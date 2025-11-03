@@ -48,3 +48,9 @@ test:
 
 test-sleep:
 	"$(PHP_CLI)" php tests/test-concur-sleep.php ${c}
+
+test-mongodb-insertOne:
+	"$(PHP_CLI)" php tests/test-concur-mongodb-insert-one.php ${c}
+
+test-mongodb-bulkWrite:
+	"$(PHP_CLI)" php tests/test-concur-mongodb-bulk-write.php ${c}
