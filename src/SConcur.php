@@ -281,7 +281,7 @@ class SConcur
                     unset($fibersByTaskKey[$taskKey]);
 
                     yield new FeatureResultDto(
-                        key: $taskKey,
+                        key: $fiberKey,
                         result: $result
                     );
                 }

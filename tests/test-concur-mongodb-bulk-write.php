@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+ini_set('memory_limit', '1024M');
+
 use MongoDB\BSON\UTCDateTime;
 use MongoDB\Client;
 use SConcur\Entities\Context;
@@ -16,7 +18,8 @@ require_once __DIR__ . '/../vendor/autoload.php';
 TestContainer::resolve();
 
 $total      = (int) ($_SERVER['argv'][1] ?? 5);
-$limitCount = (int) ($_SERVER['argv'][2] ?? 0);
+$timeout    = (int) ($_SERVER['argv'][2] ?? 2);
+$limitCount = (int) ($_SERVER['argv'][3] ?? 0);
 
 $counter = $total;
 
@@ -170,9 +173,14 @@ while ($counter--) {
     );
 }
 
-foreach (SConcur::run($callbacks, $limitCount) as $key => $result) {
-    echo "success:\n";
-    print_r($result->result);
+$generator = SConcur::run(
+    callbacks: $callbacks,
+    timeoutSeconds: $timeout,
+    limitCount: $limitCount,
+);
+
+foreach ($generator as $result) {
+    echo "success: $result->key\n";
 }
 
 $totalTime = microtime(true) - $start;
