@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Mongodb\Serialization;
 
+use DateTime;
 use JsonException;
 use RuntimeException;
 use SConcur\Features\Mongodb\Types\ObjectId;
@@ -93,10 +94,20 @@ readonly class DocumentSerializer
                 return new ObjectId($value['$oid']);
             }
 
+            if (array_key_exists('$date', $value)) {
+                $date = $value['$date']['$numberLong'] ?? null;
+
+                if (ctype_digit($date) !== false) {
+                    return new UTCDateTime(
+                        DateTime::createFromFormat('U.u', sprintf('%.6F', (int) $date / 1000))
+                    );
+                }
+            }
+
             $result = [];
 
             foreach ($value as $key => $subValue) {
-                $result[$key] = static::unserializeRecursive($value, $subValue);
+                $result[$key] = static::unserializeRecursive($subValue);
             }
 
             return $result;
