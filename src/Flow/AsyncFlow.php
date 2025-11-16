@@ -1,0 +1,80 @@
+<?php
+
+declare(strict_types=1);
+
+namespace SConcur\Flow;
+
+use SConcur\Contracts\FlowInterface;
+use SConcur\Contracts\ServerConnectorInterface;
+use SConcur\Dto\TaskResultDto;
+use SConcur\Entities\Context;
+use SConcur\Exceptions\ContinueException;
+use SConcur\Exceptions\FeatureResultNotFoundException;
+use SConcur\Features\MethodEnum;
+use SConcur\Helpers\UuidGenerator;
+use SConcur\SConcur;
+
+class AsyncFlow implements FlowInterface
+{
+    protected string $flowUuid;
+
+    public function __construct(
+        protected ServerConnectorInterface $serverConnector,
+    ) {
+        $this->flowUuid = UuidGenerator::make();
+    }
+
+    public function getUuid(): string
+    {
+        return $this->flowUuid;
+    }
+
+    /**
+     * @throws FeatureResultNotFoundException
+     * @throws ContinueException
+     */
+    public function pushTask(Context $context, MethodEnum $method, string $payload): TaskResultDto
+    {
+        $this->connectIfNotConnected($context);
+
+        $connector = $this->serverConnector->clone($context);
+
+        $runningTask = $connector->write(
+            context: $context,
+            method: $method,
+            payload: $payload
+        );
+
+        $connector->disconnect();
+
+        return SConcur::waitResult(
+            context: $context,
+            taskKey: $runningTask->key
+        );
+    }
+
+    public function waitResult(Context $context): TaskResultDto
+    {
+        return $this->serverConnector->read($context);
+    }
+
+    public function close(): void
+    {
+        $this->serverConnector->disconnect();
+    }
+
+    private function connectIfNotConnected(Context $context): void
+    {
+        if (!$this->serverConnector->isConnected()) {
+            $this->serverConnector->connect(
+                context: $context,
+                waitHandshake: true
+            );
+        }
+    }
+
+    public function __destruct()
+    {
+        $this->serverConnector->disconnect();
+    }
+}

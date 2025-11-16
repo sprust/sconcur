@@ -19,5 +19,5 @@ interface ServerConnectorInterface
 
     public function write(Context $context, MethodEnum $method, string $payload): RunningTaskDto;
 
-    public function read(Context $context): ?TaskResultDto;
+    public function read(Context $context): TaskResultDto;
 }

@@ -18,6 +18,7 @@ use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Exceptions\WriteException;
 use SConcur\Exceptions\ResponseIsNotJsonException;
 use SConcur\Features\MethodEnum;
+use SConcur\Helpers\UuidGenerator;
 use SConcur\Logging\LoggerFormatter;
 use SConcur\SConcur;
 use Throwable;
@@ -45,7 +46,6 @@ class ServerConnector implements ServerConnectorInterface
     public function __construct(
         protected array $socketAddresses,
         protected LoggerInterface $logger,
-        protected string $taskKeyPrefix,
     ) {
         if (count($socketAddresses) === 0) {
             throw new RuntimeException('No socket addresses provided');
@@ -67,7 +67,6 @@ class ServerConnector implements ServerConnectorInterface
                 $this->socketAddress,
             ],
             logger: $this->logger,
-            taskKeyPrefix: $this->taskKeyPrefix,
         );
 
         $connector->connect(
@@ -140,21 +139,7 @@ class ServerConnector implements ServerConnectorInterface
                     payload: ''
                 );
 
-                $handshakeTaskResult = null;
-
-                while (true) {
-                    $handshakeTaskResult = $this->read($context);
-
-                    if ($handshakeTaskResult === null) {
-                        $context->check();
-
-                        continue;
-                    }
-
-                    break;
-                }
-
-                if ($handshakeTaskResult->isError) {
+                if ($this->read($context)->isError) {
                     $this->disconnect();
 
                     continue;
@@ -198,13 +183,14 @@ class ServerConnector implements ServerConnectorInterface
             throw new NotConnectedException();
         }
 
-        $taskKey = uniqid(
-            prefix: $this->taskKeyPrefix . ':' . ++self::$tasksCounter . ':',
-            more_entropy: true
-        );
+        ++self::$tasksCounter;
+
+        $flowUuid = SConcur::getCurrentFlow()->getUuid();
+
+        $taskKey = $flowUuid . ':' . UuidGenerator::make() . ':' . self::$tasksCounter;
 
         $data = json_encode([
-            'fu' => SConcur::getFlowUuid(),
+            'fu' => $flowUuid,
             'md' => $method->value,
             'tk' => $taskKey,
             'pl' => $payload,
@@ -253,7 +239,7 @@ class ServerConnector implements ServerConnectorInterface
      * @throws UnexpectedResponseFormatException
      * @throws NotConnectedException
      */
-    public function read(Context $context): ?TaskResultDto
+    public function read(Context $context): TaskResultDto
     {
         if (!$this->connected) {
             throw new NotConnectedException();

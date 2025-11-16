@@ -8,9 +8,10 @@ use Closure;
 use Fiber;
 use Generator;
 use LogicException;
-use Psr\Container\ContainerInterface;
+use Psr\Log\LoggerInterface;
+use SConcur\Connection\ServerConnector;
+use SConcur\Contracts\FlowInterface;
 use SConcur\Contracts\ParametersResolverInterface;
-use SConcur\Contracts\ServerConnectorInterface;
 use SConcur\Dto\FeatureResultDto;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Entities\Context;
@@ -23,71 +24,70 @@ use SConcur\Exceptions\FiberNotFoundByTaskKeyException;
 use SConcur\Exceptions\InvalidValueException;
 use SConcur\Exceptions\ResumeException;
 use SConcur\Exceptions\StartException;
+use SConcur\Flow\AsyncFlow;
 use Throwable;
 
 class SConcur
 {
     protected static bool $initialized = false;
-    protected static bool $connected = false;
-    protected static bool $running = false;
 
-    protected static string $flowUuid;
+    protected static ?FlowInterface $currentAsyncFlow = null;
+    protected static ?FlowInterface $currentSyncFlow = null;
 
-    protected static ContainerInterface $container;
+    protected static ?TaskResultDto $currentAsyncResult = null;
 
-    protected static ?ServerConnectorInterface $serverConnector = null;
-    protected static ?ParametersResolverInterface $parametersResolver = null;
-
-    protected static ?TaskResultDto $currentResult = null;
+    protected static array $socketAddresses;
+    protected static ParametersResolverInterface $parametersResolver;
+    protected static LoggerInterface $logger;
 
     private function __construct()
     {
     }
 
-    public static function init(ContainerInterface $container): void
-    {
-        static::$container = $container;
+    /**
+     * @param array<string> $socketAddresses
+     */
+    public static function init(
+        array $socketAddresses,
+        ParametersResolverInterface $parametersResolver,
+        LoggerInterface $logger,
+    ): void {
+        static::$socketAddresses    = $socketAddresses;
+        static::$parametersResolver = $parametersResolver;
+        static::$logger             = $logger;
 
         static::$initialized = true;
     }
 
-    public static function isConcurrency(): bool
-    {
-        return static::$initialized && static::$running && static::$connected;
-    }
-
-    public static function getServerConnector(): ServerConnectorInterface
+    public static function getCurrentFlow(): FlowInterface
     {
         static::checkInitialization();
 
-        return static::$serverConnector
-            ??= static::$container->get(ServerConnectorInterface::class);
-    }
-
-    public static function getParametersResolver(): ParametersResolverInterface
-    {
-        static::checkInitialization();
-
-        return static::$parametersResolver
-            ??= static::$container->get(ParametersResolverInterface::class);
-    }
-
-    public static function getFlowUuid(): string
-    {
-        return self::$flowUuid;
+        if (static::$currentAsyncFlow !== null) {
+            return static::$currentAsyncFlow;
+        } else {
+            return static::initSyncFlow();
+        }
     }
 
     /**
      * @throws FeatureResultNotFoundException
+     * @throws ContinueException
      */
-    public static function detectResult(string $taskKey): TaskResultDto
+    public static function waitResult(Context $context, string $taskKey): TaskResultDto
     {
         static::checkInitialization();
 
-        if (static::$currentResult?->key === $taskKey) {
-            $currentResult = static::$currentResult;
+        if (self::$currentAsyncFlow === null) {
+            return self::$currentSyncFlow->waitResult($context);
+        }
 
-            static::$currentResult = null;
+        static::wait($taskKey);
+
+        if (static::$currentAsyncResult?->key === $taskKey) {
+            $currentResult = static::$currentAsyncResult;
+
+            static::$currentAsyncResult = null;
 
             return $currentResult;
         }
@@ -115,20 +115,9 @@ class SConcur
     ): Generator {
         static::checkInitialization();
 
-        if (Fiber::getCurrent()) {
-            throw new AlreadyRunningException(
-                'Running inside fiber is not allowed.',
-            );
+        if (static::$currentAsyncFlow !== null) {
+            throw new AlreadyRunningException();
         }
-
-        if (static::$running) {
-            throw new AlreadyRunningException(
-                'Concurrency is already running',
-            );
-        }
-
-        static::$running  = true;
-        static::$flowUuid = uniqid(more_entropy: true);
 
         try {
             $limitCount ??= 0;
@@ -143,43 +132,7 @@ class SConcur
                 );
             }
 
-            $serverConnector    = static::getServerConnector();
-            $parametersResolver = static::getParametersResolver();
-
-            $serverConnector->connect(
-                context: $context,
-                waitHandshake: true
-            );
-
-            if (!$serverConnector->isConnected()) {
-                static::$connected = false;
-
-                $callbackKeys = array_keys($callbacks);
-
-                foreach ($callbackKeys as $callbackKey) {
-                    $context->check();
-
-                    $callback = $callbacks[$callbackKey];
-
-                    unset($callbacks[$callbackKey]);
-
-                    $parameters = $parametersResolver->make(
-                        context: $context,
-                        callback: $callback
-                    );
-
-                    $result = $callback(...$parameters);
-
-                    yield new FeatureResultDto(
-                        key: $callbackKey,
-                        result: $result,
-                    );
-                }
-
-                return;
-            }
-
-            static::$connected = true;
+            $flow = static::createAsyncFlow();
 
             /** @var array<string, array{fk: string, fi: Fiber}> $fibersByTaskKey */
             $fibersByTaskKey = [];
@@ -204,7 +157,7 @@ class SConcur
                     $fiberData = $fibers[$fiberKey];
 
                     if (!$fiberData->isStarted()) {
-                        $parameters = $parametersResolver->make(
+                        $parameters = static::$parametersResolver->make(
                             context: $context,
                             callback: $callbacks[$fiberKey]
                         );
@@ -227,17 +180,9 @@ class SConcur
                     }
                 }
 
-                while (true) {
-                    $taskResult = $serverConnector->read(
-                        context: $context,
-                    );
-
-                    if ($taskResult === null) {
-                        continue;
-                    }
-
-                    break;
-                }
+                $taskResult = $flow->waitResult(
+                    context: $context,
+                );
 
                 $taskKey = $taskResult->key;
 
@@ -261,7 +206,7 @@ class SConcur
                     );
                 }
 
-                static::$currentResult = $taskResult;
+                static::$currentAsyncResult = $taskResult;
 
                 try {
                     $fiber->resume();
@@ -272,7 +217,7 @@ class SConcur
                     );
                 }
 
-                static::$currentResult = null;
+                static::$currentAsyncResult = null;
 
                 if ($fiber->isTerminated()) {
                     $result = $fiber->getReturn();
@@ -287,22 +232,19 @@ class SConcur
                 }
             }
         } finally {
-            static::$running   = false;
-            static::$connected = false;
-
-            static::$serverConnector?->disconnect();
+            self::deleteAsyncFlow();
         }
     }
 
     /**
      * @throws ContinueException
      */
-    public static function wait(string $taskKey): void
+    protected static function wait(string $taskKey): void
     {
-        static::checkInitialization();
-
         if (!Fiber::getCurrent()) {
-            return;
+            throw new ContinueException(
+                message: "Can't wait outside of fiber."
+            );
         }
 
         try {
@@ -312,6 +254,32 @@ class SConcur
                 previous: $exception
             );
         }
+    }
+
+    protected static function createAsyncFlow(): FlowInterface
+    {
+        return static::$currentAsyncFlow = new AsyncFlow(
+            serverConnector: new ServerConnector(
+                socketAddresses: static::$socketAddresses,
+                logger: static::$logger,
+            ),
+        );
+    }
+
+    protected static function deleteAsyncFlow(): void
+    {
+        static::$currentAsyncFlow?->close();
+        static::$currentAsyncFlow = null;
+    }
+
+    protected static function initSyncFlow(): FlowInterface
+    {
+        return static::$currentSyncFlow ??= new AsyncFlow(
+            serverConnector: new ServerConnector(
+                socketAddresses: static::$socketAddresses,
+                logger: static::$logger,
+            ),
+        );
     }
 
     protected static function checkInitialization(): void
