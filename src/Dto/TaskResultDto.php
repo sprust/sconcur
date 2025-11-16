@@ -14,6 +14,7 @@ readonly class TaskResultDto
         public string $key,
         public bool $isError,
         public string $payload,
+        public bool $isLast,
     ) {
     }
 }

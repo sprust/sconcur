@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Mongodb;
 
+use Iterator;
 use MongoDB\BulkWriteResult as DriverBulkWriteResult;
 use MongoDB\Collection;
+use MongoDB\Driver\CursorInterface as DriverCursorInterface;
 use MongoDB\InsertOneResult as DriverInsertOneResult;
 use RuntimeException;
 use SConcur\Entities\Context;
@@ -13,9 +15,10 @@ use SConcur\Exceptions\ContinueException;
 use SConcur\Exceptions\FeatureResultNotFoundException;
 use SConcur\Exceptions\InvalidMongodbBulkWriteOperationException;
 use SConcur\Features\MethodEnum;
+use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
+use SConcur\Features\Mongodb\Results\AggregateResult;
 use SConcur\Features\Mongodb\Results\BulkWriteResult as PackageBulkWriteResult;
 use SConcur\Features\Mongodb\Results\InsertOneResult as PackageInsertOneResult;
-use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
 use SConcur\SConcur;
 
@@ -124,6 +127,43 @@ readonly class MongodbFeature
             deletedCount: (int) $docResult['deletedcount'],
             upsertedCount: (int) $docResult['upsertedcount'],
             upsertedIds: (array) $docResult['upsertedids'],
+        );
+    }
+
+    /**
+     * @throws InvalidMongodbBulkWriteOperationException
+     */
+    public static function aggregate(
+        Context $context,
+        Collection $collection,
+        ConnectionParameters $connection,
+        array $pipeline,
+    ): DriverCursorInterface|Iterator {
+        if (!SConcur::isConcurrency()) {
+            return $collection->aggregate($pipeline);
+        }
+
+        $connector = SConcur::getServerConnector()->clone($context);
+
+        $serialized = DocumentSerializer::serialize(
+            static::prepareOperations($pipeline)
+        );
+
+        $runningTask = $connector->write(
+            context: $context,
+            method: MethodEnum::Mongodb,
+            payload: static::serialize(
+                connection: $connection,
+                command: CommandEnum::Aggregate,
+                data: $serialized,
+            )
+        );
+
+        $connector->disconnect();
+
+        return new AggregateResult(
+            context: $context,
+            runningTask: $runningTask,
         );
     }
 

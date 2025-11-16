@@ -24,7 +24,7 @@ readonly class DocumentSerializer
      *
      * @param array<int|string, mixed> $document
      */
-    public static function  serialize(array $document): string
+    public static function serialize(array $document): string
     {
         $result = [];
 
