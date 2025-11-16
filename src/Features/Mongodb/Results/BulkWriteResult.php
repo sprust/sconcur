@@ -4,8 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Mongodb\Results;
 
-use MongoDB\BSON\ObjectId;
-use RuntimeException;
+use SConcur\Features\Mongodb\Types\ObjectId;
 
 class BulkWriteResult
 {
@@ -32,14 +31,6 @@ class BulkWriteResult
         return $this->insertedCount;
     }
 
-    /**
-     * @return array<ObjectId|string|int|float|null>
-     */
-    public function getInsertedIds(): array
-    {
-        throw new RuntimeException('Not implemented');
-    }
-
     public function getMatchedCount(): int
     {
         return $this->matchedCount;
@@ -56,7 +47,7 @@ class BulkWriteResult
     }
 
     /**
-     * @return array<ObjectId|string|int|float|null>
+     * @return array<string|int|float|null>
      */
     public function getUpsertedIds(): array
     {
@@ -67,5 +58,4 @@ class BulkWriteResult
     {
         return true;
     }
-
 }

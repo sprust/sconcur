@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Mongodb\Results;
 
-use MongoDB\BSON\ObjectId;
+use SConcur\Features\Mongodb\Types\ObjectId;
 
 class InsertOneResult
 {

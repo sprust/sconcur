@@ -4,24 +4,14 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Mongodb\Serialization;
 
-use DateTimeInterface;
-use MongoDB\BSON\Document;
-use MongoDB\BSON\ObjectId;
-use MongoDB\BSON\UTCDateTimeInterface;
+use JsonException;
+use RuntimeException;
+use SConcur\Features\Mongodb\Types\ObjectId;
+use SConcur\Features\Mongodb\Types\UTCDateTime;
 
 readonly class DocumentSerializer
 {
-    private const TYPE_KEY  = '|t_';
-    private const VALUE_KEY = '|v_';
-
-    private const DATE_FORMAT = DATE_RFC3339;
-
-    private const DATETIME_TYPE = 'datetime';
-    private const ID_TYPE       = 'id';
-
     /**
-     * TODO: try to use MongoDB\BSON\Document
-     *
      * @param array<int|string, mixed> $document
      */
     public static function serialize(array $document): string
@@ -39,9 +29,21 @@ readonly class DocumentSerializer
         return json_encode($result);
     }
 
-    public static function unserialize(string $document): Document
+    public static function unserialize(string $document): array
     {
-        return Document::fromJSON($document);
+        try {
+            $data = json_decode($document, true, flags: JSON_THROW_ON_ERROR);
+        } catch (JsonException $exception) {
+            throw new RuntimeException( // TODO
+                message: 'Failed to decode JSON: ' . $exception->getMessage(),
+            );
+        }
+
+        foreach ($data as $key => $value) {
+            $data[$key] = static::unserializeRecursive(value: $value);
+        }
+
+        return $data;
     }
 
     /**
@@ -51,27 +53,19 @@ readonly class DocumentSerializer
     {
         if (is_object($value)) {
             if ($value instanceof ObjectId) {
-                $result[$key] = [
-                    self::TYPE_KEY  => self::ID_TYPE,
-                    self::VALUE_KEY => (string) $value,
-                ];
-
-                return;
-            }
-            if ($value instanceof DateTimeInterface) {
-                $result[$key] = [
-                    self::TYPE_KEY  => self::DATETIME_TYPE,
-                    self::VALUE_KEY => $value->format(self::DATE_FORMAT),
-                ];
+                $result[$key] = $value->format();
 
                 return;
             }
 
-            if ($value instanceof UTCDateTimeInterface) {
-                $result[$key] = [
-                    self::TYPE_KEY  => self::DATETIME_TYPE,
-                    self::VALUE_KEY => $value->toDateTime()->format(self::DATE_FORMAT),
-                ];
+            if ($value instanceof UTCDateTime) {
+                $result[$key] = $value->format();
+
+                return;
+            }
+
+            if (method_exists($value, '__toString')) {
+                $result[$key] = (string) $value;
 
                 return;
             }
@@ -90,5 +84,24 @@ readonly class DocumentSerializer
         }
 
         $result[$key] = $value;
+    }
+
+    protected static function unserializeRecursive(mixed $value): mixed
+    {
+        if (is_array($value)) {
+            if (array_key_exists('$oid', $value)) {
+                return new ObjectId($value['$oid']);
+            }
+
+            $result = [];
+
+            foreach ($value as $key => $subValue) {
+                $result[$key] = static::unserializeRecursive($value, $subValue);
+            }
+
+            return $result;
+        }
+
+        return $value;
     }
 }

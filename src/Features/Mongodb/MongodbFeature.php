@@ -5,20 +5,16 @@ declare(strict_types=1);
 namespace SConcur\Features\Mongodb;
 
 use Iterator;
-use MongoDB\BulkWriteResult as DriverBulkWriteResult;
 use MongoDB\Collection;
 use MongoDB\Driver\CursorInterface as DriverCursorInterface;
-use MongoDB\InsertOneResult as DriverInsertOneResult;
 use RuntimeException;
 use SConcur\Entities\Context;
-use SConcur\Exceptions\ContinueException;
-use SConcur\Exceptions\FeatureResultNotFoundException;
 use SConcur\Exceptions\InvalidMongodbBulkWriteOperationException;
 use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\Features\Mongodb\Results\AggregateResult;
-use SConcur\Features\Mongodb\Results\BulkWriteResult as PackageBulkWriteResult;
-use SConcur\Features\Mongodb\Results\InsertOneResult as PackageInsertOneResult;
+use SConcur\Features\Mongodb\Results\BulkWriteResult;
+use SConcur\Features\Mongodb\Results\InsertOneResult;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
 use SConcur\SConcur;
 
@@ -28,25 +24,14 @@ readonly class MongodbFeature
     {
     }
 
-    /**
-     * @throws FeatureResultNotFoundException
-     * @throws ContinueException
-     */
     public static function insertOne(
         Context $context,
-        Collection $collection,
         ConnectionParameters $connection,
         array $document,
-    ): DriverInsertOneResult|PackageInsertOneResult {
-        if (!SConcur::isConcurrency()) {
-            return $collection->insertOne($document);
-        }
-
-        $connector = SConcur::getServerConnector()->clone($context);
-
+    ): InsertOneResult {
         $serialized = DocumentSerializer::serialize($document);
 
-        $runningTask = $connector->write(
+        $taskResult = SConcur::getCurrentFlow()->pushTask(
             context: $context,
             method: MethodEnum::Mongodb,
             payload: static::serialize(
@@ -56,47 +41,32 @@ readonly class MongodbFeature
             )
         );
 
-        $connector->disconnect();
-
-        SConcur::wait($runningTask->key);
-
-        $result = SConcur::detectResult(taskKey: $runningTask->key);
-
-        if ($result->isError) {
+        if ($taskResult->isError) {
             throw new RuntimeException(
-                $result->payload ?: 'Unknown error',
+                $taskResult->payload ?: 'Unknown error',
             );
         }
 
-        $docResult = (array) DocumentSerializer::unserialize($result->payload)->toPHP();
+        $docResult = DocumentSerializer::unserialize($taskResult->payload);
 
-        return new PackageInsertOneResult(
+        return new InsertOneResult(
             insertedId: $docResult['insertedid'],
         );
     }
 
     /**
      * @throws InvalidMongodbBulkWriteOperationException
-     * @throws FeatureResultNotFoundException
-     * @throws ContinueException
      */
     public static function bulkWrite(
         Context $context,
-        Collection $collection,
         ConnectionParameters $connection,
         array $operations,
-    ): DriverBulkWriteResult|PackageBulkWriteResult {
-        if (!SConcur::isConcurrency()) {
-            return $collection->bulkWrite($operations);
-        }
-
-        $connector = SConcur::getServerConnector()->clone($context);
-
+    ): BulkWriteResult {
         $serialized = DocumentSerializer::serialize(
             static::prepareOperations($operations)
         );
 
-        $runningTask = $connector->write(
+        $taskResult = SConcur::getCurrentFlow()->pushTask(
             context: $context,
             method: MethodEnum::Mongodb,
             payload: static::serialize(
@@ -106,21 +76,15 @@ readonly class MongodbFeature
             )
         );
 
-        $connector->disconnect();
-
-        SConcur::wait($runningTask->key);
-
-        $result = SConcur::detectResult(taskKey: $runningTask->key);
-
-        if ($result->isError) {
+        if ($taskResult->isError) {
             throw new RuntimeException(
-                $result->payload ?: 'Unknown error',
+                $taskResult->payload ?: 'Unknown error',
             );
         }
 
-        $docResult = (array) DocumentSerializer::unserialize($result->payload)->toPHP();
+        $docResult = DocumentSerializer::unserialize($taskResult->payload);
 
-        return new PackageBulkWriteResult(
+        return new BulkWriteResult(
             insertedCount: (int) $docResult['insertedcount'],
             matchedCount: (int) $docResult['matchedcount'],
             modifiedCount: (int) $docResult['modifiedcount'],
