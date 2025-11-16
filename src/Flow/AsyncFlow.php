@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Flow;
 
+use Fiber;
 use SConcur\Contracts\FlowInterface;
 use SConcur\Contracts\ServerConnectorInterface;
 use SConcur\Dto\TaskResultDto;
@@ -17,6 +18,11 @@ use SConcur\SConcur;
 class AsyncFlow implements FlowInterface
 {
     protected string $flowUuid;
+
+    /**
+     * @var array<string, Fiber>
+     */
+    protected array $fibersKeyByTaskUuid = [];
 
     public function __construct(
         protected ServerConnectorInterface $serverConnector,
@@ -47,10 +53,24 @@ class AsyncFlow implements FlowInterface
 
         $connector->disconnect();
 
+        if ($currentFiber = Fiber::getCurrent()) {
+            $this->fibersKeyByTaskUuid[$runningTask->key] = $currentFiber;
+        }
+
         return SConcur::waitResult(
             context: $context,
             taskKey: $runningTask->key
         );
+    }
+
+    public function getFiberByTaskUuid(string $taskUuid): ?Fiber
+    {
+        return $this->fibersKeyByTaskUuid[$taskUuid] ?? null;
+    }
+
+    public function deleteFiberByTaskUuid(string $taskUuid): void
+    {
+        unset($this->fibersKeyByTaskUuid[$taskUuid]);
     }
 
     public function waitResult(Context $context): TaskResultDto

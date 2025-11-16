@@ -71,33 +71,6 @@ class SConcur
     }
 
     /**
-     * @throws FeatureResultNotFoundException
-     * @throws ContinueException
-     */
-    public static function waitResult(Context $context, string $taskKey): TaskResultDto
-    {
-        static::checkInitialization();
-
-        if (self::$currentAsyncFlow === null) {
-            return self::$currentSyncFlow->waitResult($context);
-        }
-
-        static::wait($taskKey);
-
-        if (static::$currentAsyncResult?->key === $taskKey) {
-            $currentResult = static::$currentAsyncResult;
-
-            static::$currentAsyncResult = null;
-
-            return $currentResult;
-        }
-
-        throw new FeatureResultNotFoundException(
-            taskKey: $taskKey,
-        );
-    }
-
-    /**
      * @return Generator<int|string, FeatureResultDto>
      *
      * @throws AlreadyRunningException
@@ -134,13 +107,26 @@ class SConcur
 
             $flow = static::createAsyncFlow();
 
-            /** @var array<string, array{fk: string, fi: Fiber}> $fibersByTaskKey */
-            $fibersByTaskKey = [];
+            /** @var array<string, Fiber> $fibers */
+            $fibers = [];
 
-            $fibers = array_map(
-                static fn(Closure $callback) => new Fiber($callback),
-                $callbacks
-            );
+            /** @var array<string, Closure> $callbacksKeyByFiberId */
+            $callbacksKeyByFiberId = [];
+
+            $callbackKeys = array_keys($callbacks);
+
+            foreach ($callbackKeys as $callbackKey) {
+                $callback = $callbacks[$callbackKey];
+
+                unset($callbacks[$callbackKey]);
+
+                $fiber = new Fiber($callback);
+
+                $fiberId = spl_object_id($fiber);
+
+                $fibers[$fiberId]                = $fiber;
+                $callbacksKeyByFiberId[$fiberId] = $callback;
+            }
 
             while (count($fibers) > 0) {
                 $context->check();
@@ -154,29 +140,24 @@ class SConcur
                 foreach ($fiberKeys as $fiberKey) {
                     $context->check();
 
-                    $fiberData = $fibers[$fiberKey];
+                    $fiber = $fibers[$fiberKey];
 
-                    if (!$fiberData->isStarted()) {
+                    if (!$fiber->isStarted()) {
                         $parameters = static::$parametersResolver->make(
                             context: $context,
-                            callback: $callbacks[$fiberKey]
+                            callback: $callbacksKeyByFiberId[$fiberKey]
                         );
 
-                        unset($callbacks[$fiberKey]);
+                        unset($callbacksKeyByFiberId[$fiberKey]);
 
                         try {
-                            $taskKey = $fiberData->start(...$parameters);
+                            $fiber->start(...$parameters);
                         } catch (Throwable $exception) {
                             throw new StartException(
                                 message: $exception->getMessage(),
                                 previous: $exception
                             );
                         }
-
-                        $fibersByTaskKey[$taskKey] = [
-                            'fk' => $fiberKey,
-                            'fi' => $fiberData,
-                        ];
                     }
                 }
 
@@ -186,21 +167,15 @@ class SConcur
 
                 $taskKey = $taskResult->key;
 
-                $fiberData = $fibersByTaskKey[$taskKey] ?? null;
+                $foundFiber = $flow->getFiberByTaskUuid($taskKey);
 
-                if (!$fiberData) {
+                if (!$foundFiber) {
                     throw new FiberNotFoundByTaskKeyException(
                         taskKey: $taskKey
                     );
                 }
 
-                /** @var string $fiberKey */
-                $fiberKey = $fiberData['fk'];
-
-                /** @var Fiber $fiber */
-                $fiber = $fiberData['fi'];
-
-                if (!$fiber->isSuspended()) {
+                if (!$foundFiber->isSuspended()) {
                     throw new LogicException(
                         message: "Fiber with task key [$taskKey] is not suspended"
                     );
@@ -209,7 +184,7 @@ class SConcur
                 static::$currentAsyncResult = $taskResult;
 
                 try {
-                    $fiber->resume();
+                    $foundFiber->resume();
                 } catch (Throwable $exception) {
                     throw new ResumeException(
                         message: $exception->getMessage(),
@@ -219,14 +194,14 @@ class SConcur
 
                 static::$currentAsyncResult = null;
 
-                if ($fiber->isTerminated()) {
-                    $result = $fiber->getReturn();
+                if ($foundFiber->isTerminated()) {
+                    $result = $foundFiber->getReturn();
 
-                    unset($fibers[$fiberKey]);
-                    unset($fibersByTaskKey[$taskKey]);
+                    unset($fibers[spl_object_id($foundFiber)]);
+                    $flow->deleteFiberByTaskUuid($taskKey);
 
                     yield new FeatureResultDto(
-                        key: $fiberKey,
+                        key: $taskKey,
                         result: $result
                     );
                 }
@@ -239,7 +214,7 @@ class SConcur
     /**
      * @throws ContinueException
      */
-    protected static function wait(string $taskKey): void
+    protected static function wait(): void
     {
         if (!Fiber::getCurrent()) {
             throw new ContinueException(
@@ -248,12 +223,39 @@ class SConcur
         }
 
         try {
-            Fiber::suspend($taskKey);
+            Fiber::suspend();
         } catch (Throwable $exception) {
             throw new ContinueException(
                 previous: $exception
             );
         }
+    }
+
+    /**
+     * @throws FeatureResultNotFoundException
+     * @throws ContinueException
+     */
+    public static function waitResult(Context $context, string $taskKey): TaskResultDto
+    {
+        static::checkInitialization();
+
+        if (self::$currentAsyncFlow === null) {
+            return self::$currentSyncFlow->waitResult($context);
+        }
+
+        static::wait();
+
+        if (static::$currentAsyncResult?->key === $taskKey) {
+            $currentResult = static::$currentAsyncResult;
+
+            static::$currentAsyncResult = null;
+
+            return $currentResult;
+        }
+
+        throw new FeatureResultNotFoundException(
+            taskKey: $taskKey,
+        );
     }
 
     protected static function createAsyncFlow(): FlowInterface
