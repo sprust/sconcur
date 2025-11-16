@@ -8,8 +8,6 @@ use SConcur\Entities\Context;
 use SConcur\Entities\Timer;
 use SConcur\Features\Mongodb\MongodbFeature;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
-use SConcur\Features\Mongodb\Types\ObjectId;
-use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\SConcur;
 use SConcur\Tests\Impl\TestContainer;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
@@ -18,7 +16,7 @@ require_once __DIR__ . '/../vendor/autoload.php';
 
 TestContainer::resolve();
 
-$total      = (int) ($_SERVER['argv'][1] ?? 5);
+$total      = (int) ($_SERVER['argv'][1] ?? 3);
 $timeout    = (int) ($_SERVER['argv'][2] ?? 2);
 $limitCount = (int) ($_SERVER['argv'][3] ?? 0);
 
@@ -41,41 +39,26 @@ $connection = new ConnectionParameters(
 );
 
 while ($counter--) {
-    $callbacks["insert-$counter"] = static function (Context $context) use ($connection) {
-        return MongodbFeature::insertOne(
+    $callbacks["agg-$counter"] = static function (Context $context) use ($counter, $connection) {
+        $aggregate = MongodbFeature::aggregate(
             context: $context,
             connection: $connection,
-            document: [
-                'IIID'      => new ObjectId('6919e3d1a3673d3f4d9137a3'),
-                'uniq'      => uniqid(),
-                'bool'      => true,
-                'date'      => new UTCDateTime(),
-                'dates'     => [
-                    new UTCDateTime(),
-                    new UTCDateTime(),
-                    'dates'     => [
-                        new UTCDateTime(),
-                        new UTCDateTime(),
-                    ],
-                    'dates_ass' => [
-                        'one' => new UTCDateTime(),
-                        'two' => new UTCDateTime(),
+            pipeline: [
+                [
+                    '$match' => [
+                        'bool' => true,
                     ],
                 ],
-                'dates_ass' => [
-                    'one'       => new UTCDateTime(),
-                    'two'       => new UTCDateTime(),
-                    'dates'     => [
-                        new UTCDateTime(),
-                        new UTCDateTime(),
-                    ],
-                    'dates_ass' => [
-                        'one' => new UTCDateTime(),
-                        'two' => new UTCDateTime(),
-                    ],
-                ],
+                [
+                    '$limit' => 40,
+                ]
             ]
-        )->getInsertedId();
+        );
+
+        foreach ($aggregate as $doc) {
+            $id = $doc['_id']->id;
+            echo "agg-$counter: document: $id\n";
+        }
     };
 }
 

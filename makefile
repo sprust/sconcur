@@ -54,3 +54,6 @@ test-mongodb-insertOne:
 
 test-mongodb-bulkWrite:
 	"$(PHP_CLI)" php tests/test-concur-mongodb-bulk-write.php ${c}
+
+test-mongodb-aggregate:
+	"$(PHP_CLI)" php tests/test-concur-mongodb-aggregate.php ${c}

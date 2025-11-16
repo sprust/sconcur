@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace SConcur\Features\Mongodb;
 
 use Iterator;
-use MongoDB\Collection;
-use MongoDB\Driver\CursorInterface as DriverCursorInterface;
 use RuntimeException;
 use SConcur\Entities\Context;
 use SConcur\Exceptions\InvalidMongodbBulkWriteOperationException;
@@ -34,7 +32,7 @@ readonly class MongodbFeature
         $taskResult = SConcur::getCurrentFlow()->pushTask(
             context: $context,
             method: MethodEnum::Mongodb,
-            payload: static::serialize(
+            payload: static::serializePayload(
                 connection: $connection,
                 command: CommandEnum::InsertOne,
                 data: $serialized,
@@ -69,7 +67,7 @@ readonly class MongodbFeature
         $taskResult = SConcur::getCurrentFlow()->pushTask(
             context: $context,
             method: MethodEnum::Mongodb,
-            payload: static::serialize(
+            payload: static::serializePayload(
                 connection: $connection,
                 command: CommandEnum::BulkWrite,
                 data: $serialized,
@@ -94,44 +92,25 @@ readonly class MongodbFeature
         );
     }
 
-    /**
-     * @throws InvalidMongodbBulkWriteOperationException
-     */
     public static function aggregate(
         Context $context,
-        Collection $collection,
         ConnectionParameters $connection,
         array $pipeline,
-    ): DriverCursorInterface|Iterator {
-        if (!SConcur::isConcurrency()) {
-            return $collection->aggregate($pipeline);
-        }
-
-        $connector = SConcur::getServerConnector()->clone($context);
-
-        $serialized = DocumentSerializer::serialize(
-            static::prepareOperations($pipeline)
-        );
-
-        $runningTask = $connector->write(
-            context: $context,
-            method: MethodEnum::Mongodb,
-            payload: static::serialize(
-                connection: $connection,
-                command: CommandEnum::Aggregate,
-                data: $serialized,
-            )
-        );
-
-        $connector->disconnect();
+    ): Iterator {
+        $serialized = DocumentSerializer::serialize($pipeline);
 
         return new AggregateResult(
             context: $context,
-            runningTask: $runningTask,
+            connection: $connection,
+            payload: static::serializePayload(
+                connection: $connection,
+                command: CommandEnum::Aggregate,
+                data: $serialized,
+            ),
         );
     }
 
-    protected static function serialize(
+    protected static function serializePayload(
         ConnectionParameters $connection,
         CommandEnum $command,
         string $data

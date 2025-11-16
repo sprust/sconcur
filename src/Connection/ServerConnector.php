@@ -308,7 +308,7 @@ class ServerConnector implements ServerConnectorInterface
                 key: $responseData['tk'],
                 isError: $responseData['er'],
                 payload: $responseData['pl'],
-                isLast: $responseData['ls'],
+                hasNext: $responseData['hn'],
             );
         } catch (Throwable $exception) {
             throw new UnexpectedResponseFormatException(

@@ -69,6 +69,6 @@ readonly class TestLogger implements LoggerInterface
 
         file_put_contents($this->filePath, $text, FILE_APPEND);
 
-        echo $text;
+        //echo $text;
     }
 }

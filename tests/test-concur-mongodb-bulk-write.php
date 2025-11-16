@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-ini_set('memory_limit', '5024M');
+ini_set('memory_limit', '1024M');
 
 use SConcur\Entities\Context;
 use SConcur\Entities\Timer;
@@ -177,6 +177,8 @@ $generator = SConcur::run(
     limitCount: $limitCount,
 );
 
+echo "\n\n---- Async call ----\n";
+
 foreach ($generator as $result) {
     echo "success: $result->key\n";
 }
@@ -193,6 +195,8 @@ $context = (new Context())->setChecker(
 );
 
 $keys = array_keys($syncCallbacks);
+
+echo "\n\n---- Sync call ----\n";
 
 foreach ($keys as $key) {
     $callback = $syncCallbacks[$key];

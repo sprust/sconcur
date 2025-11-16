@@ -115,6 +115,9 @@ class SConcur
 
             $callbackKeys = array_keys($callbacks);
 
+            /** @var array<string, mixed> $callbackKeyKeyByFiberId */
+            $callbackKeyKeyByFiberId = [];
+
             foreach ($callbackKeys as $callbackKey) {
                 $callback = $callbacks[$callbackKey];
 
@@ -124,8 +127,9 @@ class SConcur
 
                 $fiberId = spl_object_id($fiber);
 
-                $fibers[$fiberId]                = $fiber;
-                $callbacksKeyByFiberId[$fiberId] = $callback;
+                $fibers[$fiberId]                  = $fiber;
+                $callbacksKeyByFiberId[$fiberId]   = $callback;
+                $callbackKeyKeyByFiberId[$fiberId] = $callbackKey;
             }
 
             while (count($fibers) > 0) {
@@ -197,11 +201,17 @@ class SConcur
                 if ($foundFiber->isTerminated()) {
                     $result = $foundFiber->getReturn();
 
-                    unset($fibers[spl_object_id($foundFiber)]);
+                    $fiberId = spl_object_id($foundFiber);
+
+                    unset($fibers[$fiberId]);
                     $flow->deleteFiberByTaskUuid($taskKey);
 
+                    $callbackKey = $callbackKeyKeyByFiberId[$fiberId];
+
+                    unset($callbackKeyKeyByFiberId[$fiberId]);
+
                     yield new FeatureResultDto(
-                        key: $taskKey,
+                        key: $callbackKey,
                         result: $result
                     );
                 }

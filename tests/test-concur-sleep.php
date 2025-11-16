@@ -31,8 +31,16 @@ echo "\n";
 foreach (range(1, $total) as $item) {
     echo "item: $item\n";
 
-    $callbacks[] = static function (Context $context) use ($seconds) {
+    $callbacks[$item] = static function (Context $context) use ($item, $seconds) {
+        echo "$item: start\n";
+
         SleepFeature::sleep(context: $context, seconds: $seconds);
+
+        echo "$item: woke first\n";
+
+        SleepFeature::usleep(context: $context, microseconds: 100);
+
+        echo "$item: woke second\n";
     };
 }
 
