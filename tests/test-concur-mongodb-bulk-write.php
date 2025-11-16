@@ -2,11 +2,10 @@
 
 declare(strict_types=1);
 
-ini_set('memory_limit', '1024M');
+ini_set('memory_limit', '5024M');
 
-use MongoDB\BSON\UTCDateTime;
-use MongoDB\Client;
 use SConcur\Entities\Context;
+use SConcur\Entities\Timer;
 use SConcur\Features\Mongodb\MongodbFeature;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\SConcur;
@@ -26,19 +25,12 @@ $counter = $total;
 /** @var array<Closure> $callbacks */
 $callbacks = [];
 
-$start = microtime(true);
-
 $uri = TestMongodbUriResolver::get();
 
 echo "Mongodb URI: $uri\n\n";
 
 $databaseName   = 'test';
 $collectionName = 'test';
-
-$driverCollection = (new Client($uri))->selectCollection(
-    databaseName: $databaseName,
-    collectionName: $collectionName
-);
 
 $connection = new ConnectionParameters(
     uri: $uri,
@@ -47,11 +39,10 @@ $connection = new ConnectionParameters(
 );
 
 while ($counter--) {
-    $date = new UTCDateTime();
+    $date = new DateTime();
 
     $callbacks["bw-$counter"] = static fn(Context $context) => MongodbFeature::bulkWrite(
         context: $context,
-        collection: $driverCollection,
         connection: $connection,
         operations: [
             [
@@ -173,8 +164,15 @@ while ($counter--) {
     );
 }
 
+$asyncCallbacks = $callbacks;
+$syncCallbacks  = $callbacks;
+
+memory_reset_peak_usage();
+
+$start = microtime(true);
+
 $generator = SConcur::run(
-    callbacks: $callbacks,
+    callbacks: $asyncCallbacks,
     timeoutSeconds: $timeout,
     limitCount: $limitCount,
 );
@@ -183,10 +181,33 @@ foreach ($generator as $result) {
     echo "success: $result->key\n";
 }
 
-$totalTime = microtime(true) - $start;
-$memPeak   = round(memory_get_peak_usage(true) / 1024 / 1024, 4);
+$asyncTotalTime = microtime(true) - $start;
+$asyncMemPeak   = round(memory_get_peak_usage(true) / 1024 / 1024, 4);
+
+memory_reset_peak_usage();
+
+$start = microtime(true);
+
+$context = (new Context())->setChecker(
+    new Timer(timeoutSeconds: $timeout)
+);
+
+$keys = array_keys($syncCallbacks);
+
+foreach ($keys as $key) {
+    $callback = $syncCallbacks[$key];
+
+    unset($syncCallbacks[$key]);
+
+    $callback($context);
+
+    echo "success: $key\n";
+}
+
+$syncTotalTime = microtime(true) - $start;
+$syncMemPeak   = round(memory_get_peak_usage(true) / 1024 / 1024, 4);
 
 echo "\n\nTotal call:\t$total\n";
 echo "Thr limit:\t$limitCount\n";
-echo "Mem peak:\t$memPeak\n";
-echo "Total time:\t$totalTime\n";
+echo "Mem peak sync/async:\t$syncMemPeak/$asyncMemPeak\n";
+echo "Total time sync/async:\t$syncTotalTime/$asyncTotalTime\n";
