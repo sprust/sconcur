@@ -15,7 +15,9 @@ $benchmarker = new Benchmarker(
 );
 
 $benchmarker->run(
-    syncCallback: null,
+    syncCallback: static function (Context $context) {
+        SleepFeature::usleep(context: $context, microseconds: 1);
+    },
     asyncCallback: static function (Context $context) {
         $item = uniqid();
 
@@ -25,7 +27,7 @@ $benchmarker->run(
 
         echo "$item: woke first\n";
 
-        SleepFeature::usleep(context: $context, microseconds: 100);
+        SleepFeature::usleep(context: $context, microseconds: 10);
 
         echo "$item: woke second\n";
     }
