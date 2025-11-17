@@ -2,28 +2,19 @@
 
 declare(strict_types=1);
 
-ini_set('memory_limit', '1024M');
-
 use SConcur\Entities\Context;
-use SConcur\Entities\Timer;
 use SConcur\Features\Mongodb\MongodbFeature;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
-use SConcur\SConcur;
-use SConcur\Tests\Impl\TestContainer;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
 
-require_once __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__ . '/_benchmarker.php';
 
-TestContainer::resolve();
-
-$total      = (int) ($_SERVER['argv'][1] ?? 5);
-$timeout    = (int) ($_SERVER['argv'][2] ?? 2);
-$limitCount = (int) ($_SERVER['argv'][3] ?? 0);
-
-$counter = $total;
-
-/** @var array<Closure> $callbacks */
-$callbacks = [];
+$benchmarker = new Benchmarker(
+    name: 'mongodb-bulk-write',
+    total: (int) ($_SERVER['argv'][1] ?? 5),
+    timeout: (int) ($_SERVER['argv'][2] ?? 2),
+    limitCount: (int) ($_SERVER['argv'][3] ?? 0),
+);
 
 $uri = TestMongodbUriResolver::get();
 
@@ -38,17 +29,19 @@ $connection = new ConnectionParameters(
     collection: $collectionName,
 );
 
-while ($counter--) {
+$callback = static function (Context $context) use ($connection) {
     $date = new DateTime();
 
-    $callbacks["bw-$counter"] = static fn(Context $context) => MongodbFeature::bulkWrite(
+    $item = uniqid();
+
+    return MongodbFeature::bulkWrite(
         context: $context,
         connection: $connection,
         operations: [
             [
                 'updateOne' => [
                     [
-                        'uniquid'  => uniqid((string) $counter),
+                        'uniquid'  => uniqid($item),
                         'upserted' => false,
                     ],
                     [
@@ -65,7 +58,7 @@ while ($counter--) {
             [
                 'updateOne' => [
                     [
-                        'uniquid'  => uniqid((string) $counter),
+                        'uniquid'  => uniqid($item),
                         'upserted' => true,
                     ],
                     [
@@ -85,7 +78,7 @@ while ($counter--) {
             [
                 'updateMany' => [
                     [
-                        'uniquid'       => uniqid((string) $counter),
+                        'uniquid'       => uniqid($item),
                         'upserted_many' => false,
                     ],
                     [
@@ -102,7 +95,7 @@ while ($counter--) {
             [
                 'updateMany' => [
                     [
-                        'uniquid'       => uniqid((string) $counter),
+                        'uniquid'       => uniqid($item),
                         'upserted_many' => true,
                     ],
                     [
@@ -122,25 +115,25 @@ while ($counter--) {
             [
                 'deleteOne' => [
                     [
-                        'uniquid' => uniqid((string) $counter),
+                        'uniquid' => uniqid($item),
                     ],
                 ],
             ],
             [
                 'deleteMany' => [
                     [
-                        'uniquid' => uniqid((string) $counter),
+                        'uniquid' => uniqid($item),
                     ],
                 ],
             ],
             [
                 'replaceOne' => [
                     [
-                        'uniquid'  => uniqid((string) $counter),
+                        'uniquid'  => uniqid($item),
                         'upserted' => false,
                     ],
                     [
-                        'uniquid'  => uniqid((string) $counter) . '-upd',
+                        'uniquid'  => uniqid($item) . '-upd',
                         'upserted' => true,
                     ],
                 ],
@@ -148,11 +141,11 @@ while ($counter--) {
             [
                 'replaceOne' => [
                     [
-                        'uniquid'  => uniqid((string) $counter),
+                        'uniquid'  => uniqid($item),
                         'upserted' => true,
                     ],
                     [
-                        'uniquid'  => uniqid((string) $counter) . '-upd',
+                        'uniquid'  => uniqid($item) . '-upd',
                         'upserted' => true,
                     ],
                     [
@@ -162,56 +155,9 @@ while ($counter--) {
             ],
         ]
     );
-}
+};
 
-$asyncCallbacks = $callbacks;
-$syncCallbacks  = $callbacks;
-
-memory_reset_peak_usage();
-
-$start = microtime(true);
-
-$generator = SConcur::run(
-    callbacks: $asyncCallbacks,
-    timeoutSeconds: $timeout,
-    limitCount: $limitCount,
+$benchmarker->run(
+    syncCallback: $callback,
+    asyncCallback: $callback
 );
-
-echo "\n\n---- Async call ----\n";
-
-foreach ($generator as $result) {
-    echo "success: $result->key\n";
-}
-
-$asyncTotalTime = microtime(true) - $start;
-$asyncMemPeak   = round(memory_get_peak_usage(true) / 1024 / 1024, 4);
-
-memory_reset_peak_usage();
-
-$start = microtime(true);
-
-$context = (new Context())->setChecker(
-    new Timer(timeoutSeconds: $timeout)
-);
-
-$keys = array_keys($syncCallbacks);
-
-echo "\n\n---- Sync call ----\n";
-
-foreach ($keys as $key) {
-    $callback = $syncCallbacks[$key];
-
-    unset($syncCallbacks[$key]);
-
-    $callback($context);
-
-    echo "success: $key\n";
-}
-
-$syncTotalTime = microtime(true) - $start;
-$syncMemPeak   = round(memory_get_peak_usage(true) / 1024 / 1024, 4);
-
-echo "\n\nTotal call:\t$total\n";
-echo "Thr limit:\t$limitCount\n";
-echo "Mem peak sync/async:\t$syncMemPeak/$asyncMemPeak\n";
-echo "Total time sync/async:\t$syncTotalTime/$asyncTotalTime\n";

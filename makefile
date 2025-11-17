@@ -46,14 +46,14 @@ test:
   		--display-warnings \
 		tests ${c}
 
-test-sleep:
-	"$(PHP_CLI)" php tests/test-concur-sleep.php ${c}
+bench-sleep:
+	"$(PHP_CLI)" php tests/benchmarks/sleep.php ${c}
 
-test-mongodb-insertOne:
-	"$(PHP_CLI)" php tests/test-concur-mongodb-insert-one.php ${c}
+bench-mongodb-insertOne:
+	"$(PHP_CLI)" php tests/benchmarks/mongodb-insert-one.php ${c}
 
-test-mongodb-bulkWrite:
-	"$(PHP_CLI)" php tests/test-concur-mongodb-bulk-write.php ${c}
+bench-mongodb-bulkWrite:
+	"$(PHP_CLI)" php tests/benchmarks/mongodb-bulk-write.php ${c}
 
-test-mongodb-aggregate:
-	"$(PHP_CLI)" php tests/test-concur-mongodb-aggregate.php ${c}
+bench-mongodb-aggregate:
+	"$(PHP_CLI)" php tests/benchmarks/mongodb-aggregate.php ${c}
