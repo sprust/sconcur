@@ -11,6 +11,7 @@ use SConcur\Dto\TaskResultDto;
 use SConcur\Entities\Context;
 use SConcur\Exceptions\ContinueException;
 use SConcur\Exceptions\FeatureResultNotFoundException;
+use SConcur\Exceptions\TaskErrorException;
 use SConcur\Features\MethodEnum;
 use SConcur\Helpers\UuidGenerator;
 use SConcur\SConcur;
@@ -43,15 +44,11 @@ class AsyncFlow implements FlowInterface
     {
         $this->connectIfNotConnected($context);
 
-        $connector = $this->serverConnector->clone($context);
-
-        $runningTask = $connector->write(
+        $runningTask = $this->serverConnector->write(
             context: $context,
             method: $method,
             payload: $payload
         );
-
-        $connector->disconnect();
 
         if ($currentFiber = Fiber::getCurrent()) {
             $this->fibersKeyByTaskUuid[$runningTask->key] = $currentFiber;
@@ -75,7 +72,15 @@ class AsyncFlow implements FlowInterface
 
     public function waitResult(Context $context): TaskResultDto
     {
-        return $this->serverConnector->read($context);
+        $result = $this->serverConnector->read($context);
+
+        if ($result->isError) {
+            throw new TaskErrorException(
+                $result->payload ?: 'Unknown error'
+            );
+        }
+
+        return $result;
     }
 
     public function close(): void
@@ -88,7 +93,6 @@ class AsyncFlow implements FlowInterface
         if (!$this->serverConnector->isConnected()) {
             $this->serverConnector->connect(
                 context: $context,
-                waitHandshake: true
             );
         }
     }

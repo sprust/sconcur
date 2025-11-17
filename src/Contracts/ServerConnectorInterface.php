@@ -9,9 +9,7 @@ use SConcur\Features\MethodEnum;
 
 interface ServerConnectorInterface
 {
-    public function clone(Context $context): ServerConnectorInterface;
-
-    public function connect(Context $context, bool $waitHandshake): void;
+    public function connect(Context $context): void;
 
     public function disconnect(): void;
 

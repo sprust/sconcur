@@ -56,36 +56,11 @@ class ServerConnector implements ServerConnectorInterface
      * @throws UnexpectedResponseFormatException
      * @throws ResponseIsNotJsonException
      * @throws NotConnectedException
-     * @throws ContextCheckerException
-     * @throws ReadException
-     * @throws WriteException
-     */
-    public function clone(Context $context): ServerConnectorInterface
-    {
-        $connector = new ServerConnector(
-            socketAddresses: [
-                $this->socketAddress,
-            ],
-            logger: $this->logger,
-        );
-
-        $connector->connect(
-            context: $context,
-            waitHandshake: false
-        );;
-
-        return $connector;
-    }
-
-    /**
-     * @throws UnexpectedResponseFormatException
-     * @throws ResponseIsNotJsonException
-     * @throws NotConnectedException
      * @throws ReadException
      * @throws ContextCheckerException
      * @throws WriteException
      */
-    public function connect(Context $context, bool $waitHandshake): void
+    public function connect(Context $context): void
     {
         foreach ($this->socketAddresses as $socketAddress) {
             $this->disconnect();
@@ -132,18 +107,16 @@ class ServerConnector implements ServerConnectorInterface
             $this->connected     = true;
             $this->socketAddress = $socketAddress;
 
-            if ($waitHandshake) {
-                $this->write(
-                    context: $context,
-                    method: MethodEnum::Read,
-                    payload: ''
-                );
+            $this->write(
+                context: $context,
+                method: MethodEnum::Read,
+                payload: ''
+            );
 
-                if ($this->read($context)->isError) {
-                    $this->disconnect();
+            if ($this->read($context)->isError) {
+                $this->disconnect();
 
-                    continue;
-                }
+                continue;
             }
 
             $this->logger->debug(
@@ -185,12 +158,10 @@ class ServerConnector implements ServerConnectorInterface
 
         ++self::$tasksCounter;
 
-        $flowUuid = SConcur::getCurrentFlow()->getUuid();
-
-        $taskKey = $flowUuid . ':' . UuidGenerator::make() . ':' . self::$tasksCounter;
+        $taskKey = self::$tasksCounter . ':' . UuidGenerator::make();
 
         $data = json_encode([
-            'fu' => $flowUuid,
+            'fu' => SConcur::getCurrentFlow()->getUuid(),
             'md' => $method->value,
             'tk' => $taskKey,
             'pl' => $payload,
