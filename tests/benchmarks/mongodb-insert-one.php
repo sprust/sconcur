@@ -31,44 +31,68 @@ $connection = new ConnectionParameters(
     collection: $collectionName,
 );
 
-$callback = static function (Context $context) use ($connection) {
-    return MongodbFeature::insertOne(
-        context: $context,
-        connection: $connection,
-        document: [
-            'IIID'      => new ObjectId('6919e3d1a3673d3f4d9137a3'),
-            'uniq'      => uniqid(),
-            'bool'      => true,
-            'date'      => new UTCDateTime(),
-            'dates'     => [
-                new UTCDateTime(),
-                new UTCDateTime(),
-                'dates'     => [
-                    new UTCDateTime(),
-                    new UTCDateTime(),
-                ],
-                'dates_ass' => [
-                    'one' => new UTCDateTime(),
-                    'two' => new UTCDateTime(),
-                ],
-            ],
-            'dates_ass' => [
-                'one'       => new UTCDateTime(),
-                'two'       => new UTCDateTime(),
-                'dates'     => [
-                    new UTCDateTime(),
-                    new UTCDateTime(),
-                ],
-                'dates_ass' => [
-                    'one' => new UTCDateTime(),
-                    'two' => new UTCDateTime(),
-                ],
-            ],
-        ]
-    )->getInsertedId();
-};
+$collection = (new MongoDB\Client($uri))->selectDatabase($databaseName)->selectCollection($collectionName);
+
+$nativeDocument = makeDocument(
+    objectId: new \MongoDB\BSON\ObjectId('6919e3d1a3673d3f4d9137a3'),
+    dateTime: new \MongoDB\BSON\UTCDateTime()
+);
+
+$sconcurDocument = makeDocument(
+    objectId: new ObjectId('6919e3d1a3673d3f4d9137a3'),
+    dateTime: new UTCDateTime()
+);
 
 $benchmarker->run(
-    syncCallback: $callback,
-    asyncCallback: $callback
+    nativeCallback: static function () use ($collection, $nativeDocument) {
+        return $collection->insertOne($nativeDocument)->getInsertedId();
+    },
+    syncCallback: static function (Context $context) use ($connection, $sconcurDocument) {
+        return MongodbFeature::insertOne(
+            context: $context,
+            connection: $connection,
+            document: $sconcurDocument
+        )->getInsertedId();
+    },
+    asyncCallback: static function (Context $context) use ($connection, $sconcurDocument) {
+        return MongodbFeature::insertOne(
+            context: $context,
+            connection: $connection,
+            document: $sconcurDocument
+        )->getInsertedId();
+    }
 );
+
+function makeDocument(mixed $objectId, mixed $dateTime): array
+{
+    return [
+        'IIID'      => $objectId,
+        'uniq'      => uniqid(),
+        'bool'      => true,
+        'date'      => $dateTime,
+        'dates'     => [
+            $dateTime,
+            $dateTime,
+            'dates'     => [
+                $dateTime,
+                $dateTime,
+            ],
+            'dates_ass' => [
+                'one' => $dateTime,
+                'two' => $dateTime,
+            ],
+        ],
+        'dates_ass' => [
+            'one'       => $dateTime,
+            'two'       => $dateTime,
+            'dates'     => [
+                $dateTime,
+                $dateTime,
+            ],
+            'dates_ass' => [
+                'one' => $dateTime,
+                'two' => $dateTime,
+            ],
+        ],
+    ];
+}

@@ -5,6 +5,8 @@ declare(strict_types=1);
 use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\MongodbFeature;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
+use SConcur\Features\Mongodb\Types\ObjectId;
+use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
 
 require_once __DIR__ . '/_benchmarker.php';
@@ -29,135 +31,158 @@ $connection = new ConnectionParameters(
     collection: $collectionName,
 );
 
-$callback = static function (Context $context) use ($connection) {
-    $date = new DateTime();
+$collection = (new MongoDB\Client($uri))->selectDatabase($databaseName)->selectCollection($collectionName);
 
-    $item = uniqid();
+$nativeOperations = makeOperations(
+    objectId: new \MongoDB\BSON\ObjectId('6919e3d1a3673d3f4d9137a3'),
+    dateTime: new \MongoDB\BSON\UTCDateTime()
+);
 
-    return MongodbFeature::bulkWrite(
-        context: $context,
-        connection: $connection,
-        operations: [
-            [
-                'updateOne' => [
-                    [
-                        'uniquid'  => uniqid($item),
-                        'upserted' => false,
-                    ],
-                    [
-                        '$set'         => [
-                            'dtStart' => $date,
-                            'dtEnd'   => $date,
-                        ],
-                        '$setOnInsert' => [
-                            'createdAt' => $date,
-                        ],
-                    ],
-                ],
-            ],
-            [
-                'updateOne' => [
-                    [
-                        'uniquid'  => uniqid($item),
-                        'upserted' => true,
-                    ],
-                    [
-                        '$set'         => [
-                            'dtStart' => $date,
-                            'dtEnd'   => $date,
-                        ],
-                        '$setOnInsert' => [
-                            'createdAt' => $date,
-                        ],
-                    ],
-                    [
-                        'upsert' => true,
-                    ],
-                ],
-            ],
-            [
-                'updateMany' => [
-                    [
-                        'uniquid'       => uniqid($item),
-                        'upserted_many' => false,
-                    ],
-                    [
-                        '$set'         => [
-                            'dtStart' => $date,
-                            'dtEnd'   => $date,
-                        ],
-                        '$setOnInsert' => [
-                            'createdAt' => $date,
-                        ],
-                    ],
-                ],
-            ],
-            [
-                'updateMany' => [
-                    [
-                        'uniquid'       => uniqid($item),
-                        'upserted_many' => true,
-                    ],
-                    [
-                        '$set'         => [
-                            'dtStart' => $date,
-                            'dtEnd'   => $date,
-                        ],
-                        '$setOnInsert' => [
-                            'createdAt' => $date,
-                        ],
-                    ],
-                    [
-                        'upsert' => true,
-                    ],
-                ],
-            ],
-            [
-                'deleteOne' => [
-                    [
-                        'uniquid' => uniqid($item),
-                    ],
-                ],
-            ],
-            [
-                'deleteMany' => [
-                    [
-                        'uniquid' => uniqid($item),
-                    ],
-                ],
-            ],
-            [
-                'replaceOne' => [
-                    [
-                        'uniquid'  => uniqid($item),
-                        'upserted' => false,
-                    ],
-                    [
-                        'uniquid'  => uniqid($item) . '-upd',
-                        'upserted' => true,
-                    ],
-                ],
-            ],
-            [
-                'replaceOne' => [
-                    [
-                        'uniquid'  => uniqid($item),
-                        'upserted' => true,
-                    ],
-                    [
-                        'uniquid'  => uniqid($item) . '-upd',
-                        'upserted' => true,
-                    ],
-                    [
-                        'upsert' => true,
-                    ],
-                ],
-            ],
-        ]
-    );
-};
+$sconcurOperations = makeOperations(
+    objectId: new ObjectId('6919e3d1a3673d3f4d9137a3'),
+    dateTime: new UTCDateTime()
+);
 
 $benchmarker->run(
-    syncCallback: $callback,
-    asyncCallback: $callback
+    nativeCallback: static function () use ($collection, $nativeOperations) {
+        return $collection->bulkWrite($nativeOperations);
+    },
+    syncCallback: static function (Context $context) use ($connection, $sconcurOperations) {
+        return MongodbFeature::bulkWrite(
+            context: $context,
+            connection: $connection,
+            operations: $sconcurOperations
+        );
+    },
+    asyncCallback: static function (Context $context) use ($connection, $sconcurOperations) {
+        return MongodbFeature::bulkWrite(
+            context: $context,
+            connection: $connection,
+            operations: $sconcurOperations
+        );
+    }
 );
+
+function makeOperations(mixed $objectId, mixed $dateTime): array
+{
+    $uniqid = uniqid();
+
+    return [
+        [
+            'insertOne' => [
+                [
+                    'uniquid'  => $uniqid,
+                    'upserted' => false,
+                ],
+                [
+                    '$set'         => [
+                        'objectId' => $objectId,
+                        'dtStart' => $dateTime,
+                        'dtEnd'   => $dateTime,
+                    ],
+                    '$setOnInsert' => [
+                        'createdAt' => $dateTime,
+                    ],
+                ],
+            ],
+        ],
+        [
+            'updateOne' => [
+                [
+                    'uniquid'  => $uniqid,
+                    'upserted' => true,
+                ],
+                [
+                    '$set'         => [
+                        'dtStart' => $dateTime,
+                        'dtEnd'   => $dateTime,
+                    ],
+                    '$setOnInsert' => [
+                        'createdAt' => $dateTime,
+                    ],
+                ],
+                [
+                    'upsert' => true,
+                ],
+            ],
+        ],
+        [
+            'updateMany' => [
+                [
+                    'uniquid'       => $uniqid,
+                    'upserted_many' => false,
+                ],
+                [
+                    '$set'         => [
+                        'dtStart' => $dateTime,
+                        'dtEnd'   => $dateTime,
+                    ],
+                    '$setOnInsert' => [
+                        'createdAt' => $dateTime,
+                    ],
+                ],
+            ],
+        ],
+        [
+            'updateMany' => [
+                [
+                    'uniquid'       => $uniqid,
+                    'upserted_many' => true,
+                ],
+                [
+                    '$set'         => [
+                        'dtStart' => $dateTime,
+                        'dtEnd'   => $dateTime,
+                    ],
+                    '$setOnInsert' => [
+                        'createdAt' => $dateTime,
+                    ],
+                ],
+                [
+                    'upsert' => true,
+                ],
+            ],
+        ],
+        [
+            'deleteOne' => [
+                [
+                    'uniquid' => $uniqid,
+                ],
+            ],
+        ],
+        [
+            'deleteMany' => [
+                [
+                    'uniquid' => $uniqid,
+                ],
+            ],
+        ],
+        [
+            'replaceOne' => [
+                [
+                    'uniquid'  => $uniqid,
+                    'upserted' => false,
+                ],
+                [
+                    'uniquid'  => $uniqid . '-upd',
+                    'upserted' => true,
+                ],
+            ],
+        ],
+        [
+            'replaceOne' => [
+                [
+                    'uniquid'  => $uniqid,
+                    'upserted' => true,
+                ],
+                [
+                    'uniquid'  => $uniqid . '-upd',
+                    'upserted' => true,
+                ],
+                [
+                    'upsert' => true,
+                ],
+            ],
+        ],
+    ];
+}
