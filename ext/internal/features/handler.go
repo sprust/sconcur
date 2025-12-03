@@ -37,7 +37,6 @@ func NewHandler() *Handler {
 }
 
 func (h *Handler) Push(msg *dto.Message) error {
-
 	handler, err := h.detectHandler(msg.Method)
 
 	if err != nil {
@@ -53,7 +52,11 @@ func (h *Handler) Push(msg *dto.Message) error {
 
 func (h *Handler) Wait(timeoutMs int64) (string, error) {
 	select {
-	case res := <-h.finTasks:
+	case res, ok := <-h.finTasks:
+		if !ok {
+			return "", errors.New("task channel closed")
+		}
+
 		payload, err := json.Marshal(res)
 
 		if err != nil {
@@ -63,6 +66,8 @@ func (h *Handler) Wait(timeoutMs int64) (string, error) {
 		return string(payload), nil
 	case <-time.After(time.Duration(timeoutMs) * time.Millisecond):
 		return "", errors.New("timeout waiting for task completion")
+	case <-h.ctx.Done():
+		return "", h.ctx.Err()
 	}
 }
 
@@ -89,4 +94,5 @@ func (h *Handler) genTaskId() types.TaskId {
 
 func (h *Handler) Stop() {
 	h.cancel()
+	close(h.finTasks)
 }
