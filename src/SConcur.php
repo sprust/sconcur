@@ -123,8 +123,6 @@ class SConcur
                 }
 
                 foreach ($fiberKeys as $fiberKey) {
-                    $context->check();
-
                     $fiber = $fibers[$fiberKey];
 
                     if (!$fiber->isStarted()) {

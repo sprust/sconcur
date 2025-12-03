@@ -32,21 +32,13 @@ class Context
      */
     public function check(): void
     {
-        if ($this->isTimeout()) {
+        if ((microtime(true) - $this->startTime) > $this->timeout) {
             throw new TimeoutException();
         }
     }
 
     public function getRemainMs(): int
     {
-        $elapsedTime      = microtime(true) - $this->startTime;
-        $remainingSeconds = max(0, $this->timeout - $elapsedTime);
-
-        return (int) ($remainingSeconds * 1000);
-    }
-
-    private function isTimeout(): bool
-    {
-        return (microtime(true) - $this->startTime) > $this->timeout;
+        return (int) (($this->timeout - (microtime(true) - $this->startTime)) * 1000);
     }
 }
