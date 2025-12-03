@@ -72,7 +72,7 @@ class AggregateResult implements Iterator
             )[static::RESULT_KEY];
         }
 
-        if (count($this->items) === 0) {
+        if (count($this->items ?: []) === 0) {
             if (!$this->isLastBatch) {
                 throw new RuntimeException(
                     'Unexpected end of result'
