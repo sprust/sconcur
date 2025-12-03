@@ -12,7 +12,7 @@ class Context
     public float $timeout;
     public float $startTime;
 
-    public function __construct(int $timeoutSeconds)
+    protected function __construct(int $timeoutSeconds)
     {
         if ($timeoutSeconds < 1) {
             throw new InvalidValueException(
@@ -22,6 +22,13 @@ class Context
 
         $this->timeout   = (float) $timeoutSeconds;
         $this->startTime = microtime(true);
+    }
+
+    public static function create(int $timeoutSeconds): static
+    {
+        return new Context(
+            timeoutSeconds: $timeoutSeconds
+        );
     }
 
     public function check(): void

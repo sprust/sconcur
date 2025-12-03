@@ -108,9 +108,7 @@ readonly class Benchmarker
 
             $start = microtime(true);
 
-            $context = new Context(
-                timeoutSeconds: $this->timeout
-            );
+            $context = Context::create($this->timeout);
 
             $keys = array_keys($syncCallbacks);
 

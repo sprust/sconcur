@@ -54,6 +54,20 @@ class SConcur
     }
 
     /**
+     * @param Generator<mixed, FeatureResultDto> $results
+     */
+    public static function wait(Generator $results): array
+    {
+        $result = [];
+
+        foreach ($results as $featureResultDto) {
+            $result[$featureResultDto->key] = $featureResultDto->result;
+        }
+
+        return $result;
+    }
+
+    /**
      * @param array<mixed, Closure> &$callbacks
      *
      * @return Generator<mixed, FeatureResultDto>
@@ -72,9 +86,7 @@ class SConcur
         try {
             $limitCount = max(0, $limitCount ?? 0);
 
-            $context = new Context(
-                timeoutSeconds: $timeoutSeconds
-            );
+            $context = Context::create($timeoutSeconds);
 
             $flow = static::initAsyncFlow();
 

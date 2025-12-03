@@ -33,7 +33,7 @@ check:
 	make test
 
 test:
-	"$(PHP_CLI)" ./vendor/bin/phpunit \
+	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so vendor/bin/phpunit \
 		-d memory_limit=512M \
 		--colors=auto \
 		--testdox \
