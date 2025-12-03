@@ -15,7 +15,7 @@ use SConcur\SConcur;
 
 class AggregateResult implements Iterator
 {
-    protected const RESULT_KEY = '_result';
+    protected const string RESULT_KEY = '_result';
 
     protected ?FlowInterface $currentFlow = null;
     protected string $taskKey;
