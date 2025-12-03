@@ -9,7 +9,6 @@ use SConcur\Features\MethodEnum;
 readonly class TaskResultDto
 {
     public function __construct(
-        public string $flowUuid,
         public MethodEnum $method,
         public string $key,
         public bool $isError,

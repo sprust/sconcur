@@ -52,9 +52,6 @@ class TestContainer implements ContainerInterface
 
             ServerConnectorInterface::class => function () {
                 return new ServerConnector(
-                    socketAddresses: [
-                        (string) ($_ENV['SERVER_ADDRESS'] ?? null),
-                    ],
                     logger: $this->get(LoggerInterface::class),
                 );
             },
@@ -63,9 +60,6 @@ class TestContainer implements ContainerInterface
         ];
 
         SConcur::init(
-            socketAddresses: [
-                (string) ($_ENV['SERVER_ADDRESS'] ?? null),
-            ],
             parametersResolver: $this->get(ParametersResolverInterface::class),
             logger: $this->get(LoggerInterface::class),
         );

@@ -10,10 +10,10 @@ up:
 	docker-compose up -d
 
 stop:
-	docker-compose stop
+	docker-compose stop --timeout=3
 
 down:
-	docker-compose down
+	docker-compose down --timeout=3
 
 bash-php:
 	"$(PHP_CLI)" bash

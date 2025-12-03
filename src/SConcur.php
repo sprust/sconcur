@@ -36,7 +36,6 @@ class SConcur
 
     protected static ?TaskResultDto $currentAsyncResult = null;
 
-    protected static array $socketAddresses;
     protected static ParametersResolverInterface $parametersResolver;
     protected static LoggerInterface $logger;
 
@@ -44,15 +43,10 @@ class SConcur
     {
     }
 
-    /**
-     * @param array<string> $socketAddresses
-     */
     public static function init(
-        array $socketAddresses,
         ParametersResolverInterface $parametersResolver,
         LoggerInterface $logger,
     ): void {
-        static::$socketAddresses    = $socketAddresses;
         static::$parametersResolver = $parametersResolver;
         static::$logger             = $logger;
 
@@ -272,7 +266,6 @@ class SConcur
     {
         return static::$currentAsyncFlow = new AsyncFlow(
             serverConnector: new ServerConnector(
-                socketAddresses: static::$socketAddresses,
                 logger: static::$logger,
             ),
         );
@@ -288,7 +281,6 @@ class SConcur
     {
         return static::$currentSyncFlow ??= new AsyncFlow(
             serverConnector: new ServerConnector(
-                socketAddresses: static::$socketAddresses,
                 logger: static::$logger,
             ),
         );

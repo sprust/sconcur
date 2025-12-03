@@ -16,16 +16,16 @@ readonly class SleepFeature
 
     public static function sleep(Context $context, int $seconds): void
     {
-        static::usleep(context: $context, microseconds: $seconds * 1_000_000);
+        static::usleep(context: $context, milliseconds: $seconds * 1_000);
     }
 
-    public static function usleep(Context $context, int $microseconds): void
+    public static function usleep(Context $context, int $milliseconds): void
     {
         SConcur::getCurrentFlow()->pushTask(
             context: $context,
             method: MethodEnum::Sleep,
             payload: json_encode([
-                'ms' => $microseconds,
+                'ms' => $milliseconds,
             ])
         );
     }

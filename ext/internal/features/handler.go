@@ -51,20 +51,23 @@ func (h *Handler) Push(msg *dto.Message) error {
 }
 
 func (h *Handler) Wait(timeoutMs int64) (string, error) {
+	timer := time.NewTimer(time.Duration(timeoutMs) * time.Millisecond)
+	defer timer.Stop()
+
 	select {
 	case res, ok := <-h.finTasks:
 		if !ok {
 			return "", errors.New("task channel closed")
 		}
 
-		payload, err := json.Marshal(res)
+		b, err := json.Marshal(res)
 
 		if err != nil {
 			return "", err
 		}
 
-		return string(payload), nil
-	case <-time.After(time.Duration(timeoutMs) * time.Millisecond):
+		return string(b), nil
+	case <-timer.C:
 		return "", errors.New("timeout waiting for task completion")
 	case <-h.ctx.Done():
 		return "", h.ctx.Err()
