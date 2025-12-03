@@ -8,8 +8,6 @@ use Iterator;
 use RuntimeException;
 use SConcur\Contracts\FlowInterface;
 use SConcur\Entities\Context;
-use SConcur\Exceptions\ContinueException;
-use SConcur\Exceptions\FeatureResultNotFoundException;
 use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
@@ -42,10 +40,6 @@ class AggregateResult implements Iterator
         return $this->currentValue;
     }
 
-    /**
-     * @throws FeatureResultNotFoundException
-     * @throws ContinueException
-     */
     public function next(): void
     {
         if ($this->isFinished) {

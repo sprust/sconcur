@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace SConcur\Exceptions;
 
-use RuntimeException;
+use Exception;
 
-class TaskErrorException extends RuntimeException
+class TaskErrorException extends Exception
 {
 }

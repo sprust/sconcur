@@ -9,21 +9,16 @@ use Fiber;
 use Generator;
 use LogicException;
 use Psr\Log\LoggerInterface;
+use RuntimeException;
 use SConcur\Connection\ServerConnector;
 use SConcur\Contracts\FlowInterface;
 use SConcur\Contracts\ParametersResolverInterface;
 use SConcur\Dto\FeatureResultDto;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Entities\Context;
-use SConcur\Entities\Timer;
 use SConcur\Exceptions\AlreadyRunningException;
-use SConcur\Exceptions\ContextCheckerException;
-use SConcur\Exceptions\ContinueException;
-use SConcur\Exceptions\FeatureResultNotFoundException;
-use SConcur\Exceptions\FiberNotFoundByTaskKeyException;
 use SConcur\Exceptions\InvalidValueException;
-use SConcur\Exceptions\ResumeException;
-use SConcur\Exceptions\StartException;
+use SConcur\Exceptions\TimeoutException;
 use SConcur\Flow\AsyncFlow;
 use Throwable;
 
@@ -65,20 +60,18 @@ class SConcur
     }
 
     /**
-     * @return Generator<int|string, FeatureResultDto>
+     * @param array<mixed, Closure> &$callbacks
+     *
+     * @return Generator<mixed, FeatureResultDto>
      *
      * @throws AlreadyRunningException
-     * @throws ContextCheckerException
+     * @throws TimeoutException
      * @throws InvalidValueException
-     * @throws ResumeException
-     * @throws StartException
-     * @throws FiberNotFoundByTaskKeyException
      */
     public static function run(
         array &$callbacks,
         int $timeoutSeconds,
         ?int $limitCount = null,
-        ?Context $context = null
     ): Generator {
         static::checkInitialization();
 
@@ -87,17 +80,11 @@ class SConcur
         }
 
         try {
-            $limitCount ??= 0;
+            $limitCount = max(0, $limitCount ?? 0);
 
-            if (is_null($context)) {
-                $context = new Context();
-            }
-
-            if ($timeoutSeconds && !$context->hasChecker(Timer::class)) {
-                $context->setChecker(
-                    new Timer(timeoutSeconds: $timeoutSeconds)
-                );
-            }
+            $context = new Context(
+                timeoutSeconds: $timeoutSeconds
+            );
 
             $flow = static::createAsyncFlow();
 
@@ -151,7 +138,7 @@ class SConcur
                         try {
                             $fiber->start(...$parameters);
                         } catch (Throwable $exception) {
-                            throw new StartException(
+                            throw new RuntimeException(
                                 message: $exception->getMessage(),
                                 previous: $exception
                             );
@@ -168,8 +155,8 @@ class SConcur
                 $foundFiber = $flow->getFiberByTaskUuid($taskKey);
 
                 if (!$foundFiber) {
-                    throw new FiberNotFoundByTaskKeyException(
-                        taskKey: $taskKey
+                    throw new LogicException(
+                        message: "Fiber not found by task key [$taskKey]"
                     );
                 }
 
@@ -184,7 +171,7 @@ class SConcur
                 try {
                     $foundFiber->resume();
                 } catch (Throwable $exception) {
-                    throw new ResumeException(
+                    throw new RuntimeException(
                         message: $exception->getMessage(),
                         previous: $exception
                     );
@@ -215,13 +202,10 @@ class SConcur
         }
     }
 
-    /**
-     * @throws ContinueException
-     */
     protected static function wait(): void
     {
         if (!Fiber::getCurrent()) {
-            throw new ContinueException(
+            throw new LogicException(
                 message: "Can't wait outside of fiber."
             );
         }
@@ -229,16 +213,13 @@ class SConcur
         try {
             Fiber::suspend();
         } catch (Throwable $exception) {
-            throw new ContinueException(
+            throw new RuntimeException(
+                message: $exception->getMessage(),
                 previous: $exception
             );
         }
     }
 
-    /**
-     * @throws FeatureResultNotFoundException
-     * @throws ContinueException
-     */
     public static function waitResult(Context $context, string $taskKey): TaskResultDto
     {
         static::checkInitialization();
@@ -257,8 +238,8 @@ class SConcur
             return $currentResult;
         }
 
-        throw new FeatureResultNotFoundException(
-            taskKey: $taskKey,
+        throw new LogicException(
+            message: "Feature result not found for task key [$taskKey]",
         );
     }
 

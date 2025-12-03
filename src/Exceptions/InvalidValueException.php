@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace SConcur\Exceptions;
 
-use RuntimeException;
+use Exception;
 
-class InvalidValueException extends RuntimeException
+class InvalidValueException extends Exception
 {
 }

@@ -1,12 +1,6 @@
 <?php
 
 use SConcur\Entities\Context;
-use SConcur\Entities\Timer;
-use SConcur\Exceptions\AlreadyRunningException;
-use SConcur\Exceptions\ContextCheckerException;
-use SConcur\Exceptions\FiberNotFoundByTaskKeyException;
-use SConcur\Exceptions\ResumeException;
-use SConcur\Exceptions\StartException;
 use SConcur\SConcur;
 use SConcur\Tests\Impl\TestContainer;
 
@@ -27,13 +21,6 @@ readonly class Benchmarker
     ) {
     }
 
-    /**
-     * @throws AlreadyRunningException
-     * @throws ContextCheckerException
-     * @throws FiberNotFoundByTaskKeyException
-     * @throws ResumeException
-     * @throws StartException
-     */
     public function run(
         ?Closure $nativeCallback = null,
         ?Closure $syncCallback = null,
@@ -110,8 +97,8 @@ readonly class Benchmarker
 
             $start = microtime(true);
 
-            $context = (new Context())->setChecker(
-                new Timer(timeoutSeconds: $this->timeout)
+            $context = new Context(
+                timeoutSeconds: $this->timeout
             );
 
             $keys = array_keys($syncCallbacks);

@@ -11,10 +11,11 @@ use SConcur\Dto\RunningTaskDto;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Entities\Context;
 use SConcur\Exceptions\ResponseIsNotJsonException;
+use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\MethodEnum;
-use SConcur\Helpers\UuidGenerator;
 use Throwable;
+
 use function SConcur\Extension\push;
 use function SConcur\Extension\wait;
 
@@ -23,9 +24,7 @@ class ServerConnector implements ServerConnectorInterface
     protected static bool $connected = false;
     protected static int $tasksCounter = 0;
 
-    public function __construct(
-        protected LoggerInterface $logger,
-    )
+    public function __construct(protected LoggerInterface $logger)
     {
     }
 
@@ -59,13 +58,7 @@ class ServerConnector implements ServerConnectorInterface
 
         $taskKey = self::$tasksCounter . ':' . microtime(true);
 
-        $data = json_encode([
-            'md' => $method->value,
-            'tk' => $taskKey,
-            'pl' => $payload,
-        ]);
-
-        push($data);
+        push($method->value, $taskKey, $payload);
 
         return new RunningTaskDto(
             key: $taskKey,
@@ -74,11 +67,18 @@ class ServerConnector implements ServerConnectorInterface
 
     /**
      * @throws UnexpectedResponseFormatException
+     * @throws TaskErrorException
      * @throws ResponseIsNotJsonException
      */
     public function read(Context $context): TaskResultDto
     {
-        $response = wait(1_000_000); // TODO
+        $response = wait($context->getRemainMs());
+
+        if (str_starts_with($response, 'error:')) {
+            throw new TaskErrorException(
+                message: $response
+            );
+        }
 
         try {
             $responseData = json_decode(

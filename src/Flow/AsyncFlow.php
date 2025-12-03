@@ -9,8 +9,6 @@ use SConcur\Contracts\FlowInterface;
 use SConcur\Contracts\ServerConnectorInterface;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Entities\Context;
-use SConcur\Exceptions\ContinueException;
-use SConcur\Exceptions\FeatureResultNotFoundException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Features\MethodEnum;
 use SConcur\Helpers\UuidGenerator;
@@ -36,10 +34,6 @@ class AsyncFlow implements FlowInterface
         return $this->flowUuid;
     }
 
-    /**
-     * @throws FeatureResultNotFoundException
-     * @throws ContinueException
-     */
     public function pushTask(Context $context, MethodEnum $method, string $payload): TaskResultDto
     {
         $this->connectIfNotConnected($context);
