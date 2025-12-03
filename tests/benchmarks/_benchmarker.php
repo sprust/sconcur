@@ -16,12 +16,15 @@ TestContainer::resolve();
 
 readonly class Benchmarker
 {
-    public function __construct(
-        private string $name,
-        private int $total,
-        private int $timeout,
-        private int $limitCount,
-    ) {
+    private int $total;
+    private int $timeout;
+    private int $limitCount;
+
+    public function __construct(private string $name)
+    {
+        $this->total      = (int) ($_SERVER['argv'][1] ?? 5);
+        $this->timeout    = (int) ($_SERVER['argv'][2] ?? 2);
+        $this->limitCount = (int) ($_SERVER['argv'][3] ?? 0);
     }
 
     /**

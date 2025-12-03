@@ -13,9 +13,6 @@ require_once __DIR__ . '/_benchmarker.php';
 
 $benchmarker = new Benchmarker(
     name: 'mongodb-insert-one',
-    total: (int) ($_SERVER['argv'][1] ?? 5),
-    timeout: (int) ($_SERVER['argv'][2] ?? 2),
-    limitCount: (int) ($_SERVER['argv'][3] ?? 0),
 );
 
 $uri = TestMongodbUriResolver::get();
@@ -43,21 +40,23 @@ $sconcurDocument = makeDocument(
     dateTime: new UTCDateTime()
 );
 
+$feature = new MongodbFeature(
+    connection: $connection,
+);
+
 $benchmarker->run(
     nativeCallback: static function () use ($collection, $nativeDocument) {
         return $collection->insertOne($nativeDocument)->getInsertedId();
     },
-    syncCallback: static function (Context $context) use ($connection, $sconcurDocument) {
-        return MongodbFeature::insertOne(
+    syncCallback: static function (Context $context) use ($feature, $sconcurDocument) {
+        return $feature->insertOne(
             context: $context,
-            connection: $connection,
             document: $sconcurDocument
         )->getInsertedId();
     },
-    asyncCallback: static function (Context $context) use ($connection, $sconcurDocument) {
-        return MongodbFeature::insertOne(
+    asyncCallback: static function (Context $context) use ($feature, $sconcurDocument) {
+        return $feature->insertOne(
             context: $context,
-            connection: $connection,
             document: $sconcurDocument
         )->getInsertedId();
     }

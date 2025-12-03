@@ -6,7 +6,7 @@ namespace SConcur\Features\Mongodb\Results;
 
 use SConcur\Features\Mongodb\Types\ObjectId;
 
-class BulkWriteResult
+readonly class BulkWriteResult
 {
     /**
      * @param array<ObjectId|string|int|float|null> $upsertedIds

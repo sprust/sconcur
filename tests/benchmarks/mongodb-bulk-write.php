@@ -13,9 +13,6 @@ require_once __DIR__ . '/_benchmarker.php';
 
 $benchmarker = new Benchmarker(
     name: 'mongodb-bulk-write',
-    total: (int) ($_SERVER['argv'][1] ?? 5),
-    timeout: (int) ($_SERVER['argv'][2] ?? 2),
-    limitCount: (int) ($_SERVER['argv'][3] ?? 0),
 );
 
 $uri = TestMongodbUriResolver::get();
@@ -43,21 +40,23 @@ $sconcurOperations = makeOperations(
     dateTime: new UTCDateTime()
 );
 
+$feature = new MongodbFeature(
+    connection: $connection,
+);
+
 $benchmarker->run(
     nativeCallback: static function () use ($collection, $nativeOperations) {
         return $collection->bulkWrite($nativeOperations);
     },
-    syncCallback: static function (Context $context) use ($connection, $sconcurOperations) {
-        return MongodbFeature::bulkWrite(
+    syncCallback: static function (Context $context) use ($feature, $sconcurOperations) {
+        return $feature->bulkWrite(
             context: $context,
-            connection: $connection,
             operations: $sconcurOperations
         );
     },
-    asyncCallback: static function (Context $context) use ($connection, $sconcurOperations) {
-        return MongodbFeature::bulkWrite(
+    asyncCallback: static function (Context $context) use ($feature, $sconcurOperations) {
+        return $feature->bulkWrite(
             context: $context,
-            connection: $connection,
             operations: $sconcurOperations
         );
     }

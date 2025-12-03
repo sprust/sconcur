@@ -12,9 +12,6 @@ class Context
     public float $timeout;
     public float $startTime;
 
-    /**
-     * @throws InvalidValueException
-     */
     public function __construct(int $timeoutSeconds)
     {
         if ($timeoutSeconds < 1) {
@@ -27,9 +24,6 @@ class Context
         $this->startTime = microtime(true);
     }
 
-    /**
-     * @throws TimeoutException
-     */
     public function check(): void
     {
         if ((microtime(true) - $this->startTime) > $this->timeout) {

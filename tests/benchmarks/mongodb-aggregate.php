@@ -12,9 +12,6 @@ require_once __DIR__ . '/_benchmarker.php';
 
 $benchmarker = new Benchmarker(
     name: 'mongodb-aggregate',
-    total: (int) ($_SERVER['argv'][1] ?? 5),
-    timeout: (int) ($_SERVER['argv'][2] ?? 2),
-    limitCount: (int) ($_SERVER['argv'][3] ?? 0),
 );
 
 $uri = TestMongodbUriResolver::get();
@@ -52,12 +49,15 @@ $nativeCallback = static function () use ($collection, $nativePipeline) {
     }
 };
 
-$sconcurCallback = static function (Context $context) use ($connection, $sconcurPipeline) {
+$feature = new MongodbFeature(
+    connection: $connection,
+);
+
+$sconcurCallback = static function (Context $context) use ($feature, $sconcurPipeline) {
     $item = uniqid();
 
-    $aggregate = MongodbFeature::aggregate(
+    $aggregate = $feature->aggregate(
         context: $context,
-        connection: $connection,
         pipeline: $sconcurPipeline
     );
 
@@ -84,7 +84,7 @@ function makePipeline(mixed $objectId): array
             ],
         ],
         [
-            '$limit' => 30,
+            '$limit' => 100,
         ],
     ];
 }

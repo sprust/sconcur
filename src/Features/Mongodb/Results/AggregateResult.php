@@ -8,16 +8,11 @@ use Iterator;
 use LogicException;
 use RuntimeException;
 use SConcur\Entities\Context;
-use SConcur\Exceptions\ResponseIsNotJsonException;
-use SConcur\Exceptions\TaskErrorException;
-use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\MethodEnum;
-use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
 use SConcur\Flow\Flow;
 use SConcur\SConcur;
 
-// TODO: not completed
 class AggregateResult implements Iterator
 {
     protected const string RESULT_KEY = '_result';
@@ -32,14 +27,8 @@ class AggregateResult implements Iterator
     protected bool $isLastBatch = false;
     protected bool $isFinished = false;
 
-    /**
-     * @throws UnexpectedResponseFormatException
-     * @throws ResponseIsNotJsonException
-     * @throws TaskErrorException
-     */
     public function __construct(
         protected Context $context,
-        protected ConnectionParameters $connection,
         protected string $payload,
     ) {
         $this->next();
@@ -50,11 +39,6 @@ class AggregateResult implements Iterator
         return $this->currentValue;
     }
 
-    /**
-     * @throws UnexpectedResponseFormatException
-     * @throws ResponseIsNotJsonException
-     * @throws TaskErrorException
-     */
     public function next(): void
     {
         if ($this->isFinished) {
@@ -74,9 +58,13 @@ class AggregateResult implements Iterator
 
                 $this->taskKey = $taskResult->key;
             } else {
-                $taskResult = $this->currentFlow->wait(
-                    context: $this->context,
-                );
+                if ($this->currentFlow->isAsync()) {
+                    $taskResult = $this->currentFlow->suspend();
+                } else {
+                    $taskResult = $this->currentFlow->wait(
+                        context: $this->context,
+                    );
+                }
 
                 if ($taskResult->key !== $this->taskKey) {
                     throw new LogicException(
@@ -99,7 +87,6 @@ class AggregateResult implements Iterator
                 );
             }
 
-            $this->rewind();
             $this->isFinished = true;
 
             return;

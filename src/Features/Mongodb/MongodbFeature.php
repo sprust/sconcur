@@ -18,22 +18,23 @@ use SConcur\SConcur;
 
 readonly class MongodbFeature
 {
-    private function __construct()
-    {
+    protected MethodEnum $method;
+
+    public function __construct(
+        protected ConnectionParameters $connection,
+    ) {
+        $this->method = MethodEnum::Mongodb;
     }
 
-    public static function insertOne(
-        Context $context,
-        ConnectionParameters $connection,
-        array $document,
-    ): InsertOneResult {
+    public function insertOne(Context $context, array $document): InsertOneResult
+    {
         $serialized = DocumentSerializer::serialize($document);
 
         $taskResult = SConcur::getCurrentFlow()->exec(
             context: $context,
-            method: MethodEnum::Mongodb,
+            method: $this->method,
             payload: static::serializePayload(
-                connection: $connection,
+                connection: $this->connection,
                 command: CommandEnum::InsertOne,
                 data: $serialized,
             )
@@ -52,23 +53,16 @@ readonly class MongodbFeature
         );
     }
 
-    /**
-     * @throws InvalidMongodbBulkWriteOperationException
-     */
-    public static function bulkWrite(
-        Context $context,
-        ConnectionParameters $connection,
-        array $operations,
-    ): BulkWriteResult {
+    public function bulkWrite(Context $context, array $operations): BulkWriteResult {
         $serialized = DocumentSerializer::serialize(
             static::prepareOperations($operations)
         );
 
         $taskResult = SConcur::getCurrentFlow()->exec(
             context: $context,
-            method: MethodEnum::Mongodb,
+            method: $this->method,
             payload: static::serializePayload(
-                connection: $connection,
+                connection: $this->connection,
                 command: CommandEnum::BulkWrite,
                 data: $serialized,
             )
@@ -92,18 +86,14 @@ readonly class MongodbFeature
         );
     }
 
-    public static function aggregate(
-        Context $context,
-        ConnectionParameters $connection,
-        array $pipeline,
-    ): Iterator {
+    public function aggregate(Context $context, array $pipeline): Iterator
+    {
         $serialized = DocumentSerializer::serialize($pipeline);
 
         return new AggregateResult(
             context: $context,
-            connection: $connection,
             payload: static::serializePayload(
-                connection: $connection,
+                connection: $this->connection,
                 command: CommandEnum::Aggregate,
                 data: $serialized,
             ),
@@ -128,8 +118,6 @@ readonly class MongodbFeature
      * @param array<int, mixed> $operations
      *
      * @return array<int, array{type: string, model: array<string, mixed>}>
-     *
-     * @throws InvalidMongodbBulkWriteOperationException
      */
     protected static function prepareOperations(array $operations): array
     {

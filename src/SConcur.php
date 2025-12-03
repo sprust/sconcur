@@ -13,14 +13,8 @@ use RuntimeException;
 use SConcur\Connection\Extension;
 use SConcur\Contracts\ParametersResolverInterface;
 use SConcur\Dto\FeatureResultDto;
-use SConcur\Dto\TaskResultDto;
 use SConcur\Entities\Context;
 use SConcur\Exceptions\AlreadyRunningException;
-use SConcur\Exceptions\InvalidValueException;
-use SConcur\Exceptions\ResponseIsNotJsonException;
-use SConcur\Exceptions\TaskErrorException;
-use SConcur\Exceptions\TimeoutException;
-use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Flow\Flow;
 use Throwable;
 
@@ -63,13 +57,6 @@ class SConcur
      * @param array<mixed, Closure> &$callbacks
      *
      * @return Generator<mixed, FeatureResultDto>
-     *
-     * @throws AlreadyRunningException
-     * @throws ResponseIsNotJsonException
-     * @throws UnexpectedResponseFormatException
-     * @throws InvalidValueException
-     * @throws TaskErrorException
-     * @throws TimeoutException
      */
     public static function run(
         array &$callbacks,

@@ -10,41 +10,24 @@ use RuntimeException;
 use SConcur\Connection\Extension;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Entities\Context;
-use SConcur\Exceptions\ResponseIsNotJsonException;
 use SConcur\Exceptions\TaskErrorException;
-use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\MethodEnum;
-use SConcur\Helpers\UuidGenerator;
-use SConcur\SConcur;
 use Throwable;
 
 class Flow
 {
-    protected string $flowUuid;
-
     /**
      * @var array<string, Fiber>
      */
     protected array $fibersKeyByTaskUuid = [];
 
     public function __construct(
-        protected Extension $extension,
-        protected bool $isAsync
+        protected readonly Extension $extension,
+        protected readonly bool $isAsync
     ) {
-        $this->flowUuid = UuidGenerator::make();
         $this->extension->stop();
     }
 
-    public function getUuid(): string
-    {
-        return $this->flowUuid;
-    }
-
-    /**
-     * @throws UnexpectedResponseFormatException
-     * @throws TaskErrorException
-     * @throws ResponseIsNotJsonException
-     */
     public function exec(Context $context, MethodEnum $method, string $payload): TaskResultDto
     {
         $runningTask = $this->extension->push(
@@ -61,22 +44,7 @@ class Flow
                 );
             }
 
-            try {
-                $result = Fiber::suspend();
-            } catch (Throwable $exception) {
-                throw new RuntimeException(
-                    message: $exception->getMessage(),
-                    previous: $exception
-                );
-            }
-
-            if ($result instanceof TaskResultDto) {
-                $this->checkResult($result);
-            } else {
-                throw new LogicException(
-                    message: 'Unexpected result type.'
-                );
-            }
+            $result = $this->suspend();
         } else {
             $result = $this->wait(context: $context);
         }
@@ -90,11 +58,34 @@ class Flow
         return $result;
     }
 
-    /**
-     * @throws UnexpectedResponseFormatException
-     * @throws ResponseIsNotJsonException
-     * @throws TaskErrorException
-     */
+    public function suspend(): TaskResultDto
+    {
+        if (!$this->isAsync) {
+            throw new LogicException(
+                message: 'Can\'t suspend outside of fiber.'
+            );
+        }
+
+        try {
+            $result = Fiber::suspend();
+        } catch (Throwable $exception) {
+            throw new RuntimeException(
+                message: $exception->getMessage(),
+                previous: $exception
+            );
+        }
+
+        if ($result instanceof TaskResultDto) {
+            $this->checkResult($result);
+        } else {
+            throw new LogicException(
+                message: 'Unexpected result type.'
+            );
+        }
+
+        return $result;
+    }
+
     public function wait(Context $context): TaskResultDto
     {
         $result = $this->extension->wait($context);
@@ -112,14 +103,16 @@ class Flow
         unset($this->fibersKeyByTaskUuid[$taskUuid]);
     }
 
+    public function isAsync(): bool
+    {
+        return $this->isAsync;
+    }
+
     public function close(): void
     {
         $this->extension->stop();
     }
 
-    /**
-     * @throws TaskErrorException
-     */
     private function checkResult(TaskResultDto $result): TaskResultDto
     {
         if ($result->isError) {

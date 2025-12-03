@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace SConcur\Exceptions;
 
-use Exception;
+use RuntimeException;
 
-class InvalidMongodbBulkWriteOperationException extends Exception
+class InvalidMongodbBulkWriteOperationException extends RuntimeException
 {
     public function __construct(public readonly string $operationType)
     {

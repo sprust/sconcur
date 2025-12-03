@@ -9,9 +9,6 @@ require_once __DIR__ . '/_benchmarker.php';
 
 $benchmarker = new Benchmarker(
     name: 'sleep',
-    total: (int) ($_SERVER['argv'][1] ?? 5),
-    timeout: (int) ($_SERVER['argv'][2] ?? 2),
-    limitCount: (int) ($_SERVER['argv'][3] ?? 0),
 );
 
 $benchmarker->run(

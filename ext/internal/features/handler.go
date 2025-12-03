@@ -41,7 +41,12 @@ func (h *Handler) Push(msg *dto.Message) error {
 	}
 
 	go func() {
-		h.finTasks <- handler.Handle(h.ctx, msg)
+		select {
+		case <-h.ctx.Done():
+			return
+		case h.finTasks <- handler.Handle(h.ctx, msg):
+			return
+		}
 	}()
 
 	return nil
@@ -77,6 +82,7 @@ func (h *Handler) Wait(timeoutMs int64) (string, error) {
 
 func (h *Handler) Stop() {
 	h.cancel()
+	close(h.finTasks)
 	h.fresh()
 }
 

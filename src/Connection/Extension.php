@@ -42,11 +42,6 @@ class Extension
         );
     }
 
-    /**
-     * @throws UnexpectedResponseFormatException
-     * @throws TaskErrorException
-     * @throws ResponseIsNotJsonException
-     */
     public function wait(Context $context): TaskResultDto
     {
         $response = wait($context->getRemainMs());
