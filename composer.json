@@ -9,8 +9,7 @@
         }
     ],
     "require": {
-        "ext-sockets": "*",
-        "php": "^8.2",
+        "php": "^8.4",
         "psr/container": "^2.0",
         "psr/log": "^3.0"
     },
