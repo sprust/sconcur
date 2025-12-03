@@ -29,7 +29,7 @@ readonly class MongodbFeature
     ): InsertOneResult {
         $serialized = DocumentSerializer::serialize($document);
 
-        $taskResult = SConcur::getCurrentFlow()->pushTask(
+        $taskResult = SConcur::getCurrentFlow()->exec(
             context: $context,
             method: MethodEnum::Mongodb,
             payload: static::serializePayload(
@@ -64,7 +64,7 @@ readonly class MongodbFeature
             static::prepareOperations($operations)
         );
 
-        $taskResult = SConcur::getCurrentFlow()->pushTask(
+        $taskResult = SConcur::getCurrentFlow()->exec(
             context: $context,
             method: MethodEnum::Mongodb,
             payload: static::serializePayload(

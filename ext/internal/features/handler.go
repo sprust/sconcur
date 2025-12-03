@@ -27,13 +27,10 @@ type Handler struct {
 }
 
 func NewHandler() *Handler {
-	ctx, cancel := context.WithCancel(context.Background())
+	h := &Handler{}
+	h.fresh()
 
-	return &Handler{
-		ctx:      ctx,
-		cancel:   cancel,
-		finTasks: make(chan *dto.Result),
-	}
+	return h
 }
 
 func (h *Handler) Push(msg *dto.Message) error {
@@ -78,6 +75,11 @@ func (h *Handler) Wait(timeoutMs int64) (string, error) {
 	}
 }
 
+func (h *Handler) Stop() {
+	h.cancel()
+	h.fresh()
+}
+
 func (h *Handler) detectHandler(method types.Method) (contracts.MessageHandler, error) {
 	if method == 1 {
 		return sleep_feature.New(), nil
@@ -99,7 +101,11 @@ func (h *Handler) genTaskId() types.TaskId {
 	return types.TaskId(strconv.FormatInt(h.index, 10))
 }
 
-func (h *Handler) Stop() {
-	h.cancel()
-	close(h.finTasks)
+func (h *Handler) fresh() {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	h.ctx = ctx
+	h.cancel = cancel
+	h.finTasks = make(chan *dto.Result)
+
 }

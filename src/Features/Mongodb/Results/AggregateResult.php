@@ -5,19 +5,24 @@ declare(strict_types=1);
 namespace SConcur\Features\Mongodb\Results;
 
 use Iterator;
+use LogicException;
 use RuntimeException;
-use SConcur\Contracts\FlowInterface;
 use SConcur\Entities\Context;
+use SConcur\Exceptions\ResponseIsNotJsonException;
+use SConcur\Exceptions\TaskErrorException;
+use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
+use SConcur\Flow\Flow;
 use SConcur\SConcur;
 
+// TODO: not completed
 class AggregateResult implements Iterator
 {
     protected const string RESULT_KEY = '_result';
 
-    protected ?FlowInterface $currentFlow = null;
+    protected ?Flow $currentFlow = null;
     protected string $taskKey;
 
     protected ?array $items = null;
@@ -27,6 +32,11 @@ class AggregateResult implements Iterator
     protected bool $isLastBatch = false;
     protected bool $isFinished = false;
 
+    /**
+     * @throws UnexpectedResponseFormatException
+     * @throws ResponseIsNotJsonException
+     * @throws TaskErrorException
+     */
     public function __construct(
         protected Context $context,
         protected ConnectionParameters $connection,
@@ -40,6 +50,11 @@ class AggregateResult implements Iterator
         return $this->currentValue;
     }
 
+    /**
+     * @throws UnexpectedResponseFormatException
+     * @throws ResponseIsNotJsonException
+     * @throws TaskErrorException
+     */
     public function next(): void
     {
         if ($this->isFinished) {
@@ -51,7 +66,7 @@ class AggregateResult implements Iterator
             if ($this->currentFlow === null) {
                 $this->currentFlow = SConcur::getCurrentFlow();
 
-                $taskResult = $this->currentFlow->pushTask(
+                $taskResult = $this->currentFlow->exec(
                     context: $this->context,
                     method: MethodEnum::Mongodb,
                     payload: $this->payload
@@ -59,10 +74,15 @@ class AggregateResult implements Iterator
 
                 $this->taskKey = $taskResult->key;
             } else {
-                $taskResult = SConcur::waitResult(
+                $taskResult = $this->currentFlow->wait(
                     context: $this->context,
-                    taskKey: $this->taskKey
                 );
+
+                if ($taskResult->key !== $this->taskKey) {
+                    throw new LogicException(
+                        message: 'Unexpected task key'
+                    );
+                }
             }
 
             $this->isLastBatch = !$taskResult->hasNext;

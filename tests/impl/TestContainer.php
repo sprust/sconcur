@@ -11,9 +11,7 @@ use Psr\Log\LoggerInterface;
 use ReflectionClass;
 use ReflectionException;
 use RuntimeException;
-use SConcur\Connection\ServerConnector;
 use SConcur\Contracts\ParametersResolverInterface;
-use SConcur\Contracts\ServerConnectorInterface;
 use SConcur\SConcur;
 
 class TestContainer implements ContainerInterface
@@ -47,15 +45,7 @@ class TestContainer implements ContainerInterface
 
         $this->resolvers = [
             ContainerInterface::class => fn() => $this,
-
             ParametersResolverInterface::class => fn() => $this->get(TestParametersResolver::class),
-
-            ServerConnectorInterface::class => function () {
-                return new ServerConnector(
-                    logger: $this->get(LoggerInterface::class),
-                );
-            },
-
             LoggerInterface::class => fn() => $this->get(TestLogger::class),
         ];
 

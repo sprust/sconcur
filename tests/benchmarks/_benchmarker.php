@@ -1,6 +1,9 @@
 <?php
 
 use SConcur\Entities\Context;
+use SConcur\Exceptions\AlreadyRunningException;
+use SConcur\Exceptions\InvalidValueException;
+use SConcur\Exceptions\TimeoutException;
 use SConcur\SConcur;
 use SConcur\Tests\Impl\TestContainer;
 
@@ -21,6 +24,11 @@ readonly class Benchmarker
     ) {
     }
 
+    /**
+     * @throws AlreadyRunningException
+     * @throws TimeoutException
+     * @throws InvalidValueException
+     */
     public function run(
         ?Closure $nativeCallback = null,
         ?Closure $syncCallback = null,

@@ -21,7 +21,7 @@ readonly class SleepFeature
 
     public static function usleep(Context $context, int $milliseconds): void
     {
-        SConcur::getCurrentFlow()->pushTask(
+        SConcur::getCurrentFlow()->exec(
             context: $context,
             method: MethodEnum::Sleep,
             payload: json_encode([

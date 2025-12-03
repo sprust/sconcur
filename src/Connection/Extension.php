@@ -6,7 +6,6 @@ namespace SConcur\Connection;
 
 use Psr\Log\LoggerInterface;
 use RuntimeException;
-use SConcur\Contracts\ServerConnectorInterface;
 use SConcur\Dto\RunningTaskDto;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Entities\Context;
@@ -17,46 +16,24 @@ use SConcur\Features\MethodEnum;
 use Throwable;
 
 use function SConcur\Extension\push;
+use function SConcur\Extension\stop;
 use function SConcur\Extension\wait;
 
-class ServerConnector implements ServerConnectorInterface
+class Extension
 {
-    protected static bool $connected = false;
+    protected static bool $checked = false;
     protected static int $tasksCounter = 0;
 
     public function __construct(protected LoggerInterface $logger)
     {
+        $this->checkExtension();
     }
 
-    public function connect(Context $context): void
+    public function push(MethodEnum $method, string $payload): RunningTaskDto
     {
-        if (self::$connected) {
-            return;
-        }
+        ++static::$tasksCounter;
 
-        if (!extension_loaded('sconcur')) {
-            throw new RuntimeException(
-                'The extension "sconcur" is not loaded.'
-            );
-        }
-
-        self::$connected = true;
-    }
-
-    public function disconnect(): void
-    {
-    }
-
-    public function isConnected(): bool
-    {
-        return self::$connected;
-    }
-
-    public function write(Context $context, MethodEnum $method, string $payload): RunningTaskDto
-    {
-        ++self::$tasksCounter;
-
-        $taskKey = self::$tasksCounter . ':' . microtime(true);
+        $taskKey = (string) static::$tasksCounter;
 
         push($method->value, $taskKey, $payload);
 
@@ -70,7 +47,7 @@ class ServerConnector implements ServerConnectorInterface
      * @throws TaskErrorException
      * @throws ResponseIsNotJsonException
      */
-    public function read(Context $context): TaskResultDto
+    public function wait(Context $context): TaskResultDto
     {
         $response = wait($context->getRemainMs());
 
@@ -108,8 +85,23 @@ class ServerConnector implements ServerConnectorInterface
         }
     }
 
-    public function __destruct()
+    public function stop(): void
     {
-        $this->disconnect();
+        stop();
+    }
+
+    private function checkExtension(): void
+    {
+        if (static::$checked) {
+            return;
+        }
+
+        if (!extension_loaded('sconcur')) {
+            throw new RuntimeException(
+                'The extension "sconcur" is not loaded.'
+            );
+        }
+
+        static::$checked = true;
     }
 }

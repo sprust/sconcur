@@ -10,26 +10,26 @@ use Generator;
 use LogicException;
 use Psr\Log\LoggerInterface;
 use RuntimeException;
-use SConcur\Connection\ServerConnector;
-use SConcur\Contracts\FlowInterface;
+use SConcur\Connection\Extension;
 use SConcur\Contracts\ParametersResolverInterface;
 use SConcur\Dto\FeatureResultDto;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Entities\Context;
 use SConcur\Exceptions\AlreadyRunningException;
 use SConcur\Exceptions\InvalidValueException;
+use SConcur\Exceptions\ResponseIsNotJsonException;
+use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\TimeoutException;
-use SConcur\Flow\AsyncFlow;
+use SConcur\Exceptions\UnexpectedResponseFormatException;
+use SConcur\Flow\Flow;
 use Throwable;
 
 class SConcur
 {
     protected static bool $initialized = false;
 
-    protected static ?FlowInterface $currentAsyncFlow = null;
-    protected static ?FlowInterface $currentSyncFlow = null;
-
-    protected static ?TaskResultDto $currentAsyncResult = null;
+    protected static ?Flow $asyncFlow = null;
+    protected static ?Flow $syncFlow = null;
 
     protected static ParametersResolverInterface $parametersResolver;
     protected static LoggerInterface $logger;
@@ -48,12 +48,12 @@ class SConcur
         static::$initialized = true;
     }
 
-    public static function getCurrentFlow(): FlowInterface
+    public static function getCurrentFlow(): Flow
     {
         static::checkInitialization();
 
-        if (static::$currentAsyncFlow !== null) {
-            return static::$currentAsyncFlow;
+        if (static::$asyncFlow !== null) {
+            return static::$asyncFlow;
         } else {
             return static::initSyncFlow();
         }
@@ -65,8 +65,11 @@ class SConcur
      * @return Generator<mixed, FeatureResultDto>
      *
      * @throws AlreadyRunningException
-     * @throws TimeoutException
+     * @throws ResponseIsNotJsonException
+     * @throws UnexpectedResponseFormatException
      * @throws InvalidValueException
+     * @throws TaskErrorException
+     * @throws TimeoutException
      */
     public static function run(
         array &$callbacks,
@@ -75,7 +78,7 @@ class SConcur
     ): Generator {
         static::checkInitialization();
 
-        if (static::$currentAsyncFlow !== null) {
+        if (static::$asyncFlow !== null) {
             throw new AlreadyRunningException();
         }
 
@@ -86,7 +89,7 @@ class SConcur
                 timeoutSeconds: $timeoutSeconds
             );
 
-            $flow = static::createAsyncFlow();
+            $flow = static::initAsyncFlow();
 
             /** @var array<string, Fiber> $fibers */
             $fibers = [];
@@ -144,7 +147,7 @@ class SConcur
                     }
                 }
 
-                $taskResult = $flow->waitResult(
+                $taskResult = $flow->wait(
                     context: $context,
                 );
 
@@ -164,18 +167,14 @@ class SConcur
                     );
                 }
 
-                static::$currentAsyncResult = $taskResult;
-
                 try {
-                    $foundFiber->resume();
+                    $foundFiber->resume($taskResult);
                 } catch (Throwable $exception) {
                     throw new RuntimeException(
                         message: $exception->getMessage(),
                         previous: $exception
                     );
                 }
-
-                static::$currentAsyncResult = null;
 
                 if ($foundFiber->isTerminated()) {
                     $result = $foundFiber->getReturn();
@@ -200,68 +199,29 @@ class SConcur
         }
     }
 
-    protected static function wait(): void
+    protected static function initAsyncFlow(): Flow
     {
-        if (!Fiber::getCurrent()) {
-            throw new LogicException(
-                message: "Can't wait outside of fiber."
-            );
-        }
-
-        try {
-            Fiber::suspend();
-        } catch (Throwable $exception) {
-            throw new RuntimeException(
-                message: $exception->getMessage(),
-                previous: $exception
-            );
-        }
-    }
-
-    public static function waitResult(Context $context, string $taskKey): TaskResultDto
-    {
-        static::checkInitialization();
-
-        if (self::$currentAsyncFlow === null) {
-            return self::$currentSyncFlow->waitResult($context);
-        }
-
-        static::wait();
-
-        if (static::$currentAsyncResult?->key === $taskKey) {
-            $currentResult = static::$currentAsyncResult;
-
-            static::$currentAsyncResult = null;
-
-            return $currentResult;
-        }
-
-        throw new LogicException(
-            message: "Feature result not found for task key [$taskKey]",
-        );
-    }
-
-    protected static function createAsyncFlow(): FlowInterface
-    {
-        return static::$currentAsyncFlow = new AsyncFlow(
-            serverConnector: new ServerConnector(
+        return static::$asyncFlow = new Flow(
+            extension: new Extension(
                 logger: static::$logger,
             ),
+            isAsync: true
         );
     }
 
     protected static function deleteAsyncFlow(): void
     {
-        static::$currentAsyncFlow?->close();
-        static::$currentAsyncFlow = null;
+        static::$asyncFlow?->close();
+        static::$asyncFlow = null;
     }
 
-    protected static function initSyncFlow(): FlowInterface
+    protected static function initSyncFlow(): Flow
     {
-        return static::$currentSyncFlow ??= new AsyncFlow(
-            serverConnector: new ServerConnector(
+        return static::$syncFlow ??= new Flow(
+            extension: new Extension(
                 logger: static::$logger,
             ),
+            isAsync: false,
         );
     }
 
