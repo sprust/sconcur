@@ -5,9 +5,9 @@ package main
 */
 import "C"
 import (
-	"encoding/json"
 	"sconcur/internal/dto"
 	"sconcur/internal/features"
+	"sconcur/internal/types"
 )
 
 var handler *features.Handler
@@ -16,22 +16,20 @@ func init() {
 	handler = features.NewHandler()
 }
 
-//export echo
-func echo(str *C.char) *C.char {
-	return C.CString("echo: " + C.GoString(str))
+//export ping
+func ping(str *C.char) *C.char {
+	return C.CString("ping: " + C.GoString(str))
 }
 
 //export push
-func push(pl *C.char) *C.char {
-	var msg dto.Message
-
-	err := json.Unmarshal([]byte(C.GoString(pl)), &msg)
-
-	if err != nil {
-		return C.CString("error: marshal msg: " + err.Error())
+func push(mt int, tk *C.char, pl *C.char) *C.char {
+	msg := &dto.Message{
+		Method:  types.Method(mt),
+		TaskKey: C.GoString(tk),
+		Payload: C.GoString(pl),
 	}
 
-	err = handler.Push(&msg)
+	err := handler.Push(msg)
 
 	if err != nil {
 		return C.CString("error: push: " + err.Error())

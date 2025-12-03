@@ -51,6 +51,10 @@ func (h *Handler) Push(msg *dto.Message) error {
 }
 
 func (h *Handler) Wait(timeoutMs int64) (string, error) {
+	if timeoutMs <= 0 {
+		return "", errors.New("timeout waiting for task completion")
+	}
+
 	timer := time.NewTimer(time.Duration(timeoutMs) * time.Millisecond)
 	defer timer.Stop()
 

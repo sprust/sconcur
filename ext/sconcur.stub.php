@@ -2,11 +2,10 @@
 
 namespace SConcur\Extension;
 
-// function echo(string $str): string {
-//
-// }
+function ping(string $str): string {
+}
 
-function push(string $pl): string
+function push(int $mt, string $tk, string $pl): string
 {
 }
 

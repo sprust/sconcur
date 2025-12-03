@@ -8,19 +8,22 @@
 
 /*
  * arginfo:
- *  - echo(string name)
- *  - push(string payloadJSON)
+ *  - ping(string name)
+ *  - push(int method, string taskKey, string payloadJSON)
  *  - wait(int ms)
+ *  - stop()
  *  - stop()
  */
 
-// echo(string name)
-ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_echo, 0, 0, 1)
+// ping(string name)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_ping, 0, 0, 1)
     ZEND_ARG_TYPE_INFO(0, name, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
-// push(string payloadJSON)
-ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_push, 0, 0, 1)
+// push(int method, string taskKey, string payloadJSON)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_push, 0, 0, 3)
+    ZEND_ARG_TYPE_INFO(0, method, IS_LONG, 0)
+    ZEND_ARG_TYPE_INFO(0, taskKey, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, payload, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
@@ -37,8 +40,8 @@ ZEND_END_ARG_INFO()
  * Реализации PHP-функций
  */
 
-// PHP: SConcur\Extension\echo(string $name): string
-PHP_FUNCTION(echo)
+// PHP: SConcur\Extension\ping(string $name): string
+PHP_FUNCTION(ping)
 {
     char *name = NULL;
     size_t name_len;
@@ -47,24 +50,25 @@ PHP_FUNCTION(echo)
         RETURN_THROWS();
     }
 
-    // Go-функция echo (из //export echo)
-    char *response = echo(name);
+    // Go-функция ping (из //export ping)
+    char *response = ping(name);
 
     RETVAL_STRING(response);
     free(response);
 }
 
-// PHP: SConcur\Extension\push(string $payload): string
+// PHP: SConcur\Extension\push(int $method, string $taskKey, string $payload): string
 PHP_FUNCTION(push)
 {
-    char *payload = NULL;
-    size_t payload_len;
+    zend_long method;
+    char *task_key = NULL, *payload = NULL;
+    size_t task_key_len, payload_len;
 
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &payload, &payload_len) == FAILURE) {
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "lss", &method, &task_key, &task_key_len, &payload, &payload_len) == FAILURE) {
         RETURN_THROWS();
     }
 
-    char *response = push(payload);
+    char *response = push((int)method, task_key, payload);
 
     RETVAL_STRING(response);
     free(response);
@@ -101,7 +105,7 @@ PHP_FUNCTION(stop)
  * Регистрация функций с неймспейсом SConcur\Extension
  */
 static const zend_function_entry sconcur_functions[] = {
-    ZEND_NS_FE("SConcur\\Extension", echo, arginfo_sconcur_echo)
+    ZEND_NS_FE("SConcur\\Extension", ping, arginfo_sconcur_ping)
     ZEND_NS_FE("SConcur\\Extension", push, arginfo_sconcur_push)
     ZEND_NS_FE("SConcur\\Extension", wait, arginfo_sconcur_wait)
     ZEND_NS_FE("SConcur\\Extension", stop, arginfo_sconcur_stop)
