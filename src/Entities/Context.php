@@ -24,7 +24,7 @@ class Context
         $this->startTime = microtime(true);
     }
 
-    public static function create(int $timeoutSeconds): static
+    public static function create(int $timeoutSeconds): Context
     {
         return new Context(
             timeoutSeconds: $timeoutSeconds

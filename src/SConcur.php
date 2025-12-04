@@ -108,7 +108,7 @@ class SConcur
 
             $flow = static::initAsyncFlow();
 
-            /** @var array<string, Fiber> $fibers */
+            /** @var array<int, Fiber> $fibers */
             $fibers = [];
 
             /** @var array<string, Closure> $callbacksKeyByFiberId */

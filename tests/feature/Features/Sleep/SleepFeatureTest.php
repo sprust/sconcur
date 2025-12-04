@@ -18,9 +18,9 @@ class SleepFeatureTest extends TestCase
         TestContainer::resolve();
     }
 
-    public function testMulti()
+    public function testMulti(): void
     {
-        /** @var string[] $timeline */
+        /** @var string[] $events */
         $events = [];
 
         $callbacks = [
@@ -69,9 +69,9 @@ class SleepFeatureTest extends TestCase
         );
     }
 
-    public function testOrder()
+    public function testOrder(): void
     {
-        /** @var string[] $timeline */
+        /** @var string[] $events */
         $events = [];
 
         $callbacks = [
