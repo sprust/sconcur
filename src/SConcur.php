@@ -12,7 +12,6 @@ use Psr\Log\LoggerInterface;
 use RuntimeException;
 use SConcur\Connection\Extension;
 use SConcur\Contracts\ParametersResolverInterface;
-use SConcur\Dto\FeatureResultDto;
 use SConcur\Entities\Context;
 use SConcur\Exceptions\AlreadyRunningException;
 use SConcur\Flow\Flow;
@@ -54,23 +53,42 @@ class SConcur
     }
 
     /**
-     * @param Generator<mixed, FeatureResultDto> $results
+     * @param array<mixed, Closure> &$callbacks
      */
-    public static function wait(Generator $results): array
-    {
-        $result = [];
+    public static function waitAll(
+        array &$callbacks,
+        int $timeoutSeconds,
+        ?int $limitCount = null,
+    ): array {
+        $keys = array_keys($callbacks);
 
-        foreach ($results as $featureResultDto) {
-            $result[$featureResultDto->key] = $featureResultDto->result;
+        $results = [];
+
+        $generator = static::run(
+            callbacks: $callbacks,
+            timeoutSeconds: $timeoutSeconds,
+            limitCount: $limitCount,
+        );
+
+        foreach ($generator as $key => $result) {
+            $results[$key] = $result;
         }
 
-        return $result;
+        $sortedResult = [];
+
+        foreach ($keys as $key) {
+            $sortedResult[$key] = $results[$key];
+
+            unset($results[$key]);
+        }
+
+        return $sortedResult;
     }
 
     /**
      * @param array<mixed, Closure> &$callbacks
      *
-     * @return Generator<mixed, FeatureResultDto>
+     * @return Generator<mixed, mixed>
      */
     public static function run(
         array &$callbacks,
@@ -187,10 +205,7 @@ class SConcur
 
                     unset($callbackKeyKeyByFiberId[$fiberId]);
 
-                    yield new FeatureResultDto(
-                        key: $callbackKey,
-                        result: $result
-                    );
+                    yield $callbackKey => $result;
                 }
             }
         } finally {

@@ -18,7 +18,7 @@ class SleepFeatureTest extends TestCase
         TestContainer::resolve();
     }
 
-    public function testSleep()
+    public function testMulti()
     {
         /** @var string[] $timeline */
         $events = [];
@@ -27,30 +27,29 @@ class SleepFeatureTest extends TestCase
             function (Context $context) use (&$events) {
                 $events[] = '1:start';
 
-                SleepFeature::usleep(context: $context, milliseconds: 100);
+                SleepFeature::usleep(context: $context, milliseconds: 10);
 
                 $events[] = '1:woke';
 
-                SleepFeature::usleep(context: $context, milliseconds: 100);
+                SleepFeature::usleep(context: $context, milliseconds: 10);
 
                 $events[] = '1:woke_2';
             },
             function (Context $context) use (&$events) {
                 $events[] = '2:start';
 
-                SleepFeature::usleep(context: $context, milliseconds: 200);
+                SleepFeature::usleep(context: $context, milliseconds: 20);
 
                 $events[] = '2:woke';
 
-                SleepFeature::usleep(context: $context, milliseconds: 300);
+                SleepFeature::usleep(context: $context, milliseconds: 20);
 
                 $events[] = '2:woke_2';
             },
         ];
 
-        $results = SConcur::run(callbacks: $callbacks, timeoutSeconds: 1);
 
-        $result = SConcur::wait($results);
+        $result = SConcur::waitAll(callbacks: $callbacks, timeoutSeconds: 1);
 
         self::assertCount(
             2,
@@ -67,6 +66,48 @@ class SleepFeatureTest extends TestCase
                 '2:woke_2',
             ],
             $events
+        );
+    }
+
+    public function testOrder()
+    {
+        /** @var string[] $timeline */
+        $events = [];
+
+        $callbacks = [
+            function (Context $context) use (&$events) {
+                SleepFeature::usleep(context: $context, milliseconds: 10);
+
+                $events[] = '1:finish';
+
+                return '1';
+            },
+            function (Context $context) use (&$events) {
+                SleepFeature::usleep(context: $context, milliseconds: 1);
+
+                $events[] = '2:finish';
+
+                return '2';
+            },
+        ];
+
+
+        $result = SConcur::waitAll(callbacks: $callbacks, timeoutSeconds: 1);
+
+        self::assertSame(
+            [
+                '2:finish',
+                '1:finish',
+            ],
+            $events
+        );
+
+        self::assertSame(
+            [
+                0 => '1',
+                1 => '2',
+            ],
+            $result
         );
     }
 }
