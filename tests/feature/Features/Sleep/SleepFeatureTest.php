@@ -2,6 +2,7 @@
 
 namespace SConcur\Tests\Feature\Features\Sleep;
 
+use Exception;
 use SConcur\Connection\Extension;
 use SConcur\Entities\Context;
 use SConcur\Features\Sleep\SleepFeature;
@@ -21,6 +22,9 @@ class SleepFeatureTest extends TestCase
         TestContainer::resolve();
 
         $this->extension = new Extension();
+        $this->extension->stop();
+
+        self::assertFalse(SConcur::isAsync());
     }
 
     public function testMulti(): void
@@ -59,18 +63,14 @@ class SleepFeatureTest extends TestCase
 
         $callbacksCount = count($callbacks);
 
-        $expectedCount = $callbacksCount;
-
         foreach ($results as $key => $value) {
-            --$expectedCount;
-
-            self::assertEquals(
-                $expectedCount,
-                $this->extension->count()
-            );
-
             $result[$key] = $value;
+            self::assertTrue(SConcur::isAsync());
         }
+
+        // for generator finalization
+        unset($results);
+        self::assertFalse(SConcur::isAsync());
 
         self::assertCount(
             $callbacksCount,
@@ -114,6 +114,13 @@ class SleepFeatureTest extends TestCase
 
         $result = SConcur::waitAll(callbacks: $callbacks, timeoutSeconds: 1);
 
+        self::assertEquals(
+            0,
+            $this->extension->count()
+        );
+
+        self::assertFalse(SConcur::isAsync());
+
         self::assertSame(
             [
                 '2:finish',
@@ -127,6 +134,104 @@ class SleepFeatureTest extends TestCase
                 0 => '1',
                 1 => '2',
             ],
+            $result
+        );
+    }
+
+    public function testBreak(): void
+    {
+        /** @var string[] $events */
+        $events = [];
+
+        $callbacks = [
+            function (Context $context) use (&$events) {
+                SleepFeature::sleep(context: $context, seconds: 2);
+
+                $events[] = '1:finish';
+
+                return '1';
+            },
+            function (Context $context) use (&$events) {
+                SleepFeature::usleep(context: $context, milliseconds: 1);
+
+                $events[] = '2:finish';
+
+                return '2';
+            },
+        ];
+
+        $results = SConcur::run(callbacks: $callbacks, timeoutSeconds: 1);
+
+        $result = [];
+
+        foreach ($results as $key => $value) {
+            $result[$key] = $value;
+            self::assertTrue(SConcur::isAsync());
+
+            break;
+        }
+
+        // for generator finalization
+        unset($results);
+        self::assertFalse(SConcur::isAsync());
+
+        self::assertCount(
+            1,
+            $result
+        );
+
+
+        self::assertSame(
+            [
+                1 => '2',
+            ],
+            $result
+        );
+
+        self::assertEquals(
+            0,
+            $this->extension->count()
+        );
+    }
+
+    public function testException(): void
+    {
+        $callbacks = [
+            function (Context $context) {
+                SleepFeature::sleep(context: $context, seconds: 1);
+            },
+            function (Context $context) {
+                SleepFeature::usleep(context: $context, milliseconds: 1);
+
+                throw new Exception('test');
+            },
+        ];
+
+        $results = SConcur::run(callbacks: $callbacks, timeoutSeconds: 1);
+
+        $result = [];
+
+        $exception = null;
+
+        try {
+            foreach ($results as $key => $value) {
+                $result[$key] = $value;
+                self::assertTrue(SConcur::isAsync());
+            }
+        } catch (Exception $exception) {
+            //
+        }
+
+        self::assertFalse(
+            is_null($exception)
+        );
+
+        // for generator finalization
+        unset($results);
+        self::assertFalse(SConcur::isAsync());
+
+        self::assertCount(
+            0,
             $result
         );
 

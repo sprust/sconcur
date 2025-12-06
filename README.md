@@ -8,5 +8,5 @@ rm -f build/sconcur.so build/sconcur.h && \
 ```
 ## echo test
 ```shell
-php -d extension=./build/sconcur.so -r "echo \SConcur\Extension\echo('hello') . PHP_EOL;"
+php -d extension=./build/sconcur.so -r "echo \SConcur\Extension\ping('hello') . PHP_EOL;"
 ```

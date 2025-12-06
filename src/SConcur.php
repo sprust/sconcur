@@ -48,6 +48,11 @@ class SConcur
         }
     }
 
+    public static function isAsync(): bool
+    {
+        return static::$asyncFlow !== null;
+    }
+
     /**
      * @param array<mixed, Closure> &$callbacks
      */
@@ -77,6 +82,9 @@ class SConcur
 
             unset($results[$key]);
         }
+
+        // for generator finalization
+        unset($results);
 
         return $sortedResult;
     }
