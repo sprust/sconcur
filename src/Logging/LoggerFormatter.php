@@ -10,6 +10,11 @@ class LoggerFormatter
 {
     public static function make(string $message, ?string $taskKey = null): string
     {
-        return "[flow: " . SConcur::getFlowUuid() . ($taskKey ? ", task: $taskKey" : '') . ']: ' . $message;
+        return sprintf(
+            "[flow: %s%s]: %s",
+            SConcur::getCurrentFlow()->getUuid(),
+            ($taskKey ? ", task: $taskKey" : ''),
+            $message
+        );
     }
 }

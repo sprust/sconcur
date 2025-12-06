@@ -14,3 +14,23 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: [ "php", "/sconcur/docker/php/docker-php-stub.php" ]
+
+  mongodb:
+    container_name: sc-mongodb
+    image: mongo:8.0.5
+    restart: unless-stopped
+    command: [ "mongod", "--wiredTigerCacheSizeGB", "5" ]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ADMIN_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ADMIN_PASSWORD}
+      MONGO_ADMIN_USERNAME: ${MONGO_ADMIN_USERNAME}
+      MONGO_ADMIN_PASSWORD: ${MONGO_ADMIN_PASSWORD}
+    ports:
+      - ${MONGO_DOCKER_PORT}:27017
+    volumes:
+      - ./docker/mongo/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+      - mongodb:/data/db
+
+volumes:
+  mongodb:
+    driver: local

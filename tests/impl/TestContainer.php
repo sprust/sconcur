@@ -56,14 +56,19 @@ class TestContainer implements ContainerInterface
                         (string) ($_ENV['SERVER_ADDRESS'] ?? null),
                     ],
                     logger: $this->get(LoggerInterface::class),
-                    taskKeyPrefix: (string) (getmypid() ?: throw new RuntimeException('Can not get pid'))
                 );
             },
 
             LoggerInterface::class => fn() => $this->get(TestLogger::class),
         ];
 
-        SConcur::init($this);
+        SConcur::init(
+            socketAddresses: [
+                (string) ($_ENV['SERVER_ADDRESS'] ?? null),
+            ],
+            parametersResolver: $this->get(ParametersResolverInterface::class),
+            logger: $this->get(LoggerInterface::class),
+        );
     }
 
     /**

@@ -15,8 +15,7 @@ RUN apt update && apt install -y \
     procps
 
 # PHP
-RUN #pecl install zip mongodb-1.21.0 pcntl && docker-php-ext-enable zip mongodb
-RUN pecl install zip pcntl && docker-php-ext-enable zip
+RUN pecl install zip mongodb-1.21.0 pcntl && docker-php-ext-enable zip mongodb
 
 RUN docker-php-ext-install sockets pcntl && docker-php-ext-enable sockets
 

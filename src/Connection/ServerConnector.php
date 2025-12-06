@@ -18,6 +18,7 @@ use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Exceptions\WriteException;
 use SConcur\Exceptions\ResponseIsNotJsonException;
 use SConcur\Features\MethodEnum;
+use SConcur\Helpers\UuidGenerator;
 use SConcur\Logging\LoggerFormatter;
 use SConcur\SConcur;
 use Throwable;
@@ -45,7 +46,6 @@ class ServerConnector implements ServerConnectorInterface
     public function __construct(
         protected array $socketAddresses,
         protected LoggerInterface $logger,
-        protected string $taskKeyPrefix,
     ) {
         if (count($socketAddresses) === 0) {
             throw new RuntimeException('No socket addresses provided');
@@ -56,37 +56,11 @@ class ServerConnector implements ServerConnectorInterface
      * @throws UnexpectedResponseFormatException
      * @throws ResponseIsNotJsonException
      * @throws NotConnectedException
-     * @throws ContextCheckerException
-     * @throws ReadException
-     * @throws WriteException
-     */
-    public function clone(Context $context): ServerConnectorInterface
-    {
-        $connector = new ServerConnector(
-            socketAddresses: [
-                $this->socketAddress,
-            ],
-            logger: $this->logger,
-            taskKeyPrefix: $this->taskKeyPrefix,
-        );
-
-        $connector->connect(
-            context: $context,
-            waitHandshake: false
-        );;
-
-        return $connector;
-    }
-
-    /**
-     * @throws UnexpectedResponseFormatException
-     * @throws ResponseIsNotJsonException
-     * @throws NotConnectedException
      * @throws ReadException
      * @throws ContextCheckerException
      * @throws WriteException
      */
-    public function connect(Context $context, bool $waitHandshake): void
+    public function connect(Context $context): void
     {
         foreach ($this->socketAddresses as $socketAddress) {
             $this->disconnect();
@@ -133,32 +107,16 @@ class ServerConnector implements ServerConnectorInterface
             $this->connected     = true;
             $this->socketAddress = $socketAddress;
 
-            if ($waitHandshake) {
-                $this->write(
-                    context: $context,
-                    method: MethodEnum::Read,
-                    payload: ''
-                );
+            $this->write(
+                context: $context,
+                method: MethodEnum::Read,
+                payload: ''
+            );
 
-                $handshakeTaskResult = null;
+            if ($this->read($context)->isError) {
+                $this->disconnect();
 
-                while (true) {
-                    $handshakeTaskResult = $this->read($context);
-
-                    if ($handshakeTaskResult === null) {
-                        $context->check();
-
-                        continue;
-                    }
-
-                    break;
-                }
-
-                if ($handshakeTaskResult->isError) {
-                    $this->disconnect();
-
-                    continue;
-                }
+                continue;
             }
 
             $this->logger->debug(
@@ -198,13 +156,12 @@ class ServerConnector implements ServerConnectorInterface
             throw new NotConnectedException();
         }
 
-        $taskKey = uniqid(
-            prefix: $this->taskKeyPrefix . ':' . ++self::$tasksCounter . ':',
-            more_entropy: true
-        );
+        ++self::$tasksCounter;
+
+        $taskKey = self::$tasksCounter . ':' . UuidGenerator::make();
 
         $data = json_encode([
-            'fu' => SConcur::getFlowUuid(),
+            'fu' => SConcur::getCurrentFlow()->getUuid(),
             'md' => $method->value,
             'tk' => $taskKey,
             'pl' => $payload,
@@ -253,7 +210,7 @@ class ServerConnector implements ServerConnectorInterface
      * @throws UnexpectedResponseFormatException
      * @throws NotConnectedException
      */
-    public function read(Context $context): ?TaskResultDto
+    public function read(Context $context): TaskResultDto
     {
         if (!$this->connected) {
             throw new NotConnectedException();
@@ -322,6 +279,7 @@ class ServerConnector implements ServerConnectorInterface
                 key: $responseData['tk'],
                 isError: $responseData['er'],
                 payload: $responseData['pl'],
+                hasNext: $responseData['hn'],
             );
         } catch (Throwable $exception) {
             throw new UnexpectedResponseFormatException(

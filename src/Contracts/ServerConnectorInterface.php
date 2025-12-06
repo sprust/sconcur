@@ -9,9 +9,7 @@ use SConcur\Features\MethodEnum;
 
 interface ServerConnectorInterface
 {
-    public function clone(Context $context): ServerConnectorInterface;
-
-    public function connect(Context $context, bool $waitHandshake): void;
+    public function connect(Context $context): void;
 
     public function disconnect(): void;
 
@@ -19,5 +17,5 @@ interface ServerConnectorInterface
 
     public function write(Context $context, MethodEnum $method, string $payload): RunningTaskDto;
 
-    public function read(Context $context): ?TaskResultDto;
+    public function read(Context $context): TaskResultDto;
 }
