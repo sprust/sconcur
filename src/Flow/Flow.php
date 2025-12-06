@@ -12,6 +12,7 @@ use SConcur\Dto\TaskResultDto;
 use SConcur\Entities\Context;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Features\MethodEnum;
+use SConcur\SConcur;
 use Throwable;
 
 class Flow
@@ -36,7 +37,7 @@ class Flow
         );
 
         if ($this->isAsync) {
-            if ($currentFiber = Fiber::getCurrent()) {
+            if ($currentFiber = Sconcur::getCurrentFiber()) {
                 $this->fibersKeyByTaskUuid[$runningTask->key] = $currentFiber;
             } else {
                 throw new LogicException(

@@ -47,6 +47,15 @@ class SConcur
         }
     }
 
+    public static function getCurrentFiber(): ?Fiber
+    {
+        static::checkInitialization();
+
+        return self::$asyncFlow === null
+            ? null
+            : Fiber::getCurrent();
+    }
+
     public static function isAsync(): bool
     {
         return static::$asyncFlow !== null;
