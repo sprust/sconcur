@@ -49,6 +49,11 @@ func wait(ms int64) *C.char {
 	return C.CString(res)
 }
 
+//export count
+func count() int {
+	return handler.GetTasksCount()
+}
+
 //export cancel
 func cancel(tk *C.char) {
 	handler.StopTask(C.GoString(tk))

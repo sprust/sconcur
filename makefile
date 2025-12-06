@@ -49,6 +49,12 @@ test:
 ext-build:
 	"$(PHP_CLI)" sh ./ext-build.sh
 
+bench-all:
+	make bench-sleep && \
+		make bench-mongodb-insertOne && \
+		make bench-mongodb-bulkWrite && \
+		make bench-mongodb-aggregate
+
 bench-sleep:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/sleep.php ${c}
 

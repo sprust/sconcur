@@ -13,6 +13,10 @@ function wait(int $ms): string
 {
 }
 
+function count(): int
+{
+}
+
 function cancel(string $tk): void
 {
 }

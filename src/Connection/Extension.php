@@ -17,6 +17,7 @@ use Throwable;
 
 use function SConcur\Extension\push;
 use function SConcur\Extension\wait;
+use function SConcur\Extension\count;
 use function SConcur\Extension\cancel;
 use function SConcur\Extension\stop;
 
@@ -25,7 +26,7 @@ class Extension
     protected static bool $checked = false;
     protected static int $tasksCounter = 0;
 
-    public function __construct(protected LoggerInterface $logger)
+    public function __construct()
     {
         $this->checkExtension();
     }
@@ -79,6 +80,11 @@ class Extension
                 previous: $exception,
             );
         }
+    }
+
+    public function count(): int
+    {
+        return count();
     }
 
     public function cancel(string $taskKey): void

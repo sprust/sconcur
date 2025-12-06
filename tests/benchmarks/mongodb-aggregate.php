@@ -84,7 +84,7 @@ function makePipeline(mixed $objectId): array
             ],
         ],
         [
-            '$limit' => 100,
+            '$limit' => 30,
         ],
     ];
 }

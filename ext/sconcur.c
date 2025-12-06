@@ -1,6 +1,6 @@
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
+#include <php.h>
+#include <stdlib.h>
+#include "_cgo_export.h"
 
 #include <php.h>
 #include <stdlib.h>
@@ -11,7 +11,7 @@
  *  - ping(string name)
  *  - push(int method, string taskKey, string payloadJSON)
  *  - wait(int ms)
- *  - stop()
+ *  - count()
  *  - stop()
  */
 
@@ -34,6 +34,10 @@ ZEND_END_ARG_INFO()
 
 // stop()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_stop, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+// count()
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_count, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
 // cancel(string taskKey)
@@ -120,6 +124,17 @@ PHP_FUNCTION(cancel)
     RETURN_NULL();
 }
 
+// PHP: SConcur\Extension\count(): int
+PHP_FUNCTION(count)
+{
+    if (zend_parse_parameters_none() == FAILURE) {
+        RETURN_THROWS();
+    }
+
+    int result = count();
+    RETURN_LONG(result);
+}
+
 /*
  * Регистрация функций с неймспейсом SConcur\Extension
  */
@@ -129,6 +144,7 @@ static const zend_function_entry sconcur_functions[] = {
     ZEND_NS_FE("SConcur\\Extension", wait, arginfo_sconcur_wait)
     ZEND_NS_FE("SConcur\\Extension", stop, arginfo_sconcur_stop)
     ZEND_NS_FE("SConcur\\Extension", cancel, arginfo_sconcur_cancel)
+    ZEND_NS_FE("SConcur\\Extension", count, arginfo_sconcur_count)
     PHP_FE_END
 };
 

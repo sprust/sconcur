@@ -25,7 +25,6 @@ class SConcur
     protected static ?Flow $syncFlow = null;
 
     protected static ParametersResolverInterface $parametersResolver;
-    protected static LoggerInterface $logger;
 
     private function __construct()
     {
@@ -33,12 +32,9 @@ class SConcur
 
     public static function init(
         ParametersResolverInterface $parametersResolver,
-        LoggerInterface $logger,
     ): void {
         static::$parametersResolver = $parametersResolver;
-        static::$logger             = $logger;
-
-        static::$initialized = true;
+        static::$initialized        = true;
     }
 
     public static function getCurrentFlow(): Flow
@@ -216,9 +212,7 @@ class SConcur
     protected static function initAsyncFlow(): Flow
     {
         return static::$asyncFlow = new Flow(
-            extension: new Extension(
-                logger: static::$logger,
-            ),
+            extension: new Extension(),
             isAsync: true
         );
     }
@@ -232,9 +226,7 @@ class SConcur
     protected static function initSyncFlow(): Flow
     {
         return static::$syncFlow ??= new Flow(
-            extension: new Extension(
-                logger: static::$logger,
-            ),
+            extension: new Extension(),
             isAsync: false,
         );
     }

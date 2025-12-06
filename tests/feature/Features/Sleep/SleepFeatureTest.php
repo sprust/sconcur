@@ -2,6 +2,7 @@
 
 namespace SConcur\Tests\Feature\Features\Sleep;
 
+use SConcur\Connection\Extension;
 use SConcur\Entities\Context;
 use SConcur\Features\Sleep\SleepFeature;
 use PHPUnit\Framework\TestCase;
@@ -10,12 +11,16 @@ use SConcur\Tests\Impl\TestContainer;
 
 class SleepFeatureTest extends TestCase
 {
+    private readonly Extension $extension;
+
     protected function setUp(): void
     {
         parent::setUp();
 
         TestContainer::flush();
         TestContainer::resolve();
+
+        $this->extension = new Extension();
     }
 
     public function testMulti(): void
@@ -48,10 +53,27 @@ class SleepFeatureTest extends TestCase
             },
         ];
 
-        $result = SConcur::waitAll(callbacks: $callbacks, timeoutSeconds: 1);
+        $results = SConcur::run(callbacks: $callbacks, timeoutSeconds: 1);
+
+        $result = [];
+
+        $callbacksCount = count($callbacks);
+
+        $expectedCount = $callbacksCount;
+
+        foreach ($results as $key => $value) {
+            --$expectedCount;
+
+            self::assertEquals(
+                $expectedCount,
+                $this->extension->count()
+            );
+
+            $result[$key] = $value;
+        }
 
         self::assertCount(
-            2,
+            $callbacksCount,
             $result
         );
 
@@ -90,7 +112,6 @@ class SleepFeatureTest extends TestCase
             },
         ];
 
-
         $result = SConcur::waitAll(callbacks: $callbacks, timeoutSeconds: 1);
 
         self::assertSame(
@@ -107,6 +128,11 @@ class SleepFeatureTest extends TestCase
                 1 => '2',
             ],
             $result
+        );
+
+        self::assertEquals(
+            0,
+            $this->extension->count()
         );
     }
 }

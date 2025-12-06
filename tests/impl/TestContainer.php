@@ -51,7 +51,6 @@ class TestContainer implements ContainerInterface
 
         SConcur::init(
             parametersResolver: $this->get(ParametersResolverInterface::class),
-            logger: $this->get(LoggerInterface::class),
         );
     }
 
