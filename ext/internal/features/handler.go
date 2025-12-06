@@ -96,7 +96,7 @@ func (h *Handler) Wait(timeoutMs int64) (string, error) {
 }
 
 func (h *Handler) StopTask(taskKey string) {
-	h.tasks.StopTask(taskKey)
+	go h.tasks.StopTask(taskKey)
 }
 
 func (h *Handler) Stop() {

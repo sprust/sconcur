@@ -13,6 +13,7 @@ use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
 use SConcur\Flow\Flow;
 use SConcur\SConcur;
 
+// TODO: implement rewind
 class AggregateResult implements Iterator
 {
     protected const string RESULT_KEY = '_result';
@@ -122,5 +123,14 @@ class AggregateResult implements Iterator
 
     public function rewind(): void
     {
+    }
+
+    public function __destruct()
+    {
+        if ($this->taskKey) {
+            $this->currentFlow?->stopTask(
+                taskKey: $this->taskKey
+            );
+        }
     }
 }

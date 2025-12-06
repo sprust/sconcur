@@ -48,7 +48,6 @@ class SleepFeatureTest extends TestCase
             },
         ];
 
-
         $result = SConcur::waitAll(callbacks: $callbacks, timeoutSeconds: 1);
 
         self::assertCount(
