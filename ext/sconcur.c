@@ -36,6 +36,11 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_stop, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
+// cancel(string taskKey)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_cancel, 0, 0, 1)
+    ZEND_ARG_TYPE_INFO(0, taskKey, IS_STRING, 0)
+ZEND_END_ARG_INFO()
+
 /*
  * Реализации PHP-функций
  */
@@ -101,6 +106,20 @@ PHP_FUNCTION(stop)
     RETURN_NULL();
 }
 
+// PHP: SConcur\Extension\cancel(string $taskKey): void
+PHP_FUNCTION(cancel)
+{
+    char *task_key = NULL;
+    size_t task_key_len;
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &task_key, &task_key_len) == FAILURE) {
+        RETURN_THROWS();
+    }
+
+    cancel(task_key);
+    RETURN_NULL();
+}
+
 /*
  * Регистрация функций с неймспейсом SConcur\Extension
  */
@@ -109,6 +128,7 @@ static const zend_function_entry sconcur_functions[] = {
     ZEND_NS_FE("SConcur\\Extension", push, arginfo_sconcur_push)
     ZEND_NS_FE("SConcur\\Extension", wait, arginfo_sconcur_wait)
     ZEND_NS_FE("SConcur\\Extension", stop, arginfo_sconcur_stop)
+    ZEND_NS_FE("SConcur\\Extension", cancel, arginfo_sconcur_cancel)
     PHP_FE_END
 };
 

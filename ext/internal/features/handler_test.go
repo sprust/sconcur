@@ -43,11 +43,23 @@ func TestHandler_Sleep(t *testing.T) {
 		return
 	}
 
+	_, err = h.Wait(-1)
+
+	if err == nil {
+		t.Errorf("expected timeout error at -1 ms, got nil")
+
+		return
+	}
+
 	_, err = h.Wait(10)
 
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 
 		return
+	}
+
+	if h.GetTasksCount() != 0 {
+		t.Errorf("expected tasks count to be 0, got %d", h.GetTasksCount())
 	}
 }

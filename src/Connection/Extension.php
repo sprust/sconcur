@@ -16,8 +16,9 @@ use SConcur\Features\MethodEnum;
 use Throwable;
 
 use function SConcur\Extension\push;
-use function SConcur\Extension\stop;
 use function SConcur\Extension\wait;
+use function SConcur\Extension\cancel;
+use function SConcur\Extension\stop;
 
 class Extension
 {
@@ -78,6 +79,11 @@ class Extension
                 previous: $exception,
             );
         }
+    }
+
+    public function cancel(string $taskKey): void
+    {
+        cancel($taskKey);
     }
 
     public function stop(): void

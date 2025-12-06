@@ -18,7 +18,7 @@ class AggregateResult implements Iterator
     protected const string RESULT_KEY = '_result';
 
     protected ?Flow $currentFlow = null;
-    protected string $taskKey;
+    protected ?string $taskKey = null;
 
     protected ?array $items = null;
     protected mixed $currentKey = null;

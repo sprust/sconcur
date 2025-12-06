@@ -19,18 +19,18 @@ const resultKey = "_result"
 var _ contracts.MessageHandler = (*Feature)(nil)
 
 type Feature struct {
-	resultsChannel chan<- *dto.Result
-	connections    *connections.Connections
+	connections *connections.Connections
 }
 
-func New(resultsChannel chan<- *dto.Result, connections *connections.Connections) *Feature {
+func New(connections *connections.Connections) *Feature {
 	return &Feature{
-		resultsChannel: resultsChannel,
-		connections:    connections,
+		connections: connections,
 	}
 }
 
-func (f *Feature) Handle(ctx context.Context, message *dto.Message) *dto.Result {
+func (f *Feature) Handle(task *dto.Task) {
+	message := task.Msg()
+
 	var payload Payload
 
 	slog.Debug(
@@ -42,27 +42,30 @@ func (f *Feature) Handle(ctx context.Context, message *dto.Message) *dto.Result 
 	err := json.Unmarshal([]byte(message.Payload), &payload)
 
 	if err != nil {
-		return &dto.Result{
-			Method:   message.Method,
-			TaskKey:  message.TaskKey,
-			Waitable: true,
-			IsError:  true,
-			Payload: fmt.Sprintf(
-				"mongodb: parse payload error: %s",
-				err.Error(),
-			),
-		}
+		task.AddResult(
+			&dto.Result{
+				Method:   message.Method,
+				TaskKey:  message.TaskKey,
+				Waitable: true,
+				IsError:  true,
+				Payload: fmt.Sprintf(
+					"mongodb: parse payload error: %s",
+					err.Error(),
+				),
+			},
+		)
+
+		return
 	}
 
 	ctx, ctxCancel := context.WithCancel(context.Background())
-	defer ctxCancel()
 
-	go func(ctxCancel context.CancelFunc) {
+	go func() {
 		select {
-		case <-ctx.Done():
+		case <-task.Ctx().Done():
 			ctxCancel()
 		}
-	}(ctxCancel)
+	}()
 
 	collection, err := f.connections.Get(
 		ctx,
@@ -72,52 +75,71 @@ func (f *Feature) Handle(ctx context.Context, message *dto.Message) *dto.Result 
 	)
 
 	if err != nil {
-		return &dto.Result{
+		task.AddResult(
+			&dto.Result{
+				Method:   message.Method,
+				TaskKey:  message.TaskKey,
+				Waitable: true,
+				IsError:  true,
+				Payload: fmt.Sprintf(
+					"mongodb: %s",
+					err.Error(),
+				),
+			},
+		)
+
+		return
+	}
+
+	if payload.Command == 1 {
+		task.AddResult(
+			f.insertOne(
+				ctx,
+				message,
+				&payload,
+				collection,
+			),
+		)
+
+		return
+	}
+
+	if payload.Command == 2 {
+		task.AddResult(
+			f.bulkWrite(
+				ctx,
+				message,
+				&payload,
+				collection,
+			),
+		)
+
+		return
+	}
+
+	if payload.Command == 3 {
+		task.AddResult(
+			f.aggregate(
+				ctx,
+				task,
+				message,
+				&payload,
+				collection,
+			),
+		)
+
+		return
+	}
+
+	task.AddResult(
+		&dto.Result{
 			Method:   message.Method,
 			TaskKey:  message.TaskKey,
 			Waitable: true,
 			IsError:  true,
-			Payload: fmt.Sprintf(
-				"mongodb: %s",
-				err.Error(),
-			),
-		}
-	}
-
-	if payload.Command == 1 {
-		return f.insertOne(
-			ctx,
-			message,
-			&payload,
-			collection,
-		)
-	}
-
-	if payload.Command == 2 {
-		return f.bulkWrite(
-			ctx,
-			message,
-			&payload,
-			collection,
-		)
-	}
-
-	if payload.Command == 3 {
-		return f.aggregate(
-			ctx,
-			message,
-			&payload,
-			collection,
-		)
-	}
-
-	return &dto.Result{
-		Method:   message.Method,
-		TaskKey:  message.TaskKey,
-		Waitable: true,
-		IsError:  true,
-		Payload:  "mongodb: unknow command",
-	}
+			Payload:  "mongodb: unknow command",
+		},
+	)
 }
 
 func (f *Feature) insertOne(
@@ -242,6 +264,7 @@ func (f *Feature) bulkWrite(
 
 func (f *Feature) aggregate(
 	ctx context.Context,
+	task *dto.Task,
 	message *dto.Message,
 	payload *Payload,
 	collection *mongo.Collection,
@@ -320,14 +343,16 @@ func (f *Feature) aggregate(
 				}
 			}
 
-			f.resultsChannel <- &dto.Result{
-				Method:   message.Method,
-				TaskKey:  message.TaskKey,
-				Waitable: true,
-				IsError:  false,
-				Payload:  response,
-				HasNext:  true,
-			}
+			task.AddResult(
+				&dto.Result{
+					Method:   message.Method,
+					TaskKey:  message.TaskKey,
+					Waitable: true,
+					IsError:  false,
+					Payload:  response,
+					HasNext:  true,
+				},
+			)
 
 			items = []interface{}{}
 		}

@@ -144,8 +144,8 @@ readonly class Benchmarker
                 limitCount: $this->limitCount,
             );
 
-            foreach ($generator as $result) {
-                $key = "$this->name: $result->key";
+            foreach ($generator as $key => $result) {
+                $key = "$this->name: $key";
 
                 echo "success: $key\n";
             }

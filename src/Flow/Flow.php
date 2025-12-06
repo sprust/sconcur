@@ -108,6 +108,11 @@ class Flow
         return $this->isAsync;
     }
 
+    public function stopTask(string $taskKey): void
+    {
+        $this->extension->cancel($taskKey);
+    }
+
     public function close(): void
     {
         $this->extension->stop();

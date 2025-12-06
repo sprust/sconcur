@@ -11,19 +11,17 @@ import (
 	"sconcur/internal/features/mongodb_feature/connections"
 	"sconcur/internal/features/sleep_feature"
 	"sconcur/internal/types"
-	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
 type Handler struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	mutex    sync.Mutex
-	finTasks chan *dto.Result
-	closing  atomic.Bool
-	index    int64
+	ctx       context.Context
+	ctxCancel context.CancelFunc
+	mutex     sync.Mutex
+	index     int64
+
+	tasks *dto.Tasks
 }
 
 func NewHandler() *Handler {
@@ -41,11 +39,28 @@ func (h *Handler) Push(msg *dto.Message) error {
 	}
 
 	go func() {
-		select {
-		case <-h.ctx.Done():
-			return
-		case h.finTasks <- handler.Handle(h.ctx, msg):
-			return
+		task := h.tasks.AddMessage(msg)
+		defer h.tasks.StopTask(msg.TaskKey)
+
+		go handler.Handle(task)
+
+		for {
+			select {
+			case <-h.ctx.Done():
+				return
+			case <-task.Ctx().Done():
+				return
+			case result, ok := <-task.Results():
+				if ok {
+					h.tasks.AddResult(result)
+
+					if result.HasNext {
+						continue
+					}
+				}
+
+				return
+			}
 		}
 	}()
 
@@ -61,7 +76,11 @@ func (h *Handler) Wait(timeoutMs int64) (string, error) {
 	defer timer.Stop()
 
 	select {
-	case res, ok := <-h.finTasks:
+	case <-h.ctx.Done():
+		return "", h.ctx.Err()
+	case <-timer.C:
+		return "", errors.New("timeout waiting for task completion")
+	case res, ok := <-h.tasks.Results():
 		if !ok {
 			return "", errors.New("task channel closed")
 		}
@@ -73,17 +92,21 @@ func (h *Handler) Wait(timeoutMs int64) (string, error) {
 		}
 
 		return string(b), nil
-	case <-timer.C:
-		return "", errors.New("timeout waiting for task completion")
-	case <-h.ctx.Done():
-		return "", h.ctx.Err()
 	}
 }
 
+func (h *Handler) StopTask(taskKey string) {
+	h.tasks.StopTask(taskKey)
+}
+
 func (h *Handler) Stop() {
-	h.cancel()
-	close(h.finTasks)
+	h.ctxCancel()
+	h.tasks.Cancel()
 	h.fresh()
+}
+
+func (h *Handler) GetTasksCount() int {
+	return h.tasks.Count()
 }
 
 func (h *Handler) detectHandler(method types.Method) (contracts.MessageHandler, error) {
@@ -93,7 +116,6 @@ func (h *Handler) detectHandler(method types.Method) (contracts.MessageHandler, 
 
 	if method == 2 {
 		return mongodb_feature.New(
-			h.finTasks,
 			connections.GetConnections(),
 		), nil
 	}
@@ -101,17 +123,11 @@ func (h *Handler) detectHandler(method types.Method) (contracts.MessageHandler, 
 	return nil, errors.New("unknown method: " + fmt.Sprint(method))
 }
 
-func (h *Handler) genTaskId() types.TaskId {
-	h.index += 1
-
-	return types.TaskId(strconv.FormatInt(h.index, 10))
-}
-
 func (h *Handler) fresh() {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	h.ctx = ctx
-	h.cancel = cancel
-	h.finTasks = make(chan *dto.Result)
+	h.ctxCancel = cancel
 
+	h.tasks = dto.NewTasks()
 }
