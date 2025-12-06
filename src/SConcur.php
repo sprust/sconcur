@@ -8,7 +8,6 @@ use Closure;
 use Fiber;
 use Generator;
 use LogicException;
-use Psr\Log\LoggerInterface;
 use RuntimeException;
 use SConcur\Connection\Extension;
 use SConcur\Contracts\ParametersResolverInterface;
