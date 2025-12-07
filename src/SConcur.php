@@ -64,6 +64,8 @@ class SConcur
 
     /**
      * @param array<mixed, Closure> &$callbacks
+     *
+     * @return array<int|string|float|bool|null, mixed>
      */
     public static function waitAll(
         array &$callbacks,
@@ -99,9 +101,9 @@ class SConcur
     }
 
     /**
-     * @param array<mixed, Closure> &$callbacks
+     * @param array<int|string|float|bool|null, Closure> &$callbacks
      *
-     * @return Generator<mixed, mixed>
+     * @return Generator<int|string|float|bool|null, mixed>
      */
     public static function run(
         array &$callbacks,

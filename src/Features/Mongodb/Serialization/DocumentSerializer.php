@@ -30,6 +30,9 @@ readonly class DocumentSerializer
         return json_encode($result);
     }
 
+    /**
+     * @return array<int|string|float|bool|null, mixed>
+     */
     public static function unserialize(string $document): array
     {
         try {

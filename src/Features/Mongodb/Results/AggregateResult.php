@@ -13,6 +13,9 @@ use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
 use SConcur\Flow\Flow;
 use SConcur\SConcur;
 
+/**
+ * @implements Iterator<int, array<int|string|float|bool|null, mixed>>
+ */
 // TODO: implement rewind
 class AggregateResult implements Iterator
 {
@@ -21,6 +24,9 @@ class AggregateResult implements Iterator
     protected ?Flow $currentFlow = null;
     protected ?string $taskKey = null;
 
+    /**
+     * @var array<int, array<int|string|float|bool|null, mixed>>|null
+     */
     protected ?array $items = null;
     protected mixed $currentKey = null;
     protected mixed $currentValue = null;

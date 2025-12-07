@@ -7,5 +7,5 @@ parameters:
     ignoreErrors:
         -
             messages:
-                - '#unction SConcur\\Extension\\(ping|push|stop|wait) not found#'
+                - '#unction SConcur\\Extension\\(ping|push|wait|count|cancel|stop) not found#'
                 - '#generic class Fiber [\s\S]* not specify its types: TStart, TResume, TReturn, TSuspend#'

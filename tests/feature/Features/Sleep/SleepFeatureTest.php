@@ -3,16 +3,16 @@
 namespace SConcur\Tests\Feature\Features\Sleep;
 
 use Exception;
+use PHPUnit\Framework\TestCase;
 use SConcur\Connection\Extension;
 use SConcur\Entities\Context;
 use SConcur\Features\Sleep\SleepFeature;
-use PHPUnit\Framework\TestCase;
 use SConcur\SConcur;
 use SConcur\Tests\Impl\TestContainer;
 
 class SleepFeatureTest extends TestCase
 {
-    private readonly Extension $extension;
+    private Extension $extension;
 
     protected function setUp(): void
     {

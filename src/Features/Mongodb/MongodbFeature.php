@@ -26,6 +26,9 @@ readonly class MongodbFeature
         $this->method = MethodEnum::Mongodb;
     }
 
+    /**
+     * @param array<int|string|float|bool|null, mixed> $document
+     */
     public function insertOne(Context $context, array $document): InsertOneResult
     {
         $serialized = DocumentSerializer::serialize($document);
@@ -53,7 +56,11 @@ readonly class MongodbFeature
         );
     }
 
-    public function bulkWrite(Context $context, array $operations): BulkWriteResult {
+    /**
+     * @param array<int, mixed> $operations
+     */
+    public function bulkWrite(Context $context, array $operations): BulkWriteResult
+    {
         $serialized = DocumentSerializer::serialize(
             static::prepareOperations($operations)
         );
@@ -86,6 +93,9 @@ readonly class MongodbFeature
         );
     }
 
+    /**
+     * @param array<int, array<string, mixed>> $pipeline
+     */
     public function aggregate(Context $context, array $pipeline): Iterator
     {
         $serialized = DocumentSerializer::serialize($pipeline);
