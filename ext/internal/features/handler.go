@@ -10,6 +10,7 @@ import (
 	"sconcur/internal/features/mongodb_feature"
 	"sconcur/internal/features/mongodb_feature/connections"
 	"sconcur/internal/features/sleep_feature"
+	"sconcur/internal/flows"
 	"sconcur/internal/types"
 	"sync"
 	"time"
@@ -21,7 +22,7 @@ type Handler struct {
 	mutex     sync.Mutex
 	index     int64
 
-	tasks *dto.Tasks
+	flows *flows.Flows
 }
 
 func NewHandler() *Handler {
@@ -38,9 +39,11 @@ func (h *Handler) Push(msg *dto.Message) error {
 		return err
 	}
 
+	taskGroup := h.flows.InitFlow(msg.FlowKey).GetTasks()
+
 	go func() {
-		task := h.tasks.AddMessage(msg)
-		defer h.tasks.StopTask(msg.TaskKey)
+		task := taskGroup.AddMessage(msg)
+		defer taskGroup.StopTask(msg.TaskKey)
 
 		go handler.Handle(task)
 
@@ -52,7 +55,7 @@ func (h *Handler) Push(msg *dto.Message) error {
 				return
 			case result, ok := <-task.Results():
 				if ok {
-					h.tasks.AddResult(result)
+					taskGroup.AddResult(result)
 
 					if result.HasNext {
 						continue
@@ -67,7 +70,7 @@ func (h *Handler) Push(msg *dto.Message) error {
 	return nil
 }
 
-func (h *Handler) Wait(timeoutMs int64) (string, error) {
+func (h *Handler) Wait(flowKey string, timeoutMs int64) (string, error) {
 	if timeoutMs <= 0 {
 		return "", errors.New("timeout waiting for task completion")
 	}
@@ -75,12 +78,20 @@ func (h *Handler) Wait(timeoutMs int64) (string, error) {
 	timer := time.NewTimer(time.Duration(timeoutMs) * time.Millisecond)
 	defer timer.Stop()
 
+	flow, err := h.flows.GetFlow(flowKey)
+
+	if err != nil {
+		return "", err
+	}
+
+	results := flow.GetTasks().Results()
+
 	select {
 	case <-h.ctx.Done():
 		return "", h.ctx.Err()
 	case <-timer.C:
 		return "", errors.New("timeout waiting for task completion")
-	case res, ok := <-h.tasks.Results():
+	case res, ok := <-results:
 		if !ok {
 			return "", errors.New("task channel closed")
 		}
@@ -95,18 +106,26 @@ func (h *Handler) Wait(timeoutMs int64) (string, error) {
 	}
 }
 
-func (h *Handler) StopTask(taskKey string) {
-	go h.tasks.StopTask(taskKey)
+func (h *Handler) StopTask(flowKey string, taskKey string) {
+	go func() {
+		flow, err := h.flows.GetFlow(flowKey)
+
+		if err != nil {
+			return
+		}
+
+		flow.GetTasks().StopTask(taskKey)
+	}()
 }
 
 func (h *Handler) Stop() {
 	h.ctxCancel()
-	h.tasks.Cancel()
+	h.flows.Cancel()
 	h.fresh()
 }
 
 func (h *Handler) GetTasksCount() int {
-	return h.tasks.Count()
+	return h.flows.GetTasksCount()
 }
 
 func (h *Handler) detectHandler(method types.Method) (contracts.MessageHandler, error) {
@@ -129,5 +148,5 @@ func (h *Handler) fresh() {
 	h.ctx = ctx
 	h.ctxCancel = cancel
 
-	h.tasks = dto.NewTasks()
+	h.flows = flows.NewFlows()
 }

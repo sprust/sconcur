@@ -1,27 +1,28 @@
-package dto
+package tasks
 
 import (
+	"sconcur/internal/dto"
 	"sync"
 )
 
 type Tasks struct {
 	mutex   sync.Mutex
 	active  map[string]*Task
-	results chan *Result
+	results chan *dto.Result
 }
 
-func (t *Tasks) Results() chan *Result {
+func (t *Tasks) Results() chan *dto.Result {
 	return t.results
 }
 
 func NewTasks() *Tasks {
 	return &Tasks{
 		active:  make(map[string]*Task),
-		results: make(chan *Result),
+		results: make(chan *dto.Result),
 	}
 }
 
-func (t *Tasks) AddMessage(msg *Message) *Task {
+func (t *Tasks) AddMessage(msg *dto.Message) *Task {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -32,7 +33,7 @@ func (t *Tasks) AddMessage(msg *Message) *Task {
 	return task
 }
 
-func (t *Tasks) AddResult(res *Result) {
+func (t *Tasks) AddResult(res *dto.Result) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 

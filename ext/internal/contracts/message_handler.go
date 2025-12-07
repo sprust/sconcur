@@ -1,9 +1,9 @@
 package contracts
 
 import (
-	"sconcur/internal/dto"
+	"sconcur/internal/tasks"
 )
 
 type MessageHandler interface {
-	Handle(task *dto.Task)
+	Handle(task *tasks.Task)
 }

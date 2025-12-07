@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
+	"sconcur/internal/tasks"
 	"time"
 )
 
@@ -17,7 +18,7 @@ func New() *Feature {
 	return &Feature{}
 }
 
-func (s *Feature) Handle(task *dto.Task) {
+func (s *Feature) Handle(task *tasks.Task) {
 	message := task.Msg()
 
 	var payload SleepPayload

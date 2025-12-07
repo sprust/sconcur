@@ -11,6 +11,8 @@ func TestHandler_Sleep(t *testing.T) {
 	h := NewHandler()
 	defer h.Stop()
 
+	flowKey := "1"
+
 	pl := sleep_feature.SleepPayload{
 		Milliseconds: 10,
 	}
@@ -22,6 +24,7 @@ func TestHandler_Sleep(t *testing.T) {
 	}
 
 	msg := &dto.Message{
+		FlowKey: flowKey,
 		Method:  1,
 		TaskKey: "1",
 		Payload: string(psJs),
@@ -35,7 +38,7 @@ func TestHandler_Sleep(t *testing.T) {
 		return
 	}
 
-	_, err = h.Wait(1)
+	_, err = h.Wait(flowKey, 1)
 
 	if err == nil {
 		t.Errorf("expected error, got nil")
@@ -43,7 +46,7 @@ func TestHandler_Sleep(t *testing.T) {
 		return
 	}
 
-	_, err = h.Wait(-1)
+	_, err = h.Wait(flowKey, -1)
 
 	if err == nil {
 		t.Errorf("expected timeout error at -1 ms, got nil")
@@ -51,7 +54,7 @@ func TestHandler_Sleep(t *testing.T) {
 		return
 	}
 
-	_, err = h.Wait(10)
+	_, err = h.Wait(flowKey, 10)
 
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)

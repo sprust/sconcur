@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace SConcur\Connection;
 
-use Psr\Log\LoggerInterface;
 use RuntimeException;
 use SConcur\Dto\RunningTaskDto;
 use SConcur\Dto\TaskResultDto;
@@ -31,26 +30,33 @@ class Extension
         $this->checkExtension();
     }
 
-    public function push(MethodEnum $method, string $payload): RunningTaskDto
+    public function push(string $flowKey, MethodEnum $method, string $payload): RunningTaskDto
     {
         ++static::$tasksCounter;
 
         $taskKey = (string) static::$tasksCounter;
 
-        push($method->value, $taskKey, $payload);
+        push($flowKey, $method->value, $taskKey, $payload);
 
         return new RunningTaskDto(
             key: $taskKey,
         );
     }
 
-    public function wait(Context $context): TaskResultDto
+    public function wait(string $flowKey, bool $isAsync, Context $context): TaskResultDto
     {
-        $response = wait($context->getRemainMs());
+        $response = wait($flowKey, $context->getRemainMs());
 
         if (str_starts_with($response, 'error:')) {
+            $isAsyncView = $isAsync ? 'async' : 'sync';
+
             throw new TaskErrorException(
-                message: $response
+                message: sprintf(
+                    'flow %s[%s]: %s',
+                    $flowKey,
+                    $isAsyncView,
+                    $response,
+                )
             );
         }
 
@@ -68,6 +74,7 @@ class Extension
 
         try {
             return new TaskResultDto(
+                flowKey: $responseData['fk'],
                 method: MethodEnum::from($responseData['md']),
                 key: $responseData['tk'],
                 isError: $responseData['er'],
@@ -87,9 +94,9 @@ class Extension
         return count();
     }
 
-    public function cancel(string $taskKey): void
+    public function cancel(string $flowKey, string $taskKey): void
     {
-        cancel($taskKey);
+        cancel($flowKey, $taskKey);
     }
 
     public function stop(): void

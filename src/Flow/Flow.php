@@ -17,21 +17,39 @@ use Throwable;
 
 class Flow
 {
+    protected static ?Extension $extension = null;
+
+    protected static int $flowsCounter = 0;
+
+    protected readonly string $key;
+
     /**
      * @var array<string, Fiber>
      */
     protected array $fibersKeyByTaskUuid = [];
 
     public function __construct(
-        protected readonly Extension $extension,
         protected readonly bool $isAsync
     ) {
-        $this->extension->stop();
+        ++static::$flowsCounter;
+
+        $this->key = (string) static::$flowsCounter;
+    }
+
+    public static function stop(): void
+    {
+        self::initExtension()->stop();
+    }
+
+    protected static function initExtension(): Extension
+    {
+        return static::$extension ??= new Extension();
     }
 
     public function exec(Context $context, MethodEnum $method, string $payload): TaskResultDto
     {
-        $runningTask = $this->extension->push(
+        $runningTask = self::initExtension()->push(
+            flowKey: $this->key,
             method: $method,
             payload: $payload
         );
@@ -89,7 +107,11 @@ class Flow
 
     public function wait(Context $context): TaskResultDto
     {
-        $result = $this->extension->wait($context);
+        $result = self::initExtension()->wait(
+            flowKey: $this->key,
+            isAsync: $this->isAsync,
+            context: $context
+        );
 
         return $this->checkResult($result);
     }
@@ -111,12 +133,10 @@ class Flow
 
     public function stopTask(string $taskKey): void
     {
-        $this->extension->cancel($taskKey);
-    }
-
-    public function close(): void
-    {
-        $this->extension->stop();
+        self::initExtension()->cancel(
+            flowKey: $this->key,
+            taskKey: $taskKey
+        );
     }
 
     private function checkResult(TaskResultDto $result): TaskResultDto

@@ -20,15 +20,17 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_ping, 0, 0, 1)
     ZEND_ARG_TYPE_INFO(0, name, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
-// push(int method, string taskKey, string payloadJSON)
-ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_push, 0, 0, 3)
+// push(string flowKey, int method, string taskKey, string payloadJSON)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_push, 0, 0, 4)
+    ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, method, IS_LONG, 0)
     ZEND_ARG_TYPE_INFO(0, taskKey, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, payload, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
-// wait(int ms)
-ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_wait, 0, 0, 1)
+// wait(string flowKey, int ms)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_wait, 0, 0, 2)
+    ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, milliseconds, IS_LONG, 0)
 ZEND_END_ARG_INFO()
 
@@ -40,8 +42,9 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_count, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
-// cancel(string taskKey)
-ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_cancel, 0, 0, 1)
+// cancel(string flowKey, string taskKey)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_cancel, 0, 0, 2)
+    ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, taskKey, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
@@ -66,34 +69,36 @@ PHP_FUNCTION(ping)
     free(response);
 }
 
-// PHP: SConcur\Extension\push(int $method, string $taskKey, string $payload): string
+// PHP: SConcur\Extension\push(string $flowKey, int $method, string $taskKey, string $payload): string
 PHP_FUNCTION(push)
 {
     zend_long method;
-    char *task_key = NULL, *payload = NULL;
-    size_t task_key_len, payload_len;
+    char *flow_key = NULL, *task_key = NULL, *payload = NULL;
+    size_t flow_key_len, task_key_len, payload_len;
 
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "lss", &method, &task_key, &task_key_len, &payload, &payload_len) == FAILURE) {
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "slss", &flow_key, &flow_key_len, &method, &task_key, &task_key_len, &payload, &payload_len) == FAILURE) {
         RETURN_THROWS();
     }
 
-    char *response = push((int)method, task_key, payload);
+    char *response = push(flow_key, (int)method, task_key, payload);
 
     RETVAL_STRING(response);
     free(response);
 }
 
-// PHP: SConcur\Extension\wait(int $ms): string
+// PHP: SConcur\Extension\wait(string $flowKey, int $ms): string
 PHP_FUNCTION(wait)
 {
     zend_long ms;
+    char *flow_key = NULL;
+    size_t flow_key_len;
 
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "l", &ms) == FAILURE) {
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "sl", &flow_key, &flow_key_len, &ms) == FAILURE) {
         RETURN_THROWS();
     }
 
     // Go ждёт int64 (обычно мапится на long long)
-    char *response = wait((long long)ms);
+    char *response = wait(flow_key, (long long)ms);
 
     RETVAL_STRING(response);
     free(response);
@@ -110,17 +115,17 @@ PHP_FUNCTION(stop)
     RETURN_NULL();
 }
 
-// PHP: SConcur\Extension\cancel(string $taskKey): void
+// PHP: SConcur\Extension\cancel(string $flowKey, string $taskKey): void
 PHP_FUNCTION(cancel)
 {
-    char *task_key = NULL;
-    size_t task_key_len;
+    char *flow_key = NULL, *task_key = NULL;
+    size_t flow_key_len, task_key_len;
 
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &task_key, &task_key_len) == FAILURE) {
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "ss", &flow_key, &flow_key_len, &task_key, &task_key_len) == FAILURE) {
         RETURN_THROWS();
     }
 
-    cancel(task_key);
+    cancel(flow_key, task_key);
     RETURN_NULL();
 }
 

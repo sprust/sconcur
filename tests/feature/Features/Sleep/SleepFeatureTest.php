@@ -40,18 +40,18 @@ class SleepFeatureTest extends TestCase
 
                 $events[] = '1:woke';
 
-                SleepFeature::usleep(context: $context, milliseconds: 10);
+                SleepFeature::usleep(context: $context, milliseconds: 20);
 
                 $events[] = '1:woke_2';
             },
             function (Context $context) use (&$events) {
                 $events[] = '2:start';
 
-                SleepFeature::usleep(context: $context, milliseconds: 20);
+                SleepFeature::usleep(context: $context, milliseconds: 30);
 
                 $events[] = '2:woke';
 
-                SleepFeature::usleep(context: $context, milliseconds: 20);
+                SleepFeature::usleep(context: $context, milliseconds: 40);
 
                 $events[] = '2:woke_2';
             },
@@ -232,6 +232,46 @@ class SleepFeatureTest extends TestCase
 
         self::assertCount(
             0,
+            $result
+        );
+
+        self::assertEquals(
+            0,
+            $this->extension->count()
+        );
+    }
+
+    public function testSyncAsyncMix(): void
+    {
+        $callbacks = [
+            function (Context $context) {
+                SleepFeature::usleep(context: $context, milliseconds: 1);
+            },
+            function (Context $context) {
+                SleepFeature::usleep(context: $context, milliseconds: 1);
+            },
+        ];
+
+        $callbacksCount = count($callbacks);
+
+        $results = SConcur::run(callbacks: $callbacks, timeoutSeconds: 1);
+
+        $result = [];
+
+        $context = Context::create(timeoutSeconds: 1);
+
+        foreach ($results as $key => $value) {
+            $result[$key] = $value;
+
+            SleepFeature::usleep(context: $context, milliseconds: 1);
+        }
+
+        // for generator finalization
+        unset($results);
+        self::assertFalse(SConcur::isAsync());
+
+        self::assertCount(
+            $callbacksCount,
             $result
         );
 

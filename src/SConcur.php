@@ -9,7 +9,6 @@ use Fiber;
 use Generator;
 use LogicException;
 use RuntimeException;
-use SConcur\Connection\Extension;
 use SConcur\Contracts\ParametersResolverInterface;
 use SConcur\Entities\Context;
 use SConcur\Exceptions\AlreadyRunningException;
@@ -40,7 +39,9 @@ class SConcur
     {
         static::checkInitialization();
 
-        if (static::$asyncFlow !== null) {
+        if (static::$asyncFlow !== null
+            && Fiber::getCurrent() !== null
+        ) {
             return static::$asyncFlow;
         } else {
             return static::initSyncFlow();
@@ -228,21 +229,19 @@ class SConcur
     protected static function initAsyncFlow(): Flow
     {
         return static::$asyncFlow = new Flow(
-            extension: new Extension(),
             isAsync: true
         );
     }
 
     protected static function deleteAsyncFlow(): void
     {
-        static::$asyncFlow?->close();
         static::$asyncFlow = null;
+        Flow::stop();
     }
 
     protected static function initSyncFlow(): Flow
     {
         return static::$syncFlow ??= new Flow(
-            extension: new Extension(),
             isAsync: false,
         );
     }

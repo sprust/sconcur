@@ -1,28 +1,29 @@
-package dto
+package tasks
 
 import (
 	"context"
+	"sconcur/internal/dto"
 	"sync"
 )
 
 type Task struct {
-	msg       *Message
-	res       *Result
+	msg       *dto.Message
+	res       *dto.Result
 	ctx       context.Context
 	ctxCancel context.CancelFunc
-	results   chan *Result
+	results   chan *dto.Result
 	mutex     sync.Mutex
 	cancelled bool
 }
 
-func NewTask(msg *Message) *Task {
+func NewTask(msg *dto.Message) *Task {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Task{
 		msg:       msg,
 		ctx:       ctx,
 		ctxCancel: cancel,
-		results:   make(chan *Result),
+		results:   make(chan *dto.Result),
 	}
 }
 
@@ -30,11 +31,11 @@ func (t *Task) Ctx() context.Context {
 	return t.ctx
 }
 
-func (t *Task) Msg() *Message {
+func (t *Task) Msg() *dto.Message {
 	return t.msg
 }
 
-func (t *Task) AddResult(result *Result) {
+func (t *Task) AddResult(result *dto.Result) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -45,7 +46,7 @@ func (t *Task) AddResult(result *Result) {
 	t.results <- result
 }
 
-func (t *Task) Results() chan *Result {
+func (t *Task) Results() chan *dto.Result {
 	return t.results
 }
 

@@ -9,6 +9,7 @@ import (
 	"sconcur/internal/dto"
 	"sconcur/internal/features/mongodb_feature/connections"
 	"sconcur/internal/features/mongodb_feature/helpers"
+	"sconcur/internal/tasks"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -28,7 +29,7 @@ func New(connections *connections.Connections) *Feature {
 	}
 }
 
-func (f *Feature) Handle(task *dto.Task) {
+func (f *Feature) Handle(task *tasks.Task) {
 	message := task.Msg()
 
 	var payload Payload
@@ -264,7 +265,7 @@ func (f *Feature) bulkWrite(
 
 func (f *Feature) aggregate(
 	ctx context.Context,
-	task *dto.Task,
+	task *tasks.Task,
 	message *dto.Message,
 	payload *Payload,
 	collection *mongo.Collection,

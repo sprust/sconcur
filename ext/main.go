@@ -22,8 +22,9 @@ func ping(str *C.char) *C.char {
 }
 
 //export push
-func push(mt int, tk *C.char, pl *C.char) *C.char {
+func push(fk *C.char, mt int, tk *C.char, pl *C.char) *C.char {
 	msg := &dto.Message{
+		FlowKey: C.GoString(fk),
 		Method:  types.Method(mt),
 		TaskKey: C.GoString(tk),
 		Payload: C.GoString(pl),
@@ -39,8 +40,8 @@ func push(mt int, tk *C.char, pl *C.char) *C.char {
 }
 
 //export wait
-func wait(ms int64) *C.char {
-	res, err := handler.Wait(ms)
+func wait(fk *C.char, ms int64) *C.char {
+	res, err := handler.Wait(C.GoString(fk), ms)
 
 	if err != nil {
 		return C.CString("error: " + err.Error())
@@ -55,8 +56,8 @@ func count() int {
 }
 
 //export cancel
-func cancel(tk *C.char) {
-	handler.StopTask(C.GoString(tk))
+func cancel(fk *C.char, tk *C.char) {
+	handler.StopTask(C.GoString(fk), C.GoString(tk))
 }
 
 //export stop
