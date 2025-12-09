@@ -8,4 +8,5 @@ enum CommandEnum: int
     case BulkWrite = 2;
     case Aggregate = 3;
     case InsertMany = 4;
+    case CountDocuments = 5;
 }

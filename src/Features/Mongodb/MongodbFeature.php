@@ -125,6 +125,40 @@ readonly class MongodbFeature
     }
 
     /**
+     * @param array<int, mixed> $filter
+     */
+    public function countDocuments(Context $context, array $filter): int
+    {
+        $serialized = DocumentSerializer::serialize($filter);
+
+        $taskResult = SConcur::getCurrentFlow()->exec(
+            context: $context,
+            method: $this->method,
+            payload: static::serializePayload(
+                connection: $this->connection,
+                command: CommandEnum::CountDocuments,
+                data: $serialized,
+            )
+        );
+
+        if ($taskResult->isError) {
+            throw new RuntimeException(
+                $taskResult->payload ?: 'Unknown error',
+            );
+        }
+
+        $result = $taskResult->payload;
+
+        if (ctype_digit($result) === false) {
+            throw new RuntimeException(
+                "Invalid count result: $result"
+            );
+        }
+
+        return (int) $result;
+    }
+
+    /**
      * @param array<int, array<string, mixed>> $pipeline
      */
     public function aggregate(Context $context, array $pipeline): Iterator
