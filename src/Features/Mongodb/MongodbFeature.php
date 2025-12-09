@@ -12,6 +12,7 @@ use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\Features\Mongodb\Results\AggregateResult;
 use SConcur\Features\Mongodb\Results\BulkWriteResult;
+use SConcur\Features\Mongodb\Results\InsertManyResult;
 use SConcur\Features\Mongodb\Results\InsertOneResult;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
 use SConcur\SConcur;
@@ -53,6 +54,36 @@ readonly class MongodbFeature
 
         return new InsertOneResult(
             insertedId: $docResult['insertedid'],
+        );
+    }
+
+    /**
+     * @param array<int, array<int|string|float|bool|null, mixed>> $documents
+     */
+    public function insertMany(Context $context, array $documents): InsertManyResult
+    {
+        $serialized = DocumentSerializer::serialize($documents);
+
+        $taskResult = SConcur::getCurrentFlow()->exec(
+            context: $context,
+            method: $this->method,
+            payload: static::serializePayload(
+                connection: $this->connection,
+                command: CommandEnum::InsertMany,
+                data: $serialized,
+            )
+        );
+
+        if ($taskResult->isError) {
+            throw new RuntimeException(
+                $taskResult->payload ?: 'Unknown error',
+            );
+        }
+
+        $docResult = DocumentSerializer::unserialize($taskResult->payload);
+
+        return new InsertManyResult(
+            insertedIds: $docResult['insertedids'],
         );
     }
 

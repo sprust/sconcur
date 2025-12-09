@@ -61,6 +61,9 @@ bench-sleep:
 bench-mongodb-insertOne:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-insert-one.php ${c}
 
+bench-mongodb-insertMany:
+	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-insert-many.php ${c}
+
 bench-mongodb-bulkWrite:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-bulk-write.php ${c}
 

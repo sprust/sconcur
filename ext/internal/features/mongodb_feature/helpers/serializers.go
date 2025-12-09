@@ -35,6 +35,24 @@ func UnmarshalDocument(data string) (interface{}, error) {
 	return processDateValues(document), nil
 }
 
+func UnmarshalDocuments(data string) ([]interface{}, error) {
+	var documents []interface{}
+
+	err := json.Unmarshal([]byte(data), &documents)
+
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]interface{}, len(documents))
+
+	for i, document := range documents {
+		result[i] = processDateValues(document)
+	}
+
+	return result, nil
+}
+
 func MarshalResult(doc interface{}) (string, error) {
 	bsonData, err := bson.Marshal(doc)
 
