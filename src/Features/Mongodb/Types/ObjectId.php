@@ -4,16 +4,18 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Mongodb\Types;
 
-readonly class ObjectId
+use JsonSerializable;
+
+readonly class ObjectId implements JsonSerializable
 {
-    protected const TYPE_PREFIX = '$oid-ofls:';
+    protected const string TYPE_PREFIX = '$oid-ofls:';
 
     public function __construct(
         public string $id
     ) {
     }
 
-    public function format(): string
+    public function jsonSerialize(): string
     {
         return static::TYPE_PREFIX . $this->id;
     }

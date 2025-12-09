@@ -8,9 +8,9 @@ use DateTime;
 use DateTimeInterface;
 use DateTimeZone;
 
-readonly class UTCDateTime
+readonly class UTCDateTime implements \JsonSerializable
 {
-    protected const TYPE_PREFIX = '$udt-lgof:';
+    protected const string TYPE_PREFIX = '$udt-lgof:';
 
     public DateTimeInterface $dateTime;
 
@@ -25,7 +25,7 @@ readonly class UTCDateTime
         $this->dateTime = $utcDateTime;
     }
 
-    public function format(): string
+    public function jsonSerialize(): string
     {
         return static::TYPE_PREFIX . $this->dateTime->format(DATE_RFC3339);
     }

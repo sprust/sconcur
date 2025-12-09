@@ -17,17 +17,7 @@ readonly class DocumentSerializer
      */
     public static function serialize(array $document): string
     {
-        $result = [];
-
-        foreach ($document as $key => $value) {
-            static::serializeRecursive(
-                result: $result,
-                key: $key,
-                value: $value,
-            );
-        }
-
-        return json_encode($result);
+        return json_encode($document);
     }
 
     /**
@@ -48,46 +38,6 @@ readonly class DocumentSerializer
         }
 
         return $data;
-    }
-
-    /**
-     * @param array<int|string, mixed> $result
-     */
-    protected static function serializeRecursive(array &$result, int|string $key, mixed $value): void
-    {
-        if (is_object($value)) {
-            if ($value instanceof ObjectId) {
-                $result[$key] = $value->format();
-
-                return;
-            }
-
-            if ($value instanceof UTCDateTime) {
-                $result[$key] = $value->format();
-
-                return;
-            }
-
-            if (method_exists($value, '__toString')) {
-                $result[$key] = (string) $value;
-
-                return;
-            }
-        } elseif (is_array($value)) {
-            $result[$key] = [];
-
-            foreach ($value as $subKey => $subValue) {
-                static::serializeRecursive(
-                    result: $result[$key],
-                    key: $subKey,
-                    value: $subValue,
-                );
-            }
-
-            return;
-        }
-
-        $result[$key] = $value;
     }
 
     protected static function unserializeRecursive(mixed $value): mixed
