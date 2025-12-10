@@ -12,6 +12,7 @@ use RuntimeException;
 use SConcur\Contracts\ParametersResolverInterface;
 use SConcur\Entities\Context;
 use SConcur\Exceptions\AlreadyRunningException;
+use SConcur\Features\Factory;
 use SConcur\Flow\Flow;
 use Throwable;
 
@@ -21,6 +22,8 @@ class SConcur
 
     protected static ?Flow $asyncFlow = null;
     protected static ?Flow $syncFlow = null;
+
+    protected static ?Factory $features = null;
 
     protected static ParametersResolverInterface $parametersResolver;
 
@@ -60,6 +63,11 @@ class SConcur
     public static function isAsync(): bool
     {
         return static::$asyncFlow !== null;
+    }
+
+    public static function features(): Factory
+    {
+        return static::$features ??= new Factory();
     }
 
     /**

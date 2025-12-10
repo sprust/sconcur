@@ -10,16 +10,12 @@ use SConcur\SConcur;
 
 readonly class SleepFeature
 {
-    private function __construct()
+    public function sleep(Context $context, int $seconds): void
     {
+        $this->usleep(context: $context, milliseconds: $seconds * 1_000);
     }
 
-    public static function sleep(Context $context, int $seconds): void
-    {
-        static::usleep(context: $context, milliseconds: $seconds * 1_000);
-    }
-
-    public static function usleep(Context $context, int $milliseconds): void
+    public function usleep(Context $context, int $milliseconds): void
     {
         SConcur::getCurrentFlow()->exec(
             context: $context,

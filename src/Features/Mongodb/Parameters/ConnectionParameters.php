@@ -12,4 +12,9 @@ readonly class ConnectionParameters
         public string $collection,
     ) {
     }
+
+    public function toString(): string
+    {
+        return "$this->uri|$this->database|$this->collection";
+    }
 }

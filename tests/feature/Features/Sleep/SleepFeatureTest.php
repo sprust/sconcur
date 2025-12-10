@@ -13,6 +13,7 @@ use SConcur\Tests\Impl\TestContainer;
 class SleepFeatureTest extends TestCase
 {
     private Extension $extension;
+    private SleepFeature $sleepFeature;
 
     protected function setUp(): void
     {
@@ -25,6 +26,8 @@ class SleepFeatureTest extends TestCase
         $this->extension->stop();
 
         self::assertFalse(SConcur::isAsync());
+
+        $this->sleepFeature = SConcur::features()->sleep();
     }
 
     public function testMulti(): void
@@ -36,22 +39,22 @@ class SleepFeatureTest extends TestCase
             function (Context $context) use (&$events) {
                 $events[] = '1:start';
 
-                SleepFeature::usleep(context: $context, milliseconds: 10);
+                $this->sleepFeature->usleep(context: $context, milliseconds: 10);
 
                 $events[] = '1:woke';
 
-                SleepFeature::usleep(context: $context, milliseconds: 20);
+                $this->sleepFeature->usleep(context: $context, milliseconds: 20);
 
                 $events[] = '1:woke_2';
             },
             function (Context $context) use (&$events) {
                 $events[] = '2:start';
 
-                SleepFeature::usleep(context: $context, milliseconds: 30);
+                $this->sleepFeature->usleep(context: $context, milliseconds: 30);
 
                 $events[] = '2:woke';
 
-                SleepFeature::usleep(context: $context, milliseconds: 40);
+                $this->sleepFeature->usleep(context: $context, milliseconds: 40);
 
                 $events[] = '2:woke_2';
             },
@@ -97,14 +100,14 @@ class SleepFeatureTest extends TestCase
 
         $callbacks = [
             function (Context $context) use (&$events) {
-                SleepFeature::usleep(context: $context, milliseconds: 10);
+                $this->sleepFeature->usleep(context: $context, milliseconds: 10);
 
                 $events[] = '1:finish';
 
                 return '1';
             },
             function (Context $context) use (&$events) {
-                SleepFeature::usleep(context: $context, milliseconds: 1);
+                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
 
                 $events[] = '2:finish';
 
@@ -145,14 +148,14 @@ class SleepFeatureTest extends TestCase
 
         $callbacks = [
             function (Context $context) use (&$events) {
-                SleepFeature::sleep(context: $context, seconds: 2);
+                $this->sleepFeature->sleep(context: $context, seconds: 2);
 
                 $events[] = '1:finish';
 
                 return '1';
             },
             function (Context $context) use (&$events) {
-                SleepFeature::usleep(context: $context, milliseconds: 1);
+                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
 
                 $events[] = '2:finish';
 
@@ -198,10 +201,10 @@ class SleepFeatureTest extends TestCase
     {
         $callbacks = [
             function (Context $context) {
-                SleepFeature::sleep(context: $context, seconds: 1);
+                $this->sleepFeature->sleep(context: $context, seconds: 1);
             },
             function (Context $context) {
-                SleepFeature::usleep(context: $context, milliseconds: 1);
+                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
 
                 throw new Exception('test');
             },
@@ -245,10 +248,10 @@ class SleepFeatureTest extends TestCase
     {
         $callbacks = [
             function (Context $context) {
-                SleepFeature::usleep(context: $context, milliseconds: 1);
+                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
             },
             function (Context $context) {
-                SleepFeature::usleep(context: $context, milliseconds: 1);
+                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
             },
         ];
 
@@ -263,7 +266,7 @@ class SleepFeatureTest extends TestCase
         foreach ($results as $key => $value) {
             $result[$key] = $value;
 
-            SleepFeature::usleep(context: $context, milliseconds: 1);
+            $this->sleepFeature->usleep(context: $context, milliseconds: 1);
         }
 
         // for generator finalization

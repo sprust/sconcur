@@ -7,6 +7,7 @@ use SConcur\Features\Mongodb\MongodbFeature;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
+use SConcur\SConcur;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
 
 require_once __DIR__ . '/_benchmarker.php';
@@ -40,7 +41,7 @@ $sconcurDocument = makeDocument(
     dateTime: new UTCDateTime()
 );
 
-$feature = new MongodbFeature(
+$feature = SConcur::features()->mongodb(
     connection: $connection,
 );
 
