@@ -35,7 +35,8 @@ cs-fixer-fix:
 	"$(PHP_CLI)" ./vendor/bin/php-cs-fixer fix --config cs-fixer.dist.php --verbose
 
 check:
-	make phpstan
+	make php-stan
+	make cs-fixer-check
 	make test
 
 test:
