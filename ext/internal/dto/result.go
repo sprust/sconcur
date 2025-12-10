@@ -23,6 +23,7 @@ func NewSuccessResult(message *Message, payload string) *Result {
 
 func NewSuccessResultWithNext(message *Message, payload string) *Result {
 	return &Result{
+		FlowKey: message.FlowKey,
 		Method:  message.Method,
 		TaskKey: message.TaskKey,
 		IsError: false,
@@ -33,6 +34,7 @@ func NewSuccessResultWithNext(message *Message, payload string) *Result {
 
 func NewErrorResult(message *Message, payload string) *Result {
 	return &Result{
+		FlowKey: message.FlowKey,
 		Method:  message.Method,
 		TaskKey: message.TaskKey,
 		IsError: true,
