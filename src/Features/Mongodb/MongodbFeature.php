@@ -6,6 +6,7 @@ namespace SConcur\Features\Mongodb;
 
 use Iterator;
 use RuntimeException;
+use SConcur\Dto\TaskResultDto;
 use SConcur\Entities\Context;
 use SConcur\Exceptions\InvalidMongodbBulkWriteOperationException;
 use SConcur\Features\MethodEnum;
@@ -34,14 +35,10 @@ readonly class MongodbFeature
     {
         $serialized = DocumentSerializer::serialize($document);
 
-        $taskResult = SConcur::getCurrentFlow()->exec(
+        $taskResult = $this->exec(
             context: $context,
-            method: $this->method,
-            payload: static::serializePayload(
-                connection: $this->connection,
-                command: CommandEnum::InsertOne,
-                data: $serialized,
-            )
+            command: CommandEnum::InsertOne,
+            payload: $serialized,
         );
 
         $docResult = DocumentSerializer::unserialize($taskResult->payload);
@@ -58,14 +55,10 @@ readonly class MongodbFeature
     {
         $serialized = DocumentSerializer::serialize($documents);
 
-        $taskResult = SConcur::getCurrentFlow()->exec(
+        $taskResult = $this->exec(
             context: $context,
-            method: $this->method,
-            payload: static::serializePayload(
-                connection: $this->connection,
-                command: CommandEnum::InsertMany,
-                data: $serialized,
-            )
+            command: CommandEnum::InsertMany,
+            payload: $serialized,
         );
 
         $docResult = DocumentSerializer::unserialize($taskResult->payload);
@@ -115,14 +108,10 @@ readonly class MongodbFeature
 
         $serialized = DocumentSerializer::serialize($preparedOperations);
 
-        $taskResult = SConcur::getCurrentFlow()->exec(
+        $taskResult = $this->exec(
             context: $context,
-            method: $this->method,
-            payload: static::serializePayload(
-                connection: $this->connection,
-                command: CommandEnum::BulkWrite,
-                data: $serialized,
-            )
+            command: CommandEnum::BulkWrite,
+            payload: $serialized,
         );
 
         $docResult = DocumentSerializer::unserialize($taskResult->payload);
@@ -144,14 +133,10 @@ readonly class MongodbFeature
     {
         $serialized = DocumentSerializer::serialize($filter);
 
-        $taskResult = SConcur::getCurrentFlow()->exec(
+        $taskResult = $this->exec(
             context: $context,
-            method: $this->method,
-            payload: static::serializePayload(
-                connection: $this->connection,
-                command: CommandEnum::CountDocuments,
-                data: $serialized,
-            )
+            command: CommandEnum::CountDocuments,
+            payload: $serialized,
         );
 
         $result = $taskResult->payload;
@@ -174,7 +159,7 @@ readonly class MongodbFeature
 
         return new AggregateResult(
             context: $context,
-            payload: static::serializePayload(
+            payload: $this->serializePayload(
                 connection: $this->connection,
                 command: CommandEnum::Aggregate,
                 data: $serialized,
@@ -182,7 +167,23 @@ readonly class MongodbFeature
         );
     }
 
-    protected static function serializePayload(
+    protected function exec(
+        Context $context,
+        CommandEnum $command,
+        string $payload
+    ): TaskResultDto {
+        return SConcur::getCurrentFlow()->exec(
+            context: $context,
+            method: $this->method,
+            payload: $this->serializePayload(
+                connection: $this->connection,
+                command: $command,
+                data: $payload,
+            )
+        );
+    }
+
+    protected function serializePayload(
         ConnectionParameters $connection,
         CommandEnum $command,
         string $data
