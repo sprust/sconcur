@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
 	"sconcur/internal/features/mongodb_feature/connections"
@@ -35,26 +34,14 @@ func (f *Feature) Handle(task *tasks.Task) {
 
 	var payload Payload
 
-	slog.Debug(
-		fmt.Sprintf(
-			"mongodb: received message: %+v",
-			message,
-		))
-
 	err := json.Unmarshal([]byte(message.Payload), &payload)
 
 	if err != nil {
 		task.AddResult(
-			&dto.Result{
-				Method:   message.Method,
-				TaskKey:  message.TaskKey,
-				Waitable: true,
-				IsError:  true,
-				Payload: fmt.Sprintf(
-					"mongodb: parse payload error: %s",
-					err.Error(),
-				),
-			},
+			dto.NewErrorResult(message, fmt.Sprintf(
+				"mongodb: parse payload error: %s",
+				err.Error(),
+			)),
 		)
 
 		return
@@ -78,16 +65,10 @@ func (f *Feature) Handle(task *tasks.Task) {
 
 	if err != nil {
 		task.AddResult(
-			&dto.Result{
-				Method:   message.Method,
-				TaskKey:  message.TaskKey,
-				Waitable: true,
-				IsError:  true,
-				Payload: fmt.Sprintf(
-					"mongodb: %s",
-					err.Error(),
-				),
-			},
+			dto.NewErrorResult(message, fmt.Sprintf(
+				"mongodb: %s",
+				err.Error(),
+			)),
 		)
 
 		return
@@ -102,11 +83,7 @@ func (f *Feature) Handle(task *tasks.Task) {
 				collection,
 			),
 		)
-
-		return
-	}
-
-	if payload.Command == 2 {
+	} else if payload.Command == 2 {
 		task.AddResult(
 			f.bulkWrite(
 				ctx,
@@ -115,11 +92,7 @@ func (f *Feature) Handle(task *tasks.Task) {
 				collection,
 			),
 		)
-
-		return
-	}
-
-	if payload.Command == 3 {
+	} else if payload.Command == 3 {
 		task.AddResult(
 			f.aggregate(
 				ctx,
@@ -129,11 +102,7 @@ func (f *Feature) Handle(task *tasks.Task) {
 				collection,
 			),
 		)
-
-		return
-	}
-
-	if payload.Command == 4 {
+	} else if payload.Command == 4 {
 		task.AddResult(
 			f.insertMany(
 				ctx,
@@ -142,32 +111,20 @@ func (f *Feature) Handle(task *tasks.Task) {
 				collection,
 			),
 		)
-
-		return
-	}
-
-	if payload.Command == 5 {
+	} else if payload.Command == 5 {
 		task.AddResult(
-			f.count(
+			f.countDocuments(
 				ctx,
 				message,
 				&payload,
 				collection,
 			),
 		)
-
-		return
+	} else {
+		task.AddResult(
+			dto.NewErrorResult(message, "mongodb: unknow command"),
+		)
 	}
-
-	task.AddResult(
-		&dto.Result{
-			Method:   message.Method,
-			TaskKey:  message.TaskKey,
-			Waitable: true,
-			IsError:  true,
-			Payload:  "mongodb: unknow command",
-		},
-	)
 }
 
 func (f *Feature) insertOne(
@@ -179,55 +136,31 @@ func (f *Feature) insertOne(
 	doc, err := helpers.UnmarshalDocument(payload.Data)
 
 	if err != nil {
-		return &dto.Result{
-			Method:   message.Method,
-			TaskKey:  message.TaskKey,
-			Waitable: true,
-			IsError:  true,
-			Payload: fmt.Sprintf(
-				"mongodb: parse payload data error: %s",
-				err.Error(),
-			),
-		}
+		return dto.NewErrorResult(message, fmt.Sprintf(
+			"mongodb: parse insertOne payload data error: %s",
+			err.Error(),
+		))
 	}
 
 	result, err := collection.InsertOne(ctx, doc)
 
 	if err != nil {
-		return &dto.Result{
-			Method:   message.Method,
-			TaskKey:  message.TaskKey,
-			Waitable: true,
-			IsError:  true,
-			Payload: fmt.Sprintf(
-				"mongodb: insertOne error: %s",
-				err.Error(),
-			),
-		}
+		return dto.NewErrorResult(message, fmt.Sprintf(
+			"mongodb: insertOne error: %s",
+			err.Error(),
+		))
 	}
 
 	serializedResult, err := helpers.MarshalResult(result)
 
 	if err != nil {
-		return &dto.Result{
-			Method:   message.Method,
-			TaskKey:  message.TaskKey,
-			Waitable: true,
-			IsError:  true,
-			Payload: fmt.Sprintf(
-				"mongodb: marshal insertOne result error: %s",
-				err.Error(),
-			),
-		}
+		return dto.NewErrorResult(message, fmt.Sprintf(
+			"mongodb: marshal insertOne result error: %s",
+			err.Error(),
+		))
 	}
 
-	return &dto.Result{
-		Method:   message.Method,
-		TaskKey:  message.TaskKey,
-		Waitable: true,
-		IsError:  false,
-		Payload:  serializedResult,
-	}
+	return dto.NewSuccessResult(message, serializedResult)
 }
 
 func (f *Feature) bulkWrite(
@@ -239,55 +172,31 @@ func (f *Feature) bulkWrite(
 	models, err := helpers.UnmarshalModels(payload.Data)
 
 	if err != nil {
-		return &dto.Result{
-			Method:   message.Method,
-			TaskKey:  message.TaskKey,
-			Waitable: true,
-			IsError:  true,
-			Payload: fmt.Sprintf(
-				"mongodb: parse bulkWrite payload data error: %s",
-				err.Error(),
-			),
-		}
+		return dto.NewErrorResult(message, fmt.Sprintf(
+			"mongodb: parse bulkWrite payload data error: %s",
+			err.Error(),
+		))
 	}
 
 	result, err := collection.BulkWrite(ctx, models)
 
 	if err != nil {
-		return &dto.Result{
-			Method:   message.Method,
-			TaskKey:  message.TaskKey,
-			Waitable: true,
-			IsError:  true,
-			Payload: fmt.Sprintf(
-				"mongodb: bulkWrite error: %s",
-				err.Error(),
-			),
-		}
+		return dto.NewErrorResult(message, fmt.Sprintf(
+			"mongodb: bulkWrite error: %s",
+			err.Error(),
+		))
 	}
 
 	serializedResult, err := helpers.MarshalResult(result)
 
 	if err != nil {
-		return &dto.Result{
-			Method:   message.Method,
-			TaskKey:  message.TaskKey,
-			Waitable: true,
-			IsError:  true,
-			Payload: fmt.Sprintf(
-				"mongodb: marshal bulkWrite result error: %s",
-				err.Error(),
-			),
-		}
+		return dto.NewErrorResult(message, fmt.Sprintf(
+			"mongodb: marshal bulkWrite result error: %s",
+			err.Error(),
+		))
 	}
 
-	return &dto.Result{
-		Method:   message.Method,
-		TaskKey:  message.TaskKey,
-		Waitable: true,
-		IsError:  false,
-		Payload:  serializedResult,
-	}
+	return dto.NewSuccessResult(message, serializedResult)
 }
 
 func (f *Feature) aggregate(
@@ -300,31 +209,19 @@ func (f *Feature) aggregate(
 	pipeline, err := helpers.UnmarshalDocument(payload.Data)
 
 	if err != nil {
-		return &dto.Result{
-			Method:   message.Method,
-			TaskKey:  message.TaskKey,
-			Waitable: true,
-			IsError:  true,
-			Payload: fmt.Sprintf(
-				"mongodb: parse aggregate payload data error: %s",
-				err.Error(),
-			),
-		}
+		return dto.NewErrorResult(message, fmt.Sprintf(
+			"mongodb: parse aggregate payload data error: %s",
+			err.Error(),
+		))
 	}
 
 	cursor, err := collection.Aggregate(ctx, pipeline)
 
 	if err != nil {
-		return &dto.Result{
-			Method:   message.Method,
-			TaskKey:  message.TaskKey,
-			Waitable: true,
-			IsError:  true,
-			Payload: fmt.Sprintf(
-				"mongodb: aggregate error: %s",
-				err.Error(),
-			),
-		}
+		return dto.NewErrorResult(message, fmt.Sprintf(
+			"mongodb: aggregate error: %s",
+			err.Error(),
+		))
 	}
 
 	maxBatchCount := 20
@@ -337,16 +234,10 @@ func (f *Feature) aggregate(
 		if err := cursor.Err(); err != nil {
 			_ = cursor.Close(ctx)
 
-			return &dto.Result{
-				Method:   message.Method,
-				TaskKey:  message.TaskKey,
-				Waitable: true,
-				IsError:  true,
-				Payload: fmt.Sprintf(
-					"mongodb: aggregate cursor error: %s",
-					err.Error(),
-				),
-			}
+			return dto.NewErrorResult(message, fmt.Sprintf(
+				"mongodb: aggregate cursor error: %s",
+				err.Error(),
+			))
 		}
 
 		items = append(items, cursor.Current)
@@ -359,27 +250,14 @@ func (f *Feature) aggregate(
 			)
 
 			if err != nil {
-				return &dto.Result{
-					Method:   message.Method,
-					TaskKey:  message.TaskKey,
-					Waitable: true,
-					IsError:  true,
-					Payload: fmt.Sprintf(
-						"mongodb: result marshal error: %s",
-						err.Error(),
-					),
-				}
+				return dto.NewErrorResult(message, fmt.Sprintf(
+					"mongodb: result marshal error: %s",
+					err.Error(),
+				))
 			}
 
 			task.AddResult(
-				&dto.Result{
-					Method:   message.Method,
-					TaskKey:  message.TaskKey,
-					Waitable: true,
-					IsError:  false,
-					Payload:  response,
-					HasNext:  true,
-				},
+				dto.NewSuccessResultWithNext(message, response),
 			)
 
 			items = []interface{}{}
@@ -393,25 +271,13 @@ func (f *Feature) aggregate(
 	)
 
 	if err != nil {
-		return &dto.Result{
-			Method:   message.Method,
-			TaskKey:  message.TaskKey,
-			Waitable: true,
-			IsError:  true,
-			Payload: fmt.Sprintf(
-				"mongodb: result marshal error: %s",
-				err.Error(),
-			),
-		}
+		return dto.NewErrorResult(message, fmt.Sprintf(
+			"mongodb: result marshal error: %s",
+			err.Error(),
+		))
 	}
 
-	return &dto.Result{
-		Method:   message.Method,
-		TaskKey:  message.TaskKey,
-		Waitable: true,
-		IsError:  false,
-		Payload:  response,
-	}
+	return dto.NewSuccessResult(message, response)
 }
 
 func (f *Feature) insertMany(
@@ -423,58 +289,34 @@ func (f *Feature) insertMany(
 	docs, err := helpers.UnmarshalDocuments(payload.Data)
 
 	if err != nil {
-		return &dto.Result{
-			Method:   message.Method,
-			TaskKey:  message.TaskKey,
-			Waitable: true,
-			IsError:  true,
-			Payload: fmt.Sprintf(
-				"mongodb: parse payload data error: %s",
-				err.Error(),
-			),
-		}
+		return dto.NewErrorResult(message, fmt.Sprintf(
+			"mongodb: parse insertMany payload data error: %s",
+			err.Error(),
+		))
 	}
 
 	result, err := collection.InsertMany(ctx, docs)
 
 	if err != nil {
-		return &dto.Result{
-			Method:   message.Method,
-			TaskKey:  message.TaskKey,
-			Waitable: true,
-			IsError:  true,
-			Payload: fmt.Sprintf(
-				"mongodb: insertOne error: %s",
-				err.Error(),
-			),
-		}
+		return dto.NewErrorResult(message, fmt.Sprintf(
+			"mongodb: insertMany error: %s",
+			err.Error(),
+		))
 	}
 
 	serializedResult, err := helpers.MarshalResult(result)
 
 	if err != nil {
-		return &dto.Result{
-			Method:   message.Method,
-			TaskKey:  message.TaskKey,
-			Waitable: true,
-			IsError:  true,
-			Payload: fmt.Sprintf(
-				"mongodb: marshal insertOne result error: %s",
-				err.Error(),
-			),
-		}
+		return dto.NewErrorResult(message, fmt.Sprintf(
+			"mongodb: marshal insertMany result error: %s",
+			err.Error(),
+		))
 	}
 
-	return &dto.Result{
-		Method:   message.Method,
-		TaskKey:  message.TaskKey,
-		Waitable: true,
-		IsError:  false,
-		Payload:  serializedResult,
-	}
+	return dto.NewSuccessResult(message, serializedResult)
 }
 
-func (f *Feature) count(
+func (f *Feature) countDocuments(
 	ctx context.Context,
 	message *dto.Message,
 	payload *Payload,
@@ -483,38 +325,20 @@ func (f *Feature) count(
 	filter, err := helpers.UnmarshalDocument(payload.Data)
 
 	if err != nil {
-		return &dto.Result{
-			Method:   message.Method,
-			TaskKey:  message.TaskKey,
-			Waitable: true,
-			IsError:  true,
-			Payload: fmt.Sprintf(
-				"mongodb: parse payload data error: %s",
-				err.Error(),
-			),
-		}
+		return dto.NewErrorResult(message, fmt.Sprintf(
+			"mongodb: parse countDocuments payload data error: %s",
+			err.Error(),
+		))
 	}
 
 	result, err := collection.CountDocuments(ctx, filter)
 
 	if err != nil {
-		return &dto.Result{
-			Method:   message.Method,
-			TaskKey:  message.TaskKey,
-			Waitable: true,
-			IsError:  true,
-			Payload: fmt.Sprintf(
-				"mongodb: count error: %s",
-				err.Error(),
-			),
-		}
+		return dto.NewErrorResult(message, fmt.Sprintf(
+			"mongodb: countDocuments error: %s",
+			err.Error(),
+		))
 	}
 
-	return &dto.Result{
-		Method:   message.Method,
-		TaskKey:  message.TaskKey,
-		Waitable: true,
-		IsError:  false,
-		Payload:  strconv.FormatInt(result, 10),
-	}
+	return dto.NewSuccessResult(message, strconv.FormatInt(result, 10))
 }
