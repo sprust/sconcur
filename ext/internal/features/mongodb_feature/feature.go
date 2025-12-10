@@ -3,9 +3,9 @@ package mongodb_feature
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
+	"sconcur/internal/errs"
 	"sconcur/internal/features/mongodb_feature/connections"
 	"sconcur/internal/features/mongodb_feature/helpers"
 	"sconcur/internal/tasks"
@@ -18,6 +18,8 @@ import (
 const resultKey = "_result"
 
 var _ contracts.MessageHandler = (*Feature)(nil)
+
+var errFactory = errs.NewErrorsFactory("mongodb")
 
 type Feature struct {
 	connections *connections.Connections
@@ -38,10 +40,10 @@ func (f *Feature) Handle(task *tasks.Task) {
 
 	if err != nil {
 		task.AddResult(
-			dto.NewErrorResult(message, fmt.Sprintf(
-				"mongodb: parse payload error: %s",
-				err.Error(),
-			)),
+			dto.NewErrorResult(
+				message,
+				errFactory.ByErr("parse payload error", err),
+			),
 		)
 
 		return
@@ -65,10 +67,10 @@ func (f *Feature) Handle(task *tasks.Task) {
 
 	if err != nil {
 		task.AddResult(
-			dto.NewErrorResult(message, fmt.Sprintf(
-				"mongodb: %s",
-				err.Error(),
-			)),
+			dto.NewErrorResult(
+				message,
+				errFactory.ByErr("connection", err),
+			),
 		)
 
 		return
@@ -122,7 +124,10 @@ func (f *Feature) Handle(task *tasks.Task) {
 		)
 	} else {
 		task.AddResult(
-			dto.NewErrorResult(message, "mongodb: unknow command"),
+			dto.NewErrorResult(
+				message,
+				errFactory.ByText("unknown command"),
+			),
 		)
 	}
 }
@@ -136,28 +141,28 @@ func (f *Feature) insertOne(
 	doc, err := helpers.UnmarshalDocument(payload.Data)
 
 	if err != nil {
-		return dto.NewErrorResult(message, fmt.Sprintf(
-			"mongodb: parse insertOne payload data error: %s",
-			err.Error(),
-		))
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse insertOne payload", err),
+		)
 	}
 
 	result, err := collection.InsertOne(ctx, doc)
 
 	if err != nil {
-		return dto.NewErrorResult(message, fmt.Sprintf(
-			"mongodb: insertOne error: %s",
-			err.Error(),
-		))
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("insertOne error", err),
+		)
 	}
 
 	serializedResult, err := helpers.MarshalResult(result)
 
 	if err != nil {
-		return dto.NewErrorResult(message, fmt.Sprintf(
-			"mongodb: marshal insertOne result error: %s",
-			err.Error(),
-		))
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("marshal insertOne result error", err),
+		)
 	}
 
 	return dto.NewSuccessResult(message, serializedResult)
@@ -172,28 +177,28 @@ func (f *Feature) bulkWrite(
 	models, err := helpers.UnmarshalModels(payload.Data)
 
 	if err != nil {
-		return dto.NewErrorResult(message, fmt.Sprintf(
-			"mongodb: parse bulkWrite payload data error: %s",
-			err.Error(),
-		))
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse bulkWrite payload", err),
+		)
 	}
 
 	result, err := collection.BulkWrite(ctx, models)
 
 	if err != nil {
-		return dto.NewErrorResult(message, fmt.Sprintf(
-			"mongodb: bulkWrite error: %s",
-			err.Error(),
-		))
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("bulkWrite error", err),
+		)
 	}
 
 	serializedResult, err := helpers.MarshalResult(result)
 
 	if err != nil {
-		return dto.NewErrorResult(message, fmt.Sprintf(
-			"mongodb: marshal bulkWrite result error: %s",
-			err.Error(),
-		))
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("marshal bulkWrite result error", err),
+		)
 	}
 
 	return dto.NewSuccessResult(message, serializedResult)
@@ -209,19 +214,19 @@ func (f *Feature) aggregate(
 	pipeline, err := helpers.UnmarshalDocument(payload.Data)
 
 	if err != nil {
-		return dto.NewErrorResult(message, fmt.Sprintf(
-			"mongodb: parse aggregate payload data error: %s",
-			err.Error(),
-		))
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse aggregate payload", err),
+		)
 	}
 
 	cursor, err := collection.Aggregate(ctx, pipeline)
 
 	if err != nil {
-		return dto.NewErrorResult(message, fmt.Sprintf(
-			"mongodb: aggregate error: %s",
-			err.Error(),
-		))
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("aggregate error", err),
+		)
 	}
 
 	maxBatchCount := 20
@@ -234,10 +239,10 @@ func (f *Feature) aggregate(
 		if err := cursor.Err(); err != nil {
 			_ = cursor.Close(ctx)
 
-			return dto.NewErrorResult(message, fmt.Sprintf(
-				"mongodb: aggregate cursor error: %s",
-				err.Error(),
-			))
+			return dto.NewErrorResult(
+				message,
+				errFactory.ByErr("aggregate cursor error", err),
+			)
 		}
 
 		items = append(items, cursor.Current)
@@ -250,10 +255,10 @@ func (f *Feature) aggregate(
 			)
 
 			if err != nil {
-				return dto.NewErrorResult(message, fmt.Sprintf(
-					"mongodb: result marshal error: %s",
-					err.Error(),
-				))
+				return dto.NewErrorResult(
+					message,
+					errFactory.ByErr("aggregate result marshal error", err),
+				)
 			}
 
 			task.AddResult(
@@ -271,10 +276,10 @@ func (f *Feature) aggregate(
 	)
 
 	if err != nil {
-		return dto.NewErrorResult(message, fmt.Sprintf(
-			"mongodb: result marshal error: %s",
-			err.Error(),
-		))
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("aggregate result marshal error", err),
+		)
 	}
 
 	return dto.NewSuccessResult(message, response)
@@ -289,28 +294,28 @@ func (f *Feature) insertMany(
 	docs, err := helpers.UnmarshalDocuments(payload.Data)
 
 	if err != nil {
-		return dto.NewErrorResult(message, fmt.Sprintf(
-			"mongodb: parse insertMany payload data error: %s",
-			err.Error(),
-		))
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse insertMany payload", err),
+		)
 	}
 
 	result, err := collection.InsertMany(ctx, docs)
 
 	if err != nil {
-		return dto.NewErrorResult(message, fmt.Sprintf(
-			"mongodb: insertMany error: %s",
-			err.Error(),
-		))
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("insertMany error", err),
+		)
 	}
 
 	serializedResult, err := helpers.MarshalResult(result)
 
 	if err != nil {
-		return dto.NewErrorResult(message, fmt.Sprintf(
-			"mongodb: marshal insertMany result error: %s",
-			err.Error(),
-		))
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("marshal insertMany result error", err),
+		)
 	}
 
 	return dto.NewSuccessResult(message, serializedResult)
@@ -325,19 +330,19 @@ func (f *Feature) countDocuments(
 	filter, err := helpers.UnmarshalDocument(payload.Data)
 
 	if err != nil {
-		return dto.NewErrorResult(message, fmt.Sprintf(
-			"mongodb: parse countDocuments payload data error: %s",
-			err.Error(),
-		))
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse countDocuments payload", err),
+		)
 	}
 
 	result, err := collection.CountDocuments(ctx, filter)
 
 	if err != nil {
-		return dto.NewErrorResult(message, fmt.Sprintf(
-			"mongodb: countDocuments error: %s",
-			err.Error(),
-		))
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("countDocuments error", err),
+		)
 	}
 
 	return dto.NewSuccessResult(message, strconv.FormatInt(result, 10))

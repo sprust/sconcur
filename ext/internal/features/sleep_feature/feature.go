@@ -2,14 +2,16 @@ package sleep_feature
 
 import (
 	"encoding/json"
-	"fmt"
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
+	"sconcur/internal/errs"
 	"sconcur/internal/tasks"
 	"time"
 )
 
 var _ contracts.MessageHandler = (*Feature)(nil)
+
+var errFactory = errs.NewErrorsFactory("sleep")
 
 type Feature struct {
 }
@@ -27,10 +29,10 @@ func (s *Feature) Handle(task *tasks.Task) {
 
 	if err != nil {
 		task.AddResult(
-			dto.NewErrorResult(message, fmt.Sprintf(
-				"parse error: %s",
-				err.Error(),
-			)),
+			dto.NewErrorResult(
+				message,
+				errFactory.ByErr("parse error", err),
+			),
 		)
 
 		return
@@ -39,7 +41,10 @@ func (s *Feature) Handle(task *tasks.Task) {
 	select {
 	case <-task.Ctx().Done():
 		task.AddResult(
-			dto.NewErrorResult(message, "closed by task stop"),
+			dto.NewErrorResult(
+				message,
+				errFactory.ByText("closed by task stop"),
+			),
 		)
 	case <-time.After(time.Duration(payload.Milliseconds) * time.Millisecond):
 		task.AddResult(
