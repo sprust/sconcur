@@ -53,7 +53,9 @@ bench-all:
 	make bench-sleep && \
 		make bench-mongodb-insertOne && \
 		make bench-mongodb-bulkWrite && \
-		make bench-mongodb-aggregate
+		make bench-mongodb-aggregate && \
+		make bench-mongodb-insertMany && \
+		make bench-mongodb-count
 
 bench-sleep:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/sleep.php ${c}
