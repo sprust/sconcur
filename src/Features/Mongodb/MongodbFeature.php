@@ -44,12 +44,6 @@ readonly class MongodbFeature
             )
         );
 
-        if ($taskResult->isError) {
-            throw new RuntimeException(
-                $taskResult->payload ?: 'Unknown error',
-            );
-        }
-
         $docResult = DocumentSerializer::unserialize($taskResult->payload);
 
         return new InsertOneResult(
@@ -74,12 +68,6 @@ readonly class MongodbFeature
             )
         );
 
-        if ($taskResult->isError) {
-            throw new RuntimeException(
-                $taskResult->payload ?: 'Unknown error',
-            );
-        }
-
         $docResult = DocumentSerializer::unserialize($taskResult->payload);
 
         return new InsertManyResult(
@@ -92,9 +80,40 @@ readonly class MongodbFeature
      */
     public function bulkWrite(Context $context, array $operations): BulkWriteResult
     {
-        $serialized = DocumentSerializer::serialize(
-            static::prepareOperations($operations)
-        );
+        $preparedOperations = [];
+
+        foreach ($operations as $operation) {
+            $type  = array_key_first($operation);
+            $value = $operation[$type];
+
+            // TODO: value validation
+            $preparedOperations[] = [
+                'type'  => $type,
+                'model' => match ($type) {
+                    'insertOne' => [
+                        'document' => $value[0],
+                    ],
+                    'updateOne', 'updateMany' => [
+                        'filter' => $value[0],
+                        'update' => $value[1],
+                        'upsert' => $value[2]['upsert'] ?? false, // TODO
+                    ],
+                    'deleteOne', 'deleteMany' => [
+                        'filter' => $value[0],
+                    ],
+                    'replaceOne' => [
+                        'filter'      => $value[0],
+                        'replacement' => $value[1],
+                        'upsert'      => $value[2]['upsert'] ?? false, // TODO
+                    ],
+                    default => throw new InvalidMongodbBulkWriteOperationException(
+                        operationType: (string) $type
+                    )
+                },
+            ];
+        }
+
+        $serialized = DocumentSerializer::serialize($preparedOperations);
 
         $taskResult = SConcur::getCurrentFlow()->exec(
             context: $context,
@@ -105,12 +124,6 @@ readonly class MongodbFeature
                 data: $serialized,
             )
         );
-
-        if ($taskResult->isError) {
-            throw new RuntimeException(
-                $taskResult->payload ?: 'Unknown error',
-            );
-        }
 
         $docResult = DocumentSerializer::unserialize($taskResult->payload);
 
@@ -141,17 +154,11 @@ readonly class MongodbFeature
             )
         );
 
-        if ($taskResult->isError) {
-            throw new RuntimeException(
-                $taskResult->payload ?: 'Unknown error',
-            );
-        }
-
         $result = $taskResult->payload;
 
         if (ctype_digit($result) === false) {
             throw new RuntimeException(
-                "Invalid count result: $result"
+                "Invalid countDocuments result: $result"
             );
         }
 
@@ -187,48 +194,5 @@ readonly class MongodbFeature
             'cm' => $command->value,
             'dt' => $data,
         ]);
-    }
-
-    /**
-     * @param array<int, mixed> $operations
-     *
-     * @return array<int, array{type: string, model: array<string, mixed>}>
-     */
-    protected static function prepareOperations(array $operations): array
-    {
-        $result = [];
-
-        foreach ($operations as $operation) {
-            $type  = array_key_first($operation);
-            $value = $operation[$type];
-
-            // TODO: value validation
-            $result[] = [
-                'type'  => $type,
-                'model' => match ($type) {
-                    'insertOne' => [
-                        'document' => $value[0],
-                    ],
-                    'updateOne', 'updateMany' => [
-                        'filter' => $value[0],
-                        'update' => $value[1],
-                        'upsert' => $value[2]['upsert'] ?? false, // TODO
-                    ],
-                    'deleteOne', 'deleteMany' => [
-                        'filter' => $value[0],
-                    ],
-                    'replaceOne' => [
-                        'filter'      => $value[0],
-                        'replacement' => $value[1],
-                        'upsert'      => $value[2]['upsert'] ?? false, // TODO
-                    ],
-                    default => throw new InvalidMongodbBulkWriteOperationException(
-                        operationType: (string) $type
-                    )
-                },
-            ];
-        }
-
-        return $result;
     }
 }
