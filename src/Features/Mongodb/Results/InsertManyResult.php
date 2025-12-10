@@ -15,8 +15,7 @@ readonly class InsertManyResult
      */
     public function __construct(
         private array $insertedIds,
-    )
-    {
+    ) {
         $this->insertedCount = count($insertedIds);
     }
 

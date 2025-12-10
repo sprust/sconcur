@@ -13,7 +13,6 @@ use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\MethodEnum;
 use Throwable;
-
 use function SConcur\Extension\push;
 use function SConcur\Extension\wait;
 use function SConcur\Extension\count;
@@ -22,7 +21,7 @@ use function SConcur\Extension\stop;
 
 class Extension
 {
-    protected static bool $checked = false;
+    protected static bool $checked     = false;
     protected static int $tasksCounter = 0;
 
     public function __construct()

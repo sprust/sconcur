@@ -21,7 +21,7 @@ class SConcur
     protected static bool $initialized = false;
 
     protected static ?Flow $asyncFlow = null;
-    protected static ?Flow $syncFlow = null;
+    protected static ?Flow $syncFlow  = null;
 
     protected static ?Factory $features = null;
 

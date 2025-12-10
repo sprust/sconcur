@@ -183,7 +183,6 @@ class SleepFeatureTest extends TestCase
             $result
         );
 
-
         self::assertSame(
             [
                 1 => '2',

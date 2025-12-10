@@ -28,6 +28,12 @@ php-stan:
 	"$(PHP_CLI)" ./vendor/bin/phpstan analyse \
 		--memory-limit=1G
 
+cs-fixer-check:
+	"$(PHP_CLI)" ./vendor/bin/php-cs-fixer fix --config cs-fixer.dist.php --dry-run --diff --verbose
+
+cs-fixer-fix:
+	"$(PHP_CLI)" ./vendor/bin/php-cs-fixer fix --config cs-fixer.dist.php --verbose
+
 check:
 	make phpstan
 	make test

@@ -41,11 +41,6 @@ class Flow
         self::initExtension()->stop();
     }
 
-    protected static function initExtension(): Extension
-    {
-        return static::$extension ??= new Extension();
-    }
-
     public function exec(Context $context, MethodEnum $method, string $payload): TaskResultDto
     {
         $runningTask = self::initExtension()->push(
@@ -137,6 +132,11 @@ class Flow
             flowKey: $this->key,
             taskKey: $taskKey
         );
+    }
+
+    protected static function initExtension(): Extension
+    {
+        return static::$extension ??= new Extension();
     }
 
     private function checkResult(TaskResultDto $result): TaskResultDto

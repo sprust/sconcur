@@ -22,17 +22,17 @@ class AggregateResult implements Iterator
     protected const string RESULT_KEY = '_result';
 
     protected ?Flow $currentFlow = null;
-    protected ?string $taskKey = null;
+    protected ?string $taskKey   = null;
 
     /**
      * @var array<int, array<int|string|float|bool|null, mixed>>|null
      */
-    protected ?array $items = null;
-    protected mixed $currentKey = null;
+    protected ?array $items       = null;
+    protected mixed $currentKey   = null;
     protected mixed $currentValue = null;
 
     protected bool $isLastBatch = false;
-    protected bool $isFinished = false;
+    protected bool $isFinished  = false;
 
     public function __construct(
         protected Context $context,
