@@ -3,14 +3,13 @@
 namespace SConcur\Tests\Feature\Features\Sleep;
 
 use Exception;
-use PHPUnit\Framework\TestCase;
 use SConcur\Connection\Extension;
 use SConcur\Entities\Context;
 use SConcur\Features\Sleep\SleepFeature;
 use SConcur\SConcur;
-use SConcur\Tests\Impl\TestContainer;
+use SConcur\Tests\Feature\Features\BaseTestCase;
 
-class SleepFeatureTest extends TestCase
+class SleepTest extends BaseTestCase
 {
     private Extension $extension;
     private SleepFeature $sleepFeature;
@@ -19,13 +18,8 @@ class SleepFeatureTest extends TestCase
     {
         parent::setUp();
 
-        TestContainer::flush();
-        TestContainer::resolve();
-
         $this->extension = new Extension();
         $this->extension->stop();
-
-        self::assertFalse(SConcur::isAsync());
 
         $this->sleepFeature = SConcur::features()->sleep();
     }
