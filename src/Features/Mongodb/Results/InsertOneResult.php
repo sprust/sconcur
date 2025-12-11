@@ -12,19 +12,4 @@ readonly class InsertOneResult
         public ObjectId|string|int|float|null $insertedId,
     ) {
     }
-
-    public function getInsertedCount(): int
-    {
-        return 1;
-    }
-
-    public function getInsertedId(): ObjectId|string|int|float|null
-    {
-        return $this->insertedId;
-    }
-
-    public function isAcknowledged(): true
-    {
-        return true;
-    }
 }

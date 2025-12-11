@@ -25,10 +25,6 @@ class MongodbInsertTest extends BaseMongodbTestCase
 
         self::assertEquals(
             1,
-            $insertResult->getInsertedCount()
-        );
-        self::assertEquals(
-            1,
             $this->driverCollection->countDocuments([$fieldName => $driverDateTime])
         );
 
@@ -65,7 +61,7 @@ class MongodbInsertTest extends BaseMongodbTestCase
 
         self::assertEquals(
             $count,
-            $insertResult->getInsertedCount()
+            $insertResult->insertedCount
         );
         self::assertEquals(
             $count,

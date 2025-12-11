@@ -20,42 +20,4 @@ readonly class BulkWriteResult
         public array $upsertedIds,
     ) {
     }
-
-    public function getDeletedCount(): int
-    {
-        return $this->deletedCount;
-    }
-
-    public function getInsertedCount(): int
-    {
-        return $this->insertedCount;
-    }
-
-    public function getMatchedCount(): int
-    {
-        return $this->matchedCount;
-    }
-
-    public function getModifiedCount(): int
-    {
-        return $this->modifiedCount;
-    }
-
-    public function getUpsertedCount(): int
-    {
-        return $this->upsertedCount;
-    }
-
-    /**
-     * @return array<string|int|float|null>
-     */
-    public function getUpsertedIds(): array
-    {
-        return $this->upsertedIds;
-    }
-
-    public function isAcknowledged(): true
-    {
-        return true;
-    }
 }

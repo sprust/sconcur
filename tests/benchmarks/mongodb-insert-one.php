@@ -53,13 +53,13 @@ $benchmarker->run(
         return $feature->insertOne(
             context: $context,
             document: $sconcurDocument
-        )->getInsertedId();
+        )->insertedId;
     },
     asyncCallback: static function (Context $context) use ($feature, $sconcurDocument) {
         return $feature->insertOne(
             context: $context,
             document: $sconcurDocument
-        )->getInsertedId();
+        )->insertedId;
     }
 );
 

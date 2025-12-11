@@ -59,13 +59,13 @@ $benchmarker->run(
         return $feature->insertMany(
             context: $context,
             documents: $sconcurDocuments
-        )->getInsertedCount();
+        )->insertedCount;
     },
     asyncCallback: static function (Context $context) use ($feature, $sconcurDocuments) {
         return $feature->insertMany(
             context: $context,
             documents: $sconcurDocuments
-        )->getInsertedCount();
+        )->insertedCount;
     }
 );
 
