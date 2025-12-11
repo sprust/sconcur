@@ -13,6 +13,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 const resultKey = "_result"
@@ -116,6 +117,15 @@ func (f *Feature) Handle(task *tasks.Task) {
 	} else if payload.Command == 5 {
 		task.AddResult(
 			f.countDocuments(
+				ctx,
+				message,
+				&payload,
+				collection,
+			),
+		)
+	} else if payload.Command == 6 {
+		task.AddResult(
+			f.updateOne(
 				ctx,
 				message,
 				&payload,
@@ -346,4 +356,66 @@ func (f *Feature) countDocuments(
 	}
 
 	return dto.NewSuccessResult(message, strconv.FormatInt(result, 10))
+}
+
+func (f *Feature) updateOne(
+	ctx context.Context,
+	message *dto.Message,
+	payload *Payload,
+	collection *mongo.Collection,
+) *dto.Result {
+	var params UpdateOneParams
+
+	err := json.Unmarshal([]byte(payload.Data), &params)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse updateOne params", err),
+		)
+	}
+
+	filter, err := helpers.UnmarshalDocument(params.Filter)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse updateOne filter", err),
+		)
+	}
+
+	update, err := helpers.UnmarshalDocument(params.Update)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse updateOne update", err),
+		)
+	}
+
+	var opts *options.UpdateOptions
+
+	if params.OpUpsert {
+		opts = options.Update().SetUpsert(true)
+	}
+
+	result, err := collection.UpdateOne(ctx, filter, update, opts)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("updateOne error", err),
+		)
+	}
+
+	serializedResult, err := helpers.MarshalResult(result)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("marshal updateOne result error", err),
+		)
+	}
+
+	return dto.NewSuccessResult(message, serializedResult)
 }

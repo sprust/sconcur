@@ -35,8 +35,8 @@ cs-fixer-fix:
 	"$(PHP_CLI)" ./vendor/bin/php-cs-fixer fix --config cs-fixer.dist.php --verbose
 
 check:
-	make php-stan
 	make cs-fixer-check
+	make php-stan
 	make test
 
 test:
@@ -62,7 +62,8 @@ bench-all:
 		make bench-mongodb-bulkWrite && \
 		make bench-mongodb-aggregate && \
 		make bench-mongodb-insertMany && \
-		make bench-mongodb-count
+		make bench-mongodb-count && \
+		make bench-mongodb-updateOne
 
 bench-sleep:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/sleep.php ${c}
@@ -81,3 +82,6 @@ bench-mongodb-insertMany:
 
 bench-mongodb-count:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-count.php ${c}
+
+bench-mongodb-updateOne:
+	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-update-one.php ${c}

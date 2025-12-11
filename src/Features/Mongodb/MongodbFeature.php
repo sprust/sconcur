@@ -15,6 +15,7 @@ use SConcur\Features\Mongodb\Results\AggregateResult;
 use SConcur\Features\Mongodb\Results\BulkWriteResult;
 use SConcur\Features\Mongodb\Results\InsertManyResult;
 use SConcur\Features\Mongodb\Results\InsertOneResult;
+use SConcur\Features\Mongodb\Results\UpdateResult;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
 use SConcur\SConcur;
 
@@ -164,6 +165,37 @@ readonly class MongodbFeature
                 command: CommandEnum::Aggregate,
                 data: $serialized,
             ),
+        );
+    }
+
+    /**
+     * @param array<int, mixed>    $filter
+     * @param array<string, mixed> $update
+     * @param array{
+     *     upsert?: bool,
+     * }                           $options
+     */
+    public function updateOne(Context $context, array $filter, array $update, array $options = []): UpdateResult
+    {
+        $serialized = DocumentSerializer::serialize([
+            'f'  => DocumentSerializer::serialize($filter),
+            'u'  => DocumentSerializer::serialize($update),
+            'ou' => $options['upsert'] ?? false,
+        ]);
+
+        $taskResult = $this->exec(
+            context: $context,
+            command: CommandEnum::UpdateOne,
+            payload: $serialized,
+        );
+
+        $docResult = DocumentSerializer::unserialize($taskResult->payload);
+
+        return new UpdateResult(
+            matchedCount: (int) $docResult['matchedcount'],
+            modifiedCount: (int) $docResult['modifiedcount'],
+            upsertedCount: (int) $docResult['upsertedcount'],
+            upsertedId: $docResult['upsertedid'],
         );
     }
 

@@ -9,4 +9,5 @@ enum CommandEnum: int
     case Aggregate = 3;
     case InsertMany = 4;
     case CountDocuments = 5;
+    case UpdateOne = 6;
 }

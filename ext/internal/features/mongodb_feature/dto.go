@@ -7,3 +7,9 @@ type Payload struct {
 	Command    int    `json:"cm"`
 	Data       string `json:"dt"`
 }
+
+type UpdateOneParams struct {
+	Filter   string `json:"f"`
+	Update   string `json:"u"`
+	OpUpsert bool   `json:"ou"`
+}
