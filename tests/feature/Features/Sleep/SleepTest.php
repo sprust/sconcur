@@ -37,20 +37,20 @@ class SleepTest extends BaseTestCase
 
                 $events[] = '1:woke';
 
-                $this->sleepFeature->usleep(context: $context, milliseconds: 20);
+                $this->sleepFeature->usleep(context: $context, milliseconds: 30);
 
-                $events[] = '1:woke_2';
+                $events[] = '1:finish';
             },
             function (Context $context) use (&$events) {
                 $events[] = '2:start';
 
-                $this->sleepFeature->usleep(context: $context, milliseconds: 30);
+                $this->sleepFeature->usleep(context: $context, milliseconds: 20);
 
                 $events[] = '2:woke';
 
                 $this->sleepFeature->usleep(context: $context, milliseconds: 40);
 
-                $events[] = '2:woke_2';
+                $events[] = '2:finish';
             },
         ];
 
@@ -80,8 +80,8 @@ class SleepTest extends BaseTestCase
                 '2:start',
                 '1:woke',
                 '2:woke',
-                '1:woke_2',
-                '2:woke_2',
+                '1:finish',
+                '2:finish',
             ],
             $events
         );
