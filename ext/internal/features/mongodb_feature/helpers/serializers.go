@@ -16,7 +16,7 @@ const objectIdStringPrefixLen = len(objectIdStringPrefix)
 
 const utcDateTimeStringPrefix = "$udt-lgof:"
 const utcDateTimeStringPrefixLen = len(utcDateTimeStringPrefix)
-const dateFormat = time.RFC3339
+const dateFormat = time.RFC3339Nano
 
 type WriteModelWrapper struct {
 	Type  string          `json:"type"`

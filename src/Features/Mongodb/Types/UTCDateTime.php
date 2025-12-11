@@ -7,8 +7,9 @@ namespace SConcur\Features\Mongodb\Types;
 use DateTime;
 use DateTimeInterface;
 use DateTimeZone;
+use JsonSerializable;
 
-readonly class UTCDateTime implements \JsonSerializable
+readonly class UTCDateTime implements JsonSerializable
 {
     protected const string TYPE_PREFIX = '$udt-lgof:';
 
@@ -27,6 +28,6 @@ readonly class UTCDateTime implements \JsonSerializable
 
     public function jsonSerialize(): string
     {
-        return static::TYPE_PREFIX . $this->dateTime->format(DATE_RFC3339);
+        return static::TYPE_PREFIX . $this->dateTime->format(DATE_RFC3339_EXTENDED);
     }
 }

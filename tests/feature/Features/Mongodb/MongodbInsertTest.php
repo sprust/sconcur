@@ -5,14 +5,18 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Mongodb;
 
 use SConcur\Entities\Context;
+use SConcur\Features\Mongodb\Types\ObjectId;
+use SConcur\Features\Mongodb\Types\UTCDateTime;
 use Throwable;
 
 class MongodbInsertTest extends BaseMongodbTestCase
 {
     public function testInsertOne(): void
     {
+        $driverDateTime = new \MongoDB\BSON\UTCDateTime();
+
         $fieldName  = uniqid();
-        $fieldValue = uniqid();
+        $fieldValue = new UTCDateTime($driverDateTime->toDateTime());
 
         $insertResult = $this->feature->insertOne(
             context: Context::create(1000),
@@ -25,7 +29,7 @@ class MongodbInsertTest extends BaseMongodbTestCase
         );
         self::assertEquals(
             1,
-            $this->driverCollection->countDocuments([$fieldName => $fieldValue])
+            $this->driverCollection->countDocuments([$fieldName => $driverDateTime])
         );
 
         $exception = null;
@@ -44,8 +48,10 @@ class MongodbInsertTest extends BaseMongodbTestCase
 
     public function testInsertMany(): void
     {
+        $driverObjectId = new \MongoDB\BSON\ObjectId('693a7119e9d4885085366c80');
+
         $fieldName  = uniqid();
-        $fieldValue = uniqid();
+        $fieldValue = new ObjectId('693a7119e9d4885085366c80');
 
         $count = 3;
 
@@ -63,7 +69,7 @@ class MongodbInsertTest extends BaseMongodbTestCase
         );
         self::assertEquals(
             $count,
-            $this->driverCollection->countDocuments([$fieldName => $fieldValue])
+            $this->driverCollection->countDocuments([$fieldName => $driverObjectId])
         );
 
         $exception = null;
@@ -72,7 +78,7 @@ class MongodbInsertTest extends BaseMongodbTestCase
             $this->feature->insertMany(
                 context: Context::create(1000),
                 /** @phpstan-ignore-next-line argument.type */
-                documents: [$fieldName => $fieldValue]
+                documents: [$fieldName => $driverObjectId]
             );
         } catch (Throwable $exception) {
             //
