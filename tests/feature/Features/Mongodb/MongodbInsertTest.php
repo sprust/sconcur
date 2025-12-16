@@ -23,6 +23,10 @@ class MongodbInsertTest extends BaseMongodbTestCase
             document: [$fieldName => $fieldValue]
         );
 
+        self::assertTrue(
+            $insertResult->insertedId instanceof ObjectId
+        );
+
         self::assertEquals(
             1,
             $this->driverCollection->countDocuments([$fieldName => $driverDateTime])
