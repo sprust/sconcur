@@ -15,7 +15,7 @@ class Factory
     /**
      * @var array<string, MongoDBFeature>
      */
-    protected array $mongodb = [];
+    protected array $mongodbConnections = [];
 
     public function sleep(): SleepFeature
     {
@@ -24,6 +24,8 @@ class Factory
 
     public function mongodb(ConnectionParameters $connection): MongoDBFeature
     {
-        return $this->mongodb[$connection->toString()] ??= new MongodbFeature($connection);
+        $connectionKey = "$connection->uri|$connection->database|$connection->collection";
+
+        return $this->mongodbConnections[$connectionKey] ??= new MongodbFeature($connection);
     }
 }
