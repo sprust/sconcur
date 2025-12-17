@@ -140,17 +140,17 @@ readonly class Benchmarker
 
             $context = Context::create($this->timeout);
 
-            $waitGroup = WaitGroup::create();
+            $waitGroup = WaitGroup::create($context);
 
             $callbackKeys = [];
 
             foreach ($asyncCallbacks as $key => $callback) {
-                $taskKey = $waitGroup->add(context: $context, callback: $callback);
+                $taskKey = $waitGroup->add(callback: $callback);
 
                 $callbackKeys[$taskKey] = $key;
             }
 
-            $generator = $waitGroup->waitResults(context: $context);
+            $generator = $waitGroup->waitResults();
 
             foreach ($generator as $key => $result) {
                 $callbackKey = $callbackKeys[$key];

@@ -3,7 +3,6 @@
 namespace SConcur\Tests\Feature\Features\Sleep;
 
 use Exception;
-use SConcur\Connection\Extension;
 use SConcur\Entities\Context;
 use SConcur\Features\Sleep\SleepFeature;
 use SConcur\SConcur;
@@ -12,17 +11,20 @@ use SConcur\WaitGroup;
 
 class SleepTest extends BaseTestCase
 {
-    private Extension $extension;
     private SleepFeature $sleepFeature;
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        $this->extension = new Extension();
-        $this->extension->stop();
-
         $this->sleepFeature = SConcur::features()->sleep();
+    }
+
+    protected function tearDown(): void
+    {
+        $this->assertNoTasksCount();
+
+        parent::tearDown();
     }
 
     public function testMulti(): void
@@ -57,21 +59,19 @@ class SleepTest extends BaseTestCase
 
         $context = Context::create(timeoutSeconds: 1);
 
-        $waitGroup = WaitGroup::create();
+        $waitGroup = WaitGroup::create($context);
 
         foreach ($callbacks as $callback) {
-            $waitGroup->add(context: $context, callback: $callback);
+            $waitGroup->add(callback: $callback);
         }
 
-        $generator = $waitGroup->wait(context: $context);
+        $generator = $waitGroup->wait();
 
         $results = [];
 
         foreach ($generator as $key => $value) {
             $results[$key] = $value;
         }
-
-        unset($generator);
 
         self::assertCount(
             count($callbacks),
@@ -115,18 +115,13 @@ class SleepTest extends BaseTestCase
 
         $context = Context::create(timeoutSeconds: 1);
 
-        $waitGroup = WaitGroup::create();
+        $waitGroup = WaitGroup::create($context);
 
         foreach ($callbacks as $callback) {
-            $waitGroup->add(context: $context, callback: $callback);
+            $waitGroup->add(callback: $callback);
         }
 
-        $results = $waitGroup->waitResults(context: $context);
-
-        self::assertEquals(
-            0,
-            $this->extension->count()
-        );
+        $results = $waitGroup->waitResults();
 
         self::assertSame(
             [
@@ -169,13 +164,13 @@ class SleepTest extends BaseTestCase
 
         $context = Context::create(timeoutSeconds: 1);
 
-        $waitGroup = WaitGroup::create();
+        $waitGroup = WaitGroup::create($context);
 
         foreach ($callbacks as $callback) {
-            $waitGroup->add(context: $context, callback: $callback);
+            $waitGroup->add(callback: $callback);
         }
 
-        $generator = $waitGroup->wait(context: $context);
+        $generator = $waitGroup->wait();
 
         $results = [];
 
@@ -213,13 +208,13 @@ class SleepTest extends BaseTestCase
 
         $context = Context::create(timeoutSeconds: 1);
 
-        $waitGroup = WaitGroup::create();
+        $waitGroup = WaitGroup::create($context);
 
         foreach ($callbacks as $callback) {
-            $waitGroup->add(context: $context, callback: $callback);
+            $waitGroup->add(callback: $callback);
         }
 
-        $generator = $waitGroup->wait(context: $context);
+        $generator = $waitGroup->wait();
 
         $results = [];
 
@@ -258,13 +253,13 @@ class SleepTest extends BaseTestCase
 
         $context = Context::create(timeoutSeconds: 1);
 
-        $waitGroup = WaitGroup::create();
+        $waitGroup = WaitGroup::create($context);
 
         foreach ($callbacks as $callback) {
-            $waitGroup->add(context: $context, callback: $callback);
+            $waitGroup->add(callback: $callback);
         }
 
-        $generator = $waitGroup->wait(context: $context);
+        $generator = $waitGroup->wait();
 
         $results = [];
 
@@ -277,11 +272,6 @@ class SleepTest extends BaseTestCase
         self::assertCount(
             $callbacksCount,
             $results
-        );
-
-        self::assertEquals(
-            0,
-            $this->extension->count()
         );
     }
 }

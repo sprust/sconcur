@@ -44,6 +44,20 @@ func (f *Flows) GetFlow(flowKey string) (*Flow, error) {
 	return nil, errors.New("flow not found")
 }
 
+func (f *Flows) DeleteFlow(flowKey string) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+
+	flow, ok := f.flows[flowKey]
+
+	if !ok {
+		return
+	}
+
+	flow.GetTasks().Cancel()
+	delete(f.flows, flowKey)
+}
+
 func (f *Flows) GetTasksCount() int {
 	var count int
 

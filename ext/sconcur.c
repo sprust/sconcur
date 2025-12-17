@@ -48,6 +48,15 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_cancel, 0, 0, 2)
     ZEND_ARG_TYPE_INFO(0, taskKey, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
+// stopFlow(string flowKey)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_stopFlow, 0, 0, 1)
+    ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
+ZEND_END_ARG_INFO()
+
+// destroy()
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_destroy, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
 /*
  * Реализации PHP-функций
  */
@@ -111,7 +120,7 @@ PHP_FUNCTION(stop)
         RETURN_THROWS();
     }
 
-    stop();
+    destroy();
     RETURN_NULL();
 }
 
@@ -125,7 +134,7 @@ PHP_FUNCTION(cancel)
         RETURN_THROWS();
     }
 
-    cancel(flow_key, task_key);
+    cancelTask(flow_key, task_key);
     RETURN_NULL();
 }
 
@@ -140,6 +149,31 @@ PHP_FUNCTION(count)
     RETURN_LONG(result);
 }
 
+// PHP: SConcur\Extension\stopFlow(string $flowKey): void
+PHP_FUNCTION(stopFlow)
+{
+    char *flow_key = NULL;
+    size_t flow_key_len;
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &flow_key, &flow_key_len) == FAILURE) {
+        RETURN_THROWS();
+    }
+
+    stopFlow(flow_key);
+    RETURN_NULL();
+}
+
+// PHP: SConcur\Extension\destroy(): void
+PHP_FUNCTION(destroy)
+{
+    if (zend_parse_parameters_none() == FAILURE) {
+        RETURN_THROWS();
+    }
+
+    destroy();
+    RETURN_NULL();
+}
+
 /*
  * Регистрация функций с неймспейсом SConcur\Extension
  */
@@ -150,6 +184,8 @@ static const zend_function_entry sconcur_functions[] = {
     ZEND_NS_FE("SConcur\\Extension", stop, arginfo_sconcur_stop)
     ZEND_NS_FE("SConcur\\Extension", cancel, arginfo_sconcur_cancel)
     ZEND_NS_FE("SConcur\\Extension", count, arginfo_sconcur_count)
+    ZEND_NS_FE("SConcur\\Extension", stopFlow, arginfo_sconcur_stopFlow)
+    ZEND_NS_FE("SConcur\\Extension", destroy, arginfo_sconcur_destroy)
     PHP_FE_END
 };
 

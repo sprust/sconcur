@@ -35,11 +35,6 @@ class Flow
         $this->key = (string) static::$flowsCounter;
     }
 
-    public static function stop(): void
-    {
-        self::initExtension()->stop();
-    }
-
     public function exec(Context $context, MethodEnum $method, string $payload): TaskResultDto
     {
         $runningTask = self::initExtension()->push(
@@ -125,24 +120,17 @@ class Flow
         return $this->isAsync;
     }
 
-    public function stopTask(string $taskKey): void
+    public function cancelTask(string $taskKey): void
     {
-        self::initExtension()->cancel(
+        self::initExtension()->cancelTask(
             flowKey: $this->key,
             taskKey: $taskKey
         );
     }
 
-    public function cancel(): void
+    public function stop(): void
     {
-        $extension = static::initExtension();
-
-        foreach (array_keys($this->fibersKeyByTaskKeys) as $taskKey) {
-            $extension->cancel(
-                flowKey: $this->key,
-                taskKey: $taskKey
-            );
-        }
+        self::initExtension()->stopFlow($this->key);
     }
 
     protected static function initExtension(): Extension
@@ -163,6 +151,6 @@ class Flow
 
     public function __destruct()
     {
-        $this->cancel();
+        $this->stop();
     }
 }

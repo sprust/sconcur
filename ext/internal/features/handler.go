@@ -43,7 +43,7 @@ func (h *Handler) Push(msg *dto.Message) error {
 
 	go func() {
 		task := taskGroup.AddMessage(msg)
-		defer taskGroup.StopTask(msg.TaskKey)
+		defer taskGroup.CancelTask(msg.TaskKey)
 
 		go handler.Handle(task)
 
@@ -106,7 +106,7 @@ func (h *Handler) Wait(flowKey string, timeoutMs int64) (string, error) {
 	}
 }
 
-func (h *Handler) StopTask(flowKey string, taskKey string) {
+func (h *Handler) CancelTask(flowKey string, taskKey string) {
 	go func() {
 		flow, err := h.flows.GetFlow(flowKey)
 
@@ -114,11 +114,15 @@ func (h *Handler) StopTask(flowKey string, taskKey string) {
 			return
 		}
 
-		flow.GetTasks().StopTask(taskKey)
+		flow.GetTasks().CancelTask(taskKey)
 	}()
 }
 
-func (h *Handler) Stop() {
+func (h *Handler) StopFlow(flowKey string) {
+	h.flows.DeleteFlow(flowKey)
+}
+
+func (h *Handler) Destroy() {
 	h.ctxCancel()
 	h.flows.Cancel()
 	h.fresh()

@@ -48,7 +48,7 @@ func (t *Tasks) AddResult(res *dto.Result) {
 	t.results <- res
 }
 
-func (t *Tasks) StopTask(taskKey string) {
+func (t *Tasks) CancelTask(taskKey string) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 

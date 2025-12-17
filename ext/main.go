@@ -55,14 +55,19 @@ func count() int {
 	return handler.GetTasksCount()
 }
 
-//export cancel
-func cancel(fk *C.char, tk *C.char) {
-	handler.StopTask(C.GoString(fk), C.GoString(tk))
+//export cancelTask
+func cancelTask(fk *C.char, tk *C.char) {
+	handler.CancelTask(C.GoString(fk), C.GoString(tk))
 }
 
-//export stop
-func stop() {
-	handler.Stop()
+//export stopFlow
+func stopFlow(fk *C.char) {
+	handler.StopFlow(C.GoString(fk))
+}
+
+//export destroy
+func destroy() {
+	handler.Destroy()
 }
 
 func main() {}

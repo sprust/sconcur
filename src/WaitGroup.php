@@ -31,25 +31,27 @@ class WaitGroup
     protected array $syncResults = [];
 
     protected function __construct(
+        protected readonly Context $context,
         protected readonly Flow $flow,
         protected readonly ParametersResolverInterface $parametersResolver,
     ) {
     }
 
-    public static function create(): WaitGroup
+    public static function create(Context $context): WaitGroup
     {
         return new WaitGroup(
+            context: $context,
             flow: new Flow(isAsync: true),
             parametersResolver: SConcur::getParametersResolver()
         );
     }
 
-    public function add(Context $context, Closure $callback): string
+    public function add(Closure $callback): string
     {
         $fiber = new Fiber($callback);
 
         $parameters = $this->parametersResolver->make(
-            context: $context,
+            context: $this->context,
             callback: $callback
         );
 
@@ -83,9 +85,9 @@ class WaitGroup
         return $callbackKey;
     }
 
-    public function waitAll(Context $context): int
+    public function waitAll(): int
     {
-        $generator = $this->wait($context);
+        $generator = $this->wait();
 
         return iterator_count($generator);
     }
@@ -93,11 +95,11 @@ class WaitGroup
     /**
      * @return array<string, mixed>
      */
-    public function waitResults(Context $context): array
+    public function waitResults(): array
     {
         $results = [];
 
-        $generator = $this->wait($context);
+        $generator = $this->wait();
 
         foreach ($generator as $key => $result) {
             $results[$key] = $result;
@@ -109,7 +111,7 @@ class WaitGroup
     /**
      * @return Generator<string, mixed>
      */
-    public function wait(Context $context): Generator
+    public function wait(): Generator
     {
         $syncResultKeys = array_keys($this->syncResults);
 
@@ -122,7 +124,7 @@ class WaitGroup
         }
 
         while (count($this->fibers) > 0) {
-            $taskResult = $this->flow->wait($context);
+            $taskResult = $this->flow->wait($this->context);
 
             $taskKey = $taskResult->key;
 
@@ -193,6 +195,6 @@ class WaitGroup
             unset($this->fibers[$key]);
         }
 
-        $this->flow->cancel();
+        $this->flow->stop();
     }
 }

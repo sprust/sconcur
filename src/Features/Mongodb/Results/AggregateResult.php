@@ -134,7 +134,7 @@ class AggregateResult implements Iterator
     public function __destruct()
     {
         if ($this->taskKey) {
-            $this->currentFlow?->stopTask(
+            $this->currentFlow?->cancelTask(
                 taskKey: $this->taskKey
             );
         }
