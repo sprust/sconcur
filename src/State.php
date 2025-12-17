@@ -5,10 +5,9 @@ declare(strict_types=1);
 namespace SConcur;
 
 use Fiber;
-use SConcur\Features\Features;
 use SConcur\Flow\Flow;
 
-class SConcur
+class State
 {
     protected static ?Flow $syncFlow = null;
 
@@ -16,8 +15,6 @@ class SConcur
      * @var array<int, Flow>
      */
     protected static array $fiberFlows = [];
-
-    protected static ?Features $features = null;
 
     public static function registerFiberFlow(Fiber $fiber, Flow $flow): void
     {

@@ -54,7 +54,7 @@ class WaitGroup
             $this->context,
         ];
 
-        SConcur::registerFiberFlow(
+        State::registerFiberFlow(
             fiber: $fiber,
             flow: $this->flow
         );
@@ -73,7 +73,7 @@ class WaitGroup
         if ($fiber->isTerminated()) {
             $this->syncResults[$callbackKey] = $fiber->getReturn();
 
-            SConcur::unRegisterFiber($fiber);
+            State::unRegisterFiber($fiber);
         } else {
             $fiberId = spl_object_id($fiber);
 
@@ -167,7 +167,7 @@ class WaitGroup
             if ($fiber->isTerminated()) {
                 $callbackResult = $fiber->getReturn();
 
-                SConcur::unRegisterFiber($fiber);
+                State::unRegisterFiber($fiber);
 
                 unset($this->fibers[$fiberId]);
 
@@ -189,7 +189,7 @@ class WaitGroup
         foreach ($keys as $key) {
             $fiber = $this->fibers[$key];
 
-            SConcur::unRegisterFiber($fiber);
+            State::unRegisterFiber($fiber);
 
             unset($this->fibers[$key]);
         }

@@ -6,7 +6,7 @@ namespace SConcur\Features\Sleep;
 
 use SConcur\Entities\Context;
 use SConcur\Features\MethodEnum;
-use SConcur\SConcur;
+use SConcur\State;
 
 readonly class SleepFeature
 {
@@ -17,7 +17,7 @@ readonly class SleepFeature
 
     public function usleep(Context $context, int $milliseconds): void
     {
-        SConcur::getCurrentFlow()->exec(
+        State::getCurrentFlow()->exec(
             context: $context,
             method: MethodEnum::Sleep,
             payload: json_encode([

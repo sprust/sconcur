@@ -17,7 +17,7 @@ use SConcur\Features\Mongodb\Results\InsertManyResult;
 use SConcur\Features\Mongodb\Results\InsertOneResult;
 use SConcur\Features\Mongodb\Results\UpdateResult;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
-use SConcur\SConcur;
+use SConcur\State;
 
 readonly class MongodbFeature
 {
@@ -204,7 +204,7 @@ readonly class MongodbFeature
         CommandEnum $command,
         string $payload
     ): TaskResultDto {
-        return SConcur::getCurrentFlow()->exec(
+        return State::getCurrentFlow()->exec(
             context: $context,
             method: $this->method,
             payload: $this->serializePayload(

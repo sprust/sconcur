@@ -11,7 +11,7 @@ use SConcur\Entities\Context;
 use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
 use SConcur\Flow\Flow;
-use SConcur\SConcur;
+use SConcur\State;
 
 /**
  * @implements Iterator<int, array<int|string|float|bool|null, mixed>>
@@ -55,7 +55,7 @@ class AggregateResult implements Iterator
         if ($this->items === null) {
             // first iteration
             if ($this->currentFlow === null) {
-                $this->currentFlow = SConcur::getCurrentFlow();
+                $this->currentFlow = State::getCurrentFlow();
 
                 $taskResult = $this->currentFlow->exec(
                     context: $this->context,
