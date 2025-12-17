@@ -8,6 +8,7 @@ use SConcur\Entities\Context;
 use SConcur\Features\Sleep\SleepFeature;
 use SConcur\SConcur;
 use SConcur\Tests\Feature\Features\BaseTestCase;
+use SConcur\WaitGroup;
 
 class SleepTest extends BaseTestCase
 {
@@ -54,24 +55,27 @@ class SleepTest extends BaseTestCase
             },
         ];
 
-        $results = SConcur::run(callbacks: $callbacks, timeoutSeconds: 1);
+        $context = Context::create(timeoutSeconds: 1);
 
-        $result = [];
+        $waitGroup = WaitGroup::create();
 
-        $callbacksCount = count($callbacks);
-
-        foreach ($results as $key => $value) {
-            $result[$key] = $value;
-            self::assertTrue(SConcur::isAsync());
+        foreach ($callbacks as $callback) {
+            $waitGroup->add(context: $context, callback: $callback);
         }
 
-        // for generator finalization
-        unset($results);
-        self::assertFalse(SConcur::isAsync());
+        $generator = $waitGroup->wait(context: $context);
+
+        $results = [];
+
+        foreach ($generator as $key => $value) {
+            $results[$key] = $value;
+        }
+
+        unset($generator);
 
         self::assertCount(
-            $callbacksCount,
-            $result
+            count($callbacks),
+            $results
         );
 
         self::assertSame(
@@ -109,14 +113,20 @@ class SleepTest extends BaseTestCase
             },
         ];
 
-        $result = SConcur::waitAll(callbacks: $callbacks, timeoutSeconds: 1);
+        $context = Context::create(timeoutSeconds: 1);
+
+        $waitGroup = WaitGroup::create();
+
+        foreach ($callbacks as $callback) {
+            $waitGroup->add(context: $context, callback: $callback);
+        }
+
+        $results = $waitGroup->waitResults(context: $context);
 
         self::assertEquals(
             0,
             $this->extension->count()
         );
-
-        self::assertFalse(SConcur::isAsync());
 
         self::assertSame(
             [
@@ -128,10 +138,10 @@ class SleepTest extends BaseTestCase
 
         self::assertSame(
             [
-                0 => '1',
-                1 => '2',
+                '2',
+                '1',
             ],
-            $result
+            array_values($results)
         );
     }
 
@@ -157,36 +167,34 @@ class SleepTest extends BaseTestCase
             },
         ];
 
-        $results = SConcur::run(callbacks: $callbacks, timeoutSeconds: 1);
+        $context = Context::create(timeoutSeconds: 1);
 
-        $result = [];
+        $waitGroup = WaitGroup::create();
 
-        foreach ($results as $key => $value) {
-            $result[$key] = $value;
-            self::assertTrue(SConcur::isAsync());
+        foreach ($callbacks as $callback) {
+            $waitGroup->add(context: $context, callback: $callback);
+        }
+
+        $generator = $waitGroup->wait(context: $context);
+
+        $results = [];
+
+        foreach ($generator as $key => $value) {
+            $results[$key] = $value;
 
             break;
         }
 
-        // for generator finalization
-        unset($results);
-        self::assertFalse(SConcur::isAsync());
-
         self::assertCount(
             1,
-            $result
+            $results
         );
 
         self::assertSame(
             [
-                1 => '2',
+                '2',
             ],
-            $result
-        );
-
-        self::assertEquals(
-            0,
-            $this->extension->count()
+            array_values($results)
         );
     }
 
@@ -203,16 +211,23 @@ class SleepTest extends BaseTestCase
             },
         ];
 
-        $results = SConcur::run(callbacks: $callbacks, timeoutSeconds: 1);
+        $context = Context::create(timeoutSeconds: 1);
 
-        $result = [];
+        $waitGroup = WaitGroup::create();
+
+        foreach ($callbacks as $callback) {
+            $waitGroup->add(context: $context, callback: $callback);
+        }
+
+        $generator = $waitGroup->wait(context: $context);
+
+        $results = [];
 
         $exception = null;
 
         try {
-            foreach ($results as $key => $value) {
-                $result[$key] = $value;
-                self::assertTrue(SConcur::isAsync());
+            foreach ($generator as $key => $value) {
+                $results[$key] = $value;
             }
         } catch (Exception $exception) {
             //
@@ -222,18 +237,9 @@ class SleepTest extends BaseTestCase
             is_null($exception)
         );
 
-        // for generator finalization
-        unset($results);
-        self::assertFalse(SConcur::isAsync());
-
         self::assertCount(
             0,
-            $result
-        );
-
-        self::assertEquals(
-            0,
-            $this->extension->count()
+            $results
         );
     }
 
@@ -250,25 +256,27 @@ class SleepTest extends BaseTestCase
 
         $callbacksCount = count($callbacks);
 
-        $results = SConcur::run(callbacks: $callbacks, timeoutSeconds: 1);
-
-        $result = [];
-
         $context = Context::create(timeoutSeconds: 1);
 
-        foreach ($results as $key => $value) {
-            $result[$key] = $value;
+        $waitGroup = WaitGroup::create();
+
+        foreach ($callbacks as $callback) {
+            $waitGroup->add(context: $context, callback: $callback);
+        }
+
+        $generator = $waitGroup->wait(context: $context);
+
+        $results = [];
+
+        foreach ($generator as $key => $value) {
+            $results[$key] = $value;
 
             $this->sleepFeature->usleep(context: $context, milliseconds: 1);
         }
 
-        // for generator finalization
-        unset($results);
-        self::assertFalse(SConcur::isAsync());
-
         self::assertCount(
             $callbacksCount,
-            $result
+            $results
         );
 
         self::assertEquals(

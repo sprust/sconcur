@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features;
 
 use PHPUnit\Framework\TestCase;
-use SConcur\SConcur;
 use SConcur\Tests\Impl\TestContainer;
 
 abstract class BaseTestCase extends TestCase
@@ -16,7 +15,5 @@ abstract class BaseTestCase extends TestCase
 
         TestContainer::flush();
         TestContainer::resolve();
-
-        self::assertFalse(SConcur::isAsync());
     }
 }

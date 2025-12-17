@@ -19,14 +19,30 @@ class TestContainer implements ContainerInterface
     private static ?TestContainer $container = null;
 
     /**
+     * @var array<class-string, object>
+     */
+    private static array $cache = [];
+
+    /**
      * @var array<class-string<object>, Closure(): object>
      */
     private array $resolvers;
 
-    /**
-     * @var array<class-string, object>
-     */
-    private static array $cache = [];
+    private function __construct()
+    {
+        $dotenv = Dotenv::createImmutable(__DIR__ . '/../../', '.env');
+        $dotenv->load();
+
+        $this->resolvers = [
+            ContainerInterface::class          => fn() => $this,
+            ParametersResolverInterface::class => fn() => $this->get(TestParametersResolver::class),
+            LoggerInterface::class             => fn() => $this->get(TestLogger::class),
+        ];
+
+        SConcur::init(
+            parametersResolver: $this->get(ParametersResolverInterface::class),
+        );
+    }
 
     public static function resolve(): TestContainer
     {
@@ -36,22 +52,6 @@ class TestContainer implements ContainerInterface
     public static function flush(): void
     {
         self::$container = null;
-    }
-
-    private function __construct()
-    {
-        $dotenv = Dotenv::createImmutable(__DIR__ . '/../../', '.env');
-        $dotenv->load();
-
-        $this->resolvers = [
-            ContainerInterface::class => fn() => $this,
-            ParametersResolverInterface::class => fn() => $this->get(TestParametersResolver::class),
-            LoggerInterface::class => fn() => $this->get(TestLogger::class),
-        ];
-
-        SConcur::init(
-            parametersResolver: $this->get(ParametersResolverInterface::class),
-        );
     }
 
     /**

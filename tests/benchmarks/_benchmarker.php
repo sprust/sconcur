@@ -4,8 +4,8 @@ use SConcur\Entities\Context;
 use SConcur\Exceptions\AlreadyRunningException;
 use SConcur\Exceptions\InvalidValueException;
 use SConcur\Exceptions\TimeoutException;
-use SConcur\SConcur;
 use SConcur\Tests\Impl\TestContainer;
+use SConcur\WaitGroup;
 
 ini_set('memory_limit', '1024M');
 
@@ -138,14 +138,24 @@ readonly class Benchmarker
 
             $start = microtime(true);
 
-            $generator = SConcur::run(
-                callbacks: $asyncCallbacks,
-                timeoutSeconds: $this->timeout,
-                limitCount: $this->limitCount,
-            );
+            $context = Context::create($this->timeout);
+
+            $waitGroup = WaitGroup::create();
+
+            $callbackKeys = [];
+
+            foreach ($asyncCallbacks as $key => $callback) {
+                $taskKey = $waitGroup->add(context: $context, callback: $callback);
+
+                $callbackKeys[$taskKey] = $key;
+            }
+
+            $generator = $waitGroup->waitResults(context: $context);
 
             foreach ($generator as $key => $result) {
-                $key = "$this->name: $key";
+                $callbackKey = $callbackKeys[$key];
+
+                $key = "$this->name: $callbackKey";
 
                 echo "success: $key\n";
             }

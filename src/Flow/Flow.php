@@ -12,7 +12,6 @@ use SConcur\Dto\TaskResultDto;
 use SConcur\Entities\Context;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Features\MethodEnum;
-use SConcur\SConcur;
 use Throwable;
 
 class Flow
@@ -26,7 +25,7 @@ class Flow
     /**
      * @var array<string, Fiber>
      */
-    protected array $fibersKeyByTaskUuid = [];
+    protected array $fibersKeyByTaskKeys = [];
 
     public function __construct(
         protected readonly bool $isAsync
@@ -50,8 +49,8 @@ class Flow
         );
 
         if ($this->isAsync) {
-            if ($currentFiber = Sconcur::getCurrentFiber()) {
-                $this->fibersKeyByTaskUuid[$runningTask->key] = $currentFiber;
+            if ($currentFiber = Fiber::getCurrent()) {
+                $this->fibersKeyByTaskKeys[$runningTask->key] = $currentFiber;
             } else {
                 throw new LogicException(
                     message: "Can't wait outside of fiber."
@@ -111,14 +110,14 @@ class Flow
         return $this->checkResult($result);
     }
 
-    public function getFiberByTaskUuid(string $taskUuid): ?Fiber
+    public function getFiberByTaskKey(string $taskKey): ?Fiber
     {
-        return $this->fibersKeyByTaskUuid[$taskUuid] ?? null;
+        return $this->fibersKeyByTaskKeys[$taskKey] ?? null;
     }
 
-    public function deleteFiberByTaskUuid(string $taskUuid): void
+    public function deleteFiberByTaskKey(string $taskKey): void
     {
-        unset($this->fibersKeyByTaskUuid[$taskUuid]);
+        unset($this->fibersKeyByTaskKeys[$taskKey]);
     }
 
     public function isAsync(): bool
@@ -134,12 +133,24 @@ class Flow
         );
     }
 
+    public function cancel(): void
+    {
+        $extension = static::initExtension();
+
+        foreach (array_keys($this->fibersKeyByTaskKeys) as $taskKey) {
+            $extension->cancel(
+                flowKey: $this->key,
+                taskKey: $taskKey
+            );
+        }
+    }
+
     protected static function initExtension(): Extension
     {
         return static::$extension ??= new Extension();
     }
 
-    private function checkResult(TaskResultDto $result): TaskResultDto
+    protected function checkResult(TaskResultDto $result): TaskResultDto
     {
         if ($result->isError) {
             throw new TaskErrorException(
@@ -148,5 +159,10 @@ class Flow
         }
 
         return $result;
+    }
+
+    public function __destruct()
+    {
+        $this->cancel();
     }
 }

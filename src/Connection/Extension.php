@@ -33,7 +33,7 @@ class Extension
     {
         ++static::$tasksCounter;
 
-        $taskKey = (string) static::$tasksCounter;
+        $taskKey = $flowKey . ':' . static::$tasksCounter;
 
         push($flowKey, $method->value, $taskKey, $payload);
 
