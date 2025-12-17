@@ -47,6 +47,10 @@ readonly class DocumentSerializer
                 return new ObjectId($value['$oid']);
             }
 
+            if (array_key_exists('$numberInt', $value)) {
+                return $value['$numberInt'];
+            }
+
             if (array_key_exists('$date', $value)) {
                 $date = $value['$date']['$numberLong'] ?? null;
 

@@ -153,6 +153,8 @@ readonly class MongodbFeature
 
     /**
      * @param array<int, array<string, mixed>> $pipeline
+     *
+     * @return Iterator<int, array<int|string|float|bool|null, mixed>>
      */
     public function aggregate(Context $context, array $pipeline): Iterator
     {
