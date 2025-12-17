@@ -3,11 +3,10 @@
 declare(strict_types=1);
 
 use SConcur\Entities\Context;
-use SConcur\Features\Mongodb\MongodbFeature;
+use SConcur\Features\Features;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
-use SConcur\SConcur;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
 
 require_once __DIR__ . '/_benchmarker.php';
@@ -41,7 +40,7 @@ $sconcurOperations = makeOperations(
     dateTime: new UTCDateTime()
 );
 
-$feature = SConcur::features()->mongodb(
+$feature = Features::mongodb(
     connection: $connection,
 );
 
@@ -75,10 +74,10 @@ function makeOperations(mixed $objectId, mixed $dateTime): array
                     'upserted' => false,
                 ],
                 [
-                    '$set'         => [
+                    '$set' => [
                         'objectId' => $objectId,
-                        'dtStart' => $dateTime,
-                        'dtEnd'   => $dateTime,
+                        'dtStart'  => $dateTime,
+                        'dtEnd'    => $dateTime,
                     ],
                     '$setOnInsert' => [
                         'createdAt' => $dateTime,
@@ -93,7 +92,7 @@ function makeOperations(mixed $objectId, mixed $dateTime): array
                     'upserted' => true,
                 ],
                 [
-                    '$set'         => [
+                    '$set' => [
                         'dtStart' => $dateTime,
                         'dtEnd'   => $dateTime,
                     ],
@@ -113,7 +112,7 @@ function makeOperations(mixed $objectId, mixed $dateTime): array
                     'upserted_many' => false,
                 ],
                 [
-                    '$set'         => [
+                    '$set' => [
                         'dtStart' => $dateTime,
                         'dtEnd'   => $dateTime,
                     ],
@@ -130,7 +129,7 @@ function makeOperations(mixed $objectId, mixed $dateTime): array
                     'upserted_many' => true,
                 ],
                 [
-                    '$set'         => [
+                    '$set' => [
                         'dtStart' => $dateTime,
                         'dtEnd'   => $dateTime,
                     ],

@@ -4,8 +4,8 @@ namespace SConcur\Tests\Feature\Features\Sleep;
 
 use Exception;
 use SConcur\Entities\Context;
+use SConcur\Features\Features;
 use SConcur\Features\Sleep\SleepFeature;
-use SConcur\SConcur;
 use SConcur\Tests\Feature\Features\BaseTestCase;
 use SConcur\WaitGroup;
 
@@ -17,7 +17,7 @@ class SleepTest extends BaseTestCase
     {
         parent::setUp();
 
-        $this->sleepFeature = SConcur::features()->sleep();
+        $this->sleepFeature = Features::sleep();
     }
 
     protected function tearDown(): void

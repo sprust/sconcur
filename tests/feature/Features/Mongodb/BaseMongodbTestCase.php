@@ -6,9 +6,9 @@ namespace SConcur\Tests\Feature\Features\Mongodb;
 
 use MongoDB\Client;
 use MongoDB\Collection;
+use SConcur\Features\Features;
 use SConcur\Features\Mongodb\MongodbFeature;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
-use SConcur\SConcur;
 use SConcur\Tests\Feature\Features\BaseTestCase;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
 use Throwable;
@@ -32,7 +32,7 @@ abstract class BaseMongodbTestCase extends BaseTestCase
             ->selectDatabase($connectionParameters->database)
             ->selectCollection($connectionParameters->collection);
 
-        $this->feature = SConcur::features()->mongodb($connectionParameters);
+        $this->feature = Features::mongodb($connectionParameters);
 
         $this->driverCollection->deleteMany([]);
     }

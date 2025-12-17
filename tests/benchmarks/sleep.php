@@ -3,8 +3,7 @@
 declare(strict_types=1);
 
 use SConcur\Entities\Context;
-use SConcur\Features\Sleep\SleepFeature;
-use SConcur\SConcur;
+use SConcur\Features\Features;
 
 require_once __DIR__ . '/_benchmarker.php';
 
@@ -12,7 +11,7 @@ $benchmarker = new Benchmarker(
     name: 'sleep',
 );
 
-$feature = SConcur::features()->sleep();
+$feature = Features::sleep();
 
 $benchmarker->run(
     syncCallback: static function (Context $context) use ($feature) {

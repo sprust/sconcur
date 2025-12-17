@@ -2,17 +2,15 @@
 #include <stdlib.h>
 #include "_cgo_export.h"
 
-#include <php.h>
-#include <stdlib.h>
-#include "_cgo_export.h"
-
 /*
  * arginfo:
  *  - ping(string name)
- *  - push(int method, string taskKey, string payloadJSON)
- *  - wait(int ms)
+ *  - push(string flowKey, int method, string taskKey, string payloadJSON)
+ *  - wait(string flowKey, int ms)
  *  - count()
- *  - stop()
+ *  - cancelTask(string flowKey, string taskKey)
+ *  - stopFlow(string flowKey)
+ *  - destroy()
  */
 
 // ping(string name)
@@ -34,16 +32,13 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_wait, 0, 0, 2)
     ZEND_ARG_TYPE_INFO(0, milliseconds, IS_LONG, 0)
 ZEND_END_ARG_INFO()
 
-// stop()
-ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_stop, 0, 0, 0)
-ZEND_END_ARG_INFO()
 
 // count()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_count, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
-// cancel(string flowKey, string taskKey)
-ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_cancel, 0, 0, 2)
+// cancelTask(string flowKey, string taskKey)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_cancelTask, 0, 0, 2)
     ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, taskKey, IS_STRING, 0)
 ZEND_END_ARG_INFO()
@@ -113,19 +108,9 @@ PHP_FUNCTION(wait)
     free(response);
 }
 
-// PHP: SConcur\Extension\stop(): void
-PHP_FUNCTION(stop)
-{
-    if (zend_parse_parameters_none() == FAILURE) {
-        RETURN_THROWS();
-    }
 
-    destroy();
-    RETURN_NULL();
-}
-
-// PHP: SConcur\Extension\cancel(string $flowKey, string $taskKey): void
-PHP_FUNCTION(cancel)
+// PHP: SConcur\Extension\cancelTask(string $flowKey, string $taskKey): void
+PHP_FUNCTION(cancelTask)
 {
     char *flow_key = NULL, *task_key = NULL;
     size_t flow_key_len, task_key_len;
@@ -181,8 +166,7 @@ static const zend_function_entry sconcur_functions[] = {
     ZEND_NS_FE("SConcur\\Extension", ping, arginfo_sconcur_ping)
     ZEND_NS_FE("SConcur\\Extension", push, arginfo_sconcur_push)
     ZEND_NS_FE("SConcur\\Extension", wait, arginfo_sconcur_wait)
-    ZEND_NS_FE("SConcur\\Extension", stop, arginfo_sconcur_stop)
-    ZEND_NS_FE("SConcur\\Extension", cancel, arginfo_sconcur_cancel)
+    ZEND_NS_FE("SConcur\\Extension", cancelTask, arginfo_sconcur_cancelTask)
     ZEND_NS_FE("SConcur\\Extension", count, arginfo_sconcur_count)
     ZEND_NS_FE("SConcur\\Extension", stopFlow, arginfo_sconcur_stopFlow)
     ZEND_NS_FE("SConcur\\Extension", destroy, arginfo_sconcur_destroy)

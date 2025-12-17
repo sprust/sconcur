@@ -9,7 +9,6 @@ use Fiber;
 use Generator;
 use LogicException;
 use RuntimeException;
-use SConcur\Contracts\ParametersResolverInterface;
 use SConcur\Entities\Context;
 use SConcur\Flow\Flow;
 use Throwable;
@@ -33,7 +32,6 @@ class WaitGroup
     protected function __construct(
         protected readonly Context $context,
         protected readonly Flow $flow,
-        protected readonly ParametersResolverInterface $parametersResolver,
     ) {
     }
 
@@ -42,18 +40,19 @@ class WaitGroup
         return new WaitGroup(
             context: $context,
             flow: new Flow(isAsync: true),
-            parametersResolver: SConcur::getParametersResolver()
         );
     }
 
+    /**
+     * @param Closure(Context): mixed $callback
+     */
     public function add(Closure $callback): string
     {
         $fiber = new Fiber($callback);
 
-        $parameters = $this->parametersResolver->make(
-            context: $this->context,
-            callback: $callback
-        );
+        $parameters = [
+            $this->context,
+        ];
 
         SConcur::registerFiberFlow(
             fiber: $fiber,

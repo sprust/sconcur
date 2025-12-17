@@ -5,13 +5,11 @@ declare(strict_types=1);
 namespace SConcur;
 
 use Fiber;
-use SConcur\Contracts\ParametersResolverInterface;
-use SConcur\Features\Factory;
+use SConcur\Features\Features;
 use SConcur\Flow\Flow;
 
 class SConcur
 {
-    protected static ParametersResolverInterface $parametersResolver;
     protected static ?Flow $syncFlow = null;
 
     /**
@@ -19,22 +17,7 @@ class SConcur
      */
     protected static array $fiberFlows = [];
 
-    protected static ?Factory $features = null;
-
-    public static function init(ParametersResolverInterface $parametersResolver): void
-    {
-        static::$parametersResolver = $parametersResolver;
-    }
-
-    public static function features(): Factory
-    {
-        return static::$features ??= new Factory();
-    }
-
-    public static function getParametersResolver(): ParametersResolverInterface
-    {
-        return self::$parametersResolver;
-    }
+    protected static ?Features $features = null;
 
     public static function registerFiberFlow(Fiber $fiber, Flow $flow): void
     {

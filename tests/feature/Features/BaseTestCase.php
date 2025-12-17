@@ -6,7 +6,7 @@ namespace SConcur\Tests\Feature\Features;
 
 use PHPUnit\Framework\TestCase;
 use SConcur\Connection\Extension;
-use SConcur\Tests\Impl\TestContainer;
+use SConcur\Tests\Impl\TestApplication;
 
 abstract class BaseTestCase extends TestCase
 {
@@ -16,8 +16,7 @@ abstract class BaseTestCase extends TestCase
     {
         parent::setUp();
 
-        TestContainer::flush();
-        TestContainer::resolve();
+        TestApplication::init();
 
         $this->extension = new Extension();
         $this->extension->destroy();

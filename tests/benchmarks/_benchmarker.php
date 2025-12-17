@@ -4,7 +4,7 @@ use SConcur\Entities\Context;
 use SConcur\Exceptions\AlreadyRunningException;
 use SConcur\Exceptions\InvalidValueException;
 use SConcur\Exceptions\TimeoutException;
-use SConcur\Tests\Impl\TestContainer;
+use SConcur\Tests\Impl\TestApplication;
 use SConcur\WaitGroup;
 
 ini_set('memory_limit', '1024M');
@@ -12,7 +12,7 @@ ini_set('memory_limit', '1024M');
 require_once __DIR__ . '/../../vendor/autoload.php';
 require_once __DIR__ . '/_benchmarker.php';
 
-TestContainer::resolve();
+TestApplication::init();
 
 readonly class Benchmarker
 {

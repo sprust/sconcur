@@ -3,11 +3,10 @@
 declare(strict_types=1);
 
 use SConcur\Entities\Context;
-use SConcur\Features\Mongodb\MongodbFeature;
+use SConcur\Features\Features;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
-use SConcur\SConcur;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
 
 require_once __DIR__ . '/_benchmarker.php';
@@ -47,7 +46,7 @@ $sconcurDocuments = array_map(
     range(1, 30)
 );
 
-$feature = SConcur::features()->mongodb(
+$feature = Features::mongodb(
     connection: $connection,
 );
 
@@ -72,14 +71,14 @@ $benchmarker->run(
 function makeDocument(mixed $objectId, mixed $dateTime): array
 {
     return [
-        'IIID'      => $objectId,
-        'uniq'      => uniqid(),
-        'bool'      => true,
-        'date'      => $dateTime,
-        'dates'     => [
+        'IIID'  => $objectId,
+        'uniq'  => uniqid(),
+        'bool'  => true,
+        'date'  => $dateTime,
+        'dates' => [
             $dateTime,
             $dateTime,
-            'dates'     => [
+            'dates' => [
                 $dateTime,
                 $dateTime,
             ],
@@ -89,9 +88,9 @@ function makeDocument(mixed $objectId, mixed $dateTime): array
             ],
         ],
         'dates_ass' => [
-            'one'       => $dateTime,
-            'two'       => $dateTime,
-            'dates'     => [
+            'one'   => $dateTime,
+            'two'   => $dateTime,
+            'dates' => [
                 $dateTime,
                 $dateTime,
             ],
