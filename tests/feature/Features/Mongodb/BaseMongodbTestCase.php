@@ -9,11 +9,11 @@ use MongoDB\Collection;
 use SConcur\Features\Features;
 use SConcur\Features\Mongodb\MongodbFeature;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
-use SConcur\Tests\Feature\Features\BaseTestCase;
+use SConcur\Tests\Feature\BaseAsyncTestCase;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
 use Throwable;
 
-abstract class BaseMongodbTestCase extends BaseTestCase
+abstract class BaseMongodbTestCase extends BaseAsyncTestCase
 {
     protected MongodbFeature $feature;
     protected Collection $driverCollection;

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Tests\Feature\Features;
+namespace SConcur\Tests\Feature;
 
 use PHPUnit\Framework\TestCase;
 use SConcur\Connection\Extension;
@@ -20,6 +20,13 @@ abstract class BaseTestCase extends TestCase
 
         $this->extension = new Extension();
         $this->extension->destroy();
+    }
+
+    protected function tearDown(): void
+    {
+        $this->assertNoTasksCount();
+
+        parent::tearDown();
     }
 
     protected function assertNoTasksCount(): void
