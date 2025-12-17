@@ -17,7 +17,9 @@ class MongodbAggregateTest extends BaseMongodbTestCase
 
     protected int $documentsCount;
 
-    protected array $filter;
+    /**
+     * @var array<string, array<int, bool>>
+     */
     protected array $results;
 
     protected function setUp(): void
@@ -33,7 +35,6 @@ class MongodbAggregateTest extends BaseMongodbTestCase
 
         $this->seedData();
 
-        $this->filter  = [];
         $this->results = [];
     }
 

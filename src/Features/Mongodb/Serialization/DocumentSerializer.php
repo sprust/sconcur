@@ -48,17 +48,44 @@ readonly class DocumentSerializer
             }
 
             if (array_key_exists('$numberInt', $value)) {
-                return $value['$numberInt'];
+                return (int) $value['$numberInt'];
+            }
+
+            if (array_key_exists('$numberLong', $value)) {
+                return (int) $value['$numberLong'];
+            }
+
+            if (array_key_exists('$numberDouble', $value)) {
+                return (float) $value['$numberDouble'];
+            }
+
+            if (array_key_exists('$numberDecimal', $value)) {
+                return $value['$numberDecimal'];
             }
 
             if (array_key_exists('$date', $value)) {
-                $date = $value['$date']['$numberLong'] ?? null;
+                $date = $value['$date']['$numberLong'] ?? $value['$date'] ?? null;
 
-                if (ctype_digit($date) !== false) {
+                if (is_string($date) || is_int($date)) {
                     return new UTCDateTime(
                         DateTime::createFromFormat('U.u', sprintf('%.6F', (int) $date / 1000))
                     );
                 }
+            }
+
+            if (array_key_exists('$binary', $value)) {
+                return base64_decode($value['$binary']['base64'] ?? '');
+            }
+
+            if (array_key_exists('$regularExpression', $value)) {
+                return '/' . ($value['$regularExpression']['pattern'] ?? '') . '/' . ($value['$regularExpression']['options'] ?? '');
+            }
+
+            if (array_key_exists('$timestamp', $value)) {
+                return [
+                    't' => $value['$timestamp']['t'] ?? 0,
+                    'i' => $value['$timestamp']['i'] ?? 0,
+                ];
             }
 
             $result = [];
