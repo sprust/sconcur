@@ -155,14 +155,7 @@ class WaitGroup
                 );
             }
 
-            try {
-                $fiber->resume($taskResult);
-            } catch (Throwable $exception) {
-                throw new RuntimeException(
-                    message: $exception->getMessage(),
-                    previous: $exception
-                );
-            }
+            $fiber->resume($taskResult);
 
             if ($fiber->isTerminated()) {
                 $callbackResult = $fiber->getReturn();

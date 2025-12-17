@@ -71,6 +71,8 @@ class AggregateResult implements Iterator
                     $taskResult = $this->currentFlow->wait(
                         context: $this->context,
                     );
+
+                    $this->currentFlow->checkResult(result: $taskResult);
                 }
 
                 if ($taskResult->key !== $this->taskKey) {

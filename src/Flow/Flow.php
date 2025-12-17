@@ -55,6 +55,8 @@ class Flow
             $result = $this->suspend();
         } else {
             $result = $this->wait(context: $context);
+
+            $this->checkResult(result: $result);
         }
 
         if ($result->key !== $runningTask->key) {
@@ -96,13 +98,11 @@ class Flow
 
     public function wait(Context $context): TaskResultDto
     {
-        $result = self::initExtension()->wait(
+        return self::initExtension()->wait(
             flowKey: $this->key,
             isAsync: $this->isAsync,
             context: $context
         );
-
-        return $this->checkResult($result);
     }
 
     public function getFiberByTaskKey(string $taskKey): ?Fiber
@@ -138,12 +138,7 @@ class Flow
         return $this->key;
     }
 
-    protected static function initExtension(): Extension
-    {
-        return static::$extension ??= new Extension();
-    }
-
-    protected function checkResult(TaskResultDto $result): TaskResultDto
+    public function checkResult(TaskResultDto $result): TaskResultDto
     {
         if ($result->isError) {
             throw new TaskErrorException(
@@ -152,6 +147,11 @@ class Flow
         }
 
         return $result;
+    }
+
+    protected static function initExtension(): Extension
+    {
+        return static::$extension ??= new Extension();
     }
 
     public function __destruct()
