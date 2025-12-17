@@ -130,7 +130,11 @@ class MongodbAggregateTest extends BaseMongodbTestCase
                         $this->fieldName => $this->fieldValue,
                     ],
                 ],
-                ['$sort' => ['index' => 1]],
+                [
+                    '$sort' => [
+                        'index' => 1,
+                    ],
+                ],
             ],
         );
 
