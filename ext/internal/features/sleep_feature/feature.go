@@ -38,6 +38,17 @@ func (s *Feature) Handle(task *tasks.Task) {
 		return
 	}
 
+	if payload.Milliseconds <= 0 {
+		task.AddResult(
+			dto.NewErrorResult(
+				message,
+				errFactory.ByText("milliseconds must be greater than zero"),
+			),
+		)
+
+		return
+	}
+
 	select {
 	case <-task.Ctx().Done():
 		task.AddResult(

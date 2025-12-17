@@ -133,6 +133,11 @@ class Flow
         self::initExtension()->stopFlow($this->key);
     }
 
+    public function getKey(): string
+    {
+        return $this->key;
+    }
+
     protected static function initExtension(): Extension
     {
         return static::$extension ??= new Extension();

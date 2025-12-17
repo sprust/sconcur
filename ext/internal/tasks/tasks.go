@@ -6,9 +6,10 @@ import (
 )
 
 type Tasks struct {
-	mutex   sync.Mutex
-	active  map[string]*Task
-	results chan *dto.Result
+	mutex     sync.Mutex
+	active    map[string]*Task
+	results   chan *dto.Result
+	cancelled bool
 }
 
 func (t *Tasks) Results() chan *dto.Result {
@@ -37,6 +38,10 @@ func (t *Tasks) AddResult(res *dto.Result) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
+	if t.cancelled {
+		return
+	}
+
 	exist, ok := t.active[res.TaskKey]
 
 	if !ok {
@@ -52,7 +57,7 @@ func (t *Tasks) CancelTask(taskKey string) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	exist, ok := t.active[taskKey]
+	task, ok := t.active[taskKey]
 
 	if !ok {
 		return
@@ -60,7 +65,7 @@ func (t *Tasks) CancelTask(taskKey string) {
 
 	delete(t.active, taskKey)
 
-	exist.Cancel()
+	task.Cancel()
 }
 
 func (t *Tasks) Count() int {
@@ -79,4 +84,6 @@ func (t *Tasks) Cancel() {
 	}
 
 	close(t.results)
+
+	t.cancelled = true
 }
