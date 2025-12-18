@@ -52,7 +52,7 @@ class Extension
 
             throw new TaskErrorException(
                 message: sprintf(
-                    'flow %s[%s]: %s',
+                    'flow %s [%s]: %s',
                     $flowKey,
                     $isAsyncView,
                     $response,

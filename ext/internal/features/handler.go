@@ -39,7 +39,9 @@ func (h *Handler) Push(msg *dto.Message) error {
 		return err
 	}
 
-	taskGroup := h.flows.InitFlow(msg.FlowKey).GetTasks()
+	flow := h.flows.InitFlow(msg.FlowKey)
+
+	taskGroup := flow.GetTasks()
 
 	go func() {
 		task := taskGroup.AddMessage(msg)
@@ -49,9 +51,11 @@ func (h *Handler) Push(msg *dto.Message) error {
 
 		for {
 			select {
-			case <-h.ctx.Done():
+			case <-h.ctx.Done(): // destroy
 				return
-			case <-task.Ctx().Done():
+			case <-flow.Ctx().Done(): // cancel flow
+				return
+			case <-task.Ctx().Done(): // cancel task
 				return
 			case result, ok := <-task.Results():
 				if ok {
@@ -72,7 +76,7 @@ func (h *Handler) Push(msg *dto.Message) error {
 
 func (h *Handler) Wait(flowKey string, timeoutMs int64) (string, error) {
 	if timeoutMs <= 0 {
-		return "", errors.New("timeout waiting for task completion")
+		return "", errors.New("timeout must be greater than 0")
 	}
 
 	timer := time.NewTimer(time.Duration(timeoutMs) * time.Millisecond)
@@ -87,9 +91,11 @@ func (h *Handler) Wait(flowKey string, timeoutMs int64) (string, error) {
 	results := flow.GetTasks().Results()
 
 	select {
-	case <-h.ctx.Done():
+	case <-h.ctx.Done(): // destroy
 		return "", h.ctx.Err()
-	case <-timer.C:
+	case <-flow.Ctx().Done(): // cancel flow
+		return "", flow.Ctx().Err()
+	case <-timer.C: // timeout
 		return "", errors.New("timeout waiting for task completion")
 	case res, ok := <-results:
 		if !ok {
@@ -119,7 +125,7 @@ func (h *Handler) CancelTask(flowKey string, taskKey string) {
 }
 
 func (h *Handler) StopFlow(flowKey string) {
-	h.flows.DeleteFlow(flowKey)
+	go h.flows.DeleteFlow(flowKey)
 }
 
 func (h *Handler) Destroy() {

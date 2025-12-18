@@ -31,6 +31,20 @@ abstract class BaseTestCase extends TestCase
 
     protected function assertNoTasksCount(): void
     {
+        $startTime = time();
+
+        while (true) {
+            if ($this->extension->count() === 0) {
+                return;
+            }
+
+            if ((time() - $startTime) < 2) {
+                continue;
+            }
+
+            break;
+        }
+
         self::assertEquals(
             0,
             $this->extension->count()

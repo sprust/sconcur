@@ -55,6 +55,7 @@ func (f *Flows) DeleteFlow(flowKey string) {
 	}
 
 	flow.GetTasks().Cancel()
+	flow.Cancel()
 	delete(f.flows, flowKey)
 }
 
@@ -71,6 +72,7 @@ func (f *Flows) GetTasksCount() int {
 func (f *Flows) Cancel() {
 	for _, flow := range f.flows {
 		flow.GetTasks().Cancel()
+		flow.Cancel()
 	}
 
 	f.flows = make(map[string]*Flow)
