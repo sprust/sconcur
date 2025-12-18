@@ -9,7 +9,7 @@ import (
 
 func TestHandler_Sleep(t *testing.T) {
 	h := NewHandler()
-	defer h.Stop()
+	defer h.Destroy()
 
 	flowKey := "1"
 
