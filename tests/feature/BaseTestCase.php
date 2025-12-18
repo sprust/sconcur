@@ -18,7 +18,7 @@ abstract class BaseTestCase extends TestCase
 
         TestApplication::init();
 
-        $this->extension = new Extension();
+        $this->extension = Extension::get();
         $this->extension->destroy();
     }
 

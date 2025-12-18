@@ -22,12 +22,19 @@ use function SConcur\Extension\wait;
 
 class Extension
 {
+    protected static ?Extension $instance = null;
+
     protected static bool $checked     = false;
     protected static int $tasksCounter = 0;
 
-    public function __construct()
+    private function __construct()
     {
         $this->checkExtension();
+    }
+
+    public static function get(): Extension
+    {
+        return static::$instance ??= new Extension();
     }
 
     public function push(string $flowKey, MethodEnum $method, string $payload): RunningTaskDto

@@ -37,7 +37,7 @@ class Flow
 
     public function exec(Context $context, MethodEnum $method, string $payload): TaskResultDto
     {
-        $runningTask = self::initExtension()->push(
+        $runningTask = Extension::get()->push(
             flowKey: $this->key,
             method: $method,
             payload: $payload
@@ -98,7 +98,7 @@ class Flow
 
     public function wait(Context $context): TaskResultDto
     {
-        return self::initExtension()->wait(
+        return Extension::get()->wait(
             flowKey: $this->key,
             isAsync: $this->isAsync,
             context: $context
@@ -122,7 +122,7 @@ class Flow
 
     public function cancelTask(string $taskKey): void
     {
-        self::initExtension()->cancelTask(
+        Extension::get()->cancelTask(
             flowKey: $this->key,
             taskKey: $taskKey
         );
@@ -130,7 +130,7 @@ class Flow
 
     public function stop(): void
     {
-        self::initExtension()->stopFlow($this->key);
+        Extension::get()->stopFlow($this->key);
     }
 
     public function getKey(): string
@@ -147,11 +147,6 @@ class Flow
         }
 
         return $result;
-    }
-
-    protected static function initExtension(): Extension
-    {
-        return static::$extension ??= new Extension();
     }
 
     public function __destruct()
