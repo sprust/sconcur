@@ -50,14 +50,7 @@ func (f *Feature) Handle(task *tasks.Task) {
 		return
 	}
 
-	ctx, ctxCancel := context.WithCancel(context.Background())
-
-	go func() {
-		select {
-		case <-task.Ctx().Done():
-			ctxCancel()
-		}
-	}()
+	ctx := task.Ctx()
 
 	collection, err := f.connections.Get(
 		ctx,

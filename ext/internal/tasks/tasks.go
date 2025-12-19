@@ -3,6 +3,7 @@ package tasks
 import (
 	"sconcur/internal/dto"
 	"sync"
+	"sync/atomic"
 )
 
 type Tasks struct {
@@ -10,6 +11,7 @@ type Tasks struct {
 	active    map[string]*Task
 	results   chan *dto.Result
 	cancelled bool
+	count     atomic.Int32
 }
 
 func (t *Tasks) Results() chan *dto.Result {
@@ -30,6 +32,7 @@ func (t *Tasks) AddMessage(msg *dto.Message) *Task {
 	task := NewTask(msg)
 
 	t.active[msg.TaskKey] = task
+	t.count.Add(1)
 
 	return task
 }
@@ -63,16 +66,14 @@ func (t *Tasks) CancelTask(taskKey string) {
 		return
 	}
 
-	delete(t.active, taskKey)
-
 	task.Cancel()
+
+	delete(t.active, taskKey)
+	t.count.Add(-1)
 }
 
 func (t *Tasks) Count() int {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
-
-	return len(t.active)
+	return int(t.count.Load())
 }
 
 func (t *Tasks) Cancel() {
@@ -85,5 +86,7 @@ func (t *Tasks) Cancel() {
 
 	close(t.results)
 
+	t.active = make(map[string]*Task)
+	t.count.Store(0)
 	t.cancelled = true
 }
