@@ -12,6 +12,7 @@ type Tasks struct {
 	results   chan *dto.Result
 	cancelled bool
 	count     atomic.Int32
+	closeOnce sync.Once
 }
 
 func (t *Tasks) Results() chan *dto.Result {
@@ -84,7 +85,9 @@ func (t *Tasks) Cancel() {
 		task.Cancel()
 	}
 
-	close(t.results)
+	t.closeOnce.Do(func() {
+		close(t.results)
+	})
 
 	t.active = make(map[string]*Task)
 	t.count.Store(0)
