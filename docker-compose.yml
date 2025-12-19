@@ -4,7 +4,6 @@ services:
     restart: on-failure
     build:
       context: ./docker/php
-      target: php
       args:
         - GROUP_ID=${DOCKER_GROUP_ID}
         - USER_ID=${DOCKER_USER_ID}
@@ -13,7 +12,7 @@ services:
       - ./:/sconcur
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: [ "php", "/sconcur/docker/php/docker-php-stub.php" ]
+    command: ["sh", "-c", "echo \"Starting infinite wait loop...\"; while sleep 1; do :; done"]
 
   mongodb:
     container_name: sc-mongodb

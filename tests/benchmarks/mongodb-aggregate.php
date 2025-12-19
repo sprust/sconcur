@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 use SConcur\Entities\Context;
-use SConcur\Features\Mongodb\MongodbFeature;
+use SConcur\Features\Features;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
@@ -12,9 +12,6 @@ require_once __DIR__ . '/_benchmarker.php';
 
 $benchmarker = new Benchmarker(
     name: 'mongodb-aggregate',
-    total: (int) ($_SERVER['argv'][1] ?? 5),
-    timeout: (int) ($_SERVER['argv'][2] ?? 2),
-    limitCount: (int) ($_SERVER['argv'][3] ?? 0),
 );
 
 $uri = TestMongodbUriResolver::get();
@@ -52,12 +49,15 @@ $nativeCallback = static function () use ($collection, $nativePipeline) {
     }
 };
 
-$sconcurCallback = static function (Context $context) use ($connection, $sconcurPipeline) {
+$feature = Features::mongodb(
+    connection: $connection,
+);
+
+$sconcurCallback = static function (Context $context) use ($feature, $sconcurPipeline) {
     $item = uniqid();
 
-    $aggregate = MongodbFeature::aggregate(
+    $aggregate = $feature->aggregate(
         context: $context,
-        connection: $connection,
         pipeline: $sconcurPipeline
     );
 

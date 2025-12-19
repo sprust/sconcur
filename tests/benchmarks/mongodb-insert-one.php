@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 use SConcur\Entities\Context;
-use SConcur\Features\Mongodb\MongodbFeature;
+use SConcur\Features\Features;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
@@ -13,9 +13,6 @@ require_once __DIR__ . '/_benchmarker.php';
 
 $benchmarker = new Benchmarker(
     name: 'mongodb-insert-one',
-    total: (int) ($_SERVER['argv'][1] ?? 5),
-    timeout: (int) ($_SERVER['argv'][2] ?? 2),
-    limitCount: (int) ($_SERVER['argv'][3] ?? 0),
 );
 
 $uri = TestMongodbUriResolver::get();
@@ -43,37 +40,39 @@ $sconcurDocument = makeDocument(
     dateTime: new UTCDateTime()
 );
 
+$feature = Features::mongodb(
+    connection: $connection,
+);
+
 $benchmarker->run(
     nativeCallback: static function () use ($collection, $nativeDocument) {
         return $collection->insertOne($nativeDocument)->getInsertedId();
     },
-    syncCallback: static function (Context $context) use ($connection, $sconcurDocument) {
-        return MongodbFeature::insertOne(
+    syncCallback: static function (Context $context) use ($feature, $sconcurDocument) {
+        return $feature->insertOne(
             context: $context,
-            connection: $connection,
             document: $sconcurDocument
-        )->getInsertedId();
+        )->insertedId;
     },
-    asyncCallback: static function (Context $context) use ($connection, $sconcurDocument) {
-        return MongodbFeature::insertOne(
+    asyncCallback: static function (Context $context) use ($feature, $sconcurDocument) {
+        return $feature->insertOne(
             context: $context,
-            connection: $connection,
             document: $sconcurDocument
-        )->getInsertedId();
+        )->insertedId;
     }
 );
 
 function makeDocument(mixed $objectId, mixed $dateTime): array
 {
     return [
-        'IIID'      => $objectId,
-        'uniq'      => uniqid(),
-        'bool'      => true,
-        'date'      => $dateTime,
-        'dates'     => [
+        'IIID'  => $objectId,
+        'uniq'  => uniqid(),
+        'bool'  => true,
+        'date'  => $dateTime,
+        'dates' => [
             $dateTime,
             $dateTime,
-            'dates'     => [
+            'dates' => [
                 $dateTime,
                 $dateTime,
             ],
@@ -83,9 +82,9 @@ function makeDocument(mixed $objectId, mixed $dateTime): array
             ],
         ],
         'dates_ass' => [
-            'one'       => $dateTime,
-            'two'       => $dateTime,
-            'dates'     => [
+            'one'   => $dateTime,
+            'two'   => $dateTime,
+            'dates' => [
                 $dateTime,
                 $dateTime,
             ],

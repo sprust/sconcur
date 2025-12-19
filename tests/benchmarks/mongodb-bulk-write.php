@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 use SConcur\Entities\Context;
-use SConcur\Features\Mongodb\MongodbFeature;
+use SConcur\Features\Features;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
@@ -13,9 +13,6 @@ require_once __DIR__ . '/_benchmarker.php';
 
 $benchmarker = new Benchmarker(
     name: 'mongodb-bulk-write',
-    total: (int) ($_SERVER['argv'][1] ?? 5),
-    timeout: (int) ($_SERVER['argv'][2] ?? 2),
-    limitCount: (int) ($_SERVER['argv'][3] ?? 0),
 );
 
 $uri = TestMongodbUriResolver::get();
@@ -43,21 +40,23 @@ $sconcurOperations = makeOperations(
     dateTime: new UTCDateTime()
 );
 
+$feature = Features::mongodb(
+    connection: $connection,
+);
+
 $benchmarker->run(
     nativeCallback: static function () use ($collection, $nativeOperations) {
         return $collection->bulkWrite($nativeOperations);
     },
-    syncCallback: static function (Context $context) use ($connection, $sconcurOperations) {
-        return MongodbFeature::bulkWrite(
+    syncCallback: static function (Context $context) use ($feature, $sconcurOperations) {
+        return $feature->bulkWrite(
             context: $context,
-            connection: $connection,
             operations: $sconcurOperations
         );
     },
-    asyncCallback: static function (Context $context) use ($connection, $sconcurOperations) {
-        return MongodbFeature::bulkWrite(
+    asyncCallback: static function (Context $context) use ($feature, $sconcurOperations) {
+        return $feature->bulkWrite(
             context: $context,
-            connection: $connection,
             operations: $sconcurOperations
         );
     }
@@ -75,10 +74,10 @@ function makeOperations(mixed $objectId, mixed $dateTime): array
                     'upserted' => false,
                 ],
                 [
-                    '$set'         => [
+                    '$set' => [
                         'objectId' => $objectId,
-                        'dtStart' => $dateTime,
-                        'dtEnd'   => $dateTime,
+                        'dtStart'  => $dateTime,
+                        'dtEnd'    => $dateTime,
                     ],
                     '$setOnInsert' => [
                         'createdAt' => $dateTime,
@@ -93,7 +92,7 @@ function makeOperations(mixed $objectId, mixed $dateTime): array
                     'upserted' => true,
                 ],
                 [
-                    '$set'         => [
+                    '$set' => [
                         'dtStart' => $dateTime,
                         'dtEnd'   => $dateTime,
                     ],
@@ -113,7 +112,7 @@ function makeOperations(mixed $objectId, mixed $dateTime): array
                     'upserted_many' => false,
                 ],
                 [
-                    '$set'         => [
+                    '$set' => [
                         'dtStart' => $dateTime,
                         'dtEnd'   => $dateTime,
                     ],
@@ -130,7 +129,7 @@ function makeOperations(mixed $objectId, mixed $dateTime): array
                     'upserted_many' => true,
                 ],
                 [
-                    '$set'         => [
+                    '$set' => [
                         'dtStart' => $dateTime,
                         'dtEnd'   => $dateTime,
                     ],

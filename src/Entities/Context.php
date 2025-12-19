@@ -4,117 +4,42 @@ declare(strict_types=1);
 
 namespace SConcur\Entities;
 
-use SConcur\Contracts\ContextCheckerInterface;
-use SConcur\Exceptions\ContextCheckerException;
-use Throwable;
+use SConcur\Exceptions\InvalidValueException;
+use SConcur\Exceptions\TimeoutException;
 
 class Context
 {
-    /**
-     * @var array<string, mixed>
-     */
-    protected array $values = [];
+    public float $timeout;
+    public float $startTime;
 
-    /**
-     * @var array<class-string<ContextCheckerInterface>, ContextCheckerInterface>
-     */
-    protected array $checkers = [];
-
-    public function addValue(string $key, mixed $value): static
+    protected function __construct(int $timeoutSeconds)
     {
-        $this->values[$key] = $value;
-
-        return $this;
-    }
-
-    public function getValue(string $key): mixed
-    {
-        if (!array_key_exists($key, $this->values)) {
-            return null;
+        if ($timeoutSeconds < 1) {
+            throw new InvalidValueException(
+                'Timeout seconds must be greater than 0'
+            );
         }
 
-        $value = $this->values[$key];
-
-        if (is_null($value)) {
-            return null;
-        }
-
-        if (is_callable($value)) {
-            return $value();
-        }
-
-        return $value;
+        $this->timeout   = (float) $timeoutSeconds;
+        $this->startTime = microtime(true);
     }
 
-    /**
-     * @return array<string, mixed>
-     */
-    public function getValues(): array
+    public static function create(int $timeoutSeconds): Context
     {
-        $context = [];
-
-        foreach ($this->values as $key => $serializedValue) {
-            $context[$key] = $this->getValue($key);
-        }
-
-        return $context;
+        return new Context(
+            timeoutSeconds: $timeoutSeconds
+        );
     }
 
-    public function hasValue(string $key): bool
-    {
-        return array_key_exists($key, $this->values);
-    }
-
-    public function deleteValue(string $key): void
-    {
-        unset($this->values[$key]);
-    }
-
-    public function clearValues(): void
-    {
-        $this->values = [];
-    }
-
-    public function setChecker(ContextCheckerInterface $checker): static
-    {
-        $this->checkers[$checker::class] = $checker;
-
-        return $this;
-    }
-
-    /**
-     * @param class-string<ContextCheckerInterface> $checkerClass
-     */
-    public function hasChecker(string $checkerClass): bool
-    {
-        return array_key_exists($checkerClass, $this->checkers);
-    }
-
-    /**
-     * @throws ContextCheckerException
-     */
     public function check(): void
     {
-        foreach ($this->checkers as $checker) {
-            try {
-                $checker->check();
-            } catch (Throwable $exception) {
-                throw new ContextCheckerException(
-                    checker: $checker,
-                    exception: $exception
-                );
-            }
+        if ((microtime(true) - $this->startTime) > $this->timeout) {
+            throw new TimeoutException();
         }
     }
 
-    public function clearCheckers(): void
+    public function getRemainMs(): int
     {
-        $this->checkers = [];
-    }
-
-    public function clear(): void
-    {
-        $this->clearValues();
-        $this->clearCheckers();
+        return (int) (($this->timeout - (microtime(true) - $this->startTime)) * 1000);
     }
 }

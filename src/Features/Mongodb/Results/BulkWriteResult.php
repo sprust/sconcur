@@ -6,7 +6,7 @@ namespace SConcur\Features\Mongodb\Results;
 
 use SConcur\Features\Mongodb\Types\ObjectId;
 
-class BulkWriteResult
+readonly class BulkWriteResult
 {
     /**
      * @param array<ObjectId|string|int|float|null> $upsertedIds
@@ -19,43 +19,5 @@ class BulkWriteResult
         public int $upsertedCount,
         public array $upsertedIds,
     ) {
-    }
-
-    public function getDeletedCount(): int
-    {
-        return $this->deletedCount;
-    }
-
-    public function getInsertedCount(): int
-    {
-        return $this->insertedCount;
-    }
-
-    public function getMatchedCount(): int
-    {
-        return $this->matchedCount;
-    }
-
-    public function getModifiedCount(): int
-    {
-        return $this->modifiedCount;
-    }
-
-    public function getUpsertedCount(): int
-    {
-        return $this->upsertedCount;
-    }
-
-    /**
-     * @return array<string|int|float|null>
-     */
-    public function getUpsertedIds(): array
-    {
-        return $this->upsertedIds;
-    }
-
-    public function isAcknowledged(): true
-    {
-        return true;
     }
 }

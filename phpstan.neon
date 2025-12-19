@@ -1,5 +1,11 @@
 parameters:
     paths:
         - ./src
-        - ./tests
+        - ./tests/feature
     level: 6
+
+    ignoreErrors:
+        -
+            messages:
+                - '#unction SConcur\\Extension\\(cancelTask|count|destroy|push|stopFlow|wait) not found#'
+                - '#generic class Fiber [\s\S]* not specify its types: TStart, TResume, TReturn, TSuspend#'

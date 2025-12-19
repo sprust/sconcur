@@ -5,33 +5,37 @@ declare(strict_types=1);
 namespace SConcur\Features\Mongodb\Results;
 
 use Iterator;
+use LogicException;
 use RuntimeException;
-use SConcur\Contracts\FlowInterface;
 use SConcur\Entities\Context;
-use SConcur\Exceptions\ContinueException;
-use SConcur\Exceptions\FeatureResultNotFoundException;
 use SConcur\Features\MethodEnum;
-use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
-use SConcur\SConcur;
+use SConcur\Flow\Flow;
+use SConcur\State;
 
+/**
+ * @implements Iterator<int, array<int|string|float|bool|null, mixed>>
+ */
+// TODO: implement rewind
 class AggregateResult implements Iterator
 {
-    protected const RESULT_KEY = '_result';
+    protected const string RESULT_KEY = '_result';
 
-    protected ?FlowInterface $currentFlow = null;
-    protected string $taskKey;
+    protected ?Flow $currentFlow = null;
+    protected ?string $taskKey   = null;
 
-    protected ?array $items = null;
-    protected mixed $currentKey = null;
+    /**
+     * @var array<int, array<int|string|float|bool|null, mixed>>|null
+     */
+    protected ?array $items       = null;
+    protected mixed $currentKey   = null;
     protected mixed $currentValue = null;
 
     protected bool $isLastBatch = false;
-    protected bool $isFinished = false;
+    protected bool $isFinished  = false;
 
     public function __construct(
         protected Context $context,
-        protected ConnectionParameters $connection,
         protected string $payload,
     ) {
         $this->next();
@@ -42,10 +46,6 @@ class AggregateResult implements Iterator
         return $this->currentValue;
     }
 
-    /**
-     * @throws FeatureResultNotFoundException
-     * @throws ContinueException
-     */
     public function next(): void
     {
         if ($this->isFinished) {
@@ -55,9 +55,9 @@ class AggregateResult implements Iterator
         if ($this->items === null) {
             // first iteration
             if ($this->currentFlow === null) {
-                $this->currentFlow = SConcur::getCurrentFlow();
+                $this->currentFlow = State::getCurrentFlow();
 
-                $taskResult = $this->currentFlow->pushTask(
+                $taskResult = $this->currentFlow->exec(
                     context: $this->context,
                     method: MethodEnum::Mongodb,
                     payload: $this->payload
@@ -65,10 +65,21 @@ class AggregateResult implements Iterator
 
                 $this->taskKey = $taskResult->key;
             } else {
-                $taskResult = SConcur::waitResult(
-                    context: $this->context,
-                    taskKey: $this->taskKey
-                );
+                if ($this->currentFlow->isAsync()) {
+                    $taskResult = $this->currentFlow->suspend();
+                } else {
+                    $taskResult = $this->currentFlow->wait(
+                        context: $this->context,
+                    );
+
+                    $this->currentFlow->checkResult(result: $taskResult);
+                }
+
+                if ($taskResult->key !== $this->taskKey) {
+                    throw new LogicException(
+                        message: 'Unexpected task key'
+                    );
+                }
             }
 
             $this->isLastBatch = !$taskResult->hasNext;
@@ -78,14 +89,13 @@ class AggregateResult implements Iterator
             )[static::RESULT_KEY];
         }
 
-        if (count($this->items) === 0) {
+        if (count($this->items ?: []) === 0) {
             if (!$this->isLastBatch) {
                 throw new RuntimeException(
                     'Unexpected end of result'
                 );
             }
 
-            $this->rewind();
             $this->isFinished = true;
 
             return;

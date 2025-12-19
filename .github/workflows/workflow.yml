@@ -1,0 +1,42 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build in Docker
+        run: |
+          # Собираем образ из вашего Dockerfile
+          docker build -t builder -f docker/release/Dockerfile .
+          
+          # Running the build inside the container
+          # Mount the current directory and run the script
+          docker run --rm -v $(pwd):/app -w /app builder sh ./ext-build.sh
+
+      - name: Create Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # We delete Latest tag if it exists
+          git tag -d latest || true
+          git push origin :refs/tags/latest || true
+          # We create a new tag
+          git tag -f latest
+          git push -f origin latest
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ./ext/build/sconcur.so
+          tag_name: latest
+          name: Latest Build
+          body: Automatically collected latest version
+          token: ${{ secrets.GITHUB_TOKEN }}

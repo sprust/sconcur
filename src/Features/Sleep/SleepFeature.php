@@ -6,26 +6,22 @@ namespace SConcur\Features\Sleep;
 
 use SConcur\Entities\Context;
 use SConcur\Features\MethodEnum;
-use SConcur\SConcur;
+use SConcur\State;
 
 readonly class SleepFeature
 {
-    private function __construct()
+    public function sleep(Context $context, int $seconds): void
     {
+        $this->usleep(context: $context, milliseconds: $seconds * 1_000);
     }
 
-    public static function sleep(Context $context, int $seconds): void
+    public function usleep(Context $context, int $milliseconds): void
     {
-        static::usleep(context: $context, microseconds: $seconds * 1_000_000);
-    }
-
-    public static function usleep(Context $context, int $microseconds): void
-    {
-        SConcur::getCurrentFlow()->pushTask(
+        State::getCurrentFlow()->exec(
             context: $context,
             method: MethodEnum::Sleep,
             payload: json_encode([
-                'ms' => $microseconds,
+                'ms' => $milliseconds,
             ])
         );
     }

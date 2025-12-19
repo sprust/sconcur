@@ -1,38 +1,36 @@
 <?php
 
 use SConcur\Entities\Context;
-use SConcur\Entities\Timer;
 use SConcur\Exceptions\AlreadyRunningException;
-use SConcur\Exceptions\ContextCheckerException;
-use SConcur\Exceptions\FiberNotFoundByTaskKeyException;
-use SConcur\Exceptions\ResumeException;
-use SConcur\Exceptions\StartException;
-use SConcur\SConcur;
-use SConcur\Tests\Impl\TestContainer;
+use SConcur\Exceptions\InvalidValueException;
+use SConcur\Exceptions\TimeoutException;
+use SConcur\Tests\Impl\TestApplication;
+use SConcur\WaitGroup;
 
 ini_set('memory_limit', '1024M');
 
 require_once __DIR__ . '/../../vendor/autoload.php';
 require_once __DIR__ . '/_benchmarker.php';
 
-TestContainer::resolve();
+TestApplication::init();
 
 readonly class Benchmarker
 {
-    public function __construct(
-        private string $name,
-        private int $total,
-        private int $timeout,
-        private int $limitCount,
-    ) {
+    private int $total;
+    private int $timeout;
+    private int $limitCount;
+
+    public function __construct(private string $name)
+    {
+        $this->total      = (int) ($_SERVER['argv'][1] ?? 5);
+        $this->timeout    = (int) ($_SERVER['argv'][2] ?? 2);
+        $this->limitCount = (int) ($_SERVER['argv'][3] ?? 0);
     }
 
     /**
      * @throws AlreadyRunningException
-     * @throws ContextCheckerException
-     * @throws FiberNotFoundByTaskKeyException
-     * @throws ResumeException
-     * @throws StartException
+     * @throws TimeoutException
+     * @throws InvalidValueException
      */
     public function run(
         ?Closure $nativeCallback = null,
@@ -110,9 +108,7 @@ readonly class Benchmarker
 
             $start = microtime(true);
 
-            $context = (new Context())->setChecker(
-                new Timer(timeoutSeconds: $this->timeout)
-            );
+            $context = Context::create($this->timeout);
 
             $keys = array_keys($syncCallbacks);
 
@@ -142,14 +138,24 @@ readonly class Benchmarker
 
             $start = microtime(true);
 
-            $generator = SConcur::run(
-                callbacks: $asyncCallbacks,
-                timeoutSeconds: $this->timeout,
-                limitCount: $this->limitCount,
-            );
+            $context = Context::create($this->timeout);
 
-            foreach ($generator as $result) {
-                $key = "$this->name: $result->key";
+            $waitGroup = WaitGroup::create($context);
+
+            $callbackKeys = [];
+
+            foreach ($asyncCallbacks as $key => $callback) {
+                $taskKey = $waitGroup->add(callback: $callback);
+
+                $callbackKeys[$taskKey] = $key;
+            }
+
+            $generator = $waitGroup->waitResults();
+
+            foreach ($generator as $key => $result) {
+                $callbackKey = $callbackKeys[$key];
+
+                $key = "$this->name: $callbackKey";
 
                 echo "success: $key\n";
             }
@@ -162,5 +168,7 @@ readonly class Benchmarker
         echo "Thr limit:\t$this->limitCount\n";
         echo "Mem peak native/sync/async:\t$nativeMemPeak/$syncMemPeak/$asyncMemPeak\n";
         echo "Total time native/sync/async:\t$nativeTotalTime/$syncTotalTime/$asyncTotalTime\n";
+        echo "--------------------------------------------------------------------------\n";
+        echo "--------------------------------------------------------------------------\n";
     }
 }
