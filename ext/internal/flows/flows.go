@@ -6,7 +6,7 @@ import (
 )
 
 type Flows struct {
-	mutex sync.Mutex
+	mutex sync.RWMutex
 	flows map[string]*Flow
 }
 
@@ -32,8 +32,8 @@ func (f *Flows) InitFlow(flowKey string) *Flow {
 }
 
 func (f *Flows) GetFlow(flowKey string) (*Flow, error) {
-	f.mutex.Lock()
-	defer f.mutex.Unlock()
+	f.mutex.RLock()
+	defer f.mutex.RUnlock()
 
 	flow, ok := f.flows[flowKey]
 
@@ -60,6 +60,9 @@ func (f *Flows) DeleteFlow(flowKey string) {
 }
 
 func (f *Flows) GetTasksCount() int {
+	f.mutex.RLock()
+	defer f.mutex.RUnlock()
+
 	var count int
 
 	for _, flow := range f.flows {
@@ -70,6 +73,9 @@ func (f *Flows) GetTasksCount() int {
 }
 
 func (f *Flows) Cancel() {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+
 	for _, flow := range f.flows {
 		flow.GetTasks().Cancel()
 		flow.Cancel()

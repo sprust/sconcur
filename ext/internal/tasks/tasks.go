@@ -7,7 +7,7 @@ import (
 )
 
 type Tasks struct {
-	mutex     sync.Mutex
+	mutex     sync.RWMutex
 	active    map[string]*Task
 	results   chan *dto.Result
 	cancelled bool
@@ -39,14 +39,17 @@ func (t *Tasks) AddMessage(msg *dto.Message) *Task {
 }
 
 func (t *Tasks) AddResult(res *dto.Result) {
-	t.mutex.Lock()
-	defer t.mutex.Unlock()
+	t.mutex.RLock()
 
 	if t.cancelled {
+		t.mutex.RUnlock()
+
 		return
 	}
 
 	exist, ok := t.active[res.TaskKey]
+
+	t.mutex.RUnlock()
 
 	if !ok {
 		return

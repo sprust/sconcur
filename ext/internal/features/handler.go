@@ -42,9 +42,9 @@ func (h *Handler) Push(msg *dto.Message) error {
 	flow := h.flows.InitFlow(msg.FlowKey)
 
 	taskGroup := flow.GetTasks()
+	task := taskGroup.AddMessage(msg)
 
 	go func() {
-		task := taskGroup.AddMessage(msg)
 		defer taskGroup.CancelTask(msg.TaskKey)
 
 		go handler.Handle(task)
@@ -79,7 +79,7 @@ func (h *Handler) Wait(flowKey string, timeoutMs int64) (string, error) {
 		return "", errors.New("timeout must be greater than 0")
 	}
 
-	timer := time.NewTimer(time.Duration(timeoutMs) * time.Millisecond)
+	timer := time.NewTicker(time.Duration(timeoutMs) * time.Millisecond)
 	defer timer.Stop()
 
 	flow, err := h.flows.GetFlow(flowKey)

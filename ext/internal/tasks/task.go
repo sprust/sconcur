@@ -37,11 +37,14 @@ func (t *Task) Msg() *dto.Message {
 
 func (t *Task) AddResult(result *dto.Result) {
 	t.mutex.Lock()
-	defer t.mutex.Unlock()
 
 	if t.cancelled {
+		t.mutex.Unlock()
+
 		return
 	}
+
+	t.mutex.Unlock()
 
 	t.results <- result
 }
@@ -52,9 +55,10 @@ func (t *Task) Results() chan *dto.Result {
 
 func (t *Task) Cancel() {
 	t.mutex.Lock()
-	defer t.mutex.Unlock()
 
 	if t.cancelled {
+		t.mutex.Unlock()
+
 		return
 	}
 
@@ -62,4 +66,6 @@ func (t *Task) Cancel() {
 	close(t.results)
 
 	t.cancelled = true
+
+	t.mutex.Unlock()
 }
