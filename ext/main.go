@@ -6,14 +6,14 @@ package main
 import "C"
 import (
 	"sconcur/internal/dto"
-	"sconcur/internal/features"
+	handler2 "sconcur/internal/handler"
 	"sconcur/internal/types"
 )
 
-var handler *features.Handler
+var handler *handler2.Handler
 
 func init() {
-	handler = features.NewHandler()
+	handler = handler2.NewHandler()
 }
 
 //export ping
@@ -53,11 +53,6 @@ func wait(fk *C.char, ms int64) *C.char {
 //export count
 func count() int {
 	return handler.GetTasksCount()
-}
-
-//export cancelTask
-func cancelTask(fk *C.char, tk *C.char) {
-	handler.CancelTask(C.GoString(fk), C.GoString(tk))
 }
 
 //export stopFlow

@@ -132,13 +132,4 @@ class AggregateResult implements Iterator
     public function rewind(): void
     {
     }
-
-    public function __destruct()
-    {
-        if ($this->taskKey) {
-            $this->currentFlow?->cancelTask(
-                taskKey: $this->taskKey
-            );
-        }
-    }
 }

@@ -1,6 +1,7 @@
 package flows
 
 import (
+	"context"
 	"errors"
 	"sync"
 )
@@ -16,14 +17,14 @@ func NewFlows() *Flows {
 	}
 }
 
-func (f *Flows) InitFlow(flowKey string) *Flow {
+func (f *Flows) InitFlow(handlerCtx context.Context, flowKey string) *Flow {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
 	flow, ok := f.flows[flowKey]
 
 	if !ok {
-		flow = NewFlow(flowKey)
+		flow = NewFlow(handlerCtx, flowKey)
 
 		f.flows[flowKey] = flow
 	}
@@ -54,7 +55,6 @@ func (f *Flows) DeleteFlow(flowKey string) {
 		return
 	}
 
-	flow.GetTasks().Cancel()
 	flow.Cancel()
 	delete(f.flows, flowKey)
 }
@@ -66,7 +66,7 @@ func (f *Flows) GetTasksCount() int {
 	var count int
 
 	for _, flow := range f.flows {
-		count += flow.GetTasks().Count()
+		count += flow.Count()
 	}
 
 	return count
@@ -77,7 +77,6 @@ func (f *Flows) Cancel() {
 	defer f.mutex.Unlock()
 
 	for _, flow := range f.flows {
-		flow.GetTasks().Cancel()
 		flow.Cancel()
 	}
 

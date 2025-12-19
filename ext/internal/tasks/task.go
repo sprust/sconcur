@@ -16,56 +16,32 @@ type Task struct {
 	cancelled bool
 }
 
-func NewTask(msg *dto.Message) *Task {
-	ctx, cancel := context.WithCancel(context.Background())
+func NewTask(
+	flowCtx context.Context,
+	results chan *dto.Result,
+	msg *dto.Message,
+) *Task {
+	ctx, cancel := context.WithCancel(flowCtx)
 
 	return &Task{
 		msg:       msg,
 		ctx:       ctx,
 		ctxCancel: cancel,
-		results:   make(chan *dto.Result),
+		results:   results,
 	}
 }
 
-func (t *Task) Ctx() context.Context {
+func (t *Task) GetContext() context.Context {
 	return t.ctx
 }
 
-func (t *Task) Msg() *dto.Message {
+func (t *Task) GetMessage() *dto.Message {
 	return t.msg
 }
 
 func (t *Task) AddResult(result *dto.Result) {
-	t.mutex.Lock()
-
-	if t.cancelled {
-		t.mutex.Unlock()
-
-		return
+	select {
+	case t.results <- result:
+	case <-t.ctx.Done():
 	}
-
-	t.mutex.Unlock()
-
-	t.results <- result
-}
-
-func (t *Task) Results() chan *dto.Result {
-	return t.results
-}
-
-func (t *Task) Cancel() {
-	t.mutex.Lock()
-
-	if t.cancelled {
-		t.mutex.Unlock()
-
-		return
-	}
-
-	t.ctxCancel()
-	close(t.results)
-
-	t.cancelled = true
-
-	t.mutex.Unlock()
 }

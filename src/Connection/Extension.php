@@ -13,7 +13,6 @@ use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\MethodEnum;
 use Throwable;
-use function SConcur\Extension\cancelTask;
 use function SConcur\Extension\count;
 use function SConcur\Extension\destroy;
 use function SConcur\Extension\push;
@@ -99,11 +98,6 @@ class Extension
     public function count(): int
     {
         return count();
-    }
-
-    public function cancelTask(string $flowKey, string $taskKey): void
-    {
-        cancelTask($flowKey, $taskKey);
     }
 
     public function stopFlow(string $flowKey): void

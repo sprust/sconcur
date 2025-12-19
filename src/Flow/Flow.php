@@ -120,14 +120,6 @@ class Flow
         return $this->isAsync;
     }
 
-    public function cancelTask(string $taskKey): void
-    {
-        Extension::get()->cancelTask(
-            flowKey: $this->key,
-            taskKey: $taskKey
-        );
-    }
-
     public function stop(): void
     {
         Extension::get()->stopFlow($this->key);

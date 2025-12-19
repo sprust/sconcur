@@ -8,7 +8,6 @@
  *  - push(string flowKey, int method, string taskKey, string payloadJSON)
  *  - wait(string flowKey, int ms)
  *  - count()
- *  - cancelTask(string flowKey, string taskKey)
  *  - stopFlow(string flowKey)
  *  - destroy()
  */
@@ -35,12 +34,6 @@ ZEND_END_ARG_INFO()
 
 // count()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_count, 0, 0, 0)
-ZEND_END_ARG_INFO()
-
-// cancelTask(string flowKey, string taskKey)
-ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_cancelTask, 0, 0, 2)
-    ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
-    ZEND_ARG_TYPE_INFO(0, taskKey, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
 // stopFlow(string flowKey)
@@ -108,21 +101,6 @@ PHP_FUNCTION(wait)
     free(response);
 }
 
-
-// PHP: SConcur\Extension\cancelTask(string $flowKey, string $taskKey): void
-PHP_FUNCTION(cancelTask)
-{
-    char *flow_key = NULL, *task_key = NULL;
-    size_t flow_key_len, task_key_len;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "ss", &flow_key, &flow_key_len, &task_key, &task_key_len) == FAILURE) {
-        RETURN_THROWS();
-    }
-
-    cancelTask(flow_key, task_key);
-    RETURN_NULL();
-}
-
 // PHP: SConcur\Extension\count(): int
 PHP_FUNCTION(count)
 {
@@ -166,7 +144,6 @@ static const zend_function_entry sconcur_functions[] = {
     ZEND_NS_FE("SConcur\\Extension", ping, arginfo_sconcur_ping)
     ZEND_NS_FE("SConcur\\Extension", push, arginfo_sconcur_push)
     ZEND_NS_FE("SConcur\\Extension", wait, arginfo_sconcur_wait)
-    ZEND_NS_FE("SConcur\\Extension", cancelTask, arginfo_sconcur_cancelTask)
     ZEND_NS_FE("SConcur\\Extension", count, arginfo_sconcur_count)
     ZEND_NS_FE("SConcur\\Extension", stopFlow, arginfo_sconcur_stopFlow)
     ZEND_NS_FE("SConcur\\Extension", destroy, arginfo_sconcur_destroy)

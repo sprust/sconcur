@@ -4,16 +4,16 @@ import (
 	"fmt"
 	"log"
 	"sconcur/internal/dto"
-	"sconcur/internal/features"
+	handler2 "sconcur/internal/handler"
 	"sconcur/internal/types"
 	"time"
 )
 
-var handler *features.Handler
+var handler *handler2.Handler
 
 func main() {
 	// Initialize handler
-	handler = features.NewHandler()
+	handler = handler2.NewHandler()
 	defer handler.Destroy()
 
 	// Test flow 1: Sleep feature
@@ -24,16 +24,8 @@ func main() {
 	fmt.Println("\n=== Test Flow 2: Multiple Tasks ===")
 	testMultipleTasks()
 
-	// Test flow 3: Cancel task
-	fmt.Println("\n=== Test Flow 3: Cancel Task ===")
-	testCancelTask()
-
-	// Test flow 4: Stop flow
-	fmt.Println("\n=== Test Flow 4: Stop Flow ===")
-	testStopFlow()
-
-	// Test flow 5: Stop flow
-	fmt.Println("\n=== Test Flow 5: Stop Flow ===")
+	// Test flow 3: Stop flow
+	fmt.Println("\n=== Test Flow 3: Stop Flow ===")
 	testStopFlow()
 
 	// Show final task count
@@ -102,41 +94,6 @@ func testMultipleTasks() {
 		}
 
 		fmt.Printf("Result %d: %s\n", i, result)
-	}
-
-	fmt.Printf("Task count: %d\n", handler.GetTasksCount())
-}
-
-func testCancelTask() {
-	flowKey := "flow3"
-	taskKey := "task_cancel"
-
-	msg := &dto.Message{
-		FlowKey: flowKey,
-		Method:  types.Method(1),
-		TaskKey: taskKey,
-		Payload: `{"duration": 2000}`,
-	}
-
-	err := handler.Push(msg)
-	if err != nil {
-		log.Printf("Error pushing task: %v\n", err)
-		return
-	}
-
-	fmt.Printf("Pushed task: %s\n", taskKey)
-
-	// Cancel task after short delay
-	time.Sleep(100 * time.Millisecond)
-	handler.CancelTask(flowKey, taskKey)
-	fmt.Printf("Cancelled task: %s\n", taskKey)
-
-	// Try to wait (should fail or timeout quickly)
-	result, err := handler.Wait(flowKey, 1000)
-	if err != nil {
-		fmt.Printf("Expected error after cancel: %v\n", err)
-	} else {
-		fmt.Printf("Unexpected result: %s\n", result)
 	}
 
 	fmt.Printf("Task count: %d\n", handler.GetTasksCount())

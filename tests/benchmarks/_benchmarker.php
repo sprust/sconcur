@@ -168,5 +168,7 @@ readonly class Benchmarker
         echo "Thr limit:\t$this->limitCount\n";
         echo "Mem peak native/sync/async:\t$nativeMemPeak/$syncMemPeak/$asyncMemPeak\n";
         echo "Total time native/sync/async:\t$nativeTotalTime/$syncTotalTime/$asyncTotalTime\n";
+        echo "--------------------------------------------------------------------------\n";
+        echo "--------------------------------------------------------------------------\n";
     }
 }

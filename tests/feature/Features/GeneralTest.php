@@ -7,7 +7,6 @@ use SConcur\Entities\Context;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Features\Features;
 use SConcur\Features\Sleep\SleepFeature;
-use SConcur\State;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\WaitGroup;
 
@@ -251,45 +250,6 @@ class GeneralTest extends BaseTestCase
         self::assertEquals(
             $callbacksCount,
             $resultsCount
-        );
-    }
-
-    // TODO
-    // public function testCancelTask(): void
-    public function cancelTask(): void
-    {
-        $context = Context::create(timeoutSeconds: 1);
-
-        $waitGroup = WaitGroup::create($context);
-
-        $taskKey = $waitGroup->add(callback: function (Context $context) {
-            $this->sleepFeature->usleep(context: $context, milliseconds: 1000);
-        });
-
-        $waitGroup->add(callback: function () use ($taskKey) {
-            $flow = State::getCurrentFlow();
-
-            self::assertTrue($flow->isAsync());
-
-            $this->extension->cancelTask(
-                flowKey: $flow->getKey(),
-                taskKey: $taskKey
-            );
-        });
-
-        $exception = null;
-
-        try {
-            $waitGroup->waitAll();
-        } catch (TaskErrorException $exception) {
-            //
-        }
-
-        self::assertFalse(is_null($exception));
-
-        self::assertStringContainsString(
-            'timeout waiting for task completion',
-            $exception->getMessage()
         );
     }
 

@@ -21,7 +21,7 @@ func New() *Feature {
 }
 
 func (s *Feature) Handle(task *tasks.Task) {
-	message := task.Msg()
+	message := task.GetMessage()
 
 	var payload SleepPayload
 
@@ -50,7 +50,7 @@ func (s *Feature) Handle(task *tasks.Task) {
 	}
 
 	select {
-	case <-task.Ctx().Done():
+	case <-task.GetContext().Done():
 		task.AddResult(
 			dto.NewErrorResult(
 				message,

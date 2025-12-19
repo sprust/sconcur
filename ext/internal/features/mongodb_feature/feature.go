@@ -33,7 +33,7 @@ func New(connections *connections.Connections) *Feature {
 }
 
 func (f *Feature) Handle(task *tasks.Task) {
-	message := task.Msg()
+	message := task.GetMessage()
 
 	var payload Payload
 
@@ -50,7 +50,7 @@ func (f *Feature) Handle(task *tasks.Task) {
 		return
 	}
 
-	ctx := task.Ctx()
+	ctx := task.GetContext()
 
 	collection, err := f.connections.Get(
 		ctx,

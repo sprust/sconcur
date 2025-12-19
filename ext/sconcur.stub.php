@@ -18,10 +18,6 @@ function count(): int
 {
 }
 
-function cancelTask(string $fk, string $tk): void
-{
-}
-
 function stopFlow(string $fk): void
 {
 }
