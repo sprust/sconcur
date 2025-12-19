@@ -8,6 +8,7 @@ use SConcur\Entities\Context;
 use SConcur\Features\Features;
 use SConcur\Features\Sleep\SleepFeature;
 use SConcur\Tests\Feature\BaseAsyncTestCase;
+use Throwable;
 
 class SleepTest extends BaseAsyncTestCase
 {
@@ -46,6 +47,16 @@ class SleepTest extends BaseAsyncTestCase
     protected function on_iterate(Context $context): void
     {
         $this->sleepFeature->usleep(context: $context, milliseconds: 1);
+    }
+
+    protected function on_exception(Context $context): void
+    {
+        $this->sleepFeature->usleep(context: $context, milliseconds: -1);
+    }
+
+    protected function assertException(Throwable $exception): void
+    {
+        self::assertTrue(str_contains($exception->getMessage(), 'sleep:'));
     }
 
     protected function assertResult(array $results): void

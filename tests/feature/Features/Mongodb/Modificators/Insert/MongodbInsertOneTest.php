@@ -8,7 +8,6 @@ use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbTestCase;
-use Throwable;
 
 class MongodbInsertOneTest extends BaseMongodbTestCase
 {
@@ -67,19 +66,14 @@ class MongodbInsertOneTest extends BaseMongodbTestCase
             context: Context::create(2),
             document: [$this->fieldName => $this->fieldValue]
         );
+    }
 
-        $exception = null;
-
-        try {
-            $this->feature->insertOne(
-                context: Context::create(2),
-                document: [[$this->fieldName => $this->fieldValue]]
-            );
-        } catch (Throwable $exception) {
-            //
-        }
-
-        self::assertMongodbException($exception);
+    protected function on_exception(Context $context): void
+    {
+        $this->feature->insertOne(
+            context: Context::create(2),
+            document: [[$this->fieldName => $this->fieldValue]]
+        );
     }
 
     protected function assertResult(array $results): void

@@ -7,7 +7,6 @@ namespace SConcur\Tests\Feature\Features\Mongodb\Modificators\Insert;
 use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbTestCase;
-use Throwable;
 
 class MongodbInsertManyTest extends BaseMongodbTestCase
 {
@@ -17,6 +16,7 @@ class MongodbInsertManyTest extends BaseMongodbTestCase
     protected ObjectId $fieldValue;
 
     protected int $documentsCount;
+    protected int $expectedDocumentsCount;
 
     protected function setUp(): void
     {
@@ -27,7 +27,8 @@ class MongodbInsertManyTest extends BaseMongodbTestCase
         $this->fieldName  = uniqid();
         $this->fieldValue = new ObjectId('693a7119e9d4885085366c80');
 
-        $this->documentsCount = 3;
+        $this->documentsCount         = 3;
+        $this->expectedDocumentsCount = 18;
     }
 
     protected function on_1_start(Context $context): void
@@ -53,26 +54,21 @@ class MongodbInsertManyTest extends BaseMongodbTestCase
     protected function on_iterate(Context $context): void
     {
         $this->insertDocuments();
+    }
 
-        $exception = null;
-
-        try {
-            $this->feature->insertMany(
-                context: Context::create(2),
-                /** @phpstan-ignore-next-line argument.type */
-                documents: [$this->fieldName => $this->fieldValue]
-            );
-        } catch (Throwable $exception) {
-            //
-        }
-
-        self::assertMongodbException($exception);
+    protected function on_exception(Context $context): void
+    {
+        $this->feature->insertMany(
+            context: $context,
+            /** @phpstan-ignore-next-line argument.type */
+            documents: [$this->fieldName => $this->fieldValue]
+        );
     }
 
     protected function assertResult(array $results): void
     {
         self::assertEquals(
-            $this->documentsCount * 6,
+            $this->expectedDocumentsCount,
             $this->driverCollection->countDocuments([$this->fieldName => $this->driverObjectId])
         );
     }

@@ -37,9 +37,8 @@ abstract class BaseMongodbTestCase extends BaseAsyncTestCase
         $this->driverCollection->deleteMany([]);
     }
 
-    protected static function assertMongodbException(?Throwable $exception): void
+    protected function assertException(Throwable $exception): void
     {
-        self::assertNotNull($exception);
         self::assertTrue(str_contains($exception->getMessage(), 'mongodb:'));
     }
 }

@@ -78,6 +78,15 @@ class MongodbAggregateTest extends BaseMongodbTestCase
         );
     }
 
+    protected function on_exception(Context $context): void
+    {
+        $this->feature->aggregate(
+            context: $context,
+            /** @phpstan-ignore-next-line argument.type */
+            pipeline: [$this->fieldName => $this->fieldValue],
+        );
+    }
+
     protected function assertResult(array $results): void
     {
         self::assertCount(

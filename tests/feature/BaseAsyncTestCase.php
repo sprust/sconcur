@@ -4,6 +4,7 @@ namespace SConcur\Tests\Feature;
 
 use SConcur\Entities\Context;
 use SConcur\WaitGroup;
+use Throwable;
 
 abstract class BaseAsyncTestCase extends BaseTestCase
 {
@@ -16,6 +17,10 @@ abstract class BaseAsyncTestCase extends BaseTestCase
     abstract protected function on_2_middle(Context $context): void;
 
     abstract protected function on_iterate(Context $context): void;
+
+    abstract protected function on_exception(Context $context): void;
+
+    abstract protected function assertException(Throwable $exception): void;
 
     /**
      * @param array<string, mixed> $results
@@ -52,7 +57,7 @@ abstract class BaseAsyncTestCase extends BaseTestCase
             },
         ];
 
-        $context = Context::create(timeoutSeconds: 1);
+        $context = Context::create(timeoutSeconds: 2);
 
         $waitGroup = WaitGroup::create($context);
 
@@ -75,12 +80,14 @@ abstract class BaseAsyncTestCase extends BaseTestCase
             $results
         );
 
+        $expectedStartEvents = [
+            '1:start',
+            '2:start',
+        ];
+
         self::assertSame(
-            [
-                '1:start',
-                '2:start',
-            ],
-            array_slice($events, 0, 2)
+            $expectedStartEvents,
+            array_slice($events, 0, count($expectedStartEvents))
         );
 
         $expectedEvents = [
@@ -98,6 +105,39 @@ abstract class BaseAsyncTestCase extends BaseTestCase
                 $events,
                 "Event '$expectedEvent' not found in events: " . implode(', ', $events)
             );
+        }
+
+        foreach ([true, false] as $isAsync) {
+            $exception = null;
+
+            if ($isAsync) {
+                $exceptionWaitGroup = WaitGroup::create($context);
+
+                $exceptionWaitGroup->add(
+                    callback: function (Context $context) {
+                        $this->on_exception($context);
+                    }
+                );
+
+                try {
+                    $exceptionWaitGroup->waitAll();
+                } catch (Throwable $exception) {
+                    //
+                }
+            } else {
+                try {
+                    $this->on_exception($context);
+                } catch (Throwable $exception) {
+                    //
+                }
+            }
+
+            self::assertFalse(
+                is_null($exception),
+                'Exception not fired for ' . ($isAsync ? 'async' : 'async') . ' case'
+            );
+
+            $this->assertException($exception);
         }
 
         $this->assertResult($results);
