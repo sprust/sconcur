@@ -31,6 +31,11 @@ class MongodbInsertManyTest extends BaseMongodbTestCase
         $this->expectedDocumentsCount = 18;
     }
 
+    protected function getCollectionName(): string
+    {
+        return 'insertMany';
+    }
+
     protected function on_1_start(Context $context): void
     {
         $this->insertDocuments();

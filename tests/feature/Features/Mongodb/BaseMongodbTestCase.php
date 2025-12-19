@@ -18,6 +18,8 @@ abstract class BaseMongodbTestCase extends BaseAsyncTestCase
     protected MongodbFeature $feature;
     protected Collection $driverCollection;
 
+    abstract protected function getCollectionName(): string;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -25,7 +27,7 @@ abstract class BaseMongodbTestCase extends BaseAsyncTestCase
         $connectionParameters = new ConnectionParameters(
             uri: TestMongodbUriResolver::get(),
             database: 'u-test',
-            collection: 'u-test',
+            collection: $this->getCollectionName(),
         );
 
         $this->driverCollection = new Client($connectionParameters->uri)

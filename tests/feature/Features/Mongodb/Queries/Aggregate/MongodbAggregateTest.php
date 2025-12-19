@@ -38,6 +38,11 @@ class MongodbAggregateTest extends BaseMongodbTestCase
         $this->results = [];
     }
 
+    protected function getCollectionName(): string
+    {
+        return 'aggregate';
+    }
+
     protected function on_1_start(Context $context): void
     {
         $this->aggregate(

@@ -26,6 +26,11 @@ class MongodbInsertOneTest extends BaseMongodbTestCase
         $this->fieldValue = new UTCDateTime($this->driverDateTime->toDateTime());
     }
 
+    protected function getCollectionName(): string
+    {
+        return 'insertOne';
+    }
+
     protected function on_1_start(Context $context): void
     {
         $insertResult = $this->feature->insertOne(
