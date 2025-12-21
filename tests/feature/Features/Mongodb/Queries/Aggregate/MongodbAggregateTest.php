@@ -115,7 +115,12 @@ class MongodbAggregateTest extends BaseMongodbTestCase
                 self::assertEquals(
                     $index,
                     $documentIndex,
-                    "Document index is not equal to expected index in order [$order]"
+                    sprintf(
+                        "Document index [%d] is not equal to expected index [%d] in order [%s]",
+                        $documentIndex,
+                        $index,
+                        $order
+                    )
                 );
             }
         }
