@@ -13,7 +13,7 @@ use SConcur\Tests\Feature\BaseAsyncTestCase;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
 use Throwable;
 
-abstract class BaseMongodbTestCase extends BaseAsyncTestCase
+abstract class BaseMongodbAsyncTestCase extends BaseAsyncTestCase
 {
     protected MongodbFeature $feature;
     protected Collection $driverCollection;

@@ -7,9 +7,9 @@ namespace SConcur\Tests\Feature\Features\Mongodb\Modificators\Insert;
 use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
-use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbTestCase;
+use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbAsyncTestCase;
 
-class MongodbInsertOneTest extends BaseMongodbTestCase
+class MongodbInsertOneAsyncTest extends BaseMongodbAsyncTestCase
 {
     protected \MongoDB\BSON\UTCDateTime $driverDateTime;
 

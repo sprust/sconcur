@@ -6,9 +6,9 @@ namespace SConcur\Tests\Feature\Features\Mongodb\Queries\Aggregate;
 
 use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Types\ObjectId;
-use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbTestCase;
+use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbAsyncTestCase;
 
-class MongodbAggregateTest extends BaseMongodbTestCase
+class MongodbAggregateAsyncTest extends BaseMongodbAsyncTestCase
 {
     protected \MongoDB\BSON\ObjectId $driverObjectId;
 
