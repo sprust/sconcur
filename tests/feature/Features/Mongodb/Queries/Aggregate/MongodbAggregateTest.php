@@ -123,6 +123,11 @@ class MongodbAggregateTest extends BaseMongodbTestCase
                     )
                 );
             }
+
+            self::assertEquals(
+                $this->documentsCount,
+                $index
+            );
         }
     }
 

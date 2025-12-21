@@ -64,11 +64,13 @@ class SleepTest extends BaseAsyncTestCase
         $totalTimeMs = (microtime(true) - $this->startTime) * 1000;
 
         self::assertTrue(
-            $totalTimeMs >= 20
+            $totalTimeMs >= 20,
+            "Total time is less than 20ms but $totalTimeMs"
         );
 
         self::assertTrue(
-            $totalTimeMs <= 30
+            $totalTimeMs <= 30,
+            "Total time is more than 30ms but $totalTimeMs"
         );
     }
 }

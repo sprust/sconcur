@@ -6,7 +6,6 @@ namespace SConcur\Features\Mongodb\Results;
 
 use Iterator;
 use LogicException;
-use RuntimeException;
 use SConcur\Entities\Context;
 use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
@@ -89,28 +88,16 @@ class AggregateResult implements Iterator
             )[static::RESULT_KEY];
         }
 
-        if (count($this->items ?: []) === 0) {
-            if (!$this->isLastBatch) {
-                throw new RuntimeException(
-                    'Unexpected end of result'
-                );
-            }
-
-            $this->isFinished = true;
-
-            return;
-        }
-
-        foreach ($this->items as $key => $value) {
+        foreach ($this->items ?: [] as $key => $value) {
             unset($this->items[$key]);
 
             $this->currentKey   = $key;
             $this->currentValue = $value;
 
-            break;
+            return;
         }
 
-        if (count($this->items) === 0) {
+        if (count($this->items ?: []) === 0) {
             $this->items = null;
 
             if ($this->isLastBatch) {
