@@ -9,7 +9,7 @@ use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbRangeTestCase;
 /**
  * @extends BaseMongodbRangeTestCase<int>
  */
-class IntMongodbRangeTest extends BaseMongodbRangeTestCase
+class MongodbIntRangeTest extends BaseMongodbRangeTestCase
 {
     protected function getType(): string
     {

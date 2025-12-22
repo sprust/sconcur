@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Tests\Feature\Features\Mongodb\Modificators\Insert;
+namespace SConcur\Tests\Feature\Features\Mongodb\Operations\Insert;
 
 use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Types\ObjectId;

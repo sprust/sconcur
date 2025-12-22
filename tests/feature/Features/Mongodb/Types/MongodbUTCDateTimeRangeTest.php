@@ -11,7 +11,7 @@ use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbRangeTestCase;
 /**
  * @extends BaseMongodbRangeTestCase<UTCDateTime>
  */
-class UTCDateTimeMongodbRangeTest extends BaseMongodbRangeTestCase
+class MongodbUTCDateTimeRangeTest extends BaseMongodbRangeTestCase
 {
     protected function getType(): string
     {

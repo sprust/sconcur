@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Tests\Feature\Features\Mongodb\Queries\Aggregate;
+namespace SConcur\Tests\Feature\Features\Mongodb\Operations\Aggregate;
 
 use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Types\ObjectId;
