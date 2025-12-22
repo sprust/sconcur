@@ -128,7 +128,7 @@ readonly class MongodbFeature
     }
 
     /**
-     * @param array<int, mixed> $filter
+     * @param array<string, mixed> $filter
      */
     public function countDocuments(Context $context, array $filter): int
     {
@@ -175,7 +175,7 @@ readonly class MongodbFeature
      * @param array<string, mixed> $update
      * @param array{
      *     upsert?: bool,
-     * }                           $options
+     * } $options
      */
     public function updateOne(Context $context, array $filter, array $update, array $options = []): UpdateResult
     {

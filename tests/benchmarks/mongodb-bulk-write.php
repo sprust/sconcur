@@ -73,16 +73,6 @@ function makeOperations(mixed $objectId, mixed $dateTime): array
                     'uniquid'  => $uniqid,
                     'upserted' => false,
                 ],
-                [
-                    '$set' => [
-                        'objectId' => $objectId,
-                        'dtStart'  => $dateTime,
-                        'dtEnd'    => $dateTime,
-                    ],
-                    '$setOnInsert' => [
-                        'createdAt' => $dateTime,
-                    ],
-                ],
             ],
         ],
         [
