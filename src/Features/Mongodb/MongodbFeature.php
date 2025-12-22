@@ -223,11 +223,12 @@ readonly class MongodbFeature
         string $data
     ): string {
         return json_encode([
-            'ul' => $connection->uri,
-            'db' => $connection->database,
-            'cl' => $connection->collection,
-            'cm' => $command->value,
-            'dt' => $data,
+            'ul'  => $connection->uri,
+            'db'  => $connection->database,
+            'cl'  => $connection->collection,
+            'sto' => $connection->socketTimeoutMs,
+            'cm'  => $command->value,
+            'dt'  => $data,
         ]);
     }
 }

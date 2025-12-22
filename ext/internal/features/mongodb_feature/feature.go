@@ -57,6 +57,7 @@ func (f *Feature) Handle(task *tasks.Task) {
 		payload.Url,
 		payload.Database,
 		payload.Collection,
+		payload.SocketTimeoutMs,
 	)
 
 	if err != nil {

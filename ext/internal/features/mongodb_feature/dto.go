@@ -1,11 +1,12 @@
 package mongodb_feature
 
 type Payload struct {
-	Url        string `json:"ul"`
-	Database   string `json:"db"`
-	Collection string `json:"cl"`
-	Command    int    `json:"cm"`
-	Data       string `json:"dt"`
+	Url             string `json:"ul"`
+	Database        string `json:"db"`
+	Collection      string `json:"cl"`
+	SocketTimeoutMs int    `json:"sto"`
+	Command         int    `json:"cm"`
+	Data            string `json:"dt"`
 }
 
 type UpdateOneParams struct {

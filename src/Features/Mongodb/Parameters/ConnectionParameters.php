@@ -10,6 +10,7 @@ readonly class ConnectionParameters
         public string $uri,
         public string $database,
         public string $collection,
+        public int $socketTimeoutMs = 30000, // 30 seconds
     ) {
     }
 }

@@ -24,7 +24,13 @@ class Features
 
     public static function mongodb(ConnectionParameters $connection): MongoDBFeature
     {
-        $connectionKey = "$connection->uri|$connection->database|$connection->collection";
+        $connectionKey = sprintf(
+            '%s|%s|%s|%d',
+            $connection->uri,
+            $connection->database,
+            $connection->collection,
+            $connection->socketTimeoutMs,
+        );
 
         return static::$mongodbConnections[$connectionKey] ??= new MongodbFeature($connection);
     }

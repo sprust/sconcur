@@ -3,6 +3,7 @@ package connections
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -34,14 +35,18 @@ func (c *Connections) Get(
 	url string,
 	database string,
 	collection string,
+	socketTimeoutMs int,
 ) (*mongo.Collection, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	client, exists := c.clients[url]
+	key := fmt.Sprintf("%s[sto:%d]", url, socketTimeoutMs)
+
+	client, exists := c.clients[key]
 
 	if !exists {
-		clientOptions := options.Client().ApplyURI(url)
+		clientOptions := options.Client().ApplyURI(url).
+			SetSocketTimeout(time.Duration(socketTimeoutMs) * time.Millisecond)
 
 		var err error
 
@@ -51,7 +56,7 @@ func (c *Connections) Get(
 			return nil, err
 		}
 
-		c.clients[url] = client
+		c.clients[key] = client
 	}
 
 	return client.Database(database).Collection(collection), nil

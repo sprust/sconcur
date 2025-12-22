@@ -101,6 +101,7 @@ func UnmarshalModels(data string) ([]mongo.WriteModel, error) {
 			if err := json.Unmarshal(wrapper.Model, &um); err != nil {
 				return nil, errors.New("updateOne [" + err.Error() + "]")
 			}
+			um.Filter = normalizeEmptyFilter(um.Filter)
 			model = mongo.NewUpdateOneModel().
 				SetFilter(processDateValues(um.Filter)).
 				SetUpdate(processDateValues(um.Update))
@@ -117,6 +118,7 @@ func UnmarshalModels(data string) ([]mongo.WriteModel, error) {
 			if err := json.Unmarshal(wrapper.Model, &um); err != nil {
 				return nil, errors.New("updateMany [" + err.Error() + "]")
 			}
+			um.Filter = normalizeEmptyFilter(um.Filter)
 			model = mongo.NewUpdateManyModel().
 				SetFilter(processDateValues(um.Filter)).
 				SetUpdate(processDateValues(um.Update))
@@ -131,6 +133,7 @@ func UnmarshalModels(data string) ([]mongo.WriteModel, error) {
 			if err := json.Unmarshal(wrapper.Model, &dm); err != nil {
 				return nil, errors.New("deleteOne [" + err.Error() + "]")
 			}
+			dm.Filter = normalizeEmptyFilter(dm.Filter)
 			model = mongo.NewDeleteOneModel().SetFilter(processDateValues(dm.Filter))
 
 		case "deleteMany":
@@ -140,6 +143,7 @@ func UnmarshalModels(data string) ([]mongo.WriteModel, error) {
 			if err := json.Unmarshal(wrapper.Model, &dm); err != nil {
 				return nil, errors.New("deleteMany [" + err.Error() + "]")
 			}
+			dm.Filter = normalizeEmptyFilter(dm.Filter)
 			model = mongo.NewDeleteManyModel().SetFilter(processDateValues(dm.Filter))
 
 		case "replaceOne":
@@ -151,6 +155,7 @@ func UnmarshalModels(data string) ([]mongo.WriteModel, error) {
 			if err := json.Unmarshal(wrapper.Model, &rm); err != nil {
 				return nil, errors.New("replaceOne [" + err.Error() + "]")
 			}
+			rm.Filter = normalizeEmptyFilter(rm.Filter)
 			model = mongo.NewReplaceOneModel().
 				SetFilter(processDateValues(rm.Filter)).
 				SetReplacement(processDateValues(rm.Replacement))
@@ -166,6 +171,18 @@ func UnmarshalModels(data string) ([]mongo.WriteModel, error) {
 	}
 
 	return models, nil
+}
+
+func normalizeEmptyFilter(data interface{}) interface{} {
+	if data == nil {
+		return bson.D{}
+	}
+
+	if slice, ok := data.([]interface{}); ok && len(slice) == 0 {
+		return bson.D{}
+	}
+
+	return data
 }
 
 func processDateValues(data interface{}) interface{} {
