@@ -10,4 +10,5 @@ enum CommandEnum: int
     case InsertMany = 4;
     case CountDocuments = 5;
     case UpdateOne = 6;
+    case FindOne = 7;
 }

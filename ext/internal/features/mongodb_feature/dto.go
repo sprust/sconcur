@@ -14,3 +14,7 @@ type UpdateOneParams struct {
 	Update   string `json:"u"`
 	OpUpsert bool   `json:"ou"`
 }
+
+type FindOneParams struct {
+	Filter string `json:"f"`
+}

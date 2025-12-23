@@ -9,6 +9,7 @@ use JsonException;
 use RuntimeException;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
+use stdClass;
 
 readonly class DocumentSerializer
 {
@@ -17,7 +18,7 @@ readonly class DocumentSerializer
      */
     public static function serialize(array $document): string
     {
-        return json_encode($document);
+        return json_encode($document ?: new stdClass());
     }
 
     /**

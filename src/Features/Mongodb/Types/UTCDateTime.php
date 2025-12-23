@@ -22,6 +22,12 @@ readonly class UTCDateTime implements JsonSerializable
 
         $utcDateTime = DateTime::createFromInterface($dateTime);
         $utcDateTime->setTimezone(new DateTimeZone('UTC'));
+        $utcDateTime->setTime(
+            (int) $utcDateTime->format('H'),
+            (int) $utcDateTime->format('i'),
+            (int) $utcDateTime->format('s'),
+            (int) round((int) $utcDateTime->format('u') / 1000) * 1000
+        );
         $this->dateTime = $utcDateTime;
     }
 

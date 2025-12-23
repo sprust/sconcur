@@ -201,6 +201,30 @@ readonly class MongodbFeature
         );
     }
 
+    /**
+     * @param array<string, mixed> $filter
+     *
+     * @return array<int|string, mixed>|null
+     */
+    public function findOne(Context $context, array $filter): ?array
+    {
+        $serialized = DocumentSerializer::serialize([
+            'f' => DocumentSerializer::serialize($filter),
+        ]);
+
+        $taskResult = $this->exec(
+            context: $context,
+            command: CommandEnum::FindOne,
+            payload: $serialized,
+        );
+
+        if (!$taskResult->payload) {
+            return null;
+        }
+
+        return DocumentSerializer::unserialize($taskResult->payload) ?: null;
+    }
+
     protected function exec(
         Context $context,
         CommandEnum $command,

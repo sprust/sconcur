@@ -3,6 +3,7 @@ package mongodb_feature
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
@@ -120,6 +121,15 @@ func (f *Feature) Handle(task *tasks.Task) {
 	} else if payload.Command == 6 {
 		task.AddResult(
 			f.updateOne(
+				ctx,
+				message,
+				&payload,
+				collection,
+			),
+		)
+	} else if payload.Command == 7 {
+		task.AddResult(
+			f.findOne(
 				ctx,
 				message,
 				&payload,
@@ -408,6 +418,79 @@ func (f *Feature) updateOne(
 		return dto.NewErrorResult(
 			message,
 			errFactory.ByErr("marshal updateOne result error", err),
+		)
+	}
+
+	return dto.NewSuccessResult(message, serializedResult)
+}
+
+func (f *Feature) findOne(
+	ctx context.Context,
+	message *dto.Message,
+	payload *Payload,
+	collection *mongo.Collection,
+) *dto.Result {
+	var params FindOneParams
+
+	err := json.Unmarshal([]byte(payload.Data), &params)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse findOne params", err),
+		)
+	}
+
+	filter, err := helpers.UnmarshalDocument(params.Filter)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse findOne filter", err),
+		)
+	}
+
+	var opts *options.FindOneOptions
+
+	result := collection.FindOne(ctx, filter, opts)
+
+	err = result.Err()
+
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			serializedResult, marshalErr := helpers.MarshalResult(bson.D{})
+
+			if marshalErr != nil {
+				return dto.NewErrorResult(
+					message,
+					errFactory.ByErr("marshal findOne nil result error", marshalErr),
+				)
+			}
+
+			return dto.NewSuccessResult(message, serializedResult)
+		}
+
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("findOne result error", err),
+		)
+	}
+
+	raw, err := result.Raw()
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("findOne raw error", err),
+		)
+	}
+
+	serializedResult, err := helpers.MarshalResult(raw)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("marshal findOne result error", err),
 		)
 	}
 
