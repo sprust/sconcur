@@ -49,7 +49,7 @@ class Extension
         );
     }
 
-    public function wait(string $flowKey, bool $isAsync, Context $context): TaskResultDto
+    public function wait(Context $context, string $flowKey, bool $isAsync): TaskResultDto
     {
         $response = wait($flowKey, $context->getRemainMs());
 

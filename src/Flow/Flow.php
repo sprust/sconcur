@@ -99,9 +99,9 @@ class Flow
     public function wait(Context $context): TaskResultDto
     {
         return Extension::get()->wait(
+            context: $context,
             flowKey: $this->key,
             isAsync: $this->isAsync,
-            context: $context
         );
     }
 
