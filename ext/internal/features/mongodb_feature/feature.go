@@ -136,6 +136,15 @@ func (f *Feature) Handle(task *tasks.Task) {
 				collection,
 			),
 		)
+	} else if payload.Command == 8 {
+		task.AddResult(
+			f.createIndexes(
+				ctx,
+				message,
+				&payload,
+				collection,
+			),
+		)
 	} else {
 		task.AddResult(
 			dto.NewErrorResult(
@@ -495,4 +504,73 @@ func (f *Feature) findOne(
 	}
 
 	return dto.NewSuccessResult(message, serializedResult)
+}
+
+func (f *Feature) createIndexes(
+	ctx context.Context,
+	message *dto.Message,
+	payload *Payload,
+	collection *mongo.Collection,
+) *dto.Result {
+	var params CreateIndexesParams
+
+	err := json.Unmarshal([]byte(payload.Data), &params)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse createIndexes params", err),
+		)
+	}
+
+	var rawIndexes []bson.D
+
+	err = bson.UnmarshalExtJSON([]byte(params.Indexes), true, &rawIndexes)
+	
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse indexes BSON error", err),
+		)
+	}
+
+	if len(rawIndexes) == 0 {
+		return dto.NewSuccessResult(
+			message,
+			"createIndexes: indexes can't be empty",
+		)
+	}
+
+	models := make([]mongo.IndexModel, len(rawIndexes))
+
+	for i, keys := range rawIndexes {
+		models[i] = mongo.IndexModel{
+			Keys: keys,
+		}
+	}
+
+	result, err := collection.Indexes().CreateMany(ctx, models)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("createIndexes error", err),
+		)
+	}
+
+	response, err := helpers.MarshalResult(
+		bson.D{
+			{Key: resultKey, Value: result},
+		},
+	)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("aggregate result marshal error", err),
+		)
+	}
+
+	return dto.NewSuccessResult(message, response)
+
 }

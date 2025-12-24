@@ -21,6 +21,8 @@ use SConcur\State;
 
 readonly class MongodbFeature
 {
+    protected const string RESULT_KEY = '_result';
+
     protected MethodEnum $method;
 
     public function __construct(
@@ -167,6 +169,7 @@ readonly class MongodbFeature
                 command: CommandEnum::Aggregate,
                 data: $serialized,
             ),
+            resultKey: static::RESULT_KEY,
         );
     }
 
@@ -223,6 +226,26 @@ readonly class MongodbFeature
         }
 
         return DocumentSerializer::unserialize($taskResult->payload) ?: null;
+    }
+
+    /**
+     * @param array<array<string, int>> $indexes
+     *
+     * @return array<string>
+     */
+    public function createIndexes(Context $context, array $indexes): array
+    {
+        $serialized = DocumentSerializer::serialize([
+            'i' => DocumentSerializer::serialize(array_values($indexes)),
+        ]);
+
+        $taskResult = $this->exec(
+            context: $context,
+            command: CommandEnum::CreateIndexes,
+            payload: $serialized,
+        );
+
+        return DocumentSerializer::unserialize($taskResult->payload)[static::RESULT_KEY];
     }
 
     protected function exec(

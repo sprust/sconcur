@@ -18,3 +18,7 @@ type UpdateOneParams struct {
 type FindOneParams struct {
 	Filter string `json:"f"`
 }
+
+type CreateIndexesParams struct {
+	Indexes string `json:"i"`
+}

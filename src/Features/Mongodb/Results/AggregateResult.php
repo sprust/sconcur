@@ -18,8 +18,6 @@ use SConcur\State;
 // TODO: implement rewind
 class AggregateResult implements Iterator
 {
-    protected const string RESULT_KEY = '_result';
-
     protected ?Flow $currentFlow = null;
     protected ?string $taskKey   = null;
 
@@ -36,6 +34,7 @@ class AggregateResult implements Iterator
     public function __construct(
         protected Context $context,
         protected string $payload,
+        protected string $resultKey,
     ) {
         $this->next();
     }
@@ -85,7 +84,7 @@ class AggregateResult implements Iterator
 
             $this->items = DocumentSerializer::unserialize(
                 $taskResult->payload
-            )[static::RESULT_KEY];
+            )[$this->resultKey];
         }
 
         foreach ($this->items ?: [] as $key => $value) {
