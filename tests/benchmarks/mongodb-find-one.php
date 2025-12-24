@@ -16,10 +16,10 @@ $benchmarker = new Benchmarker(
 
 $uri = TestMongodbUriResolver::get();
 
-echo "Mongodb URI: $uri\n\n";
+echo "Mongodb URI: $uri\n";
 
-$databaseName   = 'test';
-$collectionName = 'test';
+$databaseName   = 'benchmark';
+$collectionName = 'benchmark';
 
 $connection = new ConnectionParameters(
     uri: $uri,

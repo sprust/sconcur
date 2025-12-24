@@ -16,10 +16,10 @@ $benchmarker = new Benchmarker(
 
 $uri = TestMongodbUriResolver::get();
 
-echo "Mongodb URI: $uri\n\n";
+echo "Mongodb URI: $uri\n";
 
-$databaseName   = 'test';
-$collectionName = 'test';
+$databaseName   = 'benchmark';
+$collectionName = 'benchmark';
 
 $connection = new ConnectionParameters(
     uri: $uri,
@@ -37,13 +37,19 @@ $sconcurPipeline = makePipeline(
     new ObjectId('6919e3d1a3673d3f4d9137a3')
 );
 
-$nativeCallback = static function () use ($collection, $nativePipeline) {
+$isLogProcess = $benchmarker->isLogProcess();
+
+$nativeCallback = static function () use ($collection, $nativePipeline, $isLogProcess) {
     $item = uniqid();
 
     $aggregate = $collection->aggregate($nativePipeline);
 
     foreach ($aggregate as $doc) {
         $id = $doc['_id'];
+
+        if (!$isLogProcess) {
+            continue;
+        }
 
         echo "aggregate-$item: document: $id\n";
     }
@@ -53,7 +59,7 @@ $feature = Features::mongodb(
     connection: $connection,
 );
 
-$sconcurCallback = static function (Context $context) use ($feature, $sconcurPipeline) {
+$sconcurCallback = static function (Context $context) use ($feature, $sconcurPipeline, $isLogProcess) {
     $item = uniqid();
 
     $aggregate = $feature->aggregate(
@@ -63,6 +69,10 @@ $sconcurCallback = static function (Context $context) use ($feature, $sconcurPip
 
     foreach ($aggregate as $doc) {
         $id = $doc['_id']->id;
+
+        if (!$isLogProcess) {
+            continue;
+        }
 
         echo "aggregate-$item: document: $id\n";
     }

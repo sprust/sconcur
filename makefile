@@ -1,3 +1,5 @@
+MAKEFLAGS += --no-print-directory
+
 PHP_CLI="docker-compose exec php"
 
 env-copy:
@@ -57,14 +59,14 @@ ext-build:
 	"$(PHP_CLI)" sh ./ext-build.sh
 
 bench-all:
-	make bench-sleep && \
-		make bench-mongodb-insertOne && \
-		make bench-mongodb-bulkWrite && \
-		make bench-mongodb-aggregate && \
-		make bench-mongodb-insertMany && \
-		make bench-mongodb-count && \
-		make bench-mongodb-updateOne && \
-		make bench-mongodb-findOne
+	make bench-sleep
+	make bench-mongodb-insertOne
+	make bench-mongodb-bulkWrite
+	make bench-mongodb-aggregate
+	make bench-mongodb-insertMany
+	make bench-mongodb-count
+	make bench-mongodb-updateOne
+	make bench-mongodb-findOne
 
 bench-sleep:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/sleep.php ${c}

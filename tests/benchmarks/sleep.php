@@ -11,29 +11,41 @@ $benchmarker = new Benchmarker(
     name: 'sleep',
 );
 
+$isLogProcess = $benchmarker->isLogProcess();
+
 $feature = Features::sleep();
 
 $benchmarker->run(
-    syncCallback: static function (Context $context) use ($feature) {
+    syncCallback: static function (Context $context) use ($feature, $isLogProcess) {
         $item = uniqid();
 
-        echo "$item: sync: start\n";
+        if ($isLogProcess) {
+            echo "$item: sync: start\n";
+        }
 
         $feature->usleep(context: $context, milliseconds: 1);
 
-        echo "$item: sync: finished\n";
+        if ($isLogProcess) {
+            echo "$item: sync: finished\n";
+        }
     },
-    asyncCallback: static function (Context $context) use ($feature) {
+    asyncCallback: static function (Context $context) use ($feature, $isLogProcess) {
         $item = uniqid();
 
-        echo "$item: start\n";
+        if ($isLogProcess) {
+            echo "$item: start\n";
+        }
 
         $feature->sleep(context: $context, seconds: 1);
 
-        echo "$item: woke first\n";
+        if ($isLogProcess) {
+            echo "$item: woke first\n";
+        }
 
         $feature->usleep(context: $context, milliseconds: 10);
 
-        echo "$item: woke second\n";
+        if ($isLogProcess) {
+            echo "$item: woke second\n";
+        }
     }
 );

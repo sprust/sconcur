@@ -18,13 +18,18 @@ readonly class Benchmarker
 {
     private int $total;
     private int $timeout;
-    private int $limitCount;
+    private bool $logProcess;
 
     public function __construct(private string $name)
     {
         $this->total      = (int) ($_SERVER['argv'][1] ?? 5);
         $this->timeout    = (int) ($_SERVER['argv'][2] ?? 2);
-        $this->limitCount = (int) ($_SERVER['argv'][3] ?? 0);
+        $this->logProcess = (bool) ((int) ($_SERVER['argv'][3] ?? 0));
+    }
+
+    public function isLogProcess(): bool
+    {
+        return $this->logProcess;
     }
 
     /**
@@ -37,11 +42,12 @@ readonly class Benchmarker
         ?Closure $syncCallback = null,
         ?Closure $asyncCallback = null
     ): void {
-        echo "\nBenchmarking $this->name...\n";
+        echo str_repeat('*', 80) . "\n";
+        echo str_repeat('*', 80) . "\n";
+
+        echo "Benchmarking $this->name...\n";
         echo "Total call:\t$this->total\n";
         echo "Timeout:\t$this->timeout\n";
-        echo "Limit:\t$this->limitCount\n";
-        echo "\n";
 
         /** @var Closure[] $nativeCallbacks */
         $nativeCallbacks = [];
@@ -70,7 +76,7 @@ readonly class Benchmarker
             }
         }
 
-        echo "\n\n---- Native call ----\n";
+        $this->logProcess("\n\n---- Native call ----\n");
 
         $nativeTotalTime = '-';
         $nativeMemPeak   = '-';
@@ -91,14 +97,14 @@ readonly class Benchmarker
 
                 $key = "$this->name: $key";
 
-                echo "success: $key\n";
+                $this->logProcess("success: $key\n");
             }
 
             $nativeTotalTime = microtime(true) - $start;
             $nativeMemPeak   = round(memory_get_peak_usage(true) / 1024 / 1024, 4);
         }
 
-        echo "\n\n---- Sync call ----\n";
+        $this->logProcess("\n\n---- Sync call ----\n");
 
         $syncTotalTime = '-';
         $syncMemPeak   = '-';
@@ -121,14 +127,14 @@ readonly class Benchmarker
 
                 $key = "$this->name: $key";
 
-                echo "success: $key\n";
+                $this->logProcess("success: $key\n");
             }
 
             $syncTotalTime = microtime(true) - $start;
             $syncMemPeak   = round(memory_get_peak_usage(true) / 1024 / 1024, 4);
         }
 
-        echo "\n\n---- Async call ----\n";
+        $this->logProcess("\n\n---- Async call ----\n");
 
         $asyncTotalTime = '-';
         $asyncMemPeak   = '-';
@@ -157,18 +163,27 @@ readonly class Benchmarker
 
                 $key = "$this->name: $callbackKey";
 
-                echo "success: $key\n";
+                $this->logProcess("success: $key\n");
             }
 
             $asyncTotalTime = microtime(true) - $start;
             $asyncMemPeak   = round(memory_get_peak_usage(true) / 1024 / 1024, 4);
         }
 
-        echo "\n\nTotal call:\t$this->total\n";
-        echo "Thr limit:\t$this->limitCount\n";
+        echo "\nResult $this->name:\n";
+        echo "Total call:\t$this->total\n";
         echo "Mem peak native/sync/async:\t$nativeMemPeak/$syncMemPeak/$asyncMemPeak\n";
         echo "Total time native/sync/async:\t$nativeTotalTime/$syncTotalTime/$asyncTotalTime\n";
-        echo "--------------------------------------------------------------------------\n";
-        echo "--------------------------------------------------------------------------\n\n";
+        echo str_repeat('-', 80) . "\n";
+        echo str_repeat('-', 80) . "\n";
+    }
+
+    private function logProcess(string $message): void
+    {
+        if (!$this->logProcess) {
+            return;
+        }
+
+        echo $message;
     }
 }
