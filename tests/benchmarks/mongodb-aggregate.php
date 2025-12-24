@@ -39,6 +39,10 @@ $sconcurPipeline = makePipeline(
 
 $isLogProcess = $benchmarker->isLogProcess();
 
+$feature = Features::mongodb(
+    connection: $connection,
+);
+
 $nativeCallback = static function () use ($collection, $nativePipeline, $isLogProcess) {
     $item = uniqid();
 
@@ -54,10 +58,6 @@ $nativeCallback = static function () use ($collection, $nativePipeline, $isLogPr
         echo "aggregate-$item: document: $id\n";
     }
 };
-
-$feature = Features::mongodb(
-    connection: $connection,
-);
 
 $sconcurCallback = static function (Context $context) use ($feature, $sconcurPipeline, $isLogProcess) {
     $item = uniqid();
