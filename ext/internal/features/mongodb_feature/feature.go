@@ -17,7 +17,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-const resultKey = "_result"
+const resultKey = "_r"
 
 var _ contracts.MessageHandler = (*Feature)(nil)
 
@@ -252,7 +252,7 @@ func (f *Feature) aggregate(
 		)
 	}
 
-	maxBatchCount := 20
+	maxBatchCount := 50
 
 	var items []interface{}
 

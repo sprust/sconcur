@@ -21,7 +21,7 @@ use SConcur\State;
 
 readonly class MongodbFeature
 {
-    protected const string RESULT_KEY = '_result';
+    protected const string RESULT_KEY = '_r';
 
     protected MethodEnum $method;
 
