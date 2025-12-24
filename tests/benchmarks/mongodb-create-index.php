@@ -30,7 +30,9 @@ $connection = new ConnectionParameters(
 
 $collection = (new MongoDB\Client($uri))->selectDatabase($databaseName)->selectCollection($collectionName);
 
-$collection->dropIndexes();
+if (iterator_count($collection->listIndexes()) > 0) {
+    $collection->dropIndexes();
+}
 
 $sconcurFilter = makeFilter(
     objectId: new ObjectId('6919e3d1a3673d3f4d9137a3'),
@@ -49,7 +51,7 @@ $benchmarker->run(
 
         return $collection->createIndex([
             uniqid("$index-native_") => 1,
-            uniqid()          => -1,
+            uniqid()                 => -1,
         ]);
     },
     syncCallback: static function (Context $context) use ($feature, &$index) {
@@ -59,7 +61,7 @@ $benchmarker->run(
             context: $context,
             keys: [
                 uniqid("$index-sync_") => 1,
-                uniqid()        => -1,
+                uniqid()               => -1,
             ]
         );
     },
@@ -70,7 +72,7 @@ $benchmarker->run(
             context: $context,
             keys: [
                 uniqid("$index-async_") => 1,
-                uniqid()         => -1,
+                uniqid()                => -1,
             ]
         );
     }

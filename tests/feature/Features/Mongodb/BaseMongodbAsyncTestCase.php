@@ -27,7 +27,7 @@ abstract class BaseMongodbAsyncTestCase extends BaseAsyncTestCase
         $connectionParameters = new ConnectionParameters(
             uri: TestMongodbUriResolver::get(),
             database: 'u-test',
-            collection: $this->getCollectionName(),
+            collection: 'async_' . ucfirst($this->getCollectionName()),
         );
 
         $this->driverCollection = new Client($connectionParameters->uri)

@@ -229,7 +229,7 @@ readonly class MongodbFeature
     }
 
     /**
-     * @param array<string, int> $keys
+     * @param array<string, int|string> $keys
      */
     public function createIndex(Context $context, array $keys): string
     {

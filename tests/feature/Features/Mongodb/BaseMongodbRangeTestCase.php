@@ -49,7 +49,7 @@ abstract class BaseMongodbRangeTestCase extends BaseTestCase
         $connectionParameters = new ConnectionParameters(
             uri: TestMongodbUriResolver::get(),
             database: 'u-test',
-            collection: 'type' . ucfirst($this->getType()),
+            collection: 'range_' . ucfirst($this->getType()),
         );
 
         $this->driverCollection = new Client($connectionParameters->uri)
