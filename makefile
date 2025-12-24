@@ -67,7 +67,7 @@ bench-all:
 	make bench-mongodb-count
 	make bench-mongodb-updateOne
 	make bench-mongodb-findOne
-	make bench-mongodb-createIndexes
+	make bench-mongodb-createIndex
 
 bench-sleep:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/sleep.php ${c}
@@ -93,5 +93,5 @@ bench-mongodb-updateOne:
 bench-mongodb-findOne:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-find-one.php ${c}
 
-bench-mongodb-createIndexes:
-	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-create-indexes.php ${c}
+bench-mongodb-createIndex:
+	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-create-index.php ${c}

@@ -12,7 +12,7 @@ use SConcur\Tests\Impl\TestMongodbUriResolver;
 require_once __DIR__ . '/_benchmarker.php';
 
 $benchmarker = new Benchmarker(
-    name: 'mongodb-create-indexes',
+    name: 'mongodb-create-index',
 );
 
 $uri = TestMongodbUriResolver::get();
@@ -41,20 +41,37 @@ $feature = Features::mongodb(
     connection: $connection,
 );
 
+$index = 0;
+
 $benchmarker->run(
-    nativeCallback: static function () use ($collection) {
-        return $collection->createIndexes([['key' => [uniqid('native_') => 1]]]);
+    nativeCallback: static function () use ($collection, &$index) {
+        ++$index;
+
+        return $collection->createIndex([
+            uniqid("$index-native_") => 1,
+            uniqid()          => -1,
+        ]);
     },
-    syncCallback: static function (Context $context) use ($feature) {
-        return $feature->createIndexes(
+    syncCallback: static function (Context $context) use ($feature, &$index) {
+        ++$index;
+
+        return $feature->createIndex(
             context: $context,
-            indexes: [[uniqid('sync_') => 1]]
+            keys: [
+                uniqid("$index-sync_") => 1,
+                uniqid()        => -1,
+            ]
         );
     },
-    asyncCallback: static function (Context $context) use ($feature) {
-        return $feature->createIndexes(
+    asyncCallback: static function (Context $context) use ($feature, &$index) {
+        ++$index;
+
+        return $feature->createIndex(
             context: $context,
-            indexes: [[uniqid('async_') => 1]]
+            keys: [
+                uniqid("$index-async_") => 1,
+                uniqid()         => -1,
+            ]
         );
     }
 );

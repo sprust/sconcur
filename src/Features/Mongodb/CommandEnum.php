@@ -11,5 +11,5 @@ enum CommandEnum: int
     case CountDocuments = 5;
     case UpdateOne      = 6;
     case FindOne        = 7;
-    case CreateIndexes  = 8;
+    case CreateIndex    = 8;
 }

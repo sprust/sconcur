@@ -138,7 +138,7 @@ func (f *Feature) Handle(task *tasks.Task) {
 		)
 	} else if payload.Command == 8 {
 		task.AddResult(
-			f.createIndexes(
+			f.createIndex(
 				ctx,
 				message,
 				&payload,
@@ -506,27 +506,27 @@ func (f *Feature) findOne(
 	return dto.NewSuccessResult(message, serializedResult)
 }
 
-func (f *Feature) createIndexes(
+func (f *Feature) createIndex(
 	ctx context.Context,
 	message *dto.Message,
 	payload *Payload,
 	collection *mongo.Collection,
 ) *dto.Result {
-	var params CreateIndexesParams
+	var params CreateIndexParams
 
 	err := json.Unmarshal([]byte(payload.Data), &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
 			message,
-			errFactory.ByErr("parse createIndexes params", err),
+			errFactory.ByErr("parse createIndex params", err),
 		)
 	}
 
-	var rawIndexes []bson.D
+	var keys bson.D
 
-	err = bson.UnmarshalExtJSON([]byte(params.Indexes), true, &rawIndexes)
-	
+	err = bson.UnmarshalExtJSON([]byte(params.Keys), true, &keys)
+
 	if err != nil {
 		return dto.NewErrorResult(
 			message,
@@ -534,43 +534,18 @@ func (f *Feature) createIndexes(
 		)
 	}
 
-	if len(rawIndexes) == 0 {
-		return dto.NewSuccessResult(
-			message,
-			"createIndexes: indexes can't be empty",
-		)
+	model := mongo.IndexModel{
+		Keys: keys,
 	}
 
-	models := make([]mongo.IndexModel, len(rawIndexes))
-
-	for i, keys := range rawIndexes {
-		models[i] = mongo.IndexModel{
-			Keys: keys,
-		}
-	}
-
-	result, err := collection.Indexes().CreateMany(ctx, models)
+	result, err := collection.Indexes().CreateOne(ctx, model)
 
 	if err != nil {
 		return dto.NewErrorResult(
 			message,
-			errFactory.ByErr("createIndexes error", err),
+			errFactory.ByErr("createIndex error", err),
 		)
 	}
 
-	response, err := helpers.MarshalResult(
-		bson.D{
-			{Key: resultKey, Value: result},
-		},
-	)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("aggregate result marshal error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, response)
-
+	return dto.NewSuccessResult(message, result)
 }

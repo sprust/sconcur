@@ -229,23 +229,21 @@ readonly class MongodbFeature
     }
 
     /**
-     * @param array<array<string, int>> $indexes
-     *
-     * @return array<string>
+     * @param array<string, int> $keys
      */
-    public function createIndexes(Context $context, array $indexes): array
+    public function createIndex(Context $context, array $keys): string
     {
         $serialized = DocumentSerializer::serialize([
-            'i' => DocumentSerializer::serialize(array_values($indexes)),
+            'k' => DocumentSerializer::serialize($keys),
         ]);
 
         $taskResult = $this->exec(
             context: $context,
-            command: CommandEnum::CreateIndexes,
+            command: CommandEnum::CreateIndex,
             payload: $serialized,
         );
 
-        return DocumentSerializer::unserialize($taskResult->payload)[static::RESULT_KEY];
+        return $taskResult->payload;
     }
 
     protected function exec(
