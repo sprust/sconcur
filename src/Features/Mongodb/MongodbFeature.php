@@ -231,10 +231,23 @@ readonly class MongodbFeature
     /**
      * @param array<string, int|string> $keys
      */
-    public function createIndex(Context $context, array $keys): string
+    public function createIndex(Context $context, array $keys, ?string $name = null): string
     {
+        if ($name) {
+            $indexName = $name;
+        } else {
+            $indexNames = [];
+
+            foreach ($keys as $field => $type) {
+                $indexNames[] = "{$field}_$type";
+            }
+
+            $indexName = implode('_', $indexNames);
+        }
+
         $serialized = DocumentSerializer::serialize([
             'k' => DocumentSerializer::serialize($keys),
+            'n' => $indexName,
         ]);
 
         $taskResult = $this->exec(

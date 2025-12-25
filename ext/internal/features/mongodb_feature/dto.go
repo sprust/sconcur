@@ -21,4 +21,5 @@ type FindOneParams struct {
 
 type CreateIndexParams struct {
 	Keys string `json:"k"`
+	Name string `json:"n"`
 }

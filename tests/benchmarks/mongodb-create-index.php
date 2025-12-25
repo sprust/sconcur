@@ -57,23 +57,29 @@ $benchmarker->run(
     syncCallback: static function (Context $context) use ($feature, &$index) {
         ++$index;
 
+        $indexName = "$index-sync";
+
         return $feature->createIndex(
             context: $context,
             keys: [
-                uniqid("$index-sync_") => 1,
-                uniqid()               => -1,
-            ]
+                uniqid("{$indexName}_") => 1,
+                uniqid()                => -1,
+            ],
+            name: $indexName
         );
     },
     asyncCallback: static function (Context $context) use ($feature, &$index) {
         ++$index;
 
+        $indexName = "$index-async";
+
         return $feature->createIndex(
             context: $context,
             keys: [
-                uniqid("$index-async_") => 1,
+                uniqid("{$indexName}_") => 1,
                 uniqid()                => -1,
-            ]
+            ],
+            name: $indexName
         );
     }
 );

@@ -530,12 +530,17 @@ func (f *Feature) createIndex(
 	if err != nil {
 		return dto.NewErrorResult(
 			message,
-			errFactory.ByErr("parse indexes BSON error", err),
+			errFactory.ByErr("parse indexzes BSON error", err),
 		)
 	}
 
+	var opts options.IndexOptions
+
+	opts.Name = &params.Name
+
 	model := mongo.IndexModel{
-		Keys: keys,
+		Keys:    keys,
+		Options: &opts,
 	}
 
 	result, err := collection.Indexes().CreateOne(ctx, model)
