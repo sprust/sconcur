@@ -18,7 +18,7 @@ readonly class DocumentSerializer
      */
     public static function serialize(array $document): string
     {
-        return json_encode($document ?: new stdClass());
+        return json_encode($document);
     }
 
     /**
