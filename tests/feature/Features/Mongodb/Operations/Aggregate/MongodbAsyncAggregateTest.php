@@ -8,7 +8,7 @@ use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbAsyncTestCase;
 
-class MongodbAggregateAsyncTest extends BaseMongodbAsyncTestCase
+class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
 {
     protected \MongoDB\BSON\ObjectId $driverObjectId;
 

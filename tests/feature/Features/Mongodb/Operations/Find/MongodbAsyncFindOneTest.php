@@ -11,7 +11,7 @@ use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbAsyncTestCase;
 
-class MongodbFindOneAsyncTest extends BaseMongodbAsyncTestCase
+class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
 {
     protected \MongoDB\BSON\ObjectId $driverObjectId;
 

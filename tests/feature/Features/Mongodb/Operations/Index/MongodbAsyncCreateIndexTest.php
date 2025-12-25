@@ -7,7 +7,7 @@ namespace SConcur\Tests\Feature\Features\Mongodb\Operations\Index;
 use SConcur\Entities\Context;
 use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbAsyncTestCase;
 
-class MongodbCreateIndexAsyncTest extends BaseMongodbAsyncTestCase
+class MongodbAsyncCreateIndexTest extends BaseMongodbAsyncTestCase
 {
     protected function setUp(): void
     {

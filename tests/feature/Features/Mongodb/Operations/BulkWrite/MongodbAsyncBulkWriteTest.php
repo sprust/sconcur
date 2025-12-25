@@ -9,7 +9,7 @@ use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbAsyncTestCase;
 
-class BulkWriteAsyncTest extends BaseMongodbAsyncTestCase
+class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
 {
     protected ObjectId $fieldValue;
 

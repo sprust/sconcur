@@ -9,7 +9,7 @@ use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbAsyncTestCase;
 
-class MongodbInsertOneAsyncTest extends BaseMongodbAsyncTestCase
+class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
 {
     protected \MongoDB\BSON\UTCDateTime $driverDateTime;
 

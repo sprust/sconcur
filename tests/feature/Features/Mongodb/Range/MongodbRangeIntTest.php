@@ -2,14 +2,14 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Tests\Feature\Features\Mongodb\Types;
+namespace SConcur\Tests\Feature\Features\Mongodb\Range;
 
 use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbRangeTestCase;
 
 /**
  * @extends BaseMongodbRangeTestCase<int>
  */
-class MongodbIntRangeTest extends BaseMongodbRangeTestCase
+class MongodbRangeIntTest extends BaseMongodbRangeTestCase
 {
     protected function getType(): string
     {

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Tests\Feature\Features\Mongodb\Types;
+namespace SConcur\Tests\Feature\Features\Mongodb\Range;
 
 use DateMalformedStringException;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
@@ -11,7 +11,7 @@ use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbRangeTestCase;
 /**
  * @extends BaseMongodbRangeTestCase<UTCDateTime>
  */
-class MongodbUTCDateTimeRangeTest extends BaseMongodbRangeTestCase
+class MongodbRangeUTCDateTimeTest extends BaseMongodbRangeTestCase
 {
     protected function getType(): string
     {
