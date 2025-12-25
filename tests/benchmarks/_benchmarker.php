@@ -10,7 +10,6 @@ use SConcur\WaitGroup;
 ini_set('memory_limit', '1024M');
 
 require_once __DIR__ . '/../../vendor/autoload.php';
-require_once __DIR__ . '/_benchmarker.php';
 
 TestApplication::init();
 
