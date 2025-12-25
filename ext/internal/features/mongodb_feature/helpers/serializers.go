@@ -32,7 +32,9 @@ func UnmarshalDocument(data string) (interface{}, error) {
 		return nil, err
 	}
 
-	return processDateValues(document), nil
+	result := unmarshalRecursive(document)
+
+	return normalizeEmptyData(result), nil
 }
 
 func UnmarshalDocuments(data string) ([]interface{}, error) {
@@ -47,13 +49,13 @@ func UnmarshalDocuments(data string) ([]interface{}, error) {
 	result := make([]interface{}, len(documents))
 
 	for i, document := range documents {
-		result[i] = processDateValues(document)
+		result[i] = unmarshalRecursive(document)
 	}
 
 	return result, nil
 }
 
-func MarshalResult(doc interface{}) (string, error) {
+func MarshalDocument(doc interface{}) (string, error) {
 	bsonData, err := bson.Marshal(doc)
 
 	if err != nil {
@@ -71,7 +73,7 @@ func MarshalResult(doc interface{}) (string, error) {
 	return string(jsonData), nil
 }
 
-func UnmarshalModels(data string) ([]mongo.WriteModel, error) {
+func UnmarshalBulkWriteModels(data string) ([]mongo.WriteModel, error) {
 	var wrappers []WriteModelWrapper
 
 	if err := json.Unmarshal([]byte(data), &wrappers); err != nil {
@@ -91,7 +93,7 @@ func UnmarshalModels(data string) ([]mongo.WriteModel, error) {
 			if err := json.Unmarshal(wrapper.Model, &im); err != nil {
 				return nil, errors.New("insertOne [" + err.Error() + "]")
 			}
-			model = mongo.NewInsertOneModel().SetDocument(processDateValues(im.Document))
+			model = mongo.NewInsertOneModel().SetDocument(unmarshalRecursive(im.Document))
 		case "updateOne":
 			var um struct {
 				Filter interface{} `json:"filter"`
@@ -101,10 +103,10 @@ func UnmarshalModels(data string) ([]mongo.WriteModel, error) {
 			if err := json.Unmarshal(wrapper.Model, &um); err != nil {
 				return nil, errors.New("updateOne [" + err.Error() + "]")
 			}
-			um.Filter = normalizeEmptyFilter(um.Filter)
+			um.Filter = normalizeEmptyData(um.Filter)
 			model = mongo.NewUpdateOneModel().
-				SetFilter(processDateValues(um.Filter)).
-				SetUpdate(processDateValues(um.Update))
+				SetFilter(unmarshalRecursive(um.Filter)).
+				SetUpdate(unmarshalRecursive(um.Update))
 			if um.Upsert != nil {
 				model.(*mongo.UpdateOneModel).SetUpsert(*um.Upsert)
 			}
@@ -118,10 +120,10 @@ func UnmarshalModels(data string) ([]mongo.WriteModel, error) {
 			if err := json.Unmarshal(wrapper.Model, &um); err != nil {
 				return nil, errors.New("updateMany [" + err.Error() + "]")
 			}
-			um.Filter = normalizeEmptyFilter(um.Filter)
+			um.Filter = normalizeEmptyData(um.Filter)
 			model = mongo.NewUpdateManyModel().
-				SetFilter(processDateValues(um.Filter)).
-				SetUpdate(processDateValues(um.Update))
+				SetFilter(unmarshalRecursive(um.Filter)).
+				SetUpdate(unmarshalRecursive(um.Update))
 			if um.Upsert != nil {
 				model.(*mongo.UpdateManyModel).SetUpsert(*um.Upsert)
 			}
@@ -133,8 +135,8 @@ func UnmarshalModels(data string) ([]mongo.WriteModel, error) {
 			if err := json.Unmarshal(wrapper.Model, &dm); err != nil {
 				return nil, errors.New("deleteOne [" + err.Error() + "]")
 			}
-			dm.Filter = normalizeEmptyFilter(dm.Filter)
-			model = mongo.NewDeleteOneModel().SetFilter(processDateValues(dm.Filter))
+			dm.Filter = normalizeEmptyData(dm.Filter)
+			model = mongo.NewDeleteOneModel().SetFilter(unmarshalRecursive(dm.Filter))
 
 		case "deleteMany":
 			var dm struct {
@@ -143,8 +145,8 @@ func UnmarshalModels(data string) ([]mongo.WriteModel, error) {
 			if err := json.Unmarshal(wrapper.Model, &dm); err != nil {
 				return nil, errors.New("deleteMany [" + err.Error() + "]")
 			}
-			dm.Filter = normalizeEmptyFilter(dm.Filter)
-			model = mongo.NewDeleteManyModel().SetFilter(processDateValues(dm.Filter))
+			dm.Filter = normalizeEmptyData(dm.Filter)
+			model = mongo.NewDeleteManyModel().SetFilter(unmarshalRecursive(dm.Filter))
 
 		case "replaceOne":
 			var rm struct {
@@ -155,10 +157,10 @@ func UnmarshalModels(data string) ([]mongo.WriteModel, error) {
 			if err := json.Unmarshal(wrapper.Model, &rm); err != nil {
 				return nil, errors.New("replaceOne [" + err.Error() + "]")
 			}
-			rm.Filter = normalizeEmptyFilter(rm.Filter)
+			rm.Filter = normalizeEmptyData(rm.Filter)
 			model = mongo.NewReplaceOneModel().
-				SetFilter(processDateValues(rm.Filter)).
-				SetReplacement(processDateValues(rm.Replacement))
+				SetFilter(unmarshalRecursive(rm.Filter)).
+				SetReplacement(unmarshalRecursive(rm.Replacement))
 			if rm.Upsert != nil {
 				model.(*mongo.ReplaceOneModel).SetUpsert(*rm.Upsert)
 			}
@@ -173,7 +175,7 @@ func UnmarshalModels(data string) ([]mongo.WriteModel, error) {
 	return models, nil
 }
 
-func normalizeEmptyFilter(data interface{}) interface{} {
+func normalizeEmptyData(data interface{}) interface{} {
 	if data == nil {
 		return bson.D{}
 	}
@@ -185,7 +187,7 @@ func normalizeEmptyFilter(data interface{}) interface{} {
 	return data
 }
 
-func processDateValues(data interface{}) interface{} {
+func unmarshalRecursive(data interface{}) interface{} {
 	if data == nil {
 		return nil
 	}
@@ -195,7 +197,7 @@ func processDateValues(data interface{}) interface{} {
 		result := make(map[string]interface{})
 
 		for key, value := range v {
-			result[key] = processDateValues(value)
+			result[key] = unmarshalRecursive(value)
 		}
 
 		return result
@@ -204,7 +206,7 @@ func processDateValues(data interface{}) interface{} {
 		result := make([]interface{}, len(v))
 
 		for i, value := range v {
-			result[i] = processDateValues(value)
+			result[i] = unmarshalRecursive(value)
 		}
 
 		return result

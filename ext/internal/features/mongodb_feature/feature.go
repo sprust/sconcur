@@ -179,7 +179,7 @@ func (f *Feature) insertOne(
 		)
 	}
 
-	serializedResult, err := helpers.MarshalResult(result)
+	serializedResult, err := helpers.MarshalDocument(result)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -197,7 +197,7 @@ func (f *Feature) bulkWrite(
 	payload *Payload,
 	collection *mongo.Collection,
 ) *dto.Result {
-	models, err := helpers.UnmarshalModels(payload.Data)
+	models, err := helpers.UnmarshalBulkWriteModels(payload.Data)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -215,7 +215,7 @@ func (f *Feature) bulkWrite(
 		)
 	}
 
-	serializedResult, err := helpers.MarshalResult(result)
+	serializedResult, err := helpers.MarshalDocument(result)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -271,7 +271,7 @@ func (f *Feature) aggregate(
 		items = append(items, cursor.Current)
 
 		if len(items) == maxBatchCount {
-			response, err = helpers.MarshalResult(
+			response, err = helpers.MarshalDocument(
 				bson.D{
 					{Key: resultKey, Value: items},
 				},
@@ -292,7 +292,7 @@ func (f *Feature) aggregate(
 		}
 	}
 
-	response, err = helpers.MarshalResult(
+	response, err = helpers.MarshalDocument(
 		bson.D{
 			{Key: resultKey, Value: items},
 		},
@@ -332,7 +332,7 @@ func (f *Feature) insertMany(
 		)
 	}
 
-	serializedResult, err := helpers.MarshalResult(result)
+	serializedResult, err := helpers.MarshalDocument(result)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -421,7 +421,7 @@ func (f *Feature) updateOne(
 		)
 	}
 
-	serializedResult, err := helpers.MarshalResult(result)
+	serializedResult, err := helpers.MarshalDocument(result)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -467,7 +467,7 @@ func (f *Feature) findOne(
 
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
-			serializedResult, marshalErr := helpers.MarshalResult(bson.D{})
+			serializedResult, marshalErr := helpers.MarshalDocument(bson.D{})
 
 			if marshalErr != nil {
 				return dto.NewErrorResult(
@@ -494,7 +494,7 @@ func (f *Feature) findOne(
 		)
 	}
 
-	serializedResult, err := helpers.MarshalResult(raw)
+	serializedResult, err := helpers.MarshalDocument(raw)
 
 	if err != nil {
 		return dto.NewErrorResult(
