@@ -16,7 +16,8 @@ use SConcur\State;
  * @implements Iterator<int, array<int|string|float|bool|null, mixed>>
  */
 // TODO: implement rewind
-class AggregateResult implements Iterator
+// TODO: crash when no iteration
+class IteratorResult implements Iterator
 {
     protected ?Flow $currentFlow = null;
     protected ?string $taskKey   = null;

@@ -11,7 +11,7 @@ use SConcur\Entities\Context;
 use SConcur\Exceptions\InvalidMongodbBulkWriteOperationException;
 use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
-use SConcur\Features\Mongodb\Results\AggregateResult;
+use SConcur\Features\Mongodb\Results\IteratorResult;
 use SConcur\Features\Mongodb\Results\BulkWriteResult;
 use SConcur\Features\Mongodb\Results\InsertManyResult;
 use SConcur\Features\Mongodb\Results\InsertOneResult;
@@ -162,7 +162,7 @@ readonly class MongodbFeature
     {
         $serialized = DocumentSerializer::serialize($pipeline);
 
-        return new AggregateResult(
+        return new IteratorResult(
             context: $context,
             payload: $this->serializePayload(
                 connection: $this->connection,
