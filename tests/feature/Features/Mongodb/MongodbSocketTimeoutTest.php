@@ -55,7 +55,7 @@ class MongodbSocketTimeoutTest extends BaseTestCase
         $exception = null;
 
         try {
-            $feature->aggregate(
+            $iterator = $feature->aggregate(
                 context: $context,
                 pipeline: [
                     [
@@ -79,6 +79,8 @@ class MongodbSocketTimeoutTest extends BaseTestCase
                     ],
                 ]
             );
+
+            $iterator->rewind();
         } catch (TaskErrorException $exception) {
             //
         }

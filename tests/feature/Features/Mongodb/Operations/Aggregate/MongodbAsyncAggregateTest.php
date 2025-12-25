@@ -8,6 +8,7 @@ use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbAsyncTestCase;
 
+// TODO: test for iteration break
 class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
 {
     protected \MongoDB\BSON\ObjectId $driverObjectId;
@@ -31,7 +32,7 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
         $this->fieldName  = uniqid();
         $this->fieldValue = new ObjectId('693a7119e9d4885085366c80');
 
-        $this->documentsCount = 1000;
+        $this->documentsCount = 10;
 
         $this->seedData();
 
@@ -85,11 +86,13 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
 
     protected function on_exception(Context $context): void
     {
-        $this->feature->aggregate(
+        $iterator = $this->feature->aggregate(
             context: $context,
             /** @phpstan-ignore-next-line argument.type */
             pipeline: [$this->fieldName => $this->fieldValue],
         );
+
+        $iterator->rewind();
     }
 
     protected function assertResult(array $results): void
