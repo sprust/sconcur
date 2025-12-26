@@ -8,6 +8,7 @@ import (
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
 	"sconcur/internal/features/mongodb_feature/connections"
+	mdbDto "sconcur/internal/features/mongodb_feature/dto"
 	"sconcur/internal/features/mongodb_feature/helpers"
 	"sconcur/internal/tasks"
 	"strconv"
@@ -19,24 +20,24 @@ import (
 
 const resultKey = "_r"
 
-var _ contracts.MessageHandler = (*Feature)(nil)
+var _ contracts.MessageHandler = (*CollectionFeature)(nil)
 
 var errFactory = errs.NewErrorsFactory("mongodb")
 
-type Feature struct {
+type CollectionFeature struct {
 	connections *connections.Connections
 }
 
-func New(connections *connections.Connections) *Feature {
-	return &Feature{
+func NewCollection(connections *connections.Connections) *CollectionFeature {
+	return &CollectionFeature{
 		connections: connections,
 	}
 }
 
-func (f *Feature) Handle(task *tasks.Task) {
+func (f *CollectionFeature) Handle(task *tasks.Task) {
 	message := task.GetMessage()
 
-	var payload Payload
+	var payload mdbDto.Payload
 
 	err := json.Unmarshal([]byte(message.Payload), &payload)
 
@@ -155,10 +156,10 @@ func (f *Feature) Handle(task *tasks.Task) {
 	}
 }
 
-func (f *Feature) insertOne(
+func (f *CollectionFeature) insertOne(
 	ctx context.Context,
 	message *dto.Message,
-	payload *Payload,
+	payload *mdbDto.Payload,
 	collection *mongo.Collection,
 ) *dto.Result {
 	doc, err := helpers.UnmarshalDocument(payload.Data)
@@ -191,10 +192,10 @@ func (f *Feature) insertOne(
 	return dto.NewSuccessResult(message, serializedResult)
 }
 
-func (f *Feature) bulkWrite(
+func (f *CollectionFeature) bulkWrite(
 	ctx context.Context,
 	message *dto.Message,
-	payload *Payload,
+	payload *mdbDto.Payload,
 	collection *mongo.Collection,
 ) *dto.Result {
 	models, err := helpers.UnmarshalBulkWriteModels(payload.Data)
@@ -227,11 +228,11 @@ func (f *Feature) bulkWrite(
 	return dto.NewSuccessResult(message, serializedResult)
 }
 
-func (f *Feature) aggregate(
+func (f *CollectionFeature) aggregate(
 	ctx context.Context,
 	task *tasks.Task,
 	message *dto.Message,
-	payload *Payload,
+	payload *mdbDto.Payload,
 	collection *mongo.Collection,
 ) *dto.Result {
 	pipeline, err := helpers.UnmarshalDocument(payload.Data)
@@ -308,10 +309,10 @@ func (f *Feature) aggregate(
 	return dto.NewSuccessResult(message, response)
 }
 
-func (f *Feature) insertMany(
+func (f *CollectionFeature) insertMany(
 	ctx context.Context,
 	message *dto.Message,
-	payload *Payload,
+	payload *mdbDto.Payload,
 	collection *mongo.Collection,
 ) *dto.Result {
 	docs, err := helpers.UnmarshalDocuments(payload.Data)
@@ -344,10 +345,10 @@ func (f *Feature) insertMany(
 	return dto.NewSuccessResult(message, serializedResult)
 }
 
-func (f *Feature) countDocuments(
+func (f *CollectionFeature) countDocuments(
 	ctx context.Context,
 	message *dto.Message,
-	payload *Payload,
+	payload *mdbDto.Payload,
 	collection *mongo.Collection,
 ) *dto.Result {
 	filter, err := helpers.UnmarshalDocument(payload.Data)
@@ -371,13 +372,13 @@ func (f *Feature) countDocuments(
 	return dto.NewSuccessResult(message, strconv.FormatInt(result, 10))
 }
 
-func (f *Feature) updateOne(
+func (f *CollectionFeature) updateOne(
 	ctx context.Context,
 	message *dto.Message,
-	payload *Payload,
+	payload *mdbDto.Payload,
 	collection *mongo.Collection,
 ) *dto.Result {
-	var params UpdateOneParams
+	var params mdbDto.UpdateOneParams
 
 	err := json.Unmarshal([]byte(payload.Data), &params)
 
@@ -433,13 +434,13 @@ func (f *Feature) updateOne(
 	return dto.NewSuccessResult(message, serializedResult)
 }
 
-func (f *Feature) findOne(
+func (f *CollectionFeature) findOne(
 	ctx context.Context,
 	message *dto.Message,
-	payload *Payload,
+	payload *mdbDto.Payload,
 	collection *mongo.Collection,
 ) *dto.Result {
-	var params FindOneParams
+	var params mdbDto.FindOneParams
 
 	err := json.Unmarshal([]byte(payload.Data), &params)
 
@@ -506,13 +507,13 @@ func (f *Feature) findOne(
 	return dto.NewSuccessResult(message, serializedResult)
 }
 
-func (f *Feature) createIndex(
+func (f *CollectionFeature) createIndex(
 	ctx context.Context,
 	message *dto.Message,
-	payload *Payload,
+	payload *mdbDto.Payload,
 	collection *mongo.Collection,
 ) *dto.Result {
-	var params CreateIndexParams
+	var params mdbDto.CreateIndexParams
 
 	err := json.Unmarshal([]byte(payload.Data), &params)
 

@@ -2,9 +2,7 @@ package connections
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -14,6 +12,8 @@ import (
 
 var once sync.Once
 var instance Connections
+
+// TODO: graceful shutdown
 
 type Connections struct {
 	mutex   sync.Mutex
@@ -60,28 +60,4 @@ func (c *Connections) Get(
 	}
 
 	return client.Database(database).Collection(collection), nil
-}
-
-func (c *Connections) Close() error {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	slog.Warn("Closing mongodb connections")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var errList []error
-
-	for _, client := range c.clients {
-		if err := client.Disconnect(ctx); err != nil {
-			errList = append(errList, err)
-		}
-	}
-
-	if len(errList) > 0 {
-		return errors.Join(errList...)
-	}
-
-	return nil
 }

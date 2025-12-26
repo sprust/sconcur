@@ -100,7 +100,7 @@ class IteratorResult implements Iterator
 
         $taskResult = $this->currentFlow->exec(
             context: $this->context,
-            method: MethodEnum::Mongodb,
+            method: MethodEnum::MongodbCollection,
             payload: $this->payload
         );
 

@@ -16,7 +16,7 @@ func DetectMessageHandler(method types.Method) (contracts.MessageHandler, error)
 	}
 
 	if method == 2 {
-		return mongodb_feature.New(
+		return mongodb_feature.NewCollection(
 			connections.GetConnections(),
 		), nil
 	}

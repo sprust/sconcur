@@ -36,7 +36,7 @@ readonly class Collection
             socketTimeoutMs: $this->database->client->socketTimeoutMs,
         );
 
-        $this->method = MethodEnum::Mongodb;
+        $this->method = MethodEnum::MongodbCollection;
     }
 
     /**

@@ -1,4 +1,4 @@
-package mongodb_feature
+package dto
 
 type Payload struct {
 	Url             string `json:"ul"`
