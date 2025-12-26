@@ -8,7 +8,6 @@ use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbAsyncTestCase;
 
-// TODO: test for iteration break
 class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
 {
     protected \MongoDB\BSON\ObjectId $driverObjectId;
