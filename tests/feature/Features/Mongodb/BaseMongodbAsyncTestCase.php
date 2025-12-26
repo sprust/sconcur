@@ -4,19 +4,16 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb;
 
-use MongoDB\Client;
-use MongoDB\Collection;
-use SConcur\Features\Features;
-use SConcur\Features\Mongodb\MongodbFeature;
-use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
+use SConcur\Features\Mongodb\Connection\Client;
+use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Tests\Feature\BaseAsyncTestCase;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
 use Throwable;
 
 abstract class BaseMongodbAsyncTestCase extends BaseAsyncTestCase
 {
-    protected MongodbFeature $feature;
-    protected Collection $driverCollection;
+    protected \MongoDB\Collection $driverCollection;
+    protected Collection $sconcurCollection;
 
     abstract protected function getCollectionName(): string;
 
@@ -24,17 +21,17 @@ abstract class BaseMongodbAsyncTestCase extends BaseAsyncTestCase
     {
         parent::setUp();
 
-        $connectionParameters = new ConnectionParameters(
-            uri: TestMongodbUriResolver::get(),
-            database: 'u-test',
-            collection: 'async_' . ucfirst($this->getCollectionName()),
-        );
+        $uri        = TestMongodbUriResolver::get();
+        $database   = 'u-test';
+        $collection = 'async_' . ucfirst($this->getCollectionName());
 
-        $this->driverCollection = new Client($connectionParameters->uri)
-            ->selectDatabase($connectionParameters->database)
-            ->selectCollection($connectionParameters->collection);
+        $this->driverCollection = new \MongoDB\Client($uri)
+            ->selectDatabase($database)
+            ->selectCollection($collection);
 
-        $this->feature = Features::mongodb($connectionParameters);
+        $this->sconcurCollection = new Client($uri)
+            ->selectDatabase($database)
+            ->selectCollection($collection);
 
         $this->driverCollection->deleteMany([]);
     }

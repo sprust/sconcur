@@ -9,7 +9,6 @@ use JsonException;
 use RuntimeException;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
-use stdClass;
 
 readonly class DocumentSerializer
 {

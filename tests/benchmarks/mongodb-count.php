@@ -3,8 +3,7 @@
 declare(strict_types=1);
 
 use SConcur\Entities\Context;
-use SConcur\Features\Features;
-use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
+use SConcur\Features\Mongodb\Connection\Client;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
@@ -22,15 +21,10 @@ echo "Mongodb URI: $uri\n";
 $databaseName   = 'benchmark';
 $collectionName = 'benchmark';
 
-$connection = new ConnectionParameters(
-    uri: $uri,
-    database: $databaseName,
-    collection: $collectionName,
-);
+$driverCollection  = new MongoDB\Client($uri)->selectDatabase($databaseName)->selectCollection($collectionName);
+$sconcurCollection = new Client($uri)->selectDatabase($databaseName)->selectCollection($collectionName);
 
-$collection = (new MongoDB\Client($uri))->selectDatabase($databaseName)->selectCollection($collectionName);
-
-$nativeFilter = makeFilter(
+$driverFilter = makeFilter(
     objectId: new \MongoDB\BSON\ObjectId('6919e3d1a3673d3f4d9137a3'),
     dateTime: new \MongoDB\BSON\UTCDateTime()
 );
@@ -40,22 +34,18 @@ $sconcurFilter = makeFilter(
     dateTime: new UTCDateTime()
 );
 
-$feature = Features::mongodb(
-    connection: $connection,
-);
-
 $benchmarker->run(
-    nativeCallback: static function () use ($collection, $nativeFilter) {
-        return $collection->countDocuments($nativeFilter);
+    nativeCallback: static function () use ($driverCollection, $driverFilter) {
+        return $driverCollection->countDocuments($driverFilter);
     },
-    syncCallback: static function (Context $context) use ($feature, $sconcurFilter) {
-        return $feature->countDocuments(
+    syncCallback: static function (Context $context) use ($sconcurCollection, $sconcurFilter) {
+        return $sconcurCollection->countDocuments(
             context: $context,
             filter: $sconcurFilter
         );
     },
-    asyncCallback: static function (Context $context) use ($feature, $sconcurFilter) {
-        return $feature->countDocuments(
+    asyncCallback: static function (Context $context) use ($sconcurCollection, $sconcurFilter) {
+        return $sconcurCollection->countDocuments(
             context: $context,
             filter: $sconcurFilter
         );

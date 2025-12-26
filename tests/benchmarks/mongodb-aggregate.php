@@ -3,8 +3,7 @@
 declare(strict_types=1);
 
 use SConcur\Entities\Context;
-use SConcur\Features\Features;
-use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
+use SConcur\Features\Mongodb\Connection\Client;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
 
@@ -21,15 +20,10 @@ echo "Mongodb URI: $uri\n";
 $databaseName   = 'benchmark';
 $collectionName = 'benchmark';
 
-$connection = new ConnectionParameters(
-    uri: $uri,
-    database: $databaseName,
-    collection: $collectionName,
-);
+$driverCollection  = new MongoDB\Client($uri)->selectDatabase($databaseName)->selectCollection($collectionName);
+$sconcurCollection = new Client($uri)->selectDatabase($databaseName)->selectCollection($collectionName);
 
-$collection = (new MongoDB\Client($uri))->selectDatabase($databaseName)->selectCollection($collectionName);
-
-$nativePipeline = makePipeline(
+$driverPipeline = makePipeline(
     new \MongoDB\BSON\ObjectId('6919e3d1a3673d3f4d9137a3')
 );
 
@@ -39,14 +33,10 @@ $sconcurPipeline = makePipeline(
 
 $isLogProcess = $benchmarker->isLogProcess();
 
-$feature = Features::mongodb(
-    connection: $connection,
-);
-
-$nativeCallback = static function () use ($collection, $nativePipeline, $isLogProcess) {
+$nativeCallback = static function () use ($driverCollection, $driverPipeline, $isLogProcess) {
     $item = uniqid();
 
-    $aggregate = $collection->aggregate($nativePipeline);
+    $aggregate = $driverCollection->aggregate($driverPipeline);
 
     foreach ($aggregate as $doc) {
         $id = $doc['_id'];
@@ -59,10 +49,10 @@ $nativeCallback = static function () use ($collection, $nativePipeline, $isLogPr
     }
 };
 
-$sconcurCallback = static function (Context $context) use ($feature, $sconcurPipeline, $isLogProcess) {
+$sconcurCallback = static function (Context $context) use ($sconcurCollection, $sconcurPipeline, $isLogProcess) {
     $item = uniqid();
 
-    $aggregate = $feature->aggregate(
+    $aggregate = $sconcurCollection->aggregate(
         context: $context,
         pipeline: $sconcurPipeline
     );

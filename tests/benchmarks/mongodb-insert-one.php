@@ -3,8 +3,7 @@
 declare(strict_types=1);
 
 use SConcur\Entities\Context;
-use SConcur\Features\Features;
-use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
+use SConcur\Features\Mongodb\Connection\Client;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
@@ -22,13 +21,8 @@ echo "Mongodb URI: $uri\n";
 $databaseName   = 'benchmark';
 $collectionName = 'benchmark';
 
-$connection = new ConnectionParameters(
-    uri: $uri,
-    database: $databaseName,
-    collection: $collectionName,
-);
-
-$collection = (new MongoDB\Client($uri))->selectDatabase($databaseName)->selectCollection($collectionName);
+$driverCollection  = new MongoDB\Client($uri)->selectDatabase($databaseName)->selectCollection($collectionName);
+$sconcurCollection = new Client($uri)->selectDatabase($databaseName)->selectCollection($collectionName);
 
 $nativeDocument = makeDocument(
     objectId: new \MongoDB\BSON\ObjectId('6919e3d1a3673d3f4d9137a3'),
@@ -40,22 +34,18 @@ $sconcurDocument = makeDocument(
     dateTime: new UTCDateTime()
 );
 
-$feature = Features::mongodb(
-    connection: $connection,
-);
-
 $benchmarker->run(
-    nativeCallback: static function () use ($collection, $nativeDocument) {
-        return $collection->insertOne($nativeDocument)->getInsertedId();
+    nativeCallback: static function () use ($driverCollection, $nativeDocument) {
+        return $driverCollection->insertOne($nativeDocument)->getInsertedId();
     },
-    syncCallback: static function (Context $context) use ($feature, $sconcurDocument) {
-        return $feature->insertOne(
+    syncCallback: static function (Context $context) use ($sconcurCollection, $sconcurDocument) {
+        return $sconcurCollection->insertOne(
             context: $context,
             document: $sconcurDocument
         )->insertedId;
     },
-    asyncCallback: static function (Context $context) use ($feature, $sconcurDocument) {
-        return $feature->insertOne(
+    asyncCallback: static function (Context $context) use ($sconcurCollection, $sconcurDocument) {
+        return $sconcurCollection->insertOne(
             context: $context,
             document: $sconcurDocument
         )->insertedId;

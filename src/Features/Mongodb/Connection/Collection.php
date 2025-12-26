@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Features\Mongodb;
+namespace SConcur\Features\Mongodb\Connection;
 
 use Iterator;
 use RuntimeException;
@@ -10,24 +10,32 @@ use SConcur\Dto\TaskResultDto;
 use SConcur\Entities\Context;
 use SConcur\Exceptions\InvalidMongodbBulkWriteOperationException;
 use SConcur\Features\MethodEnum;
+use SConcur\Features\Mongodb\CommandEnum;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
-use SConcur\Features\Mongodb\Results\IteratorResult;
 use SConcur\Features\Mongodb\Results\BulkWriteResult;
 use SConcur\Features\Mongodb\Results\InsertManyResult;
 use SConcur\Features\Mongodb\Results\InsertOneResult;
+use SConcur\Features\Mongodb\Results\IteratorResult;
 use SConcur\Features\Mongodb\Results\UpdateResult;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
 use SConcur\State;
 
-readonly class MongodbFeature
+readonly class Collection
 {
     protected const string RESULT_KEY = '_r';
 
+    protected ConnectionParameters $connection;
     protected MethodEnum $method;
 
-    public function __construct(
-        protected ConnectionParameters $connection,
-    ) {
+    public function __construct(public Database $database, public string $name)
+    {
+        $this->connection = new ConnectionParameters(
+            uri: $this->database->client->uri,
+            database: $this->database->name,
+            collection: $this->name,
+            socketTimeoutMs: $this->database->client->socketTimeoutMs,
+        );
+
         $this->method = MethodEnum::Mongodb;
     }
 

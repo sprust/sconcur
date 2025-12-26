@@ -3,8 +3,7 @@
 declare(strict_types=1);
 
 use SConcur\Entities\Context;
-use SConcur\Features\Features;
-use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
+use SConcur\Features\Mongodb\Connection\Client;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
@@ -22,15 +21,10 @@ echo "Mongodb URI: $uri\n";
 $databaseName   = 'benchmark';
 $collectionName = 'benchmark';
 
-$connection = new ConnectionParameters(
-    uri: $uri,
-    database: $databaseName,
-    collection: $collectionName,
-);
+$driverCollection  = new MongoDB\Client($uri)->selectDatabase($databaseName)->selectCollection($collectionName);
+$sconcurCollection = new Client($uri)->selectDatabase($databaseName)->selectCollection($collectionName);
 
-$collection = (new MongoDB\Client($uri))->selectDatabase($databaseName)->selectCollection($collectionName);
-
-$nativeDocuments = array_map(
+$driverDocuments = array_map(
     static fn() => makeDocument(
         objectId: new \MongoDB\BSON\ObjectId('6919e3d1a3673d3f4d9137a3'),
         dateTime: new \MongoDB\BSON\UTCDateTime()
@@ -46,22 +40,18 @@ $sconcurDocuments = array_map(
     range(1, 30)
 );
 
-$feature = Features::mongodb(
-    connection: $connection,
-);
-
 $benchmarker->run(
-    nativeCallback: static function () use ($collection, $nativeDocuments) {
-        return $collection->insertMany($nativeDocuments)->getInsertedCount();
+    nativeCallback: static function () use ($driverCollection, $driverDocuments) {
+        return $driverCollection->insertMany($driverDocuments)->getInsertedCount();
     },
-    syncCallback: static function (Context $context) use ($feature, $sconcurDocuments) {
-        return $feature->insertMany(
+    syncCallback: static function (Context $context) use ($sconcurCollection, $sconcurDocuments) {
+        return $sconcurCollection->insertMany(
             context: $context,
             documents: $sconcurDocuments
         )->insertedCount;
     },
-    asyncCallback: static function (Context $context) use ($feature, $sconcurDocuments) {
-        return $feature->insertMany(
+    asyncCallback: static function (Context $context) use ($sconcurCollection, $sconcurDocuments) {
+        return $sconcurCollection->insertMany(
             context: $context,
             documents: $sconcurDocuments
         )->insertedCount;

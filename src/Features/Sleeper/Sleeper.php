@@ -2,13 +2,13 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Features\Sleep;
+namespace SConcur\Features\Sleeper;
 
 use SConcur\Entities\Context;
 use SConcur\Features\MethodEnum;
 use SConcur\State;
 
-readonly class SleepFeature
+readonly class Sleeper
 {
     public function sleep(Context $context, int $seconds): void
     {

@@ -41,7 +41,7 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
 
     protected function on_1_start(Context $context): void
     {
-        $result = $this->feature->findOne($context, []);
+        $result = $this->sconcurCollection->findOne($context, []);
 
         self::assertTrue(
             is_null($result)
@@ -50,7 +50,7 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
 
     protected function on_1_middle(Context $context): void
     {
-        $this->feature->insertMany(
+        $this->sconcurCollection->insertMany(
             $context,
             [
                 [
@@ -62,7 +62,7 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
             ]
         );
 
-        $result = $this->feature->findOne($context, [$this->fieldName => $this->objectId]);
+        $result = $this->sconcurCollection->findOne($context, [$this->fieldName => $this->objectId]);
 
         self::assertFalse(
             is_null($result)
@@ -92,7 +92,7 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
             new DateTime()->modify('+1 day')
         );
 
-        $this->feature->insertMany(
+        $this->sconcurCollection->insertMany(
             $context,
             [
                 [
@@ -104,7 +104,7 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
             ]
         );
 
-        $result = $this->feature->findOne($context, [$this->fieldName => $dateTime]);
+        $result = $this->sconcurCollection->findOne($context, [$this->fieldName => $dateTime]);
 
         self::assertFalse(
             is_null($result)
@@ -127,7 +127,7 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
 
     protected function on_2_middle(Context $context): void
     {
-        $result = $this->feature->findOne($context, []);
+        $result = $this->sconcurCollection->findOne($context, []);
 
         self::assertFalse(
             is_null($result)
@@ -136,7 +136,7 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
 
     protected function on_iterate(Context $context): void
     {
-        $result = $this->feature->findOne($context, []);
+        $result = $this->sconcurCollection->findOne($context, []);
 
         self::assertFalse(
             is_null($result)
@@ -145,7 +145,7 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
 
     protected function on_exception(Context $context): void
     {
-        $this->feature->findOne($context, ['$set' => 11]);
+        $this->sconcurCollection->findOne($context, ['$set' => 11]);
     }
 
     protected function assertResult(array $results): void

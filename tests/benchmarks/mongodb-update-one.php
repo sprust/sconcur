@@ -3,8 +3,7 @@
 declare(strict_types=1);
 
 use SConcur\Entities\Context;
-use SConcur\Features\Features;
-use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
+use SConcur\Features\Mongodb\Connection\Client;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
@@ -22,15 +21,10 @@ echo "Mongodb URI: $uri\n";
 $databaseName   = 'benchmark';
 $collectionName = 'benchmark';
 
-$connection = new ConnectionParameters(
-    uri: $uri,
-    database: $databaseName,
-    collection: $collectionName,
-);
+$driverCollection  = new MongoDB\Client($uri)->selectDatabase($databaseName)->selectCollection($collectionName);
+$sconcurCollection = new Client($uri)->selectDatabase($databaseName)->selectCollection($collectionName);
 
-$collection = (new MongoDB\Client($uri))->selectDatabase($databaseName)->selectCollection($collectionName);
-
-$nativeData = makeDocument(
+$driverData = makeDocument(
     objectId: new \MongoDB\BSON\ObjectId('6919e3d1a3673d3f4d9137a3'),
     dateTime: new \MongoDB\BSON\UTCDateTime()
 );
@@ -40,30 +34,26 @@ $sconcurDate = makeDocument(
     dateTime: new UTCDateTime()
 );
 
-$feature = Features::mongodb(
-    connection: $connection,
-);
-
 $benchmarker->run(
-    nativeCallback: static function () use ($collection, $nativeData) {
-        return $collection
+    nativeCallback: static function () use ($driverCollection, $driverData) {
+        return $driverCollection
             ->updateOne(
-                filter: $nativeData['filter'],
-                update: $nativeData['update'],
-                options: $nativeData['options'],
+                filter: $driverData['filter'],
+                update: $driverData['update'],
+                options: $driverData['options'],
             )
             ->getModifiedCount();
     },
-    syncCallback: static function (Context $context) use ($feature, $sconcurDate) {
-        return $feature->updateOne(
+    syncCallback: static function (Context $context) use ($sconcurCollection, $sconcurDate) {
+        return $sconcurCollection->updateOne(
             context: $context,
             filter: $sconcurDate['filter'],
             update: $sconcurDate['update'],
             options: $sconcurDate['options'],
         )->modifiedCount;
     },
-    asyncCallback: static function (Context $context) use ($feature, $sconcurDate) {
-        return $feature->updateOne(
+    asyncCallback: static function (Context $context) use ($sconcurCollection, $sconcurDate) {
+        return $sconcurCollection->updateOne(
             context: $context,
             filter: $sconcurDate['filter'],
             update: $sconcurDate['update'],

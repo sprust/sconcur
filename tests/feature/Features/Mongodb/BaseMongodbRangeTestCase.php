@@ -4,12 +4,9 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb;
 
-use MongoDB\Client;
-use MongoDB\Collection;
 use SConcur\Entities\Context;
-use SConcur\Features\Features;
-use SConcur\Features\Mongodb\MongodbFeature;
-use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
+use SConcur\Features\Mongodb\Connection\Client;
+use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
 
@@ -18,8 +15,8 @@ use SConcur\Tests\Impl\TestMongodbUriResolver;
  */
 abstract class BaseMongodbRangeTestCase extends BaseTestCase
 {
-    protected MongodbFeature $feature;
-    protected Collection $driverCollection;
+    protected \MongoDB\Collection $driverCollection;
+    protected Collection $sconcurCollection;
 
     abstract protected function getType(): string;
 
@@ -46,17 +43,17 @@ abstract class BaseMongodbRangeTestCase extends BaseTestCase
     {
         parent::setUp();
 
-        $connectionParameters = new ConnectionParameters(
-            uri: TestMongodbUriResolver::get(),
-            database: 'u-test',
-            collection: 'range_' . ucfirst($this->getType()),
-        );
+        $uri        = TestMongodbUriResolver::get();
+        $database   = 'u-test';
+        $collection = 'range_' . ucfirst($this->getType());
 
-        $this->driverCollection = new Client($connectionParameters->uri)
-            ->selectDatabase($connectionParameters->database)
-            ->selectCollection($connectionParameters->collection);
+        $this->driverCollection = new \MongoDB\Client($uri)
+            ->selectDatabase($database)
+            ->selectCollection($collection);
 
-        $this->feature = Features::mongodb($connectionParameters);
+        $this->sconcurCollection = new Client($uri)
+            ->selectDatabase($database)
+            ->selectCollection($collection);
 
         $this->driverCollection->deleteMany([]);
     }
@@ -91,12 +88,12 @@ abstract class BaseMongodbRangeTestCase extends BaseTestCase
 
         $context = Context::create(3);
 
-        $this->feature->insertMany(
+        $this->sconcurCollection->insertMany(
             context: $context,
             documents: $documents
         );
 
-        $aggregation = $this->feature->aggregate(
+        $aggregation = $this->sconcurCollection->aggregate(
             context: $context,
             pipeline: [
                 [
@@ -116,7 +113,7 @@ abstract class BaseMongodbRangeTestCase extends BaseTestCase
             iterator_count($aggregation)
         );
 
-        $aggregation = $this->feature->aggregate(
+        $aggregation = $this->sconcurCollection->aggregate(
             context: $context,
             pipeline: [
                 [

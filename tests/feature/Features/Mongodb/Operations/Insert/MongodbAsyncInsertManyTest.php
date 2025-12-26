@@ -63,7 +63,7 @@ class MongodbAsyncInsertManyTest extends BaseMongodbAsyncTestCase
 
     protected function on_exception(Context $context): void
     {
-        $this->feature->insertMany(
+        $this->sconcurCollection->insertMany(
             context: $context,
             /** @phpstan-ignore-next-line argument.type */
             documents: [$this->fieldName => $this->fieldValue]
@@ -80,7 +80,7 @@ class MongodbAsyncInsertManyTest extends BaseMongodbAsyncTestCase
 
     protected function insertDocuments(): void
     {
-        $insertResult = $this->feature->insertMany(
+        $insertResult = $this->sconcurCollection->insertMany(
             context: Context::create(2),
             documents: array_map(
                 fn() => [$this->fieldName => $this->fieldValue],

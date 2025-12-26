@@ -130,7 +130,7 @@ class MongodbAsyncCreateIndexTest extends BaseMongodbAsyncTestCase
      */
     protected function createIndex(Context $context, array $keys, ?string $name): void
     {
-        $this->feature->createIndex(
+        $this->sconcurCollection->createIndex(
             context: $context,
             keys: $keys,
             name: $name

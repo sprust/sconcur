@@ -33,7 +33,7 @@ class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
 
     protected function on_1_start(Context $context): void
     {
-        $insertResult = $this->feature->insertOne(
+        $insertResult = $this->sconcurCollection->insertOne(
             context: Context::create(2),
             document: [$this->fieldName => $this->fieldValue]
         );
@@ -45,7 +45,7 @@ class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
 
     protected function on_1_middle(Context $context): void
     {
-        $insertResult = $this->feature->insertOne(
+        $insertResult = $this->sconcurCollection->insertOne(
             context: Context::create(2),
             document: [$this->fieldName => $this->fieldValue]
         );
@@ -67,7 +67,7 @@ class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
 
     protected function on_iterate(Context $context): void
     {
-        $this->feature->insertOne(
+        $this->sconcurCollection->insertOne(
             context: Context::create(2),
             document: [$this->fieldName => $this->fieldValue]
         );
@@ -75,7 +75,7 @@ class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
 
     protected function on_exception(Context $context): void
     {
-        $this->feature->insertOne(
+        $this->sconcurCollection->insertOne(
             context: Context::create(2),
             document: [[$this->fieldName => $this->fieldValue]]
         );

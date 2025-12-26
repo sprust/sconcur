@@ -2,17 +2,16 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Tests\Feature\Features\Sleep;
+namespace SConcur\Tests\Feature\Features\Sleeper;
 
 use SConcur\Entities\Context;
-use SConcur\Features\Features;
-use SConcur\Features\Sleep\SleepFeature;
+use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Feature\BaseAsyncTestCase;
 use Throwable;
 
-class SleepTest extends BaseAsyncTestCase
+class SleeperTest extends BaseAsyncTestCase
 {
-    private SleepFeature $sleepFeature;
+    private Sleeper $sleeper;
 
     private float $startTime;
 
@@ -20,38 +19,38 @@ class SleepTest extends BaseAsyncTestCase
     {
         parent::setUp();
 
-        $this->sleepFeature = Features::sleep();
-        $this->startTime    = microtime(true);
+        $this->sleeper   = new Sleeper();
+        $this->startTime = microtime(true);
     }
 
     protected function on_1_start(Context $context): void
     {
-        $this->sleepFeature->usleep(context: $context, milliseconds: 10);
+        $this->sleeper->usleep(context: $context, milliseconds: 10);
     }
 
     protected function on_1_middle(Context $context): void
     {
-        $this->sleepFeature->usleep(context: $context, milliseconds: 10);
+        $this->sleeper->usleep(context: $context, milliseconds: 10);
     }
 
     protected function on_2_start(Context $context): void
     {
-        $this->sleepFeature->usleep(context: $context, milliseconds: 10);
+        $this->sleeper->usleep(context: $context, milliseconds: 10);
     }
 
     protected function on_2_middle(Context $context): void
     {
-        $this->sleepFeature->usleep(context: $context, milliseconds: 10);
+        $this->sleeper->usleep(context: $context, milliseconds: 10);
     }
 
     protected function on_iterate(Context $context): void
     {
-        $this->sleepFeature->usleep(context: $context, milliseconds: 1);
+        $this->sleeper->usleep(context: $context, milliseconds: 1);
     }
 
     protected function on_exception(Context $context): void
     {
-        $this->sleepFeature->usleep(context: $context, milliseconds: -1);
+        $this->sleeper->usleep(context: $context, milliseconds: -1);
     }
 
     protected function assertException(Throwable $exception): void

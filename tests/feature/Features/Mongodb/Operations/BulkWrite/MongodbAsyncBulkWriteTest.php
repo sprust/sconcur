@@ -31,7 +31,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
             uniqid('InsertOne_') => $this->fieldValue,
         ];
 
-        $this->feature->bulkWrite(
+        $this->sconcurCollection->bulkWrite(
             context: $context,
             operations: [
                 [
@@ -44,7 +44,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
 
         self::assertEquals(
             1,
-            $this->feature->countDocuments(
+            $this->sconcurCollection->countDocuments(
                 context: $context,
                 filter: $document
             )
@@ -58,7 +58,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
                 uniqid(ucfirst($operation) . '_') => $this->fieldValue,
             ];
 
-            $this->feature->bulkWrite(
+            $this->sconcurCollection->bulkWrite(
                 context: $context,
                 operations: [
                     [
@@ -76,13 +76,13 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
 
             self::assertEquals(
                 0,
-                $this->feature->countDocuments(
+                $this->sconcurCollection->countDocuments(
                     context: $context,
                     filter: $filter
                 )
             );
 
-            $this->feature->bulkWrite(
+            $this->sconcurCollection->bulkWrite(
                 context: $context,
                 operations: [
                     [
@@ -103,7 +103,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
 
             self::assertEquals(
                 1,
-                $this->feature->countDocuments(
+                $this->sconcurCollection->countDocuments(
                     context: $context,
                     filter: [
                         ...$filter,
@@ -112,7 +112,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
                 )
             );
 
-            $this->feature->bulkWrite(
+            $this->sconcurCollection->bulkWrite(
                 context: $context,
                 operations: [
                     [
@@ -130,7 +130,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
 
             self::assertEquals(
                 1,
-                $this->feature->countDocuments(
+                $this->sconcurCollection->countDocuments(
                     context: $context,
                     filter: [
                         ...$filter,
@@ -147,7 +147,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
             uniqid('DeleteOneMany_') => $this->fieldValue,
         ];
 
-        $this->feature->insertMany(
+        $this->sconcurCollection->insertMany(
             context: $context,
             documents: [
                 $filter,
@@ -158,13 +158,13 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
 
         self::assertEquals(
             3,
-            $this->feature->countDocuments(
+            $this->sconcurCollection->countDocuments(
                 context: $context,
                 filter: $filter
             )
         );
 
-        $this->feature->bulkWrite(
+        $this->sconcurCollection->bulkWrite(
             context: $context,
             operations: [
                 [
@@ -177,13 +177,13 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
 
         self::assertEquals(
             2,
-            $this->feature->countDocuments(
+            $this->sconcurCollection->countDocuments(
                 context: $context,
                 filter: $filter
             )
         );
 
-        $this->feature->bulkWrite(
+        $this->sconcurCollection->bulkWrite(
             context: $context,
             operations: [
                 [
@@ -196,7 +196,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
 
         self::assertEquals(
             0,
-            $this->feature->countDocuments(
+            $this->sconcurCollection->countDocuments(
                 context: $context,
                 filter: $filter
             )
@@ -212,7 +212,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
             'createdAt'    => $datetime,
         ];
 
-        $this->feature->bulkWrite(
+        $this->sconcurCollection->bulkWrite(
             context: $context,
             operations: [
                 [
@@ -251,13 +251,13 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
 
         self::assertEquals(
             1,
-            $this->feature->countDocuments(
+            $this->sconcurCollection->countDocuments(
                 context: $context,
                 filter: $primaryFilter
             )
         );
 
-        $this->feature->bulkWrite(
+        $this->sconcurCollection->bulkWrite(
             context: $context,
             operations: [
                 [
@@ -274,7 +274,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
 
         self::assertEquals(
             0,
-            $this->feature->countDocuments(
+            $this->sconcurCollection->countDocuments(
                 context: $context,
                 filter: $primaryFilter
             )
@@ -282,7 +282,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
 
         self::assertEquals(
             1,
-            $this->feature->countDocuments(
+            $this->sconcurCollection->countDocuments(
                 context: $context,
                 filter: [
                     ...$filter,
@@ -298,7 +298,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
             uniqid('Iterate_InsertOne_') => $this->fieldValue,
         ];
 
-        $this->feature->bulkWrite(
+        $this->sconcurCollection->bulkWrite(
             context: $context,
             operations: [
                 [
@@ -311,7 +311,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
 
         self::assertEquals(
             1,
-            $this->feature->countDocuments(
+            $this->sconcurCollection->countDocuments(
                 context: $context,
                 filter: $document
             )
@@ -320,7 +320,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
 
     protected function on_exception(Context $context): void
     {
-        $this->feature->bulkWrite(
+        $this->sconcurCollection->bulkWrite(
             context: $context,
             operations: [
                 [

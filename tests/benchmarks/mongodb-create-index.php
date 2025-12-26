@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 use SConcur\Entities\Context;
-use SConcur\Features\Features;
+use SConcur\Features\Mongodb\Connection\Client;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
@@ -28,10 +28,11 @@ $connection = new ConnectionParameters(
     collection: $collectionName,
 );
 
-$collection = (new MongoDB\Client($uri))->selectDatabase($databaseName)->selectCollection($collectionName);
+$driverCollection  = new MongoDB\Client($uri)->selectDatabase($databaseName)->selectCollection($collectionName);
+$sconcurCollection = new Client($uri)->selectDatabase($databaseName)->selectCollection($collectionName);
 
-if (iterator_count($collection->listIndexes()) > 0) {
-    $collection->dropIndexes();
+if (iterator_count($driverCollection->listIndexes()) > 0) {
+    $driverCollection->dropIndexes();
 }
 
 $sconcurFilter = makeFilter(
@@ -39,27 +40,23 @@ $sconcurFilter = makeFilter(
     dateTime: new UTCDateTime()
 );
 
-$feature = Features::mongodb(
-    connection: $connection,
-);
-
 $index = 0;
 
 $benchmarker->run(
-    nativeCallback: static function () use ($collection, &$index) {
+    nativeCallback: static function () use ($driverCollection, &$index) {
         ++$index;
 
-        return $collection->createIndex([
+        return $driverCollection->createIndex([
             uniqid("$index-native_") => 1,
             uniqid()                 => -1,
         ]);
     },
-    syncCallback: static function (Context $context) use ($feature, &$index) {
+    syncCallback: static function (Context $context) use ($sconcurCollection, &$index) {
         ++$index;
 
         $indexName = "$index-sync";
 
-        return $feature->createIndex(
+        return $sconcurCollection->createIndex(
             context: $context,
             keys: [
                 uniqid("{$indexName}_") => 1,
@@ -68,12 +65,12 @@ $benchmarker->run(
             name: $indexName
         );
     },
-    asyncCallback: static function (Context $context) use ($feature, &$index) {
+    asyncCallback: static function (Context $context) use ($sconcurCollection, &$index) {
         ++$index;
 
         $indexName = "$index-async";
 
-        return $feature->createIndex(
+        return $sconcurCollection->createIndex(
             context: $context,
             keys: [
                 uniqid("{$indexName}_") => 1,

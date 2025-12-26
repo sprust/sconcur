@@ -5,20 +5,19 @@ namespace SConcur\Tests\Feature\Features;
 use Exception;
 use SConcur\Entities\Context;
 use SConcur\Exceptions\TaskErrorException;
-use SConcur\Features\Features;
-use SConcur\Features\Sleep\SleepFeature;
+use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\WaitGroup;
 
 class GeneralTest extends BaseTestCase
 {
-    private SleepFeature $sleepFeature;
+    private Sleeper $sleeper;
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        $this->sleepFeature = Features::sleep();
+        $this->sleeper = new Sleeper();
     }
 
     public function testMulti(): void
@@ -30,22 +29,22 @@ class GeneralTest extends BaseTestCase
             function (Context $context) use (&$events) {
                 $events[] = '1:start';
 
-                $this->sleepFeature->usleep(context: $context, milliseconds: 10);
+                $this->sleeper->usleep(context: $context, milliseconds: 10);
 
                 $events[] = '1:woke';
 
-                $this->sleepFeature->usleep(context: $context, milliseconds: 30);
+                $this->sleeper->usleep(context: $context, milliseconds: 30);
 
                 $events[] = '1:finish';
             },
             function (Context $context) use (&$events) {
                 $events[] = '2:start';
 
-                $this->sleepFeature->usleep(context: $context, milliseconds: 20);
+                $this->sleeper->usleep(context: $context, milliseconds: 20);
 
                 $events[] = '2:woke';
 
-                $this->sleepFeature->usleep(context: $context, milliseconds: 40);
+                $this->sleeper->usleep(context: $context, milliseconds: 40);
 
                 $events[] = '2:finish';
             },
@@ -92,14 +91,14 @@ class GeneralTest extends BaseTestCase
 
         $callbacks = [
             function (Context $context) use (&$events) {
-                $this->sleepFeature->usleep(context: $context, milliseconds: 10);
+                $this->sleeper->usleep(context: $context, milliseconds: 10);
 
                 $events[] = '1:finish';
 
                 return '1';
             },
             function (Context $context) use (&$events) {
-                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
+                $this->sleeper->usleep(context: $context, milliseconds: 1);
 
                 $events[] = '2:finish';
 
@@ -141,14 +140,14 @@ class GeneralTest extends BaseTestCase
 
         $callbacks = [
             function (Context $context) use (&$events) {
-                $this->sleepFeature->sleep(context: $context, seconds: 2);
+                $this->sleeper->sleep(context: $context, seconds: 2);
 
                 $events[] = '1:finish';
 
                 return '1';
             },
             function (Context $context) use (&$events) {
-                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
+                $this->sleeper->usleep(context: $context, milliseconds: 1);
 
                 $events[] = '2:finish';
 
@@ -191,10 +190,10 @@ class GeneralTest extends BaseTestCase
     {
         $callbacks = [
             function (Context $context) {
-                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
+                $this->sleeper->usleep(context: $context, milliseconds: 1);
             },
             function (Context $context) {
-                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
+                $this->sleeper->usleep(context: $context, milliseconds: 1);
             },
         ];
 
@@ -215,7 +214,7 @@ class GeneralTest extends BaseTestCase
         foreach ($generator as $key => $value) {
             $results[$key] = $value;
 
-            $this->sleepFeature->usleep(context: $context, milliseconds: 1);
+            $this->sleeper->usleep(context: $context, milliseconds: 1);
         }
 
         self::assertCount(
@@ -228,10 +227,10 @@ class GeneralTest extends BaseTestCase
     {
         $callbacks = [
             function (Context $context) {
-                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
+                $this->sleeper->usleep(context: $context, milliseconds: 1);
             },
             function (Context $context) {
-                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
+                $this->sleeper->usleep(context: $context, milliseconds: 1);
             },
         ];
 
@@ -259,10 +258,10 @@ class GeneralTest extends BaseTestCase
 
         $callbacks = [
             function (Context $context) {
-                $this->sleepFeature->sleep(context: $context, seconds: 1);
+                $this->sleeper->sleep(context: $context, seconds: 1);
             },
             function (Context $context) use ($exceptionMessage) {
-                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
+                $this->sleeper->usleep(context: $context, milliseconds: 1);
 
                 throw new Exception($exceptionMessage);
             },
@@ -315,7 +314,7 @@ class GeneralTest extends BaseTestCase
 
         $waitGroup->add(callback: function (Context $context) use (&$exception, $exceptionMessage) {
             try {
-                $this->sleepFeature->usleep(context: $context, milliseconds: -1);
+                $this->sleeper->usleep(context: $context, milliseconds: -1);
             } catch (TaskErrorException $exception) {
                 throw new Exception($exceptionMessage);
             }

@@ -6,8 +6,7 @@ namespace SConcur\Tests\Feature\Features\Mongodb;
 
 use SConcur\Entities\Context;
 use SConcur\Exceptions\TaskErrorException;
-use SConcur\Features\Features;
-use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
+use SConcur\Features\Mongodb\Connection\Client;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
 
@@ -17,45 +16,46 @@ class MongodbSocketTimeoutTest extends BaseTestCase
     {
         $context = Context::create(2);
 
-        $connectionParameters = new ConnectionParameters(
-            uri: TestMongodbUriResolver::get(),
-            database: 'u-test',
-            collection: 'socketTimeout',
-        );
+        $uri        = TestMongodbUriResolver::get();
+        $database   = 'u-test';
+        $collection = 'socketTimeout';
 
-        Features::mongodb($connectionParameters)
-            ->bulkWrite(
-                context: $context,
-                operations: [
-                    [
-                        'deleteMany' => [
-                            [],
-                        ],
+        $driverCollection = new \MongoDB\Client($uri)
+            ->selectDatabase($database)
+            ->selectCollection($collection);
+
+        $sconcurCollection = new Client($uri)
+            ->selectDatabase($database)
+            ->selectCollection($collection);
+
+        $driverCollection->deleteMany([]);
+
+        $sconcurCollection->bulkWrite(
+            context: $context,
+            operations: [
+                [
+                    'deleteMany' => [
+                        [],
                     ],
-                ]
-            );
-
-        Features::mongodb($connectionParameters)
-            ->insertOne(
-                context: $context,
-                document: [
-                    uniqid() => true,
-                ]
-            );
-
-        $connectionParameters = new ConnectionParameters(
-            uri: TestMongodbUriResolver::get(),
-            database: 'u-test',
-            collection: 'socketTimeout',
-            socketTimeoutMs: 1
+                ],
+            ]
         );
 
-        $feature = Features::mongodb($connectionParameters);
+        $sconcurCollection->insertOne(
+            context: $context,
+            document: [
+                uniqid() => true,
+            ]
+        );
+
+        $sconcurCollection = new Client($uri, socketTimeoutMs: 1)
+            ->selectDatabase($database)
+            ->selectCollection($collection);
 
         $exception = null;
 
         try {
-            $iterator = $feature->aggregate(
+            $iterator = $sconcurCollection->aggregate(
                 context: $context,
                 pipeline: [
                     [

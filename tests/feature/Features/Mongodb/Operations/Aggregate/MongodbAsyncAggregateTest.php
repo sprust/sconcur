@@ -85,7 +85,7 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
 
     protected function on_exception(Context $context): void
     {
-        $iterator = $this->feature->aggregate(
+        $iterator = $this->sconcurCollection->aggregate(
             context: $context,
             /** @phpstan-ignore-next-line argument.type */
             pipeline: [$this->fieldName => $this->fieldValue],
@@ -148,7 +148,7 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
 
     protected function aggregate(Context $context, string $order): void
     {
-        $aggregation = $this->feature->aggregate(
+        $aggregation = $this->sconcurCollection->aggregate(
             context: $context,
             pipeline: [
                 [
