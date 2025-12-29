@@ -11,7 +11,6 @@ use SConcur\Entities\Context;
 use SConcur\Exceptions\InvalidMongodbBulkWriteOperationException;
 use SConcur\Features\MethofEnum;
 use SConcur\Features\Mongodb\CommandEnum;
-use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\Features\Mongodb\Results\BulkWriteResult;
 use SConcur\Features\Mongodb\Results\DeleteResult;
 use SConcur\Features\Mongodb\Results\InsertManyResult;
@@ -25,17 +24,19 @@ readonly class Collection
 {
     protected const string RESULT_KEY = '_r';
 
-    protected ConnectionParameters $connection;
     protected MethofEnum $method;
+
+    protected string $uri;
+    protected string $databaseName;
+    protected string $collectionName;
+    protected int $socketTimeoutMs;
 
     public function __construct(public Database $database, public string $name)
     {
-        $this->connection = new ConnectionParameters(
-            uri: $this->database->client->uri,
-            database: $this->database->name,
-            collection: $this->name,
-            socketTimeoutMs: $this->database->client->socketTimeoutMs,
-        );
+        $this->uri             = $this->database->client->uri;
+        $this->databaseName    = $this->database->name;
+        $this->collectionName  = $this->name;
+        $this->socketTimeoutMs = $this->database->client->socketTimeoutMs;
 
         $this->method = MethofEnum::MongodbCollection;
     }
@@ -174,7 +175,6 @@ readonly class Collection
         return new IteratorResult(
             context: $context,
             payload: $this->serializePayload(
-                connection: $this->connection,
                 command: CommandEnum::Aggregate,
                 data: $serialized,
             ),
@@ -321,23 +321,19 @@ readonly class Collection
             context: $context,
             method: $this->method,
             payload: $this->serializePayload(
-                connection: $this->connection,
                 command: $command,
                 data: $payload,
             )
         );
     }
 
-    protected function serializePayload(
-        ConnectionParameters $connection,
-        CommandEnum $command,
-        string $data
-    ): string {
+    protected function serializePayload(CommandEnum $command, string $data): string
+    {
         return json_encode([
-            'ul'  => $connection->uri,
-            'db'  => $connection->database,
-            'cl'  => $connection->collection,
-            'sto' => $connection->socketTimeoutMs,
+            'ul'  => $this->uri,
+            'db'  => $this->databaseName,
+            'cl'  => $this->collectionName,
+            'sto' => $this->socketTimeoutMs,
             'cm'  => $command->value,
             'dt'  => $data,
         ]);

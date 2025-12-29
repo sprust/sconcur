@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Connection\Client;
-use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
@@ -21,12 +20,6 @@ echo "Mongodb URI: $uri\n";
 
 $databaseName   = 'benchmark';
 $collectionName = 'benchmark';
-
-$connection = new ConnectionParameters(
-    uri: $uri,
-    database: $databaseName,
-    collection: $collectionName,
-);
 
 $driverCollection  = new MongoDB\Client($uri)->selectDatabase($databaseName)->selectCollection($collectionName);
 $sconcurCollection = new Client($uri)->selectDatabase($databaseName)->selectCollection($collectionName);
