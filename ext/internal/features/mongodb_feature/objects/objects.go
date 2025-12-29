@@ -1,4 +1,4 @@
-package dto
+package objects
 
 type Payload struct {
 	Url             string `json:"ul"`

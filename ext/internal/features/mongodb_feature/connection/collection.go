@@ -6,8 +6,8 @@ import (
 	"errors"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
-	mdbDto "sconcur/internal/features/mongodb_feature/dto"
 	"sconcur/internal/features/mongodb_feature/helpers"
+	"sconcur/internal/features/mongodb_feature/objects"
 	"sconcur/internal/tasks"
 	"strconv"
 
@@ -35,7 +35,7 @@ func NewCollection(database *Database, mCollection *mongo.Collection) *Collectio
 func (c *Collection) InsertOne(
 	ctx context.Context,
 	message *dto.Message,
-	payload *mdbDto.Payload,
+	payload *objects.Payload,
 ) *dto.Result {
 	doc, err := helpers.UnmarshalDocument(payload.Data)
 
@@ -70,7 +70,7 @@ func (c *Collection) InsertOne(
 func (c *Collection) BulkWrite(
 	ctx context.Context,
 	message *dto.Message,
-	payload *mdbDto.Payload,
+	payload *objects.Payload,
 ) *dto.Result {
 	models, err := helpers.UnmarshalBulkWriteModels(payload.Data)
 
@@ -106,7 +106,7 @@ func (c *Collection) Aggregate(
 	ctx context.Context,
 	task *tasks.Task,
 	message *dto.Message,
-	payload *mdbDto.Payload,
+	payload *objects.Payload,
 ) *dto.Result {
 	pipeline, err := helpers.UnmarshalDocument(payload.Data)
 
@@ -185,7 +185,7 @@ func (c *Collection) Aggregate(
 func (c *Collection) InsertMany(
 	ctx context.Context,
 	message *dto.Message,
-	payload *mdbDto.Payload,
+	payload *objects.Payload,
 ) *dto.Result {
 	docs, err := helpers.UnmarshalDocuments(payload.Data)
 
@@ -220,7 +220,7 @@ func (c *Collection) InsertMany(
 func (c *Collection) CountDocuments(
 	ctx context.Context,
 	message *dto.Message,
-	payload *mdbDto.Payload,
+	payload *objects.Payload,
 ) *dto.Result {
 	filter, err := helpers.UnmarshalDocument(payload.Data)
 
@@ -246,9 +246,9 @@ func (c *Collection) CountDocuments(
 func (c *Collection) UpdateOne(
 	ctx context.Context,
 	message *dto.Message,
-	payload *mdbDto.Payload,
+	payload *objects.Payload,
 ) *dto.Result {
-	var params mdbDto.UpdateOneParams
+	var params objects.UpdateOneParams
 
 	err := json.Unmarshal([]byte(payload.Data), &params)
 
@@ -307,9 +307,9 @@ func (c *Collection) UpdateOne(
 func (c *Collection) FindOne(
 	ctx context.Context,
 	message *dto.Message,
-	payload *mdbDto.Payload,
+	payload *objects.Payload,
 ) *dto.Result {
-	var params mdbDto.FindOneParams
+	var params objects.FindOneParams
 
 	err := json.Unmarshal([]byte(payload.Data), &params)
 
@@ -379,9 +379,9 @@ func (c *Collection) FindOne(
 func (c *Collection) CreateIndex(
 	ctx context.Context,
 	message *dto.Message,
-	payload *mdbDto.Payload,
+	payload *objects.Payload,
 ) *dto.Result {
-	var params mdbDto.CreateIndexParams
+	var params objects.CreateIndexParams
 
 	err := json.Unmarshal([]byte(payload.Data), &params)
 
@@ -399,7 +399,7 @@ func (c *Collection) CreateIndex(
 	if err != nil {
 		return dto.NewErrorResult(
 			message,
-			errFactory.ByErr("parse indexzes BSON error", err),
+			errFactory.ByErr("parse indexes BSON error", err),
 		)
 	}
 

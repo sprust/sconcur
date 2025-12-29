@@ -1,4 +1,4 @@
-package sleep_feature
+package params
 
 type SleepPayload struct {
 	Milliseconds int64 `json:"ms"`

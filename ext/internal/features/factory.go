@@ -9,13 +9,13 @@ import (
 	"sconcur/internal/types"
 )
 
-func DetectMessageHandler(method types.Method) (contracts.MessageHandler, error) {
+func DetectMessageHandler(method types.Method) (contracts.FeatureContract, error) {
 	if method == 1 {
 		return sleep_feature.Get(), nil
 	}
 
 	if method == 2 {
-		return mongodb_feature.GetCollectionHandler(), nil
+		return mongodb_feature.GetCollectionFeature(), nil
 	}
 
 	return nil, errors.New("unknown method: " + fmt.Sprint(method))

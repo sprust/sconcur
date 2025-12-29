@@ -4,6 +4,6 @@ import (
 	"sconcur/internal/tasks"
 )
 
-type MessageHandler interface {
+type FeatureContract interface {
 	Handle(task *tasks.Task)
 }

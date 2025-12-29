@@ -5,33 +5,34 @@ import (
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
+	"sconcur/internal/features/sleep_feature/params"
 	"sconcur/internal/tasks"
 	"sync"
 	"time"
 )
 
-var _ contracts.MessageHandler = (*Feature)(nil)
+var _ contracts.FeatureContract = (*SleepFeature)(nil)
 
 var once sync.Once
-var instance *Feature
+var instance *SleepFeature
 
 var errFactory = errs.NewErrorsFactory("sleep")
 
-type Feature struct {
+type SleepFeature struct {
 }
 
-func Get() *Feature {
+func Get() *SleepFeature {
 	once.Do(func() {
-		instance = &Feature{}
+		instance = &SleepFeature{}
 	})
 
 	return instance
 }
 
-func (s *Feature) Handle(task *tasks.Task) {
+func (s *SleepFeature) Handle(task *tasks.Task) {
 	message := task.GetMessage()
 
-	var payload SleepPayload
+	var payload params.SleepPayload
 
 	err := json.Unmarshal([]byte(message.Payload), &payload)
 

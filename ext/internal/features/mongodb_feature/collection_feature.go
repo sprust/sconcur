@@ -6,25 +6,25 @@ import (
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
 	"sconcur/internal/features/mongodb_feature/connection"
-	mdbDto "sconcur/internal/features/mongodb_feature/dto"
+	"sconcur/internal/features/mongodb_feature/objects"
 	"sconcur/internal/tasks"
 	"sync"
 )
 
-var _ contracts.MessageHandler = (*CollectionHandler)(nil)
+var _ contracts.FeatureContract = (*CollectionFeature)(nil)
 
 var once sync.Once
-var instance *CollectionHandler
+var instance *CollectionFeature
 
 var errFactory = errs.NewErrorsFactory("mongodb")
 
-type CollectionHandler struct {
+type CollectionFeature struct {
 	clients *connection.Clients
 }
 
-func GetCollectionHandler() *CollectionHandler {
+func GetCollectionFeature() *CollectionFeature {
 	once.Do(func() {
-		instance = &CollectionHandler{
+		instance = &CollectionFeature{
 			clients: connection.GetClients(),
 		}
 	})
@@ -32,10 +32,10 @@ func GetCollectionHandler() *CollectionHandler {
 	return instance
 }
 
-func (f *CollectionHandler) Handle(task *tasks.Task) {
+func (f *CollectionFeature) Handle(task *tasks.Task) {
 	message := task.GetMessage()
 
-	var payload mdbDto.Payload
+	var payload objects.Payload
 
 	err := json.Unmarshal([]byte(message.Payload), &payload)
 

@@ -3,7 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"sconcur/internal/dto"
-	"sconcur/internal/features/sleep_feature"
+	"sconcur/internal/features/sleep_feature/params"
 	"testing"
 )
 
@@ -13,7 +13,7 @@ func TestHandler_Sleep(t *testing.T) {
 
 	flowKey := "1"
 
-	pl := sleep_feature.SleepPayload{
+	pl := params.SleepPayload{
 		Milliseconds: 10,
 	}
 
