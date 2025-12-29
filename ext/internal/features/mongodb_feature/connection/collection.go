@@ -469,3 +469,49 @@ func (c *Collection) DeleteOne(
 
 	return dto.NewSuccessResult(message, serializedResult)
 }
+
+func (c *Collection) DeleteMany(
+	ctx context.Context,
+	message *dto.Message,
+	payload *objects.Payload,
+) *dto.Result {
+	var params objects.DeleteManyParams
+
+	err := json.Unmarshal([]byte(payload.Data), &params)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse deleteMany params", err),
+		)
+	}
+
+	filter, err := helpers.UnmarshalDocument(params.Filter)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse deleteMany filter", err),
+		)
+	}
+
+	result, err := c.mCollection.DeleteMany(ctx, filter)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("deleteMany error", err),
+		)
+	}
+
+	serializedResult, err := helpers.MarshalDocument(result)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("marshal deleteMany result error", err),
+		)
+	}
+
+	return dto.NewSuccessResult(message, serializedResult)
+}

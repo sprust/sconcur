@@ -27,3 +27,7 @@ type CreateIndexParams struct {
 type DeleteOneParams struct {
 	Filter string `json:"f"`
 }
+
+type DeleteManyParams struct {
+	Filter string `json:"f"`
+}

@@ -290,6 +290,28 @@ readonly class Collection
         );
     }
 
+    /**
+     * @param array<string, mixed> $filter
+     */
+    public function deleteMany(Context $context, array $filter): DeleteResult
+    {
+        $serialized = DocumentSerializer::serialize([
+            'f' => DocumentSerializer::serialize($filter),
+        ]);
+
+        $taskResult = $this->exec(
+            context: $context,
+            command: CommandEnum::DeleteMany,
+            payload: $serialized,
+        );
+
+        $docResult = DocumentSerializer::unserialize($taskResult->payload);
+
+        return new DeleteResult(
+            deletedCount: (int) $docResult['n'],
+        );
+    }
+
     protected function exec(
         Context $context,
         CommandEnum $command,

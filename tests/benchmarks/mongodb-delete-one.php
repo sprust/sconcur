@@ -23,44 +23,39 @@ $collectionName = 'benchmark';
 $driverCollection  = new MongoDB\Client($uri)->selectDatabase($databaseName)->selectCollection($collectionName);
 $sconcurCollection = new Client($uri)->selectDatabase($databaseName)->selectCollection($collectionName);
 
-$driverData = makeDocument(
+$driverFilter = makeFilter(
     objectId: new \MongoDB\BSON\ObjectId('6919e3d1a3673d3f4d9137a3'),
 );
 
-$sconcurDate = makeDocument(
+$sconcurFilter = makeFilter(
     objectId: new ObjectId('6919e3d1a3673d3f4d9137a3'),
 );
 
 $benchmarker->run(
-    nativeCallback: static function () use ($driverCollection, $driverData) {
+    nativeCallback: static function () use ($driverCollection, $driverFilter) {
         return $driverCollection
             ->deleteOne(
-                filter: $driverData['filter'],
+                filter: $driverFilter,
             )
             ->getDeletedCount();
     },
-    syncCallback: static function (Context $context) use ($sconcurCollection, $sconcurDate) {
+    syncCallback: static function (Context $context) use ($sconcurCollection, $sconcurFilter) {
         return $sconcurCollection->deleteOne(
             context: $context,
-            filter: $sconcurDate['filter'],
+            filter: $sconcurFilter,
         )->deletedCount;
     },
-    asyncCallback: static function (Context $context) use ($sconcurCollection, $sconcurDate) {
+    asyncCallback: static function (Context $context) use ($sconcurCollection, $sconcurFilter) {
         return $sconcurCollection->deleteOne(
             context: $context,
-            filter: $sconcurDate['filter'],
+            filter: $sconcurFilter,
         )->deletedCount;
     }
 );
 
-/**
- * @return array{filter: array, update: array, options: array}
- */
-function makeDocument(mixed $objectId): array
+function makeFilter(mixed $objectId): array
 {
     return [
-        'filter' => [
-            'IIID' => $objectId,
-        ],
+        'IIID' => $objectId,
     ];
 }
