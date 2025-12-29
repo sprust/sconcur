@@ -14,6 +14,7 @@ var once sync.Once
 var instance Clients
 
 // TODO: graceful shutdown
+// TODO: ttl
 
 type Clients struct {
 	mutex   sync.Mutex
@@ -48,13 +49,13 @@ func (c *Clients) GetClient(
 
 		var err error
 
-		mdbClient, err := mongo.Connect(ctx, clientOptions)
+		mClient, err := mongo.Connect(ctx, clientOptions)
 
 		if err != nil {
 			return nil, err
 		}
 
-		client = NewClient(mdbClient)
+		client = NewClient(mClient)
 
 		c.clients[key] = client
 	}

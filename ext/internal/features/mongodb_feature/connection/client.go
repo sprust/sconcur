@@ -5,16 +5,16 @@ import (
 )
 
 type Client struct {
-	client *mongo.Client
+	mClient *mongo.Client
 }
 
-func NewClient(client *mongo.Client) *Client {
-	return &Client{client: client}
+func NewClient(mClient *mongo.Client) *Client {
+	return &Client{mClient: mClient}
 }
 
 func (c *Client) Database(name string) *Database {
 	return NewDatabase(
 		c,
-		c.client.Database(name),
+		c.mClient.Database(name),
 	)
 }

@@ -21,14 +21,14 @@ const resultKey = "_r"
 var errFactory = errs.NewErrorsFactory("mongodb")
 
 type Collection struct {
-	database   *Database
-	collection *mongo.Collection
+	database    *Database
+	mCollection *mongo.Collection
 }
 
-func NewCollection(database *Database, collection *mongo.Collection) *Collection {
+func NewCollection(database *Database, mCollection *mongo.Collection) *Collection {
 	return &Collection{
-		database:   database,
-		collection: collection,
+		database:    database,
+		mCollection: mCollection,
 	}
 }
 
@@ -46,7 +46,7 @@ func (c *Collection) InsertOne(
 		)
 	}
 
-	result, err := c.collection.InsertOne(ctx, doc)
+	result, err := c.mCollection.InsertOne(ctx, doc)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -81,7 +81,7 @@ func (c *Collection) BulkWrite(
 		)
 	}
 
-	result, err := c.collection.BulkWrite(ctx, models)
+	result, err := c.mCollection.BulkWrite(ctx, models)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -117,7 +117,7 @@ func (c *Collection) Aggregate(
 		)
 	}
 
-	cursor, err := c.collection.Aggregate(ctx, pipeline)
+	cursor, err := c.mCollection.Aggregate(ctx, pipeline)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -196,7 +196,7 @@ func (c *Collection) InsertMany(
 		)
 	}
 
-	result, err := c.collection.InsertMany(ctx, docs)
+	result, err := c.mCollection.InsertMany(ctx, docs)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -231,7 +231,7 @@ func (c *Collection) CountDocuments(
 		)
 	}
 
-	result, err := c.collection.CountDocuments(ctx, filter)
+	result, err := c.mCollection.CountDocuments(ctx, filter)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -283,7 +283,7 @@ func (c *Collection) UpdateOne(
 		opts = options.Update().SetUpsert(true)
 	}
 
-	result, err := c.collection.UpdateOne(ctx, filter, update, opts)
+	result, err := c.mCollection.UpdateOne(ctx, filter, update, opts)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -331,7 +331,7 @@ func (c *Collection) FindOne(
 
 	var opts *options.FindOneOptions
 
-	result := c.collection.FindOne(ctx, filter, opts)
+	result := c.mCollection.FindOne(ctx, filter, opts)
 
 	err = result.Err()
 
@@ -412,7 +412,7 @@ func (c *Collection) CreateIndex(
 		Options: &opts,
 	}
 
-	result, err := c.collection.Indexes().CreateOne(ctx, model)
+	result, err := c.mCollection.Indexes().CreateOne(ctx, model)
 
 	if err != nil {
 		return dto.NewErrorResult(
