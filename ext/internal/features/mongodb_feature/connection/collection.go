@@ -423,3 +423,49 @@ func (c *Collection) CreateIndex(
 
 	return dto.NewSuccessResult(message, result)
 }
+
+func (c *Collection) DeleteOne(
+	ctx context.Context,
+	message *dto.Message,
+	payload *objects.Payload,
+) *dto.Result {
+	var params objects.DeleteOneParams
+
+	err := json.Unmarshal([]byte(payload.Data), &params)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse deleteOne params", err),
+		)
+	}
+
+	filter, err := helpers.UnmarshalDocument(params.Filter)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse deleteOne filter", err),
+		)
+	}
+
+	result, err := c.mCollection.DeleteOne(ctx, filter)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("deleteOne error", err),
+		)
+	}
+
+	serializedResult, err := helpers.MarshalDocument(result)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("marshal deleteOne result error", err),
+		)
+	}
+
+	return dto.NewSuccessResult(message, serializedResult)
+}

@@ -23,3 +23,7 @@ type CreateIndexParams struct {
 	Keys string `json:"k"`
 	Name string `json:"n"`
 }
+
+type DeleteOneParams struct {
+	Filter string `json:"f"`
+}

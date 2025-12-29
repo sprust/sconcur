@@ -12,4 +12,5 @@ enum CommandEnum: int
     case UpdateOne      = 6;
     case FindOne        = 7;
     case CreateIndex    = 8;
+    case DeleteOne      = 9;
 }

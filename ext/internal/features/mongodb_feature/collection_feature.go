@@ -137,6 +137,14 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 				&payload,
 			),
 		)
+	case payload.Command == 9:
+		task.AddResult(
+			collection.DeleteOne(
+				ctx,
+				message,
+				&payload,
+			),
+		)
 	default:
 		task.AddResult(
 			dto.NewErrorResult(

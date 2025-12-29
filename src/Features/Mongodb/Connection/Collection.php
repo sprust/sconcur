@@ -13,6 +13,7 @@ use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\CommandEnum;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\Features\Mongodb\Results\BulkWriteResult;
+use SConcur\Features\Mongodb\Results\DeleteResult;
 use SConcur\Features\Mongodb\Results\InsertManyResult;
 use SConcur\Features\Mongodb\Results\InsertOneResult;
 use SConcur\Features\Mongodb\Results\IteratorResult;
@@ -265,6 +266,28 @@ readonly class Collection
         );
 
         return $taskResult->payload;
+    }
+
+    /**
+     * @param array<string, mixed> $filter
+     */
+    public function deleteOne(Context $context, array $filter): DeleteResult
+    {
+        $serialized = DocumentSerializer::serialize([
+            'f' => DocumentSerializer::serialize($filter),
+        ]);
+
+        $taskResult = $this->exec(
+            context: $context,
+            command: CommandEnum::DeleteOne,
+            payload: $serialized,
+        );
+
+        $docResult = DocumentSerializer::unserialize($taskResult->payload);
+
+        return new DeleteResult(
+            deletedCount: (int) $docResult['n'],
+        );
     }
 
     protected function exec(
