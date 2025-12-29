@@ -6,18 +6,26 @@ import (
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
 	"sconcur/internal/tasks"
+	"sync"
 	"time"
 )
 
 var _ contracts.MessageHandler = (*Feature)(nil)
+
+var once sync.Once
+var instance *Feature
 
 var errFactory = errs.NewErrorsFactory("sleep")
 
 type Feature struct {
 }
 
-func New() *Feature {
-	return &Feature{}
+func Get() *Feature {
+	once.Do(func() {
+		instance = &Feature{}
+	})
+
+	return instance
 }
 
 func (s *Feature) Handle(task *tasks.Task) {

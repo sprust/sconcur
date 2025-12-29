@@ -11,11 +11,11 @@ import (
 
 func DetectMessageHandler(method types.Method) (contracts.MessageHandler, error) {
 	if method == 1 {
-		return sleep_feature.New(), nil
+		return sleep_feature.Get(), nil
 	}
 
 	if method == 2 {
-		return mongodb_feature.NewCollection(), nil
+		return mongodb_feature.GetCollectionHandler(), nil
 	}
 
 	return nil, errors.New("unknown method: " + fmt.Sprint(method))
