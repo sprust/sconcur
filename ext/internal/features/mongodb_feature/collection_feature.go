@@ -71,7 +71,8 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 
 	collection := client.Database(payload.Database).Collection(payload.Collection)
 
-	if payload.Command == 1 {
+	switch {
+	case payload.Command == 1:
 		task.AddResult(
 			collection.InsertOne(
 				ctx,
@@ -79,7 +80,7 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 				&payload,
 			),
 		)
-	} else if payload.Command == 2 {
+	case payload.Command == 2:
 		task.AddResult(
 			collection.BulkWrite(
 				ctx,
@@ -87,7 +88,7 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 				&payload,
 			),
 		)
-	} else if payload.Command == 3 {
+	case payload.Command == 3:
 		task.AddResult(
 			collection.Aggregate(
 				ctx,
@@ -96,7 +97,7 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 				&payload,
 			),
 		)
-	} else if payload.Command == 4 {
+	case payload.Command == 4:
 		task.AddResult(
 			collection.InsertMany(
 				ctx,
@@ -104,7 +105,7 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 				&payload,
 			),
 		)
-	} else if payload.Command == 5 {
+	case payload.Command == 5:
 		task.AddResult(
 			collection.CountDocuments(
 				ctx,
@@ -112,7 +113,7 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 				&payload,
 			),
 		)
-	} else if payload.Command == 6 {
+	case payload.Command == 6:
 		task.AddResult(
 			collection.UpdateOne(
 				ctx,
@@ -120,7 +121,7 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 				&payload,
 			),
 		)
-	} else if payload.Command == 7 {
+	case payload.Command == 7:
 		task.AddResult(
 			collection.FindOne(
 				ctx,
@@ -128,7 +129,7 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 				&payload,
 			),
 		)
-	} else if payload.Command == 8 {
+	case payload.Command == 8:
 		task.AddResult(
 			collection.CreateIndex(
 				ctx,
@@ -136,7 +137,7 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 				&payload,
 			),
 		)
-	} else {
+	default:
 		task.AddResult(
 			dto.NewErrorResult(
 				message,
