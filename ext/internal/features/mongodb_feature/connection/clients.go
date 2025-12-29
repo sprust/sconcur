@@ -1,4 +1,4 @@
-package connections
+package connection
 
 import (
 	"context"
@@ -11,32 +11,30 @@ import (
 )
 
 var once sync.Once
-var instance Connections
+var instance Clients
 
 // TODO: graceful shutdown
 
-type Connections struct {
+type Clients struct {
 	mutex   sync.Mutex
-	clients map[string]*mongo.Client
+	clients map[string]*Client
 }
 
-func GetConnections() *Connections {
+func GetClients() *Clients {
 	once.Do(func() {
-		instance = Connections{
-			clients: make(map[string]*mongo.Client),
+		instance = Clients{
+			clients: make(map[string]*Client),
 		}
 	})
 
 	return &instance
 }
 
-func (c *Connections) Get(
+func (c *Clients) GetClient(
 	ctx context.Context,
 	url string,
-	database string,
-	collection string,
 	socketTimeoutMs int,
-) (*mongo.Collection, error) {
+) (*Client, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -50,14 +48,16 @@ func (c *Connections) Get(
 
 		var err error
 
-		client, err = mongo.Connect(ctx, clientOptions)
+		mdbClient, err := mongo.Connect(ctx, clientOptions)
 
 		if err != nil {
 			return nil, err
 		}
 
+		client = NewClient(mdbClient)
+
 		c.clients[key] = client
 	}
 
-	return client.Database(database).Collection(collection), nil
+	return client, nil
 }

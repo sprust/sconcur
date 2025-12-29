@@ -1,13 +1,11 @@
-package mongodb_feature
+package connection
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
-	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
-	"sconcur/internal/features/mongodb_feature/connections"
 	mdbDto "sconcur/internal/features/mongodb_feature/dto"
 	"sconcur/internal/features/mongodb_feature/helpers"
 	"sconcur/internal/tasks"
@@ -20,147 +18,24 @@ import (
 
 const resultKey = "_r"
 
-var _ contracts.MessageHandler = (*CollectionFeature)(nil)
-
 var errFactory = errs.NewErrorsFactory("mongodb")
 
-type CollectionFeature struct {
-	connections *connections.Connections
+type Collection struct {
+	database   *Database
+	collection *mongo.Collection
 }
 
-func NewCollection(connections *connections.Connections) *CollectionFeature {
-	return &CollectionFeature{
-		connections: connections,
-	}
-}
-
-func (f *CollectionFeature) Handle(task *tasks.Task) {
-	message := task.GetMessage()
-
-	var payload mdbDto.Payload
-
-	err := json.Unmarshal([]byte(message.Payload), &payload)
-
-	if err != nil {
-		task.AddResult(
-			dto.NewErrorResult(
-				message,
-				errFactory.ByErr("parse payload error", err),
-			),
-		)
-
-		return
-	}
-
-	ctx := task.GetContext()
-
-	collection, err := f.connections.Get(
-		ctx,
-		payload.Url,
-		payload.Database,
-		payload.Collection,
-		payload.SocketTimeoutMs,
-	)
-
-	if err != nil {
-		task.AddResult(
-			dto.NewErrorResult(
-				message,
-				errFactory.ByErr("connection", err),
-			),
-		)
-
-		return
-	}
-
-	if payload.Command == 1 {
-		task.AddResult(
-			f.insertOne(
-				ctx,
-				message,
-				&payload,
-				collection,
-			),
-		)
-	} else if payload.Command == 2 {
-		task.AddResult(
-			f.bulkWrite(
-				ctx,
-				message,
-				&payload,
-				collection,
-			),
-		)
-	} else if payload.Command == 3 {
-		task.AddResult(
-			f.aggregate(
-				ctx,
-				task,
-				message,
-				&payload,
-				collection,
-			),
-		)
-	} else if payload.Command == 4 {
-		task.AddResult(
-			f.insertMany(
-				ctx,
-				message,
-				&payload,
-				collection,
-			),
-		)
-	} else if payload.Command == 5 {
-		task.AddResult(
-			f.countDocuments(
-				ctx,
-				message,
-				&payload,
-				collection,
-			),
-		)
-	} else if payload.Command == 6 {
-		task.AddResult(
-			f.updateOne(
-				ctx,
-				message,
-				&payload,
-				collection,
-			),
-		)
-	} else if payload.Command == 7 {
-		task.AddResult(
-			f.findOne(
-				ctx,
-				message,
-				&payload,
-				collection,
-			),
-		)
-	} else if payload.Command == 8 {
-		task.AddResult(
-			f.createIndex(
-				ctx,
-				message,
-				&payload,
-				collection,
-			),
-		)
-	} else {
-		task.AddResult(
-			dto.NewErrorResult(
-				message,
-				errFactory.ByText("unknown command"),
-			),
-		)
+func NewCollection(database *Database, collection *mongo.Collection) *Collection {
+	return &Collection{
+		database:   database,
+		collection: collection,
 	}
 }
 
-func (f *CollectionFeature) insertOne(
+func (c *Collection) InsertOne(
 	ctx context.Context,
 	message *dto.Message,
 	payload *mdbDto.Payload,
-	collection *mongo.Collection,
 ) *dto.Result {
 	doc, err := helpers.UnmarshalDocument(payload.Data)
 
@@ -171,7 +46,7 @@ func (f *CollectionFeature) insertOne(
 		)
 	}
 
-	result, err := collection.InsertOne(ctx, doc)
+	result, err := c.collection.InsertOne(ctx, doc)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -192,11 +67,10 @@ func (f *CollectionFeature) insertOne(
 	return dto.NewSuccessResult(message, serializedResult)
 }
 
-func (f *CollectionFeature) bulkWrite(
+func (c *Collection) BulkWrite(
 	ctx context.Context,
 	message *dto.Message,
 	payload *mdbDto.Payload,
-	collection *mongo.Collection,
 ) *dto.Result {
 	models, err := helpers.UnmarshalBulkWriteModels(payload.Data)
 
@@ -207,7 +81,7 @@ func (f *CollectionFeature) bulkWrite(
 		)
 	}
 
-	result, err := collection.BulkWrite(ctx, models)
+	result, err := c.collection.BulkWrite(ctx, models)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -228,12 +102,11 @@ func (f *CollectionFeature) bulkWrite(
 	return dto.NewSuccessResult(message, serializedResult)
 }
 
-func (f *CollectionFeature) aggregate(
+func (c *Collection) Aggregate(
 	ctx context.Context,
 	task *tasks.Task,
 	message *dto.Message,
 	payload *mdbDto.Payload,
-	collection *mongo.Collection,
 ) *dto.Result {
 	pipeline, err := helpers.UnmarshalDocument(payload.Data)
 
@@ -244,7 +117,7 @@ func (f *CollectionFeature) aggregate(
 		)
 	}
 
-	cursor, err := collection.Aggregate(ctx, pipeline)
+	cursor, err := c.collection.Aggregate(ctx, pipeline)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -309,11 +182,10 @@ func (f *CollectionFeature) aggregate(
 	return dto.NewSuccessResult(message, response)
 }
 
-func (f *CollectionFeature) insertMany(
+func (c *Collection) InsertMany(
 	ctx context.Context,
 	message *dto.Message,
 	payload *mdbDto.Payload,
-	collection *mongo.Collection,
 ) *dto.Result {
 	docs, err := helpers.UnmarshalDocuments(payload.Data)
 
@@ -324,7 +196,7 @@ func (f *CollectionFeature) insertMany(
 		)
 	}
 
-	result, err := collection.InsertMany(ctx, docs)
+	result, err := c.collection.InsertMany(ctx, docs)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -345,11 +217,10 @@ func (f *CollectionFeature) insertMany(
 	return dto.NewSuccessResult(message, serializedResult)
 }
 
-func (f *CollectionFeature) countDocuments(
+func (c *Collection) CountDocuments(
 	ctx context.Context,
 	message *dto.Message,
 	payload *mdbDto.Payload,
-	collection *mongo.Collection,
 ) *dto.Result {
 	filter, err := helpers.UnmarshalDocument(payload.Data)
 
@@ -360,7 +231,7 @@ func (f *CollectionFeature) countDocuments(
 		)
 	}
 
-	result, err := collection.CountDocuments(ctx, filter)
+	result, err := c.collection.CountDocuments(ctx, filter)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -372,11 +243,10 @@ func (f *CollectionFeature) countDocuments(
 	return dto.NewSuccessResult(message, strconv.FormatInt(result, 10))
 }
 
-func (f *CollectionFeature) updateOne(
+func (c *Collection) UpdateOne(
 	ctx context.Context,
 	message *dto.Message,
 	payload *mdbDto.Payload,
-	collection *mongo.Collection,
 ) *dto.Result {
 	var params mdbDto.UpdateOneParams
 
@@ -413,7 +283,7 @@ func (f *CollectionFeature) updateOne(
 		opts = options.Update().SetUpsert(true)
 	}
 
-	result, err := collection.UpdateOne(ctx, filter, update, opts)
+	result, err := c.collection.UpdateOne(ctx, filter, update, opts)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -434,11 +304,10 @@ func (f *CollectionFeature) updateOne(
 	return dto.NewSuccessResult(message, serializedResult)
 }
 
-func (f *CollectionFeature) findOne(
+func (c *Collection) FindOne(
 	ctx context.Context,
 	message *dto.Message,
 	payload *mdbDto.Payload,
-	collection *mongo.Collection,
 ) *dto.Result {
 	var params mdbDto.FindOneParams
 
@@ -462,7 +331,7 @@ func (f *CollectionFeature) findOne(
 
 	var opts *options.FindOneOptions
 
-	result := collection.FindOne(ctx, filter, opts)
+	result := c.collection.FindOne(ctx, filter, opts)
 
 	err = result.Err()
 
@@ -507,11 +376,10 @@ func (f *CollectionFeature) findOne(
 	return dto.NewSuccessResult(message, serializedResult)
 }
 
-func (f *CollectionFeature) createIndex(
+func (c *Collection) CreateIndex(
 	ctx context.Context,
 	message *dto.Message,
 	payload *mdbDto.Payload,
-	collection *mongo.Collection,
 ) *dto.Result {
 	var params mdbDto.CreateIndexParams
 
@@ -544,7 +412,7 @@ func (f *CollectionFeature) createIndex(
 		Options: &opts,
 	}
 
-	result, err := collection.Indexes().CreateOne(ctx, model)
+	result, err := c.collection.Indexes().CreateOne(ctx, model)
 
 	if err != nil {
 		return dto.NewErrorResult(

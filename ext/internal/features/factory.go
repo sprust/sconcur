@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sconcur/internal/contracts"
 	"sconcur/internal/features/mongodb_feature"
-	"sconcur/internal/features/mongodb_feature/connections"
 	"sconcur/internal/features/sleep_feature"
 	"sconcur/internal/types"
 )
@@ -16,9 +15,7 @@ func DetectMessageHandler(method types.Method) (contracts.MessageHandler, error)
 	}
 
 	if method == 2 {
-		return mongodb_feature.NewCollection(
-			connections.GetConnections(),
-		), nil
+		return mongodb_feature.NewCollection(), nil
 	}
 
 	return nil, errors.New("unknown method: " + fmt.Sprint(method))
