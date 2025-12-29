@@ -9,7 +9,7 @@ use RuntimeException;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Entities\Context;
 use SConcur\Exceptions\InvalidMongodbBulkWriteOperationException;
-use SConcur\Features\FeatureEnum;
+use SConcur\Features\MethofEnum;
 use SConcur\Features\Mongodb\CommandEnum;
 use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
 use SConcur\Features\Mongodb\Results\BulkWriteResult;
@@ -26,7 +26,7 @@ readonly class Collection
     protected const string RESULT_KEY = '_r';
 
     protected ConnectionParameters $connection;
-    protected FeatureEnum $method;
+    protected MethofEnum $method;
 
     public function __construct(public Database $database, public string $name)
     {
@@ -37,7 +37,7 @@ readonly class Collection
             socketTimeoutMs: $this->database->client->socketTimeoutMs,
         );
 
-        $this->method = FeatureEnum::MongodbCollection;
+        $this->method = MethofEnum::MongodbCollection;
     }
 
     /**

@@ -2,7 +2,7 @@
 
 namespace SConcur\Features;
 
-enum FeatureEnum: int
+enum MethofEnum: int
 {
     case Sleep             = 1;
     case MongodbCollection = 2;

@@ -11,7 +11,7 @@ use SConcur\Connection\Extension;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Entities\Context;
 use SConcur\Exceptions\TaskErrorException;
-use SConcur\Features\FeatureEnum;
+use SConcur\Features\MethofEnum;
 use Throwable;
 
 class Flow
@@ -35,7 +35,7 @@ class Flow
         $this->key = (string) static::$flowsCounter;
     }
 
-    public function exec(Context $context, FeatureEnum $method, string $payload): TaskResultDto
+    public function exec(Context $context, MethofEnum $method, string $payload): TaskResultDto
     {
         $runningTask = Extension::get()->push(
             flowKey: $this->key,

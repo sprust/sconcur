@@ -11,7 +11,7 @@ use SConcur\Entities\Context;
 use SConcur\Exceptions\ResponseIsNotJsonException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\UnexpectedResponseFormatException;
-use SConcur\Features\FeatureEnum;
+use SConcur\Features\MethofEnum;
 use Throwable;
 use function SConcur\Extension\count;
 use function SConcur\Extension\destroy;
@@ -36,7 +36,7 @@ class Extension
         return static::$instance ??= new Extension();
     }
 
-    public function push(string $flowKey, FeatureEnum $method, string $payload): RunningTaskDto
+    public function push(string $flowKey, MethofEnum $method, string $payload): RunningTaskDto
     {
         ++static::$tasksCounter;
 
@@ -81,7 +81,7 @@ class Extension
         try {
             return new TaskResultDto(
                 flowKey: $responseData['fk'],
-                method: FeatureEnum::from($responseData['md']),
+                method: MethofEnum::from($responseData['md']),
                 key: $responseData['tk'],
                 isError: $responseData['er'],
                 payload: $responseData['pl'],

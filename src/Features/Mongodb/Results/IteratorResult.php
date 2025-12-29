@@ -8,7 +8,7 @@ use Iterator;
 use LogicException;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Entities\Context;
-use SConcur\Features\FeatureEnum;
+use SConcur\Features\MethofEnum;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
 use SConcur\Flow\Flow;
 use SConcur\State;
@@ -100,7 +100,7 @@ class IteratorResult implements Iterator
 
         $taskResult = $this->currentFlow->exec(
             context: $this->context,
-            method: FeatureEnum::MongodbCollection,
+            method: MethofEnum::MongodbCollection,
             payload: $this->payload
         );
 

@@ -4,13 +4,13 @@ declare(strict_types=1);
 
 namespace SConcur\Dto;
 
-use SConcur\Features\FeatureEnum;
+use SConcur\Features\MethofEnum;
 
 readonly class TaskResultDto
 {
     public function __construct(
         public string $flowKey,
-        public FeatureEnum $method,
+        public MethofEnum $method,
         public string $key,
         public bool $isError,
         public string $payload,
