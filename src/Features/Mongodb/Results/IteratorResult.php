@@ -18,18 +18,18 @@ use SConcur\State;
  */
 class IteratorResult implements Iterator
 {
-    protected ?Flow $currentFlow = null;
-    protected ?string $taskKey   = null;
+    protected ?Flow $currentFlow;
+    protected ?string $taskKey;
 
     /**
      * @var array<int, array<int|string|float|bool|null, mixed>>|null
      */
-    protected ?array $items       = null;
-    protected mixed $currentKey   = null;
-    protected mixed $currentValue = null;
+    protected ?array $items;
+    protected mixed $currentKey;
+    protected mixed $currentValue;
 
-    protected bool $isLastBatch = false;
-    protected bool $isFinished  = false;
+    protected bool $isLastBatch;
+    protected bool $isFinished;
 
     public function __construct(
         protected Context $context,
@@ -37,6 +37,7 @@ class IteratorResult implements Iterator
         protected string $payload,
         protected string $resultKey,
     ) {
+        $this->resetProperties();
     }
 
     public function current(): mixed
@@ -46,12 +47,6 @@ class IteratorResult implements Iterator
 
     public function next(): void
     {
-        if ($this->currentFlow === null) {
-            throw new LogicException(
-                message: 'Flow is not initialized. First call rewind().'
-            );
-        }
-
         if ($this->isFinished) {
             return;
         }
@@ -97,11 +92,7 @@ class IteratorResult implements Iterator
 
     public function rewind(): void
     {
-        if ($this->currentFlow !== null) {
-            throw new LogicException(
-                message: 'Flow is already initialized. Use an another instance.'
-            );
-        }
+        $this->resetProperties();
 
         $this->currentFlow = State::getCurrentFlow();
 
@@ -145,5 +136,16 @@ class IteratorResult implements Iterator
         if ($this->isLastBatch) {
             $this->isFinished = true;
         }
+    }
+
+    protected function resetProperties(): void
+    {
+        $this->currentFlow  = null;
+        $this->taskKey      = null;
+        $this->items        = null;
+        $this->currentKey   = null;
+        $this->currentValue = null;
+        $this->isLastBatch  = false;
+        $this->isFinished   = false;
     }
 }

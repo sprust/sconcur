@@ -61,7 +61,7 @@ class Flow
 
         if ($result->key !== $runningTask->key) {
             throw new LogicException(
-                message: 'Unexpected task key.'
+                message: "Unexpected task key. Expected [$runningTask->key], got [$result->key]."
             );
         }
 

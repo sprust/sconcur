@@ -12,7 +12,8 @@ use SConcur\WaitGroup;
 
 class MongodbAggregateTest extends BaseTestCase
 {
-    private Collection $sconcurCollection;
+    protected Collection $sconcurCollection;
+    protected int $documentsCount;
 
     protected function setUp(): void
     {
@@ -21,34 +22,19 @@ class MongodbAggregateTest extends BaseTestCase
         $collectionName = 'op_Aggregate';
 
         $this->sconcurCollection = TestMongodbResolver::getSconcurTestCollection($collectionName);
+
+        $this->seedDocuments(Context::create(1));
     }
 
     public function testNoIteration(): void
     {
         $context = Context::create(2);
 
-        $this->sconcurCollection->deleteMany(
-            context: $context,
-            filter: []
-        );
-
-        $documentsCount = 10;
-
-        $this->sconcurCollection->insertMany(
-            context: $context,
-            documents: array_map(
-                static fn(int $index) => [
-                    uniqid() => $index,
-                ],
-                range(1, $documentsCount)
-            )
-        );
-
         $waitGroup = WaitGroup::create($context);
 
         $results = [];
 
-        foreach (range(1, $documentsCount) as $ignored) {
+        foreach (range(1, $this->documentsCount) as $ignored) {
             $waitGroup->add(
                 callback: function (Context $context) use (&$results) {
                     $iterator = $this->sconcurCollection->aggregate(
@@ -74,6 +60,26 @@ class MongodbAggregateTest extends BaseTestCase
 
         $waitGroup->waitAll();
 
-        $this->assertCount($documentsCount, $results);
+        $this->assertCount($this->documentsCount, $results);
+    }
+
+    private function seedDocuments(Context $context): void
+    {
+        $this->sconcurCollection->deleteMany(
+            context: $context,
+            filter: []
+        );
+
+        $this->documentsCount = 10;
+
+        $this->sconcurCollection->insertMany(
+            context: $context,
+            documents: array_map(
+                static fn(int $index) => [
+                    uniqid() => $index,
+                ],
+                range(1, $this->documentsCount)
+            )
+        );
     }
 }
