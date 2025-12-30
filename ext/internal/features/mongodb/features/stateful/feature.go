@@ -99,6 +99,7 @@ func (c *CollectionStatefulFeature) handleAggregate(statefulTaskKey string, task
 		states.DeleteState(statefulTaskKey)
 	}
 
+	// TODO: do pretty
 	result.TaskKey = message.TaskKey
 
 	task.AddResult(result)
