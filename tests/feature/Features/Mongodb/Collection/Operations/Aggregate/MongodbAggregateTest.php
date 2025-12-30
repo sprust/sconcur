@@ -63,6 +63,85 @@ class MongodbAggregateTest extends BaseTestCase
         $this->assertCount($this->documentsCount, $results);
     }
 
+    // TODO
+    // public function testBreakAtMulti(): void
+    // {
+    //     $context = Context::create(2);
+    //
+    //     $waitGroup = WaitGroup::create($context);
+    //
+    //     $waitGroup->add(
+    //         callback: function (Context $context) {
+    //             $iterator = $this->sconcurCollection->aggregate(
+    //                 context: $context,
+    //                 pipeline: [],
+    //                 batchSize: 1
+    //             );
+    //
+    //             foreach ($iterator as $ignored) {
+    //                 // no action
+    //
+    //                 break;
+    //             }
+    //
+    //             $document = $this->sconcurCollection->findOne($context, []);
+    //
+    //             self::assertTrue(
+    //                 is_array($document)
+    //             );
+    //
+    //             self::assertCount(
+    //                 1,
+    //                 $document
+    //             );
+    //
+    //             $keys = array_keys($document);
+    //
+    //             self::assertIsInt(
+    //                 $document[$keys[0]]
+    //             );
+    //         }
+    //     );
+    //
+    //     $waitGroup->waitAll();
+    // }
+    //
+    // public function testRewind(): void
+    // {
+    //     $context = Context::create(2);
+    //
+    //     $waitGroup = WaitGroup::create($context);
+    //
+    //     $counter = 0;
+    //
+    //     $waitGroup->add(
+    //         callback: function (Context $context) use (&$counter) {
+    //             $iterator = $this->sconcurCollection->aggregate(
+    //                 context: $context,
+    //                 pipeline: [],
+    //                 batchSize: 1
+    //             );
+    //
+    //             foreach ($iterator as $ignored) {
+    //                 ++$counter;
+    //
+    //                 break;
+    //             }
+    //
+    //             foreach ($iterator as $ignored) {
+    //                 ++$counter;
+    //             }
+    //         }
+    //     );
+    //
+    //     $waitGroup->waitAll();
+    //
+    //     self::assertEquals(
+    //         $this->documentsCount + 1,
+    //         $counter
+    //     );
+    // }
+
     private function seedDocuments(Context $context): void
     {
         $this->sconcurCollection->deleteMany(
