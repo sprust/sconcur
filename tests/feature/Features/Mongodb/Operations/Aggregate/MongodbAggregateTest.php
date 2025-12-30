@@ -6,44 +6,40 @@ namespace SConcur\Tests\Feature\Features\Mongodb\Operations\Aggregate;
 
 use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Connection\Client;
+use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\Tests\Impl\TestMongodbUriResolver;
 use SConcur\WaitGroup;
 
 class MongodbAggregateTest extends BaseTestCase
 {
-    public function test(): void
+    private Collection $sconcurCollection;
+
+    protected function setUp(): void
     {
-        $context = Context::create(2);
+        parent::setUp();
 
         $uri        = TestMongodbUriResolver::get();
         $database   = 'u-test';
         $collection = 'op_Aggregate';
 
-        $driverCollection = new \MongoDB\Client($uri)
+        $this->sconcurCollection = new Client($uri)
             ->selectDatabase($database)
             ->selectCollection($collection);
+    }
 
-        $sconcurCollection = new Client($uri)
-            ->selectDatabase($database)
-            ->selectCollection($collection);
+    public function testNoIteration(): void
+    {
+        $context = Context::create(2);
 
-        $driverCollection->deleteMany([]);
-
-        $sconcurCollection->bulkWrite(
+        $this->sconcurCollection->deleteMany(
             context: $context,
-            operations: [
-                [
-                    'deleteMany' => [
-                        [],
-                    ],
-                ],
-            ]
+            filter: []
         );
 
         $documentsCount = 10;
 
-        $sconcurCollection->insertMany(
+        $this->sconcurCollection->insertMany(
             context: $context,
             documents: array_map(
                 static fn(int $index) => [
@@ -59,8 +55,8 @@ class MongodbAggregateTest extends BaseTestCase
 
         foreach (range(1, $documentsCount) as $ignored) {
             $waitGroup->add(
-                callback: function (Context $context) use ($sconcurCollection, &$results) {
-                    $iterator = $sconcurCollection->aggregate(
+                callback: function (Context $context) use (&$results) {
+                    $iterator = $this->sconcurCollection->aggregate(
                         context: $context,
                         pipeline: []
                     );
@@ -73,8 +69,8 @@ class MongodbAggregateTest extends BaseTestCase
                 });
 
             $waitGroup->add(
-                callback: function (Context $context) use ($sconcurCollection) {
-                    $sconcurCollection->aggregate(
+                callback: function (Context $context) {
+                    $this->sconcurCollection->aggregate(
                         context: $context,
                         pipeline: []
                     );

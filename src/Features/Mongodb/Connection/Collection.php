@@ -174,6 +174,7 @@ readonly class Collection
 
         return new IteratorResult(
             context: $context,
+            method: $this->method,
             payload: $this->serializePayload(
                 command: CommandEnum::Aggregate,
                 data: $serialized,

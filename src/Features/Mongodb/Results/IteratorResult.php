@@ -33,6 +33,7 @@ class IteratorResult implements Iterator
 
     public function __construct(
         protected Context $context,
+        protected MethofEnum $method,
         protected string $payload,
         protected string $resultKey,
     ) {
@@ -100,7 +101,7 @@ class IteratorResult implements Iterator
 
         $taskResult = $this->currentFlow->exec(
             context: $this->context,
-            method: MethofEnum::MongodbCollection,
+            method: $this->method,
             payload: $this->payload
         );
 
