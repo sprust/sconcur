@@ -57,6 +57,12 @@ class IteratorResult implements Iterator
         }
 
         if ($this->items === null) {
+            if ($this->isLastBatch) {
+                $this->isFinished = true;
+
+                return;
+            }
+
             if ($this->currentFlow->isAsync()) {
                 $taskResult = $this->currentFlow->suspend();
             } else {
@@ -108,6 +114,8 @@ class IteratorResult implements Iterator
         $this->taskKey = $taskResult->key;
 
         $this->setTaskResult($taskResult);
+
+        $this->nextItem();
     }
 
     protected function setTaskResult(TaskResultDto $taskResult): void
@@ -115,17 +123,19 @@ class IteratorResult implements Iterator
         $this->isLastBatch = !$taskResult->hasNext;
 
         $this->items = DocumentSerializer::unserialize($taskResult->payload)[$this->resultKey];
-
-        $this->nextItem();
     }
 
     protected function nextItem(): void
     {
-        foreach ($this->items ?: [] as $key => $value) {
+        foreach ($this->items as $key => $value) {
             unset($this->items[$key]);
 
             $this->currentKey   = $key;
             $this->currentValue = $value;
+
+            if (count($this->items) === 0) {
+                $this->items = null;
+            }
 
             return;
         }

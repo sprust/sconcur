@@ -24,7 +24,7 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
 
         $this->fieldName = uniqid();
 
-        $this->documentsCount = 10;
+        $this->documentsCount = 100;
 
         $this->seedData();
 
@@ -97,7 +97,8 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
         foreach ($this->results as $order => $documents) {
             self::assertCount(
                 $this->documentsCount,
-                $documents
+                $documents,
+                "Failed asserting documents count in order [$order]"
             );
 
             $index = 0;
