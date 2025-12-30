@@ -11,6 +11,8 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
 {
     protected string $fieldName;
 
+    protected int $pagesCount;
+    protected int $pageSize;
     protected int $documentsCount;
 
     /**
@@ -24,7 +26,9 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
 
         $this->fieldName = uniqid();
 
-        $this->documentsCount = 100;
+        $this->pagesCount     = 4;
+        $this->pageSize       = 30;
+        $this->documentsCount = $this->pagesCount * $this->pageSize;
 
         $this->seedData();
 
@@ -142,26 +146,39 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
 
     protected function aggregate(Context $context, string $order): void
     {
-        $aggregation = $this->sconcurCollection->aggregate(
-            context: $context,
-            pipeline: [
-                [
-                    '$match' => [
-                        $this->fieldName => $this->sconcurObjectId,
-                    ],
-                ],
-                [
-                    '$sort' => [
-                        'index' => 1,
-                    ],
-                ],
-            ],
-        );
-
         $this->results[$order] = [];
 
-        foreach ($aggregation as $item) {
-            $this->results[$order][$item['index']] = true;
+        $batchSize = $this->pageSize - 2;
+
+        foreach (range(1, $this->pagesCount + 1) as $page) {
+            $aggregation = $this->sconcurCollection->aggregate(
+                context: $context,
+                pipeline: [
+                    [
+                        '$match' => [
+                            $this->fieldName => $this->sconcurObjectId,
+                        ],
+                    ],
+                    [
+                        '$sort' => [
+                            'index' => 1,
+                        ],
+                    ],
+                    [
+                        '$skip' => ($page - 1) * $this->pageSize,
+                    ],
+                    [
+                        '$limit' => $this->pageSize,
+                    ],
+                ],
+                batchSize: $batchSize,
+            );
+
+            foreach ($aggregation as $item) {
+                $this->results[$order][$item['index']] = true;
+            }
+
+            ++$batchSize;
         }
     }
 }

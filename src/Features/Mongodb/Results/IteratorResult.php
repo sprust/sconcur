@@ -127,7 +127,7 @@ class IteratorResult implements Iterator
 
     protected function nextItem(): void
     {
-        foreach ($this->items as $key => $value) {
+        foreach ($this->items ?: [] as $key => $value) {
             unset($this->items[$key]);
 
             $this->currentKey   = $key;

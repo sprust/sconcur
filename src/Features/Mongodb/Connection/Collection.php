@@ -168,9 +168,12 @@ readonly class Collection
      *
      * @return Iterator<int, array<int|string|float|bool|null, mixed>>
      */
-    public function aggregate(Context $context, array $pipeline): Iterator
+    public function aggregate(Context $context, array $pipeline, int $batchSize = 30): Iterator
     {
-        $serialized = DocumentSerializer::serialize($pipeline);
+        $serialized = DocumentSerializer::serialize([
+            'p'  => DocumentSerializer::serialize($pipeline),
+            'bs' => $batchSize,
+        ]);
 
         return new IteratorResult(
             context: $context,

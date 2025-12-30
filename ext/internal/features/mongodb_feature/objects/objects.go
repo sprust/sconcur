@@ -19,6 +19,11 @@ type FindOneParams struct {
 	Filter string `json:"f"`
 }
 
+type AggregateParams struct {
+	Pipeline  string `json:"p"`
+	BatchSize int    `json:"bs"`
+}
+
 type CreateIndexParams struct {
 	Keys string `json:"k"`
 	Name string `json:"n"`

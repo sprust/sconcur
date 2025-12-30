@@ -108,7 +108,18 @@ func (c *Collection) Aggregate(
 	message *dto.Message,
 	payload *objects.Payload,
 ) *dto.Result {
-	pipeline, err := helpers.UnmarshalDocument(payload.Data)
+	var params objects.AggregateParams
+
+	err := json.Unmarshal([]byte(payload.Data), &params)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse aggregate params", err),
+		)
+	}
+
+	pipeline, err := helpers.UnmarshalDocument(params.Pipeline)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -126,7 +137,7 @@ func (c *Collection) Aggregate(
 		)
 	}
 
-	maxBatchCount := 50
+	batchSize := params.BatchSize
 
 	var items []interface{}
 
@@ -144,7 +155,7 @@ func (c *Collection) Aggregate(
 
 		items = append(items, cursor.Current)
 
-		if len(items) == maxBatchCount {
+		if len(items) == batchSize {
 			response, err = helpers.MarshalDocument(
 				bson.D{
 					{Key: resultKey, Value: items},
