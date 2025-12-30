@@ -5,13 +5,14 @@ declare(strict_types=1);
 namespace SConcur\Features\Mongodb\Results;
 
 use Iterator;
-use LogicException;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Entities\Context;
-use SConcur\Features\MethofEnum;
+use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
 use SConcur\Flow\Flow;
 use SConcur\State;
+
+// TODO: do pretty for parameters reusing
 
 /**
  * @implements Iterator<int, array<int|string|float|bool|null, mixed>>
@@ -33,8 +34,10 @@ class IteratorResult implements Iterator
 
     public function __construct(
         protected Context $context,
-        protected MethofEnum $method,
+        protected MethodEnum $method,
         protected string $payload,
+        protected MethodEnum $nextMethod,
+        protected string $nextPayload,
         protected string $resultKey,
     ) {
         $this->resetProperties();
@@ -58,21 +61,14 @@ class IteratorResult implements Iterator
                 return;
             }
 
-            if ($this->currentFlow->isAsync()) {
-                $taskResult = $this->currentFlow->suspend();
-            } else {
-                $taskResult = $this->currentFlow->wait(
-                    context: $this->context,
-                );
-
-                $this->currentFlow->checkResult(result: $taskResult);
-            }
-
-            if ($taskResult->key !== $this->taskKey) {
-                throw new LogicException(
-                    message: 'Unexpected task key'
-                );
-            }
+            $taskResult = $this->currentFlow->exec(
+                context: $this->context,
+                method: $this->nextMethod,
+                payload: json_encode([
+                    'k' => $this->taskKey,
+                    'p' => $this->nextPayload,
+                ])
+            );
 
             $this->setTaskResult($taskResult);
         }

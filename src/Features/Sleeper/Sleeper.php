@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Features\Sleeper;
 
 use SConcur\Entities\Context;
-use SConcur\Features\MethofEnum;
+use SConcur\Features\MethodEnum;
 use SConcur\State;
 
 readonly class Sleeper
@@ -19,7 +19,7 @@ readonly class Sleeper
     {
         State::getCurrentFlow()->exec(
             context: $context,
-            method: MethofEnum::Sleep,
+            method: MethodEnum::Sleep,
             payload: json_encode([
                 'ms' => $milliseconds,
             ])

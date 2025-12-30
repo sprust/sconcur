@@ -9,7 +9,7 @@ use RuntimeException;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Entities\Context;
 use SConcur\Exceptions\InvalidMongodbBulkWriteOperationException;
-use SConcur\Features\MethofEnum;
+use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\CommandEnum;
 use SConcur\Features\Mongodb\Results\BulkWriteResult;
 use SConcur\Features\Mongodb\Results\DeleteResult;
@@ -24,7 +24,7 @@ readonly class Collection
 {
     protected const string RESULT_KEY = '_r';
 
-    protected MethofEnum $method;
+    protected MethodEnum $method;
 
     protected string $uri;
     protected string $databaseName;
@@ -38,7 +38,7 @@ readonly class Collection
         $this->collectionName  = $this->name;
         $this->socketTimeoutMs = $this->database->client->socketTimeoutMs;
 
-        $this->method = MethofEnum::MongodbCollection;
+        $this->method = MethodEnum::MongodbCollection;
     }
 
     /**
@@ -182,6 +182,10 @@ readonly class Collection
                 command: CommandEnum::Aggregate,
                 data: $serialized,
             ),
+            nextMethod: MethodEnum::MongodbStateful,
+            nextPayload: json_encode([
+                'cm'  => CommandEnum::Aggregate,
+            ]),
             resultKey: static::RESULT_KEY,
         );
     }
