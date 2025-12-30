@@ -110,11 +110,6 @@ class Extension
         destroy();
     }
 
-    public function __destruct()
-    {
-        $this->destroy();
-    }
-
     private function checkExtension(): void
     {
         if (static::$checked) {
@@ -128,5 +123,10 @@ class Extension
         }
 
         static::$checked = true;
+    }
+
+    public function __destruct()
+    {
+        $this->destroy();
     }
 }
