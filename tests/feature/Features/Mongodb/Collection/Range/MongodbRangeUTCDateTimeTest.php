@@ -7,6 +7,7 @@ namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Range;
 use DateMalformedStringException;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbRangeTestCase;
+use SConcur\Tests\Impl\TestMongodbResolver;
 
 /**
  * @extends BaseMongodbRangeTestCase<UTCDateTime>
@@ -20,7 +21,7 @@ class MongodbRangeUTCDateTimeTest extends BaseMongodbRangeTestCase
 
     protected function firstValue(): UTCDateTime
     {
-        return new UTCDateTime();
+        return TestMongodbResolver::getSconcurDateTime();
     }
 
     /**
@@ -30,7 +31,7 @@ class MongodbRangeUTCDateTimeTest extends BaseMongodbRangeTestCase
      */
     protected function nextValue(mixed $value): UTCDateTime
     {
-        return new UTCDateTime(
+        return TestMongodbResolver::getSconcurDateTime(
             (clone $value->dateTime)->modify('+1 hour')
         );
     }
@@ -42,7 +43,7 @@ class MongodbRangeUTCDateTimeTest extends BaseMongodbRangeTestCase
      */
     protected function prevValue(mixed $value): UTCDateTime
     {
-        return new UTCDateTime(
+        return TestMongodbResolver::getSconcurDateTime(
             (clone $value->dateTime)->modify('-1 hour')
         );
     }

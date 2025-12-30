@@ -5,15 +5,11 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Aggregate;
 
 use SConcur\Entities\Context;
-use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
 
 class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
 {
-    protected \MongoDB\BSON\ObjectId $driverObjectId;
-
     protected string $fieldName;
-    protected ObjectId $fieldValue;
 
     protected int $documentsCount;
 
@@ -26,10 +22,7 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
     {
         parent::setUp();
 
-        $this->driverObjectId = new \MongoDB\BSON\ObjectId('693a7119e9d4885085366c80');
-
-        $this->fieldName  = uniqid();
-        $this->fieldValue = new ObjectId('693a7119e9d4885085366c80');
+        $this->fieldName = uniqid();
 
         $this->documentsCount = 10;
 
@@ -88,7 +81,7 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
         $iterator = $this->sconcurCollection->aggregate(
             context: $context,
             /** @phpstan-ignore-next-line argument.type */
-            pipeline: [$this->fieldName => $this->fieldValue],
+            pipeline: [$this->fieldName => $this->sconcurObjectId],
         );
 
         $iterator->rewind();
@@ -153,7 +146,7 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
             pipeline: [
                 [
                     '$match' => [
-                        $this->fieldName => $this->fieldValue,
+                        $this->fieldName => $this->sconcurObjectId,
                     ],
                 ],
                 [

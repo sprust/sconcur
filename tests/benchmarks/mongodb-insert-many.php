@@ -3,8 +3,6 @@
 declare(strict_types=1);
 
 use SConcur\Entities\Context;
-use SConcur\Features\Mongodb\Types\ObjectId;
-use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Impl\TestMongodbResolver;
 
 require_once __DIR__ . '/_benchmarker.php';
@@ -18,16 +16,16 @@ $sconcurCollection = TestMongodbResolver::getSconcurBenchmarkCollection();
 
 $driverDocuments = array_map(
     static fn() => makeDocument(
-        objectId: new \MongoDB\BSON\ObjectId('6919e3d1a3673d3f4d9137a3'),
-        dateTime: new \MongoDB\BSON\UTCDateTime()
+        objectId: TestMongodbResolver::getDriverObjectId(),
+        dateTime: TestMongodbResolver::getDriverDateTime(),
     ),
     range(1, 30)
 );
 
 $sconcurDocuments = array_map(
     static fn() => makeDocument(
-        objectId: new ObjectId('6919e3d1a3673d3f4d9137a3'),
-        dateTime: new UTCDateTime()
+        objectId: TestMongodbResolver::getSconcurObjectId(),
+        dateTime: TestMongodbResolver::getSconcurDateTime(),
     ),
     range(1, 30)
 );

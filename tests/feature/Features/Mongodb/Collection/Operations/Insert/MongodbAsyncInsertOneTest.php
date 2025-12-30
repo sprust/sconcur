@@ -8,6 +8,7 @@ use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
+use SConcur\Tests\Impl\TestMongodbResolver;
 
 class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
 {
@@ -20,10 +21,12 @@ class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
     {
         parent::setUp();
 
-        $this->driverDateTime = new \MongoDB\BSON\UTCDateTime();
+        $this->driverDateTime = TestMongodbResolver::getDriverDateTime();
 
         $this->fieldName  = uniqid();
-        $this->fieldValue = new UTCDateTime($this->driverDateTime->toDateTime());
+        $this->fieldValue = TestMongodbResolver::getSconcurDateTime(
+            $this->driverDateTime->toDateTime()
+        );
     }
 
     protected function getCollectionName(): string

@@ -10,13 +10,11 @@ use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
+use SConcur\Tests\Impl\TestMongodbResolver;
 
 class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
 {
-    protected \MongoDB\BSON\ObjectId $driverObjectId;
-
     protected string $fieldName;
-    protected ObjectId $objectId;
 
     protected int $documentsCount;
     protected int $expectedDocumentsCount;
@@ -25,10 +23,7 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
     {
         parent::setUp();
 
-        $this->driverObjectId = new \MongoDB\BSON\ObjectId('693a7119e9d4885085366c80');
-
         $this->fieldName = uniqid();
-        $this->objectId  = new ObjectId('693a7119e9d4885085366c80');
 
         $this->documentsCount         = 3;
         $this->expectedDocumentsCount = 18;
@@ -57,12 +52,12 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
                     uniqid() => uniqid(),
                 ],
                 [
-                    $this->fieldName => $this->objectId,
+                    $this->fieldName => $this->sconcurObjectId,
                 ],
             ]
         );
 
-        $result = $this->sconcurCollection->findOne($context, [$this->fieldName => $this->objectId]);
+        $result = $this->sconcurCollection->findOne($context, [$this->fieldName => $this->sconcurObjectId]);
 
         self::assertFalse(
             is_null($result)
@@ -78,7 +73,7 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
         );
 
         self::assertEquals(
-            $this->objectId,
+            $this->sconcurObjectId,
             $result[$this->fieldName],
         );
     }
@@ -88,7 +83,7 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
      */
     protected function on_2_start(Context $context): void
     {
-        $dateTime = new UTCDateTime(
+        $dateTime = TestMongodbResolver::getSconcurDateTime(
             new DateTime()->modify('+1 day')
         );
 

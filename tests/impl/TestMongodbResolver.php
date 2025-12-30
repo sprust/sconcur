@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Impl;
 
+use DateTime;
 use SConcur\Features\Mongodb\Connection\Client;
 use SConcur\Features\Mongodb\Connection\Collection;
+use SConcur\Features\Mongodb\Types\ObjectId;
+use SConcur\Features\Mongodb\Types\UTCDateTime;
 
 class TestMongodbResolver
 {
@@ -13,6 +16,8 @@ class TestMongodbResolver
 
     protected static string $testDatabaseName = 'u-test';
     protected static string $benchmarkName    = 'benchmark';
+
+    protected static string $objectId = '6919e3d1a3673d3f4d9137a3';
 
     public static function getDriverTestCollection(string $collectionName): \MongoDB\Collection
     {
@@ -40,6 +45,26 @@ class TestMongodbResolver
         return new Client(uri: static::getUri())
             ->selectDatabase(static::$benchmarkName)
             ->selectCollection(static::$benchmarkName);
+    }
+
+    public static function getDriverObjectId(?string $id = null): \MongoDB\BSON\ObjectId
+    {
+        return new \MongoDB\BSON\ObjectId($id ?: static::$objectId);
+    }
+
+    public static function getSconcurObjectId(?string $id = null): ObjectId
+    {
+        return new ObjectId($id ?: static::$objectId);
+    }
+
+    public static function getDriverDateTime(?DateTime $dateTime = null): \MongoDB\BSON\UTCDateTime
+    {
+        return new \MongoDB\BSON\UTCDateTime($dateTime);
+    }
+
+    public static function getSconcurDateTime(?DateTime $dateTime = null): UTCDateTime
+    {
+        return new UTCDateTime($dateTime);
     }
 
     protected static function getUri(): string

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection;
 
 use SConcur\Features\Mongodb\Connection\Collection;
+use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Tests\Feature\BaseAsyncTestCase;
 use SConcur\Tests\Impl\TestMongodbResolver;
 use Throwable;
@@ -13,6 +14,9 @@ abstract class BaseMongodbAsyncTestCase extends BaseAsyncTestCase
 {
     protected \MongoDB\Collection $driverCollection;
     protected Collection $sconcurCollection;
+
+    protected \MongoDB\BSON\ObjectId $driverObjectId;
+    protected ObjectId $sconcurObjectId;
 
     abstract protected function getCollectionName(): string;
 
@@ -24,6 +28,9 @@ abstract class BaseMongodbAsyncTestCase extends BaseAsyncTestCase
 
         $this->driverCollection  = TestMongodbResolver::getDriverTestCollection($collectionName);
         $this->sconcurCollection = TestMongodbResolver::getSconcurTestCollection($collectionName);
+
+        $this->driverObjectId  = TestMongodbResolver::getDriverObjectId();
+        $this->sconcurObjectId = TestMongodbResolver::getSconcurObjectId();
 
         $this->driverCollection->deleteMany([]);
     }

@@ -5,21 +5,11 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\BulkWrite;
 
 use SConcur\Entities\Context;
-use SConcur\Features\Mongodb\Types\ObjectId;
-use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
+use SConcur\Tests\Impl\TestMongodbResolver;
 
 class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
 {
-    protected ObjectId $fieldValue;
-
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        $this->fieldValue = new ObjectId('693a7119e9d4885085366c80');
-    }
-
     protected function getCollectionName(): string
     {
         return 'bulkWrite';
@@ -28,7 +18,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
     protected function on_1_start(Context $context): void
     {
         $document = [
-            uniqid('InsertOne_') => $this->fieldValue,
+            uniqid('InsertOne_') => $this->sconcurObjectId,
         ];
 
         $this->sconcurCollection->bulkWrite(
@@ -55,7 +45,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
     {
         foreach (['updateOne', 'updateMany'] as $operation) {
             $filter = [
-                uniqid(ucfirst($operation) . '_') => $this->fieldValue,
+                uniqid(ucfirst($operation) . '_') => $this->sconcurObjectId,
             ];
 
             $this->sconcurCollection->bulkWrite(
@@ -144,7 +134,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
     protected function on_2_start(Context $context): void
     {
         $filter = [
-            uniqid('DeleteOneMany_') => $this->fieldValue,
+            uniqid('DeleteOneMany_') => $this->sconcurObjectId,
         ];
 
         $this->sconcurCollection->insertMany(
@@ -205,10 +195,10 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
 
     protected function on_2_middle(Context $context): void
     {
-        $datetime = new UTCDateTime();
+        $datetime = TestMongodbResolver::getSconcurDateTime();
 
         $filter = [
-            uniqid('All_') => $this->fieldValue,
+            uniqid('All_') => $this->sconcurObjectId,
             'createdAt'    => $datetime,
         ];
 
@@ -295,7 +285,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
     protected function on_iterate(Context $context): void
     {
         $document = [
-            uniqid('Iterate_InsertOne_') => $this->fieldValue,
+            uniqid('Iterate_InsertOne_') => $this->sconcurObjectId,
         ];
 
         $this->sconcurCollection->bulkWrite(

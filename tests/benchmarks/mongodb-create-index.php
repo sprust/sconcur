@@ -3,8 +3,6 @@
 declare(strict_types=1);
 
 use SConcur\Entities\Context;
-use SConcur\Features\Mongodb\Types\ObjectId;
-use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Impl\TestMongodbResolver;
 
 require_once __DIR__ . '/_benchmarker.php';
@@ -19,11 +17,6 @@ $sconcurCollection = TestMongodbResolver::getSconcurBenchmarkCollection();
 if (iterator_count($driverCollection->listIndexes()) > 0) {
     $driverCollection->dropIndexes();
 }
-
-$sconcurFilter = makeFilter(
-    objectId: new ObjectId('6919e3d1a3673d3f4d9137a3'),
-    dateTime: new UTCDateTime()
-);
 
 $index = 0;
 

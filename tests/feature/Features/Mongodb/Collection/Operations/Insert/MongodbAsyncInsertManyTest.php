@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Insert;
 
 use SConcur\Entities\Context;
-use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
 
 class MongodbAsyncInsertManyTest extends BaseMongodbAsyncTestCase
@@ -13,7 +12,6 @@ class MongodbAsyncInsertManyTest extends BaseMongodbAsyncTestCase
     protected \MongoDB\BSON\ObjectId $driverObjectId;
 
     protected string $fieldName;
-    protected ObjectId $fieldValue;
 
     protected int $documentsCount;
     protected int $expectedDocumentsCount;
@@ -22,10 +20,7 @@ class MongodbAsyncInsertManyTest extends BaseMongodbAsyncTestCase
     {
         parent::setUp();
 
-        $this->driverObjectId = new \MongoDB\BSON\ObjectId('693a7119e9d4885085366c80');
-
-        $this->fieldName  = uniqid();
-        $this->fieldValue = new ObjectId('693a7119e9d4885085366c80');
+        $this->fieldName = uniqid();
 
         $this->documentsCount         = 3;
         $this->expectedDocumentsCount = 18;
@@ -66,7 +61,7 @@ class MongodbAsyncInsertManyTest extends BaseMongodbAsyncTestCase
         $this->sconcurCollection->insertMany(
             context: $context,
             /** @phpstan-ignore-next-line argument.type */
-            documents: [$this->fieldName => $this->fieldValue]
+            documents: [$this->fieldName => $this->sconcurObjectId]
         );
     }
 
@@ -83,7 +78,7 @@ class MongodbAsyncInsertManyTest extends BaseMongodbAsyncTestCase
         $insertResult = $this->sconcurCollection->insertMany(
             context: Context::create(2),
             documents: array_map(
-                fn() => [$this->fieldName => $this->fieldValue],
+                fn() => [$this->fieldName => $this->sconcurObjectId],
                 range(1, $this->documentsCount)
             )
         );

@@ -5,15 +5,11 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Delete;
 
 use SConcur\Entities\Context;
-use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
 
 class MongodbAsyncDeleteOneTest extends BaseMongodbAsyncTestCase
 {
-    protected \MongoDB\BSON\ObjectId $driverObjectId;
-
     protected string $fieldName;
-    protected ObjectId $objectId;
 
     protected int $documentsCount;
     protected int $deletedDocumentsCount;
@@ -22,10 +18,7 @@ class MongodbAsyncDeleteOneTest extends BaseMongodbAsyncTestCase
     {
         parent::setUp();
 
-        $this->driverObjectId = new \MongoDB\BSON\ObjectId('693a7119e9d4885085366c80');
-
         $this->fieldName = uniqid();
-        $this->objectId  = new ObjectId('693a7119e9d4885085366c80');
 
         $this->documentsCount        = 10;
         $this->deletedDocumentsCount = 0;
@@ -60,7 +53,7 @@ class MongodbAsyncDeleteOneTest extends BaseMongodbAsyncTestCase
         $result = $this->sconcurCollection->deleteOne(
             context: $context,
             filter: [
-                uniqid() => $this->objectId,
+                uniqid() => $this->sconcurObjectId,
             ]
         );
 
@@ -98,7 +91,7 @@ class MongodbAsyncDeleteOneTest extends BaseMongodbAsyncTestCase
         $result = $this->sconcurCollection->deleteOne(
             context: $context,
             filter: [
-                $this->fieldName => $this->objectId,
+                $this->fieldName => $this->sconcurObjectId,
             ]
         );
 

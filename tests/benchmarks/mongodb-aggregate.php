@@ -3,7 +3,6 @@
 declare(strict_types=1);
 
 use SConcur\Entities\Context;
-use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Tests\Impl\TestMongodbResolver;
 
 require_once __DIR__ . '/_benchmarker.php';
@@ -16,11 +15,11 @@ $driverCollection  = TestMongodbResolver::getDriverBenchmarkCollection();
 $sconcurCollection = TestMongodbResolver::getSconcurBenchmarkCollection();
 
 $driverPipeline = makePipeline(
-    new \MongoDB\BSON\ObjectId('6919e3d1a3673d3f4d9137a3')
+    TestMongodbResolver::getDriverObjectId()
 );
 
 $sconcurPipeline = makePipeline(
-    new ObjectId('6919e3d1a3673d3f4d9137a3')
+    TestMongodbResolver::getSconcurObjectId()
 );
 
 $isLogProcess = $benchmarker->isLogProcess();
