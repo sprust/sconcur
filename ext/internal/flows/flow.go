@@ -75,10 +75,8 @@ func (f *Flow) Wait(timeoutMs int64) (string, error) {
 
 		f.mutex.Lock()
 
-		if !result.HasNext {
-			delete(f.activeTasks, result.TaskKey)
-			f.tasksCount.Add(-1)
-		}
+		delete(f.activeTasks, result.TaskKey)
+		f.tasksCount.Add(-1)
 
 		f.mutex.Unlock()
 

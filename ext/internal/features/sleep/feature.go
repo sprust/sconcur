@@ -5,7 +5,7 @@ import (
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
-	"sconcur/internal/features/sleep_feature/params"
+	"sconcur/internal/features/sleep/params"
 	"sconcur/internal/tasks"
 	"sync"
 	"time"

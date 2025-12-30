@@ -1,9 +1,10 @@
-package connection
+package aggregate_stateful
 
 import (
 	"context"
 	"sconcur/internal/dto"
-	"sconcur/internal/features/mongodb_feature/helpers"
+	"sconcur/internal/errs"
+	"sconcur/internal/features/mongodb/helpers"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -15,6 +16,8 @@ type AggregateState struct {
 	mCollection *mongo.Collection
 	pipeline    interface{}
 	batchSize   int
+	resultKey   string
+	errFactory  *errs.Factory
 	cursor      *mongo.Cursor
 }
 
@@ -24,6 +27,8 @@ func NewAggregateState(
 	mCollection *mongo.Collection,
 	pipeline interface{},
 	batchSize int,
+	resultKey string,
+	errFactory *errs.Factory,
 ) *AggregateState {
 	return &AggregateState{
 		ctx:         ctx,
@@ -31,6 +36,8 @@ func NewAggregateState(
 		mCollection: mCollection,
 		pipeline:    pipeline,
 		batchSize:   batchSize,
+		resultKey:   resultKey,
+		errFactory:  errFactory,
 	}
 }
 
@@ -41,7 +48,7 @@ func (a *AggregateState) Next() *dto.Result {
 		if err != nil {
 			return dto.NewErrorResult(
 				a.message,
-				errFactory.ByErr("aggregate error", err),
+				a.errFactory.ByErr("aggregate error", err),
 			)
 		}
 
@@ -56,7 +63,7 @@ func (a *AggregateState) Next() *dto.Result {
 
 			return dto.NewErrorResult(
 				a.message,
-				errFactory.ByErr("aggregate cursor error", err),
+				a.errFactory.ByErr("aggregate cursor error", err),
 			)
 		}
 
@@ -65,14 +72,14 @@ func (a *AggregateState) Next() *dto.Result {
 		if len(items) == a.batchSize {
 			response, err := helpers.MarshalDocument(
 				bson.D{
-					{Key: resultKey, Value: items},
+					{Key: a.resultKey, Value: items},
 				},
 			)
 
 			if err != nil {
 				return dto.NewErrorResult(
 					a.message,
-					errFactory.ByErr("aggregate result marshal error", err),
+					a.errFactory.ByErr("aggregate result marshal error", err),
 				)
 			}
 
@@ -82,14 +89,14 @@ func (a *AggregateState) Next() *dto.Result {
 
 	response, err := helpers.MarshalDocument(
 		bson.D{
-			{Key: resultKey, Value: items},
+			{Key: a.resultKey, Value: items},
 		},
 	)
 
 	if err != nil {
 		return dto.NewErrorResult(
 			a.message,
-			errFactory.ByErr("aggregate result marshal error", err),
+			a.errFactory.ByErr("aggregate result marshal error", err),
 		)
 	}
 

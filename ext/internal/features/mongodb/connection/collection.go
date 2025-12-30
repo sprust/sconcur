@@ -6,9 +6,9 @@ import (
 	"errors"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
-	"sconcur/internal/features/mongodb_feature/helpers"
-	"sconcur/internal/features/mongodb_feature/objects"
-	"sconcur/internal/tasks"
+	"sconcur/internal/features/mongodb/helpers"
+	"sconcur/internal/features/mongodb/objects"
+	"sconcur/internal/features/mongodb/stateful/aggregate_stateful"
 	"strconv"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -104,7 +104,6 @@ func (c *Collection) BulkWrite(
 
 func (c *Collection) Aggregate(
 	ctx context.Context,
-	task *tasks.Task,
 	message *dto.Message,
 	payload *objects.Payload,
 ) *dto.Result {
@@ -128,69 +127,43 @@ func (c *Collection) Aggregate(
 		)
 	}
 
-	cursor, err := c.mCollection.Aggregate(ctx, pipeline)
+	states := aggregate_stateful.GetAggregates()
 
-	if err != nil {
+	state := states.GetState(message.TaskKey)
+
+	if state != nil {
 		return dto.NewErrorResult(
 			message,
-			errFactory.ByErr("aggregate error", err),
+			errFactory.ByText("aggregate already started"),
 		)
 	}
 
-	batchSize := params.BatchSize
-
-	var items []interface{}
-
-	var response string
-
-	for cursor.Next(ctx) {
-		if err := cursor.Err(); err != nil {
-			_ = cursor.Close(ctx)
-
-			return dto.NewErrorResult(
-				message,
-				errFactory.ByErr("aggregate cursor error", err),
-			)
-		}
-
-		items = append(items, cursor.Current)
-
-		if len(items) == batchSize {
-			response, err = helpers.MarshalDocument(
-				bson.D{
-					{Key: resultKey, Value: items},
-				},
-			)
-
-			if err != nil {
-				return dto.NewErrorResult(
-					message,
-					errFactory.ByErr("aggregate result marshal error", err),
-				)
-			}
-
-			task.AddResult(
-				dto.NewSuccessResultWithNext(message, response),
-			)
-
-			items = []interface{}{}
-		}
-	}
-
-	response, err = helpers.MarshalDocument(
-		bson.D{
-			{Key: resultKey, Value: items},
-		},
+	state = aggregate_stateful.NewAggregateState(
+		ctx,
+		message,
+		c.mCollection,
+		pipeline,
+		params.BatchSize,
+		resultKey,
+		errFactory,
 	)
 
+	err = states.AddState(ctx, message.TaskKey, state)
+
 	if err != nil {
 		return dto.NewErrorResult(
 			message,
-			errFactory.ByErr("aggregate result marshal error", err),
+			errFactory.ByErr("aggregate", err),
 		)
 	}
 
-	return dto.NewSuccessResult(message, response)
+	result := state.Next()
+
+	if !result.HasNext {
+		states.DeleteState(message.TaskKey)
+	}
+
+	return result
 }
 
 func (c *Collection) InsertMany(

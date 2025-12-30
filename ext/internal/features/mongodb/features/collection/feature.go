@@ -1,12 +1,12 @@
-package mongodb_feature
+package collection_feature
 
 import (
 	"encoding/json"
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
-	"sconcur/internal/features/mongodb_feature/connection"
-	"sconcur/internal/features/mongodb_feature/objects"
+	"sconcur/internal/features/mongodb/connection"
+	"sconcur/internal/features/mongodb/objects"
 	"sconcur/internal/tasks"
 	"sync"
 )
@@ -92,7 +92,6 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 		task.AddResult(
 			collection.Aggregate(
 				ctx,
-				task,
 				message,
 				&payload,
 			),
