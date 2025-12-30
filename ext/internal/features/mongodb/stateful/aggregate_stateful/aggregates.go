@@ -6,6 +6,8 @@ import (
 	"sync"
 )
 
+// TODO: make universal
+
 var once sync.Once
 var instance *AggregateStates
 
