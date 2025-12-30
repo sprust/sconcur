@@ -3,10 +3,9 @@
 declare(strict_types=1);
 
 use SConcur\Entities\Context;
-use SConcur\Features\Mongodb\Connection\Client;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
-use SConcur\Tests\Impl\TestMongodbUriResolver;
+use SConcur\Tests\Impl\TestMongodbResolver;
 
 require_once __DIR__ . '/_benchmarker.php';
 
@@ -14,15 +13,8 @@ $benchmarker = new Benchmarker(
     name: 'mongodb-count',
 );
 
-$uri = TestMongodbUriResolver::get();
-
-echo "Mongodb URI: $uri\n";
-
-$databaseName   = 'benchmark';
-$collectionName = 'benchmark';
-
-$driverCollection  = new MongoDB\Client($uri)->selectDatabase($databaseName)->selectCollection($collectionName);
-$sconcurCollection = new Client($uri)->selectDatabase($databaseName)->selectCollection($collectionName);
+$driverCollection  = TestMongodbResolver::getDriverBenchmarkCollection();
+$sconcurCollection = TestMongodbResolver::getSconcurBenchmarkCollection();
 
 $driverFilter = makeFilter(
     objectId: new \MongoDB\BSON\ObjectId('6919e3d1a3673d3f4d9137a3'),

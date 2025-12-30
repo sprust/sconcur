@@ -5,10 +5,9 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection;
 
 use SConcur\Entities\Context;
-use SConcur\Features\Mongodb\Connection\Client;
 use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Tests\Feature\BaseTestCase;
-use SConcur\Tests\Impl\TestMongodbUriResolver;
+use SConcur\Tests\Impl\TestMongodbResolver;
 
 /**
  * @template T
@@ -43,17 +42,10 @@ abstract class BaseMongodbRangeTestCase extends BaseTestCase
     {
         parent::setUp();
 
-        $uri        = TestMongodbUriResolver::get();
-        $database   = 'u-test';
-        $collection = 'range_' . ucfirst($this->getType());
+        $collectionName = 'range_' . ucfirst($this->getType());
 
-        $this->driverCollection = new \MongoDB\Client($uri)
-            ->selectDatabase($database)
-            ->selectCollection($collection);
-
-        $this->sconcurCollection = new Client($uri)
-            ->selectDatabase($database)
-            ->selectCollection($collection);
+        $this->driverCollection  = TestMongodbResolver::getDriverTestCollection($collectionName);
+        $this->sconcurCollection = TestMongodbResolver::getSconcurTestCollection($collectionName);
 
         $this->driverCollection->deleteMany([]);
     }

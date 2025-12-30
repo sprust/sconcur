@@ -4,10 +4,9 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection;
 
-use SConcur\Features\Mongodb\Connection\Client;
 use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Tests\Feature\BaseAsyncTestCase;
-use SConcur\Tests\Impl\TestMongodbUriResolver;
+use SConcur\Tests\Impl\TestMongodbResolver;
 use Throwable;
 
 abstract class BaseMongodbAsyncTestCase extends BaseAsyncTestCase
@@ -21,17 +20,10 @@ abstract class BaseMongodbAsyncTestCase extends BaseAsyncTestCase
     {
         parent::setUp();
 
-        $uri        = TestMongodbUriResolver::get();
-        $database   = 'u-test';
-        $collection = 'async_' . ucfirst($this->getCollectionName());
+        $collectionName = 'async_' . ucfirst($this->getCollectionName());
 
-        $this->driverCollection = new \MongoDB\Client($uri)
-            ->selectDatabase($database)
-            ->selectCollection($collection);
-
-        $this->sconcurCollection = new Client($uri)
-            ->selectDatabase($database)
-            ->selectCollection($collection);
+        $this->driverCollection  = TestMongodbResolver::getDriverTestCollection($collectionName);
+        $this->sconcurCollection = TestMongodbResolver::getSconcurTestCollection($collectionName);
 
         $this->driverCollection->deleteMany([]);
     }

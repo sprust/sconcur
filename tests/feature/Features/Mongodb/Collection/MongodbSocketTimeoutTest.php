@@ -6,9 +6,8 @@ namespace SConcur\Tests\Feature\Features\Mongodb\Collection;
 
 use SConcur\Entities\Context;
 use SConcur\Exceptions\TaskErrorException;
-use SConcur\Features\Mongodb\Connection\Client;
 use SConcur\Tests\Feature\BaseTestCase;
-use SConcur\Tests\Impl\TestMongodbUriResolver;
+use SConcur\Tests\Impl\TestMongodbResolver;
 
 class MongodbSocketTimeoutTest extends BaseTestCase
 {
@@ -16,19 +15,11 @@ class MongodbSocketTimeoutTest extends BaseTestCase
     {
         $context = Context::create(2);
 
-        $uri        = TestMongodbUriResolver::get();
-        $database   = 'u-test';
-        $collection = 'socketTimeout';
+        $collectionName = 'socketTimeout';
 
-        $driverCollection = new \MongoDB\Client($uri)
-            ->selectDatabase($database)
-            ->selectCollection($collection);
+        $sconcurCollection = TestMongodbResolver::getSconcurTestCollection($collectionName);
 
-        $sconcurCollection = new Client($uri)
-            ->selectDatabase($database)
-            ->selectCollection($collection);
-
-        $driverCollection->deleteMany([]);
+        $sconcurCollection->deleteMany($context, []);
 
         $sconcurCollection->bulkWrite(
             context: $context,
@@ -48,9 +39,10 @@ class MongodbSocketTimeoutTest extends BaseTestCase
             ]
         );
 
-        $sconcurCollection = new Client($uri, socketTimeoutMs: 1)
-            ->selectDatabase($database)
-            ->selectCollection($collection);
+        $sconcurCollection = TestMongodbResolver::getSconcurTestCollection(
+            collectionName: $collectionName,
+            socketTimeoutMs: 1
+        );
 
         $exception = null;
 
