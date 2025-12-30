@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Tests\Feature\Features\Mongodb;
+namespace SConcur\Tests\Feature\Features\Mongodb\Collection;
 
 use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Connection\Client;

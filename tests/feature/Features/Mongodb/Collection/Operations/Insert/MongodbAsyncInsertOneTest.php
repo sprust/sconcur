@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Tests\Feature\Features\Mongodb\Operations\Insert;
+namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Insert;
 
 use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
-use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbAsyncTestCase;
+use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
 
 class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
 {

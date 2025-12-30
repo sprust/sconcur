@@ -2,14 +2,14 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Tests\Feature\Features\Mongodb\Operations\Find;
+namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Find;
 
 use DateMalformedStringException;
 use DateTime;
 use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
-use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbAsyncTestCase;
+use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
 
 class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
 {

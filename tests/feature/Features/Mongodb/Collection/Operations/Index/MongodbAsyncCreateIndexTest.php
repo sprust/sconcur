@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Tests\Feature\Features\Mongodb\Operations\Index;
+namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Index;
 
 use SConcur\Entities\Context;
-use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbAsyncTestCase;
+use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
 
 class MongodbAsyncCreateIndexTest extends BaseMongodbAsyncTestCase
 {

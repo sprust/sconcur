@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Tests\Feature\Features\Mongodb\Range;
+namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Range;
 
-use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbRangeTestCase;
+use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbRangeTestCase;
 
 /**
  * @extends BaseMongodbRangeTestCase<float>

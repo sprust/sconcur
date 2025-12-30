@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Tests\Feature\Features\Mongodb\Operations\Aggregate;
+namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Aggregate;
 
 use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Types\ObjectId;
-use SConcur\Tests\Feature\Features\Mongodb\BaseMongodbAsyncTestCase;
+use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
 
 class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
 {
