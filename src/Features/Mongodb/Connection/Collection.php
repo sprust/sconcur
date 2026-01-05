@@ -223,15 +223,15 @@ readonly class Collection
 
     /**
      * @param array<string, mixed> $filter
-     * @param array<string, mixed> $protection
+     * @param array<string, mixed> $projection
      *
      * @return array<int|string, mixed>|null
      */
-    public function findOne(Context $context, array $filter, ?array $protection = null): ?array
+    public function findOne(Context $context, array $filter, ?array $projection = null): ?array
     {
         $serialized = DocumentSerializer::serialize([
             'f'  => DocumentSerializer::serialize($filter),
-            'op' => ($protection === null) ? "" : DocumentSerializer::serialize($protection),
+            'op' => ($projection === null) ? "" : DocumentSerializer::serialize($projection),
         ]);
 
         $taskResult = $this->exec(

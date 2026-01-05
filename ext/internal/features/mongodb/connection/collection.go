@@ -327,17 +327,17 @@ func (c *Collection) FindOne(
 
 	var opts *options.FindOneOptions
 
-	if params.Protection != "" {
-		protection, err := serializer.UnmarshalDocument(params.Protection)
+	if params.Projection != "" {
+		projection, err := serializer.UnmarshalDocument(params.Projection)
 
 		if err != nil {
 			return dto.NewErrorResult(
 				message,
-				errFactory.ByErr("parse findOne protection", err),
+				errFactory.ByErr("parse findOne projection", err),
 			)
 		}
 
-		opts = options.FindOne().SetProjection(protection)
+		opts = options.FindOne().SetProjection(projection)
 	}
 
 	start := time.Now()

@@ -17,7 +17,7 @@ type UpdateOneParams struct {
 
 type FindOneParams struct {
 	Filter     string `json:"f"`
-	Protection string `json:"op"`
+	Projection string `json:"op"`
 }
 
 type AggregateParams struct {

@@ -118,7 +118,7 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
             filter: [
                 $this->fieldName => $dateTime,
             ],
-            protection: [
+            projection: [
                 $this->fieldName => 1,
             ]
         );
