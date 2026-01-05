@@ -38,10 +38,9 @@ func (a *AggregateStates) AddState(ctx context.Context, taskKey string, state *A
 
 	a.states[taskKey] = state
 
-	go func() {
-		<-ctx.Done()
+	context.AfterFunc(ctx, func() {
 		a.DeleteState(taskKey)
-	}()
+	})
 
 	return nil
 }
