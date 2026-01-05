@@ -58,7 +58,7 @@ class GeneralTest extends BaseTestCase
             $waitGroup->add(callback: $callback);
         }
 
-        $generator = $waitGroup->wait();
+        $generator = $waitGroup->iterate();
 
         $results = [];
 
@@ -163,7 +163,7 @@ class GeneralTest extends BaseTestCase
             $waitGroup->add(callback: $callback);
         }
 
-        $generator = $waitGroup->wait();
+        $generator = $waitGroup->iterate();
 
         $results = [];
 
@@ -207,7 +207,7 @@ class GeneralTest extends BaseTestCase
             $waitGroup->add(callback: $callback);
         }
 
-        $generator = $waitGroup->wait();
+        $generator = $waitGroup->iterate();
 
         $results = [];
 
@@ -275,7 +275,7 @@ class GeneralTest extends BaseTestCase
             $waitGroup->add(callback: $callback);
         }
 
-        $generator = $waitGroup->wait();
+        $generator = $waitGroup->iterate();
 
         $results = [];
 

@@ -65,7 +65,7 @@ abstract class BaseAsyncTestCase extends BaseTestCase
             $waitGroup->add(callback: $callback);
         }
 
-        $generator = $waitGroup->wait();
+        $generator = $waitGroup->iterate();
 
         $results = [];
 

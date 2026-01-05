@@ -86,7 +86,7 @@ class WaitGroup
 
     public function waitAll(): int
     {
-        $generator = $this->wait();
+        $generator = $this->iterate();
 
         return iterator_count($generator);
     }
@@ -98,7 +98,7 @@ class WaitGroup
     {
         $results = [];
 
-        $generator = $this->wait();
+        $generator = $this->iterate();
 
         foreach ($generator as $key => $result) {
             $results[$key] = $result;
@@ -110,7 +110,7 @@ class WaitGroup
     /**
      * @return Generator<string, mixed>
      */
-    public function wait(): Generator
+    public function iterate(): Generator
     {
         $syncResultKeys = array_keys($this->syncResults);
 
