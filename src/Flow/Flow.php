@@ -68,7 +68,42 @@ class Flow
         return $result;
     }
 
-    public function suspend(): TaskResultDto
+    public function wait(Context $context): TaskResultDto
+    {
+        return Extension::get()->wait(
+            context: $context,
+            flowKey: $this->key,
+            isAsync: $this->isAsync,
+        );
+    }
+
+    public function getFiberByTaskKey(string $taskKey): ?Fiber
+    {
+        return $this->fibersKeyByTaskKeys[$taskKey] ?? null;
+    }
+
+    public function deleteFiberByTaskKey(string $taskKey): void
+    {
+        unset($this->fibersKeyByTaskKeys[$taskKey]);
+    }
+
+    public function stop(): void
+    {
+        Extension::get()->stopFlow($this->key);
+    }
+
+    protected function checkResult(TaskResultDto $result): TaskResultDto
+    {
+        if ($result->isError) {
+            throw new TaskErrorException(
+                $result->payload ?: 'Unknown error'
+            );
+        }
+
+        return $result;
+    }
+
+    protected function suspend(): TaskResultDto
     {
         if (!$this->isAsync) {
             throw new LogicException(
@@ -90,51 +125,6 @@ class Flow
         } else {
             throw new LogicException(
                 message: 'Unexpected result type.'
-            );
-        }
-
-        return $result;
-    }
-
-    public function wait(Context $context): TaskResultDto
-    {
-        return Extension::get()->wait(
-            context: $context,
-            flowKey: $this->key,
-            isAsync: $this->isAsync,
-        );
-    }
-
-    public function getFiberByTaskKey(string $taskKey): ?Fiber
-    {
-        return $this->fibersKeyByTaskKeys[$taskKey] ?? null;
-    }
-
-    public function deleteFiberByTaskKey(string $taskKey): void
-    {
-        unset($this->fibersKeyByTaskKeys[$taskKey]);
-    }
-
-    public function isAsync(): bool
-    {
-        return $this->isAsync;
-    }
-
-    public function stop(): void
-    {
-        Extension::get()->stopFlow($this->key);
-    }
-
-    public function getKey(): string
-    {
-        return $this->key;
-    }
-
-    public function checkResult(TaskResultDto $result): TaskResultDto
-    {
-        if ($result->isError) {
-            throw new TaskErrorException(
-                $result->payload ?: 'Unknown error'
             );
         }
 
