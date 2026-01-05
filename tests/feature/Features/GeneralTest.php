@@ -387,4 +387,54 @@ class GeneralTest extends BaseTestCase
             $exception->getMessage()
         );
     }
+
+    public function testAddAtIteration(): void
+    {
+        $events = [
+            'start'  => 0,
+            'finish' => 0,
+        ];
+
+        $callback = function (Context $context) use (&$events) {
+            ++$events['start'];
+
+            $this->sleeper->usleep(context: $context, milliseconds: 1);
+
+            ++$events['finish'];
+        };
+
+        $context = Context::create(timeoutSeconds: 1);
+
+        $waitGroup = WaitGroup::create($context);
+
+        $waitGroup->add(callback: $callback);
+
+        $iterationCount   = 5;
+        $iterationCounter = $iterationCount;
+
+        $generator = $waitGroup->iterate();
+
+        foreach ($generator as $ignored) {
+            --$iterationCounter;
+
+            if ($iterationCounter === 0) {
+                continue;
+            }
+
+            $waitGroup->add(callback: $callback);
+        }
+
+        self::assertEquals(
+            0,
+            $iterationCounter
+        );
+
+        self::assertSame(
+            [
+                'start'  => $iterationCount,
+                'finish' => $iterationCount,
+            ],
+            $events
+        );
+    }
 }
