@@ -42,6 +42,48 @@ class GeneralTest extends BaseTestCase
 
                 $this->sleeper->usleep(context: $context, milliseconds: 20);
 
+                // internal flow
+                $callbacks = [
+                    function (Context $context) use (&$events) {
+                        $events[] = '2.1:start';
+
+                        $this->sleeper->usleep(context: $context, milliseconds: 10);
+
+                        $events[] = '2.1:woke';
+
+                        $this->sleeper->usleep(context: $context, milliseconds: 30);
+
+                        $events[] = '2.1:finish';
+                    },
+                    function (Context $context) use (&$events) {
+                        $events[] = '2.2:start';
+
+                        $this->sleeper->usleep(context: $context, milliseconds: 20);
+
+                        $events[] = '2.2:woke';
+
+                        $this->sleeper->usleep(context: $context, milliseconds: 40);
+
+                        $events[] = '2.2:finish';
+                    },
+                ];
+
+                $context = Context::create(timeoutSeconds: 1);
+
+                $waitGroup = WaitGroup::create($context);
+
+                foreach ($callbacks as $callback) {
+                    $waitGroup->add(callback: $callback);
+                }
+
+                $resultsCount = $waitGroup->waitAll();
+
+                self::assertEquals(
+                    count($callbacks),
+                    $resultsCount
+                );
+                // internal flow ^
+
                 $events[] = '2:woke';
 
                 $this->sleeper->usleep(context: $context, milliseconds: 40);
@@ -76,6 +118,14 @@ class GeneralTest extends BaseTestCase
                 '1:start',
                 '2:start',
                 '1:woke',
+                // internal flow
+                '2.1:start',
+                '2.2:start',
+                '2.1:woke',
+                '2.2:woke',
+                '2.1:finish',
+                '2.2:finish',
+                // internal flow ^
                 '2:woke',
                 '1:finish',
                 '2:finish',
