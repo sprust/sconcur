@@ -263,7 +263,7 @@ func (c *Collection) UpdateOne(
 
 	var opts *options.UpdateOptions
 
-	if params.OpUpsert {
+	if params.Upsert {
 		opts = options.Update().SetUpsert(true)
 	}
 
@@ -314,6 +314,19 @@ func (c *Collection) FindOne(
 	}
 
 	var opts *options.FindOneOptions
+
+	if params.Protection != "" {
+		protection, err := helpers.UnmarshalDocument(params.Protection)
+
+		if err != nil {
+			return dto.NewErrorResult(
+				message,
+				errFactory.ByErr("parse findOne protection", err),
+			)
+		}
+
+		opts = options.FindOne().SetProjection(protection)
+	}
 
 	result := c.mCollection.FindOne(ctx, filter, opts)
 

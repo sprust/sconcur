@@ -184,7 +184,7 @@ readonly class Collection
             ),
             nextMethod: MethodEnum::MongodbStateful,
             nextPayload: json_encode([
-                'cm'  => CommandEnum::Aggregate,
+                'cm' => CommandEnum::Aggregate,
             ]),
             resultKey: static::RESULT_KEY,
         );
@@ -223,13 +223,15 @@ readonly class Collection
 
     /**
      * @param array<string, mixed> $filter
+     * @param array<string, mixed> $protection
      *
      * @return array<int|string, mixed>|null
      */
-    public function findOne(Context $context, array $filter): ?array
+    public function findOne(Context $context, array $filter, ?array $protection = null): ?array
     {
         $serialized = DocumentSerializer::serialize([
-            'f' => DocumentSerializer::serialize($filter),
+            'f'  => DocumentSerializer::serialize($filter),
+            'op' => ($protection === null) ? "" : DocumentSerializer::serialize($protection),
         ]);
 
         $taskResult = $this->exec(

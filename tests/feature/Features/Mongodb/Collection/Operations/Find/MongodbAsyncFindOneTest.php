@@ -46,18 +46,25 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
     protected function on_1_middle(Context $context): void
     {
         $this->sconcurCollection->insertMany(
-            $context,
-            [
+            context: $context,
+            documents: [
                 [
+                    uniqid() => uniqid(),
                     uniqid() => uniqid(),
                 ],
                 [
                     $this->fieldName => $this->sconcurObjectId,
+                    uniqid()         => uniqid(),
                 ],
             ]
         );
 
-        $result = $this->sconcurCollection->findOne($context, [$this->fieldName => $this->sconcurObjectId]);
+        $result = $this->sconcurCollection->findOne(
+            context: $context,
+            filter: [
+                $this->fieldName => $this->sconcurObjectId,
+            ]
+        );
 
         self::assertFalse(
             is_null($result)
@@ -65,6 +72,11 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
 
         self::assertArrayHasKey(
             $this->fieldName,
+            $result
+        );
+
+        self::assertCount(
+            3,
             $result
         );
 
@@ -88,25 +100,40 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
         );
 
         $this->sconcurCollection->insertMany(
-            $context,
-            [
+            context: $context,
+            documents: [
                 [
+                    uniqid() => uniqid(),
                     uniqid() => uniqid(),
                 ],
                 [
                     $this->fieldName => $dateTime,
+                    uniqid()         => uniqid(),
                 ],
             ]
         );
 
-        $result = $this->sconcurCollection->findOne($context, [$this->fieldName => $dateTime]);
+        $result = $this->sconcurCollection->findOne(
+            context: $context,
+            filter: [
+                $this->fieldName => $dateTime,
+            ],
+            protection: [
+                $this->fieldName => 1,
+            ]
+        );
 
         self::assertFalse(
             is_null($result)
         );
 
         self::assertArrayHasKey(
-            $this->fieldName,
+            '_id',
+            $result
+        );
+
+        self::assertCount(
+            2,
             $result
         );
 

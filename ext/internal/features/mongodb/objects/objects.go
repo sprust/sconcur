@@ -10,13 +10,14 @@ type Payload struct {
 }
 
 type UpdateOneParams struct {
-	Filter   string `json:"f"`
-	Update   string `json:"u"`
-	OpUpsert bool   `json:"ou"`
+	Filter string `json:"f"`
+	Update string `json:"u"`
+	Upsert bool   `json:"ou"`
 }
 
 type FindOneParams struct {
-	Filter string `json:"f"`
+	Filter     string `json:"f"`
+	Protection string `json:"op"`
 }
 
 type AggregateParams struct {
