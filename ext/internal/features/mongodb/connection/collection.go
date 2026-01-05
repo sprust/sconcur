@@ -6,10 +6,12 @@ import (
 	"errors"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
-	"sconcur/internal/features/mongodb/helpers"
 	"sconcur/internal/features/mongodb/objects"
+	"sconcur/internal/features/mongodb/serializer"
 	"sconcur/internal/features/mongodb/stateful/aggregate_stateful"
+	"sconcur/internal/helpers"
 	"strconv"
+	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -37,7 +39,7 @@ func (c *Collection) InsertOne(
 	message *dto.Message,
 	payload *objects.Payload,
 ) *dto.Result {
-	doc, err := helpers.UnmarshalDocument(payload.Data)
+	doc, err := serializer.UnmarshalDocument(payload.Data)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -46,7 +48,9 @@ func (c *Collection) InsertOne(
 		)
 	}
 
+	start := time.Now()
 	result, err := c.mCollection.InsertOne(ctx, doc)
+	executionMs := helpers.CalcExecutionMs(start)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -55,7 +59,7 @@ func (c *Collection) InsertOne(
 		)
 	}
 
-	serializedResult, err := helpers.MarshalDocument(result)
+	serializedResult, err := serializer.MarshalDocument(result)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -64,7 +68,7 @@ func (c *Collection) InsertOne(
 		)
 	}
 
-	return dto.NewSuccessResult(message, serializedResult)
+	return dto.NewSuccessResult(message, serializedResult, executionMs)
 }
 
 func (c *Collection) BulkWrite(
@@ -72,7 +76,7 @@ func (c *Collection) BulkWrite(
 	message *dto.Message,
 	payload *objects.Payload,
 ) *dto.Result {
-	models, err := helpers.UnmarshalBulkWriteModels(payload.Data)
+	models, err := serializer.UnmarshalBulkWriteModels(payload.Data)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -81,7 +85,9 @@ func (c *Collection) BulkWrite(
 		)
 	}
 
+	start := time.Now()
 	result, err := c.mCollection.BulkWrite(ctx, models)
+	executionMs := helpers.CalcExecutionMs(start)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -90,7 +96,7 @@ func (c *Collection) BulkWrite(
 		)
 	}
 
-	serializedResult, err := helpers.MarshalDocument(result)
+	serializedResult, err := serializer.MarshalDocument(result)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -99,7 +105,7 @@ func (c *Collection) BulkWrite(
 		)
 	}
 
-	return dto.NewSuccessResult(message, serializedResult)
+	return dto.NewSuccessResult(message, serializedResult, executionMs)
 }
 
 func (c *Collection) Aggregate(
@@ -118,7 +124,7 @@ func (c *Collection) Aggregate(
 		)
 	}
 
-	pipeline, err := helpers.UnmarshalDocument(params.Pipeline)
+	pipeline, err := serializer.UnmarshalDocument(params.Pipeline)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -171,7 +177,7 @@ func (c *Collection) InsertMany(
 	message *dto.Message,
 	payload *objects.Payload,
 ) *dto.Result {
-	docs, err := helpers.UnmarshalDocuments(payload.Data)
+	docs, err := serializer.UnmarshalDocuments(payload.Data)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -180,7 +186,9 @@ func (c *Collection) InsertMany(
 		)
 	}
 
+	start := time.Now()
 	result, err := c.mCollection.InsertMany(ctx, docs)
+	executionMs := helpers.CalcExecutionMs(start)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -189,7 +197,7 @@ func (c *Collection) InsertMany(
 		)
 	}
 
-	serializedResult, err := helpers.MarshalDocument(result)
+	serializedResult, err := serializer.MarshalDocument(result)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -198,7 +206,7 @@ func (c *Collection) InsertMany(
 		)
 	}
 
-	return dto.NewSuccessResult(message, serializedResult)
+	return dto.NewSuccessResult(message, serializedResult, executionMs)
 }
 
 func (c *Collection) CountDocuments(
@@ -206,7 +214,7 @@ func (c *Collection) CountDocuments(
 	message *dto.Message,
 	payload *objects.Payload,
 ) *dto.Result {
-	filter, err := helpers.UnmarshalDocument(payload.Data)
+	filter, err := serializer.UnmarshalDocument(payload.Data)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -215,7 +223,9 @@ func (c *Collection) CountDocuments(
 		)
 	}
 
+	start := time.Now()
 	result, err := c.mCollection.CountDocuments(ctx, filter)
+	executionMs := helpers.CalcExecutionMs(start)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -224,7 +234,7 @@ func (c *Collection) CountDocuments(
 		)
 	}
 
-	return dto.NewSuccessResult(message, strconv.FormatInt(result, 10))
+	return dto.NewSuccessResult(message, strconv.FormatInt(result, 10), executionMs)
 }
 
 func (c *Collection) UpdateOne(
@@ -243,7 +253,7 @@ func (c *Collection) UpdateOne(
 		)
 	}
 
-	filter, err := helpers.UnmarshalDocument(params.Filter)
+	filter, err := serializer.UnmarshalDocument(params.Filter)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -252,7 +262,7 @@ func (c *Collection) UpdateOne(
 		)
 	}
 
-	update, err := helpers.UnmarshalDocument(params.Update)
+	update, err := serializer.UnmarshalDocument(params.Update)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -267,7 +277,9 @@ func (c *Collection) UpdateOne(
 		opts = options.Update().SetUpsert(true)
 	}
 
+	start := time.Now()
 	result, err := c.mCollection.UpdateOne(ctx, filter, update, opts)
+	executionMs := helpers.CalcExecutionMs(start)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -276,7 +288,7 @@ func (c *Collection) UpdateOne(
 		)
 	}
 
-	serializedResult, err := helpers.MarshalDocument(result)
+	serializedResult, err := serializer.MarshalDocument(result)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -285,7 +297,7 @@ func (c *Collection) UpdateOne(
 		)
 	}
 
-	return dto.NewSuccessResult(message, serializedResult)
+	return dto.NewSuccessResult(message, serializedResult, executionMs)
 }
 
 func (c *Collection) FindOne(
@@ -304,7 +316,7 @@ func (c *Collection) FindOne(
 		)
 	}
 
-	filter, err := helpers.UnmarshalDocument(params.Filter)
+	filter, err := serializer.UnmarshalDocument(params.Filter)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -316,7 +328,7 @@ func (c *Collection) FindOne(
 	var opts *options.FindOneOptions
 
 	if params.Protection != "" {
-		protection, err := helpers.UnmarshalDocument(params.Protection)
+		protection, err := serializer.UnmarshalDocument(params.Protection)
 
 		if err != nil {
 			return dto.NewErrorResult(
@@ -328,13 +340,15 @@ func (c *Collection) FindOne(
 		opts = options.FindOne().SetProjection(protection)
 	}
 
+	start := time.Now()
 	result := c.mCollection.FindOne(ctx, filter, opts)
+	executionMs := helpers.CalcExecutionMs(start)
 
 	err = result.Err()
 
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
-			serializedResult, marshalErr := helpers.MarshalDocument(bson.D{})
+			serializedResult, marshalErr := serializer.MarshalDocument(bson.D{})
 
 			if marshalErr != nil {
 				return dto.NewErrorResult(
@@ -343,7 +357,7 @@ func (c *Collection) FindOne(
 				)
 			}
 
-			return dto.NewSuccessResult(message, serializedResult)
+			return dto.NewSuccessResult(message, serializedResult, executionMs)
 		}
 
 		return dto.NewErrorResult(
@@ -361,7 +375,7 @@ func (c *Collection) FindOne(
 		)
 	}
 
-	serializedResult, err := helpers.MarshalDocument(raw)
+	serializedResult, err := serializer.MarshalDocument(raw)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -370,7 +384,7 @@ func (c *Collection) FindOne(
 		)
 	}
 
-	return dto.NewSuccessResult(message, serializedResult)
+	return dto.NewSuccessResult(message, serializedResult, executionMs)
 }
 
 func (c *Collection) CreateIndex(
@@ -409,7 +423,9 @@ func (c *Collection) CreateIndex(
 		Options: &opts,
 	}
 
+	start := time.Now()
 	result, err := c.mCollection.Indexes().CreateOne(ctx, model)
+	executionMs := helpers.CalcExecutionMs(start)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -418,7 +434,7 @@ func (c *Collection) CreateIndex(
 		)
 	}
 
-	return dto.NewSuccessResult(message, result)
+	return dto.NewSuccessResult(message, result, executionMs)
 }
 
 func (c *Collection) DeleteOne(
@@ -437,7 +453,7 @@ func (c *Collection) DeleteOne(
 		)
 	}
 
-	filter, err := helpers.UnmarshalDocument(params.Filter)
+	filter, err := serializer.UnmarshalDocument(params.Filter)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -446,7 +462,9 @@ func (c *Collection) DeleteOne(
 		)
 	}
 
+	start := time.Now()
 	result, err := c.mCollection.DeleteOne(ctx, filter)
+	executionMs := helpers.CalcExecutionMs(start)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -455,7 +473,7 @@ func (c *Collection) DeleteOne(
 		)
 	}
 
-	serializedResult, err := helpers.MarshalDocument(result)
+	serializedResult, err := serializer.MarshalDocument(result)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -464,7 +482,7 @@ func (c *Collection) DeleteOne(
 		)
 	}
 
-	return dto.NewSuccessResult(message, serializedResult)
+	return dto.NewSuccessResult(message, serializedResult, executionMs)
 }
 
 func (c *Collection) DeleteMany(
@@ -483,7 +501,7 @@ func (c *Collection) DeleteMany(
 		)
 	}
 
-	filter, err := helpers.UnmarshalDocument(params.Filter)
+	filter, err := serializer.UnmarshalDocument(params.Filter)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -492,7 +510,9 @@ func (c *Collection) DeleteMany(
 		)
 	}
 
+	start := time.Now()
 	result, err := c.mCollection.DeleteMany(ctx, filter)
+	executionMs := helpers.CalcExecutionMs(start)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -501,7 +521,7 @@ func (c *Collection) DeleteMany(
 		)
 	}
 
-	serializedResult, err := helpers.MarshalDocument(result)
+	serializedResult, err := serializer.MarshalDocument(result)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -510,5 +530,5 @@ func (c *Collection) DeleteMany(
 		)
 	}
 
-	return dto.NewSuccessResult(message, serializedResult)
+	return dto.NewSuccessResult(message, serializedResult, executionMs)
 }

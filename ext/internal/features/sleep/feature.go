@@ -6,6 +6,7 @@ import (
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
 	"sconcur/internal/features/sleep/params"
+	"sconcur/internal/helpers"
 	"sconcur/internal/tasks"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ func Get() *SleepFeature {
 }
 
 func (s *SleepFeature) Handle(task *tasks.Task) {
+	startTime := time.Now()
 	message := task.GetMessage()
 
 	var payload params.SleepPayload
@@ -68,7 +70,7 @@ func (s *SleepFeature) Handle(task *tasks.Task) {
 		)
 	case <-time.After(time.Duration(payload.Milliseconds) * time.Millisecond):
 		task.AddResult(
-			dto.NewSuccessResult(message, ""),
+			dto.NewSuccessResult(message, "", helpers.CalcExecutionMs(startTime)),
 		)
 	}
 }

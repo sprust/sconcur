@@ -4,7 +4,9 @@ import (
 	"context"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
-	"sconcur/internal/features/mongodb/helpers"
+	"sconcur/internal/features/mongodb/serializer"
+	"sconcur/internal/helpers"
+	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -19,6 +21,7 @@ type AggregateState struct {
 	resultKey   string
 	errFactory  *errs.Factory
 	cursor      *mongo.Cursor
+	startTime   time.Time
 }
 
 func NewAggregateState(
@@ -38,11 +41,13 @@ func NewAggregateState(
 		batchSize:   batchSize,
 		resultKey:   resultKey,
 		errFactory:  errFactory,
+		startTime:   time.Now(),
 	}
 }
 
 func (a *AggregateState) Next() *dto.Result {
 	if a.cursor == nil {
+		a.startTime = time.Now()
 		cursor, err := a.mCollection.Aggregate(a.ctx, a.pipeline)
 
 		if err != nil {
@@ -70,7 +75,7 @@ func (a *AggregateState) Next() *dto.Result {
 		items = append(items, a.cursor.Current)
 
 		if len(items) == a.batchSize {
-			response, err := helpers.MarshalDocument(
+			response, err := serializer.MarshalDocument(
 				bson.D{
 					{Key: a.resultKey, Value: items},
 				},
@@ -83,11 +88,11 @@ func (a *AggregateState) Next() *dto.Result {
 				)
 			}
 
-			return dto.NewSuccessResultWithNext(a.message, response)
+			return dto.NewSuccessResultWithNext(a.message, response, a.calcExecutionMs())
 		}
 	}
 
-	response, err := helpers.MarshalDocument(
+	response, err := serializer.MarshalDocument(
 		bson.D{
 			{Key: a.resultKey, Value: items},
 		},
@@ -100,5 +105,9 @@ func (a *AggregateState) Next() *dto.Result {
 		)
 	}
 
-	return dto.NewSuccessResult(a.message, response)
+	return dto.NewSuccessResult(a.message, response, a.calcExecutionMs())
+}
+
+func (a *AggregateState) calcExecutionMs() int {
+	return helpers.CalcExecutionMs(a.startTime)
 }
