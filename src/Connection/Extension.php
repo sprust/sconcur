@@ -51,6 +51,8 @@ class Extension
 
     public function wait(Context $context, string $flowKey, bool $isAsync): TaskResultDto
     {
+        $start = microtime(true);
+
         $response = wait($flowKey, $context->getRemainMs());
 
         if (str_starts_with($response, 'error:')) {
@@ -86,6 +88,8 @@ class Extension
                 isError: $responseData['er'],
                 payload: $responseData['pl'],
                 hasNext: $responseData['hn'],
+                executionMs: $responseData['ems'],
+                totalExecutionMs: (int) ((microtime(true) - $start) * 1000),
             );
         } catch (Throwable $exception) {
             throw new UnexpectedResponseFormatException(
