@@ -16,6 +16,10 @@ class MongodbDropTest extends BaseTestCase
 
         $collectionName = 'drop';
 
+        TestMongodbResolver::getDriverTestDatabase()->dropCollection($collectionName);
+
+        self::assertCollectionCount($collectionName, 0);
+
         $sconcurCollection = TestMongodbResolver::getSconcurTestCollection($collectionName);
 
         $sconcurCollection->insertOne(
