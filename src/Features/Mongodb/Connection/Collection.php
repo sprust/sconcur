@@ -191,64 +191,32 @@ readonly class Collection
     }
 
     /**
-     * @param array<int, mixed>    $filter
+     * @param array<string, mixed> $filter
      * @param array<string, mixed> $update
-     * @param array{
-     *     upsert?: bool,
-     * } $options
      */
-    public function updateOne(Context $context, array $filter, array $update, array $options = []): UpdateResult
+    public function updateOne(Context $context, array $filter, array $update, bool $upsert = false): UpdateResult
     {
-        $serialized = DocumentSerializer::serialize([
-            'f'  => DocumentSerializer::serialize($filter),
-            'u'  => DocumentSerializer::serialize($update),
-            'ou' => $options['upsert'] ?? false,
-        ]);
-
-        $taskResult = $this->exec(
+        return $this->update(
             context: $context,
-            command: CommandEnum::UpdateOne,
-            payload: $serialized,
-        );
-
-        $docResult = DocumentSerializer::unserialize($taskResult->payload);
-
-        return new UpdateResult(
-            matchedCount: (int) $docResult['matchedcount'],
-            modifiedCount: (int) $docResult['modifiedcount'],
-            upsertedCount: (int) $docResult['upsertedcount'],
-            upsertedId: $docResult['upsertedid'],
+            isMany: false,
+            filter: $filter,
+            update: $update,
+            upsert: $upsert,
         );
     }
 
     /**
-     * @param array<int, mixed>    $filter
+     * @param array<string, mixed> $filter
      * @param array<string, mixed> $update
-     * @param array{
-     *     upsert?: bool,
-     * } $options
      */
-    public function updateMany(Context $context, array $filter, array $update, array $options = []): UpdateResult
+    public function updateMany(Context $context, array $filter, array $update, bool $upsert = false): UpdateResult
     {
-        $serialized = DocumentSerializer::serialize([
-            'f'  => DocumentSerializer::serialize($filter),
-            'u'  => DocumentSerializer::serialize($update),
-            'ou' => $options['upsert'] ?? false,
-        ]);
-
-        $taskResult = $this->exec(
+        return $this->update(
             context: $context,
-            command: CommandEnum::UpdateMany,
-            payload: $serialized,
-        );
-
-        $docResult = DocumentSerializer::unserialize($taskResult->payload);
-
-        return new UpdateResult(
-            matchedCount: (int) $docResult['matchedcount'],
-            modifiedCount: (int) $docResult['modifiedcount'],
-            upsertedCount: (int) $docResult['upsertedcount'],
-            upsertedId: $docResult['upsertedid'],
+            isMany: true,
+            filter: $filter,
+            update: $update,
+            upsert: $upsert,
         );
     }
 
@@ -365,6 +333,39 @@ readonly class Collection
                 command: $command,
                 data: $payload,
             )
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $filter
+     * @param array<string, mixed> $update
+     */
+    protected function update(
+        Context $context,
+        bool $isMany,
+        array $filter,
+        array $update,
+        bool $upsert = false
+    ): UpdateResult {
+        $serialized = DocumentSerializer::serialize([
+            'f'  => DocumentSerializer::serialize($filter),
+            'u'  => DocumentSerializer::serialize($update),
+            'ou' => $upsert,
+        ]);
+
+        $taskResult = $this->exec(
+            context: $context,
+            command: $isMany ? CommandEnum::UpdateMany : CommandEnum::UpdateOne,
+            payload: $serialized,
+        );
+
+        $docResult = DocumentSerializer::unserialize($taskResult->payload);
+
+        return new UpdateResult(
+            matchedCount: (int) $docResult['matchedcount'],
+            modifiedCount: (int) $docResult['modifiedcount'],
+            upsertedCount: (int) $docResult['upsertedcount'],
+            upsertedId: $docResult['upsertedid'],
         );
     }
 

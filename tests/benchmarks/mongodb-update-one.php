@@ -39,7 +39,7 @@ $benchmarker->run(
             context: $context,
             filter: $sconcurDate['filter'],
             update: $sconcurDate['update'],
-            options: $sconcurDate['options'],
+            upsert: $sconcurDate['upsert'] ?? false,
         )->modifiedCount;
     },
     asyncCallback: static function (Context $context) use ($sconcurCollection, $sconcurDate) {
@@ -47,7 +47,7 @@ $benchmarker->run(
             context: $context,
             filter: $sconcurDate['filter'],
             update: $sconcurDate['update'],
-            options: $sconcurDate['options'],
+            upsert: $sconcurDate['upsert'] ?? false,
         )->modifiedCount;
     }
 );

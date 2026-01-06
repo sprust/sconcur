@@ -4,6 +4,7 @@ use SConcur\Entities\Context;
 use SConcur\Tests\Impl\TestApplication;
 use SConcur\WaitGroup;
 
+error_reporting(E_ALL);
 ini_set('memory_limit', '1024M');
 
 require_once __DIR__ . '/../../vendor/autoload.php';
