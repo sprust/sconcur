@@ -83,9 +83,6 @@ bench-mongodb-bulkWrite:
 bench-mongodb-aggregate:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-aggregate.php ${c}
 
-bench-mongodb-aggregate-endless:
-	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-aggregate-endless.php ${c}
-
 bench-mongodb-insertMany:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-insert-many.php ${c}
 
@@ -106,3 +103,9 @@ bench-mongodb-deleteOne:
 
 bench-mongodb-updateMany:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-update-many.php ${c}
+
+mem-leak-endless-add:
+	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/mem-leak/endless-add.php ${c}
+
+mem-leak-endless-break:
+	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/mem-leak/endless-break.php ${c}
