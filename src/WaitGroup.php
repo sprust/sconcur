@@ -105,70 +105,78 @@ class WaitGroup
      */
     public function iterate(): Generator
     {
-        $syncResultKeys = array_keys($this->syncResults);
+        // TODO: union syncResults and fibers handling
 
-        foreach ($syncResultKeys as $syncResultKey) {
-            $syncResult = $this->syncResults[$syncResultKey];
+        while (count($this->syncResults) > 0) {
+            $syncResultKeys = array_keys($this->syncResults);
 
-            unset($this->syncResults[$syncResultKey]);
+            foreach ($syncResultKeys as $syncResultKey) {
+                $syncResult = $this->syncResults[$syncResultKey];
 
-            yield $syncResultKey => $syncResult;
+                unset($this->syncResults[$syncResultKey]);
+
+                yield $syncResultKey => $syncResult;
+            }
         }
 
-        while (count($this->fibers) > 0) {
-            $taskResult = $this->flow->wait();
+        try {
+            while (count($this->fibers) > 0) {
+                $taskResult = $this->flow->wait();
 
-            $taskKey = $taskResult->key;
+                $taskKey = $taskResult->key;
 
-            $fiber = $this->flow->getFiberByTaskKey($taskKey);
+                $fiber = $this->flow->getFiberByTaskKey($taskKey);
 
-            if (!$fiber) {
-                throw new LogicException(
-                    message: "Fiber not found by task key [$taskKey]"
-                );
+                if (!$fiber) {
+                    throw new LogicException(
+                        message: "Fiber not found by task key [$taskKey]"
+                    );
+                }
+
+                if (!$fiber->isSuspended()) {
+                    throw new LogicException(
+                        message: "Fiber with task key [$taskKey] is not suspended"
+                    );
+                }
+
+                $fiberId = spl_object_id($fiber);
+
+                if (!array_key_exists($fiberId, $this->fibers)) {
+                    throw new LogicException(
+                        message: "Fiber not found by fiber id [$fiberId]"
+                    );
+                }
+
+                if (!array_key_exists($fiberId, $this->fiberCallbackKeys)) {
+                    throw new LogicException(
+                        message: "Fiber callback key not found by fiber id [$fiberId]"
+                    );
+                }
+
+                $fiber->resume($taskResult);
+
+                if ($fiber->isTerminated()) {
+                    $callbackResult = $fiber->getReturn();
+
+                    State::unRegisterFiber($fiber);
+
+                    unset($this->fibers[$fiberId]);
+
+                    $callbackKey = $this->fiberCallbackKeys[$fiberId];
+
+                    unset($this->fiberCallbackKeys[$fiberId]);
+
+                    $this->flow->deleteFiberByTaskKey($taskKey);
+
+                    yield $callbackKey => $callbackResult;
+                }
             }
-
-            if (!$fiber->isSuspended()) {
-                throw new LogicException(
-                    message: "Fiber with task key [$taskKey] is not suspended"
-                );
-            }
-
-            $fiberId = spl_object_id($fiber);
-
-            if (!array_key_exists($fiberId, $this->fibers)) {
-                throw new LogicException(
-                    message: "Fiber not found by fiber id [$fiberId]"
-                );
-            }
-
-            if (!array_key_exists($fiberId, $this->fiberCallbackKeys)) {
-                throw new LogicException(
-                    message: "Fiber callback key not found by fiber id [$fiberId]"
-                );
-            }
-
-            $fiber->resume($taskResult);
-
-            if ($fiber->isTerminated()) {
-                $callbackResult = $fiber->getReturn();
-
-                State::unRegisterFiber($fiber);
-
-                unset($this->fibers[$fiberId]);
-
-                $callbackKey = $this->fiberCallbackKeys[$fiberId];
-
-                unset($this->fiberCallbackKeys[$fiberId]);
-
-                $this->flow->deleteFiberByTaskKey($taskKey);
-
-                yield $callbackKey => $callbackResult;
-            }
+        } finally {
+            $this->stop();
         }
     }
 
-    public function __destruct()
+    public function stop(): void
     {
         $keys = array_keys($this->fibers);
 
@@ -180,6 +188,14 @@ class WaitGroup
             unset($this->fibers[$key]);
         }
 
+        $this->fiberCallbackKeys = [];
+        $this->syncResults       = [];
+
         $this->flow->stop();
+    }
+
+    public function __destruct()
+    {
+        $this->stop();
     }
 }

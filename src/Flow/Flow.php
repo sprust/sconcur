@@ -88,6 +88,8 @@ class Flow
     public function stop(): void
     {
         Extension::get()->stopFlow($this->key);
+
+        $this->fibersKeyByTaskKeys = [];
     }
 
     protected function checkResult(TaskResultDto $result): TaskResultDto
