@@ -160,6 +160,14 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 				&payload,
 			),
 		)
+	case payload.Command == 12:
+		task.AddResult(
+			collection.Drop(
+				ctx,
+				message,
+				&payload,
+			),
+		)
 	default:
 		task.AddResult(
 			dto.NewErrorResult(

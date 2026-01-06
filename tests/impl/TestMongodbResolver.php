@@ -19,10 +19,15 @@ class TestMongodbResolver
 
     protected static string $objectId = '6919e3d1a3673d3f4d9137a3';
 
-    public static function getDriverTestCollection(string $collectionName): \MongoDB\Collection
+    public static function getDriverTestDatabase(): \MongoDB\Database
     {
         return new \MongoDB\Client(static::getUri())
-            ->selectDatabase(static::$testDatabaseName)
+            ->selectDatabase(static::$testDatabaseName);
+    }
+
+    public static function getDriverTestCollection(string $collectionName): \MongoDB\Collection
+    {
+        return self::getDriverTestDatabase()
             ->selectCollection($collectionName);
     }
 

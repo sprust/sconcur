@@ -595,3 +595,24 @@ func (c *Collection) UpdateMany(
 
 	return dto.NewSuccessResult(message, serializedResult, executionMs)
 }
+
+func (c *Collection) Drop(
+	ctx context.Context,
+	message *dto.Message,
+	_ *objects.Payload,
+) *dto.Result {
+	start := time.Now()
+
+	err := c.mCollection.Drop(ctx)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("drop error", err),
+		)
+	}
+
+	executionMs := helpers.CalcExecutionMs(start)
+
+	return dto.NewSuccessResult(message, "", executionMs)
+}

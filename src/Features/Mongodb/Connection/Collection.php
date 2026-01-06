@@ -321,6 +321,15 @@ readonly class Collection
         );
     }
 
+    public function drop(Context $context): void
+    {
+        $this->exec(
+            context: $context,
+            command: CommandEnum::Drop,
+            payload: '{}',
+        );
+    }
+
     protected function exec(
         Context $context,
         CommandEnum $command,

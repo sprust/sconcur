@@ -15,4 +15,5 @@ enum CommandEnum: int
     case DeleteOne      = 9;
     case DeleteMany     = 10;
     case UpdateMany     = 11;
+    case Drop           = 12;
 }
