@@ -9,7 +9,7 @@ type Payload struct {
 	Data            string `json:"dt"`
 }
 
-type UpdateOneParams struct {
+type UpdateParams struct {
 	Filter string `json:"f"`
 	Update string `json:"u"`
 	Upsert bool   `json:"ou"`

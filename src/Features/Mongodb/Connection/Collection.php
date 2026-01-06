@@ -222,6 +222,37 @@ readonly class Collection
     }
 
     /**
+     * @param array<int, mixed>    $filter
+     * @param array<string, mixed> $update
+     * @param array{
+     *     upsert?: bool,
+     * } $options
+     */
+    public function updateMany(Context $context, array $filter, array $update, array $options = []): UpdateResult
+    {
+        $serialized = DocumentSerializer::serialize([
+            'f'  => DocumentSerializer::serialize($filter),
+            'u'  => DocumentSerializer::serialize($update),
+            'ou' => $options['upsert'] ?? false,
+        ]);
+
+        $taskResult = $this->exec(
+            context: $context,
+            command: CommandEnum::UpdateMany,
+            payload: $serialized,
+        );
+
+        $docResult = DocumentSerializer::unserialize($taskResult->payload);
+
+        return new UpdateResult(
+            matchedCount: (int) $docResult['matchedcount'],
+            modifiedCount: (int) $docResult['modifiedcount'],
+            upsertedCount: (int) $docResult['upsertedcount'],
+            upsertedId: $docResult['upsertedid'],
+        );
+    }
+
+    /**
      * @param array<string, mixed> $filter
      * @param array<string, mixed> $projection
      *

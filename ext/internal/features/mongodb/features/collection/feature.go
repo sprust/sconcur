@@ -152,6 +152,14 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 				&payload,
 			),
 		)
+	case payload.Command == 11:
+		task.AddResult(
+			collection.UpdateMany(
+				ctx,
+				message,
+				&payload,
+			),
+		)
 	default:
 		task.AddResult(
 			dto.NewErrorResult(

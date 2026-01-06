@@ -242,7 +242,7 @@ func (c *Collection) UpdateOne(
 	message *dto.Message,
 	payload *objects.Payload,
 ) *dto.Result {
-	var params objects.UpdateOneParams
+	var params objects.UpdateParams
 
 	err := json.Unmarshal([]byte(payload.Data), &params)
 
@@ -527,6 +527,69 @@ func (c *Collection) DeleteMany(
 		return dto.NewErrorResult(
 			message,
 			errFactory.ByErr("marshal deleteMany result error", err),
+		)
+	}
+
+	return dto.NewSuccessResult(message, serializedResult, executionMs)
+}
+
+func (c *Collection) UpdateMany(
+	ctx context.Context,
+	message *dto.Message,
+	payload *objects.Payload,
+) *dto.Result {
+	var params objects.UpdateParams
+
+	err := json.Unmarshal([]byte(payload.Data), &params)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse updateMany params", err),
+		)
+	}
+
+	filter, err := serializer.UnmarshalDocument(params.Filter)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse updateMany filter", err),
+		)
+	}
+
+	update, err := serializer.UnmarshalDocument(params.Update)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse updateMany update", err),
+		)
+	}
+
+	var opts *options.UpdateOptions
+
+	if params.Upsert {
+		opts = options.Update().SetUpsert(true)
+	}
+
+	start := time.Now()
+	result, err := c.mCollection.UpdateMany(ctx, filter, update, opts)
+	executionMs := helpers.CalcExecutionMs(start)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("updateMany error", err),
+		)
+	}
+
+	serializedResult, err := serializer.MarshalDocument(result)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("marshal updateMany result error", err),
 		)
 	}
 
