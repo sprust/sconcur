@@ -83,6 +83,9 @@ bench-mongodb-bulkWrite:
 bench-mongodb-aggregate:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-aggregate.php ${c}
 
+bench-mongodb-aggregate-endless:
+	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-aggregate-endless.php ${c}
+
 bench-mongodb-insertMany:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-insert-many.php ${c}
 
