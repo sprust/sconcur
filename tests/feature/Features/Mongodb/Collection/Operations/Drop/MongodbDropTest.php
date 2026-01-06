@@ -23,7 +23,7 @@ class MongodbDropTest extends BaseTestCase
             document: [uniqid() => uniqid()]
         );
 
-        self::assertCollectionNames($collectionName, 1);
+        self::assertCollectionCount($collectionName, 1);
 
         self::assertEquals(
             1,
@@ -32,10 +32,10 @@ class MongodbDropTest extends BaseTestCase
 
         $sconcurCollection->drop($context);
 
-        self::assertCollectionNames($collectionName, 0);
+        self::assertCollectionCount($collectionName, 0);
     }
 
-    protected static function assertCollectionNames(string $collectionName, int $expectedCount): void
+    protected static function assertCollectionCount(string $collectionName, int $expectedCount): void
     {
         self::assertEquals(
             $expectedCount,
