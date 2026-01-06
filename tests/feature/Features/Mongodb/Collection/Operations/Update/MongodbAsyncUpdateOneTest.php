@@ -7,12 +7,11 @@ namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Update;
 use SConcur\Entities\Context;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
 
-class MongodbAsyncUpdateManyTest extends BaseMongodbAsyncTestCase
+class MongodbAsyncUpdateOneTest extends BaseMongodbAsyncTestCase
 {
     protected string $fieldName;
 
     protected int $documentsCount;
-    protected int $insertedDocumentsCount;
 
     protected function setUp(): void
     {
@@ -20,15 +19,14 @@ class MongodbAsyncUpdateManyTest extends BaseMongodbAsyncTestCase
 
         $this->fieldName = uniqid();
 
-        $this->documentsCount         = 10;
-        $this->insertedDocumentsCount = 0;
+        $this->documentsCount = 10;
 
         $this->seedDocuments();
     }
 
     protected function getCollectionName(): string
     {
-        return 'updateMany';
+        return 'updateOne';
     }
 
     protected function on_1_start(Context $context): void
@@ -59,7 +57,7 @@ class MongodbAsyncUpdateManyTest extends BaseMongodbAsyncTestCase
 
     protected function on_exception(Context $context): void
     {
-        $this->sconcurCollection->updateMany(
+        $this->sconcurCollection->updateOne(
             context: $context,
             filter: [],
             update: [uniqid('$') => [$this->fieldName => $this->sconcurObjectId]]
@@ -73,40 +71,32 @@ class MongodbAsyncUpdateManyTest extends BaseMongodbAsyncTestCase
 
     protected function seedDocuments(): void
     {
-        $context = Context::create(2);
-
-        foreach (range(1, $this->documentsCount) as $index) {
-            $this->sconcurCollection->insertMany(
-                context: $context,
-                documents: array_map(
-                    function () use ($index) {
-                        ++$this->insertedDocumentsCount;
-
-                        return ["e:$index" => $this->sconcurObjectId];
-                    },
-                    range(1, $this->documentsCount)
-                )
-            );
-        }
+        $this->sconcurCollection->insertMany(
+            context: Context::create(2),
+            documents: array_map(
+                fn(int $index) => ["e:$index" => $this->sconcurObjectId],
+                range(1, $this->documentsCount)
+            )
+        );
     }
 
     protected function caseForKey(Context $context, string $key): void
     {
         $field = uniqid();
 
-        $result = $this->sconcurCollection->updateMany(
+        $result = $this->sconcurCollection->updateOne(
             context: $context,
             filter: [$key => $this->sconcurObjectId],
             update: ['$set' => [$field => $this->sconcurObjectId]]
         );
 
         self::assertEquals(
-            $this->documentsCount,
+            1,
             $result->modifiedCount
         );
 
         self::assertEquals(
-            $this->documentsCount,
+            1,
             $this->sconcurCollection->countDocuments(
                 context: $context,
                 filter: [$field => $this->sconcurObjectId]
@@ -118,19 +108,19 @@ class MongodbAsyncUpdateManyTest extends BaseMongodbAsyncTestCase
     {
         $field = uniqid();
 
-        $result = $this->sconcurCollection->updateMany(
+        $result = $this->sconcurCollection->updateOne(
             context: $context,
             filter: [],
             update: ['$set' => [$field => $this->sconcurObjectId]]
         );
 
         self::assertEquals(
-            $this->insertedDocumentsCount,
+            1,
             $result->modifiedCount
         );
 
         self::assertEquals(
-            $this->insertedDocumentsCount,
+            1,
             $this->sconcurCollection->countDocuments(
                 context: $context,
                 filter: [$field => $this->sconcurObjectId]
