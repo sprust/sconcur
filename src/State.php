@@ -26,6 +26,19 @@ class State
         unset(static::$fiberFlows[spl_object_id($fiber)]);
     }
 
+    public static function unRegisterFlow(Flow $flow): void
+    {
+        $fiberIds = array_keys(static::$fiberFlows);
+
+        foreach ($fiberIds as $fiberId) {
+            $registeredFlow = static::$fiberFlows[$fiberId];
+
+            if ($registeredFlow === $flow) {
+                unset(static::$fiberFlows[$fiberId]);
+            }
+        }
+    }
+
     public static function getCurrentFlow(): Flow
     {
         $currentFiber = Fiber::getCurrent();

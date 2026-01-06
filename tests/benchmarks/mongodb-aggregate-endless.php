@@ -6,8 +6,6 @@ use SConcur\Tests\Impl\TestApplication;
 use SConcur\Tests\Impl\TestMongodbResolver;
 use SConcur\WaitGroup;
 
-// TODO: memory leak
-
 ini_set('memory_limit', '8M');
 
 require_once __DIR__ . '/../../vendor/autoload.php';

@@ -155,6 +155,8 @@ class WaitGroup
 
                 $fiber->resume($taskResult);
 
+                $this->flow->deleteFiberByTaskKey($taskKey);
+
                 if ($fiber->isTerminated()) {
                     $callbackResult = $fiber->getReturn();
 
@@ -165,8 +167,6 @@ class WaitGroup
                     $callbackKey = $this->fiberCallbackKeys[$fiberId];
 
                     unset($this->fiberCallbackKeys[$fiberId]);
-
-                    $this->flow->deleteFiberByTaskKey($taskKey);
 
                     yield $callbackKey => $callbackResult;
                 }

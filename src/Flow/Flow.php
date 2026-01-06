@@ -11,12 +11,11 @@ use SConcur\Connection\Extension;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Features\MethodEnum;
+use SConcur\State;
 use Throwable;
 
 class Flow
 {
-    protected static ?Extension $extension = null;
-
     protected static int $flowsCounter = 0;
 
     protected readonly string $key;
@@ -88,6 +87,8 @@ class Flow
     public function stop(): void
     {
         Extension::get()->stopFlow($this->key);
+
+        State::unRegisterFlow($this);
 
         $this->fibersKeyByTaskKeys = [];
     }
