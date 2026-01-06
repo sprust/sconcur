@@ -8,6 +8,7 @@ use SConcur\Exceptions\TaskErrorException;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\WaitGroup;
+use Throwable;
 
 class GeneralTest extends BaseTestCase
 {
@@ -351,6 +352,54 @@ class GeneralTest extends BaseTestCase
         self::assertCount(
             0,
             $results
+        );
+    }
+
+    public function testTryCatch(): void
+    {
+        $events = [
+            'first'  => false,
+            'second' => false,
+        ];
+
+        $callbacks = [
+            function (Context $context) use (&$events) {
+                $this->sleeper->usleep(context: $context, milliseconds: 1);
+
+                $events['first'] = true;
+            },
+            function (Context $context) use (&$events) {
+                try {
+                    $this->sleeper->usleep(context: $context, milliseconds: 1);
+                } catch (Throwable) {
+                    //
+                }
+
+                $events['second'] = true;
+            },
+        ];
+
+        $context = Context::create(timeoutSeconds: 1);
+
+        $waitGroup = WaitGroup::create($context);
+
+        foreach ($callbacks as $callback) {
+            $waitGroup->add(callback: $callback);
+        }
+
+        $resultsCount = $waitGroup->waitAll();
+
+        self::assertEquals(
+            2,
+            $resultsCount
+        );
+
+        self::assertSame(
+            [
+                'first'  => true,
+                'second' => true,
+            ],
+            $events
         );
     }
 
