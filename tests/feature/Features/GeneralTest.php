@@ -362,17 +362,19 @@ class GeneralTest extends BaseTestCase
             'second' => false,
         ];
 
+        $exceptionMessage = null;
+
         $callbacks = [
             function (Context $context) use (&$events) {
                 $this->sleeper->usleep(context: $context, milliseconds: 1);
 
                 $events['first'] = true;
             },
-            function (Context $context) use (&$events) {
+            function (Context $context) use (&$events, &$exceptionMessage) {
                 try {
-                    $this->sleeper->usleep(context: $context, milliseconds: 1);
-                } catch (Throwable) {
-                    //
+                    $this->sleeper->usleep(context: $context, milliseconds: -1);
+                } catch (Throwable $exception) {
+                    $exceptionMessage = $exception->getMessage();
                 }
 
                 $events['second'] = true;
@@ -388,6 +390,10 @@ class GeneralTest extends BaseTestCase
         }
 
         $resultsCount = $waitGroup->waitAll();
+
+        self::assertNotNull(
+            $exceptionMessage
+        );
 
         self::assertEquals(
             2,
