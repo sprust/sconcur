@@ -3,7 +3,6 @@
 namespace SConcur\Tests\Feature\Features;
 
 use Exception;
-use SConcur\Entities\Context;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Feature\BaseTestCase;
@@ -27,51 +26,49 @@ class GeneralTest extends BaseTestCase
         $events = [];
 
         $callbacks = [
-            function (Context $context) use (&$events) {
+            function () use (&$events) {
                 $events[] = '1:start';
 
-                $this->sleeper->usleep(context: $context, milliseconds: 10);
+                $this->sleeper->usleep(milliseconds: 10);
 
                 $events[] = '1:woke';
 
-                $this->sleeper->usleep(context: $context, milliseconds: 30);
+                $this->sleeper->usleep(milliseconds: 30);
 
                 $events[] = '1:finish';
             },
-            function (Context $context) use (&$events) {
+            function () use (&$events) {
                 $events[] = '2:start';
 
-                $this->sleeper->usleep(context: $context, milliseconds: 20);
+                $this->sleeper->usleep(milliseconds: 20);
 
                 // internal flow
                 $callbacks = [
-                    function (Context $context) use (&$events) {
+                    function () use (&$events) {
                         $events[] = '2.1:start';
 
-                        $this->sleeper->usleep(context: $context, milliseconds: 10);
+                        $this->sleeper->usleep(milliseconds: 10);
 
                         $events[] = '2.1:woke';
 
-                        $this->sleeper->usleep(context: $context, milliseconds: 30);
+                        $this->sleeper->usleep(milliseconds: 30);
 
                         $events[] = '2.1:finish';
                     },
-                    function (Context $context) use (&$events) {
+                    function () use (&$events) {
                         $events[] = '2.2:start';
 
-                        $this->sleeper->usleep(context: $context, milliseconds: 20);
+                        $this->sleeper->usleep(milliseconds: 20);
 
                         $events[] = '2.2:woke';
 
-                        $this->sleeper->usleep(context: $context, milliseconds: 40);
+                        $this->sleeper->usleep(milliseconds: 40);
 
                         $events[] = '2.2:finish';
                     },
                 ];
 
-                $context = Context::create(timeoutSeconds: 1);
-
-                $waitGroup = WaitGroup::create($context);
+                $waitGroup = WaitGroup::create();
 
                 foreach ($callbacks as $callback) {
                     $waitGroup->add(callback: $callback);
@@ -87,15 +84,13 @@ class GeneralTest extends BaseTestCase
 
                 $events[] = '2:woke';
 
-                $this->sleeper->usleep(context: $context, milliseconds: 40);
+                $this->sleeper->usleep(milliseconds: 40);
 
                 $events[] = '2:finish';
             },
         ];
 
-        $context = Context::create(timeoutSeconds: 1);
-
-        $waitGroup = WaitGroup::create($context);
+        $waitGroup = WaitGroup::create();
 
         foreach ($callbacks as $callback) {
             $waitGroup->add(callback: $callback);
@@ -141,15 +136,15 @@ class GeneralTest extends BaseTestCase
         $events = [];
 
         $callbacks = [
-            function (Context $context) use (&$events) {
-                $this->sleeper->usleep(context: $context, milliseconds: 10);
+            function () use (&$events) {
+                $this->sleeper->usleep(milliseconds: 10);
 
                 $events[] = '1:finish';
 
                 return '1';
             },
-            function (Context $context) use (&$events) {
-                $this->sleeper->usleep(context: $context, milliseconds: 1);
+            function () use (&$events) {
+                $this->sleeper->usleep(milliseconds: 1);
 
                 $events[] = '2:finish';
 
@@ -157,9 +152,7 @@ class GeneralTest extends BaseTestCase
             },
         ];
 
-        $context = Context::create(timeoutSeconds: 1);
-
-        $waitGroup = WaitGroup::create($context);
+        $waitGroup = WaitGroup::create();
 
         foreach ($callbacks as $callback) {
             $waitGroup->add(callback: $callback);
@@ -190,15 +183,15 @@ class GeneralTest extends BaseTestCase
         $events = [];
 
         $callbacks = [
-            function (Context $context) use (&$events) {
-                $this->sleeper->sleep(context: $context, seconds: 2);
+            function () use (&$events) {
+                $this->sleeper->sleep(seconds: 2);
 
                 $events[] = '1:finish';
 
                 return '1';
             },
-            function (Context $context) use (&$events) {
-                $this->sleeper->usleep(context: $context, milliseconds: 1);
+            function () use (&$events) {
+                $this->sleeper->usleep(milliseconds: 1);
 
                 $events[] = '2:finish';
 
@@ -206,9 +199,7 @@ class GeneralTest extends BaseTestCase
             },
         ];
 
-        $context = Context::create(timeoutSeconds: 1);
-
-        $waitGroup = WaitGroup::create($context);
+        $waitGroup = WaitGroup::create();
 
         foreach ($callbacks as $callback) {
             $waitGroup->add(callback: $callback);
@@ -240,19 +231,17 @@ class GeneralTest extends BaseTestCase
     public function testSyncAsyncMix(): void
     {
         $callbacks = [
-            function (Context $context) {
-                $this->sleeper->usleep(context: $context, milliseconds: 1);
+            function () {
+                $this->sleeper->usleep(milliseconds: 1);
             },
-            function (Context $context) {
-                $this->sleeper->usleep(context: $context, milliseconds: 1);
+            function () {
+                $this->sleeper->usleep(milliseconds: 1);
             },
         ];
 
         $callbacksCount = count($callbacks);
 
-        $context = Context::create(timeoutSeconds: 1);
-
-        $waitGroup = WaitGroup::create($context);
+        $waitGroup = WaitGroup::create();
 
         foreach ($callbacks as $callback) {
             $waitGroup->add(callback: $callback);
@@ -265,7 +254,7 @@ class GeneralTest extends BaseTestCase
         foreach ($generator as $key => $value) {
             $results[$key] = $value;
 
-            $this->sleeper->usleep(context: $context, milliseconds: 1);
+            $this->sleeper->usleep(milliseconds: 1);
         }
 
         self::assertCount(
@@ -277,19 +266,17 @@ class GeneralTest extends BaseTestCase
     public function testWaitAll(): void
     {
         $callbacks = [
-            function (Context $context) {
-                $this->sleeper->usleep(context: $context, milliseconds: 1);
+            function () {
+                $this->sleeper->usleep(milliseconds: 1);
             },
-            function (Context $context) {
-                $this->sleeper->usleep(context: $context, milliseconds: 1);
+            function () {
+                $this->sleeper->usleep(milliseconds: 1);
             },
         ];
 
         $callbacksCount = count($callbacks);
 
-        $context = Context::create(timeoutSeconds: 1);
-
-        $waitGroup = WaitGroup::create($context);
+        $waitGroup = WaitGroup::create();
 
         foreach ($callbacks as $callback) {
             $waitGroup->add(callback: $callback);
@@ -308,19 +295,17 @@ class GeneralTest extends BaseTestCase
         $exceptionMessage = uniqid();
 
         $callbacks = [
-            function (Context $context) {
-                $this->sleeper->sleep(context: $context, seconds: 1);
+            function () {
+                $this->sleeper->sleep(seconds: 1);
             },
-            function (Context $context) use ($exceptionMessage) {
-                $this->sleeper->usleep(context: $context, milliseconds: 1);
+            function () use ($exceptionMessage) {
+                $this->sleeper->usleep(milliseconds: 1);
 
                 throw new Exception($exceptionMessage);
             },
         ];
 
-        $context = Context::create(timeoutSeconds: 1);
-
-        $waitGroup = WaitGroup::create($context);
+        $waitGroup = WaitGroup::create();
 
         foreach ($callbacks as $callback) {
             $waitGroup->add(callback: $callback);
@@ -365,14 +350,14 @@ class GeneralTest extends BaseTestCase
         $exceptionMessage = null;
 
         $callbacks = [
-            function (Context $context) use (&$events) {
-                $this->sleeper->usleep(context: $context, milliseconds: 1);
+            function () use (&$events) {
+                $this->sleeper->usleep(milliseconds: 1);
 
                 $events['first'] = true;
             },
-            function (Context $context) use (&$events, &$exceptionMessage) {
+            function () use (&$events, &$exceptionMessage) {
                 try {
-                    $this->sleeper->usleep(context: $context, milliseconds: -1);
+                    $this->sleeper->usleep(milliseconds: -1);
                 } catch (Throwable $exception) {
                     $exceptionMessage = $exception->getMessage();
                 }
@@ -381,9 +366,7 @@ class GeneralTest extends BaseTestCase
             },
         ];
 
-        $context = Context::create(timeoutSeconds: 1);
-
-        $waitGroup = WaitGroup::create($context);
+        $waitGroup = WaitGroup::create();
 
         foreach ($callbacks as $callback) {
             $waitGroup->add(callback: $callback);
@@ -413,13 +396,11 @@ class GeneralTest extends BaseTestCase
     {
         $exceptionMessage = uniqid();
 
-        $context = Context::create(timeoutSeconds: 1);
+        $waitGroup = WaitGroup::create();
 
-        $waitGroup = WaitGroup::create($context);
-
-        $waitGroup->add(callback: function (Context $context) use (&$exception, $exceptionMessage) {
+        $waitGroup->add(callback: function () use (&$exception, $exceptionMessage) {
             try {
-                $this->sleeper->usleep(context: $context, milliseconds: -1);
+                $this->sleeper->usleep(milliseconds: -1);
             } catch (TaskErrorException $exception) {
                 throw new Exception($exceptionMessage);
             }
@@ -450,17 +431,15 @@ class GeneralTest extends BaseTestCase
             'finish' => 0,
         ];
 
-        $callback = function (Context $context) use (&$events) {
+        $callback = function () use (&$events) {
             ++$events['start'];
 
-            $this->sleeper->usleep(context: $context, milliseconds: 1);
+            $this->sleeper->usleep(milliseconds: 1);
 
             ++$events['finish'];
         };
 
-        $context = Context::create(timeoutSeconds: 1);
-
-        $waitGroup = WaitGroup::create($context);
+        $waitGroup = WaitGroup::create();
 
         $waitGroup->add(callback: $callback);
 

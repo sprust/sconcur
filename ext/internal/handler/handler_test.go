@@ -38,7 +38,7 @@ func TestHandler_Sleep(t *testing.T) {
 		return
 	}
 
-	_, err = h.Wait(flowKey, 1)
+	_, err = h.Wait(flowKey)
 
 	if err == nil {
 		t.Errorf("expected error, got nil")
@@ -46,7 +46,7 @@ func TestHandler_Sleep(t *testing.T) {
 		return
 	}
 
-	_, err = h.Wait(flowKey, -1)
+	_, err = h.Wait(flowKey)
 
 	if err == nil {
 		t.Errorf("expected timeout error at -1 ms, got nil")
@@ -54,7 +54,7 @@ func TestHandler_Sleep(t *testing.T) {
 		return
 	}
 
-	_, err = h.Wait(flowKey, 10)
+	_, err = h.Wait(flowKey)
 
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)

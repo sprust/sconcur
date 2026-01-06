@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Aggregate;
 
-use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\Tests\Impl\TestMongodbResolver;
@@ -23,22 +22,19 @@ class MongodbAggregateTest extends BaseTestCase
 
         $this->sconcurCollection = TestMongodbResolver::getSconcurTestCollection($collectionName);
 
-        $this->seedDocuments(Context::create(1));
+        $this->seedDocuments();
     }
 
     public function testNoIteration(): void
     {
-        $context = Context::create(2);
-
-        $waitGroup = WaitGroup::create($context);
+        $waitGroup = WaitGroup::create();
 
         $results = [];
 
         foreach (range(1, $this->documentsCount) as $ignored) {
             $waitGroup->add(
-                callback: function (Context $context) use (&$results) {
+                callback: function () use (&$results) {
                     $iterator = $this->sconcurCollection->aggregate(
-                        context: $context,
                         pipeline: []
                     );
 
@@ -50,9 +46,8 @@ class MongodbAggregateTest extends BaseTestCase
                 });
 
             $waitGroup->add(
-                callback: function (Context $context) {
+                callback: function () {
                     $this->sconcurCollection->aggregate(
-                        context: $context,
                         pipeline: []
                     );
                 });
@@ -65,14 +60,11 @@ class MongodbAggregateTest extends BaseTestCase
 
     public function testBreakAtMulti(): void
     {
-        $context = Context::create(2);
-
-        $waitGroup = WaitGroup::create($context);
+        $waitGroup = WaitGroup::create();
 
         $waitGroup->add(
-            callback: function (Context $context) {
+            callback: function () {
                 $iterator = $this->sconcurCollection->aggregate(
-                    context: $context,
                     pipeline: [],
                     batchSize: 1
                 );
@@ -81,7 +73,7 @@ class MongodbAggregateTest extends BaseTestCase
                     break;
                 }
 
-                $document = $this->sconcurCollection->findOne($context, []);
+                $document = $this->sconcurCollection->findOne([]);
 
                 self::assertTrue(
                     is_array($document)
@@ -104,16 +96,13 @@ class MongodbAggregateTest extends BaseTestCase
 
     public function testRewind(): void
     {
-        $context = Context::create(2);
-
-        $waitGroup = WaitGroup::create($context);
+        $waitGroup = WaitGroup::create();
 
         $counter = 0;
 
         $waitGroup->add(
-            callback: function (Context $context) use (&$counter) {
+            callback: function () use (&$counter) {
                 $iterator = $this->sconcurCollection->aggregate(
-                    context: $context,
                     pipeline: [],
                     batchSize: 1
                 );
@@ -138,17 +127,15 @@ class MongodbAggregateTest extends BaseTestCase
         );
     }
 
-    private function seedDocuments(Context $context): void
+    private function seedDocuments(): void
     {
         $this->sconcurCollection->deleteMany(
-            context: $context,
             filter: []
         );
 
         $this->documentsCount = 10;
 
         $this->sconcurCollection->insertMany(
-            context: $context,
             documents: array_map(
                 static fn(int $index) => [
                     uniqid() => $index,

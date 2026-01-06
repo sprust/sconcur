@@ -2,7 +2,6 @@
 
 declare(strict_types=1);
 
-use SConcur\Entities\Context;
 use SConcur\Tests\Impl\TestMongodbResolver;
 
 require_once __DIR__ . '/_benchmarker.php';
@@ -28,15 +27,13 @@ $benchmarker->run(
     nativeCallback: static function () use ($driverCollection, $driverOperations) {
         return $driverCollection->bulkWrite($driverOperations);
     },
-    syncCallback: static function (Context $context) use ($sconcurCollection, $sconcurOperations) {
+    syncCallback: static function () use ($sconcurCollection, $sconcurOperations) {
         return $sconcurCollection->bulkWrite(
-            context: $context,
             operations: $sconcurOperations
         );
     },
-    asyncCallback: static function (Context $context) use ($sconcurCollection, $sconcurOperations) {
+    asyncCallback: static function () use ($sconcurCollection, $sconcurOperations) {
         return $sconcurCollection->bulkWrite(
-            context: $context,
             operations: $sconcurOperations
         );
     }

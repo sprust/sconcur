@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Drop;
 
-use SConcur\Entities\Context;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\Tests\Impl\TestMongodbResolver;
 
@@ -12,8 +11,6 @@ class MongodbDropTest extends BaseTestCase
 {
     public function test(): void
     {
-        $context = Context::create(2);
-
         $collectionName = 'drop';
 
         TestMongodbResolver::getDriverTestDatabase()->dropCollection($collectionName);
@@ -23,7 +20,6 @@ class MongodbDropTest extends BaseTestCase
         $sconcurCollection = TestMongodbResolver::getSconcurTestCollection($collectionName);
 
         $sconcurCollection->insertOne(
-            context: $context,
             document: [uniqid() => uniqid()]
         );
 
@@ -31,10 +27,10 @@ class MongodbDropTest extends BaseTestCase
 
         self::assertEquals(
             1,
-            $sconcurCollection->countDocuments($context, []) > 0
+            $sconcurCollection->countDocuments([]) > 0
         );
 
-        $sconcurCollection->drop($context);
+        $sconcurCollection->drop();
 
         self::assertCollectionCount($collectionName, 0);
     }

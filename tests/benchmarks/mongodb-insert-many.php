@@ -2,7 +2,6 @@
 
 declare(strict_types=1);
 
-use SConcur\Entities\Context;
 use SConcur\Tests\Impl\TestMongodbResolver;
 
 require_once __DIR__ . '/_benchmarker.php';
@@ -34,16 +33,14 @@ $benchmarker->run(
     nativeCallback: static function () use ($driverCollection, $driverDocuments) {
         return $driverCollection->insertMany($driverDocuments)->getInsertedCount();
     },
-    syncCallback: static function (Context $context) use ($sconcurCollection, $sconcurDocuments) {
+    syncCallback: static function () use ($sconcurCollection, $sconcurDocuments) {
         return $sconcurCollection->insertMany(
-            context: $context,
-            documents: $sconcurDocuments
+        documents: $sconcurDocuments
         )->insertedCount;
     },
-    asyncCallback: static function (Context $context) use ($sconcurCollection, $sconcurDocuments) {
+    asyncCallback: static function () use ($sconcurCollection, $sconcurDocuments) {
         return $sconcurCollection->insertMany(
-            context: $context,
-            documents: $sconcurDocuments
+        documents: $sconcurDocuments
         )->insertedCount;
     }
 );

@@ -2,7 +2,6 @@
 
 declare(strict_types=1);
 
-use SConcur\Entities\Context;
 use SConcur\Tests\Impl\TestMongodbResolver;
 
 require_once __DIR__ . '/_benchmarker.php';
@@ -34,18 +33,16 @@ $benchmarker->run(
             )
             ->getModifiedCount();
     },
-    syncCallback: static function (Context $context) use ($sconcurCollection, $sconcurDate) {
+    syncCallback: static function () use ($sconcurCollection, $sconcurDate) {
         return $sconcurCollection->updateMany(
-            context: $context,
-            filter: $sconcurDate['filter'],
+        filter: $sconcurDate['filter'],
             update: $sconcurDate['update'],
             upsert: $sconcurDate['upsert'] ?? false,
         )->modifiedCount;
     },
-    asyncCallback: static function (Context $context) use ($sconcurCollection, $sconcurDate) {
+    asyncCallback: static function () use ($sconcurCollection, $sconcurDate) {
         return $sconcurCollection->updateMany(
-            context: $context,
-            filter: $sconcurDate['filter'],
+        filter: $sconcurDate['filter'],
             update: $sconcurDate['update'],
             upsert: $sconcurDate['upsert'] ?? false,
         )->modifiedCount;

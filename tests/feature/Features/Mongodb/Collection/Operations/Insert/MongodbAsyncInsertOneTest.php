@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Insert;
 
-use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
@@ -34,10 +33,9 @@ class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
         return 'insertOne';
     }
 
-    protected function on_1_start(Context $context): void
+    protected function on_1_start(): void
     {
         $insertResult = $this->sconcurCollection->insertOne(
-            context: Context::create(2),
             document: [$this->fieldName => $this->fieldValue]
         );
 
@@ -46,10 +44,9 @@ class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
         );
     }
 
-    protected function on_1_middle(Context $context): void
+    protected function on_1_middle(): void
     {
         $insertResult = $this->sconcurCollection->insertOne(
-            context: Context::create(2),
             document: [$this->fieldName => $this->fieldValue]
         );
 
@@ -58,28 +55,26 @@ class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
         );
     }
 
-    protected function on_2_start(Context $context): void
+    protected function on_2_start(): void
     {
-        $this->on_1_start($context);
+        $this->on_1_start();
     }
 
-    protected function on_2_middle(Context $context): void
+    protected function on_2_middle(): void
     {
-        $this->on_1_middle($context);
+        $this->on_1_middle();
     }
 
-    protected function on_iterate(Context $context): void
+    protected function on_iterate(): void
     {
         $this->sconcurCollection->insertOne(
-            context: Context::create(2),
             document: [$this->fieldName => $this->fieldValue]
         );
     }
 
-    protected function on_exception(Context $context): void
+    protected function on_exception(): void
     {
         $this->sconcurCollection->insertOne(
-            context: Context::create(2),
             document: [[$this->fieldName => $this->fieldValue]]
         );
     }

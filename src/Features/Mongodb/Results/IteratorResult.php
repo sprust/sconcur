@@ -6,7 +6,6 @@ namespace SConcur\Features\Mongodb\Results;
 
 use Iterator;
 use SConcur\Dto\TaskResultDto;
-use SConcur\Entities\Context;
 use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
 use SConcur\Flow\Flow;
@@ -33,7 +32,6 @@ class IteratorResult implements Iterator
     protected bool $isFinished;
 
     public function __construct(
-        protected Context $context,
         protected MethodEnum $method,
         protected string $payload,
         protected MethodEnum $nextMethod,
@@ -62,7 +60,6 @@ class IteratorResult implements Iterator
             }
 
             $taskResult = $this->currentFlow->exec(
-                context: $this->context,
                 method: $this->nextMethod,
                 payload: json_encode([
                     'k' => $this->taskKey,
@@ -93,7 +90,6 @@ class IteratorResult implements Iterator
         $this->currentFlow = State::getCurrentFlow();
 
         $taskResult = $this->currentFlow->exec(
-            context: $this->context,
             method: $this->method,
             payload: $this->payload
         );

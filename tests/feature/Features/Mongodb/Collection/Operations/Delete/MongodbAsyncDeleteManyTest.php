@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Delete;
 
-use SConcur\Entities\Context;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
 
 class MongodbAsyncDeleteManyTest extends BaseMongodbAsyncTestCase
@@ -29,20 +28,19 @@ class MongodbAsyncDeleteManyTest extends BaseMongodbAsyncTestCase
         return 'deleteMany';
     }
 
-    protected function on_1_start(Context $context): void
+    protected function on_1_start(): void
     {
-        $this->insertAndDelete($context);
+        $this->insertAndDelete();
     }
 
-    protected function on_1_middle(Context $context): void
+    protected function on_1_middle(): void
     {
-        $this->insertAndDelete($context);
+        $this->insertAndDelete();
     }
 
-    protected function on_2_start(Context $context): void
+    protected function on_2_start(): void
     {
         $result = $this->sconcurCollection->deleteMany(
-            context: $context,
             filter: [
                 uniqid() => $this->sconcurObjectId,
             ]
@@ -54,19 +52,19 @@ class MongodbAsyncDeleteManyTest extends BaseMongodbAsyncTestCase
         );
     }
 
-    protected function on_2_middle(Context $context): void
+    protected function on_2_middle(): void
     {
-        $this->insertAndDelete($context);
+        $this->insertAndDelete();
     }
 
-    protected function on_iterate(Context $context): void
+    protected function on_iterate(): void
     {
-        $this->insertAndDelete($context);
+        $this->insertAndDelete();
     }
 
-    protected function on_exception(Context $context): void
+    protected function on_exception(): void
     {
-        $this->sconcurCollection->deleteMany($context, ['$set' => 11]);
+        $this->sconcurCollection->deleteMany(['$set' => 11]);
     }
 
     protected function assertResult(array $results): void
@@ -82,7 +80,7 @@ class MongodbAsyncDeleteManyTest extends BaseMongodbAsyncTestCase
         );
     }
 
-    protected function insertAndDelete(Context $context): void
+    protected function insertAndDelete(): void
     {
         $fieldName = uniqid("$this->fieldName-");
 
@@ -91,7 +89,6 @@ class MongodbAsyncDeleteManyTest extends BaseMongodbAsyncTestCase
         ];
 
         $this->sconcurCollection->insertMany(
-            context: $context,
             documents: array_fill(
                 start_index: 0,
                 count: $this->documentsCount,
@@ -100,7 +97,6 @@ class MongodbAsyncDeleteManyTest extends BaseMongodbAsyncTestCase
         );
 
         $this->deletedDocumentsCount += $this->sconcurCollection->deleteMany(
-            context: $context,
             filter: $filter
         )->deletedCount;
     }

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection;
 
-use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\Tests\Impl\TestMongodbResolver;
@@ -78,15 +77,11 @@ abstract class BaseMongodbRangeTestCase extends BaseTestCase
         $firstValue = $values[0];
         $lastValue  = $values[count($values) - 1];
 
-        $context = Context::create(3);
-
         $this->sconcurCollection->insertMany(
-            context: $context,
             documents: $documents
         );
 
         $aggregation = $this->sconcurCollection->aggregate(
-            context: $context,
             pipeline: [
                 [
                     '$match' => [
@@ -106,7 +101,6 @@ abstract class BaseMongodbRangeTestCase extends BaseTestCase
         );
 
         $aggregation = $this->sconcurCollection->aggregate(
-            context: $context,
             pipeline: [
                 [
                     '$match' => [

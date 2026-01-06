@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Delete;
 
-use SConcur\Entities\Context;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
 
 class MongodbAsyncDeleteOneTest extends BaseMongodbAsyncTestCase
@@ -38,20 +37,19 @@ class MongodbAsyncDeleteOneTest extends BaseMongodbAsyncTestCase
         return 'deleteOne';
     }
 
-    protected function on_1_start(Context $context): void
+    protected function on_1_start(): void
     {
-        $this->deleteOne($context);
+        $this->deleteOne();
     }
 
-    protected function on_1_middle(Context $context): void
+    protected function on_1_middle(): void
     {
-        $this->deleteOne($context);
+        $this->deleteOne();
     }
 
-    protected function on_2_start(Context $context): void
+    protected function on_2_start(): void
     {
         $result = $this->sconcurCollection->deleteOne(
-            context: $context,
             filter: [
                 uniqid() => $this->sconcurObjectId,
             ]
@@ -63,19 +61,19 @@ class MongodbAsyncDeleteOneTest extends BaseMongodbAsyncTestCase
         );
     }
 
-    protected function on_2_middle(Context $context): void
+    protected function on_2_middle(): void
     {
-        $this->deleteOne($context);
+        $this->deleteOne();
     }
 
-    protected function on_iterate(Context $context): void
+    protected function on_iterate(): void
     {
-        $this->deleteOne($context);
+        $this->deleteOne();
     }
 
-    protected function on_exception(Context $context): void
+    protected function on_exception(): void
     {
-        $this->sconcurCollection->deleteOne($context, ['$set' => 11]);
+        $this->sconcurCollection->deleteOne(['$set' => 11]);
     }
 
     protected function assertResult(array $results): void
@@ -86,10 +84,9 @@ class MongodbAsyncDeleteOneTest extends BaseMongodbAsyncTestCase
         );
     }
 
-    protected function deleteOne(Context $context): void
+    protected function deleteOne(): void
     {
         $result = $this->sconcurCollection->deleteOne(
-            context: $context,
             filter: [
                 $this->fieldName => $this->sconcurObjectId,
             ]

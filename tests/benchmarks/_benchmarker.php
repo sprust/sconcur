@@ -1,6 +1,5 @@
 <?php
 
-use SConcur\Entities\Context;
 use SConcur\Tests\Impl\TestApplication;
 use SConcur\WaitGroup;
 
@@ -14,14 +13,12 @@ TestApplication::init();
 readonly class Benchmarker
 {
     private int $total;
-    private int $timeout;
     private bool $logProcess;
 
     public function __construct(private string $name)
     {
         $this->total      = (int) ($_SERVER['argv'][1] ?? 5);
-        $this->timeout    = (int) ($_SERVER['argv'][2] ?? 2);
-        $this->logProcess = (bool) ((int) ($_SERVER['argv'][3] ?? 0));
+        $this->logProcess = (bool) ((int) ($_SERVER['argv'][2] ?? 0));
     }
 
     public function isLogProcess(): bool
@@ -39,7 +36,6 @@ readonly class Benchmarker
 
         echo "Benchmarking $this->name...\n";
         echo "Total call:\t$this->total\n";
-        echo "Timeout:\t$this->timeout\n";
 
         /** @var Closure[] $nativeCallbacks */
         $nativeCallbacks = [];
@@ -106,8 +102,6 @@ readonly class Benchmarker
 
             $start = microtime(true);
 
-            $context = Context::create($this->timeout);
-
             $keys = array_keys($syncCallbacks);
 
             foreach ($keys as $key) {
@@ -115,7 +109,7 @@ readonly class Benchmarker
 
                 unset($syncCallbacks[$key]);
 
-                $callback($context);
+                $callback();
 
                 $key = "$this->name: $key";
 
@@ -136,9 +130,7 @@ readonly class Benchmarker
 
             $start = microtime(true);
 
-            $context = Context::create($this->timeout);
-
-            $waitGroup = WaitGroup::create($context);
+            $waitGroup = WaitGroup::create();
 
             $callbackKeys = [];
 

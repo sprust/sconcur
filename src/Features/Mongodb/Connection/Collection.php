@@ -7,7 +7,6 @@ namespace SConcur\Features\Mongodb\Connection;
 use Iterator;
 use RuntimeException;
 use SConcur\Dto\TaskResultDto;
-use SConcur\Entities\Context;
 use SConcur\Exceptions\InvalidMongodbBulkWriteOperationException;
 use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\CommandEnum;
@@ -44,12 +43,11 @@ readonly class Collection
     /**
      * @param array<int|string|float|bool|null, mixed> $document
      */
-    public function insertOne(Context $context, array $document): InsertOneResult
+    public function insertOne(array $document): InsertOneResult
     {
         $serialized = DocumentSerializer::serialize($document);
 
         $taskResult = $this->exec(
-            context: $context,
             command: CommandEnum::InsertOne,
             payload: $serialized,
         );
@@ -64,12 +62,11 @@ readonly class Collection
     /**
      * @param array<int, array<int|string|float|bool|null, mixed>> $documents
      */
-    public function insertMany(Context $context, array $documents): InsertManyResult
+    public function insertMany(array $documents): InsertManyResult
     {
         $serialized = DocumentSerializer::serialize($documents);
 
         $taskResult = $this->exec(
-            context: $context,
             command: CommandEnum::InsertMany,
             payload: $serialized,
         );
@@ -84,7 +81,7 @@ readonly class Collection
     /**
      * @param array<int, mixed> $operations
      */
-    public function bulkWrite(Context $context, array $operations): BulkWriteResult
+    public function bulkWrite(array $operations): BulkWriteResult
     {
         $preparedOperations = [];
 
@@ -122,7 +119,6 @@ readonly class Collection
         $serialized = DocumentSerializer::serialize($preparedOperations);
 
         $taskResult = $this->exec(
-            context: $context,
             command: CommandEnum::BulkWrite,
             payload: $serialized,
         );
@@ -142,12 +138,11 @@ readonly class Collection
     /**
      * @param array<string, mixed> $filter
      */
-    public function countDocuments(Context $context, array $filter): int
+    public function countDocuments(array $filter): int
     {
         $serialized = DocumentSerializer::serialize($filter);
 
         $taskResult = $this->exec(
-            context: $context,
             command: CommandEnum::CountDocuments,
             payload: $serialized,
         );
@@ -168,7 +163,7 @@ readonly class Collection
      *
      * @return Iterator<int, array<int|string|float|bool|null, mixed>>
      */
-    public function aggregate(Context $context, array $pipeline, int $batchSize = 30): Iterator
+    public function aggregate(array $pipeline, int $batchSize = 30): Iterator
     {
         $serialized = DocumentSerializer::serialize([
             'p'  => DocumentSerializer::serialize($pipeline),
@@ -176,7 +171,6 @@ readonly class Collection
         ]);
 
         return new IteratorResult(
-            context: $context,
             method: $this->method,
             payload: $this->serializePayload(
                 command: CommandEnum::Aggregate,
@@ -194,10 +188,9 @@ readonly class Collection
      * @param array<string, mixed> $filter
      * @param array<string, mixed> $update
      */
-    public function updateOne(Context $context, array $filter, array $update, bool $upsert = false): UpdateResult
+    public function updateOne(array $filter, array $update, bool $upsert = false): UpdateResult
     {
         return $this->update(
-            context: $context,
             isMany: false,
             filter: $filter,
             update: $update,
@@ -209,10 +202,9 @@ readonly class Collection
      * @param array<string, mixed> $filter
      * @param array<string, mixed> $update
      */
-    public function updateMany(Context $context, array $filter, array $update, bool $upsert = false): UpdateResult
+    public function updateMany(array $filter, array $update, bool $upsert = false): UpdateResult
     {
         return $this->update(
-            context: $context,
             isMany: true,
             filter: $filter,
             update: $update,
@@ -226,7 +218,7 @@ readonly class Collection
      *
      * @return array<int|string, mixed>|null
      */
-    public function findOne(Context $context, array $filter, ?array $projection = null): ?array
+    public function findOne(array $filter, ?array $projection = null): ?array
     {
         $serialized = DocumentSerializer::serialize([
             'f'  => DocumentSerializer::serialize($filter),
@@ -234,7 +226,6 @@ readonly class Collection
         ]);
 
         $taskResult = $this->exec(
-            context: $context,
             command: CommandEnum::FindOne,
             payload: $serialized,
         );
@@ -249,7 +240,7 @@ readonly class Collection
     /**
      * @param array<string, int|string> $keys
      */
-    public function createIndex(Context $context, array $keys, ?string $name = null): string
+    public function createIndex(array $keys, ?string $name = null): string
     {
         if ($name) {
             $indexName = $name;
@@ -263,7 +254,6 @@ readonly class Collection
         ]);
 
         $taskResult = $this->exec(
-            context: $context,
             command: CommandEnum::CreateIndex,
             payload: $serialized,
         );
@@ -274,7 +264,7 @@ readonly class Collection
     /**
      * @param array<string, int|string>|string $index
      */
-    public function dropIndex(Context $context, array|string $index): string
+    public function dropIndex(array|string $index): string
     {
         if (is_string($index)) {
             $indexName = $index;
@@ -287,7 +277,6 @@ readonly class Collection
         ]);
 
         $taskResult = $this->exec(
-            context: $context,
             command: CommandEnum::DropIndex,
             payload: $serialized,
         );
@@ -298,14 +287,13 @@ readonly class Collection
     /**
      * @param array<string, mixed> $filter
      */
-    public function deleteOne(Context $context, array $filter): DeleteResult
+    public function deleteOne(array $filter): DeleteResult
     {
         $serialized = DocumentSerializer::serialize([
             'f' => DocumentSerializer::serialize($filter),
         ]);
 
         $taskResult = $this->exec(
-            context: $context,
             command: CommandEnum::DeleteOne,
             payload: $serialized,
         );
@@ -320,14 +308,13 @@ readonly class Collection
     /**
      * @param array<string, mixed> $filter
      */
-    public function deleteMany(Context $context, array $filter): DeleteResult
+    public function deleteMany(array $filter): DeleteResult
     {
         $serialized = DocumentSerializer::serialize([
             'f' => DocumentSerializer::serialize($filter),
         ]);
 
         $taskResult = $this->exec(
-            context: $context,
             command: CommandEnum::DeleteMany,
             payload: $serialized,
         );
@@ -339,10 +326,9 @@ readonly class Collection
         );
     }
 
-    public function drop(Context $context): void
+    public function drop(): void
     {
         $this->exec(
-            context: $context,
             command: CommandEnum::Drop,
             payload: '{}',
         );
@@ -362,13 +348,9 @@ readonly class Collection
         return implode('_', $indexNames);
     }
 
-    protected function exec(
-        Context $context,
-        CommandEnum $command,
-        string $payload
-    ): TaskResultDto {
+    protected function exec(CommandEnum $command, string $payload): TaskResultDto
+    {
         return State::getCurrentFlow()->exec(
-            context: $context,
             method: $this->method,
             payload: $this->serializePayload(
                 command: $command,
@@ -382,7 +364,6 @@ readonly class Collection
      * @param array<string, mixed> $update
      */
     protected function update(
-        Context $context,
         bool $isMany,
         array $filter,
         array $update,
@@ -395,7 +376,6 @@ readonly class Collection
         ]);
 
         $taskResult = $this->exec(
-            context: $context,
             command: $isMany ? CommandEnum::UpdateMany : CommandEnum::UpdateOne,
             payload: $serialized,
         );

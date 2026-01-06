@@ -9,7 +9,6 @@ use LogicException;
 use RuntimeException;
 use SConcur\Connection\Extension;
 use SConcur\Dto\TaskResultDto;
-use SConcur\Entities\Context;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Features\MethodEnum;
 use Throwable;
@@ -35,7 +34,7 @@ class Flow
         $this->key = (string) static::$flowsCounter;
     }
 
-    public function exec(Context $context, MethodEnum $method, string $payload): TaskResultDto
+    public function exec(MethodEnum $method, string $payload): TaskResultDto
     {
         $runningTask = Extension::get()->push(
             flowKey: $this->key,
@@ -54,7 +53,7 @@ class Flow
 
             $result = $this->suspend();
         } else {
-            $result = $this->wait(context: $context);
+            $result = $this->wait();
 
             $this->checkResult(result: $result);
         }
@@ -68,10 +67,9 @@ class Flow
         return $result;
     }
 
-    public function wait(Context $context): TaskResultDto
+    public function wait(): TaskResultDto
     {
         return Extension::get()->wait(
-            context: $context,
             flowKey: $this->key,
             isAsync: $this->isAsync,
         );

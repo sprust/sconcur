@@ -9,7 +9,6 @@ use Fiber;
 use Generator;
 use LogicException;
 use RuntimeException;
-use SConcur\Entities\Context;
 use SConcur\Flow\Flow;
 use Throwable;
 
@@ -30,29 +29,23 @@ class WaitGroup
     protected array $syncResults = [];
 
     protected function __construct(
-        protected readonly Context $context,
         protected readonly Flow $flow,
     ) {
     }
 
-    public static function create(Context $context): WaitGroup
+    public static function create(): WaitGroup
     {
         return new WaitGroup(
-            context: $context,
             flow: new Flow(isAsync: true),
         );
     }
 
     /**
-     * @param Closure(Context): mixed $callback
+     * @param Closure(): mixed $callback
      */
     public function add(Closure $callback): string
     {
         $fiber = new Fiber($callback);
-
-        $parameters = [
-            $this->context,
-        ];
 
         State::registerFiberFlow(
             fiber: $fiber,
@@ -60,7 +53,7 @@ class WaitGroup
         );
 
         try {
-            $fiber->start(...$parameters);
+            $fiber->start();
         } catch (Throwable $exception) {
             throw new RuntimeException(
                 message: $exception->getMessage(),
@@ -123,7 +116,7 @@ class WaitGroup
         }
 
         while (count($this->fibers) > 0) {
-            $taskResult = $this->flow->wait($this->context);
+            $taskResult = $this->flow->wait();
 
             $taskKey = $taskResult->key;
 

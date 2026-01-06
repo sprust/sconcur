@@ -6,7 +6,6 @@ namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Find;
 
 use DateMalformedStringException;
 use DateTime;
-use SConcur\Entities\Context;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
@@ -34,19 +33,18 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
         return 'findOne';
     }
 
-    protected function on_1_start(Context $context): void
+    protected function on_1_start(): void
     {
-        $result = $this->sconcurCollection->findOne($context, []);
+        $result = $this->sconcurCollection->findOne([]);
 
         self::assertTrue(
             is_null($result)
         );
     }
 
-    protected function on_1_middle(Context $context): void
+    protected function on_1_middle(): void
     {
         $this->sconcurCollection->insertMany(
-            context: $context,
             documents: [
                 [
                     uniqid() => uniqid(),
@@ -60,7 +58,6 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
         );
 
         $result = $this->sconcurCollection->findOne(
-            context: $context,
             filter: [
                 $this->fieldName => $this->sconcurObjectId,
             ]
@@ -93,14 +90,13 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
     /**
      * @throws DateMalformedStringException
      */
-    protected function on_2_start(Context $context): void
+    protected function on_2_start(): void
     {
         $dateTime = TestMongodbResolver::getSconcurDateTime(
             new DateTime()->modify('+1 day')
         );
 
         $this->sconcurCollection->insertMany(
-            context: $context,
             documents: [
                 [
                     uniqid() => uniqid(),
@@ -114,7 +110,6 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
         );
 
         $result = $this->sconcurCollection->findOne(
-            context: $context,
             filter: [
                 $this->fieldName => $dateTime,
             ],
@@ -147,27 +142,27 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
         );
     }
 
-    protected function on_2_middle(Context $context): void
+    protected function on_2_middle(): void
     {
-        $result = $this->sconcurCollection->findOne($context, []);
+        $result = $this->sconcurCollection->findOne([]);
 
         self::assertFalse(
             is_null($result)
         );
     }
 
-    protected function on_iterate(Context $context): void
+    protected function on_iterate(): void
     {
-        $result = $this->sconcurCollection->findOne($context, []);
+        $result = $this->sconcurCollection->findOne([]);
 
         self::assertFalse(
             is_null($result)
         );
     }
 
-    protected function on_exception(Context $context): void
+    protected function on_exception(): void
     {
-        $this->sconcurCollection->findOne($context, ['$set' => 11]);
+        $this->sconcurCollection->findOne(['$set' => 11]);
     }
 
     protected function assertResult(array $results): void

@@ -6,7 +6,7 @@
  * arginfo:
  *  - ping(string name)
  *  - push(string flowKey, int method, string taskKey, string payloadJSON)
- *  - wait(string flowKey, int ms)
+ *  - wait(string flowKey)
  *  - count()
  *  - stopFlow(string flowKey)
  *  - destroy()
@@ -25,10 +25,9 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_push, 0, 0, 4)
     ZEND_ARG_TYPE_INFO(0, payload, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
-// wait(string flowKey, int ms)
-ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_wait, 0, 0, 2)
+// wait(string flowKey)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_wait, 0, 0, 1)
     ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
-    ZEND_ARG_TYPE_INFO(0, milliseconds, IS_LONG, 0)
 ZEND_END_ARG_INFO()
 
 
@@ -83,19 +82,17 @@ PHP_FUNCTION(push)
     free(response);
 }
 
-// PHP: SConcur\Extension\wait(string $flowKey, int $ms): string
+// PHP: SConcur\Extension\wait(string $flowKey): string
 PHP_FUNCTION(wait)
 {
-    zend_long ms;
     char *flow_key = NULL;
     size_t flow_key_len;
 
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "sl", &flow_key, &flow_key_len, &ms) == FAILURE) {
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &flow_key, &flow_key_len) == FAILURE) {
         RETURN_THROWS();
     }
 
-    // Go ждёт int64 (обычно мапится на long long)
-    char *response = wait(flow_key, (long long)ms);
+    char *response = wait(flow_key);
 
     RETVAL_STRING(response);
     free(response);

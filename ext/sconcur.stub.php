@@ -10,7 +10,7 @@ function push(string $fk, int $mt, string $tk, string $pl): string
 {
 }
 
-function wait(string $fk, int $ms): string
+function wait(string $fk): string
 {
 }
 

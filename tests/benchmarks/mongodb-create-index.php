@@ -2,7 +2,6 @@
 
 declare(strict_types=1);
 
-use SConcur\Entities\Context;
 use SConcur\Tests\Impl\TestMongodbResolver;
 
 require_once __DIR__ . '/_benchmarker.php';
@@ -29,28 +28,26 @@ $benchmarker->run(
             uniqid()                 => -1,
         ]);
     },
-    syncCallback: static function (Context $context) use ($sconcurCollection, &$index) {
+    syncCallback: static function () use ($sconcurCollection, &$index) {
         ++$index;
 
         $indexName = "$index-sync";
 
         return $sconcurCollection->createIndex(
-            context: $context,
-            keys: [
+        keys: [
                 uniqid("{$indexName}_") => 1,
                 uniqid()                => -1,
             ],
             name: $indexName
         );
     },
-    asyncCallback: static function (Context $context) use ($sconcurCollection, &$index) {
+    asyncCallback: static function () use ($sconcurCollection, &$index) {
         ++$index;
 
         $indexName = "$index-async";
 
         return $sconcurCollection->createIndex(
-            context: $context,
-            keys: [
+        keys: [
                 uniqid("{$indexName}_") => 1,
                 uniqid()                => -1,
             ],

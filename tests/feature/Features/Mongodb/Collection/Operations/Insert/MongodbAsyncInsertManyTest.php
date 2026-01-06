@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Insert;
 
-use SConcur\Entities\Context;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
 
 class MongodbAsyncInsertManyTest extends BaseMongodbAsyncTestCase
@@ -31,35 +30,34 @@ class MongodbAsyncInsertManyTest extends BaseMongodbAsyncTestCase
         return 'insertMany';
     }
 
-    protected function on_1_start(Context $context): void
+    protected function on_1_start(): void
     {
         $this->insertDocuments();
     }
 
-    protected function on_1_middle(Context $context): void
+    protected function on_1_middle(): void
     {
         $this->insertDocuments();
     }
 
-    protected function on_2_start(Context $context): void
+    protected function on_2_start(): void
     {
         $this->insertDocuments();
     }
 
-    protected function on_2_middle(Context $context): void
+    protected function on_2_middle(): void
     {
         $this->insertDocuments();
     }
 
-    protected function on_iterate(Context $context): void
+    protected function on_iterate(): void
     {
         $this->insertDocuments();
     }
 
-    protected function on_exception(Context $context): void
+    protected function on_exception(): void
     {
         $this->sconcurCollection->insertMany(
-            context: $context,
             /** @phpstan-ignore-next-line argument.type */
             documents: [$this->fieldName => $this->sconcurObjectId]
         );
@@ -76,7 +74,6 @@ class MongodbAsyncInsertManyTest extends BaseMongodbAsyncTestCase
     protected function insertDocuments(): void
     {
         $insertResult = $this->sconcurCollection->insertMany(
-            context: Context::create(2),
             documents: array_map(
                 fn() => [$this->fieldName => $this->sconcurObjectId],
                 range(1, $this->documentsCount)

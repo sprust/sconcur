@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Sleeper;
 
-use SConcur\Entities\Context;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Feature\BaseAsyncTestCase;
 use Throwable;
@@ -23,34 +22,34 @@ class SleeperTest extends BaseAsyncTestCase
         $this->startTime = microtime(true);
     }
 
-    protected function on_1_start(Context $context): void
+    protected function on_1_start(): void
     {
-        $this->sleeper->usleep(context: $context, milliseconds: 10);
+        $this->sleeper->usleep(milliseconds: 10);
     }
 
-    protected function on_1_middle(Context $context): void
+    protected function on_1_middle(): void
     {
-        $this->sleeper->usleep(context: $context, milliseconds: 10);
+        $this->sleeper->usleep(milliseconds: 10);
     }
 
-    protected function on_2_start(Context $context): void
+    protected function on_2_start(): void
     {
-        $this->sleeper->usleep(context: $context, milliseconds: 10);
+        $this->sleeper->usleep(milliseconds: 10);
     }
 
-    protected function on_2_middle(Context $context): void
+    protected function on_2_middle(): void
     {
-        $this->sleeper->usleep(context: $context, milliseconds: 10);
+        $this->sleeper->usleep(milliseconds: 10);
     }
 
-    protected function on_iterate(Context $context): void
+    protected function on_iterate(): void
     {
-        $this->sleeper->usleep(context: $context, milliseconds: 1);
+        $this->sleeper->usleep(milliseconds: 1);
     }
 
-    protected function on_exception(Context $context): void
+    protected function on_exception(): void
     {
-        $this->sleeper->usleep(context: $context, milliseconds: -1);
+        $this->sleeper->usleep(milliseconds: -1);
     }
 
     protected function assertException(Throwable $exception): void

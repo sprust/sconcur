@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Aggregate;
 
-use SConcur\Entities\Context;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
 
 class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
@@ -40,50 +39,44 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
         return 'aggregate';
     }
 
-    protected function on_1_start(Context $context): void
+    protected function on_1_start(): void
     {
         $this->aggregate(
-            context: $context,
             order: '_1',
         );
     }
 
-    protected function on_1_middle(Context $context): void
+    protected function on_1_middle(): void
     {
         $this->aggregate(
-            context: $context,
             order: '_1.1',
         );
     }
 
-    protected function on_2_start(Context $context): void
+    protected function on_2_start(): void
     {
         $this->aggregate(
-            context: $context,
             order: '_2',
         );
     }
 
-    protected function on_2_middle(Context $context): void
+    protected function on_2_middle(): void
     {
         $this->aggregate(
-            context: $context,
             order: '_2.1',
         );
     }
 
-    protected function on_iterate(Context $context): void
+    protected function on_iterate(): void
     {
         $this->aggregate(
-            context: $context,
             order: '_sync',
         );
     }
 
-    protected function on_exception(Context $context): void
+    protected function on_exception(): void
     {
         $iterator = $this->sconcurCollection->aggregate(
-            context: $context,
             /** @phpstan-ignore-next-line argument.type */
             pipeline: [$this->fieldName => $this->sconcurObjectId],
         );
@@ -144,7 +137,7 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
         );
     }
 
-    protected function aggregate(Context $context, string $order): void
+    protected function aggregate(string $order): void
     {
         $this->results[$order] = [];
 
@@ -152,7 +145,6 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
 
         foreach (range(1, $this->pagesCount + 1) as $page) {
             $aggregation = $this->sconcurCollection->aggregate(
-                context: $context,
                 pipeline: [
                     [
                         '$match' => [
