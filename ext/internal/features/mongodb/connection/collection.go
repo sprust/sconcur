@@ -616,3 +616,42 @@ func (c *Collection) Drop(
 
 	return dto.NewSuccessResult(message, "", executionMs)
 }
+
+func (c *Collection) DropIndex(
+	ctx context.Context,
+	message *dto.Message,
+	payload *objects.Payload,
+) *dto.Result {
+	var params objects.DropIndexParams
+
+	err := json.Unmarshal([]byte(payload.Data), &params)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse dropIndex params", err),
+		)
+	}
+
+	start := time.Now()
+	result, err := c.mCollection.Indexes().DropOne(ctx, params.Name)
+	executionMs := helpers.CalcExecutionMs(start)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("dropIndex error", err),
+		)
+	}
+
+	serializedResult, err := serializer.MarshalDocument(result)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("marshal dropIndex result error", err),
+		)
+	}
+
+	return dto.NewSuccessResult(message, serializedResult, executionMs)
+}

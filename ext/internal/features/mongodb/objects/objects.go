@@ -34,6 +34,10 @@ type CreateIndexParams struct {
 	Name string `json:"n"`
 }
 
+type DropIndexParams struct {
+	Name string `json:"n"`
+}
+
 type DeleteOneParams struct {
 	Filter string `json:"f"`
 }

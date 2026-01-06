@@ -254,13 +254,7 @@ readonly class Collection
         if ($name) {
             $indexName = $name;
         } else {
-            $indexNames = [];
-
-            foreach ($keys as $field => $type) {
-                $indexNames[] = "{$field}_$type";
-            }
-
-            $indexName = implode('_', $indexNames);
+            $indexName = $this->makeIndexNameByKeys($keys);
         }
 
         $serialized = DocumentSerializer::serialize([
@@ -271,6 +265,30 @@ readonly class Collection
         $taskResult = $this->exec(
             context: $context,
             command: CommandEnum::CreateIndex,
+            payload: $serialized,
+        );
+
+        return $taskResult->payload;
+    }
+
+    /**
+     * @param array<string, int|string>|string $index
+     */
+    public function dropIndex(Context $context, array|string $index): string
+    {
+        if (is_string($index)) {
+            $indexName = $index;
+        } else {
+            $indexName = $this->makeIndexNameByKeys($index);
+        }
+
+        $serialized = DocumentSerializer::serialize([
+            'n' => $indexName,
+        ]);
+
+        $taskResult = $this->exec(
+            context: $context,
+            command: CommandEnum::DropIndex,
             payload: $serialized,
         );
 
@@ -328,6 +346,20 @@ readonly class Collection
             command: CommandEnum::Drop,
             payload: '{}',
         );
+    }
+
+    /**
+     * @param array<string, int|string> $keys
+     */
+    public function makeIndexNameByKeys(array $keys): string
+    {
+        $indexNames = [];
+
+        foreach ($keys as $field => $type) {
+            $indexNames[] = "{$field}_$type";
+        }
+
+        return implode('_', $indexNames);
     }
 
     protected function exec(
