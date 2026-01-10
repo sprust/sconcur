@@ -143,13 +143,13 @@ class WaitGroup
 
                 if (!$fiber) {
                     throw new LogicException(
-                        message: "Fiber not found by task key [$taskKey]"
+                        message: "Fiber [flow: $this->flowKey, task: $taskKey] not found"
                     );
                 }
 
                 if (!$fiber->isSuspended()) {
                     throw new LogicException(
-                        message: "Fiber with task key [$taskKey] is not suspended"
+                        message: "Fiber [flow: $this->flowKey, task: $taskKey] is not suspended"
                     );
                 }
 
