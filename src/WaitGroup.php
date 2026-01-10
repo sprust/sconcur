@@ -114,22 +114,26 @@ class WaitGroup
      */
     public function iterate(): Generator
     {
-        // TODO: union syncResults and fibers handling
-
-        while (count($this->syncResults) > 0) {
-            $syncResultKeys = array_keys($this->syncResults);
-
-            foreach ($syncResultKeys as $syncResultKey) {
-                $syncResult = $this->syncResults[$syncResultKey];
-
-                unset($this->syncResults[$syncResultKey]);
-
-                yield $syncResultKey => $syncResult;
-            }
-        }
-
         try {
-            while (count($this->fibers) > 0) {
+            while (true) {
+                if (count($this->syncResults) > 0) {
+                    $syncResultKeys = array_keys($this->syncResults);
+
+                    foreach ($syncResultKeys as $syncResultKey) {
+                        $syncResult = $this->syncResults[$syncResultKey];
+
+                        unset($this->syncResults[$syncResultKey]);
+
+                        yield $syncResultKey => $syncResult;
+                    }
+
+                    continue;
+                }
+
+                if (count($this->fibers) === 0) {
+                    break;
+                }
+
                 $taskResult = FeatureExecutor::wait(
                     flowKey: $this->flowKey
                 );
