@@ -29,7 +29,7 @@ readonly class FeatureExecutor
                 State::addFiberTask(
                     flowKey: $currentFlow->key,
                     taskKey: $runningTask->key,
-                    fiber: $currentFiber
+                    fiberId: spl_object_id($currentFiber)
                 );
             } else {
                 throw new LogicException(

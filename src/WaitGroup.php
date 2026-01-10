@@ -54,7 +54,7 @@ class WaitGroup
         $fiber = new Fiber($callback);
 
         State::registerFiberFlow(
-            fiber: $fiber,
+            fiberId: spl_object_id($fiber),
             flow: new CurrentFlow(
                 isAsync: true,
                 key: $this->flowKey
@@ -72,12 +72,13 @@ class WaitGroup
 
         $callbackKey = uniqid(more_entropy: true);
 
+        $fiberId = spl_object_id($fiber);
+
         if ($fiber->isTerminated()) {
             $this->syncResults[$callbackKey] = $fiber->getReturn();
 
-            State::unRegisterFiber($fiber);
+            State::unRegisterFiber($fiberId);
         } else {
-            $fiberId = spl_object_id($fiber);
 
             $this->fibers[$fiberId]            = $fiber;
             $this->fiberCallbackKeys[$fiberId] = $callbackKey;
@@ -140,12 +141,14 @@ class WaitGroup
 
                 $taskKey = $taskResult->key;
 
-                $fiber = State::pullFiberByTask(
+                $fiberId = State::pullFiberByTask(
                     flowKey: $this->flowKey,
                     taskKey: $taskKey
                 );
 
-                if (!$fiber) {
+                $fiber = $this->fibers[$fiberId] ?? null;
+
+                if ($fiber === null) {
                     throw new LogicException(
                         message: "Fiber [flow: $this->flowKey, task: $taskKey] not found"
                     );
@@ -156,8 +159,6 @@ class WaitGroup
                         message: "Fiber [flow: $this->flowKey, task: $taskKey] is not suspended"
                     );
                 }
-
-                $fiberId = spl_object_id($fiber);
 
                 if (!array_key_exists($fiberId, $this->fibers)) {
                     throw new LogicException(
@@ -176,7 +177,7 @@ class WaitGroup
                 if ($fiber->isTerminated()) {
                     $callbackResult = $fiber->getReturn();
 
-                    State::unRegisterFiber($fiber);
+                    State::unRegisterFiber($fiberId);
 
                     unset($this->fibers[$fiberId]);
 
