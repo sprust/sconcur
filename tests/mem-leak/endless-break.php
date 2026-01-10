@@ -6,8 +6,6 @@ use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Impl\TestApplication;
 use SConcur\WaitGroup;
 
-// TODO: memory leak
-
 ini_set('memory_limit', '8M');
 
 require_once __DIR__ . '/../../vendor/autoload.php';
@@ -23,7 +21,7 @@ $sconcurCallback = static function () {
     $memReal = str_pad((string) round(memory_get_usage(true) / 1024 / 1024, 6), 10);
     $memPeak = str_pad((string) round(memory_get_peak_usage() / 1024 / 1024, 6), 10);
 
-    $time = new DateTime()->format('Y-m-d H:i:s.U');
+    $time = new DateTime()->format('Y-m-d H:i:s.u');
 
     echo sprintf(
         "$time \t mem: \t%s\t\tmem(real): \t%s\tmem(peak): \t%s\n",

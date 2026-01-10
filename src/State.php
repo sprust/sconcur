@@ -6,37 +6,25 @@ namespace SConcur;
 
 use Fiber;
 use SConcur\Flow\Flow;
+use WeakMap;
 
 class State
 {
     protected static ?Flow $syncFlow = null;
 
     /**
-     * @var array<int, Flow>
+     * @var WeakMap<Fiber, Flow>|null
      */
-    protected static array $fiberFlows = [];
+    protected static ?WeakMap $fiberFlows = null;
 
     public static function registerFiberFlow(Fiber $fiber, Flow $flow): void
     {
-        static::$fiberFlows[spl_object_id($fiber)] = $flow;
+        static::getFiberFlows()->offsetSet($fiber, $flow);
     }
 
     public static function unRegisterFiber(Fiber $fiber): void
     {
-        unset(static::$fiberFlows[spl_object_id($fiber)]);
-    }
-
-    public static function unRegisterFlow(Flow $flow): void
-    {
-        $fiberIds = array_keys(static::$fiberFlows);
-
-        foreach ($fiberIds as $fiberId) {
-            $registeredFlow = static::$fiberFlows[$fiberId];
-
-            if ($registeredFlow === $flow) {
-                unset(static::$fiberFlows[$fiberId]);
-            }
-        }
+        static::getFiberFlows()->offsetUnset($fiber);
     }
 
     public static function getCurrentFlow(): Flow
@@ -47,8 +35,11 @@ class State
             return static::initSyncFlow();
         }
 
-        return static::$fiberFlows[spl_object_id($currentFiber)]
-            ?? static::initSyncFlow();
+        $flows = static::getFiberFlows();
+
+        return $flows->offsetExists($currentFiber)
+            ? $flows->offsetGet($currentFiber)
+            : static::initSyncFlow();
     }
 
     protected static function initSyncFlow(): Flow
@@ -56,5 +47,13 @@ class State
         return static::$syncFlow ??= new Flow(
             isAsync: false,
         );
+    }
+
+    /**
+     * @return  WeakMap<Fiber, Flow>
+     */
+    protected static function getFiberFlows(): WeakMap
+    {
+        return static::$fiberFlows ??= new WeakMap();
     }
 }

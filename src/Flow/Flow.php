@@ -9,9 +9,9 @@ use LogicException;
 use RuntimeException;
 use SConcur\Connection\Extension;
 use SConcur\Dto\TaskResultDto;
+use SConcur\Exceptions\FiberStopException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Features\MethodEnum;
-use SConcur\State;
 use Throwable;
 
 class Flow
@@ -88,8 +88,6 @@ class Flow
     {
         Extension::get()->stopFlow($this->key);
 
-        State::unRegisterFlow($this);
-
         $this->fibersKeyByTaskKeys = [];
     }
 
@@ -119,6 +117,10 @@ class Flow
                 message: $exception->getMessage(),
                 previous: $exception
             );
+        }
+
+        if ($result instanceof FiberStopException) {
+            throw $result;
         }
 
         if ($result instanceof TaskResultDto) {

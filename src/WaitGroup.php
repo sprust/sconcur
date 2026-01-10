@@ -9,6 +9,7 @@ use Fiber;
 use Generator;
 use LogicException;
 use RuntimeException;
+use SConcur\Exceptions\FiberStopException;
 use SConcur\Flow\Flow;
 use Throwable;
 
@@ -178,16 +179,27 @@ class WaitGroup
 
     public function stop(): void
     {
-        $keys = array_keys($this->fibers);
+        $stopException = FiberStopException::create();
 
-        foreach ($keys as $key) {
-            $fiber = $this->fibers[$key];
-
+        foreach ($this->fibers as $fiber) {
             State::unRegisterFiber($fiber);
 
-            unset($this->fibers[$key]);
+            if ($fiber->isTerminated()) {
+                continue;
+            }
+
+            // TODO: think about better way to implement this
+            // memory leak fix
+            try {
+                $fiber->resume($stopException);
+            } catch (Throwable $exception) {
+                if (!$exception instanceof FiberStopException) {
+                    throw $exception;
+                }
+            }
         }
 
+        $this->fibers            = [];
         $this->fiberCallbackKeys = [];
         $this->syncResults       = [];
 
