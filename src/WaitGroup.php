@@ -16,6 +16,7 @@ use Throwable;
 class WaitGroup
 {
     protected static int $counter = 0;
+
     /**
      * @var array<int, Fiber>
      */
