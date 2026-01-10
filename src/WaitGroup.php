@@ -79,7 +79,6 @@ class WaitGroup
 
             State::unRegisterFiber($fiberId);
         } else {
-
             $this->fibers[$fiberId]            = $fiber;
             $this->fiberCallbackKeys[$fiberId] = $callbackKey;
         }
