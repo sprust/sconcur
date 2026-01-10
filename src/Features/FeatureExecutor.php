@@ -87,7 +87,7 @@ readonly class FeatureExecutor
             static::checkResult($result);
         } else {
             throw new LogicException(
-                message: 'Unexpected result type.'
+                message: 'Unexpected result type. Expected ' . TaskResultDto::class . '.'
             );
         }
 
