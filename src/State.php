@@ -11,11 +11,15 @@ use SConcur\Flow\CurrentFlow;
 class State
 {
     /**
+     * array<$fiberId, $flow>
+     *
      * @var array<int, CurrentFlow>
      */
     protected static array $fiberFlows = [];
 
     /**
+     * array<$flowKey, array<$taskKey, $fiberId>>
+     *
      * @var array<string, array<string, int>>
      */
     protected static array $fiberTasks = [];
@@ -86,7 +90,7 @@ class State
                 continue;
             }
 
-            unset(static::$fiberFlows[$fiberId]);
+            static::unRegisterFiber($fiberId);
         }
 
         Extension::get()->stopFlow($flowKey);

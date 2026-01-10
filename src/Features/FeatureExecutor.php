@@ -33,7 +33,7 @@ readonly class FeatureExecutor
                 );
             } else {
                 throw new LogicException(
-                    message: "Can't wait outside of fiber."
+                    message: 'Can\'t wait outside of fiber.'
                 );
             }
 
