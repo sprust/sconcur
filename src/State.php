@@ -44,6 +44,8 @@ class State
         } else {
             $fiberId = spl_object_id($currentFiber);
 
+            unset($currentFiber);
+
             if (array_key_exists($fiberId, self::$fiberFlows)) {
                 $isAsync = true;
                 $flowKey = self::$fiberFlows[$fiberId]->key;

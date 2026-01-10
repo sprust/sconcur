@@ -31,6 +31,8 @@ readonly class FeatureExecutor
                     taskKey: $runningTask->key,
                     fiberId: spl_object_id($currentFiber)
                 );
+
+                unset($currentFiber);
             } else {
                 throw new LogicException(
                     message: 'Can\'t wait outside of fiber.'
