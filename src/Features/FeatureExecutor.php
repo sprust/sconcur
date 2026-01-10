@@ -6,14 +6,11 @@ namespace SConcur\Features;
 
 use Fiber;
 use LogicException;
-use RuntimeException;
 use SConcur\Connection\Extension;
 use SConcur\Dto\TaskResultDto;
-use SConcur\Exceptions\FiberStopException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Flow\CurrentFlow;
 use SConcur\State;
-use Throwable;
 
 readonly class FeatureExecutor
 {
@@ -82,18 +79,7 @@ readonly class FeatureExecutor
             );
         }
 
-        try {
-            $result = Fiber::suspend();
-        } catch (Throwable $exception) {
-            throw new RuntimeException(
-                message: $exception->getMessage(),
-                previous: $exception
-            );
-        }
-
-        if ($result instanceof FiberStopException) {
-            throw $result;
-        }
+        $result = Fiber::suspend();
 
         if ($result instanceof TaskResultDto) {
             static::checkResult($result);

@@ -193,8 +193,6 @@ class WaitGroup
         $stopException = FiberStopException::create();
 
         foreach ($this->fibers as $fiber) {
-            State::unRegisterFiber($fiber);
-
             if ($fiber->isTerminated()) {
                 continue;
             }
@@ -202,11 +200,9 @@ class WaitGroup
             // TODO: think about better way to implement this
             // memory leak fix
             try {
-                $fiber->resume($stopException);
-            } catch (Throwable $exception) {
-                if (!$exception instanceof FiberStopException) {
-                    throw $exception;
-                }
+                $fiber->throw($stopException);
+            } catch (FiberStopException) {
+                //
             }
         }
 
