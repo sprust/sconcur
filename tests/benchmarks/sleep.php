@@ -2,8 +2,7 @@
 
 declare(strict_types=1);
 
-use SConcur\Entities\Context;
-use SConcur\Features\Features;
+use SConcur\Features\Sleeper\Sleeper;
 
 require_once __DIR__ . '/_benchmarker.php';
 
@@ -11,29 +10,41 @@ $benchmarker = new Benchmarker(
     name: 'sleep',
 );
 
-$feature = Features::sleep();
+$isLogProcess = $benchmarker->isLogProcess();
+
+$sleeper = new Sleeper();
 
 $benchmarker->run(
-    syncCallback: static function (Context $context) use ($feature) {
+    syncCallback: static function () use ($sleeper, $isLogProcess) {
         $item = uniqid();
 
-        echo "$item: sync: start\n";
+        if ($isLogProcess) {
+            echo "$item: sync: start\n";
+        }
 
-        $feature->usleep(context: $context, milliseconds: 1);
+        $sleeper->usleep(milliseconds: 1);
 
-        echo "$item: sync: finished\n";
+        if ($isLogProcess) {
+            echo "$item: sync: finished\n";
+        }
     },
-    asyncCallback: static function (Context $context) use ($feature) {
+    asyncCallback: static function () use ($sleeper, $isLogProcess) {
         $item = uniqid();
 
-        echo "$item: start\n";
+        if ($isLogProcess) {
+            echo "$item: start\n";
+        }
 
-        $feature->sleep(context: $context, seconds: 1);
+        $sleeper->sleep(seconds: 1);
 
-        echo "$item: woke first\n";
+        if ($isLogProcess) {
+            echo "$item: woke first\n";
+        }
 
-        $feature->usleep(context: $context, milliseconds: 10);
+        $sleeper->usleep(milliseconds: 10);
 
-        echo "$item: woke second\n";
+        if ($isLogProcess) {
+            echo "$item: woke second\n";
+        }
     }
 );

@@ -2,12 +2,7 @@
 
 declare(strict_types=1);
 
-use SConcur\Entities\Context;
-use SConcur\Features\Features;
-use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
-use SConcur\Features\Mongodb\Types\ObjectId;
-use SConcur\Features\Mongodb\Types\UTCDateTime;
-use SConcur\Tests\Impl\TestMongodbUriResolver;
+use SConcur\Tests\Impl\TestMongodbResolver;
 
 require_once __DIR__ . '/_benchmarker.php';
 
@@ -15,49 +10,31 @@ $benchmarker = new Benchmarker(
     name: 'mongodb-insert-one',
 );
 
-$uri = TestMongodbUriResolver::get();
-
-echo "Mongodb URI: $uri\n\n";
-
-$databaseName   = 'test';
-$collectionName = 'test';
-
-$connection = new ConnectionParameters(
-    uri: $uri,
-    database: $databaseName,
-    collection: $collectionName,
-);
-
-$collection = (new MongoDB\Client($uri))->selectDatabase($databaseName)->selectCollection($collectionName);
+$driverCollection  = TestMongodbResolver::getDriverBenchmarkCollection();
+$sconcurCollection = TestMongodbResolver::getSconcurBenchmarkCollection();
 
 $nativeDocument = makeDocument(
-    objectId: new \MongoDB\BSON\ObjectId('6919e3d1a3673d3f4d9137a3'),
-    dateTime: new \MongoDB\BSON\UTCDateTime()
+    objectId: TestMongodbResolver::getDriverObjectId(),
+    dateTime: TestMongodbResolver::getDriverDateTime(),
 );
 
 $sconcurDocument = makeDocument(
-    objectId: new ObjectId('6919e3d1a3673d3f4d9137a3'),
-    dateTime: new UTCDateTime()
-);
-
-$feature = Features::mongodb(
-    connection: $connection,
+    objectId: TestMongodbResolver::getSconcurObjectId(),
+    dateTime: TestMongodbResolver::getSconcurDateTime(),
 );
 
 $benchmarker->run(
-    nativeCallback: static function () use ($collection, $nativeDocument) {
-        return $collection->insertOne($nativeDocument)->getInsertedId();
+    nativeCallback: static function () use ($driverCollection, $nativeDocument) {
+        return $driverCollection->insertOne($nativeDocument)->getInsertedId();
     },
-    syncCallback: static function (Context $context) use ($feature, $sconcurDocument) {
-        return $feature->insertOne(
-            context: $context,
-            document: $sconcurDocument
+    syncCallback: static function () use ($sconcurCollection, $sconcurDocument) {
+        return $sconcurCollection->insertOne(
+        document: $sconcurDocument
         )->insertedId;
     },
-    asyncCallback: static function (Context $context) use ($feature, $sconcurDocument) {
-        return $feature->insertOne(
-            context: $context,
-            document: $sconcurDocument
+    asyncCallback: static function () use ($sconcurCollection, $sconcurDocument) {
+        return $sconcurCollection->insertOne(
+        document: $sconcurDocument
         )->insertedId;
     }
 );

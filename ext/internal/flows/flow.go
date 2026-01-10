@@ -9,7 +9,6 @@ import (
 	"sconcur/internal/tasks"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 type Flow struct {
@@ -55,19 +54,10 @@ func (f *Flow) HandleMessage(msg *dto.Message) error {
 	return nil
 }
 
-func (f *Flow) Wait(timeoutMs int64) (string, error) {
-	if timeoutMs <= 0 {
-		return "", errors.New("timeout must be greater than 0")
-	}
-
-	timer := time.NewTicker(time.Duration(timeoutMs) * time.Millisecond)
-	defer timer.Stop()
-
+func (f *Flow) Wait() (string, error) {
 	select {
 	case <-f.ctx.Done():
 		return "", f.ctx.Err()
-	case <-timer.C:
-		return "", errors.New("timeout waiting for task completion")
 	case result, ok := <-f.results:
 		if !ok {
 			return "", errors.New("task channel closed")
@@ -75,10 +65,8 @@ func (f *Flow) Wait(timeoutMs int64) (string, error) {
 
 		f.mutex.Lock()
 
-		if !result.HasNext {
-			delete(f.activeTasks, result.TaskKey)
-			f.tasksCount.Add(-1)
-		}
+		delete(f.activeTasks, result.TaskKey)
+		f.tasksCount.Add(-1)
 
 		f.mutex.Unlock()
 

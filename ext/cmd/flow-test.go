@@ -53,7 +53,7 @@ func testSleepFlow() {
 	fmt.Printf("Pushed task: %s to flow: %s\n", taskKey, flowKey)
 
 	// Wait for result
-	result, err := handler.Wait(flowKey, 5000)
+	result, err := handler.Wait(flowKey)
 	if err != nil {
 		log.Printf("Error waiting for result: %v\n", err)
 		return
@@ -87,7 +87,7 @@ func testMultipleTasks() {
 
 	// Wait for each result
 	for i := 1; i <= 3; i++ {
-		result, err := handler.Wait(flowKey, 5000)
+		result, err := handler.Wait(flowKey)
 		if err != nil {
 			log.Printf("Error waiting for result %d: %v\n", i, err)
 			continue
@@ -123,7 +123,7 @@ func testStopFlow() {
 	fmt.Printf("Stopped flow: %s\n", flowKey)
 
 	// Try to wait (should fail)
-	result, err := handler.Wait(flowKey, 1000)
+	result, err := handler.Wait(flowKey)
 	if err != nil {
 		fmt.Printf("Expected error after stop: %v\n", err)
 	} else {

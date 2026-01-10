@@ -3,22 +3,21 @@
 namespace SConcur\Tests\Feature\Features;
 
 use Exception;
-use SConcur\Entities\Context;
 use SConcur\Exceptions\TaskErrorException;
-use SConcur\Features\Features;
-use SConcur\Features\Sleep\SleepFeature;
+use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\WaitGroup;
+use Throwable;
 
 class GeneralTest extends BaseTestCase
 {
-    private SleepFeature $sleepFeature;
+    private Sleeper $sleeper;
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        $this->sleepFeature = Features::sleep();
+        $this->sleeper = new Sleeper();
     }
 
     public function testMulti(): void
@@ -27,39 +26,77 @@ class GeneralTest extends BaseTestCase
         $events = [];
 
         $callbacks = [
-            function (Context $context) use (&$events) {
+            function () use (&$events) {
                 $events[] = '1:start';
 
-                $this->sleepFeature->usleep(context: $context, milliseconds: 10);
+                $this->sleeper->usleep(milliseconds: 10);
 
                 $events[] = '1:woke';
 
-                $this->sleepFeature->usleep(context: $context, milliseconds: 30);
+                $this->sleeper->usleep(milliseconds: 30);
 
                 $events[] = '1:finish';
             },
-            function (Context $context) use (&$events) {
+            function () use (&$events) {
                 $events[] = '2:start';
 
-                $this->sleepFeature->usleep(context: $context, milliseconds: 20);
+                $this->sleeper->usleep(milliseconds: 20);
+
+                // internal flow
+                $callbacks = [
+                    function () use (&$events) {
+                        $events[] = '2.1:start';
+
+                        $this->sleeper->usleep(milliseconds: 10);
+
+                        $events[] = '2.1:woke';
+
+                        $this->sleeper->usleep(milliseconds: 30);
+
+                        $events[] = '2.1:finish';
+                    },
+                    function () use (&$events) {
+                        $events[] = '2.2:start';
+
+                        $this->sleeper->usleep(milliseconds: 20);
+
+                        $events[] = '2.2:woke';
+
+                        $this->sleeper->usleep(milliseconds: 40);
+
+                        $events[] = '2.2:finish';
+                    },
+                ];
+
+                $waitGroup = WaitGroup::create();
+
+                foreach ($callbacks as $callback) {
+                    $waitGroup->add(callback: $callback);
+                }
+
+                $resultsCount = $waitGroup->waitAll();
+
+                self::assertEquals(
+                    count($callbacks),
+                    $resultsCount
+                );
+                // internal flow ^
 
                 $events[] = '2:woke';
 
-                $this->sleepFeature->usleep(context: $context, milliseconds: 40);
+                $this->sleeper->usleep(milliseconds: 40);
 
                 $events[] = '2:finish';
             },
         ];
 
-        $context = Context::create(timeoutSeconds: 1);
-
-        $waitGroup = WaitGroup::create($context);
+        $waitGroup = WaitGroup::create();
 
         foreach ($callbacks as $callback) {
             $waitGroup->add(callback: $callback);
         }
 
-        $generator = $waitGroup->wait();
+        $generator = $waitGroup->iterate();
 
         $results = [];
 
@@ -77,6 +114,14 @@ class GeneralTest extends BaseTestCase
                 '1:start',
                 '2:start',
                 '1:woke',
+                // internal flow
+                '2.1:start',
+                '2.2:start',
+                '2.1:woke',
+                '2.2:woke',
+                '2.1:finish',
+                '2.2:finish',
+                // internal flow ^
                 '2:woke',
                 '1:finish',
                 '2:finish',
@@ -91,15 +136,15 @@ class GeneralTest extends BaseTestCase
         $events = [];
 
         $callbacks = [
-            function (Context $context) use (&$events) {
-                $this->sleepFeature->usleep(context: $context, milliseconds: 10);
+            function () use (&$events) {
+                $this->sleeper->usleep(milliseconds: 10);
 
                 $events[] = '1:finish';
 
                 return '1';
             },
-            function (Context $context) use (&$events) {
-                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
+            function () use (&$events) {
+                $this->sleeper->usleep(milliseconds: 1);
 
                 $events[] = '2:finish';
 
@@ -107,9 +152,7 @@ class GeneralTest extends BaseTestCase
             },
         ];
 
-        $context = Context::create(timeoutSeconds: 1);
-
-        $waitGroup = WaitGroup::create($context);
+        $waitGroup = WaitGroup::create();
 
         foreach ($callbacks as $callback) {
             $waitGroup->add(callback: $callback);
@@ -140,15 +183,15 @@ class GeneralTest extends BaseTestCase
         $events = [];
 
         $callbacks = [
-            function (Context $context) use (&$events) {
-                $this->sleepFeature->sleep(context: $context, seconds: 2);
+            function () use (&$events) {
+                $this->sleeper->sleep(seconds: 2);
 
                 $events[] = '1:finish';
 
                 return '1';
             },
-            function (Context $context) use (&$events) {
-                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
+            function () use (&$events) {
+                $this->sleeper->usleep(milliseconds: 1);
 
                 $events[] = '2:finish';
 
@@ -156,15 +199,13 @@ class GeneralTest extends BaseTestCase
             },
         ];
 
-        $context = Context::create(timeoutSeconds: 1);
-
-        $waitGroup = WaitGroup::create($context);
+        $waitGroup = WaitGroup::create();
 
         foreach ($callbacks as $callback) {
             $waitGroup->add(callback: $callback);
         }
 
-        $generator = $waitGroup->wait();
+        $generator = $waitGroup->iterate();
 
         $results = [];
 
@@ -190,32 +231,30 @@ class GeneralTest extends BaseTestCase
     public function testSyncAsyncMix(): void
     {
         $callbacks = [
-            function (Context $context) {
-                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
+            function () {
+                $this->sleeper->usleep(milliseconds: 1);
             },
-            function (Context $context) {
-                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
+            function () {
+                $this->sleeper->usleep(milliseconds: 1);
             },
         ];
 
         $callbacksCount = count($callbacks);
 
-        $context = Context::create(timeoutSeconds: 1);
-
-        $waitGroup = WaitGroup::create($context);
+        $waitGroup = WaitGroup::create();
 
         foreach ($callbacks as $callback) {
             $waitGroup->add(callback: $callback);
         }
 
-        $generator = $waitGroup->wait();
+        $generator = $waitGroup->iterate();
 
         $results = [];
 
         foreach ($generator as $key => $value) {
             $results[$key] = $value;
 
-            $this->sleepFeature->usleep(context: $context, milliseconds: 1);
+            $this->sleeper->usleep(milliseconds: 1);
         }
 
         self::assertCount(
@@ -227,19 +266,17 @@ class GeneralTest extends BaseTestCase
     public function testWaitAll(): void
     {
         $callbacks = [
-            function (Context $context) {
-                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
+            function () {
+                $this->sleeper->usleep(milliseconds: 1);
             },
-            function (Context $context) {
-                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
+            function () {
+                $this->sleeper->usleep(milliseconds: 1);
             },
         ];
 
         $callbacksCount = count($callbacks);
 
-        $context = Context::create(timeoutSeconds: 1);
-
-        $waitGroup = WaitGroup::create($context);
+        $waitGroup = WaitGroup::create();
 
         foreach ($callbacks as $callback) {
             $waitGroup->add(callback: $callback);
@@ -258,25 +295,23 @@ class GeneralTest extends BaseTestCase
         $exceptionMessage = uniqid();
 
         $callbacks = [
-            function (Context $context) {
-                $this->sleepFeature->sleep(context: $context, seconds: 1);
+            function () {
+                $this->sleeper->sleep(seconds: 1);
             },
-            function (Context $context) use ($exceptionMessage) {
-                $this->sleepFeature->usleep(context: $context, milliseconds: 1);
+            function () use ($exceptionMessage) {
+                $this->sleeper->usleep(milliseconds: 1);
 
                 throw new Exception($exceptionMessage);
             },
         ];
 
-        $context = Context::create(timeoutSeconds: 1);
-
-        $waitGroup = WaitGroup::create($context);
+        $waitGroup = WaitGroup::create();
 
         foreach ($callbacks as $callback) {
             $waitGroup->add(callback: $callback);
         }
 
-        $generator = $waitGroup->wait();
+        $generator = $waitGroup->iterate();
 
         $results = [];
 
@@ -305,17 +340,67 @@ class GeneralTest extends BaseTestCase
         );
     }
 
+    public function testTryCatch(): void
+    {
+        $events = [
+            'first'  => false,
+            'second' => false,
+        ];
+
+        $exceptionMessage = null;
+
+        $callbacks = [
+            function () use (&$events) {
+                $this->sleeper->usleep(milliseconds: 1);
+
+                $events['first'] = true;
+            },
+            function () use (&$events, &$exceptionMessage) {
+                try {
+                    $this->sleeper->usleep(milliseconds: -1);
+                } catch (Throwable $exception) {
+                    $exceptionMessage = $exception->getMessage();
+                }
+
+                $events['second'] = true;
+            },
+        ];
+
+        $waitGroup = WaitGroup::create();
+
+        foreach ($callbacks as $callback) {
+            $waitGroup->add(callback: $callback);
+        }
+
+        $resultsCount = $waitGroup->waitAll();
+
+        self::assertNotNull(
+            $exceptionMessage
+        );
+
+        self::assertEquals(
+            2,
+            $resultsCount
+        );
+
+        self::assertSame(
+            [
+                'first'  => true,
+                'second' => true,
+            ],
+            $events
+        );
+    }
+
     public function testExtError(): void
     {
         $exceptionMessage = uniqid();
 
-        $context = Context::create(timeoutSeconds: 1);
+        $waitGroup = WaitGroup::create();
 
-        $waitGroup = WaitGroup::create($context);
-
-        $waitGroup->add(callback: function (Context $context) use (&$exception, $exceptionMessage) {
+        $waitGroup->add(callback: function () use (&$exception, $exceptionMessage) {
             try {
-                $this->sleepFeature->usleep(context: $context, milliseconds: -1);
+                $this->sleeper->usleep(milliseconds: -1);
             } catch (TaskErrorException $exception) {
                 throw new Exception($exceptionMessage);
             }
@@ -336,6 +421,54 @@ class GeneralTest extends BaseTestCase
         self::assertEquals(
             $exceptionMessage,
             $exception->getMessage()
+        );
+    }
+
+    public function testAddAtIteration(): void
+    {
+        $events = [
+            'start'  => 0,
+            'finish' => 0,
+        ];
+
+        $callback = function () use (&$events) {
+            ++$events['start'];
+
+            $this->sleeper->usleep(milliseconds: 1);
+
+            ++$events['finish'];
+        };
+
+        $waitGroup = WaitGroup::create();
+
+        $waitGroup->add(callback: $callback);
+
+        $iterationCount   = 5;
+        $iterationCounter = $iterationCount;
+
+        $generator = $waitGroup->iterate();
+
+        foreach ($generator as $ignored) {
+            --$iterationCounter;
+
+            if ($iterationCounter === 0) {
+                continue;
+            }
+
+            $waitGroup->add(callback: $callback);
+        }
+
+        self::assertEquals(
+            0,
+            $iterationCounter
+        );
+
+        self::assertSame(
+            [
+                'start'  => $iterationCount,
+                'finish' => $iterationCount,
+            ],
+            $events
         );
     }
 }

@@ -60,7 +60,7 @@ readonly class DocumentSerializer
             }
 
             if (array_key_exists('$numberDecimal', $value)) {
-                return $value['$numberDecimal'];
+                return (float) $value['$numberDecimal'];
             }
 
             if (array_key_exists('$date', $value)) {
@@ -78,7 +78,8 @@ readonly class DocumentSerializer
             }
 
             if (array_key_exists('$regularExpression', $value)) {
-                return '/' . ($value['$regularExpression']['pattern'] ?? '') . '/' . ($value['$regularExpression']['options'] ?? '');
+                return '/' . ($value['$regularExpression']['pattern'] ?? '')
+                    . '/' . ($value['$regularExpression']['options'] ?? '');
             }
 
             if (array_key_exists('$timestamp', $value)) {

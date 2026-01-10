@@ -7,7 +7,6 @@ namespace SConcur\Connection;
 use RuntimeException;
 use SConcur\Dto\RunningTaskDto;
 use SConcur\Dto\TaskResultDto;
-use SConcur\Entities\Context;
 use SConcur\Exceptions\ResponseIsNotJsonException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\UnexpectedResponseFormatException;
@@ -49,18 +48,17 @@ class Extension
         );
     }
 
-    public function wait(string $flowKey, bool $isAsync, Context $context): TaskResultDto
+    public function wait(string $flowKey): TaskResultDto
     {
-        $response = wait($flowKey, $context->getRemainMs());
+        $start = microtime(true);
+
+        $response = wait($flowKey);
 
         if (str_starts_with($response, 'error:')) {
-            $isAsyncView = $isAsync ? 'async' : 'sync';
-
             throw new TaskErrorException(
                 message: sprintf(
-                    'flow %s [%s]: %s',
+                    'flow %s: %s',
                     $flowKey,
-                    $isAsyncView,
                     $response,
                 )
             );
@@ -86,6 +84,8 @@ class Extension
                 isError: $responseData['er'],
                 payload: $responseData['pl'],
                 hasNext: $responseData['hn'],
+                executionMs: $responseData['ems'],
+                totalExecutionMs: (int) ((microtime(true) - $start) * 1000),
             );
         } catch (Throwable $exception) {
             throw new UnexpectedResponseFormatException(
@@ -123,5 +123,10 @@ class Extension
         }
 
         static::$checked = true;
+    }
+
+    public function __destruct()
+    {
+        $this->destroy();
     }
 }

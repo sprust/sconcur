@@ -2,11 +2,7 @@
 
 declare(strict_types=1);
 
-use SConcur\Entities\Context;
-use SConcur\Features\Features;
-use SConcur\Features\Mongodb\Parameters\ConnectionParameters;
-use SConcur\Features\Mongodb\Types\ObjectId;
-use SConcur\Tests\Impl\TestMongodbUriResolver;
+use SConcur\Tests\Impl\TestMongodbResolver;
 
 require_once __DIR__ . '/_benchmarker.php';
 
@@ -14,55 +10,48 @@ $benchmarker = new Benchmarker(
     name: 'mongodb-aggregate',
 );
 
-$uri = TestMongodbUriResolver::get();
+$driverCollection  = TestMongodbResolver::getDriverBenchmarkCollection();
+$sconcurCollection = TestMongodbResolver::getSconcurBenchmarkCollection();
 
-echo "Mongodb URI: $uri\n\n";
-
-$databaseName   = 'test';
-$collectionName = 'test';
-
-$connection = new ConnectionParameters(
-    uri: $uri,
-    database: $databaseName,
-    collection: $collectionName,
-);
-
-$collection = (new MongoDB\Client($uri))->selectDatabase($databaseName)->selectCollection($collectionName);
-
-$nativePipeline = makePipeline(
-    new \MongoDB\BSON\ObjectId('6919e3d1a3673d3f4d9137a3')
+$driverPipeline = makePipeline(
+    TestMongodbResolver::getDriverObjectId()
 );
 
 $sconcurPipeline = makePipeline(
-    new ObjectId('6919e3d1a3673d3f4d9137a3')
+    TestMongodbResolver::getSconcurObjectId()
 );
 
-$nativeCallback = static function () use ($collection, $nativePipeline) {
+$isLogProcess = $benchmarker->isLogProcess();
+
+$nativeCallback = static function () use ($driverCollection, $driverPipeline, $isLogProcess) {
     $item = uniqid();
 
-    $aggregate = $collection->aggregate($nativePipeline);
+    $aggregate = $driverCollection->aggregate($driverPipeline);
 
     foreach ($aggregate as $doc) {
         $id = $doc['_id'];
+
+        if (!$isLogProcess) {
+            continue;
+        }
 
         echo "aggregate-$item: document: $id\n";
     }
 };
 
-$feature = Features::mongodb(
-    connection: $connection,
-);
-
-$sconcurCallback = static function (Context $context) use ($feature, $sconcurPipeline) {
+$sconcurCallback = static function () use ($sconcurCollection, $sconcurPipeline, $isLogProcess) {
     $item = uniqid();
 
-    $aggregate = $feature->aggregate(
-        context: $context,
-        pipeline: $sconcurPipeline
+    $aggregate = $sconcurCollection->aggregate(
+    pipeline: $sconcurPipeline
     );
 
     foreach ($aggregate as $doc) {
         $id = $doc['_id']->id;
+
+        if (!$isLogProcess) {
+            continue;
+        }
 
         echo "aggregate-$item: document: $id\n";
     }

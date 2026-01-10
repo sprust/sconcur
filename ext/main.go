@@ -40,8 +40,8 @@ func push(fk *C.char, mt int, tk *C.char, pl *C.char) *C.char {
 }
 
 //export wait
-func wait(fk *C.char, ms int64) *C.char {
-	res, err := handler.Wait(C.GoString(fk), ms)
+func wait(fk *C.char) *C.char {
+	res, err := handler.Wait(C.GoString(fk))
 
 	if err != nil {
 		return C.CString("error: " + err.Error())

@@ -2,23 +2,22 @@
 
 namespace SConcur\Tests\Feature;
 
-use SConcur\Entities\Context;
 use SConcur\WaitGroup;
 use Throwable;
 
 abstract class BaseAsyncTestCase extends BaseTestCase
 {
-    abstract protected function on_1_start(Context $context): void;
+    abstract protected function on_1_start(): void;
 
-    abstract protected function on_1_middle(Context $context): void;
+    abstract protected function on_1_middle(): void;
 
-    abstract protected function on_2_start(Context $context): void;
+    abstract protected function on_2_start(): void;
 
-    abstract protected function on_2_middle(Context $context): void;
+    abstract protected function on_2_middle(): void;
 
-    abstract protected function on_iterate(Context $context): void;
+    abstract protected function on_iterate(): void;
 
-    abstract protected function on_exception(Context $context): void;
+    abstract protected function on_exception(): void;
 
     abstract protected function assertException(Throwable $exception): void;
 
@@ -33,46 +32,44 @@ abstract class BaseAsyncTestCase extends BaseTestCase
         $events = [];
 
         $callbacks = [
-            function (Context $context) use (&$events) {
+            function () use (&$events) {
                 $events[] = '1:start';
 
-                $this->on_1_start($context);
+                $this->on_1_start();
 
                 $events[] = '1:middle';
 
-                $this->on_1_middle($context);
+                $this->on_1_middle();
 
                 $events[] = '1:last';
             },
-            function (Context $context) use (&$events) {
+            function () use (&$events) {
                 $events[] = '2:start';
 
-                $this->on_2_start($context);
+                $this->on_2_start();
 
                 $events[] = '2:middle';
 
-                $this->on_2_middle($context);
+                $this->on_2_middle();
 
                 $events[] = '2:last';
             },
         ];
 
-        $context = Context::create(timeoutSeconds: 2);
-
-        $waitGroup = WaitGroup::create($context);
+        $waitGroup = WaitGroup::create();
 
         foreach ($callbacks as $callback) {
             $waitGroup->add(callback: $callback);
         }
 
-        $generator = $waitGroup->wait();
+        $generator = $waitGroup->iterate();
 
         $results = [];
 
         foreach ($generator as $key => $value) {
             $results[$key] = $value;
 
-            $this->on_iterate($context);
+            $this->on_iterate();
         }
 
         self::assertCount(
@@ -111,11 +108,11 @@ abstract class BaseAsyncTestCase extends BaseTestCase
             $exception = null;
 
             if ($isAsync) {
-                $exceptionWaitGroup = WaitGroup::create($context);
+                $exceptionWaitGroup = WaitGroup::create();
 
                 $exceptionWaitGroup->add(
-                    callback: function (Context $context) {
-                        $this->on_exception($context);
+                    callback: function () {
+                        $this->on_exception();
                     }
                 );
 
@@ -126,7 +123,7 @@ abstract class BaseAsyncTestCase extends BaseTestCase
                 }
             } else {
                 try {
-                    $this->on_exception($context);
+                    $this->on_exception();
                 } catch (Throwable $exception) {
                     //
                 }

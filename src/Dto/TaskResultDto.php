@@ -15,6 +15,8 @@ readonly class TaskResultDto
         public bool $isError,
         public string $payload,
         public bool $hasNext,
+        public int $executionMs,
+        public int $totalExecutionMs,
     ) {
     }
 }

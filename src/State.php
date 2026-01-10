@@ -5,43 +5,96 @@ declare(strict_types=1);
 namespace SConcur;
 
 use Fiber;
-use SConcur\Flow\Flow;
+use SConcur\Connection\Extension;
+use SConcur\Flow\CurrentFlow;
 
 class State
 {
-    protected static ?Flow $syncFlow = null;
-
     /**
-     * @var array<int, Flow>
+     * array<$fiberId, $flow>
+     *
+     * @var array<int, CurrentFlow>
      */
     protected static array $fiberFlows = [];
 
-    public static function registerFiberFlow(Fiber $fiber, Flow $flow): void
+    /**
+     * array<$flowKey, array<$taskKey, $fiberId>>
+     *
+     * @var array<string, array<string, int>>
+     */
+    protected static array $fiberTasks = [];
+
+    public static function registerFiberFlow(int $fiberId, CurrentFlow $flow): void
     {
-        static::$fiberFlows[spl_object_id($fiber)] = $flow;
+        static::$fiberFlows[$fiberId] = $flow;
     }
 
-    public static function unRegisterFiber(Fiber $fiber): void
+    public static function unRegisterFiber(int $fiberId): void
     {
-        unset(static::$fiberFlows[spl_object_id($fiber)]);
+        unset(static::$fiberFlows[$fiberId]);
     }
 
-    public static function getCurrentFlow(): Flow
+    public static function getCurrentFlow(): CurrentFlow
     {
         $currentFiber = Fiber::getCurrent();
 
         if ($currentFiber === null) {
-            return static::initSyncFlow();
+            $isAsync = false;
+            $flowKey = uniqid();
+        } else {
+            $fiberId = spl_object_id($currentFiber);
+
+            unset($currentFiber);
+
+            if (array_key_exists($fiberId, self::$fiberFlows)) {
+                $isAsync = true;
+                $flowKey = self::$fiberFlows[$fiberId]->key;
+            } else {
+                $isAsync = false;
+                $flowKey = uniqid();
+            }
         }
 
-        return static::$fiberFlows[spl_object_id($currentFiber)]
-            ?? static::initSyncFlow();
+        return new CurrentFlow(
+            isAsync: $isAsync,
+            key: $flowKey,
+        );
     }
 
-    protected static function initSyncFlow(): Flow
+    public static function addFiberTask(string $flowKey, string $taskKey, int $fiberId): void
     {
-        return static::$syncFlow ??= new Flow(
-            isAsync: false,
-        );
+        static::$fiberTasks[$flowKey][$taskKey] = $fiberId;
+    }
+
+    public static function pullFiberByTask(string $flowKey, string $taskKey): ?int
+    {
+        if (!array_key_exists($flowKey, static::$fiberTasks)) {
+            return null;
+        }
+
+        $fiberId = static::$fiberTasks[$flowKey][$taskKey] ?? null;
+
+        unset(static::$fiberTasks[$flowKey][$taskKey]);
+
+        return $fiberId;
+    }
+
+    public static function deleteFlow(string $flowKey): void
+    {
+        unset(static::$fiberTasks[$flowKey]);
+
+        $flowFiberIds = array_keys(static::$fiberFlows);
+
+        foreach ($flowFiberIds as $fiberId) {
+            $registeredFlow = static::$fiberFlows[$fiberId];
+
+            if ($registeredFlow->key !== $flowKey) {
+                continue;
+            }
+
+            static::unRegisterFiber($fiberId);
+        }
+
+        Extension::get()->stopFlow($flowKey);
     }
 }
