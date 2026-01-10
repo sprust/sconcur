@@ -40,13 +40,13 @@ class State
             $isAsync = false;
             $flowKey = uniqid();
         } else {
-            $isAsync = true;
-
             $flows = static::getFiberFlows();
 
             if ($flows->offsetExists($currentFiber)) {
+                $isAsync = true;
                 $flowKey = $flows->offsetGet($currentFiber)->key;
             } else {
+                $isAsync = false;
                 $flowKey = uniqid();
             }
         }
