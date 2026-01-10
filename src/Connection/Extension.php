@@ -48,20 +48,17 @@ class Extension
         );
     }
 
-    public function wait(string $flowKey, bool $isAsync): TaskResultDto
+    public function wait(string $flowKey): TaskResultDto
     {
         $start = microtime(true);
 
         $response = wait($flowKey);
 
         if (str_starts_with($response, 'error:')) {
-            $isAsyncView = $isAsync ? 'async' : 'sync';
-
             throw new TaskErrorException(
                 message: sprintf(
-                    'flow %s [%s]: %s',
+                    'flow %s: %s',
                     $flowKey,
-                    $isAsyncView,
                     $response,
                 )
             );

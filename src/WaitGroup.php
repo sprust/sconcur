@@ -10,15 +10,18 @@ use Generator;
 use LogicException;
 use RuntimeException;
 use SConcur\Exceptions\FiberStopException;
-use SConcur\Flow\Flow;
+use SConcur\Features\FeatureExecutor;
+use SConcur\Flow\CurrentFlow;
 use Throwable;
 
 class WaitGroup
 {
+    protected static int $counter = 0;
     /**
      * @var array<int, Fiber>
      */
     protected array $fibers = [];
+
     /**
      * @var array<int, string>
      */
@@ -29,16 +32,18 @@ class WaitGroup
      */
     protected array $syncResults = [];
 
-    protected function __construct(
-        protected readonly Flow $flow,
-    ) {
+    protected string $flowKey;
+
+    protected function __construct()
+    {
+        ++static::$counter;
+
+        $this->flowKey = (string) static::$counter;
     }
 
     public static function create(): WaitGroup
     {
-        return new WaitGroup(
-            flow: new Flow(isAsync: true),
-        );
+        return new WaitGroup();
     }
 
     /**
@@ -50,7 +55,10 @@ class WaitGroup
 
         State::registerFiberFlow(
             fiber: $fiber,
-            flow: $this->flow
+            flow: new CurrentFlow(
+                isAsync: true,
+                key: $this->flowKey
+            )
         );
 
         try {
@@ -122,11 +130,16 @@ class WaitGroup
 
         try {
             while (count($this->fibers) > 0) {
-                $taskResult = $this->flow->wait();
+                $taskResult = FeatureExecutor::wait(
+                    flowKey: $this->flowKey
+                );
 
                 $taskKey = $taskResult->key;
 
-                $fiber = $this->flow->getFiberByTaskKey($taskKey);
+                $fiber = State::pullFiberByTask(
+                    flowKey: $this->flowKey,
+                    taskKey: $taskKey
+                );
 
                 if (!$fiber) {
                     throw new LogicException(
@@ -155,8 +168,6 @@ class WaitGroup
                 }
 
                 $fiber->resume($taskResult);
-
-                $this->flow->deleteFiberByTaskKey($taskKey);
 
                 if ($fiber->isTerminated()) {
                     $callbackResult = $fiber->getReturn();
@@ -203,7 +214,7 @@ class WaitGroup
         $this->fiberCallbackKeys = [];
         $this->syncResults       = [];
 
-        $this->flow->stop();
+        State::deleteFlow($this->flowKey);
     }
 
     public function __destruct()

@@ -8,6 +8,7 @@ use Iterator;
 use RuntimeException;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\InvalidMongodbBulkWriteOperationException;
+use SConcur\Features\FeatureExecutor;
 use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\CommandEnum;
 use SConcur\Features\Mongodb\Results\BulkWriteResult;
@@ -17,7 +18,6 @@ use SConcur\Features\Mongodb\Results\InsertOneResult;
 use SConcur\Features\Mongodb\Results\IteratorResult;
 use SConcur\Features\Mongodb\Results\UpdateResult;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
-use SConcur\State;
 
 readonly class Collection
 {
@@ -350,7 +350,7 @@ readonly class Collection
 
     protected function exec(CommandEnum $command, string $payload): TaskResultDto
     {
-        return State::getCurrentFlow()->exec(
+        return FeatureExecutor::exec(
             method: $this->method,
             payload: $this->serializePayload(
                 command: $command,

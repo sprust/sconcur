@@ -6,9 +6,10 @@ namespace SConcur\Features\Mongodb\Results;
 
 use Iterator;
 use SConcur\Dto\TaskResultDto;
+use SConcur\Features\FeatureExecutor;
 use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
-use SConcur\Flow\Flow;
+use SConcur\Flow\CurrentFlow;
 use SConcur\State;
 
 // TODO: do pretty for parameters reusing
@@ -18,7 +19,7 @@ use SConcur\State;
  */
 class IteratorResult implements Iterator
 {
-    protected ?Flow $currentFlow;
+    protected ?CurrentFlow $currentFlow;
     protected ?string $taskKey;
 
     /**
@@ -59,7 +60,7 @@ class IteratorResult implements Iterator
                 return;
             }
 
-            $taskResult = $this->currentFlow->exec(
+            $taskResult = FeatureExecutor::exec(
                 method: $this->nextMethod,
                 payload: json_encode([
                     'k' => $this->taskKey,
@@ -89,7 +90,7 @@ class IteratorResult implements Iterator
 
         $this->currentFlow = State::getCurrentFlow();
 
-        $taskResult = $this->currentFlow->exec(
+        $taskResult = FeatureExecutor::exec(
             method: $this->method,
             payload: $this->payload
         );

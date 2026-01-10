@@ -5,19 +5,24 @@ declare(strict_types=1);
 namespace SConcur;
 
 use Fiber;
-use SConcur\Flow\Flow;
+use SConcur\Connection\Extension;
+use SConcur\Flow\CurrentFlow;
 use WeakMap;
 
 class State
 {
-    protected static ?Flow $syncFlow = null;
-
     /**
-     * @var WeakMap<Fiber, Flow>|null
+     * @var WeakMap<Fiber, CurrentFlow>|null
      */
+    // TODO: maybe use an array instead of WeakMap
     protected static ?WeakMap $fiberFlows = null;
 
-    public static function registerFiberFlow(Fiber $fiber, Flow $flow): void
+    /**
+     * @var array<string, array<string, Fiber>>
+     */
+    protected static array $fiberTasks = [];
+
+    public static function registerFiberFlow(Fiber $fiber, CurrentFlow $flow): void
     {
         static::getFiberFlows()->offsetSet($fiber, $flow);
     }
@@ -27,30 +32,58 @@ class State
         static::getFiberFlows()->offsetUnset($fiber);
     }
 
-    public static function getCurrentFlow(): Flow
+    public static function getCurrentFlow(): CurrentFlow
     {
         $currentFiber = Fiber::getCurrent();
 
         if ($currentFiber === null) {
-            return static::initSyncFlow();
+            $isAsync = false;
+            $flowKey = uniqid();
+        } else {
+            $isAsync = true;
+
+            $flows = static::getFiberFlows();
+
+            if ($flows->offsetExists($currentFiber)) {
+                $flowKey = $flows->offsetGet($currentFiber)->key;
+            } else {
+                $flowKey = uniqid();
+            }
         }
 
-        $flows = static::getFiberFlows();
-
-        return $flows->offsetExists($currentFiber)
-            ? $flows->offsetGet($currentFiber)
-            : static::initSyncFlow();
-    }
-
-    protected static function initSyncFlow(): Flow
-    {
-        return static::$syncFlow ??= new Flow(
-            isAsync: false,
+        return new CurrentFlow(
+            isAsync: $isAsync,
+            key: $flowKey,
         );
     }
 
+    public static function addFiberTask(string $flowKey, string $taskKey, Fiber $fiber): void
+    {
+        static::$fiberTasks[$flowKey][$taskKey] = $fiber;
+    }
+
+    public static function pullFiberByTask(string $flowKey, string $taskKey): ?Fiber
+    {
+        if (!array_key_exists($flowKey, static::$fiberTasks)) {
+            return null;
+        }
+
+        $fiber = static::$fiberTasks[$flowKey][$taskKey] ?? null;
+
+        unset(static::$fiberTasks[$flowKey][$taskKey]);
+
+        return $fiber;
+    }
+
+    public static function deleteFlow(string $flowKey): void
+    {
+        unset(static::$fiberTasks[$flowKey]);
+
+        Extension::get()->stopFlow($flowKey);
+    }
+
     /**
-     * @return  WeakMap<Fiber, Flow>
+     * @return  WeakMap<Fiber, CurrentFlow>
      */
     protected static function getFiberFlows(): WeakMap
     {

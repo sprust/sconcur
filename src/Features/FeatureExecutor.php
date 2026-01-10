@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Flow;
+namespace SConcur\Features;
 
 use Fiber;
 use LogicException;
@@ -11,50 +11,40 @@ use SConcur\Connection\Extension;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\FiberStopException;
 use SConcur\Exceptions\TaskErrorException;
-use SConcur\Features\MethodEnum;
+use SConcur\Flow\CurrentFlow;
+use SConcur\State;
 use Throwable;
 
-class Flow
+readonly class FeatureExecutor
 {
-    protected static int $flowsCounter = 0;
-
-    protected readonly string $key;
-
-    /**
-     * @var array<string, Fiber>
-     */
-    protected array $fibersKeyByTaskKeys = [];
-
-    public function __construct(
-        protected readonly bool $isAsync
-    ) {
-        ++static::$flowsCounter;
-
-        $this->key = (string) static::$flowsCounter;
-    }
-
-    public function exec(MethodEnum $method, string $payload): TaskResultDto
+    public static function exec(MethodEnum $method, string $payload): TaskResultDto
     {
+        $currentFlow = State::getCurrentFlow();
+
         $runningTask = Extension::get()->push(
-            flowKey: $this->key,
+            flowKey: $currentFlow->key,
             method: $method,
             payload: $payload
         );
 
-        if ($this->isAsync) {
+        if ($currentFlow->isAsync) {
             if ($currentFiber = Fiber::getCurrent()) {
-                $this->fibersKeyByTaskKeys[$runningTask->key] = $currentFiber;
+                State::addFiberTask(
+                    flowKey: $currentFlow->key,
+                    taskKey: $runningTask->key,
+                    fiber: $currentFiber
+                );
             } else {
                 throw new LogicException(
                     message: "Can't wait outside of fiber."
                 );
             }
 
-            $result = $this->suspend();
+            $result = static::suspend($currentFlow);
         } else {
-            $result = $this->wait();
+            $result = static::wait($currentFlow->key);
 
-            $this->checkResult(result: $result);
+            static::checkResult(result: $result);
         }
 
         if ($result->key !== $runningTask->key) {
@@ -66,32 +56,14 @@ class Flow
         return $result;
     }
 
-    public function wait(): TaskResultDto
+    public static function wait(string $flowKey): TaskResultDto
     {
         return Extension::get()->wait(
-            flowKey: $this->key,
-            isAsync: $this->isAsync,
+            flowKey: $flowKey,
         );
     }
 
-    public function getFiberByTaskKey(string $taskKey): ?Fiber
-    {
-        return $this->fibersKeyByTaskKeys[$taskKey] ?? null;
-    }
-
-    public function deleteFiberByTaskKey(string $taskKey): void
-    {
-        unset($this->fibersKeyByTaskKeys[$taskKey]);
-    }
-
-    public function stop(): void
-    {
-        Extension::get()->stopFlow($this->key);
-
-        $this->fibersKeyByTaskKeys = [];
-    }
-
-    protected function checkResult(TaskResultDto $result): TaskResultDto
+    protected static function checkResult(TaskResultDto $result): TaskResultDto
     {
         if ($result->isError) {
             throw new TaskErrorException(
@@ -102,9 +74,9 @@ class Flow
         return $result;
     }
 
-    protected function suspend(): TaskResultDto
+    protected static function suspend(CurrentFlow $currentFlow): TaskResultDto
     {
-        if (!$this->isAsync) {
+        if (!$currentFlow->isAsync) {
             throw new LogicException(
                 message: 'Can\'t suspend outside of fiber.'
             );
@@ -124,7 +96,7 @@ class Flow
         }
 
         if ($result instanceof TaskResultDto) {
-            $this->checkResult($result);
+            static::checkResult($result);
         } else {
             throw new LogicException(
                 message: 'Unexpected result type.'
@@ -132,10 +104,5 @@ class Flow
         }
 
         return $result;
-    }
-
-    public function __destruct()
-    {
-        $this->stop();
     }
 }
