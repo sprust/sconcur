@@ -13,7 +13,8 @@ use SConcur\Flow\CurrentFlow;
 use SConcur\State;
 
 // TODO: do pretty for parameters reusing
-
+// TODO: check for iterator_to_array
+// TODO: check for iterator_count
 /**
  * @implements Iterator<int, array<int|string|float|bool|null, mixed>>
  */

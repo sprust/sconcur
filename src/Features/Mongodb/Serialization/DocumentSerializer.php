@@ -40,6 +40,7 @@ readonly class DocumentSerializer
         return $data;
     }
 
+    // TODO: create tests
     protected static function unserializeRecursive(mixed $value): mixed
     {
         if (is_array($value)) {
