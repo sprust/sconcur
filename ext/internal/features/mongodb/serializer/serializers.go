@@ -224,6 +224,12 @@ func unmarshalRecursive(data interface{}) interface{} {
 
 		return v
 	default:
+		if f, ok := v.(float64); ok {
+			if f == float64(int64(f)) {
+				return int64(f)
+			}
+		}
+
 		return v
 	}
 }
