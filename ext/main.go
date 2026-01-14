@@ -65,4 +65,9 @@ func destroy() {
 	handler.Destroy()
 }
 
+//export version
+func version() *C.char {
+	return C.CString("0.0.1")
+}
+
 func main() {}

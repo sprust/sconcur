@@ -16,6 +16,7 @@ use function SConcur\Extension\count;
 use function SConcur\Extension\destroy;
 use function SConcur\Extension\push;
 use function SConcur\Extension\stopFlow;
+use function SConcur\Extension\version;
 use function SConcur\Extension\wait;
 
 class Extension
@@ -108,6 +109,11 @@ class Extension
     public function destroy(): void
     {
         destroy();
+    }
+
+    public function version(): string
+    {
+        return version();
     }
 
     private function checkExtension(): void

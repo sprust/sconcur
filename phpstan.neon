@@ -7,5 +7,5 @@ parameters:
     ignoreErrors:
         -
             messages:
-                - '#unction SConcur\\Extension\\(cancelTask|count|destroy|push|stopFlow|wait) not found#'
+                - '#unction SConcur\\Extension\\(cancelTask|count|destroy|push|stopFlow|wait|version) not found#'
                 - '#generic class Fiber [\s\S]* not specify its types: TStart, TResume, TReturn, TSuspend#'

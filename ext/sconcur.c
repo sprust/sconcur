@@ -10,6 +10,7 @@
  *  - count()
  *  - stopFlow(string flowKey)
  *  - destroy()
+ *  - version()
  */
 
 // ping(string name)
@@ -42,6 +43,10 @@ ZEND_END_ARG_INFO()
 
 // destroy()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_destroy, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+// version()
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_version, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
 /*
@@ -134,6 +139,19 @@ PHP_FUNCTION(destroy)
     RETURN_NULL();
 }
 
+// PHP: SConcur\Extension\version(): string
+PHP_FUNCTION(version)
+{
+    if (zend_parse_parameters_none() == FAILURE) {
+        RETURN_THROWS();
+    }
+
+    char *response = version();
+
+    RETVAL_STRING(response);
+    free(response);
+}
+
 /*
  * Регистрация функций с неймспейсом SConcur\Extension
  */
@@ -144,6 +162,7 @@ static const zend_function_entry sconcur_functions[] = {
     ZEND_NS_FE("SConcur\\Extension", count, arginfo_sconcur_count)
     ZEND_NS_FE("SConcur\\Extension", stopFlow, arginfo_sconcur_stopFlow)
     ZEND_NS_FE("SConcur\\Extension", destroy, arginfo_sconcur_destroy)
+    ZEND_NS_FE("SConcur\\Extension", version, arginfo_sconcur_version)
     PHP_FE_END
 };
 

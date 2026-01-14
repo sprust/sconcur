@@ -25,3 +25,7 @@ function stopFlow(string $fk): void
 function destroy(): void
 {
 }
+
+function version(): string
+{
+}
