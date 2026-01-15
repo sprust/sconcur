@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -225,8 +226,10 @@ func unmarshalRecursive(data interface{}) interface{} {
 		return v
 	default:
 		if f, ok := v.(float64); ok {
-			if f == float64(int64(f)) {
-				return int64(f)
+			if f == math.Trunc(f) && !math.IsInf(f, 0) {
+				if f >= math.MinInt64 && f <= math.MaxInt64 {
+					return int64(f)
+				}
 			}
 		}
 

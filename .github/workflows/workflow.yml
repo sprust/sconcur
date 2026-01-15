@@ -27,6 +27,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Delete existing 'latest' release if it exists
+          gh release delete latest --yes || true
           # We delete Latest tag if it exists
           git tag -d latest || true
           git push origin :refs/tags/latest || true
