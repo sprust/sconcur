@@ -15,8 +15,14 @@ readonly class DocumentSerializer
     /**
      * @param array<int|string, mixed> $document
      */
-    public static function serialize(array $document): string
+    public static function serialize(array $document, bool $isObject = true): string
     {
+        $count = count($document);
+
+        if ($count === 0) {
+            return $isObject ? '{}' : '[]';
+        }
+
         return json_encode($document);
     }
 

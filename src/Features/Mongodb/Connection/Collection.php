@@ -64,7 +64,7 @@ readonly class Collection
      */
     public function insertMany(array $documents): InsertManyResult
     {
-        $serialized = DocumentSerializer::serialize($documents);
+        $serialized = DocumentSerializer::serialize($documents, isObject: false);
 
         $taskResult = $this->exec(
             command: CommandEnum::InsertMany,
@@ -116,7 +116,7 @@ readonly class Collection
             ];
         }
 
-        $serialized = DocumentSerializer::serialize($preparedOperations);
+        $serialized = DocumentSerializer::serialize($preparedOperations, isObject: false);
 
         $taskResult = $this->exec(
             command: CommandEnum::BulkWrite,
@@ -166,7 +166,7 @@ readonly class Collection
     public function aggregate(array $pipeline, int $batchSize = 30): Iterator
     {
         $serialized = DocumentSerializer::serialize([
-            'p'  => DocumentSerializer::serialize($pipeline),
+            'p'  => DocumentSerializer::serialize($pipeline, isObject: false),
             'bs' => $batchSize,
         ]);
 
