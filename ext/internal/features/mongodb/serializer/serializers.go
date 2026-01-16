@@ -89,82 +89,142 @@ func UnmarshalBulkWriteModels(data string) ([]mongo.WriteModel, error) {
 		switch wrapper.Type {
 		case "insertOne":
 			var im struct {
-				Document interface{} `json:"document"`
+				Document string `json:"document"`
 			}
+
 			if err := json.Unmarshal(wrapper.Model, &im); err != nil {
 				return nil, errors.New("insertOne [" + err.Error() + "]")
 			}
-			model = mongo.NewInsertOneModel().SetDocument(unmarshalRecursive(im.Document))
+
+			document, err := UnmarshalDocument(im.Document)
+
+			if err != nil {
+				return nil, errors.New("insertOne document [" + err.Error() + "]")
+			}
+
+			model = mongo.NewInsertOneModel().SetDocument(document)
 		case "updateOne":
 			var um struct {
-				Filter interface{} `json:"filter"`
-				Update interface{} `json:"update"`
-				Upsert *bool       `json:"upsert,omitempty"`
+				Filter string `json:"filter"`
+				Update string `json:"update"`
+				Upsert *bool  `json:"upsert,omitempty"`
 			}
+
 			if err := json.Unmarshal(wrapper.Model, &um); err != nil {
 				return nil, errors.New("updateOne [" + err.Error() + "]")
 			}
-			um.Filter = normalizeEmptyData(um.Filter)
+
+			filter, err := UnmarshalDocument(um.Filter)
+
+			if err != nil {
+				return nil, errors.New("updateOne filter [" + err.Error() + "]")
+			}
+
+			update, err := UnmarshalDocument(um.Update)
+
+			if err != nil {
+				return nil, errors.New("updateOne update [" + err.Error() + "]")
+			}
+
 			model = mongo.NewUpdateOneModel().
-				SetFilter(unmarshalRecursive(um.Filter)).
-				SetUpdate(unmarshalRecursive(um.Update))
+				SetFilter(filter).
+				SetUpdate(update)
+
 			if um.Upsert != nil {
 				model.(*mongo.UpdateOneModel).SetUpsert(*um.Upsert)
 			}
-
 		case "updateMany":
 			var um struct {
-				Filter interface{} `json:"filter"`
-				Update interface{} `json:"update"`
-				Upsert *bool       `json:"upsert,omitempty"`
+				Filter string `json:"filter"`
+				Update string `json:"update"`
+				Upsert *bool  `json:"upsert,omitempty"`
 			}
+
 			if err := json.Unmarshal(wrapper.Model, &um); err != nil {
 				return nil, errors.New("updateMany [" + err.Error() + "]")
 			}
-			um.Filter = normalizeEmptyData(um.Filter)
+
+			filter, err := UnmarshalDocument(um.Filter)
+
+			if err != nil {
+				return nil, errors.New("updateMany filter [" + err.Error() + "]")
+			}
+
+			update, err := UnmarshalDocument(um.Update)
+
+			if err != nil {
+				return nil, errors.New("updateMany update [" + err.Error() + "]")
+			}
+
 			model = mongo.NewUpdateManyModel().
-				SetFilter(unmarshalRecursive(um.Filter)).
-				SetUpdate(unmarshalRecursive(um.Update))
+				SetFilter(filter).
+				SetUpdate(update)
+
 			if um.Upsert != nil {
 				model.(*mongo.UpdateManyModel).SetUpsert(*um.Upsert)
 			}
 		case "deleteOne":
 			var dm struct {
-				Filter interface{} `json:"filter"`
+				Filter string `json:"filter"`
 			}
+
 			if err := json.Unmarshal(wrapper.Model, &dm); err != nil {
 				return nil, errors.New("deleteOne [" + err.Error() + "]")
 			}
-			dm.Filter = normalizeEmptyData(dm.Filter)
-			model = mongo.NewDeleteOneModel().SetFilter(unmarshalRecursive(dm.Filter))
 
+			filter, err := UnmarshalDocument(dm.Filter)
+
+			if err != nil {
+				return nil, errors.New("updateOne filter [" + err.Error() + "]")
+			}
+
+			model = mongo.NewDeleteOneModel().SetFilter(filter)
 		case "deleteMany":
 			var dm struct {
-				Filter interface{} `json:"filter"`
+				Filter string `json:"filter"`
 			}
+
 			if err := json.Unmarshal(wrapper.Model, &dm); err != nil {
 				return nil, errors.New("deleteMany [" + err.Error() + "]")
 			}
-			dm.Filter = normalizeEmptyData(dm.Filter)
-			model = mongo.NewDeleteManyModel().SetFilter(unmarshalRecursive(dm.Filter))
 
+			filter, err := UnmarshalDocument(dm.Filter)
+
+			if err != nil {
+				return nil, errors.New("deleteMany filter [" + err.Error() + "]")
+			}
+
+			model = mongo.NewDeleteManyModel().SetFilter(filter)
 		case "replaceOne":
 			var rm struct {
-				Filter      interface{} `json:"filter"`
-				Replacement interface{} `json:"replacement"`
-				Upsert      *bool       `json:"upsert,omitempty"`
+				Filter      string `json:"filter"`
+				Replacement string `json:"replacement"`
+				Upsert      *bool  `json:"upsert,omitempty"`
 			}
+
 			if err := json.Unmarshal(wrapper.Model, &rm); err != nil {
 				return nil, errors.New("replaceOne [" + err.Error() + "]")
 			}
-			rm.Filter = normalizeEmptyData(rm.Filter)
+
+			filter, err := UnmarshalDocument(rm.Filter)
+
+			if err != nil {
+				return nil, errors.New("replaceOne filter [" + err.Error() + "]")
+			}
+
+			replacement, err := UnmarshalDocument(rm.Replacement)
+
+			if err != nil {
+				return nil, errors.New("replaceOne replacement [" + err.Error() + "]")
+			}
+
 			model = mongo.NewReplaceOneModel().
-				SetFilter(unmarshalRecursive(rm.Filter)).
-				SetReplacement(unmarshalRecursive(rm.Replacement))
+				SetFilter(filter).
+				SetReplacement(replacement)
+
 			if rm.Upsert != nil {
 				model.(*mongo.ReplaceOneModel).SetUpsert(*rm.Upsert)
 			}
-
 		default:
 			return nil, fmt.Errorf("unknown type of model: %s", wrapper.Type)
 		}

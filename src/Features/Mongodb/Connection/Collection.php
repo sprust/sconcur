@@ -94,19 +94,19 @@ readonly class Collection
                 'type'  => $type,
                 'model' => match ($type) {
                     'insertOne' => [
-                        'document' => $value[0],
+                        'document' => DocumentSerializer::serialize($value[0] ?: []),
                     ],
                     'updateOne', 'updateMany' => [
-                        'filter' => $value[0],
-                        'update' => $value[1],
+                        'filter' => DocumentSerializer::serialize($value[0] ?: []),
+                        'update' => DocumentSerializer::serialize($value[1] ?: []),
                         'upsert' => $value[2]['upsert'] ?? false, // TODO
                     ],
                     'deleteOne', 'deleteMany' => [
-                        'filter' => $value[0],
+                        'filter' => DocumentSerializer::serialize($value[0] ?: []),
                     ],
                     'replaceOne' => [
-                        'filter'      => $value[0],
-                        'replacement' => $value[1],
+                        'filter'      => DocumentSerializer::serialize($value[0] ?: []),
+                        'replacement' => DocumentSerializer::serialize($value[1] ?: []),
                         'upsert'      => $value[2]['upsert'] ?? false, // TODO
                     ],
                     default => throw new InvalidMongodbBulkWriteOperationException(
