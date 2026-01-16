@@ -27,7 +27,7 @@ type WriteModelWrapper struct {
 func UnmarshalDocument(data string) (interface{}, error) {
 	var document interface{}
 
-	err := json.Unmarshal([]byte(data), &document)
+	err := bson.UnmarshalExtJSON([]byte(data), true, &document)
 
 	if err != nil {
 		return nil, err
@@ -41,7 +41,7 @@ func UnmarshalDocument(data string) (interface{}, error) {
 func UnmarshalDocuments(data string) ([]interface{}, error) {
 	var documents []interface{}
 
-	err := json.Unmarshal([]byte(data), &documents)
+	err := bson.UnmarshalExtJSON([]byte(data), true, &documents)
 
 	if err != nil {
 		return nil, err
@@ -128,7 +128,6 @@ func UnmarshalBulkWriteModels(data string) ([]mongo.WriteModel, error) {
 			if um.Upsert != nil {
 				model.(*mongo.UpdateManyModel).SetUpsert(*um.Upsert)
 			}
-
 		case "deleteOne":
 			var dm struct {
 				Filter interface{} `json:"filter"`
@@ -194,6 +193,25 @@ func unmarshalRecursive(data interface{}) interface{} {
 	}
 
 	switch v := data.(type) {
+	case bson.D:
+		result := make(bson.D, len(v))
+
+		for i, elem := range v {
+			result[i] = bson.E{
+				Key:   elem.Key,
+				Value: unmarshalRecursive(elem.Value),
+			}
+		}
+
+		return result
+	case primitive.A:
+		result := make(primitive.A, len(v))
+
+		for i, value := range v {
+			result[i] = unmarshalRecursive(value)
+		}
+
+		return result
 	case map[string]interface{}:
 		result := make(map[string]interface{})
 
