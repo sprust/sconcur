@@ -12,7 +12,6 @@ use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
 use SConcur\Flow\CurrentFlow;
 use SConcur\State;
 
-// TODO: do pretty for parameters reusing
 // TODO: check for iterator_to_array
 // TODO: check for iterator_count
 /**
@@ -36,8 +35,6 @@ class IteratorResult implements Iterator
     public function __construct(
         protected MethodEnum $method,
         protected string $payload,
-        protected MethodEnum $nextMethod,
-        protected string $nextPayload,
         protected string $resultKey,
     ) {
         $this->resetProperties();
@@ -61,12 +58,8 @@ class IteratorResult implements Iterator
                 return;
             }
 
-            $taskResult = FeatureExecutor::exec(
-                method: $this->nextMethod,
-                payload: json_encode([
-                    'k' => $this->taskKey,
-                    'p' => $this->nextPayload,
-                ])
+            $taskResult = FeatureExecutor::next(
+                taskKey: $this->taskKey,
             );
 
             $this->setTaskResult($taskResult);

@@ -2,6 +2,7 @@ package aggregate_stateful
 
 import (
 	"context"
+	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
 	"sconcur/internal/features/mongodb/serializer"
@@ -32,7 +33,7 @@ func NewAggregateState(
 	batchSize int,
 	resultKey string,
 	errFactory *errs.Factory,
-) *AggregateState {
+) contracts.StateContract {
 	return &AggregateState{
 		ctx:         ctx,
 		message:     message,

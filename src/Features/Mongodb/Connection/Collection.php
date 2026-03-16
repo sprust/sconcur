@@ -176,10 +176,6 @@ readonly class Collection
                 command: CommandEnum::Aggregate,
                 data: $serialized,
             ),
-            nextMethod: MethodEnum::MongodbStateful,
-            nextPayload: json_encode([
-                'cm' => CommandEnum::Aggregate,
-            ]),
             resultKey: static::RESULT_KEY,
         );
     }

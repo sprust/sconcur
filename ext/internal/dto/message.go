@@ -7,4 +7,5 @@ type Message struct {
 	Method  types.Method `json:"md"`
 	TaskKey string       `json:"tk"`
 	Payload string       `json:"pl"`
+	IsNext  bool         `json:"nx"`
 }

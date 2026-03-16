@@ -7,6 +7,7 @@ namespace SConcur\Features;
 use Fiber;
 use LogicException;
 use SConcur\Connection\Extension;
+use SConcur\Dto\RunningTaskDto;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Flow\CurrentFlow;
@@ -24,6 +25,36 @@ readonly class FeatureExecutor
             payload: $payload
         );
 
+        return static::handle(
+            currentFlow: $currentFlow,
+            runningTask: $runningTask
+        );
+    }
+
+    public static function next(string $taskKey): TaskResultDto
+    {
+        $currentFlow = State::getCurrentFlow();
+
+        $runningTask = Extension::get()->next(
+            flowKey: $currentFlow->key,
+            taskKey: $taskKey
+        );
+
+        return static::handle(
+            currentFlow: $currentFlow,
+            runningTask: $runningTask
+        );
+    }
+
+    public static function wait(string $flowKey): TaskResultDto
+    {
+        return Extension::get()->wait(
+            flowKey: $flowKey,
+        );
+    }
+
+    protected static function handle(CurrentFlow $currentFlow, RunningTaskDto $runningTask): TaskResultDto
+    {
         if ($currentFlow->isAsync) {
             if ($currentFiber = Fiber::getCurrent()) {
                 State::addFiberTask(
@@ -53,13 +84,6 @@ readonly class FeatureExecutor
         }
 
         return $result;
-    }
-
-    public static function wait(string $flowKey): TaskResultDto
-    {
-        return Extension::get()->wait(
-            flowKey: $flowKey,
-        );
     }
 
     protected static function checkResult(TaskResultDto $result): TaskResultDto

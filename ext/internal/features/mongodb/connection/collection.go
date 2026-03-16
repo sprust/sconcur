@@ -10,6 +10,7 @@ import (
 	"sconcur/internal/features/mongodb/serializer"
 	"sconcur/internal/features/mongodb/stateful/aggregate_stateful"
 	"sconcur/internal/helpers"
+	"sconcur/internal/stateful"
 	"strconv"
 	"time"
 
@@ -133,18 +134,7 @@ func (c *Collection) Aggregate(
 		)
 	}
 
-	states := aggregate_stateful.GetAggregates()
-
-	state := states.GetState(message.TaskKey)
-
-	if state != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByText("aggregate already started"),
-		)
-	}
-
-	state = aggregate_stateful.NewAggregateState(
+	state := aggregate_stateful.NewAggregateState(
 		ctx,
 		message,
 		c.mCollection,
@@ -154,19 +144,13 @@ func (c *Collection) Aggregate(
 		errFactory,
 	)
 
-	err = states.AddState(ctx, message.TaskKey, state)
+	result, err := stateful.Get().Start(ctx, message.TaskKey, state)
 
 	if err != nil {
 		return dto.NewErrorResult(
 			message,
 			errFactory.ByErr("aggregate", err),
 		)
-	}
-
-	result := state.Next()
-
-	if !result.HasNext {
-		states.DeleteState(message.TaskKey)
 	}
 
 	return result
