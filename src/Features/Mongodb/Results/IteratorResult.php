@@ -6,6 +6,7 @@ namespace SConcur\Features\Mongodb\Results;
 
 use Iterator;
 use SConcur\Dto\TaskResultDto;
+use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
@@ -14,6 +15,7 @@ use SConcur\State;
 
 // TODO: check for iterator_to_array
 // TODO: check for iterator_count
+
 /**
  * @implements Iterator<int, array<int|string|float|bool|null, mixed>>
  */
@@ -100,7 +102,15 @@ class IteratorResult implements Iterator
     {
         $this->isLastBatch = !$taskResult->hasNext;
 
-        $this->items = DocumentSerializer::unserialize($taskResult->payload)[$this->resultKey];
+        $decoded = DocumentSerializer::unserialize($taskResult->payload);
+
+        if (!array_key_exists($this->resultKey, $decoded)) {
+            throw new UnexpectedResponseFormatException(
+                message: "Result key [$this->resultKey] not found in payload"
+            );
+        }
+
+        $this->items = $decoded[$this->resultKey];
     }
 
     protected function nextItem(): void

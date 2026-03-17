@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Features\Mongodb\Connection;
 
 use Iterator;
+use JsonException;
 use RuntimeException;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\InvalidMongodbBulkWriteOperationException;
@@ -388,13 +389,23 @@ readonly class Collection
 
     protected function serializePayload(CommandEnum $command, string $data): string
     {
-        return json_encode([
-            'ul'  => $this->uri,
-            'db'  => $this->databaseName,
-            'cl'  => $this->collectionName,
-            'sto' => $this->socketTimeoutMs,
-            'cm'  => $command->value,
-            'dt'  => $data,
-        ]);
+        try {
+            return json_encode(
+                [
+                    'ul'  => $this->uri,
+                    'db'  => $this->databaseName,
+                    'cl'  => $this->collectionName,
+                    'sto' => $this->socketTimeoutMs,
+                    'cm'  => $command->value,
+                    'dt'  => $data,
+                ],
+                JSON_THROW_ON_ERROR
+            );
+        } catch (JsonException $exception) {
+            throw new RuntimeException(
+                message: 'Failed to encode payload JSON: ' . $exception->getMessage(),
+                previous: $exception
+            );
+        }
     }
 }

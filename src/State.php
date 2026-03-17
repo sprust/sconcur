@@ -18,6 +18,13 @@ class State
     protected static array $fiberFlows = [];
 
     /**
+     * array<$flowKey, array<$fiberId, true>>
+     *
+     * @var array<string, array<int, true>>
+     */
+    protected static array $flowFibers = [];
+
+    /**
      * array<$flowKey, array<$taskKey, $fiberId>>
      *
      * @var array<string, array<string, int>>
@@ -26,11 +33,22 @@ class State
 
     public static function registerFiberFlow(int $fiberId, CurrentFlow $flow): void
     {
-        static::$fiberFlows[$fiberId] = $flow;
+        static::$fiberFlows[$fiberId]             = $flow;
+        static::$flowFibers[$flow->key][$fiberId] = true;
     }
 
     public static function unRegisterFiber(int $fiberId): void
     {
+        $flow = static::$fiberFlows[$fiberId] ?? null;
+
+        if ($flow !== null) {
+            unset(static::$flowFibers[$flow->key][$fiberId]);
+
+            if (isset(static::$flowFibers[$flow->key]) && count(static::$flowFibers[$flow->key]) === 0) {
+                unset(static::$flowFibers[$flow->key]);
+            }
+        }
+
         unset(static::$fiberFlows[$fiberId]);
     }
 
@@ -40,7 +58,7 @@ class State
 
         if ($currentFiber === null) {
             $isAsync = false;
-            $flowKey = uniqid();
+            $flowKey = static::newFlowKey();
         } else {
             $fiberId = spl_object_id($currentFiber);
 
@@ -51,7 +69,7 @@ class State
                 $flowKey = self::$fiberFlows[$fiberId]->key;
             } else {
                 $isAsync = false;
-                $flowKey = uniqid();
+                $flowKey = static::newFlowKey();
             }
         }
 
@@ -83,18 +101,30 @@ class State
     {
         unset(static::$fiberTasks[$flowKey]);
 
-        $flowFiberIds = array_keys(static::$fiberFlows);
+        if (isset(static::$flowFibers[$flowKey])) {
+            $flowFiberIds = array_keys(static::$flowFibers[$flowKey]);
 
-        foreach ($flowFiberIds as $fiberId) {
-            $registeredFlow = static::$fiberFlows[$fiberId];
-
-            if ($registeredFlow->key !== $flowKey) {
-                continue;
+            foreach ($flowFiberIds as $fiberId) {
+                static::unRegisterFiber($fiberId);
             }
+        } else {
+            $flowFiberIds = array_keys(static::$fiberFlows);
 
-            static::unRegisterFiber($fiberId);
+            foreach ($flowFiberIds as $fiberId) {
+                $registeredFlow = static::$fiberFlows[$fiberId];
+
+                if ($registeredFlow->key !== $flowKey) {
+                    continue;
+                }
+                static::unRegisterFiber($fiberId);
+            }
         }
 
         Extension::get()->stopFlow($flowKey);
+    }
+
+    protected static function newFlowKey(): string
+    {
+        return uniqid('', true);
     }
 }
