@@ -164,7 +164,7 @@ readonly class Collection
      *
      * @return Iterator<int, array<int|string|float|bool|null, mixed>>
      */
-    public function aggregate(array $pipeline, int $batchSize = 30): Iterator
+    public function aggregate(array $pipeline, int $batchSize = 200): Iterator
     {
         $serialized = DocumentSerializer::serialize([
             'p'  => DocumentSerializer::serialize($pipeline, isObject: false),

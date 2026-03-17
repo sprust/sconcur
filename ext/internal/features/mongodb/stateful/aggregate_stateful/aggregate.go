@@ -11,6 +11,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type AggregateState struct {
@@ -49,7 +50,14 @@ func NewAggregateState(
 func (a *AggregateState) Next() *dto.Result {
 	if a.cursor == nil {
 		a.startTime = time.Now()
-		cursor, err := a.mCollection.Aggregate(a.ctx, a.pipeline)
+
+		var opts *options.AggregateOptions
+
+		if a.batchSize > 0 {
+			opts = options.Aggregate().SetBatchSize(int32(a.batchSize))
+		}
+
+		cursor, err := a.mCollection.Aggregate(a.ctx, a.pipeline, opts)
 
 		if err != nil {
 			return dto.NewErrorResult(
@@ -63,16 +71,11 @@ func (a *AggregateState) Next() *dto.Result {
 
 	var items []interface{}
 
+	if a.batchSize > 0 {
+		items = make([]interface{}, 0, a.batchSize)
+	}
+
 	for a.cursor.Next(a.ctx) {
-		if err := a.cursor.Err(); err != nil {
-			_ = a.cursor.Close(a.ctx)
-
-			return dto.NewErrorResult(
-				a.message,
-				a.errFactory.ByErr("aggregate cursor error", err),
-			)
-		}
-
 		items = append(items, a.cursor.Current)
 
 		if len(items) == a.batchSize {
@@ -93,6 +96,15 @@ func (a *AggregateState) Next() *dto.Result {
 		}
 	}
 
+	if err := a.cursor.Err(); err != nil {
+		_ = a.cursor.Close(a.ctx)
+
+		return dto.NewErrorResult(
+			a.message,
+			a.errFactory.ByErr("aggregate cursor error", err),
+		)
+	}
+
 	response, err := serializer.MarshalDocument(
 		bson.D{
 			{Key: a.resultKey, Value: items},
@@ -105,6 +117,8 @@ func (a *AggregateState) Next() *dto.Result {
 			a.errFactory.ByErr("aggregate result marshal error", err),
 		)
 	}
+
+	_ = a.cursor.Close(a.ctx)
 
 	return dto.NewSuccessResult(a.message, response, a.calcExecutionMs())
 }
