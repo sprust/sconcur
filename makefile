@@ -17,6 +17,10 @@ stop:
 down:
 	docker-compose down --timeout=3
 
+restart:
+	make stop
+	make up
+
 bash-php:
 	"$(PHP_CLI)" bash
 

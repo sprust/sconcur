@@ -18,7 +18,7 @@ RUN apt-get update && \
       wget && \
     rm -rf /var/lib/apt/lists/*
 
-ENV GO_VERSION="1.25.0"
+ENV GO_VERSION="1.26.1"
 
 RUN wget -P /tmp "https://dl.google.com/go/go${GO_VERSION}.linux-amd64.tar.gz"
 
