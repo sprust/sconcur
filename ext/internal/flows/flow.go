@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sconcur/internal/dto"
 	"sconcur/internal/features"
+	"sconcur/internal/states"
 	"sconcur/internal/tasks"
 	"sync"
 	"sync/atomic"
@@ -38,18 +39,22 @@ func (f *Flow) HandleMessage(msg *dto.Message) error {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	handler, err := features.DetectMessageHandler(msg.Method)
-
-	if err != nil {
-		return err
-	}
-
 	task := tasks.NewTask(f.ctx, f.results, msg)
 
 	f.activeTasks[msg.TaskKey] = task
 	f.tasksCount.Add(1)
 
-	go handler.Handle(task)
+	if msg.IsNext {
+		go states.Get().Next(task)
+	} else {
+		handler, err := features.DetectMessageHandler(msg.Method)
+
+		if err != nil {
+			return err
+		}
+
+		go handler.Handle(task)
+	}
 
 	return nil
 }

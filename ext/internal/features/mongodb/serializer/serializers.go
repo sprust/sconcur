@@ -1,7 +1,6 @@
 package serializer
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -20,8 +19,8 @@ const utcDateTimeStringPrefixLen = len(utcDateTimeStringPrefix)
 const dateFormat = time.RFC3339Nano
 
 type WriteModelWrapper struct {
-	Type  string          `json:"type"`
-	Model json.RawMessage `json:"model"`
+	Type  string      `bson:"type" json:"type"`
+	Model interface{} `bson:"model" json:"model"`
 }
 
 func UnmarshalDocument(data string) (interface{}, error) {
@@ -77,7 +76,7 @@ func MarshalDocument(doc interface{}) (string, error) {
 func UnmarshalBulkWriteModels(data string) ([]mongo.WriteModel, error) {
 	var wrappers []WriteModelWrapper
 
-	if err := json.Unmarshal([]byte(data), &wrappers); err != nil {
+	if err := bson.UnmarshalExtJSON([]byte(data), true, &wrappers); err != nil {
 		return nil, err
 	}
 
@@ -89,10 +88,10 @@ func UnmarshalBulkWriteModels(data string) ([]mongo.WriteModel, error) {
 		switch wrapper.Type {
 		case "insertOne":
 			var im struct {
-				Document string `json:"document"`
+				Document string `bson:"document" json:"document"`
 			}
 
-			if err := json.Unmarshal(wrapper.Model, &im); err != nil {
+			if err := unmarshalBSONValue(wrapper.Model, &im); err != nil {
 				return nil, errors.New("insertOne [" + err.Error() + "]")
 			}
 
@@ -105,12 +104,12 @@ func UnmarshalBulkWriteModels(data string) ([]mongo.WriteModel, error) {
 			model = mongo.NewInsertOneModel().SetDocument(document)
 		case "updateOne":
 			var um struct {
-				Filter string `json:"filter"`
-				Update string `json:"update"`
-				Upsert *bool  `json:"upsert,omitempty"`
+				Filter string `bson:"filter" json:"filter"`
+				Update string `bson:"update" json:"update"`
+				Upsert *bool  `bson:"upsert,omitempty" json:"upsert,omitempty"`
 			}
 
-			if err := json.Unmarshal(wrapper.Model, &um); err != nil {
+			if err := unmarshalBSONValue(wrapper.Model, &um); err != nil {
 				return nil, errors.New("updateOne [" + err.Error() + "]")
 			}
 
@@ -135,12 +134,12 @@ func UnmarshalBulkWriteModels(data string) ([]mongo.WriteModel, error) {
 			}
 		case "updateMany":
 			var um struct {
-				Filter string `json:"filter"`
-				Update string `json:"update"`
-				Upsert *bool  `json:"upsert,omitempty"`
+				Filter string `bson:"filter" json:"filter"`
+				Update string `bson:"update" json:"update"`
+				Upsert *bool  `bson:"upsert,omitempty" json:"upsert,omitempty"`
 			}
 
-			if err := json.Unmarshal(wrapper.Model, &um); err != nil {
+			if err := unmarshalBSONValue(wrapper.Model, &um); err != nil {
 				return nil, errors.New("updateMany [" + err.Error() + "]")
 			}
 
@@ -165,10 +164,10 @@ func UnmarshalBulkWriteModels(data string) ([]mongo.WriteModel, error) {
 			}
 		case "deleteOne":
 			var dm struct {
-				Filter string `json:"filter"`
+				Filter string `bson:"filter" json:"filter"`
 			}
 
-			if err := json.Unmarshal(wrapper.Model, &dm); err != nil {
+			if err := unmarshalBSONValue(wrapper.Model, &dm); err != nil {
 				return nil, errors.New("deleteOne [" + err.Error() + "]")
 			}
 
@@ -181,10 +180,10 @@ func UnmarshalBulkWriteModels(data string) ([]mongo.WriteModel, error) {
 			model = mongo.NewDeleteOneModel().SetFilter(filter)
 		case "deleteMany":
 			var dm struct {
-				Filter string `json:"filter"`
+				Filter string `bson:"filter" json:"filter"`
 			}
 
-			if err := json.Unmarshal(wrapper.Model, &dm); err != nil {
+			if err := unmarshalBSONValue(wrapper.Model, &dm); err != nil {
 				return nil, errors.New("deleteMany [" + err.Error() + "]")
 			}
 
@@ -197,12 +196,12 @@ func UnmarshalBulkWriteModels(data string) ([]mongo.WriteModel, error) {
 			model = mongo.NewDeleteManyModel().SetFilter(filter)
 		case "replaceOne":
 			var rm struct {
-				Filter      string `json:"filter"`
-				Replacement string `json:"replacement"`
-				Upsert      *bool  `json:"upsert,omitempty"`
+				Filter      string `bson:"filter" json:"filter"`
+				Replacement string `bson:"replacement" json:"replacement"`
+				Upsert      *bool  `bson:"upsert,omitempty" json:"upsert,omitempty"`
 			}
 
-			if err := json.Unmarshal(wrapper.Model, &rm); err != nil {
+			if err := unmarshalBSONValue(wrapper.Model, &rm); err != nil {
 				return nil, errors.New("replaceOne [" + err.Error() + "]")
 			}
 
@@ -233,6 +232,16 @@ func UnmarshalBulkWriteModels(data string) ([]mongo.WriteModel, error) {
 	}
 
 	return models, nil
+}
+
+func unmarshalBSONValue(data interface{}, out interface{}) error {
+	bsonData, err := bson.Marshal(data)
+
+	if err != nil {
+		return err
+	}
+
+	return bson.Unmarshal(bsonData, out)
 }
 
 func normalizeEmptyData(data interface{}) interface{} {

@@ -28,12 +28,30 @@ func push(fk *C.char, mt int, tk *C.char, pl *C.char) *C.char {
 		Method:  types.Method(mt),
 		TaskKey: C.GoString(tk),
 		Payload: C.GoString(pl),
+		IsNext:  false,
 	}
 
 	err := handler.Push(msg)
 
 	if err != nil {
 		return C.CString("error: push: " + err.Error())
+	}
+
+	return C.CString("")
+}
+
+//export next
+func next(fk *C.char, tk *C.char) *C.char {
+	msg := &dto.Message{
+		FlowKey: C.GoString(fk),
+		TaskKey: C.GoString(tk),
+		IsNext:  true,
+	}
+
+	err := handler.Push(msg)
+
+	if err != nil {
+		return C.CString("error: next: " + err.Error())
 	}
 
 	return C.CString("")

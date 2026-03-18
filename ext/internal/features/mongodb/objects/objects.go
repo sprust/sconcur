@@ -25,10 +25,6 @@ type AggregateParams struct {
 	BatchSize int    `json:"bs"`
 }
 
-type StatefulNextParams struct {
-	Command int `json:"cm"`
-}
-
 type CreateIndexParams struct {
 	Keys string `json:"k"`
 	Name string `json:"n"`

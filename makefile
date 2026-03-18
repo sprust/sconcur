@@ -17,6 +17,10 @@ stop:
 down:
 	docker-compose down --timeout=3
 
+restart:
+	make stop
+	make up
+
 bash-php:
 	"$(PHP_CLI)" bash
 
@@ -40,6 +44,7 @@ check:
 	make cs-fixer-check
 	make php-stan
 	make test
+	make ext-test
 
 test:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so vendor/bin/phpunit \
@@ -57,6 +62,9 @@ test:
 
 ext-build:
 	"$(PHP_CLI)" sh ./ext-build.sh
+
+ext-test:
+	"$(PHP_CLI)" sh ./ext-test.sh
 
 bench-all:
 	make bench-sleep

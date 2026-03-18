@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Features\Mongodb\Connection;
 
 use Iterator;
+use JsonException;
 use RuntimeException;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\InvalidMongodbBulkWriteOperationException;
@@ -163,7 +164,7 @@ readonly class Collection
      *
      * @return Iterator<int, array<int|string|float|bool|null, mixed>>
      */
-    public function aggregate(array $pipeline, int $batchSize = 30): Iterator
+    public function aggregate(array $pipeline, int $batchSize = 200): Iterator
     {
         $serialized = DocumentSerializer::serialize([
             'p'  => DocumentSerializer::serialize($pipeline, isObject: false),
@@ -176,10 +177,6 @@ readonly class Collection
                 command: CommandEnum::Aggregate,
                 data: $serialized,
             ),
-            nextMethod: MethodEnum::MongodbStateful,
-            nextPayload: json_encode([
-                'cm' => CommandEnum::Aggregate,
-            ]),
             resultKey: static::RESULT_KEY,
         );
     }
@@ -392,13 +389,23 @@ readonly class Collection
 
     protected function serializePayload(CommandEnum $command, string $data): string
     {
-        return json_encode([
-            'ul'  => $this->uri,
-            'db'  => $this->databaseName,
-            'cl'  => $this->collectionName,
-            'sto' => $this->socketTimeoutMs,
-            'cm'  => $command->value,
-            'dt'  => $data,
-        ]);
+        try {
+            return json_encode(
+                [
+                    'ul'  => $this->uri,
+                    'db'  => $this->databaseName,
+                    'cl'  => $this->collectionName,
+                    'sto' => $this->socketTimeoutMs,
+                    'cm'  => $command->value,
+                    'dt'  => $data,
+                ],
+                JSON_THROW_ON_ERROR
+            );
+        } catch (JsonException $exception) {
+            throw new RuntimeException(
+                message: 'Failed to encode payload JSON: ' . $exception->getMessage(),
+                previous: $exception
+            );
+        }
     }
 }

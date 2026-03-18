@@ -23,7 +23,13 @@ readonly class DocumentSerializer
             return $isObject ? '{}' : '[]';
         }
 
-        return json_encode($document);
+        try {
+            return json_encode($document, JSON_THROW_ON_ERROR);
+        } catch (JsonException $exception) {
+            throw new RuntimeException(
+                message: 'Failed to encode JSON: ' . $exception->getMessage(),
+            );
+        }
     }
 
     /**
@@ -36,6 +42,12 @@ readonly class DocumentSerializer
         } catch (JsonException $exception) {
             throw new RuntimeException( // TODO
                 message: 'Failed to decode JSON: ' . $exception->getMessage(),
+            );
+        }
+
+        if (!is_array($data)) {
+            throw new RuntimeException(
+                message: 'Failed to decode JSON: expected array payload',
             );
         }
 
@@ -73,9 +85,18 @@ readonly class DocumentSerializer
                 $date = $value['$date']['$numberLong'] ?? $value['$date'] ?? null;
 
                 if (is_string($date) || is_int($date)) {
-                    return new UTCDateTime(
-                        DateTime::createFromFormat('U.u', sprintf('%.6F', (int) $date / 1000))
+                    $dateTime = DateTime::createFromFormat(
+                        'U.u',
+                        sprintf('%.6F', (int) $date / 1000)
                     );
+
+                    if ($dateTime === false) {
+                        throw new RuntimeException(
+                            message: 'Invalid $date value in document'
+                        );
+                    }
+
+                    return new UTCDateTime($dateTime);
                 }
             }
 

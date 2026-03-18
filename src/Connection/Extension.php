@@ -15,6 +15,7 @@ use Throwable;
 use function SConcur\Extension\count;
 use function SConcur\Extension\destroy;
 use function SConcur\Extension\push;
+use function SConcur\Extension\next;
 use function SConcur\Extension\stopFlow;
 use function SConcur\Extension\version;
 use function SConcur\Extension\wait;
@@ -43,6 +44,15 @@ class Extension
         $taskKey = $flowKey . ':' . static::$tasksCounter;
 
         push($flowKey, $method->value, $taskKey, $payload);
+
+        return new RunningTaskDto(
+            key: $taskKey,
+        );
+    }
+
+    public function next(string $flowKey, string $taskKey): RunningTaskDto
+    {
+        next($flowKey, $taskKey);
 
         return new RunningTaskDto(
             key: $taskKey,

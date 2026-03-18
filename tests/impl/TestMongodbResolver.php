@@ -41,14 +41,14 @@ class TestMongodbResolver
     public static function getDriverBenchmarkCollection(): \MongoDB\Collection
     {
         return new \MongoDB\Client(static::getUri())
-            ->selectDatabase(static::$benchmarkName)
+            ->selectDatabase(static::$testDatabaseName)
             ->selectCollection(static::$benchmarkName);
     }
 
     public static function getSconcurBenchmarkCollection(): Collection
     {
         return new Client(uri: static::getUri())
-            ->selectDatabase(static::$benchmarkName)
+            ->selectDatabase(static::$testDatabaseName)
             ->selectCollection(static::$benchmarkName);
     }
 
