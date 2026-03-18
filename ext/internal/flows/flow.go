@@ -6,7 +6,7 @@ import (
 	"errors"
 	"sconcur/internal/dto"
 	"sconcur/internal/features"
-	"sconcur/internal/stateful"
+	"sconcur/internal/states"
 	"sconcur/internal/tasks"
 	"sync"
 	"sync/atomic"
@@ -45,7 +45,7 @@ func (f *Flow) HandleMessage(msg *dto.Message) error {
 	f.tasksCount.Add(1)
 
 	if msg.IsNext {
-		go stateful.Get().Next(task)
+		go states.Get().Next(task)
 	} else {
 		handler, err := features.DetectMessageHandler(msg.Method)
 

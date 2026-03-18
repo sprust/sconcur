@@ -1,4 +1,4 @@
-package aggregate_stateful
+package aggregation_state
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-type AggregateState struct {
+type AggregationState struct {
 	ctx         context.Context
 	message     *dto.Message
 	mCollection *mongo.Collection
@@ -26,7 +26,7 @@ type AggregateState struct {
 	startTime   time.Time
 }
 
-func NewAggregateState(
+func New(
 	ctx context.Context,
 	message *dto.Message,
 	mCollection *mongo.Collection,
@@ -35,7 +35,7 @@ func NewAggregateState(
 	resultKey string,
 	errFactory *errs.Factory,
 ) contracts.StateContract {
-	return &AggregateState{
+	return &AggregationState{
 		ctx:         ctx,
 		message:     message,
 		mCollection: mCollection,
@@ -47,82 +47,82 @@ func NewAggregateState(
 	}
 }
 
-func (a *AggregateState) Next() *dto.Result {
-	if a.cursor == nil {
-		a.startTime = time.Now()
+func (s *AggregationState) Next() *dto.Result {
+	if s.cursor == nil {
+		s.startTime = time.Now()
 
 		var opts *options.AggregateOptions
 
-		if a.batchSize > 0 {
-			opts = options.Aggregate().SetBatchSize(int32(a.batchSize))
+		if s.batchSize > 0 {
+			opts = options.Aggregate().SetBatchSize(int32(s.batchSize))
 		}
 
-		cursor, err := a.mCollection.Aggregate(a.ctx, a.pipeline, opts)
+		cursor, err := s.mCollection.Aggregate(s.ctx, s.pipeline, opts)
 
 		if err != nil {
 			return dto.NewErrorResult(
-				a.message,
-				a.errFactory.ByErr("aggregate error", err),
+				s.message,
+				s.errFactory.ByErr("aggregate error", err),
 			)
 		}
 
-		a.cursor = cursor
+		s.cursor = cursor
 	}
 
 	var items []interface{}
 
-	if a.batchSize > 0 {
-		items = make([]interface{}, 0, a.batchSize)
+	if s.batchSize > 0 {
+		items = make([]interface{}, 0, s.batchSize)
 	}
 
-	for a.cursor.Next(a.ctx) {
-		items = append(items, a.cursor.Current)
+	for s.cursor.Next(s.ctx) {
+		items = append(items, s.cursor.Current)
 
-		if len(items) == a.batchSize {
+		if len(items) == s.batchSize {
 			response, err := serializer.MarshalDocument(
 				bson.D{
-					{Key: a.resultKey, Value: items},
+					{Key: s.resultKey, Value: items},
 				},
 			)
 
 			if err != nil {
 				return dto.NewErrorResult(
-					a.message,
-					a.errFactory.ByErr("aggregate result marshal error", err),
+					s.message,
+					s.errFactory.ByErr("aggregate result marshal error", err),
 				)
 			}
 
-			return dto.NewSuccessResultWithNext(a.message, response, a.calcExecutionMs())
+			return dto.NewSuccessResultWithNext(s.message, response, s.calcExecutionMs())
 		}
 	}
 
-	if err := a.cursor.Err(); err != nil {
-		_ = a.cursor.Close(a.ctx)
+	if err := s.cursor.Err(); err != nil {
+		_ = s.cursor.Close(s.ctx)
 
 		return dto.NewErrorResult(
-			a.message,
-			a.errFactory.ByErr("aggregate cursor error", err),
+			s.message,
+			s.errFactory.ByErr("aggregate cursor error", err),
 		)
 	}
 
 	response, err := serializer.MarshalDocument(
 		bson.D{
-			{Key: a.resultKey, Value: items},
+			{Key: s.resultKey, Value: items},
 		},
 	)
 
+	_ = s.cursor.Close(s.ctx)
+
 	if err != nil {
 		return dto.NewErrorResult(
-			a.message,
-			a.errFactory.ByErr("aggregate result marshal error", err),
+			s.message,
+			s.errFactory.ByErr("aggregate result marshal error", err),
 		)
 	}
 
-	_ = a.cursor.Close(a.ctx)
-
-	return dto.NewSuccessResult(a.message, response, a.calcExecutionMs())
+	return dto.NewSuccessResult(s.message, response, s.calcExecutionMs())
 }
 
-func (a *AggregateState) calcExecutionMs() int {
-	return helpers.CalcExecutionMs(a.startTime)
+func (s *AggregationState) calcExecutionMs() int {
+	return helpers.CalcExecutionMs(s.startTime)
 }

@@ -1,4 +1,4 @@
-package stateful
+package states
 
 import (
 	"context"
@@ -27,32 +27,32 @@ func Get() *States {
 	return instance
 }
 
-func (a *States) Start(ctx context.Context, taskKey string, state contracts.StateContract) (*dto.Result, error) {
-	a.mutex.Lock()
+func (s *States) Start(ctx context.Context, taskKey string, state contracts.StateContract) (*dto.Result, error) {
+	s.mutex.Lock()
 
-	_, ok := a.states[taskKey]
+	_, ok := s.states[taskKey]
 
 	if ok {
-		a.mutex.Unlock()
+		s.mutex.Unlock()
 
 		return nil, errors.New("state already exists")
 	}
 
-	a.states[taskKey] = state
+	s.states[taskKey] = state
 
-	a.mutex.Unlock()
+	s.mutex.Unlock()
 
 	context.AfterFunc(ctx, func() {
-		a.DeleteState(taskKey)
+		s.DeleteState(taskKey)
 	})
 
-	return a.handleNext(taskKey, state), nil
+	return s.handleNext(taskKey, state), nil
 }
 
-func (a *States) Next(task *tasks.Task) {
+func (s *States) Next(task *tasks.Task) {
 	message := task.GetMessage()
 
-	state := a.GetState(message.TaskKey)
+	state := s.GetState(message.TaskKey)
 
 	if state == nil {
 		task.AddResult(
@@ -65,16 +65,16 @@ func (a *States) Next(task *tasks.Task) {
 		return
 	}
 
-	result := a.handleNext(message.TaskKey, state)
+	result := s.handleNext(message.TaskKey, state)
 
 	task.AddResult(result)
 }
 
-func (a *States) GetState(taskKey string) contracts.StateContract {
-	a.mutex.RLock()
-	defer a.mutex.RUnlock()
+func (s *States) GetState(taskKey string) contracts.StateContract {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
 
-	state, ok := a.states[taskKey]
+	state, ok := s.states[taskKey]
 
 	if !ok {
 		return nil
@@ -83,11 +83,11 @@ func (a *States) GetState(taskKey string) contracts.StateContract {
 	return state
 }
 
-func (a *States) handleNext(taskKey string, state contracts.StateContract) *dto.Result {
+func (s *States) handleNext(taskKey string, state contracts.StateContract) *dto.Result {
 	result := state.Next()
 
 	if !result.HasNext {
-		a.DeleteState(taskKey)
+		s.DeleteState(taskKey)
 	}
 
 	result.TaskKey = taskKey
@@ -95,9 +95,9 @@ func (a *States) handleNext(taskKey string, state contracts.StateContract) *dto.
 	return result
 }
 
-func (a *States) DeleteState(taskKey string) {
-	a.mutex.Lock()
-	defer a.mutex.Unlock()
+func (s *States) DeleteState(taskKey string) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 
-	delete(a.states, taskKey)
+	delete(s.states, taskKey)
 }
