@@ -127,6 +127,126 @@ class MongodbAggregateTest extends BaseTestCase
         );
     }
 
+    public function testBatchSizeEqDocumentsCount(): void
+    {
+        $waitGroup = WaitGroup::create();
+
+        $counter = 0;
+
+        $waitGroup->add(
+            callback: function () use (&$counter) {
+                $iterator = $this->sconcurCollection->aggregate(
+                    pipeline: [],
+                    batchSize: $this->documentsCount
+                );
+
+                foreach ($iterator as $ignored) {
+                    ++$counter;
+                }
+            }
+        );
+
+        $waitGroup->add(
+            callback: function () use (&$counter) {
+                $iterator = $this->sconcurCollection->aggregate(
+                    pipeline: [],
+                    batchSize: $this->documentsCount
+                );
+
+                foreach ($iterator as $ignored) {
+                    ++$counter;
+                }
+            }
+        );
+
+        $waitGroup->waitAll();
+
+        self::assertEquals(
+            $this->documentsCount * 2,
+            $counter
+        );
+    }
+
+    public function testBatchSizeLessDocumentsCount(): void
+    {
+        $waitGroup = WaitGroup::create();
+
+        $counter = 0;
+
+        $waitGroup->add(
+            callback: function () use (&$counter) {
+                $iterator = $this->sconcurCollection->aggregate(
+                    pipeline: [],
+                    batchSize: $this->documentsCount - 3
+                );
+
+                foreach ($iterator as $ignored) {
+                    ++$counter;
+                }
+            }
+        );
+
+        $waitGroup->add(
+            callback: function () use (&$counter) {
+                $iterator = $this->sconcurCollection->aggregate(
+                    pipeline: [],
+                    batchSize: $this->documentsCount
+                );
+
+                foreach ($iterator as $ignored) {
+                    ++$counter;
+                }
+            }
+        );
+
+        $waitGroup->waitAll();
+
+        self::assertEquals(
+            $this->documentsCount * 2,
+            $counter
+        );
+    }
+
+    public function testBatchSizeGreatDocumentsCount(): void
+    {
+        $waitGroup = WaitGroup::create();
+
+        $counter = 0;
+
+        $waitGroup->add(
+            callback: function () use (&$counter) {
+                $iterator = $this->sconcurCollection->aggregate(
+                    pipeline: [],
+                    batchSize: $this->documentsCount + 3
+                );
+
+                foreach ($iterator as $ignored) {
+                    ++$counter;
+                }
+            }
+        );
+
+        $waitGroup->add(
+            callback: function () use (&$counter) {
+                $iterator = $this->sconcurCollection->aggregate(
+                    pipeline: [],
+                    batchSize: $this->documentsCount
+                );
+
+                foreach ($iterator as $ignored) {
+                    ++$counter;
+                }
+            }
+        );
+
+        $waitGroup->waitAll();
+
+        self::assertEquals(
+            $this->documentsCount * 2,
+            $counter
+        );
+    }
+
     private function seedDocuments(): void
     {
         $this->sconcurCollection->deleteMany(

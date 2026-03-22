@@ -23,6 +23,7 @@ type AggregationState struct {
 	resultKey   string
 	errFactory  *errs.Factory
 	cursor      *mongo.Cursor
+	pending     []interface{}
 	startTime   time.Time
 }
 
@@ -69,42 +70,74 @@ func (s *AggregationState) Next() *dto.Result {
 		s.cursor = cursor
 	}
 
-	var items []interface{}
+	itemsCapacity := 0
 
 	if s.batchSize > 0 {
-		items = make([]interface{}, 0, s.batchSize)
+		itemsCapacity = s.batchSize
 	}
 
-	for s.cursor.Next(s.ctx) {
-		items = append(items, s.cursor.Current)
+	items := make([]interface{}, 0, itemsCapacity)
 
-		if len(items) == s.batchSize {
-			response, err := serializer.MarshalDocument(
-				bson.D{
-					{Key: s.resultKey, Value: items},
-				},
-			)
+	if len(s.pending) > 0 {
+		items = append(items, s.pending...)
+		s.pending = nil
+	}
 
-			if err != nil {
+	for {
+		for s.batchSize <= 0 || len(items) < s.batchSize {
+			if !s.cursor.Next(s.ctx) {
+				if err := s.cursor.Err(); err != nil {
+					_ = s.cursor.Close(s.ctx)
+
+					return dto.NewErrorResult(
+						s.message,
+						s.errFactory.ByErr("aggregate cursor error", err),
+					)
+				}
+
+				return s.finish(items)
+			}
+
+			items = append(items, cloneRaw(s.cursor.Current))
+		}
+
+		if !s.cursor.Next(s.ctx) {
+			if err := s.cursor.Err(); err != nil {
+				_ = s.cursor.Close(s.ctx)
+
 				return dto.NewErrorResult(
 					s.message,
-					s.errFactory.ByErr("aggregate result marshal error", err),
+					s.errFactory.ByErr("aggregate cursor error", err),
 				)
 			}
 
-			return dto.NewSuccessResultWithNext(s.message, response, s.calcExecutionMs())
+			return s.finish(items)
 		}
-	}
 
-	if err := s.cursor.Err(); err != nil {
-		_ = s.cursor.Close(s.ctx)
+		s.pending = []interface{}{cloneRaw(s.cursor.Current)}
 
-		return dto.NewErrorResult(
-			s.message,
-			s.errFactory.ByErr("aggregate cursor error", err),
+		response, err := serializer.MarshalDocument(
+			bson.D{
+				{Key: s.resultKey, Value: items},
+			},
 		)
-	}
 
+		if err != nil {
+			return dto.NewErrorResult(
+				s.message,
+				s.errFactory.ByErr("aggregate result marshal error", err),
+			)
+		}
+
+		return dto.NewSuccessResultWithNext(s.message, response, s.calcExecutionMs())
+	}
+}
+
+func (s *AggregationState) calcExecutionMs() int {
+	return helpers.CalcExecutionMs(s.startTime)
+}
+
+func (s *AggregationState) finish(items []interface{}) *dto.Result {
 	response, err := serializer.MarshalDocument(
 		bson.D{
 			{Key: s.resultKey, Value: items},
@@ -123,6 +156,6 @@ func (s *AggregationState) Next() *dto.Result {
 	return dto.NewSuccessResult(s.message, response, s.calcExecutionMs())
 }
 
-func (s *AggregationState) calcExecutionMs() int {
-	return helpers.CalcExecutionMs(s.startTime)
+func cloneRaw(raw bson.Raw) bson.Raw {
+	return append(bson.Raw(nil), raw...)
 }

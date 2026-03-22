@@ -43,7 +43,7 @@ $sconcurCallback = static function () use ($sconcurCollection, $sconcurPipeline,
     $item = uniqid();
 
     $aggregate = $sconcurCollection->aggregate(
-    pipeline: $sconcurPipeline
+        pipeline: $sconcurPipeline,
     );
 
     foreach ($aggregate as $doc) {
@@ -74,6 +74,11 @@ function makePipeline(mixed $objectId): array
         ],
         [
             '$limit' => 30,
+        ],
+        [
+            '$project' => [
+                '_id' => 1,
+            ],
         ],
     ];
 }
