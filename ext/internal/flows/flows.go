@@ -3,6 +3,7 @@ package flows
 import (
 	"context"
 	"errors"
+	"sconcur/internal/cleanup"
 	"sync"
 )
 
@@ -55,6 +56,7 @@ func (f *Flows) DeleteFlow(flowKey string) {
 		return
 	}
 
+	cleanup.Run(flowKey)
 	flow.Cancel()
 	delete(f.flows, flowKey)
 }
@@ -77,6 +79,7 @@ func (f *Flows) Cancel() {
 	defer f.mutex.Unlock()
 
 	for _, flow := range f.flows {
+		cleanup.Run(flow.key)
 		flow.Cancel()
 	}
 

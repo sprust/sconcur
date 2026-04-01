@@ -30,6 +30,21 @@ services:
       - ./docker/mongo/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
       - mongodb:/data/db
 
+  mysql:
+    container_name: sc-mysql
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      - ${MYSQL_DOCKER_PORT}:3306
+    tmpfs:
+      - /var/lib/mysql
+    mem_limit: 1g
+
 volumes:
   mongodb:
     driver: local

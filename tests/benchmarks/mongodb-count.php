@@ -10,7 +10,7 @@ $benchmarker = new Benchmarker(
     name: 'mongodb-count',
 );
 
-$driverCollection  = TestMongodbResolver::getDriverBenchmarkCollection();
+$driverCollection = TestMongodbResolver::getDriverBenchmarkCollection();
 $sconcurCollection = TestMongodbResolver::getSconcurBenchmarkCollection();
 
 $driverFilter = makeFilter(
@@ -29,12 +29,12 @@ $benchmarker->run(
     },
     syncCallback: static function () use ($sconcurCollection, $sconcurFilter) {
         return $sconcurCollection->countDocuments(
-        filter: $sconcurFilter
+            filter: $sconcurFilter
         );
     },
     asyncCallback: static function () use ($sconcurCollection, $sconcurFilter) {
         return $sconcurCollection->countDocuments(
-        filter: $sconcurFilter
+            filter: $sconcurFilter
         );
     }
 );
