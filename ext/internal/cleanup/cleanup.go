@@ -9,6 +9,8 @@ var (
 	funcs []Func
 )
 
+// TODO: delete, refactor to context cancel
+
 func Register(fn Func) {
 	mutex.Lock()
 	defer mutex.Unlock()
