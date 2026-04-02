@@ -3,6 +3,7 @@ package mysql_feature
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"sconcur/internal/features/mysql/transactions"
 	"sconcur/internal/helpers"
 	"sconcur/internal/tasks"
+	"strings"
 	"sync"
 	"time"
 
@@ -412,6 +414,18 @@ func normalizeBinding(value interface{}) (interface{}, error) {
 	case nil:
 		return nil, nil
 	case string:
+		if strings.HasPrefix(v, "$bin-ldkf:") {
+			encodedData := v[len("$bin-ldkf:"):]
+			
+			decodedData, err := base64.StdEncoding.DecodeString(encodedData)
+
+			if err != nil {
+				return nil, fmt.Errorf("failed to decode base64 binary data: %w", err)
+			}
+
+			return decodedData, nil
+		}
+
 		return v, nil
 	case bool:
 		return v, nil

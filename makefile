@@ -109,6 +109,9 @@ bench-mongodb-createIndex:
 bench-mongodb-deleteOne:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-delete-one.php ${c}
 
+bench-mysql-seeder:
+	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mysql-seeder.php ${c}
+
 bench-mongodb-updateMany:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-update-many.php ${c}
 
