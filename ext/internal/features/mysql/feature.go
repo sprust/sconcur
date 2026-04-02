@@ -416,7 +416,7 @@ func normalizeBinding(value interface{}) (interface{}, error) {
 	case string:
 		if strings.HasPrefix(v, "$bin-ldkf:") {
 			encodedData := v[len("$bin-ldkf:"):]
-			
+
 			decodedData, err := base64.StdEncoding.DecodeString(encodedData)
 
 			if err != nil {

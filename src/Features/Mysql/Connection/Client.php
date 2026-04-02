@@ -7,6 +7,8 @@ namespace SConcur\Features\Mysql\Connection;
 use JsonException;
 use RuntimeException;
 use SConcur\Dto\TaskResultDto;
+use SConcur\Exceptions\TransactionAlreadyBeganException;
+use SConcur\Exceptions\TransactionIsNotStartedException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\MethodEnum;
 use SConcur\Features\Mysql\CommandEnum;
@@ -14,8 +16,10 @@ use SConcur\Features\Mysql\Results\ExecResult;
 use SConcur\Features\Mysql\Results\QueryResult;
 use SConcur\Features\Mysql\TransactionIsolationEnum;
 
-readonly class Client
+class Client
 {
+    protected ?Transaction $transaction = null;
+
     public function __construct(
         public string $dsn,
         public int $timeoutMs = 0,
@@ -25,53 +29,13 @@ readonly class Client
     /**
      * @param array<int, mixed> $bindings
      */
-    public function query(string $sql, array $bindings = []): QueryResult
-    {
-        return $this->queryInternal(
-            sql: $sql,
-            bindings: $bindings,
-            txKey: null,
-        );
-    }
-
-    /**
-     * @param array<int, mixed> $bindings
-     */
-    public function exec(string $sql, array $bindings = []): ExecResult
-    {
-        return $this->execInternal(
-            sql: $sql,
-            bindings: $bindings,
-            txKey: null,
-        );
-    }
-
-    public function beginTransaction(?TransactionIsolationEnum $isolation = null): Transaction
-    {
-        $taskResult = $this->execCommand(
-            command: CommandEnum::Begin,
-            sql: '',
-            bindings: [],
-            txKey: null,
-            isolation: $isolation ?? TransactionIsolationEnum::Default,
-        );
-
-        return new Transaction(
-            client: $this,
-            txKey: $taskResult->payload,
-        );
-    }
-
-    /**
-     * @param array<int, mixed> $bindings
-     */
-    public function queryInternal(string $sql, array $bindings, ?string $txKey): QueryResult
+    public function query(string $sql, array $bindings = [], ?Transaction $transaction = null): QueryResult
     {
         $taskResult = $this->execCommand(
             command: CommandEnum::Query,
             sql: $sql,
             bindings: $bindings,
-            txKey: $txKey,
+            txKey: $this->getTransactionKey(),
             isolation: null,
         );
 
@@ -86,13 +50,13 @@ readonly class Client
     /**
      * @param array<int, mixed> $bindings
      */
-    public function execInternal(string $sql, array $bindings, ?string $txKey): ExecResult
+    public function exec(string $sql, array $bindings = []): ExecResult
     {
         $taskResult = $this->execCommand(
             command: CommandEnum::Exec,
             sql: $sql,
             bindings: $bindings,
-            txKey: $txKey,
+            txKey: $this->getTransactionKey(),
             isolation: null,
         );
 
@@ -104,26 +68,87 @@ readonly class Client
         );
     }
 
-    public function commit(string $txKey): void
+    public function beginTransaction(?TransactionIsolationEnum $isolation = null): static
     {
+        $this->checkTransactionBegin();
+
+        $this->transaction = new Transaction();
+
+        $taskResult = $this->execCommand(
+            command: CommandEnum::Begin,
+            sql: '',
+            bindings: [],
+            txKey: null,
+            isolation: $isolation ?: TransactionIsolationEnum::Default,
+        );
+
+        $this->transaction->setKey(
+            key: $taskResult->payload
+        );
+
+        return $this;
+    }
+
+    public function commit(): void
+    {
+        $this->checkTransactionCommitRollback();
+
         $this->execCommand(
             command: CommandEnum::Commit,
             sql: '',
             bindings: [],
-            txKey: $txKey,
+            txKey: $this->getTransactionKey(),
             isolation: null,
         );
+
+        $this->resetTransaction();
     }
 
-    public function rollback(string $txKey): void
+    public function rollback(): void
     {
+        $this->checkTransactionCommitRollback();
+
         $this->execCommand(
             command: CommandEnum::Rollback,
             sql: '',
             bindings: [],
-            txKey: $txKey,
+            txKey: $this->getTransactionKey(),
             isolation: null,
         );
+
+        $this->resetTransaction();
+    }
+
+    protected function checkTransactionBegin(): void
+    {
+        if ($this->transaction !== null) {
+            throw new TransactionAlreadyBeganException();
+        }
+    }
+
+    protected function checkTransactionCommitRollback(): void
+    {
+        if ($this->transaction === null) {
+            throw new TransactionIsNotStartedException();
+        }
+    }
+
+    protected function getTransactionKey(): ?string
+    {
+        if ($this->transaction === null) {
+            return null;
+        }
+
+        if ($key = $this->transaction->getKey()) {
+            return $key;
+        }
+
+        throw new TransactionIsNotStartedException();
+    }
+
+    protected function resetTransaction(): void
+    {
+        $this->transaction = null;
     }
 
     /**
