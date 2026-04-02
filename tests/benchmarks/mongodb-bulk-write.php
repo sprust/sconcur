@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use SConcur\Tests\Impl\TestMongodbResolver;
+use SConcur\Tests\Impl\Mongodb\TestMongodbResolver;
 
 require_once __DIR__ . '/_benchmarker.php';
 

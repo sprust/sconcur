@@ -6,7 +6,7 @@ namespace SConcur\Tests\Feature\Features\Mongodb\Collection;
 
 use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Tests\Feature\BaseTestCase;
-use SConcur\Tests\Impl\TestMongodbResolver;
+use SConcur\Tests\Impl\Mongodb\TestMongodbResolver;
 
 abstract class BaseMongodbOrderTestCase extends BaseTestCase
 {

@@ -8,7 +8,7 @@ use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Feature\BaseTestCase;
-use SConcur\Tests\Impl\TestMongodbResolver;
+use SConcur\Tests\Impl\Mongodb\TestMongodbResolver;
 
 class MongodbDocumentSerializerTest extends BaseTestCase
 {

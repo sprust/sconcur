@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 use Random\RandomException;
 use SConcur\Features\Mysql\Serialization\BindingSerializer;
-use SConcur\Tests\Impl\TestMysqlResolver;
+use SConcur\Tests\Impl\Mysql\TestMysqlResolver;
 
 require_once __DIR__ . '/_benchmarker.php';
 

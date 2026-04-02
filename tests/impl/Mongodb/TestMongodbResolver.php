@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Tests\Impl;
+namespace SConcur\Tests\Impl\Mongodb;
 
 use DateTime;
 use SConcur\Features\Mongodb\Connection\Client;

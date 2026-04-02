@@ -6,7 +6,7 @@ namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Aggregate
 
 use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Tests\Feature\BaseTestCase;
-use SConcur\Tests\Impl\TestMongodbResolver;
+use SConcur\Tests\Impl\Mongodb\TestMongodbResolver;
 use SConcur\WaitGroup;
 
 class MongodbAggregateTest extends BaseTestCase

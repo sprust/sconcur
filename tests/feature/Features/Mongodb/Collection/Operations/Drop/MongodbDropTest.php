@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Drop;
 
 use SConcur\Tests\Feature\BaseTestCase;
-use SConcur\Tests\Impl\TestMongodbResolver;
+use SConcur\Tests\Impl\Mongodb\TestMongodbResolver;
 
 class MongodbDropTest extends BaseTestCase
 {

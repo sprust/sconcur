@@ -7,7 +7,7 @@ namespace SConcur\Tests\Feature\Features\Mongodb\Collection;
 use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Tests\Feature\BaseAsyncTestCase;
-use SConcur\Tests\Impl\TestMongodbResolver;
+use SConcur\Tests\Impl\Mongodb\TestMongodbResolver;
 use Throwable;
 
 abstract class BaseMongodbAsyncTestCase extends BaseAsyncTestCase

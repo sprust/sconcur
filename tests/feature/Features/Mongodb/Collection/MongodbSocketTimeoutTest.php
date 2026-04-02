@@ -6,7 +6,7 @@ namespace SConcur\Tests\Feature\Features\Mongodb\Collection;
 
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Tests\Feature\BaseTestCase;
-use SConcur\Tests\Impl\TestMongodbResolver;
+use SConcur\Tests\Impl\Mongodb\TestMongodbResolver;
 
 class MongodbSocketTimeoutTest extends BaseTestCase
 {

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Tests\Impl;
+namespace SConcur\Tests\Impl\Mysql;
 
 use SConcur\Features\Mysql\Connection\Client;
 

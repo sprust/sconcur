@@ -7,7 +7,7 @@ namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Insert;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
-use SConcur\Tests\Impl\TestMongodbResolver;
+use SConcur\Tests\Impl\Mongodb\TestMongodbResolver;
 
 class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
 {
