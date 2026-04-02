@@ -3,6 +3,7 @@ package connection
 import (
 	"database/sql"
 	"sync"
+	"time"
 )
 
 var once sync.Once
@@ -49,6 +50,12 @@ func (c *Clients) GetClient(dsn string) (*sql.DB, error) {
 		_ = db.Close()
 		return client, nil
 	}
+
+	// TODO: check, fix, update
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(25)
+	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(1 * time.Minute)
 
 	c.clients[dsn] = db
 
