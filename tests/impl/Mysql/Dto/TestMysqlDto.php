@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Tests\Impl\Mysql\Repositories;
+namespace SConcur\Tests\Impl\Mysql\Dto;
 
-readonly class TestMysqlDto
+class TestMysqlDto
 {
     public function __construct(
         public ?string $varcharCol,

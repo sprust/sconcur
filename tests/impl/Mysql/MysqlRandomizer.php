@@ -2,11 +2,7 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Tests\Impl\Mysql\Repositories;
-
-use Random\RandomException;
-use RuntimeException;
-use SConcur\Features\Mysql\Serialization\BindingSerializer;
+namespace SConcur\Tests\Impl\Mysql;
 
 readonly class MysqlRandomizer
 {
@@ -17,19 +13,12 @@ readonly class MysqlRandomizer
 
     public static function randInt(int $min, int $max): int
     {
-        try {
-            return random_int($min, $max);
-        } catch (RandomException $exception) {
-            throw new RuntimeException(
-                message: $exception->getMessage(),
-                previous: $exception
-            );
-        }
+        return random_int($min, $max);
     }
 
     public static function randFloat(): float
     {
-        return (float)(self::randInt(0, 999999) / 100);
+        return (float) (self::randInt(0, 999999) / 100);
     }
 
     public static function varchar(): string
@@ -139,32 +128,32 @@ readonly class MysqlRandomizer
 
     public static function binary(): string
     {
-        return BindingSerializer::bin(random_bytes(16));
+        return random_bytes(16);
     }
 
     public static function varbinary(): string
     {
-        return BindingSerializer::bin(random_bytes(self::randInt(1, 100)));
+        return random_bytes(self::randInt(1, 100));
     }
 
     public static function blob(): string
     {
-        return BindingSerializer::bin(random_bytes(self::randInt(1, 100)));
+        return random_bytes(self::randInt(1, 100));
     }
 
     public static function tinyblob(): string
     {
-        return BindingSerializer::bin(random_bytes(self::randInt(1, 50)));
+        return random_bytes(self::randInt(1, 50));
     }
 
     public static function mediumblob(): string
     {
-        return BindingSerializer::bin(random_bytes(self::randInt(1, 200)));
+        return random_bytes(self::randInt(1, 200));
     }
 
     public static function longblob(): string
     {
-        return BindingSerializer::bin(random_bytes(self::randInt(1, 500)));
+        return random_bytes(self::randInt(1, 500));
     }
 
     public static function enum(): string
@@ -186,5 +175,4 @@ readonly class MysqlRandomizer
     {
         return self::randInt(0, 1);
     }
-
 }

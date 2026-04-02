@@ -2,8 +2,8 @@
 
 declare(strict_types=1);
 
-use SConcur\Tests\Impl\Mysql\Repositories\MysqlRandomizer;
-use SConcur\Tests\Impl\Mysql\Repositories\TestMysqlDto;
+use SConcur\Tests\Impl\Mysql\Dto\TestMysqlDto;
+use SConcur\Tests\Impl\Mysql\MysqlRandomizer;
 use SConcur\Tests\Impl\Mysql\TestMysqlResolver;
 
 require_once __DIR__ . '/_benchmarker.php';
@@ -12,22 +12,29 @@ $benchmarker = new Benchmarker(
     name: 'mysql-seeder',
 );
 
-$testRepository = TestMysqlResolver::getTestRepository();
+$driverRepository = TestMysqlResolver::getDriverRepository();
+$sconcurRepository = TestMysqlResolver::getSconcurRepository();
 
-$testRepository->refresh();
+$sconcurRepository->dropTableIfExists();
+$sconcurRepository->createTableIfNotExists();
 
-$sconcurClient = TestMysqlResolver::getSconcurTestClient();
+$sconcurClient = TestMysqlResolver::getSconcurRepository();
 
 $benchmarker->run(
-    syncCallback: static function () use ($testRepository) {
-        $query = makeTestMysqlDto();
-
-        return $testRepository->insert($query)->rowsAffected;
+    nativeCallback: static function () use ($driverRepository) {
+        return $driverRepository->insert(
+            makeTestMysqlDto()
+        );
     },
-    asyncCallback: static function () use ($testRepository) {
-        $query = makeTestMysqlDto();
-
-        return $testRepository->insert($query)->rowsAffected;
+    syncCallback: static function () use ($sconcurRepository) {
+        return $sconcurRepository->insert(
+            makeTestMysqlDto()
+        );
+    },
+    asyncCallback: static function () use ($sconcurRepository) {
+        return $sconcurRepository->insert(
+            makeTestMysqlDto()
+        );
     }
 );
 

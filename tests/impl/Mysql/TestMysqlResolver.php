@@ -4,45 +4,51 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Impl\Mysql;
 
+use PDO;
 use SConcur\Features\Mysql\Connection\Client;
-use SConcur\Tests\Impl\Mysql\Repositories\TestMysqlRepository;
+use SConcur\Tests\Impl\Mysql\Repositories\DriverMysqlRepository;
+use SConcur\Tests\Impl\Mysql\Repositories\SconcurMysqlRepository;
 
 class TestMysqlResolver
 {
-    protected static ?string $dns = null;
-
     protected static string $testTableName = 'test_table';
 
-    public static function getTestTableName(): string
+    public static function getDriverRepository(): DriverMysqlRepository
     {
-        return self::$testTableName;
-    }
+        $host     = $_ENV['MYSQL_HOST'];
+        $user     = $_ENV['MYSQL_USER'];
+        $pass     = $_ENV['MYSQL_PASSWORD'];
+        $database = $_ENV['MYSQL_DATABASE'];
+        $port     = $_ENV['MYSQL_PORT'];
 
-    public static function getTestRepository(): TestMysqlRepository
-    {
-        return new TestMysqlRepository(
-            client: static::getSconcurTestClient(),
+        $dns = "mysql:host=$host;port=$port;dbname=$database;charset=utf8mb4;";
+
+        return new DriverMysqlRepository(
+            pdo: new PDO(
+                dsn: $dns,
+                username: $user,
+                password: $pass,
+            ),
             tableName: static::$testTableName,
         );
     }
 
-    public static function getSconcurTestClient(int $timeoutMs = 0): Client
+    public static function getSconcurRepository(): SconcurMysqlRepository
     {
-        return new Client(dsn: static::getDns(), timeoutMs: $timeoutMs);
-    }
-
-    protected static function getDns(): string
-    {
-        if (static::$dns !== null) {
-            return static::$dns;
-        }
-
-        $host = $_ENV['MYSQL_HOST'];
-        $user = $_ENV['MYSQL_USER'];
-        $pass = $_ENV['MYSQL_PASSWORD'];
+        $host     = $_ENV['MYSQL_HOST'];
+        $user     = $_ENV['MYSQL_USER'];
+        $pass     = $_ENV['MYSQL_PASSWORD'];
         $database = $_ENV['MYSQL_DATABASE'];
-        $port = $_ENV['MYSQL_PORT'];
+        $port     = $_ENV['MYSQL_PORT'];
 
-        return static::$dns = "$user:$pass@tcp($host:$port)/$database?parseTime=true";
+        $dns = "$user:$pass@tcp($host:$port)/$database?parseTime=true";
+
+        return new SconcurMysqlRepository(
+            client: new Client(
+                dsn: $dns,
+                timeoutMs: 0
+            ),
+            tableName: static::$testTableName,
+        );
     }
 }

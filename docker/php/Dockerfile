@@ -38,6 +38,8 @@ RUN curl -sS https://getcomposer.org/installer  \
 
 RUN pecl install zip mongodb-1.21.0 && docker-php-ext-enable zip mongodb
 
+RUN docker-php-ext-install pdo pdo_mysql
+
 # Check if user and group doesn't exist before creating
 RUN getent group "$GROUP_ID" || addgroup --gid "$GROUP_ID" user
 RUN getent passwd "$USER_ID" || adduser --disabled-password --gecos '' --uid "$USER_ID" --gid "$GROUP_ID" user

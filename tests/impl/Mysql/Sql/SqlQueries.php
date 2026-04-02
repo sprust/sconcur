@@ -2,27 +2,24 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Tests\Impl\Mysql\Repositories;
+namespace SConcur\Tests\Impl\Mysql\Sql;
 
-use SConcur\Features\Mysql\Connection\Client;
-use SConcur\Features\Mysql\Results\ExecResult;
+use SConcur\Tests\Impl\Mysql\Dto\QueryDto;
+use SConcur\Tests\Impl\Mysql\Dto\TestMysqlDto;
 
-readonly class TestMysqlRepository
+readonly class SqlQueries
 {
-    public function __construct(
-        protected Client $client,
-        protected string $tableName,
-    ) {
+    public static function dropTableIfExists(string $tableName): string
+    {
+        return <<<SQL
+            DROP TABLE IF EXISTS $tableName;
+        SQL;
     }
 
-    public function refresh(): void
+    public static function createTableIfNotExists(string $tableName): string
     {
-        $this->client->exec(
-            sql: "DROP TABLE IF EXISTS $this->tableName",
-        );
-
-        $this->client->exec(
-            sql: "CREATE TABLE IF NOT EXISTS $this->tableName (
+        return <<<SQL
+            CREATE TABLE IF NOT EXISTS $tableName (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 varchar_col VARCHAR(255) NULL,
                 char_col CHAR(50) NULL,
@@ -55,16 +52,79 @@ readonly class TestMysqlRepository
                 set_col SET('option1', 'option2', 'option3') NULL,
                 json_col JSON NULL,
                 bool_col BOOLEAN NULL
-            )",
-        );
+            );
+        SQL;
     }
 
-    public function insert(TestMysqlDto $dto): ExecResult {
-        $sql = "INSERT INTO $this->tableName (varchar_col, char_col, text_col, tinytext_col, mediumtext_col, longtext_col, " .
-            "tinyint_col, smallint_col, mediumint_col, int_col, bigint_col, decimal_col, numeric_col, float_col, double_col, " .
-            "bit_col, date_col, datetime_col, timestamp_col, time_col, year_col, binary_col, varbinary_col, blob_col, " .
-            "tinyblob_col, mediumblob_col, longblob_col, enum_col, set_col, json_col, bool_col) VALUES " .
-            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    public static function insert(TestMysqlDto $dto, string $tableName): QueryDto
+    {
+        $sql = <<<SQL
+            INSERT INTO $tableName (
+                varchar_col, 
+                char_col, 
+                text_col, 
+                tinytext_col, 
+                mediumtext_col, 
+                longtext_col, 
+                tinyint_col, 
+                smallint_col, 
+                mediumint_col, 
+                int_col, 
+                bigint_col, 
+                decimal_col, 
+                numeric_col, 
+                float_col, 
+                double_col, 
+                bit_col, 
+                date_col, 
+                datetime_col, 
+                timestamp_col, 
+                time_col, 
+                year_col, 
+                binary_col, 
+                varbinary_col, 
+                blob_col, 
+                tinyblob_col, 
+                mediumblob_col, 
+                longblob_col, 
+                enum_col, 
+                set_col, 
+                json_col, 
+                bool_col
+            ) VALUES (
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?, 
+                ?
+            )
+        SQL;
 
         $bindings = [
             $dto->varcharCol,
@@ -100,7 +160,7 @@ readonly class TestMysqlRepository
             $dto->boolCol,
         ];
 
-        return $this->client->exec(
+        return new QueryDto(
             sql: $sql,
             bindings: $bindings,
         );
