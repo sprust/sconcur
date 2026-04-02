@@ -8,6 +8,7 @@ use JsonException;
 use RuntimeException;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\TransactionAlreadyBeganException;
+use SConcur\Exceptions\TransactionIsNotFinishedException;
 use SConcur\Exceptions\TransactionIsNotStartedException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\MethodEnum;
@@ -133,6 +134,13 @@ class Client
         }
     }
 
+    protected function checkTransactionFinished(): void
+    {
+        if ($this->transaction !== null) {
+            throw new TransactionIsNotFinishedException();
+        }
+    }
+
     protected function getTransactionKey(): ?string
     {
         if ($this->transaction === null) {
@@ -240,5 +248,10 @@ class Client
         }
 
         return $data;
+    }
+
+    public function __destruct()
+    {
+        $this->checkTransactionFinished();
     }
 }

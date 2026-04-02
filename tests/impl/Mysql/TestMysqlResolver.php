@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Impl\Mysql;
 
 use SConcur\Features\Mysql\Connection\Client;
+use SConcur\Tests\Impl\Mysql\Repositories\TestMysqlRepository;
 
 class TestMysqlResolver
 {
@@ -17,54 +18,11 @@ class TestMysqlResolver
         return self::$testTableName;
     }
 
-    public static function initSconcurTable(): void
+    public static function getTestRepository(): TestMysqlRepository
     {
-        $tableName = static::$testTableName;
-
-        static::getSconcurTestClient()->exec(
-            sql: "CREATE TABLE IF NOT EXISTS $tableName (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                varchar_col VARCHAR(255),
-                char_col CHAR(50),
-                text_col TEXT,
-                tinytext_col TINYTEXT,
-                mediumtext_col MEDIUMTEXT,
-                longtext_col LONGTEXT,
-                tinyint_col TINYINT,
-                smallint_col SMALLINT,
-                mediumint_col MEDIUMINT,
-                int_col INT,
-                bigint_col BIGINT,
-                decimal_col DECIMAL(10,2),
-                numeric_col NUMERIC(10,2),
-                float_col FLOAT,
-                double_col DOUBLE,
-                bit_col BIT(8),
-                date_col DATE,
-                datetime_col DATETIME,
-                timestamp_col TIMESTAMP,
-                time_col TIME,
-                year_col YEAR,
-                binary_col BINARY(16),
-                varbinary_col VARBINARY(255),
-                blob_col BLOB,
-                tinyblob_col TINYBLOB,
-                mediumblob_col MEDIUMBLOB,
-                longblob_col LONGBLOB,
-                enum_col ENUM('value1', 'value2', 'value3'),
-                set_col SET('option1', 'option2', 'option3'),
-                json_col JSON,
-                bool_col BOOLEAN
-            )",
-        );
-    }
-
-    public static function dropSconcurTable(): void
-    {
-        $tableName = static::$testTableName;
-
-        static::getSconcurTestClient()->exec(
-            sql: "DROP TABLE IF EXISTS $tableName",
+        return new TestMysqlRepository(
+            client: static::getSconcurTestClient(),
+            tableName: static::$testTableName,
         );
     }
 
