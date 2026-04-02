@@ -6,10 +6,10 @@ namespace SConcur\Features\Mysql\Serialization;
 
 readonly class BindingSerializer
 {
-    protected const string TYPE_PREFIX = '$bin-ldkf:';
+    protected const string BIN_PREFIX = '$bin-ldkf:';
 
     public static function bin(string $value): string
     {
-        return static::TYPE_PREFIX . base64_encode($value);
+        return static::BIN_PREFIX . base64_encode($value);
     }
 }
