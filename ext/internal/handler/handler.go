@@ -29,11 +29,11 @@ func (h *Handler) Push(msg *dto.Message) error {
 	return flow.HandleMessage(msg)
 }
 
-func (h *Handler) Wait(flowKey string) (string, error) {
+func (h *Handler) Wait(flowKey string) (*dto.Result, error) {
 	flow, err := h.flows.GetFlow(flowKey)
 
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	return flow.Wait()

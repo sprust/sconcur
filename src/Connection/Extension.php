@@ -7,18 +7,18 @@ namespace SConcur\Connection;
 use RuntimeException;
 use SConcur\Dto\RunningTaskDto;
 use SConcur\Dto\TaskResultDto;
-use SConcur\Exceptions\ResponseIsNotJsonException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\MethodEnum;
+use SConcur\Transport\MessagePackTransport;
 use Throwable;
 use function SConcur\Extension\count;
 use function SConcur\Extension\destroy;
-use function SConcur\Extension\push;
+use function SConcur\Extension\pushBin;
 use function SConcur\Extension\next;
 use function SConcur\Extension\stopFlow;
 use function SConcur\Extension\version;
-use function SConcur\Extension\wait;
+use function SConcur\Extension\waitBin;
 
 class Extension
 {
@@ -43,7 +43,7 @@ class Extension
 
         $taskKey = $flowKey . ':' . static::$tasksCounter;
 
-        push($flowKey, $method->value, $taskKey, $payload);
+        pushBin($flowKey, $method->value, $taskKey, $payload);
 
         return new RunningTaskDto(
             key: $taskKey,
@@ -63,7 +63,7 @@ class Extension
     {
         $start = microtime(true);
 
-        $response = wait($flowKey);
+        $response = waitBin($flowKey);
 
         if (str_starts_with($response, 'error:')) {
             throw new TaskErrorException(
@@ -75,17 +75,7 @@ class Extension
             );
         }
 
-        try {
-            $responseData = json_decode(
-                json: $response,
-                associative: true,
-                flags: JSON_THROW_ON_ERROR
-            );
-        } catch (Throwable $exception) {
-            throw new ResponseIsNotJsonException(
-                message: $exception->getMessage(),
-            );
-        }
+        $responseData = MessagePackTransport::unpack($response);
 
         try {
             return new TaskResultDto(

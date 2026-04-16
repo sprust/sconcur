@@ -1,7 +1,6 @@
 package sleep_feature
 
 import (
-	"encoding/json"
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
@@ -10,6 +9,8 @@ import (
 	"sconcur/internal/tasks"
 	"sync"
 	"time"
+
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 var _ contracts.FeatureContract = (*SleepFeature)(nil)
@@ -36,7 +37,7 @@ func (s *SleepFeature) Handle(task *tasks.Task) {
 
 	var payload params.SleepPayload
 
-	err := json.Unmarshal([]byte(message.Payload), &payload)
+	err := msgpack.Unmarshal([]byte(message.Payload), &payload)
 
 	if err != nil {
 		task.AddResult(

@@ -1,7 +1,6 @@
 package collection_feature
 
 import (
-	"encoding/json"
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
@@ -9,6 +8,8 @@ import (
 	"sconcur/internal/features/mongodb/objects"
 	"sconcur/internal/tasks"
 	"sync"
+
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 var _ contracts.FeatureContract = (*CollectionFeature)(nil)
@@ -37,7 +38,7 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 
 	var payload objects.Payload
 
-	err := json.Unmarshal([]byte(message.Payload), &payload)
+	err := msgpack.Unmarshal([]byte(message.Payload), &payload)
 
 	if err != nil {
 		task.AddResult(

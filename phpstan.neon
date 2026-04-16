@@ -8,4 +8,5 @@ parameters:
         -
             messages:
                 - '#unction SConcur\\Extension\\(cancelTask|count|destroy|push|next|stopFlow|wait|version) not found#'
+                - '#unction SConcur\\Extension\\(pushBin|waitBin) not found#'
                 - '#generic class Fiber [\s\S]* not specify its types: TStart, TResume, TReturn, TSuspend#'

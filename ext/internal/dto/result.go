@@ -3,13 +3,13 @@ package dto
 import "sconcur/internal/types"
 
 type Result struct {
-	FlowKey     string       `json:"fk"`
-	Method      types.Method `json:"md"`
-	TaskKey     string       `json:"tk"`
-	IsError     bool         `json:"er"`
-	Payload     string       `json:"pl"`
-	HasNext     bool         `json:"hn"`
-	ExecutionMs int          `json:"ems"`
+	FlowKey     string       `json:"fk" msgpack:"fk"`
+	Method      types.Method `json:"md" msgpack:"md"`
+	TaskKey     string       `json:"tk" msgpack:"tk"`
+	IsError     bool         `json:"er" msgpack:"er"`
+	Payload     string       `json:"pl" msgpack:"pl"`
+	HasNext     bool         `json:"hn" msgpack:"hn"`
+	ExecutionMs int          `json:"ems" msgpack:"ems"`
 }
 
 func NewSuccessResult(message *Message, payload string, executionMs int) *Result {

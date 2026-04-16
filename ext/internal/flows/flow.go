@@ -2,7 +2,6 @@ package flows
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sconcur/internal/dto"
 	"sconcur/internal/features"
@@ -59,13 +58,13 @@ func (f *Flow) HandleMessage(msg *dto.Message) error {
 	return nil
 }
 
-func (f *Flow) Wait() (string, error) {
+func (f *Flow) Wait() (*dto.Result, error) {
 	select {
 	case <-f.ctx.Done():
-		return "", f.ctx.Err()
+		return nil, f.ctx.Err()
 	case result, ok := <-f.results:
 		if !ok {
-			return "", errors.New("task channel closed")
+			return nil, errors.New("task channel closed")
 		}
 
 		f.mutex.Lock()
@@ -75,13 +74,7 @@ func (f *Flow) Wait() (string, error) {
 
 		f.mutex.Unlock()
 
-		b, err := json.Marshal(result)
-
-		if err != nil {
-			return "", err
-		}
-
-		return string(b), nil
+		return result, nil
 	}
 }
 

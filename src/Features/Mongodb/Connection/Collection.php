@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace SConcur\Features\Mongodb\Connection;
 
 use Iterator;
-use JsonException;
 use RuntimeException;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\InvalidMongodbBulkWriteOperationException;
@@ -19,6 +18,7 @@ use SConcur\Features\Mongodb\Results\InsertOneResult;
 use SConcur\Features\Mongodb\Results\IteratorResult;
 use SConcur\Features\Mongodb\Results\UpdateResult;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
+use SConcur\Transport\MessagePackTransport;
 
 readonly class Collection
 {
@@ -117,7 +117,7 @@ readonly class Collection
             ];
         }
 
-        $serialized = DocumentSerializer::serialize($preparedOperations, isObject: false);
+        $serialized = MessagePackTransport::pack($preparedOperations);
 
         $taskResult = $this->exec(
             command: CommandEnum::BulkWrite,
@@ -166,7 +166,7 @@ readonly class Collection
      */
     public function aggregate(array $pipeline, int $batchSize = 50): Iterator
     {
-        $serialized = DocumentSerializer::serialize([
+        $serialized = MessagePackTransport::pack([
             'p'  => DocumentSerializer::serialize($pipeline, isObject: false),
             'bs' => $batchSize,
         ]);
@@ -217,7 +217,7 @@ readonly class Collection
      */
     public function findOne(array $filter, ?array $projection = null): ?array
     {
-        $serialized = DocumentSerializer::serialize([
+        $serialized = MessagePackTransport::pack([
             'f'  => DocumentSerializer::serialize($filter),
             'op' => ($projection === null) ? "" : DocumentSerializer::serialize($projection),
         ]);
@@ -245,7 +245,7 @@ readonly class Collection
             $indexName = $this->makeIndexNameByKeys($keys);
         }
 
-        $serialized = DocumentSerializer::serialize([
+        $serialized = MessagePackTransport::pack([
             'k' => DocumentSerializer::serialize($keys),
             'n' => $indexName,
         ]);
@@ -269,7 +269,7 @@ readonly class Collection
             $indexName = $this->makeIndexNameByKeys($index);
         }
 
-        $serialized = DocumentSerializer::serialize([
+        $serialized = MessagePackTransport::pack([
             'n' => $indexName,
         ]);
 
@@ -286,7 +286,7 @@ readonly class Collection
      */
     public function deleteOne(array $filter): DeleteResult
     {
-        $serialized = DocumentSerializer::serialize([
+        $serialized = MessagePackTransport::pack([
             'f' => DocumentSerializer::serialize($filter),
         ]);
 
@@ -307,7 +307,7 @@ readonly class Collection
      */
     public function deleteMany(array $filter): DeleteResult
     {
-        $serialized = DocumentSerializer::serialize([
+        $serialized = MessagePackTransport::pack([
             'f' => DocumentSerializer::serialize($filter),
         ]);
 
@@ -327,7 +327,7 @@ readonly class Collection
     {
         $this->exec(
             command: CommandEnum::Drop,
-            payload: '{}',
+            payload: DocumentSerializer::serialize([]),
         );
     }
 
@@ -366,7 +366,7 @@ readonly class Collection
         array $update,
         bool $upsert = false
     ): UpdateResult {
-        $serialized = DocumentSerializer::serialize([
+        $serialized = MessagePackTransport::pack([
             'f'  => DocumentSerializer::serialize($filter),
             'u'  => DocumentSerializer::serialize($update),
             'ou' => $upsert,
@@ -389,23 +389,13 @@ readonly class Collection
 
     protected function serializePayload(CommandEnum $command, string $data): string
     {
-        try {
-            return json_encode(
-                [
-                    'ul'  => $this->uri,
-                    'db'  => $this->databaseName,
-                    'cl'  => $this->collectionName,
-                    'sto' => $this->socketTimeoutMs,
-                    'cm'  => $command->value,
-                    'dt'  => $data,
-                ],
-                JSON_THROW_ON_ERROR
-            );
-        } catch (JsonException $exception) {
-            throw new RuntimeException(
-                message: 'Failed to encode payload JSON: ' . $exception->getMessage(),
-                previous: $exception
-            );
-        }
+        return MessagePackTransport::pack([
+            'ul'  => $this->uri,
+            'db'  => $this->databaseName,
+            'cl'  => $this->collectionName,
+            'sto' => $this->socketTimeoutMs,
+            'cm'  => $command->value,
+            'dt'  => $data,
+        ]);
     }
 }

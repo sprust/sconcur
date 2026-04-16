@@ -2,12 +2,23 @@ package main
 
 /*
 #cgo CFLAGS: -D_GNU_SOURCE
+
+#include <stdlib.h>
+
+typedef struct {
+	void *data;
+	int len;
+	char *err;
+} buffer_result_t;
 */
 import "C"
 import (
 	"sconcur/internal/dto"
 	handler2 "sconcur/internal/handler"
 	"sconcur/internal/types"
+	"unsafe"
+
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 var handler *handler2.Handler
@@ -23,11 +34,24 @@ func ping(str *C.char) *C.char {
 
 //export push
 func push(fk *C.char, mt int, tk *C.char, pl *C.char) *C.char {
+	return C.CString("error: push: legacy push() is not binary-safe; use push_bin()")
+}
+
+//export push_bin
+func push_bin(
+	fk *C.char,
+	fkLen C.int,
+	mt C.int,
+	tk *C.char,
+	tkLen C.int,
+	pl unsafe.Pointer,
+	plLen C.int,
+) *C.char {
 	msg := &dto.Message{
-		FlowKey: C.GoString(fk),
+		FlowKey: C.GoStringN(fk, fkLen),
 		Method:  types.Method(mt),
-		TaskKey: C.GoString(tk),
-		Payload: C.GoString(pl),
+		TaskKey: C.GoStringN(tk, tkLen),
+		Payload: string(C.GoBytes(pl, plLen)),
 		IsNext:  false,
 	}
 
@@ -59,13 +83,44 @@ func next(fk *C.char, tk *C.char) *C.char {
 
 //export wait
 func wait(fk *C.char) *C.char {
-	res, err := handler.Wait(C.GoString(fk))
+	_, err := handler.Wait(C.GoString(fk))
 
 	if err != nil {
 		return C.CString("error: " + err.Error())
 	}
 
-	return C.CString(res)
+	return C.CString("error: wait: legacy wait() is not binary-safe; use waitBin()")
+}
+
+//export wait_bin
+func wait_bin(fk *C.char, fkLen C.int) C.buffer_result_t {
+	res, err := handler.Wait(C.GoStringN(fk, fkLen))
+
+	if err != nil {
+		return C.buffer_result_t{
+			data: nil,
+			len:  0,
+			err:  C.CString("error: " + err.Error()),
+		}
+	}
+
+	serialized, err := msgpack.Marshal(res)
+
+	if err != nil {
+		return C.buffer_result_t{
+			data: nil,
+			len:  0,
+			err:  C.CString("error: marshal msgpack: " + err.Error()),
+		}
+	}
+
+	data := C.CBytes(serialized)
+
+	return C.buffer_result_t{
+		data: data,
+		len:  C.int(len(serialized)),
+		err:  nil,
+	}
 }
 
 //export count

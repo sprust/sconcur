@@ -6,6 +6,7 @@ namespace SConcur\Features\Sleeper;
 
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\MethodEnum;
+use SConcur\Transport\MessagePackTransport;
 
 readonly class Sleeper
 {
@@ -18,7 +19,7 @@ readonly class Sleeper
     {
         FeatureExecutor::exec(
             method: MethodEnum::Sleep,
-            payload: json_encode([
+            payload: MessagePackTransport::pack([
                 'ms' => $milliseconds,
             ])
         );
