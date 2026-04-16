@@ -12,6 +12,7 @@ use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
 use SConcur\Flow\CurrentFlow;
 use SConcur\State;
+use SConcur\Transport\MessagePackTransport;
 
 // TODO: check for iterator_to_array
 // TODO: check for iterator_count
@@ -25,7 +26,7 @@ class IteratorResult implements Iterator
     protected ?string $taskKey;
 
     /**
-     * @var array<int, array<int|string|float|bool|null, mixed>>|null
+     * @var array<int, string>|null
      */
     protected ?array $items;
     protected mixed $currentKey;
@@ -102,24 +103,33 @@ class IteratorResult implements Iterator
     {
         $this->isLastBatch = !$taskResult->hasNext;
 
-        $decoded = DocumentSerializer::unserialize($taskResult->payload);
+        $decoded = MessagePackTransport::unpack($taskResult->payload);
 
-        if (!array_key_exists($this->resultKey, $decoded)) {
+        if (!array_is_list($decoded)) {
             throw new UnexpectedResponseFormatException(
-                message: "Result key [$this->resultKey] not found in payload"
+                message: 'Aggregate batch payload is not a list.'
             );
         }
 
-        $this->items = $decoded[$this->resultKey];
+        foreach ($decoded as $item) {
+            if (!is_string($item)) {
+                throw new UnexpectedResponseFormatException(
+                    message: 'Aggregate batch item payload is not a string.'
+                );
+            }
+        }
+
+        /** @var array<int, string> $decoded */
+        $this->items = $decoded;
     }
 
     protected function nextItem(): void
     {
-        foreach ($this->items ?: [] as $key => $value) {
+        foreach ($this->items ?: [] as $key => $payload) {
             unset($this->items[$key]);
 
             $this->currentKey   = $key;
-            $this->currentValue = $value;
+            $this->currentValue = DocumentSerializer::unserialize($payload);
 
             if (count($this->items) === 0) {
                 $this->items = null;

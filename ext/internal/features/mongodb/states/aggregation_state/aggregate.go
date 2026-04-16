@@ -20,7 +20,6 @@ type AggregationState struct {
 	mCollection *mongo.Collection
 	pipeline    interface{}
 	batchSize   int
-	resultKey   string
 	errFactory  *errs.Factory
 	cursor      *mongo.Cursor
 	pending     []interface{}
@@ -33,7 +32,7 @@ func New(
 	mCollection *mongo.Collection,
 	pipeline interface{},
 	batchSize int,
-	resultKey string,
+	_ string,
 	errFactory *errs.Factory,
 ) contracts.StateContract {
 	return &AggregationState{
@@ -42,7 +41,6 @@ func New(
 		mCollection: mCollection,
 		pipeline:    pipeline,
 		batchSize:   batchSize,
-		resultKey:   resultKey,
 		errFactory:  errFactory,
 		startTime:   time.Now(),
 	}
@@ -116,11 +114,7 @@ func (s *AggregationState) Next() *dto.Result {
 
 		s.pending = []interface{}{cloneRaw(s.cursor.Current)}
 
-		response, err := serializer.MarshalDocument(
-			bson.D{
-				{Key: s.resultKey, Value: items},
-			},
-		)
+		response, err := serializer.MarshalDocumentBatch(items)
 
 		if err != nil {
 			return dto.NewErrorResult(
@@ -138,11 +132,7 @@ func (s *AggregationState) calcExecutionMs() int {
 }
 
 func (s *AggregationState) finish(items []interface{}) *dto.Result {
-	response, err := serializer.MarshalDocument(
-		bson.D{
-			{Key: s.resultKey, Value: items},
-		},
-	)
+	response, err := serializer.MarshalDocumentBatch(items)
 
 	_ = s.cursor.Close(s.ctx)
 

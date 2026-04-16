@@ -76,6 +76,28 @@ func MarshalDocument(doc interface{}) (string, error) {
 	return string(packed), nil
 }
 
+func MarshalDocumentBatch(items []interface{}) (string, error) {
+	batch := make([][]byte, 0, len(items))
+
+	for _, item := range items {
+		packed, err := MarshalDocument(item)
+
+		if err != nil {
+			return "", err
+		}
+
+		batch = append(batch, []byte(packed))
+	}
+
+	packedBatch, err := msgpack.Marshal(batch)
+
+	if err != nil {
+		return "", fmt.Errorf("error MessagePack batch marshaling: %w", err)
+	}
+
+	return string(packedBatch), nil
+}
+
 func UnmarshalBulkWriteModels(data []byte) ([]mongo.WriteModel, error) {
 	var wrappers []WriteModelWrapper
 

@@ -34,7 +34,7 @@ final readonly class MessagePackTransport
     }
 
     /**
-     * @return array<string, mixed>
+     * @return array<mixed>
      */
     public static function unpack(string $payload): array
     {
