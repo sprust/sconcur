@@ -10,8 +10,6 @@ use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
-use SConcur\Flow\CurrentFlow;
-use SConcur\State;
 use SConcur\Transport\MessagePackTransport;
 
 // TODO: check for iterator_to_array
@@ -22,13 +20,13 @@ use SConcur\Transport\MessagePackTransport;
  */
 class IteratorResult implements Iterator
 {
-    protected ?CurrentFlow $currentFlow;
     protected ?string $taskKey;
 
     /**
      * @var array<int, string>|null
      */
     protected ?array $items;
+    protected int $itemIndex;
     protected mixed $currentKey;
     protected mixed $currentValue;
 
@@ -85,8 +83,6 @@ class IteratorResult implements Iterator
     {
         $this->resetProperties();
 
-        $this->currentFlow = State::getCurrentFlow();
-
         $taskResult = FeatureExecutor::exec(
             method: $this->method,
             payload: $this->payload
@@ -120,18 +116,18 @@ class IteratorResult implements Iterator
         }
 
         /** @var array<int, string> $decoded */
-        $this->items = $decoded;
+        $this->items     = $decoded;
+        $this->itemIndex = 0;
     }
 
     protected function nextItem(): void
     {
-        foreach ($this->items ?: [] as $key => $payload) {
-            unset($this->items[$key]);
+        if ($this->items !== null && isset($this->items[$this->itemIndex])) {
+            $this->currentKey   = $this->itemIndex;
+            $this->currentValue = DocumentSerializer::unserialize($this->items[$this->itemIndex]);
+            ++$this->itemIndex;
 
-            $this->currentKey   = $key;
-            $this->currentValue = DocumentSerializer::unserialize($payload);
-
-            if (count($this->items) === 0) {
+            if (!isset($this->items[$this->itemIndex])) {
                 $this->items = null;
             }
 
@@ -147,9 +143,9 @@ class IteratorResult implements Iterator
 
     protected function resetProperties(): void
     {
-        $this->currentFlow  = null;
         $this->taskKey      = null;
         $this->items        = null;
+        $this->itemIndex    = 0;
         $this->currentKey   = null;
         $this->currentValue = null;
         $this->isLastBatch  = false;

@@ -44,7 +44,7 @@ class State
         if ($flow !== null) {
             unset(static::$flowFibers[$flow->key][$fiberId]);
 
-            if (isset(static::$flowFibers[$flow->key]) && count(static::$flowFibers[$flow->key]) === 0) {
+            if ((static::$flowFibers[$flow->key] ?? []) === []) {
                 unset(static::$flowFibers[$flow->key]);
             }
         }
@@ -102,20 +102,15 @@ class State
         unset(static::$fiberTasks[$flowKey]);
 
         if (isset(static::$flowFibers[$flowKey])) {
-            $flowFiberIds = array_keys(static::$flowFibers[$flowKey]);
-
-            foreach ($flowFiberIds as $fiberId) {
+            foreach (static::$flowFibers[$flowKey] as $fiberId => $_) {
                 static::unRegisterFiber($fiberId);
             }
         } else {
-            $flowFiberIds = array_keys(static::$fiberFlows);
-
-            foreach ($flowFiberIds as $fiberId) {
-                $registeredFlow = static::$fiberFlows[$fiberId];
-
+            foreach (static::$fiberFlows as $fiberId => $registeredFlow) {
                 if ($registeredFlow->key !== $flowKey) {
                     continue;
                 }
+
                 static::unRegisterFiber($fiberId);
             }
         }
