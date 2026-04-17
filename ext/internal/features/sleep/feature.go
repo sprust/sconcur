@@ -37,7 +37,7 @@ func (s *SleepFeature) Handle(task *tasks.Task) {
 
 	var payload params.SleepPayload
 
-	err := msgpack.Unmarshal([]byte(message.Payload), &payload)
+	err := msgpack.Unmarshal(message.Payload, &payload)
 
 	if err != nil {
 		task.AddResult(

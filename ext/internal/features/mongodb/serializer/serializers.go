@@ -8,6 +8,7 @@ import (
 
 	"github.com/vmihailenco/msgpack/v5"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/bsontype"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -22,8 +23,8 @@ const dateFormat = time.RFC3339Nano
 const orderedMapMarker = "\x00m"
 
 type WriteModelWrapper struct {
-	Type  string      `bson:"type" json:"type" msgpack:"type"`
-	Model interface{} `bson:"model" json:"model" msgpack:"model"`
+	Type  string             `bson:"type" json:"type" msgpack:"type"`
+	Model msgpack.RawMessage `bson:"model" json:"model" msgpack:"model"`
 }
 
 func UnmarshalDocument(data []byte) (interface{}, error) {
@@ -55,38 +56,26 @@ func UnmarshalDocuments(data []byte) ([]interface{}, error) {
 }
 
 func MarshalDocument(doc interface{}) (string, error) {
-	bsonData, err := normalizeToBSON(doc)
+	packed, err := marshalDocumentBytes(doc)
 
 	if err != nil {
-		return "", fmt.Errorf("error BSON marshaling: %w", err)
-	}
-
-	var document interface{}
-
-	if err := bson.Unmarshal(bsonData, &document); err != nil {
-		return "", fmt.Errorf("error BSON unmarshaling: %w", err)
-	}
-
-	packed, err := msgpack.Marshal(marshalRecursive(document))
-
-	if err != nil {
-		return "", fmt.Errorf("error MessagePack marshaling: %w", err)
+		return "", err
 	}
 
 	return string(packed), nil
 }
 
 func MarshalDocumentBatch(items []interface{}) (string, error) {
-	batch := make([][]byte, 0, len(items))
+	batch := make([][]byte, len(items))
 
-	for _, item := range items {
-		packed, err := MarshalDocument(item)
+	for i, item := range items {
+		packed, err := marshalDocumentBytes(item)
 
 		if err != nil {
 			return "", err
 		}
 
-		batch = append(batch, []byte(packed))
+		batch[i] = packed
 	}
 
 	packedBatch, err := msgpack.Marshal(batch)
@@ -96,6 +85,66 @@ func MarshalDocumentBatch(items []interface{}) (string, error) {
 	}
 
 	return string(packedBatch), nil
+}
+
+func MarshalDocumentBatchRaw(items []bson.Raw) (string, error) {
+	batch := make([][]byte, len(items))
+
+	for i, item := range items {
+		packed, err := marshalDocumentBytes(item)
+
+		if err != nil {
+			return "", err
+		}
+
+		batch[i] = packed
+	}
+
+	packedBatch, err := msgpack.Marshal(batch)
+
+	if err != nil {
+		return "", fmt.Errorf("error MessagePack batch marshaling: %w", err)
+	}
+
+	return string(packedBatch), nil
+}
+
+func marshalDocumentBytes(doc interface{}) ([]byte, error) {
+	if raw, ok := doc.(bson.Raw); ok {
+		document, err := marshalRawDocument(raw)
+
+		if err != nil {
+			return nil, fmt.Errorf("error BSON raw marshaling: %w", err)
+		}
+
+		packed, err := msgpack.Marshal(document)
+
+		if err != nil {
+			return nil, fmt.Errorf("error MessagePack marshaling: %w", err)
+		}
+
+		return packed, nil
+	}
+
+	bsonData, err := normalizeToBSON(doc)
+
+	if err != nil {
+		return nil, fmt.Errorf("error BSON marshaling: %w", err)
+	}
+
+	var document interface{}
+
+	if err := bson.Unmarshal(bsonData, &document); err != nil {
+		return nil, fmt.Errorf("error BSON unmarshaling: %w", err)
+	}
+
+	packed, err := msgpack.Marshal(marshalRecursive(document))
+
+	if err != nil {
+		return nil, fmt.Errorf("error MessagePack marshaling: %w", err)
+	}
+
+	return packed, nil
 }
 
 func UnmarshalBulkWriteModels(data []byte) ([]mongo.WriteModel, error) {
@@ -267,14 +316,90 @@ func normalizeToBSON(doc interface{}) ([]byte, error) {
 	return bson.Marshal(doc)
 }
 
-func unmarshalMessagePackValue(data interface{}, out interface{}) error {
-	packed, err := msgpack.Marshal(data)
+func unmarshalMessagePackValue(data msgpack.RawMessage, out interface{}) error {
+	return msgpack.Unmarshal(data, out)
+}
+
+func marshalRawDocument(raw bson.Raw) (interface{}, error) {
+	elements, err := raw.Elements()
 
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	return msgpack.Unmarshal(packed, out)
+	items := make([]interface{}, len(elements))
+
+	for i, element := range elements {
+		value, err := marshalRawValue(element.Value())
+
+		if err != nil {
+			return nil, err
+		}
+
+		items[i] = []interface{}{
+			element.Key(),
+			value,
+		}
+	}
+
+	return map[string]interface{}{
+		orderedMapMarker: items,
+	}, nil
+}
+
+func marshalRawArray(raw bson.Raw) ([]interface{}, error) {
+	values, err := raw.Values()
+
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]interface{}, len(values))
+
+	for i, value := range values {
+		converted, err := marshalRawValue(value)
+
+		if err != nil {
+			return nil, err
+		}
+
+		result[i] = converted
+	}
+
+	return result, nil
+}
+
+func marshalRawValue(value bson.RawValue) (interface{}, error) {
+	switch value.Type {
+	case bsontype.EmbeddedDocument:
+		return marshalRawDocument(value.Document())
+	case bsontype.Array:
+		return marshalRawArray(value.Array())
+	case bsontype.ObjectID:
+		return objectIdStringPrefix + value.ObjectID().Hex(), nil
+	case bsontype.DateTime:
+		return utcDateTimeStringPrefix + value.Time().UTC().Format(dateFormat), nil
+	case bsontype.String:
+		return value.StringValue(), nil
+	case bsontype.Boolean:
+		return value.Boolean(), nil
+	case bsontype.Int32:
+		return int64(value.Int32()), nil
+	case bsontype.Int64:
+		return value.Int64(), nil
+	case bsontype.Double:
+		return value.Double(), nil
+	case bsontype.Null:
+		return nil, nil
+	}
+
+	var decoded interface{}
+
+	if err := value.Unmarshal(&decoded); err != nil {
+		return nil, err
+	}
+
+	return marshalRecursive(decoded), nil
 }
 
 func normalizeEmptyData(data interface{}) interface{} {
@@ -292,13 +417,13 @@ func marshalRecursive(data interface{}) interface{} {
 
 	switch v := data.(type) {
 	case bson.D:
-		items := make([]interface{}, 0, len(v))
+		items := make([]interface{}, len(v))
 
-		for _, elem := range v {
-			items = append(items, []interface{}{
+		for i, elem := range v {
+			items[i] = []interface{}{
 				elem.Key,
 				marshalRecursive(elem.Value),
-			})
+			}
 		}
 
 		return map[string]interface{}{
@@ -321,13 +446,15 @@ func marshalRecursive(data interface{}) interface{} {
 
 		return result
 	case map[string]interface{}:
-		items := make([]interface{}, 0, len(v))
+		items := make([]interface{}, len(v))
+		i := 0
 
 		for key, value := range v {
-			items = append(items, []interface{}{
+			items[i] = []interface{}{
 				key,
 				marshalRecursive(value),
-			})
+			}
+			i++
 		}
 
 		return map[string]interface{}{

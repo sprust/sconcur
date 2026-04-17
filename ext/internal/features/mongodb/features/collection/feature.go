@@ -38,7 +38,7 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 
 	var payload objects.Payload
 
-	err := msgpack.Unmarshal([]byte(message.Payload), &payload)
+	err := msgpack.Unmarshal(message.Payload, &payload)
 
 	if err != nil {
 		task.AddResult(

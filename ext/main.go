@@ -51,7 +51,7 @@ func push_bin(
 		FlowKey: C.GoStringN(fk, fkLen),
 		Method:  types.Method(mt),
 		TaskKey: C.GoStringN(tk, tkLen),
-		Payload: string(C.GoBytes(pl, plLen)),
+		Payload: C.GoBytes(pl, plLen),
 		IsNext:  false,
 	}
 

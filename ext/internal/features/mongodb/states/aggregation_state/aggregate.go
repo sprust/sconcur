@@ -22,7 +22,7 @@ type AggregationState struct {
 	batchSize   int
 	errFactory  *errs.Factory
 	cursor      *mongo.Cursor
-	pending     []interface{}
+	pending     bson.Raw
 	startTime   time.Time
 }
 
@@ -74,10 +74,14 @@ func (s *AggregationState) Next() *dto.Result {
 		itemsCapacity = s.batchSize
 	}
 
-	items := make([]interface{}, 0, itemsCapacity)
+	if len(s.pending) > 0 {
+		itemsCapacity++
+	}
+
+	items := make([]bson.Raw, 0, itemsCapacity)
 
 	if len(s.pending) > 0 {
-		items = append(items, s.pending...)
+		items = append(items, s.pending)
 		s.pending = nil
 	}
 
@@ -112,9 +116,9 @@ func (s *AggregationState) Next() *dto.Result {
 			return s.finish(items)
 		}
 
-		s.pending = []interface{}{cloneRaw(s.cursor.Current)}
+		s.pending = cloneRaw(s.cursor.Current)
 
-		response, err := serializer.MarshalDocumentBatch(items)
+		response, err := serializer.MarshalDocumentBatchRaw(items)
 
 		if err != nil {
 			return dto.NewErrorResult(
@@ -131,8 +135,8 @@ func (s *AggregationState) calcExecutionMs() int {
 	return helpers.CalcExecutionMs(s.startTime)
 }
 
-func (s *AggregationState) finish(items []interface{}) *dto.Result {
-	response, err := serializer.MarshalDocumentBatch(items)
+func (s *AggregationState) finish(items []bson.Raw) *dto.Result {
+	response, err := serializer.MarshalDocumentBatchRaw(items)
 
 	_ = s.cursor.Close(s.ctx)
 
