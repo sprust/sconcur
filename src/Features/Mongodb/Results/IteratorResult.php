@@ -27,6 +27,7 @@ class IteratorResult implements Iterator
      */
     protected ?array $items;
     protected int $itemIndex;
+    protected int $globalIndex;
     protected mixed $currentKey;
     protected mixed $currentValue;
 
@@ -123,8 +124,9 @@ class IteratorResult implements Iterator
     protected function nextItem(): void
     {
         if ($this->items !== null && isset($this->items[$this->itemIndex])) {
-            $this->currentKey   = $this->itemIndex;
+            $this->currentKey   = $this->globalIndex;
             $this->currentValue = DocumentSerializer::unserialize($this->items[$this->itemIndex]);
+            ++$this->globalIndex;
             ++$this->itemIndex;
 
             if (!isset($this->items[$this->itemIndex])) {
@@ -146,6 +148,7 @@ class IteratorResult implements Iterator
         $this->taskKey      = null;
         $this->items        = null;
         $this->itemIndex    = 0;
+        $this->globalIndex  = 0;
         $this->currentKey   = null;
         $this->currentValue = null;
         $this->isLastBatch  = false;

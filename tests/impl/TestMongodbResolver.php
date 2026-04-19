@@ -7,6 +7,7 @@ namespace SConcur\Tests\Impl;
 use DateTime;
 use SConcur\Features\Mongodb\Connection\Client;
 use SConcur\Features\Mongodb\Connection\Collection;
+use SConcur\Features\Mongodb\Connection\Database;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
 
@@ -29,6 +30,12 @@ class TestMongodbResolver
     {
         return self::getDriverTestDatabase()
             ->selectCollection($collectionName);
+    }
+
+    public static function getSconcurTestDatabase(): Database
+    {
+        return new Client(uri: static::getUri())
+            ->selectDatabase(static::$testDatabaseName);
     }
 
     public static function getSconcurTestCollection(string $collectionName, ?int $socketTimeoutMs = null): Collection

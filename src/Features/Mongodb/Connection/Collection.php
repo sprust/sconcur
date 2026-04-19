@@ -235,6 +235,202 @@ readonly class Collection
     }
 
     /**
+     * @param array<string, mixed>      $filter
+     * @param array<string, mixed>|null $projection
+     * @param array<string, int>|null   $sort
+     *
+     * @return Iterator<int, array<int|string|float|bool|null, mixed>>
+     */
+    public function find(
+        array $filter,
+        ?array $projection = null,
+        ?array $sort = null,
+        int $limit = 0,
+        int $skip = 0,
+        int $batchSize = 50,
+    ): Iterator {
+        $serialized = MessagePackTransport::pack([
+            'f'  => DocumentSerializer::serialize($filter),
+            'op' => ($projection === null) ? "" : DocumentSerializer::serialize($projection),
+            's'  => ($sort === null) ? "" : DocumentSerializer::serialize($sort),
+            'l'  => $limit,
+            'sk' => $skip,
+            'bs' => $batchSize,
+        ]);
+
+        return new IteratorResult(
+            method: $this->method,
+            payload: $this->serializePayload(
+                command: CommandEnum::Find,
+                data: $serialized,
+            ),
+            resultKey: static::RESULT_KEY,
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $filter
+     *
+     * @return array<int, mixed>
+     */
+    public function distinct(string $fieldName, array $filter = []): array
+    {
+        $serialized = MessagePackTransport::pack([
+            'fn' => $fieldName,
+            'f'  => DocumentSerializer::serialize($filter),
+        ]);
+
+        $taskResult = $this->exec(
+            command: CommandEnum::Distinct,
+            payload: $serialized,
+        );
+
+        $docResult = DocumentSerializer::unserialize($taskResult->payload);
+
+        return $docResult['values'] ?? [];
+    }
+
+    /**
+     * @param array<string, mixed>      $filter
+     * @param array<string, mixed>      $update
+     * @param array<string, mixed>|null $projection
+     *
+     * @return array<int|string, mixed>|null
+     */
+    public function findOneAndUpdate(
+        array $filter,
+        array $update,
+        ?array $projection = null,
+        bool $upsert = false,
+        bool $returnDocument = true,
+    ): ?array {
+        $serialized = MessagePackTransport::pack([
+            'f'  => DocumentSerializer::serialize($filter),
+            'u'  => DocumentSerializer::serialize($update),
+            'op' => ($projection === null) ? "" : DocumentSerializer::serialize($projection),
+            'ou' => $upsert,
+            'rd' => $returnDocument,
+        ]);
+
+        $taskResult = $this->exec(
+            command: CommandEnum::FindOneAndUpdate,
+            payload: $serialized,
+        );
+
+        if (!$taskResult->payload) {
+            return null;
+        }
+
+        return DocumentSerializer::unserialize($taskResult->payload) ?: null;
+    }
+
+    /**
+     * @param array<string, mixed>      $filter
+     * @param array<string, mixed>|null $projection
+     *
+     * @return array<int|string, mixed>|null
+     */
+    public function findOneAndDelete(
+        array $filter,
+        ?array $projection = null,
+    ): ?array {
+        $serialized = MessagePackTransport::pack([
+            'f'  => DocumentSerializer::serialize($filter),
+            'op' => ($projection === null) ? "" : DocumentSerializer::serialize($projection),
+        ]);
+
+        $taskResult = $this->exec(
+            command: CommandEnum::FindOneAndDelete,
+            payload: $serialized,
+        );
+
+        if (!$taskResult->payload) {
+            return null;
+        }
+
+        return DocumentSerializer::unserialize($taskResult->payload) ?: null;
+    }
+
+    /**
+     * @param array<string, mixed>      $filter
+     * @param array<string, mixed>      $replacement
+     * @param array<string, mixed>|null $projection
+     *
+     * @return array<int|string, mixed>|null
+     */
+    public function findOneAndReplace(
+        array $filter,
+        array $replacement,
+        ?array $projection = null,
+        bool $upsert = false,
+        bool $returnDocument = true,
+    ): ?array {
+        $serialized = MessagePackTransport::pack([
+            'f'  => DocumentSerializer::serialize($filter),
+            'r'  => DocumentSerializer::serialize($replacement),
+            'op' => ($projection === null) ? "" : DocumentSerializer::serialize($projection),
+            'ou' => $upsert,
+            'rd' => $returnDocument,
+        ]);
+
+        $taskResult = $this->exec(
+            command: CommandEnum::FindOneAndReplace,
+            payload: $serialized,
+        );
+
+        if (!$taskResult->payload) {
+            return null;
+        }
+
+        return DocumentSerializer::unserialize($taskResult->payload) ?: null;
+    }
+
+    /**
+     * @param array<string, mixed> $filter
+     * @param array<string, mixed> $replacement
+     */
+    public function replaceOne(array $filter, array $replacement, bool $upsert = false): UpdateResult
+    {
+        $serialized = MessagePackTransport::pack([
+            'f'  => DocumentSerializer::serialize($filter),
+            'r'  => DocumentSerializer::serialize($replacement),
+            'ou' => $upsert,
+        ]);
+
+        $taskResult = $this->exec(
+            command: CommandEnum::ReplaceOne,
+            payload: $serialized,
+        );
+
+        $docResult = DocumentSerializer::unserialize($taskResult->payload);
+
+        return new UpdateResult(
+            matchedCount: (int) $docResult['matchedcount'],
+            modifiedCount: (int) $docResult['modifiedcount'],
+            upsertedCount: (int) $docResult['upsertedcount'],
+            upsertedId: $docResult['upsertedid'],
+        );
+    }
+
+    public function estimatedDocumentCount(): int
+    {
+        $taskResult = $this->exec(
+            command: CommandEnum::EstimatedDocumentCount,
+            payload: DocumentSerializer::serialize([]),
+        );
+
+        $result = $taskResult->payload;
+
+        if (ctype_digit($result) === false) {
+            throw new RuntimeException(
+                "Invalid estimatedDocumentCount result: $result"
+            );
+        }
+
+        return (int) $result;
+    }
+
+    /**
      * @param array<string, int|string> $keys
      */
     public function createIndex(array $keys, ?string $name = null): string
@@ -256,6 +452,66 @@ readonly class Collection
         );
 
         return $taskResult->payload;
+    }
+
+    /**
+     * @param array<int, array{keys: array<string, int|string>, name?: string}> $indexes
+     *
+     * @return array<int, string>
+     */
+    public function createIndexes(array $indexes): array
+    {
+        $preparedIndexes = [];
+
+        foreach ($indexes as $index) {
+            $keys = $index['keys'];
+            $name = $index['name'] ?? $this->makeIndexNameByKeys($keys);
+
+            $preparedIndexes[] = [
+                'k' => DocumentSerializer::serialize($keys),
+                'n' => $name,
+            ];
+        }
+
+        $serialized = MessagePackTransport::pack([
+            'ix' => $preparedIndexes,
+        ]);
+
+        $taskResult = $this->exec(
+            command: CommandEnum::CreateIndexes,
+            payload: $serialized,
+        );
+
+        $docResult = DocumentSerializer::unserialize($taskResult->payload);
+
+        return $docResult['names'] ?? [];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function listIndexes(): array
+    {
+        $taskResult = $this->exec(
+            command: CommandEnum::ListIndexes,
+            payload: DocumentSerializer::serialize([]),
+        );
+
+        if (!$taskResult->payload) {
+            return [];
+        }
+
+        $decoded = MessagePackTransport::unpack($taskResult->payload);
+
+        $indexes = [];
+
+        foreach ($decoded as $item) {
+            if (is_string($item)) {
+                $indexes[] = DocumentSerializer::unserialize($item);
+            }
+        }
+
+        return $indexes;
     }
 
     /**
@@ -328,6 +584,19 @@ readonly class Collection
         $this->exec(
             command: CommandEnum::Drop,
             payload: DocumentSerializer::serialize([]),
+        );
+    }
+
+    public function rename(string $target, bool $dropTarget = false): void
+    {
+        $serialized = MessagePackTransport::pack([
+            't'  => $target,
+            'dt' => $dropTarget,
+        ]);
+
+        $this->exec(
+            command: CommandEnum::RenameCollection,
+            payload: $serialized,
         );
     }
 
