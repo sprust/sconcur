@@ -33,12 +33,7 @@ func ping(str *C.char) *C.char {
 }
 
 //export push
-func push(fk *C.char, mt int, tk *C.char, pl *C.char) *C.char {
-	return C.CString("error: push: legacy push() is not binary-safe; use push_bin()")
-}
-
-//export push_bin
-func push_bin(
+func push(
 	fk *C.char,
 	fkLen C.int,
 	mt C.int,
@@ -82,18 +77,7 @@ func next(fk *C.char, tk *C.char) *C.char {
 }
 
 //export wait
-func wait(fk *C.char) *C.char {
-	_, err := handler.Wait(C.GoString(fk))
-
-	if err != nil {
-		return C.CString("error: " + err.Error())
-	}
-
-	return C.CString("error: wait: legacy wait() is not binary-safe; use waitBin()")
-}
-
-//export wait_bin
-func wait_bin(fk *C.char, fkLen C.int) C.buffer_result_t {
+func wait(fk *C.char, fkLen C.int) C.buffer_result_t {
 	res, err := handler.Wait(C.GoStringN(fk, fkLen))
 
 	if err != nil {
@@ -123,8 +107,8 @@ func wait_bin(fk *C.char, fkLen C.int) C.buffer_result_t {
 	}
 }
 
-//export count
-func count() int {
+//export tasksCount
+func tasksCount() int {
 	return handler.GetTasksCount()
 }
 

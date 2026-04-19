@@ -12,13 +12,13 @@ use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\MethodEnum;
 use SConcur\Transport\MessagePackTransport;
 use Throwable;
-use function SConcur\Extension\count;
 use function SConcur\Extension\destroy;
-use function SConcur\Extension\pushBin;
 use function SConcur\Extension\next;
+use function SConcur\Extension\push;
 use function SConcur\Extension\stopFlow;
+use function SConcur\Extension\tasksCount;
 use function SConcur\Extension\version;
-use function SConcur\Extension\waitBin;
+use function SConcur\Extension\wait;
 
 class Extension
 {
@@ -43,7 +43,7 @@ class Extension
 
         $taskKey = $flowKey . ':' . static::$tasksCounter;
 
-        pushBin($flowKey, $method->value, $taskKey, $payload);
+        push($flowKey, $method->value, $taskKey, $payload);
 
         return new RunningTaskDto(
             key: $taskKey,
@@ -63,7 +63,7 @@ class Extension
     {
         $start = microtime(true);
 
-        $response = waitBin($flowKey);
+        $response = wait($flowKey);
 
         if (str_starts_with($response, 'error:')) {
             throw new TaskErrorException(
@@ -98,7 +98,7 @@ class Extension
 
     public function count(): int
     {
-        return count();
+        return tasksCount();
     }
 
     public function stopFlow(string $flowKey): void
