@@ -12,6 +12,7 @@ use SConcur\Transport\MessagePackTransport;
 
 readonly class DocumentSerializer
 {
+    // Must match orderedMapMarker in ext/internal/features/mongodb/serializer/serializers.go
     protected const string ORDERED_MAP_MARKER = "\0m";
 
     /**

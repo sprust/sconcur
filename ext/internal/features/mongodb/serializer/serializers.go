@@ -20,6 +20,7 @@ const utcDateTimeStringPrefix = "$udt-lgof:"
 const utcDateTimeStringPrefixLen = len(utcDateTimeStringPrefix)
 const dateFormat = time.RFC3339Nano
 
+// orderedMapMarker must match DocumentSerializer::ORDERED_MAP_MARKER on PHP side
 const orderedMapMarker = "\x00m"
 
 type WriteModelWrapper struct {
