@@ -117,9 +117,3 @@ bench-mongodb-deleteOne:
 
 bench-mongodb-updateMany:
 	$(PHP_EXT) tests/benchmarks/mongodb-update-many.php ${c}
-
-mem-leak-endless-add:
-	$(PHP_EXT) tests/mem-leak/endless-add.php ${c}
-
-mem-leak-endless-break:
-	$(PHP_EXT) tests/mem-leak/endless-break.php ${c}
