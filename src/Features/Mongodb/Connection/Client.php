@@ -13,9 +13,18 @@ readonly class Client
 {
     public int $socketTimeoutMs;
 
+    protected Connection $connection;
+
     public function __construct(public string $uri, ?int $socketTimeoutMs = null)
     {
         $this->socketTimeoutMs = $socketTimeoutMs ?: 30000;
+
+        $this->connection = new Connection(
+            uri: $this->uri,
+            databaseName: '',
+            collectionName: '',
+            socketTimeoutMs: $this->socketTimeoutMs,
+        );
     }
 
     public function selectDatabase(string $name): Database
@@ -30,12 +39,7 @@ readonly class Client
     {
         $taskResult = FeatureExecutor::exec(
             payload: new ListDatabasesPayload(
-                connection: new Connection(
-                    uri: $this->uri,
-                    databaseName: '',
-                    collectionName: '',
-                    socketTimeoutMs: $this->socketTimeoutMs,
-                ),
+                connection: $this->connection,
             ),
         );
 
