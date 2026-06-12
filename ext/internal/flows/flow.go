@@ -3,6 +3,8 @@ package flows
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime/debug"
 	"sconcur/internal/dto"
 	"sconcur/internal/features"
 	"sconcur/internal/states"
@@ -44,7 +46,7 @@ func (f *Flow) HandleMessage(msg *dto.Message) error {
 	f.tasksCount.Add(1)
 
 	if msg.IsNext {
-		go states.Get().Next(task)
+		go runTaskProtected(task, states.Get().Next)
 	} else {
 		handler, err := features.DetectMessageHandler(msg.Method)
 
@@ -52,10 +54,27 @@ func (f *Flow) HandleMessage(msg *dto.Message) error {
 			return err
 		}
 
-		go handler.Handle(task)
+		go runTaskProtected(task, handler.Handle)
 	}
 
 	return nil
+}
+
+// runTaskProtected converts a panic into a task error result:
+// an unrecovered panic in a c-shared library aborts the whole PHP process.
+func runTaskProtected(task *tasks.Task, handle func(task *tasks.Task)) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			task.AddResult(
+				dto.NewErrorResult(
+					task.GetMessage(),
+					fmt.Sprintf("panic: %v\n%s", recovered, debug.Stack()),
+				),
+			)
+		}
+	}()
+
+	handle(task)
 }
 
 func (f *Flow) Wait() (*dto.Result, error) {
