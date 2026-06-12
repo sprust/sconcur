@@ -25,11 +25,11 @@ func TestUnmarshalDocumentPreservesFieldAndElementOrder(t *testing.T) {
 		{Key: "third", Value: []interface{}{
 			bson.D{
 				{Key: "arrDocFirst", Value: true},
-				{Key: "arrDocSecond", Value: utcDateTimeStringPrefix + ts.Format(dateFormat)},
+				{Key: "arrDocSecond", Value: utcDateTimeStringPrefix + ts.Format(dateParseFormat)},
 			},
 			3,
 			bson.D{
-				{Key: "when", Value: utcDateTimeStringPrefix + ts.Format(dateFormat)},
+				{Key: "when", Value: utcDateTimeStringPrefix + ts.Format(dateParseFormat)},
 			},
 		}},
 		{Key: "fourth", Value: objectIdStringPrefix + objectID.Hex()},
@@ -60,6 +60,21 @@ func TestUnmarshalDocumentPreservesFieldAndElementOrder(t *testing.T) {
 	}
 
 	assertDeepEqual(t, got, want)
+}
+
+// A whole-second timestamp must serialize with an explicit ".000" millisecond part.
+// time.RFC3339Nano drops the fraction for zero sub-second values ("...:55Z"), which the
+// PHP side (DATE_RFC3339_EXTENDED) cannot parse. See dateOutputFormat.
+func TestMarshalRecursiveDateTimeAlwaysEmitsMilliseconds(t *testing.T) {
+	wholeSecond := time.Date(2026, time.June, 12, 6, 44, 55, 0, time.UTC)
+
+	got := marshalRecursive(primitive.NewDateTimeFromTime(wholeSecond))
+
+	want := utcDateTimeStringPrefix + "2026-06-12T06:44:55.000Z"
+
+	if got != want {
+		t.Fatalf("marshalRecursive(zero-ms DateTime) = %q, want %q", got, want)
+	}
 }
 
 func TestUnmarshalDocumentNormalizesEmptyPayloads(t *testing.T) {
@@ -236,7 +251,7 @@ func TestUnmarshalBulkWriteModelsPreservesOperationAndFieldOrder(t *testing.T) {
 			{Key: "legacy", Value: ""},
 		}},
 		{Key: "$set", Value: bson.D{
-			{Key: "updatedAt", Value: utcDateTimeStringPrefix + time.UnixMilli(1735689600000).UTC().Format(dateFormat)},
+			{Key: "updatedAt", Value: utcDateTimeStringPrefix + time.UnixMilli(1735689600000).UTC().Format(dateParseFormat)},
 		}},
 	})
 	deleteOneFilter := mustPackValue(t, bson.D{

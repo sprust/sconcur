@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb\Serialization;
 
+use DateTime;
+use DateTimeZone;
 use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Features\Mongodb\Types\ObjectId;
 use SConcur\Features\Mongodb\Types\UTCDateTime;
@@ -20,6 +22,10 @@ class MongodbDocumentSerializerTest extends BaseTestCase
     protected float $floatValue = 123.456;
     protected bool $boolValue   = true;
 
+    // Whole-second timestamp (zero milliseconds): the extension must serialize it back
+    // as "...:55.000Z", not "...:55Z", otherwise PHP parsing fails. Regression guard.
+    protected string $zeroMsDateString = '2026-06-12 06:44:55';
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -31,11 +37,14 @@ class MongodbDocumentSerializerTest extends BaseTestCase
         $this->sconcurCollection->insertMany(
             documents: array_map(
                 fn(int $index) => [
-                    'objectId' => TestMongodbResolver::getSconcurObjectId(),
-                    'date'     => TestMongodbResolver::getSconcurDateTime(),
-                    'int'      => $this->intValue,
-                    'float'    => $this->floatValue,
-                    'bool'     => $this->boolValue,
+                    'objectId'   => TestMongodbResolver::getSconcurObjectId(),
+                    'date'       => TestMongodbResolver::getSconcurDateTime(),
+                    'dateZeroMs' => TestMongodbResolver::getSconcurDateTime(
+                        new DateTime($this->zeroMsDateString, new DateTimeZone('UTC'))
+                    ),
+                    'int'        => $this->intValue,
+                    'float'      => $this->floatValue,
+                    'bool'       => $this->boolValue,
                 ],
                 range(1, $this->documentsCount)
             )
@@ -62,6 +71,24 @@ class MongodbDocumentSerializerTest extends BaseTestCase
 
         self::assertTrue(
             $date instanceof UTCDateTime
+        );
+
+        $dateZeroMs = $document['dateZeroMs'];
+
+        self::assertNotNull($dateZeroMs);
+
+        self::assertTrue(
+            $dateZeroMs instanceof UTCDateTime
+        );
+
+        self::assertSame(
+            $this->zeroMsDateString,
+            $dateZeroMs->dateTime->format('Y-m-d H:i:s')
+        );
+
+        self::assertSame(
+            '000000',
+            $dateZeroMs->dateTime->format('u')
         );
 
         self::assertSame(
