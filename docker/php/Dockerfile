@@ -11,6 +11,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       ca-certificates \
       libcurl4-openssl-dev \
+      libtool \
       libzip-dev \
       zip \
       unzip \
@@ -36,9 +37,13 @@ RUN chmod -R 777 /go/
 RUN curl -sS https://getcomposer.org/installer  \
     | php -- --install-dir=/usr/local/bin --filename=composer
 
+COPY --from=ghcr.io/php/pie:bin /pie /usr/local/bin/pie
+
+# mongodb 1.21.0 (the previously pinned version) is blocked by a security
+# advisory (PKSA-r3zn-9sn1-sy2d, affects <1.21.2); 1.21.5 is the patched line.
 RUN docker-php-ext-install zip && \
-    pecl install mongodb-1.21.0 msgpack && \
-    docker-php-ext-enable mongodb msgpack
+    pie install --no-interaction mongodb/mongodb-extension:1.21.5 && \
+    pie install --no-interaction msgpack/msgpack-php:3.0.1
 
 # Check if user and group doesn't exist before creating
 RUN getent group "$GROUP_ID" || addgroup --gid "$GROUP_ID" user
