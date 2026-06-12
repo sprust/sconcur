@@ -36,7 +36,7 @@ RUN chmod -R 777 /go/
 RUN curl -sS https://getcomposer.org/installer  \
     | php -- --install-dir=/usr/local/bin --filename=composer
 
-RUN pecl install zip mongodb-1.21.0 && docker-php-ext-enable zip mongodb
+RUN pecl install zip mongodb-1.21.0 msgpack && docker-php-ext-enable zip mongodb msgpack
 
 # Check if user and group doesn't exist before creating
 RUN getent group "$GROUP_ID" || addgroup --gid "$GROUP_ID" user

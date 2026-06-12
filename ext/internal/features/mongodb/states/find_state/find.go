@@ -1,4 +1,4 @@
-package aggregation_state
+package find_state
 
 import (
 	"context"
@@ -14,11 +14,12 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-type AggregationState struct {
+type FindState struct {
 	ctx         context.Context
 	message     *dto.Message
 	mCollection *mongo.Collection
-	pipeline    interface{}
+	filter      interface{}
+	opts        *options.FindOptions
 	batchSize   int
 	errFactory  *errs.Factory
 	cursor      *mongo.Cursor
@@ -30,38 +31,33 @@ func New(
 	ctx context.Context,
 	message *dto.Message,
 	mCollection *mongo.Collection,
-	pipeline interface{},
+	filter interface{},
+	opts *options.FindOptions,
 	batchSize int,
-	_ string,
 	errFactory *errs.Factory,
 ) contracts.StateContract {
-	return &AggregationState{
+	return &FindState{
 		ctx:         ctx,
 		message:     message,
 		mCollection: mCollection,
-		pipeline:    pipeline,
+		filter:      filter,
+		opts:        opts,
 		batchSize:   batchSize,
 		errFactory:  errFactory,
 		startTime:   time.Now(),
 	}
 }
 
-func (s *AggregationState) Next() *dto.Result {
+func (s *FindState) Next() *dto.Result {
 	if s.cursor == nil {
 		s.startTime = time.Now()
 
-		var opts *options.AggregateOptions
-
-		if s.batchSize > 0 {
-			opts = options.Aggregate().SetBatchSize(int32(s.batchSize))
-		}
-
-		cursor, err := s.mCollection.Aggregate(s.ctx, s.pipeline, opts)
+		cursor, err := s.mCollection.Find(s.ctx, s.filter, s.opts)
 
 		if err != nil {
 			return dto.NewErrorResult(
 				s.message,
-				s.errFactory.ByErr("aggregate error", err),
+				s.errFactory.ByErr("find error", err),
 			)
 		}
 
@@ -93,7 +89,7 @@ func (s *AggregationState) Next() *dto.Result {
 
 					return dto.NewErrorResult(
 						s.message,
-						s.errFactory.ByErr("aggregate cursor error", err),
+						s.errFactory.ByErr("find cursor error", err),
 					)
 				}
 
@@ -109,7 +105,7 @@ func (s *AggregationState) Next() *dto.Result {
 
 				return dto.NewErrorResult(
 					s.message,
-					s.errFactory.ByErr("aggregate cursor error", err),
+					s.errFactory.ByErr("find cursor error", err),
 				)
 			}
 
@@ -123,7 +119,7 @@ func (s *AggregationState) Next() *dto.Result {
 		if err != nil {
 			return dto.NewErrorResult(
 				s.message,
-				s.errFactory.ByErr("aggregate result marshal error", err),
+				s.errFactory.ByErr("find result marshal error", err),
 			)
 		}
 
@@ -131,11 +127,11 @@ func (s *AggregationState) Next() *dto.Result {
 	}
 }
 
-func (s *AggregationState) calcExecutionMs() int {
+func (s *FindState) calcExecutionMs() int {
 	return helpers.CalcExecutionMs(s.startTime)
 }
 
-func (s *AggregationState) finish(items []bson.Raw) *dto.Result {
+func (s *FindState) finish(items []bson.Raw) *dto.Result {
 	response, err := serializer.MarshalDocumentBatchRaw(items)
 
 	_ = s.cursor.Close(s.ctx)
@@ -143,7 +139,7 @@ func (s *AggregationState) finish(items []bson.Raw) *dto.Result {
 	if err != nil {
 		return dto.NewErrorResult(
 			s.message,
-			s.errFactory.ByErr("aggregate result marshal error", err),
+			s.errFactory.ByErr("find result marshal error", err),
 		)
 	}
 

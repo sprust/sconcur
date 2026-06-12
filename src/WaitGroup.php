@@ -116,21 +116,16 @@ class WaitGroup
     {
         try {
             while (true) {
-                if (count($this->syncResults) > 0) {
-                    $syncResultKeys = array_keys($this->syncResults);
-
-                    foreach ($syncResultKeys as $syncResultKey) {
-                        $syncResult = $this->syncResults[$syncResultKey];
-
+                if ($this->syncResults !== []) {
+                    foreach ($this->syncResults as $syncResultKey => $syncResult) {
                         unset($this->syncResults[$syncResultKey]);
-
                         yield $syncResultKey => $syncResult;
                     }
 
                     continue;
                 }
 
-                if (count($this->fibers) === 0) {
+                if ($this->fibers === []) {
                     break;
                 }
 
@@ -156,12 +151,6 @@ class WaitGroup
                 if (!$fiber->isSuspended()) {
                     throw new LogicException(
                         message: "Fiber [flow: $this->flowKey, task: $taskKey] is not suspended"
-                    );
-                }
-
-                if (!array_key_exists($fiberId, $this->fibers)) {
-                    throw new LogicException(
-                        message: "Fiber not found by fiber id [$fiberId]"
                     );
                 }
 

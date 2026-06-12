@@ -1,12 +1,12 @@
 package serializer
 
 import (
-	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/vmihailenco/msgpack/v5"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -16,12 +16,24 @@ func TestUnmarshalDocumentPreservesFieldAndElementOrder(t *testing.T) {
 	objectID := primitive.NewObjectID()
 	ts := time.Date(2024, time.May, 6, 7, 8, 9, 123456000, time.UTC)
 
-	input := fmt.Sprintf(
-		`{"first":1,"second":{"nestedA":"x","nestedB":2},"third":[{"arrDocFirst":true,"arrDocSecond":"%s"},3,{"when":{"$date":{"$numberLong":"%d"}}}],"fourth":{"$oid":"%s"}}`,
-		utcDateTimeStringPrefix+ts.Format(dateFormat),
-		ts.UnixMilli(),
-		objectID.Hex(),
-	)
+	input := mustPackValue(t, bson.D{
+		{Key: "first", Value: 1},
+		{Key: "second", Value: bson.D{
+			{Key: "nestedA", Value: "x"},
+			{Key: "nestedB", Value: 2},
+		}},
+		{Key: "third", Value: []interface{}{
+			bson.D{
+				{Key: "arrDocFirst", Value: true},
+				{Key: "arrDocSecond", Value: utcDateTimeStringPrefix + ts.Format(dateFormat)},
+			},
+			3,
+			bson.D{
+				{Key: "when", Value: utcDateTimeStringPrefix + ts.Format(dateFormat)},
+			},
+		}},
+		{Key: "fourth", Value: objectIdStringPrefix + objectID.Hex()},
+	})
 
 	got, err := UnmarshalDocument(input)
 	if err != nil {
@@ -53,17 +65,17 @@ func TestUnmarshalDocumentPreservesFieldAndElementOrder(t *testing.T) {
 func TestUnmarshalDocumentNormalizesEmptyPayloads(t *testing.T) {
 	tests := []struct {
 		name  string
-		input string
+		input []byte
 		want  interface{}
 	}{
 		{
 			name:  "null becomes empty document",
-			input: `null`,
+			input: mustPackNil(t),
 			want:  bson.D{},
 		},
 		{
 			name:  "empty array remains empty array",
-			input: `[]`,
+			input: mustPackValue(t, []interface{}{}),
 			want:  primitive.A{},
 		},
 	}
@@ -81,10 +93,33 @@ func TestUnmarshalDocumentNormalizesEmptyPayloads(t *testing.T) {
 }
 
 func TestUnmarshalDocumentsPreservesTopLevelAndNestedOrder(t *testing.T) {
-	input := `[
-		{"doc":"first","payload":{"a":1,"b":2},"items":[{"x":1,"y":2}, {"x":3,"y":4}]},
-		{"doc":"second","payload":{"c":3,"d":4},"items":[5,6,7]}
-	]`
+	input := mustPackValue(t, []interface{}{
+		bson.D{
+			{Key: "doc", Value: "first"},
+			{Key: "payload", Value: bson.D{
+				{Key: "a", Value: 1},
+				{Key: "b", Value: 2},
+			}},
+			{Key: "items", Value: []interface{}{
+				bson.D{
+					{Key: "x", Value: 1},
+					{Key: "y", Value: 2},
+				},
+				bson.D{
+					{Key: "x", Value: 3},
+					{Key: "y", Value: 4},
+				},
+			}},
+		},
+		bson.D{
+			{Key: "doc", Value: "second"},
+			{Key: "payload", Value: bson.D{
+				{Key: "c", Value: 3},
+				{Key: "d", Value: 4},
+			}},
+			{Key: "items", Value: []interface{}{5, 6, 7}},
+		},
+	})
 
 	got, err := UnmarshalDocuments(input)
 	if err != nil {
@@ -147,7 +182,7 @@ func TestMarshalDocumentRoundTripPreservesOrder(t *testing.T) {
 		t.Fatalf("MarshalDocument() error = %v", err)
 	}
 
-	got, err := UnmarshalDocument(marshaled)
+	got, err := UnmarshalDocument([]byte(marshaled))
 	if err != nil {
 		t.Fatalf("UnmarshalDocument() error = %v", err)
 	}
@@ -156,31 +191,125 @@ func TestMarshalDocumentRoundTripPreservesOrder(t *testing.T) {
 }
 
 func TestUnmarshalBulkWriteModelsPreservesOperationAndFieldOrder(t *testing.T) {
-	insertDoc := `{"z":1,"a":{"nested1":1,"nested2":2},"arr":[{"x":1,"y":2},2]}`
-	updateOneFilter := `{"tenant":"t1","user":{"id":1,"name":"alice"}}`
-	updateOneUpdate := `{"$set":{"profile":{"first":"Alice","last":"Smith"},"tags":["one","two"]},"$inc":{"version":1}}`
-	updateManyFilter := `{"status":"active","scope":{"region":"eu","env":"prod"}}`
-	updateManyUpdate := `{"$unset":{"legacy":""},"$set":{"updatedAt":{"$date":{"$numberLong":"1735689600000"}}}}`
-	deleteOneFilter := `{"kind":"single","payload":{"left":1,"right":2}}`
-	deleteManyFilter := `{"kind":"many","ids":[1,2,3]}`
-	replaceOneFilter := `{"entity":"account","meta":{"tenant":"t1","project":"p1"}}`
-	replaceOneReplacement := `{"name":"replacement","flags":[true,false],"doc":{"first":1,"second":2}}`
+	insertDoc := mustPackValue(t, bson.D{
+		{Key: "z", Value: 1},
+		{Key: "a", Value: bson.D{
+			{Key: "nested1", Value: 1},
+			{Key: "nested2", Value: 2},
+		}},
+		{Key: "arr", Value: []interface{}{
+			bson.D{
+				{Key: "x", Value: 1},
+				{Key: "y", Value: 2},
+			},
+			2,
+		}},
+	})
+	updateOneFilter := mustPackValue(t, bson.D{
+		{Key: "tenant", Value: "t1"},
+		{Key: "user", Value: bson.D{
+			{Key: "id", Value: 1},
+			{Key: "name", Value: "alice"},
+		}},
+	})
+	updateOneUpdate := mustPackValue(t, bson.D{
+		{Key: "$set", Value: bson.D{
+			{Key: "profile", Value: bson.D{
+				{Key: "first", Value: "Alice"},
+				{Key: "last", Value: "Smith"},
+			}},
+			{Key: "tags", Value: []interface{}{"one", "two"}},
+		}},
+		{Key: "$inc", Value: bson.D{
+			{Key: "version", Value: 1},
+		}},
+	})
+	updateManyFilter := mustPackValue(t, bson.D{
+		{Key: "status", Value: "active"},
+		{Key: "scope", Value: bson.D{
+			{Key: "region", Value: "eu"},
+			{Key: "env", Value: "prod"},
+		}},
+	})
+	updateManyUpdate := mustPackValue(t, bson.D{
+		{Key: "$unset", Value: bson.D{
+			{Key: "legacy", Value: ""},
+		}},
+		{Key: "$set", Value: bson.D{
+			{Key: "updatedAt", Value: utcDateTimeStringPrefix + time.UnixMilli(1735689600000).UTC().Format(dateFormat)},
+		}},
+	})
+	deleteOneFilter := mustPackValue(t, bson.D{
+		{Key: "kind", Value: "single"},
+		{Key: "payload", Value: bson.D{
+			{Key: "left", Value: 1},
+			{Key: "right", Value: 2},
+		}},
+	})
+	deleteManyFilter := mustPackValue(t, bson.D{
+		{Key: "kind", Value: "many"},
+		{Key: "ids", Value: []interface{}{1, 2, 3}},
+	})
+	replaceOneFilter := mustPackValue(t, bson.D{
+		{Key: "entity", Value: "account"},
+		{Key: "meta", Value: bson.D{
+			{Key: "tenant", Value: "t1"},
+			{Key: "project", Value: "p1"},
+		}},
+	})
+	replaceOneReplacement := mustPackValue(t, bson.D{
+		{Key: "name", Value: "replacement"},
+		{Key: "flags", Value: []interface{}{true, false}},
+		{Key: "doc", Value: bson.D{
+			{Key: "first", Value: 1},
+			{Key: "second", Value: 2},
+		}},
+	})
 
-	input := fmt.Sprintf(`[
-		{"type":"insertOne","model":{"document":%q}},
-		{"type":"updateOne","model":{"filter":%q,"update":%q,"upsert":true}},
-		{"type":"updateMany","model":{"filter":%q,"update":%q,"upsert":false}},
-		{"type":"deleteOne","model":{"filter":%q}},
-		{"type":"deleteMany","model":{"filter":%q}},
-		{"type":"replaceOne","model":{"filter":%q,"replacement":%q,"upsert":true}}
-	]`,
-		insertDoc,
-		updateOneFilter, updateOneUpdate,
-		updateManyFilter, updateManyUpdate,
-		deleteOneFilter,
-		deleteManyFilter,
-		replaceOneFilter, replaceOneReplacement,
-	)
+	input := mustPackValue(t, []interface{}{
+		map[string]interface{}{
+			"type": "insertOne",
+			"model": map[string]interface{}{
+				"document": insertDoc,
+			},
+		},
+		map[string]interface{}{
+			"type": "updateOne",
+			"model": map[string]interface{}{
+				"filter": updateOneFilter,
+				"update": updateOneUpdate,
+				"upsert": true,
+			},
+		},
+		map[string]interface{}{
+			"type": "updateMany",
+			"model": map[string]interface{}{
+				"filter": updateManyFilter,
+				"update": updateManyUpdate,
+				"upsert": false,
+			},
+		},
+		map[string]interface{}{
+			"type": "deleteOne",
+			"model": map[string]interface{}{
+				"filter": deleteOneFilter,
+			},
+		},
+		map[string]interface{}{
+			"type": "deleteMany",
+			"model": map[string]interface{}{
+				"filter": deleteManyFilter,
+			},
+		},
+		map[string]interface{}{
+			"type": "replaceOne",
+			"model": map[string]interface{}{
+				"filter":      replaceOneFilter,
+				"replacement": replaceOneReplacement,
+				"upsert":      true,
+			},
+		},
+	})
 
 	got, err := UnmarshalBulkWriteModels(input)
 	if err != nil {
@@ -301,7 +430,14 @@ func TestUnmarshalBulkWriteModelsPreservesOperationAndFieldOrder(t *testing.T) {
 
 func TestUnmarshalBulkWriteModelsReturnsHelpfulErrors(t *testing.T) {
 	t.Run("unknown model type", func(t *testing.T) {
-		_, err := UnmarshalBulkWriteModels(`[{"type":"mystery","model":{}}]`)
+		input := mustPackValue(t, []interface{}{
+			map[string]interface{}{
+				"type":  "mystery",
+				"model": map[string]interface{}{},
+			},
+		})
+
+		_, err := UnmarshalBulkWriteModels(input)
 		if err == nil {
 			t.Fatal("UnmarshalBulkWriteModels() error = nil, want error")
 		}
@@ -311,8 +447,17 @@ func TestUnmarshalBulkWriteModelsReturnsHelpfulErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("invalid nested extjson is attributed to operation", func(t *testing.T) {
-		_, err := UnmarshalBulkWriteModels(`[{"type":"insertOne","model":{"document":"{"}}]`)
+	t.Run("invalid nested payload is attributed to operation", func(t *testing.T) {
+		input := mustPackValue(t, []interface{}{
+			map[string]interface{}{
+				"type": "insertOne",
+				"model": map[string]interface{}{
+					"document": []byte{0xc1},
+				},
+			},
+		})
+
+		_, err := UnmarshalBulkWriteModels(input)
 		if err == nil {
 			t.Fatal("UnmarshalBulkWriteModels() error = nil, want error")
 		}
@@ -338,7 +483,132 @@ func assertBoolPtrValue(t *testing.T, got *bool, want bool, field string) {
 func assertDeepEqual(t *testing.T, got interface{}, want interface{}) {
 	t.Helper()
 
-	if !reflect.DeepEqual(got, want) {
+	gotNormalized := normalizeForComparison(got)
+	wantNormalized := normalizeForComparison(want)
+
+	if !reflect.DeepEqual(gotNormalized, wantNormalized) {
 		t.Fatalf("value mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func normalizeForComparison(value interface{}) interface{} {
+	switch v := value.(type) {
+	case bson.D:
+		result := make([]interface{}, len(v))
+
+		for i, item := range v {
+			result[i] = []interface{}{
+				item.Key,
+				normalizeForComparison(item.Value),
+			}
+		}
+
+		return result
+	case primitive.A:
+		result := make([]interface{}, len(v))
+
+		for i, item := range v {
+			result[i] = normalizeForComparison(item)
+		}
+
+		return result
+	case []interface{}:
+		result := make([]interface{}, len(v))
+
+		for i, item := range v {
+			result[i] = normalizeForComparison(item)
+		}
+
+		return result
+	case primitive.DateTime:
+		return int64(v)
+	case int:
+		return int64(v)
+	case int8:
+		return int64(v)
+	case int16:
+		return int64(v)
+	case int32:
+		return int64(v)
+	case int64:
+		return v
+	case uint:
+		return uint64(v)
+	case uint8:
+		return uint64(v)
+	case uint16:
+		return uint64(v)
+	case uint32:
+		return uint64(v)
+	case uint64:
+		return v
+	default:
+		return v
+	}
+}
+
+func mustPackNil(t *testing.T) []byte {
+	t.Helper()
+
+	packed, err := msgpack.Marshal(nil)
+	if err != nil {
+		t.Fatalf("msgpack.Marshal(nil) error = %v", err)
+	}
+
+	return packed
+}
+
+func mustPackValue(t *testing.T, value interface{}) []byte {
+	t.Helper()
+
+	packed, err := msgpack.Marshal(encodeMessagePackValue(value))
+	if err != nil {
+		t.Fatalf("msgpack.Marshal() error = %v", err)
+	}
+
+	return packed
+}
+
+func encodeMessagePackValue(value interface{}) interface{} {
+	switch v := value.(type) {
+	case bson.D:
+		items := make([]interface{}, 0, len(v))
+
+		for _, element := range v {
+			items = append(items, []interface{}{
+				element.Key,
+				encodeMessagePackValue(element.Value),
+			})
+		}
+
+		return map[string]interface{}{
+			orderedMapMarker: items,
+		}
+	case primitive.A:
+		result := make([]interface{}, len(v))
+
+		for i, item := range v {
+			result[i] = encodeMessagePackValue(item)
+		}
+
+		return result
+	case []interface{}:
+		result := make([]interface{}, len(v))
+
+		for i, item := range v {
+			result[i] = encodeMessagePackValue(item)
+		}
+
+		return result
+	case map[string]interface{}:
+		result := make(map[string]interface{}, len(v))
+
+		for key, item := range v {
+			result[key] = encodeMessagePackValue(item)
+		}
+
+		return result
+	default:
+		return v
 	}
 }

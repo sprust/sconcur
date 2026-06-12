@@ -7,16 +7,16 @@ namespace SConcur\Connection;
 use RuntimeException;
 use SConcur\Dto\RunningTaskDto;
 use SConcur\Dto\TaskResultDto;
-use SConcur\Exceptions\ResponseIsNotJsonException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\MethodEnum;
+use SConcur\Transport\MessagePackTransport;
 use Throwable;
-use function SConcur\Extension\count;
 use function SConcur\Extension\destroy;
-use function SConcur\Extension\push;
 use function SConcur\Extension\next;
+use function SConcur\Extension\push;
 use function SConcur\Extension\stopFlow;
+use function SConcur\Extension\tasksCount;
 use function SConcur\Extension\version;
 use function SConcur\Extension\wait;
 
@@ -75,17 +75,7 @@ class Extension
             );
         }
 
-        try {
-            $responseData = json_decode(
-                json: $response,
-                associative: true,
-                flags: JSON_THROW_ON_ERROR
-            );
-        } catch (Throwable $exception) {
-            throw new ResponseIsNotJsonException(
-                message: $exception->getMessage(),
-            );
-        }
+        $responseData = MessagePackTransport::unpack($response);
 
         try {
             return new TaskResultDto(
@@ -108,7 +98,7 @@ class Extension
 
     public function count(): int
     {
-        return count();
+        return tasksCount();
     }
 
     public function stopFlow(string $flowKey): void

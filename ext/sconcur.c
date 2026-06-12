@@ -5,10 +5,10 @@
 /*
  * arginfo:
  *  - ping(string name)
- *  - push(string flowKey, int method, string taskKey, string payloadJSON)
+ *  - push(string flowKey, int method, string taskKey, string payload)
  *  - next(string flowKey, string taskKey)
  *  - wait(string flowKey)
- *  - count()
+ *  - tasksCount()
  *  - stopFlow(string flowKey)
  *  - destroy()
  *  - version()
@@ -19,7 +19,7 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_ping, 0, 0, 1)
     ZEND_ARG_TYPE_INFO(0, name, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
-// push(string flowKey, int method, string taskKey, string payloadJSON)
+// push(string flowKey, int method, string taskKey, string payload)
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_push, 0, 0, 4)
     ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, method, IS_LONG, 0)
@@ -38,9 +38,8 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_wait, 0, 0, 1)
     ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
-
-// count()
-ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_count, 0, 0, 0)
+// tasksCount()
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_tasksCount, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
 // stopFlow(string flowKey)
@@ -88,7 +87,15 @@ PHP_FUNCTION(push)
         RETURN_THROWS();
     }
 
-    char *response = push(flow_key, (int)method, task_key, payload);
+    char *response = push(
+        flow_key,
+        (int)flow_key_len,
+        (int)method,
+        task_key,
+        (int)task_key_len,
+        payload,
+        (int)payload_len
+    );
 
     RETVAL_STRING(response);
     free(response);
@@ -115,25 +122,35 @@ PHP_FUNCTION(wait)
 {
     char *flow_key = NULL;
     size_t flow_key_len;
+    buffer_result_t response;
 
     if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &flow_key, &flow_key_len) == FAILURE) {
         RETURN_THROWS();
     }
 
-    char *response = wait(flow_key);
+    response = wait(
+        flow_key,
+        (int)flow_key_len
+    );
 
-    RETVAL_STRING(response);
-    free(response);
+    if (response.err != NULL) {
+        RETVAL_STRING(response.err);
+        free(response.err);
+        return;
+    }
+
+    RETVAL_STRINGL((char *)response.data, response.len);
+    free(response.data);
 }
 
-// PHP: SConcur\Extension\count(): int
-PHP_FUNCTION(count)
+// PHP: SConcur\Extension\tasksCount(): int
+PHP_FUNCTION(tasksCount)
 {
     if (zend_parse_parameters_none() == FAILURE) {
         RETURN_THROWS();
     }
 
-    int result = count();
+    int result = tasksCount();
     RETURN_LONG(result);
 }
 
@@ -183,7 +200,7 @@ static const zend_function_entry sconcur_functions[] = {
     ZEND_NS_FE("SConcur\\Extension", push, arginfo_sconcur_push)
     ZEND_NS_FE("SConcur\\Extension", next, arginfo_sconcur_next)
     ZEND_NS_FE("SConcur\\Extension", wait, arginfo_sconcur_wait)
-    ZEND_NS_FE("SConcur\\Extension", count, arginfo_sconcur_count)
+    ZEND_NS_FE("SConcur\\Extension", tasksCount, arginfo_sconcur_tasksCount)
     ZEND_NS_FE("SConcur\\Extension", stopFlow, arginfo_sconcur_stopFlow)
     ZEND_NS_FE("SConcur\\Extension", destroy, arginfo_sconcur_destroy)
     ZEND_NS_FE("SConcur\\Extension", version, arginfo_sconcur_version)

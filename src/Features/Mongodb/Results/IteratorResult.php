@@ -10,8 +10,7 @@ use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
-use SConcur\Flow\CurrentFlow;
-use SConcur\State;
+use SConcur\Transport\MessagePackTransport;
 
 // TODO: check for iterator_to_array
 // TODO: check for iterator_count
@@ -21,13 +20,14 @@ use SConcur\State;
  */
 class IteratorResult implements Iterator
 {
-    protected ?CurrentFlow $currentFlow;
     protected ?string $taskKey;
 
     /**
-     * @var array<int, array<int|string|float|bool|null, mixed>>|null
+     * @var array<int, string>|null
      */
     protected ?array $items;
+    protected int $itemIndex;
+    protected int $globalIndex;
     protected mixed $currentKey;
     protected mixed $currentValue;
 
@@ -84,8 +84,6 @@ class IteratorResult implements Iterator
     {
         $this->resetProperties();
 
-        $this->currentFlow = State::getCurrentFlow();
-
         $taskResult = FeatureExecutor::exec(
             method: $this->method,
             payload: $this->payload
@@ -102,26 +100,36 @@ class IteratorResult implements Iterator
     {
         $this->isLastBatch = !$taskResult->hasNext;
 
-        $decoded = DocumentSerializer::unserialize($taskResult->payload);
+        $decoded = MessagePackTransport::unpack($taskResult->payload);
 
-        if (!array_key_exists($this->resultKey, $decoded)) {
+        if (!array_is_list($decoded)) {
             throw new UnexpectedResponseFormatException(
-                message: "Result key [$this->resultKey] not found in payload"
+                message: 'Aggregate batch payload is not a list.'
             );
         }
 
-        $this->items = $decoded[$this->resultKey];
+        foreach ($decoded as $item) {
+            if (!is_string($item)) {
+                throw new UnexpectedResponseFormatException(
+                    message: 'Aggregate batch item payload is not a string.'
+                );
+            }
+        }
+
+        /** @var array<int, string> $decoded */
+        $this->items     = $decoded;
+        $this->itemIndex = 0;
     }
 
     protected function nextItem(): void
     {
-        foreach ($this->items ?: [] as $key => $value) {
-            unset($this->items[$key]);
+        if ($this->items !== null && isset($this->items[$this->itemIndex])) {
+            $this->currentKey   = $this->globalIndex;
+            $this->currentValue = DocumentSerializer::unserialize($this->items[$this->itemIndex]);
+            ++$this->globalIndex;
+            ++$this->itemIndex;
 
-            $this->currentKey   = $key;
-            $this->currentValue = $value;
-
-            if (count($this->items) === 0) {
+            if (!isset($this->items[$this->itemIndex])) {
                 $this->items = null;
             }
 
@@ -137,9 +145,10 @@ class IteratorResult implements Iterator
 
     protected function resetProperties(): void
     {
-        $this->currentFlow  = null;
         $this->taskKey      = null;
         $this->items        = null;
+        $this->itemIndex    = 0;
+        $this->globalIndex  = 0;
         $this->currentKey   = null;
         $this->currentValue = null;
         $this->isLastBatch  = false;

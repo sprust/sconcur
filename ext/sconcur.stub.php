@@ -18,7 +18,7 @@ function wait(string $fk): string
 {
 }
 
-function count(): int
+function tasksCount(): int
 {
 }
 
