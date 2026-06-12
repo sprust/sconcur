@@ -248,7 +248,19 @@ func bsonArrayDocuments(data []byte) ([]interface{}, error) {
 	documents := make([]interface{}, len(values))
 
 	for i, value := range values {
-		documents[i] = value.Document()
+		// DocumentOK instead of Document: the latter panics on a non-document
+		// element, and the input comes straight from PHP user code.
+		document, ok := value.DocumentOK()
+
+		if !ok {
+			return nil, fmt.Errorf(
+				"element %d of BSON array is not a document, got type %s",
+				i,
+				value.Type.String(),
+			)
+		}
+
+		documents[i] = document
 	}
 
 	return documents, nil
