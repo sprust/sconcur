@@ -11,7 +11,7 @@ use SConcur\Tests\Impl\TestMongodbResolver;
 
 class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
 {
-    protected \MongoDB\BSON\UTCDateTime $driverDateTime;
+    protected UTCDateTime $driverDateTime;
 
     private string $fieldName;
     private UTCDateTime $fieldValue;

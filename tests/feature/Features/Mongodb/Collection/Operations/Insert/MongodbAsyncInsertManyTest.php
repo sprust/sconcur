@@ -4,11 +4,12 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Insert;
 
+use MongoDB\BSON\ObjectId;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
 
 class MongodbAsyncInsertManyTest extends BaseMongodbAsyncTestCase
 {
-    protected \MongoDB\BSON\ObjectId $driverObjectId;
+    protected ObjectId $driverObjectId;
 
     protected string $fieldName;
 

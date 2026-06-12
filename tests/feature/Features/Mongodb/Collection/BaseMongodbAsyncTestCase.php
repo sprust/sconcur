@@ -15,7 +15,7 @@ abstract class BaseMongodbAsyncTestCase extends BaseAsyncTestCase
     protected \MongoDB\Collection $driverCollection;
     protected Collection $sconcurCollection;
 
-    protected \MongoDB\BSON\ObjectId $driverObjectId;
+    protected ObjectId $driverObjectId;
     protected ObjectId $sconcurObjectId;
 
     abstract protected function getCollectionName(): string;
