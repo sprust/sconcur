@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"sconcur/internal/dto"
+	"sconcur/internal/features"
 	"sconcur/internal/flows"
 	"sync"
 )
@@ -46,6 +47,7 @@ func (h *Handler) StopFlow(flowKey string) {
 func (h *Handler) Destroy() {
 	h.ctxCancel()
 	h.flows.Cancel()
+	features.Shutdown()
 	h.fresh()
 }
 

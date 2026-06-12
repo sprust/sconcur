@@ -7,6 +7,7 @@ import (
 	"sconcur/internal/errs"
 	"sconcur/internal/features/mongodb/serializer"
 	"sconcur/internal/helpers"
+	"sync"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -14,7 +15,12 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+const closeCursorTimeout = 5 * time.Second
+
 type AggregationState struct {
+	// mutex serializes Next against Close: Close may fire from the task
+	// context cancellation while a Next call is still using the cursor.
+	mutex       sync.Mutex
 	ctx         context.Context
 	message     *dto.Message
 	mCollection *mongo.Collection
@@ -49,7 +55,32 @@ func (s *AggregationState) marshalBatch(items []bson.Raw) (string, error) {
 	return serializer.MarshalDocumentBatchRaw(items)
 }
 
+func (s *AggregationState) Close() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	s.closeCursorLocked()
+}
+
+// closeCursorLocked uses a fresh context: the task context may already be
+// cancelled, and killCursors would never reach the server through it.
+func (s *AggregationState) closeCursorLocked() {
+	if s.cursor == nil {
+		return
+	}
+
+	closeCtx, closeCtxCancel := context.WithTimeout(context.Background(), closeCursorTimeout)
+	defer closeCtxCancel()
+
+	_ = s.cursor.Close(closeCtx)
+
+	s.cursor = nil
+}
+
 func (s *AggregationState) Next() *dto.Result {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	if s.cursor == nil {
 		s.startTime = time.Now()
 
@@ -92,7 +123,7 @@ func (s *AggregationState) Next() *dto.Result {
 		for s.batchSize <= 0 || len(items) < s.batchSize {
 			if !s.cursor.Next(s.ctx) {
 				if err := s.cursor.Err(); err != nil {
-					_ = s.cursor.Close(s.ctx)
+					s.closeCursorLocked()
 
 					return dto.NewErrorResult(
 						s.message,
@@ -108,7 +139,7 @@ func (s *AggregationState) Next() *dto.Result {
 
 		if !s.cursor.Next(s.ctx) {
 			if err := s.cursor.Err(); err != nil {
-				_ = s.cursor.Close(s.ctx)
+				s.closeCursorLocked()
 
 				return dto.NewErrorResult(
 					s.message,
@@ -141,7 +172,7 @@ func (s *AggregationState) calcExecutionMs() int {
 func (s *AggregationState) finish(items []bson.Raw) *dto.Result {
 	response, err := s.marshalBatch(items)
 
-	_ = s.cursor.Close(s.ctx)
+	s.closeCursorLocked()
 
 	if err != nil {
 		return dto.NewErrorResult(

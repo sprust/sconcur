@@ -97,7 +97,15 @@ func (s *States) handleNext(taskKey string, state contracts.StateContract) *dto.
 
 func (s *States) DeleteState(taskKey string) {
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
+
+	state, ok := s.states[taskKey]
 
 	delete(s.states, taskKey)
+
+	s.mutex.Unlock()
+
+	// Close outside the lock: it may do network I/O (killCursors).
+	if ok {
+		state.Close()
+	}
 }

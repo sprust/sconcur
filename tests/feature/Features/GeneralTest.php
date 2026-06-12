@@ -29,40 +29,40 @@ class GeneralTest extends BaseTestCase
             function () use (&$events) {
                 $events[] = '1:start';
 
-                $this->sleeper->usleep(milliseconds: 30);
+                $this->sleeper->usleep(milliseconds: 60);
 
                 $events[] = '1:woke';
 
-                $this->sleeper->usleep(milliseconds: 90);
+                $this->sleeper->usleep(milliseconds: 180);
 
                 $events[] = '1:finish';
             },
             function () use (&$events) {
                 $events[] = '2:start';
 
-                $this->sleeper->usleep(milliseconds: 60);
+                $this->sleeper->usleep(milliseconds: 120);
 
                 // internal flow
                 $callbacks = [
                     function () use (&$events) {
                         $events[] = '2.1:start';
 
-                        $this->sleeper->usleep(milliseconds: 30);
+                        $this->sleeper->usleep(milliseconds: 60);
 
                         $events[] = '2.1:woke';
 
-                        $this->sleeper->usleep(milliseconds: 90);
+                        $this->sleeper->usleep(milliseconds: 180);
 
                         $events[] = '2.1:finish';
                     },
                     function () use (&$events) {
                         $events[] = '2.2:start';
 
-                        $this->sleeper->usleep(milliseconds: 60);
+                        $this->sleeper->usleep(milliseconds: 120);
 
                         $events[] = '2.2:woke';
 
-                        $this->sleeper->usleep(milliseconds: 120);
+                        $this->sleeper->usleep(milliseconds: 240);
 
                         $events[] = '2.2:finish';
                     },
@@ -84,7 +84,7 @@ class GeneralTest extends BaseTestCase
 
                 $events[] = '2:woke';
 
-                $this->sleeper->usleep(milliseconds: 120);
+                $this->sleeper->usleep(milliseconds: 240);
 
                 $events[] = '2:finish';
             },
@@ -137,7 +137,9 @@ class GeneralTest extends BaseTestCase
 
         $callbacks = [
             function () use (&$events) {
-                $this->sleeper->usleep(milliseconds: 10);
+                // The gap must be wide: when the PHP side stalls longer than the
+                // difference, both results are pending and arrive in random order.
+                $this->sleeper->usleep(milliseconds: 100);
 
                 $events[] = '1:finish';
 

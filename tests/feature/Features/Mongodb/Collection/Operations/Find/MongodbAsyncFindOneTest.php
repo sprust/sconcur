@@ -35,7 +35,13 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
 
     protected function on_1_start(): void
     {
-        $result = $this->sconcurCollection->findOne([]);
+        // The filter must not match documents inserted concurrently by the
+        // second task: an empty filter would race with its insertMany.
+        $result = $this->sconcurCollection->findOne(
+            filter: [
+                $this->fieldName => $this->sconcurObjectId,
+            ]
+        );
 
         self::assertTrue(
             is_null($result)

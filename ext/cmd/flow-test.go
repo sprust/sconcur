@@ -4,12 +4,25 @@ import (
 	"fmt"
 	"log"
 	"sconcur/internal/dto"
+	"sconcur/internal/features/sleep/params"
 	handler2 "sconcur/internal/handler"
 	"sconcur/internal/types"
 	"time"
+
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 var handler *handler2.Handler
+
+func sleepPayload(milliseconds int64) []byte {
+	payload, err := msgpack.Marshal(params.SleepPayload{Milliseconds: milliseconds})
+
+	if err != nil {
+		log.Fatalf("Error marshaling sleep payload: %v", err)
+	}
+
+	return payload
+}
 
 func main() {
 	// Initialize handler
@@ -41,7 +54,7 @@ func testSleepFlow() {
 		FlowKey: flowKey,
 		Method:  types.Method(1), // Sleep feature
 		TaskKey: taskKey,
-		Payload: `{"duration": 100}`,
+		Payload: sleepPayload(100),
 	}
 
 	err := handler.Push(msg)
@@ -59,7 +72,7 @@ func testSleepFlow() {
 		return
 	}
 
-	fmt.Printf("Result: %s\n", result)
+	fmt.Printf("Result: %+v\n", result)
 	fmt.Printf("Task count: %d\n", handler.GetTasksCount())
 }
 
@@ -73,7 +86,7 @@ func testMultipleTasks() {
 			FlowKey: flowKey,
 			Method:  types.Method(1),
 			TaskKey: taskKey,
-			Payload: fmt.Sprintf(`{"duration": %d}`, i*50),
+			Payload: sleepPayload(int64(i * 50)),
 		}
 
 		err := handler.Push(msg)
@@ -93,7 +106,7 @@ func testMultipleTasks() {
 			continue
 		}
 
-		fmt.Printf("Result %d: %s\n", i, result)
+		fmt.Printf("Result %d: %+v\n", i, result)
 	}
 
 	fmt.Printf("Task count: %d\n", handler.GetTasksCount())
@@ -106,7 +119,7 @@ func testStopFlow() {
 		FlowKey: flowKey,
 		Method:  types.Method(1),
 		TaskKey: "task_stop",
-		Payload: `{"duration": 2000}`,
+		Payload: sleepPayload(2000),
 	}
 
 	err := handler.Push(msg)
@@ -127,7 +140,7 @@ func testStopFlow() {
 	if err != nil {
 		fmt.Printf("Expected error after stop: %v\n", err)
 	} else {
-		fmt.Printf("Unexpected result: %s\n", result)
+		fmt.Printf("Unexpected result: %+v\n", result)
 	}
 
 	fmt.Printf("Task count: %d\n", handler.GetTasksCount())

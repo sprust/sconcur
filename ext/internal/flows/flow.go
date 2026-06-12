@@ -3,6 +3,8 @@ package flows
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime/debug"
 	"sconcur/internal/dto"
 	"sconcur/internal/features"
 	"sconcur/internal/states"
@@ -38,13 +40,13 @@ func (f *Flow) HandleMessage(msg *dto.Message) error {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	task := tasks.NewTask(f.ctx, f.results, msg)
-
-	f.activeTasks[msg.TaskKey] = task
-	f.tasksCount.Add(1)
+	// Resolve the handler before mutating flow state: a task registered for
+	// a message that will never run would corrupt the tasks accounting and
+	// leave PHP waiting forever.
+	var handle func(task *tasks.Task)
 
 	if msg.IsNext {
-		go states.Get().Next(task)
+		handle = states.Get().Next
 	} else {
 		handler, err := features.DetectMessageHandler(msg.Method)
 
@@ -52,10 +54,34 @@ func (f *Flow) HandleMessage(msg *dto.Message) error {
 			return err
 		}
 
-		go handler.Handle(task)
+		handle = handler.Handle
 	}
 
+	task := tasks.NewTask(f.ctx, f.results, msg)
+
+	f.activeTasks[msg.TaskKey] = task
+	f.tasksCount.Add(1)
+
+	go runTaskProtected(task, handle)
+
 	return nil
+}
+
+// runTaskProtected converts a panic into a task error result:
+// an unrecovered panic in a c-shared library aborts the whole PHP process.
+func runTaskProtected(task *tasks.Task, handle func(task *tasks.Task)) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			task.AddResult(
+				dto.NewErrorResult(
+					task.GetMessage(),
+					fmt.Sprintf("panic: %v\n%s", recovered, debug.Stack()),
+				),
+			)
+		}
+	}()
+
+	handle(task)
 }
 
 func (f *Flow) Wait() (*dto.Result, error) {
@@ -69,10 +95,20 @@ func (f *Flow) Wait() (*dto.Result, error) {
 
 		f.mutex.Lock()
 
+		task := f.activeTasks[result.TaskKey]
+
 		delete(f.activeTasks, result.TaskKey)
 		f.tasksCount.Add(-1)
 
 		f.mutex.Unlock()
+
+		// Release the task context once its result is delivered. The initial
+		// task of a multi-batch find/aggregate is the exception: its context
+		// owns the cursor state lifetime (states.Start hooks AfterFunc on it),
+		// so it must live until the state is finished or the flow is stopped.
+		if task != nil && (task.GetMessage().IsNext || !result.HasNext) {
+			task.Cancel()
+		}
 
 		return result, nil
 	}

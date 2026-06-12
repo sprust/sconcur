@@ -6,4 +6,5 @@ import (
 
 type StateContract interface {
 	Next() *dto.Result
+	Close()
 }

@@ -101,3 +101,19 @@ func TestMarshalDocumentBatchRawWrapsDocuments(t *testing.T) {
 		t.Fatalf("wrapper has %d documents, want 2", len(wrapper.D))
 	}
 }
+
+func TestUnmarshalDocumentsRejectsNonDocumentElement(t *testing.T) {
+	arrayBytes, err := bson.Marshal(bson.D{
+		{Key: "0", Value: bson.D{{Key: "title", Value: "valid document"}}},
+		{Key: "1", Value: "scalar instead of document"},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	_, err = UnmarshalDocuments(arrayBytes)
+
+	if err == nil {
+		t.Fatal("UnmarshalDocuments() must return an error for a non-document element, not panic")
+	}
+}

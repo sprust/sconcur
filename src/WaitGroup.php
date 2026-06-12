@@ -64,6 +64,10 @@ class WaitGroup
         try {
             $fiber->start();
         } catch (Throwable $exception) {
+            // Without this, a reused spl_object_id could route a foreign
+            // fiber's tasks into this flow.
+            State::unRegisterFiber(spl_object_id($fiber));
+
             throw new RuntimeException(
                 message: $exception->getMessage(),
                 previous: $exception
