@@ -6,7 +6,7 @@ namespace SConcur\Features\Mongodb\Serialization;
 
 use MongoDB\BSON\Document;
 use MongoDB\BSON\PackedArray;
-use SConcur\Exceptions\UnexpectedResponseFormatException;
+use SConcur\Features\Mongodb\Exceptions\UnexpectedMongodbResponseFormatException;
 
 /**
  * Documents are exchanged with the Go extension as raw BSON and decoded natively via
@@ -64,7 +64,7 @@ final class DocumentSerializer
         $items = $decoded['d'] ?? [];
 
         if (!is_array($items)) {
-            throw new UnexpectedResponseFormatException(
+            throw new UnexpectedMongodbResponseFormatException(
                 message: 'BSON batch payload is not a list.'
             );
         }

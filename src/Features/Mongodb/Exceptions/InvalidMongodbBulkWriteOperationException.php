@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Exceptions;
+namespace SConcur\Features\Mongodb\Exceptions;
 
 use RuntimeException;
 
