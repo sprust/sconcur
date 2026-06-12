@@ -76,9 +76,9 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
 
     protected function on_exception(): void
     {
+        // Unrecognized pipeline stage is rejected by MongoDB (server-side error).
         $iterator = $this->sconcurCollection->aggregate(
-            /** @phpstan-ignore-next-line argument.type */
-            pipeline: [$this->fieldName => $this->sconcurObjectId],
+            pipeline: [['$notARealStage' => 1]],
         );
 
         $iterator->rewind();

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Mongodb\Results;
 
-use SConcur\Features\Mongodb\Types\ObjectId;
+use MongoDB\BSON\ObjectId;
 
 readonly class BulkWriteResult
 {

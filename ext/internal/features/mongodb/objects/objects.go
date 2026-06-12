@@ -10,14 +10,19 @@ type Payload struct {
 }
 
 type UpdateParams struct {
-	Filter []byte `json:"f" msgpack:"f"`
-	Update []byte `json:"u" msgpack:"u"`
-	Upsert bool   `json:"ou" msgpack:"ou"`
+	Filter       []byte `json:"f" msgpack:"f"`
+	Update       []byte `json:"u" msgpack:"u"`
+	Upsert       bool   `json:"ou" msgpack:"ou"`
+	Hint         []byte `json:"hn" msgpack:"hn"`
+	Collation    []byte `json:"co" msgpack:"co"`
+	ArrayFilters []byte `json:"af" msgpack:"af"`
 }
 
 type FindOneParams struct {
 	Filter     []byte `json:"f" msgpack:"f"`
 	Projection []byte `json:"op" msgpack:"op"`
+	Hint       []byte `json:"hn" msgpack:"hn"`
+	Collation  []byte `json:"co" msgpack:"co"`
 }
 
 type FindParams struct {
@@ -27,6 +32,8 @@ type FindParams struct {
 	Limit      int64  `json:"l" msgpack:"l"`
 	Skip       int64  `json:"sk" msgpack:"sk"`
 	BatchSize  int    `json:"bs" msgpack:"bs"`
+	Hint       []byte `json:"hn" msgpack:"hn"`
+	Collation  []byte `json:"co" msgpack:"co"`
 }
 
 type AggregateParams struct {
@@ -48,16 +55,21 @@ type DropIndexParams struct {
 }
 
 type DeleteOneParams struct {
-	Filter []byte `json:"f" msgpack:"f"`
+	Filter    []byte `json:"f" msgpack:"f"`
+	Hint      []byte `json:"hn" msgpack:"hn"`
+	Collation []byte `json:"co" msgpack:"co"`
 }
 
 type DeleteManyParams struct {
-	Filter []byte `json:"f" msgpack:"f"`
+	Filter    []byte `json:"f" msgpack:"f"`
+	Hint      []byte `json:"hn" msgpack:"hn"`
+	Collation []byte `json:"co" msgpack:"co"`
 }
 
 type DistinctParams struct {
 	FieldName string `json:"fn" msgpack:"fn"`
 	Filter    []byte `json:"f" msgpack:"f"`
+	Collation []byte `json:"co" msgpack:"co"`
 }
 
 type FindOneAndUpdateParams struct {
@@ -66,6 +78,9 @@ type FindOneAndUpdateParams struct {
 	Projection     []byte `json:"op" msgpack:"op"`
 	Upsert         bool   `json:"ou" msgpack:"ou"`
 	ReturnDocument bool   `json:"rd" msgpack:"rd"`
+	Hint           []byte `json:"hn" msgpack:"hn"`
+	Collation      []byte `json:"co" msgpack:"co"`
+	ArrayFilters   []byte `json:"af" msgpack:"af"`
 }
 
 type FindOneAndDeleteParams struct {

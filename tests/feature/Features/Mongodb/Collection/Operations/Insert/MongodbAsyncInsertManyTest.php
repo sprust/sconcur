@@ -4,11 +4,12 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Insert;
 
+use MongoDB\BSON\ObjectId;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
 
 class MongodbAsyncInsertManyTest extends BaseMongodbAsyncTestCase
 {
-    protected \MongoDB\BSON\ObjectId $driverObjectId;
+    protected ObjectId $driverObjectId;
 
     protected string $fieldName;
 
@@ -57,9 +58,9 @@ class MongodbAsyncInsertManyTest extends BaseMongodbAsyncTestCase
 
     protected function on_exception(): void
     {
+        // An array-valued _id is rejected by MongoDB (server-side error).
         $this->sconcurCollection->insertMany(
-            /** @phpstan-ignore-next-line argument.type */
-            documents: [$this->fieldName => $this->sconcurObjectId]
+            documents: [['_id' => [1, 2, 3]]]
         );
     }
 

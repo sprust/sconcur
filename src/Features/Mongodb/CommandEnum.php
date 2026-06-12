@@ -29,4 +29,5 @@ enum CommandEnum: int
     case ListCollections        = 23;
     case ListDatabases          = 24;
     case RenameCollection       = 25;
+    case RunCommand             = 26;
 }
