@@ -92,7 +92,7 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 
 	ctx := task.GetContext()
 
-	client, err := f.clients.GetClient(
+	client, err := f.clients.Acquire(
 		payload.Url,
 		payload.SocketTimeoutMs,
 	)
@@ -107,6 +107,10 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 
 		return
 	}
+
+	// Release the handler's hold when Handle returns. A streaming command additionally
+	// retains the client for the lifetime of its cursor (released on the state's Close).
+	defer client.Release()
 
 	database := client.Database(payload.Database)
 

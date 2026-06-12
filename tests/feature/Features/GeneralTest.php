@@ -230,6 +230,50 @@ class GeneralTest extends BaseTestCase
         );
     }
 
+    public function testBreakUnwindsSuspendedCallback(): void
+    {
+        /** @var string[] $events */
+        $events = [];
+
+        $callbacks = [
+            // Stays suspended past the break: its finally must still run.
+            function () use (&$events) {
+                try {
+                    $this->sleeper->sleep(seconds: 2);
+
+                    $events[] = '1:finish';
+                } finally {
+                    $events[] = '1:finally';
+                }
+            },
+            function () use (&$events) {
+                $this->sleeper->usleep(milliseconds: 1);
+
+                $events[] = '2:finish';
+            },
+        ];
+
+        $waitGroup = WaitGroup::create();
+
+        foreach ($callbacks as $callback) {
+            $waitGroup->add(callback: $callback);
+        }
+
+        $generator = $waitGroup->iterate();
+
+        foreach ($generator as $ignored) {
+            break;
+        }
+
+        // Dropping the generator runs its finally { stop() }, which unwinds the
+        // still-suspended first callback.
+        unset($generator);
+
+        self::assertContains('2:finish', $events);
+        self::assertContains('1:finally', $events);
+        self::assertNotContains('1:finish', $events);
+    }
+
     public function testSyncAsyncMix(): void
     {
         $callbacks = [

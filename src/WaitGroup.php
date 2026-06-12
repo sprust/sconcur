@@ -9,6 +9,7 @@ use Fiber;
 use Generator;
 use LogicException;
 use RuntimeException;
+use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Flow\CurrentFlow;
 use Throwable;
@@ -187,9 +188,29 @@ class WaitGroup
 
     public function stop(): void
     {
+        $fibers = $this->fibers;
+
         $this->fibers            = [];
         $this->fiberCallbackKeys = [];
         $this->syncResults       = [];
+
+        // Unwind still-suspended fibers so their finally-blocks and local destructors
+        // run (rollback a transaction, release a lock, ...). Without this the paused
+        // callbacks would be abandoned until end of request. Done before deleteFlow()
+        // so finally-blocks doing synchronous cleanup still resolve the flow; cleanup
+        // that itself suspends on a new async call is best-effort.
+        foreach ($fibers as $fiber) {
+            if (!$fiber->isSuspended()) {
+                continue;
+            }
+
+            try {
+                $fiber->throw(new FlowStoppedException(message: 'Flow stopped'));
+            } catch (Throwable) {
+                // The unwinding callback may surface an exception; it must not prevent
+                // stopping the remaining fibers or the flow.
+            }
+        }
 
         State::deleteFlow($this->flowKey);
     }

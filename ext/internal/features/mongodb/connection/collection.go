@@ -93,6 +93,11 @@ func (c *Collection) Aggregate(
 		)
 	}
 
+	// The cursor outlives this handler, so keep the client owner alive until the state
+	// is closed (last batch or cancellation).
+	client := c.database.client
+	client.Retain()
+
 	state := aggregation_state.New(
 		ctx,
 		message,
@@ -100,11 +105,14 @@ func (c *Collection) Aggregate(
 		pipeline,
 		params.BatchSize,
 		errFactory,
+		client.Release,
 	)
 
 	result, err := states.Get().Start(ctx, message.TaskKey, state)
 
 	if err != nil {
+		client.Release()
+
 		return dto.NewErrorResult(
 			message,
 			errFactory.ByErr("aggregate", err),
@@ -534,6 +542,11 @@ func (c *Collection) Find(
 		)
 	}
 
+	// The cursor outlives this handler, so keep the client owner alive until the state
+	// is closed (last batch or cancellation).
+	client := c.database.client
+	client.Retain()
+
 	state := find_state.New(
 		ctx,
 		message,
@@ -542,11 +555,14 @@ func (c *Collection) Find(
 		opts,
 		params.BatchSize,
 		errFactory,
+		client.Release,
 	)
 
 	result, err := states.Get().Start(ctx, message.TaskKey, state)
 
 	if err != nil {
+		client.Release()
+
 		return dto.NewErrorResult(
 			message,
 			errFactory.ByErr("find", err),

@@ -27,6 +27,7 @@ type AggregationState struct {
 	pipeline    interface{}
 	batchSize   int
 	errFactory  *errs.Factory
+	release     func()
 	cursor      *mongo.Cursor
 	pending     bson.Raw
 	startTime   time.Time
@@ -39,6 +40,7 @@ func New(
 	pipeline interface{},
 	batchSize int,
 	errFactory *errs.Factory,
+	release func(),
 ) contracts.StateContract {
 	return &AggregationState{
 		ctx:         ctx,
@@ -47,6 +49,7 @@ func New(
 		pipeline:    pipeline,
 		batchSize:   batchSize,
 		errFactory:  errFactory,
+		release:     release,
 		startTime:   time.Now(),
 	}
 }
@@ -57,9 +60,18 @@ func (s *AggregationState) marshalBatch(items []bson.Raw) (string, error) {
 
 func (s *AggregationState) Close() {
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
 
 	s.closeCursorLocked()
+
+	release := s.release
+	s.release = nil
+
+	s.mutex.Unlock()
+
+	// Release the client owner outside the lock; runs once per state.
+	if release != nil {
+		release()
+	}
 }
 
 // closeCursorLocked uses a fresh context: the task context may already be
