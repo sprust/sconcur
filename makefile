@@ -78,6 +78,7 @@ bench-all:
 	make bench-mongodb-createIndex
 	make bench-mongodb-deleteOne
 	make bench-mongodb-updateMany
+	make bench-mongodb-command
 
 bench-sleep:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/sleep.php ${c}
@@ -96,6 +97,9 @@ bench-mongodb-insertMany:
 
 bench-mongodb-count:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-count.php ${c}
+
+bench-mongodb-command:
+	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-command.php ${c}
 
 bench-mongodb-updateOne:
 	"$(PHP_CLI)" php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-update-one.php ${c}

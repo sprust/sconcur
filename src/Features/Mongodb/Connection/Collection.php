@@ -179,45 +179,75 @@ readonly class Collection
     }
 
     /**
-     * @param array<string, mixed> $filter
-     * @param array<string, mixed> $update
+     * @param array<string, mixed>                  $filter
+     * @param array<string, mixed>                  $update
+     * @param array<int, array<string, mixed>>|null $arrayFilters
+     * @param array<string, int>|string|null        $hint
+     * @param array<string, mixed>|null             $collation
      */
-    public function updateOne(array $filter, array $update, bool $upsert = false): UpdateResult
-    {
+    public function updateOne(
+        array $filter,
+        array $update,
+        bool $upsert = false,
+        ?array $arrayFilters = null,
+        array|string|null $hint = null,
+        ?array $collation = null,
+    ): UpdateResult {
         return $this->update(
             isMany: false,
             filter: $filter,
             update: $update,
             upsert: $upsert,
+            arrayFilters: $arrayFilters,
+            hint: $hint,
+            collation: $collation,
         );
     }
 
     /**
-     * @param array<string, mixed> $filter
-     * @param array<string, mixed> $update
+     * @param array<string, mixed>                  $filter
+     * @param array<string, mixed>                  $update
+     * @param array<int, array<string, mixed>>|null $arrayFilters
+     * @param array<string, int>|string|null        $hint
+     * @param array<string, mixed>|null             $collation
      */
-    public function updateMany(array $filter, array $update, bool $upsert = false): UpdateResult
-    {
+    public function updateMany(
+        array $filter,
+        array $update,
+        bool $upsert = false,
+        ?array $arrayFilters = null,
+        array|string|null $hint = null,
+        ?array $collation = null,
+    ): UpdateResult {
         return $this->update(
             isMany: true,
             filter: $filter,
             update: $update,
             upsert: $upsert,
+            arrayFilters: $arrayFilters,
+            hint: $hint,
+            collation: $collation,
         );
     }
 
     /**
-     * @param array<string, mixed> $filter
-     * @param array<string, mixed> $projection
+     * @param array<string, mixed>           $filter
+     * @param array<string, mixed>           $projection
+     * @param array<string, int>|string|null $hint
+     * @param array<string, mixed>|null      $collation
      *
      * @return array<int|string, mixed>|null
      */
-    public function findOne(array $filter, ?array $projection = null): ?array
-    {
+    public function findOne(
+        array $filter,
+        ?array $projection = null,
+        array|string|null $hint = null,
+        ?array $collation = null,
+    ): ?array {
         $serialized = MessagePackTransport::pack([
             'f'  => DocumentSerializer::serialize($filter),
             'op' => ($projection === null) ? "" : DocumentSerializer::serialize($projection),
-        ]);
+        ] + $this->encodeOptions(hint: $hint, collation: $collation));
 
         $taskResult = $this->exec(
             command: CommandEnum::FindOne,
@@ -232,9 +262,11 @@ readonly class Collection
     }
 
     /**
-     * @param array<string, mixed>      $filter
-     * @param array<string, mixed>|null $projection
-     * @param array<string, int>|null   $sort
+     * @param array<string, mixed>           $filter
+     * @param array<string, mixed>|null      $projection
+     * @param array<string, int>|null        $sort
+     * @param array<string, int>|string|null $hint
+     * @param array<string, mixed>|null      $collation
      *
      * @return Iterator<int, array<int|string|float|bool|null, mixed>>
      */
@@ -245,6 +277,8 @@ readonly class Collection
         int $limit = 0,
         int $skip = 0,
         int $batchSize = 50,
+        array|string|null $hint = null,
+        ?array $collation = null,
     ): Iterator {
         $serialized = MessagePackTransport::pack([
             'f'  => DocumentSerializer::serialize($filter),
@@ -253,7 +287,7 @@ readonly class Collection
             'l'  => $limit,
             'sk' => $skip,
             'bs' => $batchSize,
-        ]);
+        ] + $this->encodeOptions(hint: $hint, collation: $collation));
 
         return new IteratorResult(
             method: $this->method,
@@ -265,16 +299,17 @@ readonly class Collection
     }
 
     /**
-     * @param array<string, mixed> $filter
+     * @param array<string, mixed>      $filter
+     * @param array<string, mixed>|null $collation
      *
      * @return array<int, mixed>
      */
-    public function distinct(string $fieldName, array $filter = []): array
+    public function distinct(string $fieldName, array $filter = [], ?array $collation = null): array
     {
         $serialized = MessagePackTransport::pack([
             'fn' => $fieldName,
             'f'  => DocumentSerializer::serialize($filter),
-        ]);
+        ] + $this->encodeOptions(collation: $collation));
 
         $taskResult = $this->exec(
             command: CommandEnum::Distinct,
@@ -287,9 +322,12 @@ readonly class Collection
     }
 
     /**
-     * @param array<string, mixed>      $filter
-     * @param array<string, mixed>      $update
-     * @param array<string, mixed>|null $projection
+     * @param array<string, mixed>                  $filter
+     * @param array<string, mixed>                  $update
+     * @param array<string, mixed>|null             $projection
+     * @param array<int, array<string, mixed>>|null $arrayFilters
+     * @param array<string, int>|string|null        $hint
+     * @param array<string, mixed>|null             $collation
      *
      * @return array<int|string, mixed>|null
      */
@@ -299,6 +337,9 @@ readonly class Collection
         ?array $projection = null,
         bool $upsert = false,
         bool $returnDocument = true,
+        ?array $arrayFilters = null,
+        array|string|null $hint = null,
+        ?array $collation = null,
     ): ?array {
         $serialized = MessagePackTransport::pack([
             'f'  => DocumentSerializer::serialize($filter),
@@ -306,7 +347,7 @@ readonly class Collection
             'op' => ($projection === null) ? "" : DocumentSerializer::serialize($projection),
             'ou' => $upsert,
             'rd' => $returnDocument,
-        ]);
+        ] + $this->encodeOptions(hint: $hint, collation: $collation, arrayFilters: $arrayFilters));
 
         $taskResult = $this->exec(
             command: CommandEnum::FindOneAndUpdate,
@@ -524,13 +565,15 @@ readonly class Collection
     }
 
     /**
-     * @param array<string, mixed> $filter
+     * @param array<string, mixed>           $filter
+     * @param array<string, int>|string|null $hint
+     * @param array<string, mixed>|null      $collation
      */
-    public function deleteOne(array $filter): DeleteResult
+    public function deleteOne(array $filter, array|string|null $hint = null, ?array $collation = null): DeleteResult
     {
         $serialized = MessagePackTransport::pack([
             'f' => DocumentSerializer::serialize($filter),
-        ]);
+        ] + $this->encodeOptions(hint: $hint, collation: $collation));
 
         $taskResult = $this->exec(
             command: CommandEnum::DeleteOne,
@@ -545,13 +588,15 @@ readonly class Collection
     }
 
     /**
-     * @param array<string, mixed> $filter
+     * @param array<string, mixed>           $filter
+     * @param array<string, int>|string|null $hint
+     * @param array<string, mixed>|null      $collation
      */
-    public function deleteMany(array $filter): DeleteResult
+    public function deleteMany(array $filter, array|string|null $hint = null, ?array $collation = null): DeleteResult
     {
         $serialized = MessagePackTransport::pack([
             'f' => DocumentSerializer::serialize($filter),
-        ]);
+        ] + $this->encodeOptions(hint: $hint, collation: $collation));
 
         $taskResult = $this->exec(
             command: CommandEnum::DeleteMany,
@@ -612,20 +657,26 @@ readonly class Collection
     }
 
     /**
-     * @param array<string, mixed> $filter
-     * @param array<string, mixed> $update
+     * @param array<string, mixed>                  $filter
+     * @param array<string, mixed>                  $update
+     * @param array<int, array<string, mixed>>|null $arrayFilters
+     * @param array<string, int>|string|null        $hint
+     * @param array<string, mixed>|null             $collation
      */
     protected function update(
         bool $isMany,
         array $filter,
         array $update,
-        bool $upsert = false
+        bool $upsert = false,
+        ?array $arrayFilters = null,
+        array|string|null $hint = null,
+        ?array $collation = null,
     ): UpdateResult {
         $serialized = MessagePackTransport::pack([
             'f'  => DocumentSerializer::serialize($filter),
             'u'  => DocumentSerializer::serialize($update),
             'ou' => $upsert,
-        ]);
+        ] + $this->encodeOptions(hint: $hint, collation: $collation, arrayFilters: $arrayFilters));
 
         $taskResult = $this->exec(
             command: $isMany ? CommandEnum::UpdateMany : CommandEnum::UpdateOne,
@@ -640,6 +691,37 @@ readonly class Collection
             upsertedCount: (int) $docResult['upsertedcount'],
             upsertedId: $docResult['upsertedid'],
         );
+    }
+
+    /**
+     * Encodes optional query options into payload fields, omitting any not provided.
+     *
+     * @param array<string, int>|string|null        $hint
+     * @param array<string, mixed>|null             $collation
+     * @param array<int, array<string, mixed>>|null $arrayFilters
+     *
+     * @return array<string, string>
+     */
+    protected function encodeOptions(
+        array|string|null $hint = null,
+        ?array $collation = null,
+        ?array $arrayFilters = null,
+    ): array {
+        $options = [];
+
+        if ($hint !== null) {
+            $options['hn'] = DocumentSerializer::serialize(['v' => $hint]);
+        }
+
+        if ($collation !== null) {
+            $options['co'] = DocumentSerializer::serialize($collation);
+        }
+
+        if ($arrayFilters !== null) {
+            $options['af'] = DocumentSerializer::serialize($arrayFilters, isObject: false);
+        }
+
+        return $options;
     }
 
     protected function serializePayload(CommandEnum $command, string $data): string

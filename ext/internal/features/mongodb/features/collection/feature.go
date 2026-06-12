@@ -89,6 +89,11 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 			database.RenameCollection(ctx, message, &payload),
 		)
 		return
+	case payload.Command == 26:
+		task.AddResult(
+			database.RunCommand(ctx, message, &payload),
+		)
+		return
 	}
 
 	collection := database.Collection(payload.Collection)

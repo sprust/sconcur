@@ -92,6 +92,43 @@ func (d *Database) ListDatabases(
 	return dto.NewSuccessResult(message, serializedResult, executionMs)
 }
 
+func (d *Database) RunCommand(
+	ctx context.Context,
+	message *dto.Message,
+	payload *objects.Payload,
+) *dto.Result {
+	command, err := serializer.UnmarshalDocument(payload.Data)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse command", err),
+		)
+	}
+
+	start := time.Now()
+	raw, err := d.mDatabase.RunCommand(ctx, command).Raw()
+	executionMs := helpers.CalcExecutionMs(start)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("runCommand error", err),
+		)
+	}
+
+	serializedResult, err := serializer.MarshalDocument(raw)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("marshal runCommand result error", err),
+		)
+	}
+
+	return dto.NewSuccessResult(message, serializedResult, executionMs)
+}
+
 func (d *Database) RenameCollection(
 	ctx context.Context,
 	message *dto.Message,

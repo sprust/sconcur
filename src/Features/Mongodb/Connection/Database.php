@@ -22,6 +22,26 @@ readonly class Database
     }
 
     /**
+     * Runs an arbitrary database command and returns the result document.
+     *
+     * @param array<string, mixed> $command
+     *
+     * @return array<int|string, mixed>
+     */
+    public function command(array $command): array
+    {
+        $taskResult = FeatureExecutor::exec(
+            method: MethodEnum::MongodbCollection,
+            payload: $this->serializePayload(
+                command: CommandEnum::RunCommand,
+                data: DocumentSerializer::serialize($command),
+            ),
+        );
+
+        return DocumentSerializer::unserialize($taskResult->payload);
+    }
+
+    /**
      * @return array<int, string>
      */
     public function listCollections(): array

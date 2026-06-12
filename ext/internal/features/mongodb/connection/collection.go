@@ -253,10 +253,17 @@ func (c *Collection) UpdateOne(
 		)
 	}
 
-	var opts *options.UpdateOptions
+	opts := options.Update()
 
 	if params.Upsert {
-		opts = options.Update().SetUpsert(true)
+		opts.SetUpsert(true)
+	}
+
+	if err := applyUpdateOptions(opts, &params); err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("updateOne options", err),
+		)
 	}
 
 	start := time.Now()
@@ -307,7 +314,7 @@ func (c *Collection) FindOne(
 		)
 	}
 
-	var opts *options.FindOneOptions
+	opts := options.FindOne()
 
 	if len(params.Projection) > 0 {
 		projection, err := serializer.UnmarshalDocument(params.Projection)
@@ -319,7 +326,14 @@ func (c *Collection) FindOne(
 			)
 		}
 
-		opts = options.FindOne().SetProjection(projection)
+		opts.SetProjection(projection)
+	}
+
+	if err := applyFindOneOptions(opts, params.Hint, params.Collation); err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("findOne options", err),
+		)
 	}
 
 	start := time.Now()
@@ -442,8 +456,17 @@ func (c *Collection) DeleteOne(
 		)
 	}
 
+	opts := options.Delete()
+
+	if err := applyDeleteOptions(opts, params.Hint, params.Collation); err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("deleteOne options", err),
+		)
+	}
+
 	start := time.Now()
-	result, err := c.mCollection.DeleteOne(ctx, filter)
+	result, err := c.mCollection.DeleteOne(ctx, filter, opts)
 	executionMs := helpers.CalcExecutionMs(start)
 
 	if err != nil {
@@ -490,8 +513,17 @@ func (c *Collection) DeleteMany(
 		)
 	}
 
+	opts := options.Delete()
+
+	if err := applyDeleteOptions(opts, params.Hint, params.Collation); err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("deleteMany options", err),
+		)
+	}
+
 	start := time.Now()
-	result, err := c.mCollection.DeleteMany(ctx, filter)
+	result, err := c.mCollection.DeleteMany(ctx, filter, opts)
 	executionMs := helpers.CalcExecutionMs(start)
 
 	if err != nil {
@@ -547,10 +579,17 @@ func (c *Collection) UpdateMany(
 		)
 	}
 
-	var opts *options.UpdateOptions
+	opts := options.Update()
 
 	if params.Upsert {
-		opts = options.Update().SetUpsert(true)
+		opts.SetUpsert(true)
+	}
+
+	if err := applyUpdateOptions(opts, &params); err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("updateMany options", err),
+		)
 	}
 
 	start := time.Now()
@@ -701,6 +740,13 @@ func (c *Collection) Find(
 		opts.SetBatchSize(int32(params.BatchSize))
 	}
 
+	if err := applyFindOptions(opts, params.Hint, params.Collation); err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("find options", err),
+		)
+	}
+
 	state := find_state.New(
 		ctx,
 		message,
@@ -748,8 +794,17 @@ func (c *Collection) Distinct(
 		)
 	}
 
+	opts := options.Distinct()
+
+	if err := applyDistinctOptions(opts, params.Collation); err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("distinct options", err),
+		)
+	}
+
 	start := time.Now()
-	result, err := c.mCollection.Distinct(ctx, params.FieldName, filter)
+	result, err := c.mCollection.Distinct(ctx, params.FieldName, filter, opts)
 	executionMs := helpers.CalcExecutionMs(start)
 
 	if err != nil {
@@ -828,6 +883,13 @@ func (c *Collection) FindOneAndUpdate(
 		}
 
 		opts.SetProjection(projection)
+	}
+
+	if err := applyFindOneAndUpdateOptions(opts, &params); err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("findOneAndUpdate options", err),
+		)
 	}
 
 	start := time.Now()
