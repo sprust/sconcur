@@ -42,8 +42,8 @@ COPY --from=ghcr.io/php/pie:bin /pie /usr/local/bin/pie
 # mongodb 1.21.0 (the previously pinned version) is blocked by a security
 # advisory (PKSA-r3zn-9sn1-sy2d, affects <1.21.2); 1.21.5 is the patched line.
 RUN docker-php-ext-install zip && \
-    pie install --no-interaction mongodb/mongodb-extension:1.21.5 && \
-    pie install --no-interaction msgpack/msgpack-php:3.0.1
+    pie install mongodb/mongodb-extension:1.21.5 && \
+    pie install msgpack/msgpack-php:3.0.1
 
 # Check if user and group doesn't exist before creating
 RUN getent group "$GROUP_ID" || addgroup --gid "$GROUP_ID" user
