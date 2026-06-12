@@ -12,18 +12,20 @@ class SleeperTest extends BaseAsyncTestCase
 {
     private Sleeper $sleeper;
 
-    private float $startTime;
+    private float $startTime = 0;
+    private float $endTime   = 0;
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        $this->sleeper   = new Sleeper();
-        $this->startTime = microtime(true);
+        $this->sleeper = new Sleeper();
     }
 
     protected function on_1_start(): void
     {
+        $this->startTime = microtime(true);
+
         $this->sleeper->usleep(milliseconds: 10);
     }
 
@@ -44,6 +46,8 @@ class SleeperTest extends BaseAsyncTestCase
 
     protected function on_iterate(): void
     {
+        $this->endTime = microtime(true);
+
         $this->sleeper->usleep(milliseconds: 1);
     }
 
@@ -59,7 +63,10 @@ class SleeperTest extends BaseAsyncTestCase
 
     protected function assertResult(array $results): void
     {
-        $totalTimeMs = (microtime(true) - $this->startTime) * 1000;
+        // Measured from the start of the first task to the last yielded result:
+        // each task sleeps 10ms twice, so concurrent execution takes >= 20ms,
+        // while sequential execution would take >= 40ms.
+        $totalTimeMs = ($this->endTime - $this->startTime) * 1000;
 
         self::assertTrue(
             $totalTimeMs >= 20,
@@ -67,8 +74,8 @@ class SleeperTest extends BaseAsyncTestCase
         );
 
         self::assertTrue(
-            $totalTimeMs <= 30,
-            "Total time is more than 30ms but $totalTimeMs"
+            $totalTimeMs < 40,
+            "Total time is not less than 40ms but $totalTimeMs"
         );
     }
 }
