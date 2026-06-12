@@ -12,6 +12,7 @@ use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Flow\CurrentFlow;
 use SConcur\State;
+use Throwable;
 
 readonly class FeatureExecutor
 {
@@ -27,7 +28,8 @@ readonly class FeatureExecutor
 
         return static::handle(
             currentFlow: $currentFlow,
-            runningTask: $runningTask
+            runningTask: $runningTask,
+            isNext: false
         );
     }
 
@@ -42,7 +44,8 @@ readonly class FeatureExecutor
 
         return static::handle(
             currentFlow: $currentFlow,
-            runningTask: $runningTask
+            runningTask: $runningTask,
+            isNext: true
         );
     }
 
@@ -53,7 +56,7 @@ readonly class FeatureExecutor
         );
     }
 
-    protected static function handle(CurrentFlow $currentFlow, RunningTaskDto $runningTask): TaskResultDto
+    protected static function handle(CurrentFlow $currentFlow, RunningTaskDto $runningTask, bool $isNext): TaskResultDto
     {
         if ($currentFlow->isAsync) {
             if ($currentFiber = Fiber::getCurrent()) {
@@ -72,15 +75,58 @@ readonly class FeatureExecutor
 
             $result = static::suspend($currentFlow);
         } else {
-            $result = static::wait($currentFlow->key);
-
-            static::checkResult(result: $result);
+            $result = static::handleSync(
+                currentFlow: $currentFlow,
+                runningTask: $runningTask,
+                isNext: $isNext
+            );
         }
 
         if ($result->key !== $runningTask->key) {
             throw new LogicException(
                 message: "Unexpected task key. Expected [$runningTask->key], got [$result->key]."
             );
+        }
+
+        return $result;
+    }
+
+    /**
+     * Outside of a fiber every push creates a one-off flow on the Go side,
+     * so the flow must be stopped here as soon as it is no longer needed —
+     * otherwise it leaks for the lifetime of the process. The only flow that
+     * survives is the one owning an unfinished cursor (hasNext): it is handed
+     * over to State and released by the iterator or on the final batch.
+     */
+    protected static function handleSync(CurrentFlow $currentFlow, RunningTaskDto $runningTask, bool $isNext): TaskResultDto
+    {
+        try {
+            $result = static::wait($currentFlow->key);
+
+            static::checkResult(result: $result);
+        } catch (Throwable $exception) {
+            Extension::get()->stopFlow($currentFlow->key);
+
+            if ($isNext) {
+                State::releaseSyncTaskFlow($runningTask->key);
+            }
+
+            throw $exception;
+        }
+
+        if ($isNext) {
+            Extension::get()->stopFlow($currentFlow->key);
+
+            if (!$result->hasNext) {
+                State::releaseSyncTaskFlow($runningTask->key);
+            }
+        } elseif ($result->hasNext) {
+            State::registerSyncTaskFlow(
+                taskKey: $runningTask->key,
+                flowKey: $currentFlow->key
+            );
+        } else {
+            Extension::get()->stopFlow($currentFlow->key);
         }
 
         return $result;

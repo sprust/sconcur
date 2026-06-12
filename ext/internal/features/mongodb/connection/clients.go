@@ -13,7 +13,8 @@ import (
 var once sync.Once
 var instance Clients
 
-// TODO: graceful shutdown
+const disconnectTimeout = 5 * time.Second
+
 // TODO: ttl
 
 type Clients struct {
@@ -32,7 +33,6 @@ func GetClients() *Clients {
 }
 
 func (c *Clients) GetClient(
-	ctx context.Context,
 	url string,
 	socketTimeoutMs int,
 ) (*Client, error) {
@@ -49,7 +49,8 @@ func (c *Clients) GetClient(
 
 		var err error
 
-		mClient, err := mongo.Connect(ctx, clientOptions)
+		// The client outlives any task, so it must not depend on a task context.
+		mClient, err := mongo.Connect(context.Background(), clientOptions)
 
 		if err != nil {
 			return nil, err
@@ -61,4 +62,21 @@ func (c *Clients) GetClient(
 	}
 
 	return client, nil
+}
+
+func (c *Clients) DisconnectAll() {
+	c.mutex.Lock()
+
+	clients := c.clients
+	c.clients = make(map[string]*Client)
+
+	c.mutex.Unlock()
+
+	for _, client := range clients {
+		ctx, ctxCancel := context.WithTimeout(context.Background(), disconnectTimeout)
+
+		_ = client.mClient.Disconnect(ctx)
+
+		ctxCancel()
+	}
 }

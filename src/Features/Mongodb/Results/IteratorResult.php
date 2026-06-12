@@ -9,6 +9,7 @@ use SConcur\Dto\TaskResultDto;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
+use SConcur\State;
 
 /**
  * @implements Iterator<int, array<int|string, mixed>>
@@ -76,6 +77,8 @@ class IteratorResult implements Iterator
 
     public function rewind(): void
     {
+        $this->releaseTask();
+
         $this->resetProperties();
 
         $taskResult = FeatureExecutor::exec(
@@ -129,5 +132,22 @@ class IteratorResult implements Iterator
         $this->currentValue = null;
         $this->isLastBatch  = false;
         $this->isFinished   = false;
+    }
+
+    /**
+     * Releases the synchronous flow owning the cursor when the iterator is
+     * abandoned before exhaustion (early break). No-op in async mode and
+     * after normal completion.
+     */
+    protected function releaseTask(): void
+    {
+        if ($this->taskKey !== null) {
+            State::releaseSyncTaskFlow($this->taskKey);
+        }
+    }
+
+    public function __destruct()
+    {
+        $this->releaseTask();
     }
 }

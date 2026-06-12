@@ -35,6 +35,10 @@ func (t *Task) GetContext() context.Context {
 	return t.ctx
 }
 
+func (t *Task) Cancel() {
+	t.ctxCancel()
+}
+
 func (t *Task) GetMessage() *dto.Message {
 	return t.msg
 }

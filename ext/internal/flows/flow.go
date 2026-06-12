@@ -88,10 +88,20 @@ func (f *Flow) Wait() (*dto.Result, error) {
 
 		f.mutex.Lock()
 
+		task := f.activeTasks[result.TaskKey]
+
 		delete(f.activeTasks, result.TaskKey)
 		f.tasksCount.Add(-1)
 
 		f.mutex.Unlock()
+
+		// Release the task context once its result is delivered. The initial
+		// task of a multi-batch find/aggregate is the exception: its context
+		// owns the cursor state lifetime (states.Start hooks AfterFunc on it),
+		// so it must live until the state is finished or the flow is stopped.
+		if task != nil && (task.GetMessage().IsNext || !result.HasNext) {
+			task.Cancel()
+		}
 
 		return result, nil
 	}

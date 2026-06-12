@@ -31,6 +31,16 @@ class State
      */
     protected static array $fiberTasks = [];
 
+    /**
+     * Flows created for synchronous (non-fiber) iterable operations. Such a flow
+     * lives until its cursor is exhausted or the iterator is released.
+     *
+     * array<$taskKey, $flowKey>
+     *
+     * @var array<string, string>
+     */
+    protected static array $syncTaskFlows = [];
+
     public static function registerFiberFlow(int $fiberId, CurrentFlow $flow): void
     {
         static::$fiberFlows[$fiberId]             = $flow;
@@ -95,6 +105,24 @@ class State
         unset(static::$fiberTasks[$flowKey][$taskKey]);
 
         return $fiberId;
+    }
+
+    public static function registerSyncTaskFlow(string $taskKey, string $flowKey): void
+    {
+        static::$syncTaskFlows[$taskKey] = $flowKey;
+    }
+
+    public static function releaseSyncTaskFlow(string $taskKey): void
+    {
+        $flowKey = static::$syncTaskFlows[$taskKey] ?? null;
+
+        if ($flowKey === null) {
+            return;
+        }
+
+        unset(static::$syncTaskFlows[$taskKey]);
+
+        Extension::get()->stopFlow($flowKey);
     }
 
     public static function deleteFlow(string $flowKey): void

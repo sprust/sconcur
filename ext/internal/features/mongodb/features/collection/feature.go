@@ -54,7 +54,6 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 	ctx := task.GetContext()
 
 	client, err := f.clients.GetClient(
-		ctx,
 		payload.Url,
 		payload.SocketTimeoutMs,
 	)
