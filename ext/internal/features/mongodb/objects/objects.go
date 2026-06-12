@@ -1,12 +1,14 @@
 package objects
 
+import "sconcur/internal/types"
+
 type Payload struct {
-	Url             string `json:"ul" msgpack:"ul"`
-	Database        string `json:"db" msgpack:"db"`
-	Collection      string `json:"cl" msgpack:"cl"`
-	SocketTimeoutMs int    `json:"sto" msgpack:"sto"`
-	Command         int    `json:"cm" msgpack:"cm"`
-	Data            []byte `json:"dt" msgpack:"dt"`
+	Url             string               `json:"ul" msgpack:"ul"`
+	Database        string               `json:"db" msgpack:"db"`
+	Collection      string               `json:"cl" msgpack:"cl"`
+	SocketTimeoutMs int                  `json:"sto" msgpack:"sto"`
+	Command         types.MongodbCommand `json:"cm" msgpack:"cm"`
+	Data            []byte               `json:"dt" msgpack:"dt"`
 }
 
 type UpdateParams struct {
@@ -44,10 +46,6 @@ type AggregateParams struct {
 type CreateIndexParams struct {
 	Keys []byte `json:"k" msgpack:"k"`
 	Name string `json:"n" msgpack:"n"`
-}
-
-type CreateIndexesParams struct {
-	Indexes []CreateIndexParams `json:"ix" msgpack:"ix"`
 }
 
 type DropIndexParams struct {

@@ -2,17 +2,14 @@ package connection
 
 import (
 	"context"
-	"errors"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
 	"sconcur/internal/features/mongodb/objects"
 	"sconcur/internal/features/mongodb/serializer"
 	"sconcur/internal/features/mongodb/states/aggregation_state"
 	"sconcur/internal/features/mongodb/states/find_state"
-	"sconcur/internal/helpers"
 	"sconcur/internal/states"
 	"strconv"
-	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -47,27 +44,9 @@ func (c *Collection) InsertOne(
 		)
 	}
 
-	start := time.Now()
-	result, err := c.mCollection.InsertOne(ctx, doc)
-	executionMs := helpers.CalcExecutionMs(start)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("insertOne error", err),
-		)
-	}
-
-	serializedResult, err := serializer.MarshalDocument(result)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("marshal insertOne result error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, serializedResult, executionMs)
+	return documentResult(message, "insertOne", func() (interface{}, error) {
+		return c.mCollection.InsertOne(ctx, doc)
+	})
 }
 
 func (c *Collection) BulkWrite(
@@ -84,27 +63,9 @@ func (c *Collection) BulkWrite(
 		)
 	}
 
-	start := time.Now()
-	result, err := c.mCollection.BulkWrite(ctx, models)
-	executionMs := helpers.CalcExecutionMs(start)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("bulkWrite error", err),
-		)
-	}
-
-	serializedResult, err := serializer.MarshalDocument(result)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("marshal bulkWrite result error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, serializedResult, executionMs)
+	return documentResult(message, "bulkWrite", func() (interface{}, error) {
+		return c.mCollection.BulkWrite(ctx, models)
+	})
 }
 
 func (c *Collection) Aggregate(
@@ -167,27 +128,9 @@ func (c *Collection) InsertMany(
 		)
 	}
 
-	start := time.Now()
-	result, err := c.mCollection.InsertMany(ctx, docs)
-	executionMs := helpers.CalcExecutionMs(start)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("insertMany error", err),
-		)
-	}
-
-	serializedResult, err := serializer.MarshalDocument(result)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("marshal insertMany result error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, serializedResult, executionMs)
+	return documentResult(message, "insertMany", func() (interface{}, error) {
+		return c.mCollection.InsertMany(ctx, docs)
+	})
 }
 
 func (c *Collection) CountDocuments(
@@ -204,18 +147,15 @@ func (c *Collection) CountDocuments(
 		)
 	}
 
-	start := time.Now()
-	result, err := c.mCollection.CountDocuments(ctx, filter)
-	executionMs := helpers.CalcExecutionMs(start)
+	return stringResult(message, "countDocuments", func() (string, error) {
+		result, err := c.mCollection.CountDocuments(ctx, filter)
 
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("countDocuments error", err),
-		)
-	}
+		if err != nil {
+			return "", err
+		}
 
-	return dto.NewSuccessResult(message, strconv.FormatInt(result, 10), executionMs)
+		return strconv.FormatInt(result, 10), nil
+	})
 }
 
 func (c *Collection) UpdateOne(
@@ -265,27 +205,9 @@ func (c *Collection) UpdateOne(
 		)
 	}
 
-	start := time.Now()
-	result, err := c.mCollection.UpdateOne(ctx, filter, update, opts)
-	executionMs := helpers.CalcExecutionMs(start)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("updateOne error", err),
-		)
-	}
-
-	serializedResult, err := serializer.MarshalDocument(result)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("marshal updateOne result error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, serializedResult, executionMs)
+	return documentResult(message, "updateOne", func() (interface{}, error) {
+		return c.mCollection.UpdateOne(ctx, filter, update, opts)
+	})
 }
 
 func (c *Collection) FindOne(
@@ -335,51 +257,9 @@ func (c *Collection) FindOne(
 		)
 	}
 
-	start := time.Now()
-	result := c.mCollection.FindOne(ctx, filter, opts)
-	executionMs := helpers.CalcExecutionMs(start)
-
-	err = result.Err()
-
-	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			serializedResult, marshalErr := serializer.MarshalDocument(bson.D{})
-
-			if marshalErr != nil {
-				return dto.NewErrorResult(
-					message,
-					errFactory.ByErr("marshal findOne nil result error", marshalErr),
-				)
-			}
-
-			return dto.NewSuccessResult(message, serializedResult, executionMs)
-		}
-
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("findOne result error", err),
-		)
-	}
-
-	raw, err := result.Raw()
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("findOne raw error", err),
-		)
-	}
-
-	serializedResult, err := serializer.MarshalDocument(raw)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("marshal findOne result error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, serializedResult, executionMs)
+	return singleResult(message, "findOne", func() *mongo.SingleResult {
+		return c.mCollection.FindOne(ctx, filter, opts)
+	})
 }
 
 func (c *Collection) CreateIndex(
@@ -416,18 +296,9 @@ func (c *Collection) CreateIndex(
 		Options: &opts,
 	}
 
-	start := time.Now()
-	result, err := c.mCollection.Indexes().CreateOne(ctx, model)
-	executionMs := helpers.CalcExecutionMs(start)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("createIndex error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, result, executionMs)
+	return stringResult(message, "createIndex", func() (string, error) {
+		return c.mCollection.Indexes().CreateOne(ctx, model)
+	})
 }
 
 func (c *Collection) DeleteOne(
@@ -464,27 +335,9 @@ func (c *Collection) DeleteOne(
 		)
 	}
 
-	start := time.Now()
-	result, err := c.mCollection.DeleteOne(ctx, filter, opts)
-	executionMs := helpers.CalcExecutionMs(start)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("deleteOne error", err),
-		)
-	}
-
-	serializedResult, err := serializer.MarshalDocument(result)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("marshal deleteOne result error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, serializedResult, executionMs)
+	return documentResult(message, "deleteOne", func() (interface{}, error) {
+		return c.mCollection.DeleteOne(ctx, filter, opts)
+	})
 }
 
 func (c *Collection) DeleteMany(
@@ -521,27 +374,9 @@ func (c *Collection) DeleteMany(
 		)
 	}
 
-	start := time.Now()
-	result, err := c.mCollection.DeleteMany(ctx, filter, opts)
-	executionMs := helpers.CalcExecutionMs(start)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("deleteMany error", err),
-		)
-	}
-
-	serializedResult, err := serializer.MarshalDocument(result)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("marshal deleteMany result error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, serializedResult, executionMs)
+	return documentResult(message, "deleteMany", func() (interface{}, error) {
+		return c.mCollection.DeleteMany(ctx, filter, opts)
+	})
 }
 
 func (c *Collection) UpdateMany(
@@ -591,27 +426,9 @@ func (c *Collection) UpdateMany(
 		)
 	}
 
-	start := time.Now()
-	result, err := c.mCollection.UpdateMany(ctx, filter, update, opts)
-	executionMs := helpers.CalcExecutionMs(start)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("updateMany error", err),
-		)
-	}
-
-	serializedResult, err := serializer.MarshalDocument(result)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("marshal updateMany result error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, serializedResult, executionMs)
+	return documentResult(message, "updateMany", func() (interface{}, error) {
+		return c.mCollection.UpdateMany(ctx, filter, update, opts)
+	})
 }
 
 func (c *Collection) Drop(
@@ -619,20 +436,9 @@ func (c *Collection) Drop(
 	message *dto.Message,
 	_ *objects.Payload,
 ) *dto.Result {
-	start := time.Now()
-
-	err := c.mCollection.Drop(ctx)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("drop error", err),
-		)
-	}
-
-	executionMs := helpers.CalcExecutionMs(start)
-
-	return dto.NewSuccessResult(message, "", executionMs)
+	return stringResult(message, "drop", func() (string, error) {
+		return "", c.mCollection.Drop(ctx)
+	})
 }
 
 func (c *Collection) DropIndex(
@@ -651,27 +457,9 @@ func (c *Collection) DropIndex(
 		)
 	}
 
-	start := time.Now()
-	result, err := c.mCollection.Indexes().DropOne(ctx, params.Name)
-	executionMs := helpers.CalcExecutionMs(start)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("dropIndex error", err),
-		)
-	}
-
-	serializedResult, err := serializer.MarshalDocument(result)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("marshal dropIndex result error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, serializedResult, executionMs)
+	return documentResult(message, "dropIndex", func() (interface{}, error) {
+		return c.mCollection.Indexes().DropOne(ctx, params.Name)
+	})
 }
 
 func (c *Collection) Find(
@@ -802,29 +590,15 @@ func (c *Collection) Distinct(
 		)
 	}
 
-	start := time.Now()
-	result, err := c.mCollection.Distinct(ctx, params.FieldName, filter, opts)
-	executionMs := helpers.CalcExecutionMs(start)
+	return documentResult(message, "distinct", func() (interface{}, error) {
+		result, err := c.mCollection.Distinct(ctx, params.FieldName, filter, opts)
 
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("distinct error", err),
-		)
-	}
+		if err != nil {
+			return nil, err
+		}
 
-	serializedResult, err := serializer.MarshalDocument(bson.D{
-		{Key: "values", Value: result},
+		return bson.D{{Key: "values", Value: result}}, nil
 	})
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("marshal distinct result error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, serializedResult, executionMs)
 }
 
 func (c *Collection) FindOneAndUpdate(
@@ -891,11 +665,9 @@ func (c *Collection) FindOneAndUpdate(
 		)
 	}
 
-	start := time.Now()
-	result := c.mCollection.FindOneAndUpdate(ctx, filter, update, opts)
-	executionMs := helpers.CalcExecutionMs(start)
-
-	return c.handleSingleResult(message, result, "findOneAndUpdate", executionMs)
+	return singleResult(message, "findOneAndUpdate", func() *mongo.SingleResult {
+		return c.mCollection.FindOneAndUpdate(ctx, filter, update, opts)
+	})
 }
 
 func (c *Collection) FindOneAndDelete(
@@ -938,11 +710,9 @@ func (c *Collection) FindOneAndDelete(
 		opts = options.FindOneAndDelete().SetProjection(projection)
 	}
 
-	start := time.Now()
-	result := c.mCollection.FindOneAndDelete(ctx, filter, opts)
-	executionMs := helpers.CalcExecutionMs(start)
-
-	return c.handleSingleResult(message, result, "findOneAndDelete", executionMs)
+	return singleResult(message, "findOneAndDelete", func() *mongo.SingleResult {
+		return c.mCollection.FindOneAndDelete(ctx, filter, opts)
+	})
 }
 
 func (c *Collection) FindOneAndReplace(
@@ -1002,11 +772,9 @@ func (c *Collection) FindOneAndReplace(
 		opts.SetProjection(projection)
 	}
 
-	start := time.Now()
-	result := c.mCollection.FindOneAndReplace(ctx, filter, replacement, opts)
-	executionMs := helpers.CalcExecutionMs(start)
-
-	return c.handleSingleResult(message, result, "findOneAndReplace", executionMs)
+	return singleResult(message, "findOneAndReplace", func() *mongo.SingleResult {
+		return c.mCollection.FindOneAndReplace(ctx, filter, replacement, opts)
+	})
 }
 
 func (c *Collection) ReplaceOne(
@@ -1049,27 +817,9 @@ func (c *Collection) ReplaceOne(
 		opts = options.Replace().SetUpsert(true)
 	}
 
-	start := time.Now()
-	result, err := c.mCollection.ReplaceOne(ctx, filter, replacement, opts)
-	executionMs := helpers.CalcExecutionMs(start)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("replaceOne error", err),
-		)
-	}
-
-	serializedResult, err := serializer.MarshalDocument(result)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("marshal replaceOne result error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, serializedResult, executionMs)
+	return documentResult(message, "replaceOne", func() (interface{}, error) {
+		return c.mCollection.ReplaceOne(ctx, filter, replacement, opts)
+	})
 }
 
 func (c *Collection) EstimatedDocumentCount(
@@ -1077,18 +827,15 @@ func (c *Collection) EstimatedDocumentCount(
 	message *dto.Message,
 	_ *objects.Payload,
 ) *dto.Result {
-	start := time.Now()
-	result, err := c.mCollection.EstimatedDocumentCount(ctx)
-	executionMs := helpers.CalcExecutionMs(start)
+	return stringResult(message, "estimatedDocumentCount", func() (string, error) {
+		result, err := c.mCollection.EstimatedDocumentCount(ctx)
 
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("estimatedDocumentCount error", err),
-		)
-	}
+		if err != nil {
+			return "", err
+		}
 
-	return dto.NewSuccessResult(message, strconv.FormatInt(result, 10), executionMs)
+		return strconv.FormatInt(result, 10), nil
+	})
 }
 
 func (c *Collection) CreateIndexes(
@@ -1159,29 +906,15 @@ func (c *Collection) CreateIndexes(
 		}
 	}
 
-	start := time.Now()
-	result, err := c.mCollection.Indexes().CreateMany(ctx, models)
-	executionMs := helpers.CalcExecutionMs(start)
+	return documentResult(message, "createIndexes", func() (interface{}, error) {
+		result, err := c.mCollection.Indexes().CreateMany(ctx, models)
 
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("createIndexes error", err),
-		)
-	}
+		if err != nil {
+			return nil, err
+		}
 
-	serializedResult, err := serializer.MarshalDocument(bson.D{
-		{Key: "names", Value: result},
+		return bson.D{{Key: "names", Value: result}}, nil
 	})
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("marshal createIndexes result error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, serializedResult, executionMs)
 }
 
 func (c *Collection) ListIndexes(
@@ -1189,82 +922,27 @@ func (c *Collection) ListIndexes(
 	message *dto.Message,
 	_ *objects.Payload,
 ) *dto.Result {
-	start := time.Now()
-	cursor, err := c.mCollection.Indexes().List(ctx)
-	executionMs := helpers.CalcExecutionMs(start)
+	return stringResult(message, "listIndexes", func() (string, error) {
+		cursor, err := c.mCollection.Indexes().List(ctx)
 
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("listIndexes error", err),
-		)
-	}
-
-	defer cursor.Close(ctx)
-
-	var indexes []bson.Raw
-
-	for cursor.Next(ctx) {
-		indexes = append(indexes, cloneRaw(cursor.Current))
-	}
-
-	if err := cursor.Err(); err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("listIndexes cursor error", err),
-		)
-	}
-
-	serializedResult, err := serializer.MarshalDocumentBatchRaw(indexes)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("marshal listIndexes result error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, serializedResult, executionMs)
-}
-
-func (c *Collection) handleSingleResult(
-	message *dto.Message,
-	result *mongo.SingleResult,
-	opName string,
-	executionMs int,
-) *dto.Result {
-	err := result.Err()
-
-	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return dto.NewSuccessResult(message, "", executionMs)
+		if err != nil {
+			return "", err
 		}
 
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr(opName+" error", err),
-		)
-	}
+		defer cursor.Close(ctx)
 
-	raw, err := result.Raw()
+		var indexes []bson.Raw
 
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr(opName+" raw error", err),
-		)
-	}
+		for cursor.Next(ctx) {
+			indexes = append(indexes, cloneRaw(cursor.Current))
+		}
 
-	serializedResult, err := serializer.MarshalDocument(raw)
+		if err := cursor.Err(); err != nil {
+			return "", err
+		}
 
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("marshal "+opName+" result error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, serializedResult, executionMs)
+		return serializer.MarshalDocumentBatchRaw(indexes)
+	})
 }
 
 func cloneRaw(raw bson.Raw) bson.Raw {

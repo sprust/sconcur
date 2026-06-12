@@ -1,4 +1,8 @@
 package types
 
-// Method 1 - sleep, 2 - mongodb
 type Method int
+
+const (
+	MethodSleep   Method = 1
+	MethodMongodb Method = 2
+)
