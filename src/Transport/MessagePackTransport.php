@@ -30,36 +30,4 @@ final readonly class MessagePackTransport
 
         return $decoded;
     }
-
-    /**
-     * @param array<int|string, mixed> $payload
-     *
-     * @return array<int|string, mixed>
-     */
-    public static function packArray(array &$payload): array
-    {
-        $result = [];
-
-        $keys = array_keys($payload);
-
-        foreach ($keys as $key) {
-            $value = $payload[$key];
-
-            unset($payload[$key]);
-
-            if (is_array($value)) {
-                $value = self::packArray($value);
-            } elseif ($value instanceof PayloadInterface) {
-                $value = $value->getData();
-
-                if (is_array($value)) {
-                    $value = self::packArray($value);
-                }
-            }
-
-            $result[$key] = $value;
-        }
-
-        return $result;
-    }
 }
