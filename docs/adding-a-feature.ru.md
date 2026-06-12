@@ -1,236 +1,205 @@
-# Как добавить новую фичу
+# Как добавить новую фичу верхнего уровня
 
-Инструкция по добавлению новой операции в SConcur — на обеих сторонах (PHP и Go),
-в двух вариантах: **без стриминга** (один результат) и **со стримингом** (несколько
-батчей). Общую архитектуру см. в [README](../README.md).
+Фича верхнего уровня — это новый **домен** со своим `Method` (как `Sleeper`). Эталон
+для копирования — `Sleeper`: PHP в `src/Features/Sleeper/`, Go в
+`ext/internal/features/sleep/`.
 
-Описание абстрактное — без деталей конкретных драйверов. Конкретные операции (запрос
-к БД, чтение и т.п.) скрыты за вызовом «вашей операции»; за рабочими примерами
-смотрите существующие команды.
-
-> Большинство фич — это новые **команды MongoDB** (под-фичи фичи `Mongodb`). Реже
-> нужна **новая фича верхнего уровня** (как `Sleeper`) — см. отдельный раздел.
+Ниже — пошагово, в двух вариантах: **без стриминга** (один результат) и
+**со стримингом** (несколько батчей). Конкретная работа фичи скрыта за «вашей
+операцией». Общую архитектуру см. в [README](../README.md).
 
 ---
 
 ## ⚠️ Два обязательных требования
 
 Любой обработчик на Go-стороне обязан соблюдать оба правила. Нарушение приводит к
-утечкам ресурсов (горутины, открытые ресурсы, соединения) и к неверному поведению
-`WaitGroup`.
+утечкам ресурсов и к неверному поведению `WaitGroup`.
 
-### 1. Отмена контекста (обязательно)
+1. **Отмена контекста.** Контекст задачи `task.GetContext()` отменяется при остановке
+   потока (`WaitGroup::stop()`, ранний `break`, разрушение `WaitGroup`, `destroy`).
+   Выполняйте работу на этом контексте; для долгих операций слушайте `ctx.Done()`
+   через `select` — иначе задачу нельзя остановить. Для стриминга освобождайте ресурс
+   на **свежем** контексте (`context.Background()` + таймаут): контекст задачи к
+   моменту очистки уже отменён.
 
-Контекст задачи `task.GetContext()` **отменяется**, когда поток останавливают
-(`WaitGroup::stop()`, ранний `break` в `iterate()`, разрушение `WaitGroup`, `destroy`).
-Поэтому:
+2. **Передача максимального времени выполнения.** При пуше задачи из PHP нужно
+   передавать предельное время выполнения, а Go-сторона обязана им **ограничить**
+   операцию — задача не должна выполняться неограниченно долго. Заложите этот параметр
+   в payload фичи. Как его применяют:
+   - иногда время и есть суть операции — `Sleeper` (длительность сна);
+   - иногда таймаут прикладывается нативно — MongoDB передаёт
+     `SConcur\Features\Mongodb\Connection\Client::$socketTimeoutMs`, а Go применяет его
+     как `options.Client().ApplyURI(url).SetSocketTimeout(time.Duration(socketTimeoutMs) * time.Millisecond)`;
+   - общий способ — ограничить контекст задачи:
+     `ctx, cancel := context.WithTimeout(task.GetContext(), timeout)`.
 
-- Все блокирующие/IO-операции выполняются на **контексте задачи**, а не на
-  `context.Background()`. Тогда при отмене операция немедленно прерывается.
-- Для долгоживущих собственных операций слушайте `ctx.Done()` через `select`
-  (см. `Sleeper`), иначе задачу нельзя будет остановить.
-- Для стриминга освобождение удерживаемого ресурса делается **на свежем контексте**
-  (`context.Background()` + таймаут): к моменту очистки контекст задачи уже отменён,
-  и финальные действия по освобождению через него до сервера не дойдут.
-
-### 2. Передача времени выполнения (обязательно)
-
-Каждый результат обязан нести `ExecutionMs` — длительность **самой работы**,
-замеренную от её старта. Это время уходит в PHP (`TaskResultDto::executionMs`) и
-определяет модель конкурентности: суммарное время `WaitGroup` ≈ время самой
-**медленной** задачи. Никогда не возвращайте успешный результат с `ExecutionMs == 0`.
-
-На практике это бесплатно:
-
-- обычные обработчики используют хелперы результата `documentResult` / `stringResult` /
-  `singleResult` (`ext/internal/features/mongodb/connection/execute.go`) — они сами
-  замеряют время и пробрасывают его в результат;
-- стриминговые состояния используют `helpers.CalcExecutionMs(startTime)` и
-  `dto.NewSuccessResult` / `dto.NewSuccessResultWithNext`.
+   (`ExecutionMs` в результате — это уже фактическое время работы, его проставляет
+   `dto.NewSuccessResult`; с пунктом про таймаут не путать.)
 
 ---
 
-## Соответствие команд PHP ↔ Go
+## Соответствие `Method` PHP ↔ Go
 
-Команда — это число, продублированное в двух enum'ах. **Оба** должны совпадать:
+Домен — это число, продублированное в двух местах; **оба** должны совпадать:
 
-- PHP: `SConcur\Features\Mongodb\CommandEnum`
-- Go: `ext/internal/types/mongodb.go` (`MongodbCommand`)
-
-Добавляя команду, заводите одинаковое значение в обоих местах.
+- PHP: `SConcur\Features\MethodEnum`
+- Go: `ext/internal/types/method.go` (`Method`)
 
 ---
 
-## Вариант A. Команда без стриминга (один результат)
+## Вариант A. Без стриминга (один результат)
 
 ### PHP
 
-1. **`CommandEnum`** — новый кейс:
+1. **`MethodEnum`** — новый кейс:
    ```php
-   case Foo = 27;
+   case Foo = 3;
    ```
 
-2. **Payload-класс** `src/Features/Mongodb/Payloads/FooPayload.php`. Вся сборка
-   параметров живёт здесь (в `getParameters()`), вызывающий код передаёт только сырой
-   вход. Базовый класс сериализует параметры в единый payload (`getData()`).
+2. **Payload-класс** `src/Features/Foo/FooPayload.php`, реализующий `PayloadInterface`.
+   `getMethod()` возвращает новый `Method`, `getData()` — параметры (массив/скаляр,
+   сериализуемые в MessagePack):
    ```php
-   readonly class FooPayload extends BaseMongodbPayload
+   readonly class FooPayload implements PayloadInterface
    {
-       /**
-        * @param array<string, mixed> $filter
-        */
        public function __construct(
-           public Connection $connection,
-           public array $filter,
+           private int $someParam,
+           private int $timeoutMs, // обязательный предельный срок выполнения
        ) {
        }
 
-       protected function getCommand(): CommandEnum
+       public function getMethod(): MethodEnum
        {
-           return CommandEnum::Foo;
+           return MethodEnum::Foo;
        }
 
-       protected function getConnection(): Connection
+       /**
+        * @return array<string, int>
+        */
+       public function getData(): int|float|string|array|null
        {
-           return $this->connection;
-       }
-
-       protected function getParameters(): Parameters
-       {
-           return new Parameters(
-               data: [
-                   'f' => $this->filter,
-               ],
-               isObject: true,
-           );
+           return [
+               'p'  => $this->someParam,
+               'to' => $this->timeoutMs,
+           ];
        }
    }
    ```
-   Ключи `data` (`f`, …) — это имена полей, которые читает Go. Для общих опций есть
-   хелпер `encodeOptions()` в базовом классе.
 
-3. **Метод входа** в `Collection` (или `Database`/`Client`) — собрать payload,
-   выполнить, разобрать результат:
+3. **Публичный API** `src/Features/Foo/Foo.php` — собрать payload и выполнить:
    ```php
-   public function foo(array $filter): FooResult
+   readonly class Foo
    {
-       $taskResult = $this->exec(
-           payload: new FooPayload(
-               connection: $this->connection,
-               filter: $filter,
-           ),
-       );
+       public function doFoo(int $someParam, int $timeoutMs): void
+       {
+           $taskResult = FeatureExecutor::exec(
+               payload: new FooPayload(someParam: $someParam, timeoutMs: $timeoutMs),
+           );
 
-       return new FooResult(/* разбор $taskResult->payload */);
+           // при необходимости — разбор $taskResult->payload
+       }
    }
    ```
 
 ### Go
 
-1. **`types/mongodb.go`** — та же константа:
+1. **`types/method.go`** — та же константа:
    ```go
-   MongodbFoo MongodbCommand = 27
+   MethodFoo Method = 3
    ```
 
-2. **`objects/objects.go`** — структура параметров (если полей несколько). Теги
-   `msgpack` совпадают с ключами `data` из PHP:
+2. **Пакет фичи** `ext/internal/features/foo/feature.go`, реализующий
+   `contracts.FeatureContract` (`Handle(task *tasks.Task)`). Внутри: разобрать
+   `message.Payload`, выполнить работу на `task.GetContext()`, вернуть результат с
+   `ExecutionMs`:
    ```go
-   type FooParams struct {
-       Filter []byte `json:"f" msgpack:"f"`
-   }
-   ```
-   > Если параметр — ровно один объект, структура не нужна: читайте `payload.Data`
-   > напрямую.
+   var errFactory = errs.NewErrorsFactory("foo")
 
-3. **Обработчик** в `connection/collection.go` (или `database.go`): разобрать
-   параметры и **обернуть вызов в хелпер результата**. Хелпер сам пробрасывает
-   контекст-результат и замеряет `ExecutionMs` — оба обязательных требования
-   выполняются автоматически.
-   ```go
-   func (c *Collection) Foo(
-       ctx context.Context,
-       message *dto.Message,
-       payload *objects.Payload,
-   ) *dto.Result {
-       var params objects.FooParams
+   type FooFeature struct{}
 
-       if err := objects.UnmarshalParams(payload.Data, &params); err != nil {
-           return dto.NewErrorResult(message, errFactory.ByErr("parse foo params", err))
+   func (f *FooFeature) Handle(task *tasks.Task) {
+       start := time.Now()
+       message := task.GetMessage()
+
+       var payload params.FooPayload // поле TimeoutMs с тегом msgpack:"to"
+
+       if err := msgpack.Unmarshal(message.Payload, &payload); err != nil {
+           task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("parse error", err)))
+           return
        }
 
-       // ctx обязательно уходит в вашу операцию → отмена работает.
-       return documentResult(message, "foo", func() (interface{}, error) {
-           return /* ваша операция на ctx, возвращает (результат, error) */
-       })
-   }
-   ```
-   Какой хелпер выбрать (сигнатуры — в `execute.go`):
-   - `documentResult` — результат-объект (сериализуется автоматически);
-   - `stringResult` — готовая строка (счётчики, идентификаторы, пустой ответ);
-   - `singleResult` — одиночный результат, где «не найдено» = пустой успех.
+       // Ограничиваем работу переданным таймаутом; этот же ctx отменяется при стопе.
+       ctx, cancel := context.WithTimeout(
+           task.GetContext(),
+           time.Duration(payload.TimeoutMs)*time.Millisecond,
+       )
+       defer cancel()
 
-4. **Регистрация в диспетчере** `features/collection/feature.go` — одна запись в карте:
-   ```go
-   var collectionHandlers = map[types.MongodbCommand]collectionHandler{
-       // ...
-       types.MongodbFoo: (*connection.Collection).Foo,
+       result, err := doFoo(ctx) // ваша операция; обязана уважать ctx
+
+       if err != nil {
+           task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("foo error", err)))
+           return
+       }
+
+       task.AddResult(dto.NewSuccessResult(message, result, helpers.CalcExecutionMs(start)))
    }
    ```
-   Для команд уровня БД — в `databaseHandlers`.
+   (как у `Sleeper`, фичу обычно делают синглтоном через `sync.Once` + `Get()`.)
+
+3. **Регистрация** в `ext/internal/features/factory.go` — кейс в `DetectMessageHandler`:
+   ```go
+   case types.MethodFoo:
+       return foo_feature.Get(), nil
+   ```
 
 ---
 
-## Вариант B. Команда со стримингом
+## Вариант B. Со стримингом (батчами)
 
-Стриминг отдаёт результат **батчами**: Go держит «состояние» (открытый ресурс), а PHP
-тянет следующие батчи. На PHP это инкапсулирует `IteratorResult`.
+Стриминг отдаёт результат частями: Go держит «состояние», PHP тянет следующие батчи.
+Маршрутизация `next` к состоянию — общая для всех фич, отдельно её настраивать не нужно.
 
 ### PHP
 
-1. **`CommandEnum`** + **Payload** — как в варианте A (payload несёт фильтр, размер
-   батча и т.п.).
+1. **`MethodEnum`** + **Payload** — как в варианте A.
 
-2. **Метод входа** возвращает `IteratorResult`, обёрнутый вокруг payload — он сам
+2. **Публичный API** возвращает `IteratorResult`, обёрнутый вокруг payload — он сам
    запросит первый и последующие батчи:
    ```php
    /**
-    * @return Iterator<int, array<int|string, mixed>>
+    * @return Iterator<int, mixed>
     */
-   public function foo(array $filter, int $batchSize = 50): Iterator
+   public function doFoo(int $someParam): Iterator
    {
        return new IteratorResult(
-           payload: new FooPayload(
-               connection: $this->connection,
-               filter: $filter,
-               batchSize: $batchSize,
-           ),
+           payload: new FooPayload(someParam: $someParam),
        );
    }
    ```
 
 ### Go
 
-1. **`types/mongodb.go`** — константа (как в A).
+1. **`types/method.go`** — константа (как в A).
 
-2. **Состояние** `states/foo_state/foo.go`, реализующее `contracts.StateContract`
-   (`Next() *dto.Result`, `Close()`). Оба обязательных требования здесь критичны:
+2. **Состояние** `ext/internal/features/foo/state/foo.go`, реализующее
+   `contracts.StateContract` (`Next() *dto.Result`, `Close()`):
    ```go
    type FooState struct {
        // mutex сериализует Next и Close: Close может прийти из отмены контекста,
-       // пока Next ещё использует удерживаемый ресурс.
+       // пока Next ещё использует ресурс.
        mutex     sync.Mutex
        ctx       context.Context
        message   *dto.Message
        startTime time.Time
-       // удерживаемый ресурс + параметры (фильтр, batchSize, ...)
+       // удерживаемый ресурс + параметры
    }
 
    func (s *FooState) Next() *dto.Result {
        s.mutex.Lock()
        defer s.mutex.Unlock()
 
-       // при первом вызове — лениво открыть ресурс на s.ctx, запомнить s.startTime
-       // прочитать следующий батч на s.ctx
+       // лениво инициализировать ресурс на s.ctx при первом вызове, прочитать батч
 
        // есть ещё данные → батч с флагом «будет ещё»:
        return dto.NewSuccessResultWithNext(s.message, response, helpers.CalcExecutionMs(s.startTime))
@@ -238,8 +207,7 @@
        // return dto.NewSuccessResult(s.message, response, helpers.CalcExecutionMs(s.startTime))
    }
 
-   // Close освобождает ресурс на СВЕЖЕМ контексте: контекст задачи к этому моменту
-   // уже отменён, и освобождение через него до сервера не дошло бы.
+   // Close освобождает ресурс на СВЕЖЕМ контексте: контекст задачи уже отменён.
    func (s *FooState) Close() {
        s.mutex.Lock()
        defer s.mutex.Unlock()
@@ -251,101 +219,71 @@
    }
    ```
 
-3. **Обработчик** создаёт состояние и запускает его. `states.Get().Start` сам
-   регистрирует отмену: при отмене контекста задачи будет вызван `Close()`. Возвращается
+3. **`Handle`** фичи создаёт состояние и запускает его через реестр состояний;
+   `states.Get().Start` сам зарегистрирует `Close()` на отмену контекста и вернёт
    первый батч:
    ```go
-   func (c *Collection) Foo(
-       ctx context.Context,
-       message *dto.Message,
-       payload *objects.Payload,
-   ) *dto.Result {
-       // ... разбор параметров ...
+   func (f *FooFeature) Handle(task *tasks.Task) {
+       message := task.GetMessage()
+       // ... разбор message.Payload ...
 
-       state := foo_state.New(ctx, message /*, параметры */)
+       state := state.New(task.GetContext(), message /*, параметры */)
 
-       result, err := states.Get().Start(ctx, message.TaskKey, state)
+       result, err := states.Get().Start(task.GetContext(), message.TaskKey, state)
        if err != nil {
-           return dto.NewErrorResult(message, errFactory.ByErr("foo", err))
+           task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("foo", err)))
+           return
        }
 
-       return result
+       task.AddResult(result)
    }
    ```
 
-4. **Регистрация в диспетчере** — как в A.
+4. **Регистрация** в `factory.go` — как в A.
 
-> Недотянутый до конца поток (ранний `break` на PHP) закрывается автоматически: PHP
-> освобождает поток, контекст задачи отменяется, и хук `states.Start` зовёт `Close()`.
-> Именно поэтому `Close()` обязан работать на свежем контексте.
-
----
-
-## Новая фича верхнего уровня (как `Sleeper`)
-
-Если нужна не команда MongoDB, а отдельный домен (новый `Method`):
-
-1. **`types/method.go`** — новый `Method` + та же константа в PHP `MethodEnum`.
-2. **Go-фича** в `ext/internal/features/<name>/` — реализует `contracts.FeatureContract`
-   (`Handle(task *tasks.Task)`). Внутри: разобрать payload; выполнять работу на
-   `task.GetContext()` и слушать `ctx.Done()` для отмены; вернуть результат с
-   `ExecutionMs`.
-3. **`features/factory.go`** — добавить кейс в `DetectMessageHandler`.
-4. **PHP**: payload-класс, реализующий `PayloadInterface` (`getMethod()` → новый
-   `MethodEnum`, `getData()`), и точка входа в `FeatureExecutor::exec()`.
-
-`Sleeper` — минимальный эталон: приём параметра, проверка, отмена через `ctx.Done()`,
-возврат времени выполнения.
+> Недотянутый поток (ранний `break` на PHP) закрывается автоматически: PHP освобождает
+> поток, контекст задачи отменяется, и хук реестра состояний зовёт `Close()`. Поэтому
+> `Close()` обязан работать на свежем контексте.
 
 ---
 
 ## Тесты (обязательно)
 
-Тесты пишутся обязательно. Правила:
-
-- **Под каждую фичу и каждую её под-фичу — отдельный тест.** Для MongoDB это значит:
-  **на каждую команду — свой тест** (`insertOne`, `find`, `bulkWrite`, … — отдельные
-  тест-классы).
+- **На каждую фичу — отдельный тест.** Если у фичи есть под-операции — тест на каждую.
 - **Все тесты наследуются от `BaseTestCase`** (напрямую или через `BaseAsyncTestCase`).
-  `BaseTestCase` управляет жизненным циклом расширения и в `tearDown` проверяет, что
-  после теста **не осталось «висящих» задач** (`assertNoTasksCount`) — это ловит утечки
-  и забытую отмену контекста.
-- **Тест под-фичи пишется с родителем `BaseAsyncTestCase`** — он задаёт асинхронный
-  паттерн: запускает два конкурентных таска через `WaitGroup`, проверяет порядок
-  событий и конкурентность, а также путь с исключением (синхронный и асинхронный).
-  Вы реализуете хуки:
-  - `on_1_start` / `on_1_middle` и `on_2_start` / `on_2_middle` — шаги двух тасков
-    (внутри вызывайте свою операцию);
+  `BaseTestCase` управляет жизненным циклом расширения и в `tearDown` проверяет
+  отсутствие «висящих» задач — это ловит утечки и забытую отмену контекста.
+- **Тест фичи пишется с родителем `BaseAsyncTestCase`** — он задаёт асинхронный
+  паттерн: два конкурентных таска через `WaitGroup`, проверка порядка событий,
+  конкурентности и пути с исключением (синхронного и асинхронного). Реализуйте хуки:
+  - `on_1_start` / `on_1_middle`, `on_2_start` / `on_2_middle` — шаги двух тасков
+    (вызывайте внутри свою операцию);
   - `on_iterate` — действие на каждой итерации результата;
-  - `on_exception` — вызов, который обязан бросить исключение (например невалидный
-    ввод);
+  - `on_exception` — вызов, который обязан бросить исключение;
   - `assertException(Throwable)` — проверка исключения;
   - `assertResult(array $results)` — проверка результатов; здесь же проверяют
     конкурентность (общее время ≈ самой медленной операции, а не сумме).
 
   Эталон — `tests/feature/Features/Sleeper/SleeperTest.php`.
-
-- Дополнительные синхронные/краевые проверки (опции, ошибки, форматы) добавляйте
-  отдельными методами/классами от `BaseTestCase`.
-- Go-логику (сериализация, состояния) покрывайте Go-тестами в `ext/...` (`make ext-test`).
+- Краевые/синхронные проверки добавляйте отдельными тестами от `BaseTestCase`.
+- Go-логику покрывайте Go-тестами (`make ext-test`).
 
 ---
 
 ## Чеклист
 
 PHP:
-- [ ] `CommandEnum` / `MethodEnum` — новое значение.
-- [ ] Payload-класс; вся сборка параметров — внутри него.
-- [ ] Точка входа в `Collection`/`Database`/`Client` (для стриминга — возвращает `IteratorResult`).
-- [ ] (опц.) Result-DTO.
-- [ ] Тест от `BaseAsyncTestCase` на под-фичу + краевые тесты от `BaseTestCase`.
+- [ ] `MethodEnum` — новое значение.
+- [ ] Payload-класс (`PayloadInterface`); сборка параметров — внутри него; payload несёт
+      предельное время выполнения (таймаут).
+- [ ] Публичный API (для стриминга — возвращает `IteratorResult`).
+- [ ] Тест от `BaseAsyncTestCase` + краевые тесты от `BaseTestCase`.
 
 Go:
-- [ ] Та же константа в `types/`.
-- [ ] (опц.) `objects.*Params` с тегами под ключи `data`.
-- [ ] Обработчик: контекст задачи во все вызовы; результат через хелпер (без стрима)
-      или через состояние (`StateContract` + `Close()` на свежем контексте, стрим).
-- [ ] Запись в карте `collectionHandlers`/`databaseHandlers`.
+- [ ] Та же константа в `types/method.go`.
+- [ ] Пакет фичи с `Handle`: контекст задачи во все вызовы; работа ограничена переданным
+      таймаутом; для стриминга — состояние `StateContract` + `Close()` на свежем контексте.
+- [ ] Регистрация в `features/factory.go`.
 - [ ] (опц.) Go-тесты.
 
 Проверка: `make ext-build && make ext-test && make php-stan && make cs-fixer-check && make test`.

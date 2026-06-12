@@ -153,6 +153,12 @@ $collection->insertOne(['name' => 'example']);
 `waitAll()` — это `iterator_count(iterate())`; `waitResults()` собирает результаты в
 массив по `callbackKey`.
 
+## Документация
+
+- [Как добавить новую фичу верхнего уровня](docs/adding-a-feature.ru.md) — пошагово
+  (со стримингом и без), с обязательными требованиями: отмена контекста и передача
+  предельного времени выполнения.
+
 ## Build
 ```shell
 rm -f build/sconcur.so build/sconcur.h && \
