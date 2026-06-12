@@ -125,7 +125,7 @@ readonly class DocumentSerializer
 
                 if ($dateTime === false) {
                     throw new RuntimeException(
-                        message: 'Invalid UTCDateTime value in document'
+                        message: 'Invalid UTCDateTime value in document: ' . mb_substr($value, 0, 50)
                     );
                 }
 

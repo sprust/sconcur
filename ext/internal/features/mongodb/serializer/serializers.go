@@ -18,7 +18,17 @@ const objectIdStringPrefixLen = len(objectIdStringPrefix)
 
 const utcDateTimeStringPrefix = "$udt-lgof:"
 const utcDateTimeStringPrefixLen = len(utcDateTimeStringPrefix)
-const dateFormat = time.RFC3339Nano
+
+// dateParseFormat is used to PARSE incoming UTCDateTime values. It is liberal about
+// fractional seconds (RFC3339Nano accepts 0..9 digits).
+const dateParseFormat = time.RFC3339Nano
+
+// dateOutputFormat is used to FORMAT outgoing UTCDateTime values. It always emits exactly
+// three fractional digits (".000"), so whole-second timestamps serialize as
+// "...:55.000Z" instead of "...:55Z". The PHP side parses with DATE_RFC3339_EXTENDED,
+// which strictly requires a three-digit millisecond part; dropping it (as time.RFC3339Nano
+// does for zero sub-second values) broke parsing on PHP. Be strict in what we emit.
+const dateOutputFormat = "2006-01-02T15:04:05.000Z07:00"
 
 // orderedMapMarker must match DocumentSerializer::ORDERED_MAP_MARKER on PHP side
 const orderedMapMarker = "\x00m"
@@ -379,7 +389,7 @@ func marshalRawValue(value bson.RawValue) (interface{}, error) {
 	case bsontype.ObjectID:
 		return objectIdStringPrefix + value.ObjectID().Hex(), nil
 	case bsontype.DateTime:
-		return utcDateTimeStringPrefix + value.Time().UTC().Format(dateFormat), nil
+		return utcDateTimeStringPrefix + value.Time().UTC().Format(dateOutputFormat), nil
 	case bsontype.String:
 		return value.StringValue(), nil
 	case bsontype.Boolean:
@@ -464,9 +474,9 @@ func marshalRecursive(data interface{}) interface{} {
 	case primitive.ObjectID:
 		return objectIdStringPrefix + v.Hex()
 	case primitive.DateTime:
-		return utcDateTimeStringPrefix + v.Time().UTC().Format(dateFormat)
+		return utcDateTimeStringPrefix + v.Time().UTC().Format(dateOutputFormat)
 	case time.Time:
-		return utcDateTimeStringPrefix + v.UTC().Format(dateFormat)
+		return utcDateTimeStringPrefix + v.UTC().Format(dateOutputFormat)
 	default:
 		return v
 	}
@@ -530,7 +540,7 @@ func unmarshalRecursive(data interface{}) interface{} {
 		}
 
 		if len(v) > utcDateTimeStringPrefixLen && v[:utcDateTimeStringPrefixLen] == utcDateTimeStringPrefix {
-			if t, err := time.Parse(dateFormat, v[utcDateTimeStringPrefixLen:]); err == nil {
+			if t, err := time.Parse(dateParseFormat, v[utcDateTimeStringPrefixLen:]); err == nil {
 				return primitive.NewDateTimeFromTime(t)
 			}
 		}
