@@ -2,6 +2,7 @@ MAKEFLAGS += --no-print-directory
 
 DOCKER_COMPOSE = docker compose
 PHP_CLI = $(DOCKER_COMPOSE) exec -T php
+PHP_EXT = $(PHP_CLI) php -d extension=./ext/build/sconcur.so
 
 env-copy:
 	cp -i .env.example .env
@@ -48,7 +49,7 @@ check:
 	make ext-test
 
 test:
-	$(PHP_CLI) php -d extension=./ext/build/sconcur.so vendor/bin/phpunit \
+	$(PHP_EXT) vendor/bin/phpunit \
 		-d memory_limit=512M \
 		--colors=auto \
 		--testdox \
@@ -82,43 +83,43 @@ bench-all:
 	make bench-mongodb-command
 
 bench-sleep:
-	$(PHP_CLI) php -d extension=./ext/build/sconcur.so tests/benchmarks/sleep.php ${c}
+	$(PHP_EXT) tests/benchmarks/sleep.php ${c}
 
 bench-mongodb-insertOne:
-	$(PHP_CLI) php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-insert-one.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb-insert-one.php ${c}
 
 bench-mongodb-bulkWrite:
-	$(PHP_CLI) php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-bulk-write.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb-bulk-write.php ${c}
 
 bench-mongodb-aggregate:
-	$(PHP_CLI) php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-aggregate.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb-aggregate.php ${c}
 
 bench-mongodb-insertMany:
-	$(PHP_CLI) php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-insert-many.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb-insert-many.php ${c}
 
 bench-mongodb-count:
-	$(PHP_CLI) php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-count.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb-count.php ${c}
 
 bench-mongodb-command:
-	$(PHP_CLI) php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-command.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb-command.php ${c}
 
 bench-mongodb-updateOne:
-	$(PHP_CLI) php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-update-one.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb-update-one.php ${c}
 
 bench-mongodb-findOne:
-	$(PHP_CLI) php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-find-one.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb-find-one.php ${c}
 
 bench-mongodb-createIndex:
-	$(PHP_CLI) php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-create-index.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb-create-index.php ${c}
 
 bench-mongodb-deleteOne:
-	$(PHP_CLI) php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-delete-one.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb-delete-one.php ${c}
 
 bench-mongodb-updateMany:
-	$(PHP_CLI) php -d extension=./ext/build/sconcur.so tests/benchmarks/mongodb-update-many.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb-update-many.php ${c}
 
 mem-leak-endless-add:
-	$(PHP_CLI) php -d extension=./ext/build/sconcur.so tests/mem-leak/endless-add.php ${c}
+	$(PHP_EXT) tests/mem-leak/endless-add.php ${c}
 
 mem-leak-endless-break:
-	$(PHP_CLI) php -d extension=./ext/build/sconcur.so tests/mem-leak/endless-break.php ${c}
+	$(PHP_EXT) tests/mem-leak/endless-break.php ${c}
