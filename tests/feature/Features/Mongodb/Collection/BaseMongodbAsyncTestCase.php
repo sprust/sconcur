@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection;
 
 use SConcur\Features\Mongodb\Connection\Collection;
-use SConcur\Features\Mongodb\Types\ObjectId;
+use MongoDB\BSON\ObjectId;
 use SConcur\Tests\Feature\BaseAsyncTestCase;
 use SConcur\Tests\Impl\TestMongodbResolver;
 use Throwable;

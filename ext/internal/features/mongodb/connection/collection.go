@@ -20,8 +20,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-const resultKey = "_r"
-
 var errFactory = errs.NewErrorsFactory("mongodb")
 
 type Collection struct {
@@ -126,7 +124,7 @@ func (c *Collection) Aggregate(
 		)
 	}
 
-	pipeline, err := serializer.UnmarshalDocument(params.Pipeline)
+	pipeline, err := serializer.UnmarshalPipeline(params.Pipeline)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -141,7 +139,6 @@ func (c *Collection) Aggregate(
 		c.mCollection,
 		pipeline,
 		params.BatchSize,
-		resultKey,
 		errFactory,
 	)
 

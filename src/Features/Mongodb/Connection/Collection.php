@@ -22,8 +22,6 @@ use SConcur\Transport\MessagePackTransport;
 
 readonly class Collection
 {
-    protected const string RESULT_KEY = '_r';
-
     protected MethodEnum $method;
 
     protected string $uri;
@@ -177,7 +175,6 @@ readonly class Collection
                 command: CommandEnum::Aggregate,
                 data: $serialized,
             ),
-            resultKey: static::RESULT_KEY,
         );
     }
 
@@ -264,7 +261,6 @@ readonly class Collection
                 command: CommandEnum::Find,
                 data: $serialized,
             ),
-            resultKey: static::RESULT_KEY,
         );
     }
 
@@ -501,17 +497,7 @@ readonly class Collection
             return [];
         }
 
-        $decoded = MessagePackTransport::unpack($taskResult->payload);
-
-        $indexes = [];
-
-        foreach ($decoded as $item) {
-            if (is_string($item)) {
-                $indexes[] = DocumentSerializer::unserialize($item);
-            }
-        }
-
-        return $indexes;
+        return DocumentSerializer::unserializeBatch($taskResult->payload);
     }
 
     /**

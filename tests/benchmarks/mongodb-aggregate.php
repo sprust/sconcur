@@ -47,7 +47,7 @@ $sconcurCallback = static function () use ($sconcurCollection, $sconcurPipeline,
     );
 
     foreach ($aggregate as $doc) {
-        $id = $doc['_id']->id;
+        $id = (string) $doc['_id'];
 
         if (!$isLogProcess) {
             continue;

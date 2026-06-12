@@ -3,159 +3,72 @@ package serializer
 import (
 	"errors"
 	"fmt"
-	"math"
-	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/bsontype"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
-const objectIdStringPrefix = "$oid-ofls:"
-const objectIdStringPrefixLen = len(objectIdStringPrefix)
-
-const utcDateTimeStringPrefix = "$udt-lgof:"
-const utcDateTimeStringPrefixLen = len(utcDateTimeStringPrefix)
-
-// dateParseFormat is used to PARSE incoming UTCDateTime values. It is liberal about
-// fractional seconds (RFC3339Nano accepts 0..9 digits).
-const dateParseFormat = time.RFC3339Nano
-
-// dateOutputFormat is used to FORMAT outgoing UTCDateTime values. It always emits exactly
-// three fractional digits (".000"), so whole-second timestamps serialize as
-// "...:55.000Z" instead of "...:55Z". The PHP side parses with DATE_RFC3339_EXTENDED,
-// which strictly requires a three-digit millisecond part; dropping it (as time.RFC3339Nano
-// does for zero sub-second values) broke parsing on PHP. Be strict in what we emit.
-const dateOutputFormat = "2006-01-02T15:04:05.000Z07:00"
-
-// orderedMapMarker must match DocumentSerializer::ORDERED_MAP_MARKER on PHP side
-const orderedMapMarker = "\x00m"
+// Documents are exchanged with the PHP side as raw BSON: the PHP side encodes via
+// ext-mongodb (MongoDB\BSON\Document/PackedArray) and decodes via the same C path the
+// native driver uses. Go therefore passes the cursor/driver bson.Raw straight through,
+// without an intermediate representation.
 
 type WriteModelWrapper struct {
 	Type  string             `bson:"type" json:"type" msgpack:"type"`
 	Model msgpack.RawMessage `bson:"model" json:"model" msgpack:"model"`
 }
 
+// UnmarshalDocument treats the incoming bytes as a raw BSON document. The mongo driver
+// accepts bson.Raw directly as a filter/update/projection/document.
 func UnmarshalDocument(data []byte) (interface{}, error) {
-	var document interface{}
-
-	if err := msgpack.Unmarshal(data, &document); err != nil {
-		return nil, err
-	}
-
-	result := unmarshalRecursive(document)
-
-	return normalizeEmptyData(result), nil
+	return bson.Raw(data), nil
 }
 
+// UnmarshalDocuments splits a raw BSON array (PackedArray) into its document elements,
+// e.g. for InsertMany.
 func UnmarshalDocuments(data []byte) ([]interface{}, error) {
-	var documents []interface{}
-
-	if err := msgpack.Unmarshal(data, &documents); err != nil {
-		return nil, err
-	}
-
-	result := make([]interface{}, len(documents))
-
-	for i, document := range documents {
-		result[i] = unmarshalRecursive(document)
-	}
-
-	return result, nil
+	return bsonArrayDocuments(data)
 }
 
+// UnmarshalPipeline splits a raw BSON array into pipeline stage documents.
+func UnmarshalPipeline(data []byte) (interface{}, error) {
+	return bsonArrayDocuments(data)
+}
+
+// MarshalDocument encodes a document to raw BSON bytes. A bson.Raw is passed through
+// as-is; anything else (driver result structs, bson.D, ...) is BSON-marshaled.
 func MarshalDocument(doc interface{}) (string, error) {
-	packed, err := marshalDocumentBytes(doc)
+	if raw, ok := doc.(bson.Raw); ok {
+		return string(raw), nil
+	}
+
+	packed, err := bson.Marshal(doc)
 
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("error BSON marshaling: %w", err)
 	}
 
 	return string(packed), nil
 }
 
-func MarshalDocumentBatch(items []interface{}) (string, error) {
-	batch := make([][]byte, len(items))
-
-	for i, item := range items {
-		packed, err := marshalDocumentBytes(item)
-
-		if err != nil {
-			return "", err
-		}
-
-		batch[i] = packed
-	}
-
-	packedBatch, err := msgpack.Marshal(batch)
-
-	if err != nil {
-		return "", fmt.Errorf("error MessagePack batch marshaling: %w", err)
-	}
-
-	return string(packedBatch), nil
-}
-
+// MarshalDocumentBatchRaw packs a batch as a single raw BSON wrapper document
+// {"d": [doc0, doc1, ...]} built directly from the cursor's bson.Raw documents. The PHP
+// side decodes it natively via MongoDB\BSON\Document::fromBSON()->toPHP().
 func MarshalDocumentBatchRaw(items []bson.Raw) (string, error) {
-	batch := make([][]byte, len(items))
+	arr := make(bson.A, len(items))
 
 	for i, item := range items {
-		packed, err := marshalDocumentBytes(item)
-
-		if err != nil {
-			return "", err
-		}
-
-		batch[i] = packed
+		arr[i] = item
 	}
 
-	packedBatch, err := msgpack.Marshal(batch)
+	packed, err := bson.Marshal(bson.M{"d": arr})
 
 	if err != nil {
-		return "", fmt.Errorf("error MessagePack batch marshaling: %w", err)
+		return "", fmt.Errorf("error BSON batch marshaling: %w", err)
 	}
 
-	return string(packedBatch), nil
-}
-
-func marshalDocumentBytes(doc interface{}) ([]byte, error) {
-	if raw, ok := doc.(bson.Raw); ok {
-		document, err := marshalRawDocument(raw)
-
-		if err != nil {
-			return nil, fmt.Errorf("error BSON raw marshaling: %w", err)
-		}
-
-		packed, err := msgpack.Marshal(document)
-
-		if err != nil {
-			return nil, fmt.Errorf("error MessagePack marshaling: %w", err)
-		}
-
-		return packed, nil
-	}
-
-	bsonData, err := normalizeToBSON(doc)
-
-	if err != nil {
-		return nil, fmt.Errorf("error BSON marshaling: %w", err)
-	}
-
-	var document interface{}
-
-	if err := bson.Unmarshal(bsonData, &document); err != nil {
-		return nil, fmt.Errorf("error BSON unmarshaling: %w", err)
-	}
-
-	packed, err := msgpack.Marshal(marshalRecursive(document))
-
-	if err != nil {
-		return nil, fmt.Errorf("error MessagePack marshaling: %w", err)
-	}
-
-	return packed, nil
+	return string(packed), nil
 }
 
 func UnmarshalBulkWriteModels(data []byte) ([]mongo.WriteModel, error) {
@@ -259,7 +172,7 @@ func UnmarshalBulkWriteModels(data []byte) ([]mongo.WriteModel, error) {
 			filter, err := UnmarshalDocument(dm.Filter)
 
 			if err != nil {
-				return nil, errors.New("updateOne filter [" + err.Error() + "]")
+				return nil, errors.New("deleteOne filter [" + err.Error() + "]")
 			}
 
 			model = mongo.NewDeleteOneModel().SetFilter(filter)
@@ -319,270 +232,28 @@ func UnmarshalBulkWriteModels(data []byte) ([]mongo.WriteModel, error) {
 	return models, nil
 }
 
-func normalizeToBSON(doc interface{}) ([]byte, error) {
-	if raw, ok := doc.(bson.Raw); ok {
-		return []byte(raw), nil
+// bsonArrayDocuments reads a raw BSON array and returns its document elements as a slice
+// of bson.Raw values (usable directly by the mongo driver).
+func bsonArrayDocuments(data []byte) ([]interface{}, error) {
+	if len(data) == 0 {
+		return []interface{}{}, nil
 	}
 
-	return bson.Marshal(doc)
+	values, err := bson.Raw(data).Values()
+
+	if err != nil {
+		return nil, fmt.Errorf("error reading BSON array: %w", err)
+	}
+
+	documents := make([]interface{}, len(values))
+
+	for i, value := range values {
+		documents[i] = value.Document()
+	}
+
+	return documents, nil
 }
 
 func unmarshalMessagePackValue(data msgpack.RawMessage, out interface{}) error {
 	return msgpack.Unmarshal(data, out)
-}
-
-func marshalRawDocument(raw bson.Raw) (interface{}, error) {
-	elements, err := raw.Elements()
-
-	if err != nil {
-		return nil, err
-	}
-
-	items := make([]interface{}, len(elements))
-
-	for i, element := range elements {
-		value, err := marshalRawValue(element.Value())
-
-		if err != nil {
-			return nil, err
-		}
-
-		items[i] = []interface{}{
-			element.Key(),
-			value,
-		}
-	}
-
-	return map[string]interface{}{
-		orderedMapMarker: items,
-	}, nil
-}
-
-func marshalRawArray(raw bson.Raw) ([]interface{}, error) {
-	values, err := raw.Values()
-
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]interface{}, len(values))
-
-	for i, value := range values {
-		converted, err := marshalRawValue(value)
-
-		if err != nil {
-			return nil, err
-		}
-
-		result[i] = converted
-	}
-
-	return result, nil
-}
-
-func marshalRawValue(value bson.RawValue) (interface{}, error) {
-	switch value.Type {
-	case bsontype.EmbeddedDocument:
-		return marshalRawDocument(value.Document())
-	case bsontype.Array:
-		return marshalRawArray(value.Array())
-	case bsontype.ObjectID:
-		return objectIdStringPrefix + value.ObjectID().Hex(), nil
-	case bsontype.DateTime:
-		return utcDateTimeStringPrefix + value.Time().UTC().Format(dateOutputFormat), nil
-	case bsontype.String:
-		return value.StringValue(), nil
-	case bsontype.Boolean:
-		return value.Boolean(), nil
-	case bsontype.Int32:
-		return int64(value.Int32()), nil
-	case bsontype.Int64:
-		return value.Int64(), nil
-	case bsontype.Double:
-		return value.Double(), nil
-	case bsontype.Null:
-		return nil, nil
-	}
-
-	var decoded interface{}
-
-	if err := value.Unmarshal(&decoded); err != nil {
-		return nil, err
-	}
-
-	return marshalRecursive(decoded), nil
-}
-
-func normalizeEmptyData(data interface{}) interface{} {
-	if data == nil {
-		return bson.D{}
-	}
-
-	return data
-}
-
-func marshalRecursive(data interface{}) interface{} {
-	if data == nil {
-		return nil
-	}
-
-	switch v := data.(type) {
-	case bson.D:
-		items := make([]interface{}, len(v))
-
-		for i, elem := range v {
-			items[i] = []interface{}{
-				elem.Key,
-				marshalRecursive(elem.Value),
-			}
-		}
-
-		return map[string]interface{}{
-			orderedMapMarker: items,
-		}
-	case primitive.A:
-		result := make([]interface{}, len(v))
-
-		for i, value := range v {
-			result[i] = marshalRecursive(value)
-		}
-
-		return result
-	case []interface{}:
-		result := make([]interface{}, len(v))
-
-		for i, value := range v {
-			result[i] = marshalRecursive(value)
-		}
-
-		return result
-	case map[string]interface{}:
-		items := make([]interface{}, len(v))
-		i := 0
-
-		for key, value := range v {
-			items[i] = []interface{}{
-				key,
-				marshalRecursive(value),
-			}
-			i++
-		}
-
-		return map[string]interface{}{
-			orderedMapMarker: items,
-		}
-	case primitive.ObjectID:
-		return objectIdStringPrefix + v.Hex()
-	case primitive.DateTime:
-		return utcDateTimeStringPrefix + v.Time().UTC().Format(dateOutputFormat)
-	case time.Time:
-		return utcDateTimeStringPrefix + v.UTC().Format(dateOutputFormat)
-	default:
-		return v
-	}
-}
-
-func unmarshalRecursive(data interface{}) interface{} {
-	if data == nil {
-		return nil
-	}
-
-	switch v := data.(type) {
-	case map[string]interface{}:
-		if items, ok := v[orderedMapMarker]; ok {
-			rawItems, ok := items.([]interface{})
-
-			if !ok {
-				return bson.D{}
-			}
-
-			result := make(bson.D, 0, len(rawItems))
-
-			for _, rawItem := range rawItems {
-				pair, ok := rawItem.([]interface{})
-
-				if !ok || len(pair) != 2 {
-					continue
-				}
-
-				result = append(result, bson.E{
-					Key:   fmt.Sprint(pair[0]),
-					Value: unmarshalRecursive(pair[1]),
-				})
-			}
-
-			return result
-		}
-
-		result := make(bson.D, 0, len(v))
-
-		for key, value := range v {
-			result = append(result, bson.E{
-				Key:   key,
-				Value: unmarshalRecursive(value),
-			})
-		}
-
-		return result
-	case []interface{}:
-		result := make(primitive.A, len(v))
-
-		for i, value := range v {
-			result[i] = unmarshalRecursive(value)
-		}
-
-		return result
-	case string:
-		if len(v) > objectIdStringPrefixLen && v[:objectIdStringPrefixLen] == objectIdStringPrefix {
-			if objectID, err := primitive.ObjectIDFromHex(v[objectIdStringPrefixLen:]); err == nil {
-				return objectID
-			}
-		}
-
-		if len(v) > utcDateTimeStringPrefixLen && v[:utcDateTimeStringPrefixLen] == utcDateTimeStringPrefix {
-			if t, err := time.Parse(dateParseFormat, v[utcDateTimeStringPrefixLen:]); err == nil {
-				return primitive.NewDateTimeFromTime(t)
-			}
-		}
-
-		return v
-	case float32:
-		return float64(v)
-	case float64:
-		if v == math.Trunc(v) && !math.IsInf(v, 0) && v >= math.MinInt64 && v <= math.MaxInt64 {
-			return int64(v)
-		}
-
-		return v
-	case int:
-		return int64(v)
-	case int8:
-		return int64(v)
-	case int16:
-		return int64(v)
-	case int32:
-		return int64(v)
-	case int64:
-		return v
-	case uint:
-		if uint64(v) <= math.MaxInt64 {
-			return int64(v)
-		}
-
-		return uint64(v)
-	case uint8:
-		return int64(v)
-	case uint16:
-		return int64(v)
-	case uint32:
-		return int64(v)
-	case uint64:
-		if v <= math.MaxInt64 {
-			return int64(v)
-		}
-
-		return v
-	default:
-		return v
-	}
 }

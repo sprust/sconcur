@@ -32,7 +32,6 @@ func New(
 	mCollection *mongo.Collection,
 	pipeline interface{},
 	batchSize int,
-	_ string,
 	errFactory *errs.Factory,
 ) contracts.StateContract {
 	return &AggregationState{
@@ -44,6 +43,10 @@ func New(
 		errFactory:  errFactory,
 		startTime:   time.Now(),
 	}
+}
+
+func (s *AggregationState) marshalBatch(items []bson.Raw) (string, error) {
+	return serializer.MarshalDocumentBatchRaw(items)
 }
 
 func (s *AggregationState) Next() *dto.Result {
@@ -118,7 +121,7 @@ func (s *AggregationState) Next() *dto.Result {
 
 		s.pending = cloneRaw(s.cursor.Current)
 
-		response, err := serializer.MarshalDocumentBatchRaw(items)
+		response, err := s.marshalBatch(items)
 
 		if err != nil {
 			return dto.NewErrorResult(
@@ -136,7 +139,7 @@ func (s *AggregationState) calcExecutionMs() int {
 }
 
 func (s *AggregationState) finish(items []bson.Raw) *dto.Result {
-	response, err := serializer.MarshalDocumentBatchRaw(items)
+	response, err := s.marshalBatch(items)
 
 	_ = s.cursor.Close(s.ctx)
 

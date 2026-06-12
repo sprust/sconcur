@@ -4,135 +4,71 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Mongodb\Serialization;
 
-use DateTime;
-use RuntimeException;
-use SConcur\Features\Mongodb\Types\ObjectId;
-use SConcur\Features\Mongodb\Types\UTCDateTime;
-use SConcur\Transport\MessagePackTransport;
+use MongoDB\BSON\Document;
+use MongoDB\BSON\PackedArray;
+use SConcur\Exceptions\UnexpectedResponseFormatException;
 
-readonly class DocumentSerializer
+/**
+ * Documents are exchanged with the Go extension as raw BSON and decoded natively via
+ * ext-mongodb (the same C path the native driver uses). Values use the driver's BSON
+ * types (MongoDB\BSON\ObjectId, UTCDateTime, ...).
+ */
+final class DocumentSerializer
 {
-    // Must match orderedMapMarker in ext/internal/features/mongodb/serializer/serializers.go
-    protected const string ORDERED_MAP_MARKER = "\0m";
+    /**
+     * ext-mongodb type map: documents/arrays become PHP arrays; scalars stay native
+     * MongoDB\BSON\* objects.
+     *
+     * @var array<string, string>
+     */
+    private const array TYPE_MAP = [
+        'root'     => 'array',
+        'document' => 'array',
+        'array'    => 'array',
+    ];
 
     /**
+     * Encode a value to raw BSON bytes. An object-like value ($isObject) becomes a BSON
+     * document; a list becomes a BSON array.
+     *
      * @param array<int|string, mixed> $document
      */
     public static function serialize(array $document, bool $isObject = true): string
     {
-        if ($document === []) {
-            return MessagePackTransport::pack(
-                $isObject
-                    ? [static::ORDERED_MAP_MARKER => []]
-                    : []
-            );
+        if ($isObject) {
+            return (string) Document::fromPHP($document);
         }
 
-        return MessagePackTransport::pack(
-            static::serializeRecursive($document)
-        );
+        return (string) PackedArray::fromPHP($document);
     }
 
     /**
-     * @return array<int|string|float|bool|null, mixed>
+     * Decode a raw BSON document into a PHP array.
+     *
+     * @return array<int|string, mixed>
      */
     public static function unserialize(string $document): array
     {
-        $data   = MessagePackTransport::unpack($document);
-        $result = static::unserializeRecursive($data);
+        return (array) Document::fromBSON($document)->toPHP(self::TYPE_MAP);
+    }
 
-        if (!is_array($result)) {
-            throw new RuntimeException(
-                message: 'Failed to decode MessagePack: expected array payload',
+    /**
+     * Decode a raw BSON batch wrapper {d: [...]} into a list of documents.
+     *
+     * @return array<int, mixed>
+     */
+    public static function unserializeBatch(string $payload): array
+    {
+        $decoded = (array) Document::fromBSON($payload)->toPHP(self::TYPE_MAP);
+
+        $items = $decoded['d'] ?? [];
+
+        if (!is_array($items)) {
+            throw new UnexpectedResponseFormatException(
+                message: 'BSON batch payload is not a list.'
             );
         }
 
-        return $result;
-    }
-
-    protected static function serializeRecursive(mixed $value): mixed
-    {
-        if ($value instanceof ObjectId || $value instanceof UTCDateTime) {
-            return $value->jsonSerialize();
-        }
-
-        if (is_array($value)) {
-            if (!array_is_list($value)) {
-                $items = [];
-
-                foreach ($value as $key => $subValue) {
-                    $items[] = [
-                        $key,
-                        static::serializeRecursive($subValue),
-                    ];
-                }
-
-                return [
-                    static::ORDERED_MAP_MARKER => $items,
-                ];
-            }
-
-            $result = [];
-
-            foreach ($value as $subValue) {
-                $result[] = static::serializeRecursive($subValue);
-            }
-
-            return $result;
-        }
-
-        return $value;
-    }
-
-    protected static function unserializeRecursive(mixed $value): mixed
-    {
-        if (is_array($value)) {
-            if (array_key_exists(static::ORDERED_MAP_MARKER, $value)) {
-                $result = [];
-                $items  = $value[static::ORDERED_MAP_MARKER];
-
-                if (!is_array($items)) {
-                    return $result;
-                }
-
-                foreach ($items as $item) {
-                    if (!is_array($item) || count($item) !== 2) {
-                        continue;
-                    }
-
-                    $result[$item[0]] = static::unserializeRecursive($item[1]);
-                }
-
-                return $result;
-            }
-
-            $result = [];
-
-            foreach ($value as $key => $subValue) {
-                $result[$key] = static::unserializeRecursive($subValue);
-            }
-
-            return $result;
-        }
-
-        if (is_string($value)) {
-            if (str_starts_with($value, '$oid-ofls:')) {
-                return new ObjectId(substr($value, strlen('$oid-ofls:')));
-            }
-
-            if (str_starts_with($value, '$udt-lgof:')) {
-                $dateTime = DateTime::createFromFormat(DATE_RFC3339_EXTENDED, substr($value, strlen('$udt-lgof:')));
-
-                if ($dateTime === false) {
-                    throw new RuntimeException(
-                        message: 'Invalid UTCDateTime value in document: ' . mb_substr($value, 0, 50)
-                    );
-                }
-
-                return new UTCDateTime($dateTime);
-            }
-        }
-
-        return $value;
+        return array_values($items);
     }
 }

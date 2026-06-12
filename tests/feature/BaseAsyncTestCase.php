@@ -110,13 +110,15 @@ abstract class BaseAsyncTestCase extends BaseTestCase
             if ($isAsync) {
                 $exceptionWaitGroup = WaitGroup::create();
 
-                $exceptionWaitGroup->add(
-                    callback: function () {
-                        $this->on_exception();
-                    }
-                );
-
                 try {
+                    // Bad input may surface synchronously while the fiber starts (add)
+                    // or later while results are awaited (waitAll).
+                    $exceptionWaitGroup->add(
+                        callback: function () {
+                            $this->on_exception();
+                        }
+                    );
+
                     $exceptionWaitGroup->waitAll();
                 } catch (Throwable $exception) {
                     //

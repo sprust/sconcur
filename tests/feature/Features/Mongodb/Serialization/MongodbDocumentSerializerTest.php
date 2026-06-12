@@ -7,8 +7,8 @@ namespace SConcur\Tests\Feature\Features\Mongodb\Serialization;
 use DateTime;
 use DateTimeZone;
 use SConcur\Features\Mongodb\Connection\Collection;
-use SConcur\Features\Mongodb\Types\ObjectId;
-use SConcur\Features\Mongodb\Types\UTCDateTime;
+use MongoDB\BSON\ObjectId;
+use MongoDB\BSON\UTCDateTime;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\Tests\Impl\TestMongodbResolver;
 
@@ -83,12 +83,12 @@ class MongodbDocumentSerializerTest extends BaseTestCase
 
         self::assertSame(
             $this->zeroMsDateString,
-            $dateZeroMs->dateTime->format('Y-m-d H:i:s')
+            $dateZeroMs->toDateTime()->format('Y-m-d H:i:s')
         );
 
         self::assertSame(
             '000000',
-            $dateZeroMs->dateTime->format('u')
+            $dateZeroMs->toDateTime()->format('u')
         );
 
         self::assertSame(

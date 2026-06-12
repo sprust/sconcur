@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Insert;
 
-use SConcur\Features\Mongodb\Types\ObjectId;
-use SConcur\Features\Mongodb\Types\UTCDateTime;
+use MongoDB\BSON\ObjectId;
+use MongoDB\BSON\UTCDateTime;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
 use SConcur\Tests\Impl\TestMongodbResolver;
 
@@ -74,8 +74,9 @@ class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
 
     protected function on_exception(): void
     {
+        // An array-valued _id is rejected by MongoDB (server-side error).
         $this->sconcurCollection->insertOne(
-            document: [[$this->fieldName => $this->fieldValue]]
+            document: ['_id' => [1, 2, 3]]
         );
     }
 
