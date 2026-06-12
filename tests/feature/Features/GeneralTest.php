@@ -29,40 +29,40 @@ class GeneralTest extends BaseTestCase
             function () use (&$events) {
                 $events[] = '1:start';
 
-                $this->sleeper->usleep(milliseconds: 10);
+                $this->sleeper->usleep(milliseconds: 30);
 
                 $events[] = '1:woke';
 
-                $this->sleeper->usleep(milliseconds: 30);
+                $this->sleeper->usleep(milliseconds: 90);
 
                 $events[] = '1:finish';
             },
             function () use (&$events) {
                 $events[] = '2:start';
 
-                $this->sleeper->usleep(milliseconds: 20);
+                $this->sleeper->usleep(milliseconds: 60);
 
                 // internal flow
                 $callbacks = [
                     function () use (&$events) {
                         $events[] = '2.1:start';
 
-                        $this->sleeper->usleep(milliseconds: 10);
+                        $this->sleeper->usleep(milliseconds: 30);
 
                         $events[] = '2.1:woke';
 
-                        $this->sleeper->usleep(milliseconds: 30);
+                        $this->sleeper->usleep(milliseconds: 90);
 
                         $events[] = '2.1:finish';
                     },
                     function () use (&$events) {
                         $events[] = '2.2:start';
 
-                        $this->sleeper->usleep(milliseconds: 20);
+                        $this->sleeper->usleep(milliseconds: 60);
 
                         $events[] = '2.2:woke';
 
-                        $this->sleeper->usleep(milliseconds: 40);
+                        $this->sleeper->usleep(milliseconds: 120);
 
                         $events[] = '2.2:finish';
                     },
@@ -84,7 +84,7 @@ class GeneralTest extends BaseTestCase
 
                 $events[] = '2:woke';
 
-                $this->sleeper->usleep(milliseconds: 40);
+                $this->sleeper->usleep(milliseconds: 120);
 
                 $events[] = '2:finish';
             },
@@ -470,5 +470,29 @@ class GeneralTest extends BaseTestCase
             ],
             $events
         );
+    }
+
+    public function testStop(): void
+    {
+        $waitGroup = WaitGroup::create();
+
+        $waitGroup->add(callback: function (): string {
+            $this->sleeper->sleep(seconds: 5);
+
+            return 'should-not-complete';
+        });
+
+        // stop() cancels the in-flight flow; iterate() must then yield nothing and
+        // return immediately instead of waiting for the 5s task.
+        $waitGroup->stop();
+
+        $start = microtime(true);
+
+        $results = iterator_to_array($waitGroup->iterate());
+
+        $elapsedSeconds = microtime(true) - $start;
+
+        self::assertCount(0, $results);
+        self::assertLessThan(1, $elapsedSeconds);
     }
 }

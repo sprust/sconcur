@@ -194,6 +194,44 @@ class MongodbDocumentSerializerTest extends BaseTestCase
         self::assertSame((string) $objectId, (string) $found['objectIds'][0]);
     }
 
+    /**
+     * The cursor batch path (find/aggregate → unserializeBatch wrapper) must decode BSON
+     * types with the same fidelity as the single-document path.
+     */
+    public function testRoundTripsBsonTypesViaCursorBatch(): void
+    {
+        $objectId = new ObjectId('6919e3d1a3673d3f4d9137a3');
+
+        $this->sconcurCollection->insertOne([
+            '_id'        => 'batch-types',
+            'objectId'   => $objectId,
+            'date'       => new UTCDateTime(1_700_000_000_000),
+            'binary'     => new Binary('bin', Binary::TYPE_GENERIC),
+            'decimal128' => new Decimal128('2.5'),
+            'document'   => ['nested' => 'value'],
+            'array'      => [1, 2, 3],
+        ]);
+
+        $documents = iterator_to_array(
+            $this->sconcurCollection->find(['_id' => 'batch-types'])
+        );
+
+        self::assertCount(1, $documents);
+
+        $found = $documents[0];
+
+        self::assertInstanceOf(ObjectId::class, $found['objectId']);
+        self::assertSame((string) $objectId, (string) $found['objectId']);
+        self::assertInstanceOf(UTCDateTime::class, $found['date']);
+        self::assertSame('1700000000000', (string) $found['date']);
+        self::assertInstanceOf(Binary::class, $found['binary']);
+        self::assertSame('bin', $found['binary']->getData());
+        self::assertInstanceOf(Decimal128::class, $found['decimal128']);
+        self::assertSame('2.5', (string) $found['decimal128']);
+        self::assertSame(['nested' => 'value'], $found['document']);
+        self::assertSame([1, 2, 3], $found['array']);
+    }
+
     public function testAggregateGroup(): void
     {
         $iterator = $this->sconcurCollection->aggregate([
