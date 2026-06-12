@@ -1,7 +1,7 @@
 MAKEFLAGS += --no-print-directory
 
 DOCKER_COMPOSE = docker compose
-PHP_CLI = $(DOCKER_COMPOSE) exec -T php
+PHP_CLI = $(DOCKER_COMPOSE) exec php
 PHP_EXT = $(PHP_CLI) php -d extension=./ext/build/sconcur.so
 
 env-copy:

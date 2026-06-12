@@ -6,6 +6,7 @@ namespace SConcur\Features;
 
 use Fiber;
 use LogicException;
+use RuntimeException;
 use SConcur\Connection\Extension;
 use SConcur\Dto\RunningTaskDto;
 use SConcur\Dto\TaskResultDto;
@@ -29,7 +30,10 @@ readonly class FeatureExecutor
         } catch (Throwable $exception) {
             static::stopFailedCallFlow(currentFlow: $currentFlow);
 
-            throw $exception;
+            throw new RuntimeException(
+                message: $exception->getMessage(),
+                previous: $exception
+            );
         }
 
         return static::handle(
@@ -51,7 +55,10 @@ readonly class FeatureExecutor
         } catch (Throwable $exception) {
             static::stopFailedCallFlow(currentFlow: $currentFlow);
 
-            throw $exception;
+            throw new RuntimeException(
+                message: $exception->getMessage(),
+                previous: $exception
+            );
         }
 
         return static::handle(
@@ -137,7 +144,10 @@ readonly class FeatureExecutor
                 State::releaseSyncTaskFlow($runningTask->key);
             }
 
-            throw $exception;
+            throw new RuntimeException(
+                message: $exception->getMessage(),
+                previous: $exception
+            );
         }
 
         if ($isNext) {
@@ -177,7 +187,14 @@ readonly class FeatureExecutor
             );
         }
 
-        $result = Fiber::suspend();
+        try {
+            $result = Fiber::suspend();
+        } catch (Throwable $exception) {
+            throw new RuntimeException(
+                message: $exception->getMessage(),
+                previous: $exception
+            );
+        }
 
         if ($result instanceof TaskResultDto) {
             static::checkResult($result);
