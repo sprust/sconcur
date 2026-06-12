@@ -40,13 +40,13 @@ func (f *Flow) HandleMessage(msg *dto.Message) error {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
-	task := tasks.NewTask(f.ctx, f.results, msg)
-
-	f.activeTasks[msg.TaskKey] = task
-	f.tasksCount.Add(1)
+	// Resolve the handler before mutating flow state: a task registered for
+	// a message that will never run would corrupt the tasks accounting and
+	// leave PHP waiting forever.
+	var handle func(task *tasks.Task)
 
 	if msg.IsNext {
-		go runTaskProtected(task, states.Get().Next)
+		handle = states.Get().Next
 	} else {
 		handler, err := features.DetectMessageHandler(msg.Method)
 
@@ -54,8 +54,15 @@ func (f *Flow) HandleMessage(msg *dto.Message) error {
 			return err
 		}
 
-		go runTaskProtected(task, handler.Handle)
+		handle = handler.Handle
 	}
+
+	task := tasks.NewTask(f.ctx, f.results, msg)
+
+	f.activeTasks[msg.TaskKey] = task
+	f.tasksCount.Add(1)
+
+	go runTaskProtected(task, handle)
 
 	return nil
 }

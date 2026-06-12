@@ -61,6 +61,32 @@ func TestWaitCancelsTaskContextAfterDelivery(t *testing.T) {
 	}
 }
 
+func TestHandleMessageUnknownMethodLeavesFlowStateUntouched(t *testing.T) {
+	flow := NewFlow(context.Background(), "flow")
+
+	msg := &dto.Message{
+		FlowKey: "flow",
+		Method:  types.Method(99),
+		TaskKey: "task-1",
+	}
+
+	if err := flow.HandleMessage(msg); err == nil {
+		t.Fatal("expected an error for an unknown method")
+	}
+
+	if flow.Count() != 0 {
+		t.Fatalf("a task that never runs must not be counted, got %d", flow.Count())
+	}
+
+	flow.mutex.Lock()
+	_, registered := flow.activeTasks[msg.TaskKey]
+	flow.mutex.Unlock()
+
+	if registered {
+		t.Fatal("a task that never runs must not be registered")
+	}
+}
+
 func TestWaitKeepsInitialTaskContextWhileHasNext(t *testing.T) {
 	flow := NewFlow(context.Background(), "flow")
 

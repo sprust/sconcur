@@ -7,6 +7,7 @@ namespace SConcur\Connection;
 use RuntimeException;
 use SConcur\Dto\RunningTaskDto;
 use SConcur\Dto\TaskResultDto;
+use SConcur\Exceptions\ExtensionCallException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\MethodEnum;
@@ -43,7 +44,9 @@ class Extension
 
         $taskKey = $flowKey . ':' . static::$tasksCounter;
 
-        push($flowKey, $method->value, $taskKey, $payload);
+        $response = push($flowKey, $method->value, $taskKey, $payload);
+
+        static::checkCallResponse(flowKey: $flowKey, response: $response);
 
         return new RunningTaskDto(
             key: $taskKey,
@@ -52,7 +55,9 @@ class Extension
 
     public function next(string $flowKey, string $taskKey): RunningTaskDto
     {
-        next($flowKey, $taskKey);
+        $response = next($flowKey, $taskKey);
+
+        static::checkCallResponse(flowKey: $flowKey, response: $response);
 
         return new RunningTaskDto(
             key: $taskKey,
@@ -114,6 +119,21 @@ class Extension
     public function version(): string
     {
         return version();
+    }
+
+    protected static function checkCallResponse(string $flowKey, string $response): void
+    {
+        if (!str_starts_with($response, 'error:')) {
+            return;
+        }
+
+        throw new ExtensionCallException(
+            message: sprintf(
+                'flow %s: %s',
+                $flowKey,
+                $response,
+            )
+        );
     }
 
     private function checkExtension(): void

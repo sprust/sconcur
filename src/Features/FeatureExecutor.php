@@ -20,11 +20,17 @@ readonly class FeatureExecutor
     {
         $currentFlow = State::getCurrentFlow();
 
-        $runningTask = Extension::get()->push(
-            flowKey: $currentFlow->key,
-            method: $method,
-            payload: $payload
-        );
+        try {
+            $runningTask = Extension::get()->push(
+                flowKey: $currentFlow->key,
+                method: $method,
+                payload: $payload
+            );
+        } catch (Throwable $exception) {
+            static::stopFailedCallFlow(currentFlow: $currentFlow);
+
+            throw $exception;
+        }
 
         return static::handle(
             currentFlow: $currentFlow,
@@ -37,10 +43,16 @@ readonly class FeatureExecutor
     {
         $currentFlow = State::getCurrentFlow();
 
-        $runningTask = Extension::get()->next(
-            flowKey: $currentFlow->key,
-            taskKey: $taskKey
-        );
+        try {
+            $runningTask = Extension::get()->next(
+                flowKey: $currentFlow->key,
+                taskKey: $taskKey
+            );
+        } catch (Throwable $exception) {
+            static::stopFailedCallFlow(currentFlow: $currentFlow);
+
+            throw $exception;
+        }
 
         return static::handle(
             currentFlow: $currentFlow,
@@ -54,6 +66,20 @@ readonly class FeatureExecutor
         return Extension::get()->wait(
             flowKey: $flowKey,
         );
+    }
+
+    /**
+     * A failed push/next leaves no task to wait for. The one-off flow created
+     * for a synchronous call must be stopped right away; an async flow belongs
+     * to its WaitGroup and is stopped there.
+     */
+    protected static function stopFailedCallFlow(CurrentFlow $currentFlow): void
+    {
+        if ($currentFlow->isAsync) {
+            return;
+        }
+
+        Extension::get()->stopFlow($currentFlow->key);
     }
 
     protected static function handle(CurrentFlow $currentFlow, RunningTaskDto $runningTask, bool $isNext): TaskResultDto
