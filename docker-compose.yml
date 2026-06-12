@@ -26,6 +26,12 @@ services:
       MONGO_ADMIN_PASSWORD: ${MONGO_ADMIN_PASSWORD}
     ports:
       - ${MONGO_DOCKER_PORT}:27017
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
     volumes:
       - ./docker/mongo/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
       - mongodb:/data/db
