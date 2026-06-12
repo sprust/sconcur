@@ -25,8 +25,8 @@ RUN wget -P /tmp "https://dl.google.com/go/go${GO_VERSION}.linux-amd64.tar.gz"
 RUN tar -C /usr/local -xzf "/tmp/go${GO_VERSION}.linux-amd64.tar.gz"
 RUN rm "/tmp/go${GO_VERSION}.linux-amd64.tar.gz"
 
-ENV GOPATH /go
-ENV PATH $GOPATH/bin:/usr/local/go/bin:$PATH
+ENV GOPATH=/go
+ENV PATH=$GOPATH/bin:/usr/local/go/bin:$PATH
 RUN mkdir -p "$GOPATH/src" "$GOPATH/bin" && chmod -R 777 "$GOPATH" && mkdir -p /.cache && chmod -R 777 /.cache
 
 RUN mkdir -p -m 777 /go/pkg/mod/cache/download
@@ -36,7 +36,9 @@ RUN chmod -R 777 /go/
 RUN curl -sS https://getcomposer.org/installer  \
     | php -- --install-dir=/usr/local/bin --filename=composer
 
-RUN pecl install zip mongodb-1.21.0 msgpack && docker-php-ext-enable zip mongodb msgpack
+RUN docker-php-ext-install zip && \
+    pecl install mongodb-1.21.0 msgpack && \
+    docker-php-ext-enable mongodb msgpack
 
 # Check if user and group doesn't exist before creating
 RUN getent group "$GROUP_ID" || addgroup --gid "$GROUP_ID" user
