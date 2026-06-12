@@ -11,9 +11,9 @@ import (
 	"sconcur/internal/states"
 	"strconv"
 
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 var errFactory = errs.NewErrorsFactory("mongodb")
@@ -200,7 +200,7 @@ func (c *Collection) UpdateOne(
 		)
 	}
 
-	opts := options.Update()
+	opts := options.UpdateOne()
 
 	if params.Upsert {
 		opts.SetUpsert(true)
@@ -295,13 +295,9 @@ func (c *Collection) CreateIndex(
 		)
 	}
 
-	var opts options.IndexOptions
-
-	opts.Name = &params.Name
-
 	model := mongo.IndexModel{
 		Keys:    keys,
-		Options: &opts,
+		Options: options.Index().SetName(params.Name),
 	}
 
 	return stringResult(message, "createIndex", func() (string, error) {
@@ -334,7 +330,7 @@ func (c *Collection) DeleteOne(
 		)
 	}
 
-	opts := options.Delete()
+	opts := options.DeleteOne()
 
 	if err := applyDeleteOptions(opts, params.Hint, params.Collation); err != nil {
 		return dto.NewErrorResult(
@@ -373,7 +369,7 @@ func (c *Collection) DeleteMany(
 		)
 	}
 
-	opts := options.Delete()
+	opts := options.DeleteMany()
 
 	if err := applyDeleteOptions(opts, params.Hint, params.Collation); err != nil {
 		return dto.NewErrorResult(
@@ -421,7 +417,7 @@ func (c *Collection) UpdateMany(
 		)
 	}
 
-	opts := options.Update()
+	opts := options.UpdateMany()
 
 	if params.Upsert {
 		opts.SetUpsert(true)
@@ -465,8 +461,8 @@ func (c *Collection) DropIndex(
 		)
 	}
 
-	return documentResult(message, "dropIndex", func() (interface{}, error) {
-		return c.mCollection.Indexes().DropOne(ctx, params.Name)
+	return stringResult(message, "dropIndex", func() (string, error) {
+		return params.Name, c.mCollection.Indexes().DropOne(ctx, params.Name)
 	})
 }
 
@@ -607,13 +603,19 @@ func (c *Collection) Distinct(
 	}
 
 	return documentResult(message, "distinct", func() (interface{}, error) {
-		result, err := c.mCollection.Distinct(ctx, params.FieldName, filter, opts)
+		result := c.mCollection.Distinct(ctx, params.FieldName, filter, opts)
 
-		if err != nil {
+		if err := result.Err(); err != nil {
 			return nil, err
 		}
 
-		return bson.D{{Key: "values", Value: result}}, nil
+		var values []interface{}
+
+		if err := result.Decode(&values); err != nil {
+			return nil, err
+		}
+
+		return bson.D{{Key: "values", Value: values}}, nil
 	})
 }
 
@@ -711,7 +713,7 @@ func (c *Collection) FindOneAndDelete(
 		)
 	}
 
-	var opts *options.FindOneAndDeleteOptions
+	var opts *options.FindOneAndDeleteOptionsBuilder
 
 	if len(params.Projection) > 0 {
 		projection, err := serializer.UnmarshalDocument(params.Projection)
@@ -827,7 +829,7 @@ func (c *Collection) ReplaceOne(
 		)
 	}
 
-	var opts *options.ReplaceOptions
+	var opts *options.ReplaceOptionsBuilder
 
 	if params.Upsert {
 		opts = options.Replace().SetUpsert(true)
@@ -877,7 +879,7 @@ func (c *Collection) CreateIndexes(
 		)
 	}
 
-	elements, err := indexesArray.Elements()
+	elements, err := indexesArray.Values()
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -889,7 +891,7 @@ func (c *Collection) CreateIndexes(
 	models := make([]mongo.IndexModel, len(elements))
 
 	for i, element := range elements {
-		index, ok := element.Value().DocumentOK()
+		index, ok := element.DocumentOK()
 
 		if !ok {
 			return dto.NewErrorResult(
@@ -918,7 +920,7 @@ func (c *Collection) CreateIndexes(
 
 		models[i] = mongo.IndexModel{
 			Keys:    keys,
-			Options: &options.IndexOptions{Name: &name},
+			Options: options.Index().SetName(name),
 		}
 	}
 

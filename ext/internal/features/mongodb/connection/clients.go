@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 var once sync.Once
@@ -56,10 +56,10 @@ func (c *Clients) Acquire(
 
 	if !exists {
 		clientOptions := options.Client().ApplyURI(url).
-			SetSocketTimeout(time.Duration(socketTimeoutMs) * time.Millisecond)
+			SetTimeout(time.Duration(socketTimeoutMs) * time.Millisecond)
 
 		// The client outlives any task, so it must not depend on a task context.
-		mClient, err := mongo.Connect(context.Background(), clientOptions)
+		mClient, err := mongo.Connect(clientOptions)
 
 		if err != nil {
 			return nil, err

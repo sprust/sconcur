@@ -597,7 +597,7 @@ readonly class Collection
         $docResult = DocumentSerializer::unserialize($taskResult->payload);
 
         return new DeleteResult(
-            deletedCount: (int) $docResult['n'],
+            deletedCount: (int) $docResult['deletedcount'],
         );
     }
 }

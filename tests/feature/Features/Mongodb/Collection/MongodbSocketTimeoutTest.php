@@ -82,8 +82,10 @@ class MongodbSocketTimeoutTest extends BaseTestCase
             $exceptionMessage
         );
 
-        self::assertStringEndsWith(
-            'i/o timeout',
+        // The driver enforces the timeout via CSOT, so a too-small timeout surfaces as a
+        // context deadline / "timed out" rather than a socket-level "i/o timeout".
+        self::assertMatchesRegularExpression(
+            '/deadline exceeded|timed out|timeout/i',
             $exceptionMessage
         );
     }

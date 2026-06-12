@@ -4,11 +4,26 @@ import (
 	"sconcur/internal/features/mongodb/objects"
 	"sconcur/internal/features/mongodb/serializer"
 
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
+// updateOptionsBuilder is satisfied by both *UpdateOneOptionsBuilder and
+// *UpdateManyOptionsBuilder, which v2 split into separate types.
+type updateOptionsBuilder[T any] interface {
+	SetHint(any) T
+	SetCollation(*options.Collation) T
+	SetArrayFilters([]any) T
+}
+
+// deleteOptionsBuilder is satisfied by both *DeleteOneOptionsBuilder and
+// *DeleteManyOptionsBuilder.
+type deleteOptionsBuilder[T any] interface {
+	SetHint(any) T
+	SetCollation(*options.Collation) T
+}
+
 // applyUpdateOptions applies the shared hint/collation/arrayFilters options to an update.
-func applyUpdateOptions(opts *options.UpdateOptions, params *objects.UpdateParams) error {
+func applyUpdateOptions[T updateOptionsBuilder[T]](opts T, params *objects.UpdateParams) error {
 	if hint := serializer.ParseHint(params.Hint); hint != nil {
 		opts.SetHint(hint)
 	}
@@ -30,13 +45,13 @@ func applyUpdateOptions(opts *options.UpdateOptions, params *objects.UpdateParam
 	}
 
 	if len(arrayFilters) > 0 {
-		opts.SetArrayFilters(options.ArrayFilters{Filters: arrayFilters})
+		opts.SetArrayFilters(arrayFilters)
 	}
 
 	return nil
 }
 
-func applyFindOptions(opts *options.FindOptions, hint, collation []byte) error {
+func applyFindOptions(opts *options.FindOptionsBuilder, hint, collation []byte) error {
 	if h := serializer.ParseHint(hint); h != nil {
 		opts.SetHint(h)
 	}
@@ -54,7 +69,7 @@ func applyFindOptions(opts *options.FindOptions, hint, collation []byte) error {
 	return nil
 }
 
-func applyFindOneOptions(opts *options.FindOneOptions, hint, collation []byte) error {
+func applyFindOneOptions(opts *options.FindOneOptionsBuilder, hint, collation []byte) error {
 	if h := serializer.ParseHint(hint); h != nil {
 		opts.SetHint(h)
 	}
@@ -72,7 +87,7 @@ func applyFindOneOptions(opts *options.FindOneOptions, hint, collation []byte) e
 	return nil
 }
 
-func applyDeleteOptions(opts *options.DeleteOptions, hint, collation []byte) error {
+func applyDeleteOptions[T deleteOptionsBuilder[T]](opts T, hint, collation []byte) error {
 	if h := serializer.ParseHint(hint); h != nil {
 		opts.SetHint(h)
 	}
@@ -90,7 +105,7 @@ func applyDeleteOptions(opts *options.DeleteOptions, hint, collation []byte) err
 	return nil
 }
 
-func applyDistinctOptions(opts *options.DistinctOptions, collation []byte) error {
+func applyDistinctOptions(opts *options.DistinctOptionsBuilder, collation []byte) error {
 	coll, err := serializer.ParseCollation(collation)
 
 	if err != nil {
@@ -105,7 +120,7 @@ func applyDistinctOptions(opts *options.DistinctOptions, collation []byte) error
 }
 
 // applyFindOneAndUpdateOptions applies hint/collation/arrayFilters to a findOneAndUpdate.
-func applyFindOneAndUpdateOptions(opts *options.FindOneAndUpdateOptions, params *objects.FindOneAndUpdateParams) error {
+func applyFindOneAndUpdateOptions(opts *options.FindOneAndUpdateOptionsBuilder, params *objects.FindOneAndUpdateParams) error {
 	if hint := serializer.ParseHint(params.Hint); hint != nil {
 		opts.SetHint(hint)
 	}
@@ -127,7 +142,7 @@ func applyFindOneAndUpdateOptions(opts *options.FindOneAndUpdateOptions, params 
 	}
 
 	if len(arrayFilters) > 0 {
-		opts.SetArrayFilters(options.ArrayFilters{Filters: arrayFilters})
+		opts.SetArrayFilters(arrayFilters)
 	}
 
 	return nil

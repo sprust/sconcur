@@ -7,7 +7,7 @@ import (
 	"sconcur/internal/helpers"
 	"time"
 
-	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 // documentResult runs fn, times it, BSON-marshals the returned value and wraps any error

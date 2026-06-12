@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 const closeCursorTimeout = 5 * time.Second
@@ -25,7 +25,7 @@ type FindState struct {
 	message     *dto.Message
 	mCollection *mongo.Collection
 	filter      interface{}
-	opts        *options.FindOptions
+	opts        *options.FindOptionsBuilder
 	batchSize   int
 	errFactory  *errs.Factory
 	release     func()
@@ -39,7 +39,7 @@ func New(
 	message *dto.Message,
 	mCollection *mongo.Collection,
 	filter interface{},
-	opts *options.FindOptions,
+	opts *options.FindOptionsBuilder,
 	batchSize int,
 	errFactory *errs.Factory,
 	release func(),
