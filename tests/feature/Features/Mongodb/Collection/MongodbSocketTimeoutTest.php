@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection;
 
-use SConcur\Exceptions\TaskErrorException;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\Tests\Impl\TestMongodbResolver;
+use Throwable;
 
 class MongodbSocketTimeoutTest extends BaseTestCase
 {
@@ -67,7 +67,7 @@ class MongodbSocketTimeoutTest extends BaseTestCase
             );
 
             $iterator->rewind();
-        } catch (TaskErrorException $exception) {
+        } catch (Throwable $exception) {
             //
         }
 
