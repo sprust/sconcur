@@ -22,7 +22,7 @@ $benchmarker->run(
             echo "$item: sync: start\n";
         }
 
-        $sleeper->usleep(milliseconds: 1);
+        $sleeper->msleep(milliseconds: 1);
 
         if ($isLogProcess) {
             echo "$item: sync: finished\n";
@@ -41,7 +41,7 @@ $benchmarker->run(
             echo "$item: woke first\n";
         }
 
-        $sleeper->usleep(milliseconds: 10);
+        $sleeper->msleep(milliseconds: 10);
 
         if ($isLogProcess) {
             echo "$item: woke second\n";

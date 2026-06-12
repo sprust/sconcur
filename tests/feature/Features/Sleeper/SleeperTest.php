@@ -26,34 +26,34 @@ class SleeperTest extends BaseAsyncTestCase
     {
         $this->startTime = microtime(true);
 
-        $this->sleeper->usleep(milliseconds: 10);
+        $this->sleeper->msleep(milliseconds: 10);
     }
 
     protected function on_1_middle(): void
     {
-        $this->sleeper->usleep(milliseconds: 10);
+        $this->sleeper->msleep(milliseconds: 10);
     }
 
     protected function on_2_start(): void
     {
-        $this->sleeper->usleep(milliseconds: 10);
+        $this->sleeper->msleep(milliseconds: 10);
     }
 
     protected function on_2_middle(): void
     {
-        $this->sleeper->usleep(milliseconds: 10);
+        $this->sleeper->msleep(milliseconds: 10);
     }
 
     protected function on_iterate(): void
     {
         $this->endTime = microtime(true);
 
-        $this->sleeper->usleep(milliseconds: 1);
+        $this->sleeper->msleep(milliseconds: 1);
     }
 
     protected function on_exception(): void
     {
-        $this->sleeper->usleep(milliseconds: -1);
+        $this->sleeper->msleep(milliseconds: -1);
     }
 
     protected function assertException(Throwable $exception): void

@@ -35,7 +35,7 @@ class MemLeakTest extends BaseTestCase
     public function testEndlessAddKeepsMemoryStable(): void
     {
         $callback = function (): void {
-            $this->sleeper->usleep(milliseconds: 1);
+            $this->sleeper->msleep(milliseconds: 1);
         };
 
         $waitGroup = WaitGroup::create();
@@ -74,7 +74,7 @@ class MemLeakTest extends BaseTestCase
     public function testEndlessBreakKeepsMemoryStable(): void
     {
         $callback = function (): void {
-            $this->sleeper->usleep(milliseconds: 1);
+            $this->sleeper->msleep(milliseconds: 1);
         };
 
         $baseline = 0;

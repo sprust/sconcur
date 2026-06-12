@@ -1,6 +1,6 @@
 {
     "name": "sconcur/sconcur",
-    "description": "Concurrency PHP via external demon",
+    "description": "PHP concurrency library backed by an external Go daemon",
     "license": "MIT",
     "version": "0.0.1",
     "authors": [

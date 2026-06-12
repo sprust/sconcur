@@ -10,10 +10,10 @@ readonly class Sleeper
 {
     public function sleep(int $seconds): void
     {
-        $this->usleep(milliseconds: $seconds * 1_000);
+        $this->msleep(milliseconds: $seconds * 1_000);
     }
 
-    public function usleep(int $milliseconds): void
+    public function msleep(int $milliseconds): void
     {
         FeatureExecutor::exec(
             payload: new SleeperPayload(

@@ -199,7 +199,7 @@ $waitGroup->add(
 
 $waitGroup->add(
     function () use ($sleeper) {
-        $sleeper->usleep(milliseconds: 11);
+        $sleeper->msleep(milliseconds: 11);
 
         return 2;
     }
