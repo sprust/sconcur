@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace SConcur\Features\Sleeper;
 
 use SConcur\Features\FeatureExecutor;
-use SConcur\Features\MethodEnum;
-use SConcur\Transport\MessagePackTransport;
 
 readonly class Sleeper
 {
@@ -18,10 +16,9 @@ readonly class Sleeper
     public function usleep(int $milliseconds): void
     {
         FeatureExecutor::exec(
-            method: MethodEnum::Sleep,
-            payload: MessagePackTransport::pack([
-                'ms' => $milliseconds,
-            ])
+            payload: new SleeperPayload(
+                milliseconds: $milliseconds,
+            )
         );
     }
 }

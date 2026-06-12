@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/vmihailenco/msgpack/v5"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -115,7 +114,7 @@ func (c *Collection) Aggregate(
 ) *dto.Result {
 	var params objects.AggregateParams
 
-	err := msgpack.Unmarshal(payload.Data, &params)
+	err := objects.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -226,7 +225,7 @@ func (c *Collection) UpdateOne(
 ) *dto.Result {
 	var params objects.UpdateParams
 
-	err := msgpack.Unmarshal(payload.Data, &params)
+	err := objects.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -296,7 +295,7 @@ func (c *Collection) FindOne(
 ) *dto.Result {
 	var params objects.FindOneParams
 
-	err := msgpack.Unmarshal(payload.Data, &params)
+	err := objects.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -390,7 +389,7 @@ func (c *Collection) CreateIndex(
 ) *dto.Result {
 	var params objects.CreateIndexParams
 
-	err := msgpack.Unmarshal(payload.Data, &params)
+	err := objects.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -438,7 +437,7 @@ func (c *Collection) DeleteOne(
 ) *dto.Result {
 	var params objects.DeleteOneParams
 
-	err := msgpack.Unmarshal(payload.Data, &params)
+	err := objects.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -495,7 +494,7 @@ func (c *Collection) DeleteMany(
 ) *dto.Result {
 	var params objects.DeleteManyParams
 
-	err := msgpack.Unmarshal(payload.Data, &params)
+	err := objects.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -552,7 +551,7 @@ func (c *Collection) UpdateMany(
 ) *dto.Result {
 	var params objects.UpdateParams
 
-	err := msgpack.Unmarshal(payload.Data, &params)
+	err := objects.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -643,7 +642,7 @@ func (c *Collection) DropIndex(
 ) *dto.Result {
 	var params objects.DropIndexParams
 
-	err := msgpack.Unmarshal(payload.Data, &params)
+	err := objects.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -682,7 +681,7 @@ func (c *Collection) Find(
 ) *dto.Result {
 	var params objects.FindParams
 
-	err := msgpack.Unmarshal(payload.Data, &params)
+	err := objects.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -776,7 +775,7 @@ func (c *Collection) Distinct(
 ) *dto.Result {
 	var params objects.DistinctParams
 
-	err := msgpack.Unmarshal(payload.Data, &params)
+	err := objects.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -835,7 +834,7 @@ func (c *Collection) FindOneAndUpdate(
 ) *dto.Result {
 	var params objects.FindOneAndUpdateParams
 
-	err := msgpack.Unmarshal(payload.Data, &params)
+	err := objects.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -906,7 +905,7 @@ func (c *Collection) FindOneAndDelete(
 ) *dto.Result {
 	var params objects.FindOneAndDeleteParams
 
-	err := msgpack.Unmarshal(payload.Data, &params)
+	err := objects.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -953,7 +952,7 @@ func (c *Collection) FindOneAndReplace(
 ) *dto.Result {
 	var params objects.FindOneAndReplaceParams
 
-	err := msgpack.Unmarshal(payload.Data, &params)
+	err := objects.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -1017,7 +1016,7 @@ func (c *Collection) ReplaceOne(
 ) *dto.Result {
 	var params objects.ReplaceOneParams
 
-	err := msgpack.Unmarshal(payload.Data, &params)
+	err := objects.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -1097,9 +1096,7 @@ func (c *Collection) CreateIndexes(
 	message *dto.Message,
 	payload *objects.Payload,
 ) *dto.Result {
-	var params objects.CreateIndexesParams
-
-	err := msgpack.Unmarshal(payload.Data, &params)
+	indexesValue, err := bson.Raw(payload.Data).LookupErr("ix")
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -1108,10 +1105,37 @@ func (c *Collection) CreateIndexes(
 		)
 	}
 
-	models := make([]mongo.IndexModel, len(params.Indexes))
+	indexesArray, ok := indexesValue.ArrayOK()
 
-	for i, idx := range params.Indexes {
-		keys, err := serializer.UnmarshalDocument(idx.Keys)
+	if !ok {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByText("createIndexes: ix is not an array"),
+		)
+	}
+
+	elements, err := indexesArray.Elements()
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse createIndexes indexes", err),
+		)
+	}
+
+	models := make([]mongo.IndexModel, len(elements))
+
+	for i, element := range elements {
+		index, ok := element.Value().DocumentOK()
+
+		if !ok {
+			return dto.NewErrorResult(
+				message,
+				errFactory.ByText("createIndexes: index is not a document"),
+			)
+		}
+
+		keys, err := serializer.UnmarshalDocument(index.Lookup("k").Value)
 
 		if err != nil {
 			return dto.NewErrorResult(
@@ -1120,7 +1144,15 @@ func (c *Collection) CreateIndexes(
 			)
 		}
 
-		name := idx.Name
+		name, ok := index.Lookup("n").StringValueOK()
+
+		if !ok {
+			return dto.NewErrorResult(
+				message,
+				errFactory.ByText("createIndexes: name is not a string"),
+			)
+		}
+
 		models[i] = mongo.IndexModel{
 			Keys:    keys,
 			Options: &options.IndexOptions{Name: &name},

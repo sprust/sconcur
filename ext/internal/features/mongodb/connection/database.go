@@ -8,7 +8,6 @@ import (
 	"sconcur/internal/helpers"
 	"time"
 
-	"github.com/vmihailenco/msgpack/v5"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -136,7 +135,7 @@ func (d *Database) RenameCollection(
 ) *dto.Result {
 	var params objects.RenameCollectionParams
 
-	err := msgpack.Unmarshal(payload.Data, &params)
+	err := objects.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(

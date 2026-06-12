@@ -13,18 +13,18 @@ use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Flow\CurrentFlow;
 use SConcur\State;
+use SConcur\Transport\PayloadInterface;
 use Throwable;
 
 readonly class FeatureExecutor
 {
-    public static function exec(MethodEnum $method, string $payload): TaskResultDto
+    public static function exec(PayloadInterface $payload): TaskResultDto
     {
         $currentFlow = State::getCurrentFlow();
 
         try {
             $runningTask = Extension::get()->push(
                 flowKey: $currentFlow->key,
-                method: $method,
                 payload: $payload
             );
         } catch (Throwable $exception) {

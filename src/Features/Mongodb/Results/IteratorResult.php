@@ -7,9 +7,9 @@ namespace SConcur\Features\Mongodb\Results;
 use Iterator;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Features\FeatureExecutor;
-use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
 use SConcur\State;
+use SConcur\Transport\PayloadInterface;
 
 /**
  * @implements Iterator<int, array<int|string, mixed>>
@@ -31,8 +31,7 @@ class IteratorResult implements Iterator
     protected bool $isFinished;
 
     public function __construct(
-        protected MethodEnum $method,
-        protected string $payload,
+        protected PayloadInterface $payload,
     ) {
         $this->resetProperties();
     }
@@ -82,7 +81,6 @@ class IteratorResult implements Iterator
         $this->resetProperties();
 
         $taskResult = FeatureExecutor::exec(
-            method: $this->method,
             payload: $this->payload
         );
 

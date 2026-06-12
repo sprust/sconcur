@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/vmihailenco/msgpack/v5"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -13,11 +12,6 @@ import (
 // ext-mongodb (MongoDB\BSON\Document/PackedArray) and decodes via the same C path the
 // native driver uses. Go therefore passes the cursor/driver bson.Raw straight through,
 // without an intermediate representation.
-
-type WriteModelWrapper struct {
-	Type  string             `bson:"type" json:"type" msgpack:"type"`
-	Model msgpack.RawMessage `bson:"model" json:"model" msgpack:"model"`
-}
 
 // UnmarshalDocument treats the incoming bytes as a raw BSON document. The mongo driver
 // accepts bson.Raw directly as a filter/update/projection/document.
@@ -71,165 +65,157 @@ func MarshalDocumentBatchRaw(items []bson.Raw) (string, error) {
 	return string(packed), nil
 }
 
+// UnmarshalBulkWriteModels reads the bulkWrite payload as a single raw BSON document
+// produced by the PHP side: an ordered map {"0": {type, model}, "1": {...}, ...}. Each
+// operation's nested filter/update/document/replacement are themselves BSON sub-documents
+// passed straight to the driver as bson.Raw.
 func UnmarshalBulkWriteModels(data []byte) ([]mongo.WriteModel, error) {
-	var wrappers []WriteModelWrapper
-
-	if err := msgpack.Unmarshal(data, &wrappers); err != nil {
-		return nil, err
+	if len(data) == 0 {
+		return []mongo.WriteModel{}, nil
 	}
 
-	models := make([]mongo.WriteModel, 0, len(wrappers))
+	elements, err := bson.Raw(data).Elements()
 
-	for _, wrapper := range wrappers {
-		var model mongo.WriteModel
+	if err != nil {
+		return nil, fmt.Errorf("error reading bulkWrite BSON: %w", err)
+	}
 
-		switch wrapper.Type {
-		case "insertOne":
-			var im struct {
-				Document []byte `msgpack:"document"`
-			}
+	models := make([]mongo.WriteModel, 0, len(elements))
 
-			if err := unmarshalMessagePackValue(wrapper.Model, &im); err != nil {
-				return nil, errors.New("insertOne [" + err.Error() + "]")
-			}
+	for _, element := range elements {
+		wrapper, ok := element.Value().DocumentOK()
 
-			document, err := UnmarshalDocument(im.Document)
-
-			if err != nil {
-				return nil, errors.New("insertOne document [" + err.Error() + "]")
-			}
-
-			model = mongo.NewInsertOneModel().SetDocument(document)
-		case "updateOne":
-			var um struct {
-				Filter []byte `msgpack:"filter"`
-				Update []byte `msgpack:"update"`
-				Upsert *bool  `msgpack:"upsert,omitempty"`
-			}
-
-			if err := unmarshalMessagePackValue(wrapper.Model, &um); err != nil {
-				return nil, errors.New("updateOne [" + err.Error() + "]")
-			}
-
-			filter, err := UnmarshalDocument(um.Filter)
-
-			if err != nil {
-				return nil, errors.New("updateOne filter [" + err.Error() + "]")
-			}
-
-			update, err := UnmarshalDocument(um.Update)
-
-			if err != nil {
-				return nil, errors.New("updateOne update [" + err.Error() + "]")
-			}
-
-			model = mongo.NewUpdateOneModel().
-				SetFilter(filter).
-				SetUpdate(update)
-
-			if um.Upsert != nil {
-				model.(*mongo.UpdateOneModel).SetUpsert(*um.Upsert)
-			}
-		case "updateMany":
-			var um struct {
-				Filter []byte `msgpack:"filter"`
-				Update []byte `msgpack:"update"`
-				Upsert *bool  `msgpack:"upsert,omitempty"`
-			}
-
-			if err := unmarshalMessagePackValue(wrapper.Model, &um); err != nil {
-				return nil, errors.New("updateMany [" + err.Error() + "]")
-			}
-
-			filter, err := UnmarshalDocument(um.Filter)
-
-			if err != nil {
-				return nil, errors.New("updateMany filter [" + err.Error() + "]")
-			}
-
-			update, err := UnmarshalDocument(um.Update)
-
-			if err != nil {
-				return nil, errors.New("updateMany update [" + err.Error() + "]")
-			}
-
-			model = mongo.NewUpdateManyModel().
-				SetFilter(filter).
-				SetUpdate(update)
-
-			if um.Upsert != nil {
-				model.(*mongo.UpdateManyModel).SetUpsert(*um.Upsert)
-			}
-		case "deleteOne":
-			var dm struct {
-				Filter []byte `msgpack:"filter"`
-			}
-
-			if err := unmarshalMessagePackValue(wrapper.Model, &dm); err != nil {
-				return nil, errors.New("deleteOne [" + err.Error() + "]")
-			}
-
-			filter, err := UnmarshalDocument(dm.Filter)
-
-			if err != nil {
-				return nil, errors.New("deleteOne filter [" + err.Error() + "]")
-			}
-
-			model = mongo.NewDeleteOneModel().SetFilter(filter)
-		case "deleteMany":
-			var dm struct {
-				Filter []byte `msgpack:"filter"`
-			}
-
-			if err := unmarshalMessagePackValue(wrapper.Model, &dm); err != nil {
-				return nil, errors.New("deleteMany [" + err.Error() + "]")
-			}
-
-			filter, err := UnmarshalDocument(dm.Filter)
-
-			if err != nil {
-				return nil, errors.New("deleteMany filter [" + err.Error() + "]")
-			}
-
-			model = mongo.NewDeleteManyModel().SetFilter(filter)
-		case "replaceOne":
-			var rm struct {
-				Filter      []byte `msgpack:"filter"`
-				Replacement []byte `msgpack:"replacement"`
-				Upsert      *bool  `msgpack:"upsert,omitempty"`
-			}
-
-			if err := unmarshalMessagePackValue(wrapper.Model, &rm); err != nil {
-				return nil, errors.New("replaceOne [" + err.Error() + "]")
-			}
-
-			filter, err := UnmarshalDocument(rm.Filter)
-
-			if err != nil {
-				return nil, errors.New("replaceOne filter [" + err.Error() + "]")
-			}
-
-			replacement, err := UnmarshalDocument(rm.Replacement)
-
-			if err != nil {
-				return nil, errors.New("replaceOne replacement [" + err.Error() + "]")
-			}
-
-			model = mongo.NewReplaceOneModel().
-				SetFilter(filter).
-				SetReplacement(replacement)
-
-			if rm.Upsert != nil {
-				model.(*mongo.ReplaceOneModel).SetUpsert(*rm.Upsert)
-			}
-		default:
-			return nil, fmt.Errorf("unknown type of model: %s", wrapper.Type)
+		if !ok {
+			return nil, fmt.Errorf("bulkWrite operation %q is not a document", element.Key())
 		}
 
-		models = append(models, model)
+		operationType, ok := wrapper.Lookup("type").StringValueOK()
+
+		if !ok {
+			return nil, fmt.Errorf("bulkWrite operation %q has no string type", element.Key())
+		}
+
+		model, ok := wrapper.Lookup("model").DocumentOK()
+
+		if !ok {
+			return nil, errors.New(operationType + " [model is not a document]")
+		}
+
+		writeModel, err := buildBulkWriteModel(operationType, model)
+
+		if err != nil {
+			return nil, err
+		}
+
+		models = append(models, writeModel)
 	}
 
 	return models, nil
+}
+
+// buildBulkWriteModel maps a single operation type and its model document to the driver's
+// write model. Document fields are passed as bson.Raw; the optional upsert flag is read
+// from the model when present.
+func buildBulkWriteModel(operationType string, model bson.Raw) (mongo.WriteModel, error) {
+	switch operationType {
+	case "insertOne":
+		document, err := bulkWriteDocumentField(model, "document")
+
+		if err != nil {
+			return nil, errors.New("insertOne document [" + err.Error() + "]")
+		}
+
+		return mongo.NewInsertOneModel().SetDocument(document), nil
+	case "updateOne", "updateMany":
+		filter, err := bulkWriteDocumentField(model, "filter")
+
+		if err != nil {
+			return nil, errors.New(operationType + " filter [" + err.Error() + "]")
+		}
+
+		update, err := bulkWriteDocumentField(model, "update")
+
+		if err != nil {
+			return nil, errors.New(operationType + " update [" + err.Error() + "]")
+		}
+
+		if operationType == "updateOne" {
+			updateModel := mongo.NewUpdateOneModel().SetFilter(filter).SetUpdate(update)
+
+			if upsert, ok := bulkWriteUpsert(model); ok {
+				updateModel.SetUpsert(upsert)
+			}
+
+			return updateModel, nil
+		}
+
+		updateModel := mongo.NewUpdateManyModel().SetFilter(filter).SetUpdate(update)
+
+		if upsert, ok := bulkWriteUpsert(model); ok {
+			updateModel.SetUpsert(upsert)
+		}
+
+		return updateModel, nil
+	case "deleteOne":
+		filter, err := bulkWriteDocumentField(model, "filter")
+
+		if err != nil {
+			return nil, errors.New("deleteOne filter [" + err.Error() + "]")
+		}
+
+		return mongo.NewDeleteOneModel().SetFilter(filter), nil
+	case "deleteMany":
+		filter, err := bulkWriteDocumentField(model, "filter")
+
+		if err != nil {
+			return nil, errors.New("deleteMany filter [" + err.Error() + "]")
+		}
+
+		return mongo.NewDeleteManyModel().SetFilter(filter), nil
+	case "replaceOne":
+		filter, err := bulkWriteDocumentField(model, "filter")
+
+		if err != nil {
+			return nil, errors.New("replaceOne filter [" + err.Error() + "]")
+		}
+
+		replacement, err := bulkWriteDocumentField(model, "replacement")
+
+		if err != nil {
+			return nil, errors.New("replaceOne replacement [" + err.Error() + "]")
+		}
+
+		replaceModel := mongo.NewReplaceOneModel().SetFilter(filter).SetReplacement(replacement)
+
+		if upsert, ok := bulkWriteUpsert(model); ok {
+			replaceModel.SetUpsert(upsert)
+		}
+
+		return replaceModel, nil
+	default:
+		return nil, fmt.Errorf("unknown type of model: %s", operationType)
+	}
+}
+
+// bulkWriteDocumentField extracts a nested BSON sub-document from a model by key. An empty
+// filter/update/document is encoded by the PHP side as an empty BSON array; its bytes form
+// a valid empty document, so arrays are accepted as well.
+func bulkWriteDocumentField(model bson.Raw, key string) (bson.Raw, error) {
+	value := model.Lookup(key)
+
+	switch value.Type {
+	case bson.TypeEmbeddedDocument:
+		return value.Document(), nil
+	case bson.TypeArray:
+		return bson.Raw(value.Value), nil
+	default:
+		return nil, fmt.Errorf("%s is missing or not a document", key)
+	}
+}
+
+// bulkWriteUpsert reads the optional boolean upsert flag from a model document.
+func bulkWriteUpsert(model bson.Raw) (bool, bool) {
+	return model.Lookup("upsert").BooleanOK()
 }
 
 // bsonArrayDocuments reads a raw BSON array and returns its document elements as a slice
@@ -264,8 +250,4 @@ func bsonArrayDocuments(data []byte) ([]interface{}, error) {
 	}
 
 	return documents, nil
-}
-
-func unmarshalMessagePackValue(data msgpack.RawMessage, out interface{}) error {
-	return msgpack.Unmarshal(data, out)
 }

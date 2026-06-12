@@ -8,9 +8,32 @@ use Iterator;
 use RuntimeException;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Features\FeatureExecutor;
-use SConcur\Features\MethodEnum;
-use SConcur\Features\Mongodb\CommandEnum;
-use SConcur\Features\Mongodb\Exceptions\InvalidMongodbBulkWriteOperationException;
+use SConcur\Features\Mongodb\Payloads\AggregatePayload;
+use SConcur\Features\Mongodb\Payloads\Base\BaseMongodbPayload;
+use SConcur\Features\Mongodb\Payloads\BulkWritePayload;
+use SConcur\Features\Mongodb\Payloads\CountDocumentsPayload;
+use SConcur\Features\Mongodb\Payloads\CreateIndexesPayload;
+use SConcur\Features\Mongodb\Payloads\CreateIndexPayload;
+use SConcur\Features\Mongodb\Payloads\DeleteManyPayload;
+use SConcur\Features\Mongodb\Payloads\DeleteOnePayload;
+use SConcur\Features\Mongodb\Payloads\DistinctPayload;
+use SConcur\Features\Mongodb\Payloads\DropIndexPayload;
+use SConcur\Features\Mongodb\Payloads\DropPayload;
+use SConcur\Features\Mongodb\Payloads\Dto\Connection;
+use SConcur\Features\Mongodb\Payloads\EstimatedDocumentCountPayload;
+use SConcur\Features\Mongodb\Payloads\FindOneAndDeletePayload;
+use SConcur\Features\Mongodb\Payloads\FindOneAndReplacePayload;
+use SConcur\Features\Mongodb\Payloads\FindOneAndUpdatePayload;
+use SConcur\Features\Mongodb\Payloads\FindOnePayload;
+use SConcur\Features\Mongodb\Payloads\FindPayload;
+use SConcur\Features\Mongodb\Payloads\InsertManyPayload;
+use SConcur\Features\Mongodb\Payloads\InsertOnePayload;
+use SConcur\Features\Mongodb\Payloads\ListIndexesPayload;
+use SConcur\Features\Mongodb\Payloads\RenameCollectionPayload;
+use SConcur\Features\Mongodb\Payloads\ReplaceOnePayload;
+use SConcur\Features\Mongodb\Payloads\Support\IndexName;
+use SConcur\Features\Mongodb\Payloads\UpdateManyPayload;
+use SConcur\Features\Mongodb\Payloads\UpdateOnePayload;
 use SConcur\Features\Mongodb\Results\BulkWriteResult;
 use SConcur\Features\Mongodb\Results\DeleteResult;
 use SConcur\Features\Mongodb\Results\InsertManyResult;
@@ -18,25 +41,19 @@ use SConcur\Features\Mongodb\Results\InsertOneResult;
 use SConcur\Features\Mongodb\Results\IteratorResult;
 use SConcur\Features\Mongodb\Results\UpdateResult;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
-use SConcur\Transport\MessagePackTransport;
 
 readonly class Collection
 {
-    protected MethodEnum $method;
-
-    protected string $uri;
-    protected string $databaseName;
-    protected string $collectionName;
-    protected int $socketTimeoutMs;
+    protected Connection $connection;
 
     public function __construct(public Database $database, public string $name)
     {
-        $this->uri             = $this->database->client->uri;
-        $this->databaseName    = $this->database->name;
-        $this->collectionName  = $this->name;
-        $this->socketTimeoutMs = $this->database->client->socketTimeoutMs;
-
-        $this->method = MethodEnum::MongodbCollection;
+        $this->connection = new Connection(
+            uri: $this->database->client->uri,
+            databaseName: $this->database->name,
+            collectionName: $this->name,
+            socketTimeoutMs: $this->database->client->socketTimeoutMs,
+        );
     }
 
     /**
@@ -44,11 +61,11 @@ readonly class Collection
      */
     public function insertOne(array $document): InsertOneResult
     {
-        $serialized = DocumentSerializer::serialize($document);
-
         $taskResult = $this->exec(
-            command: CommandEnum::InsertOne,
-            payload: $serialized,
+            payload: new InsertOnePayload(
+                connection: $this->connection,
+                document: $document,
+            ),
         );
 
         $docResult = DocumentSerializer::unserialize($taskResult->payload);
@@ -63,11 +80,11 @@ readonly class Collection
      */
     public function insertMany(array $documents): InsertManyResult
     {
-        $serialized = DocumentSerializer::serialize($documents, isObject: false);
-
         $taskResult = $this->exec(
-            command: CommandEnum::InsertMany,
-            payload: $serialized,
+            payload: new InsertManyPayload(
+                connection: $this->connection,
+                documents: $documents,
+            ),
         );
 
         $docResult = DocumentSerializer::unserialize($taskResult->payload);
@@ -82,44 +99,11 @@ readonly class Collection
      */
     public function bulkWrite(array $operations): BulkWriteResult
     {
-        $preparedOperations = [];
-
-        foreach ($operations as $operation) {
-            $type  = array_key_first($operation);
-            $value = $operation[$type];
-
-            // TODO: value validation
-            $preparedOperations[] = [
-                'type'  => $type,
-                'model' => match ($type) {
-                    'insertOne' => [
-                        'document' => DocumentSerializer::serialize($value[0] ?: []),
-                    ],
-                    'updateOne', 'updateMany' => [
-                        'filter' => DocumentSerializer::serialize($value[0] ?: []),
-                        'update' => DocumentSerializer::serialize($value[1] ?: []),
-                        'upsert' => $value[2]['upsert'] ?? false, // TODO
-                    ],
-                    'deleteOne', 'deleteMany' => [
-                        'filter' => DocumentSerializer::serialize($value[0] ?: []),
-                    ],
-                    'replaceOne' => [
-                        'filter'      => DocumentSerializer::serialize($value[0] ?: []),
-                        'replacement' => DocumentSerializer::serialize($value[1] ?: []),
-                        'upsert'      => $value[2]['upsert'] ?? false, // TODO
-                    ],
-                    default => throw new InvalidMongodbBulkWriteOperationException(
-                        operationType: (string) $type
-                    )
-                },
-            ];
-        }
-
-        $serialized = MessagePackTransport::pack($preparedOperations);
-
         $taskResult = $this->exec(
-            command: CommandEnum::BulkWrite,
-            payload: $serialized,
+            payload: new BulkWritePayload(
+                connection: $this->connection,
+                operations: $operations,
+            ),
         );
 
         $docResult = DocumentSerializer::unserialize($taskResult->payload);
@@ -139,11 +123,11 @@ readonly class Collection
      */
     public function countDocuments(array $filter): int
     {
-        $serialized = DocumentSerializer::serialize($filter);
-
         $taskResult = $this->exec(
-            command: CommandEnum::CountDocuments,
-            payload: $serialized,
+            payload: new CountDocumentsPayload(
+                connection: $this->connection,
+                filter: $filter,
+            ),
         );
 
         $result = $taskResult->payload;
@@ -164,16 +148,11 @@ readonly class Collection
      */
     public function aggregate(array $pipeline, int $batchSize = 50): Iterator
     {
-        $serialized = MessagePackTransport::pack([
-            'p'  => DocumentSerializer::serialize($pipeline, isObject: false),
-            'bs' => $batchSize,
-        ]);
-
         return new IteratorResult(
-            method: $this->method,
-            payload: $this->serializePayload(
-                command: CommandEnum::Aggregate,
-                data: $serialized,
+            payload: new AggregatePayload(
+                connection: $this->connection,
+                pipeline: $pipeline,
+                batchSize: $batchSize,
             ),
         );
     }
@@ -193,14 +172,18 @@ readonly class Collection
         array|string|null $hint = null,
         ?array $collation = null,
     ): UpdateResult {
-        return $this->update(
-            isMany: false,
-            filter: $filter,
-            update: $update,
-            upsert: $upsert,
-            arrayFilters: $arrayFilters,
-            hint: $hint,
-            collation: $collation,
+        return $this->buildUpdateResult(
+            $this->exec(
+                payload: new UpdateOnePayload(
+                    connection: $this->connection,
+                    filter: $filter,
+                    update: $update,
+                    upsert: $upsert,
+                    arrayFilters: $arrayFilters,
+                    hint: $hint,
+                    collation: $collation,
+                ),
+            ),
         );
     }
 
@@ -219,14 +202,18 @@ readonly class Collection
         array|string|null $hint = null,
         ?array $collation = null,
     ): UpdateResult {
-        return $this->update(
-            isMany: true,
-            filter: $filter,
-            update: $update,
-            upsert: $upsert,
-            arrayFilters: $arrayFilters,
-            hint: $hint,
-            collation: $collation,
+        return $this->buildUpdateResult(
+            $this->exec(
+                payload: new UpdateManyPayload(
+                    connection: $this->connection,
+                    filter: $filter,
+                    update: $update,
+                    upsert: $upsert,
+                    arrayFilters: $arrayFilters,
+                    hint: $hint,
+                    collation: $collation,
+                ),
+            ),
         );
     }
 
@@ -244,14 +231,14 @@ readonly class Collection
         array|string|null $hint = null,
         ?array $collation = null,
     ): ?array {
-        $serialized = MessagePackTransport::pack([
-            'f'  => DocumentSerializer::serialize($filter),
-            'op' => ($projection === null) ? "" : DocumentSerializer::serialize($projection),
-        ] + $this->encodeOptions(hint: $hint, collation: $collation));
-
         $taskResult = $this->exec(
-            command: CommandEnum::FindOne,
-            payload: $serialized,
+            payload: new FindOnePayload(
+                connection: $this->connection,
+                filter: $filter,
+                projection: $projection,
+                hint: $hint,
+                collation: $collation,
+            ),
         );
 
         if (!$taskResult->payload) {
@@ -280,20 +267,17 @@ readonly class Collection
         array|string|null $hint = null,
         ?array $collation = null,
     ): Iterator {
-        $serialized = MessagePackTransport::pack([
-            'f'  => DocumentSerializer::serialize($filter),
-            'op' => ($projection === null) ? "" : DocumentSerializer::serialize($projection),
-            's'  => ($sort === null) ? "" : DocumentSerializer::serialize($sort),
-            'l'  => $limit,
-            'sk' => $skip,
-            'bs' => $batchSize,
-        ] + $this->encodeOptions(hint: $hint, collation: $collation));
-
         return new IteratorResult(
-            method: $this->method,
-            payload: $this->serializePayload(
-                command: CommandEnum::Find,
-                data: $serialized,
+            payload: new FindPayload(
+                connection: $this->connection,
+                filter: $filter,
+                projection: $projection,
+                sort: $sort,
+                limit: $limit,
+                skip: $skip,
+                batchSize: $batchSize,
+                hint: $hint,
+                collation: $collation,
             ),
         );
     }
@@ -306,14 +290,13 @@ readonly class Collection
      */
     public function distinct(string $fieldName, array $filter = [], ?array $collation = null): array
     {
-        $serialized = MessagePackTransport::pack([
-            'fn' => $fieldName,
-            'f'  => DocumentSerializer::serialize($filter),
-        ] + $this->encodeOptions(collation: $collation));
-
         $taskResult = $this->exec(
-            command: CommandEnum::Distinct,
-            payload: $serialized,
+            payload: new DistinctPayload(
+                connection: $this->connection,
+                fieldName: $fieldName,
+                filter: $filter,
+                collation: $collation,
+            ),
         );
 
         $docResult = DocumentSerializer::unserialize($taskResult->payload);
@@ -341,17 +324,18 @@ readonly class Collection
         array|string|null $hint = null,
         ?array $collation = null,
     ): ?array {
-        $serialized = MessagePackTransport::pack([
-            'f'  => DocumentSerializer::serialize($filter),
-            'u'  => DocumentSerializer::serialize($update),
-            'op' => ($projection === null) ? "" : DocumentSerializer::serialize($projection),
-            'ou' => $upsert,
-            'rd' => $returnDocument,
-        ] + $this->encodeOptions(hint: $hint, collation: $collation, arrayFilters: $arrayFilters));
-
         $taskResult = $this->exec(
-            command: CommandEnum::FindOneAndUpdate,
-            payload: $serialized,
+            payload: new FindOneAndUpdatePayload(
+                connection: $this->connection,
+                filter: $filter,
+                update: $update,
+                projection: $projection,
+                upsert: $upsert,
+                returnDocument: $returnDocument,
+                arrayFilters: $arrayFilters,
+                hint: $hint,
+                collation: $collation,
+            ),
         );
 
         if (!$taskResult->payload) {
@@ -371,14 +355,12 @@ readonly class Collection
         array $filter,
         ?array $projection = null,
     ): ?array {
-        $serialized = MessagePackTransport::pack([
-            'f'  => DocumentSerializer::serialize($filter),
-            'op' => ($projection === null) ? "" : DocumentSerializer::serialize($projection),
-        ]);
-
         $taskResult = $this->exec(
-            command: CommandEnum::FindOneAndDelete,
-            payload: $serialized,
+            payload: new FindOneAndDeletePayload(
+                connection: $this->connection,
+                filter: $filter,
+                projection: $projection,
+            ),
         );
 
         if (!$taskResult->payload) {
@@ -402,17 +384,15 @@ readonly class Collection
         bool $upsert = false,
         bool $returnDocument = true,
     ): ?array {
-        $serialized = MessagePackTransport::pack([
-            'f'  => DocumentSerializer::serialize($filter),
-            'r'  => DocumentSerializer::serialize($replacement),
-            'op' => ($projection === null) ? "" : DocumentSerializer::serialize($projection),
-            'ou' => $upsert,
-            'rd' => $returnDocument,
-        ]);
-
         $taskResult = $this->exec(
-            command: CommandEnum::FindOneAndReplace,
-            payload: $serialized,
+            payload: new FindOneAndReplacePayload(
+                connection: $this->connection,
+                filter: $filter,
+                replacement: $replacement,
+                projection: $projection,
+                upsert: $upsert,
+                returnDocument: $returnDocument,
+            ),
         );
 
         if (!$taskResult->payload) {
@@ -428,32 +408,24 @@ readonly class Collection
      */
     public function replaceOne(array $filter, array $replacement, bool $upsert = false): UpdateResult
     {
-        $serialized = MessagePackTransport::pack([
-            'f'  => DocumentSerializer::serialize($filter),
-            'r'  => DocumentSerializer::serialize($replacement),
-            'ou' => $upsert,
-        ]);
-
-        $taskResult = $this->exec(
-            command: CommandEnum::ReplaceOne,
-            payload: $serialized,
-        );
-
-        $docResult = DocumentSerializer::unserialize($taskResult->payload);
-
-        return new UpdateResult(
-            matchedCount: (int) $docResult['matchedcount'],
-            modifiedCount: (int) $docResult['modifiedcount'],
-            upsertedCount: (int) $docResult['upsertedcount'],
-            upsertedId: $docResult['upsertedid'],
+        return $this->buildUpdateResult(
+            $this->exec(
+                payload: new ReplaceOnePayload(
+                    connection: $this->connection,
+                    filter: $filter,
+                    replacement: $replacement,
+                    upsert: $upsert,
+                ),
+            ),
         );
     }
 
     public function estimatedDocumentCount(): int
     {
         $taskResult = $this->exec(
-            command: CommandEnum::EstimatedDocumentCount,
-            payload: DocumentSerializer::serialize([]),
+            payload: new EstimatedDocumentCountPayload(
+                connection: $this->connection,
+            ),
         );
 
         $result = $taskResult->payload;
@@ -472,20 +444,12 @@ readonly class Collection
      */
     public function createIndex(array $keys, ?string $name = null): string
     {
-        if ($name) {
-            $indexName = $name;
-        } else {
-            $indexName = $this->makeIndexNameByKeys($keys);
-        }
-
-        $serialized = MessagePackTransport::pack([
-            'k' => DocumentSerializer::serialize($keys),
-            'n' => $indexName,
-        ]);
-
         $taskResult = $this->exec(
-            command: CommandEnum::CreateIndex,
-            payload: $serialized,
+            payload: new CreateIndexPayload(
+                connection: $this->connection,
+                keys: $keys,
+                name: $name,
+            ),
         );
 
         return $taskResult->payload;
@@ -498,25 +462,11 @@ readonly class Collection
      */
     public function createIndexes(array $indexes): array
     {
-        $preparedIndexes = [];
-
-        foreach ($indexes as $index) {
-            $keys = $index['keys'];
-            $name = $index['name'] ?? $this->makeIndexNameByKeys($keys);
-
-            $preparedIndexes[] = [
-                'k' => DocumentSerializer::serialize($keys),
-                'n' => $name,
-            ];
-        }
-
-        $serialized = MessagePackTransport::pack([
-            'ix' => $preparedIndexes,
-        ]);
-
         $taskResult = $this->exec(
-            command: CommandEnum::CreateIndexes,
-            payload: $serialized,
+            payload: new CreateIndexesPayload(
+                connection: $this->connection,
+                indexes: $indexes,
+            ),
         );
 
         $docResult = DocumentSerializer::unserialize($taskResult->payload);
@@ -530,8 +480,9 @@ readonly class Collection
     public function listIndexes(): array
     {
         $taskResult = $this->exec(
-            command: CommandEnum::ListIndexes,
-            payload: DocumentSerializer::serialize([]),
+            payload: new ListIndexesPayload(
+                connection: $this->connection,
+            ),
         );
 
         if (!$taskResult->payload) {
@@ -546,19 +497,11 @@ readonly class Collection
      */
     public function dropIndex(array|string $index): string
     {
-        if (is_string($index)) {
-            $indexName = $index;
-        } else {
-            $indexName = $this->makeIndexNameByKeys($index);
-        }
-
-        $serialized = MessagePackTransport::pack([
-            'n' => $indexName,
-        ]);
-
         $taskResult = $this->exec(
-            command: CommandEnum::DropIndex,
-            payload: $serialized,
+            payload: new DropIndexPayload(
+                connection: $this->connection,
+                index: $index,
+            ),
         );
 
         return $taskResult->payload;
@@ -571,19 +514,15 @@ readonly class Collection
      */
     public function deleteOne(array $filter, array|string|null $hint = null, ?array $collation = null): DeleteResult
     {
-        $serialized = MessagePackTransport::pack([
-            'f' => DocumentSerializer::serialize($filter),
-        ] + $this->encodeOptions(hint: $hint, collation: $collation));
-
-        $taskResult = $this->exec(
-            command: CommandEnum::DeleteOne,
-            payload: $serialized,
-        );
-
-        $docResult = DocumentSerializer::unserialize($taskResult->payload);
-
-        return new DeleteResult(
-            deletedCount: (int) $docResult['n'],
+        return $this->buildDeleteResult(
+            $this->exec(
+                payload: new DeleteOnePayload(
+                    connection: $this->connection,
+                    filter: $filter,
+                    hint: $hint,
+                    collation: $collation,
+                ),
+            ),
         );
     }
 
@@ -594,40 +533,35 @@ readonly class Collection
      */
     public function deleteMany(array $filter, array|string|null $hint = null, ?array $collation = null): DeleteResult
     {
-        $serialized = MessagePackTransport::pack([
-            'f' => DocumentSerializer::serialize($filter),
-        ] + $this->encodeOptions(hint: $hint, collation: $collation));
-
-        $taskResult = $this->exec(
-            command: CommandEnum::DeleteMany,
-            payload: $serialized,
-        );
-
-        $docResult = DocumentSerializer::unserialize($taskResult->payload);
-
-        return new DeleteResult(
-            deletedCount: (int) $docResult['n'],
+        return $this->buildDeleteResult(
+            $this->exec(
+                payload: new DeleteManyPayload(
+                    connection: $this->connection,
+                    filter: $filter,
+                    hint: $hint,
+                    collation: $collation,
+                ),
+            ),
         );
     }
 
     public function drop(): void
     {
         $this->exec(
-            command: CommandEnum::Drop,
-            payload: DocumentSerializer::serialize([]),
+            payload: new DropPayload(
+                connection: $this->connection,
+            ),
         );
     }
 
     public function rename(string $target, bool $dropTarget = false): void
     {
-        $serialized = MessagePackTransport::pack([
-            't'  => $target,
-            'dt' => $dropTarget,
-        ]);
-
         $this->exec(
-            command: CommandEnum::RenameCollection,
-            payload: $serialized,
+            payload: new RenameCollectionPayload(
+                connection: $this->connection,
+                target: $target,
+                dropTarget: $dropTarget,
+            ),
         );
     }
 
@@ -636,53 +570,18 @@ readonly class Collection
      */
     public function makeIndexNameByKeys(array $keys): string
     {
-        $indexNames = [];
-
-        foreach ($keys as $field => $type) {
-            $indexNames[] = "{$field}_$type";
-        }
-
-        return implode('_', $indexNames);
+        return IndexName::fromKeys($keys);
     }
 
-    protected function exec(CommandEnum $command, string $payload): TaskResultDto
+    protected function exec(BaseMongodbPayload $payload): TaskResultDto
     {
         return FeatureExecutor::exec(
-            method: $this->method,
-            payload: $this->serializePayload(
-                command: $command,
-                data: $payload,
-            )
+            payload: $payload,
         );
     }
 
-    /**
-     * @param array<string, mixed>                  $filter
-     * @param array<string, mixed>                  $update
-     * @param array<int, array<string, mixed>>|null $arrayFilters
-     * @param array<string, int>|string|null        $hint
-     * @param array<string, mixed>|null             $collation
-     */
-    protected function update(
-        bool $isMany,
-        array $filter,
-        array $update,
-        bool $upsert = false,
-        ?array $arrayFilters = null,
-        array|string|null $hint = null,
-        ?array $collation = null,
-    ): UpdateResult {
-        $serialized = MessagePackTransport::pack([
-            'f'  => DocumentSerializer::serialize($filter),
-            'u'  => DocumentSerializer::serialize($update),
-            'ou' => $upsert,
-        ] + $this->encodeOptions(hint: $hint, collation: $collation, arrayFilters: $arrayFilters));
-
-        $taskResult = $this->exec(
-            command: $isMany ? CommandEnum::UpdateMany : CommandEnum::UpdateOne,
-            payload: $serialized,
-        );
-
+    private function buildUpdateResult(TaskResultDto $taskResult): UpdateResult
+    {
         $docResult = DocumentSerializer::unserialize($taskResult->payload);
 
         return new UpdateResult(
@@ -693,46 +592,12 @@ readonly class Collection
         );
     }
 
-    /**
-     * Encodes optional query options into payload fields, omitting any not provided.
-     *
-     * @param array<string, int>|string|null        $hint
-     * @param array<string, mixed>|null             $collation
-     * @param array<int, array<string, mixed>>|null $arrayFilters
-     *
-     * @return array<string, string>
-     */
-    protected function encodeOptions(
-        array|string|null $hint = null,
-        ?array $collation = null,
-        ?array $arrayFilters = null,
-    ): array {
-        $options = [];
-
-        if ($hint !== null) {
-            $options['hn'] = DocumentSerializer::serialize(['v' => $hint]);
-        }
-
-        if ($collation !== null) {
-            $options['co'] = DocumentSerializer::serialize($collation);
-        }
-
-        if ($arrayFilters !== null) {
-            $options['af'] = DocumentSerializer::serialize($arrayFilters, isObject: false);
-        }
-
-        return $options;
-    }
-
-    protected function serializePayload(CommandEnum $command, string $data): string
+    private function buildDeleteResult(TaskResultDto $taskResult): DeleteResult
     {
-        return MessagePackTransport::pack([
-            'ul'  => $this->uri,
-            'db'  => $this->databaseName,
-            'cl'  => $this->collectionName,
-            'sto' => $this->socketTimeoutMs,
-            'cm'  => $command->value,
-            'dt'  => $data,
-        ]);
+        $docResult = DocumentSerializer::unserialize($taskResult->payload);
+
+        return new DeleteResult(
+            deletedCount: (int) $docResult['n'],
+        );
     }
 }

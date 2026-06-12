@@ -12,6 +12,7 @@ use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\MethodEnum;
 use SConcur\Transport\MessagePackTransport;
+use SConcur\Transport\PayloadInterface;
 use Throwable;
 use function SConcur\Extension\destroy;
 use function SConcur\Extension\next;
@@ -38,13 +39,13 @@ class Extension
         return static::$instance ??= new Extension();
     }
 
-    public function push(string $flowKey, MethodEnum $method, string $payload): RunningTaskDto
+    public function push(string $flowKey, PayloadInterface $payload): RunningTaskDto
     {
         ++static::$tasksCounter;
 
         $taskKey = $flowKey . ':' . static::$tasksCounter;
 
-        $response = push($flowKey, $method->value, $taskKey, $payload);
+        $response = push($flowKey, $payload->getMethod()->value, $taskKey, MessagePackTransport::pack($payload));
 
         static::checkCallResponse(flowKey: $flowKey, response: $response);
 
