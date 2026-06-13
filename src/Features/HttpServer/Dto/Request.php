@@ -30,8 +30,13 @@ readonly class Request
         /** @var array<string, mixed> $data */
         $data = MessagePackTransport::unpack($payload);
 
-        /** @var array<string, array<int, string>> $headers */
-        $headers = $data['hd'] ?? [];
+        // An empty header map decodes to stdClass (a MessagePack quirk), and
+        // nested values may too; normalize to array<string, array<int, string>>.
+        $headers = [];
+
+        foreach ((array) ($data['hd'] ?? []) as $name => $values) {
+            $headers[(string) $name] = array_values((array) $values);
+        }
 
         return new self(
             requestId: (string) ($data['rid'] ?? ''),

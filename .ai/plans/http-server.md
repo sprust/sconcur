@@ -9,11 +9,18 @@
   (listener как стриминговая задача: каждый запрос = «батч» через `states`/`next`),
   `Scheduler::serve()`/`spawn()`, `HttpServer::serve()`, `Request`/`Response`,
   `ServePayload`/`RespondPayload`, методы `MethodHttpServe`/`MethodHttpRespond`.
-  Обработчик ошибок → 500. Один запрос на соединение (`Connection: close`).
-- **Осталось (этапы 4–5):** graceful shutdown по сигналу; keep-alive; лимит
-  конкурентности; стриминг ответов (SSE/chunked); мульти-процесс (`SO_REUSEPORT`);
-  автотест в CI (нужен отдельно-процессный харнесс — в одном процессе `serve()`
-  блокирует, а `fork` запрещён).
+  Обработчик ошибок → 500.
+- **Готово (этап 4, путь B):** сеть на стандартном `net/http.Server` (serverState —
+  его `http.Handler`): **keep-alive**, таймауты (read/write/idle), корректный
+  парсинг/запись из коробки. Graceful **на стороне Go** — `Close()` делает
+  `http.Server.Shutdown` на свежем контексте (дренаж активных запросов), `BaseContext`
+  привязывает запросы к жизни сервера. Проверено e2e (несколько запросов по одному
+  соединению).
+- **Осталось:** graceful shutdown по сигналу **из PHP** (serve-цикл блокирует в cgo
+  `waitAny`, сигнал не прервёт — нужен `waitAny` с таймаутом или self-pipe); лимит
+  конкурентности; стриминг ответов (SSE/chunked через `http.Flusher`); мульти-процесс
+  (`SO_REUSEPORT`); автотест в CI (нужен отдельно-процессный харнесс — в одном процессе
+  `serve()` блокирует, а `fork` запрещён).
 
 Ключевая реализация (отличие от первоначального наброска): listener — это
 **стриминговая задача**, а не источник «события-результата» с произвольным
@@ -126,8 +133,9 @@ Go (фича httpserver):
 1. [x] `Scheduler::spawn` + `serve()`.
 2. [x] Go-фича `httpserver`: listener как стриминговая задача; `httpStart` (push `ServePayload`).
 3. [x] `MethodHttpRespond` + DTO запроса/ответа; базовый запрос-ответ end-to-end.
-4. [ ] Graceful shutdown, keep-alive/таймауты (изоляция ошибок → 500 уже есть).
-5. [ ] Лимит конкурентности; затем стриминг ответов (SSE/chunked) через механику `next`;
+4. [x] Keep-alive + таймауты (путь B: `net/http.Server`); Go-side graceful `Shutdown`.
+   Осталось: signal-driven graceful shutdown из PHP (нужен `waitAny` с таймаутом).
+5. [ ] Лимит конкурентности; затем стриминг ответов (SSE/chunked) через `http.Flusher`;
    затем мульти-процесс (`SO_REUSEPORT`).
 
 ## Открытые вопросы

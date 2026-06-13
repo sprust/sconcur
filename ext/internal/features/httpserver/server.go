@@ -1,17 +1,13 @@
 package httpserver_feature
 
 import (
-	"bufio"
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"sconcur/internal/dto"
 	"sconcur/internal/features/httpserver/payloads"
 	"sconcur/internal/helpers"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
@@ -19,6 +15,17 @@ import (
 
 // maxRequestBody caps how much of a request body is read into memory (10 MiB).
 const maxRequestBody = 10 << 20
+
+// shutdownTimeout bounds how long Close waits for in-flight requests to drain.
+const shutdownTimeout = 5 * time.Second
+
+// Connection timeouts for the embedded net/http server.
+const (
+	readHeaderTimeout = 10 * time.Second
+	readTimeout       = 30 * time.Second
+	writeTimeout      = 30 * time.Second
+	idleTimeout       = 60 * time.Second
+)
 
 // respondData is the response a PHP handler produced for one request.
 type respondData struct {
@@ -29,12 +36,18 @@ type respondData struct {
 
 // serverState is the streaming state of one HTTP server: each accepted request
 // is one "batch" pulled by PHP via next(). Implements contracts.StateContract.
+//
+// The network is handled by a standard net/http.Server (keep-alive, timeouts,
+// correct parsing/writing); serverState is its http.Handler. Each request is
+// handed to PHP through the requests channel and the handler goroutine blocks on
+// a per-request response channel until the PHP coroutine answers.
 type serverState struct {
-	ctx       context.Context
-	message   *dto.Message
-	listener  net.Listener
-	requests  chan *payloads.RequestEvent
-	startTime time.Time
+	ctx        context.Context
+	message    *dto.Message
+	listener   net.Listener
+	httpServer *http.Server
+	requests   chan *payloads.RequestEvent
+	startTime  time.Time
 }
 
 func newServerState(
@@ -51,38 +64,35 @@ func newServerState(
 		startTime: startTime,
 	}
 
-	go state.acceptLoop()
+	state.httpServer = &http.Server{
+		Handler:           state,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+		// Tie every request context to the server's lifetime so blocked handlers
+		// unblock when the server stops.
+		BaseContext: func(net.Listener) context.Context {
+			return state.ctx
+		},
+	}
+
+	go func() {
+		_ = state.httpServer.Serve(listener)
+	}()
 
 	return state
 }
 
-func (s *serverState) acceptLoop() {
-	for {
-		conn, err := s.listener.Accept()
-
-		if err != nil {
-			// Listener closed (server stop) or a fatal accept error: stop looping.
-			return
-		}
-
-		go s.handleConn(conn)
-	}
-}
-
-func (s *serverState) handleConn(conn net.Conn) {
-	defer func() { _ = conn.Close() }()
-
-	request, err := http.ReadRequest(bufio.NewReader(conn))
-
-	if err != nil {
-		return
-	}
-
+// ServeHTTP handles one request: hand it to PHP, wait for the response.
+func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	requestId := nextRequestId(s.message.FlowKey)
 	responseCh := make(chan respondData, 1)
 
 	pendingRequests.Store(requestId, responseCh)
 	defer pendingRequests.Delete(requestId)
+
+	body, _ := io.ReadAll(io.LimitReader(request.Body, maxRequestBody))
 
 	event := &payloads.RequestEvent{
 		RequestId: requestId,
@@ -90,20 +100,21 @@ func (s *serverState) handleConn(conn net.Conn) {
 		Path:      request.URL.Path,
 		Query:     request.URL.RawQuery,
 		Headers:   request.Header,
-		Body:      readBody(request),
+		Body:      string(body),
 	}
 
-	// Hand the request to PHP (via Next) and wait for the handler's response.
+	// Deliver the request to PHP (via Next).
 	select {
 	case s.requests <- event:
-	case <-s.ctx.Done():
+	case <-request.Context().Done():
 		return
 	}
 
+	// Wait for the PHP handler's response.
 	select {
 	case response := <-responseCh:
-		writeResponse(conn, response)
-	case <-s.ctx.Done():
+		writeResponse(writer, response)
+	case <-request.Context().Done():
 	}
 }
 
@@ -123,56 +134,28 @@ func (s *serverState) Next() *dto.Result {
 	}
 }
 
+// Close gracefully shuts the server down: stop accepting and wait for in-flight
+// requests to drain. Run on a fresh context — the task context is already
+// cancelled by the time the state is closed.
 func (s *serverState) Close() {
-	_ = s.listener.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	_ = s.httpServer.Shutdown(ctx)
 }
 
-func readBody(request *http.Request) string {
-	if request.Body == nil {
-		return ""
+func writeResponse(writer http.ResponseWriter, response respondData) {
+	for key, value := range response.headers {
+		writer.Header().Set(key, value)
 	}
 
-	defer func() { _ = request.Body.Close() }()
-
-	data, err := io.ReadAll(io.LimitReader(request.Body, maxRequestBody))
-
-	if err != nil {
-		return ""
-	}
-
-	return string(data)
-}
-
-func writeResponse(conn net.Conn, response respondData) {
 	status := response.status
 
 	if status == 0 {
 		status = http.StatusOK
 	}
 
-	headers := response.headers
+	writer.WriteHeader(status)
 
-	if headers == nil {
-		headers = map[string]string{}
-	}
-
-	if _, ok := headers["Content-Length"]; !ok {
-		headers["Content-Length"] = strconv.Itoa(len(response.body))
-	}
-
-	// v1 is a one-request-per-connection server.
-	headers["Connection"] = "close"
-
-	var builder strings.Builder
-
-	builder.WriteString(fmt.Sprintf("HTTP/1.1 %d %s\r\n", status, http.StatusText(status)))
-
-	for key, value := range headers {
-		builder.WriteString(key + ": " + value + "\r\n")
-	}
-
-	builder.WriteString("\r\n")
-	builder.WriteString(response.body)
-
-	_, _ = conn.Write([]byte(builder.String()))
+	_, _ = io.WriteString(writer, response.body)
 }
