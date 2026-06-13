@@ -10,9 +10,9 @@ use function msgpack_unpack;
 
 final readonly class MessagePackTransport
 {
-    public static function pack(mixed $payload): string
+    public static function pack(PayloadInterface $payload): string
     {
-        return msgpack_pack($payload);
+        return msgpack_pack($payload->getData());
     }
 
     /**

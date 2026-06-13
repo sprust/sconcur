@@ -5,12 +5,9 @@ import (
 	"sconcur/internal/dto"
 	"sconcur/internal/features/mongodb/objects"
 	"sconcur/internal/features/mongodb/serializer"
-	"sconcur/internal/helpers"
-	"time"
 
-	"github.com/vmihailenco/msgpack/v5"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 type Database struct {
@@ -37,29 +34,15 @@ func (d *Database) ListCollections(
 	message *dto.Message,
 	_ *objects.Payload,
 ) *dto.Result {
-	start := time.Now()
-	names, err := d.mDatabase.ListCollectionNames(ctx, bson.D{})
-	executionMs := helpers.CalcExecutionMs(start)
+	return documentResult(message, "listCollections", func() (interface{}, error) {
+		names, err := d.mDatabase.ListCollectionNames(ctx, bson.D{})
 
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("listCollections error", err),
-		)
-	}
+		if err != nil {
+			return nil, err
+		}
 
-	serializedResult, err := serializer.MarshalDocument(bson.D{
-		{Key: "names", Value: names},
+		return bson.D{{Key: "names", Value: names}}, nil
 	})
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("marshal listCollections result error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, serializedResult, executionMs)
 }
 
 func (d *Database) ListDatabases(
@@ -67,29 +50,15 @@ func (d *Database) ListDatabases(
 	message *dto.Message,
 	_ *objects.Payload,
 ) *dto.Result {
-	start := time.Now()
-	names, err := d.client.mClient.ListDatabaseNames(ctx, bson.D{})
-	executionMs := helpers.CalcExecutionMs(start)
+	return documentResult(message, "listDatabases", func() (interface{}, error) {
+		names, err := d.client.mClient.ListDatabaseNames(ctx, bson.D{})
 
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("listDatabases error", err),
-		)
-	}
+		if err != nil {
+			return nil, err
+		}
 
-	serializedResult, err := serializer.MarshalDocument(bson.D{
-		{Key: "names", Value: names},
+		return bson.D{{Key: "names", Value: names}}, nil
 	})
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("marshal listDatabases result error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, serializedResult, executionMs)
 }
 
 func (d *Database) RunCommand(
@@ -106,27 +75,9 @@ func (d *Database) RunCommand(
 		)
 	}
 
-	start := time.Now()
-	raw, err := d.mDatabase.RunCommand(ctx, command).Raw()
-	executionMs := helpers.CalcExecutionMs(start)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("runCommand error", err),
-		)
-	}
-
-	serializedResult, err := serializer.MarshalDocument(raw)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("marshal runCommand result error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, serializedResult, executionMs)
+	return documentResult(message, "runCommand", func() (interface{}, error) {
+		return d.mDatabase.RunCommand(ctx, command).Raw()
+	})
 }
 
 func (d *Database) RenameCollection(
@@ -136,7 +87,7 @@ func (d *Database) RenameCollection(
 ) *dto.Result {
 	var params objects.RenameCollectionParams
 
-	err := msgpack.Unmarshal(payload.Data, &params)
+	err := objects.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -155,16 +106,7 @@ func (d *Database) RenameCollection(
 		{Key: "dropTarget", Value: params.DropTarget},
 	}
 
-	start := time.Now()
-	err = d.client.mClient.Database("admin").RunCommand(ctx, cmd).Err()
-	executionMs := helpers.CalcExecutionMs(start)
-
-	if err != nil {
-		return dto.NewErrorResult(
-			message,
-			errFactory.ByErr("renameCollection error", err),
-		)
-	}
-
-	return dto.NewSuccessResult(message, "", executionMs)
+	return stringResult(message, "renameCollection", func() (string, error) {
+		return "", d.client.mClient.Database("admin").RunCommand(ctx, cmd).Err()
+	})
 }

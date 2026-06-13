@@ -12,9 +12,9 @@ import (
 
 func DetectMessageHandler(method types.Method) (contracts.FeatureContract, error) {
 	switch method {
-	case 1: // sleep
+	case types.MethodSleep:
 		return sleep_feature.Get(), nil
-	case 2: // mongodb collection
+	case types.MethodMongodb:
 		return collection_feature.GetCollectionFeature(), nil
 	default:
 		return nil, errors.New("unknown method: " + fmt.Sprint(method))

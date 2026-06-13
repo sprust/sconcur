@@ -3,7 +3,7 @@ package serializer
 import (
 	"testing"
 
-	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 func TestUnmarshalDocumentReturnsRawBSON(t *testing.T) {

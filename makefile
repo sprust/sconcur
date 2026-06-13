@@ -1,7 +1,7 @@
 MAKEFLAGS += --no-print-directory
 
 DOCKER_COMPOSE = docker compose
-PHP_CLI = $(DOCKER_COMPOSE) exec -T php
+PHP_CLI = $(DOCKER_COMPOSE) exec php
 PHP_EXT = $(PHP_CLI) php -d extension=./ext/build/sconcur.so
 
 env-copy:
@@ -117,9 +117,3 @@ bench-mongodb-deleteOne:
 
 bench-mongodb-updateMany:
 	$(PHP_EXT) tests/benchmarks/mongodb-update-many.php ${c}
-
-mem-leak-endless-add:
-	$(PHP_EXT) tests/mem-leak/endless-add.php ${c}
-
-mem-leak-endless-break:
-	$(PHP_EXT) tests/mem-leak/endless-break.php ${c}

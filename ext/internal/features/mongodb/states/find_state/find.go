@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 const closeCursorTimeout = 5 * time.Second
@@ -25,9 +25,10 @@ type FindState struct {
 	message     *dto.Message
 	mCollection *mongo.Collection
 	filter      interface{}
-	opts        *options.FindOptions
+	opts        *options.FindOptionsBuilder
 	batchSize   int
 	errFactory  *errs.Factory
+	release     func()
 	cursor      *mongo.Cursor
 	pending     bson.Raw
 	startTime   time.Time
@@ -38,9 +39,10 @@ func New(
 	message *dto.Message,
 	mCollection *mongo.Collection,
 	filter interface{},
-	opts *options.FindOptions,
+	opts *options.FindOptionsBuilder,
 	batchSize int,
 	errFactory *errs.Factory,
+	release func(),
 ) contracts.StateContract {
 	return &FindState{
 		ctx:         ctx,
@@ -50,15 +52,25 @@ func New(
 		opts:        opts,
 		batchSize:   batchSize,
 		errFactory:  errFactory,
+		release:     release,
 		startTime:   time.Now(),
 	}
 }
 
 func (s *FindState) Close() {
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
 
 	s.closeCursorLocked()
+
+	release := s.release
+	s.release = nil
+
+	s.mutex.Unlock()
+
+	// Release the client owner outside the lock; runs once per state.
+	if release != nil {
+		release()
+	}
 }
 
 // closeCursorLocked uses a fresh context: the task context may already be

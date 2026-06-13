@@ -1,0 +1,38 @@
+name: Check
+
+on:
+  pull_request:
+    branches:
+      - master
+    types: [ opened, synchronize, reopened, ready_for_review ]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event.pull_request.draft == false
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Prepare environment
+        run: cp .env.example .env
+
+      - name: Build images
+        run: make build
+
+      - name: Start containers
+        run: make up
+
+      - name: Install composer dependencies
+        run: make composer c="install --no-interaction --no-progress"
+
+      - name: Build extension
+        run: make ext-build
+
+      - name: Run checks
+        run: make check
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose logs --tail=100
