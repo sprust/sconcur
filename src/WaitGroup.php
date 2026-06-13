@@ -7,8 +7,8 @@ namespace SConcur;
 use Closure;
 use Fiber;
 use Generator;
-use LogicException;
-use RuntimeException;
+use SConcur\Exceptions\CallbackExecutionException;
+use SConcur\Exceptions\FiberStateException;
 use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Flow\CurrentFlow;
@@ -69,7 +69,7 @@ class WaitGroup
             // fiber's tasks into this flow.
             State::unRegisterFiber(spl_object_id($fiber));
 
-            throw new RuntimeException(
+            throw new CallbackExecutionException(
                 message: $exception->getMessage(),
                 previous: $exception
             );
@@ -148,24 +148,31 @@ class WaitGroup
                 $fiber = $this->fibers[$fiberId] ?? null;
 
                 if ($fiber === null) {
-                    throw new LogicException(
+                    throw new FiberStateException(
                         message: "Fiber [flow: $this->flowKey, task: $taskKey] not found"
                     );
                 }
 
                 if (!$fiber->isSuspended()) {
-                    throw new LogicException(
+                    throw new FiberStateException(
                         message: "Fiber [flow: $this->flowKey, task: $taskKey] is not suspended"
                     );
                 }
 
                 if (!array_key_exists($fiberId, $this->fiberCallbackKeys)) {
-                    throw new LogicException(
+                    throw new FiberStateException(
                         message: "Fiber callback key not found by fiber id [$fiberId]"
                     );
                 }
 
-                $fiber->resume($taskResult);
+                try {
+                    $fiber->resume($taskResult);
+                } catch (Throwable $exception) {
+                    throw new CallbackExecutionException(
+                        message: $exception->getMessage(),
+                        previous: $exception
+                    );
+                }
 
                 if ($fiber->isTerminated()) {
                     $callbackResult = $fiber->getReturn();

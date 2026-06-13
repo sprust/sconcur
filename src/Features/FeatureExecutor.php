@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace SConcur\Features;
 
 use Fiber;
-use LogicException;
-use RuntimeException;
 use SConcur\Connection\Extension;
 use SConcur\Dto\RunningTaskDto;
 use SConcur\Dto\TaskResultDto;
+use SConcur\Exceptions\OutsideFiberException;
 use SConcur\Exceptions\TaskErrorException;
+use SConcur\Exceptions\TaskExecutionException;
+use SConcur\Exceptions\UnexpectedResultTypeException;
+use SConcur\Exceptions\UnexpectedTaskKeyException;
 use SConcur\Flow\CurrentFlow;
 use SConcur\State;
 use SConcur\Transport\PayloadInterface;
@@ -30,7 +32,7 @@ readonly class FeatureExecutor
         } catch (Throwable $exception) {
             static::stopFailedCallFlow(currentFlow: $currentFlow);
 
-            throw new RuntimeException(
+            throw new TaskExecutionException(
                 message: $exception->getMessage(),
                 previous: $exception
             );
@@ -55,7 +57,7 @@ readonly class FeatureExecutor
         } catch (Throwable $exception) {
             static::stopFailedCallFlow(currentFlow: $currentFlow);
 
-            throw new RuntimeException(
+            throw new TaskExecutionException(
                 message: $exception->getMessage(),
                 previous: $exception
             );
@@ -101,7 +103,7 @@ readonly class FeatureExecutor
 
                 unset($currentFiber);
             } else {
-                throw new LogicException(
+                throw new OutsideFiberException(
                     message: 'Can\'t wait outside of fiber.'
                 );
             }
@@ -116,7 +118,7 @@ readonly class FeatureExecutor
         }
 
         if ($result->key !== $runningTask->key) {
-            throw new LogicException(
+            throw new UnexpectedTaskKeyException(
                 message: "Unexpected task key. Expected [$runningTask->key], got [$result->key]."
             );
         }
@@ -144,7 +146,7 @@ readonly class FeatureExecutor
                 State::releaseSyncTaskFlow($runningTask->key);
             }
 
-            throw new RuntimeException(
+            throw new TaskExecutionException(
                 message: $exception->getMessage(),
                 previous: $exception
             );
@@ -182,7 +184,7 @@ readonly class FeatureExecutor
     protected static function suspend(CurrentFlow $currentFlow): TaskResultDto
     {
         if (!$currentFlow->isAsync) {
-            throw new LogicException(
+            throw new OutsideFiberException(
                 message: 'Can\'t suspend outside of fiber.'
             );
         }
@@ -190,7 +192,7 @@ readonly class FeatureExecutor
         try {
             $result = Fiber::suspend();
         } catch (Throwable $exception) {
-            throw new RuntimeException(
+            throw new TaskExecutionException(
                 message: $exception->getMessage(),
                 previous: $exception
             );
@@ -199,7 +201,7 @@ readonly class FeatureExecutor
         if ($result instanceof TaskResultDto) {
             static::checkResult($result);
         } else {
-            throw new LogicException(
+            throw new UnexpectedResultTypeException(
                 message: 'Unexpected result type. Expected ' . TaskResultDto::class . '.'
             );
         }

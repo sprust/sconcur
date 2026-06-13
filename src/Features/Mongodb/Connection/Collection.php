@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace SConcur\Features\Mongodb\Connection;
 
 use Iterator;
-use RuntimeException;
 use SConcur\Dto\TaskResultDto;
+use SConcur\Exceptions\Mongodb\InvalidCountResultException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\Mongodb\Payloads\AggregatePayload;
 use SConcur\Features\Mongodb\Payloads\Base\BaseMongodbPayload;
@@ -134,7 +134,7 @@ readonly class Collection
         $result = $taskResult->payload;
 
         if (ctype_digit($result) === false) {
-            throw new RuntimeException(
+            throw new InvalidCountResultException(
                 "Invalid countDocuments result: $result"
             );
         }
@@ -432,7 +432,7 @@ readonly class Collection
         $result = $taskResult->payload;
 
         if (ctype_digit($result) === false) {
-            throw new RuntimeException(
+            throw new InvalidCountResultException(
                 "Invalid estimatedDocumentCount result: $result"
             );
         }

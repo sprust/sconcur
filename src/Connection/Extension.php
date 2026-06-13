@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 namespace SConcur\Connection;
 
-use RuntimeException;
 use SConcur\Dto\RunningTaskDto;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\ExtensionCallException;
+use SConcur\Exceptions\ExtensionNotLoadedException;
 use SConcur\Exceptions\IncompatibleExtensionVersionException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\UnexpectedResponseFormatException;
@@ -152,7 +152,7 @@ class Extension
         }
 
         if (!extension_loaded('sconcur')) {
-            throw new RuntimeException(
+            throw new ExtensionNotLoadedException(
                 'The extension "sconcur" is not loaded.'
             );
         }
