@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace SConcur\Scheduler;
 
+use Closure;
 use Fiber;
 use SConcur\Connection\Extension;
+use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\CallbackExecutionException;
 use SConcur\Exceptions\FiberStateException;
 use SConcur\Exceptions\FlowStoppedException;
+use SConcur\Flow\CurrentFlow;
 use SConcur\State;
 use SConcur\WaitGroup;
 use Throwable;
@@ -48,6 +51,53 @@ class Scheduler
     public function register(Coroutine $coroutine): void
     {
         $this->coroutines[$coroutine->id] = $coroutine;
+    }
+
+    /**
+     * Spawns a standalone coroutine outside any WaitGroup (fire-and-forget). Used
+     * by the server loop to handle each incoming request in its own coroutine.
+     * The coroutine gets its own flow, so its async calls run concurrently with
+     * everything else and the flow is stopped when it finishes; its return value
+     * is not collected. The callback is expected to handle its own errors.
+     */
+    public function spawn(Closure $callback): void
+    {
+        $fiber   = new Fiber($callback);
+        $fiberId = spl_object_id($fiber);
+        $flowKey = uniqid('sp_', more_entropy: true);
+
+        State::registerFiberFlow(
+            fiberId: $fiberId,
+            flow: new CurrentFlow(
+                isAsync: true,
+                key: $flowKey,
+            )
+        );
+
+        $coroutine = new Coroutine(
+            id: $fiberId,
+            fiber: $fiber,
+            group: null,
+            callbackKey: '',
+            flowKey: $flowKey,
+        );
+
+        $this->register($coroutine);
+
+        try {
+            // Run up to the first suspend (its first async call), like WaitGroup::add.
+            $fiber->start();
+        } catch (Throwable) {
+            // Groupless: nowhere to report. Clean up and keep the loop alive.
+            $this->forget($coroutine);
+
+            return;
+        }
+
+        // Fully synchronous handler: nothing to wait for, clean up immediately.
+        if ($fiber->isTerminated()) {
+            $this->forget($coroutine);
+        }
     }
 
     /**
@@ -111,13 +161,56 @@ class Scheduler
     }
 
     /**
+     * Serves a streaming flow whose batches are incoming requests (the HTTP
+     * server). Each request is dispatched to a freshly spawned coroutine
+     * (spawn-on-request); results of every other flow resume their coroutines.
+     * The single waitAny loop multiplexes incoming requests and the async work
+     * their handlers do. Returns when the server stream ends (flow stopped).
+     *
+     * @param Closure(string): void $onRequest receives the raw request payload
+     */
+    public function serve(string $serverFlowKey, string $serverTaskKey, Closure $onRequest): void
+    {
+        while (true) {
+            $result = Extension::get()->waitAny();
+
+            if ($result->flowKey === $serverFlowKey && $result->key === $serverTaskKey) {
+                // The server stream ended (flow stopped): leave the serve loop.
+                if (!$result->hasNext) {
+                    break;
+                }
+
+                // Re-arm for the next request before handling this one, so the
+                // listener keeps accepting while the handler runs.
+                Extension::get()->next($serverFlowKey, $serverTaskKey);
+
+                $payload = $result->payload;
+
+                $this->spawn(static function () use ($onRequest, $payload): void {
+                    $onRequest($payload);
+                });
+
+                continue;
+            }
+
+            $this->resumeByResult($result);
+        }
+    }
+
+    /**
      * One scheduler step: take the first ready result of any flow and resume the
      * coroutine it belongs to.
      */
     protected function tick(): void
     {
-        $result = Extension::get()->waitAny();
+        $this->resumeByResult(Extension::get()->waitAny());
+    }
 
+    /**
+     * Routes a delivered result to the coroutine that issued its task.
+     */
+    protected function resumeByResult(TaskResultDto $result): void
+    {
         $fiberId = State::pullFiberByTask(
             flowKey: $result->flowKey,
             taskKey: $result->key,
@@ -165,11 +258,11 @@ class Scheduler
 
     protected function completeCoroutine(Coroutine $coroutine): void
     {
-        $coroutine->group->markReady($coroutine->callbackKey, $coroutine->fiber->getReturn());
+        $coroutine->group?->markReady($coroutine->callbackKey, $coroutine->fiber->getReturn());
 
         $this->forget($coroutine);
 
-        if (!$coroutine->group->isLive()) {
+        if ($coroutine->group !== null && !$coroutine->group->isLive()) {
             $this->wakeGroupWaiters($coroutine->group);
         }
     }
@@ -177,6 +270,14 @@ class Scheduler
     protected function failCoroutine(Coroutine $coroutine, Throwable $exception): void
     {
         $this->forget($coroutine);
+
+        // Spawned (groupless) coroutine: there is no group to report to. The
+        // spawn caller (e.g. the HTTP request wrapper) is expected to catch its
+        // own errors; reaching here means it didn't, so we drop the failure
+        // rather than crash the scheduler loop serving other coroutines.
+        if ($coroutine->group === null) {
+            return;
+        }
 
         $coroutine->group->markFailure(
             new CallbackExecutionException(
@@ -194,9 +295,17 @@ class Scheduler
     {
         unset($this->coroutines[$coroutine->id]);
 
-        State::unRegisterFiber($coroutine->id);
+        if ($coroutine->group !== null) {
+            State::unRegisterFiber($coroutine->id);
 
-        $coroutine->group->removeMember($coroutine->id);
+            $coroutine->group->removeMember($coroutine->id);
+
+            return;
+        }
+
+        // Spawned coroutine owns a per-coroutine flow; stop it (Go side + State),
+        // which also unregisters the fiber.
+        State::deleteFlow($coroutine->flowKey);
     }
 
     protected function wakeGroupWaiters(WaitGroup $group): void

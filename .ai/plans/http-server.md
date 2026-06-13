@@ -1,6 +1,26 @@
 # HTTP-сервер: каждый запрос в отдельной корутине
 
-Статус: план. Краткий пункт — в [README → Планы](../../README.md#планы).
+Статус: **v1 реализован** (этапы 1–3). Этапы 4–5 — в планах. Краткий пункт —
+в [README → Планы](../../README.md#планы).
+
+## Состояние
+
+- **Готово (v1):** spawn-на-запрос работает end-to-end. Go-фича `httpserver`
+  (listener как стриминговая задача: каждый запрос = «батч» через `states`/`next`),
+  `Scheduler::serve()`/`spawn()`, `HttpServer::serve()`, `Request`/`Response`,
+  `ServePayload`/`RespondPayload`, методы `MethodHttpServe`/`MethodHttpRespond`.
+  Обработчик ошибок → 500. Один запрос на соединение (`Connection: close`).
+- **Осталось (этапы 4–5):** graceful shutdown по сигналу; keep-alive; лимит
+  конкурентности; стриминг ответов (SSE/chunked); мульти-процесс (`SO_REUSEPORT`);
+  автотест в CI (нужен отдельно-процессный харнесс — в одном процессе `serve()`
+  блокирует, а `fork` запрещён).
+
+Ключевая реализация (отличие от первоначального наброска): listener — это
+**стриминговая задача**, а не источник «события-результата» с произвольным
+`taskKey`. Эмитить результаты с незарегистрированным `taskKey` напрямую в общий
+канал нельзя — `Flow.OnDelivered` ломает учёт `tasksCount`. Поэтому каждый запрос
+приходит как очередной батч (`HasNext=true`), а PHP переармливает поток через
+`next()`. `requestId` для маршрутизации ответа лежит в payload события.
 
 ## Идея
 
@@ -103,11 +123,11 @@ Go (фича httpserver):
 
 ## Этапы внедрения
 
-1. `Scheduler::spawn` + `serve()` (без сети — на «фейковых» событиях из теста).
-2. Go-фича `httpserver`: listener + `request-event` в общий канал; `httpStart`.
-3. `MethodHttpRespond` + DTO запроса/ответа; базовый запрос-ответ end-to-end.
-4. Graceful shutdown, изоляция ошибок, keep-alive/таймауты.
-5. Лимит конкурентности; затем стриминг ответов (SSE/chunked) через механику `next`;
+1. [x] `Scheduler::spawn` + `serve()`.
+2. [x] Go-фича `httpserver`: listener как стриминговая задача; `httpStart` (push `ServePayload`).
+3. [x] `MethodHttpRespond` + DTO запроса/ответа; базовый запрос-ответ end-to-end.
+4. [ ] Graceful shutdown, keep-alive/таймауты (изоляция ошибок → 500 уже есть).
+5. [ ] Лимит конкурентности; затем стриминг ответов (SSE/chunked) через механику `next`;
    затем мульти-процесс (`SO_REUSEPORT`).
 
 ## Открытые вопросы
