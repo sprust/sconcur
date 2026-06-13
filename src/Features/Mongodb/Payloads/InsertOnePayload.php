@@ -33,7 +33,7 @@ readonly class InsertOnePayload extends BaseMongodbPayload
     protected function getParameters(): Parameters
     {
         return new Parameters(
-            data: $this->document,
+            payload: new InsertOnePayloadParameters($this->document),
             isObject: true,
         );
     }

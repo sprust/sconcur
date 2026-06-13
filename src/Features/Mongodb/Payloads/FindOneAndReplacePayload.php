@@ -38,19 +38,8 @@ readonly class FindOneAndReplacePayload extends BaseMongodbPayload
 
     protected function getParameters(): Parameters
     {
-        $data = [
-            'f'  => $this->filter,
-            'r'  => $this->replacement,
-            'ou' => $this->upsert,
-            'rd' => $this->returnDocument,
-        ];
-
-        if ($this->projection !== null) {
-            $data['op'] = $this->projection;
-        }
-
         return new Parameters(
-            data: $data,
+            payload: new FindOneAndReplacePayloadParameters($this->filter, $this->replacement, $this->projection, $this->upsert, $this->returnDocument),
             isObject: true,
         );
     }

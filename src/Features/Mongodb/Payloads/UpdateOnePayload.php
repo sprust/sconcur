@@ -42,14 +42,13 @@ readonly class UpdateOnePayload extends BaseMongodbPayload
     protected function getParameters(): Parameters
     {
         return new Parameters(
-            data: [
-                'f'  => $this->filter,
-                'u'  => $this->update,
-                'ou' => $this->upsert,
-            ] + $this->encodeOptions(
-                hint: $this->hint,
-                collation: $this->collation,
+            payload: new UpdateOnePayloadParameters(
+                filter: $this->filter,
+                update: $this->update,
+                upsert: $this->upsert,
                 arrayFilters: $this->arrayFilters,
+                hint: $this->hint,
+                collation: $this->collation
             ),
             isObject: true,
         );

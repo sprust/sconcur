@@ -33,7 +33,7 @@ readonly class CountDocumentsPayload extends BaseMongodbPayload
     protected function getParameters(): Parameters
     {
         return new Parameters(
-            data: $this->filter,
+            payload: new CountDocumentsPayloadParameters($this->filter),
             isObject: true,
         );
     }

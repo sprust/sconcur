@@ -36,11 +36,7 @@ readonly class ReplaceOnePayload extends BaseMongodbPayload
     protected function getParameters(): Parameters
     {
         return new Parameters(
-            data: [
-                'f'  => $this->filter,
-                'r'  => $this->replacement,
-                'ou' => $this->upsert,
-            ],
+            payload: new ReplaceOnePayloadParameters($this->filter, $this->replacement, $this->upsert),
             isObject: true,
         );
     }

@@ -8,7 +8,6 @@ use SConcur\Features\Mongodb\CommandEnum;
 use SConcur\Features\Mongodb\Payloads\Base\BaseMongodbPayload;
 use SConcur\Features\Mongodb\Payloads\Dto\Connection;
 use SConcur\Features\Mongodb\Payloads\Dto\Parameters;
-use SConcur\Features\Mongodb\Payloads\Support\IndexName;
 
 readonly class DropIndexPayload extends BaseMongodbPayload
 {
@@ -34,9 +33,7 @@ readonly class DropIndexPayload extends BaseMongodbPayload
     protected function getParameters(): Parameters
     {
         return new Parameters(
-            data: [
-                'n' => is_string($this->index) ? $this->index : IndexName::fromKeys($this->index),
-            ],
+            payload: new DropIndexPayloadParameters($this->index),
             isObject: true,
         );
     }
