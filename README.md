@@ -266,5 +266,6 @@ foreach ($iterator as $key => $item) {
 - **Остановка отдельной корутины** из любой точки (а не только всего флоу).
 - **Лимит параллелизма группы** — `WaitGroup::create(maxConcurrency: N)`, backpressure для пула
   задач ([детали](.ai/plans/wait-group-max-concurrency.md)).
-- **HTTP/socket-сервер** — долгоживущий event-loop, каждый запрос в отдельной корутине.
+- **HTTP-сервер** — долгоживущий демон, каждый запрос в отдельной корутине; сеть в Go,
+  запросы приходят через общий `waitAny` ([детали](.ai/plans/http-server.md)).
 - **Новые I/O-фичи** — MySQL, Redis, HTTP-клиент, socket-клиент, работа с файлами.
