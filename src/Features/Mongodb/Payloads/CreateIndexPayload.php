@@ -9,6 +9,9 @@ use SConcur\Features\Mongodb\Payloads\Base\BaseMongodbPayload;
 use SConcur\Features\Mongodb\Payloads\Dto\Connection;
 use SConcur\Features\Mongodb\Payloads\Dto\Parameters;
 
+/**
+ * Go: payloads.CreateIndexPayload (ext/internal/features/mongodb/payloads/payloads.go).
+ */
 readonly class CreateIndexPayload extends BaseMongodbPayload
 {
     /**

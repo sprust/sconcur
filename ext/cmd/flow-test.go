@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 	"sconcur/internal/dto"
-	"sconcur/internal/features/sleep/params"
+	"sconcur/internal/features/sleeper/payloads"
 	handler2 "sconcur/internal/handler"
 	"sconcur/internal/types"
 	"time"
@@ -15,7 +15,7 @@ import (
 var handler *handler2.Handler
 
 func sleepPayload(milliseconds int64) []byte {
-	payload, err := msgpack.Marshal(params.SleepPayload{Milliseconds: milliseconds})
+	payload, err := msgpack.Marshal(payloads.SleeperPayload{Milliseconds: milliseconds})
 
 	if err != nil {
 		log.Fatalf("Error marshaling sleep payload: %v", err)

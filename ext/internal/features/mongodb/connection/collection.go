@@ -4,7 +4,7 @@ import (
 	"context"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
-	"sconcur/internal/features/mongodb/objects"
+	"sconcur/internal/features/mongodb/payloads"
 	"sconcur/internal/features/mongodb/serializer"
 	"sconcur/internal/features/mongodb/states/aggregation_state"
 	"sconcur/internal/features/mongodb/states/find_state"
@@ -33,7 +33,7 @@ func NewCollection(database *Database, mCollection *mongo.Collection) *Collectio
 func (c *Collection) InsertOne(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
 	doc, err := serializer.UnmarshalDocument(payload.Data)
 
@@ -52,7 +52,7 @@ func (c *Collection) InsertOne(
 func (c *Collection) BulkWrite(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
 	models, err := serializer.UnmarshalBulkWriteModels(payload.Data)
 
@@ -71,11 +71,11 @@ func (c *Collection) BulkWrite(
 func (c *Collection) Aggregate(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
-	var params objects.AggregateParams
+	var params payloads.AggregatePayload
 
-	err := objects.UnmarshalParams(payload.Data, &params)
+	err := payloads.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -125,7 +125,7 @@ func (c *Collection) Aggregate(
 func (c *Collection) InsertMany(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
 	docs, err := serializer.UnmarshalDocuments(payload.Data)
 
@@ -144,7 +144,7 @@ func (c *Collection) InsertMany(
 func (c *Collection) CountDocuments(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
 	filter, err := serializer.UnmarshalDocument(payload.Data)
 
@@ -169,11 +169,11 @@ func (c *Collection) CountDocuments(
 func (c *Collection) UpdateOne(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
-	var params objects.UpdateParams
+	var params payloads.UpdateOnePayload
 
-	err := objects.UnmarshalParams(payload.Data, &params)
+	err := payloads.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -221,11 +221,11 @@ func (c *Collection) UpdateOne(
 func (c *Collection) FindOne(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
-	var params objects.FindOneParams
+	var params payloads.FindOnePayload
 
-	err := objects.UnmarshalParams(payload.Data, &params)
+	err := payloads.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -273,11 +273,11 @@ func (c *Collection) FindOne(
 func (c *Collection) CreateIndex(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
-	var params objects.CreateIndexParams
+	var params payloads.CreateIndexPayload
 
-	err := objects.UnmarshalParams(payload.Data, &params)
+	err := payloads.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -308,11 +308,11 @@ func (c *Collection) CreateIndex(
 func (c *Collection) DeleteOne(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
-	var params objects.DeleteOneParams
+	var params payloads.DeleteOnePayload
 
-	err := objects.UnmarshalParams(payload.Data, &params)
+	err := payloads.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -347,11 +347,11 @@ func (c *Collection) DeleteOne(
 func (c *Collection) DeleteMany(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
-	var params objects.DeleteManyParams
+	var params payloads.DeleteManyPayload
 
-	err := objects.UnmarshalParams(payload.Data, &params)
+	err := payloads.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -386,11 +386,11 @@ func (c *Collection) DeleteMany(
 func (c *Collection) UpdateMany(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
-	var params objects.UpdateParams
+	var params payloads.UpdateManyPayload
 
-	err := objects.UnmarshalParams(payload.Data, &params)
+	err := payloads.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -438,7 +438,7 @@ func (c *Collection) UpdateMany(
 func (c *Collection) Drop(
 	ctx context.Context,
 	message *dto.Message,
-	_ *objects.Payload,
+	_ *payloads.Payload,
 ) *dto.Result {
 	return stringResult(message, "drop", func() (string, error) {
 		return "", c.mCollection.Drop(ctx)
@@ -448,11 +448,11 @@ func (c *Collection) Drop(
 func (c *Collection) DropIndex(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
-	var params objects.DropIndexParams
+	var params payloads.DropIndexPayload
 
-	err := objects.UnmarshalParams(payload.Data, &params)
+	err := payloads.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -469,11 +469,11 @@ func (c *Collection) DropIndex(
 func (c *Collection) Find(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
-	var params objects.FindParams
+	var params payloads.FindPayload
 
-	err := objects.UnmarshalParams(payload.Data, &params)
+	err := payloads.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -571,11 +571,11 @@ func (c *Collection) Find(
 func (c *Collection) Distinct(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
-	var params objects.DistinctParams
+	var params payloads.DistinctPayload
 
-	err := objects.UnmarshalParams(payload.Data, &params)
+	err := payloads.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -622,11 +622,11 @@ func (c *Collection) Distinct(
 func (c *Collection) FindOneAndUpdate(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
-	var params objects.FindOneAndUpdateParams
+	var params payloads.FindOneAndUpdatePayload
 
-	err := objects.UnmarshalParams(payload.Data, &params)
+	err := payloads.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -691,11 +691,11 @@ func (c *Collection) FindOneAndUpdate(
 func (c *Collection) FindOneAndDelete(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
-	var params objects.FindOneAndDeleteParams
+	var params payloads.FindOneAndDeletePayload
 
-	err := objects.UnmarshalParams(payload.Data, &params)
+	err := payloads.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -736,11 +736,11 @@ func (c *Collection) FindOneAndDelete(
 func (c *Collection) FindOneAndReplace(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
-	var params objects.FindOneAndReplaceParams
+	var params payloads.FindOneAndReplacePayload
 
-	err := objects.UnmarshalParams(payload.Data, &params)
+	err := payloads.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -798,11 +798,11 @@ func (c *Collection) FindOneAndReplace(
 func (c *Collection) ReplaceOne(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
-	var params objects.ReplaceOneParams
+	var params payloads.ReplaceOnePayload
 
-	err := objects.UnmarshalParams(payload.Data, &params)
+	err := payloads.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -843,7 +843,7 @@ func (c *Collection) ReplaceOne(
 func (c *Collection) EstimatedDocumentCount(
 	ctx context.Context,
 	message *dto.Message,
-	_ *objects.Payload,
+	_ *payloads.Payload,
 ) *dto.Result {
 	return stringResult(message, "estimatedDocumentCount", func() (string, error) {
 		result, err := c.mCollection.EstimatedDocumentCount(ctx)
@@ -859,7 +859,7 @@ func (c *Collection) EstimatedDocumentCount(
 func (c *Collection) CreateIndexes(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
 	indexesValue, err := bson.Raw(payload.Data).LookupErr("ix")
 
@@ -938,7 +938,7 @@ func (c *Collection) CreateIndexes(
 func (c *Collection) ListIndexes(
 	ctx context.Context,
 	message *dto.Message,
-	_ *objects.Payload,
+	_ *payloads.Payload,
 ) *dto.Result {
 	return stringResult(message, "listIndexes", func() (string, error) {
 		cursor, err := c.mCollection.Indexes().List(ctx)

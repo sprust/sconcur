@@ -6,7 +6,7 @@ import (
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
 	"sconcur/internal/features/mongodb/connection"
-	"sconcur/internal/features/mongodb/objects"
+	"sconcur/internal/features/mongodb/payloads"
 	"sconcur/internal/tasks"
 	"sconcur/internal/types"
 	"sync"
@@ -21,8 +21,8 @@ var instance *CollectionFeature
 
 var errFactory = errs.NewErrorsFactory("mongodb")
 
-type collectionHandler = func(*connection.Collection, context.Context, *dto.Message, *objects.Payload) *dto.Result
-type databaseHandler = func(*connection.Database, context.Context, *dto.Message, *objects.Payload) *dto.Result
+type collectionHandler = func(*connection.Collection, context.Context, *dto.Message, *payloads.Payload) *dto.Result
+type databaseHandler = func(*connection.Database, context.Context, *dto.Message, *payloads.Payload) *dto.Result
 
 // databaseHandlers/collectionHandlers map a command to its handler. Adding a command is a
 // single entry here plus the handler method — no dispatch switch to touch.
@@ -75,7 +75,7 @@ func GetCollectionFeature() *CollectionFeature {
 func (f *CollectionFeature) Handle(task *tasks.Task) {
 	message := task.GetMessage()
 
-	var payload objects.Payload
+	var payload payloads.Payload
 
 	err := msgpack.Unmarshal(message.Payload, &payload)
 

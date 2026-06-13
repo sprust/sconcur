@@ -1,10 +1,10 @@
-package sleep_feature
+package sleeper_feature
 
 import (
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
-	"sconcur/internal/features/sleep/params"
+	"sconcur/internal/features/sleeper/payloads"
 	"sconcur/internal/helpers"
 	"sconcur/internal/tasks"
 	"sync"
@@ -35,7 +35,7 @@ func (s *SleepFeature) Handle(task *tasks.Task) {
 	startTime := time.Now()
 	message := task.GetMessage()
 
-	var payload params.SleepPayload
+	var payload payloads.SleeperPayload
 
 	err := msgpack.Unmarshal(message.Payload, &payload)
 
