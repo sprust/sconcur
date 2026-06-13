@@ -10,6 +10,14 @@ env-copy:
 build:
 	$(DOCKER_COMPOSE) build
 
+setup:
+	make env-copy
+	make stop
+	make build
+	make up
+	make compose c=i
+	make ext-build
+
 up:
 	$(DOCKER_COMPOSE) up -d --wait
 
