@@ -37,12 +37,7 @@ readonly class DeleteOnePayload extends BaseMongodbPayload
     protected function getParameters(): Parameters
     {
         return new Parameters(
-            data: [
-                'f' => $this->filter,
-            ] + $this->encodeOptions(
-                hint: $this->hint,
-                collation: $this->collation,
-            ),
+            payload: new DeleteOnePayloadParameters($this->filter, $this->hint, $this->collation),
             isObject: true,
         );
     }

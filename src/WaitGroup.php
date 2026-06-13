@@ -7,11 +7,12 @@ namespace SConcur;
 use Closure;
 use Fiber;
 use Generator;
+use RuntimeException;
 use SConcur\Exceptions\CallbackExecutionException;
-use SConcur\Exceptions\FiberStateException;
 use SConcur\Exceptions\FlowStoppedException;
-use SConcur\Features\FeatureExecutor;
 use SConcur\Flow\CurrentFlow;
+use SConcur\Scheduler\Coroutine;
+use SConcur\Scheduler\Scheduler;
 use Throwable;
 
 class WaitGroup
@@ -19,19 +20,24 @@ class WaitGroup
     protected static int $counter = 0;
 
     /**
-     * @var array<int, Fiber>
-     */
-    protected array $fibers = [];
-
-    /**
+     * Live coroutines of this group: fiber id => callback key.
+     *
      * @var array<int, string>
      */
-    protected array $fiberCallbackKeys = [];
+    protected array $members = [];
 
     /**
+     * Settled coroutine results awaiting delivery through iterate():
+     * callback key => return value.
+     *
      * @var array<string, mixed>
      */
-    protected array $syncResults = [];
+    protected array $ready = [];
+
+    /**
+     * First failure raised by a coroutine of this group; rethrown from iterate().
+     */
+    protected ?Throwable $failure = null;
 
     protected string $flowKey;
 
@@ -52,22 +58,35 @@ class WaitGroup
      */
     public function add(Closure $callback): string
     {
-        $fiber = new Fiber($callback);
+        $fiber       = new Fiber($callback);
+        $fiberId     = spl_object_id($fiber);
+        $callbackKey = uniqid(more_entropy: true);
 
         State::registerFiberFlow(
-            fiberId: spl_object_id($fiber),
+            fiberId: $fiberId,
             flow: new CurrentFlow(
                 isAsync: true,
                 key: $this->flowKey
             )
         );
 
+        $this->members[$fiberId] = $callbackKey;
+
+        Scheduler::get()->register(
+            new Coroutine(
+                id: $fiberId,
+                fiber: $fiber,
+                group: $this,
+                callbackKey: $callbackKey,
+            )
+        );
+
         try {
+            // First run up to the first suspend. May happen nested inside another
+            // coroutine; that is fine — it ends at a suspend that returns here.
             $fiber->start();
         } catch (Throwable $exception) {
-            // Without this, a reused spl_object_id could route a foreign
-            // fiber's tasks into this flow.
-            State::unRegisterFiber(spl_object_id($fiber));
+            $this->discard($fiberId);
 
             throw new CallbackExecutionException(
                 message: $exception->getMessage(),
@@ -75,17 +94,11 @@ class WaitGroup
             );
         }
 
-        $callbackKey = uniqid(more_entropy: true);
-
-        $fiberId = spl_object_id($fiber);
-
+        // Synchronous callback (no async call): its result is ready immediately.
         if ($fiber->isTerminated()) {
-            $this->syncResults[$callbackKey] = $fiber->getReturn();
+            $this->ready[$callbackKey] = $fiber->getReturn();
 
-            State::unRegisterFiber($fiberId);
-        } else {
-            $this->fibers[$fiberId]            = $fiber;
-            $this->fiberCallbackKeys[$fiberId] = $callbackKey;
+            $this->discard($fiberId);
         }
 
         return $callbackKey;
@@ -93,9 +106,7 @@ class WaitGroup
 
     public function waitAll(): int
     {
-        $generator = $this->iterate();
-
-        return iterator_count($generator);
+        return iterator_count($this->iterate());
     }
 
     /**
@@ -105,9 +116,7 @@ class WaitGroup
     {
         $results = [];
 
-        $generator = $this->iterate();
-
-        foreach ($generator as $key => $result) {
+        foreach ($this->iterate() as $key => $result) {
             $results[$key] = $result;
         }
 
@@ -115,77 +124,48 @@ class WaitGroup
     }
 
     /**
+     * Yields each coroutine's result as it settles. Delegates all waiting to the
+     * Scheduler: at the top level it drives the scheduler loop; nested inside a
+     * coroutine it cooperatively suspends so the outer flow keeps progressing.
+     *
      * @return Generator<string, mixed>
      */
     public function iterate(): Generator
     {
         try {
             while (true) {
-                if ($this->syncResults !== []) {
-                    foreach ($this->syncResults as $syncResultKey => $syncResult) {
-                        unset($this->syncResults[$syncResultKey]);
-                        yield $syncResultKey => $syncResult;
-                    }
+                if ($this->failure !== null) {
+                    $failure       = $this->failure;
+                    $this->failure = null;
+
+                    /**
+                     * Not to write Throwable in the annotation
+                     *
+                     * @var RuntimeException $failure
+                     */
+
+                    throw $failure;
+                }
+
+                if ($this->ready !== []) {
+                    $callbackKey = array_key_first($this->ready);
+                    $value       = $this->ready[$callbackKey];
+
+                    unset($this->ready[$callbackKey]);
+
+                    yield $callbackKey => $value;
 
                     continue;
                 }
 
-                if ($this->fibers === []) {
+                if ($this->members === []) {
                     break;
                 }
 
-                $taskResult = FeatureExecutor::wait(
-                    flowKey: $this->flowKey
-                );
-
-                $taskKey = $taskResult->key;
-
-                $fiberId = State::pullFiberByTask(
-                    flowKey: $this->flowKey,
-                    taskKey: $taskKey
-                );
-
-                $fiber = $this->fibers[$fiberId] ?? null;
-
-                if ($fiber === null) {
-                    throw new FiberStateException(
-                        message: "Fiber [flow: $this->flowKey, task: $taskKey] not found"
-                    );
-                }
-
-                if (!$fiber->isSuspended()) {
-                    throw new FiberStateException(
-                        message: "Fiber [flow: $this->flowKey, task: $taskKey] is not suspended"
-                    );
-                }
-
-                if (!array_key_exists($fiberId, $this->fiberCallbackKeys)) {
-                    throw new FiberStateException(
-                        message: "Fiber callback key not found by fiber id [$fiberId]"
-                    );
-                }
-
-                try {
-                    $fiber->resume($taskResult);
-                } catch (Throwable $exception) {
-                    throw new CallbackExecutionException(
-                        message: $exception->getMessage(),
-                        previous: $exception
-                    );
-                }
-
-                if ($fiber->isTerminated()) {
-                    $callbackResult = $fiber->getReturn();
-
-                    State::unRegisterFiber($fiberId);
-
-                    unset($this->fibers[$fiberId]);
-
-                    $callbackKey = $this->fiberCallbackKeys[$fiberId];
-
-                    unset($this->fiberCallbackKeys[$fiberId]);
-
-                    yield $callbackKey => $callbackResult;
+                if (Fiber::getCurrent() === null) {
+                    Scheduler::get()->run($this);
+                } else {
+                    Scheduler::get()->awaitGroup($this);
                 }
             }
         } finally {
@@ -195,31 +175,76 @@ class WaitGroup
 
     public function stop(): void
     {
-        $fibers = $this->fibers;
+        $members = $this->members;
 
-        $this->fibers            = [];
-        $this->fiberCallbackKeys = [];
-        $this->syncResults       = [];
+        $this->members = [];
+        $this->ready   = [];
+        $this->failure = null;
 
-        // Unwind still-suspended fibers so their finally-blocks and local destructors
-        // run (rollback a transaction, release a lock, ...). Without this the paused
-        // callbacks would be abandoned until end of request. Done before deleteFlow()
-        // so finally-blocks doing synchronous cleanup still resolve the flow; cleanup
-        // that itself suspends on a new async call is best-effort.
-        foreach ($fibers as $fiber) {
-            if (!$fiber->isSuspended()) {
+        Scheduler::get()->clearGroupWaiter($this->flowKey);
+
+        // Unwind still-suspended coroutines so their finally-blocks and local
+        // destructors run (rollback a transaction, release a lock, ...). Done
+        // before deleteFlow() so finally-blocks doing synchronous cleanup still
+        // resolve the flow; cleanup that itself suspends on a new async call is
+        // best-effort.
+        foreach ($members as $fiberId => $callbackKey) {
+            $coroutine = Scheduler::get()->detach($fiberId);
+
+            if ($coroutine === null || !$coroutine->fiber->isSuspended()) {
                 continue;
             }
 
             try {
-                $fiber->throw(new FlowStoppedException(message: 'Flow stopped'));
+                $coroutine->fiber->throw(new FlowStoppedException(message: 'Flow stopped'));
             } catch (Throwable) {
-                // The unwinding callback may surface an exception; it must not prevent
-                // stopping the remaining fibers or the flow.
+                // The unwinding callback may surface an exception; it must not
+                // prevent stopping the remaining coroutines or the flow.
             }
         }
 
         State::deleteFlow($this->flowKey);
+    }
+
+    /**
+     * Group key as seen by the Scheduler (== flow key).
+     */
+    public function key(): string
+    {
+        return $this->flowKey;
+    }
+
+    public function isLive(): bool
+    {
+        return $this->members !== [];
+    }
+
+    public function hasReadyOrFailure(): bool
+    {
+        return $this->ready !== [] || $this->failure !== null;
+    }
+
+    public function markReady(string $callbackKey, mixed $value): void
+    {
+        $this->ready[$callbackKey] = $value;
+    }
+
+    public function markFailure(Throwable $exception): void
+    {
+        $this->failure ??= $exception;
+    }
+
+    public function removeMember(int $fiberId): void
+    {
+        unset($this->members[$fiberId]);
+    }
+
+    private function discard(int $fiberId): void
+    {
+        Scheduler::get()->detach($fiberId);
+        State::unRegisterFiber($fiberId);
+
+        unset($this->members[$fiberId]);
     }
 
     public function __destruct()

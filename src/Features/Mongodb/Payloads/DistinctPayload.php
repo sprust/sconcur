@@ -36,12 +36,7 @@ readonly class DistinctPayload extends BaseMongodbPayload
     protected function getParameters(): Parameters
     {
         return new Parameters(
-            data: [
-                'fn' => $this->fieldName,
-                'f'  => $this->filter,
-            ] + $this->encodeOptions(
-                collation: $this->collation,
-            ),
+            payload: new DistinctPayloadParameters($this->fieldName, $this->filter, $this->collation),
             isObject: true,
         );
     }

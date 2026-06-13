@@ -8,6 +8,7 @@
  *  - push(string flowKey, int method, string taskKey, string payload)
  *  - next(string flowKey, string taskKey)
  *  - wait(string flowKey)
+ *  - waitAny()
  *  - tasksCount()
  *  - stopFlow(string flowKey)
  *  - destroy()
@@ -36,6 +37,10 @@ ZEND_END_ARG_INFO()
 // wait(string flowKey)
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_wait, 0, 0, 1)
     ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
+ZEND_END_ARG_INFO()
+
+// waitAny()
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_waitAny, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
 // tasksCount()
@@ -143,6 +148,27 @@ PHP_FUNCTION(wait)
     free(response.data);
 }
 
+// PHP: SConcur\Extension\waitAny(): string
+PHP_FUNCTION(waitAny)
+{
+    buffer_result_t response;
+
+    if (zend_parse_parameters_none() == FAILURE) {
+        RETURN_THROWS();
+    }
+
+    response = waitAny();
+
+    if (response.err != NULL) {
+        RETVAL_STRING(response.err);
+        free(response.err);
+        return;
+    }
+
+    RETVAL_STRINGL((char *)response.data, response.len);
+    free(response.data);
+}
+
 // PHP: SConcur\Extension\tasksCount(): int
 PHP_FUNCTION(tasksCount)
 {
@@ -200,6 +226,7 @@ static const zend_function_entry sconcur_functions[] = {
     ZEND_NS_FE("SConcur\\Extension", push, arginfo_sconcur_push)
     ZEND_NS_FE("SConcur\\Extension", next, arginfo_sconcur_next)
     ZEND_NS_FE("SConcur\\Extension", wait, arginfo_sconcur_wait)
+    ZEND_NS_FE("SConcur\\Extension", waitAny, arginfo_sconcur_waitAny)
     ZEND_NS_FE("SConcur\\Extension", tasksCount, arginfo_sconcur_tasksCount)
     ZEND_NS_FE("SConcur\\Extension", stopFlow, arginfo_sconcur_stopFlow)
     ZEND_NS_FE("SConcur\\Extension", destroy, arginfo_sconcur_destroy)
@@ -219,7 +246,7 @@ zend_module_entry sconcur_module_entry = {
     NULL,  // RINIT
     NULL,  // RSHUTDOWN
     NULL,  // MINFO
-    "0.1",
+    "0.1.0",
     STANDARD_MODULE_PROPERTIES
 };
 

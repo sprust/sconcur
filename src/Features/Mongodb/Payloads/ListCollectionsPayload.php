@@ -29,7 +29,7 @@ readonly class ListCollectionsPayload extends BaseMongodbPayload
     protected function getParameters(): Parameters
     {
         return new Parameters(
-            data: [],
+            payload: new EmptyPayloadParameters(),
             isObject: true,
         );
     }

@@ -22,7 +22,7 @@ readonly class SleeperPayload implements PayloadInterface
     /**
      * @return array<string, int>
      */
-    public function getData(): int|float|string|array|null
+    public function getData(): array
     {
         return [
             'ms' => $this->milliseconds,

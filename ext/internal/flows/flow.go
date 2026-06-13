@@ -2,7 +2,6 @@ package flows
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"runtime/debug"
 	"sconcur/internal/dto"
@@ -24,7 +23,11 @@ type Flow struct {
 	results     chan *dto.Result
 }
 
-func NewFlow(handlerCtx context.Context, key string) *Flow {
+// NewFlow builds a flow that publishes task results into the shared results
+// channel owned by the handler. All flows write to the same channel so the PHP
+// side can wait for any flow's result at once (waitAny), which is what lets
+// nested coroutines run concurrently with the outer flow.
+func NewFlow(handlerCtx context.Context, key string, results chan *dto.Result) *Flow {
 	ctx, ctxCancel := context.WithCancel(handlerCtx)
 
 	return &Flow{
@@ -32,7 +35,7 @@ func NewFlow(handlerCtx context.Context, key string) *Flow {
 		ctxCancel:   ctxCancel,
 		key:         key,
 		activeTasks: make(map[string]*tasks.Task),
-		results:     make(chan *dto.Result),
+		results:     results,
 	}
 }
 
@@ -84,33 +87,25 @@ func runTaskProtected(task *tasks.Task, handle func(task *tasks.Task)) {
 	handle(task)
 }
 
-func (f *Flow) Wait() (*dto.Result, error) {
-	select {
-	case <-f.ctx.Done():
-		return nil, f.ctx.Err()
-	case result, ok := <-f.results:
-		if !ok {
-			return nil, errors.New("task channel closed")
-		}
+// OnDelivered runs the post-delivery bookkeeping for a result that has just
+// been pulled from the shared channel by the handler: drop the task from the
+// active set, decrement the counter and release the task context.
+//
+// The initial task of a multi-batch find/aggregate is the exception: its
+// context owns the cursor state lifetime (states.Start hooks AfterFunc on it),
+// so it must live until the state is finished or the flow is stopped.
+func (f *Flow) OnDelivered(result *dto.Result) {
+	f.mutex.Lock()
 
-		f.mutex.Lock()
+	task := f.activeTasks[result.TaskKey]
 
-		task := f.activeTasks[result.TaskKey]
+	delete(f.activeTasks, result.TaskKey)
+	f.tasksCount.Add(-1)
 
-		delete(f.activeTasks, result.TaskKey)
-		f.tasksCount.Add(-1)
+	f.mutex.Unlock()
 
-		f.mutex.Unlock()
-
-		// Release the task context once its result is delivered. The initial
-		// task of a multi-batch find/aggregate is the exception: its context
-		// owns the cursor state lifetime (states.Start hooks AfterFunc on it),
-		// so it must live until the state is finished or the flow is stopped.
-		if task != nil && (task.GetMessage().IsNext || !result.HasNext) {
-			task.Cancel()
-		}
-
-		return result, nil
+	if task != nil && (task.GetMessage().IsNext || !result.HasNext) {
+		task.Cancel()
 	}
 }
 

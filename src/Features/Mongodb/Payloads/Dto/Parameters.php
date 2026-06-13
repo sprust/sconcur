@@ -4,13 +4,12 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Mongodb\Payloads\Dto;
 
+use SConcur\Transport\PayloadParametersInterface;
+
 readonly class Parameters
 {
-    /**
-     * @param array<int|string, mixed> $data
-     */
     public function __construct(
-        public array $data,
+        public PayloadParametersInterface $payload,
         public bool $isObject,
     ) {
     }

@@ -9,7 +9,7 @@ interface PayloadInterface
     public function getMethod(): MethodEnum;
 
     /**
-     * @return array<int|string, mixed>|int|float|string|null
+     * @return array<int|string, mixed>
      */
-    public function getData(): int|float|string|array|null;
+    public function getData(): array;
 }

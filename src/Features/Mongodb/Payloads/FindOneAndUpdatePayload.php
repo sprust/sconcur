@@ -44,23 +44,8 @@ readonly class FindOneAndUpdatePayload extends BaseMongodbPayload
 
     protected function getParameters(): Parameters
     {
-        $data = [
-            'f'  => $this->filter,
-            'u'  => $this->update,
-            'ou' => $this->upsert,
-            'rd' => $this->returnDocument,
-        ];
-
-        if ($this->projection !== null) {
-            $data['op'] = $this->projection;
-        }
-
         return new Parameters(
-            data: $data + $this->encodeOptions(
-                hint: $this->hint,
-                collation: $this->collation,
-                arrayFilters: $this->arrayFilters,
-            ),
+            payload: new FindOneAndUpdatePayloadParameters($this->filter, $this->update, $this->projection, $this->upsert, $this->returnDocument, $this->arrayFilters, $this->hint, $this->collation),
             isObject: true,
         );
     }

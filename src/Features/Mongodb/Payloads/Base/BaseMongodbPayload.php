@@ -24,10 +24,7 @@ abstract readonly class BaseMongodbPayload implements PayloadInterface
         return MethodEnum::Mongodb;
     }
 
-    /**
-     * @return array<string, mixed>
-     */
-    public function getData(): int|float|string|array|null
+    public function getData(): array
     {
         $connection = $this->getConnection();
         $parameters = $this->getParameters();
@@ -40,41 +37,9 @@ abstract readonly class BaseMongodbPayload implements PayloadInterface
             'sst' => $connection->serverSelectionTimeoutMs,
             'cm'  => $this->getCommand()->value,
             'dt'  => DocumentSerializer::serialize(
-                document: $parameters->data,
+                document: $parameters->payload->getData(),
                 isObject: $parameters->isObject,
             ),
         ];
-    }
-
-    /**
-     * Encodes optional query options into nested payload fields, omitting any not provided.
-     * The whole payload is serialized to BSON once by getData(), so values stay raw here.
-     *
-     * @param array<string, int>|string|null        $hint
-     * @param array<string, mixed>|null             $collation
-     * @param array<int, array<string, mixed>>|null $arrayFilters
-     *
-     * @return array<string, mixed>
-     */
-    protected function encodeOptions(
-        array|string|null $hint = null,
-        ?array $collation = null,
-        ?array $arrayFilters = null,
-    ): array {
-        $options = [];
-
-        if ($hint !== null) {
-            $options['hn'] = ['v' => $hint];
-        }
-
-        if ($collation !== null) {
-            $options['co'] = $collation;
-        }
-
-        if ($arrayFilters !== null) {
-            $options['af'] = $arrayFilters;
-        }
-
-        return $options;
     }
 }

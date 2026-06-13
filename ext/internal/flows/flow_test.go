@@ -12,8 +12,33 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-func TestWaitCancelsTaskContextAfterDelivery(t *testing.T) {
-	flow := NewFlow(context.Background(), "flow")
+// newTestFlow builds a flow wired to a fresh shared results channel and returns
+// both, mirroring how the handler owns the channel in production.
+func newTestFlow(key string) (*Flow, chan *dto.Result) {
+	results := make(chan *dto.Result)
+
+	return NewFlow(context.Background(), key, results), results
+}
+
+// receive pulls one result from the shared channel and runs the handler's
+// post-delivery bookkeeping, emulating Handler.deliver.
+func receive(t *testing.T, flow *Flow, results chan *dto.Result) *dto.Result {
+	t.Helper()
+
+	select {
+	case result := <-results:
+		flow.OnDelivered(result)
+
+		return result
+	case <-time.After(time.Second):
+		t.Fatal("no result delivered in time")
+
+		return nil
+	}
+}
+
+func TestOnDeliveredCancelsTaskContextAfterDelivery(t *testing.T) {
+	flow, results := newTestFlow("flow")
 
 	payload, err := msgpack.Marshal(map[string]int64{"ms": 1})
 
@@ -40,11 +65,7 @@ func TestWaitCancelsTaskContextAfterDelivery(t *testing.T) {
 		t.Fatal("task not registered")
 	}
 
-	result, err := flow.Wait()
-
-	if err != nil {
-		t.Fatal(err)
-	}
+	result := receive(t, flow, results)
 
 	if result.IsError {
 		t.Fatalf("unexpected error result: %s", result.Payload)
@@ -62,7 +83,7 @@ func TestWaitCancelsTaskContextAfterDelivery(t *testing.T) {
 }
 
 func TestHandleMessageUnknownMethodLeavesFlowStateUntouched(t *testing.T) {
-	flow := NewFlow(context.Background(), "flow")
+	flow, _ := newTestFlow("flow")
 
 	msg := &dto.Message{
 		FlowKey: "flow",
@@ -87,8 +108,8 @@ func TestHandleMessageUnknownMethodLeavesFlowStateUntouched(t *testing.T) {
 	}
 }
 
-func TestWaitKeepsInitialTaskContextWhileHasNext(t *testing.T) {
-	flow := NewFlow(context.Background(), "flow")
+func TestOnDeliveredKeepsInitialTaskContextWhileHasNext(t *testing.T) {
+	flow, results := newTestFlow("flow")
 
 	msg := &dto.Message{
 		FlowKey: "flow",
@@ -104,9 +125,7 @@ func TestWaitKeepsInitialTaskContextWhileHasNext(t *testing.T) {
 
 	go task.AddResult(dto.NewSuccessResultWithNext(msg, "", 0))
 
-	if _, err := flow.Wait(); err != nil {
-		t.Fatal(err)
-	}
+	receive(t, flow, results)
 
 	select {
 	case <-task.GetContext().Done():
@@ -115,8 +134,8 @@ func TestWaitKeepsInitialTaskContextWhileHasNext(t *testing.T) {
 	}
 }
 
-func TestWaitCancelsNextTaskContextEvenWithNext(t *testing.T) {
-	flow := NewFlow(context.Background(), "flow")
+func TestOnDeliveredCancelsNextTaskContextEvenWithNext(t *testing.T) {
+	flow, results := newTestFlow("flow")
 
 	msg := &dto.Message{
 		FlowKey: "flow",
@@ -133,9 +152,7 @@ func TestWaitCancelsNextTaskContextEvenWithNext(t *testing.T) {
 
 	go task.AddResult(dto.NewSuccessResultWithNext(msg, "", 0))
 
-	if _, err := flow.Wait(); err != nil {
-		t.Fatal(err)
-	}
+	receive(t, flow, results)
 
 	select {
 	case <-task.GetContext().Done():

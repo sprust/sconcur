@@ -8,7 +8,6 @@ use SConcur\Features\Mongodb\CommandEnum;
 use SConcur\Features\Mongodb\Payloads\Base\BaseMongodbPayload;
 use SConcur\Features\Mongodb\Payloads\Dto\Connection;
 use SConcur\Features\Mongodb\Payloads\Dto\Parameters;
-use SConcur\Features\Mongodb\Payloads\Support\IndexName;
 
 readonly class CreateIndexPayload extends BaseMongodbPayload
 {
@@ -35,10 +34,7 @@ readonly class CreateIndexPayload extends BaseMongodbPayload
     protected function getParameters(): Parameters
     {
         return new Parameters(
-            data: [
-                'k' => $this->keys,
-                'n' => $this->name ?: IndexName::fromKeys($this->keys),
-            ],
+            payload: new CreateIndexPayloadParameters($this->keys, $this->name),
             isObject: true,
         );
     }
