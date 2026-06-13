@@ -8,6 +8,7 @@ use RuntimeException;
 use SConcur\Dto\RunningTaskDto;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\ExtensionCallException;
+use SConcur\Exceptions\IncompatibleExtensionVersionException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\MethodEnum;
@@ -24,6 +25,13 @@ use function SConcur\Extension\wait;
 
 class Extension
 {
+    /**
+     * Minimum "sconcur" extension version this package is compatible with. Bump it
+     * whenever the PHP <-> Go protocol changes (payload keys, exported functions) so
+     * an outdated .so is rejected instead of silently misbehaving.
+     */
+    private const string REQUIRED_EXTENSION_VERSION = '0.0.1';
+
     protected static ?Extension $instance = null;
 
     protected static bool $checked     = false;
@@ -146,6 +154,18 @@ class Extension
         if (!extension_loaded('sconcur')) {
             throw new RuntimeException(
                 'The extension "sconcur" is not loaded.'
+            );
+        }
+
+        $loadedVersion = version();
+
+        if (version_compare($loadedVersion, self::REQUIRED_EXTENSION_VERSION, '<')) {
+            throw new IncompatibleExtensionVersionException(
+                message: sprintf(
+                    'The loaded "sconcur" extension version %s is older than the required %s.',
+                    $loadedVersion,
+                    self::REQUIRED_EXTENSION_VERSION,
+                )
             );
         }
 
