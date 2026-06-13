@@ -22,19 +22,44 @@ use Throwable;
 readonly class HttpServer
 {
     /**
-     * Starts the listener and serves forever (until the flow is stopped). The
-     * handler receives a Request and must return a Response; it runs in its own
-     * coroutine, so it may issue concurrent async calls (Mongodb, Sleeper, ...).
+     * @param int $maxRequestBody request body read limit, in bytes
+     *
+     * Defaults mirror the Go server defaults.
+     */
+    public function __construct(
+        private string $address,
+        private int $readHeaderTimeoutMs = 10_000,
+        private int $readTimeoutMs = 30_000,
+        private int $writeTimeoutMs = 30_000,
+        private int $idleTimeoutMs = 60_000,
+        private int $shutdownTimeoutMs = 5_000,
+        private int $maxRequestBody = 10_485_760,
+    ) {
+    }
+
+    /**
+     * Starts the listener and serves forever (until the flow is stopped or a
+     * shutdown signal arrives). The handler receives a Request and must return a
+     * Response; it runs in its own coroutine, so it may issue concurrent async
+     * calls (Mongodb, Sleeper, ...).
      *
      * @param Closure(Request): Response $handler
      */
-    public function serve(string $address, Closure $handler): void
+    public function serve(Closure $handler): void
     {
         $flowKey = uniqid('http_', more_entropy: true);
 
         $runningTask = Extension::get()->push(
             flowKey: $flowKey,
-            payload: new ServePayload(address: $address),
+            payload: new ServePayload(
+                address: $this->address,
+                readHeaderTimeoutMs: $this->readHeaderTimeoutMs,
+                readTimeoutMs: $this->readTimeoutMs,
+                writeTimeoutMs: $this->writeTimeoutMs,
+                idleTimeoutMs: $this->idleTimeoutMs,
+                shutdownTimeoutMs: $this->shutdownTimeoutMs,
+                maxRequestBody: $this->maxRequestBody,
+            ),
         );
 
         $stopRequested = false;

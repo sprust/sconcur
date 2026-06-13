@@ -11,11 +11,11 @@ use SConcur\Features\Sleeper\Sleeper;
 
 $address = $argv[1] ?? '0.0.0.0:8088';
 
-$server  = new HttpServer();
+$server = new HttpServer(address: $address);
 
 // Each request is handled in its own coroutine; the msleep below proves the
 // handler can do async work concurrently with other requests.
-$server->serve($address, static function (Request $request): Response {
+$server->serve(static function (Request $request): Response {
     $sleeper = new Sleeper();
     $sleeper->msleep(milliseconds: 5);
 

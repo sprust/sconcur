@@ -77,7 +77,7 @@ func (f *HttpFeature) handleServe(task *tasks.Task) {
 		return
 	}
 
-	state := newServerState(task.GetContext(), message, listener, startTime)
+	state := newServerState(task.GetContext(), message, listener, startTime, configFromPayload(payload))
 
 	result, err := states.Get().Start(task.GetContext(), message.TaskKey, state)
 
@@ -92,23 +92,31 @@ func (f *HttpFeature) handleServe(task *tasks.Task) {
 	task.AddResult(result)
 }
 
-// handleRespond routes a PHP handler's response to the waiting connection.
+// handleRespond routes a PHP handler's response to the waiting connection. It
+// never leaves the connection hanging: as long as the request id resolves, the
+// client always gets an answer — a 500 if the response body itself is malformed.
 func (f *HttpFeature) handleRespond(task *tasks.Task) {
 	message := task.GetMessage()
 	startTime := time.Now()
 
-	var payload payloads.RespondPayload
+	// Decode the request id on its own first: a struct with only this field
+	// ignores every other key, so we can always route a response back even if the
+	// rest of the payload is malformed.
+	var idOnly struct {
+		RequestId string `msgpack:"rid"`
+	}
 
-	if err := msgpack.Unmarshal(message.Payload, &payload); err != nil {
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("parse respond payload", err)))
+	if err := msgpack.Unmarshal(message.Payload, &idOnly); err != nil || idOnly.RequestId == "" {
+		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("parse respond requestId", err)))
 
 		return
 	}
 
-	value, ok := pendingRequests.Load(payload.RequestId)
+	value, ok := pendingRequests.Load(idOnly.RequestId)
 
 	if !ok {
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("unknown requestId "+payload.RequestId)))
+		// The connection is already gone (answered or disconnected): nothing to do.
+		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("unknown requestId "+idOnly.RequestId)))
 
 		return
 	}
@@ -121,11 +129,18 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 		return
 	}
 
-	select {
-	case responseCh <- respondData{status: payload.Status, headers: payload.Headers, body: payload.Body}:
-	default:
-		// Connection already gone or already answered: nothing to do.
+	var payload payloads.RespondPayload
+
+	if err := msgpack.Unmarshal(message.Payload, &payload); err != nil {
+		// Malformed response: answer the client with a 500 instead of hanging.
+		responseCh <- respondData{status: 500, body: "Internal Server Error"}
+
+		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("parse respond payload", err)))
+
+		return
 	}
+
+	responseCh <- respondData{status: payload.Status, headers: payload.Headers, body: payload.Body}
 
 	task.AddResult(dto.NewSuccessResult(message, "", helpers.CalcExecutionMs(startTime)))
 }

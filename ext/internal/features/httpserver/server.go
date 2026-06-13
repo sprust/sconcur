@@ -13,19 +13,55 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-// maxRequestBody caps how much of a request body is read into memory (10 MiB).
-const maxRequestBody = 10 << 20
-
-// shutdownTimeout bounds how long Close waits for in-flight requests to drain.
-const shutdownTimeout = 5 * time.Second
-
-// Connection timeouts for the embedded net/http server.
+// Default server tuning, used as a fallback when the PHP side sends a zero value.
+// The PHP side normally supplies these (its defaults mirror them).
 const (
-	readHeaderTimeout = 10 * time.Second
-	readTimeout       = 30 * time.Second
-	writeTimeout      = 30 * time.Second
-	idleTimeout       = 60 * time.Second
+	defaultMaxRequestBody    = 10 << 20 // 10 MiB
+	defaultShutdownTimeout   = 5 * time.Second
+	defaultReadHeaderTimeout = 10 * time.Second
+	defaultReadTimeout       = 30 * time.Second
+	defaultWriteTimeout      = 30 * time.Second
+	defaultIdleTimeout       = 60 * time.Second
 )
+
+// serverConfig holds the resolved tuning for one server instance.
+type serverConfig struct {
+	readHeaderTimeout time.Duration
+	readTimeout       time.Duration
+	writeTimeout      time.Duration
+	idleTimeout       time.Duration
+	shutdownTimeout   time.Duration
+	maxRequestBody    int64
+}
+
+// configFromPayload resolves the tuning from the PHP payload, falling back to the
+// defaults for any zero (unset) value.
+func configFromPayload(payload payloads.ServePayload) serverConfig {
+	return serverConfig{
+		readHeaderTimeout: msOrDefault(payload.ReadHeaderTimeoutMs, defaultReadHeaderTimeout),
+		readTimeout:       msOrDefault(payload.ReadTimeoutMs, defaultReadTimeout),
+		writeTimeout:      msOrDefault(payload.WriteTimeoutMs, defaultWriteTimeout),
+		idleTimeout:       msOrDefault(payload.IdleTimeoutMs, defaultIdleTimeout),
+		shutdownTimeout:   msOrDefault(payload.ShutdownTimeoutMs, defaultShutdownTimeout),
+		maxRequestBody:    int64OrDefault(payload.MaxRequestBody, defaultMaxRequestBody),
+	}
+}
+
+func msOrDefault(ms int, fallback time.Duration) time.Duration {
+	if ms <= 0 {
+		return fallback
+	}
+
+	return time.Duration(ms) * time.Millisecond
+}
+
+func int64OrDefault(value int64, fallback int64) int64 {
+	if value <= 0 {
+		return fallback
+	}
+
+	return value
+}
 
 // respondData is the response a PHP handler produced for one request.
 type respondData struct {
@@ -48,6 +84,7 @@ type serverState struct {
 	httpServer *http.Server
 	requests   chan *payloads.RequestEvent
 	startTime  time.Time
+	config     serverConfig
 }
 
 func newServerState(
@@ -55,6 +92,7 @@ func newServerState(
 	message *dto.Message,
 	listener net.Listener,
 	startTime time.Time,
+	config serverConfig,
 ) *serverState {
 	state := &serverState{
 		ctx:       ctx,
@@ -62,14 +100,15 @@ func newServerState(
 		listener:  listener,
 		requests:  make(chan *payloads.RequestEvent, 1024),
 		startTime: startTime,
+		config:    config,
 	}
 
 	state.httpServer = &http.Server{
 		Handler:           state,
-		ReadHeaderTimeout: readHeaderTimeout,
-		ReadTimeout:       readTimeout,
-		WriteTimeout:      writeTimeout,
-		IdleTimeout:       idleTimeout,
+		ReadHeaderTimeout: config.readHeaderTimeout,
+		ReadTimeout:       config.readTimeout,
+		WriteTimeout:      config.writeTimeout,
+		IdleTimeout:       config.idleTimeout,
 		// Tie every request context to the server's lifetime so blocked handlers
 		// unblock when the server stops.
 		BaseContext: func(net.Listener) context.Context {
@@ -86,13 +125,21 @@ func newServerState(
 
 // ServeHTTP handles one request: hand it to PHP, wait for the response.
 func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	// Reject a body larger than the configured limit instead of silently
+	// truncating it (which would also leave the connection unusable).
+	body, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, s.config.maxRequestBody))
+
+	if err != nil {
+		http.Error(writer, "request body too large", http.StatusRequestEntityTooLarge)
+
+		return
+	}
+
 	requestId := nextRequestId(s.message.FlowKey)
 	responseCh := make(chan respondData, 1)
 
 	pendingRequests.Store(requestId, responseCh)
 	defer pendingRequests.Delete(requestId)
-
-	body, _ := io.ReadAll(io.LimitReader(request.Body, maxRequestBody))
 
 	event := &payloads.RequestEvent{
 		RequestId: requestId,
@@ -103,18 +150,21 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		Body:      string(body),
 	}
 
-	// Deliver the request to PHP (via Next).
+	// Deliver the request to PHP and wait for the handler's response. We wait on
+	// the server context, not the per-request one: the PHP handler coroutine must
+	// always complete its round-trip (so its flow is cleaned up), and net/http may
+	// cancel the request context independently. If the client has gone, the final
+	// write simply no-ops.
 	select {
 	case s.requests <- event:
-	case <-request.Context().Done():
+	case <-s.ctx.Done():
 		return
 	}
 
-	// Wait for the PHP handler's response.
 	select {
 	case response := <-responseCh:
 		writeResponse(writer, response)
-	case <-request.Context().Done():
+	case <-s.ctx.Done():
 	}
 }
 
@@ -138,7 +188,7 @@ func (s *serverState) Next() *dto.Result {
 // requests to drain. Run on a fresh context — the task context is already
 // cancelled by the time the state is closed.
 func (s *serverState) Close() {
-	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), s.config.shutdownTimeout)
 	defer cancel()
 
 	_ = s.httpServer.Shutdown(ctx)

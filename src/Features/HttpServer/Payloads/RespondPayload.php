@@ -35,11 +35,18 @@ readonly class RespondPayload implements PayloadInterface
      */
     public function getData(): array
     {
-        return [
+        $data = [
             'rid' => $this->requestId,
             'st'  => $this->status,
-            'hd'  => $this->headers,
             'bd'  => $this->body,
         ];
+
+        // Omit empty headers: an empty PHP array encodes as a MessagePack array,
+        // which the Go side cannot decode into its headers map (it stays nil).
+        if ($this->headers !== []) {
+            $data['hd'] = $this->headers;
+        }
+
+        return $data;
     }
 }

@@ -4,10 +4,18 @@
 // MessagePack.
 package payloads
 
-// ServePayload is the payload of an httpStart command.
+// ServePayload is the payload of an httpStart command — the listener address and
+// the server tuning parameters (all timeouts in milliseconds, body limit in
+// bytes). Defaults are supplied by the PHP side.
 // PHP: SConcur\Features\HttpServer\Payloads\ServePayload.
 type ServePayload struct {
-	Address string `json:"ad" msgpack:"ad"`
+	Address             string `json:"ad" msgpack:"ad"`
+	ReadHeaderTimeoutMs int    `json:"rht" msgpack:"rht"`
+	ReadTimeoutMs       int    `json:"rt" msgpack:"rt"`
+	WriteTimeoutMs      int    `json:"wt" msgpack:"wt"`
+	IdleTimeoutMs       int    `json:"it" msgpack:"it"`
+	ShutdownTimeoutMs   int    `json:"sht" msgpack:"sht"`
+	MaxRequestBody      int64  `json:"mrb" msgpack:"mrb"`
 }
 
 // RespondPayload is the payload of an httpRespond command — the response a PHP
