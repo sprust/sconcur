@@ -8,6 +8,15 @@ here.
 
 - [README.md](../README.md) — project overview and usage
 - [docs/adding-a-feature.ru.md](../docs/adding-a-feature.ru.md) — guide for adding a new feature
+- [.ai/plans/](plans/) — detailed designs for roadmap items
+
+## Plans
+
+The README keeps only a short, one-line-per-item roadmap. Detailed designs for
+roadmap items live in `.ai/plans/` — one Markdown file per plan. When a roadmap
+item grows beyond a sentence (mechanics, API sketch, trade-offs, open
+questions), put the detail in a `.ai/plans/<kebab-name>.md` file and link it
+from the README's `## Планы` bullet instead of inlining it.
 
 ## Project
 
