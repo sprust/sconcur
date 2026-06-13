@@ -29,4 +29,4 @@ RUN mkdir -p -m 777 /go/pkg/mod/cache/download
 RUN chown $USER_ID:$GROUP_ID /go/pkg/mod/cache/download
 RUN chmod -R 777 /go/
 
-RUN docker-php-ext-install zip
+RUN docker-php-ext-install zip pcntl

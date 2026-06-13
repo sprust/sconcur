@@ -37,13 +37,41 @@ readonly class HttpServer
             payload: new ServePayload(address: $address),
         );
 
+        $stopRequested = false;
+
+        $this->installSignalHandlers($stopRequested);
+
         Scheduler::get()->serve(
             serverFlowKey: $flowKey,
             serverTaskKey: $runningTask->key,
             onRequest: static function (string $payload) use ($handler): void {
                 self::handle($handler, $payload);
             },
+            shouldStop: static function () use (&$stopRequested): bool {
+                return $stopRequested;
+            },
         );
+    }
+
+    /**
+     * Installs SIGTERM/SIGINT handlers that flip $stopRequested so the serve loop
+     * shuts down gracefully. Requires ext-pcntl; without it the server runs until
+     * the process is killed.
+     */
+    private function installSignalHandlers(bool &$stopRequested): void
+    {
+        if (!function_exists('pcntl_async_signals')) {
+            return;
+        }
+
+        pcntl_async_signals(true);
+
+        $handler = static function () use (&$stopRequested): void {
+            $stopRequested = true;
+        };
+
+        pcntl_signal(SIGTERM, $handler);
+        pcntl_signal(SIGINT, $handler);
     }
 
     /**

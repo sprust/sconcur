@@ -16,8 +16,15 @@
   `http.Server.Shutdown` на свежем контексте (дренаж активных запросов), `BaseContext`
   привязывает запросы к жизни сервера. Проверено e2e (несколько запросов по одному
   соединению).
-- **Осталось:** graceful shutdown по сигналу **из PHP** (serve-цикл блокирует в cgo
-  `waitAny`, сигнал не прервёт — нужен `waitAny` с таймаутом или self-pipe); лимит
+- **Готово (этап 4, signal-driven graceful):** `HttpServer::serve` ставит
+  `pcntl`-обработчики `SIGTERM`/`SIGINT` (`pcntl_async_signals`), которые взводят флаг;
+  `Scheduler::serve` по флагу перестаёт принимать новые запросы, дренажит in-flight
+  корутины (счётчик `spawnedCount`), затем `stopFlow` и выходит. `pcntl` включён в
+  Dockerfile (dev + release). Проверено e2e (SIGTERM → in-flight дослуживается →
+  сервер корректно завершается). **Ограничение:** serve блокирует в cgo `waitAny`, и
+  PHP-сигнал обрабатывается лишь на следующем событии — на idle-сервере shutdown
+  отложен до ближайшего запроса. Снимется `waitAny` с таймаутом (ниже).
+- **Осталось:** `waitAny` с таймаутом (мгновенный shutdown на idle); лимит
   конкурентности; стриминг ответов (SSE/chunked через `http.Flusher`); мульти-процесс
   (`SO_REUSEPORT`); автотест в CI (нужен отдельно-процессный харнесс — в одном процессе
   `serve()` блокирует, а `fork` запрещён).
@@ -133,8 +140,9 @@ Go (фича httpserver):
 1. [x] `Scheduler::spawn` + `serve()`.
 2. [x] Go-фича `httpserver`: listener как стриминговая задача; `httpStart` (push `ServePayload`).
 3. [x] `MethodHttpRespond` + DTO запроса/ответа; базовый запрос-ответ end-to-end.
-4. [x] Keep-alive + таймауты (путь B: `net/http.Server`); Go-side graceful `Shutdown`.
-   Осталось: signal-driven graceful shutdown из PHP (нужен `waitAny` с таймаутом).
+4. [x] Keep-alive + таймауты (путь B: `net/http.Server`); Go-side graceful `Shutdown`;
+   signal-driven graceful из PHP (`pcntl` SIGTERM/SIGINT → дренаж in-flight → stopFlow).
+   Осталось: `waitAny` с таймаутом для мгновенного shutdown на idle-сервере.
 5. [ ] Лимит конкурентности; затем стриминг ответов (SSE/chunked) через `http.Flusher`;
    затем мульти-процесс (`SO_REUSEPORT`).
 

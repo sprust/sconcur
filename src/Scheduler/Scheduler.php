@@ -43,6 +43,12 @@ class Scheduler
      */
     protected array $groupWaiters = [];
 
+    /**
+     * Number of live spawned (groupless) coroutines — request handlers in the
+     * server loop. Used to drain in-flight requests on graceful shutdown.
+     */
+    protected int $spawnedCount = 0;
+
     public static function get(): Scheduler
     {
         return static::$instance ??= new Scheduler();
@@ -83,6 +89,8 @@ class Scheduler
         );
 
         $this->register($coroutine);
+
+        ++$this->spawnedCount;
 
         try {
             // Run up to the first suspend (its first async call), like WaitGroup::add.
@@ -165,19 +173,47 @@ class Scheduler
      * server). Each request is dispatched to a freshly spawned coroutine
      * (spawn-on-request); results of every other flow resume their coroutines.
      * The single waitAny loop multiplexes incoming requests and the async work
-     * their handlers do. Returns when the server stream ends (flow stopped).
+     * their handlers do.
      *
-     * @param Closure(string): void $onRequest receives the raw request payload
+     * Graceful shutdown: once $shouldStop() returns true the loop stops accepting
+     * new requests and keeps running only to drain the in-flight handlers; when
+     * the last one finishes it stops the server flow and returns. The check
+     * happens after each delivered result, so on an idle server shutdown takes
+     * effect on the next event (a bounded waitAny will make it immediate later).
+     *
+     * @param Closure(string): void $onRequest  receives the raw request payload
+     * @param Closure(): bool       $shouldStop true once a shutdown was requested
      */
-    public function serve(string $serverFlowKey, string $serverTaskKey, Closure $onRequest): void
-    {
+    public function serve(
+        string $serverFlowKey,
+        string $serverTaskKey,
+        Closure $onRequest,
+        Closure $shouldStop,
+    ): void {
+        $draining = false;
+
         while (true) {
+            if (!$draining && $shouldStop()) {
+                // Stop accepting new requests; keep draining in-flight handlers.
+                $draining = true;
+            }
+
+            if ($draining && $this->spawnedCount === 0) {
+                break;
+            }
+
             $result = Extension::get()->waitAny();
 
             if ($result->flowKey === $serverFlowKey && $result->key === $serverTaskKey) {
                 // The server stream ended (flow stopped): leave the serve loop.
                 if (!$result->hasNext) {
                     break;
+                }
+
+                // While draining, refuse new requests; their connections are
+                // aborted when the server flow is stopped below.
+                if ($draining) {
+                    continue;
                 }
 
                 // Re-arm for the next request before handling this one, so the
@@ -195,6 +231,9 @@ class Scheduler
 
             $this->resumeByResult($result);
         }
+
+        // Stop the listener and abort any connections not yet answered.
+        Extension::get()->stopFlow($serverFlowKey);
     }
 
     /**
@@ -305,6 +344,8 @@ class Scheduler
 
         // Spawned coroutine owns a per-coroutine flow; stop it (Go side + State),
         // which also unregisters the fiber.
+        --$this->spawnedCount;
+
         State::deleteFlow($coroutine->flowKey);
     }
 

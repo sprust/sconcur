@@ -22,6 +22,9 @@
         "mongodb/mongodb": "^1.21",
         "friendsofphp/php-cs-fixer": "^3.91"
     },
+    "suggest": {
+        "ext-pcntl": "Required for graceful shutdown of the HTTP server (SIGTERM/SIGINT handling); the server otherwise runs until the process is killed"
+    },
     "autoload": {
         "psr-4": {
             "SConcur\\": "src/"
