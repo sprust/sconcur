@@ -22,6 +22,7 @@ use function SConcur\Extension\stopFlow;
 use function SConcur\Extension\tasksCount;
 use function SConcur\Extension\version;
 use function SConcur\Extension\wait;
+use function SConcur\Extension\waitAny;
 
 class Extension
 {
@@ -30,7 +31,7 @@ class Extension
      * whenever the PHP <-> Go protocol changes (payload keys, exported functions) so
      * an outdated .so is rejected instead of silently misbehaving.
      */
-    private const string REQUIRED_EXTENSION_VERSION = '0.0.1';
+    private const string REQUIRED_EXTENSION_VERSION = '0.1.0';
 
     protected static ?Extension $instance = null;
 
@@ -79,11 +80,58 @@ class Extension
 
         $response = wait($flowKey);
 
+        return static::parseWaitResponse(
+            response: $response,
+            errorContext: sprintf('flow %s', $flowKey),
+            start: $start,
+        );
+    }
+
+    /**
+     * Waits for the first ready result of any flow. This is the single global
+     * wait point the scheduler uses so flows progress concurrently instead of
+     * each one blocking on its own channel.
+     */
+    public function waitAny(): TaskResultDto
+    {
+        $start = microtime(true);
+
+        $response = waitAny();
+
+        return static::parseWaitResponse(
+            response: $response,
+            errorContext: 'waitAny',
+            start: $start,
+        );
+    }
+
+    public function count(): int
+    {
+        return tasksCount();
+    }
+
+    public function stopFlow(string $flowKey): void
+    {
+        stopFlow($flowKey);
+    }
+
+    public function destroy(): void
+    {
+        destroy();
+    }
+
+    public function version(): string
+    {
+        return version();
+    }
+
+    protected static function parseWaitResponse(string $response, string $errorContext, float $start): TaskResultDto
+    {
         if (str_starts_with($response, 'error:')) {
             throw new TaskErrorException(
                 message: sprintf(
-                    'flow %s: %s',
-                    $flowKey,
+                    '%s: %s',
+                    $errorContext,
                     $response,
                 )
             );
@@ -108,26 +156,6 @@ class Extension
                 previous: $exception,
             );
         }
-    }
-
-    public function count(): int
-    {
-        return tasksCount();
-    }
-
-    public function stopFlow(string $flowKey): void
-    {
-        stopFlow($flowKey);
-    }
-
-    public function destroy(): void
-    {
-        destroy();
-    }
-
-    public function version(): string
-    {
-        return version();
     }
 
     protected static function checkCallResponse(string $flowKey, string $response): void

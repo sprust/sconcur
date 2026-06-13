@@ -18,6 +18,10 @@ function wait(string $fk): string
 {
 }
 
+function waitAny(): string
+{
+}
+
 function tasksCount(): int
 {
 }

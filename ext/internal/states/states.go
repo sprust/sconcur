@@ -67,6 +67,12 @@ func (s *States) Next(task *tasks.Task) {
 
 	result := s.handleNext(message.TaskKey, state)
 
+	// The cursor state keeps the original message, but each next() may arrive on
+	// a different flow (a sync cursor uses a fresh flow per batch). Route the
+	// result back to whoever issued THIS next, not the flow that opened the
+	// cursor — otherwise the per-flow demultiplexer never delivers it.
+	result.FlowKey = message.FlowKey
+
 	task.AddResult(result)
 }
 

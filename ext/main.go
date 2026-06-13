@@ -107,6 +107,37 @@ func wait(fk *C.char, fkLen C.int) C.buffer_result_t {
 	}
 }
 
+//export waitAny
+func waitAny() C.buffer_result_t {
+	res, err := handler.WaitAny()
+
+	if err != nil {
+		return C.buffer_result_t{
+			data: nil,
+			len:  0,
+			err:  C.CString("error: " + err.Error()),
+		}
+	}
+
+	serialized, err := msgpack.Marshal(res)
+
+	if err != nil {
+		return C.buffer_result_t{
+			data: nil,
+			len:  0,
+			err:  C.CString("error: marshal msgpack: " + err.Error()),
+		}
+	}
+
+	data := C.CBytes(serialized)
+
+	return C.buffer_result_t{
+		data: data,
+		len:  C.int(len(serialized)),
+		err:  nil,
+	}
+}
+
 //export tasksCount
 func tasksCount() int {
 	return handler.GetTasksCount()
@@ -124,7 +155,7 @@ func destroy() {
 
 //export version
 func version() *C.char {
-	return C.CString("0.0.1")
+	return C.CString("0.1.0")
 }
 
 func main() {}

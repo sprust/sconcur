@@ -3,6 +3,7 @@ package flows
 import (
 	"context"
 	"errors"
+	"sconcur/internal/dto"
 	"sync"
 )
 
@@ -17,14 +18,14 @@ func NewFlows() *Flows {
 	}
 }
 
-func (f *Flows) InitFlow(handlerCtx context.Context, flowKey string) *Flow {
+func (f *Flows) InitFlow(handlerCtx context.Context, flowKey string, results chan *dto.Result) *Flow {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
 	flow, ok := f.flows[flowKey]
 
 	if !ok {
-		flow = NewFlow(handlerCtx, flowKey)
+		flow = NewFlow(handlerCtx, flowKey, results)
 
 		f.flows[flowKey] = flow
 	}

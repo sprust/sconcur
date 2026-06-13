@@ -58,13 +58,24 @@ Rebuild the extension with `make ext-build` before running tests that depend on
 **Execution flow:**
 `WaitGroup::add(closure)` → `Fiber::start()` → Fiber suspends on
 `FeatureExecutor::exec()` → `Extension::push()` sends task to Go → Go goroutine
-executes → result sent via channel → `Extension::wait()` retrieves → Fiber
-resumes → `WaitGroup::iterate()` yields result.
+executes → result sent via shared channel → `Scheduler` retrieves it with
+`Extension::waitAny()` and resumes the owning Fiber → `WaitGroup::iterate()`
+yields result.
+
+**Concurrency / nested coroutines:** a single process-wide `Scheduler` is the
+only place that waits on the extension (`waitAny`, the first ready result of any
+flow) and resumes fibers, so coroutines never nest on each other's call stack.
+A nested `WaitGroup` inside a coroutine cooperatively suspends (`awaitGroup`)
+instead of blocking, so nested coroutines run concurrently with each other and
+with the outer flow. (`Extension::wait(flowKey)` remains for the synchronous,
+non-fiber path.)
 
 **PHP layer** (`src/`):
 - `WaitGroup` — main API: `add()`, `iterate()`, `waitAll()`, `waitResults()`
+- `Scheduler/Scheduler` — process-wide cooperative scheduler (single `waitAny` loop, resumes coroutines, wakes nested-group waiters)
+- `Scheduler/Coroutine` — a tracked fiber: id, fiber, owning group, callback key
 - `State` — static registry mapping Fibers ↔ flows ↔ tasks
-- `Connection/Extension` — singleton wrapping Go extension's exported C functions (`push`, `wait`, `next`, `stopFlow`, etc.)
+- `Connection/Extension` — singleton wrapping Go extension's exported C functions (`push`, `wait`, `waitAny`, `next`, `stopFlow`, etc.)
 - `Features/FeatureExecutor` — coordinates feature execution, detects async context via `Fiber::getCurrent()`
 - `Features/Mongodb/Connection/{Client,Database,Collection}` — MongoDB operations (insert, update, delete, find, aggregate, indexes, bulk write)
 - `Features/Sleeper/Sleeper` — async sleep
@@ -104,6 +115,30 @@ lifecycle-sensitive tests extend `BaseTestCase`.
 - Code must be maximally typed (type hints for parameters, return types, properties)
 - Never abbreviate variable names — use full, descriptive names
 - Prefer short arrays (`[]`)
+
+## Exceptions
+
+Concept: callable signatures stay clean of `@throws` noise, so the public API
+does not advertise concrete throwables — any caught `Throwable` is wrapped before
+re-throwing. Rules:
+
+- **Never `throw` a built-in exception directly** (`RuntimeException`,
+  `LogicException`, `DomainException`, etc.). Always throw a custom exception
+  from `SConcur\Exceptions\` named for the case.
+- Custom exceptions extend a built-in base by nature: **`RuntimeException`** for
+  runtime failures (e.g. `TaskExecutionException`, `CallbackExecutionException`,
+  `ExtensionNotLoadedException`, `Mongodb\InvalidCountResultException`),
+  **`LogicException`** for invariant/usage bugs (e.g. `OutsideFiberException`,
+  `UnexpectedTaskKeyException`, `UnexpectedResultTypeException`,
+  `FiberStateException`). So `catch (RuntimeException)` still works while the
+  concrete type stays catchable.
+- When wrapping a caught `Throwable`, keep it as `previous` (preserve message +
+  chain). A `Throwable` from `Fiber::suspend()`/`Fiber::resume()` is wrapped the
+  same way (see `FeatureExecutor::suspend`, `Scheduler::awaitGroup`); a
+  deliberate unwind signal (`FlowStoppedException`) is re-thrown as-is.
+- A task error from Go surfaces as `TaskErrorException`; on the async path it is
+  wrapped in `CallbackExecutionException` (original reachable via
+  `getPrevious()`).
 
 ## Workflow Rules
 

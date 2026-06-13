@@ -109,25 +109,35 @@ class GeneralTest extends BaseTestCase
             $results
         );
 
-        self::assertSame(
+        foreach (
             [
-                '1:start',
-                '2:start',
-                '1:woke',
-                // internal flow
-                '2.1:start',
-                '2.2:start',
-                '2.1:woke',
-                '2.2:woke',
-                '2.1:finish',
-                '2.2:finish',
-                // internal flow ^
-                '2:woke',
-                '1:finish',
-                '2:finish',
-            ],
-            $events
-        );
+                '1:start', '2:start', '1:woke',
+                '2.1:start', '2.2:start', '2.1:woke', '2.2:woke',
+                '2.1:finish', '2.2:finish', '2:woke', '1:finish', '2:finish',
+            ] as $expectedEvent
+        ) {
+            self::assertContains($expectedEvent, $events);
+        }
+
+        $positionOf = static fn(string $event): int => (int) array_search($event, $events, true);
+
+        // Both top-level coroutines start before either makes progress.
+        self::assertLessThan($positionOf('1:woke'), $positionOf('1:start'));
+        self::assertLessThan($positionOf('2.1:start'), $positionOf('2:start'));
+
+        // Cross-flow concurrency: the outer coroutine 1 finishes WHILE the nested
+        // group of coroutine 2 is still running — i.e. before the nested coroutines
+        // finish. Under the old blocking model 1:finish only came after the whole
+        // nested flow had completed.
+        self::assertLessThan($positionOf('2.1:finish'), $positionOf('1:finish'));
+        self::assertLessThan($positionOf('2.2:finish'), $positionOf('1:finish'));
+
+        // The nested group completes before coroutine 2 resumes past its waitAll.
+        self::assertLessThan($positionOf('2:woke'), $positionOf('2.1:finish'));
+        self::assertLessThan($positionOf('2:woke'), $positionOf('2.2:finish'));
+
+        // Coroutine 2 (with the nested flow) finishes after coroutine 1.
+        self::assertLessThan($positionOf('2:finish'), $positionOf('1:finish'));
     }
 
     public function testOrder(): void
@@ -540,5 +550,72 @@ class GeneralTest extends BaseTestCase
 
         self::assertCount(0, $results);
         self::assertLessThan(1, $elapsedSeconds);
+    }
+
+    public function testNestedGroupRunsConcurrentlyWithOuterFlow(): void
+    {
+        /** @var string[] $events */
+        $events = [];
+
+        $waitGroup = WaitGroup::create();
+
+        // Fast outer coroutine.
+        $waitGroup->add(function () use (&$events) {
+            $this->sleeper->msleep(milliseconds: 50);
+
+            $events[] = 'outer:fast';
+        });
+
+        // Outer coroutine that spawns a nested group of slow coroutines.
+        $waitGroup->add(function () use (&$events) {
+            $inner = WaitGroup::create();
+
+            $inner->add(function () use (&$events) {
+                $this->sleeper->msleep(milliseconds: 300);
+
+                $events[] = 'inner:slow';
+            });
+
+            $inner->waitAll();
+
+            $events[] = 'outer:slow';
+        });
+
+        $waitGroup->waitAll();
+
+        // The fast outer coroutine must finish before the nested slow coroutine:
+        // the nested group does not block the outer flow. Under the old blocking
+        // model the nested waitAll() froze the outer flow, so 'outer:fast' could
+        // only appear after 'inner:slow'.
+        self::assertContains('outer:fast', $events);
+        self::assertContains('inner:slow', $events);
+
+        self::assertLessThan(
+            (int) array_search('inner:slow', $events, true),
+            (int) array_search('outer:fast', $events, true),
+        );
+    }
+
+    public function testSiblingWaitGroupsBothComplete(): void
+    {
+        $first  = WaitGroup::create();
+        $second = WaitGroup::create();
+
+        $first->add(function (): string {
+            $this->sleeper->msleep(milliseconds: 20);
+
+            return 'first';
+        });
+
+        $second->add(function (): string {
+            $this->sleeper->msleep(milliseconds: 20);
+
+            return 'second';
+        });
+
+        // Two independent groups on the top level must both resolve correctly
+        // without deadlock or cross-routing of results.
+        self::assertSame(['first'], array_values($first->waitResults()));
+        self::assertSame(['second'], array_values($second->waitResults()));
     }
 }
