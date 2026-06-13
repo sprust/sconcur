@@ -52,7 +52,8 @@ readonly class Collection
             uri: $this->database->client->uri,
             databaseName: $this->database->name,
             collectionName: $this->name,
-            socketTimeoutMs: $this->database->client->socketTimeoutMs,
+            timeoutMs: $this->database->client->timeoutMs,
+            serverSelectionTimeoutMs: $this->database->client->serverSelectionTimeoutMs,
         );
     }
 

@@ -94,7 +94,8 @@ func (f *CollectionFeature) Handle(task *tasks.Task) {
 
 	client, err := f.clients.Acquire(
 		payload.Url,
-		payload.SocketTimeoutMs,
+		payload.TimeoutMs,
+		payload.ServerSelectionTimeoutMs,
 	)
 
 	if err != nil {

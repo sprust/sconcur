@@ -10,7 +10,8 @@ readonly class Connection
         public string $uri,
         public string $databaseName,
         public string $collectionName,
-        public int $socketTimeoutMs,
+        public int $timeoutMs,
+        public int $serverSelectionTimeoutMs,
     ) {
     }
 }

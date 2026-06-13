@@ -36,7 +36,8 @@ abstract readonly class BaseMongodbPayload implements PayloadInterface
             'ul'  => $connection->uri,
             'db'  => $connection->databaseName,
             'cl'  => $connection->collectionName,
-            'sto' => $connection->socketTimeoutMs,
+            'to'  => $connection->timeoutMs,
+            'sst' => $connection->serverSelectionTimeoutMs,
             'cm'  => $this->getCommand()->value,
             'dt'  => DocumentSerializer::serialize(
                 document: $parameters->data,

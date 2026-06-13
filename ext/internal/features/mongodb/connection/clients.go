@@ -41,22 +41,24 @@ func GetClients() *Clients {
 	return &instance
 }
 
-// Acquire returns the client for url+socketTimeout, creating it on first use, and marks it
-// as held (inUse). The caller must Release it when done.
+// Acquire returns the client for url+timeout+serverSelectionTimeout, creating it on first
+// use, and marks it as held (inUse). The caller must Release it when done.
 func (c *Clients) Acquire(
 	url string,
-	socketTimeoutMs int,
+	timeoutMs int,
+	serverSelectionTimeoutMs int,
 ) (*Client, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	key := fmt.Sprintf("%s[sto:%d]", url, socketTimeoutMs)
+	key := fmt.Sprintf("%s[to:%d,sst:%d]", url, timeoutMs, serverSelectionTimeoutMs)
 
 	client, exists := c.clients[key]
 
 	if !exists {
 		clientOptions := options.Client().ApplyURI(url).
-			SetTimeout(time.Duration(socketTimeoutMs) * time.Millisecond)
+			SetTimeout(time.Duration(timeoutMs) * time.Millisecond).
+			SetServerSelectionTimeout(time.Duration(serverSelectionTimeoutMs) * time.Millisecond)
 
 		// The client outlives any task, so it must not depend on a task context.
 		mClient, err := mongo.Connect(clientOptions)

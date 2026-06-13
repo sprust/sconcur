@@ -38,9 +38,9 @@ class TestMongodbResolver
             ->selectDatabase(static::$testDatabaseName);
     }
 
-    public static function getSconcurTestCollection(string $collectionName, ?int $socketTimeoutMs = null): Collection
+    public static function getSconcurTestCollection(string $collectionName, ?int $timeoutMs = null): Collection
     {
-        return new Client(uri: static::getUri(), socketTimeoutMs: $socketTimeoutMs)
+        return new Client(uri: static::getUri(), timeoutMs: $timeoutMs)
             ->selectDatabase(static::$testDatabaseName)
             ->selectCollection($collectionName);
     }

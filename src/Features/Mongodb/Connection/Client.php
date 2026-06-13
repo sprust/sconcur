@@ -11,19 +11,26 @@ use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
 
 readonly class Client
 {
-    public int $socketTimeoutMs;
+    public int $timeoutMs;
+
+    public int $serverSelectionTimeoutMs;
 
     protected Connection $connection;
 
-    public function __construct(public string $uri, ?int $socketTimeoutMs = null)
-    {
-        $this->socketTimeoutMs = $socketTimeoutMs ?: 30000;
+    public function __construct(
+        public string $uri,
+        ?int $timeoutMs = null,
+        ?int $serverSelectionTimeoutMs = null,
+    ) {
+        $this->timeoutMs                = $timeoutMs ?: 30000;
+        $this->serverSelectionTimeoutMs = $serverSelectionTimeoutMs ?: 10000;
 
         $this->connection = new Connection(
             uri: $this->uri,
             databaseName: '',
             collectionName: '',
-            socketTimeoutMs: $this->socketTimeoutMs,
+            timeoutMs: $this->timeoutMs,
+            serverSelectionTimeoutMs: $this->serverSelectionTimeoutMs,
         );
     }
 

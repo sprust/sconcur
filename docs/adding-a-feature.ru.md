@@ -28,8 +28,10 @@
    в payload фичи. Как его применяют:
    - иногда время и есть суть операции — `Sleeper` (длительность сна);
    - иногда таймаут прикладывается нативно — MongoDB передаёт
-     `SConcur\Features\Mongodb\Connection\Client::$socketTimeoutMs`, а Go применяет его
-     как `options.Client().ApplyURI(url).SetSocketTimeout(time.Duration(socketTimeoutMs) * time.Millisecond)`;
+     `SConcur\Features\Mongodb\Connection\Client::$timeoutMs` (предельное время операции,
+     CSOT) и `::$serverSelectionTimeoutMs` (сколько ждать доступный сервер, чтобы
+     недоступный MongoDB не подвешивал задачу), а Go применяет их как
+     `options.Client().ApplyURI(url).SetTimeout(...).SetServerSelectionTimeout(...)`;
    - общий способ — ограничить контекст задачи:
      `ctx, cancel := context.WithTimeout(task.GetContext(), timeout)`.
 

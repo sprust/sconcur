@@ -3,12 +3,13 @@ package objects
 import "sconcur/internal/types"
 
 type Payload struct {
-	Url             string               `json:"ul" msgpack:"ul"`
-	Database        string               `json:"db" msgpack:"db"`
-	Collection      string               `json:"cl" msgpack:"cl"`
-	SocketTimeoutMs int                  `json:"sto" msgpack:"sto"`
-	Command         types.MongodbCommand `json:"cm" msgpack:"cm"`
-	Data            []byte               `json:"dt" msgpack:"dt"`
+	Url                      string               `json:"ul" msgpack:"ul"`
+	Database                 string               `json:"db" msgpack:"db"`
+	Collection               string               `json:"cl" msgpack:"cl"`
+	TimeoutMs                int                  `json:"to" msgpack:"to"`
+	ServerSelectionTimeoutMs int                  `json:"sst" msgpack:"sst"`
+	Command                  types.MongodbCommand `json:"cm" msgpack:"cm"`
+	Data                     []byte               `json:"dt" msgpack:"dt"`
 }
 
 type UpdateParams struct {
