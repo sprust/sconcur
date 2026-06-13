@@ -24,10 +24,7 @@ abstract readonly class BaseMongodbPayload implements PayloadInterface
         return MethodEnum::Mongodb;
     }
 
-    /**
-     * @return array<string, mixed>
-     */
-    public function getData(): int|float|string|array|null
+    public function getData(): array
     {
         $connection = $this->getConnection();
         $parameters = $this->getParameters();
