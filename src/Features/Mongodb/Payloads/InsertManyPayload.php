@@ -9,6 +9,10 @@ use SConcur\Features\Mongodb\Payloads\Base\BaseMongodbPayload;
 use SConcur\Features\Mongodb\Payloads\Dto\Connection;
 use SConcur\Features\Mongodb\Payloads\Dto\Parameters;
 
+/**
+ * Go: no struct — the `dt` body is consumed as raw BSON (or is empty);
+ * see ext/internal/features/mongodb/payloads/payloads.go.
+ */
 readonly class InsertManyPayload extends BaseMongodbPayload
 {
     /**

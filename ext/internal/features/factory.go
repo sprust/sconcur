@@ -6,14 +6,14 @@ import (
 	"sconcur/internal/contracts"
 	"sconcur/internal/features/mongodb/connection"
 	"sconcur/internal/features/mongodb/features/collection"
-	"sconcur/internal/features/sleep"
+	"sconcur/internal/features/sleeper"
 	"sconcur/internal/types"
 )
 
 func DetectMessageHandler(method types.Method) (contracts.FeatureContract, error) {
 	switch method {
 	case types.MethodSleep:
-		return sleep_feature.Get(), nil
+		return sleeper_feature.Get(), nil
 	case types.MethodMongodb:
 		return collection_feature.GetCollectionFeature(), nil
 	default:

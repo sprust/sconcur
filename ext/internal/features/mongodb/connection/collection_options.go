@@ -1,7 +1,7 @@
 package connection
 
 import (
-	"sconcur/internal/features/mongodb/objects"
+	"sconcur/internal/features/mongodb/payloads"
 	"sconcur/internal/features/mongodb/serializer"
 
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -23,7 +23,7 @@ type deleteOptionsBuilder[T any] interface {
 }
 
 // applyUpdateOptions applies the shared hint/collation/arrayFilters options to an update.
-func applyUpdateOptions[T updateOptionsBuilder[T]](opts T, params *objects.UpdateParams) error {
+func applyUpdateOptions[T updateOptionsBuilder[T]](opts T, params *payloads.UpdateOnePayload) error {
 	if hint := serializer.ParseHint(params.Hint); hint != nil {
 		opts.SetHint(hint)
 	}
@@ -120,7 +120,7 @@ func applyDistinctOptions(opts *options.DistinctOptionsBuilder, collation []byte
 }
 
 // applyFindOneAndUpdateOptions applies hint/collation/arrayFilters to a findOneAndUpdate.
-func applyFindOneAndUpdateOptions(opts *options.FindOneAndUpdateOptionsBuilder, params *objects.FindOneAndUpdateParams) error {
+func applyFindOneAndUpdateOptions(opts *options.FindOneAndUpdateOptionsBuilder, params *payloads.FindOneAndUpdatePayload) error {
 	if hint := serializer.ParseHint(params.Hint); hint != nil {
 		opts.SetHint(hint)
 	}

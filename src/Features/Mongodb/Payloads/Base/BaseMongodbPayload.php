@@ -11,6 +11,11 @@ use SConcur\Features\Mongodb\Payloads\Dto\Parameters;
 use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
 use SConcur\Transport\PayloadInterface;
 
+/**
+ * Builds the command envelope (ul/db/cl/to/sst/cm/dt) every MongoDB payload sends.
+ *
+ * Go: payloads.Payload (ext/internal/features/mongodb/payloads/payloads.go).
+ */
 abstract readonly class BaseMongodbPayload implements PayloadInterface
 {
     abstract protected function getCommand(): CommandEnum;

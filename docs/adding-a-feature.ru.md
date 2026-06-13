@@ -1,8 +1,9 @@
 # Как добавить новую фичу верхнего уровня
 
 Фича верхнего уровня — это новый **домен** со своим `Method` (как `Sleeper`). Эталон
-для копирования — `Sleeper`: PHP в `src/Features/Sleeper/`, Go в
-`ext/internal/features/sleep/`.
+для копирования — `Sleeper`: PHP в `src/Features/Sleeper/` (payloads — в
+`src/Features/Sleeper/Payloads/`), Go в `ext/internal/features/sleeper/` (payloads — в
+`ext/internal/features/sleeper/payloads/`).
 
 Ниже — пошагово, в двух вариантах: **без стриминга** (один результат) и
 **со стримингом** (несколько батчей). Конкретная работа фичи скрыта за «вашей
@@ -49,6 +50,57 @@
 
 ---
 
+## Оформление payloads (PHP ↔ Go)
+
+Payload — это контракт обмена между PHP и Go. Он оформляется зеркально с обеих
+сторон, чтобы конвертация «PHP → Go» читалась наглядно.
+
+**Расположение.**
+- PHP: `src/Features/<Feature>/Payloads/` — по классу на каждый payload.
+- Go: `ext/internal/features/<feature>/payloads/payloads.go` — все типы в одном файле
+  пакета `payloads`.
+
+Каталог фичи на Go называется так же, как PHP-домен (`Sleeper` → `sleeper`,
+`Mongodb` → `mongodb`).
+
+**Соответствие 1:1.** Каждый PHP `*Payload` имеет Go-структуру с **тем же именем**.
+Поля Go-структуры — это ключи, которые отдаёт `getData()`; теги `msgpack` (и `json`)
+равны этим коротким ключам. Go декодирует payload именно по `msgpack`-тегам.
+
+```go
+// SleeperPayload is the payload of a sleep command.
+// PHP: SConcur\Features\Sleeper\Payloads\SleeperPayload.
+type SleeperPayload struct {
+    Milliseconds int64 `json:"ms" msgpack:"ms"`
+}
+```
+
+**Кросс-ссылки — обязательны в обе стороны** (комментарием):
+- на Go-структуре: `// PHP: SConcur\Features\<Feature>\Payloads\<Class>`;
+- на PHP-классе (docblock): `Go: payloads.<Type> (ext/internal/features/<feature>/payloads/payloads.go)`.
+
+**Мульти-командные фичи (эталон — `Mongodb`).** Когда один `Method` обслуживает много
+команд, payload двухуровневый:
+- общий **конверт** (envelope) с полем команды и `dt` (сериализованное тело) —
+  на Go это один тип `Payload`, на PHP его строит `Base\BaseMongodbPayload`;
+- **содержимое `dt`** — по структуре на команду, имена зеркалят PHP `*Payload`.
+
+Правила для таких фич:
+- PHP-классы `*PayloadParameters` — это PHP-only удобство для сборки `dt`; **на Go их
+  не переносят**. Их поля раскрывают прямо в соответствующую `*Payload`-структуру на Go
+  (поля опций — инлайн).
+- Если `dt` команды — это произвольный пользовательский документ/массив (insert, count,
+  runCommand, …) или пусто (drop, list…), Go-структуры у неё нет: `dt` читается как
+  raw BSON в обработчике. Такой случай **помечают комментарием** в `payloads.go`, чтобы
+  каждому PHP `*Payload` соответствовала либо Go-структура, либо явная пометка.
+
+**Прочее.** Payload несёт предельное время выполнения (см. требование 2). PHP-payload —
+`readonly`, поля типизированы, имена не сокращаются.
+
+Эталоны: `Sleeper` (одна команда) и `Mongodb` (конверт + команды).
+
+---
+
 ## Вариант A. Без стриминга (один результат)
 
 ### PHP
@@ -58,10 +110,14 @@
    case Foo = 3;
    ```
 
-2. **Payload-класс** `src/Features/Foo/FooPayload.php`, реализующий `PayloadInterface`.
-   `getMethod()` возвращает новый `Method`, `getData()` — параметры (массив/скаляр,
-   сериализуемые в MessagePack):
+2. **Payload-класс** `src/Features/Foo/Payloads/FooPayload.php`, реализующий
+   `PayloadInterface` (оформление — см. «Оформление payloads» выше). `getMethod()`
+   возвращает новый `Method`, `getData()` — параметры (массив/скаляр, сериализуемые в
+   MessagePack):
    ```php
+   /**
+    * Go: payloads.FooPayload (ext/internal/features/foo/payloads/payloads.go).
+    */
    readonly class FooPayload implements PayloadInterface
    {
        public function __construct(
@@ -123,7 +179,7 @@
        start := time.Now()
        message := task.GetMessage()
 
-       var payload params.FooPayload // поле TimeoutMs с тегом msgpack:"to"
+       var payload payloads.FooPayload // payloads.FooPayload зеркалит PHP FooPayload; TimeoutMs с тегом msgpack:"to"
 
        if err := msgpack.Unmarshal(message.Payload, &payload); err != nil {
            task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("parse error", err)))
@@ -276,13 +332,16 @@
 
 PHP:
 - [ ] `MethodEnum` — новое значение.
-- [ ] Payload-класс (`PayloadInterface`); сборка параметров — внутри него; payload несёт
-      предельное время выполнения (таймаут).
+- [ ] Payload-класс (`PayloadInterface`) в `src/Features/<Feature>/Payloads/`; сборка
+      параметров — внутри него; payload несёт предельное время выполнения (таймаут);
+      docblock с кросс-ссылкой `Go: payloads.<Type>`.
 - [ ] Публичный API (для стриминга — возвращает `IteratorResult`).
 - [ ] Тест от `BaseAsyncTestCase` + краевые тесты от `BaseTestCase`.
 
 Go:
 - [ ] Та же константа в `types/method.go`.
+- [ ] Payload-структуры в `ext/internal/features/<feature>/payloads/payloads.go`,
+      зеркалят PHP `*Payload` 1:1 (имена, `msgpack`-теги) + кросс-ссылка `// PHP: …`.
 - [ ] Пакет фичи с `Handle`: контекст задачи во все вызовы; работа ограничена переданным
       таймаутом; для стриминга — состояние `StateContract` + `Close()` на свежем контексте.
 - [ ] Регистрация в `features/factory.go`.

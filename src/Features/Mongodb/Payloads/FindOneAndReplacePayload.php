@@ -9,6 +9,9 @@ use SConcur\Features\Mongodb\Payloads\Base\BaseMongodbPayload;
 use SConcur\Features\Mongodb\Payloads\Dto\Connection;
 use SConcur\Features\Mongodb\Payloads\Dto\Parameters;
 
+/**
+ * Go: payloads.FindOneAndReplacePayload (ext/internal/features/mongodb/payloads/payloads.go).
+ */
 readonly class FindOneAndReplacePayload extends BaseMongodbPayload
 {
     /**

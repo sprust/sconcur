@@ -596,6 +596,74 @@ class GeneralTest extends BaseTestCase
         );
     }
 
+    public function testNestedIterateRunsConcurrentlyWithOuterFlow(): void
+    {
+        /** @var string[] $events */
+        $events = [];
+
+        /** @var array<string, string> $innerResults */
+        $innerResults = [];
+
+        $waitGroup = WaitGroup::create();
+
+        // Fast outer coroutine.
+        $waitGroup->add(function () use (&$events) {
+            $this->sleeper->msleep(milliseconds: 50);
+
+            $events[] = 'outer:fast';
+        });
+
+        // Outer coroutine that spawns a nested group and drains it through a
+        // manually consumed iterate() generator (not waitAll()/waitResults()).
+        $waitGroup->add(function () use (&$events, &$innerResults) {
+            $inner = WaitGroup::create();
+
+            $inner->add(function () use (&$events): string {
+                $this->sleeper->msleep(milliseconds: 300);
+
+                $events[] = 'inner:slow';
+
+                return 'slow';
+            });
+
+            $inner->add(function () use (&$events): string {
+                $this->sleeper->msleep(milliseconds: 320);
+
+                $events[] = 'inner:slower';
+
+                return 'slower';
+            });
+
+            foreach ($inner->iterate() as $key => $value) {
+                $innerResults[$key] = $value;
+            }
+
+            $events[] = 'outer:slow';
+        });
+
+        $waitGroup->waitAll();
+
+        // The nested iterate() yields every nested result.
+        self::assertEqualsCanonicalizing(['slow', 'slower'], array_values($innerResults));
+
+        // Cross-flow: the fast outer coroutine finishes before the nested slow
+        // coroutines, i.e. a nested iterate() does not block the outer flow.
+        self::assertContains('outer:fast', $events);
+        self::assertContains('inner:slow', $events);
+
+        self::assertLessThan(
+            (int) array_search('inner:slow', $events, true),
+            (int) array_search('outer:fast', $events, true),
+        );
+
+        // The coroutine driving the nested iterate() only proceeds once its
+        // nested group has fully drained.
+        self::assertLessThan(
+            (int) array_search('outer:slow', $events, true),
+            (int) array_search('inner:slower', $events, true),
+        );
+    }
+
     public function testSiblingWaitGroupsBothComplete(): void
     {
         $first  = WaitGroup::create();

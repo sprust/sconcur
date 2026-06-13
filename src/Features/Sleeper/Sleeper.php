@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Features\Sleeper;
 
 use SConcur\Features\FeatureExecutor;
+use SConcur\Features\Sleeper\Payloads\SleeperPayload;
 
 readonly class Sleeper
 {

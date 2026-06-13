@@ -3,7 +3,7 @@ package connection
 import (
 	"context"
 	"sconcur/internal/dto"
-	"sconcur/internal/features/mongodb/objects"
+	"sconcur/internal/features/mongodb/payloads"
 	"sconcur/internal/features/mongodb/serializer"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -32,7 +32,7 @@ func (d *Database) Collection(name string) *Collection {
 func (d *Database) ListCollections(
 	ctx context.Context,
 	message *dto.Message,
-	_ *objects.Payload,
+	_ *payloads.Payload,
 ) *dto.Result {
 	return documentResult(message, "listCollections", func() (interface{}, error) {
 		names, err := d.mDatabase.ListCollectionNames(ctx, bson.D{})
@@ -48,7 +48,7 @@ func (d *Database) ListCollections(
 func (d *Database) ListDatabases(
 	ctx context.Context,
 	message *dto.Message,
-	_ *objects.Payload,
+	_ *payloads.Payload,
 ) *dto.Result {
 	return documentResult(message, "listDatabases", func() (interface{}, error) {
 		names, err := d.client.mClient.ListDatabaseNames(ctx, bson.D{})
@@ -64,7 +64,7 @@ func (d *Database) ListDatabases(
 func (d *Database) RunCommand(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
 	command, err := serializer.UnmarshalDocument(payload.Data)
 
@@ -83,11 +83,11 @@ func (d *Database) RunCommand(
 func (d *Database) RenameCollection(
 	ctx context.Context,
 	message *dto.Message,
-	payload *objects.Payload,
+	payload *payloads.Payload,
 ) *dto.Result {
-	var params objects.RenameCollectionParams
+	var params payloads.RenameCollectionPayload
 
-	err := objects.UnmarshalParams(payload.Data, &params)
+	err := payloads.UnmarshalParams(payload.Data, &params)
 
 	if err != nil {
 		return dto.NewErrorResult(
