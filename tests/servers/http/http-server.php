@@ -136,8 +136,9 @@ $server->serve(static function (Request $request) use ($sleeper): Response|Strea
             body: 'cookies',
             headers: ['Set-Cookie' => ['a=1', 'b=2']],
         ),
-        $request->path === '/stream' => streamRoute($sleeper),
-        $request->path === '/throw'  => throw new RuntimeException('boom in handler'),
+        $request->path === '/stream'      => streamRoute($sleeper),
+        $request->path === '/slow-stream' => slowStreamRoute($sleeper),
+        $request->path === '/throw'       => throw new RuntimeException('boom in handler'),
         str_starts_with($request->path, '/msleep/') => msleepRoute($sleeper, $request->path),
         str_starts_with($request->path, '/status/') => statusRoute($request->path),
         default => new Response(body: 'not found', status: 404),
@@ -176,6 +177,22 @@ function streamRoute(Sleeper $sleeper): StreamedResponse
 
                 // Async work between chunks: other requests keep being served.
                 $sleeper->msleep(milliseconds: 50);
+            }
+        },
+        headers: ['Content-Type' => 'text/plain'],
+    );
+}
+
+function slowStreamRoute(Sleeper $sleeper): StreamedResponse
+{
+    // Four chunks 100ms apart (~400ms total): a small handlerTimeoutMs cuts it
+    // mid-stream. Used by the handler-timeout test.
+    return new StreamedResponse(
+        writer: static function (ResponseStream $out) use ($sleeper): void {
+            foreach (['p0', 'p1', 'p2', 'p3'] as $part) {
+                $out->write("$part\n");
+
+                $sleeper->msleep(milliseconds: 100);
             }
         },
         headers: ['Content-Type' => 'text/plain'],

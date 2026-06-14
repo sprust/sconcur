@@ -32,9 +32,10 @@ readonly class HttpServer
      *                                                                      Bounds goroutines, buffered request bodies (memory) and request
      *                                                                      coroutines; excess connections wait for a free slot. Set it to
      *                                                                      cap resource use under load.
-     * @param int                                         $handlerTimeoutMs how long to wait for a handler to start responding before
-     *                                                                      answering 504 and freeing the slot (0 = disabled). Covers only
-     *                                                                      the time to the first write, so a started stream is not cut off.
+     * @param int                                         $handlerTimeoutMs max total time to handle a request, including a streamed
+     *                                                                      response, before it is cut off and the slot freed (0 = disabled).
+     *                                                                      If nothing was written yet the client gets a 504; mid-stream the
+     *                                                                      response is aborted (status is already on the wire).
      *                                                                      Note: a CPU-bound handler still blocks the single-threaded loop;
      *                                                                      this guards handlers waiting on async work.
      * @param bool                                        $reusePort        set SO_REUSEPORT so several processes can bind this same

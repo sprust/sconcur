@@ -275,10 +275,10 @@ func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan 
 	// status can no longer change (so no 503 fallback on shutdown).
 	started := false
 
-	// Bound the time to the first response: a stuck handler must not hold the
-	// connection (and its concurrency slot) forever. The deadline covers only the
-	// first write — once a response has started, a stream may run as long as it
-	// likes. Disabled when handlerTimeout is 0.
+	// Bound the total handling time: the whole request — including a streamed
+	// response — must complete within handlerTimeout, otherwise it is cut off.
+	// A stuck handler must not hold the connection (and its concurrency slot)
+	// forever. Disabled when handlerTimeout is 0.
 	var timeout <-chan time.Time
 
 	if s.config.handlerTimeout > 0 {
@@ -318,9 +318,12 @@ func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan 
 
 			return
 		case <-timeout:
-			// The handler produced nothing in time (timeout only fires before the
-			// first write): 504 and give up the connection and the slot.
-			writeGatewayTimeout(writer)
+			// The total deadline elapsed. Before the first write we can still
+			// answer 504; once a response has started the status is already on the
+			// wire, so just abort the (now-truncated) stream and free the slot.
+			if !started {
+				writeGatewayTimeout(writer)
+			}
 
 			return
 		case command := <-commands:
@@ -329,9 +332,6 @@ func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan 
 
 			if command.kind != writeEnd {
 				started = true
-				// Response has started; stop the first-write deadline so a long
-				// stream is not cut off.
-				timeout = nil
 			}
 
 			if finished {
