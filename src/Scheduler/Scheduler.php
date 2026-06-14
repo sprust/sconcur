@@ -4,11 +4,15 @@ declare(strict_types=1);
 
 namespace SConcur\Scheduler;
 
+use Closure;
 use Fiber;
 use SConcur\Connection\Extension;
+use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\CallbackExecutionException;
 use SConcur\Exceptions\FiberStateException;
 use SConcur\Exceptions\FlowStoppedException;
+use SConcur\Exceptions\TaskErrorException;
+use SConcur\Flow\CurrentFlow;
 use SConcur\State;
 use SConcur\WaitGroup;
 use Throwable;
@@ -22,6 +26,12 @@ use Throwable;
  */
 class Scheduler
 {
+    /**
+     * How long the server loop blocks on one waitAny before looping to re-check
+     * for a shutdown signal. Bounds the shutdown latency of an idle server.
+     */
+    private const int SERVE_POLL_INTERVAL_MS = 250;
+
     protected static ?Scheduler $instance = null;
 
     /**
@@ -40,6 +50,12 @@ class Scheduler
      */
     protected array $groupWaiters = [];
 
+    /**
+     * Number of live spawned (groupless) coroutines — request handlers in the
+     * server loop. Used to drain in-flight requests on graceful shutdown.
+     */
+    protected int $spawnedCount = 0;
+
     public static function get(): Scheduler
     {
         return static::$instance ??= new Scheduler();
@@ -48,6 +64,55 @@ class Scheduler
     public function register(Coroutine $coroutine): void
     {
         $this->coroutines[$coroutine->id] = $coroutine;
+    }
+
+    /**
+     * Spawns a standalone coroutine outside any WaitGroup (fire-and-forget). Used
+     * by the server loop to handle each incoming request in its own coroutine.
+     * The coroutine gets its own flow, so its async calls run concurrently with
+     * everything else and the flow is stopped when it finishes; its return value
+     * is not collected. The callback is expected to handle its own errors.
+     */
+    public function spawn(Closure $callback): void
+    {
+        $fiber   = new Fiber($callback);
+        $fiberId = spl_object_id($fiber);
+        $flowKey = uniqid('sp_', more_entropy: true);
+
+        State::registerFiberFlow(
+            fiberId: $fiberId,
+            flow: new CurrentFlow(
+                isAsync: true,
+                key: $flowKey,
+            )
+        );
+
+        $coroutine = new Coroutine(
+            id: $fiberId,
+            fiber: $fiber,
+            group: null,
+            callbackKey: '',
+            flowKey: $flowKey,
+        );
+
+        $this->register($coroutine);
+
+        ++$this->spawnedCount;
+
+        try {
+            // Run up to the first suspend (its first async call), like WaitGroup::add.
+            $fiber->start();
+        } catch (Throwable) {
+            // Groupless: nowhere to report. Clean up and keep the loop alive.
+            $this->forget($coroutine);
+
+            return;
+        }
+
+        // Fully synchronous handler: nothing to wait for, clean up immediately.
+        if ($fiber->isTerminated()) {
+            $this->forget($coroutine);
+        }
     }
 
     /**
@@ -111,13 +176,117 @@ class Scheduler
     }
 
     /**
+     * Serves a streaming flow whose batches are incoming requests (the HTTP
+     * server). Each request is dispatched to a freshly spawned coroutine
+     * (spawn-on-request); results of every other flow resume their coroutines.
+     * The single waitAny loop multiplexes incoming requests and the async work
+     * their handlers do.
+     *
+     * Graceful shutdown: once $shouldStop() returns true the loop stops accepting
+     * new requests and keeps running only to drain the in-flight handlers; when
+     * the last one finishes it stops the server flow and returns. The check
+     * happens after each delivered result, so on an idle server shutdown takes
+     * effect on the next event (a bounded waitAny will make it immediate later).
+     *
+     * @param Closure(string): void $onRequest    receives the raw request payload
+     * @param Closure(): bool       $shouldStop   true once a shutdown was requested
+     * @param Closure(): void       $onDrainStart called once when draining begins, before
+     *                                            in-flight handlers finish (e.g. to stop the
+     *                                            listener from accepting so siblings take over)
+     */
+    public function serve(
+        string $serverFlowKey,
+        string $serverTaskKey,
+        Closure $onRequest,
+        Closure $shouldStop,
+        Closure $onDrainStart,
+    ): void {
+        $draining = false;
+
+        // Whatever ends the loop — clean shutdown, a bind error, or an unexpected
+        // throwable out of waitAny()/next() — the listener flow must be stopped so
+        // it does not leak for the process lifetime.
+        try {
+            while (true) {
+                if (!$draining && $shouldStop()) {
+                    // Stop accepting new requests; keep draining in-flight handlers.
+                    $draining = true;
+
+                    // Close the listener up front so the kernel reroutes new
+                    // connections to SO_REUSEPORT siblings while we drain.
+                    $onDrainStart();
+                }
+
+                if ($draining && $this->spawnedCount === 0) {
+                    break;
+                }
+
+                // Poll rather than block forever: on an idle server this is the
+                // only way the loop notices a shutdown signal (it flips a flag the
+                // blocking cgo waitAny would not return for). A timeout just loops
+                // back to re-check shouldStop()/drain above.
+                $result = Extension::get()->waitAnyTimeout(self::SERVE_POLL_INTERVAL_MS);
+
+                if ($result === null) {
+                    continue;
+                }
+
+                if ($result->flowKey === $serverFlowKey && $result->key === $serverTaskKey) {
+                    // The server stream ended. A clean end (e.g. graceful shutdown)
+                    // leaves the loop; an error end (e.g. the listener failed to
+                    // bind) must surface instead of returning as if it ran fine.
+                    if (!$result->hasNext) {
+                        if ($result->isError) {
+                            throw new TaskErrorException(
+                                message: "http server stopped with error: {$result->payload}",
+                            );
+                        }
+
+                        break;
+                    }
+
+                    // While draining, refuse new requests: leave them unhandled so
+                    // the Go side answers them 503 when the server flow is stopped
+                    // below, instead of running their handlers.
+                    if ($draining) {
+                        continue;
+                    }
+
+                    // Re-arm for the next request before handling this one, so the
+                    // listener keeps accepting while the handler runs.
+                    Extension::get()->next($serverFlowKey, $serverTaskKey);
+
+                    $payload = $result->payload;
+
+                    $this->spawn(static function () use ($onRequest, $payload): void {
+                        $onRequest($payload);
+                    });
+
+                    continue;
+                }
+
+                $this->resumeByResult($result);
+            }
+        } finally {
+            // Stop the listener and abort any connections not yet answered.
+            Extension::get()->stopFlow($serverFlowKey);
+        }
+    }
+
+    /**
      * One scheduler step: take the first ready result of any flow and resume the
      * coroutine it belongs to.
      */
     protected function tick(): void
     {
-        $result = Extension::get()->waitAny();
+        $this->resumeByResult(Extension::get()->waitAny());
+    }
 
+    /**
+     * Routes a delivered result to the coroutine that issued its task.
+     */
+    protected function resumeByResult(TaskResultDto $result): void
+    {
         $fiberId = State::pullFiberByTask(
             flowKey: $result->flowKey,
             taskKey: $result->key,
@@ -165,11 +334,11 @@ class Scheduler
 
     protected function completeCoroutine(Coroutine $coroutine): void
     {
-        $coroutine->group->markReady($coroutine->callbackKey, $coroutine->fiber->getReturn());
+        $coroutine->group?->markReady($coroutine->callbackKey, $coroutine->fiber->getReturn());
 
         $this->forget($coroutine);
 
-        if (!$coroutine->group->isLive()) {
+        if ($coroutine->group !== null && !$coroutine->group->isLive()) {
             $this->wakeGroupWaiters($coroutine->group);
         }
     }
@@ -177,6 +346,14 @@ class Scheduler
     protected function failCoroutine(Coroutine $coroutine, Throwable $exception): void
     {
         $this->forget($coroutine);
+
+        // Spawned (groupless) coroutine: there is no group to report to. The
+        // spawn caller (e.g. the HTTP request wrapper) is expected to catch its
+        // own errors; reaching here means it didn't, so we drop the failure
+        // rather than crash the scheduler loop serving other coroutines.
+        if ($coroutine->group === null) {
+            return;
+        }
 
         $coroutine->group->markFailure(
             new CallbackExecutionException(
@@ -194,9 +371,19 @@ class Scheduler
     {
         unset($this->coroutines[$coroutine->id]);
 
-        State::unRegisterFiber($coroutine->id);
+        if ($coroutine->group !== null) {
+            State::unRegisterFiber($coroutine->id);
 
-        $coroutine->group->removeMember($coroutine->id);
+            $coroutine->group->removeMember($coroutine->id);
+
+            return;
+        }
+
+        // Spawned coroutine owns a per-coroutine flow; stop it (Go side + State),
+        // which also unregisters the fiber.
+        --$this->spawnedCount;
+
+        State::deleteFlow($coroutine->flowKey);
     }
 
     protected function wakeGroupWaiters(WaitGroup $group): void

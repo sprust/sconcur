@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sconcur/internal/contracts"
+	"sconcur/internal/features/httpserver"
 	"sconcur/internal/features/mongodb/connection"
 	"sconcur/internal/features/mongodb/features/collection"
 	"sconcur/internal/features/sleeper"
@@ -16,6 +17,8 @@ func DetectMessageHandler(method types.Method) (contracts.FeatureContract, error
 		return sleeper_feature.Get(), nil
 	case types.MethodMongodb:
 		return collection_feature.GetCollectionFeature(), nil
+	case types.MethodHttpServe, types.MethodHttpRespond:
+		return httpserver_feature.Get(), nil
 	default:
 		return nil, errors.New("unknown method: " + fmt.Sprint(method))
 	}

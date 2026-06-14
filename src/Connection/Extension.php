@@ -16,6 +16,7 @@ use SConcur\Transport\MessagePackTransport;
 use SConcur\Transport\PayloadInterface;
 use Throwable;
 use function SConcur\Extension\destroy;
+use function SConcur\Extension\httpStopAccepting;
 use function SConcur\Extension\next;
 use function SConcur\Extension\push;
 use function SConcur\Extension\stopFlow;
@@ -23,6 +24,7 @@ use function SConcur\Extension\tasksCount;
 use function SConcur\Extension\version;
 use function SConcur\Extension\wait;
 use function SConcur\Extension\waitAny;
+use function SConcur\Extension\waitAnyTimeout;
 
 class Extension
 {
@@ -31,7 +33,7 @@ class Extension
      * whenever the PHP <-> Go protocol changes (payload keys, exported functions) so
      * an outdated .so is rejected instead of silently misbehaving.
      */
-    private const string REQUIRED_EXTENSION_VERSION = '0.1.0';
+    private const string REQUIRED_EXTENSION_VERSION = '0.2.0';
 
     protected static ?Extension $instance = null;
 
@@ -105,6 +107,31 @@ class Extension
         );
     }
 
+    /**
+     * waitAny with a deadline: returns null if no result became ready within
+     * $timeoutMs, so a blocking caller (the HTTP serve loop) can wake to check for
+     * a shutdown signal even on an idle server.
+     */
+    public function waitAnyTimeout(int $timeoutMs): ?TaskResultDto
+    {
+        $start = microtime(true);
+
+        $response = waitAnyTimeout($timeoutMs);
+
+        // Distinct, non-"error:" sentinel the Go side returns on timeout. A real
+        // result is msgpack (binary) and an error starts with "error:", so this
+        // never collides.
+        if ($response === 'timeout') {
+            return null;
+        }
+
+        return static::parseWaitResponse(
+            response: $response,
+            errorContext: 'waitAny',
+            start: $start,
+        );
+    }
+
     public function count(): int
     {
         return tasksCount();
@@ -113,6 +140,16 @@ class Extension
     public function stopFlow(string $flowKey): void
     {
         stopFlow($flowKey);
+    }
+
+    /**
+     * Stops the HTTP server flow's listener from accepting new connections,
+     * without cancelling in-flight requests. Lets a SO_REUSEPORT sibling take over
+     * new connections while this process drains on graceful shutdown.
+     */
+    public function httpStopAccepting(string $flowKey): void
+    {
+        httpStopAccepting($flowKey);
     }
 
     public function destroy(): void

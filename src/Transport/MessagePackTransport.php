@@ -8,7 +8,7 @@ use SConcur\Exceptions\ResponseIsNotMessagePackException;
 use function msgpack_pack;
 use function msgpack_unpack;
 
-final readonly class MessagePackTransport
+readonly class MessagePackTransport
 {
     public static function pack(PayloadInterface $payload): string
     {

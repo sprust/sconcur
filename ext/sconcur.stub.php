@@ -22,11 +22,19 @@ function waitAny(): string
 {
 }
 
+function waitAnyTimeout(int $timeoutMs): string
+{
+}
+
 function tasksCount(): int
 {
 }
 
 function stopFlow(string $fk): void
+{
+}
+
+function httpStopAccepting(string $fk): void
 {
 }
 

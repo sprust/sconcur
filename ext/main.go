@@ -13,7 +13,9 @@ typedef struct {
 */
 import "C"
 import (
+	"errors"
 	"sconcur/internal/dto"
+	httpserver_feature "sconcur/internal/features/httpserver"
 	handler2 "sconcur/internal/handler"
 	"sconcur/internal/types"
 	"unsafe"
@@ -138,6 +140,43 @@ func waitAny() C.buffer_result_t {
 	}
 }
 
+//export waitAnyTimeout
+func waitAnyTimeout(ms C.int) C.buffer_result_t {
+	res, err := handler.WaitAnyTimeout(int(ms))
+
+	if err != nil {
+		// A timeout is not an error: signal it with a distinct, non-"error:"
+		// sentinel the PHP side maps to "no result yet".
+		if errors.Is(err, handler2.ErrWaitTimeout) {
+			return C.buffer_result_t{data: nil, len: 0, err: C.CString("timeout")}
+		}
+
+		return C.buffer_result_t{
+			data: nil,
+			len:  0,
+			err:  C.CString("error: " + err.Error()),
+		}
+	}
+
+	serialized, err := msgpack.Marshal(res)
+
+	if err != nil {
+		return C.buffer_result_t{
+			data: nil,
+			len:  0,
+			err:  C.CString("error: marshal msgpack: " + err.Error()),
+		}
+	}
+
+	data := C.CBytes(serialized)
+
+	return C.buffer_result_t{
+		data: data,
+		len:  C.int(len(serialized)),
+		err:  nil,
+	}
+}
+
 //export tasksCount
 func tasksCount() int {
 	return handler.GetTasksCount()
@@ -148,6 +187,11 @@ func stopFlow(fk *C.char) {
 	handler.StopFlow(C.GoString(fk))
 }
 
+//export httpStopAccepting
+func httpStopAccepting(fk *C.char) {
+	httpserver_feature.StopAccepting(C.GoString(fk))
+}
+
 //export destroy
 func destroy() {
 	handler.Destroy()
@@ -155,7 +199,7 @@ func destroy() {
 
 //export version
 func version() *C.char {
-	return C.CString("0.1.0")
+	return C.CString("0.2.0")
 }
 
 func main() {}

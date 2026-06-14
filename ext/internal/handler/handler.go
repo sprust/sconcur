@@ -7,7 +7,13 @@ import (
 	"sconcur/internal/features"
 	"sconcur/internal/flows"
 	"sync"
+	"time"
 )
+
+// ErrWaitTimeout is returned by WaitAnyTimeout when no result became ready within
+// the deadline. It is not a failure: the caller polls again (e.g. the HTTP serve
+// loop checks for a shutdown signal between waits).
+var ErrWaitTimeout = errors.New("wait timeout")
 
 type Handler struct {
 	ctx       context.Context
@@ -54,6 +60,33 @@ func (h *Handler) WaitAny() (*dto.Result, error) {
 	select {
 	case <-h.ctx.Done():
 		return nil, h.ctx.Err()
+	case result, ok := <-h.results:
+		if !ok {
+			return nil, errors.New("results channel closed")
+		}
+
+		h.deliver(result)
+
+		return result, nil
+	}
+}
+
+// WaitAnyTimeout is WaitAny with a deadline: it returns ErrWaitTimeout if no
+// result is ready within the given milliseconds, so a blocking PHP caller can
+// wake periodically (e.g. to notice a shutdown signal on an idle server).
+func (h *Handler) WaitAnyTimeout(ms int) (*dto.Result, error) {
+	if result := h.popAnyPending(); result != nil {
+		return result, nil
+	}
+
+	timer := time.NewTimer(time.Duration(ms) * time.Millisecond)
+	defer timer.Stop()
+
+	select {
+	case <-h.ctx.Done():
+		return nil, h.ctx.Err()
+	case <-timer.C:
+		return nil, ErrWaitTimeout
 	case result, ok := <-h.results:
 		if !ok {
 			return nil, errors.New("results channel closed")

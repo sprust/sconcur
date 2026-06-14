@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Mongodb\Payloads\Support;
 
-final class IndexName
+class IndexName
 {
     /**
      * Builds the default index name from its keys, matching MongoDB's convention

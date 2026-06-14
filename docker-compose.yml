@@ -12,7 +12,30 @@ services:
       - ./:/sconcur
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    environment:
+      # Where the HTTP-server feature tests reach the running http-server service.
+      - HTTP_SERVER_HOST=http-server
+      - HTTP_SERVER_PORT=${HTTP_SERVER_PORT}
     command: ["sh", "-c", "echo \"Starting infinite wait loop...\"; while sleep 1; do :; done"]
+
+  # Runs the HTTP server (reuses the php image build). The port is published to
+  # the host via env. Rebuild/restart it with `make http-server-restart`.
+  http-server:
+    container_name: sc-http-server
+    restart: on-failure
+    build:
+      context: ./docker/php
+      args:
+        - GROUP_ID=${DOCKER_GROUP_ID}
+        - USER_ID=${DOCKER_USER_ID}
+    working_dir: /sconcur
+    volumes:
+      - ./:/sconcur
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - ${HTTP_SERVER_DOCKER_PORT}:${HTTP_SERVER_PORT}
+    command: ["sh", "-c", "php -d extension=./ext/build/sconcur.so tests/servers/http/http-server.php 0.0.0.0:${HTTP_SERVER_PORT}"]
 
   mongodb:
     container_name: sc-mongodb

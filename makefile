@@ -31,6 +31,10 @@ restart:
 	make stop
 	make up
 
+http-server-restart:
+	make ext-build
+	$(DOCKER_COMPOSE) up -d --build --force-recreate http-server
+
 bash-php:
 	$(DOCKER_COMPOSE) exec php bash
 
@@ -89,6 +93,8 @@ bench-all:
 	make bench-mongodb-deleteOne
 	make bench-mongodb-updateMany
 	make bench-mongodb-command
+	make bench-http-reuseport-io
+	make bench-http-reuseport-cpu
 
 bench-sleep:
 	$(PHP_EXT) tests/benchmarks/sleep.php ${c}
@@ -125,3 +131,9 @@ bench-mongodb-deleteOne:
 
 bench-mongodb-updateMany:
 	$(PHP_EXT) tests/benchmarks/mongodb-update-many.php ${c}
+
+bench-http-reuseport-io:
+	$(PHP_CLI) php tests/benchmarks/http-reuseport-io.php
+
+bench-http-reuseport-cpu:
+	$(PHP_CLI) php tests/benchmarks/http-reuseport-cpu.php
