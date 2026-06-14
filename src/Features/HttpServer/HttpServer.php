@@ -7,6 +7,7 @@ namespace SConcur\Features\HttpServer;
 use Closure;
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\HttpServer\InvalidHandlerResponseException;
+use SConcur\Exceptions\HttpServer\RequestBodyTooLargeException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\HttpServer\Dto\Request;
 use SConcur\Features\HttpServer\Dto\Response;
@@ -252,6 +253,12 @@ readonly class HttpServer
             }
 
             return $response;
+        } catch (RequestBodyTooLargeException $exception) {
+            // The body exceeded maxRequestBody mid-read and the response has not
+            // started: answer 413 rather than a generic 500.
+            self::notifyOnError($onError, $exception, $request);
+
+            return new Response(body: 'Payload Too Large', status: 413);
         } catch (Throwable $exception) {
             return self::handleError($onError, $exception, $request);
         }

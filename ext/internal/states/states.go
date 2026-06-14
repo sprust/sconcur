@@ -49,6 +49,23 @@ func (s *States) Start(ctx context.Context, taskKey string, state contracts.Stat
 	return s.handleNext(taskKey, state), nil
 }
 
+// Register stores a state without reading its first batch (unlike Start) and
+// without hooking context cleanup — the caller owns its lifetime and must call
+// DeleteState. Used for states created out of band (e.g. an HTTP request body,
+// registered by the connection goroutine rather than by a PHP-issued task).
+func (s *States) Register(taskKey string, state contracts.StateContract) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	if _, ok := s.states[taskKey]; ok {
+		return errors.New("state already exists")
+	}
+
+	s.states[taskKey] = state
+
+	return nil
+}
+
 func (s *States) Next(task *tasks.Task) {
 	message := task.GetMessage()
 

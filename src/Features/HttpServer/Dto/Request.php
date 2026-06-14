@@ -14,6 +14,8 @@ readonly class Request
 {
     /**
      * @param array<string, array<int, string>> $headers
+     * @param RequestBody                       $body       read fully with $body->contents() or chunk by chunk
+     *                                                      with $body->read() (streamed, never buffered whole)
      * @param string                            $remoteAddr client "ip:port" as seen by the server
      * @param string                            $host       the request Host header / authority
      * @param string                            $proto      HTTP protocol version, e.g. "HTTP/1.1"
@@ -24,7 +26,7 @@ readonly class Request
         public string $path,
         public string $query,
         public array $headers,
-        public string $body,
+        public RequestBody $body,
         public string $remoteAddr = '',
         public string $host = '',
         public string $proto = '',
@@ -50,7 +52,10 @@ readonly class Request
             path: (string) ($data['pt'] ?? ''),
             query: (string) ($data['qr'] ?? ''),
             headers: $headers,
-            body: (string) ($data['bd'] ?? ''),
+            body: new RequestBody(
+                firstChunk: (string) ($data['bd'] ?? ''),
+                bodyKey: (string) ($data['bk'] ?? ''),
+            ),
             remoteAddr: (string) ($data['ra'] ?? ''),
             host: (string) ($data['ho'] ?? ''),
             proto: (string) ($data['pr'] ?? ''),

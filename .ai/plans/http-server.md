@@ -45,10 +45,17 @@
 - **Готово (drain без потери трафика):** при shutdown листенер закрывается **в начале**
   дренажа (`httpStopAccepting` → Go `http.Server.Shutdown`, не отменяя in-flight), чтобы
   воркер вышел из reuseport-группы и ядро увело новые соединения на соседей. Новый
-  cgo-экспорт `httpStopAccepting`; версия расширения → `0.3.0`. Покрыто
+  cgo-экспорт `httpStopAccepting`. Покрыто
   `TestStopAcceptingClosesListener` (Go) и `HttpServerGracefulShutdownTest::
   testListenerStopsAcceptingAtDrainStart` (PHP).
-- **Осталось:** стриминг **тела запроса** (читается целиком).
+- **Готово (стриминг тела запроса):** тело не буферизуется целиком — инлайн-первый-чанк
+  в событии + остаток стримом через `bodyState` (StateContract, по образцу
+  `aggregate`-курсора) и существующий путь `next`/`states`. PHP `$request->body` →
+  `RequestBody` с `contents()` (полное) и `read(?int $maxBytes)` (буферизует/нарезает).
+  Транспортная гранулярность фиксирована 64 KiB; превышение лимита →
+  `RequestBodyTooLargeException` → `413`. Покрыто `TestBodyState*` (Go) и
+  `HttpServerRequestStreamTest` (PHP).
+- **Все пункты плана и ревью закрыты.**
 
 Ключевая реализация (отличие от первоначального наброска): listener — это
 **стриминговая задача**, а не источник «события-результата» с произвольным
@@ -231,8 +238,9 @@ Go (фича httpserver):
     round-trip-подтверждением (write backpressure); PHP `StreamedResponse` +
     `ResponseStream::write`. **`SO_REUSEPORT`** — **готово**: `HttpServer(reusePort: true)`,
     несколько процессов на одном порту (`ext/.../listen.go`), покрыто
-    `TestListenReusePort*` (Go) и `HttpServerReusePortTest` (PHP). **Осталось:**
-    стриминг тела запроса (читается целиком).
+    `TestListenReusePort*` (Go) и `HttpServerReusePortTest` (PHP). **Стриминг тела
+    запроса** — **готово**: `RequestBody::contents()/read()`, инлайн-первый-чанк +
+    `bodyState`, `requestBodyChunkSize` (`HttpServerRequestStreamTest`).
 
 ### Тесты
 

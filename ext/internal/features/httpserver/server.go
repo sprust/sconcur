@@ -2,12 +2,14 @@ package httpserver_feature
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"sconcur/internal/dto"
 	"sconcur/internal/features/httpserver/payloads"
 	"sconcur/internal/helpers"
+	"sconcur/internal/states"
 	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
@@ -16,12 +18,15 @@ import (
 // Default server tuning, used as a fallback when the PHP side sends a zero value.
 // The PHP side normally supplies these (its defaults mirror them).
 const (
-	defaultMaxRequestBody    = 10 << 20 // 10 MiB
-	defaultShutdownTimeout   = 5 * time.Second
-	defaultReadHeaderTimeout = 10 * time.Second
-	defaultReadTimeout       = 30 * time.Second
-	defaultWriteTimeout      = 30 * time.Second
-	defaultIdleTimeout       = 60 * time.Second
+	defaultMaxRequestBody = 10 << 20 // 10 MiB
+	// Fixed transport granularity (not configurable): the inline first-chunk size
+	// and the bytes read per streamed chunk. App-level sizing is RequestBody::read.
+	defaultRequestBodyChunkSize = 64 << 10 // 64 KiB
+	defaultShutdownTimeout      = 5 * time.Second
+	defaultReadHeaderTimeout    = 10 * time.Second
+	defaultReadTimeout          = 30 * time.Second
+	defaultWriteTimeout         = 30 * time.Second
+	defaultIdleTimeout          = 60 * time.Second
 )
 
 // serverConfig holds the resolved tuning for one server instance.
@@ -186,17 +191,37 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		}
 	}
 
-	// Reject a body larger than the configured limit instead of silently
-	// truncating it (which would also leave the connection unusable).
-	body, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, s.config.maxRequestBody))
+	requestId := nextRequestId(s.message.FlowKey)
+
+	// Read only the first chunk inline (bounded by maxRequestBody): small bodies
+	// arrive whole with the event (no extra round-trips), large ones stream the
+	// remainder on demand via a bodyState — the body is never buffered whole.
+	reader := http.MaxBytesReader(writer, request.Body, s.config.maxRequestBody)
+
+	firstChunk, bodyComplete, err := readChunk(reader, defaultRequestBodyChunkSize)
 
 	if err != nil {
-		http.Error(writer, "request body too large", http.StatusRequestEntityTooLarge)
+		var maxBytesError *http.MaxBytesError
+
+		if errors.As(err, &maxBytesError) {
+			http.Error(writer, "request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(writer, "bad request body", http.StatusBadRequest)
+		}
 
 		return
 	}
 
-	requestId := nextRequestId(s.message.FlowKey)
+	bodyKey := ""
+
+	if !bodyComplete {
+		bodyKey = requestId + ":body"
+
+		_ = states.Get().Register(bodyKey, newBodyState(s.message, reader, defaultRequestBodyChunkSize))
+
+		defer states.Get().DeleteState(bodyKey)
+	}
+
 	pending := &pendingRequest{
 		commands:  make(chan writeCommand),
 		abandoned: make(chan struct{}),
@@ -213,7 +238,8 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		Path:       request.URL.Path,
 		Query:      request.URL.RawQuery,
 		Headers:    request.Header,
-		Body:       string(body),
+		Body:       string(firstChunk),
+		BodyKey:    bodyKey,
 		RemoteAddr: request.RemoteAddr,
 		Host:       request.Host,
 		Proto:      request.Proto,

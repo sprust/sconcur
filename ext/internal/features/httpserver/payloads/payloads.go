@@ -45,13 +45,16 @@ type RespondPayload struct {
 // MessagePack-marshaled into the streaming result's payload). PHP decodes it
 // into SConcur\Features\HttpServer\Dto\Request.
 type RequestEvent struct {
-	RequestId  string              `json:"rid" msgpack:"rid"`
-	Method     string              `json:"mt" msgpack:"mt"`
-	Path       string              `json:"pt" msgpack:"pt"`
-	Query      string              `json:"qr" msgpack:"qr"`
-	Headers    map[string][]string `json:"hd" msgpack:"hd"`
-	Body       string              `json:"bd" msgpack:"bd"`
-	RemoteAddr string              `json:"ra" msgpack:"ra"`
-	Host       string              `json:"ho" msgpack:"ho"`
-	Proto      string              `json:"pr" msgpack:"pr"`
+	RequestId string              `json:"rid" msgpack:"rid"`
+	Method    string              `json:"mt" msgpack:"mt"`
+	Path      string              `json:"pt" msgpack:"pt"`
+	Query     string              `json:"qr" msgpack:"qr"`
+	Headers   map[string][]string `json:"hd" msgpack:"hd"`
+	// Body is the inline first chunk of the request body. BodyKey is the streaming
+	// state key for the remainder, or "" when the whole body fits in Body.
+	Body       string `json:"bd" msgpack:"bd"`
+	BodyKey    string `json:"bk" msgpack:"bk"`
+	RemoteAddr string `json:"ra" msgpack:"ra"`
+	Host       string `json:"ho" msgpack:"ho"`
+	Proto      string `json:"pr" msgpack:"pr"`
 }

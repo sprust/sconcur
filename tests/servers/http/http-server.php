@@ -15,7 +15,8 @@ use SConcur\Features\Sleeper\Sleeper;
  * Demo / test HTTP server. Routes:
  *   GET  /                  -> 200 "ok"
  *   *    /method            -> 200, body = request method (GET/POST/...)
- *   *    /echo              -> 200, body = the request body (echo)
+ *   *    /echo              -> 200, body = the request body (echo, full read)
+ *   *    /upload            -> 200, body = sha256 of the request body (streamed read)
  *   *    /query             -> 200, body = the raw query string
  *   *    /echo-header       -> 200, body = the "X-Echo" request header (joined)
  *   *    /meta              -> 200, body = "<proto> <host>" (connection metadata)
@@ -80,7 +81,19 @@ $server->serve(static function (Request $request) use ($sleeper): Response|Strea
     }
 
     if ($request->path === '/echo') {
-        return new Response(body: $request->body);
+        return new Response(body: $request->body->contents());
+    }
+
+    if ($request->path === '/upload') {
+        // Stream the body in fixed 8 KiB pieces (never buffering it whole) and
+        // return its sha256, so a test can verify every byte arrived in order.
+        $hash = hash_init('sha256');
+
+        while (($chunk = $request->body->read(8192)) !== null) {
+            hash_update($hash, $chunk);
+        }
+
+        return new Response(body: hash_final($hash));
     }
 
     if ($request->path === '/query') {

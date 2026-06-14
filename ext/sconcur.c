@@ -297,7 +297,7 @@ zend_module_entry sconcur_module_entry = {
     NULL,  // RINIT
     NULL,  // RSHUTDOWN
     NULL,  // MINFO
-    "0.3.0",
+    "0.2.0",
     STANDARD_MODULE_PROPERTIES
 };
 
