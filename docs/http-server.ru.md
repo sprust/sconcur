@@ -319,15 +319,19 @@ use SConcur\Features\HttpServer\Dto\AccessLogEntry;
 $server = new HttpServer(
     address: '0.0.0.0:8080',
     accessLog: static function (AccessLogEntry $entry): void {
+        // время начала запроса с микросекундами
+        $time = date('Y-m-d\TH:i:s', (int) $entry->startedAt)
+            . sprintf('.%06d', (int) (($entry->startedAt - floor($entry->startedAt)) * 1_000_000));
+
         fwrite(STDOUT, sprintf(
             "%s %s %s %d %.2fms\n",
-            date('Y-m-d\TH:i:s', (int) $entry->startedAt), // время начала запроса
-            $entry->method,                                 // метод
-            $entry->path,                                   // путь
-            $entry->status,                                 // статус ответа
-            $entry->executionMs,                            // время выполнения, мс
+            $time,                // время начала запроса
+            $entry->method,       // метод
+            $entry->path,         // путь
+            $entry->status,       // статус ответа
+            $entry->executionMs,  // время выполнения, мс
         ));
-        fflush(STDOUT);                                     // чтобы строка появилась сразу
+        fflush(STDOUT);           // чтобы строка появилась сразу
     },
 );
 ```
@@ -335,8 +339,8 @@ $server = new HttpServer(
 Пример вывода:
 
 ```
-2026-06-14T17:36:26 GET / 200 2.59ms
-2026-06-14T17:36:26 GET /msleep/30 200 34.77ms
+2026-06-14T17:36:26.123456 GET / 200 2.59ms
+2026-06-14T17:36:26.456789 GET /msleep/30 200 34.77ms
 ```
 
 Поля `AccessLogEntry`: `startedAt` (float, unix-таймстамп начала обработки),

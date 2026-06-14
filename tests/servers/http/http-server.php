@@ -71,12 +71,15 @@ foreach (array_slice($argv, 2) as $argument) {
     }
 }
 
-// Access log: one line per request — start time, method, path, status, duration.
-// Written and flushed straight to stdout so it appears live.
+// Access log: one line per request — start time (with microseconds), method,
+// path, status, duration. Written and flushed straight to stdout so it appears live.
 $accessLog = static function (AccessLogEntry $entry): void {
+    $time = date('Y-m-d\TH:i:s', (int) $entry->startedAt)
+        . sprintf('.%06d', (int) (($entry->startedAt - floor($entry->startedAt)) * 1_000_000));
+
     fwrite(STDOUT, sprintf(
         "%s %s %s %d %.2fms\n",
-        date('Y-m-d\TH:i:s', (int) $entry->startedAt),
+        $time,
         $entry->method,
         $entry->path,
         $entry->status,

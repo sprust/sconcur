@@ -28,8 +28,8 @@ class HttpServerAccessLogTest extends TestCase
 
             $output = $server->output();
 
-            // "<date>T<time> GET / 200 <n>ms"
-            self::assertMatchesRegularExpression('#\dT[\d:]+ GET / 200 [\d.]+ms#', $output);
+            // "<date>T<hh:mm:ss>.<microseconds> GET / 200 <n>ms"
+            self::assertMatchesRegularExpression('#\dT\d{2}:\d{2}:\d{2}\.\d{6} GET / 200 [\d.]+ms#', $output);
             self::assertMatchesRegularExpression('#GET /does-not-exist 404 [\d.]+ms#', $output);
         } finally {
             $server->stop();
