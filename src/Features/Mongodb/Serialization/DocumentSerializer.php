@@ -13,7 +13,7 @@ use SConcur\Features\Mongodb\Exceptions\UnexpectedMongodbResponseFormatException
  * ext-mongodb (the same C path the native driver uses). Values use the driver's BSON
  * types (MongoDB\BSON\ObjectId, UTCDateTime, ...).
  */
-final class DocumentSerializer
+class DocumentSerializer
 {
     /**
      * ext-mongodb type map: documents/arrays become PHP arrays; scalars stay native

@@ -13,7 +13,7 @@ use SConcur\Features\HttpServer\Payloads\RespondPayload;
  * backpressure, so a fast producer cannot outrun a slow client. The response head
  * is sent by the framework before the writer runs; this object only appends body.
  */
-final readonly class ResponseStream
+readonly class ResponseStream
 {
     public function __construct(
         private string $requestId,

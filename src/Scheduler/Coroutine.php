@@ -17,7 +17,7 @@ use SConcur\WaitGroup;
  * group: it is fire-and-forget, its return value is not collected, so $group is
  * null.
  */
-final class Coroutine
+readonly class Coroutine
 {
     /**
      * @param int            $id          spl_object_id of the fiber

@@ -15,7 +15,7 @@ use SConcur\Features\FeatureExecutor;
  * fully via contents() or piece by piece via read() — use one style per request,
  * since both consume the same one-shot stream.
  */
-final class RequestBody
+class RequestBody
 {
     /** Marker the Go side returns when the body exceeds maxRequestBody. */
     private const string TOO_LARGE_MARKER = 'request body too large';

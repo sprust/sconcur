@@ -15,7 +15,7 @@ use RuntimeException;
  * override its defaults, e.g.
  * TestHttpServer::start(['maxRequestBody' => 65536, 'maxConcurrency' => 2]).
  */
-final class TestHttpServer
+class TestHttpServer
 {
     private const string HOST = '127.0.0.1';
 
