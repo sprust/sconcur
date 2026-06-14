@@ -30,6 +30,7 @@ final class TestHttpServer
     private function __construct(
         $process,
         private readonly int $port,
+        private readonly string $stdoutFile,
     ) {
         $this->process = $process;
     }
@@ -55,9 +56,12 @@ final class TestHttpServer
             $command[] = '--' . $name . '=' . (int) $value;
         }
 
+        // Capture stdout to a file so tests can read the server's access log.
+        $stdoutFile = (string) tempnam(sys_get_temp_dir(), 'sc-http-out-');
+
         $descriptors = [
             0 => ['pipe', 'r'],
-            1 => ['file', '/dev/null', 'w'],
+            1 => ['file', $stdoutFile, 'w'],
             2 => ['file', '/dev/null', 'w'],
         ];
 
@@ -72,7 +76,7 @@ final class TestHttpServer
             fclose($pipes[0]);
         }
 
-        $server = new self($process, $port);
+        $server = new self($process, $port, $stdoutFile);
 
         if (!$server->waitUntilReachable()) {
             $server->stop();
@@ -108,6 +112,14 @@ final class TestHttpServer
     public function isRunning(): bool
     {
         return (bool) proc_get_status($this->process)['running'];
+    }
+
+    /**
+     * Returns everything the server has written to stdout so far (its access log).
+     */
+    public function output(): string
+    {
+        return (string) @file_get_contents($this->stdoutFile);
     }
 
     /**
@@ -148,6 +160,8 @@ final class TestHttpServer
         }
 
         proc_close($this->process);
+
+        @unlink($this->stdoutFile);
     }
 
     private function waitUntilReachable(): bool

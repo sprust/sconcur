@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 require dirname(__DIR__, 3) . '/vendor/autoload.php';
 
+use SConcur\Features\HttpServer\Dto\AccessLogEntry;
 use SConcur\Features\HttpServer\Dto\Request;
 use SConcur\Features\HttpServer\Dto\Response;
 use SConcur\Features\HttpServer\Dto\ResponseStream;
@@ -70,12 +71,25 @@ foreach (array_slice($argv, 2) as $argument) {
     }
 }
 
+// Access log: one line per request — start time, method, path, status, duration.
+// Written and flushed straight to stdout so it appears live.
+$accessLog = static function (AccessLogEntry $entry): void {
+    fwrite(STDOUT, sprintf(
+        "%s %s %s %d %.2fms\n",
+        date('Y-m-d\TH:i:s', (int) $entry->startedAt),
+        $entry->method,
+        $entry->path,
+        $entry->status,
+        $entry->executionMs,
+    ));
+
+    fflush(STDOUT);
+};
+
 // Spread as named args; address first, overrides take precedence over defaults.
-$server = new HttpServer(...['address' => $address, ...$overrides]);
+$server = new HttpServer(...['address' => $address, 'accessLog' => $accessLog, ...$overrides]);
 
 $server->serve(static function (Request $request) use ($sleeper): Response|StreamedResponse {
-    echo "$request->method $request->path\n";
-
     if ($request->path === '/method') {
         return new Response(body: $request->method);
     }

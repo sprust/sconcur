@@ -18,6 +18,7 @@ Go-расширении; PHP остаётся тонким слоем-оркес
 - [API: Request / Response / StreamedResponse](#api-request--response--streamedresponse)
 - [Стриминг ответа (chunked / SSE)](#стриминг-ответа-chunked--sse)
 - [Обработка ошибок](#обработка-ошибок)
+- [Access-лог](#access-лог)
 - [Конкурентность и лимиты](#конкурентность-и-лимиты)
 - [Масштабирование на ядра (SO_REUSEPORT)](#масштабирование-на-ядра-so_reuseport)
 - [Graceful shutdown](#graceful-shutdown)
@@ -169,6 +170,7 @@ $server = new HttpServer(
 | `handlerTimeoutMs` | `0` (выкл) | Сколько ждать **начала** ответа от обработчика, иначе `504`. См. [таймаут хендлера](#таймаут-хендлера). |
 | `reusePort` | `false` | Включить `SO_REUSEPORT` — несколько процессов на одном порту. См. [масштабирование на ядра](#масштабирование-на-ядра-so_reuseport). |
 | `onError` | `null` | `Closure(Throwable, Request): ?Response` — наблюдатель ошибок обработчика. |
+| `accessLog` | `null` | `Closure(AccessLogEntry): void` — вызывается после каждого запроса (лог доступа). См. [Access-лог](#access-лог). |
 
 Значение `0` для `maxConcurrency`/`handlerTimeoutMs` означает «выключено». Для
 таймаутов `0` означает «взять Go-дефолт».
@@ -304,6 +306,43 @@ onError: static function (\Throwable $e, Request $request): ?Response {
 
 `onError`, бросивший исключение сам, безопасно проглатывается — клиент всё равно
 получит `500`.
+
+## Access-лог
+
+Колбэк `accessLog` вызывается **после** каждого обслуженного запроса (включая
+ошибочные — `4xx`/`5xx`) с объектом `AccessLogEntry`. Формат и место вывода — на
+ваше усмотрение; пишите в stdout/файл/трейсинг как удобно.
+
+```php
+use SConcur\Features\HttpServer\Dto\AccessLogEntry;
+
+$server = new HttpServer(
+    address: '0.0.0.0:8080',
+    accessLog: static function (AccessLogEntry $entry): void {
+        fwrite(STDOUT, sprintf(
+            "%s %s %s %d %.2fms\n",
+            date('Y-m-d\TH:i:s', (int) $entry->startedAt), // время начала запроса
+            $entry->method,                                 // метод
+            $entry->path,                                   // путь
+            $entry->status,                                 // статус ответа
+            $entry->executionMs,                            // время выполнения, мс
+        ));
+        fflush(STDOUT);                                     // чтобы строка появилась сразу
+    },
+);
+```
+
+Пример вывода:
+
+```
+2026-06-14T17:36:26 GET / 200 2.59ms
+2026-06-14T17:36:26 GET /msleep/30 200 34.77ms
+```
+
+Поля `AccessLogEntry`: `startedAt` (float, unix-таймстамп начала обработки),
+`method`, `path`, `status` (int), `executionMs` (float). `executionMs` —
+полное время обработки в PHP (до отправки ответа; для стрима — вся длительность
+стрима).
 
 ## Конкурентность и лимиты
 

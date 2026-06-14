@@ -9,6 +9,7 @@ use SConcur\Connection\Extension;
 use SConcur\Exceptions\HttpServer\InvalidHandlerResponseException;
 use SConcur\Exceptions\HttpServer\RequestBodyTooLargeException;
 use SConcur\Features\FeatureExecutor;
+use SConcur\Features\HttpServer\Dto\AccessLogEntry;
 use SConcur\Features\HttpServer\Dto\Request;
 use SConcur\Features\HttpServer\Dto\Response;
 use SConcur\Features\HttpServer\Dto\ResponseStream;
@@ -44,6 +45,8 @@ readonly class HttpServer
      *                                                                      to send instead of the default 500; returning null (or being absent)
      *                                                                      falls back to a bare 500. Lets the caller log/trace otherwise-swallowed
      *                                                                      errors.
+     * @param null|Closure(AccessLogEntry): void          $accessLog        called after each handled request with its start time, method,
+     *                                                                      path, status and execution time — print or ship it as you like.
      *
      * Defaults mirror the Go server defaults.
      */
@@ -59,6 +62,7 @@ readonly class HttpServer
         private int $handlerTimeoutMs = 0,
         private bool $reusePort = false,
         private ?Closure $onError = null,
+        private ?Closure $accessLog = null,
     ) {
     }
 
@@ -97,13 +101,14 @@ readonly class HttpServer
                 ),
             );
 
-            $onError = $this->onError;
+            $onError   = $this->onError;
+            $accessLog = $this->accessLog;
 
             Scheduler::get()->serve(
                 serverFlowKey: $flowKey,
                 serverTaskKey: $runningTask->key,
-                onRequest: static function (string $payload) use ($handler, $onError): void {
-                    self::handle($handler, $onError, $payload);
+                onRequest: static function (string $payload) use ($handler, $onError, $accessLog): void {
+                    self::handle($handler, $onError, $accessLog, $payload);
                 },
                 shouldStop: static function () use (&$stopRequested): bool {
                     return $stopRequested;
@@ -173,27 +178,38 @@ readonly class HttpServer
      *
      * @param Closure(Request): (Response|StreamedResponse) $handler
      * @param null|Closure(Throwable, Request): ?Response   $onError
+     * @param null|Closure(AccessLogEntry): void            $accessLog
      */
-    private static function handle(Closure $handler, ?Closure $onError, string $payload): void
+    private static function handle(Closure $handler, ?Closure $onError, ?Closure $accessLog, string $payload): void
     {
+        $startedAt = microtime(true);
+
         $request = Request::fromPayload($payload);
 
         $response = self::resolveResponse($handler, $onError, $request);
 
         if ($response instanceof StreamedResponse) {
             self::stream($request, $response, $onError);
-
-            return;
+        } else {
+            FeatureExecutor::exec(
+                payload: RespondPayload::full(
+                    requestId: $request->requestId,
+                    status: $response->status,
+                    headers: $response->headers,
+                    body: $response->body,
+                ),
+            );
         }
 
-        FeatureExecutor::exec(
-            payload: RespondPayload::full(
-                requestId: $request->requestId,
+        if ($accessLog !== null) {
+            $accessLog(new AccessLogEntry(
+                startedAt: $startedAt,
+                method: $request->method,
+                path: $request->path,
                 status: $response->status,
-                headers: $response->headers,
-                body: $response->body,
-            ),
-        );
+                executionMs: (microtime(true) - $startedAt) * 1000,
+            ));
+        }
     }
 
     /**
