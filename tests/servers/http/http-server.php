@@ -32,7 +32,7 @@ use SConcur\Features\Sleeper\Sleeper;
  * Launch options (override the HttpServer defaults; all integers) are named
  * exactly like the HttpServer constructor parameters, passed as --name=value:
  *   --readHeaderTimeoutMs  --readTimeoutMs  --writeTimeoutMs  --idleTimeoutMs
- *   --shutdownTimeoutMs  --maxRequestBody  --maxConcurrency
+ *   --shutdownTimeoutMs  --maxRequestBody  --maxConcurrency  --handlerTimeoutMs
  */
 
 $address = $argv[1] ?? '0.0.0.0:8080';
@@ -49,6 +49,7 @@ $allowedOptions = [
     'shutdownTimeoutMs',
     'maxRequestBody',
     'maxConcurrency',
+    'handlerTimeoutMs',
 ];
 
 $overrides = [];

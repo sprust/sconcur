@@ -31,6 +31,7 @@ type serverConfig struct {
 	writeTimeout      time.Duration
 	idleTimeout       time.Duration
 	shutdownTimeout   time.Duration
+	handlerTimeout    time.Duration
 	maxRequestBody    int64
 	maxConcurrency    int
 }
@@ -45,7 +46,8 @@ func configFromPayload(payload payloads.ServePayload) serverConfig {
 		idleTimeout:       msOrDefault(payload.IdleTimeoutMs, defaultIdleTimeout),
 		shutdownTimeout:   msOrDefault(payload.ShutdownTimeoutMs, defaultShutdownTimeout),
 		maxRequestBody:    int64OrDefault(payload.MaxRequestBody, defaultMaxRequestBody),
-		// 0 stays 0 (unlimited); a negative value is treated as unlimited too.
+		// 0 stays 0 (disabled/unlimited); a negative value is treated the same.
+		handlerTimeout: time.Duration(max(payload.HandlerTimeoutMs, 0)) * time.Millisecond,
 		maxConcurrency: max(payload.MaxConcurrency, 0),
 	}
 }
@@ -88,6 +90,15 @@ type writeCommand struct {
 	headers map[string][]string
 	body    string
 	done    chan error
+}
+
+// pendingRequest is the rendezvous between the connection goroutine (ServeHTTP)
+// and the PHP handler's write commands. abandoned is closed once ServeHTTP stops
+// consuming — on a handler timeout or any return — so a handler that responds
+// late unblocks with an error instead of hanging on the unbuffered commands chan.
+type pendingRequest struct {
+	commands  chan writeCommand
+	abandoned chan struct{}
 }
 
 // serverState is the streaming state of one HTTP server: each accepted request
@@ -186,10 +197,15 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	}
 
 	requestId := nextRequestId(s.message.FlowKey)
-	commands := make(chan writeCommand)
+	pending := &pendingRequest{
+		commands:  make(chan writeCommand),
+		abandoned: make(chan struct{}),
+	}
 
-	pendingRequests.Store(requestId, commands)
+	pendingRequests.Store(requestId, pending)
 	defer pendingRequests.Delete(requestId)
+	// Once we stop consuming, release a handler still trying to respond.
+	defer close(pending.abandoned)
 
 	event := &payloads.RequestEvent{
 		RequestId:  requestId,
@@ -217,7 +233,7 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 
-	s.consumeCommands(writer, commands)
+	s.consumeCommands(writer, pending.commands)
 }
 
 // consumeCommands applies the handler's write commands in order until the
@@ -232,6 +248,19 @@ func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan 
 	// started becomes true once any bytes/headers have gone out, after which the
 	// status can no longer change (so no 503 fallback on shutdown).
 	started := false
+
+	// Bound the time to the first response: a stuck handler must not hold the
+	// connection (and its concurrency slot) forever. The deadline covers only the
+	// first write — once a response has started, a stream may run as long as it
+	// likes. Disabled when handlerTimeout is 0.
+	var timeout <-chan time.Time
+
+	if s.config.handlerTimeout > 0 {
+		timer := time.NewTimer(s.config.handlerTimeout)
+		defer timer.Stop()
+
+		timeout = timer.C
+	}
 
 	for {
 		select {
@@ -262,12 +291,21 @@ func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan 
 			}
 
 			return
+		case <-timeout:
+			// The handler produced nothing in time (timeout only fires before the
+			// first write): 504 and give up the connection and the slot.
+			writeGatewayTimeout(writer)
+
+			return
 		case command := <-commands:
 			finished, err := applyWrite(writer, flusher, command)
 			command.done <- err
 
 			if command.kind != writeEnd {
 				started = true
+				// Response has started; stop the first-write deadline so a long
+				// stream is not cut off.
+				timeout = nil
 			}
 
 			if finished {
@@ -348,6 +386,14 @@ func writeServiceUnavailable(writer http.ResponseWriter) {
 	writer.WriteHeader(http.StatusServiceUnavailable)
 
 	_, _ = io.WriteString(writer, "Service Unavailable")
+}
+
+// writeGatewayTimeout answers a request whose handler did not respond within the
+// configured deadline with a 504. Safe only before any other write.
+func writeGatewayTimeout(writer http.ResponseWriter) {
+	writer.WriteHeader(http.StatusGatewayTimeout)
+
+	_, _ = io.WriteString(writer, "Gateway Timeout")
 }
 
 func writeStatus(writer http.ResponseWriter, status int) {

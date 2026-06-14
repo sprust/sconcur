@@ -1,6 +1,7 @@
 package httpserver_feature
 
 import (
+	"errors"
 	"net"
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
@@ -31,6 +32,11 @@ var errFactory = errs.NewErrorsFactory("httpServer")
 var pendingRequests sync.Map
 
 var requestCounter atomic.Int64
+
+// errAbandoned is returned to a handler coroutine when the connection goroutine
+// has stopped consuming its writes (handler timeout, or the connection is gone),
+// so the coroutine unwinds instead of blocking on the response channel forever.
+var errAbandoned = errors.New("request abandoned")
 
 type HttpFeature struct{}
 
@@ -122,10 +128,10 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 		return
 	}
 
-	commands, ok := value.(chan writeCommand)
+	pending, ok := value.(*pendingRequest)
 
 	if !ok {
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("bad command channel")))
+		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("bad pending request")))
 
 		return
 	}
@@ -134,7 +140,7 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 
 	if err := msgpack.Unmarshal(message.Payload, &payload); err != nil {
 		// Malformed payload: answer the client with a 500 instead of hanging.
-		f.dispatch(task, commands, writeCommand{kind: writeFull, status: 500, body: "Internal Server Error"})
+		_ = f.dispatch(task, pending, writeCommand{kind: writeFull, status: 500, body: "Internal Server Error"})
 
 		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("parse respond payload", err)))
 
@@ -148,7 +154,7 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 		body:    payload.Body,
 	}
 
-	if err := f.dispatch(task, commands, command); err != nil {
+	if err := f.dispatch(task, pending, command); err != nil {
 		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("write response", err)))
 
 		return
@@ -159,20 +165,34 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 
 // dispatch hands one write command to the connection goroutine and waits for it
 // to be applied, so the handler coroutine only continues once the bytes hit the
-// wire (write backpressure). It returns the client write error, if any. The task
-// context guards against a vanished connection so the coroutine never deadlocks.
-func (f *HttpFeature) dispatch(task *tasks.Task, commands chan writeCommand, command writeCommand) error {
+// wire (write backpressure). It returns the client write error, if any —
+// including errAbandoned when ServeHTTP has stopped consuming (handler timeout or
+// the connection is gone), so the handler coroutine unwinds instead of hanging on
+// the unbuffered commands channel.
+func (f *HttpFeature) dispatch(task *tasks.Task, pending *pendingRequest, command writeCommand) error {
 	command.done = make(chan error, 1)
 
 	select {
-	case commands <- command:
+	case pending.commands <- command:
+	case <-pending.abandoned:
+		return errAbandoned
 	case <-task.GetContext().Done():
 		return nil
+	}
+
+	// Prefer a delivered result over a late abandon signal: if the write was
+	// applied, honor it even if ServeHTTP returned right after.
+	select {
+	case err := <-command.done:
+		return err
+	default:
 	}
 
 	select {
 	case err := <-command.done:
 		return err
+	case <-pending.abandoned:
+		return errAbandoned
 	case <-task.GetContext().Done():
 		return nil
 	}

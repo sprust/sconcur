@@ -25,16 +25,21 @@ use Throwable;
 readonly class HttpServer
 {
     /**
-     * @param int                                         $maxRequestBody request body read limit, in bytes
-     * @param int                                         $maxConcurrency max requests handled at once (0 = unlimited).
-     *                                                                    Bounds goroutines, buffered request bodies (memory) and request
-     *                                                                    coroutines; excess connections wait for a free slot. Set it to
-     *                                                                    cap resource use under load.
-     * @param null|Closure(Throwable, Request): ?Response $onError        observes a handler
-     *                                                                    failure (exception or a non-Response return). It may return a Response
-     *                                                                    to send instead of the default 500; returning null (or being absent)
-     *                                                                    falls back to a bare 500. Lets the caller log/trace otherwise-swallowed
-     *                                                                    errors.
+     * @param int                                         $maxRequestBody   request body read limit, in bytes
+     * @param int                                         $maxConcurrency   max requests handled at once (0 = unlimited).
+     *                                                                      Bounds goroutines, buffered request bodies (memory) and request
+     *                                                                      coroutines; excess connections wait for a free slot. Set it to
+     *                                                                      cap resource use under load.
+     * @param int                                         $handlerTimeoutMs how long to wait for a handler to start responding before
+     *                                                                      answering 504 and freeing the slot (0 = disabled). Covers only
+     *                                                                      the time to the first write, so a started stream is not cut off.
+     *                                                                      Note: a CPU-bound handler still blocks the single-threaded loop;
+     *                                                                      this guards handlers waiting on async work.
+     * @param null|Closure(Throwable, Request): ?Response $onError          observes a handler
+     *                                                                      failure (exception or a non-Response return). It may return a Response
+     *                                                                      to send instead of the default 500; returning null (or being absent)
+     *                                                                      falls back to a bare 500. Lets the caller log/trace otherwise-swallowed
+     *                                                                      errors.
      *
      * Defaults mirror the Go server defaults.
      */
@@ -47,6 +52,7 @@ readonly class HttpServer
         private int $shutdownTimeoutMs = 5_000,
         private int $maxRequestBody = 10_485_760,
         private int $maxConcurrency = 0,
+        private int $handlerTimeoutMs = 0,
         private ?Closure $onError = null,
     ) {
     }
@@ -81,6 +87,7 @@ readonly class HttpServer
                     shutdownTimeoutMs: $this->shutdownTimeoutMs,
                     maxRequestBody: $this->maxRequestBody,
                     maxConcurrency: $this->maxConcurrency,
+                    handlerTimeoutMs: $this->handlerTimeoutMs,
                 ),
             );
 

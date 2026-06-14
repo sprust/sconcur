@@ -143,6 +143,73 @@ func TestServeHTTPAnswers503OnShutdown(t *testing.T) {
 	}
 }
 
+// TestServeHTTPHandlerTimeout verifies the per-request deadline: a handler that
+// never responds gets the client a 504 and frees its slot, and the server keeps
+// serving the next request.
+func TestServeHTTPHandlerTimeout(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	message := &dto.Message{FlowKey: "timeout-flow", TaskKey: "timeout-task"}
+
+	// One slot, 100ms handler deadline.
+	config := configFromPayload(payloads.ServePayload{MaxConcurrency: 1, HandlerTimeoutMs: 100})
+
+	state := newServerState(ctx, message, listener, time.Now(), config)
+	defer state.Close()
+
+	// First request: the stand-in PHP side reads it but never answers.
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-state.requests:
+		}
+	}()
+
+	response, err := http.Get("http://" + listener.Addr().String() + "/")
+
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+
+	_ = response.Body.Close()
+
+	if response.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("expected 504 for a stuck handler, got %d", response.StatusCode)
+	}
+
+	// The slot must have been freed: a second request, answered promptly, succeeds.
+	go func() {
+		select {
+		case <-ctx.Done():
+		case event := <-state.requests:
+			if value, ok := pendingRequests.Load(event.RequestId); ok {
+				done := make(chan error, 1)
+				value.(*pendingRequest).commands <- writeCommand{kind: writeFull, status: 200, body: "ok", done: done}
+				<-done
+			}
+		}
+	}()
+
+	second, err := http.Get("http://" + listener.Addr().String() + "/")
+
+	if err != nil {
+		t.Fatalf("second request: %v", err)
+	}
+
+	_ = second.Body.Close()
+
+	if second.StatusCode != http.StatusOK {
+		t.Fatalf("expected the freed slot to serve the next request (200), got %d", second.StatusCode)
+	}
+}
+
 func answer(event *payloads.RequestEvent, inFlight, maxSeen *int32) {
 	current := atomic.AddInt32(inFlight, 1)
 
@@ -166,7 +233,7 @@ func answer(event *payloads.RequestEvent, inFlight, maxSeen *int32) {
 	if ok {
 		done := make(chan error, 1)
 
-		value.(chan writeCommand) <- writeCommand{kind: writeFull, status: 200, body: "ok", done: done}
+		value.(*pendingRequest).commands <- writeCommand{kind: writeFull, status: 200, body: "ok", done: done}
 
 		<-done
 	}
