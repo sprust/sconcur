@@ -33,9 +33,9 @@ readonly class HttpServer
      *                                                                      coroutines; excess connections wait for a free slot. Set it to
      *                                                                      cap resource use under load.
      * @param int                                         $handlerTimeoutMs max total time to handle a request, including a streamed
-     *                                                                      response, before it is cut off and the slot freed (0 = disabled).
-     *                                                                      If nothing was written yet the client gets a 504; mid-stream the
-     *                                                                      response is aborted (status is already on the wire).
+     *                                                                      response, before it is cut off and the slot freed (default 60s;
+     *                                                                      0 disables). If nothing was written yet the client gets a 504;
+     *                                                                      mid-stream the response is aborted (status is already on the wire).
      *                                                                      Note: a CPU-bound handler still blocks the single-threaded loop;
      *                                                                      this guards handlers waiting on async work.
      * @param bool                                        $reusePort        set SO_REUSEPORT so several processes can bind this same
@@ -60,7 +60,7 @@ readonly class HttpServer
         private int $shutdownTimeoutMs = 5_000,
         private int $maxRequestBody = 10_485_760,
         private int $maxConcurrency = 0,
-        private int $handlerTimeoutMs = 0,
+        private int $handlerTimeoutMs = 60_000,
         private bool $reusePort = false,
         private ?Closure $onError = null,
         private ?Closure $accessLog = null,
