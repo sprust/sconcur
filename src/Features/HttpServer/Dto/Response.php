@@ -11,7 +11,8 @@ namespace SConcur\Features\HttpServer\Dto;
 readonly class Response
 {
     /**
-     * @param array<string, string> $headers
+     * @param array<string, string|array<int, string>> $headers a header value may be
+     *                                                          a single string or a list of strings (e.g. several Set-Cookie entries)
      */
     public function __construct(
         public string $body = '',

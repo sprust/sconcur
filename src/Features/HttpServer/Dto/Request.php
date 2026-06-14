@@ -14,6 +14,9 @@ readonly class Request
 {
     /**
      * @param array<string, array<int, string>> $headers
+     * @param string                            $remoteAddr client "ip:port" as seen by the server
+     * @param string                            $host       the request Host header / authority
+     * @param string                            $proto      HTTP protocol version, e.g. "HTTP/1.1"
      */
     public function __construct(
         public string $requestId,
@@ -22,6 +25,9 @@ readonly class Request
         public string $query,
         public array $headers,
         public string $body,
+        public string $remoteAddr = '',
+        public string $host = '',
+        public string $proto = '',
     ) {
     }
 
@@ -45,6 +51,9 @@ readonly class Request
             query: (string) ($data['qr'] ?? ''),
             headers: $headers,
             body: (string) ($data['bd'] ?? ''),
+            remoteAddr: (string) ($data['ra'] ?? ''),
+            host: (string) ($data['ho'] ?? ''),
+            proto: (string) ($data['pr'] ?? ''),
         );
     }
 }

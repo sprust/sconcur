@@ -11,6 +11,7 @@ use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\CallbackExecutionException;
 use SConcur\Exceptions\FiberStateException;
 use SConcur\Exceptions\FlowStoppedException;
+use SConcur\Exceptions\TaskErrorException;
 use SConcur\Flow\CurrentFlow;
 use SConcur\State;
 use SConcur\WaitGroup;
@@ -192,48 +193,61 @@ class Scheduler
     ): void {
         $draining = false;
 
-        while (true) {
-            if (!$draining && $shouldStop()) {
-                // Stop accepting new requests; keep draining in-flight handlers.
-                $draining = true;
-            }
+        // Whatever ends the loop — clean shutdown, a bind error, or an unexpected
+        // throwable out of waitAny()/next() — the listener flow must be stopped so
+        // it does not leak for the process lifetime.
+        try {
+            while (true) {
+                if (!$draining && $shouldStop()) {
+                    // Stop accepting new requests; keep draining in-flight handlers.
+                    $draining = true;
+                }
 
-            if ($draining && $this->spawnedCount === 0) {
-                break;
-            }
-
-            $result = Extension::get()->waitAny();
-
-            if ($result->flowKey === $serverFlowKey && $result->key === $serverTaskKey) {
-                // The server stream ended (flow stopped): leave the serve loop.
-                if (!$result->hasNext) {
+                if ($draining && $this->spawnedCount === 0) {
                     break;
                 }
 
-                // While draining, refuse new requests; their connections are
-                // aborted when the server flow is stopped below.
-                if ($draining) {
+                $result = Extension::get()->waitAny();
+
+                if ($result->flowKey === $serverFlowKey && $result->key === $serverTaskKey) {
+                    // The server stream ended. A clean end (e.g. graceful shutdown)
+                    // leaves the loop; an error end (e.g. the listener failed to
+                    // bind) must surface instead of returning as if it ran fine.
+                    if (!$result->hasNext) {
+                        if ($result->isError) {
+                            throw new TaskErrorException(
+                                message: "http server stopped with error: {$result->payload}",
+                            );
+                        }
+
+                        break;
+                    }
+
+                    // While draining, refuse new requests; their connections are
+                    // aborted when the server flow is stopped below.
+                    if ($draining) {
+                        continue;
+                    }
+
+                    // Re-arm for the next request before handling this one, so the
+                    // listener keeps accepting while the handler runs.
+                    Extension::get()->next($serverFlowKey, $serverTaskKey);
+
+                    $payload = $result->payload;
+
+                    $this->spawn(static function () use ($onRequest, $payload): void {
+                        $onRequest($payload);
+                    });
+
                     continue;
                 }
 
-                // Re-arm for the next request before handling this one, so the
-                // listener keeps accepting while the handler runs.
-                Extension::get()->next($serverFlowKey, $serverTaskKey);
-
-                $payload = $result->payload;
-
-                $this->spawn(static function () use ($onRequest, $payload): void {
-                    $onRequest($payload);
-                });
-
-                continue;
+                $this->resumeByResult($result);
             }
-
-            $this->resumeByResult($result);
+        } finally {
+            // Stop the listener and abort any connections not yet answered.
+            Extension::get()->stopFlow($serverFlowKey);
         }
-
-        // Stop the listener and abort any connections not yet answered.
-        Extension::get()->stopFlow($serverFlowKey);
     }
 
     /**

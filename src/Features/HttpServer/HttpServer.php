@@ -6,6 +6,7 @@ namespace SConcur\Features\HttpServer;
 
 use Closure;
 use SConcur\Connection\Extension;
+use SConcur\Exceptions\HttpServer\InvalidHandlerResponseException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\HttpServer\Dto\Request;
 use SConcur\Features\HttpServer\Dto\Response;
@@ -22,7 +23,12 @@ use Throwable;
 readonly class HttpServer
 {
     /**
-     * @param int $maxRequestBody request body read limit, in bytes
+     * @param int                                         $maxRequestBody request body read limit, in bytes
+     * @param null|Closure(Throwable, Request): ?Response $onError        observes a handler
+     *                                                                    failure (exception or a non-Response return). It may return a Response
+     *                                                                    to send instead of the default 500; returning null (or being absent)
+     *                                                                    falls back to a bare 500. Lets the caller log/trace otherwise-swallowed
+     *                                                                    errors.
      *
      * Defaults mirror the Go server defaults.
      */
@@ -34,6 +40,7 @@ readonly class HttpServer
         private int $idleTimeoutMs = 60_000,
         private int $shutdownTimeoutMs = 5_000,
         private int $maxRequestBody = 10_485_760,
+        private ?Closure $onError = null,
     ) {
     }
 
@@ -66,11 +73,13 @@ readonly class HttpServer
 
         $this->installSignalHandlers($stopRequested);
 
+        $onError = $this->onError;
+
         Scheduler::get()->serve(
             serverFlowKey: $flowKey,
             serverTaskKey: $runningTask->key,
-            onRequest: static function (string $payload) use ($handler): void {
-                self::handle($handler, $payload);
+            onRequest: static function (string $payload) use ($handler, $onError): void {
+                self::handle($handler, $onError, $payload);
             },
             shouldStop: static function () use (&$stopRequested): bool {
                 return $stopRequested;
@@ -100,20 +109,20 @@ readonly class HttpServer
     }
 
     /**
-     * Runs inside a spawned coroutine: decode the request, call the user handler
-     * (turning any error into a 500), then send the response back to Go.
+     * Runs inside a spawned coroutine: decode the request, resolve a Response
+     * (turning any failure into a 500), then send it back to Go. Resolution and
+     * the RespondPayload build are both guarded so the connection is always
+     * answered — a handler that throws or returns the wrong type still gets a 500
+     * instead of hanging the client until a timeout.
      *
-     * @param Closure(Request): Response $handler
+     * @param Closure(Request): Response                  $handler
+     * @param null|Closure(Throwable, Request): ?Response $onError
      */
-    private static function handle(Closure $handler, string $payload): void
+    private static function handle(Closure $handler, ?Closure $onError, string $payload): void
     {
         $request = Request::fromPayload($payload);
 
-        try {
-            $response = $handler($request);
-        } catch (Throwable) {
-            $response = new Response(body: 'Internal Server Error', status: 500);
-        }
+        $response = self::resolveResponse($handler, $onError, $request);
 
         FeatureExecutor::exec(
             payload: new RespondPayload(
@@ -123,5 +132,60 @@ readonly class HttpServer
                 body: $response->body,
             ),
         );
+    }
+
+    /**
+     * Calls the handler and validates its result. Any throwable — or a non-Response
+     * return — is reported to $onError (if given) and turned into a 500.
+     *
+     * $handler is typed as a bare Closure here on purpose: PHP does not enforce a
+     * closure's declared return type at runtime, so the instanceof guard below is a
+     * real check, not dead code.
+     *
+     * @param null|Closure(Throwable, Request): ?Response $onError
+     */
+    private static function resolveResponse(Closure $handler, ?Closure $onError, Request $request): Response
+    {
+        try {
+            $response = $handler($request);
+
+            if (!$response instanceof Response) {
+                throw new InvalidHandlerResponseException(
+                    sprintf(
+                        'HTTP handler must return %s, got %s.',
+                        Response::class,
+                        get_debug_type($response),
+                    )
+                );
+            }
+
+            return $response;
+        } catch (Throwable $exception) {
+            return self::handleError($onError, $exception, $request);
+        }
+    }
+
+    /**
+     * Builds the error response: let $onError observe the failure (and optionally
+     * supply its own Response); fall back to a bare 500 if it is absent, returns
+     * null, or itself throws.
+     *
+     * @param null|Closure(Throwable, Request): ?Response $onError
+     */
+    private static function handleError(?Closure $onError, Throwable $exception, Request $request): Response
+    {
+        if ($onError !== null) {
+            try {
+                $custom = $onError($exception, $request);
+
+                if ($custom instanceof Response) {
+                    return $custom;
+                }
+            } catch (Throwable) {
+                // The error hook itself failed: still answer the client with a 500.
+            }
+        }
+
+        return new Response(body: 'Internal Server Error', status: 500);
     }
 }

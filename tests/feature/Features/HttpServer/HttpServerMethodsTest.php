@@ -33,9 +33,11 @@ class HttpServerMethodsTest extends BaseHttpServerTestCase
 
     public function testPostBodyIsReceived(): void
     {
-        [$status, $body] = $this->request('GET', '/');
+        $payload = 'hello body 123';
+
+        [$status, $body] = $this->request('POST', '/echo', $payload);
 
         self::assertSame(200, $status);
-        self::assertSame('ok', $body);
+        self::assertSame($payload, $body);
     }
 }

@@ -15,7 +15,7 @@ use SConcur\Transport\PayloadInterface;
 readonly class RespondPayload implements PayloadInterface
 {
     /**
-     * @param array<string, string> $headers
+     * @param array<string, string|array<int, string>> $headers
      */
     public function __construct(
         private string $requestId,
@@ -41,10 +41,18 @@ readonly class RespondPayload implements PayloadInterface
             'bd'  => $this->body,
         ];
 
-        // Omit empty headers: an empty PHP array encodes as a MessagePack array,
-        // which the Go side cannot decode into its headers map (it stays nil).
+        // Normalize each header to a list of strings so the Go side (map[string]
+        // []string) decodes it uniformly, whether the handler gave a single string
+        // or several values. Omit empty headers: an empty PHP array encodes as a
+        // MessagePack array, which the Go side cannot decode into its map (stays nil).
         if ($this->headers !== []) {
-            $data['hd'] = $this->headers;
+            $headers = [];
+
+            foreach ($this->headers as $name => $value) {
+                $headers[$name] = is_array($value) ? array_values($value) : [$value];
+            }
+
+            $data['hd'] = $headers;
         }
 
         return $data;

@@ -54,6 +54,40 @@ abstract class BaseHttpServerTestCase extends TestCase
     }
 
     /**
+     * Performs a request and returns its response headers, each as a list of
+     * values (a header may legitimately appear more than once, e.g. Set-Cookie).
+     * Header names are lower-cased.
+     *
+     * @return array<string, array<int, string>>
+     */
+    protected function responseHeaders(string $method, string $path): array
+    {
+        $curl = curl_init($this->baseUrl . $path);
+
+        $headers = [];
+
+        curl_setopt_array($curl, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CUSTOMREQUEST  => $method,
+            CURLOPT_TIMEOUT        => 5,
+            CURLOPT_HEADERFUNCTION => static function ($_curl, string $line) use (&$headers): int {
+                $parts = explode(':', $line, 2);
+
+                if (count($parts) === 2) {
+                    $headers[strtolower(trim($parts[0]))][] = trim($parts[1]);
+                }
+
+                return strlen($line);
+            },
+        ]);
+
+        curl_exec($curl);
+        curl_close($curl);
+
+        return $headers;
+    }
+
+    /**
      * Fires the given GET paths concurrently and returns their [status, body].
      *
      * @param array<int, string> $paths

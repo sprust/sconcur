@@ -66,7 +66,7 @@ func int64OrDefault(value int64, fallback int64) int64 {
 // respondData is the response a PHP handler produced for one request.
 type respondData struct {
 	status  int
-	headers map[string]string
+	headers map[string][]string
 	body    string
 }
 
@@ -142,12 +142,15 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	defer pendingRequests.Delete(requestId)
 
 	event := &payloads.RequestEvent{
-		RequestId: requestId,
-		Method:    request.Method,
-		Path:      request.URL.Path,
-		Query:     request.URL.RawQuery,
-		Headers:   request.Header,
-		Body:      string(body),
+		RequestId:  requestId,
+		Method:     request.Method,
+		Path:       request.URL.Path,
+		Query:      request.URL.RawQuery,
+		Headers:    request.Header,
+		Body:       string(body),
+		RemoteAddr: request.RemoteAddr,
+		Host:       request.Host,
+		Proto:      request.Proto,
 	}
 
 	// Deliver the request to PHP and wait for the handler's response. We wait on
@@ -165,6 +168,15 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	case response := <-responseCh:
 		writeResponse(writer, response)
 	case <-s.ctx.Done():
+		// The server is shutting down. Both this and responseCh may be ready at
+		// once (the PHP handler answered just as the flow was stopped); Go picks a
+		// ready case at random, so re-check responseCh non-blocking and still write
+		// a response the handler already produced instead of dropping it.
+		select {
+		case response := <-responseCh:
+			writeResponse(writer, response)
+		default:
+		}
 	}
 }
 
@@ -195,8 +207,12 @@ func (s *serverState) Close() {
 }
 
 func writeResponse(writer http.ResponseWriter, response respondData) {
-	for key, value := range response.headers {
-		writer.Header().Set(key, value)
+	header := writer.Header()
+
+	for key, values := range response.headers {
+		for _, value := range values {
+			header.Add(key, value)
+		}
 	}
 
 	status := response.status

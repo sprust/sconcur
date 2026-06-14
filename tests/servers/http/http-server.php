@@ -13,6 +13,9 @@ use SConcur\Features\Sleeper\Sleeper;
  * Demo / test HTTP server. Routes:
  *   GET  /                  -> 200 "ok"
  *   *    /method            -> 200, body = request method (GET/POST/...)
+ *   *    /echo              -> 200, body = the request body (echo)
+ *   *    /meta              -> 200, body = "<proto> <host>" (connection metadata)
+ *   GET  /cookies           -> 200 with two Set-Cookie headers (multi-value demo)
  *   GET  /sleep             -> sleeps 500ms, then 200 "slept" (concurrency demo)
  *   GET  /throw             -> handler throws -> framework answers 500
  *   GET  /status/{code}     -> responds with the given status code
@@ -34,12 +37,24 @@ $server->serve(static function (Request $request) use ($sleeper): Response {
         return new Response(body: $request->method);
     }
 
+    if ($request->path === '/echo') {
+        return new Response(body: $request->body);
+    }
+
+    if ($request->path === '/meta') {
+        return new Response(body: "$request->proto $request->host");
+    }
+
     if ($request->method !== 'GET') {
         return new Response(body: 'method not allowed', status: 405);
     }
 
     return match (true) {
-        $request->path === '/'      => new Response(body: 'ok'),
+        $request->path === '/'        => new Response(body: 'ok'),
+        $request->path === '/cookies' => new Response(
+            body: 'cookies',
+            headers: ['Set-Cookie' => ['a=1', 'b=2']],
+        ),
         $request->path === '/sleep' => sleepRoute($sleeper),
         $request->path === '/throw' => throw new RuntimeException('boom in handler'),
         str_starts_with($request->path, '/status/') => statusRoute($request->path),

@@ -19,23 +19,27 @@ type ServePayload struct {
 }
 
 // RespondPayload is the payload of an httpRespond command — the response a PHP
-// request-handler coroutine sends back for a given request.
+// request-handler coroutine sends back for a given request. Headers are
+// multi-valued so a handler can emit several Set-Cookie (etc.) entries.
 // PHP: SConcur\Features\HttpServer\Payloads\RespondPayload.
 type RespondPayload struct {
-	RequestId string            `json:"rid" msgpack:"rid"`
-	Status    int               `json:"st" msgpack:"st"`
-	Headers   map[string]string `json:"hd" msgpack:"hd"`
-	Body      string            `json:"bd" msgpack:"bd"`
+	RequestId string              `json:"rid" msgpack:"rid"`
+	Status    int                 `json:"st" msgpack:"st"`
+	Headers   map[string][]string `json:"hd" msgpack:"hd"`
+	Body      string              `json:"bd" msgpack:"bd"`
 }
 
 // RequestEvent is what the server emits to PHP for each accepted request (it is
 // MessagePack-marshaled into the streaming result's payload). PHP decodes it
 // into SConcur\Features\HttpServer\Dto\Request.
 type RequestEvent struct {
-	RequestId string              `json:"rid" msgpack:"rid"`
-	Method    string              `json:"mt" msgpack:"mt"`
-	Path      string              `json:"pt" msgpack:"pt"`
-	Query     string              `json:"qr" msgpack:"qr"`
-	Headers   map[string][]string `json:"hd" msgpack:"hd"`
-	Body      string              `json:"bd" msgpack:"bd"`
+	RequestId  string              `json:"rid" msgpack:"rid"`
+	Method     string              `json:"mt" msgpack:"mt"`
+	Path       string              `json:"pt" msgpack:"pt"`
+	Query      string              `json:"qr" msgpack:"qr"`
+	Headers    map[string][]string `json:"hd" msgpack:"hd"`
+	Body       string              `json:"bd" msgpack:"bd"`
+	RemoteAddr string              `json:"ra" msgpack:"ra"`
+	Host       string              `json:"ho" msgpack:"ho"`
+	Proto      string              `json:"pr" msgpack:"pr"`
 }
