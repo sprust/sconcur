@@ -30,6 +30,10 @@ var errFactory = errs.NewErrorsFactory("httpServer")
 // different flow) can find it.
 var pendingRequests sync.Map
 
+// serverStates maps a server flow key to its *serverState, so StopAccepting can
+// find the listener to close on graceful shutdown.
+var serverStates sync.Map
+
 var requestCounter atomic.Int64
 
 // errAbandoned is returned to a handler coroutine when the connection goroutine
@@ -83,6 +87,10 @@ func (f *HttpFeature) handleServe(task *tasks.Task) {
 	}
 
 	state := newServerState(task.GetContext(), message, listener, startTime, configFromPayload(payload))
+
+	// Registered by flow key so a graceful shutdown can stop accepting early
+	// (close the listener) without cancelling in-flight requests. Cleaned in Close.
+	serverStates.Store(message.FlowKey, state)
 
 	result, err := states.Get().Start(task.GetContext(), message.TaskKey, state)
 
@@ -199,4 +207,19 @@ func (f *HttpFeature) dispatch(task *tasks.Task, pending *pendingRequest, comman
 
 func nextRequestId(flowKey string) string {
 	return flowKey + ":r:" + strconv.FormatInt(requestCounter.Add(1), 10)
+}
+
+// StopAccepting closes the listener of the given server flow without cancelling
+// in-flight requests. On a SO_REUSEPORT pool this lets the kernel route new
+// connections to sibling processes while this one drains. No-op if unknown.
+func StopAccepting(flowKey string) {
+	value, ok := serverStates.Load(flowKey)
+
+	if !ok {
+		return
+	}
+
+	if state, ok := value.(*serverState); ok {
+		state.stopAccepting()
+	}
 }

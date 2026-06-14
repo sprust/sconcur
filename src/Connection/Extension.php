@@ -16,6 +16,7 @@ use SConcur\Transport\MessagePackTransport;
 use SConcur\Transport\PayloadInterface;
 use Throwable;
 use function SConcur\Extension\destroy;
+use function SConcur\Extension\httpStopAccepting;
 use function SConcur\Extension\next;
 use function SConcur\Extension\push;
 use function SConcur\Extension\stopFlow;
@@ -32,7 +33,7 @@ class Extension
      * whenever the PHP <-> Go protocol changes (payload keys, exported functions) so
      * an outdated .so is rejected instead of silently misbehaving.
      */
-    private const string REQUIRED_EXTENSION_VERSION = '0.2.0';
+    private const string REQUIRED_EXTENSION_VERSION = '0.3.0';
 
     protected static ?Extension $instance = null;
 
@@ -139,6 +140,16 @@ class Extension
     public function stopFlow(string $flowKey): void
     {
         stopFlow($flowKey);
+    }
+
+    /**
+     * Stops the HTTP server flow's listener from accepting new connections,
+     * without cancelling in-flight requests. Lets a SO_REUSEPORT sibling take over
+     * new connections while this process drains on graceful shutdown.
+     */
+    public function httpStopAccepting(string $flowKey): void
+    {
+        httpStopAccepting($flowKey);
     }
 
     public function destroy(): void

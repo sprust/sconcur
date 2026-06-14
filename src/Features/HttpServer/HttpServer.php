@@ -107,6 +107,11 @@ readonly class HttpServer
                 shouldStop: static function () use (&$stopRequested): bool {
                     return $stopRequested;
                 },
+                onDrainStart: static function () use ($flowKey): void {
+                    // Leave the SO_REUSEPORT group early: stop accepting so new
+                    // connections go to sibling processes, then drain in-flight.
+                    Extension::get()->httpStopAccepting($flowKey);
+                },
             );
         } finally {
             $restoreSignals();

@@ -34,6 +34,10 @@ function stopFlow(string $fk): void
 {
 }
 
+function httpStopAccepting(string $fk): void
+{
+}
+
 function destroy(): void
 {
 }

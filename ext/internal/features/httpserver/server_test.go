@@ -210,6 +210,58 @@ func TestServeHTTPHandlerTimeout(t *testing.T) {
 	}
 }
 
+// TestStopAcceptingClosesListener verifies that stopAccepting closes the listener
+// (so a SO_REUSEPORT sibling takes over) without needing the flow to be cancelled.
+func TestStopAcceptingClosesListener(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	message := &dto.Message{FlowKey: "stop-flow", TaskKey: "stop-task"}
+
+	state := newServerState(ctx, message, listener, time.Now(), configFromPayload(payloads.ServePayload{}))
+	defer state.Close()
+
+	address := listener.Addr().String()
+
+	// Sanity: the server accepts connections before stopAccepting.
+	connection, err := net.DialTimeout("tcp", address, time.Second)
+
+	if err != nil {
+		t.Fatalf("expected to connect before stopAccepting: %v", err)
+	}
+
+	_ = connection.Close()
+
+	state.stopAccepting()
+
+	// Shutdown closes the listener asynchronously; new connections must start being
+	// refused shortly after.
+	refused := false
+
+	for range 50 {
+		next, err := net.DialTimeout("tcp", address, 200*time.Millisecond)
+
+		if err != nil {
+			refused = true
+
+			break
+		}
+
+		_ = next.Close()
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if !refused {
+		t.Fatal("listener should be closed (connections refused) after stopAccepting")
+	}
+}
+
 func answer(event *payloads.RequestEvent, inFlight, maxSeen *int32) {
 	current := atomic.AddInt32(inFlight, 1)
 

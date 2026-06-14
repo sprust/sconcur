@@ -15,6 +15,7 @@ import "C"
 import (
 	"errors"
 	"sconcur/internal/dto"
+	httpserver_feature "sconcur/internal/features/httpserver"
 	handler2 "sconcur/internal/handler"
 	"sconcur/internal/types"
 	"unsafe"
@@ -186,6 +187,11 @@ func stopFlow(fk *C.char) {
 	handler.StopFlow(C.GoString(fk))
 }
 
+//export httpStopAccepting
+func httpStopAccepting(fk *C.char) {
+	httpserver_feature.StopAccepting(C.GoString(fk))
+}
+
 //export destroy
 func destroy() {
 	handler.Destroy()
@@ -193,7 +199,7 @@ func destroy() {
 
 //export version
 func version() *C.char {
-	return C.CString("0.2.0")
+	return C.CString("0.3.0")
 }
 
 func main() {}

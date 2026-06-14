@@ -331,10 +331,22 @@ func (s *serverState) Next() *dto.Result {
 	}
 }
 
+// stopAccepting closes the listener (and stops accepting) without cancelling
+// in-flight requests, so a SO_REUSEPORT sibling takes over new connections while
+// this server drains. Shutdown runs in its own goroutine on a background context:
+// it closes the listener immediately and returns once active handlers finish.
+func (s *serverState) stopAccepting() {
+	go func() {
+		_ = s.httpServer.Shutdown(context.Background())
+	}()
+}
+
 // Close gracefully shuts the server down: stop accepting and wait for in-flight
 // requests to drain. Run on a fresh context — the task context is already
 // cancelled by the time the state is closed.
 func (s *serverState) Close() {
+	serverStates.Delete(s.message.FlowKey)
+
 	ctx, cancel := context.WithTimeout(context.Background(), s.config.shutdownTimeout)
 	defer cancel()
 

@@ -188,14 +188,18 @@ class Scheduler
      * happens after each delivered result, so on an idle server shutdown takes
      * effect on the next event (a bounded waitAny will make it immediate later).
      *
-     * @param Closure(string): void $onRequest  receives the raw request payload
-     * @param Closure(): bool       $shouldStop true once a shutdown was requested
+     * @param Closure(string): void $onRequest    receives the raw request payload
+     * @param Closure(): bool       $shouldStop   true once a shutdown was requested
+     * @param Closure(): void       $onDrainStart called once when draining begins, before
+     *                                            in-flight handlers finish (e.g. to stop the
+     *                                            listener from accepting so siblings take over)
      */
     public function serve(
         string $serverFlowKey,
         string $serverTaskKey,
         Closure $onRequest,
         Closure $shouldStop,
+        Closure $onDrainStart,
     ): void {
         $draining = false;
 
@@ -207,6 +211,10 @@ class Scheduler
                 if (!$draining && $shouldStop()) {
                     // Stop accepting new requests; keep draining in-flight handlers.
                     $draining = true;
+
+                    // Close the listener up front so the kernel reroutes new
+                    // connections to SO_REUSEPORT siblings while we drain.
+                    $onDrainStart();
                 }
 
                 if ($draining && $this->spawnedCount === 0) {

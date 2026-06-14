@@ -12,6 +12,7 @@
  *  - waitAnyTimeout(int timeoutMs)
  *  - tasksCount()
  *  - stopFlow(string flowKey)
+ *  - httpStopAccepting(string flowKey)
  *  - destroy()
  *  - version()
  */
@@ -55,6 +56,11 @@ ZEND_END_ARG_INFO()
 
 // stopFlow(string flowKey)
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_stopFlow, 0, 0, 1)
+    ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
+ZEND_END_ARG_INFO()
+
+// httpStopAccepting(string flowKey)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_httpStopAccepting, 0, 0, 1)
     ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
@@ -223,6 +229,20 @@ PHP_FUNCTION(stopFlow)
     RETURN_NULL();
 }
 
+// PHP: SConcur\Extension\httpStopAccepting(string $flowKey): void
+PHP_FUNCTION(httpStopAccepting)
+{
+    char *flow_key = NULL;
+    size_t flow_key_len;
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &flow_key, &flow_key_len) == FAILURE) {
+        RETURN_THROWS();
+    }
+
+    httpStopAccepting(flow_key);
+    RETURN_NULL();
+}
+
 // PHP: SConcur\Extension\destroy(): void
 PHP_FUNCTION(destroy)
 {
@@ -259,6 +279,7 @@ static const zend_function_entry sconcur_functions[] = {
     ZEND_NS_FE("SConcur\\Extension", waitAnyTimeout, arginfo_sconcur_waitAnyTimeout)
     ZEND_NS_FE("SConcur\\Extension", tasksCount, arginfo_sconcur_tasksCount)
     ZEND_NS_FE("SConcur\\Extension", stopFlow, arginfo_sconcur_stopFlow)
+    ZEND_NS_FE("SConcur\\Extension", httpStopAccepting, arginfo_sconcur_httpStopAccepting)
     ZEND_NS_FE("SConcur\\Extension", destroy, arginfo_sconcur_destroy)
     ZEND_NS_FE("SConcur\\Extension", version, arginfo_sconcur_version)
     PHP_FE_END
@@ -276,7 +297,7 @@ zend_module_entry sconcur_module_entry = {
     NULL,  // RINIT
     NULL,  // RSHUTDOWN
     NULL,  // MINFO
-    "0.2.0",
+    "0.3.0",
     STANDARD_MODULE_PROPERTIES
 };
 

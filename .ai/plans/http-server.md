@@ -42,6 +42,12 @@
   конкурентности, 413, graceful drain.
 - **Готово (SO_REUSEPORT):** `HttpServer(reusePort: true)` — несколько процессов на
   одном порту, ядро балансирует соединения (process-per-core). `ext/.../listen.go`.
+- **Готово (drain без потери трафика):** при shutdown листенер закрывается **в начале**
+  дренажа (`httpStopAccepting` → Go `http.Server.Shutdown`, не отменяя in-flight), чтобы
+  воркер вышел из reuseport-группы и ядро увело новые соединения на соседей. Новый
+  cgo-экспорт `httpStopAccepting`; версия расширения → `0.3.0`. Покрыто
+  `TestStopAcceptingClosesListener` (Go) и `HttpServerGracefulShutdownTest::
+  testListenerStopsAcceptingAtDrainStart` (PHP).
 - **Осталось:** стриминг **тела запроса** (читается целиком).
 
 Ключевая реализация (отличие от первоначального наброска): listener — это
