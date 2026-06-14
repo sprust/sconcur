@@ -25,6 +25,7 @@ use SConcur\Features\Sleeper\Sleeper;
  *   GET  /cookies           -> 200 with two Set-Cookie headers (multi-value demo)
  *   GET  /stream            -> 200 chunked, body streamed in parts (streaming demo)
  *   GET  /msleep/{ms}       -> sleeps {ms}, then 200 "slept" (concurrency demo)
+ *   GET  /cpu/{n}           -> runs a CPU-bound sha256 loop of {n} rounds (bench)
  *   GET  /throw             -> handler throws -> framework answers 500
  *   GET  /status/{code}     -> responds with the given status code
  *   (anything else)         -> 404 "not found"
@@ -140,6 +141,7 @@ $server->serve(static function (Request $request) use ($sleeper): Response|Strea
         $request->path === '/slow-stream' => slowStreamRoute($sleeper),
         $request->path === '/throw'       => throw new RuntimeException('boom in handler'),
         str_starts_with($request->path, '/msleep/') => msleepRoute($sleeper, $request->path),
+        str_starts_with($request->path, '/cpu/')    => cpuRoute($request->path),
         str_starts_with($request->path, '/status/') => statusRoute($request->path),
         default => new Response(body: 'not found', status: 404),
     };
@@ -197,6 +199,21 @@ function slowStreamRoute(Sleeper $sleeper): StreamedResponse
         },
         headers: ['Content-Type' => 'text/plain'],
     );
+}
+
+// CPU-bound route: a sha256 loop that does NOT yield to the scheduler — used by
+// the CPU benchmark to show SO_REUSEPORT spreading compute across processes/cores.
+function cpuRoute(string $path): Response
+{
+    $iterations = (int) substr($path, strlen('/cpu/'));
+
+    $value = '';
+
+    for ($i = 0; $i < $iterations; $i++) {
+        $value = hash('sha256', $value . $i);
+    }
+
+    return new Response(body: $value);
 }
 
 function statusRoute(string $path): Response
