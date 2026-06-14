@@ -31,6 +31,10 @@ restart:
 	make stop
 	make up
 
+http-server-restart:
+	make ext-build
+	$(DOCKER_COMPOSE) up -d --build --force-recreate http-server
+
 bash-php:
 	$(DOCKER_COMPOSE) exec php bash
 
