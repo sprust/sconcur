@@ -167,6 +167,10 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		case s.sem <- struct{}{}:
 			defer func() { <-s.sem }()
 		case <-s.ctx.Done():
+			// Shutting down before this request got a slot: answer 503 instead of
+			// resetting the connection.
+			writeServiceUnavailable(writer)
+
 			return
 		}
 	}
@@ -207,6 +211,9 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	select {
 	case s.requests <- event:
 	case <-s.ctx.Done():
+		// Shutting down before PHP accepted this request: answer 503.
+		writeServiceUnavailable(writer)
+
 		return
 	}
 
@@ -222,6 +229,10 @@ func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan 
 	// (chunked transfer); absent only on exotic ResponseWriters.
 	flusher, _ := writer.(http.Flusher)
 
+	// started becomes true once any bytes/headers have gone out, after which the
+	// status can no longer change (so no 503 fallback on shutdown).
+	started := false
+
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -234,16 +245,30 @@ func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan 
 				finished, err := applyWrite(writer, flusher, command)
 				command.done <- err
 
+				if command.kind != writeEnd {
+					started = true
+				}
+
 				if finished {
 					return
 				}
 			default:
 			}
 
+			// A request delivered to PHP but never answered (refused during drain):
+			// answer 503 rather than reset, as long as nothing was written yet.
+			if !started {
+				writeServiceUnavailable(writer)
+			}
+
 			return
 		case command := <-commands:
 			finished, err := applyWrite(writer, flusher, command)
 			command.done <- err
+
+			if command.kind != writeEnd {
+				started = true
+			}
 
 			if finished {
 				return
@@ -314,6 +339,15 @@ func writeHeaders(writer http.ResponseWriter, command writeCommand) {
 			header.Add(key, value)
 		}
 	}
+}
+
+// writeServiceUnavailable answers a request the server can no longer handle
+// (shutting down) with a 503, used in place of dropping the connection. Safe only
+// before any other write, since it calls WriteHeader.
+func writeServiceUnavailable(writer http.ResponseWriter) {
+	writer.WriteHeader(http.StatusServiceUnavailable)
+
+	_, _ = io.WriteString(writer, "Service Unavailable")
 }
 
 func writeStatus(writer http.ResponseWriter, status int) {

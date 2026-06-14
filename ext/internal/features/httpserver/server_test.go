@@ -80,6 +80,69 @@ func TestServeHTTPRespectsMaxConcurrency(t *testing.T) {
 	}
 }
 
+// TestServeHTTPAnswers503OnShutdown verifies that a request accepted but not yet
+// answered when the server stops gets a 503, not a dropped connection.
+func TestServeHTTPAnswers503OnShutdown(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	message := &dto.Message{FlowKey: "drain-flow", TaskKey: "drain-task"}
+
+	state := newServerState(ctx, message, listener, time.Now(), configFromPayload(payloads.ServePayload{}))
+	defer state.Close()
+
+	// Stand-in PHP side: accept the request but never answer it.
+	delivered := make(chan struct{})
+
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-state.requests:
+			close(delivered)
+		}
+	}()
+
+	status := make(chan int, 1)
+
+	go func() {
+		response, err := http.Get("http://" + listener.Addr().String() + "/")
+
+		if err != nil {
+			status <- -1
+
+			return
+		}
+
+		defer func() { _ = response.Body.Close() }()
+
+		status <- response.StatusCode
+	}()
+
+	select {
+	case <-delivered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("request was not delivered")
+	}
+
+	// Simulate a graceful stop (what stopFlow does): cancel the server context.
+	cancel()
+
+	select {
+	case got := <-status:
+		if got != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503 on shutdown, got %d", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("client never got a response")
+	}
+}
+
 func answer(event *payloads.RequestEvent, inFlight, maxSeen *int32) {
 	current := atomic.AddInt32(inFlight, 1)
 
@@ -93,6 +156,11 @@ func answer(event *payloads.RequestEvent, inFlight, maxSeen *int32) {
 
 	time.Sleep(50 * time.Millisecond)
 
+	// Leave the measured window before responding: the response releases the
+	// server's slot, and a freed slot lets the next request in — counting it only
+	// after this decrement keeps the gauge aligned with real slot occupancy.
+	atomic.AddInt32(inFlight, -1)
+
 	value, ok := pendingRequests.Load(event.RequestId)
 
 	if ok {
@@ -102,6 +170,4 @@ func answer(event *payloads.RequestEvent, inFlight, maxSeen *int32) {
 
 		<-done
 	}
-
-	atomic.AddInt32(inFlight, -1)
 }

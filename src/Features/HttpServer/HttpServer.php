@@ -63,47 +63,68 @@ readonly class HttpServer
     {
         $flowKey = uniqid('http_', more_entropy: true);
 
-        $runningTask = Extension::get()->push(
-            flowKey: $flowKey,
-            payload: new ServePayload(
-                address: $this->address,
-                readHeaderTimeoutMs: $this->readHeaderTimeoutMs,
-                readTimeoutMs: $this->readTimeoutMs,
-                writeTimeoutMs: $this->writeTimeoutMs,
-                idleTimeoutMs: $this->idleTimeoutMs,
-                shutdownTimeoutMs: $this->shutdownTimeoutMs,
-                maxRequestBody: $this->maxRequestBody,
-                maxConcurrency: $this->maxConcurrency,
-            ),
-        );
-
         $stopRequested = false;
 
-        $this->installSignalHandlers($stopRequested);
+        // Install handlers before starting the listener so a signal arriving during
+        // startup is not missed, and restore the previous ones when serving ends.
+        $restoreSignals = $this->installSignalHandlers($stopRequested);
 
-        $onError = $this->onError;
+        try {
+            $runningTask = Extension::get()->push(
+                flowKey: $flowKey,
+                payload: new ServePayload(
+                    address: $this->address,
+                    readHeaderTimeoutMs: $this->readHeaderTimeoutMs,
+                    readTimeoutMs: $this->readTimeoutMs,
+                    writeTimeoutMs: $this->writeTimeoutMs,
+                    idleTimeoutMs: $this->idleTimeoutMs,
+                    shutdownTimeoutMs: $this->shutdownTimeoutMs,
+                    maxRequestBody: $this->maxRequestBody,
+                    maxConcurrency: $this->maxConcurrency,
+                ),
+            );
 
-        Scheduler::get()->serve(
-            serverFlowKey: $flowKey,
-            serverTaskKey: $runningTask->key,
-            onRequest: static function (string $payload) use ($handler, $onError): void {
-                self::handle($handler, $onError, $payload);
-            },
-            shouldStop: static function () use (&$stopRequested): bool {
-                return $stopRequested;
-            },
-        );
+            $onError = $this->onError;
+
+            Scheduler::get()->serve(
+                serverFlowKey: $flowKey,
+                serverTaskKey: $runningTask->key,
+                onRequest: static function (string $payload) use ($handler, $onError): void {
+                    self::handle($handler, $onError, $payload);
+                },
+                shouldStop: static function () use (&$stopRequested): bool {
+                    return $stopRequested;
+                },
+            );
+        } finally {
+            $restoreSignals();
+        }
     }
 
     /**
      * Installs SIGTERM/SIGINT handlers that flip $stopRequested so the serve loop
-     * shuts down gracefully. Requires ext-pcntl; without it the server runs until
-     * the process is killed.
+     * shuts down gracefully, and returns a callback that restores the handlers (and
+     * async-signals mode) that were in place before. Requires ext-pcntl; without it
+     * the server runs until the process is killed and the restorer is a no-op.
+     *
+     * @return Closure(): void
      */
-    private function installSignalHandlers(bool &$stopRequested): void
+    private function installSignalHandlers(bool &$stopRequested): Closure
     {
         if (!function_exists('pcntl_async_signals')) {
-            return;
+            return static function (): void {
+            };
+        }
+
+        $signals = [SIGTERM, SIGINT];
+
+        $previousAsync = pcntl_async_signals();
+
+        /** @var array<int, callable|int> $previousHandlers */
+        $previousHandlers = [];
+
+        foreach ($signals as $signal) {
+            $previousHandlers[$signal] = pcntl_signal_get_handler($signal);
         }
 
         pcntl_async_signals(true);
@@ -112,8 +133,17 @@ readonly class HttpServer
             $stopRequested = true;
         };
 
-        pcntl_signal(SIGTERM, $handler);
-        pcntl_signal(SIGINT, $handler);
+        foreach ($signals as $signal) {
+            pcntl_signal($signal, $handler);
+        }
+
+        return static function () use ($signals, $previousHandlers, $previousAsync): void {
+            foreach ($signals as $signal) {
+                pcntl_signal($signal, $previousHandlers[$signal]);
+            }
+
+            pcntl_async_signals($previousAsync);
+        };
     }
 
     /**

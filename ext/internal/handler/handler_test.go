@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"testing"
 
 	"sconcur/internal/dto"
@@ -90,6 +91,31 @@ func TestWaitBuffersOtherFlowResults(t *testing.T) {
 	}
 	if buffered.FlowKey != "fast" || buffered.TaskKey != "fast-1" {
 		t.Fatalf("expected buffered fast result, got %s/%s", buffered.FlowKey, buffered.TaskKey)
+	}
+}
+
+// WaitAnyTimeout must return ErrWaitTimeout when nothing is ready in time, and a
+// real result when one arrives before the deadline.
+func TestWaitAnyTimeout(t *testing.T) {
+	h := NewHandler()
+	defer h.Destroy()
+
+	if _, err := h.WaitAnyTimeout(20); !errors.Is(err, ErrWaitTimeout) {
+		t.Fatalf("expected ErrWaitTimeout on an idle handler, got %v", err)
+	}
+
+	if err := h.Push(sleepMessage(t, "flow", "task-1", 1)); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := h.WaitAnyTimeout(1000)
+
+	if err != nil {
+		t.Fatalf("expected a result before the deadline, got %v", err)
+	}
+
+	if result.FlowKey != "flow" {
+		t.Fatalf("expected flow result, got %s", result.FlowKey)
 	}
 }
 

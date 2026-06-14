@@ -23,6 +23,7 @@ use function SConcur\Extension\tasksCount;
 use function SConcur\Extension\version;
 use function SConcur\Extension\wait;
 use function SConcur\Extension\waitAny;
+use function SConcur\Extension\waitAnyTimeout;
 
 class Extension
 {
@@ -31,7 +32,7 @@ class Extension
      * whenever the PHP <-> Go protocol changes (payload keys, exported functions) so
      * an outdated .so is rejected instead of silently misbehaving.
      */
-    private const string REQUIRED_EXTENSION_VERSION = '0.1.0';
+    private const string REQUIRED_EXTENSION_VERSION = '0.2.0';
 
     protected static ?Extension $instance = null;
 
@@ -97,6 +98,31 @@ class Extension
         $start = microtime(true);
 
         $response = waitAny();
+
+        return static::parseWaitResponse(
+            response: $response,
+            errorContext: 'waitAny',
+            start: $start,
+        );
+    }
+
+    /**
+     * waitAny with a deadline: returns null if no result became ready within
+     * $timeoutMs, so a blocking caller (the HTTP serve loop) can wake to check for
+     * a shutdown signal even on an idle server.
+     */
+    public function waitAnyTimeout(int $timeoutMs): ?TaskResultDto
+    {
+        $start = microtime(true);
+
+        $response = waitAnyTimeout($timeoutMs);
+
+        // Distinct, non-"error:" sentinel the Go side returns on timeout. A real
+        // result is msgpack (binary) and an error starts with "error:", so this
+        // never collides.
+        if ($response === 'timeout') {
+            return null;
+        }
 
         return static::parseWaitResponse(
             response: $response,

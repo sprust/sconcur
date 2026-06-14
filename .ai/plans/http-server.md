@@ -21,17 +21,20 @@
   `Scheduler::serve` по флагу перестаёт принимать новые запросы, дренажит in-flight
   корутины (счётчик `spawnedCount`), затем `stopFlow` и выходит. `pcntl` включён в
   Dockerfile (dev + release). Проверено e2e (SIGTERM → in-flight дослуживается →
-  сервер корректно завершается). **Ограничение:** serve блокирует в cgo `waitAny`, и
-  PHP-сигнал обрабатывается лишь на следующем событии — на idle-сервере shutdown
-  отложен до ближайшего запроса. Снимется `waitAny` с таймаутом (ниже).
+  сервер корректно завершается). Обработчики ставятся **до** `push` и восстанавливаются
+  в `finally`. Idle-задержка shutdown снята поллингом (ниже).
+- **Готово (idle shutdown):** `waitAnyTimeout(ms)` (новый cgo-экспорт); `Scheduler::serve`
+  поллит каждые 250 мс и замечает сигнал даже без трафика.
 - **Готово (стриминг ответов):** respond переведён на команды записи
   (`op` full/head/chunk/end) с round-trip-подтверждением (write backpressure);
   chunked/SSE через `http.Flusher`; PHP `StreamedResponse` + `ResponseStream::write`.
 - **Готово (лимит конкурентности):** `HttpServer(maxConcurrency: N)` — семафор в Go
   `ServeHTTP` до чтения тела; ограничивает горутины, память (тела) и PHP-корутины разом.
-- **Осталось:** `waitAny` с таймаутом (мгновенный shutdown на idle); стриминг **тела
-  запроса** (читается целиком); мульти-процесс (`SO_REUSEPORT`); автотест в CI (нужен
-  отдельно-процессный харнесс — в одном процессе `serve()` блокирует, а `fork` запрещён).
+- **Готово (503 при дренаже):** запрос, принятый но не отвеченный к моменту остановки,
+  получает `503`, а не reset.
+- **Осталось:** стриминг **тела запроса** (читается целиком); мульти-процесс
+  (`SO_REUSEPORT`); автотест в CI (нужен отдельно-процессный харнесс — в одном процессе
+  `serve()` блокирует, а `fork` запрещён).
 
 Ключевая реализация (отличие от первоначального наброска): listener — это
 **стриминговая задача**, а не источник «события-результата» с произвольным
@@ -181,8 +184,9 @@ Go (фича httpserver):
 ### Безопасность
 
 7. [ ] **TLS.** Только `net.Listen("tcp")`; добавить `ServeTLS`/`tls.Config`.
-8. [ ] **Сигналы перехватываются глобально без восстановления** и ставятся после
-   `push(serve)` (окно гонки). Восстанавливать прежние обработчики, ставить до push.
+8. [x] **Сигналы.** `installSignalHandlers` теперь ставит обработчики **до** `push`
+   (нет окна пропуска сигнала на старте) и возвращает restorer, который в `finally`
+   восстанавливает прежние обработчики `SIGTERM`/`SIGINT` и режим `async_signals`.
 
 ### Корректность / функционал
 
@@ -192,10 +196,17 @@ Go (фича httpserver):
     `map[string][]string`; `Response::headers` принимает `string|list<string>` и
     нормализуется; `writeResponse` использует `Header().Add`. Покрыто тестом
     (несколько `Set-Cookie`).
-11. [ ] **Запросы во время дренажа → `503`**, а не reset соединения.
+11. [x] **Запросы во время дренажа → `503`.** Go `ServeHTTP` при отмене серверного
+    контекста (если ответ ещё не начат) отдаёт `503 Service Unavailable` вместо reset —
+    во всех точках выхода по shutdown (семафор, доставка, `consumeCommands`). Покрыто
+    Go-тестом `TestServeHTTPAnswers503OnShutdown`.
 12. [x] **`serve` хрупок к исключениям** из `next()`/`waitAny()` — цикл обёрнут в
     `try/finally`, `stopFlow(serverFlowKey)` гарантирован на любом выходе.
-13. [ ] **`waitAny` с таймаутом** для мгновенного shutdown на idle-сервере.
+13. [x] **`waitAny` с таймаутом.** Новый экспорт `waitAnyTimeout(ms)` (Go
+    `Handler.WaitAnyTimeout` + C-мост `sconcur.c`); PHP `Extension::waitAnyTimeout`
+    возвращает `null` по таймауту (sentinel `"timeout"`). `Scheduler::serve` поллит с
+    интервалом 250 мс, поэтому замечает сигнал shutdown даже на idle. Версия расширения
+    поднята до `0.2.0`. Покрыто `TestWaitAnyTimeout` (Go) и `WaitAnyTimeoutTest` (PHP).
 14. [~] **Стриминг.** Ответы (chunked/SSE через `http.Flusher`) — **готово**: respond
     переведён на команды записи (`op` full/head/chunk/end) с round-trip-подтверждением
     (write backpressure); PHP `StreamedResponse` + `ResponseStream::write`. Покрыто

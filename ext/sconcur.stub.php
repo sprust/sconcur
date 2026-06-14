@@ -22,6 +22,10 @@ function waitAny(): string
 {
 }
 
+function waitAnyTimeout(int $timeoutMs): string
+{
+}
+
 function tasksCount(): int
 {
 }

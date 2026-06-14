@@ -26,6 +26,12 @@ use Throwable;
  */
 class Scheduler
 {
+    /**
+     * How long the server loop blocks on one waitAny before looping to re-check
+     * for a shutdown signal. Bounds the shutdown latency of an idle server.
+     */
+    private const int SERVE_POLL_INTERVAL_MS = 250;
+
     protected static ?Scheduler $instance = null;
 
     /**
@@ -207,7 +213,15 @@ class Scheduler
                     break;
                 }
 
-                $result = Extension::get()->waitAny();
+                // Poll rather than block forever: on an idle server this is the
+                // only way the loop notices a shutdown signal (it flips a flag the
+                // blocking cgo waitAny would not return for). A timeout just loops
+                // back to re-check shouldStop()/drain above.
+                $result = Extension::get()->waitAnyTimeout(self::SERVE_POLL_INTERVAL_MS);
+
+                if ($result === null) {
+                    continue;
+                }
 
                 if ($result->flowKey === $serverFlowKey && $result->key === $serverTaskKey) {
                     // The server stream ended. A clean end (e.g. graceful shutdown)
@@ -223,8 +237,9 @@ class Scheduler
                         break;
                     }
 
-                    // While draining, refuse new requests; their connections are
-                    // aborted when the server flow is stopped below.
+                    // While draining, refuse new requests: leave them unhandled so
+                    // the Go side answers them 503 when the server flow is stopped
+                    // below, instead of running their handlers.
                     if ($draining) {
                         continue;
                     }

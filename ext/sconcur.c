@@ -9,6 +9,7 @@
  *  - next(string flowKey, string taskKey)
  *  - wait(string flowKey)
  *  - waitAny()
+ *  - waitAnyTimeout(int timeoutMs)
  *  - tasksCount()
  *  - stopFlow(string flowKey)
  *  - destroy()
@@ -41,6 +42,11 @@ ZEND_END_ARG_INFO()
 
 // waitAny()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_waitAny, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+// waitAnyTimeout(int timeoutMs)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_waitAnyTimeout, 0, 0, 1)
+    ZEND_ARG_TYPE_INFO(0, timeoutMs, IS_LONG, 0)
 ZEND_END_ARG_INFO()
 
 // tasksCount()
@@ -169,6 +175,29 @@ PHP_FUNCTION(waitAny)
     free(response.data);
 }
 
+// PHP: SConcur\Extension\waitAnyTimeout(int $timeoutMs): string
+// Returns the literal "timeout" when no result became ready in time.
+PHP_FUNCTION(waitAnyTimeout)
+{
+    zend_long timeout_ms;
+    buffer_result_t response;
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "l", &timeout_ms) == FAILURE) {
+        RETURN_THROWS();
+    }
+
+    response = waitAnyTimeout((int)timeout_ms);
+
+    if (response.err != NULL) {
+        RETVAL_STRING(response.err);
+        free(response.err);
+        return;
+    }
+
+    RETVAL_STRINGL((char *)response.data, response.len);
+    free(response.data);
+}
+
 // PHP: SConcur\Extension\tasksCount(): int
 PHP_FUNCTION(tasksCount)
 {
@@ -227,6 +256,7 @@ static const zend_function_entry sconcur_functions[] = {
     ZEND_NS_FE("SConcur\\Extension", next, arginfo_sconcur_next)
     ZEND_NS_FE("SConcur\\Extension", wait, arginfo_sconcur_wait)
     ZEND_NS_FE("SConcur\\Extension", waitAny, arginfo_sconcur_waitAny)
+    ZEND_NS_FE("SConcur\\Extension", waitAnyTimeout, arginfo_sconcur_waitAnyTimeout)
     ZEND_NS_FE("SConcur\\Extension", tasksCount, arginfo_sconcur_tasksCount)
     ZEND_NS_FE("SConcur\\Extension", stopFlow, arginfo_sconcur_stopFlow)
     ZEND_NS_FE("SConcur\\Extension", destroy, arginfo_sconcur_destroy)
@@ -246,7 +276,7 @@ zend_module_entry sconcur_module_entry = {
     NULL,  // RINIT
     NULL,  // RSHUTDOWN
     NULL,  // MINFO
-    "0.1.0",
+    "0.2.0",
     STANDARD_MODULE_PROPERTIES
 };
 
