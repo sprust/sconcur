@@ -67,4 +67,14 @@ class HttpServerErrorsTest extends BaseHttpServerTestCase
         self::assertSame(200, $status);
         self::assertSame($body, $echoed);
     }
+
+    /**
+     * @return array<string, int>
+     */
+    protected static function serverOptions(): array
+    {
+        // Small body limit so the 413 test only needs a few KB over it (a large
+        // over-limit upload risks a connection reset before the 413 is read).
+        return ['maxRequestBody' => 65536];
+    }
 }

@@ -16,24 +16,57 @@ use SConcur\Features\Sleeper\Sleeper;
  *   GET  /                  -> 200 "ok"
  *   *    /method            -> 200, body = request method (GET/POST/...)
  *   *    /echo              -> 200, body = the request body (echo)
+ *   *    /query             -> 200, body = the raw query string
+ *   *    /echo-header       -> 200, body = the "X-Echo" request header (joined)
  *   *    /meta              -> 200, body = "<proto> <host>" (connection metadata)
+ *   GET  /empty             -> 200 with an empty body
  *   GET  /cookies           -> 200 with two Set-Cookie headers (multi-value demo)
  *   GET  /stream            -> 200 chunked, body streamed in parts (streaming demo)
- *   GET  /sleep             -> sleeps 500ms, then 200 "slept" (concurrency demo)
+ *   GET  /msleep/{ms}       -> sleeps {ms}, then 200 "slept" (concurrency demo)
  *   GET  /throw             -> handler throws -> framework answers 500
  *   GET  /status/{code}     -> responds with the given status code
  *   (anything else)         -> 404 "not found"
  *
- * Usage: php -d extension=ext/build/sconcur.so tests/servers/http/http-server.php [addr]
+ * Usage: php -d extension=ext/build/sconcur.so tests/servers/http/http-server.php [addr] [--option=value ...]
+ *
+ * Launch options (override the HttpServer defaults; all integers) are named
+ * exactly like the HttpServer constructor parameters, passed as --name=value:
+ *   --readHeaderTimeoutMs  --readTimeoutMs  --writeTimeoutMs  --idleTimeoutMs
+ *   --shutdownTimeoutMs  --maxRequestBody  --maxConcurrency
  */
 
 $address = $argv[1] ?? '0.0.0.0:8080';
 
 $sleeper = new Sleeper();
 
-// A small body limit so the 413 test only needs a few KB over it (a large
-// over-limit upload risks a connection reset before the 413 is read).
-$server = new HttpServer(address: $address, maxRequestBody: 65536);
+// Accepted launch options — exactly the HttpServer constructor parameter names.
+// Only the ones actually passed override the defaults (named-arg unpacking below).
+$allowedOptions = [
+    'readHeaderTimeoutMs',
+    'readTimeoutMs',
+    'writeTimeoutMs',
+    'idleTimeoutMs',
+    'shutdownTimeoutMs',
+    'maxRequestBody',
+    'maxConcurrency',
+];
+
+$overrides = [];
+
+foreach (array_slice($argv, 2) as $argument) {
+    if (!str_starts_with($argument, '--')) {
+        continue;
+    }
+
+    [$name, $value] = array_pad(explode('=', substr($argument, 2), 2), 2, '');
+
+    if (in_array($name, $allowedOptions, true)) {
+        $overrides[$name] = (int) $value;
+    }
+}
+
+// Spread as named args; address first, overrides take precedence over defaults.
+$server = new HttpServer(...['address' => $address, ...$overrides]);
 
 $server->serve(static function (Request $request) use ($sleeper): Response|StreamedResponse {
     echo "$request->method $request->path\n";
@@ -46,6 +79,14 @@ $server->serve(static function (Request $request) use ($sleeper): Response|Strea
         return new Response(body: $request->body);
     }
 
+    if ($request->path === '/query') {
+        return new Response(body: $request->query);
+    }
+
+    if ($request->path === '/echo-header') {
+        return new Response(body: headerValue($request, 'X-Echo'));
+    }
+
     if ($request->path === '/meta') {
         return new Response(body: "$request->proto $request->host");
     }
@@ -56,21 +97,38 @@ $server->serve(static function (Request $request) use ($sleeper): Response|Strea
 
     return match (true) {
         $request->path === '/'        => new Response(body: 'ok'),
+        $request->path === '/empty'   => new Response(),
         $request->path === '/cookies' => new Response(
             body: 'cookies',
             headers: ['Set-Cookie' => ['a=1', 'b=2']],
         ),
         $request->path === '/stream' => streamRoute($sleeper),
-        $request->path === '/sleep'  => sleepRoute($sleeper),
-        $request->path === '/throw' => throw new RuntimeException('boom in handler'),
+        $request->path === '/throw'  => throw new RuntimeException('boom in handler'),
+        str_starts_with($request->path, '/msleep/') => msleepRoute($sleeper, $request->path),
         str_starts_with($request->path, '/status/') => statusRoute($request->path),
         default => new Response(body: 'not found', status: 404),
     };
 });
 
-function sleepRoute(Sleeper $sleeper): Response
+/**
+ * Returns the value(s) of a request header (case-insensitive), joined by ",".
+ */
+function headerValue(Request $request, string $name): string
 {
-    $sleeper->msleep(milliseconds: 500);
+    foreach ($request->headers as $headerName => $values) {
+        if (strcasecmp($headerName, $name) === 0) {
+            return implode(',', $values);
+        }
+    }
+
+    return '';
+}
+
+function msleepRoute(Sleeper $sleeper, string $path): Response
+{
+    $milliseconds = (int) substr($path, strlen('/msleep/'));
+
+    $sleeper->msleep(milliseconds: $milliseconds);
 
     return new Response(body: 'slept');
 }

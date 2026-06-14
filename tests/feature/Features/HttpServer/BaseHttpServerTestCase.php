@@ -5,41 +5,76 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\HttpServer;
 
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
+use SConcur\Tests\Impl\HttpServer\TestHttpServer;
 
 /**
- * Base for HTTP-server tests. They run against the dedicated `http-server`
- * container (see docker-compose.yml) reached over the Docker network, so start
- * it with `make http-server-restart` first. If it is not reachable the tests are
- * skipped rather than failed.
+ * Base for HTTP-server tests. Each test class spawns its own real server process
+ * (via TestHttpServer) for the whole class, with the launch options it needs —
+ * no shared, externally-started container required.
  */
 abstract class BaseHttpServerTestCase extends TestCase
 {
-    private string $baseUrl;
+    private static ?TestHttpServer $server = null;
 
-    protected function setUp(): void
+    public static function setUpBeforeClass(): void
     {
-        parent::setUp();
+        parent::setUpBeforeClass();
 
-        $host = getenv('HTTP_SERVER_HOST') ?: 'http-server';
-        $port = (int) (getenv('HTTP_SERVER_PORT') ?: 8080);
+        self::$server = TestHttpServer::start(static::serverOptions());
+    }
 
-        $this->baseUrl = "http://$host:$port";
+    public static function tearDownAfterClass(): void
+    {
+        self::$server?->stop();
+        self::$server = null;
 
-        $this->skipUnlessReachable($host, $port);
+        parent::tearDownAfterClass();
     }
 
     /**
+     * Launch options (kebab-case) overriding the server defaults for this whole
+     * test class. Override to tune the server, e.g. ['max-request-body' => 65536].
+     *
+     * @return array<string, int>
+     */
+    protected static function serverOptions(): array
+    {
+        return [];
+    }
+
+    protected static function server(): TestHttpServer
+    {
+        if (self::$server === null) {
+            throw new RuntimeException('Test HTTP server is not started.');
+        }
+
+        return self::$server;
+    }
+
+    protected function baseUrl(): string
+    {
+        return self::server()->baseUrl();
+    }
+
+    /**
+     * @param array<int, string> $headers raw request headers, e.g. ['X-Echo: hi']
+     *
      * @return array{int, string} [status, body]
      */
-    protected function request(string $method, string $path, ?string $body = null): array
+    protected function request(string $method, string $path, ?string $body = null, array $headers = []): array
     {
-        $curl = curl_init($this->baseUrl . $path);
+        $curl = curl_init($this->baseUrl() . $path);
 
         curl_setopt_array($curl, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_CUSTOMREQUEST  => $method,
             CURLOPT_TIMEOUT        => 5,
         ]);
+
+        if ($headers !== []) {
+            curl_setopt($curl, CURLOPT_HTTPHEADER, $headers);
+        }
 
         if ($body !== null) {
             curl_setopt($curl, CURLOPT_POSTFIELDS, $body);
@@ -62,7 +97,7 @@ abstract class BaseHttpServerTestCase extends TestCase
      */
     protected function responseHeaders(string $method, string $path): array
     {
-        $curl = curl_init($this->baseUrl . $path);
+        $curl = curl_init($this->baseUrl() . $path);
 
         $headers = [];
 
@@ -100,7 +135,7 @@ abstract class BaseHttpServerTestCase extends TestCase
         $handles = [];
 
         foreach ($paths as $index => $path) {
-            $curl = curl_init($this->baseUrl . $path);
+            $curl = curl_init($this->baseUrl() . $path);
 
             curl_setopt_array($curl, [
                 CURLOPT_RETURNTRANSFER => true,
@@ -134,20 +169,5 @@ abstract class BaseHttpServerTestCase extends TestCase
         curl_multi_close($multi);
 
         return $results;
-    }
-
-    private function skipUnlessReachable(string $host, int $port): void
-    {
-        $connection = @fsockopen($host, $port, $errno, $errstr, 1.0);
-
-        if (is_resource($connection)) {
-            fclose($connection);
-
-            return;
-        }
-
-        self::markTestSkipped(
-            "HTTP server is not reachable at $host:$port; start it with `make http-server-restart`."
-        );
     }
 }

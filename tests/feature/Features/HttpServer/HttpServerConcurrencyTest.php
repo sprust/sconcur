@@ -8,12 +8,12 @@ class HttpServerConcurrencyTest extends BaseHttpServerTestCase
 {
     public function testConcurrentSleepRequestsRunInParallel(): void
     {
-        // Each /sleep handler sleeps 500ms in its own coroutine. Three concurrent
-        // requests must overlap, so the total wall time stays well under their sum
-        // (1.5s) — under 1s.
+        // Each /msleep/500 handler sleeps 500ms in its own coroutine. Five
+        // concurrent requests must overlap, so the total wall time stays well under
+        // their sum (2.5s) — under 1s.
         $start = microtime(true);
 
-        $results = $this->concurrentGet(['/sleep', '/sleep', '/sleep', '/sleep', '/sleep']);
+        $results = $this->concurrentGet(['/msleep/500', '/msleep/500', '/msleep/500', '/msleep/500', '/msleep/500']);
 
         $elapsed = microtime(true) - $start;
 
