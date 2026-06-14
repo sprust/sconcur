@@ -173,10 +173,12 @@ Go (фича httpserver):
 2. [x] Go-фича `httpserver`: listener как стриминговая задача; `httpStart` (push `ServePayload`).
 3. [x] `MethodHttpRespond` + DTO запроса/ответа; базовый запрос-ответ end-to-end.
 4. [x] Keep-alive + таймауты (путь B: `net/http.Server`); Go-side graceful `Shutdown`;
-   signal-driven graceful из PHP (`pcntl` SIGTERM/SIGINT → дренаж in-flight → stopFlow).
-   Осталось: `waitAny` с таймаутом для мгновенного shutdown на idle-сервере.
-5. [ ] Лимит конкурентности; затем стриминг ответов (SSE/chunked) через `http.Flusher`;
-   затем мульти-процесс (`SO_REUSEPORT`).
+   signal-driven graceful из PHP (`pcntl` SIGTERM/SIGINT → дренаж in-flight → stopFlow);
+   `waitAny` с таймаутом (мгновенный shutdown на idle).
+5. [x] Лимит конкурентности; стриминг ответов (SSE/chunked) через `http.Flusher`;
+   мульти-процесс (`SO_REUSEPORT`); стриминг тела запроса; access-лог.
+
+Полный статус — в разделе «Доработки по ревью» ниже (все пункты, кроме TLS, закрыты).
 
 ## Доработки по ревью (2026-06-14)
 

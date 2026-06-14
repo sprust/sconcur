@@ -8,6 +8,7 @@ here.
 
 - [README.md](../README.md) — project overview and usage
 - [docs/adding-a-feature.ru.md](../docs/adding-a-feature.ru.md) — guide for adding a new feature
+- [docs/http-server.ru.md](../docs/http-server.ru.md) — HTTP-server feature: usage, params, internals, limits
 - [.ai/plans/](plans/) — detailed designs for roadmap items
 
 ## Plans
@@ -89,17 +90,20 @@ non-fiber path.)
 - `Features/Mongodb/Connection/{Client,Database,Collection}` — MongoDB operations (insert, update, delete, find, aggregate, indexes, bulk write)
 - `Features/Sleeper/Sleeper` — async sleep
 - `Features/Mongodb/Serialization/DocumentSerializer` — handles MongoDB Extended JSON (`$oid`, `$date`, `$numberLong`, etc.)
+- `Features/HttpServer/` — long-lived HTTP server: `HttpServer::serve()`, `Scheduler::serve()`, DTOs (`Request`/`RequestBody`/`Response`/`StreamedResponse`/`ResponseStream`/`AccessLogEntry`). See [docs/http-server.ru.md](../docs/http-server.ru.md).
 
 **Go extension** (`ext/`):
-- `main.go` — cgo exports (`push`, `wait`, `next`, `count`, `stopFlow`, `destroy`)
+- `main.go` — cgo exports (`push`, `wait`, `next`, `waitAny`, `waitAnyTimeout`, `tasksCount`, `stopFlow`, `httpStopAccepting`, `destroy`, `version`)
 - `internal/handler/` — singleton orchestrator routing messages to flows
 - `internal/flows/` — `Flows` manages concurrent `Flow` instances; each `Flow` holds tasks and a result channel
 - `internal/tasks/` — individual task unit with context cancellation
-- `internal/features/sleep/` — goroutine-based sleep
+- `internal/states/` — registry of streaming states (cursor batches, HTTP requests, request-body chunks) driven by `next()`
+- `internal/features/sleeper/` — goroutine-based sleep
 - `internal/features/mongodb/` — MongoDB operations via Go driver, with aggregation cursor state management
+- `internal/features/httpserver/` — `net/http.Server` as an http.Handler streaming each request to PHP; response write-commands, request-body streaming, concurrency limit, timeouts, graceful shutdown, SO_REUSEPORT
 
 **Key enums:**
-- `MethodEnum`: Sleep (1), MongodbCollection (2)
+- `MethodEnum`: Sleep (1), MongodbCollection (2), HttpServe (3), HttpRespond (4)
 - `CommandEnum`: InsertOne (1), BulkWrite (2), Aggregate (3), InsertMany (4), CountDocuments (5), UpdateOne (6), FindOne (7), CreateIndex (8), DeleteOne (9), DeleteMany (10), UpdateMany (11), Drop (12), DropIndex (13)
 
 ## Test Structure
