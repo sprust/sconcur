@@ -31,7 +31,9 @@ $address = $argv[1] ?? '0.0.0.0:8080';
 
 $sleeper = new Sleeper();
 
-$server = new HttpServer(address: $address);
+// A small body limit so the 413 test only needs a few KB over it (a large
+// over-limit upload risks a connection reset before the 413 is read).
+$server = new HttpServer(address: $address, maxRequestBody: 65536);
 
 $server->serve(static function (Request $request) use ($sleeper): Response|StreamedResponse {
     echo "$request->method $request->path\n";

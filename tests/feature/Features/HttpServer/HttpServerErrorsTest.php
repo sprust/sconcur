@@ -47,4 +47,24 @@ class HttpServerErrorsTest extends BaseHttpServerTestCase
 
         self::assertSame(405, $status);
     }
+
+    public function testBodyOverTheLimitReturns413(): void
+    {
+        // The demo server caps the body at 64 KiB; send a little over that.
+        $body = str_repeat('x', 70000);
+
+        [$status] = $this->request('POST', '/echo', $body);
+
+        self::assertSame(413, $status);
+    }
+
+    public function testBodyUnderTheLimitIsAccepted(): void
+    {
+        $body = str_repeat('x', 60000);
+
+        [$status, $echoed] = $this->request('POST', '/echo', $body);
+
+        self::assertSame(200, $status);
+        self::assertSame($body, $echoed);
+    }
 }
