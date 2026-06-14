@@ -16,6 +16,9 @@ type ServePayload struct {
 	IdleTimeoutMs       int    `json:"it" msgpack:"it"`
 	ShutdownTimeoutMs   int    `json:"sht" msgpack:"sht"`
 	MaxRequestBody      int64  `json:"mrb" msgpack:"mrb"`
+	// MaxConcurrency caps the number of requests handled at once (0 = unlimited).
+	// Bounds goroutines, buffered request bodies (memory) and PHP coroutines.
+	MaxConcurrency int `json:"mc" msgpack:"mc"`
 }
 
 // RespondPayload is the payload of an httpRespond command — one write a PHP

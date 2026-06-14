@@ -26,6 +26,10 @@ readonly class HttpServer
 {
     /**
      * @param int                                         $maxRequestBody request body read limit, in bytes
+     * @param int                                         $maxConcurrency max requests handled at once (0 = unlimited).
+     *                                                                    Bounds goroutines, buffered request bodies (memory) and request
+     *                                                                    coroutines; excess connections wait for a free slot. Set it to
+     *                                                                    cap resource use under load.
      * @param null|Closure(Throwable, Request): ?Response $onError        observes a handler
      *                                                                    failure (exception or a non-Response return). It may return a Response
      *                                                                    to send instead of the default 500; returning null (or being absent)
@@ -42,6 +46,7 @@ readonly class HttpServer
         private int $idleTimeoutMs = 60_000,
         private int $shutdownTimeoutMs = 5_000,
         private int $maxRequestBody = 10_485_760,
+        private int $maxConcurrency = 0,
         private ?Closure $onError = null,
     ) {
     }
@@ -68,6 +73,7 @@ readonly class HttpServer
                 idleTimeoutMs: $this->idleTimeoutMs,
                 shutdownTimeoutMs: $this->shutdownTimeoutMs,
                 maxRequestBody: $this->maxRequestBody,
+                maxConcurrency: $this->maxConcurrency,
             ),
         );
 

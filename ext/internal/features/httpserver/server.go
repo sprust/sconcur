@@ -32,6 +32,7 @@ type serverConfig struct {
 	idleTimeout       time.Duration
 	shutdownTimeout   time.Duration
 	maxRequestBody    int64
+	maxConcurrency    int
 }
 
 // configFromPayload resolves the tuning from the PHP payload, falling back to the
@@ -44,6 +45,8 @@ func configFromPayload(payload payloads.ServePayload) serverConfig {
 		idleTimeout:       msOrDefault(payload.IdleTimeoutMs, defaultIdleTimeout),
 		shutdownTimeout:   msOrDefault(payload.ShutdownTimeoutMs, defaultShutdownTimeout),
 		maxRequestBody:    int64OrDefault(payload.MaxRequestBody, defaultMaxRequestBody),
+		// 0 stays 0 (unlimited); a negative value is treated as unlimited too.
+		maxConcurrency: max(payload.MaxConcurrency, 0),
 	}
 }
 
@@ -102,6 +105,10 @@ type serverState struct {
 	requests   chan *payloads.RequestEvent
 	startTime  time.Time
 	config     serverConfig
+	// sem bounds concurrent in-flight requests when maxConcurrency > 0; nil means
+	// unlimited. Acquired before the body is read, released when ServeHTTP returns,
+	// so it caps goroutines, buffered bodies and (transitively) PHP coroutines.
+	sem chan struct{}
 }
 
 func newServerState(
@@ -118,6 +125,7 @@ func newServerState(
 		requests:  make(chan *payloads.RequestEvent, 1024),
 		startTime: startTime,
 		config:    config,
+		sem:       newSemaphore(config.maxConcurrency),
 	}
 
 	state.httpServer = &http.Server{
@@ -140,8 +148,29 @@ func newServerState(
 	return state
 }
 
+// newSemaphore builds the concurrency limiter, or nil when unlimited (size <= 0).
+func newSemaphore(size int) chan struct{} {
+	if size <= 0 {
+		return nil
+	}
+
+	return make(chan struct{}, size)
+}
+
 // ServeHTTP handles one request: hand it to PHP, wait for the response.
 func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	// Bound concurrency before touching the body, so requests waiting for a slot
+	// hold no body buffer: this caps memory (and goroutines) under load. A waiting
+	// request unblocks when a slot frees or the server stops.
+	if s.sem != nil {
+		select {
+		case s.sem <- struct{}{}:
+			defer func() { <-s.sem }()
+		case <-s.ctx.Done():
+			return
+		}
+	}
+
 	// Reject a body larger than the configured limit instead of silently
 	// truncating it (which would also leave the connection unusable).
 	body, err := io.ReadAll(http.MaxBytesReader(writer, request.Body, s.config.maxRequestBody))

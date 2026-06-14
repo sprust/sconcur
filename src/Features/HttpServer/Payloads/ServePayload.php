@@ -23,6 +23,7 @@ readonly class ServePayload implements PayloadInterface
         private int $idleTimeoutMs,
         private int $shutdownTimeoutMs,
         private int $maxRequestBody,
+        private int $maxConcurrency,
     ) {
     }
 
@@ -44,6 +45,7 @@ readonly class ServePayload implements PayloadInterface
             'it'  => $this->idleTimeoutMs,
             'sht' => $this->shutdownTimeoutMs,
             'mrb' => $this->maxRequestBody,
+            'mc'  => $this->maxConcurrency,
         ];
     }
 }
