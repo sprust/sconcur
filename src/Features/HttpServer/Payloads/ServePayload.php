@@ -25,6 +25,7 @@ readonly class ServePayload implements PayloadInterface
         private int $maxRequestBody,
         private int $maxConcurrency,
         private int $handlerTimeoutMs,
+        private bool $reusePort,
     ) {
     }
 
@@ -34,7 +35,7 @@ readonly class ServePayload implements PayloadInterface
     }
 
     /**
-     * @return array<string, int|string>
+     * @return array<string, int|string|bool>
      */
     public function getData(): array
     {
@@ -48,6 +49,7 @@ readonly class ServePayload implements PayloadInterface
             'mrb' => $this->maxRequestBody,
             'mc'  => $this->maxConcurrency,
             'hto' => $this->handlerTimeoutMs,
+            'rp'  => $this->reusePort,
         ];
     }
 }

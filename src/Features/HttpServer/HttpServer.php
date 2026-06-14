@@ -35,6 +35,9 @@ readonly class HttpServer
      *                                                                      the time to the first write, so a started stream is not cut off.
      *                                                                      Note: a CPU-bound handler still blocks the single-threaded loop;
      *                                                                      this guards handlers waiting on async work.
+     * @param bool                                        $reusePort        set SO_REUSEPORT so several processes can bind this same
+     *                                                                      address; the kernel load-balances connections across them
+     *                                                                      (run one process per core). Linux only; each process must set it.
      * @param null|Closure(Throwable, Request): ?Response $onError          observes a handler
      *                                                                      failure (exception or a non-Response return). It may return a Response
      *                                                                      to send instead of the default 500; returning null (or being absent)
@@ -53,6 +56,7 @@ readonly class HttpServer
         private int $maxRequestBody = 10_485_760,
         private int $maxConcurrency = 0,
         private int $handlerTimeoutMs = 0,
+        private bool $reusePort = false,
         private ?Closure $onError = null,
     ) {
     }
@@ -88,6 +92,7 @@ readonly class HttpServer
                     maxRequestBody: $this->maxRequestBody,
                     maxConcurrency: $this->maxConcurrency,
                     handlerTimeoutMs: $this->handlerTimeoutMs,
+                    reusePort: $this->reusePort,
                 ),
             );
 

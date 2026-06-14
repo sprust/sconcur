@@ -40,8 +40,9 @@
   `make test`); докер-сервис `http-server` остаётся для ручного запуска демо. Покрытие
   расширено: query-строка, заголовки запроса, бинарное тело, пустой ответ, e2e-лимит
   конкурентности, 413, graceful drain.
-- **Осталось:** стриминг **тела запроса** (читается целиком); мульти-процесс
-  (`SO_REUSEPORT`).
+- **Готово (SO_REUSEPORT):** `HttpServer(reusePort: true)` — несколько процессов на
+  одном порту, ядро балансирует соединения (process-per-core). `ext/.../listen.go`.
+- **Осталось:** стриминг **тела запроса** (читается целиком).
 
 Ключевая реализация (отличие от первоначального наброска): listener — это
 **стриминговая задача**, а не источник «события-результата» с произвольным
@@ -219,11 +220,13 @@ Go (фича httpserver):
     возвращает `null` по таймауту (sentinel `"timeout"`). `Scheduler::serve` поллит с
     интервалом 250 мс, поэтому замечает сигнал shutdown даже на idle. Версия расширения
     поднята до `0.2.0`. Покрыто `TestWaitAnyTimeout` (Go) и `WaitAnyTimeoutTest` (PHP).
-14. [~] **Стриминг.** Ответы (chunked/SSE через `http.Flusher`) — **готово**: respond
-    переведён на команды записи (`op` full/head/chunk/end) с round-trip-подтверждением
-    (write backpressure); PHP `StreamedResponse` + `ResponseStream::write`. Покрыто
-    `HttpServerStreamingTest`. **Осталось:** стриминг тела запроса (читается целиком);
-    мульти-процесс `SO_REUSEPORT`.
+14. [~] **Стриминг + мульти-процесс.** Ответы (chunked/SSE через `http.Flusher`) —
+    **готово**: respond переведён на команды записи (`op` full/head/chunk/end) с
+    round-trip-подтверждением (write backpressure); PHP `StreamedResponse` +
+    `ResponseStream::write`. **`SO_REUSEPORT`** — **готово**: `HttpServer(reusePort: true)`,
+    несколько процессов на одном порту (`ext/.../listen.go`), покрыто
+    `TestListenReusePort*` (Go) и `HttpServerReusePortTest` (PHP). **Осталось:**
+    стриминг тела запроса (читается целиком).
 
 ### Тесты
 

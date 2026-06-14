@@ -2,7 +2,6 @@ package httpserver_feature
 
 import (
 	"errors"
-	"net"
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
@@ -75,7 +74,7 @@ func (f *HttpFeature) handleServe(task *tasks.Task) {
 		return
 	}
 
-	listener, err := net.Listen("tcp", payload.Address)
+	listener, err := listen(payload.Address, payload.ReusePort)
 
 	if err != nil {
 		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("listen", err)))

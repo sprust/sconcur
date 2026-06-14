@@ -22,6 +22,9 @@ type ServePayload struct {
 	// HandlerTimeoutMs bounds how long the server waits for a handler to start
 	// responding before answering 504 and freeing the slot (0 = disabled).
 	HandlerTimeoutMs int `json:"hto" msgpack:"hto"`
+	// ReusePort sets SO_REUSEPORT so several processes can bind the same address
+	// and the kernel load-balances connections across them (process-per-core).
+	ReusePort bool `json:"rp" msgpack:"rp"`
 }
 
 // RespondPayload is the payload of an httpRespond command — one write a PHP

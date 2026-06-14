@@ -35,13 +35,15 @@ final class TestHttpServer
     }
 
     /**
-     * @param array<string, int> $options launch options overriding the server
+     * @param array<string, int|bool> $options launch options overriding the server
      *        defaults, keyed by HttpServer constructor parameter name (e.g.
-     *        'maxRequestBody')
+     *        'maxRequestBody'); booleans are passed as 0/1
+     * @param int|null                 $port    bind this exact port instead of a free
+     *        one — used to start several SO_REUSEPORT servers on the same port
      */
-    public static function start(array $options = []): self
+    public static function start(array $options = [], ?int $port = null): self
     {
-        $port = self::freePort();
+        $port ??= self::freePort();
 
         $root      = dirname(__DIR__, 3);
         $extension = $root . '/ext/build/sconcur.so';
@@ -50,7 +52,7 @@ final class TestHttpServer
         $command = ['php', '-d', 'extension=' . $extension, $script, self::HOST . ':' . $port];
 
         foreach ($options as $name => $value) {
-            $command[] = '--' . $name . '=' . $value;
+            $command[] = '--' . $name . '=' . (int) $value;
         }
 
         $descriptors = [

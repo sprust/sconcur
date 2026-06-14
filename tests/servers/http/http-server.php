@@ -33,6 +33,7 @@ use SConcur\Features\Sleeper\Sleeper;
  * exactly like the HttpServer constructor parameters, passed as --name=value:
  *   --readHeaderTimeoutMs  --readTimeoutMs  --writeTimeoutMs  --idleTimeoutMs
  *   --shutdownTimeoutMs  --maxRequestBody  --maxConcurrency  --handlerTimeoutMs
+ *   --reusePort (0/1)
  */
 
 $address = $argv[1] ?? '0.0.0.0:8080';
@@ -41,7 +42,7 @@ $sleeper = new Sleeper();
 
 // Accepted launch options — exactly the HttpServer constructor parameter names.
 // Only the ones actually passed override the defaults (named-arg unpacking below).
-$allowedOptions = [
+$allowedIntOptions = [
     'readHeaderTimeoutMs',
     'readTimeoutMs',
     'writeTimeoutMs',
@@ -61,7 +62,9 @@ foreach (array_slice($argv, 2) as $argument) {
 
     [$name, $value] = array_pad(explode('=', substr($argument, 2), 2), 2, '');
 
-    if (in_array($name, $allowedOptions, true)) {
+    if ($name === 'reusePort') {
+        $overrides['reusePort'] = (bool) (int) $value;
+    } elseif (in_array($name, $allowedIntOptions, true)) {
         $overrides[$name] = (int) $value;
     }
 }
