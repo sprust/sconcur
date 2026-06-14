@@ -63,11 +63,28 @@ func int64OrDefault(value int64, fallback int64) int64 {
 	return value
 }
 
-// respondData is the response a PHP handler produced for one request.
-type respondData struct {
+// writeKind tags what a write command does to the connection. A one-shot
+// response is a single writeFull; a streamed response is writeHead, then any
+// number of writeChunk, then writeEnd.
+type writeKind int
+
+const (
+	writeFull  writeKind = 0 // status + headers + body, then finish
+	writeHead  writeKind = 1 // status + headers, flushed (start of a stream)
+	writeChunk writeKind = 2 // body bytes, flushed
+	writeEnd   writeKind = 3 // finish a stream
+)
+
+// writeCommand is one instruction the PHP handler sends for a request. done
+// carries the result of applying it back to the issuing coroutine (nil on
+// success, an error if the client write failed) so the handler gets real write
+// backpressure and stops early on a dead connection.
+type writeCommand struct {
+	kind    writeKind
 	status  int
 	headers map[string][]string
 	body    string
+	done    chan error
 }
 
 // serverState is the streaming state of one HTTP server: each accepted request
@@ -136,9 +153,9 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	}
 
 	requestId := nextRequestId(s.message.FlowKey)
-	responseCh := make(chan respondData, 1)
+	commands := make(chan writeCommand)
 
-	pendingRequests.Store(requestId, responseCh)
+	pendingRequests.Store(requestId, commands)
 	defer pendingRequests.Delete(requestId)
 
 	event := &payloads.RequestEvent{
@@ -164,18 +181,44 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 
-	select {
-	case response := <-responseCh:
-		writeResponse(writer, response)
-	case <-s.ctx.Done():
-		// The server is shutting down. Both this and responseCh may be ready at
-		// once (the PHP handler answered just as the flow was stopped); Go picks a
-		// ready case at random, so re-check responseCh non-blocking and still write
-		// a response the handler already produced instead of dropping it.
+	s.consumeCommands(writer, commands)
+}
+
+// consumeCommands applies the handler's write commands in order until the
+// response is finished (writeFull/writeEnd) or the server is shutting down. Each
+// command's outcome is reported on its done channel so the issuing coroutine
+// gets write backpressure.
+func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan writeCommand) {
+	// Flusher lets a streamed response push each chunk to the client immediately
+	// (chunked transfer); absent only on exotic ResponseWriters.
+	flusher, _ := writer.(http.Flusher)
+
+	for {
 		select {
-		case response := <-responseCh:
-			writeResponse(writer, response)
-		default:
+		case <-s.ctx.Done():
+			// The server is shutting down. A command may be ready at the same time
+			// (the handler answered just as the flow stopped); Go picks a ready case
+			// at random, so drain one pending command non-blocking and still write
+			// what the handler produced instead of dropping it.
+			select {
+			case command := <-commands:
+				finished, err := applyWrite(writer, flusher, command)
+				command.done <- err
+
+				if finished {
+					return
+				}
+			default:
+			}
+
+			return
+		case command := <-commands:
+			finished, err := applyWrite(writer, flusher, command)
+			command.done <- err
+
+			if finished {
+				return
+			}
 		}
 	}
 }
@@ -206,22 +249,54 @@ func (s *serverState) Close() {
 	_ = s.httpServer.Shutdown(ctx)
 }
 
-func writeResponse(writer http.ResponseWriter, response respondData) {
+// applyWrite carries out one write command against the connection and reports
+// whether it finishes the response and whether the client write failed.
+func applyWrite(writer http.ResponseWriter, flusher http.Flusher, command writeCommand) (finished bool, err error) {
+	switch command.kind {
+	case writeFull:
+		writeHeaders(writer, command)
+		writeStatus(writer, command.status)
+		_, err = io.WriteString(writer, command.body)
+
+		return true, err
+	case writeHead:
+		writeHeaders(writer, command)
+		writeStatus(writer, command.status)
+		flush(flusher)
+
+		return false, nil
+	case writeChunk:
+		_, err = io.WriteString(writer, command.body)
+		flush(flusher)
+
+		return false, err
+	case writeEnd:
+		return true, nil
+	default:
+		return true, nil
+	}
+}
+
+func writeHeaders(writer http.ResponseWriter, command writeCommand) {
 	header := writer.Header()
 
-	for key, values := range response.headers {
+	for key, values := range command.headers {
 		for _, value := range values {
 			header.Add(key, value)
 		}
 	}
+}
 
-	status := response.status
-
+func writeStatus(writer http.ResponseWriter, status int) {
 	if status == 0 {
 		status = http.StatusOK
 	}
 
 	writer.WriteHeader(status)
+}
 
-	_, _ = io.WriteString(writer, response.body)
+func flush(flusher http.Flusher) {
+	if flusher != nil {
+		flusher.Flush()
+	}
 }

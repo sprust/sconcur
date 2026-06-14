@@ -18,12 +18,15 @@ type ServePayload struct {
 	MaxRequestBody      int64  `json:"mrb" msgpack:"mrb"`
 }
 
-// RespondPayload is the payload of an httpRespond command — the response a PHP
-// request-handler coroutine sends back for a given request. Headers are
-// multi-valued so a handler can emit several Set-Cookie (etc.) entries.
+// RespondPayload is the payload of an httpRespond command — one write a PHP
+// request-handler coroutine sends back for a given request. Op selects the kind
+// of write (0 one-shot full response, 1 stream head, 2 stream chunk, 3 stream
+// end). Headers are multi-valued so a handler can emit several Set-Cookie (etc.)
+// entries.
 // PHP: SConcur\Features\HttpServer\Payloads\RespondPayload.
 type RespondPayload struct {
 	RequestId string              `json:"rid" msgpack:"rid"`
+	Op        int                 `json:"op" msgpack:"op"`
 	Status    int                 `json:"st" msgpack:"st"`
 	Headers   map[string][]string `json:"hd" msgpack:"hd"`
 	Body      string              `json:"bd" msgpack:"bd"`

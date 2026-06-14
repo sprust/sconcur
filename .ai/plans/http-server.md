@@ -24,8 +24,11 @@
   сервер корректно завершается). **Ограничение:** serve блокирует в cgo `waitAny`, и
   PHP-сигнал обрабатывается лишь на следующем событии — на idle-сервере shutdown
   отложен до ближайшего запроса. Снимется `waitAny` с таймаутом (ниже).
+- **Готово (стриминг ответов):** respond переведён на команды записи
+  (`op` full/head/chunk/end) с round-trip-подтверждением (write backpressure);
+  chunked/SSE через `http.Flusher`; PHP `StreamedResponse` + `ResponseStream::write`.
 - **Осталось:** `waitAny` с таймаутом (мгновенный shutdown на idle); лимит
-  конкурентности; стриминг ответов (SSE/chunked через `http.Flusher`); мульти-процесс
+  конкурентности; стриминг **тела запроса** (читается целиком); мульти-процесс
   (`SO_REUSEPORT`); автотест в CI (нужен отдельно-процессный харнесс — в одном процессе
   `serve()` блокирует, а `fork` запрещён).
 
@@ -190,7 +193,11 @@ Go (фича httpserver):
 12. [x] **`serve` хрупок к исключениям** из `next()`/`waitAny()` — цикл обёрнут в
     `try/finally`, `stopFlow(serverFlowKey)` гарантирован на любом выходе.
 13. [ ] **`waitAny` с таймаутом** для мгновенного shutdown на idle-сервере.
-14. [ ] **Стриминг** ответов (SSE/chunked) и тела запроса; мульти-процесс `SO_REUSEPORT`.
+14. [~] **Стриминг.** Ответы (chunked/SSE через `http.Flusher`) — **готово**: respond
+    переведён на команды записи (`op` full/head/chunk/end) с round-trip-подтверждением
+    (write backpressure); PHP `StreamedResponse` + `ResponseStream::write`. Покрыто
+    `HttpServerStreamingTest`. **Осталось:** стриминг тела запроса (читается целиком);
+    мульти-процесс `SO_REUSEPORT`.
 
 ### Тесты
 

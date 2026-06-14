@@ -10,6 +10,8 @@ use SConcur\Exceptions\HttpServer\InvalidHandlerResponseException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\HttpServer\Dto\Request;
 use SConcur\Features\HttpServer\Dto\Response;
+use SConcur\Features\HttpServer\Dto\ResponseStream;
+use SConcur\Features\HttpServer\Dto\StreamedResponse;
 use SConcur\Features\HttpServer\Payloads\RespondPayload;
 use SConcur\Features\HttpServer\Payloads\ServePayload;
 use SConcur\Scheduler\Scheduler;
@@ -109,14 +111,14 @@ readonly class HttpServer
     }
 
     /**
-     * Runs inside a spawned coroutine: decode the request, resolve a Response
-     * (turning any failure into a 500), then send it back to Go. Resolution and
-     * the RespondPayload build are both guarded so the connection is always
-     * answered — a handler that throws or returns the wrong type still gets a 500
-     * instead of hanging the client until a timeout.
+     * Runs inside a spawned coroutine: decode the request, resolve the handler's
+     * result, then send it back to Go. A plain Response is one atomic write; a
+     * StreamedResponse is driven head/chunk/end. Resolution is guarded so the
+     * connection is always answered — a handler that throws or returns the wrong
+     * type still gets a 500 instead of hanging the client until a timeout.
      *
-     * @param Closure(Request): Response                  $handler
-     * @param null|Closure(Throwable, Request): ?Response $onError
+     * @param Closure(Request): (Response|StreamedResponse) $handler
+     * @param null|Closure(Throwable, Request): ?Response   $onError
      */
     private static function handle(Closure $handler, ?Closure $onError, string $payload): void
     {
@@ -124,8 +126,14 @@ readonly class HttpServer
 
         $response = self::resolveResponse($handler, $onError, $request);
 
+        if ($response instanceof StreamedResponse) {
+            self::stream($request, $response, $onError);
+
+            return;
+        }
+
         FeatureExecutor::exec(
-            payload: new RespondPayload(
+            payload: RespondPayload::full(
                 requestId: $request->requestId,
                 status: $response->status,
                 headers: $response->headers,
@@ -135,8 +143,38 @@ readonly class HttpServer
     }
 
     /**
-     * Calls the handler and validates its result. Any throwable — or a non-Response
-     * return — is reported to $onError (if given) and turned into a 500.
+     * Drives a streamed response: send the head, run the writer (which pushes
+     * flushed chunks), then always end the stream. Once the head is on the wire
+     * the status can no longer change, so a failure inside the writer is only
+     * reported to $onError, not turned into a 500.
+     *
+     * @param null|Closure(Throwable, Request): ?Response $onError
+     */
+    private static function stream(Request $request, StreamedResponse $response, ?Closure $onError): void
+    {
+        FeatureExecutor::exec(
+            payload: RespondPayload::head(
+                requestId: $request->requestId,
+                status: $response->status,
+                headers: $response->headers,
+            ),
+        );
+
+        try {
+            ($response->writer)(new ResponseStream($request->requestId));
+        } catch (Throwable $exception) {
+            self::notifyOnError($onError, $exception, $request);
+        } finally {
+            FeatureExecutor::exec(
+                payload: RespondPayload::end($request->requestId),
+            );
+        }
+    }
+
+    /**
+     * Calls the handler and validates its result. Any throwable — or a result that
+     * is neither a Response nor a StreamedResponse — is reported to $onError (if
+     * given) and turned into a 500.
      *
      * $handler is typed as a bare Closure here on purpose: PHP does not enforce a
      * closure's declared return type at runtime, so the instanceof guard below is a
@@ -144,16 +182,17 @@ readonly class HttpServer
      *
      * @param null|Closure(Throwable, Request): ?Response $onError
      */
-    private static function resolveResponse(Closure $handler, ?Closure $onError, Request $request): Response
+    private static function resolveResponse(Closure $handler, ?Closure $onError, Request $request): Response|StreamedResponse
     {
         try {
             $response = $handler($request);
 
-            if (!$response instanceof Response) {
+            if (!$response instanceof Response && !$response instanceof StreamedResponse) {
                 throw new InvalidHandlerResponseException(
                     sprintf(
-                        'HTTP handler must return %s, got %s.',
+                        'HTTP handler must return %s or %s, got %s.',
                         Response::class,
+                        StreamedResponse::class,
                         get_debug_type($response),
                     )
                 );
@@ -187,5 +226,25 @@ readonly class HttpServer
         }
 
         return new Response(body: 'Internal Server Error', status: 500);
+    }
+
+    /**
+     * Reports a failure to $onError for observability, swallowing anything the hook
+     * itself throws. Used on the streaming path where the head is already sent and
+     * the hook's return value cannot be applied.
+     *
+     * @param null|Closure(Throwable, Request): ?Response $onError
+     */
+    private static function notifyOnError(?Closure $onError, Throwable $exception, Request $request): void
+    {
+        if ($onError === null) {
+            return;
+        }
+
+        try {
+            $onError($exception, $request);
+        } catch (Throwable) {
+            // Observability only: a failing hook must not break stream teardown.
+        }
     }
 }

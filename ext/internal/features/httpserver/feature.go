@@ -92,9 +92,10 @@ func (f *HttpFeature) handleServe(task *tasks.Task) {
 	task.AddResult(result)
 }
 
-// handleRespond routes a PHP handler's response to the waiting connection. It
-// never leaves the connection hanging: as long as the request id resolves, the
-// client always gets an answer — a 500 if the response body itself is malformed.
+// handleRespond routes one write command (a one-shot response, or a head/chunk/
+// end of a streamed one) from a PHP handler to the waiting connection. It never
+// leaves the connection hanging: as long as the request id resolves, the client
+// always gets an answer — a 500 if the payload itself is malformed.
 func (f *HttpFeature) handleRespond(task *tasks.Task) {
 	message := task.GetMessage()
 	startTime := time.Now()
@@ -121,10 +122,10 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 		return
 	}
 
-	responseCh, ok := value.(chan respondData)
+	commands, ok := value.(chan writeCommand)
 
 	if !ok {
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("bad response channel")))
+		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("bad command channel")))
 
 		return
 	}
@@ -132,17 +133,49 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 	var payload payloads.RespondPayload
 
 	if err := msgpack.Unmarshal(message.Payload, &payload); err != nil {
-		// Malformed response: answer the client with a 500 instead of hanging.
-		responseCh <- respondData{status: 500, body: "Internal Server Error"}
+		// Malformed payload: answer the client with a 500 instead of hanging.
+		f.dispatch(task, commands, writeCommand{kind: writeFull, status: 500, body: "Internal Server Error"})
 
 		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("parse respond payload", err)))
 
 		return
 	}
 
-	responseCh <- respondData{status: payload.Status, headers: payload.Headers, body: payload.Body}
+	command := writeCommand{
+		kind:    writeKind(payload.Op),
+		status:  payload.Status,
+		headers: payload.Headers,
+		body:    payload.Body,
+	}
+
+	if err := f.dispatch(task, commands, command); err != nil {
+		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("write response", err)))
+
+		return
+	}
 
 	task.AddResult(dto.NewSuccessResult(message, "", helpers.CalcExecutionMs(startTime)))
+}
+
+// dispatch hands one write command to the connection goroutine and waits for it
+// to be applied, so the handler coroutine only continues once the bytes hit the
+// wire (write backpressure). It returns the client write error, if any. The task
+// context guards against a vanished connection so the coroutine never deadlocks.
+func (f *HttpFeature) dispatch(task *tasks.Task, commands chan writeCommand, command writeCommand) error {
+	command.done = make(chan error, 1)
+
+	select {
+	case commands <- command:
+	case <-task.GetContext().Done():
+		return nil
+	}
+
+	select {
+	case err := <-command.done:
+		return err
+	case <-task.GetContext().Done():
+		return nil
+	}
 }
 
 func nextRequestId(flowKey string) string {
