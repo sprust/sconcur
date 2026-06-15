@@ -7,4 +7,5 @@ const (
 	MethodMongodb     Method = 2
 	MethodHttpServe   Method = 3
 	MethodHttpRespond Method = 4
+	MethodHttpClient  Method = 5
 )

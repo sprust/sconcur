@@ -33,7 +33,7 @@ class Extension
      * whenever the PHP <-> Go protocol changes (payload keys, exported functions) so
      * an outdated .so is rejected instead of silently misbehaving.
      */
-    private const string REQUIRED_EXTENSION_VERSION = '0.2.0';
+    private const string REQUIRED_EXTENSION_VERSION = '0.2.1';
 
     protected static ?Extension $instance = null;
 

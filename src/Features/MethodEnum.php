@@ -9,4 +9,5 @@ enum MethodEnum: int
     case Mongodb     = 2;
     case HttpServe   = 3;
     case HttpRespond = 4;
+    case HttpClient  = 5;
 }

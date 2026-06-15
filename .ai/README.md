@@ -9,6 +9,7 @@ here.
 - [README.md](../README.md) — project overview and usage
 - [docs/adding-a-feature.ru.md](../docs/adding-a-feature.ru.md) — guide for adding a new feature
 - [docs/http-server.ru.md](../docs/http-server.ru.md) — HTTP-server feature: usage, params, internals, limits
+- [docs/http-client.ru.md](../docs/http-client.ru.md) — HTTP-client feature (PSR-18): usage, options, streaming, internals
 - [.ai/plans/](plans/) — detailed designs for roadmap items
 
 ## Plans
@@ -91,6 +92,7 @@ non-fiber path.)
 - `Features/Sleeper/Sleeper` — async sleep
 - `Features/Mongodb/Serialization/DocumentSerializer` — handles MongoDB Extended JSON (`$oid`, `$date`, `$numberLong`, etc.)
 - `Features/HttpServer/` — long-lived HTTP server: `HttpServer::serve()`, `Scheduler::serve()`, DTOs (`Request`/`RequestBody`/`Response`/`StreamedResponse`/`ResponseStream`/`AccessLogEntry`). See [docs/http-server.ru.md](../docs/http-server.ru.md).
+- `Features/HttpClient/` — async PSR-18 HTTP client with response streaming: `HttpClient` (`ClientInterface`), `HttpClientOptions`, `Payloads/RequestPayload`, `Dto/ResponseBodyStream` (`StreamInterface`). See [docs/http-client.ru.md](../docs/http-client.ru.md).
 
 **Go extension** (`ext/`):
 - `main.go` — cgo exports (`push`, `wait`, `next`, `waitAny`, `waitAnyTimeout`, `tasksCount`, `stopFlow`, `httpStopAccepting`, `destroy`, `version`)
@@ -101,9 +103,11 @@ non-fiber path.)
 - `internal/features/sleeper/` — goroutine-based sleep
 - `internal/features/mongodb/` — MongoDB operations via Go driver, with aggregation cursor state management
 - `internal/features/httpserver/` — `net/http.Server` as an http.Handler streaming each request to PHP; response write-commands, request-body streaming, concurrency limit, timeouts, graceful shutdown, SO_REUSEPORT
+- `internal/features/httpclient/` — `net/http.Client` sending one request as a streaming state: first result carries response metadata + inline first chunk, subsequent results are raw body chunks; reusable transports (keep-alive pool), per-request deadline
+- `internal/helpers/` — small shared helpers: `CalcExecutionMs`, and `ReadChunk` (fixed-granularity body chunk reader used by both the HTTP server and client)
 
 **Key enums:**
-- `MethodEnum`: Sleep (1), MongodbCollection (2), HttpServe (3), HttpRespond (4)
+- `MethodEnum`: Sleep (1), MongodbCollection (2), HttpServe (3), HttpRespond (4), HttpClient (5)
 - `CommandEnum`: InsertOne (1), BulkWrite (2), Aggregate (3), InsertMany (4), CountDocuments (5), UpdateOne (6), FindOne (7), CreateIndex (8), DeleteOne (9), DeleteMany (10), UpdateMany (11), Drop (12), DropIndex (13)
 
 ## Test Structure
@@ -128,6 +132,16 @@ lifecycle-sensitive tests extend `BaseTestCase`.
 - Code must be maximally typed (type hints for parameters, return types, properties)
 - Never abbreviate variable names — use full, descriptive names
 - Prefer short arrays (`[]`)
+- Do **not** use `final` on classes
+- Class properties (including promoted constructor properties) must be `protected`, never `private` (use `public` only for DTO fields read externally)
+
+## Extension versioning
+
+The Go extension version lives in `ext/main.go` (`version()`) and the minimum
+required version in `src/Connection/Extension.php`
+(`REQUIRED_EXTENSION_VERSION`); they are bumped together on any PHP↔Go protocol
+change. **Never bump the major version without the maintainer's approval**; bump
+the minor only when warranted, otherwise the patch. Current: `0.2.1`.
 
 ## Exceptions
 

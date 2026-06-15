@@ -198,7 +198,7 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	// remainder on demand via a bodyState — the body is never buffered whole.
 	reader := http.MaxBytesReader(writer, request.Body, s.config.maxRequestBody)
 
-	firstChunk, bodyComplete, err := readChunk(reader, defaultRequestBodyChunkSize)
+	firstChunk, bodyComplete, err := helpers.ReadChunk(reader, defaultRequestBodyChunkSize)
 
 	if err != nil {
 		var maxBytesError *http.MaxBytesError

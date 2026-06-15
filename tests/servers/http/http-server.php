@@ -24,6 +24,8 @@ use SConcur\Features\Sleeper\Sleeper;
  *   GET  /empty             -> 200 with an empty body
  *   GET  /cookies           -> 200 with two Set-Cookie headers (multi-value demo)
  *   GET  /stream            -> 200 chunked, body streamed in parts (streaming demo)
+ *   GET  /big/{n}           -> 200, body = {n} bytes of a deterministic pattern
+ *   *    /redirect/{n}      -> 302 to /redirect/{n-1} until n=0, then 200 "done"
  *   GET  /msleep/{ms}       -> sleeps {ms}, then 200 "slept" (concurrency demo)
  *   GET  /cpu/{n}           -> runs a CPU-bound sha256 loop of {n} rounds (bench)
  *   GET  /throw             -> handler throws -> framework answers 500
@@ -139,6 +141,8 @@ $server->serve(static function (Request $request) use ($sleeper): Response|Strea
         ),
         $request->path === '/stream'      => streamRoute($sleeper),
         $request->path === '/slow-stream' => slowStreamRoute($sleeper),
+        str_starts_with($request->path, '/big/')      => bigRoute($request->path),
+        str_starts_with($request->path, '/redirect/')  => redirectRoute($request->path),
         $request->path === '/throw'       => throw new RuntimeException('boom in handler'),
         str_starts_with($request->path, '/msleep/') => msleepRoute($sleeper, $request->path),
         str_starts_with($request->path, '/cpu/')    => cpuRoute($request->path),
@@ -214,6 +218,49 @@ function cpuRoute(string $path): Response
     }
 
     return new Response(body: $value);
+}
+
+/**
+ * Returns a body of exactly {n} bytes built from a fixed, repeating pattern, so a
+ * client can verify a large (multi-chunk) response arrives complete and in order.
+ * The same pattern is reproducible on the test side.
+ */
+function bigRoute(string $path): Response
+{
+    $size = (int) substr($path, strlen('/big/'));
+
+    if ($size < 0) {
+        $size = 0;
+    }
+
+    return new Response(body: bigBody($size));
+}
+
+function bigBody(int $size): string
+{
+    $pattern = '0123456789abcdef';
+
+    return substr(str_repeat($pattern, intdiv($size, strlen($pattern)) + 1), 0, $size);
+}
+
+/**
+ * Redirects to /redirect/{n-1} with a 302 until n reaches 0, then answers 200
+ * "done". Lets a client test redirect following, a redirect cap and no-follow.
+ * The Location is relative on purpose — clients must resolve it against the URL.
+ */
+function redirectRoute(string $path): Response
+{
+    $remaining = (int) substr($path, strlen('/redirect/'));
+
+    if ($remaining <= 0) {
+        return new Response(body: 'done');
+    }
+
+    return new Response(
+        body: 'redirecting',
+        status: 302,
+        headers: ['Location' => ['/redirect/' . ($remaining - 1)]],
+    );
 }
 
 function statusRoute(string $path): Response
