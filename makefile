@@ -11,11 +11,10 @@ build:
 	$(DOCKER_COMPOSE) build
 
 setup:
-	make env-copy
 	make stop
 	make build
 	make up
-	make compose c=i
+	make composer c=i
 	make ext-build
 
 up:
