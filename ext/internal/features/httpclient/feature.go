@@ -2,6 +2,7 @@ package httpclient_feature
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
@@ -9,6 +10,7 @@ import (
 	"sconcur/internal/features/httpclient/payloads"
 	"sconcur/internal/states"
 	"sconcur/internal/tasks"
+	"sconcur/internal/types"
 	"strings"
 	"sync"
 	"time"
@@ -48,10 +50,36 @@ func Get() *HttpClientFeature {
 func (f *HttpClientFeature) Handle(task *tasks.Task) {
 	message := task.GetMessage()
 
-	var payload payloads.RequestPayload
+	var envelope payloads.Envelope
 
-	if err := msgpack.Unmarshal(message.Payload, &payload); err != nil {
-		task.AddResult(dto.NewErrorResult(message, requestErrorPayload(errFactory.ByErr("parse request payload", err))))
+	if err := msgpack.Unmarshal(message.Payload, &envelope); err != nil {
+		task.AddResult(dto.NewErrorResult(message, requestErrorPayload(errFactory.ByErr("parse envelope", err))))
+
+		return
+	}
+
+	switch types.HttpClientCommand(envelope.Command) {
+	case types.HttpClientRequest:
+		f.handleRequest(task, envelope.Params)
+	case types.HttpClientUploadChunk:
+		f.handleUpload(task, envelope.Params, false)
+	case types.HttpClientUploadEnd:
+		f.handleUpload(task, envelope.Params, true)
+	default:
+		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("unknown command")))
+	}
+}
+
+// handleRequest opens one HTTP request. With a buffered body it registers the
+// streaming responseState that performs the request and streams the response back.
+// With a streamed body it pipes the body from PHP upload commands (see upload.go).
+func (f *HttpClientFeature) handleRequest(task *tasks.Task, raw msgpack.RawMessage) {
+	message := task.GetMessage()
+
+	var payload payloads.RequestParams
+
+	if err := msgpack.Unmarshal(raw, &payload); err != nil {
+		task.AddResult(dto.NewErrorResult(message, requestErrorPayload(errFactory.ByErr("parse request params", err))))
 
 		return
 	}
@@ -72,15 +100,37 @@ func (f *HttpClientFeature) Handle(task *tasks.Task) {
 		context.AfterFunc(ctx, cancel)
 	}
 
-	request, err := http.NewRequestWithContext(ctx, payload.Method, payload.Url, strings.NewReader(payload.Body))
+	// A streamed body is a pipe filled by upload commands; a buffered body is read
+	// from the payload in one shot.
+	var bodyReader io.Reader
+	var pipeWriter *io.PipeWriter
+
+	if payload.StreamBody {
+		pipeReader, writer := io.Pipe()
+		bodyReader = pipeReader
+		pipeWriter = writer
+	} else {
+		bodyReader = strings.NewReader(payload.Body)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, payload.Method, payload.Url, bodyReader)
 
 	if err != nil {
+		if pipeWriter != nil {
+			_ = pipeWriter.Close()
+		}
+
 		task.AddResult(dto.NewErrorResult(message, requestErrorPayload(errFactory.ByErr("build request", err))))
 
 		return
 	}
 
 	applyHeaders(request, payload.Headers)
+
+	if payload.StreamBody {
+		// Unknown length → chunked request encoding; the server reads it streamed.
+		request.ContentLength = -1
+	}
 
 	client := buildClient(
 		transportKey{
@@ -96,7 +146,15 @@ func (f *HttpClientFeature) Handle(task *tasks.Task) {
 		payload.MaxRedirects,
 	)
 
-	state := newResponseState(message, client, request, chunkSizeOrDefault(payload.ChunkSize), payload.MaxResponseBody)
+	chunkSize := chunkSizeOrDefault(payload.ChunkSize)
+
+	if payload.StreamBody {
+		f.startStreamedRequest(task, ctx, client, request, payload, pipeWriter, chunkSize)
+
+		return
+	}
+
+	state := newResponseState(message, client, request, chunkSize, payload.MaxResponseBody)
 
 	result, err := states.Get().Start(ctx, message.TaskKey, state)
 

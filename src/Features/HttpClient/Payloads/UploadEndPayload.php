@@ -9,25 +9,22 @@ use SConcur\Features\HttpClient\Payloads\Base\BaseHttpClientPayload;
 use SConcur\Transport\PayloadParametersInterface;
 
 /**
- * The Request command: open one HTTP request (buffered body, or the start of a
- * streamed-body upload when the parameters carry streamBody).
- *
- * Go: payloads.RequestParams (ext/internal/features/httpclient/payloads/payloads.go).
+ * The UploadEnd command: close an open streamed request body (no more chunks).
  */
-readonly class RequestPayload extends BaseHttpClientPayload
+readonly class UploadEndPayload extends BaseHttpClientPayload
 {
     public function __construct(
-        protected RequestPayloadParameters $parameters,
+        protected string $requestId,
     ) {
     }
 
     protected function getCommand(): HttpClientCommandEnum
     {
-        return HttpClientCommandEnum::Request;
+        return HttpClientCommandEnum::UploadEnd;
     }
 
     protected function getParameters(): PayloadParametersInterface
     {
-        return $this->parameters;
+        return new UploadPayloadParameters($this->requestId, '');
     }
 }

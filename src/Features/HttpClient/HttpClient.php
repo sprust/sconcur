@@ -12,9 +12,13 @@ use Psr\Http\Message\ResponseInterface;
 use SConcur\Exceptions\HttpClient\HttpClientException;
 use SConcur\Exceptions\HttpClient\NetworkException;
 use SConcur\Exceptions\HttpClient\RequestException;
+use SConcur\Dto\TaskResultDto;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\HttpClient\Dto\ResponseBodyStream;
 use SConcur\Features\HttpClient\Payloads\RequestPayload;
+use SConcur\Features\HttpClient\Payloads\RequestPayloadParameters;
+use SConcur\Features\HttpClient\Payloads\UploadChunkPayload;
+use SConcur\Features\HttpClient\Payloads\UploadEndPayload;
 use SConcur\Transport\MessagePackTransport;
 use Throwable;
 
@@ -45,11 +49,53 @@ readonly class HttpClient implements ClientInterface
     public function sendRequest(RequestInterface $request): ResponseInterface
     {
         try {
-            $result = FeatureExecutor::exec(payload: $this->buildPayload($request));
+            $result = $this->options->streamRequestBody
+                ? $this->sendStreaming($request)
+                : FeatureExecutor::exec(payload: $this->buildPayload($request, (string) $request->getBody(), false, ''));
         } catch (Throwable $exception) {
             throw $this->toClientException($exception, $request);
         }
 
+        return $this->buildResponse($result);
+    }
+
+    /**
+     * Streams the request body to Go in chunks instead of buffering it whole: open
+     * the request (Go starts the round-trip with a pipe as its body), push the body
+     * chunk by chunk (each write blocks until Go consumes it — backpressure), end
+     * the body, then pull the response metadata. Mirrors the HTTP-server's write
+     * commands in reverse.
+     */
+    protected function sendStreaming(RequestInterface $request): TaskResultDto
+    {
+        $requestId = uniqid('up_', more_entropy: true);
+
+        $open = FeatureExecutor::exec(payload: $this->buildPayload($request, '', true, $requestId));
+
+        $body = $request->getBody();
+
+        if ($body->isSeekable()) {
+            $body->rewind();
+        }
+
+        while (!$body->eof()) {
+            $chunk = $body->read($this->options->chunkSize);
+
+            if ($chunk === '') {
+                break;
+            }
+
+            FeatureExecutor::exec(payload: new UploadChunkPayload($requestId, $chunk));
+        }
+
+        FeatureExecutor::exec(payload: new UploadEndPayload($requestId));
+
+        // The response status+headers are only known once the body is fully sent.
+        return FeatureExecutor::next(taskKey: $open->key);
+    }
+
+    protected function buildResponse(TaskResultDto $result): ResponseInterface
+    {
         /** @var array<string, mixed> $meta */
         $meta = MessagePackTransport::unpack($result->payload);
 
@@ -70,13 +116,15 @@ readonly class HttpClient implements ClientInterface
         return $response->withBody($body);
     }
 
-    protected function buildPayload(RequestInterface $request): RequestPayload
+    protected function buildPayload(RequestInterface $request, string $body, bool $streamBody, string $requestId): RequestPayload
     {
-        return new RequestPayload(
+        return new RequestPayload(new RequestPayloadParameters(
             method: $request->getMethod(),
             url: (string) $request->getUri(),
             headers: $request->getHeaders(),
-            body: (string) $request->getBody(),
+            body: $body,
+            streamBody: $streamBody,
+            requestId: $requestId,
             requestTimeoutMs: $this->options->requestTimeoutMs,
             connectTimeoutMs: $this->options->connectTimeoutMs,
             responseHeaderTimeoutMs: $this->options->responseHeaderTimeoutMs,
@@ -89,7 +137,7 @@ readonly class HttpClient implements ClientInterface
             maxIdleConnsPerHost: $this->options->maxIdleConnsPerHost,
             idleConnTimeoutMs: $this->options->idleConnTimeoutMs,
             tlsHandshakeTimeoutMs: $this->options->tlsHandshakeTimeoutMs,
-        );
+        ));
     }
 
     /**

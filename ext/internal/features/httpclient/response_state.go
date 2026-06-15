@@ -41,6 +41,9 @@ type responseState struct {
 	resp            *http.Response
 	bodyReader      io.Reader
 	requested       bool
+	// session is set in deferred (streamed-upload) mode: client.Do already runs in
+	// the background, so the first Next waits on its result instead of issuing it.
+	session *uploadSession
 }
 
 func newResponseState(
@@ -54,6 +57,24 @@ func newResponseState(
 		message:         message,
 		client:          client,
 		request:         request,
+		chunkSize:       chunkSize,
+		maxResponseBody: maxResponseBody,
+		startTime:       time.Now(),
+	}
+}
+
+// newDeferredResponseState builds the response state for a streamed-upload request:
+// client.Do is already running in the background, and the first Next waits on the
+// session's result rather than issuing the request itself.
+func newDeferredResponseState(
+	message *dto.Message,
+	session *uploadSession,
+	chunkSize int,
+	maxResponseBody int64,
+) *responseState {
+	return &responseState{
+		message:         message,
+		session:         session,
 		chunkSize:       chunkSize,
 		maxResponseBody: maxResponseBody,
 		startTime:       time.Now(),
@@ -77,7 +98,18 @@ func (s *responseState) Next() *dto.Result {
 func (s *responseState) sendAndReadMeta() *dto.Result {
 	s.requested = true
 
-	resp, err := s.client.Do(s.request)
+	var resp *http.Response
+	var err error
+
+	if s.session != nil {
+		// Streamed upload: client.Do is already running; wait for its result once
+		// PHP has finished pushing the body.
+		<-s.session.resultReady
+
+		resp, err = s.session.result.resp, s.session.result.err
+	} else {
+		resp, err = s.client.Do(s.request)
+	}
 
 	if err != nil {
 		// Connection/DNS/timeout/redirect failures are network-class (PSR-18).
@@ -148,6 +180,24 @@ func (s *responseState) Close() {
 		_ = s.resp.Body.Close()
 		s.resp = nil
 		s.bodyReader = nil
+
+		return
+	}
+
+	// Deferred upload whose response was never consumed: close the response body
+	// once client.Do finishes, so it does not leak. client.Do is bounded by the
+	// request context, which is already cancelled by the time Close runs.
+	if s.session != nil && !s.requested {
+		session := s.session
+		s.session = nil
+
+		go func() {
+			<-session.resultReady
+
+			if session.result.resp != nil {
+				_ = session.result.resp.Body.Close()
+			}
+		}()
 	}
 }
 

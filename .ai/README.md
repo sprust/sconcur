@@ -103,11 +103,12 @@ non-fiber path.)
 - `internal/features/sleeper/` — goroutine-based sleep
 - `internal/features/mongodb/` — MongoDB operations via Go driver, with aggregation cursor state management
 - `internal/features/httpserver/` — `net/http.Server` as an http.Handler streaming each request to PHP; response write-commands, request-body streaming, concurrency limit, timeouts, graceful shutdown, SO_REUSEPORT
-- `internal/features/httpclient/` — `net/http.Client` sending one request as a streaming state: first result carries response metadata + inline first chunk, subsequent results are raw body chunks; reusable transports (keep-alive pool), per-request deadline
+- `internal/features/httpclient/` — `net/http.Client` sending one request as a streaming state: first result carries response metadata + inline first chunk, subsequent results are raw body chunks; reusable transports (keep-alive pool), per-request deadline; optional streamed request body (upload) via an `io.Pipe` fed by `UploadChunk`/`UploadEnd` commands. Sub-operations are selected by a command in the payload envelope (`HttpClientCommand`), like MongoDB — not by separate `MethodEnum` values
 - `internal/helpers/` — small shared helpers: `CalcExecutionMs`, and `ReadChunk` (fixed-granularity body chunk reader used by both the HTTP server and client)
 
 **Key enums:**
 - `MethodEnum`: Sleep (1), MongodbCollection (2), HttpServe (3), HttpRespond (4), HttpClient (5)
+- `HttpClientCommand` (sub-operations under HttpClient): Request (1), UploadChunk (2), UploadEnd (3) — selected via the payload envelope's `cm`, like MongoDB's `CommandEnum`
 - `CommandEnum`: InsertOne (1), BulkWrite (2), Aggregate (3), InsertMany (4), CountDocuments (5), UpdateOne (6), FindOne (7), CreateIndex (8), DeleteOne (9), DeleteMany (10), UpdateMany (11), Drop (12), DropIndex (13)
 
 ## Test Structure
@@ -141,7 +142,10 @@ The Go extension version lives in `ext/main.go` (`version()`) and the minimum
 required version in `src/Connection/Extension.php`
 (`REQUIRED_EXTENSION_VERSION`); they are bumped together on any PHP↔Go protocol
 change. **Never bump the major version without the maintainer's approval**; bump
-the minor only when warranted, otherwise the patch. Current: `0.2.1`.
+the minor only when warranted, otherwise the patch. **Bump the version at most
+once per git branch** — the first protocol change on a branch bumps it, later
+commits on the same branch reuse that version (do not move it again). Current:
+`0.2.1`.
 
 ## Exceptions
 

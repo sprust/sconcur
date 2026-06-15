@@ -123,7 +123,9 @@ while (!$stream->eof()) {
 > закрывается. Небольшие ответы (≤ 64 KiB) приходят инлайн с первым результатом и
 > доступны после `waitResults()` без оговорок.
 
-### Тело запроса (v1 — буферизованное)
+### Тело запроса
+
+По умолчанию тело читается целиком и уходит в payload (буферизованно):
 
 ```php
 $request = $factory->createRequest('POST', $url)
@@ -131,6 +133,18 @@ $request = $factory->createRequest('POST', $url)
     ->withBody($factory->createStream(json_encode(['name' => 'example'])));
 
 $response = $client->sendRequest($request);
+```
+
+Для больших тел включите **стриминг тела запроса** (`streamRequestBody: true`): тело
+досылается чанками (`chunkSize`) PHP → Go и пишется в `io.Pipe`, отданный как
+`req.Body`, — с write-backpressure от Go, без буферизации всего тела в памяти.
+
+```php
+$client = new HttpClient($factory, new HttpClientOptions(streamRequestBody: true));
+
+$request = $factory->createRequest('POST', $url)->withBody($largeStream);
+
+$response = $client->sendRequest($request); // тело уходит чанками
 ```
 
 ### С тюнингом
@@ -165,6 +179,7 @@ $client = new HttpClient($factory, new HttpClientOptions(
 | `maxIdleConnsPerHost` | `16` | Idle keep-alive соединений на хост. |
 | `idleConnTimeoutMs` | `90000` | Сколько держать idle keep-alive соединение перед закрытием. |
 | `tlsHandshakeTimeoutMs` | `10000` | Предел TLS-рукопожатия. |
+| `streamRequestBody` | `false` | Стримить тело запроса чанками (вместо буферизации целиком); write-backpressure для больших загрузок. |
 
 `requestTimeoutMs` — обязательное предельное время выполнения всей операции,
 применяется на Go-стороне как `context.WithTimeout(task.GetContext(), …)`.
@@ -249,6 +264,8 @@ try {
 - `feature.go` — `HttpClientFeature` (`contracts.FeatureContract`): строит
   `*http.Request`, применяет `context.WithTimeout` (требование предельного времени),
   стартует состояние.
+- `upload.go` — стриминг тела запроса: `uploadSession` (pipe + результат фонового
+  `client.Do`), `pendingUploads` по `requestId`, обработка upload-команд (chunk/end).
 
 Общий хелпер `internal/helpers.ReadChunk` нарезает тело фиксированными кусками
 (используется и сервером, и клиентом).
@@ -257,7 +274,6 @@ try {
 
 | Что | Комментарий |
 |---|---|
-| Стриминг **тела запроса** (upload) | v1 шлёт тело целиком; ленивая загрузка из `StreamInterface` — фаза 2. |
 | HTTP/2, h2c | `net/http` HTTP/1.1; h2 — позже. |
 | Cookie-jar | На стороне приложения / PSR-7 middleware. |
 | Прокси, кастомный CA-bundle | Позже опциями. |

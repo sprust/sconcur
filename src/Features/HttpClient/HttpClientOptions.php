@@ -28,6 +28,9 @@ readonly class HttpClientOptions
      * @param int  $maxIdleConnsPerHost     idle keep-alive connections kept per host
      * @param int  $idleConnTimeoutMs       how long an idle keep-alive connection is kept before closing
      * @param int  $tlsHandshakeTimeoutMs   TLS handshake limit
+     * @param bool $streamRequestBody       stream the request body to Go in chunks (chunkSize granularity) instead of
+     *                                      buffering it whole; gives write-backpressure for large uploads. Off by
+     *                                      default (v1 buffered behaviour).
      */
     public function __construct(
         public int $requestTimeoutMs = 30_000,
@@ -42,6 +45,7 @@ readonly class HttpClientOptions
         public int $maxIdleConnsPerHost = 16,
         public int $idleConnTimeoutMs = 90_000,
         public int $tlsHandshakeTimeoutMs = 10_000,
+        public bool $streamRequestBody = false,
     ) {
     }
 }

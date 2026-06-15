@@ -2,6 +2,7 @@ package httpclient_feature
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,23 +10,38 @@ import (
 
 	"sconcur/internal/dto"
 	"sconcur/internal/features/httpclient/payloads"
+	"sconcur/internal/states"
 	"sconcur/internal/tasks"
 	"sconcur/internal/types"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
 
+// envelopePayload builds a command envelope (cm/p) the way the PHP side does:
+// params marshalled into the `p` raw field under the given command.
+func envelopePayload(t *testing.T, command types.HttpClientCommand, params any) []byte {
+	t.Helper()
+
+	raw, err := msgpack.Marshal(params)
+
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	data, err := msgpack.Marshal(payloads.Envelope{Command: int(command), Params: raw})
+
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+
+	return data
+}
+
 // TestHandleRejectsInvalidRequestWithReqMarker checks a request that cannot even
 // be built (invalid HTTP method) surfaces as a request-class error, so PHP raises
 // a PSR-18 RequestException.
 func TestHandleRejectsInvalidRequestWithReqMarker(t *testing.T) {
-	payload := payloads.RequestPayload{Method: "BAD METHOD", Url: "http://127.0.0.1"}
-
-	data, err := msgpack.Marshal(payload)
-
-	if err != nil {
-		t.Fatalf("marshal payload: %v", err)
-	}
+	data := envelopePayload(t, types.HttpClientRequest, payloads.RequestParams{Method: "BAD METHOD", Url: "http://127.0.0.1"})
 
 	message := &dto.Message{Method: types.MethodHttpClient, FlowKey: "f", TaskKey: "t", Payload: data}
 	results := make(chan *dto.Result, 1)
@@ -135,5 +151,89 @@ func TestResponseStateFollowsRedirects(t *testing.T) {
 
 	if meta.Body != "arrived" {
 		t.Fatalf("body = %q, want %q", meta.Body, "arrived")
+	}
+}
+
+// TestStreamedUploadEndToEnd drives the streamed-upload path: open with a piped
+// body, push chunks, end, then pull the response — the server must receive the
+// whole body in order.
+func TestStreamedUploadEndToEnd(t *testing.T) {
+	var received []byte
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		received, _ = io.ReadAll(request.Body)
+		_, _ = writer.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	const requestId = "rid-upload-e2e"
+	const taskKey = "t-upload-e2e"
+	const flowKey = "f-upload-e2e"
+
+	openData := envelopePayload(t, types.HttpClientRequest, payloads.RequestParams{
+		Method:     http.MethodPost,
+		Url:        server.URL,
+		StreamBody: true,
+		RequestId:  requestId,
+		ChunkSize:  1024,
+	})
+
+	openResults := make(chan *dto.Result, 1)
+	openMessage := &dto.Message{Method: types.MethodHttpClient, FlowKey: flowKey, TaskKey: taskKey, Payload: openData}
+
+	Get().Handle(tasks.NewTask(context.Background(), openResults, openMessage))
+
+	if ack := <-openResults; ack.IsError || !ack.HasNext {
+		t.Fatalf("open ack: error=%v hasNext=%v payload=%q", ack.IsError, ack.HasNext, ack.Payload)
+	}
+
+	sendUpload := func(command types.HttpClientCommand, body string) *dto.Result {
+		uploadData := envelopePayload(t, command, payloads.UploadParams{RequestId: requestId, Body: body})
+
+		uploadResults := make(chan *dto.Result, 1)
+		uploadMessage := &dto.Message{Method: types.MethodHttpClient, FlowKey: flowKey, TaskKey: "t-up", Payload: uploadData}
+
+		Get().Handle(tasks.NewTask(context.Background(), uploadResults, uploadMessage))
+
+		return <-uploadResults
+	}
+
+	body := strings.Repeat("abcde", 1000) // 5000 bytes, several chunks
+
+	for offset := 0; offset < len(body); offset += 1024 {
+		end := min(offset+1024, len(body))
+
+		if result := sendUpload(types.HttpClientUploadChunk, body[offset:end]); result.IsError {
+			t.Fatalf("chunk: %s", result.Payload)
+		}
+	}
+
+	if result := sendUpload(types.HttpClientUploadEnd, ""); result.IsError {
+		t.Fatalf("end: %s", result.Payload)
+	}
+
+	metaResults := make(chan *dto.Result, 1)
+	metaMessage := &dto.Message{Method: types.MethodHttpClient, FlowKey: flowKey, TaskKey: taskKey, IsNext: true}
+
+	states.Get().Next(tasks.NewTask(context.Background(), metaResults, metaMessage))
+
+	meta := <-metaResults
+
+	if meta.IsError {
+		t.Fatalf("meta: %s", meta.Payload)
+	}
+
+	var responseMeta payloads.ResponseMeta
+
+	if err := msgpack.Unmarshal([]byte(meta.Payload), &responseMeta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+
+	if responseMeta.Status != http.StatusOK || responseMeta.Body != "ok" {
+		t.Fatalf("response = %d %q, want 200 ok", responseMeta.Status, responseMeta.Body)
+	}
+
+	if string(received) != body {
+		t.Fatalf("server received %d bytes, want %d", len(received), len(body))
 	}
 }

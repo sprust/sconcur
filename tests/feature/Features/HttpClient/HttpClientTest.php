@@ -284,6 +284,83 @@ class HttpClientTest extends BaseHttpClientTestCase
         self::assertTrue($sleptDone);
     }
 
+    public function testStreamedRequestBodyIsSent(): void
+    {
+        $client = $this->client(new HttpClientOptions(streamRequestBody: true));
+
+        $response = $client->sendRequest($this->request('POST', '/echo', 'streamed hello'));
+
+        self::assertSame('streamed hello', (string) $response->getBody());
+    }
+
+    public function testStreamedLargeRequestBodyArrivesIntact(): void
+    {
+        $client = $this->client(new HttpClientOptions(streamRequestBody: true));
+
+        // ~240 KB, several upload chunks; /upload reads it streamed and returns its
+        // sha256, so every byte must have arrived in order.
+        $body = str_repeat('payload-', 30_000);
+
+        $response = $client->sendRequest($this->request('POST', '/upload', $body));
+
+        self::assertSame(hash('sha256', $body), (string) $response->getBody());
+    }
+
+    public function testStreamedRequestWithEmptyBody(): void
+    {
+        $client = $this->client(new HttpClientOptions(streamRequestBody: true));
+
+        $response = $client->sendRequest($this->request('GET', '/'));
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('ok', (string) $response->getBody());
+    }
+
+    public function testStreamedRequestToUnreachableHostThrows(): void
+    {
+        $client = $this->client(new HttpClientOptions(
+            requestTimeoutMs: 2_000,
+            connectTimeoutMs: 1_000,
+            streamRequestBody: true,
+        ));
+        $request = $this->factory->createRequest('POST', 'http://127.0.0.1:1')
+            ->withBody($this->factory->createStream('data'));
+
+        $this->expectException(NetworkExceptionInterface::class);
+
+        $client->sendRequest($request);
+    }
+
+    public function testStreamedRequestBodyInsideCoroutine(): void
+    {
+        $client  = $this->client(new HttpClientOptions(streamRequestBody: true));
+        $factory = $this->factory;
+        $baseUrl = $this->baseUrl();
+        $body    = str_repeat('x', 200_000);
+        $hash    = '';
+        $slept   = false;
+
+        $waitGroup = WaitGroup::create();
+
+        $waitGroup->add(function () use ($client, $factory, $baseUrl, $body, &$hash): void {
+            $request  = $factory->createRequest('POST', $baseUrl . '/upload')->withBody($factory->createStream($body));
+            $response = $client->sendRequest($request);
+
+            $hash = (string) $response->getBody();
+        });
+
+        $waitGroup->add(function () use ($client, $factory, $baseUrl, &$slept): void {
+            $client->sendRequest($factory->createRequest('GET', $baseUrl . '/msleep/50'));
+
+            $slept = true;
+        });
+
+        $waitGroup->waitAll();
+
+        self::assertSame(hash('sha256', $body), $hash);
+        self::assertTrue($slept);
+    }
+
     private function bigBody(int $size): string
     {
         $pattern = '0123456789abcdef';
