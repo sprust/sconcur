@@ -56,3 +56,23 @@ services:
     tmpfs:
       - /data/db:rw,noexec,nosuid,size=1024m
       - /data/configdb:rw,noexec,nosuid,size=512m
+
+  mysql:
+    container_name: sc-mysql
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      - ${MYSQL_DOCKER_PORT}:3306
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    tmpfs:
+      - /var/lib/mysql:rw,noexec,nosuid,size=1024m

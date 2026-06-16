@@ -92,6 +92,13 @@ bench-all:
 	make bench-mongodb-deleteOne
 	make bench-mongodb-updateMany
 	make bench-mongodb-command
+	make bench-mysql-insert
+	make bench-mysql-selectOne
+	make bench-mysql-selectMany
+	make bench-mysql-count
+	make bench-mysql-update
+	make bench-mysql-delete
+	make bench-mysql-transaction
 	make bench-http-client
 	make bench-http-client-google
 	make bench-http-reuseport-io
@@ -132,6 +139,27 @@ bench-mongodb-deleteOne:
 
 bench-mongodb-updateMany:
 	$(PHP_EXT) tests/benchmarks/mongodb-update-many.php ${c}
+
+bench-mysql-insert:
+	$(PHP_EXT) tests/benchmarks/mysql-insert.php ${c}
+
+bench-mysql-selectOne:
+	$(PHP_EXT) tests/benchmarks/mysql-select-one.php ${c}
+
+bench-mysql-selectMany:
+	$(PHP_EXT) tests/benchmarks/mysql-select-many.php ${c}
+
+bench-mysql-count:
+	$(PHP_EXT) tests/benchmarks/mysql-count.php ${c}
+
+bench-mysql-update:
+	$(PHP_EXT) tests/benchmarks/mysql-update.php ${c}
+
+bench-mysql-delete:
+	$(PHP_EXT) tests/benchmarks/mysql-delete.php ${c}
+
+bench-mysql-transaction:
+	$(PHP_EXT) tests/benchmarks/mysql-transaction.php ${c}
 
 bench-http-client:
 	$(PHP_EXT) tests/benchmarks/http-client.php ${c}

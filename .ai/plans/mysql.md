@@ -295,9 +295,9 @@ try {
 
 ## Версия расширения
 
-Протокол меняется (новый `Method` + команды) → бамп **0.2.1 → 0.3.0** (minor,
-новая фича) в `ext/main.go` (`version()`) и
-`src/Connection/Extension.php` (`REQUIRED_EXTENSION_VERSION`), один раз на ветку.
+Протокол меняется (новый `Method` + команды) → бамп **0.2.1 → 0.2.2** (patch) в
+`ext/main.go` (`version()`) и `src/Connection/Extension.php`
+(`REQUIRED_EXTENSION_VERSION`), один раз на ветку.
 
 ---
 
