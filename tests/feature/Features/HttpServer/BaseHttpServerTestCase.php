@@ -21,7 +21,9 @@ abstract class BaseHttpServerTestCase extends TestCase
     {
         parent::setUpBeforeClass();
 
-        self::$server = TestHttpServer::start(static::serverOptions());
+        self::$server = TestHttpServer::start(
+            options: static::serverOptions(),
+        );
     }
 
     public static function tearDownAfterClass(): void

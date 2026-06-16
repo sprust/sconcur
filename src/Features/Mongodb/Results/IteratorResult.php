@@ -81,7 +81,7 @@ class IteratorResult implements Iterator
         $this->resetProperties();
 
         $taskResult = FeatureExecutor::exec(
-            payload: $this->payload
+            payload: $this->payload,
         );
 
         $this->taskKey = $taskResult->key;

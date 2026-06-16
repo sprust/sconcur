@@ -35,7 +35,7 @@ class MongodbFindTest extends BaseTestCase
         $waitGroup->add(callback: function () {
             $this->sconcurCollection->insertMany(
                 array_map(
-                    fn(int $i) => [$this->fieldName => $i],
+                    fn(int $index) => [$this->fieldName => $index],
                     range(1, 10)
                 )
             );
@@ -60,7 +60,7 @@ class MongodbFindTest extends BaseTestCase
         $waitGroup->add(callback: function () {
             $this->sconcurCollection->insertMany(
                 array_map(
-                    fn(int $i) => [$this->fieldName => $i],
+                    fn(int $index) => [$this->fieldName => $index],
                     range(1, 10)
                 )
             );
@@ -86,7 +86,7 @@ class MongodbFindTest extends BaseTestCase
         $waitGroup->add(callback: function () {
             $this->sconcurCollection->insertMany(
                 array_map(
-                    fn(int $i) => [$this->fieldName => $i],
+                    fn(int $index) => [$this->fieldName => $index],
                     range(1, 5)
                 )
             );

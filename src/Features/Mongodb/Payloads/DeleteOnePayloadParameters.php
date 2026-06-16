@@ -22,14 +22,14 @@ readonly class DeleteOnePayloadParameters implements PayloadParametersInterface
 
     public function getData(): array
     {
-        $options = new OptionsPayloadParameters(
+        $optionsPayloadParameters = new OptionsPayloadParameters(
             hint: $this->hint,
-            collation: $this->collation
+            collation: $this->collation,
         );
 
         return [
             'f' => $this->filter,
-            ...$options->getData(),
+            ...$optionsPayloadParameters->getData(),
         ];
     }
 }

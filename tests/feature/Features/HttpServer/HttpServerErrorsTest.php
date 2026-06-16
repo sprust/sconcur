@@ -8,7 +8,10 @@ class HttpServerErrorsTest extends BaseHttpServerTestCase
 {
     public function testUnknownRouteReturns404(): void
     {
-        [$status, $body] = $this->request('GET', '/does-not-exist');
+        [$status, $body] = $this->request(
+            method: 'GET',
+            path: '/does-not-exist',
+        );
 
         self::assertSame(404, $status);
         self::assertSame('not found', $body);
@@ -16,16 +19,25 @@ class HttpServerErrorsTest extends BaseHttpServerTestCase
 
     public function testThrowingHandlerReturns500(): void
     {
-        [$status] = $this->request('GET', '/throw');
+        [$status] = $this->request(
+            method: 'GET',
+            path: '/throw',
+        );
 
         self::assertSame(500, $status);
     }
 
     public function testServerKeepsServingAfterAnError(): void
     {
-        $this->request('GET', '/throw');
+        $this->request(
+            method: 'GET',
+            path: '/throw',
+        );
 
-        [$status, $body] = $this->request('GET', '/');
+        [$status, $body] = $this->request(
+            method: 'GET',
+            path: '/',
+        );
 
         self::assertSame(200, $status);
         self::assertSame('ok', $body);
@@ -34,7 +46,10 @@ class HttpServerErrorsTest extends BaseHttpServerTestCase
     public function testExplicitStatusCodes(): void
     {
         foreach ([400, 404, 418, 500, 503] as $code) {
-            [$status, $body] = $this->request('GET', '/status/' . $code);
+            [$status, $body] = $this->request(
+                method: 'GET',
+                path: '/status/' . $code,
+            );
 
             self::assertSame($code, $status);
             self::assertSame('status ' . $code, $body);
@@ -43,7 +58,10 @@ class HttpServerErrorsTest extends BaseHttpServerTestCase
 
     public function testNonGetMethodOnGetRouteReturns405(): void
     {
-        [$status] = $this->request('DELETE', '/sleep');
+        [$status] = $this->request(
+            method: 'DELETE',
+            path: '/sleep',
+        );
 
         self::assertSame(405, $status);
     }
@@ -53,7 +71,11 @@ class HttpServerErrorsTest extends BaseHttpServerTestCase
         // The demo server caps the body at 64 KiB; send a little over that.
         $body = str_repeat('x', 70000);
 
-        [$status] = $this->request('POST', '/echo', $body);
+        [$status] = $this->request(
+            method: 'POST',
+            path: '/echo',
+            body: $body,
+        );
 
         self::assertSame(413, $status);
     }
@@ -62,7 +84,11 @@ class HttpServerErrorsTest extends BaseHttpServerTestCase
     {
         $body = str_repeat('x', 60000);
 
-        [$status, $echoed] = $this->request('POST', '/echo', $body);
+        [$status, $echoed] = $this->request(
+            method: 'POST',
+            path: '/echo',
+            body: $body,
+        );
 
         self::assertSame(200, $status);
         self::assertSame($body, $echoed);

@@ -78,7 +78,7 @@ abstract class BaseMongodbRangeTestCase extends BaseTestCase
         $lastValue  = $values[count($values) - 1];
 
         $this->sconcurCollection->insertMany(
-            documents: $documents
+            documents: $documents,
         );
 
         $aggregation = $this->sconcurCollection->aggregate(
@@ -92,7 +92,7 @@ abstract class BaseMongodbRangeTestCase extends BaseTestCase
                         ],
                     ],
                 ],
-            ]
+            ],
         );
 
         self::assertEquals(
@@ -111,7 +111,7 @@ abstract class BaseMongodbRangeTestCase extends BaseTestCase
                         ],
                     ],
                 ],
-            ]
+            ],
         );
 
         self::assertEquals(

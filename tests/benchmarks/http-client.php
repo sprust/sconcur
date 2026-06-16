@@ -30,8 +30,10 @@ $baseUrl = "http://$host:$port/msleep/$sleepMs";
 // concurrency, not by sibling processes.
 $procs = benchSpawnServers($host, $port, 1, false);
 
-$factory = new Psr17Factory();
-$client  = new HttpClient($factory);
+$psr17Factory = new Psr17Factory();
+$client       = new HttpClient(
+    responseFactory: $psr17Factory,
+);
 
 try {
     $benchmarker->run(
@@ -40,11 +42,11 @@ try {
 
             file_get_contents($baseUrl, false, $context);
         },
-        syncCallback: static function () use ($client, $factory, $baseUrl): void {
-            $client->sendRequest($factory->createRequest('GET', $baseUrl));
+        syncCallback: static function () use ($client, $psr17Factory, $baseUrl): void {
+            $client->sendRequest($psr17Factory->createRequest('GET', $baseUrl));
         },
-        asyncCallback: static function () use ($client, $factory, $baseUrl): void {
-            $response = $client->sendRequest($factory->createRequest('GET', $baseUrl));
+        asyncCallback: static function () use ($client, $psr17Factory, $baseUrl): void {
+            $response = $client->sendRequest($psr17Factory->createRequest('GET', $baseUrl));
 
             // Drain the (tiny) body so the response is fully consumed.
             (string) $response->getBody();

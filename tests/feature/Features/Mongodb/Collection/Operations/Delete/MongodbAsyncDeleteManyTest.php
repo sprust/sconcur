@@ -64,7 +64,9 @@ class MongodbAsyncDeleteManyTest extends BaseMongodbAsyncTestCase
 
     protected function on_exception(): void
     {
-        $this->sconcurCollection->deleteMany(['$set' => 11]);
+        $this->sconcurCollection->deleteMany(
+            filter: ['$set' => 11],
+        );
     }
 
     protected function assertResult(array $results): void

@@ -51,9 +51,19 @@ readonly class HttpClient implements ClientInterface
         try {
             $result = $this->options->streamRequestBody
                 ? $this->sendStreaming($request)
-                : FeatureExecutor::exec(payload: $this->buildPayload($request, (string) $request->getBody(), false, ''));
+                : FeatureExecutor::exec(
+                    payload: $this->buildPayload(
+                        request: $request,
+                        body: (string) $request->getBody(),
+                        streamBody: false,
+                        requestId: '',
+                    ),
+                );
         } catch (Throwable $exception) {
-            throw $this->toClientException($exception, $request);
+            throw $this->toClientException(
+                exception: $exception,
+                request: $request,
+            );
         }
 
         return $this->buildResponse($result);
@@ -70,7 +80,14 @@ readonly class HttpClient implements ClientInterface
     {
         $requestId = uniqid('up_', more_entropy: true);
 
-        $open = FeatureExecutor::exec(payload: $this->buildPayload($request, '', true, $requestId));
+        $open = FeatureExecutor::exec(
+            payload: $this->buildPayload(
+                request: $request,
+                body: '',
+                streamBody: true,
+                requestId: $requestId,
+            ),
+        );
 
         $body = $request->getBody();
 
@@ -85,7 +102,12 @@ readonly class HttpClient implements ClientInterface
                 break;
             }
 
-            FeatureExecutor::exec(payload: new UploadChunkPayload($requestId, $chunk));
+            FeatureExecutor::exec(
+                payload: new UploadChunkPayload(
+                    requestId: $requestId,
+                    body: $chunk,
+                ),
+            );
         }
 
         FeatureExecutor::exec(payload: new UploadEndPayload($requestId));
@@ -116,28 +138,34 @@ readonly class HttpClient implements ClientInterface
         return $response->withBody($body);
     }
 
-    protected function buildPayload(RequestInterface $request, string $body, bool $streamBody, string $requestId): RequestPayload
-    {
-        return new RequestPayload(new RequestPayloadParameters(
-            method: $request->getMethod(),
-            url: (string) $request->getUri(),
-            headers: $request->getHeaders(),
-            body: $body,
-            streamBody: $streamBody,
-            requestId: $requestId,
-            requestTimeoutMs: $this->options->requestTimeoutMs,
-            connectTimeoutMs: $this->options->connectTimeoutMs,
-            responseHeaderTimeoutMs: $this->options->responseHeaderTimeoutMs,
-            maxResponseBody: $this->options->maxResponseBody,
-            followRedirects: $this->options->followRedirects,
-            maxRedirects: $this->options->maxRedirects,
-            chunkSize: $this->options->chunkSize,
-            verifyTls: $this->options->verifyTls,
-            maxIdleConns: $this->options->maxIdleConns,
-            maxIdleConnsPerHost: $this->options->maxIdleConnsPerHost,
-            idleConnTimeoutMs: $this->options->idleConnTimeoutMs,
-            tlsHandshakeTimeoutMs: $this->options->tlsHandshakeTimeoutMs,
-        ));
+    protected function buildPayload(
+        RequestInterface $request,
+        string $body,
+        bool $streamBody,
+        string $requestId,
+    ): RequestPayload {
+        return new RequestPayload(
+            new RequestPayloadParameters(
+                method: $request->getMethod(),
+                url: (string) $request->getUri(),
+                headers: $request->getHeaders(),
+                body: $body,
+                streamBody: $streamBody,
+                requestId: $requestId,
+                requestTimeoutMs: $this->options->requestTimeoutMs,
+                connectTimeoutMs: $this->options->connectTimeoutMs,
+                responseHeaderTimeoutMs: $this->options->responseHeaderTimeoutMs,
+                maxResponseBody: $this->options->maxResponseBody,
+                followRedirects: $this->options->followRedirects,
+                maxRedirects: $this->options->maxRedirects,
+                chunkSize: $this->options->chunkSize,
+                verifyTls: $this->options->verifyTls,
+                maxIdleConns: $this->options->maxIdleConns,
+                maxIdleConnsPerHost: $this->options->maxIdleConnsPerHost,
+                idleConnTimeoutMs: $this->options->idleConnTimeoutMs,
+                tlsHandshakeTimeoutMs: $this->options->tlsHandshakeTimeoutMs,
+            ),
+        );
     }
 
     /**
@@ -169,14 +197,26 @@ readonly class HttpClient implements ClientInterface
             $message = $current->getMessage();
 
             if (str_starts_with($message, self::NETWORK_MARKER)) {
-                return new NetworkException($request, $message, $exception);
+                return new NetworkException(
+                    request: $request,
+                    message: $message,
+                    previous: $exception,
+                );
             }
 
             if (str_starts_with($message, self::REQUEST_MARKER)) {
-                return new RequestException($request, $message, $exception);
+                return new RequestException(
+                    request: $request,
+                    message: $message,
+                    previous: $exception,
+                );
             }
         }
 
-        return new HttpClientException($exception->getMessage(), 0, $exception);
+        return new HttpClientException(
+            message: $exception->getMessage(),
+            code: 0,
+            previous: $exception,
+        );
     }
 }

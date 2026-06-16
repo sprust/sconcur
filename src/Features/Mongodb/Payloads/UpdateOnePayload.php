@@ -51,7 +51,7 @@ readonly class UpdateOnePayload extends BaseMongodbPayload
                 upsert: $this->upsert,
                 arrayFilters: $this->arrayFilters,
                 hint: $this->hint,
-                collation: $this->collation
+                collation: $this->collation,
             ),
             isObject: true,
         );

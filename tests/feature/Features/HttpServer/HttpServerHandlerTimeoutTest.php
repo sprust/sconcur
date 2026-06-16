@@ -12,7 +12,10 @@ class HttpServerHandlerTimeoutTest extends BaseHttpServerTestCase
         // before that, freeing the connection.
         $start = microtime(true);
 
-        [$status] = $this->request('GET', '/msleep/10000');
+        [$status] = $this->request(
+            method: 'GET',
+            path: '/msleep/10000',
+        );
 
         $elapsed = microtime(true) - $start;
 
@@ -22,7 +25,10 @@ class HttpServerHandlerTimeoutTest extends BaseHttpServerTestCase
 
     public function testFastHandlerIsNotAffected(): void
     {
-        [$status, $body] = $this->request('GET', '/msleep/50');
+        [$status, $body] = $this->request(
+            method: 'GET',
+            path: '/msleep/50',
+        );
 
         self::assertSame(200, $status);
         self::assertSame('slept', $body);

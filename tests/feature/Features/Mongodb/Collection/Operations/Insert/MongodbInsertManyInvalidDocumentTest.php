@@ -20,7 +20,9 @@ class MongodbInsertManyInvalidDocumentTest extends BaseTestCase
 {
     public function test(): void
     {
-        $collection = TestMongodbResolver::getSconcurTestCollection('insertManyInvalidDocument');
+        $collection = TestMongodbResolver::getSconcurTestCollection(
+            collectionName: 'insertManyInvalidDocument',
+        );
 
         $waitGroup = WaitGroup::create();
 

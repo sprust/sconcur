@@ -15,8 +15,10 @@ $benchmarker = new Benchmarker(
 $host    = '127.0.0.1';
 $baseUrl = "https://google.com";
 
-$factory = new Psr17Factory();
-$client  = new HttpClient($factory);
+$psr17Factory = new Psr17Factory();
+$client       = new HttpClient(
+    responseFactory: $psr17Factory,
+);
 
 $benchmarker->run(
     nativeCallback: static function () use ($baseUrl): void {
@@ -24,11 +26,11 @@ $benchmarker->run(
 
         file_get_contents($baseUrl, false, $context);
     },
-    syncCallback: static function () use ($client, $factory, $baseUrl): void {
-        $client->sendRequest($factory->createRequest('GET', $baseUrl));
+    syncCallback: static function () use ($client, $psr17Factory, $baseUrl): void {
+        $client->sendRequest($psr17Factory->createRequest('GET', $baseUrl));
     },
-    asyncCallback: static function () use ($client, $factory, $baseUrl): void {
-        $response = $client->sendRequest($factory->createRequest('GET', $baseUrl));
+    asyncCallback: static function () use ($client, $psr17Factory, $baseUrl): void {
+        $response = $client->sendRequest($psr17Factory->createRequest('GET', $baseUrl));
 
         // Drain the (tiny) body so the response is fully consumed.
         (string) $response->getBody();

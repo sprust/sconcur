@@ -38,7 +38,9 @@ abstract class BaseMongodbOrderTestCase extends BaseTestCase
 
         $this->sconcurCollection = TestMongodbResolver::getSconcurTestCollection($collectionName);
 
-        $this->sconcurCollection->deleteMany([]);
+        $this->sconcurCollection->deleteMany(
+            filter: [],
+        );
 
         $this->keys = array_map(
             fn(int $index) => '_' . $index,
@@ -68,7 +70,7 @@ abstract class BaseMongodbOrderTestCase extends BaseTestCase
             filter: [],
             projection: [
                 '_id' => 0,
-            ]
+            ],
         );
 
         self::assertNotNull($document);

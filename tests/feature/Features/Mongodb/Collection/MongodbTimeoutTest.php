@@ -17,7 +17,9 @@ class MongodbTimeoutTest extends BaseTestCase
 
         $sconcurCollection = TestMongodbResolver::getSconcurTestCollection($collectionName);
 
-        $sconcurCollection->deleteMany([]);
+        $sconcurCollection->deleteMany(
+            filter: [],
+        );
 
         $sconcurCollection->bulkWrite(
             operations: [
@@ -26,18 +28,18 @@ class MongodbTimeoutTest extends BaseTestCase
                         [],
                     ],
                 ],
-            ]
+            ],
         );
 
         $sconcurCollection->insertOne(
             document: [
                 uniqid() => true,
-            ]
+            ],
         );
 
         $sconcurCollection = TestMongodbResolver::getSconcurTestCollection(
             collectionName: $collectionName,
-            timeoutMs: 1
+            timeoutMs: 1,
         );
 
         $exception = null;
@@ -64,7 +66,7 @@ class MongodbTimeoutTest extends BaseTestCase
                             'sleep_result' => 1,
                         ],
                     ],
-                ]
+                ],
             );
 
             $iterator->rewind();

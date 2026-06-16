@@ -37,7 +37,10 @@ readonly class CreateIndexPayload extends BaseMongodbPayload
     protected function getParameters(): Parameters
     {
         return new Parameters(
-            payload: new CreateIndexPayloadParameters($this->keys, $this->name),
+            payload: new CreateIndexPayloadParameters(
+                keys: $this->keys,
+                name: $this->name,
+            ),
             isObject: true,
         );
     }

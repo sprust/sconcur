@@ -29,7 +29,7 @@ readonly class Benchmarker
     public function run(
         ?Closure $nativeCallback = null,
         ?Closure $syncCallback = null,
-        ?Closure $asyncCallback = null
+        ?Closure $asyncCallback = null,
     ): void {
         echo str_repeat('*', 80) . "\n";
         echo str_repeat('*', 80) . "\n";

@@ -49,7 +49,9 @@ class HttpClientConcurrencyTest extends BaseAsyncTestCase
         parent::setUp();
 
         $this->factory = new Psr17Factory();
-        $this->client  = new HttpClient($this->factory);
+        $this->client  = new HttpClient(
+            responseFactory: $this->factory,
+        );
     }
 
     protected function on_1_start(): void
@@ -82,7 +84,13 @@ class HttpClientConcurrencyTest extends BaseAsyncTestCase
     protected function on_exception(): void
     {
         // An unreachable port: the connection is refused → a network-class error.
-        $client  = new HttpClient($this->factory, new HttpClientOptions(requestTimeoutMs: 2_000, connectTimeoutMs: 1_000));
+        $client = new HttpClient(
+            responseFactory: $this->factory,
+            options: new HttpClientOptions(
+                requestTimeoutMs: 2_000,
+                connectTimeoutMs: 1_000,
+            ),
+        );
         $request = $this->factory->createRequest('GET', 'http://127.0.0.1:1');
 
         $client->sendRequest($request);

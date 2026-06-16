@@ -24,7 +24,7 @@ class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
 
         $this->fieldName  = uniqid();
         $this->fieldValue = TestMongodbResolver::getSconcurDateTime(
-            $this->driverDateTime->toDateTime()
+            dateTime: $this->driverDateTime->toDateTime(),
         );
     }
 

@@ -21,14 +21,14 @@ readonly class DistinctPayloadParameters implements PayloadParametersInterface
 
     public function getData(): array
     {
-        $options = new OptionsPayloadParameters(
-            collation: $this->collation
+        $optionsPayloadParameters = new OptionsPayloadParameters(
+            collation: $this->collation,
         );
 
         return [
             'fn' => $this->fieldName,
             'f'  => $this->filter,
-            ...$options->getData(),
+            ...$optionsPayloadParameters->getData(),
         ];
     }
 }

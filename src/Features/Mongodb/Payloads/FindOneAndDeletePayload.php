@@ -38,7 +38,10 @@ readonly class FindOneAndDeletePayload extends BaseMongodbPayload
     protected function getParameters(): Parameters
     {
         return new Parameters(
-            payload: new FindOneAndDeletePayloadParameters($this->filter, $this->projection),
+            payload: new FindOneAndDeletePayloadParameters(
+                filter: $this->filter,
+                projection: $this->projection,
+            ),
             isObject: true,
         );
     }

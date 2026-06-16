@@ -69,7 +69,10 @@ abstract class BaseHttpClientTestCase extends BaseTestCase
 
     protected function client(HttpClientOptions $options = new HttpClientOptions()): HttpClient
     {
-        return new HttpClient($this->factory, $options);
+        return new HttpClient(
+            responseFactory: $this->factory,
+            options: $options,
+        );
     }
 
     protected function request(string $method, string $path, ?string $body = null): RequestInterface

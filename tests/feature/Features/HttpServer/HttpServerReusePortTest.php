@@ -15,12 +15,17 @@ class HttpServerReusePortTest extends TestCase
 {
     public function testTwoServersShareOnePortAndBothServe(): void
     {
-        $first = TestHttpServer::start(['reusePort' => 1]);
+        $first = TestHttpServer::start(
+            options: ['reusePort' => 1],
+        );
 
         try {
             // The second process binds the SAME port — only possible with
             // SO_REUSEPORT; without it this would fail with EADDRINUSE.
-            $second = TestHttpServer::start(['reusePort' => 1], $first->port());
+            $second = TestHttpServer::start(
+                options: ['reusePort' => 1],
+                port: $first->port(),
+            );
 
             try {
                 // Give a would-be EADDRINUSE crash time to surface, then confirm

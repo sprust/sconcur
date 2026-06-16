@@ -25,6 +25,9 @@ readonly class UploadEndPayload extends BaseHttpClientPayload
 
     protected function getParameters(): PayloadParametersInterface
     {
-        return new UploadPayloadParameters($this->requestId, '');
+        return new UploadPayloadParameters(
+            requestId: $this->requestId,
+            body: '',
+        );
     }
 }

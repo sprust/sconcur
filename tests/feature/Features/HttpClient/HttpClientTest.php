@@ -20,7 +20,12 @@ class HttpClientTest extends BaseHttpClientTestCase
 {
     public function testStatusHeadersAndBody(): void
     {
-        $response = $this->client()->sendRequest($this->request('GET', '/'));
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/',
+            ),
+        );
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('ok', (string) $response->getBody());
@@ -30,14 +35,25 @@ class HttpClientTest extends BaseHttpClientTestCase
 
     public function testRequestMethodReachesServer(): void
     {
-        $response = $this->client()->sendRequest($this->request('DELETE', '/method'));
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'DELETE',
+                path: '/method',
+            ),
+        );
 
         self::assertSame('DELETE', (string) $response->getBody());
     }
 
     public function testRequestBodyIsSent(): void
     {
-        $response = $this->client()->sendRequest($this->request('POST', '/echo', 'hello body'));
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'POST',
+                path: '/echo',
+                body: 'hello body',
+            ),
+        );
 
         self::assertSame('hello body', (string) $response->getBody());
     }
@@ -46,21 +62,37 @@ class HttpClientTest extends BaseHttpClientTestCase
     {
         $binary = random_bytes(2048);
 
-        $response = $this->client()->sendRequest($this->request('POST', '/echo', $binary));
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'POST',
+                path: '/echo',
+                body: $binary,
+            ),
+        );
 
         self::assertSame($binary, (string) $response->getBody());
     }
 
     public function testQueryStringIsPreserved(): void
     {
-        $response = $this->client()->sendRequest($this->request('GET', '/query?a=1&b=two'));
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/query?a=1&b=two',
+            ),
+        );
 
         self::assertSame('a=1&b=two', (string) $response->getBody());
     }
 
     public function testMultiValueResponseHeaders(): void
     {
-        $response = $this->client()->sendRequest($this->request('GET', '/cookies'));
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/cookies',
+            ),
+        );
 
         // Two Set-Cookie headers must survive as two distinct values.
         self::assertSame(['a=1', 'b=2'], $response->getHeader('Set-Cookie'));
@@ -69,7 +101,12 @@ class HttpClientTest extends BaseHttpClientTestCase
     public function testErrorStatusesAreNormalResponses(): void
     {
         foreach ([404, 500] as $code) {
-            $response = $this->client()->sendRequest($this->request('GET', '/status/' . $code));
+            $response = $this->client()->sendRequest(
+                $this->request(
+                    method: 'GET',
+                    path: '/status/' . $code,
+                ),
+            );
 
             self::assertSame($code, $response->getStatusCode());
             self::assertSame('status ' . $code, (string) $response->getBody());
@@ -80,7 +117,12 @@ class HttpClientTest extends BaseHttpClientTestCase
     {
         $size = 200_000; // > 64 KiB transport chunk, so the body really streams.
 
-        $response = $this->client()->sendRequest($this->request('GET', '/big/' . $size));
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/big/' . $size,
+            ),
+        );
 
         self::assertSame(200, $response->getStatusCode());
 
@@ -110,14 +152,24 @@ class HttpClientTest extends BaseHttpClientTestCase
     {
         $size = 150_000;
 
-        $response = $this->client()->sendRequest($this->request('GET', '/big/' . $size));
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/big/' . $size,
+            ),
+        );
 
         self::assertSame($this->bigBody($size), (string) $response->getBody());
     }
 
     public function testAbandonedBodyLeavesNoDanglingTasks(): void
     {
-        $response = $this->client()->sendRequest($this->request('GET', '/big/200000'));
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/big/200000',
+            ),
+        );
 
         // Read just the first chunk, then drop the response without draining it.
         self::assertNotSame('', $response->getBody()->read(1024));
@@ -131,7 +183,12 @@ class HttpClientTest extends BaseHttpClientTestCase
 
     public function testNetworkErrorThrowsNetworkException(): void
     {
-        $client  = $this->client(new HttpClientOptions(requestTimeoutMs: 2_000, connectTimeoutMs: 1_000));
+        $client = $this->client(
+            options: new HttpClientOptions(
+                requestTimeoutMs: 2_000,
+                connectTimeoutMs: 1_000,
+            ),
+        );
         $request = $this->factory->createRequest('GET', 'http://127.0.0.1:1');
 
         try {
@@ -145,8 +202,15 @@ class HttpClientTest extends BaseHttpClientTestCase
 
     public function testRequestTimeoutThrowsNetworkException(): void
     {
-        $client  = $this->client(new HttpClientOptions(requestTimeoutMs: 200));
-        $request = $this->request('GET', '/msleep/3000');
+        $client = $this->client(
+            options: new HttpClientOptions(
+                requestTimeoutMs: 200,
+            ),
+        );
+        $request = $this->request(
+            method: 'GET',
+            path: '/msleep/3000',
+        );
 
         $this->expectException(NetworkExceptionInterface::class);
 
@@ -155,7 +219,10 @@ class HttpClientTest extends BaseHttpClientTestCase
 
     public function testRequestHeadersReachTheServer(): void
     {
-        $request = $this->request('GET', '/echo-header')->withHeader('X-Echo', ['one', 'two']);
+        $request = $this->request(
+            method: 'GET',
+            path: '/echo-header',
+        )->withHeader('X-Echo', ['one', 'two']);
 
         $response = $this->client()->sendRequest($request);
 
@@ -165,7 +232,12 @@ class HttpClientTest extends BaseHttpClientTestCase
 
     public function testEmptyResponseBody(): void
     {
-        $response = $this->client()->sendRequest($this->request('GET', '/empty'));
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/empty',
+            ),
+        );
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('', (string) $response->getBody());
@@ -175,7 +247,12 @@ class HttpClientTest extends BaseHttpClientTestCase
     public function testGetSizeIsNullForChunkedResponse(): void
     {
         // /stream is a flushed StreamedResponse: chunked transfer, no Content-Length.
-        $response = $this->client()->sendRequest($this->request('GET', '/stream'));
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/stream',
+            ),
+        );
 
         self::assertNull($response->getBody()->getSize());
         self::assertSame("chunk-a\nchunk-b\nchunk-c\n", (string) $response->getBody());
@@ -183,18 +260,32 @@ class HttpClientTest extends BaseHttpClientTestCase
 
     public function testMaxResponseBodyExceededThrows(): void
     {
-        $client = $this->client(new HttpClientOptions(maxResponseBody: 1024));
+        $client = $this->client(
+            options: new HttpClientOptions(
+                maxResponseBody: 1024,
+            ),
+        );
 
         // The very first chunk already exceeds the limit, so the failure surfaces
         // from sendRequest as a generic client error (no net/req marker).
         $this->expectException(ClientExceptionInterface::class);
 
-        $client->sendRequest($this->request('GET', '/big/200000'));
+        $client->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/big/200000',
+            ),
+        );
     }
 
     public function testRedirectsAreFollowedByDefault(): void
     {
-        $response = $this->client()->sendRequest($this->request('GET', '/redirect/3'));
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/redirect/3',
+            ),
+        );
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('done', (string) $response->getBody());
@@ -202,9 +293,18 @@ class HttpClientTest extends BaseHttpClientTestCase
 
     public function testRedirectsCanBeDisabled(): void
     {
-        $client = $this->client(new HttpClientOptions(followRedirects: false));
+        $client = $this->client(
+            options: new HttpClientOptions(
+                followRedirects: false,
+            ),
+        );
 
-        $response = $client->sendRequest($this->request('GET', '/redirect/3'));
+        $response = $client->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/redirect/3',
+            ),
+        );
 
         self::assertSame(302, $response->getStatusCode());
         self::assertNotSame('', $response->getHeaderLine('Location'));
@@ -212,16 +312,30 @@ class HttpClientTest extends BaseHttpClientTestCase
 
     public function testTooManyRedirectsThrowsNetworkException(): void
     {
-        $client = $this->client(new HttpClientOptions(maxRedirects: 1));
+        $client = $this->client(
+            options: new HttpClientOptions(
+                maxRedirects: 1,
+            ),
+        );
 
         $this->expectException(NetworkExceptionInterface::class);
 
-        $client->sendRequest($this->request('GET', '/redirect/5'));
+        $client->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/redirect/5',
+            ),
+        );
     }
 
     public function testStreamContractIsReadOnlyAndNonSeekable(): void
     {
-        $stream = $this->client()->sendRequest($this->request('GET', '/'))->getBody();
+        $stream = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/',
+            ),
+        )->getBody();
 
         self::assertTrue($stream->isReadable());
         self::assertFalse($stream->isWritable());
@@ -286,31 +400,60 @@ class HttpClientTest extends BaseHttpClientTestCase
 
     public function testStreamedRequestBodyIsSent(): void
     {
-        $client = $this->client(new HttpClientOptions(streamRequestBody: true));
+        $client = $this->client(
+            options: new HttpClientOptions(
+                streamRequestBody: true,
+            ),
+        );
 
-        $response = $client->sendRequest($this->request('POST', '/echo', 'streamed hello'));
+        $response = $client->sendRequest(
+            $this->request(
+                method: 'POST',
+                path: '/echo',
+                body: 'streamed hello',
+            ),
+        );
 
         self::assertSame('streamed hello', (string) $response->getBody());
     }
 
     public function testStreamedLargeRequestBodyArrivesIntact(): void
     {
-        $client = $this->client(new HttpClientOptions(streamRequestBody: true));
+        $client = $this->client(
+            options: new HttpClientOptions(
+                streamRequestBody: true,
+            ),
+        );
 
         // ~240 KB, several upload chunks; /upload reads it streamed and returns its
         // sha256, so every byte must have arrived in order.
         $body = str_repeat('payload-', 30_000);
 
-        $response = $client->sendRequest($this->request('POST', '/upload', $body));
+        $response = $client->sendRequest(
+            $this->request(
+                method: 'POST',
+                path: '/upload',
+                body: $body,
+            ),
+        );
 
         self::assertSame(hash('sha256', $body), (string) $response->getBody());
     }
 
     public function testStreamedRequestWithEmptyBody(): void
     {
-        $client = $this->client(new HttpClientOptions(streamRequestBody: true));
+        $client = $this->client(
+            options: new HttpClientOptions(
+                streamRequestBody: true,
+            ),
+        );
 
-        $response = $client->sendRequest($this->request('GET', '/'));
+        $response = $client->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/',
+            ),
+        );
 
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('ok', (string) $response->getBody());
@@ -318,11 +461,13 @@ class HttpClientTest extends BaseHttpClientTestCase
 
     public function testStreamedRequestToUnreachableHostThrows(): void
     {
-        $client = $this->client(new HttpClientOptions(
-            requestTimeoutMs: 2_000,
-            connectTimeoutMs: 1_000,
-            streamRequestBody: true,
-        ));
+        $client = $this->client(
+            options: new HttpClientOptions(
+                requestTimeoutMs: 2_000,
+                connectTimeoutMs: 1_000,
+                streamRequestBody: true,
+            ),
+        );
         $request = $this->factory->createRequest('POST', 'http://127.0.0.1:1')
             ->withBody($this->factory->createStream('data'));
 
@@ -333,7 +478,11 @@ class HttpClientTest extends BaseHttpClientTestCase
 
     public function testStreamedRequestBodyInsideCoroutine(): void
     {
-        $client  = $this->client(new HttpClientOptions(streamRequestBody: true));
+        $client = $this->client(
+            options: new HttpClientOptions(
+                streamRequestBody: true,
+            ),
+        );
         $factory = $this->factory;
         $baseUrl = $this->baseUrl();
         $body    = str_repeat('x', 200_000);

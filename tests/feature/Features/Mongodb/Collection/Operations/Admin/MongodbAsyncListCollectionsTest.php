@@ -68,7 +68,9 @@ class MongodbAsyncListCollectionsTest extends BaseMongodbAsyncTestCase
 
     protected function on_exception(): void
     {
-        $this->sconcurCollection->findOne(['$set' => 11]);
+        $this->sconcurCollection->findOne(
+            filter: ['$set' => 11],
+        );
     }
 
     protected function assertResult(array $results): void

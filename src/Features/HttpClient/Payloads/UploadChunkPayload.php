@@ -26,6 +26,9 @@ readonly class UploadChunkPayload extends BaseHttpClientPayload
 
     protected function getParameters(): PayloadParametersInterface
     {
-        return new UploadPayloadParameters($this->requestId, $this->body);
+        return new UploadPayloadParameters(
+            requestId: $this->requestId,
+            body: $this->body,
+        );
     }
 }

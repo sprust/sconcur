@@ -76,7 +76,11 @@ class TestHttpServer
             fclose($pipes[0]);
         }
 
-        $server = new self($process, $port, $stdoutFile);
+        $server = new self(
+            process: $process,
+            port: $port,
+            stdoutFile: $stdoutFile,
+        );
 
         if (!$server->waitUntilReachable()) {
             $server->stop();

@@ -16,7 +16,7 @@ class MongodbAsyncEstimatedCountTest extends BaseMongodbAsyncTestCase
             documents: array_map(
                 fn(int $index) => ['idx' => $index],
                 range(1, 10)
-            )
+            ),
         );
     }
 
@@ -64,7 +64,9 @@ class MongodbAsyncEstimatedCountTest extends BaseMongodbAsyncTestCase
         self::assertGreaterThanOrEqual(0, $count);
 
         // Force an exception by calling another method with invalid data
-        $this->sconcurCollection->findOne(['$set' => 11]);
+        $this->sconcurCollection->findOne(
+            filter: ['$set' => 11],
+        );
     }
 
     protected function assertResult(array $results): void

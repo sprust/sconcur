@@ -38,9 +38,13 @@ class MongodbDocumentSerializerTest extends BaseTestCase
     {
         parent::setUp();
 
-        $this->sconcurCollection = TestMongodbResolver::getSconcurTestCollection('serializer');
+        $this->sconcurCollection = TestMongodbResolver::getSconcurTestCollection(
+            collectionName: 'serializer',
+        );
 
-        $this->sconcurCollection->deleteMany([]);
+        $this->sconcurCollection->deleteMany(
+            filter: [],
+        );
 
         $this->sconcurCollection->insertMany(
             documents: array_map(
@@ -48,7 +52,7 @@ class MongodbDocumentSerializerTest extends BaseTestCase
                     'objectId'   => TestMongodbResolver::getSconcurObjectId(),
                     'date'       => TestMongodbResolver::getSconcurDateTime(),
                     'dateZeroMs' => TestMongodbResolver::getSconcurDateTime(
-                        new DateTime($this->zeroMsDateString, new DateTimeZone('UTC'))
+                        dateTime: new DateTime($this->zeroMsDateString, new DateTimeZone('UTC')),
                     ),
                     'int'        => $this->intValue,
                     'float'      => $this->floatValue,
@@ -61,7 +65,9 @@ class MongodbDocumentSerializerTest extends BaseTestCase
 
     public function testFindOne(): void
     {
-        $document = $this->sconcurCollection->findOne([]);
+        $document = $this->sconcurCollection->findOne(
+            filter: [],
+        );
 
         self::assertNotNull($document);
 
@@ -146,7 +152,9 @@ class MongodbDocumentSerializerTest extends BaseTestCase
 
         $insertResult = $this->sconcurCollection->insertOne($document);
 
-        $found = $this->sconcurCollection->findOne(['_id' => $insertResult->insertedId]);
+        $found = $this->sconcurCollection->findOne(
+            filter: ['_id' => $insertResult->insertedId],
+        );
 
         self::assertNotNull($found);
 
@@ -213,7 +221,9 @@ class MongodbDocumentSerializerTest extends BaseTestCase
         ]);
 
         $documents = iterator_to_array(
-            $this->sconcurCollection->find(['_id' => 'batch-types'])
+            $this->sconcurCollection->find(
+                filter: ['_id' => 'batch-types'],
+            )
         );
 
         self::assertCount(1, $documents);
@@ -234,16 +244,18 @@ class MongodbDocumentSerializerTest extends BaseTestCase
 
     public function testAggregateGroup(): void
     {
-        $iterator = $this->sconcurCollection->aggregate([
-            [
-                '$group' => [
-                    '_id'   => null,
-                    'count' => [
-                        '$sum' => 1,
+        $iterator = $this->sconcurCollection->aggregate(
+            pipeline: [
+                [
+                    '$group' => [
+                        '_id'   => null,
+                        'count' => [
+                            '$sum' => 1,
+                        ],
                     ],
                 ],
             ],
-        ]);
+        );
 
         $items = iterator_to_array($iterator);
 

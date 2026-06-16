@@ -13,7 +13,9 @@ class MongodbAsyncListIndexesTest extends BaseMongodbAsyncTestCase
         parent::setUp();
 
         $this->sconcurCollection->insertOne(['field_x' => 1]);
-        $this->sconcurCollection->createIndex(['field_x' => 1]);
+        $this->sconcurCollection->createIndex(
+            keys: ['field_x' => 1],
+        );
     }
 
     protected function getCollectionName(): string
@@ -46,7 +48,9 @@ class MongodbAsyncListIndexesTest extends BaseMongodbAsyncTestCase
 
     protected function on_2_start(): void
     {
-        $this->sconcurCollection->createIndex(['field_y' => 1]);
+        $this->sconcurCollection->createIndex(
+            keys: ['field_y' => 1],
+        );
 
         $indexes = $this->sconcurCollection->listIndexes();
         self::assertGreaterThanOrEqual(3, count($indexes));
@@ -68,7 +72,9 @@ class MongodbAsyncListIndexesTest extends BaseMongodbAsyncTestCase
     {
         // listIndexes doesn't have filter-based errors easily
         // Use another operation to trigger exception
-        $this->sconcurCollection->findOne(['$set' => 11]);
+        $this->sconcurCollection->findOne(
+            filter: ['$set' => 11],
+        );
     }
 
     protected function assertResult(array $results): void

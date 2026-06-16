@@ -35,7 +35,7 @@ class MongodbAggregateTest extends BaseTestCase
             $waitGroup->add(
                 callback: function () use (&$results) {
                     $iterator = $this->sconcurCollection->aggregate(
-                        pipeline: []
+                        pipeline: [],
                     );
 
                     foreach ($iterator as $item) {
@@ -48,7 +48,7 @@ class MongodbAggregateTest extends BaseTestCase
             $waitGroup->add(
                 callback: function () {
                     $this->sconcurCollection->aggregate(
-                        pipeline: []
+                        pipeline: [],
                     );
                 });
         }
@@ -66,14 +66,16 @@ class MongodbAggregateTest extends BaseTestCase
             callback: function () {
                 $iterator = $this->sconcurCollection->aggregate(
                     pipeline: [],
-                    batchSize: 1
+                    batchSize: 1,
                 );
 
                 foreach ($iterator as $ignored) {
                     break;
                 }
 
-                $document = $this->sconcurCollection->findOne([]);
+                $document = $this->sconcurCollection->findOne(
+                    filter: [],
+                );
 
                 self::assertTrue(
                     is_array($document)
@@ -104,7 +106,7 @@ class MongodbAggregateTest extends BaseTestCase
             callback: function () use (&$counter) {
                 $iterator = $this->sconcurCollection->aggregate(
                     pipeline: [],
-                    batchSize: 1
+                    batchSize: 1,
                 );
 
                 foreach ($iterator as $ignored) {
@@ -137,7 +139,7 @@ class MongodbAggregateTest extends BaseTestCase
             callback: function () use (&$counter) {
                 $iterator = $this->sconcurCollection->aggregate(
                     pipeline: [],
-                    batchSize: $this->documentsCount
+                    batchSize: $this->documentsCount,
                 );
 
                 foreach ($iterator as $ignored) {
@@ -150,7 +152,7 @@ class MongodbAggregateTest extends BaseTestCase
             callback: function () use (&$counter) {
                 $iterator = $this->sconcurCollection->aggregate(
                     pipeline: [],
-                    batchSize: $this->documentsCount
+                    batchSize: $this->documentsCount,
                 );
 
                 foreach ($iterator as $ignored) {
@@ -177,7 +179,7 @@ class MongodbAggregateTest extends BaseTestCase
             callback: function () use (&$counter) {
                 $iterator = $this->sconcurCollection->aggregate(
                     pipeline: [],
-                    batchSize: $this->documentsCount - 3
+                    batchSize: $this->documentsCount - 3,
                 );
 
                 foreach ($iterator as $ignored) {
@@ -190,7 +192,7 @@ class MongodbAggregateTest extends BaseTestCase
             callback: function () use (&$counter) {
                 $iterator = $this->sconcurCollection->aggregate(
                     pipeline: [],
-                    batchSize: $this->documentsCount
+                    batchSize: $this->documentsCount,
                 );
 
                 foreach ($iterator as $ignored) {
@@ -217,7 +219,7 @@ class MongodbAggregateTest extends BaseTestCase
             callback: function () use (&$counter) {
                 $iterator = $this->sconcurCollection->aggregate(
                     pipeline: [],
-                    batchSize: $this->documentsCount + 3
+                    batchSize: $this->documentsCount + 3,
                 );
 
                 foreach ($iterator as $ignored) {
@@ -230,7 +232,7 @@ class MongodbAggregateTest extends BaseTestCase
             callback: function () use (&$counter) {
                 $iterator = $this->sconcurCollection->aggregate(
                     pipeline: [],
-                    batchSize: $this->documentsCount
+                    batchSize: $this->documentsCount,
                 );
 
                 foreach ($iterator as $ignored) {

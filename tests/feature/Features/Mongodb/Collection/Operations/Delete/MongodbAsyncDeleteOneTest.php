@@ -73,7 +73,9 @@ class MongodbAsyncDeleteOneTest extends BaseMongodbAsyncTestCase
 
     protected function on_exception(): void
     {
-        $this->sconcurCollection->deleteOne(['$set' => 11]);
+        $this->sconcurCollection->deleteOne(
+            filter: ['$set' => 11],
+        );
     }
 
     protected function assertResult(array $results): void

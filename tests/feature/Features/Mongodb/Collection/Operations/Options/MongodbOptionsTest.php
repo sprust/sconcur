@@ -21,9 +21,13 @@ class MongodbOptionsTest extends BaseTestCase
     {
         parent::setUp();
 
-        $this->collection = TestMongodbResolver::getSconcurTestCollection('options');
+        $this->collection = TestMongodbResolver::getSconcurTestCollection(
+            collectionName: 'options',
+        );
 
-        $this->collection->deleteMany([]);
+        $this->collection->deleteMany(
+            filter: [],
+        );
     }
 
     // --- arrayFilters ---
@@ -45,7 +49,9 @@ class MongodbOptionsTest extends BaseTestCase
             arrayFilters: [['elem.name' => 'a']],
         );
 
-        $document = $this->collection->findOne(['_id' => 'doc1']);
+        $document = $this->collection->findOne(
+            filter: ['_id' => 'doc1'],
+        );
 
         self::assertNotNull($document);
         self::assertTrue($document['items'][0]['done']);
@@ -68,7 +74,9 @@ class MongodbOptionsTest extends BaseTestCase
 
         self::assertSame(2, $result->modifiedCount);
 
-        $d1 = $this->collection->findOne(['_id' => 'd1']);
+        $d1 = $this->collection->findOne(
+            filter: ['_id' => 'd1'],
+        );
         self::assertNotNull($d1);
         self::assertSame(1, $d1['items'][0]['v']);
         self::assertSame(0, $d1['items'][1]['v']);
@@ -99,7 +107,11 @@ class MongodbOptionsTest extends BaseTestCase
     {
         $this->collection->insertOne(['_id' => 'c1', 'name' => 'Alice']);
 
-        self::assertNull($this->collection->findOne(['name' => 'alice']));
+        self::assertNull(
+            $this->collection->findOne(
+                filter: ['name' => 'alice'],
+            )
+        );
 
         $found = $this->collection->findOne(
             filter: ['name' => 'alice'],
@@ -151,7 +163,11 @@ class MongodbOptionsTest extends BaseTestCase
             ['t' => 'B'],
         ]);
 
-        $values = $this->collection->distinct('t', [], collation: self::CASE_INSENSITIVE);
+        $values = $this->collection->distinct(
+            fieldName: 't',
+            filter: [],
+            collation: self::CASE_INSENSITIVE,
+        );
 
         // "A" and "a" collapse under a case-insensitive collation.
         self::assertCount(2, $values);
@@ -162,7 +178,9 @@ class MongodbOptionsTest extends BaseTestCase
     public function testUpdateOneHint(): void
     {
         $this->collection->insertMany([['k' => 1], ['k' => 2]]);
-        $this->collection->createIndex(['k' => 1]);
+        $this->collection->createIndex(
+            keys: ['k' => 1],
+        );
 
         $result = $this->collection->updateOne(
             filter: ['k' => 1],
@@ -176,9 +194,14 @@ class MongodbOptionsTest extends BaseTestCase
     public function testFindOneHint(): void
     {
         $this->collection->insertOne(['k' => 5]);
-        $this->collection->createIndex(['k' => 1]);
+        $this->collection->createIndex(
+            keys: ['k' => 1],
+        );
 
-        $found = $this->collection->findOne(['k' => 5], hint: ['k' => 1]);
+        $found = $this->collection->findOne(
+            filter: ['k' => 5],
+            hint: ['k' => 1],
+        );
 
         self::assertNotNull($found);
         self::assertSame(5, $found['k']);
@@ -187,9 +210,14 @@ class MongodbOptionsTest extends BaseTestCase
     public function testDeleteOneHint(): void
     {
         $this->collection->insertMany([['k' => 1], ['k' => 2]]);
-        $this->collection->createIndex(['k' => 1]);
+        $this->collection->createIndex(
+            keys: ['k' => 1],
+        );
 
-        $result = $this->collection->deleteOne(['k' => 1], hint: ['k' => 1]);
+        $result = $this->collection->deleteOne(
+            filter: ['k' => 1],
+            hint: ['k' => 1],
+        );
 
         self::assertSame(1, $result->deletedCount);
     }
@@ -201,7 +229,10 @@ class MongodbOptionsTest extends BaseTestCase
         $this->expectException(Throwable::class);
 
         iterator_to_array(
-            $this->collection->find(['k' => 1], hint: 'nonexistent_index')
+            $this->collection->find(
+                filter: ['k' => 1],
+                hint: 'nonexistent_index',
+            )
         );
     }
 
@@ -226,7 +257,9 @@ class MongodbOptionsTest extends BaseTestCase
 
         $waitGroup->waitAll();
 
-        $document = $this->collection->findOne(['_id' => 'async1']);
+        $document = $this->collection->findOne(
+            filter: ['_id' => 'async1'],
+        );
 
         self::assertNotNull($document);
         self::assertSame(9, $document['items'][0]['v']);

@@ -130,7 +130,10 @@ class RequestBody
             return FeatureExecutor::next(taskKey: $this->bodyKey);
         } catch (TaskErrorException $exception) {
             if ($exception->getMessage() === self::TOO_LARGE_MARKER) {
-                throw new RequestBodyTooLargeException(self::TOO_LARGE_MARKER, previous: $exception);
+                throw new RequestBodyTooLargeException(
+                    message: self::TOO_LARGE_MARKER,
+                    previous: $exception,
+                );
             }
 
             throw $exception;

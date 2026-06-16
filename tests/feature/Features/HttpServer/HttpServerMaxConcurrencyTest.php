@@ -13,7 +13,12 @@ class HttpServerMaxConcurrencyTest extends BaseHttpServerTestCase
         // would take, proving the cap holds.
         $start = microtime(true);
 
-        $results = $this->concurrentGet(['/msleep/300', '/msleep/300', '/msleep/300', '/msleep/300']);
+        $results = $this->concurrentGet([
+            '/msleep/300',
+            '/msleep/300',
+            '/msleep/300',
+            '/msleep/300',
+        ]);
 
         $elapsed = microtime(true) - $start;
 
@@ -38,7 +43,10 @@ class HttpServerMaxConcurrencyTest extends BaseHttpServerTestCase
     public function testCapDoesNotBlockServingOverTime(): void
     {
         // After a batch drains, the server keeps accepting — a later request works.
-        [$status, $body] = $this->request('GET', '/');
+        [$status, $body] = $this->request(
+            method: 'GET',
+            path: '/',
+        );
 
         self::assertSame(200, $status);
         self::assertSame('ok', $body);

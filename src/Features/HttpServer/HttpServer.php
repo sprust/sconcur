@@ -203,13 +203,15 @@ readonly class HttpServer
         }
 
         if ($accessLog !== null) {
-            $accessLog(new AccessLogEntry(
-                startedAt: $startedAt,
-                method: $request->method,
-                path: $request->path,
-                status: $response->status,
-                executionMs: (microtime(true) - $startedAt) * 1000,
-            ));
+            $accessLog(
+                new AccessLogEntry(
+                    startedAt: $startedAt,
+                    method: $request->method,
+                    path: $request->path,
+                    status: $response->status,
+                    executionMs: (microtime(true) - $startedAt) * 1000,
+                ),
+            );
         }
     }
 
@@ -260,12 +262,12 @@ readonly class HttpServer
 
             if (!$response instanceof Response && !$response instanceof StreamedResponse) {
                 throw new InvalidHandlerResponseException(
-                    sprintf(
+                    message: sprintf(
                         'HTTP handler must return %s or %s, got %s.',
                         Response::class,
                         StreamedResponse::class,
                         get_debug_type($response),
-                    )
+                    ),
                 );
             }
 

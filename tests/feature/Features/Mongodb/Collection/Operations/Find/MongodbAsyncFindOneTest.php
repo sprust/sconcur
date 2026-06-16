@@ -99,7 +99,7 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
     protected function on_2_start(): void
     {
         $dateTime = TestMongodbResolver::getSconcurDateTime(
-            new DateTime()->modify('+1 day')
+            dateTime: new DateTime()->modify('+1 day'),
         );
 
         $this->sconcurCollection->insertMany(
@@ -150,7 +150,9 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
 
     protected function on_2_middle(): void
     {
-        $result = $this->sconcurCollection->findOne([]);
+        $result = $this->sconcurCollection->findOne(
+            filter: [],
+        );
 
         self::assertFalse(
             is_null($result)
@@ -159,7 +161,9 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
 
     protected function on_iterate(): void
     {
-        $result = $this->sconcurCollection->findOne([]);
+        $result = $this->sconcurCollection->findOne(
+            filter: [],
+        );
 
         self::assertFalse(
             is_null($result)
@@ -168,7 +172,9 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
 
     protected function on_exception(): void
     {
-        $this->sconcurCollection->findOne(['$set' => 11]);
+        $this->sconcurCollection->findOne(
+            filter: ['$set' => 11],
+        );
     }
 
     protected function assertResult(array $results): void

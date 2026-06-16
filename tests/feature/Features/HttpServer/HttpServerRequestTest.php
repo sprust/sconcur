@@ -8,7 +8,10 @@ class HttpServerRequestTest extends BaseHttpServerTestCase
 {
     public function testQueryStringIsExposed(): void
     {
-        [$status, $body] = $this->request('GET', '/query?a=1&b=two&flag');
+        [$status, $body] = $this->request(
+            method: 'GET',
+            path: '/query?a=1&b=two&flag',
+        );
 
         self::assertSame(200, $status);
         self::assertSame('a=1&b=two&flag', $body);
@@ -16,7 +19,10 @@ class HttpServerRequestTest extends BaseHttpServerTestCase
 
     public function testEmptyQueryStringIsEmpty(): void
     {
-        [$status, $body] = $this->request('GET', '/query');
+        [$status, $body] = $this->request(
+            method: 'GET',
+            path: '/query',
+        );
 
         self::assertSame(200, $status);
         self::assertSame('', $body);
@@ -24,7 +30,12 @@ class HttpServerRequestTest extends BaseHttpServerTestCase
 
     public function testRequestHeaderIsReceivedByHandler(): void
     {
-        [$status, $body] = $this->request('GET', '/echo-header', null, ['X-Echo: hello world']);
+        [$status, $body] = $this->request(
+            method: 'GET',
+            path: '/echo-header',
+            body: null,
+            headers: ['X-Echo: hello world'],
+        );
 
         self::assertSame(200, $status);
         self::assertSame('hello world', $body);
@@ -35,7 +46,11 @@ class HttpServerRequestTest extends BaseHttpServerTestCase
         // Every byte value, including NUL and high bytes.
         $binary = implode('', array_map('chr', range(0, 255)));
 
-        [$status, $body] = $this->request('POST', '/echo', $binary);
+        [$status, $body] = $this->request(
+            method: 'POST',
+            path: '/echo',
+            body: $binary,
+        );
 
         self::assertSame(200, $status);
         self::assertSame($binary, $body);
@@ -43,7 +58,10 @@ class HttpServerRequestTest extends BaseHttpServerTestCase
 
     public function testEmptyResponseBody(): void
     {
-        [$status, $body] = $this->request('GET', '/empty');
+        [$status, $body] = $this->request(
+            method: 'GET',
+            path: '/empty',
+        );
 
         self::assertSame(200, $status);
         self::assertSame('', $body);
@@ -51,7 +69,10 @@ class HttpServerRequestTest extends BaseHttpServerTestCase
 
     public function testRootRoute(): void
     {
-        [$status, $body] = $this->request('GET', '/');
+        [$status, $body] = $this->request(
+            method: 'GET',
+            path: '/',
+        );
 
         self::assertSame(200, $status);
         self::assertSame('ok', $body);

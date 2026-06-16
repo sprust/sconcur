@@ -24,5 +24,5 @@ $benchmarker->run(
     },
     asyncCallback: static function () use ($sconcurDatabase, $command) {
         return $sconcurDatabase->command($command);
-    }
+    },
 );

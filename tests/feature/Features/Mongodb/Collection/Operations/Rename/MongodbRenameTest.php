@@ -18,7 +18,9 @@ class MongodbRenameTest extends BaseTestCase
     {
         parent::setUp();
 
-        $this->source = TestMongodbResolver::getSconcurTestCollection('renameSource');
+        $this->source = TestMongodbResolver::getSconcurTestCollection(
+            collectionName: 'renameSource',
+        );
         $this->target = $this->source->database->selectCollection($this->targetName);
 
         $this->source->drop();
@@ -29,7 +31,10 @@ class MongodbRenameTest extends BaseTestCase
     {
         $this->source->insertOne(['k' => 'v']);
 
-        $this->source->rename($this->targetName, dropTarget: true);
+        $this->source->rename(
+            target: $this->targetName,
+            dropTarget: true,
+        );
 
         // The source collection no longer exists; the target holds the document.
         self::assertSame(0, $this->source->countDocuments([]));

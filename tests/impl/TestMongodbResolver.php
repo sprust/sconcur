@@ -40,7 +40,10 @@ class TestMongodbResolver
 
     public static function getSconcurTestCollection(string $collectionName, ?int $timeoutMs = null): Collection
     {
-        return new Client(uri: static::getUri(), timeoutMs: $timeoutMs)
+        return new Client(
+            uri: static::getUri(),
+            timeoutMs: $timeoutMs,
+        )
             ->selectDatabase(static::$testDatabaseName)
             ->selectCollection($collectionName);
     }
