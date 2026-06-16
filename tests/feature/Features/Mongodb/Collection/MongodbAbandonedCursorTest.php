@@ -28,8 +28,8 @@ class MongodbAbandonedCursorTest extends BaseTestCase
         $driverCollection->insertMany(
             array_map(
                 static fn(int $index) => ['index' => $index],
-                range(1, 60)
-            )
+                range(1, 60),
+            ),
         );
     }
 
@@ -112,7 +112,7 @@ class MongodbAbandonedCursorTest extends BaseTestCase
         self::assertLessThanOrEqual(
             $baseline,
             $openCursors,
-            'Abandoned server-side cursor was not closed'
+            'Abandoned server-side cursor was not closed',
         );
     }
 

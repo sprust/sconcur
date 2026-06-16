@@ -110,7 +110,7 @@ class MongodbOptionsTest extends BaseTestCase
         self::assertNull(
             $this->collection->findOne(
                 filter: ['name' => 'alice'],
-            )
+            ),
         );
 
         $found = $this->collection->findOne(
@@ -232,7 +232,7 @@ class MongodbOptionsTest extends BaseTestCase
             $this->collection->find(
                 filter: ['k' => 1],
                 hint: 'nonexistent_index',
-            )
+            ),
         );
     }
 

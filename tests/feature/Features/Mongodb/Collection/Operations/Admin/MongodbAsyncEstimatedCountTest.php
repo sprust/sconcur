@@ -15,7 +15,7 @@ class MongodbAsyncEstimatedCountTest extends BaseMongodbAsyncTestCase
         $this->sconcurCollection->insertMany(
             documents: array_map(
                 fn(int $index) => ['idx' => $index],
-                range(1, 10)
+                range(1, 10),
             ),
         );
     }

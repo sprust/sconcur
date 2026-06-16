@@ -112,7 +112,7 @@ class MemLeakTest extends BaseTestCase
                 $growth,
                 self::MEASURED_ITERATIONS,
                 self::MAX_GROWTH_BYTES,
-            )
+            ),
         );
     }
 }

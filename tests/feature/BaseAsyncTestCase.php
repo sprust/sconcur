@@ -74,7 +74,7 @@ abstract class BaseAsyncTestCase extends BaseTestCase
 
         self::assertCount(
             count($callbacks),
-            $results
+            $results,
         );
 
         $expectedStartEvents = [
@@ -84,7 +84,7 @@ abstract class BaseAsyncTestCase extends BaseTestCase
 
         self::assertSame(
             $expectedStartEvents,
-            array_slice($events, 0, count($expectedStartEvents))
+            array_slice($events, 0, count($expectedStartEvents)),
         );
 
         $expectedEvents = [
@@ -100,7 +100,7 @@ abstract class BaseAsyncTestCase extends BaseTestCase
             self::assertContains(
                 $expectedEvent,
                 $events,
-                "Event '$expectedEvent' not found in events: " . implode(', ', $events)
+                "Event '$expectedEvent' not found in events: " . implode(', ', $events),
             );
         }
 
@@ -116,7 +116,7 @@ abstract class BaseAsyncTestCase extends BaseTestCase
                     $exceptionWaitGroup->add(
                         callback: function () {
                             $this->on_exception();
-                        }
+                        },
                     );
 
                     $exceptionWaitGroup->waitAll();
@@ -133,7 +133,7 @@ abstract class BaseAsyncTestCase extends BaseTestCase
 
             self::assertFalse(
                 is_null($exception),
-                'Exception not fired for ' . ($isAsync ? 'async' : 'async') . ' case'
+                'Exception not fired for ' . ($isAsync ? 'async' : 'async') . ' case',
             );
 
             $this->assertException($exception);

@@ -104,7 +104,7 @@ readonly class FeatureExecutor
                 unset($currentFiber);
             } else {
                 throw new OutsideFiberException(
-                    message: 'Can\'t wait outside of fiber.'
+                    message: 'Can\'t wait outside of fiber.',
                 );
             }
 
@@ -119,7 +119,7 @@ readonly class FeatureExecutor
 
         if ($result->key !== $runningTask->key) {
             throw new UnexpectedTaskKeyException(
-                message: "Unexpected task key. Expected [$runningTask->key], got [$result->key]."
+                message: "Unexpected task key. Expected [$runningTask->key], got [$result->key].",
             );
         }
 
@@ -185,7 +185,7 @@ readonly class FeatureExecutor
     {
         if (!$currentFlow->isAsync) {
             throw new OutsideFiberException(
-                message: 'Can\'t suspend outside of fiber.'
+                message: 'Can\'t suspend outside of fiber.',
             );
         }
 
@@ -202,7 +202,7 @@ readonly class FeatureExecutor
             static::checkResult($result);
         } else {
             throw new UnexpectedResultTypeException(
-                message: 'Unexpected result type. Expected ' . TaskResultDto::class . '.'
+                message: 'Unexpected result type. Expected ' . TaskResultDto::class . '.',
             );
         }
 

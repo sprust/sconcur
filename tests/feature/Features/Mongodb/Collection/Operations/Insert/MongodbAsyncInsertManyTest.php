@@ -60,7 +60,7 @@ class MongodbAsyncInsertManyTest extends BaseMongodbAsyncTestCase
     {
         // An array-valued _id is rejected by MongoDB (server-side error).
         $this->sconcurCollection->insertMany(
-            documents: [['_id' => [1, 2, 3]]]
+            documents: [['_id' => [1, 2, 3]]],
         );
     }
 
@@ -68,7 +68,7 @@ class MongodbAsyncInsertManyTest extends BaseMongodbAsyncTestCase
     {
         self::assertEquals(
             $this->expectedDocumentsCount,
-            $this->driverCollection->countDocuments([$this->fieldName => $this->driverObjectId])
+            $this->driverCollection->countDocuments([$this->fieldName => $this->driverObjectId]),
         );
     }
 
@@ -77,13 +77,13 @@ class MongodbAsyncInsertManyTest extends BaseMongodbAsyncTestCase
         $insertResult = $this->sconcurCollection->insertMany(
             documents: array_map(
                 fn() => [$this->fieldName => $this->sconcurObjectId],
-                range(1, $this->documentsCount)
-            )
+                range(1, $this->documentsCount),
+            ),
         );
 
         self::assertEquals(
             $this->documentsCount,
-            $insertResult->insertedCount
+            $insertResult->insertedCount,
         );
     }
 }

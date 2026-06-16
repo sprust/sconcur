@@ -34,7 +34,7 @@ class MongodbAsyncCreateIndexTest extends BaseMongodbAsyncTestCase
                 __FUNCTION__ => 1,
                 uniqid()     => -1,
             ],
-            name: __FUNCTION__
+            name: __FUNCTION__,
         );
 
         $this->createdIndexNames[] = __FUNCTION__;
@@ -47,7 +47,7 @@ class MongodbAsyncCreateIndexTest extends BaseMongodbAsyncTestCase
                 __FUNCTION__ => 1,
                 uniqid()     => -1,
             ],
-            name: __FUNCTION__
+            name: __FUNCTION__,
         );
 
         $this->createdIndexNames[] = __FUNCTION__;
@@ -60,7 +60,7 @@ class MongodbAsyncCreateIndexTest extends BaseMongodbAsyncTestCase
                 __FUNCTION__ => 1,
                 uniqid()     => -1,
             ],
-            name: __FUNCTION__
+            name: __FUNCTION__,
         );
 
         $this->createdIndexNames[] = __FUNCTION__;
@@ -73,7 +73,7 @@ class MongodbAsyncCreateIndexTest extends BaseMongodbAsyncTestCase
                 __FUNCTION__ => 1,
                 uniqid()     => -1,
             ],
-            name: __FUNCTION__
+            name: __FUNCTION__,
         );
 
         $this->createdIndexNames[] = __FUNCTION__;
@@ -86,7 +86,7 @@ class MongodbAsyncCreateIndexTest extends BaseMongodbAsyncTestCase
                 __FUNCTION__ => 1,
                 uniqid()     => -1,
             ],
-            name: null
+            name: null,
         );
     }
 
@@ -94,7 +94,7 @@ class MongodbAsyncCreateIndexTest extends BaseMongodbAsyncTestCase
     {
         $this->createIndex(
             keys: [],
-            name: null
+            name: null,
         );
     }
 
@@ -110,7 +110,7 @@ class MongodbAsyncCreateIndexTest extends BaseMongodbAsyncTestCase
 
         self::assertCount(
             6 + 1, // +1 -> _id
-            $existIndexNames
+            $existIndexNames,
         );
 
         foreach ($this->createdIndexNames as $createdIndexName) {
@@ -125,7 +125,7 @@ class MongodbAsyncCreateIndexTest extends BaseMongodbAsyncTestCase
     {
         $this->sconcurCollection->createIndex(
             keys: $keys,
-            name: $name
+            name: $name,
         );
     }
 }

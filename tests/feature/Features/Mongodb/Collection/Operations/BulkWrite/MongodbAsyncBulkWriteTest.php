@@ -27,14 +27,14 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
                         $document,
                     ],
                 ],
-            ]
+            ],
         );
 
         self::assertEquals(
             1,
             $this->sconcurCollection->countDocuments(
-                filter: $document
-            )
+                filter: $document,
+            ),
         );
     }
 
@@ -57,14 +57,14 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
                             ],
                         ],
                     ],
-                ]
+                ],
             );
 
             self::assertEquals(
                 0,
                 $this->sconcurCollection->countDocuments(
-                    filter: $filter
-                )
+                    filter: $filter,
+                ),
             );
 
             $this->sconcurCollection->bulkWrite(
@@ -82,7 +82,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
                             ],
                         ],
                     ],
-                ]
+                ],
             );
 
             self::assertEquals(
@@ -91,8 +91,8 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
                     filter: [
                         ...$filter,
                         'value' => 'primary',
-                    ]
-                )
+                    ],
+                ),
             );
 
             $this->sconcurCollection->bulkWrite(
@@ -107,7 +107,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
                             ],
                         ],
                     ],
-                ]
+                ],
             );
 
             self::assertEquals(
@@ -116,8 +116,8 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
                     filter: [
                         ...$filter,
                         'value' => 'updated',
-                    ]
-                )
+                    ],
+                ),
             );
         }
     }
@@ -133,14 +133,14 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
                 $filter,
                 $filter,
                 $filter,
-            ]
+            ],
         );
 
         self::assertEquals(
             3,
             $this->sconcurCollection->countDocuments(
-                filter: $filter
-            )
+                filter: $filter,
+            ),
         );
 
         $this->sconcurCollection->bulkWrite(
@@ -150,14 +150,14 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
                         $filter,
                     ],
                 ],
-            ]
+            ],
         );
 
         self::assertEquals(
             2,
             $this->sconcurCollection->countDocuments(
-                filter: $filter
-            )
+                filter: $filter,
+            ),
         );
 
         $this->sconcurCollection->bulkWrite(
@@ -167,14 +167,14 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
                         $filter,
                     ],
                 ],
-            ]
+            ],
         );
 
         self::assertEquals(
             0,
             $this->sconcurCollection->countDocuments(
-                filter: $filter
-            )
+                filter: $filter,
+            ),
         );
     }
 
@@ -214,7 +214,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
                         ],
                     ],
                 ],
-            ]
+            ],
         );
 
         $primaryFilter = [
@@ -226,8 +226,8 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
         self::assertEquals(
             1,
             $this->sconcurCollection->countDocuments(
-                filter: $primaryFilter
-            )
+                filter: $primaryFilter,
+            ),
         );
 
         $this->sconcurCollection->bulkWrite(
@@ -241,14 +241,14 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
                         ],
                     ],
                 ],
-            ]
+            ],
         );
 
         self::assertEquals(
             0,
             $this->sconcurCollection->countDocuments(
-                filter: $primaryFilter
-            )
+                filter: $primaryFilter,
+            ),
         );
 
         self::assertEquals(
@@ -257,8 +257,8 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
                 filter: [
                     ...$filter,
                     'replaced' => true,
-                ]
-            )
+                ],
+            ),
         );
     }
 
@@ -275,14 +275,14 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
                         $document,
                     ],
                 ],
-            ]
+            ],
         );
 
         self::assertEquals(
             1,
             $this->sconcurCollection->countDocuments(
-                filter: $document
-            )
+                filter: $document,
+            ),
         );
     }
 
@@ -298,7 +298,7 @@ class MongodbAsyncBulkWriteTest extends BaseMongodbAsyncTestCase
                         ],
                     ],
                 ],
-            ]
+            ],
         );
     }
 

@@ -43,12 +43,12 @@ class MongodbAsyncDeleteManyTest extends BaseMongodbAsyncTestCase
         $result = $this->sconcurCollection->deleteMany(
             filter: [
                 uniqid() => $this->sconcurObjectId,
-            ]
+            ],
         );
 
         self::assertEquals(
             0,
-            $result->deletedCount
+            $result->deletedCount,
         );
     }
 
@@ -73,12 +73,12 @@ class MongodbAsyncDeleteManyTest extends BaseMongodbAsyncTestCase
     {
         self::assertEquals(
             $this->documentsCount * 5,
-            $this->deletedDocumentsCount
+            $this->deletedDocumentsCount,
         );
 
         self::assertEquals(
             0,
-            $this->driverCollection->countDocuments()
+            $this->driverCollection->countDocuments(),
         );
     }
 
@@ -94,12 +94,12 @@ class MongodbAsyncDeleteManyTest extends BaseMongodbAsyncTestCase
             documents: array_fill(
                 start_index: 0,
                 count: $this->documentsCount,
-                value: $filter
-            )
+                value: $filter,
+            ),
         );
 
         $this->deletedDocumentsCount += $this->sconcurCollection->deleteMany(
-            filter: $filter
+            filter: $filter,
         )->deletedCount;
     }
 }

@@ -32,7 +32,7 @@ class MongodbFieldsOrderBulkWriteUpdateOneTest extends BaseMongodbOrderTestCase
                         ['upsert' => true],
                     ],
                 ],
-            ]
+            ],
         );
     }
 }

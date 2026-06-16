@@ -78,19 +78,19 @@ class MongodbAggregateTest extends BaseTestCase
                 );
 
                 self::assertTrue(
-                    is_array($document)
+                    is_array($document),
                 );
 
                 self::assertArrayHasKey(
                     '_id',
-                    $document
+                    $document,
                 );
 
                 self::assertCount(
                     2,
-                    $document
+                    $document,
                 );
-            }
+            },
         );
 
         $waitGroup->waitAll();
@@ -118,14 +118,14 @@ class MongodbAggregateTest extends BaseTestCase
                 foreach ($iterator as $ignored) {
                     ++$counter;
                 }
-            }
+            },
         );
 
         $waitGroup->waitAll();
 
         self::assertEquals(
             $this->documentsCount + 1,
-            $counter
+            $counter,
         );
     }
 
@@ -145,7 +145,7 @@ class MongodbAggregateTest extends BaseTestCase
                 foreach ($iterator as $ignored) {
                     ++$counter;
                 }
-            }
+            },
         );
 
         $waitGroup->add(
@@ -158,14 +158,14 @@ class MongodbAggregateTest extends BaseTestCase
                 foreach ($iterator as $ignored) {
                     ++$counter;
                 }
-            }
+            },
         );
 
         $waitGroup->waitAll();
 
         self::assertEquals(
             $this->documentsCount * 2,
-            $counter
+            $counter,
         );
     }
 
@@ -185,7 +185,7 @@ class MongodbAggregateTest extends BaseTestCase
                 foreach ($iterator as $ignored) {
                     ++$counter;
                 }
-            }
+            },
         );
 
         $waitGroup->add(
@@ -198,14 +198,14 @@ class MongodbAggregateTest extends BaseTestCase
                 foreach ($iterator as $ignored) {
                     ++$counter;
                 }
-            }
+            },
         );
 
         $waitGroup->waitAll();
 
         self::assertEquals(
             $this->documentsCount * 2,
-            $counter
+            $counter,
         );
     }
 
@@ -225,7 +225,7 @@ class MongodbAggregateTest extends BaseTestCase
                 foreach ($iterator as $ignored) {
                     ++$counter;
                 }
-            }
+            },
         );
 
         $waitGroup->add(
@@ -238,21 +238,21 @@ class MongodbAggregateTest extends BaseTestCase
                 foreach ($iterator as $ignored) {
                     ++$counter;
                 }
-            }
+            },
         );
 
         $waitGroup->waitAll();
 
         self::assertEquals(
             $this->documentsCount * 2,
-            $counter
+            $counter,
         );
     }
 
     private function seedDocuments(): void
     {
         $this->sconcurCollection->deleteMany(
-            filter: []
+            filter: [],
         );
 
         $this->documentsCount = 10;
@@ -262,8 +262,8 @@ class MongodbAggregateTest extends BaseTestCase
                 static fn(int $index) => [
                     uniqid() => $index,
                 ],
-                range(1, $this->documentsCount)
-            )
+                range(1, $this->documentsCount),
+            ),
         );
     }
 }

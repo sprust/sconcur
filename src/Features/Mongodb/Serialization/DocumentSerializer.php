@@ -65,7 +65,7 @@ class DocumentSerializer
 
         if (!is_array($items)) {
             throw new UnexpectedMongodbResponseFormatException(
-                message: 'BSON batch payload is not a list.'
+                message: 'BSON batch payload is not a list.',
             );
         }
 

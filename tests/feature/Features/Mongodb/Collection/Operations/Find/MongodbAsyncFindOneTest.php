@@ -40,11 +40,11 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
         $result = $this->sconcurCollection->findOne(
             filter: [
                 $this->fieldName => $this->sconcurObjectId,
-            ]
+            ],
         );
 
         self::assertTrue(
-            is_null($result)
+            is_null($result),
         );
     }
 
@@ -60,31 +60,31 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
                     $this->fieldName => $this->sconcurObjectId,
                     uniqid()         => uniqid(),
                 ],
-            ]
+            ],
         );
 
         $result = $this->sconcurCollection->findOne(
             filter: [
                 $this->fieldName => $this->sconcurObjectId,
-            ]
+            ],
         );
 
         self::assertFalse(
-            is_null($result)
+            is_null($result),
         );
 
         self::assertArrayHasKey(
             $this->fieldName,
-            $result
+            $result,
         );
 
         self::assertCount(
             3,
-            $result
+            $result,
         );
 
         self::assertTrue(
-            $result[$this->fieldName] instanceof ObjectId
+            $result[$this->fieldName] instanceof ObjectId,
         );
 
         self::assertEquals(
@@ -112,7 +112,7 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
                     $this->fieldName => $dateTime,
                     uniqid()         => uniqid(),
                 ],
-            ]
+            ],
         );
 
         $result = $this->sconcurCollection->findOne(
@@ -121,25 +121,25 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
             ],
             projection: [
                 $this->fieldName => 1,
-            ]
+            ],
         );
 
         self::assertFalse(
-            is_null($result)
+            is_null($result),
         );
 
         self::assertArrayHasKey(
             '_id',
-            $result
+            $result,
         );
 
         self::assertCount(
             2,
-            $result
+            $result,
         );
 
         self::assertTrue(
-            $result[$this->fieldName] instanceof UTCDateTime
+            $result[$this->fieldName] instanceof UTCDateTime,
         );
 
         self::assertEquals(
@@ -155,7 +155,7 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
         );
 
         self::assertFalse(
-            is_null($result)
+            is_null($result),
         );
     }
 
@@ -166,7 +166,7 @@ class MongodbAsyncFindOneTest extends BaseMongodbAsyncTestCase
         );
 
         self::assertFalse(
-            is_null($result)
+            is_null($result),
         );
     }
 

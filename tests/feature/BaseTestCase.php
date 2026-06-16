@@ -47,7 +47,7 @@ abstract class BaseTestCase extends TestCase
 
         self::assertEquals(
             0,
-            $this->extension->count()
+            $this->extension->count(),
         );
     }
 }

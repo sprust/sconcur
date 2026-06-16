@@ -58,8 +58,8 @@ class MongodbDocumentSerializerTest extends BaseTestCase
                     'float'      => $this->floatValue,
                     'bool'       => $this->boolValue,
                 ],
-                range(1, $this->documentsCount)
-            )
+                range(1, $this->documentsCount),
+            ),
         );
     }
 
@@ -76,7 +76,7 @@ class MongodbDocumentSerializerTest extends BaseTestCase
         self::assertNotNull($objectId);
 
         self::assertTrue(
-            $objectId instanceof ObjectId
+            $objectId instanceof ObjectId,
         );
 
         $date = $document['date'];
@@ -84,7 +84,7 @@ class MongodbDocumentSerializerTest extends BaseTestCase
         self::assertNotNull($date);
 
         self::assertTrue(
-            $date instanceof UTCDateTime
+            $date instanceof UTCDateTime,
         );
 
         $dateZeroMs = $document['dateZeroMs'];
@@ -92,32 +92,32 @@ class MongodbDocumentSerializerTest extends BaseTestCase
         self::assertNotNull($dateZeroMs);
 
         self::assertTrue(
-            $dateZeroMs instanceof UTCDateTime
+            $dateZeroMs instanceof UTCDateTime,
         );
 
         self::assertSame(
             $this->zeroMsDateString,
-            $dateZeroMs->toDateTime()->format('Y-m-d H:i:s')
+            $dateZeroMs->toDateTime()->format('Y-m-d H:i:s'),
         );
 
         self::assertSame(
             '000000',
-            $dateZeroMs->toDateTime()->format('u')
+            $dateZeroMs->toDateTime()->format('u'),
         );
 
         self::assertSame(
             $this->intValue,
-            $document['int']
+            $document['int'],
         );
 
         self::assertSame(
             $this->floatValue,
-            $document['float']
+            $document['float'],
         );
 
         self::assertSame(
             $this->boolValue,
-            $document['bool']
+            $document['bool'],
         );
     }
 
@@ -223,7 +223,7 @@ class MongodbDocumentSerializerTest extends BaseTestCase
         $documents = iterator_to_array(
             $this->sconcurCollection->find(
                 filter: ['_id' => 'batch-types'],
-            )
+            ),
         );
 
         self::assertCount(1, $documents);
@@ -261,14 +261,14 @@ class MongodbDocumentSerializerTest extends BaseTestCase
 
         self::assertCount(
             1,
-            $items
+            $items,
         );
 
         $item = $items[0];
 
         self::assertSame(
             $this->documentsCount,
-            $item['count']
+            $item['count'],
         );
     }
 }

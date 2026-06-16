@@ -97,7 +97,7 @@ abstract class BaseMongodbRangeTestCase extends BaseTestCase
 
         self::assertEquals(
             $valuesCount - 2,
-            iterator_count($aggregation)
+            iterator_count($aggregation),
         );
 
         $aggregation = $this->sconcurCollection->aggregate(
@@ -116,7 +116,7 @@ abstract class BaseMongodbRangeTestCase extends BaseTestCase
 
         self::assertEquals(
             $valuesCount,
-            iterator_count($aggregation)
+            iterator_count($aggregation),
         );
     }
 }

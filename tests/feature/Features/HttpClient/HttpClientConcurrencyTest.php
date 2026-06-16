@@ -102,7 +102,7 @@ class HttpClientConcurrencyTest extends BaseAsyncTestCase
         // the wrapping exceptions.
         self::assertTrue(
             str_contains($exception->getMessage(), 'net:'),
-            'Expected a network-marked message, got: ' . $exception->getMessage()
+            'Expected a network-marked message, got: ' . $exception->getMessage(),
         );
     }
 
@@ -116,13 +116,13 @@ class HttpClientConcurrencyTest extends BaseAsyncTestCase
         self::assertGreaterThanOrEqual(
             self::REQUEST_SLEEP_MS * 2 * 0.8,
             $totalTimeMs,
-            "Total time $totalTimeMs ms is too low to have actually waited."
+            "Total time $totalTimeMs ms is too low to have actually waited.",
         );
 
         self::assertLessThan(
             self::REQUEST_SLEEP_MS * 4,
             $totalTimeMs,
-            "Total time $totalTimeMs ms suggests sequential, not concurrent, requests."
+            "Total time $totalTimeMs ms suggests sequential, not concurrent, requests.",
         );
     }
 

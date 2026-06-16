@@ -196,7 +196,9 @@ return $config
         'switch_case_semicolon_to_colon' => true,
         'switch_case_space'              => true,
         'ternary_operator_spaces'        => true,
-        'trailing_comma_in_multiline'    => ['elements' => ['arrays']], // ij_php_comma_after_last_array_element = true
+        'trailing_comma_in_multiline'    => [
+            'elements' => ['arrays', 'arguments', 'parameters'],
+        ], // обязательная trailing comma в вертикальных массивах, вызовах и сигнатурах
         'trim_array_spaces'              => true,
         'unary_operator_spaces'          => true, // ij_php_spaces_around_unary_operator = false
         'modifier_keywords'              => [

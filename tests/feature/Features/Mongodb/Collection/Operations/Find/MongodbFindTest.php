@@ -36,15 +36,15 @@ class MongodbFindTest extends BaseTestCase
             $this->sconcurCollection->insertMany(
                 array_map(
                     fn(int $index) => [$this->fieldName => $index],
-                    range(1, 10)
-                )
+                    range(1, 10),
+                ),
             );
 
             $results = iterator_to_array(
                 $this->sconcurCollection->find(
                     filter: [$this->fieldName => ['$exists' => true]],
                     batchSize: 3,
-                )
+                ),
             );
 
             self::assertCount(10, $results);
@@ -61,8 +61,8 @@ class MongodbFindTest extends BaseTestCase
             $this->sconcurCollection->insertMany(
                 array_map(
                     fn(int $index) => [$this->fieldName => $index],
-                    range(1, 10)
-                )
+                    range(1, 10),
+                ),
             );
 
             $results = iterator_to_array(
@@ -70,7 +70,7 @@ class MongodbFindTest extends BaseTestCase
                     filter: [$this->fieldName => ['$exists' => true]],
                     limit: 5,
                     batchSize: 2,
-                )
+                ),
             );
 
             self::assertCount(5, $results);
@@ -87,15 +87,15 @@ class MongodbFindTest extends BaseTestCase
             $this->sconcurCollection->insertMany(
                 array_map(
                     fn(int $index) => [$this->fieldName => $index],
-                    range(1, 5)
-                )
+                    range(1, 5),
+                ),
             );
 
             $results = iterator_to_array(
                 $this->sconcurCollection->find(
                     filter: [$this->fieldName => ['$exists' => true]],
                     sort: [$this->fieldName => -1],
-                )
+                ),
             );
 
             self::assertCount(5, $results);
