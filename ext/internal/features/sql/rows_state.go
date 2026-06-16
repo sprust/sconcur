@@ -19,6 +19,7 @@ type rowsState struct {
 	mutex      sync.Mutex
 	message    *dto.Message
 	ctx        context.Context
+	cancel     context.CancelFunc
 	open       func(ctx context.Context) (*sql.Rows, error)
 	release    func()
 	batchSize  int
@@ -157,7 +158,16 @@ func (s *rowsState) Close() {
 	release := s.release
 	s.release = nil
 
+	cancel := s.cancel
+	s.cancel = nil
+
 	s.mutex.Unlock()
+
+	// Free the per-statement deadline timer (if any) deterministically here, rather
+	// than via a separate watcher goroutine.
+	if cancel != nil {
+		cancel()
+	}
 
 	// Release the pooled connection owner outside the lock; runs once per state.
 	// A transaction-bound query has no release (the begin task holds the pool).

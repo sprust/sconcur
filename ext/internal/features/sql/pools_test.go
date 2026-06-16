@@ -9,7 +9,7 @@ import (
 // not start the sweeper goroutine or interfere with each other.
 func newTestPools() *pools {
 	return &pools{
-		pools: make(map[string]*pool),
+		pools: make(map[poolKey]*pool),
 	}
 }
 
@@ -79,7 +79,9 @@ func TestCollectExpiredEvictsIdleUnreferenced(t *testing.T) {
 		t.Fatalf("expired count = %d, want 1 (held pool must survive)", len(expired))
 	}
 
-	if _, stillThere := registry.pools["mysql|user:pass@tcp(127.0.0.1:3306)/idle|mo:0,mi:0,cl:0"]; stillThere {
+	idleKey := poolKey{driverName: "mysql", dsn: "user:pass@tcp(127.0.0.1:3306)/idle"}
+
+	if _, stillThere := registry.pools[idleKey]; stillThere {
 		t.Fatal("idle pool should have been removed from the registry")
 	}
 

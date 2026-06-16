@@ -3,7 +3,6 @@ package sql_feature
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"sync"
 	"time"
 )
@@ -26,15 +25,25 @@ type pool struct {
 	lastUsedAt time.Time
 }
 
+// poolKey identifies a pool by driver, DSN and sizing. A comparable struct key
+// avoids building a string key (fmt.Sprintf) on every acquire.
+type poolKey struct {
+	driverName        string
+	dsn               string
+	maxOpenConns      int
+	maxIdleConns      int
+	connMaxLifetimeMs int
+}
+
 type pools struct {
 	mutex sync.Mutex
-	pools map[string]*pool
+	pools map[poolKey]*pool
 }
 
 func getPools() *pools {
 	poolsOnce.Do(func() {
 		poolsInstance = &pools{
-			pools: make(map[string]*pool),
+			pools: make(map[poolKey]*pool),
 		}
 
 		poolsInstance.startSweeper()
@@ -56,14 +65,13 @@ func (p *pools) acquire(
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
-	key := fmt.Sprintf(
-		"%s|%s|mo:%d,mi:%d,cl:%d",
-		driverName,
-		dsn,
-		maxOpenConns,
-		maxIdleConns,
-		connMaxLifetimeMs,
-	)
+	key := poolKey{
+		driverName:        driverName,
+		dsn:               dsn,
+		maxOpenConns:      maxOpenConns,
+		maxIdleConns:      maxIdleConns,
+		connMaxLifetimeMs: connMaxLifetimeMs,
+	}
 
 	acquired, exists := p.pools[key]
 
@@ -152,7 +160,7 @@ func (p *pools) closeAll() {
 	p.mutex.Lock()
 
 	current := p.pools
-	p.pools = make(map[string]*pool)
+	p.pools = make(map[poolKey]*pool)
 
 	p.mutex.Unlock()
 

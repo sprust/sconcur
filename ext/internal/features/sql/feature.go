@@ -84,9 +84,15 @@ func (f *SqlFeature) handleQuery(task *tasks.Task, envelope *payloads.Envelope) 
 
 	bindings := normalizeBindings(params.Bindings)
 
-	// The state outlives Handle (it is pulled via next), so the deadline is tied to
-	// the context lifetime rather than a defer cancel (see deadlineContext).
-	ctx := deadlineContext(task.GetContext(), envelope.TimeoutMs)
+	// The cursor state outlives Handle (it is pulled via next), so the deadline's
+	// cancel cannot be deferred — it is carried into the state and called on Close.
+	ctx := task.GetContext()
+
+	var cancel context.CancelFunc
+
+	if envelope.TimeoutMs > 0 {
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(envelope.TimeoutMs)*time.Millisecond)
+	}
 
 	var open func(context.Context) (*sql.Rows, error)
 	var release func()
@@ -95,6 +101,10 @@ func (f *SqlFeature) handleQuery(task *tasks.Task, envelope *payloads.Envelope) 
 		transaction, errText := f.loadTransaction(params.TransactionId)
 
 		if errText != "" {
+			if cancel != nil {
+				cancel()
+			}
+
 			task.AddResult(dto.NewErrorResult(message, errText))
 
 			return
@@ -113,6 +123,10 @@ func (f *SqlFeature) handleQuery(task *tasks.Task, envelope *payloads.Envelope) 
 		)
 
 		if err != nil {
+			if cancel != nil {
+				cancel()
+			}
+
 			task.AddResult(dto.NewErrorResult(message, f.errFactory.ByErr("connect", err)))
 
 			return
@@ -130,6 +144,7 @@ func (f *SqlFeature) handleQuery(task *tasks.Task, envelope *payloads.Envelope) 
 	state := &rowsState{
 		message:    message,
 		ctx:        ctx,
+		cancel:     cancel,
 		open:       open,
 		release:    release,
 		batchSize:  params.BatchSize,
@@ -230,19 +245,4 @@ func (f *SqlFeature) execResult(message *dto.Message, result sql.Result, startTi
 	}
 
 	return dto.NewSuccessResult(message, string(encoded), helpers.CalcExecutionMs(startTime))
-}
-
-// deadlineContext bounds a streaming operation by the per-statement timeout. The
-// cancel is tied to context cancellation (it fires on deadline, flow stop or parent
-// cancel) instead of being deferred, because the cursor state outlives Handle.
-func deadlineContext(parent context.Context, timeoutMs int) context.Context {
-	if timeoutMs <= 0 {
-		return parent
-	}
-
-	ctx, cancel := context.WithTimeout(parent, time.Duration(timeoutMs)*time.Millisecond)
-
-	context.AfterFunc(ctx, cancel)
-
-	return ctx
 }
