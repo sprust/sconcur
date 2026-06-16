@@ -93,6 +93,7 @@ bench-all:
 	make bench-mongodb-updateMany
 	make bench-mongodb-command
 	make bench-http-client
+	make bench-http-client-google
 	make bench-http-reuseport-io
 	make bench-http-reuseport-cpu
 
@@ -134,6 +135,9 @@ bench-mongodb-updateMany:
 
 bench-http-client:
 	$(PHP_EXT) tests/benchmarks/http-client.php ${c}
+
+bench-http-client-google:
+	$(PHP_EXT) tests/benchmarks/http-client-google.php ${c}
 
 bench-http-reuseport-io:
 	$(PHP_CLI) php tests/benchmarks/http-reuseport-io.php
