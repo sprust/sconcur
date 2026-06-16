@@ -13,15 +13,75 @@ typedef struct {
 */
 import "C"
 import (
+	"encoding/binary"
 	"errors"
 	"sconcur/internal/dto"
 	httpserver_feature "sconcur/internal/features/httpserver"
 	handler2 "sconcur/internal/handler"
 	"sconcur/internal/types"
 	"unsafe"
-
-	"github.com/vmihailenco/msgpack/v5"
 )
+
+// Result frame layout (Go -> PHP). The envelope is a fixed binary header, not
+// MessagePack, so the result is never double-encoded: only the feature payload
+// stays MessagePack and is decoded once on the PHP side. Mirrors how push passes
+// its envelope as separate arguments. Must match Extension::parseWaitResponse.
+//
+//	[0]      flags    uint8  (bit0 isError, bit1 hasNext)
+//	[1]      method   uint8
+//	[2:6]    execMs   uint32 (big-endian)
+//	[6:8]    flowKey  length uint16 (big-endian)
+//	[8:10]   taskKey  length uint16 (big-endian)
+//	[10:]    flowKey bytes, then taskKey bytes, then the raw payload (the rest)
+const (
+	frameHeaderSize  = 10
+	frameFlagError   = 1 << 0
+	frameFlagHasNext = 1 << 1
+)
+
+// buildResultFrame serializes a result envelope as the fixed binary header followed
+// by the raw (already-encoded) payload bytes.
+func buildResultFrame(result *dto.Result) []byte {
+	flowKey := []byte(result.FlowKey)
+	taskKey := []byte(result.TaskKey)
+	payload := []byte(result.Payload)
+
+	frame := make([]byte, frameHeaderSize+len(flowKey)+len(taskKey)+len(payload))
+
+	var flags byte
+
+	if result.IsError {
+		flags |= frameFlagError
+	}
+
+	if result.HasNext {
+		flags |= frameFlagHasNext
+	}
+
+	frame[0] = flags
+	frame[1] = byte(result.Method)
+	binary.BigEndian.PutUint32(frame[2:6], uint32(result.ExecutionMs))
+	binary.BigEndian.PutUint16(frame[6:8], uint16(len(flowKey)))
+	binary.BigEndian.PutUint16(frame[8:10], uint16(len(taskKey)))
+
+	offset := frameHeaderSize
+	offset += copy(frame[offset:], flowKey)
+	offset += copy(frame[offset:], taskKey)
+	copy(frame[offset:], payload)
+
+	return frame
+}
+
+// frameResult builds the buffer_result_t carrying a framed result.
+func frameResult(result *dto.Result) C.buffer_result_t {
+	frame := buildResultFrame(result)
+
+	return C.buffer_result_t{
+		data: C.CBytes(frame),
+		len:  C.int(len(frame)),
+		err:  nil,
+	}
+}
 
 var handler *handler2.Handler
 
@@ -90,23 +150,7 @@ func wait(fk *C.char, fkLen C.int) C.buffer_result_t {
 		}
 	}
 
-	serialized, err := msgpack.Marshal(res)
-
-	if err != nil {
-		return C.buffer_result_t{
-			data: nil,
-			len:  0,
-			err:  C.CString("error: marshal msgpack: " + err.Error()),
-		}
-	}
-
-	data := C.CBytes(serialized)
-
-	return C.buffer_result_t{
-		data: data,
-		len:  C.int(len(serialized)),
-		err:  nil,
-	}
+	return frameResult(res)
 }
 
 //export waitAny
@@ -121,23 +165,7 @@ func waitAny() C.buffer_result_t {
 		}
 	}
 
-	serialized, err := msgpack.Marshal(res)
-
-	if err != nil {
-		return C.buffer_result_t{
-			data: nil,
-			len:  0,
-			err:  C.CString("error: marshal msgpack: " + err.Error()),
-		}
-	}
-
-	data := C.CBytes(serialized)
-
-	return C.buffer_result_t{
-		data: data,
-		len:  C.int(len(serialized)),
-		err:  nil,
-	}
+	return frameResult(res)
 }
 
 //export waitAnyTimeout
@@ -158,23 +186,7 @@ func waitAnyTimeout(ms C.int) C.buffer_result_t {
 		}
 	}
 
-	serialized, err := msgpack.Marshal(res)
-
-	if err != nil {
-		return C.buffer_result_t{
-			data: nil,
-			len:  0,
-			err:  C.CString("error: marshal msgpack: " + err.Error()),
-		}
-	}
-
-	data := C.CBytes(serialized)
-
-	return C.buffer_result_t{
-		data: data,
-		len:  C.int(len(serialized)),
-		err:  nil,
-	}
+	return frameResult(res)
 }
 
 //export tasksCount
