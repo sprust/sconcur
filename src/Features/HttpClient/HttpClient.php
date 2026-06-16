@@ -19,6 +19,7 @@ use SConcur\Features\HttpClient\Payloads\RequestPayload;
 use SConcur\Features\HttpClient\Payloads\RequestPayloadParameters;
 use SConcur\Features\HttpClient\Payloads\UploadChunkPayload;
 use SConcur\Features\HttpClient\Payloads\UploadEndPayload;
+use SConcur\State;
 use SConcur\Transport\MessagePackTransport;
 use Throwable;
 
@@ -89,31 +90,43 @@ readonly class HttpClient implements ClientInterface
             ),
         );
 
-        $body = $request->getBody();
+        try {
+            $body = $request->getBody();
 
-        if ($body->isSeekable()) {
-            $body->rewind();
-        }
-
-        while (!$body->eof()) {
-            $chunk = $body->read($this->options->chunkSize);
-
-            if ($chunk === '') {
-                break;
+            if ($body->isSeekable()) {
+                $body->rewind();
             }
 
-            FeatureExecutor::exec(
-                payload: new UploadChunkPayload(
-                    requestId: $requestId,
-                    body: $chunk,
-                ),
-            );
+            while (!$body->eof()) {
+                $chunk = $body->read($this->options->chunkSize);
+
+                // Stop on an empty read, mirroring Guzzle's own stream-copy idiom
+                // (Utils::copyToStream): the eof() guard above ends the loop normally.
+                if ($chunk === '') {
+                    break;
+                }
+
+                FeatureExecutor::exec(
+                    payload: new UploadChunkPayload(
+                        requestId: $requestId,
+                        body: $chunk,
+                    ),
+                );
+            }
+
+            FeatureExecutor::exec(payload: new UploadEndPayload($requestId));
+
+            // The response status+headers are only known once the body is fully sent.
+            return FeatureExecutor::next(taskKey: $open->key);
+        } catch (Throwable $exception) {
+            // A failure mid-upload (e.g. the connection dropped) skips the final
+            // next() that would have released the open request's flow; release it
+            // here so a streamed upload error leaves no dangling task (sync path;
+            // no-op in async, where the coroutine's flow is reaped on unwind).
+            State::releaseSyncTaskFlow($open->key);
+
+            throw $exception;
         }
-
-        FeatureExecutor::exec(payload: new UploadEndPayload($requestId));
-
-        // The response status+headers are only known once the body is fully sent.
-        return FeatureExecutor::next(taskKey: $open->key);
     }
 
     protected function buildResponse(TaskResultDto $result): ResponseInterface
@@ -133,6 +146,7 @@ readonly class HttpClient implements ClientInterface
             firstChunk: (string) ($meta['b'] ?? ''),
             bodyKey: $result->hasNext ? $result->key : '',
             size: $contentLength >= 0 ? $contentLength : null,
+            throwOnToStringError: $this->options->throwOnToStringError,
         );
 
         return $response->withBody($body);

@@ -65,9 +65,15 @@ func (f *HttpClientFeature) startStreamedRequest(
 		close(session.resultReady)
 	}()
 
-	pendingUploads.Store(payload.RequestId, session)
+	if _, loaded := pendingUploads.LoadOrStore(payload.RequestId, session); loaded {
+		_ = pipeWriter.CloseWithError(context.Canceled)
 
-	state := newDeferredResponseState(message, session, chunkSize, payload.MaxResponseBody)
+		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("duplicate upload "+payload.RequestId)))
+
+		return
+	}
+
+	state := newDeferredResponseState(message, session, payload.RequestId, chunkSize, payload.MaxResponseBody)
 
 	// Register without auto-reading the first batch: the response is pulled later,
 	// after the body has been streamed in (client.Do is still in flight).

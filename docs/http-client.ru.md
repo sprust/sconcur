@@ -144,6 +144,10 @@ $request = $factory->createRequest('POST', $url)->withBody($largeStream);
 $response = $client->sendRequest($request); // тело уходит чанками
 ```
 
+> При `streamRequestBody: true` редиректы не отслеживаются (тело — `io.Pipe` без
+> `GetBody`, его нельзя переиграть на 3xx): ответ-редирект возвращается как есть.
+> Для запросов с редиректами используйте буферизованный режим.
+
 ### С тюнингом
 
 ```php
@@ -177,6 +181,7 @@ $client = new HttpClient($factory, new HttpClientOptions(
 | `idleConnTimeoutMs` | `90000` | Сколько держать idle keep-alive соединение перед закрытием. |
 | `tlsHandshakeTimeoutMs` | `10000` | Предел TLS-рукопожатия. |
 | `streamRequestBody` | `false` | Стримить тело запроса чанками (вместо буферизации целиком); write-backpressure для больших загрузок. |
+| `throwOnToStringError` | `true` | Может ли `ResponseBodyStream::__toString()` бросить при ошибке чтения. PSR-7 запрещает бросать из `__toString`; при `false` ошибка превращается в `E_USER_WARNING` и пустую строку. По умолчанию `true` — как у потоков Guzzle на PHP ≥ 7.4. |
 
 `requestTimeoutMs` — обязательное предельное время выполнения всей операции,
 применяется на Go-стороне как `context.WithTimeout(task.GetContext(), …)`.

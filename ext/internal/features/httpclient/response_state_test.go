@@ -1,6 +1,7 @@
 package httpclient_feature
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -192,4 +193,30 @@ func TestResponseStateCloseIsIdempotent(t *testing.T) {
 
 	state.Close()
 	state.Close()
+}
+
+// TestDeferredResponseStateCloseWithoutRead checks the deferred (streamed-upload)
+// branch of Close: a request whose response is never consumed still forgets its
+// pending upload session and unblocks the body pipe, so nothing leaks.
+func TestDeferredResponseStateCloseWithoutRead(t *testing.T) {
+	pipeReader, pipeWriter := io.Pipe()
+	defer func() { _ = pipeReader.Close() }()
+
+	resultReady := make(chan struct{})
+	session := &uploadSession{writer: pipeWriter, resultReady: resultReady}
+	session.result = &doResult{resp: &http.Response{Body: io.NopCloser(strings.NewReader("x"))}}
+
+	close(resultReady)
+
+	const requestId = "rid-deferred-close"
+
+	pendingUploads.Store(requestId, session)
+
+	state := newDeferredResponseState(&dto.Message{}, session, requestId, 256, 0)
+
+	state.Close()
+
+	if _, ok := pendingUploads.Load(requestId); ok {
+		t.Fatal("Close must forget the pending upload session")
+	}
 }

@@ -1,6 +1,7 @@
 package httpclient_feature
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -44,6 +45,8 @@ type responseState struct {
 	// session is set in deferred (streamed-upload) mode: client.Do already runs in
 	// the background, so the first Next waits on its result instead of issuing it.
 	session *uploadSession
+	// requestId keys the upload session in pendingUploads, so Close can forget it.
+	requestId string
 }
 
 func newResponseState(
@@ -69,12 +72,14 @@ func newResponseState(
 func newDeferredResponseState(
 	message *dto.Message,
 	session *uploadSession,
+	requestId string,
 	chunkSize int,
 	maxResponseBody int64,
 ) *responseState {
 	return &responseState{
 		message:         message,
 		session:         session,
+		requestId:       requestId,
 		chunkSize:       chunkSize,
 		maxResponseBody: maxResponseBody,
 		startTime:       time.Now(),
@@ -176,28 +181,34 @@ func (s *responseState) Close() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	// Always release the streamed-upload session (idempotent): forget its pending
+	// entry and unblock client.Do if it is still reading the request body, so the
+	// session/goroutine/connection never outlive the state — even when the response
+	// completed before UploadEnd or client.Do failed. (No-op for a buffered request,
+	// where session is nil.)
+	if s.session != nil {
+		session := s.session
+		s.session = nil
+
+		pendingUploads.Delete(s.requestId)
+		_ = session.writer.CloseWithError(context.Canceled)
+
+		// Response never consumed: close its body once client.Do unwinds.
+		if s.resp == nil {
+			go func() {
+				<-session.resultReady
+
+				if session.result.resp != nil {
+					_ = session.result.resp.Body.Close()
+				}
+			}()
+		}
+	}
+
 	if s.resp != nil {
 		_ = s.resp.Body.Close()
 		s.resp = nil
 		s.bodyReader = nil
-
-		return
-	}
-
-	// Deferred upload whose response was never consumed: close the response body
-	// once client.Do finishes, so it does not leak. client.Do is bounded by the
-	// request context, which is already cancelled by the time Close runs.
-	if s.session != nil && !s.requested {
-		session := s.session
-		s.session = nil
-
-		go func() {
-			<-session.resultReady
-
-			if session.result.resp != nil {
-				_ = session.result.resp.Body.Close()
-			}
-		}()
 	}
 }
 

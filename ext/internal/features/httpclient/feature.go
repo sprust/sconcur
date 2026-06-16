@@ -132,6 +132,11 @@ func (f *HttpClientFeature) handleRequest(task *tasks.Task, raw msgpack.RawMessa
 		request.ContentLength = -1
 	}
 
+	// A streamed body is an io.Pipe with no GetBody, so net/http cannot replay it on
+	// a redirect ("cannot retry request with body"). Disable redirect following for
+	// streamed uploads so a 3xx is returned as-is instead of failing opaquely.
+	followRedirects := payload.FollowRedirects && !payload.StreamBody
+
 	client := buildClient(
 		transportKey{
 			connectTimeoutMs:        payload.ConnectTimeoutMs,
@@ -142,7 +147,7 @@ func (f *HttpClientFeature) handleRequest(task *tasks.Task, raw msgpack.RawMessa
 			idleConnTimeoutMs:       payload.IdleConnTimeoutMs,
 			tlsHandshakeTimeoutMs:   payload.TLSHandshakeTimeoutMs,
 		},
-		payload.FollowRedirects,
+		followRedirects,
 		payload.MaxRedirects,
 	)
 

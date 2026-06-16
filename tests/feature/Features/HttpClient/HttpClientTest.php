@@ -6,6 +6,8 @@ namespace SConcur\Tests\Feature\Features\HttpClient;
 
 use Psr\Http\Client\ClientExceptionInterface;
 use Psr\Http\Client\NetworkExceptionInterface;
+use Psr\Http\Client\RequestExceptionInterface;
+use ReflectionMethod;
 use RuntimeException;
 use SConcur\Features\HttpClient\HttpClientOptions;
 use SConcur\WaitGroup;
@@ -476,6 +478,34 @@ class HttpClientTest extends BaseHttpClientTestCase
         $client->sendRequest($request);
     }
 
+    public function testStreamedUploadErrorReleasesOpenFlow(): void
+    {
+        // A long requestTimeoutMs means the Go-side deadline cannot be what cleans
+        // up within the tearDown window: only sendStreaming's catch releasing the
+        // open request's flow can. So this is a strict guard for that leak fix.
+        $client = $this->client(
+            options: new HttpClientOptions(
+                requestTimeoutMs: 30_000,
+                connectTimeoutMs: 1_000,
+                streamRequestBody: true,
+            ),
+        );
+        $request = $this->factory->createRequest('POST', 'http://127.0.0.1:1')
+            ->withBody($this->factory->createStream(str_repeat('x', 100_000)));
+
+        try {
+            $client->sendRequest($request);
+
+            self::fail('Expected a NetworkExceptionInterface.');
+        } catch (NetworkExceptionInterface $exception) {
+            self::assertSame($request, $exception->getRequest());
+        }
+
+        // The open request's flow must already be gone — not waiting on the 30s
+        // request deadline (assertNoTasksCount only waits ~2s).
+        $this->assertNoTasksCount();
+    }
+
     public function testStreamedRequestBodyInsideCoroutine(): void
     {
         $client = $this->client(
@@ -508,6 +538,147 @@ class HttpClientTest extends BaseHttpClientTestCase
 
         self::assertSame(hash('sha256', $body), $hash);
         self::assertTrue($slept);
+    }
+
+    public function testRequestErrorMarkerMapsToRequestException(): void
+    {
+        // A "req:"-marked extension error (a request that could not be built/sent)
+        // must surface as a PSR-18 RequestException carrying the original request.
+        // The Go side produces this marker for invalid method/URL; here the mapping
+        // branch is exercised directly (the network branch is covered end-to-end).
+        $client  = $this->client();
+        $request = $this->request(
+            method: 'GET',
+            path: '/',
+        );
+
+        $toClientException = new ReflectionMethod($client, 'toClientException');
+
+        $exception = $toClientException->invoke(
+            $client,
+            new RuntimeException('req: invalid request'),
+            $request,
+        );
+
+        self::assertInstanceOf(RequestExceptionInterface::class, $exception);
+        self::assertSame($request, $exception->getRequest());
+    }
+
+    public function testResponseHeadersAreCaseInsensitive(): void
+    {
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/cookies',
+            ),
+        );
+
+        // PSR-7 header access is case-insensitive regardless of the casing Go sent.
+        self::assertSame(['a=1', 'b=2'], $response->getHeader('set-cookie'));
+        self::assertSame('a=1, b=2', $response->getHeaderLine('SET-COOKIE'));
+        self::assertTrue($response->hasHeader('Set-Cookie'));
+    }
+
+    public function testResponseHeaderTimeoutThrowsNetworkException(): void
+    {
+        // The server sleeps before sending the status line, so a small
+        // responseHeaderTimeoutMs trips before the (much larger) requestTimeoutMs.
+        $client = $this->client(
+            options: new HttpClientOptions(
+                responseHeaderTimeoutMs: 200,
+            ),
+        );
+
+        $this->expectException(NetworkExceptionInterface::class);
+
+        $client->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/msleep/3000',
+            ),
+        );
+    }
+
+    public function testAbandonedBodyInsideCoroutineLeavesNoDanglingTasks(): void
+    {
+        $client  = $this->client();
+        $factory = $this->factory;
+        $baseUrl = $this->baseUrl();
+
+        $waitGroup = WaitGroup::create();
+
+        $waitGroup->add(function () use ($client, $factory, $baseUrl): void {
+            $response = $client->sendRequest($factory->createRequest('GET', $baseUrl . '/big/200000'));
+
+            // Read only the first chunk and abandon the rest: when the coroutine
+            // ends its flow is stopped, so the Go side cancels the streamed body.
+            self::assertNotSame('', $response->getBody()->read(1024));
+        });
+
+        $waitGroup->waitAll();
+
+        $this->assertNoTasksCount();
+    }
+
+    public function testToStringRethrowsReadErrorByDefault(): void
+    {
+        // maxResponseBody sits between the inline first chunk and the whole body, so
+        // the failure happens mid-stream (while __toString drains), not upfront.
+        $client = $this->client(
+            options: new HttpClientOptions(
+                maxResponseBody: 100_000,
+            ),
+        );
+
+        $response = $client->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/big/200000',
+            ),
+        );
+
+        $this->expectException(RuntimeException::class);
+
+        (string) $response->getBody();
+    }
+
+    public function testToStringSwallowsReadErrorWhenConfigured(): void
+    {
+        $client = $this->client(
+            options: new HttpClientOptions(
+                maxResponseBody: 100_000,
+                throwOnToStringError: false,
+            ),
+        );
+
+        $response = $client->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/big/200000',
+            ),
+        );
+
+        $warning = null;
+
+        set_error_handler(
+            static function (int $severity, string $message) use (&$warning): bool {
+                $warning = $message;
+
+                return true;
+            },
+            E_USER_WARNING,
+        );
+
+        try {
+            $body = (string) $response->getBody();
+        } finally {
+            restore_error_handler();
+        }
+
+        // With the toggle off, a mid-stream read error becomes a warning + '' instead
+        // of bubbling out of the string cast (PSR-7: __toString must not throw).
+        self::assertSame('', $body);
+        self::assertNotNull($warning);
     }
 
     private function bigBody(int $size): string

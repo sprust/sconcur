@@ -31,6 +31,10 @@ readonly class HttpClientOptions
      * @param bool $streamRequestBody       stream the request body to Go in chunks (chunkSize granularity) instead of
      *                                      buffering it whole; gives write-backpressure for large uploads. Off by
      *                                      default (v1 buffered behaviour).
+     * @param bool $throwOnToStringError    whether ResponseBodyStream::__toString may throw on a read error. PSR-7 says
+     *                                      __toString must not throw, so when false a read failure is turned into an
+     *                                      E_USER_WARNING and an empty string. Defaults to true, mirroring Guzzle's
+     *                                      stream behaviour on PHP >= 7.4 (re-throw).
      */
     public function __construct(
         public int $requestTimeoutMs = 30_000,
@@ -46,6 +50,7 @@ readonly class HttpClientOptions
         public int $idleConnTimeoutMs = 90_000,
         public int $tlsHandshakeTimeoutMs = 10_000,
         public bool $streamRequestBody = false,
+        public bool $throwOnToStringError = true,
     ) {
     }
 }

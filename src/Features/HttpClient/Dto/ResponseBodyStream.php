@@ -9,6 +9,7 @@ use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\HttpClient\HttpClientException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\State;
+use Throwable;
 
 /**
  * The response body as a PSR-7 stream. It is never buffered whole in the
@@ -38,16 +39,22 @@ class ResponseBodyStream implements StreamInterface
     /** True after close()/detach(): the stream is spent and reads return ''. */
     protected bool $detached = false;
 
+    /** Memoized result of getContents() so repeat calls (and __toString) are stable. */
+    protected ?string $cachedContents = null;
+
     /**
-     * @param string   $firstChunk the inline first chunk of the body
-     * @param string   $bodyKey    streaming key for the remainder, or '' if the whole
-     *                             body is already in $firstChunk
-     * @param int|null $size       the response Content-Length, or null when unknown
+     * @param string   $firstChunk           the inline first chunk of the body
+     * @param string   $bodyKey              streaming key for the remainder, or '' if the
+     *                                       whole body is already in $firstChunk
+     * @param int|null $size                 the response Content-Length, or null when unknown
+     * @param bool     $throwOnToStringError whether __toString re-throws a read error (PSR-7
+     *                                       says it must not; false turns it into a warning)
      */
     public function __construct(
         protected readonly string $firstChunk,
         protected readonly string $bodyKey,
         protected readonly ?int $size = null,
+        protected readonly bool $throwOnToStringError = true,
     ) {
         $this->streamFinished = $bodyKey === '';
     }
@@ -148,25 +155,31 @@ class ResponseBodyStream implements StreamInterface
 
     public function getContents(): string
     {
+        if ($this->cachedContents !== null) {
+            return $this->cachedContents;
+        }
+
         $contents = '';
 
         while (($chunk = $this->read(self::DRAIN_CHUNK_SIZE)) !== '') {
             $contents .= $chunk;
         }
 
-        return $contents;
+        return $this->cachedContents = $contents;
     }
 
     /**
-     * @return ($key is null ? array<string, mixed> : null)
+     * @return ($key is null ? array<string, mixed> : mixed)
      */
     public function getMetadata(?string $key = null)
     {
+        $metadata = ['seekable' => false];
+
         if ($key === null) {
-            return [];
+            return $metadata;
         }
 
-        return null;
+        return $metadata[$key] ?? null;
     }
 
     /**
@@ -215,7 +228,20 @@ class ResponseBodyStream implements StreamInterface
 
     public function __toString(): string
     {
-        return $this->getContents();
+        try {
+            return $this->getContents();
+        } catch (Throwable $exception) {
+            if ($this->throwOnToStringError) {
+                throw $exception;
+            }
+
+            trigger_error(
+                sprintf('%s::__toString failed: %s', self::class, $exception->getMessage()),
+                E_USER_WARNING,
+            );
+
+            return '';
+        }
     }
 
     public function __destruct()
