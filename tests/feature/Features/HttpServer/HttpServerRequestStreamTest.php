@@ -12,7 +12,11 @@ class HttpServerRequestStreamTest extends BaseHttpServerTestCase
         // chunks, under the 200 KiB limit.
         $body = random_bytes(150000);
 
-        [$status, $hash] = $this->request('POST', '/upload', $body);
+        [$status, $hash] = $this->request(
+            method: 'POST',
+            path: '/upload',
+            body: $body,
+        );
 
         self::assertSame(200, $status);
         self::assertSame(hash('sha256', $body), $hash, 'every streamed byte must arrive in order');
@@ -23,14 +27,22 @@ class HttpServerRequestStreamTest extends BaseHttpServerTestCase
         // 250 KiB > the 200 KiB limit: the limit is hit mid-stream, mapped to 413.
         $body = random_bytes(250000);
 
-        [$status] = $this->request('POST', '/upload', $body);
+        [$status] = $this->request(
+            method: 'POST',
+            path: '/upload',
+            body: $body,
+        );
 
         self::assertSame(413, $status);
     }
 
     public function testSmallBodyReadViaContents(): void
     {
-        [$status, $echoed] = $this->request('POST', '/echo', 'tiny body');
+        [$status, $echoed] = $this->request(
+            method: 'POST',
+            path: '/echo',
+            body: 'tiny body',
+        );
 
         self::assertSame(200, $status);
         self::assertSame('tiny body', $echoed);

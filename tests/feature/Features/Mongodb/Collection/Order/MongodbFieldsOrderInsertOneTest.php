@@ -16,7 +16,7 @@ class MongodbFieldsOrderInsertOneTest extends BaseMongodbOrderTestCase
     protected function insertDocument(array $document): void
     {
         $this->sconcurCollection->insertOne(
-            document: $document
+            document: $document,
         );
     }
 }

@@ -12,7 +12,10 @@
     "require": {
         "php": "^8.4",
         "ext-msgpack": "*",
-        "ext-mongodb": "^1.21"
+        "ext-mongodb": "^1.21",
+        "psr/http-client": "^1.0",
+        "psr/http-message": "^2.0",
+        "psr/http-factory": "^1.0"
     },
     "require-dev": {
         "phpunit/phpunit": "^11.5",
@@ -20,7 +23,8 @@
         "symfony/var-dumper": "^7.3",
         "vlucas/phpdotenv": "^5.6",
         "mongodb/mongodb": "^1.21",
-        "friendsofphp/php-cs-fixer": "^3.91"
+        "friendsofphp/php-cs-fixer": "^3.91",
+        "nyholm/psr7": "^1.8"
     },
     "suggest": {
         "ext-pcntl": "Required for graceful shutdown of the HTTP server (SIGTERM/SIGINT handling); the server otherwise runs until the process is killed"

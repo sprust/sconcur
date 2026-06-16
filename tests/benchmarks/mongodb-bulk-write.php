@@ -29,14 +29,14 @@ $benchmarker->run(
     },
     syncCallback: static function () use ($sconcurCollection, $sconcurOperations) {
         return $sconcurCollection->bulkWrite(
-            operations: $sconcurOperations
+            operations: $sconcurOperations,
         );
     },
     asyncCallback: static function () use ($sconcurCollection, $sconcurOperations) {
         return $sconcurCollection->bulkWrite(
-            operations: $sconcurOperations
+            operations: $sconcurOperations,
         );
-    }
+    },
 );
 
 function makeOperations(mixed $objectId, mixed $dateTime): array

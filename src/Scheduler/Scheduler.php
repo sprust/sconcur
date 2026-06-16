@@ -84,7 +84,7 @@ class Scheduler
             flow: new CurrentFlow(
                 isAsync: true,
                 key: $flowKey,
-            )
+            ),
         );
 
         $coroutine = new Coroutine(
@@ -254,7 +254,10 @@ class Scheduler
 
                     // Re-arm for the next request before handling this one, so the
                     // listener keeps accepting while the handler runs.
-                    Extension::get()->next($serverFlowKey, $serverTaskKey);
+                    Extension::get()->next(
+                        flowKey: $serverFlowKey,
+                        taskKey: $serverTaskKey,
+                    );
 
                     $payload = $result->payload;
 
@@ -294,7 +297,7 @@ class Scheduler
 
         if ($fiberId === null) {
             throw new FiberStateException(
-                message: "No coroutine for result [flow: {$result->flowKey}, task: {$result->key}]."
+                message: "No coroutine for result [flow: {$result->flowKey}, task: {$result->key}].",
             );
         }
 
@@ -302,7 +305,7 @@ class Scheduler
 
         if ($coroutine === null) {
             throw new FiberStateException(
-                message: "Coroutine [id: {$fiberId}] not found for delivered result."
+                message: "Coroutine [id: {$fiberId}] not found for delivered result.",
             );
         }
 
@@ -359,7 +362,7 @@ class Scheduler
             new CallbackExecutionException(
                 message: $exception->getMessage(),
                 previous: $exception,
-            )
+            ),
         );
 
         // Wake whoever awaits this group so the failure surfaces at its iterate()

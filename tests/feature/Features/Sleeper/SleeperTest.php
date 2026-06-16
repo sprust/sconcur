@@ -70,12 +70,12 @@ class SleeperTest extends BaseAsyncTestCase
 
         self::assertTrue(
             $totalTimeMs >= 20,
-            "Total time is less than 20ms but $totalTimeMs"
+            "Total time is less than 20ms but $totalTimeMs",
         );
 
         self::assertTrue(
             $totalTimeMs < 40,
-            "Total time is not less than 40ms but $totalTimeMs"
+            "Total time is not less than 40ms but $totalTimeMs",
         );
     }
 }

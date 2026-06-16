@@ -42,7 +42,7 @@ func (s *bodyState) Next() *dto.Result {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	chunk, eof, err := readChunk(s.reader, s.chunkSize)
+	chunk, eof, err := helpers.ReadChunk(s.reader, s.chunkSize)
 
 	if err != nil {
 		return dto.NewErrorResult(s.message, readErrorMessage(err))
@@ -57,28 +57,6 @@ func (s *bodyState) Next() *dto.Result {
 
 func (s *bodyState) Close() {
 	// The body itself is closed by net/http when ServeHTTP returns; nothing to do.
-}
-
-// readChunk reads up to size bytes. eof is true once the body is exhausted (the
-// returned chunk may still hold the last bytes). A non-nil err is a read failure
-// (e.g. the body exceeded maxRequestBody).
-func readChunk(reader io.Reader, size int) (chunk []byte, eof bool, err error) {
-	buffer := make([]byte, size)
-
-	read, err := io.ReadFull(reader, buffer)
-
-	switch {
-	case errors.Is(err, io.EOF):
-		// Nothing left to read.
-		return nil, true, nil
-	case errors.Is(err, io.ErrUnexpectedEOF):
-		// Last, partially-filled chunk.
-		return buffer[:read], true, nil
-	case err != nil:
-		return nil, false, err
-	default:
-		return buffer[:read], false, nil
-	}
 }
 
 // readErrorMessage maps a body read error to the payload PHP receives: a stable

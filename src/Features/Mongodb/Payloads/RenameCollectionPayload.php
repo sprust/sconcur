@@ -34,7 +34,10 @@ readonly class RenameCollectionPayload extends BaseMongodbPayload
     protected function getParameters(): Parameters
     {
         return new Parameters(
-            payload: new RenameCollectionPayloadParameters($this->target, $this->dropTarget),
+            payload: new RenameCollectionPayloadParameters(
+                target: $this->target,
+                dropTarget: $this->dropTarget,
+            ),
             isObject: true,
         );
     }

@@ -9,6 +9,7 @@ here.
 - [README.md](../README.md) — project overview and usage
 - [docs/adding-a-feature.ru.md](../docs/adding-a-feature.ru.md) — guide for adding a new feature
 - [docs/http-server.ru.md](../docs/http-server.ru.md) — HTTP-server feature: usage, params, internals, limits
+- [docs/http-client.ru.md](../docs/http-client.ru.md) — HTTP-client feature (PSR-18): usage, options, streaming, internals
 - [.ai/plans/](plans/) — detailed designs for roadmap items
 
 ## Plans
@@ -91,6 +92,7 @@ non-fiber path.)
 - `Features/Sleeper/Sleeper` — async sleep
 - `Features/Mongodb/Serialization/DocumentSerializer` — handles MongoDB Extended JSON (`$oid`, `$date`, `$numberLong`, etc.)
 - `Features/HttpServer/` — long-lived HTTP server: `HttpServer::serve()`, `Scheduler::serve()`, DTOs (`Request`/`RequestBody`/`Response`/`StreamedResponse`/`ResponseStream`/`AccessLogEntry`). See [docs/http-server.ru.md](../docs/http-server.ru.md).
+- `Features/HttpClient/` — async PSR-18 HTTP client with response streaming: `HttpClient` (`ClientInterface`), `HttpClientOptions`, `Payloads/RequestPayload`, `Dto/ResponseBodyStream` (`StreamInterface`). See [docs/http-client.ru.md](../docs/http-client.ru.md).
 
 **Go extension** (`ext/`):
 - `main.go` — cgo exports (`push`, `wait`, `next`, `waitAny`, `waitAnyTimeout`, `tasksCount`, `stopFlow`, `httpStopAccepting`, `destroy`, `version`)
@@ -101,9 +103,12 @@ non-fiber path.)
 - `internal/features/sleeper/` — goroutine-based sleep
 - `internal/features/mongodb/` — MongoDB operations via Go driver, with aggregation cursor state management
 - `internal/features/httpserver/` — `net/http.Server` as an http.Handler streaming each request to PHP; response write-commands, request-body streaming, concurrency limit, timeouts, graceful shutdown, SO_REUSEPORT
+- `internal/features/httpclient/` — `net/http.Client` sending one request as a streaming state: first result carries response metadata + inline first chunk, subsequent results are raw body chunks; reusable transports (keep-alive pool), per-request deadline; optional streamed request body (upload) via an `io.Pipe` fed by `UploadChunk`/`UploadEnd` commands. Sub-operations are selected by a command in the payload envelope (`HttpClientCommand`), like MongoDB — not by separate `MethodEnum` values
+- `internal/helpers/` — small shared helpers: `CalcExecutionMs`, and `ReadChunk` (fixed-granularity body chunk reader used by both the HTTP server and client)
 
 **Key enums:**
-- `MethodEnum`: Sleep (1), MongodbCollection (2), HttpServe (3), HttpRespond (4)
+- `MethodEnum`: Sleep (1), MongodbCollection (2), HttpServe (3), HttpRespond (4), HttpClient (5)
+- `HttpClientCommand` (sub-operations under HttpClient): Request (1), UploadChunk (2), UploadEnd (3) — selected via the payload envelope's `cm`, like MongoDB's `CommandEnum`
 - `CommandEnum`: InsertOne (1), BulkWrite (2), Aggregate (3), InsertMany (4), CountDocuments (5), UpdateOne (6), FindOne (7), CreateIndex (8), DeleteOne (9), DeleteMany (10), UpdateMany (11), Drop (12), DropIndex (13)
 
 ## Test Structure
@@ -128,6 +133,56 @@ lifecycle-sensitive tests extend `BaseTestCase`.
 - Code must be maximally typed (type hints for parameters, return types, properties)
 - Never abbreviate variable names — use full, descriptive names
 - Prefer short arrays (`[]`)
+- Do **not** use `final` on classes
+- Class properties (including promoted constructor properties) must be `protected`, never `private` (use `public` only for DTO fields read externally)
+
+### Naming
+
+- Never abbreviate variable names — use full, descriptive names (e.g. `$exception`, not `$e`; `$request`, not `$req`).
+- A variable holding a class instance is named exactly after that class, in lowerCamelCase: `CreateBookingHotelAction` → `$createBookingHotelAction`, `RequestPayload` → `$requestPayload`, `Client` → `$client`.
+
+### Blank lines & block separation
+
+- Separate every `{}` block with blank lines (an empty line before and after method/closure/control-structure bodies where it aids readability; blocks never butt directly against unrelated code).
+- Separate logical blocks inside a method with a blank line — group variable declarations, then method calls, then the return, etc., with one empty line between groups.
+
+### Method parameters & call arguments
+
+- Always name method parameters meaningfully, especially when a method has more than one.
+- Use **named arguments** when calling a project method or constructor that has more than one parameter, or that has at least one optional parameter. Built-in PHP functions (`str_starts_with`, `array_values`, `sprintf`, …) are exempt — the rule is for project methods/constructors only. A call to a single required-only parameter may stay positional and inline.
+- When a call uses named arguments, lay them out **vertically** — one argument per line — with a trailing comma:
+  ```php
+  $response = new NetworkException(
+      request: $request,
+      message: $message,
+      previous: $exception,
+  );
+  ```
+- A function/constructor call is formatted **uniformly**: either all arguments on one line, or every argument on its own line. Mixed style is forbidden — e.g. `new RuntimeException(sprintf(` followed by vertical arguments is not allowed. If a nested call has its arguments expanded vertically, the outer call's first argument must also start on a new line (the nested call becomes its own vertical argument).
+
+### Method signatures
+
+- A signature need not be vertical if the line does not exceed 120 characters; otherwise format it vertically (one parameter per line).
+- If any single parameter name is longer than ~20 characters, format the signature vertically even when there is only one parameter.
+
+### Arrays
+
+- Place array keys and values on their own lines (one element per line, trailing comma) for arrays with two or more elements. Empty `[]` and a trivial single-element array may stay inline.
+
+### Conditions
+
+- In conditions that mix `&&` and `||` in one expression, and in ternary operators, wrap condition groups in parentheses to remove operator-precedence ambiguity. Simple same-operator conditions need no extra parentheses: `if ($value !== null && $value > 0)` is fine; `if ($a && $b || $c)` needs them.
+
+## Extension versioning
+
+The Go extension version lives in `ext/main.go` (`version()`) and the minimum
+required version in `src/Connection/Extension.php`
+(`REQUIRED_EXTENSION_VERSION`); they are bumped together on any PHP↔Go protocol
+change. **Never bump the major version without the maintainer's approval**; bump
+the minor only when warranted, otherwise the patch. **Bump the version at most
+once per git branch** — the first protocol change on a branch bumps it, later
+commits on the same branch reuse that version (do not move it again). Current:
+`0.2.1`.
 
 ## Exceptions
 
@@ -160,6 +215,18 @@ re-throwing. Rules:
 - Before implementing any task, propose a plan and wait for explicit user approval before starting
 - After any PHP changes, run analyzers (`make php-stan`, `make cs-fixer-check`) and tests (`make test`). Fix any errors automatically without asking
 
+## Answering & Code References
+
+When referring to any class, method, or code fragment in a reply, always give
+the full path from the project root plus the line number, so the reference is
+clickable and jumps straight to the spot in the IDE.
+
+- Whole file: `app/.../MasterWorkerManager.php`
+- Specific spot: `app/.../MasterWorkerManager.php:16`
+
+The line number is required when pointing at concrete logic; it may be omitted
+only when referring to a file as a whole.
+
 ## Commit & Pull Request Guidelines
 
 Use short, imperative subjects (e.g. `update mongodb serializer`,
@@ -168,3 +235,14 @@ Pull requests should explain the behavioral change, list validation performed
 (`make check`, targeted tests, benchmarks if relevant), and link the related
 issue or task. Screenshots are usually unnecessary unless documentation or
 tooling output changed materially.
+
+When an AI agent creates a git commit itself, it must add a sign-off trailer
+identifying the agent:
+
+```
+Co-Authored-By: <agent name> <email>
+```
+
+For example, Claude Code uses
+`Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`; OpenAI
+Codex uses `Co-Authored-By: OpenAI Codex <noreply@openai.com>`.

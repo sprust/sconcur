@@ -22,7 +22,7 @@ class MongodbFieldsOrderBulkWriteInsertOneTest extends BaseMongodbOrderTestCase
                         $document,
                     ],
                 ],
-            ]
+            ],
         );
     }
 }

@@ -1,0 +1,690 @@
+<?php
+
+declare(strict_types=1);
+
+namespace SConcur\Tests\Feature\Features\HttpClient;
+
+use Psr\Http\Client\ClientExceptionInterface;
+use Psr\Http\Client\NetworkExceptionInterface;
+use Psr\Http\Client\RequestExceptionInterface;
+use ReflectionMethod;
+use RuntimeException;
+use SConcur\Features\HttpClient\HttpClientOptions;
+use SConcur\WaitGroup;
+
+/**
+ * Synchronous (outside a WaitGroup) edge cases: status/headers/body, multi-value
+ * headers, binary echo, response streaming, early abandon, error statuses,
+ * network errors and request timeouts. The async/concurrency path is covered by
+ * HttpClientConcurrencyTest.
+ */
+class HttpClientTest extends BaseHttpClientTestCase
+{
+    public function testStatusHeadersAndBody(): void
+    {
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/',
+            ),
+        );
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('ok', (string) $response->getBody());
+        // A tiny body is sent with Content-Length, so the stream knows its size.
+        self::assertSame(2, $response->getBody()->getSize());
+    }
+
+    public function testRequestMethodReachesServer(): void
+    {
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'DELETE',
+                path: '/method',
+            ),
+        );
+
+        self::assertSame('DELETE', (string) $response->getBody());
+    }
+
+    public function testRequestBodyIsSent(): void
+    {
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'POST',
+                path: '/echo',
+                body: 'hello body',
+            ),
+        );
+
+        self::assertSame('hello body', (string) $response->getBody());
+    }
+
+    public function testBinaryBodyRoundTrips(): void
+    {
+        $binary = random_bytes(2048);
+
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'POST',
+                path: '/echo',
+                body: $binary,
+            ),
+        );
+
+        self::assertSame($binary, (string) $response->getBody());
+    }
+
+    public function testQueryStringIsPreserved(): void
+    {
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/query?a=1&b=two',
+            ),
+        );
+
+        self::assertSame('a=1&b=two', (string) $response->getBody());
+    }
+
+    public function testMultiValueResponseHeaders(): void
+    {
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/cookies',
+            ),
+        );
+
+        // Two Set-Cookie headers must survive as two distinct values.
+        self::assertSame(['a=1', 'b=2'], $response->getHeader('Set-Cookie'));
+    }
+
+    public function testErrorStatusesAreNormalResponses(): void
+    {
+        foreach ([404, 500] as $code) {
+            $response = $this->client()->sendRequest(
+                $this->request(
+                    method: 'GET',
+                    path: '/status/' . $code,
+                ),
+            );
+
+            self::assertSame($code, $response->getStatusCode());
+            self::assertSame('status ' . $code, (string) $response->getBody());
+        }
+    }
+
+    public function testLargeBodyIsStreamedInChunks(): void
+    {
+        $size = 200_000; // > 64 KiB transport chunk, so the body really streams.
+
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/big/' . $size,
+            ),
+        );
+
+        self::assertSame(200, $response->getStatusCode());
+
+        $stream    = $response->getBody();
+        $collected = '';
+        $reads     = 0;
+
+        while (!$stream->eof()) {
+            $chunk = $stream->read(8192);
+
+            if ($chunk === '') {
+                break;
+            }
+
+            $collected .= $chunk;
+            ++$reads;
+        }
+
+        self::assertSame($this->bigBody($size), $collected);
+        self::assertSame($size, strlen($collected));
+        // Reading 8 KiB at a time, a 200 KB body must take many reads — proof the
+        // body was not delivered as one buffered blob.
+        self::assertGreaterThan(1, $reads);
+    }
+
+    public function testLargeBodyGetContentsReadsWhole(): void
+    {
+        $size = 150_000;
+
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/big/' . $size,
+            ),
+        );
+
+        self::assertSame($this->bigBody($size), (string) $response->getBody());
+    }
+
+    public function testAbandonedBodyLeavesNoDanglingTasks(): void
+    {
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/big/200000',
+            ),
+        );
+
+        // Read just the first chunk, then drop the response without draining it.
+        self::assertNotSame('', $response->getBody()->read(1024));
+
+        // Dropping the response releases the streaming body (__destruct), which
+        // stops the abandoned flow on the Go side.
+        unset($response);
+
+        $this->assertNoTasksCount();
+    }
+
+    public function testNetworkErrorThrowsNetworkException(): void
+    {
+        $client = $this->client(
+            options: new HttpClientOptions(
+                requestTimeoutMs: 2_000,
+                connectTimeoutMs: 1_000,
+            ),
+        );
+        $request = $this->factory->createRequest('GET', 'http://127.0.0.1:1');
+
+        try {
+            $client->sendRequest($request);
+
+            self::fail('Expected a NetworkExceptionInterface.');
+        } catch (NetworkExceptionInterface $exception) {
+            self::assertSame($request, $exception->getRequest());
+        }
+    }
+
+    public function testRequestTimeoutThrowsNetworkException(): void
+    {
+        $client = $this->client(
+            options: new HttpClientOptions(
+                requestTimeoutMs: 200,
+            ),
+        );
+        $request = $this->request(
+            method: 'GET',
+            path: '/msleep/3000',
+        );
+
+        $this->expectException(NetworkExceptionInterface::class);
+
+        $client->sendRequest($request);
+    }
+
+    public function testRequestHeadersReachTheServer(): void
+    {
+        $request = $this->request(
+            method: 'GET',
+            path: '/echo-header',
+        )->withHeader('X-Echo', ['one', 'two']);
+
+        $response = $this->client()->sendRequest($request);
+
+        // The server joins the X-Echo values with ",": both values must arrive.
+        self::assertSame('one,two', (string) $response->getBody());
+    }
+
+    public function testEmptyResponseBody(): void
+    {
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/empty',
+            ),
+        );
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('', (string) $response->getBody());
+        self::assertSame(0, $response->getBody()->getSize());
+    }
+
+    public function testGetSizeIsNullForChunkedResponse(): void
+    {
+        // /stream is a flushed StreamedResponse: chunked transfer, no Content-Length.
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/stream',
+            ),
+        );
+
+        self::assertNull($response->getBody()->getSize());
+        self::assertSame("chunk-a\nchunk-b\nchunk-c\n", (string) $response->getBody());
+    }
+
+    public function testMaxResponseBodyExceededThrows(): void
+    {
+        $client = $this->client(
+            options: new HttpClientOptions(
+                maxResponseBody: 1024,
+            ),
+        );
+
+        // The very first chunk already exceeds the limit, so the failure surfaces
+        // from sendRequest as a generic client error (no net/req marker).
+        $this->expectException(ClientExceptionInterface::class);
+
+        $client->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/big/200000',
+            ),
+        );
+    }
+
+    public function testRedirectsAreFollowedByDefault(): void
+    {
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/redirect/3',
+            ),
+        );
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('done', (string) $response->getBody());
+    }
+
+    public function testRedirectsCanBeDisabled(): void
+    {
+        $client = $this->client(
+            options: new HttpClientOptions(
+                followRedirects: false,
+            ),
+        );
+
+        $response = $client->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/redirect/3',
+            ),
+        );
+
+        self::assertSame(302, $response->getStatusCode());
+        self::assertNotSame('', $response->getHeaderLine('Location'));
+    }
+
+    public function testTooManyRedirectsThrowsNetworkException(): void
+    {
+        $client = $this->client(
+            options: new HttpClientOptions(
+                maxRedirects: 1,
+            ),
+        );
+
+        $this->expectException(NetworkExceptionInterface::class);
+
+        $client->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/redirect/5',
+            ),
+        );
+    }
+
+    public function testStreamContractIsReadOnlyAndNonSeekable(): void
+    {
+        $stream = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/',
+            ),
+        )->getBody();
+
+        self::assertTrue($stream->isReadable());
+        self::assertFalse($stream->isWritable());
+        self::assertFalse($stream->isSeekable());
+        self::assertSame('', $stream->read(0));
+
+        foreach ([fn() => $stream->seek(0), fn() => $stream->rewind(), fn() => $stream->write('x')] as $operation) {
+            try {
+                $operation();
+
+                self::fail('Expected a RuntimeException for an unsupported stream operation.');
+            } catch (RuntimeException) {
+                // expected
+            }
+        }
+
+        // After close() the stream is spent: reads return '' and it reports eof.
+        $stream->close();
+
+        self::assertSame('', $stream->read(10));
+        self::assertTrue($stream->eof());
+    }
+
+    public function testStreamingResponseInsideCoroutine(): void
+    {
+        $size      = 200_000;
+        $client    = $this->client();
+        $factory   = $this->factory;
+        $baseUrl   = $this->baseUrl();
+        $collected = '';
+        $sleptDone = false;
+
+        $waitGroup = WaitGroup::create();
+
+        $waitGroup->add(function () use ($client, $factory, $baseUrl, $size, &$collected): void {
+            $stream = $client->sendRequest($factory->createRequest('GET', $baseUrl . '/big/' . $size))->getBody();
+
+            while (!$stream->eof()) {
+                $chunk = $stream->read(8192);
+
+                if ($chunk === '') {
+                    break;
+                }
+
+                $collected .= $chunk;
+            }
+        });
+
+        $waitGroup->add(function () use ($client, $factory, $baseUrl, &$sleptDone): void {
+            $client->sendRequest($factory->createRequest('GET', $baseUrl . '/msleep/50'));
+
+            $sleptDone = true;
+        });
+
+        $waitGroup->waitAll();
+
+        // The streamed body was read chunk by chunk inside its coroutine while the
+        // other coroutine ran concurrently.
+        self::assertSame($this->bigBody($size), $collected);
+        self::assertTrue($sleptDone);
+    }
+
+    public function testStreamedRequestBodyIsSent(): void
+    {
+        $client = $this->client(
+            options: new HttpClientOptions(
+                streamRequestBody: true,
+            ),
+        );
+
+        $response = $client->sendRequest(
+            $this->request(
+                method: 'POST',
+                path: '/echo',
+                body: 'streamed hello',
+            ),
+        );
+
+        self::assertSame('streamed hello', (string) $response->getBody());
+    }
+
+    public function testStreamedLargeRequestBodyArrivesIntact(): void
+    {
+        $client = $this->client(
+            options: new HttpClientOptions(
+                streamRequestBody: true,
+            ),
+        );
+
+        // ~240 KB, several upload chunks; /upload reads it streamed and returns its
+        // sha256, so every byte must have arrived in order.
+        $body = str_repeat('payload-', 30_000);
+
+        $response = $client->sendRequest(
+            $this->request(
+                method: 'POST',
+                path: '/upload',
+                body: $body,
+            ),
+        );
+
+        self::assertSame(hash('sha256', $body), (string) $response->getBody());
+    }
+
+    public function testStreamedRequestWithEmptyBody(): void
+    {
+        $client = $this->client(
+            options: new HttpClientOptions(
+                streamRequestBody: true,
+            ),
+        );
+
+        $response = $client->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/',
+            ),
+        );
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertSame('ok', (string) $response->getBody());
+    }
+
+    public function testStreamedRequestToUnreachableHostThrows(): void
+    {
+        $client = $this->client(
+            options: new HttpClientOptions(
+                requestTimeoutMs: 2_000,
+                connectTimeoutMs: 1_000,
+                streamRequestBody: true,
+            ),
+        );
+        $request = $this->factory->createRequest('POST', 'http://127.0.0.1:1')
+            ->withBody($this->factory->createStream('data'));
+
+        $this->expectException(NetworkExceptionInterface::class);
+
+        $client->sendRequest($request);
+    }
+
+    public function testStreamedUploadErrorReleasesOpenFlow(): void
+    {
+        // A long requestTimeoutMs means the Go-side deadline cannot be what cleans
+        // up within the tearDown window: only sendStreaming's catch releasing the
+        // open request's flow can. So this is a strict guard for that leak fix.
+        $client = $this->client(
+            options: new HttpClientOptions(
+                requestTimeoutMs: 30_000,
+                connectTimeoutMs: 1_000,
+                streamRequestBody: true,
+            ),
+        );
+        $request = $this->factory->createRequest('POST', 'http://127.0.0.1:1')
+            ->withBody($this->factory->createStream(str_repeat('x', 100_000)));
+
+        try {
+            $client->sendRequest($request);
+
+            self::fail('Expected a NetworkExceptionInterface.');
+        } catch (NetworkExceptionInterface $exception) {
+            self::assertSame($request, $exception->getRequest());
+        }
+
+        // The open request's flow must already be gone — not waiting on the 30s
+        // request deadline (assertNoTasksCount only waits ~2s).
+        $this->assertNoTasksCount();
+    }
+
+    public function testStreamedRequestBodyInsideCoroutine(): void
+    {
+        $client = $this->client(
+            options: new HttpClientOptions(
+                streamRequestBody: true,
+            ),
+        );
+        $factory = $this->factory;
+        $baseUrl = $this->baseUrl();
+        $body    = str_repeat('x', 200_000);
+        $hash    = '';
+        $slept   = false;
+
+        $waitGroup = WaitGroup::create();
+
+        $waitGroup->add(function () use ($client, $factory, $baseUrl, $body, &$hash): void {
+            $request  = $factory->createRequest('POST', $baseUrl . '/upload')->withBody($factory->createStream($body));
+            $response = $client->sendRequest($request);
+
+            $hash = (string) $response->getBody();
+        });
+
+        $waitGroup->add(function () use ($client, $factory, $baseUrl, &$slept): void {
+            $client->sendRequest($factory->createRequest('GET', $baseUrl . '/msleep/50'));
+
+            $slept = true;
+        });
+
+        $waitGroup->waitAll();
+
+        self::assertSame(hash('sha256', $body), $hash);
+        self::assertTrue($slept);
+    }
+
+    public function testRequestErrorMarkerMapsToRequestException(): void
+    {
+        // A "req:"-marked extension error (a request that could not be built/sent)
+        // must surface as a PSR-18 RequestException carrying the original request.
+        // The Go side produces this marker for invalid method/URL; here the mapping
+        // branch is exercised directly (the network branch is covered end-to-end).
+        $client  = $this->client();
+        $request = $this->request(
+            method: 'GET',
+            path: '/',
+        );
+
+        $toClientException = new ReflectionMethod($client, 'toClientException');
+
+        $exception = $toClientException->invoke(
+            $client,
+            new RuntimeException('req: invalid request'),
+            $request,
+        );
+
+        self::assertInstanceOf(RequestExceptionInterface::class, $exception);
+        self::assertSame($request, $exception->getRequest());
+    }
+
+    public function testResponseHeadersAreCaseInsensitive(): void
+    {
+        $response = $this->client()->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/cookies',
+            ),
+        );
+
+        // PSR-7 header access is case-insensitive regardless of the casing Go sent.
+        self::assertSame(['a=1', 'b=2'], $response->getHeader('set-cookie'));
+        self::assertSame('a=1, b=2', $response->getHeaderLine('SET-COOKIE'));
+        self::assertTrue($response->hasHeader('Set-Cookie'));
+    }
+
+    public function testResponseHeaderTimeoutThrowsNetworkException(): void
+    {
+        // The server sleeps before sending the status line, so a small
+        // responseHeaderTimeoutMs trips before the (much larger) requestTimeoutMs.
+        $client = $this->client(
+            options: new HttpClientOptions(
+                responseHeaderTimeoutMs: 200,
+            ),
+        );
+
+        $this->expectException(NetworkExceptionInterface::class);
+
+        $client->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/msleep/3000',
+            ),
+        );
+    }
+
+    public function testAbandonedBodyInsideCoroutineLeavesNoDanglingTasks(): void
+    {
+        $client  = $this->client();
+        $factory = $this->factory;
+        $baseUrl = $this->baseUrl();
+
+        $waitGroup = WaitGroup::create();
+
+        $waitGroup->add(function () use ($client, $factory, $baseUrl): void {
+            $response = $client->sendRequest($factory->createRequest('GET', $baseUrl . '/big/200000'));
+
+            // Read only the first chunk and abandon the rest: when the coroutine
+            // ends its flow is stopped, so the Go side cancels the streamed body.
+            self::assertNotSame('', $response->getBody()->read(1024));
+        });
+
+        $waitGroup->waitAll();
+
+        $this->assertNoTasksCount();
+    }
+
+    public function testToStringRethrowsReadErrorByDefault(): void
+    {
+        // maxResponseBody sits between the inline first chunk and the whole body, so
+        // the failure happens mid-stream (while __toString drains), not upfront.
+        $client = $this->client(
+            options: new HttpClientOptions(
+                maxResponseBody: 100_000,
+            ),
+        );
+
+        $response = $client->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/big/200000',
+            ),
+        );
+
+        $this->expectException(RuntimeException::class);
+
+        (string) $response->getBody();
+    }
+
+    public function testToStringSwallowsReadErrorWhenConfigured(): void
+    {
+        $client = $this->client(
+            options: new HttpClientOptions(
+                maxResponseBody: 100_000,
+                throwOnToStringError: false,
+            ),
+        );
+
+        $response = $client->sendRequest(
+            $this->request(
+                method: 'GET',
+                path: '/big/200000',
+            ),
+        );
+
+        $warning = null;
+
+        set_error_handler(
+            static function (int $severity, string $message) use (&$warning): bool {
+                $warning = $message;
+
+                return true;
+            },
+            E_USER_WARNING,
+        );
+
+        try {
+            $body = (string) $response->getBody();
+        } finally {
+            restore_error_handler();
+        }
+
+        // With the toggle off, a mid-stream read error becomes a warning + '' instead
+        // of bubbling out of the string cast (PSR-7: __toString must not throw).
+        self::assertSame('', $body);
+        self::assertNotNull($warning);
+    }
+
+    private function bigBody(int $size): string
+    {
+        $pattern = '0123456789abcdef';
+
+        return substr(str_repeat($pattern, intdiv($size, strlen($pattern)) + 1), 0, $size);
+    }
+}

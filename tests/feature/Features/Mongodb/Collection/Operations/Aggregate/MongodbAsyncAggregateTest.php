@@ -88,14 +88,14 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
     {
         self::assertCount(
             5,
-            $this->results
+            $this->results,
         );
 
         foreach ($this->results as $order => $documents) {
             self::assertCount(
                 $this->documentsCount,
                 $documents,
-                "Failed asserting documents count in order [$order]"
+                "Failed asserting documents count in order [$order]",
             );
 
             $index = 0;
@@ -112,14 +112,14 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
                         "Document index [%d] is not equal to expected index [%d] in order [%s]",
                         $documentIndex,
                         $index,
-                        $order
-                    )
+                        $order,
+                    ),
                 );
             }
 
             self::assertEquals(
                 $this->documentsCount,
-                $index
+                $index,
             );
         }
     }
@@ -132,7 +132,7 @@ class MongodbAsyncAggregateTest extends BaseMongodbAsyncTestCase
                     'index'          => $index,
                     $this->fieldName => $this->driverObjectId,
                 ],
-                range(1, $this->documentsCount)
+                range(1, $this->documentsCount),
             ),
         );
     }

@@ -60,7 +60,7 @@ class MongodbAsyncUpdateManyTest extends BaseMongodbAsyncTestCase
     {
         $this->sconcurCollection->updateMany(
             filter: [],
-            update: [uniqid('$') => [$this->fieldName => $this->sconcurObjectId]]
+            update: [uniqid('$') => [$this->fieldName => $this->sconcurObjectId]],
         );
     }
 
@@ -79,8 +79,8 @@ class MongodbAsyncUpdateManyTest extends BaseMongodbAsyncTestCase
 
                         return ["e:$index" => $this->sconcurObjectId];
                     },
-                    range(1, $this->documentsCount)
-                )
+                    range(1, $this->documentsCount),
+                ),
             );
         }
     }
@@ -91,19 +91,19 @@ class MongodbAsyncUpdateManyTest extends BaseMongodbAsyncTestCase
 
         $result = $this->sconcurCollection->updateMany(
             filter: [$key => $this->sconcurObjectId],
-            update: ['$set' => [$field => $this->sconcurObjectId]]
+            update: ['$set' => [$field => $this->sconcurObjectId]],
         );
 
         self::assertEquals(
             $this->documentsCount,
-            $result->modifiedCount
+            $result->modifiedCount,
         );
 
         self::assertEquals(
             $this->documentsCount,
             $this->sconcurCollection->countDocuments(
-                filter: [$field => $this->sconcurObjectId]
-            )
+                filter: [$field => $this->sconcurObjectId],
+            ),
         );
     }
 
@@ -113,19 +113,19 @@ class MongodbAsyncUpdateManyTest extends BaseMongodbAsyncTestCase
 
         $result = $this->sconcurCollection->updateMany(
             filter: [],
-            update: ['$set' => [$field => $this->sconcurObjectId]]
+            update: ['$set' => [$field => $this->sconcurObjectId]],
         );
 
         self::assertEquals(
             $this->insertedDocumentsCount,
-            $result->modifiedCount
+            $result->modifiedCount,
         );
 
         self::assertEquals(
             $this->insertedDocumentsCount,
             $this->sconcurCollection->countDocuments(
-                filter: [$field => $this->sconcurObjectId]
-            )
+                filter: [$field => $this->sconcurObjectId],
+            ),
         );
     }
 }

@@ -60,8 +60,8 @@ readonly class Database
             ),
         );
 
-        $docResult = DocumentSerializer::unserialize($taskResult->payload);
+        $documentResult = DocumentSerializer::unserialize($taskResult->payload);
 
-        return $docResult['names'] ?? [];
+        return $documentResult['names'] ?? [];
     }
 }

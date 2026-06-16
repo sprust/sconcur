@@ -42,7 +42,12 @@ readonly class FindOnePayload extends BaseMongodbPayload
     protected function getParameters(): Parameters
     {
         return new Parameters(
-            payload: new FindOnePayloadParameters($this->filter, $this->projection, $this->hint, $this->collation),
+            payload: new FindOnePayloadParameters(
+                filter: $this->filter,
+                projection: $this->projection,
+                hint: $this->hint,
+                collation: $this->collation,
+            ),
             isObject: true,
         );
     }

@@ -17,7 +17,9 @@ class MongodbTimeoutTest extends BaseTestCase
 
         $sconcurCollection = TestMongodbResolver::getSconcurTestCollection($collectionName);
 
-        $sconcurCollection->deleteMany([]);
+        $sconcurCollection->deleteMany(
+            filter: [],
+        );
 
         $sconcurCollection->bulkWrite(
             operations: [
@@ -26,18 +28,18 @@ class MongodbTimeoutTest extends BaseTestCase
                         [],
                     ],
                 ],
-            ]
+            ],
         );
 
         $sconcurCollection->insertOne(
             document: [
                 uniqid() => true,
-            ]
+            ],
         );
 
         $sconcurCollection = TestMongodbResolver::getSconcurTestCollection(
             collectionName: $collectionName,
-            timeoutMs: 1
+            timeoutMs: 1,
         );
 
         $exception = null;
@@ -64,7 +66,7 @@ class MongodbTimeoutTest extends BaseTestCase
                             'sleep_result' => 1,
                         ],
                     ],
-                ]
+                ],
             );
 
             $iterator->rewind();
@@ -73,21 +75,21 @@ class MongodbTimeoutTest extends BaseTestCase
         }
 
         self::assertFalse(
-            is_null($exception)
+            is_null($exception),
         );
 
         $exceptionMessage = $exception->getMessage();
 
         self::assertStringContainsString(
             'mongodb:',
-            $exceptionMessage
+            $exceptionMessage,
         );
 
         // The driver enforces the timeout via CSOT, so a too-small timeout surfaces as a
         // context deadline / "timed out" rather than a socket-level "i/o timeout".
         self::assertMatchesRegularExpression(
             '/deadline exceeded|timed out|timeout/i',
-            $exceptionMessage
+            $exceptionMessage,
         );
     }
 
@@ -119,7 +121,7 @@ class MongodbTimeoutTest extends BaseTestCase
 
         self::assertFalse(
             is_null($exception),
-            'An unreachable server must surface an error, not hang.'
+            'An unreachable server must surface an error, not hang.',
         );
 
         // The operation must fail via serverSelectionTimeout, far below the 30s default —
@@ -127,19 +129,19 @@ class MongodbTimeoutTest extends BaseTestCase
         self::assertLessThan(
             10000,
             $elapsedMs,
-            'Unreachable server should fail fast via serverSelectionTimeout.'
+            'Unreachable server should fail fast via serverSelectionTimeout.',
         );
 
         $exceptionMessage = $exception->getMessage();
 
         self::assertStringContainsString(
             'mongodb:',
-            $exceptionMessage
+            $exceptionMessage,
         );
 
         self::assertMatchesRegularExpression(
             '/server selection|deadline exceeded|timed out|timeout/i',
-            $exceptionMessage
+            $exceptionMessage,
         );
     }
 }

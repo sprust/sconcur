@@ -32,7 +32,7 @@ class MongodbAsyncFindTest extends BaseMongodbAsyncTestCase
             $this->sconcurCollection->find(
                 filter: [$this->fieldName => ['$exists' => true]],
                 batchSize: 5,
-            )
+            ),
         );
 
         self::assertCount($this->documentsCount, $results);
@@ -48,7 +48,7 @@ class MongodbAsyncFindTest extends BaseMongodbAsyncTestCase
             $this->sconcurCollection->find(
                 filter: [$this->fieldName => ['$exists' => true]],
                 limit: 3,
-            )
+            ),
         );
 
         self::assertCount(3, $results);
@@ -61,7 +61,7 @@ class MongodbAsyncFindTest extends BaseMongodbAsyncTestCase
                 filter: [$this->fieldName => ['$exists' => true]],
                 sort: [$this->fieldName => 1],
                 limit: 10,
-            )
+            ),
         );
 
         self::assertCount(10, $results);
@@ -82,7 +82,7 @@ class MongodbAsyncFindTest extends BaseMongodbAsyncTestCase
                 filter: [$this->fieldName => ['$exists' => true]],
                 sort: [$this->fieldName => -1],
                 limit: 5,
-            )
+            ),
         );
 
         self::assertCount(5, $results);
@@ -94,7 +94,7 @@ class MongodbAsyncFindTest extends BaseMongodbAsyncTestCase
             $this->sconcurCollection->find(
                 filter: [$this->fieldName => ['$exists' => true]],
                 limit: 1,
-            )
+            ),
         );
 
         self::assertCount(1, $results);
@@ -105,7 +105,7 @@ class MongodbAsyncFindTest extends BaseMongodbAsyncTestCase
         iterator_to_array(
             $this->sconcurCollection->find(
                 filter: ['$set' => 11],
-            )
+            ),
         );
     }
 
@@ -119,8 +119,8 @@ class MongodbAsyncFindTest extends BaseMongodbAsyncTestCase
         $this->sconcurCollection->insertMany(
             documents: array_map(
                 fn(int $index) => [$this->fieldName => $index],
-                range(1, $this->documentsCount)
-            )
+                range(1, $this->documentsCount),
+            ),
         );
     }
 }

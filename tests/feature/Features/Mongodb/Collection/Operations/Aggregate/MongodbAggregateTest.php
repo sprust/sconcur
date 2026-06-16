@@ -35,7 +35,7 @@ class MongodbAggregateTest extends BaseTestCase
             $waitGroup->add(
                 callback: function () use (&$results) {
                     $iterator = $this->sconcurCollection->aggregate(
-                        pipeline: []
+                        pipeline: [],
                     );
 
                     foreach ($iterator as $item) {
@@ -48,7 +48,7 @@ class MongodbAggregateTest extends BaseTestCase
             $waitGroup->add(
                 callback: function () {
                     $this->sconcurCollection->aggregate(
-                        pipeline: []
+                        pipeline: [],
                     );
                 });
         }
@@ -66,29 +66,31 @@ class MongodbAggregateTest extends BaseTestCase
             callback: function () {
                 $iterator = $this->sconcurCollection->aggregate(
                     pipeline: [],
-                    batchSize: 1
+                    batchSize: 1,
                 );
 
                 foreach ($iterator as $ignored) {
                     break;
                 }
 
-                $document = $this->sconcurCollection->findOne([]);
+                $document = $this->sconcurCollection->findOne(
+                    filter: [],
+                );
 
                 self::assertTrue(
-                    is_array($document)
+                    is_array($document),
                 );
 
                 self::assertArrayHasKey(
                     '_id',
-                    $document
+                    $document,
                 );
 
                 self::assertCount(
                     2,
-                    $document
+                    $document,
                 );
-            }
+            },
         );
 
         $waitGroup->waitAll();
@@ -104,7 +106,7 @@ class MongodbAggregateTest extends BaseTestCase
             callback: function () use (&$counter) {
                 $iterator = $this->sconcurCollection->aggregate(
                     pipeline: [],
-                    batchSize: 1
+                    batchSize: 1,
                 );
 
                 foreach ($iterator as $ignored) {
@@ -116,14 +118,14 @@ class MongodbAggregateTest extends BaseTestCase
                 foreach ($iterator as $ignored) {
                     ++$counter;
                 }
-            }
+            },
         );
 
         $waitGroup->waitAll();
 
         self::assertEquals(
             $this->documentsCount + 1,
-            $counter
+            $counter,
         );
     }
 
@@ -137,33 +139,33 @@ class MongodbAggregateTest extends BaseTestCase
             callback: function () use (&$counter) {
                 $iterator = $this->sconcurCollection->aggregate(
                     pipeline: [],
-                    batchSize: $this->documentsCount
+                    batchSize: $this->documentsCount,
                 );
 
                 foreach ($iterator as $ignored) {
                     ++$counter;
                 }
-            }
+            },
         );
 
         $waitGroup->add(
             callback: function () use (&$counter) {
                 $iterator = $this->sconcurCollection->aggregate(
                     pipeline: [],
-                    batchSize: $this->documentsCount
+                    batchSize: $this->documentsCount,
                 );
 
                 foreach ($iterator as $ignored) {
                     ++$counter;
                 }
-            }
+            },
         );
 
         $waitGroup->waitAll();
 
         self::assertEquals(
             $this->documentsCount * 2,
-            $counter
+            $counter,
         );
     }
 
@@ -177,33 +179,33 @@ class MongodbAggregateTest extends BaseTestCase
             callback: function () use (&$counter) {
                 $iterator = $this->sconcurCollection->aggregate(
                     pipeline: [],
-                    batchSize: $this->documentsCount - 3
+                    batchSize: $this->documentsCount - 3,
                 );
 
                 foreach ($iterator as $ignored) {
                     ++$counter;
                 }
-            }
+            },
         );
 
         $waitGroup->add(
             callback: function () use (&$counter) {
                 $iterator = $this->sconcurCollection->aggregate(
                     pipeline: [],
-                    batchSize: $this->documentsCount
+                    batchSize: $this->documentsCount,
                 );
 
                 foreach ($iterator as $ignored) {
                     ++$counter;
                 }
-            }
+            },
         );
 
         $waitGroup->waitAll();
 
         self::assertEquals(
             $this->documentsCount * 2,
-            $counter
+            $counter,
         );
     }
 
@@ -217,40 +219,40 @@ class MongodbAggregateTest extends BaseTestCase
             callback: function () use (&$counter) {
                 $iterator = $this->sconcurCollection->aggregate(
                     pipeline: [],
-                    batchSize: $this->documentsCount + 3
+                    batchSize: $this->documentsCount + 3,
                 );
 
                 foreach ($iterator as $ignored) {
                     ++$counter;
                 }
-            }
+            },
         );
 
         $waitGroup->add(
             callback: function () use (&$counter) {
                 $iterator = $this->sconcurCollection->aggregate(
                     pipeline: [],
-                    batchSize: $this->documentsCount
+                    batchSize: $this->documentsCount,
                 );
 
                 foreach ($iterator as $ignored) {
                     ++$counter;
                 }
-            }
+            },
         );
 
         $waitGroup->waitAll();
 
         self::assertEquals(
             $this->documentsCount * 2,
-            $counter
+            $counter,
         );
     }
 
     private function seedDocuments(): void
     {
         $this->sconcurCollection->deleteMany(
-            filter: []
+            filter: [],
         );
 
         $this->documentsCount = 10;
@@ -260,8 +262,8 @@ class MongodbAggregateTest extends BaseTestCase
                 static fn(int $index) => [
                     uniqid() => $index,
                 ],
-                range(1, $this->documentsCount)
-            )
+                range(1, $this->documentsCount),
+            ),
         );
     }
 }

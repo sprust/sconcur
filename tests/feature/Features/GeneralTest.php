@@ -78,7 +78,7 @@ class GeneralTest extends BaseTestCase
 
                 self::assertEquals(
                     count($callbacks),
-                    $resultsCount
+                    $resultsCount,
                 );
                 // internal flow ^
 
@@ -106,7 +106,7 @@ class GeneralTest extends BaseTestCase
 
         self::assertCount(
             count($callbacks),
-            $results
+            $results,
         );
 
         foreach (
@@ -177,7 +177,7 @@ class GeneralTest extends BaseTestCase
                 '2:finish',
                 '1:finish',
             ],
-            $events
+            $events,
         );
 
         self::assertSame(
@@ -185,7 +185,7 @@ class GeneralTest extends BaseTestCase
                 '2',
                 '1',
             ],
-            array_values($results)
+            array_values($results),
         );
     }
 
@@ -229,14 +229,14 @@ class GeneralTest extends BaseTestCase
 
         self::assertCount(
             1,
-            $results
+            $results,
         );
 
         self::assertSame(
             [
                 '2',
             ],
-            array_values($results)
+            array_values($results),
         );
     }
 
@@ -315,7 +315,7 @@ class GeneralTest extends BaseTestCase
 
         self::assertCount(
             $callbacksCount,
-            $results
+            $results,
         );
     }
 
@@ -342,7 +342,7 @@ class GeneralTest extends BaseTestCase
 
         self::assertEquals(
             $callbacksCount,
-            $resultsCount
+            $resultsCount,
         );
     }
 
@@ -382,17 +382,17 @@ class GeneralTest extends BaseTestCase
         }
 
         self::assertFalse(
-            is_null($exception)
+            is_null($exception),
         );
 
         self::assertEquals(
             $exceptionMessage,
-            $exception->getMessage()
+            $exception->getMessage(),
         );
 
         self::assertCount(
             0,
-            $results
+            $results,
         );
     }
 
@@ -431,12 +431,12 @@ class GeneralTest extends BaseTestCase
         $resultsCount = $waitGroup->waitAll();
 
         self::assertNotNull(
-            $exceptionMessage
+            $exceptionMessage,
         );
 
         self::assertEquals(
             2,
-            $resultsCount
+            $resultsCount,
         );
 
         self::assertSame(
@@ -444,7 +444,7 @@ class GeneralTest extends BaseTestCase
                 'first'  => true,
                 'second' => true,
             ],
-            $events
+            $events,
         );
     }
 
@@ -471,12 +471,12 @@ class GeneralTest extends BaseTestCase
         }
 
         self::assertFalse(
-            is_null($exception)
+            is_null($exception),
         );
 
         self::assertEquals(
             $exceptionMessage,
-            $exception->getMessage()
+            $exception->getMessage(),
         );
     }
 
@@ -516,7 +516,7 @@ class GeneralTest extends BaseTestCase
 
         self::assertEquals(
             0,
-            $iterationCounter
+            $iterationCounter,
         );
 
         self::assertSame(
@@ -524,7 +524,7 @@ class GeneralTest extends BaseTestCase
                 'start'  => $iterationCount,
                 'finish' => $iterationCount,
             ],
-            $events
+            $events,
         );
     }
 

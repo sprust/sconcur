@@ -29,14 +29,14 @@ $benchmarker->run(
     },
     syncCallback: static function () use ($sconcurCollection, $sconcurDocument) {
         return $sconcurCollection->insertOne(
-        document: $sconcurDocument
+            document: $sconcurDocument,
         )->insertedId;
     },
     asyncCallback: static function () use ($sconcurCollection, $sconcurDocument) {
         return $sconcurCollection->insertOne(
-        document: $sconcurDocument
+            document: $sconcurDocument,
         )->insertedId;
-    }
+    },
 );
 
 function makeDocument(mixed $objectId, mixed $dateTime): array

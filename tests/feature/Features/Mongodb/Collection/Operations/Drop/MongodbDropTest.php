@@ -20,14 +20,14 @@ class MongodbDropTest extends BaseTestCase
         $sconcurCollection = TestMongodbResolver::getSconcurTestCollection($collectionName);
 
         $sconcurCollection->insertOne(
-            document: [uniqid() => uniqid()]
+            document: [uniqid() => uniqid()],
         );
 
         self::assertCollectionCount($collectionName, 1);
 
         self::assertEquals(
             1,
-            $sconcurCollection->countDocuments([]) > 0
+            $sconcurCollection->countDocuments([]) > 0,
         );
 
         $sconcurCollection->drop();
@@ -44,8 +44,8 @@ class MongodbDropTest extends BaseTestCase
                     'filter' => [
                         'name' => $collectionName,
                     ],
-                ])
-            )
+                ]),
+            ),
         );
     }
 }

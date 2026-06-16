@@ -31,14 +31,14 @@ $benchmarker->run(
     },
     syncCallback: static function () use ($sconcurCollection, $sconcurFilter) {
         return $sconcurCollection->deleteOne(
-        filter: $sconcurFilter,
+            filter: $sconcurFilter,
         )->deletedCount;
     },
     asyncCallback: static function () use ($sconcurCollection, $sconcurFilter) {
         return $sconcurCollection->deleteOne(
-        filter: $sconcurFilter,
+            filter: $sconcurFilter,
         )->deletedCount;
-    }
+    },
 );
 
 function makeFilter(mixed $objectId): array

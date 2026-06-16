@@ -28,8 +28,8 @@ $nativeCallback = static function () use ($driverCollection, $driverPipeline, $i
 
     $aggregate = $driverCollection->aggregate($driverPipeline);
 
-    foreach ($aggregate as $doc) {
-        $id = $doc['_id'];
+    foreach ($aggregate as $document) {
+        $id = $document['_id'];
 
         if (!$isLogProcess) {
             continue;
@@ -46,8 +46,8 @@ $sconcurCallback = static function () use ($sconcurCollection, $sconcurPipeline,
         pipeline: $sconcurPipeline,
     );
 
-    foreach ($aggregate as $doc) {
-        $id = (string) $doc['_id'];
+    foreach ($aggregate as $document) {
+        $id = (string) $document['_id'];
 
         if (!$isLogProcess) {
             continue;
@@ -60,7 +60,7 @@ $sconcurCallback = static function () use ($sconcurCollection, $sconcurPipeline,
 $benchmarker->run(
     nativeCallback: $nativeCallback,
     syncCallback: $sconcurCallback,
-    asyncCallback: $sconcurCallback
+    asyncCallback: $sconcurCallback,
 );
 
 function makePipeline(mixed $objectId): array

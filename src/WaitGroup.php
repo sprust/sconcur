@@ -66,8 +66,8 @@ class WaitGroup
             fiberId: $fiberId,
             flow: new CurrentFlow(
                 isAsync: true,
-                key: $this->flowKey
-            )
+                key: $this->flowKey,
+            ),
         );
 
         $this->members[$fiberId] = $callbackKey;
@@ -78,7 +78,7 @@ class WaitGroup
                 fiber: $fiber,
                 group: $this,
                 callbackKey: $callbackKey,
-            )
+            ),
         );
 
         try {
@@ -90,7 +90,7 @@ class WaitGroup
 
             throw new CallbackExecutionException(
                 message: $exception->getMessage(),
-                previous: $exception
+                previous: $exception,
             );
         }
 

@@ -69,10 +69,10 @@ readonly class Collection
             ),
         );
 
-        $docResult = DocumentSerializer::unserialize($taskResult->payload);
+        $documentResult = DocumentSerializer::unserialize($taskResult->payload);
 
         return new InsertOneResult(
-            insertedId: $docResult['insertedid'],
+            insertedId: $documentResult['insertedid'],
         );
     }
 
@@ -88,10 +88,10 @@ readonly class Collection
             ),
         );
 
-        $docResult = DocumentSerializer::unserialize($taskResult->payload);
+        $documentResult = DocumentSerializer::unserialize($taskResult->payload);
 
         return new InsertManyResult(
-            insertedIds: $docResult['insertedids'],
+            insertedIds: $documentResult['insertedids'],
         );
     }
 
@@ -107,15 +107,15 @@ readonly class Collection
             ),
         );
 
-        $docResult = DocumentSerializer::unserialize($taskResult->payload);
+        $documentResult = DocumentSerializer::unserialize($taskResult->payload);
 
         return new BulkWriteResult(
-            insertedCount: (int) $docResult['insertedcount'],
-            matchedCount: (int) $docResult['matchedcount'],
-            modifiedCount: (int) $docResult['modifiedcount'],
-            deletedCount: (int) $docResult['deletedcount'],
-            upsertedCount: (int) $docResult['upsertedcount'],
-            upsertedIds: (array) $docResult['upsertedids'],
+            insertedCount: (int) $documentResult['insertedcount'],
+            matchedCount: (int) $documentResult['matchedcount'],
+            modifiedCount: (int) $documentResult['modifiedcount'],
+            deletedCount: (int) $documentResult['deletedcount'],
+            upsertedCount: (int) $documentResult['upsertedcount'],
+            upsertedIds: (array) $documentResult['upsertedids'],
         );
     }
 
@@ -134,9 +134,7 @@ readonly class Collection
         $result = $taskResult->payload;
 
         if (ctype_digit($result) === false) {
-            throw new InvalidCountResultException(
-                "Invalid countDocuments result: $result"
-            );
+            throw new InvalidCountResultException("Invalid countDocuments result: $result");
         }
 
         return (int) $result;
@@ -300,9 +298,9 @@ readonly class Collection
             ),
         );
 
-        $docResult = DocumentSerializer::unserialize($taskResult->payload);
+        $documentResult = DocumentSerializer::unserialize($taskResult->payload);
 
-        return $docResult['values'] ?? [];
+        return $documentResult['values'] ?? [];
     }
 
     /**
@@ -432,9 +430,7 @@ readonly class Collection
         $result = $taskResult->payload;
 
         if (ctype_digit($result) === false) {
-            throw new InvalidCountResultException(
-                "Invalid estimatedDocumentCount result: $result"
-            );
+            throw new InvalidCountResultException("Invalid estimatedDocumentCount result: $result");
         }
 
         return (int) $result;
@@ -470,9 +466,9 @@ readonly class Collection
             ),
         );
 
-        $docResult = DocumentSerializer::unserialize($taskResult->payload);
+        $documentResult = DocumentSerializer::unserialize($taskResult->payload);
 
-        return $docResult['names'] ?? [];
+        return $documentResult['names'] ?? [];
     }
 
     /**
@@ -583,22 +579,22 @@ readonly class Collection
 
     private function buildUpdateResult(TaskResultDto $taskResult): UpdateResult
     {
-        $docResult = DocumentSerializer::unserialize($taskResult->payload);
+        $documentResult = DocumentSerializer::unserialize($taskResult->payload);
 
         return new UpdateResult(
-            matchedCount: (int) $docResult['matchedcount'],
-            modifiedCount: (int) $docResult['modifiedcount'],
-            upsertedCount: (int) $docResult['upsertedcount'],
-            upsertedId: $docResult['upsertedid'],
+            matchedCount: (int) $documentResult['matchedcount'],
+            modifiedCount: (int) $documentResult['modifiedcount'],
+            upsertedCount: (int) $documentResult['upsertedcount'],
+            upsertedId: $documentResult['upsertedid'],
         );
     }
 
     private function buildDeleteResult(TaskResultDto $taskResult): DeleteResult
     {
-        $docResult = DocumentSerializer::unserialize($taskResult->payload);
+        $documentResult = DocumentSerializer::unserialize($taskResult->payload);
 
         return new DeleteResult(
-            deletedCount: (int) $docResult['deletedcount'],
+            deletedCount: (int) $documentResult['deletedcount'],
         );
     }
 }

@@ -24,7 +24,7 @@ class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
 
         $this->fieldName  = uniqid();
         $this->fieldValue = TestMongodbResolver::getSconcurDateTime(
-            $this->driverDateTime->toDateTime()
+            dateTime: $this->driverDateTime->toDateTime(),
         );
     }
 
@@ -36,22 +36,22 @@ class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
     protected function on_1_start(): void
     {
         $insertResult = $this->sconcurCollection->insertOne(
-            document: [$this->fieldName => $this->fieldValue]
+            document: [$this->fieldName => $this->fieldValue],
         );
 
         self::assertTrue(
-            $insertResult->insertedId instanceof ObjectId
+            $insertResult->insertedId instanceof ObjectId,
         );
     }
 
     protected function on_1_middle(): void
     {
         $insertResult = $this->sconcurCollection->insertOne(
-            document: [$this->fieldName => $this->fieldValue]
+            document: [$this->fieldName => $this->fieldValue],
         );
 
         self::assertTrue(
-            $insertResult->insertedId instanceof ObjectId
+            $insertResult->insertedId instanceof ObjectId,
         );
     }
 
@@ -68,7 +68,7 @@ class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
     protected function on_iterate(): void
     {
         $this->sconcurCollection->insertOne(
-            document: [$this->fieldName => $this->fieldValue]
+            document: [$this->fieldName => $this->fieldValue],
         );
     }
 
@@ -76,7 +76,7 @@ class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
     {
         // An array-valued _id is rejected by MongoDB (server-side error).
         $this->sconcurCollection->insertOne(
-            document: ['_id' => [1, 2, 3]]
+            document: ['_id' => [1, 2, 3]],
         );
     }
 
@@ -84,7 +84,7 @@ class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
     {
         self::assertEquals(
             6,
-            $this->driverCollection->countDocuments([$this->fieldName => $this->driverDateTime])
+            $this->driverCollection->countDocuments([$this->fieldName => $this->driverDateTime]),
         );
     }
 }

@@ -47,7 +47,16 @@ readonly class FindPayload extends BaseMongodbPayload
     protected function getParameters(): Parameters
     {
         return new Parameters(
-            payload: new FindPayloadParameters($this->filter, $this->projection, $this->sort, $this->limit, $this->skip, $this->batchSize, $this->hint, $this->collation),
+            payload: new FindPayloadParameters(
+                filter: $this->filter,
+                projection: $this->projection,
+                sort: $this->sort,
+                limit: $this->limit,
+                skip: $this->skip,
+                batchSize: $this->batchSize,
+                hint: $this->hint,
+                collation: $this->collation,
+            ),
             isObject: true,
         );
     }

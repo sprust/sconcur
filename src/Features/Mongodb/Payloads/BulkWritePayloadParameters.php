@@ -54,7 +54,7 @@ readonly class BulkWritePayloadParameters implements PayloadParametersInterface
                         'upsert'      => $value[2]['upsert'] ?? false, // TODO
                     ],
                     default => throw new InvalidMongodbBulkWriteOperationException(
-                        operationType: (string) $type
+                        operationType: (string) $type,
                     )
                 },
             ];

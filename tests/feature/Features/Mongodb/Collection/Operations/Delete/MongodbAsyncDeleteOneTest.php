@@ -27,8 +27,8 @@ class MongodbAsyncDeleteOneTest extends BaseMongodbAsyncTestCase
                 fn(int $index) => [
                     $this->fieldName => $this->driverObjectId,
                 ],
-                range(1, $this->documentsCount)
-            )
+                range(1, $this->documentsCount),
+            ),
         );
     }
 
@@ -52,12 +52,12 @@ class MongodbAsyncDeleteOneTest extends BaseMongodbAsyncTestCase
         $result = $this->sconcurCollection->deleteOne(
             filter: [
                 uniqid() => $this->sconcurObjectId,
-            ]
+            ],
         );
 
         self::assertEquals(
             0,
-            $result->deletedCount
+            $result->deletedCount,
         );
     }
 
@@ -73,14 +73,16 @@ class MongodbAsyncDeleteOneTest extends BaseMongodbAsyncTestCase
 
     protected function on_exception(): void
     {
-        $this->sconcurCollection->deleteOne(['$set' => 11]);
+        $this->sconcurCollection->deleteOne(
+            filter: ['$set' => 11],
+        );
     }
 
     protected function assertResult(array $results): void
     {
         self::assertEquals(
             $this->documentsCount - $this->deletedDocumentsCount,
-            $this->driverCollection->countDocuments()
+            $this->driverCollection->countDocuments(),
         );
     }
 
@@ -89,12 +91,12 @@ class MongodbAsyncDeleteOneTest extends BaseMongodbAsyncTestCase
         $result = $this->sconcurCollection->deleteOne(
             filter: [
                 $this->fieldName => $this->sconcurObjectId,
-            ]
+            ],
         );
 
         self::assertEquals(
             1,
-            $result->deletedCount
+            $result->deletedCount,
         );
 
         ++$this->deletedDocumentsCount;

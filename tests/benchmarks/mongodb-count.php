@@ -29,14 +29,14 @@ $benchmarker->run(
     },
     syncCallback: static function () use ($sconcurCollection, $sconcurFilter) {
         return $sconcurCollection->countDocuments(
-        filter: $sconcurFilter
+            filter: $sconcurFilter,
         );
     },
     asyncCallback: static function () use ($sconcurCollection, $sconcurFilter) {
         return $sconcurCollection->countDocuments(
-        filter: $sconcurFilter
+            filter: $sconcurFilter,
         );
-    }
+    },
 );
 
 function makeFilter(mixed $objectId, mixed $dateTime): array

@@ -28,8 +28,8 @@ class MongodbAbandonedCursorTest extends BaseTestCase
         $driverCollection->insertMany(
             array_map(
                 static fn(int $index) => ['index' => $index],
-                range(1, 60)
-            )
+                range(1, 60),
+            ),
         );
     }
 
@@ -39,7 +39,10 @@ class MongodbAbandonedCursorTest extends BaseTestCase
 
         $openCursorsBaseline = $this->getOpenCursorsCount();
 
-        $iterator = $collection->find(filter: [], batchSize: 5);
+        $iterator = $collection->find(
+            filter: [],
+            batchSize: 5,
+        );
 
         $firstDocument = null;
 
@@ -68,14 +71,19 @@ class MongodbAbandonedCursorTest extends BaseTestCase
             callback: static function () use ($collection): int {
                 $documentsSeen = 0;
 
-                foreach ($collection->find(filter: [], batchSize: 5) as $document) {
+                foreach (
+                    $collection->find(
+                        filter: [],
+                        batchSize: 5,
+                    ) as $document
+                ) {
                     ++$documentsSeen;
 
                     break;
                 }
 
                 return $documentsSeen;
-            }
+            },
         );
 
         $results = $waitGroup->waitResults();
@@ -104,7 +112,7 @@ class MongodbAbandonedCursorTest extends BaseTestCase
         self::assertLessThanOrEqual(
             $baseline,
             $openCursors,
-            'Abandoned server-side cursor was not closed'
+            'Abandoned server-side cursor was not closed',
         );
     }
 

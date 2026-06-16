@@ -60,7 +60,7 @@ class MongodbAsyncFindOneAndDeleteTest extends BaseMongodbAsyncTestCase
     protected function on_2_middle(): void
     {
         $count = $this->sconcurCollection->countDocuments(
-            [$this->fieldName => ['$exists' => true]]
+            [$this->fieldName => ['$exists' => true]],
         );
 
         self::assertEquals(1, $count);

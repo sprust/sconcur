@@ -27,21 +27,21 @@ readonly class FeatureExecutor
         try {
             $runningTask = Extension::get()->push(
                 flowKey: $currentFlow->key,
-                payload: $payload
+                payload: $payload,
             );
         } catch (Throwable $exception) {
             static::stopFailedCallFlow(currentFlow: $currentFlow);
 
             throw new TaskExecutionException(
                 message: $exception->getMessage(),
-                previous: $exception
+                previous: $exception,
             );
         }
 
         return static::handle(
             currentFlow: $currentFlow,
             runningTask: $runningTask,
-            isNext: false
+            isNext: false,
         );
     }
 
@@ -52,21 +52,21 @@ readonly class FeatureExecutor
         try {
             $runningTask = Extension::get()->next(
                 flowKey: $currentFlow->key,
-                taskKey: $taskKey
+                taskKey: $taskKey,
             );
         } catch (Throwable $exception) {
             static::stopFailedCallFlow(currentFlow: $currentFlow);
 
             throw new TaskExecutionException(
                 message: $exception->getMessage(),
-                previous: $exception
+                previous: $exception,
             );
         }
 
         return static::handle(
             currentFlow: $currentFlow,
             runningTask: $runningTask,
-            isNext: true
+            isNext: true,
         );
     }
 
@@ -98,13 +98,13 @@ readonly class FeatureExecutor
                 State::addFiberTask(
                     flowKey: $currentFlow->key,
                     taskKey: $runningTask->key,
-                    fiberId: spl_object_id($currentFiber)
+                    fiberId: spl_object_id($currentFiber),
                 );
 
                 unset($currentFiber);
             } else {
                 throw new OutsideFiberException(
-                    message: 'Can\'t wait outside of fiber.'
+                    message: 'Can\'t wait outside of fiber.',
                 );
             }
 
@@ -113,13 +113,13 @@ readonly class FeatureExecutor
             $result = static::handleSync(
                 currentFlow: $currentFlow,
                 runningTask: $runningTask,
-                isNext: $isNext
+                isNext: $isNext,
             );
         }
 
         if ($result->key !== $runningTask->key) {
             throw new UnexpectedTaskKeyException(
-                message: "Unexpected task key. Expected [$runningTask->key], got [$result->key]."
+                message: "Unexpected task key. Expected [$runningTask->key], got [$result->key].",
             );
         }
 
@@ -148,7 +148,7 @@ readonly class FeatureExecutor
 
             throw new TaskExecutionException(
                 message: $exception->getMessage(),
-                previous: $exception
+                previous: $exception,
             );
         }
 
@@ -161,7 +161,7 @@ readonly class FeatureExecutor
         } elseif ($result->hasNext) {
             State::registerSyncTaskFlow(
                 taskKey: $runningTask->key,
-                flowKey: $currentFlow->key
+                flowKey: $currentFlow->key,
             );
         } else {
             Extension::get()->stopFlow($currentFlow->key);
@@ -174,7 +174,7 @@ readonly class FeatureExecutor
     {
         if ($result->isError) {
             throw new TaskErrorException(
-                $result->payload ?: 'Unknown error'
+                message: $result->payload ?: 'Unknown error',
             );
         }
 
@@ -185,7 +185,7 @@ readonly class FeatureExecutor
     {
         if (!$currentFlow->isAsync) {
             throw new OutsideFiberException(
-                message: 'Can\'t suspend outside of fiber.'
+                message: 'Can\'t suspend outside of fiber.',
             );
         }
 
@@ -194,7 +194,7 @@ readonly class FeatureExecutor
         } catch (Throwable $exception) {
             throw new TaskExecutionException(
                 message: $exception->getMessage(),
-                previous: $exception
+                previous: $exception,
             );
         }
 
@@ -202,7 +202,7 @@ readonly class FeatureExecutor
             static::checkResult($result);
         } else {
             throw new UnexpectedResultTypeException(
-                message: 'Unexpected result type. Expected ' . TaskResultDto::class . '.'
+                message: 'Unexpected result type. Expected ' . TaskResultDto::class . '.',
             );
         }
 

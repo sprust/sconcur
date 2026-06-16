@@ -33,7 +33,7 @@ class MongodbAsyncDropIndexTest extends BaseMongodbAsyncTestCase
                 __FUNCTION__ => 1,
                 uniqid()     => -1,
             ],
-            name: __FUNCTION__
+            name: __FUNCTION__,
         );
 
         $this->assertIndex(__FUNCTION__);
@@ -52,7 +52,7 @@ class MongodbAsyncDropIndexTest extends BaseMongodbAsyncTestCase
 
         $this->createIndex(
             keys: $keys,
-            name: null
+            name: null,
         );
 
         $indexName = $this->sconcurCollection->makeIndexNameByKeys($keys);
@@ -71,7 +71,7 @@ class MongodbAsyncDropIndexTest extends BaseMongodbAsyncTestCase
                 __FUNCTION__ => 1,
                 uniqid()     => -1,
             ],
-            name: __FUNCTION__
+            name: __FUNCTION__,
         );
 
         $this->createIndex(
@@ -79,7 +79,7 @@ class MongodbAsyncDropIndexTest extends BaseMongodbAsyncTestCase
                 __FUNCTION__ => 1,
                 uniqid()     => -1,
             ],
-            name: uniqid()
+            name: uniqid(),
         );
 
         $this->assertIndex(__FUNCTION__);
@@ -98,7 +98,7 @@ class MongodbAsyncDropIndexTest extends BaseMongodbAsyncTestCase
 
         $this->createIndex(
             keys: $keys,
-            name: null
+            name: null,
         );
 
         $this->createIndex(
@@ -106,7 +106,7 @@ class MongodbAsyncDropIndexTest extends BaseMongodbAsyncTestCase
                 __FUNCTION__ => 1,
                 uniqid()     => -1,
             ],
-            name: uniqid()
+            name: uniqid(),
         );
 
         $indexName = $this->sconcurCollection->makeIndexNameByKeys($keys);
@@ -125,7 +125,7 @@ class MongodbAsyncDropIndexTest extends BaseMongodbAsyncTestCase
                 __FUNCTION__ => 1,
                 uniqid()     => -1,
             ],
-            name: null
+            name: null,
         );
     }
 
@@ -133,7 +133,7 @@ class MongodbAsyncDropIndexTest extends BaseMongodbAsyncTestCase
     {
         $this->createIndex(
             keys: [],
-            name: null
+            name: null,
         );
     }
 
@@ -141,7 +141,7 @@ class MongodbAsyncDropIndexTest extends BaseMongodbAsyncTestCase
     {
         self::assertCount(
             $this->indexesCount + 1,
-            $this->driverCollection->listIndexes()
+            $this->driverCollection->listIndexes(),
         );
     }
 
@@ -152,7 +152,7 @@ class MongodbAsyncDropIndexTest extends BaseMongodbAsyncTestCase
     {
         $this->sconcurCollection->createIndex(
             keys: $keys,
-            name: $name
+            name: $name,
         );
 
         ++$this->indexesCount;
@@ -164,7 +164,7 @@ class MongodbAsyncDropIndexTest extends BaseMongodbAsyncTestCase
     protected function dropIndex(array|string $index): void
     {
         $this->sconcurCollection->dropIndex(
-            index: $index
+            index: $index,
         );
 
         --$this->indexesCount;
@@ -179,7 +179,7 @@ class MongodbAsyncDropIndexTest extends BaseMongodbAsyncTestCase
         }
 
         self::assertTrue(
-            in_array($name, $indexes)
+            in_array($name, $indexes),
         );
     }
 
@@ -192,7 +192,7 @@ class MongodbAsyncDropIndexTest extends BaseMongodbAsyncTestCase
         }
 
         self::assertFalse(
-            in_array($name, $indexes)
+            in_array($name, $indexes),
         );
     }
 }

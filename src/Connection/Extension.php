@@ -33,7 +33,7 @@ class Extension
      * whenever the PHP <-> Go protocol changes (payload keys, exported functions) so
      * an outdated .so is rejected instead of silently misbehaving.
      */
-    private const string REQUIRED_EXTENSION_VERSION = '0.2.0';
+    private const string REQUIRED_EXTENSION_VERSION = '0.2.1';
 
     protected static ?Extension $instance = null;
 
@@ -170,7 +170,7 @@ class Extension
                     '%s: %s',
                     $errorContext,
                     $response,
-                )
+                ),
             );
         }
 
@@ -206,7 +206,7 @@ class Extension
                 'flow %s: %s',
                 $flowKey,
                 $response,
-            )
+            ),
         );
     }
 
@@ -218,7 +218,7 @@ class Extension
 
         if (!extension_loaded('sconcur')) {
             throw new ExtensionNotLoadedException(
-                'The extension "sconcur" is not loaded.'
+                message: 'The extension "sconcur" is not loaded.',
             );
         }
 
@@ -230,7 +230,7 @@ class Extension
                     'The loaded "sconcur" extension version %s is older than the required %s.',
                     $loadedVersion,
                     self::REQUIRED_EXTENSION_VERSION,
-                )
+                ),
             );
         }
 

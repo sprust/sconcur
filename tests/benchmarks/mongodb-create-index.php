@@ -34,11 +34,11 @@ $benchmarker->run(
         $indexName = "$index-sync";
 
         return $sconcurCollection->createIndex(
-        keys: [
+            keys: [
                 uniqid("{$indexName}_") => 1,
                 uniqid()                => -1,
             ],
-            name: $indexName
+            name: $indexName,
         );
     },
     asyncCallback: static function () use ($sconcurCollection, &$index) {
@@ -47,13 +47,13 @@ $benchmarker->run(
         $indexName = "$index-async";
 
         return $sconcurCollection->createIndex(
-        keys: [
+            keys: [
                 uniqid("{$indexName}_") => 1,
                 uniqid()                => -1,
             ],
-            name: $indexName
+            name: $indexName,
         );
-    }
+    },
 );
 
 function makeFilter(mixed $objectId, mixed $dateTime): array

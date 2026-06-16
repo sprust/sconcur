@@ -19,7 +19,7 @@ readonly class Sleeper
         FeatureExecutor::exec(
             payload: new SleeperPayload(
                 milliseconds: $milliseconds,
-            )
+            ),
         );
     }
 }

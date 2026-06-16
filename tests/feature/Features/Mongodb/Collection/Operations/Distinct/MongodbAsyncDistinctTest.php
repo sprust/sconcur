@@ -89,8 +89,8 @@ class MongodbAsyncDistinctTest extends BaseMongodbAsyncTestCase
         $this->sconcurCollection->insertMany(
             documents: array_map(
                 fn(int $index) => [$this->fieldName => $index],
-                range(1, 5)
-            )
+                range(1, 5),
+            ),
         );
     }
 }

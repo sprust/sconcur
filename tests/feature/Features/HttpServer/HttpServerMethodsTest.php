@@ -25,7 +25,10 @@ class HttpServerMethodsTest extends BaseHttpServerTestCase
     #[DataProvider('methodProvider')]
     public function testMethodIsRoutedAndEchoed(string $method): void
     {
-        [$status, $body] = $this->request($method, '/method');
+        [$status, $body] = $this->request(
+            method: $method,
+            path: '/method',
+        );
 
         self::assertSame(200, $status);
         self::assertSame($method, $body);
@@ -35,7 +38,11 @@ class HttpServerMethodsTest extends BaseHttpServerTestCase
     {
         $payload = 'hello body 123';
 
-        [$status, $body] = $this->request('POST', '/echo', $payload);
+        [$status, $body] = $this->request(
+            method: 'POST',
+            path: '/echo',
+            body: $payload,
+        );
 
         self::assertSame(200, $status);
         self::assertSame($payload, $body);

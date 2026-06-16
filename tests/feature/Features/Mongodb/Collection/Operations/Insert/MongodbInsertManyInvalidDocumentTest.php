@@ -20,7 +20,9 @@ class MongodbInsertManyInvalidDocumentTest extends BaseTestCase
 {
     public function test(): void
     {
-        $collection = TestMongodbResolver::getSconcurTestCollection('insertManyInvalidDocument');
+        $collection = TestMongodbResolver::getSconcurTestCollection(
+            collectionName: 'insertManyInvalidDocument',
+        );
 
         $waitGroup = WaitGroup::create();
 
@@ -30,8 +32,8 @@ class MongodbInsertManyInvalidDocumentTest extends BaseTestCase
                 documents: [
                     ['title' => 'valid document'],
                     'scalar instead of document',
-                ]
-            )
+                ],
+            ),
         );
 
         $exception = null;
@@ -49,7 +51,7 @@ class MongodbInsertManyInvalidDocumentTest extends BaseTestCase
         self::assertInstanceOf(TaskErrorException::class, $exception->getPrevious());
 
         $insertOneResult = $collection->insertOne(
-            document: ['title' => 'extension is still alive']
+            document: ['title' => 'extension is still alive'],
         );
 
         self::assertNotNull($insertOneResult->insertedId);

@@ -37,7 +37,10 @@ readonly class AggregatePayload extends BaseMongodbPayload
     protected function getParameters(): Parameters
     {
         return new Parameters(
-            payload: new AggregatePayloadParameters($this->pipeline, $this->batchSize),
+            payload: new AggregatePayloadParameters(
+                pipeline: $this->pipeline,
+                batchSize: $this->batchSize,
+            ),
             isObject: true,
         );
     }

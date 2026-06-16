@@ -13,7 +13,13 @@ class HttpServerConcurrencyTest extends BaseHttpServerTestCase
         // their sum (2.5s) — under 1s.
         $start = microtime(true);
 
-        $results = $this->concurrentGet(['/msleep/500', '/msleep/500', '/msleep/500', '/msleep/500', '/msleep/500']);
+        $results = $this->concurrentGet([
+            '/msleep/500',
+            '/msleep/500',
+            '/msleep/500',
+            '/msleep/500',
+            '/msleep/500',
+        ]);
 
         $elapsed = microtime(true) - $start;
 

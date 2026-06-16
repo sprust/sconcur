@@ -35,14 +35,14 @@ $benchmarker->run(
     },
     syncCallback: static function () use ($sconcurCollection, $sconcurDocuments) {
         return $sconcurCollection->insertMany(
-        documents: $sconcurDocuments
+            documents: $sconcurDocuments,
         )->insertedCount;
     },
     asyncCallback: static function () use ($sconcurCollection, $sconcurDocuments) {
         return $sconcurCollection->insertMany(
-        documents: $sconcurDocuments
+            documents: $sconcurDocuments,
         )->insertedCount;
-    }
+    },
 );
 
 function makeDocument(mixed $objectId, mixed $dateTime): array

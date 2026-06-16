@@ -45,7 +45,13 @@ readonly class RespondPayload implements PayloadInterface
      */
     public static function full(string $requestId, int $status, array $headers, string $body): self
     {
-        return new self($requestId, self::OP_FULL, $status, $headers, $body);
+        return new self(
+            requestId: $requestId,
+            op: self::OP_FULL,
+            status: $status,
+            headers: $headers,
+            body: $body,
+        );
     }
 
     /**
@@ -53,17 +59,35 @@ readonly class RespondPayload implements PayloadInterface
      */
     public static function head(string $requestId, int $status, array $headers): self
     {
-        return new self($requestId, self::OP_HEAD, $status, $headers, '');
+        return new self(
+            requestId: $requestId,
+            op: self::OP_HEAD,
+            status: $status,
+            headers: $headers,
+            body: '',
+        );
     }
 
     public static function chunk(string $requestId, string $body): self
     {
-        return new self($requestId, self::OP_CHUNK, 0, [], $body);
+        return new self(
+            requestId: $requestId,
+            op: self::OP_CHUNK,
+            status: 0,
+            headers: [],
+            body: $body,
+        );
     }
 
     public static function end(string $requestId): self
     {
-        return new self($requestId, self::OP_END, 0, [], '');
+        return new self(
+            requestId: $requestId,
+            op: self::OP_END,
+            status: 0,
+            headers: [],
+            body: '',
+        );
     }
 
     public function getMethod(): MethodEnum

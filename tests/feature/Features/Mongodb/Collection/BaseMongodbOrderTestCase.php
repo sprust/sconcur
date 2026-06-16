@@ -38,11 +38,13 @@ abstract class BaseMongodbOrderTestCase extends BaseTestCase
 
         $this->sconcurCollection = TestMongodbResolver::getSconcurTestCollection($collectionName);
 
-        $this->sconcurCollection->deleteMany([]);
+        $this->sconcurCollection->deleteMany(
+            filter: [],
+        );
 
         $this->keys = array_map(
             fn(int $index) => '_' . $index,
-            range(1, $this->keysCount)
+            range(1, $this->keysCount),
         );
 
         $document       = [];
@@ -68,14 +70,14 @@ abstract class BaseMongodbOrderTestCase extends BaseTestCase
             filter: [],
             projection: [
                 '_id' => 0,
-            ]
+            ],
         );
 
         self::assertNotNull($document);
 
         self::assertCount(
             $this->keysCount,
-            $document
+            $document,
         );
 
         $documentKeys = array_keys($document);
@@ -84,7 +86,7 @@ abstract class BaseMongodbOrderTestCase extends BaseTestCase
             self::assertSame(
                 $rootKey,
                 $documentKeys[$rootIndex],
-                "Failed asserting key [$rootKey] at index [$rootIndex]"
+                "Failed asserting key [$rootKey] at index [$rootIndex]",
             );
 
             $nestedDocumentKeys = array_keys($document[$rootKey]);
@@ -93,7 +95,7 @@ abstract class BaseMongodbOrderTestCase extends BaseTestCase
                 self::assertSame(
                     $nestedKey,
                     $nestedDocumentKeys[$nestedIndex],
-                    "Failed asserting nested key [$rootKey.$nestedKey] at index [$nestedKey]"
+                    "Failed asserting nested key [$rootKey.$nestedKey] at index [$nestedKey]",
                 );
             }
         }

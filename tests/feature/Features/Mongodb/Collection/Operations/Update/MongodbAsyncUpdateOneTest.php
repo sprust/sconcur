@@ -58,7 +58,7 @@ class MongodbAsyncUpdateOneTest extends BaseMongodbAsyncTestCase
     {
         $this->sconcurCollection->updateOne(
             filter: [],
-            update: [uniqid('$') => [$this->fieldName => $this->sconcurObjectId]]
+            update: [uniqid('$') => [$this->fieldName => $this->sconcurObjectId]],
         );
     }
 
@@ -72,8 +72,8 @@ class MongodbAsyncUpdateOneTest extends BaseMongodbAsyncTestCase
         $this->sconcurCollection->insertMany(
             documents: array_map(
                 fn(int $index) => ["e:$index" => $this->sconcurObjectId],
-                range(1, $this->documentsCount)
-            )
+                range(1, $this->documentsCount),
+            ),
         );
     }
 
@@ -83,19 +83,19 @@ class MongodbAsyncUpdateOneTest extends BaseMongodbAsyncTestCase
 
         $result = $this->sconcurCollection->updateOne(
             filter: [$key => $this->sconcurObjectId],
-            update: ['$set' => [$field => $this->sconcurObjectId]]
+            update: ['$set' => [$field => $this->sconcurObjectId]],
         );
 
         self::assertEquals(
             1,
-            $result->modifiedCount
+            $result->modifiedCount,
         );
 
         self::assertEquals(
             1,
             $this->sconcurCollection->countDocuments(
-                filter: [$field => $this->sconcurObjectId]
-            )
+                filter: [$field => $this->sconcurObjectId],
+            ),
         );
     }
 
@@ -105,19 +105,19 @@ class MongodbAsyncUpdateOneTest extends BaseMongodbAsyncTestCase
 
         $result = $this->sconcurCollection->updateOne(
             filter: [],
-            update: ['$set' => [$field => $this->sconcurObjectId]]
+            update: ['$set' => [$field => $this->sconcurObjectId]],
         );
 
         self::assertEquals(
             1,
-            $result->modifiedCount
+            $result->modifiedCount,
         );
 
         self::assertEquals(
             1,
             $this->sconcurCollection->countDocuments(
-                filter: [$field => $this->sconcurObjectId]
-            )
+                filter: [$field => $this->sconcurObjectId],
+            ),
         );
     }
 }

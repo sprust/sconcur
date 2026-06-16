@@ -32,7 +32,7 @@ class MongodbRangeUTCDateTimeTest extends BaseMongodbRangeTestCase
     protected function nextValue(mixed $value): UTCDateTime
     {
         return TestMongodbResolver::getSconcurDateTime(
-            (clone $value->toDateTime())->modify('+1 hour')
+            dateTime: (clone $value->toDateTime())->modify('+1 hour'),
         );
     }
 
@@ -44,7 +44,7 @@ class MongodbRangeUTCDateTimeTest extends BaseMongodbRangeTestCase
     protected function prevValue(mixed $value): UTCDateTime
     {
         return TestMongodbResolver::getSconcurDateTime(
-            (clone $value->toDateTime())->modify('-1 hour')
+            dateTime: (clone $value->toDateTime())->modify('-1 hour'),
         );
     }
 }

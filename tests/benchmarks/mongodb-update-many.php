@@ -35,18 +35,18 @@ $benchmarker->run(
     },
     syncCallback: static function () use ($sconcurCollection, $sconcurDate) {
         return $sconcurCollection->updateMany(
-        filter: $sconcurDate['filter'],
+            filter: $sconcurDate['filter'],
             update: $sconcurDate['update'],
             upsert: $sconcurDate['upsert'] ?? false,
         )->modifiedCount;
     },
     asyncCallback: static function () use ($sconcurCollection, $sconcurDate) {
         return $sconcurCollection->updateMany(
-        filter: $sconcurDate['filter'],
+            filter: $sconcurDate['filter'],
             update: $sconcurDate['update'],
             upsert: $sconcurDate['upsert'] ?? false,
         )->modifiedCount;
-    }
+    },
 );
 
 /**

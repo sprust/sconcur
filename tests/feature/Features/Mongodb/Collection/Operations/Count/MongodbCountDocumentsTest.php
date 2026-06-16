@@ -18,7 +18,9 @@ class MongodbCountDocumentsTest extends BaseTestCase
 
         $this->collection = TestMongodbResolver::getSconcurTestCollection('countDocuments');
 
-        $this->collection->deleteMany([]);
+        $this->collection->deleteMany(
+            filter: [],
+        );
 
         $this->collection->insertMany([
             ['k' => 1],
