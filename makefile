@@ -99,6 +99,13 @@ bench-all:
 	make bench-mysql-update
 	make bench-mysql-delete
 	make bench-mysql-transaction
+	make bench-pgsql-insert
+	make bench-pgsql-selectOne
+	make bench-pgsql-selectMany
+	make bench-pgsql-count
+	make bench-pgsql-update
+	make bench-pgsql-delete
+	make bench-pgsql-transaction
 	make bench-http-client
 	make bench-http-client-google
 	make bench-http-reuseport-io
@@ -160,6 +167,27 @@ bench-mysql-delete:
 
 bench-mysql-transaction:
 	$(PHP_EXT) tests/benchmarks/mysql-transaction.php ${c}
+
+bench-pgsql-insert:
+	$(PHP_EXT) tests/benchmarks/pgsql-insert.php ${c}
+
+bench-pgsql-selectOne:
+	$(PHP_EXT) tests/benchmarks/pgsql-select-one.php ${c}
+
+bench-pgsql-selectMany:
+	$(PHP_EXT) tests/benchmarks/pgsql-select-many.php ${c}
+
+bench-pgsql-count:
+	$(PHP_EXT) tests/benchmarks/pgsql-count.php ${c}
+
+bench-pgsql-update:
+	$(PHP_EXT) tests/benchmarks/pgsql-update.php ${c}
+
+bench-pgsql-delete:
+	$(PHP_EXT) tests/benchmarks/pgsql-delete.php ${c}
+
+bench-pgsql-transaction:
+	$(PHP_EXT) tests/benchmarks/pgsql-transaction.php ${c}
 
 bench-http-client:
 	$(PHP_EXT) tests/benchmarks/http-client.php ${c}
