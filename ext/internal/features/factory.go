@@ -9,6 +9,7 @@ import (
 	"sconcur/internal/features/mongodb/connection"
 	"sconcur/internal/features/mongodb/features/collection"
 	"sconcur/internal/features/sleeper"
+	"sconcur/internal/features/sql"
 	"sconcur/internal/types"
 )
 
@@ -22,14 +23,19 @@ func DetectMessageHandler(method types.Method) (contracts.FeatureContract, error
 		return httpserver_feature.Get(), nil
 	case types.MethodHttpClient:
 		return httpclient_feature.Get(), nil
+	case types.MethodMysql:
+		return sql_feature.GetMysql(), nil
+	case types.MethodPgsql:
+		return sql_feature.GetPgsql(), nil
 	default:
 		return nil, errors.New("unknown method: " + fmt.Sprint(method))
 	}
 }
 
 // Shutdown releases resources held by features (MongoDB clients and their
-// connection pools, the HTTP-client idle connections).
+// connection pools, the HTTP-client idle connections, the SQL connection pools).
 func Shutdown() {
 	connection.GetClients().DisconnectAll()
 	httpclient_feature.CloseIdleConnections()
+	sql_feature.CloseAllPools()
 }

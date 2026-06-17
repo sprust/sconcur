@@ -33,7 +33,18 @@ class Extension
      * whenever the PHP <-> Go protocol changes (payload keys, exported functions) so
      * an outdated .so is rejected instead of silently misbehaving.
      */
-    private const string REQUIRED_EXTENSION_VERSION = '0.2.1';
+    private const string REQUIRED_EXTENSION_VERSION = '0.2.2';
+
+    /**
+     * Result frame layout (Go -> PHP), see main.go buildResultFrame. The envelope is
+     * a fixed binary header, not MessagePack; only the feature payload stays
+     * MessagePack and is decoded once by the feature. Header: flags(1) + method(1) +
+     * execMs(uint32) + flowKeyLen(uint16) + taskKeyLen(uint16), then flowKey, taskKey
+     * and the raw payload (the rest).
+     */
+    private const int FRAME_HEADER_SIZE   = 10;
+    private const int FRAME_FLAG_ERROR    = 1 << 0;
+    private const int FRAME_FLAG_HAS_NEXT = 1 << 1;
 
     protected static ?Extension $instance = null;
 
@@ -174,19 +185,36 @@ class Extension
             );
         }
 
-        $responseData = MessagePackTransport::unpack($response);
-
         try {
+            // The envelope is a fixed binary header; the payload (the rest) is the
+            // feature's MessagePack bytes, decoded later by the feature itself.
+            $header = unpack('Cflags/Cmethod/NexecutionMs/nflowKeyLen/ntaskKeyLen', $response);
+
+            if ($header === false) {
+                throw new UnexpectedResponseFormatException(
+                    message: 'Could not unpack result frame header.',
+                );
+            }
+
+            $offset  = self::FRAME_HEADER_SIZE;
+            $flowKey = substr($response, $offset, $header['flowKeyLen']);
+            $offset += $header['flowKeyLen'];
+            $taskKey = substr($response, $offset, $header['taskKeyLen']);
+            $offset += $header['taskKeyLen'];
+            $payload = substr($response, $offset);
+
             return new TaskResultDto(
-                flowKey: $responseData['fk'],
-                method: MethodEnum::from($responseData['md']),
-                key: $responseData['tk'],
-                isError: $responseData['er'],
-                payload: $responseData['pl'],
-                hasNext: $responseData['hn'],
-                executionMs: $responseData['ems'],
+                flowKey: $flowKey,
+                method: MethodEnum::from($header['method']),
+                key: $taskKey,
+                isError: ($header['flags'] & self::FRAME_FLAG_ERROR) !== 0,
+                payload: $payload,
+                hasNext: ($header['flags'] & self::FRAME_FLAG_HAS_NEXT) !== 0,
+                executionMs: $header['executionMs'],
                 totalExecutionMs: (int) ((microtime(true) - $start) * 1000),
             );
+        } catch (UnexpectedResponseFormatException $exception) {
+            throw $exception;
         } catch (Throwable $exception) {
             throw new UnexpectedResponseFormatException(
                 message: $exception->getMessage(),

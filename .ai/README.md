@@ -8,8 +8,11 @@ here.
 
 - [README.md](../README.md) — project overview and usage
 - [docs/adding-a-feature.ru.md](../docs/adding-a-feature.ru.md) — guide for adding a new feature
+- [docs/mongodb.ru.md](../docs/mongodb.ru.md) — MongoDB feature: collection operations, cursors, BSON types, concurrency, internals
 - [docs/http-server.ru.md](../docs/http-server.ru.md) — HTTP-server feature: usage, params, internals, limits
 - [docs/http-client.ru.md](../docs/http-client.ru.md) — HTTP-client feature (PSR-18): usage, options, streaming, internals
+- [docs/mysql.ru.md](../docs/mysql.ru.md) — MySQL / universal SQL feature: usage, bindings, transactions, streaming, internals
+- [docs/pgsql.ru.md](../docs/pgsql.ru.md) — PostgreSQL: the SQL feature's second driver; PG-specific differences
 - [.ai/plans/](plans/) — detailed designs for roadmap items
 
 ## Plans
@@ -90,9 +93,10 @@ non-fiber path.)
 - `Features/FeatureExecutor` — coordinates feature execution, detects async context via `Fiber::getCurrent()`
 - `Features/Mongodb/Connection/{Client,Database,Collection}` — MongoDB operations (insert, update, delete, find, aggregate, indexes, bulk write)
 - `Features/Sleeper/Sleeper` — async sleep
-- `Features/Mongodb/Serialization/DocumentSerializer` — handles MongoDB Extended JSON (`$oid`, `$date`, `$numberLong`, etc.)
+- `Features/Mongodb/Serialization/DocumentSerializer` — encodes/decodes raw BSON via `ext-mongodb` (`MongoDB\BSON\Document`); values are native `MongoDB\BSON\*` types
 - `Features/HttpServer/` — long-lived HTTP server: `HttpServer::serve()`, `Scheduler::serve()`, DTOs (`Request`/`RequestBody`/`Response`/`StreamedResponse`/`ResponseStream`/`AccessLogEntry`). See [docs/http-server.ru.md](../docs/http-server.ru.md).
 - `Features/HttpClient/` — async PSR-18 HTTP client with response streaming: `HttpClient` (`ClientInterface`), `HttpClientOptions`, `Payloads/RequestPayload`, `Dto/ResponseBodyStream` (`StreamInterface`). See [docs/http-client.ru.md](../docs/http-client.ru.md).
+- `Features/Sql/` — universal SQL feature (driver-agnostic core on Go `database/sql`): `Connection` (`query`/`fetchAll`/`exec`/`begin`), `Transaction`, `Results/{RowsResult,ExecResult}`, command-envelope payloads. `Features/Mysql/Connection` and `Features/Pgsql/Connection` are thin driver facades supplying `MethodEnum::Mysql` / `MethodEnum::Pgsql`. See [docs/mysql.ru.md](../docs/mysql.ru.md) and [docs/pgsql.ru.md](../docs/pgsql.ru.md).
 
 **Go extension** (`ext/`):
 - `main.go` — cgo exports (`push`, `wait`, `next`, `waitAny`, `waitAnyTimeout`, `tasksCount`, `stopFlow`, `httpStopAccepting`, `destroy`, `version`)
@@ -103,11 +107,13 @@ non-fiber path.)
 - `internal/features/sleeper/` — goroutine-based sleep
 - `internal/features/mongodb/` — MongoDB operations via Go driver, with aggregation cursor state management
 - `internal/features/httpserver/` — `net/http.Server` as an http.Handler streaming each request to PHP; response write-commands, request-body streaming, concurrency limit, timeouts, graceful shutdown, SO_REUSEPORT
+- `internal/features/sql/` — driver-agnostic SQL on `database/sql`: one handler dispatches Query/Exec/Begin/Commit/Rollback by the envelope's command; `pools.go` is the `*sql.DB` pool registry (mirrors MongoDB clients), `rows_state.go` streams a SELECT cursor, `transactions.go` pins a `*sql.Tx` to a held begin task (auto-rollback on context cancel). The driver is selected per `Method`: `GetMysql()` registers go-sql-driver/mysql, `GetPgsql()` registers jackc/pgx (error label "pgsql").
 - `internal/features/httpclient/` — `net/http.Client` sending one request as a streaming state: first result carries response metadata + inline first chunk, subsequent results are raw body chunks; reusable transports (keep-alive pool), per-request deadline; optional streamed request body (upload) via an `io.Pipe` fed by `UploadChunk`/`UploadEnd` commands. Sub-operations are selected by a command in the payload envelope (`HttpClientCommand`), like MongoDB — not by separate `MethodEnum` values
 - `internal/helpers/` — small shared helpers: `CalcExecutionMs`, and `ReadChunk` (fixed-granularity body chunk reader used by both the HTTP server and client)
 
 **Key enums:**
-- `MethodEnum`: Sleep (1), MongodbCollection (2), HttpServe (3), HttpRespond (4), HttpClient (5)
+- `MethodEnum`: Sleep (1), MongodbCollection (2), HttpServe (3), HttpRespond (4), HttpClient (5), Mysql (6), Pgsql (7)
+- `SqlCommandEnum` (sub-operations under a SQL method, selected via the envelope's `cm`): Query (1), Exec (2), Begin (3), Commit (4), Rollback (5)
 - `HttpClientCommand` (sub-operations under HttpClient): Request (1), UploadChunk (2), UploadEnd (3) — selected via the payload envelope's `cm`, like MongoDB's `CommandEnum`
 - `CommandEnum`: InsertOne (1), BulkWrite (2), Aggregate (3), InsertMany (4), CountDocuments (5), UpdateOne (6), FindOne (7), CreateIndex (8), DeleteOne (9), DeleteMany (10), UpdateMany (11), Drop (12), DropIndex (13)
 

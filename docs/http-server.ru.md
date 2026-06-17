@@ -651,5 +651,4 @@ in-flight).
 ---
 
 См. также: [README → Принцип работы](../README.md#принцип-работы),
-[план HTTP-сервера](../.ai/plans/http-server.md),
 [Как добавить новую фичу](adding-a-feature.ru.md).
