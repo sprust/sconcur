@@ -28,10 +28,13 @@ type SqlFeature struct {
 	pools      *pools
 }
 
-func newSqlFeature(driverName string) *SqlFeature {
+// newSqlFeature builds the feature for one driver. driverName selects the
+// registered database/sql driver (e.g. "mysql", "pgx"); errorLabel prefixes error
+// messages (e.g. "mysql", "pgsql") and can differ from the driver name.
+func newSqlFeature(driverName string, errorLabel string) *SqlFeature {
 	return &SqlFeature{
 		driverName: driverName,
-		errFactory: errs.NewErrorsFactory(driverName),
+		errFactory: errs.NewErrorsFactory(errorLabel),
 		pools:      getPools(),
 	}
 }

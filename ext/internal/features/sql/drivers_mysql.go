@@ -13,7 +13,7 @@ var mysqlInstance *SqlFeature
 // GetMysql returns the singleton SQL feature bound to the MySQL driver.
 func GetMysql() *SqlFeature {
 	mysqlOnce.Do(func() {
-		mysqlInstance = newSqlFeature("mysql")
+		mysqlInstance = newSqlFeature("mysql", "mysql")
 	})
 
 	return mysqlInstance

@@ -25,6 +25,8 @@ func DetectMessageHandler(method types.Method) (contracts.FeatureContract, error
 		return httpclient_feature.Get(), nil
 	case types.MethodMysql:
 		return sql_feature.GetMysql(), nil
+	case types.MethodPgsql:
+		return sql_feature.GetPgsql(), nil
 	default:
 		return nil, errors.New("unknown method: " + fmt.Sprint(method))
 	}

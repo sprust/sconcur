@@ -11,4 +11,5 @@ enum MethodEnum: int
     case HttpRespond = 4;
     case HttpClient  = 5;
     case Mysql       = 6;
+    case Pgsql       = 7;
 }
