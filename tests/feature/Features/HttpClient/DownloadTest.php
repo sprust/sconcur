@@ -214,6 +214,28 @@ class DownloadTest extends BaseHttpClientTestCase
         }
     }
 
+    public function testTruncatedResponseThrowsAndRemovesPartialFile(): void
+    {
+        // The server declares a Content-Length larger than the body it sends, so the
+        // download fails mid-body (unexpected EOF). The partial file must be removed.
+        $path = $this->tempPath();
+
+        $exception = null;
+
+        try {
+            $this->client(new HttpClientOptions(requestTimeoutMs: 5_000))->download(
+                request: $this->request('GET', '/truncated'),
+                path: $path,
+                mode: DownloadFileMode::Replace,
+            );
+        } catch (DownloadException $exception) {
+            //
+        }
+
+        self::assertInstanceOf(DownloadException::class, $exception);
+        self::assertFileDoesNotExist($path);
+    }
+
     protected function tempPath(): string
     {
         $path = sys_get_temp_dir() . '/sconcur_download_' . getmypid() . '_' . count($this->paths);
