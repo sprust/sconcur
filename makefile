@@ -110,9 +110,17 @@ bench-all:
 	make bench-http-client-google
 	make bench-http-reuseport-io
 	make bench-http-reuseport-cpu
+	make bench-file-read
+	make bench-file-write
 
 bench-sleep:
 	$(PHP_EXT) tests/benchmarks/sleep.php ${c}
+
+bench-file-read:
+	$(PHP_EXT) tests/benchmarks/file-read.php ${c}
+
+bench-file-write:
+	$(PHP_EXT) tests/benchmarks/file-write.php ${c}
 
 bench-mongodb-insertOne:
 	$(PHP_EXT) tests/benchmarks/mongodb-insert-one.php ${c}
