@@ -54,6 +54,15 @@ type RequestParams struct {
 	MaxIdleConnsPerHost   int `json:"mih" msgpack:"mih"`
 	IdleConnTimeoutMs     int `json:"ict" msgpack:"ict"`
 	TLSHandshakeTimeoutMs int `json:"tht" msgpack:"tht"`
+	// Sink fields (download to file). When SinkPath is set, the response body is
+	// written straight into that file on the Go side (io.CopyBuffer) instead of
+	// being streamed to PHP. SinkMode mirrors PHP DownloadFileMode (see
+	// downloadModeToFlags); SinkPerm is the create permission (0 → 0644);
+	// DownloadBufferSizeBytes is the io.Copy buffer in bytes (≤0 → default).
+	SinkPath                string `json:"sp"  msgpack:"sp"`
+	SinkMode                int    `json:"sm"  msgpack:"sm"`
+	SinkPerm                int    `json:"spm" msgpack:"spm"`
+	DownloadBufferSizeBytes int    `json:"dbs" msgpack:"dbs"`
 }
 
 // UploadParams is the `p` content of an UploadChunk/UploadEnd command: the request

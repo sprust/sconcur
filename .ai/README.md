@@ -95,7 +95,7 @@ non-fiber path.)
 - `Features/Sleeper/Sleeper` — async sleep
 - `Features/Mongodb/Serialization/DocumentSerializer` — encodes/decodes raw BSON via `ext-mongodb` (`MongoDB\BSON\Document`); values are native `MongoDB\BSON\*` types
 - `Features/HttpServer/` — long-lived HTTP server: `HttpServer::serve()`, `Scheduler::serve()`, DTOs (`Request`/`RequestBody`/`Response`/`StreamedResponse`/`ResponseStream`/`AccessLogEntry`). See [docs/http-server.ru.md](../docs/http-server.ru.md).
-- `Features/HttpClient/` — async PSR-18 HTTP client with response streaming: `HttpClient` (`ClientInterface`), `HttpClientOptions`, `Payloads/RequestPayload`, `Dto/ResponseBodyStream` (`StreamInterface`). See [docs/http-client.ru.md](../docs/http-client.ru.md).
+- `Features/HttpClient/` — async PSR-18 HTTP client with response streaming: `HttpClient` (`ClientInterface`), `HttpClientOptions`, `Payloads/RequestPayload`, `Dto/ResponseBodyStream` (`StreamInterface`). `HttpClient::download()` writes the response body straight to a file on the Go side (`DownloadFileMode`, `Dto/DownloadResult`, `DownloadException`) — never crossing into PHP. See [docs/http-client.ru.md](../docs/http-client.ru.md).
 - `Features/Sql/` — universal SQL feature (driver-agnostic core on Go `database/sql`): `Connection` (`query`/`fetchAll`/`exec`/`begin`), `Transaction`, `Results/{RowsResult,ExecResult}`, command-envelope payloads. `Features/Mysql/Connection` and `Features/Pgsql/Connection` are thin driver facades supplying `MethodEnum::Mysql` / `MethodEnum::Pgsql`. See [docs/mysql.ru.md](../docs/mysql.ru.md) and [docs/pgsql.ru.md](../docs/pgsql.ru.md).
 
 **Go extension** (`ext/`):
@@ -108,7 +108,7 @@ non-fiber path.)
 - `internal/features/mongodb/` — MongoDB operations via Go driver, with aggregation cursor state management
 - `internal/features/httpserver/` — `net/http.Server` as an http.Handler streaming each request to PHP; response write-commands, request-body streaming, concurrency limit, timeouts, graceful shutdown, SO_REUSEPORT
 - `internal/features/sql/` — driver-agnostic SQL on `database/sql`: one handler dispatches Query/Exec/Begin/Commit/Rollback by the envelope's command; `pools.go` is the `*sql.DB` pool registry (mirrors MongoDB clients), `rows_state.go` streams a SELECT cursor, `transactions.go` pins a `*sql.Tx` to a held begin task (auto-rollback on context cancel). The driver is selected per `Method`: `GetMysql()` registers go-sql-driver/mysql, `GetPgsql()` registers jackc/pgx (error label "pgsql").
-- `internal/features/httpclient/` — `net/http.Client` sending one request as a streaming state: first result carries response metadata + inline first chunk, subsequent results are raw body chunks; reusable transports (keep-alive pool), per-request deadline; optional streamed request body (upload) via an `io.Pipe` fed by `UploadChunk`/`UploadEnd` commands. Sub-operations are selected by a command in the payload envelope (`HttpClientCommand`), like MongoDB — not by separate `MethodEnum` values
+- `internal/features/httpclient/` — `net/http.Client` sending one request as a streaming state: first result carries response metadata + inline first chunk, subsequent results are raw body chunks; reusable transports (keep-alive pool), per-request deadline; optional streamed request body (upload) via an `io.Pipe` fed by `UploadChunk`/`UploadEnd` commands. Sub-operations are selected by a command in the payload envelope (`HttpClientCommand`), like MongoDB — not by separate `MethodEnum` values. `download.go` is the sink path: when the request carries `SinkPath`, the response body is `io.Copy`'d straight into a file (mode→`os.O_*` via `downloadModeToFlags`) and only status+headers return to PHP — the body never crosses the boundary
 - `internal/helpers/` — small shared helpers: `CalcExecutionMs`, and `ReadChunk` (fixed-granularity body chunk reader used by both the HTTP server and client)
 
 **Key enums:**
@@ -146,6 +146,7 @@ lifecycle-sensitive tests extend `BaseTestCase`.
 
 - Never abbreviate variable names — use full, descriptive names (e.g. `$exception`, not `$e`; `$request`, not `$req`).
 - A variable holding a class instance is named exactly after that class, in lowerCamelCase: `CreateBookingHotelAction` → `$createBookingHotelAction`, `RequestPayload` → `$requestPayload`, `Client` → `$client`.
+- **A property, parameter or constant holding a measured quantity must carry its unit in the name**, so the unit is unambiguous at every call site: `filesizeBytes`, `bufferSizeBytes`, `maxResponseBodyBytes`, `timeoutMs`, `executionMs`, `intervalSeconds`. Applies to new and changed code (do not mass-retrofit existing fields in unrelated areas). Codes/identifiers that are not a measured quantity (e.g. `statusCode`, `sinkMode`) are exempt.
 
 ### Blank lines & block separation
 
