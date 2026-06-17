@@ -153,6 +153,24 @@ func (f *HttpClientFeature) handleRequest(task *tasks.Task, raw msgpack.RawMessa
 
 	chunkSize := chunkSizeOrDefault(payload.ChunkSize)
 
+	// Download to file: the response body is copied straight into a file on the Go
+	// side, never streamed to PHP. Not supported together with a streamed request
+	// body (a rare combination) in this version.
+	if payload.SinkPath != "" {
+		if payload.StreamBody {
+			task.AddResult(dto.NewErrorResult(
+				message,
+				requestErrorPayload(errFactory.ByText("sink download is not supported with a streamed request body")),
+			))
+
+			return
+		}
+
+		f.handleDownload(task, client, request, &payload)
+
+		return
+	}
+
 	if payload.StreamBody {
 		f.startStreamedRequest(task, ctx, client, request, payload, pipeWriter, chunkSize)
 

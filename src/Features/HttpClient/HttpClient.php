@@ -9,11 +9,13 @@ use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseFactoryInterface;
 use Psr\Http\Message\ResponseInterface;
+use SConcur\Exceptions\HttpClient\DownloadException;
 use SConcur\Exceptions\HttpClient\HttpClientException;
 use SConcur\Exceptions\HttpClient\NetworkException;
 use SConcur\Exceptions\HttpClient\RequestException;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Features\FeatureExecutor;
+use SConcur\Features\HttpClient\Dto\DownloadResult;
 use SConcur\Features\HttpClient\Dto\ResponseBodyStream;
 use SConcur\Features\HttpClient\Payloads\RequestPayload;
 use SConcur\Features\HttpClient\Payloads\RequestPayloadParameters;
@@ -37,6 +39,9 @@ readonly class HttpClient implements ClientInterface
     /** Error-class markers the Go side prefixes onto its error payloads. */
     protected const string NETWORK_MARKER = 'net:';
     protected const string REQUEST_MARKER = 'req:';
+
+    /** Default io.Copy buffer size for download() (64 KiB), tunable per call. */
+    protected const int DEFAULT_DOWNLOAD_BUFFER_SIZE_BYTES = 65_536;
 
     public function __construct(
         protected ResponseFactoryInterface $responseFactory,
@@ -68,6 +73,67 @@ readonly class HttpClient implements ClientInterface
         }
 
         return $this->buildResponse($result);
+    }
+
+    /**
+     * Downloads the response body straight into a file on the Go side: the body is
+     * copied with io.Copy inside the extension and never crosses into PHP, so memory
+     * stays constant for any size and there are no per-chunk round-trips. Inside a
+     * WaitGroup many downloads fan out concurrently; outside it works synchronously.
+     *
+     * Only a 2xx response is written. A non-2xx response, or a transport/file error,
+     * throws a DownloadException (its getStatusCode() carries the status for a
+     * non-2xx). $bufferSize tunes the copy granularity on the Go side.
+     *
+     * The downloaded size is DownloadResult::$filesize (the bytes actually written);
+     * the returned headers are exactly what the server sent.
+     */
+    public function download(
+        RequestInterface $request,
+        string $path,
+        DownloadFileMode $mode = DownloadFileMode::Replace,
+        int $bufferSizeBytes = self::DEFAULT_DOWNLOAD_BUFFER_SIZE_BYTES,
+        int $perm = 0644,
+    ): DownloadResult {
+        try {
+            $result = FeatureExecutor::exec(
+                payload: $this->buildPayload(
+                    request: $request,
+                    body: (string) $request->getBody(),
+                    streamBody: false,
+                    requestId: '',
+                    sinkPath: $path,
+                    sinkMode: $mode->value,
+                    sinkPerm: $perm,
+                    downloadBufferSizeBytes: $bufferSizeBytes,
+                ),
+            );
+        } catch (Throwable $exception) {
+            throw new DownloadException(
+                message: $exception->getMessage(),
+                statusCode: null,
+                previous: $exception,
+            );
+        }
+
+        /** @var array<string, mixed> $meta */
+        $meta = MessagePackTransport::unpack($result->payload);
+
+        $statusCode = (int) ($meta['st'] ?? 0);
+
+        if ($statusCode < 200 || $statusCode >= 300) {
+            throw new DownloadException(
+                message: "Download failed with HTTP status $statusCode.",
+                statusCode: $statusCode,
+            );
+        }
+
+        return new DownloadResult(
+            statusCode: $statusCode,
+            headers: $this->normalizeHeaders($meta['hd'] ?? []),
+            filesizeBytes: (int) ($meta['n'] ?? 0),
+            executionMs: $result->executionMs,
+        );
     }
 
     /**
@@ -157,6 +223,10 @@ readonly class HttpClient implements ClientInterface
         string $body,
         bool $streamBody,
         string $requestId,
+        string $sinkPath = '',
+        int $sinkMode = 0,
+        int $sinkPerm = 0,
+        int $downloadBufferSizeBytes = 0,
     ): RequestPayload {
         return new RequestPayload(
             new RequestPayloadParameters(
@@ -178,6 +248,10 @@ readonly class HttpClient implements ClientInterface
                 maxIdleConnsPerHost: $this->options->maxIdleConnsPerHost,
                 idleConnTimeoutMs: $this->options->idleConnTimeoutMs,
                 tlsHandshakeTimeoutMs: $this->options->tlsHandshakeTimeoutMs,
+                sinkPath: $sinkPath,
+                sinkMode: $sinkMode,
+                sinkPerm: $sinkPerm,
+                downloadBufferSizeBytes: $downloadBufferSizeBytes,
             ),
         );
     }

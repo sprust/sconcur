@@ -108,8 +108,12 @@ bench-all:
 	make bench-pgsql-transaction
 	make bench-http-client
 	make bench-http-client-google
+	make bench-http-client-download
 	make bench-http-reuseport-io
 	make bench-http-reuseport-cpu
+
+bench-http-client-download:
+	$(PHP_EXT) tests/benchmarks/http-client-download.php ${c}
 
 bench-sleep:
 	$(PHP_EXT) tests/benchmarks/sleep.php ${c}

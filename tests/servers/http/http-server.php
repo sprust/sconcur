@@ -141,6 +141,7 @@ $server->serve(static function (Request $request) use ($sleeper): Response|Strea
         ),
         $request->path === '/stream'      => streamRoute($sleeper),
         $request->path === '/slow-stream' => slowStreamRoute($sleeper),
+        $request->path === '/truncated'   => truncatedRoute(),
         str_starts_with($request->path, '/big/')      => bigRoute($request->path),
         str_starts_with($request->path, '/redirect/')  => redirectRoute($request->path),
         $request->path === '/throw'       => throw new RuntimeException('boom in handler'),
@@ -172,6 +173,19 @@ function msleepRoute(Sleeper $sleeper, string $path): Response
     $sleeper->msleep(milliseconds: $milliseconds);
 
     return new Response(body: 'slept');
+}
+
+function truncatedRoute(): Response
+{
+    // Declares a Content-Length far larger than the body actually sent, so net/http
+    // closes the connection short and the client gets an unexpected EOF mid-body.
+    // The server stays alive (no exit). Used by the download connection-drop test.
+    $body = str_repeat('x', 16_384);
+
+    return new Response(
+        body: $body,
+        headers: ['Content-Length' => [(string) (strlen($body) * 4)]],
+    );
 }
 
 function streamRoute(Sleeper $sleeper): StreamedResponse

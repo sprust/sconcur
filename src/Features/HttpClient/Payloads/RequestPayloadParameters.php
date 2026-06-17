@@ -37,6 +37,10 @@ readonly class RequestPayloadParameters implements PayloadParametersInterface
         protected int $maxIdleConnsPerHost,
         protected int $idleConnTimeoutMs,
         protected int $tlsHandshakeTimeoutMs,
+        protected string $sinkPath = '',
+        protected int $sinkMode = 0,
+        protected int $sinkPerm = 0,
+        protected int $downloadBufferSizeBytes = 0,
     ) {
     }
 
@@ -64,6 +68,10 @@ readonly class RequestPayloadParameters implements PayloadParametersInterface
             'mih' => $this->maxIdleConnsPerHost,
             'ict' => $this->idleConnTimeoutMs,
             'tht' => $this->tlsHandshakeTimeoutMs,
+            'sp'  => $this->sinkPath,
+            'sm'  => $this->sinkMode,
+            'spm' => $this->sinkPerm,
+            'dbs' => $this->downloadBufferSizeBytes,
         ];
     }
 }
