@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sconcur/internal/contracts"
+	"sconcur/internal/features/file"
 	"sconcur/internal/features/httpclient"
 	"sconcur/internal/features/httpserver"
 	"sconcur/internal/features/mongodb/connection"
@@ -27,6 +28,8 @@ func DetectMessageHandler(method types.Method) (contracts.FeatureContract, error
 		return sql_feature.GetMysql(), nil
 	case types.MethodPgsql:
 		return sql_feature.GetPgsql(), nil
+	case types.MethodFile:
+		return file_feature.Get(), nil
 	default:
 		return nil, errors.New("unknown method: " + fmt.Sprint(method))
 	}

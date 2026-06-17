@@ -211,7 +211,7 @@ func destroy() {
 
 //export version
 func version() *C.char {
-	return C.CString("0.2.2")
+	return C.CString("0.2.3")
 }
 
 func main() {}

@@ -13,6 +13,7 @@ here.
 - [docs/http-client.ru.md](../docs/http-client.ru.md) — HTTP-client feature (PSR-18): usage, options, streaming, internals
 - [docs/mysql.ru.md](../docs/mysql.ru.md) — MySQL / universal SQL feature: usage, bindings, transactions, streaming, internals
 - [docs/pgsql.ru.md](../docs/pgsql.ru.md) — PostgreSQL: the SQL feature's second driver; PG-specific differences
+- [docs/file.ru.md](../docs/file.ru.md) — File feature: open modes, read/write, streaming I/O, seek/stat, internals
 - [.ai/plans/](plans/) — detailed designs for roadmap items
 
 ## Plans
@@ -97,6 +98,7 @@ non-fiber path.)
 - `Features/HttpServer/` — long-lived HTTP server: `HttpServer::serve()`, `Scheduler::serve()`, DTOs (`Request`/`RequestBody`/`Response`/`StreamedResponse`/`ResponseStream`/`AccessLogEntry`). See [docs/http-server.ru.md](../docs/http-server.ru.md).
 - `Features/HttpClient/` — async PSR-18 HTTP client with response streaming: `HttpClient` (`ClientInterface`), `HttpClientOptions`, `Payloads/RequestPayload`, `Dto/ResponseBodyStream` (`StreamInterface`). See [docs/http-client.ru.md](../docs/http-client.ru.md).
 - `Features/Sql/` — universal SQL feature (driver-agnostic core on Go `database/sql`): `Connection` (`query`/`fetchAll`/`exec`/`begin`), `Transaction`, `Results/{RowsResult,ExecResult}`, command-envelope payloads. `Features/Mysql/Connection` and `Features/Pgsql/Connection` are thin driver facades supplying `MethodEnum::Mysql` / `MethodEnum::Pgsql`. See [docs/mysql.ru.md](../docs/mysql.ru.md) and [docs/pgsql.ru.md](../docs/pgsql.ru.md).
+- `Features/File/` — asynchronous file I/O on Go `os.File`: `FileSystem` (`open`/`read`/`write`/`append`/`exists`), the `File` handle (`read`/`write`/`seek`/`tell`/`rewind`/`eof`/`truncate`/`flush`/`stat`/`getContents`/`close`), `FileMode` (validated fopen modes), command-envelope payloads, `Results/FileStat`. An open handle is a held resource pinned across commands (like an SQL transaction). See [docs/file.ru.md](../docs/file.ru.md).
 
 **Go extension** (`ext/`):
 - `main.go` — cgo exports (`push`, `wait`, `next`, `waitAny`, `waitAnyTimeout`, `tasksCount`, `stopFlow`, `httpStopAccepting`, `destroy`, `version`)
@@ -108,11 +110,13 @@ non-fiber path.)
 - `internal/features/mongodb/` — MongoDB operations via Go driver, with aggregation cursor state management
 - `internal/features/httpserver/` — `net/http.Server` as an http.Handler streaming each request to PHP; response write-commands, request-body streaming, concurrency limit, timeouts, graceful shutdown, SO_REUSEPORT
 - `internal/features/sql/` — driver-agnostic SQL on `database/sql`: one handler dispatches Query/Exec/Begin/Commit/Rollback by the envelope's command; `pools.go` is the `*sql.DB` pool registry (mirrors MongoDB clients), `rows_state.go` streams a SELECT cursor, `transactions.go` pins a `*sql.Tx` to a held begin task (auto-rollback on context cancel). The driver is selected per `Method`: `GetMysql()` registers go-sql-driver/mysql, `GetPgsql()` registers jackc/pgx (error label "pgsql").
+- `internal/features/file/` — file I/O on `os.File`: one handler dispatches Open/Read/Write/Seek/Truncate/Sync/Stat/Close by the envelope's command; `sessions.go` pins an open `*os.File` to a held Open task (mirrors `sql/transactions.go`), `mode.go` maps the fopen mode string to `os.O_*` flags (the single source of those platform constants). Read/write/sync are bounded by a per-command deadline; a stuck descriptor is freed by closing the handle on flow stop
 - `internal/features/httpclient/` — `net/http.Client` sending one request as a streaming state: first result carries response metadata + inline first chunk, subsequent results are raw body chunks; reusable transports (keep-alive pool), per-request deadline; optional streamed request body (upload) via an `io.Pipe` fed by `UploadChunk`/`UploadEnd` commands. Sub-operations are selected by a command in the payload envelope (`HttpClientCommand`), like MongoDB — not by separate `MethodEnum` values
 - `internal/helpers/` — small shared helpers: `CalcExecutionMs`, and `ReadChunk` (fixed-granularity body chunk reader used by both the HTTP server and client)
 
 **Key enums:**
-- `MethodEnum`: Sleep (1), MongodbCollection (2), HttpServe (3), HttpRespond (4), HttpClient (5), Mysql (6), Pgsql (7)
+- `MethodEnum`: Sleep (1), MongodbCollection (2), HttpServe (3), HttpRespond (4), HttpClient (5), Mysql (6), Pgsql (7), File (8)
+- `FileCommandEnum` (sub-operations under the File method, selected via the envelope's `cm`): Open (1), Read (2), Write (3), Seek (4), Truncate (5), Sync (6), Stat (7), Close (8)
 - `SqlCommandEnum` (sub-operations under a SQL method, selected via the envelope's `cm`): Query (1), Exec (2), Begin (3), Commit (4), Rollback (5)
 - `HttpClientCommand` (sub-operations under HttpClient): Request (1), UploadChunk (2), UploadEnd (3) — selected via the payload envelope's `cm`, like MongoDB's `CommandEnum`
 - `CommandEnum`: InsertOne (1), BulkWrite (2), Aggregate (3), InsertMany (4), CountDocuments (5), UpdateOne (6), FindOne (7), CreateIndex (8), DeleteOne (9), DeleteMany (10), UpdateMany (11), Drop (12), DropIndex (13)
@@ -188,7 +192,7 @@ change. **Never bump the major version without the maintainer's approval**; bump
 the minor only when warranted, otherwise the patch. **Bump the version at most
 once per git branch** — the first protocol change on a branch bumps it, later
 commits on the same branch reuse that version (do not move it again). Current:
-`0.2.1`.
+`0.2.3`.
 
 ## Exceptions
 
