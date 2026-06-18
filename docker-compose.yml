@@ -35,7 +35,7 @@ services:
       - "host.docker.internal:host-gateway"
     ports:
       - ${HTTP_SERVER_DOCKER_PORT}:${HTTP_SERVER_PORT}
-    command: ["sh", "-c", "php -d extension=./ext/build/sconcur.so tests/servers/http/http-server.php --address=0.0.0.0:${HTTP_SERVER_PORT}"]
+    command: ["sh", "-c", "php /sconcur/bin/sconcur-http-server start --configPath=/sconcur/config/sconcur.http-server.config.json"]
 
   mongodb:
     container_name: sc-mongodb
