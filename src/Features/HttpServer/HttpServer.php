@@ -349,19 +349,16 @@ readonly class HttpServer
         $time = date('Y-m-d\TH:i:s', (int) $startedAt)
             . sprintf('.%06d', (int) (($startedAt - floor($startedAt)) * 1_000_000));
 
-        fwrite(
-            STDOUT,
-            sprintf(
-                "%s %s %s %d %.2fms\n",
-                $time,
-                $request->method,
-                $request->path,
-                $response->status,
-                (microtime(true) - $startedAt) * 1000,
-            ),
-        );
-
-        fflush(STDOUT);
+        // Hand the access-log line to the Go side, which writes it from a background
+        // goroutine — never blocking this single-threaded loop on log I/O.
+        Extension::get()->log(sprintf(
+            "%s %s %s %d %.2fms\n",
+            $time,
+            $request->method,
+            $request->path,
+            $response->status,
+            (microtime(true) - $startedAt) * 1000,
+        ));
     }
 
     /**

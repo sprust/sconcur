@@ -38,6 +38,10 @@ function httpStopAccepting(string $fk): void
 {
 }
 
+function logLine(string $line): void
+{
+}
+
 function destroy(): void
 {
 }

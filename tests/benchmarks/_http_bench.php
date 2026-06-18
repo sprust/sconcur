@@ -24,7 +24,7 @@ function benchSpawnServers(string $host, int $port, int $workers, bool $reusePor
     $extension = $root . '/ext/build/sconcur.so';
     $script    = $root . '/tests/servers/http/http-server.php';
 
-    $command = ['php', '-d', 'extension=' . $extension, $script, "$host:$port"];
+    $command = ['php', '-d', 'extension=' . $extension, $script, "--address=$host:$port"];
 
     if ($reusePort) {
         $command[] = '--reusePort=1';
