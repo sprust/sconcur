@@ -83,7 +83,7 @@ class TestWorkerMaster
 
         file_put_contents($configPath, (string) json_encode($config, JSON_PRETTY_PRINT));
 
-        $outputFile = (string) tempnam(self::storageDir(), 'sc-master-out-');
+        $outputFile = (string) tempnam(sys_get_temp_dir(), 'sc-master-out-');
 
         $process = self::open(['start', '--configPath=' . $configPath], $env, $outputFile);
 
@@ -121,7 +121,7 @@ class TestWorkerMaster
         $config = [
             'workerScript' => self::workerScript(),
             'workerCount'  => 1,
-            'runtimeDir'   => self::storageDir(),
+            'runtimeDir'   => sys_get_temp_dir(),
             'phpArgs'      => ['-d', 'extension=' . self::extensionPath()],
             'server'       => ['address' => self::HOST . ':0', 'reusePort' => true],
             ...$overrides,
@@ -129,7 +129,7 @@ class TestWorkerMaster
 
         $config['logDir'] ??= $config['runtimeDir'];
 
-        $path = (string) tempnam(self::storageDir(), 'sc-master-cfg-');
+        $path = (string) tempnam(sys_get_temp_dir(), 'sc-master-cfg-');
 
         file_put_contents($path, (string) json_encode($config, JSON_PRETTY_PRINT));
 
@@ -148,7 +148,7 @@ class TestWorkerMaster
     {
         $argv = [$subcommand, '--configPath=' . $configPath];
 
-        $outputFile = (string) tempnam(self::storageDir(), 'sc-master-cmd-');
+        $outputFile = (string) tempnam(sys_get_temp_dir(), 'sc-master-cmd-');
 
         $process = self::open($argv, $env, $outputFile);
 
@@ -399,21 +399,6 @@ class TestWorkerMaster
         return dirname(__DIR__, 3);
     }
 
-    /**
-     * The default runtime/config directory for tests. Contents are git-ignored and
-     * may be left behind between runs (kept under the repo, not the system temp dir).
-     */
-    public static function storageDir(): string
-    {
-        $dir = self::root() . '/tests/storage/servers';
-
-        if (!is_dir($dir)) {
-            mkdir($dir, 0o775, true);
-        }
-
-        return $dir;
-    }
-
     private static function binPath(): string
     {
         return self::root() . '/bin/sconcur-http-server';
@@ -431,7 +416,7 @@ class TestWorkerMaster
 
     private static function makeRuntimeDir(): string
     {
-        $dir = self::storageDir() . '/sc-master-' . uniqid('', true);
+        $dir = sys_get_temp_dir() . '/sc-master-' . uniqid('', true);
 
         if (!mkdir($dir, 0o775, true) && !is_dir($dir)) {
             throw new RuntimeException('Could not create runtime dir: ' . $dir);
