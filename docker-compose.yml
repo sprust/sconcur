@@ -22,7 +22,7 @@ services:
   # the host via env. Rebuild/restart it with `make http-server-restart`.
   http-server:
     container_name: sc-http-server
-    restart: on-failure
+    restart: unless-stopped
     build:
       context: ./docker/php
       args:
