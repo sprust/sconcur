@@ -30,16 +30,19 @@ class TestWorkerMaster
         private readonly int $port,
         private readonly string $runtimeDir,
         private readonly string $name,
+        private readonly string $configPath,
         private readonly string $outputFile,
     ) {
         $this->process = $process;
     }
 
     /**
-     * Starts a master supervising $workers demo workers on a loopback port.
+     * Starts a master supervising $workers demo workers on a loopback port. The
+     * master is driven by a JSON config file (--configPath); $options set master-level
+     * keys, $server sets the nested server block, $workerArgs are extra raw worker argv.
      *
-     * @param array<string, int|string> $options       extra `--key=value` CLI options (override defaults)
-     * @param array<string, string>     $env           extra env for the master (inherited by workers)
+     * @param array<string, int|string> $options       master-level config keys (override defaults)
+     * @param array<string, int|string> $env           extra env for the master (inherited by workers)
      * @param list<string>              $workerArgs    extra worker argv (e.g. ['--maxRequests=3'])
      * @param int|null                  $port          bind this exact port (default: a free one)
      * @param bool                      $waitReachable wait until a worker answers before returning
@@ -56,43 +59,40 @@ class TestWorkerMaster
         $runtimeDir = self::makeRuntimeDir();
         $name       = (string) ($options['name'] ?? 'sconcur-http-server');
 
-        $defaults = [
+        // The address lives in the server block; an explicit 'address' option (e.g. an
+        // unbindable one for the crash-loop test) overrides the loopback default.
+        $address = (string) ($options['address'] ?? self::HOST . ':' . $port);
+
+        unset($options['address']);
+
+        $config = [
             'workerScript' => self::workerScript(),
             'workerCount'  => 2,
-            'address'      => self::HOST . ':' . $port,
             'runtimeDir'   => $runtimeDir,
             'logDir'       => $runtimeDir,
             'name'         => $name,
+            // Workers must load the built extension; the master itself does not need it.
+            'phpArgs'      => ['-d', 'extension=' . self::extensionPath()],
+            // Several workers behind one port: each must enable SO_REUSEPORT.
+            'server'       => ['address' => $address, 'reusePort' => true],
+            'workerArgs'   => array_values($workerArgs),
+            ...$options,
         ];
 
-        $merged = [...$defaults, ...$options];
+        $configPath = $runtimeDir . '/config.json';
 
-        $argv = ['start'];
-
-        foreach ($merged as $key => $value) {
-            $argv[] = '--' . $key . '=' . $value;
-        }
-
-        // Several workers behind one port: each must enable SO_REUSEPORT.
-        $argv[] = '--workerArgs=--reusePort=1';
-
-        foreach ($workerArgs as $workerArg) {
-            $argv[] = '--workerArgs=' . $workerArg;
-        }
-
-        // Workers must load the built extension; the master itself does not need it.
-        $argv[] = '--phpArgs=-d';
-        $argv[] = '--phpArgs=extension=' . self::extensionPath();
+        file_put_contents($configPath, (string) json_encode($config, JSON_PRETTY_PRINT));
 
         $outputFile = (string) tempnam(sys_get_temp_dir(), 'sc-master-out-');
 
-        $process = self::open($argv, $env, $outputFile);
+        $process = self::open(['start', '--configPath=' . $configPath], $env, $outputFile);
 
         $server = new self(
             process: $process,
             port: $port,
             runtimeDir: $runtimeDir,
             name: $name,
+            configPath: $configPath,
             outputFile: $outputFile,
         );
 
@@ -110,21 +110,43 @@ class TestWorkerMaster
     }
 
     /**
-     * Runs a one-shot subcommand (status/stop) to completion and returns
-     * [exitCode, combined-output].
+     * Writes a JSON master config (filling sensible defaults) to a temp file and
+     * returns its path. For tests that drive a command against a hand-built config
+     * (validation, second-instance) rather than a running master.
      *
-     * @param array<string, int|string> $options
-     * @param array<string, string>     $env
+     * @param array<string, mixed> $overrides
+     */
+    public static function writeConfig(array $overrides): string
+    {
+        $config = [
+            'workerScript' => self::workerScript(),
+            'workerCount'  => 1,
+            'runtimeDir'   => sys_get_temp_dir(),
+            'phpArgs'      => ['-d', 'extension=' . self::extensionPath()],
+            'server'       => ['address' => self::HOST . ':0', 'reusePort' => true],
+            ...$overrides,
+        ];
+
+        $config['logDir'] ??= $config['runtimeDir'];
+
+        $path = (string) tempnam(sys_get_temp_dir(), 'sc-master-cfg-');
+
+        file_put_contents($path, (string) json_encode($config, JSON_PRETTY_PRINT));
+
+        return $path;
+    }
+
+    /**
+     * Runs a one-shot subcommand (start/status/stop) against the given config file to
+     * completion and returns [exitCode, combined-output].
+     *
+     * @param array<string, string> $env
      *
      * @return array{int, string}
      */
-    public static function runCommand(string $subcommand, array $options = [], array $env = []): array
+    public static function runCommand(string $subcommand, string $configPath, array $env = []): array
     {
-        $argv = [$subcommand];
-
-        foreach ($options as $key => $value) {
-            $argv[] = '--' . $key . '=' . $value;
-        }
+        $argv = [$subcommand, '--configPath=' . $configPath];
 
         $outputFile = (string) tempnam(sys_get_temp_dir(), 'sc-master-cmd-');
 
@@ -163,6 +185,11 @@ class TestWorkerMaster
     public function name(): string
     {
         return $this->name;
+    }
+
+    public function configPath(): string
+    {
+        return $this->configPath;
     }
 
     public function pid(): int
@@ -365,11 +392,6 @@ class TestWorkerMaster
         }
 
         return $process;
-    }
-
-    public static function demoWorkerScript(): string
-    {
-        return self::workerScript();
     }
 
     private static function root(): string

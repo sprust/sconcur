@@ -4,15 +4,18 @@ declare(strict_types=1);
 
 namespace SConcur\Worker;
 
+use SConcur\Exceptions\Worker\InvalidConfigException;
 use Throwable;
 
 /**
- * The universal master CLI behind bin/sconcur-http-server. Parses argv and runs one
- * of: start (run the supervisor in the foreground), status (report whether a master
- * is running, via the lock) or stop (remove the state file — the master watches it
- * and shuts the pool down gracefully).
+ * The universal master CLI behind bin/sconcur-http-server. Every command takes a
+ * single --configPath pointing to a JSON master config (see MasterConfig); there are
+ * no other flags. Commands: start (run the supervisor in the foreground), status
+ * (report whether a master is running, via the lock) or stop (remove the state file —
+ * the master watches it and shuts the pool down gracefully).
  *
- * The consumer only writes their worker script and points --worker at it.
+ * The consumer writes their worker script, points config.workerScript at it, and puts
+ * the server params under config.server.
  *
  * Exit codes: 0 ok; 1 error; 2 usage; 3 not-running (for status/stop and guards).
  */
@@ -23,7 +26,9 @@ class MasterCli
     public const int EXIT_USAGE       = 2;
     public const int EXIT_NOT_RUNNING = 3;
 
-    protected const string DEFAULT_NAME = 'sconcur-http-server';
+    protected const string CONFIG_PATH_FLAG = '--configPath=';
+
+    protected const int STOP_TIMEOUT_MS = 15_000;
 
     /** @var resource */
     protected mixed $stdout;
@@ -46,81 +51,50 @@ class MasterCli
      */
     public function run(array $argv): int
     {
-        $command = $argv[1] ?? '';
-        $options = $this->parseOptions(array_slice($argv, 2));
+        $command    = $argv[1] ?? '';
+        $configPath = $this->configPath(array_slice($argv, 2));
 
         return match ($command) {
-            'start'  => $this->start($options),
-            'status' => $this->status($options),
-            'stop'   => $this->stop($options),
+            'start'  => $this->start($configPath),
+            'status' => $this->status($configPath),
+            'stop'   => $this->stop($configPath),
             default  => $this->usage(),
         };
     }
 
-    /**
-     * @param array{scalar: array<string, string>, repeated: array<string, list<string>>} $options
-     */
-    protected function start(array $options): int
+    protected function start(string $configPath): int
     {
-        $scalar   = $options['scalar'];
-        $repeated = $options['repeated'];
+        $config = $this->loadConfig($configPath);
 
-        $workerScript = $scalar['workerScript'] ?? '';
-
-        if ($workerScript === '') {
-            return $this->fail('start: --workerScript=<path> is required', self::EXIT_USAGE);
+        if (!$config instanceof MasterConfig) {
+            return $config;
         }
-
-        $policy = RestartPolicy::tryFrom($scalar['restartPolicy'] ?? RestartPolicy::Always->value);
-
-        if ($policy === null) {
-            return $this->fail('start: --restartPolicy must be always|on-failure|never', self::EXIT_USAGE);
-        }
-
-        $address = ($scalar['address'] ?? '') !== '' ? $scalar['address'] : null;
-
-        $workerArgs = $address !== null ? [$address] : [];
-        $workerArgs = [...$workerArgs, ...$repeated['workerArgs']];
-
-        $master = new WorkerMaster(
-            workerScript: $workerScript,
-            runtimeDir: $scalar['runtimeDir'] ?? sys_get_temp_dir(),
-            logDir: $scalar['logDir'] ?? null,
-            name: $scalar['name'] ?? self::DEFAULT_NAME,
-            rotateDays: (int) ($scalar['rotateDays'] ?? 3),
-            workerCount: (int) ($scalar['workerCount'] ?? 0),
-            phpBinary: $scalar['phpBinary'] ?? PHP_BINARY,
-            phpArgs: $repeated['phpArgs'],
-            workerArgs: $workerArgs,
-            restartPolicy: $policy,
-            shutdownTimeoutMs: (int) ($scalar['shutdownTimeoutMs'] ?? 10_000),
-            restartBackoffMs: (int) ($scalar['restartBackoffMs'] ?? 200),
-            maxRestartBackoffMs: (int) ($scalar['maxRestartBackoffMs'] ?? 30_000),
-            address: $address,
-        );
 
         try {
-            return $master->run();
+            return $config->toWorkerMaster()->run();
         } catch (Throwable $exception) {
             return $this->fail($exception->getMessage(), self::EXIT_ERROR);
         }
     }
 
-    /**
-     * @param array{scalar: array<string, string>, repeated: array<string, list<string>>} $options
-     */
-    protected function status(array $options): int
+    protected function status(string $configPath): int
     {
+        $config = $this->loadConfig($configPath);
+
+        if (!$config instanceof MasterConfig) {
+            return $config;
+        }
+
         // Liveness is decided by whether a master holds the lock, not by a pid in the
         // state file — the lock is released by the kernel only when the real master
         // dies, so this is immune to a stale state file and PID reuse.
-        if (!$this->masterRunning($this->lockPath($options))) {
+        if (!$this->masterRunning($this->lockPath($config))) {
             $this->writeOut('stopped');
 
             return self::EXIT_NOT_RUNNING;
         }
 
-        $state = $this->stateFile($options)->read();
+        $state = $this->stateFile($config)->read();
 
         if ($state === null) {
             $this->writeOut('running');
@@ -138,12 +112,15 @@ class MasterCli
         return self::EXIT_OK;
     }
 
-    /**
-     * @param array{scalar: array<string, string>, repeated: array<string, list<string>>} $options
-     */
-    protected function stop(array $options): int
+    protected function stop(string $configPath): int
     {
-        $lockPath = $this->lockPath($options);
+        $config = $this->loadConfig($configPath);
+
+        if (!$config instanceof MasterConfig) {
+            return $config;
+        }
+
+        $lockPath = $this->lockPath($config);
 
         if (!$this->masterRunning($lockPath)) {
             $this->writeOut('not running');
@@ -153,14 +130,13 @@ class MasterCli
 
         // Removing the state file is the stop signal the master watches for: it then
         // drains its workers and exits. No pid/signal needed (and so no PID-reuse risk).
-        $statePath = $this->stateFile($options)->path();
+        $statePath = $this->stateFile($config)->path();
 
         if (is_file($statePath)) {
             @unlink($statePath);
         }
 
-        $timeoutSeconds = (int) ($options['scalar']['timeoutMs'] ?? 15_000) / 1000;
-        $deadline       = microtime(true) + $timeoutSeconds;
+        $deadline = microtime(true) + self::STOP_TIMEOUT_MS / 1000;
 
         // Wait until the lock is released — the kernel drops it the moment the master
         // process exits (even before it is reaped), so this never hangs on a zombie.
@@ -178,37 +154,32 @@ class MasterCli
     }
 
     /**
-     * @param array{scalar: array<string, string>, repeated: array<string, list<string>>} $options
+     * Loads the config, or returns an exit code to propagate (usage when --configPath
+     * is missing, error when the config is invalid).
      */
-    protected function stateFile(array $options): MasterStateFile
+    protected function loadConfig(string $configPath): MasterConfig|int
+    {
+        if ($configPath === '') {
+            return $this->fail('--configPath=<file> is required', self::EXIT_USAGE);
+        }
+
+        try {
+            return MasterConfig::fromFile($configPath);
+        } catch (InvalidConfigException $exception) {
+            return $this->fail($exception->getMessage(), self::EXIT_USAGE);
+        }
+    }
+
+    protected function stateFile(MasterConfig $config): MasterStateFile
     {
         return new MasterStateFile(
-            path: $this->runtimeDir($options) . '/' . $this->name($options) . '-state.json',
+            path: $config->runtimeDir() . '/' . $config->name() . '-state.json',
         );
     }
 
-    /**
-     * @param array{scalar: array<string, string>, repeated: array<string, list<string>>} $options
-     */
-    protected function lockPath(array $options): string
+    protected function lockPath(MasterConfig $config): string
     {
-        return $this->runtimeDir($options) . '/' . $this->name($options) . '.lock';
-    }
-
-    /**
-     * @param array{scalar: array<string, string>, repeated: array<string, list<string>>} $options
-     */
-    protected function runtimeDir(array $options): string
-    {
-        return $options['scalar']['runtimeDir'] ?? sys_get_temp_dir();
-    }
-
-    /**
-     * @param array{scalar: array<string, string>, repeated: array<string, list<string>>} $options
-     */
-    protected function name(array $options): string
-    {
-        return $options['scalar']['name'] ?? self::DEFAULT_NAME;
+        return $config->runtimeDir() . '/' . $config->name() . '.lock';
     }
 
     /**
@@ -245,74 +216,40 @@ class MasterCli
     }
 
     /**
-     * Parses `--key=value` arguments. Option names match the WorkerMaster constructor
-     * parameters verbatim. phpArgs and workerArgs are repeatable (collected into
-     * lists); everything else is a single scalar (last wins).
+     * Extracts the --configPath value from the remaining argv (last wins).
      *
      * @param list<string> $args
-     *
-     * @return array{scalar: array<string, string>, repeated: array<string, list<string>>}
      */
-    protected function parseOptions(array $args): array
+    protected function configPath(array $args): string
     {
-        $scalar = [];
-
-        /** @var array<string, list<string>> $repeated */
-        $repeated = [
-            'phpArgs'    => [],
-            'workerArgs' => [],
-        ];
+        $configPath = '';
 
         foreach ($args as $argument) {
-            if (!str_starts_with($argument, '--')) {
-                continue;
+            if (str_starts_with($argument, self::CONFIG_PATH_FLAG)) {
+                $configPath = substr($argument, strlen(self::CONFIG_PATH_FLAG));
             }
-
-            [$name, $value] = array_pad(explode('=', substr($argument, 2), 2), 2, '');
-
-            if (array_key_exists($name, $repeated)) {
-                $repeated[$name][] = $value;
-
-                continue;
-            }
-
-            $scalar[$name] = $value;
         }
 
-        return [
-            'scalar'   => $scalar,
-            'repeated' => $repeated,
-        ];
+        return $configPath;
     }
 
     protected function usage(): int
     {
         $this->writeErr(<<<USAGE
-            Usage: sconcur-http-server <start|status|stop> [options]
+            Usage: sconcur-http-server <start|status|stop> --configPath=FILE
 
-            Option names match the WorkerMaster constructor parameters.
+              --configPath=FILE   JSON master config (required for every command)
 
-            start  run the supervisor (foreground)
-              --workerScript=PATH        worker script (required)
-              --workerCount=N            worker count (default: CPU cores)
-              --address=HOST:PORT        passed to the worker argv and recorded in state
-              --phpBinary=PATH           interpreter (default: current PHP_BINARY)
-              --phpArgs=ARG              extra interpreter flag, repeatable (e.g. -d extension=...)
-              --workerArgs=ARG           extra worker argv, repeatable
-              --runtimeDir=DIR           lock + state dir (default: temp dir)
-              --logDir=DIR               log dir (default: runtimeDir)
-              --name=NAME                log/state prefix (default: sconcur-http-server)
-              --rotateDays=N             days of logs to keep (default: 3)
-              --restartPolicy=POLICY     always|on-failure|never (default: always)
-              --shutdownTimeoutMs=N      drain timeout before SIGKILL (default: 10000)
-              --restartBackoffMs=N       crash-loop backoff base (default: 200)
-              --maxRestartBackoffMs=N    crash-loop backoff cap (default: 30000)
+            The JSON holds the WorkerMaster parameters (workerScript, workerCount,
+            phpArgs, runtimeDir, logDir, name, rotateDays, restartPolicy,
+            shutdownTimeoutMs, restartBackoffMs, maxRestartBackoffMs, env) plus a
+            nested "server" object whose keys become the worker's argv flags
+            ("address" is the worker's first positional argument). Unspecified values
+            use their defaults.
 
+            start   run the supervisor (foreground)
             status  report whether a master is running (exit 0 running, 3 stopped/stale)
-              --runtimeDir=DIR --name=NAME
-
-            stop  remove the state file (the stop signal) and wait for the master to exit
-              --runtimeDir=DIR --name=NAME --timeoutMs=N
+            stop    remove the state file (the stop signal) and wait for the master to exit
             USAGE);
 
         return self::EXIT_USAGE;

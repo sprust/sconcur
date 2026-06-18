@@ -60,27 +60,37 @@
 
 ### CLI: `start | status | stop`
 
+Все команды принимают **один** флаг — `--configPath` с путём к JSON-конфигу мастера.
+Конфиг содержит параметры `WorkerMaster` плюс вложенный объект `server`, который
+мастер разворачивает в `argv` воркера (`address` — позиционный `$argv[1]`, прочие
+ключи — `--ключ=значение`, булевы → `1`/`0`). Незаданные ключи берут дефолт.
+
+```jsonc
+// /app/master.json
+{
+  "workerScript": "/app/worker.php",   // ОБЯЗАТЕЛЬНО
+  "workerCount": 8,                     // по умолчанию = число ядер
+  "phpArgs": ["-d", "extension=/app/ext/build/sconcur.so"],
+  "runtimeDir": "/run/sconcur",         // lock + state
+  "logDir": "/var/log/sconcur",
+  "rotateDays": 3,
+  "restartPolicy": "always",            // always | on-failure | never
+  "shutdownTimeoutMs": 10000,
+  "server": { "address": "0.0.0.0:8080", "reusePort": true, "maxRequests": 10000 }
+}
+```
+
 ```sh
 # start — захватить lock, поднять воркеры, супервизировать (foreground; блокируется)
-vendor/bin/sconcur-http-server start \
-    --workerScript=/app/worker.php \           # ОБЯЗАТЕЛЬНО: воркер-скрипт потребителя
-    --workerCount=8 \                         # по умолчанию = число ядер
-    --address=0.0.0.0:8080 \              # уйдёт в argv воркера
-    --phpArgs='-d' --phpArgs='extension=/app/ext/build/sconcur.so' \  # повторяемый
-    --runtimeDir=/run/sconcur \          # lock + state (по умолч. sys_get_temp_dir)
-    --logDir=/var/log/sconcur \          # каталог логов
-    --rotateDays=3 \                     # хранить N дней логов (по умолчанию 3)
-    --name=sconcur-http-server \          # префикс лога/стейта (по умолч. так и есть)
-    --restartPolicy=always \             # always | on-failure | never
-    --shutdownTimeoutMs=10000
+vendor/bin/sconcur-http-server start --configPath=/app/master.json
 
 # status — жив ли мастер (по локу), напечатать состояние
-vendor/bin/sconcur-http-server status --runtimeDir=/run/sconcur
+vendor/bin/sconcur-http-server status --configPath=/app/master.json
 #   → "running: pid=12345 workers=8 address=0.0.0.0:8080"  (код 0)
 #   → "stopped"                                            (код 3)
 
 # stop — удалить стейт-файл (сигнал остановки), дождаться выхода мастера
-vendor/bin/sconcur-http-server stop --runtimeDir=/run/sconcur
+vendor/bin/sconcur-http-server stop --configPath=/app/master.json
 ```
 
 Коды возврата: `start` — код мастера на выходе; `status` — `0` если running,
@@ -196,7 +206,10 @@ worker (script):
 - **`Worker`** — хелпер **для воркер-скрипта** (не для мастера): `masterPid()`
   (читает argv-флаг `--sconcurMasterPid`), `index()` (`--sconcurWorkerIndex`). Pid
   отдаётся в `HttpServer(masterPid:)`, который сам делает сирота-чек.
-- **`MasterCli`** — разбор `argv` и диспетчер `start|status|stop` (тестируемая
+- **`MasterConfig`** — DTO + загрузчик JSON-конфига (`fromFile`): параметры
+  `WorkerMaster` + блок `server`; `toWorkerMaster()` разворачивает `server` в `argv`
+  воркера. Битый/неполный конфиг → `InvalidConfigException`.
+- **`MasterCli`** — единственный флаг `--configPath`; диспетчер `start|status|stop` (тестируемая
   логика; bin-файл — тонкая обёртка).
 - **`MasterState`** — чтение/запись JSON state-файла `<name>-state.json` (по умолч.
   `sconcur-http-server-state.json`): pid, `startedAt`, `workerCount`, `workerScript`,
@@ -427,8 +440,8 @@ exit-code):
 
 ```sh
 # master-guard.sh, по таймеру (cron */1, systemd timer):
-vendor/bin/sconcur-http-server status --runtimeDir=/run/sconcur >/dev/null \
-  || exec vendor/bin/sconcur-http-server start --workerScript=/app/worker.php --runtimeDir=/run/sconcur ...
+vendor/bin/sconcur-http-server status --configPath=/app/master.json >/dev/null \
+  || exec vendor/bin/sconcur-http-server start --configPath=/app/master.json
 # status != 0 (stopped/stale) → поднять.
 ```
 
@@ -513,11 +526,11 @@ vendor/bin/sconcur-http-server status --runtimeDir=/run/sconcur >/dev/null \
 - **`Cpu::count()`** — возвращает `>= 1`.
 - **`WorkerProcess`** — спавн короткого скрипта, `pid()` живой, `exitInfo()` после
   выхода отдаёт код; `signal()` доходит (PID — это `php`, не шелл).
-- **`MasterCli`** — юнит: разбор `argv` в конфиг; неизвестная команда / нет
-  `--workerScript` у `start` → понятная ошибка + ненулевой код; маппинг `--rotateDays`,
-  `--name`, `--restartPolicy` и т.д.
-- **Харнесс `TestWorkerMaster`** (по образцу `TestHttpServer`): `proc_open`
-  `bin/sconcur-http-server start` с опциями; `pid()`, `signal()`, `waitForExit()`,
+- **`MasterCli`** — юнит: нет `--configPath` → usage; битый/отсутствующий конфиг,
+  нет `workerScript`, неизвестный `restartPolicy` → понятная ошибка + ненулевой код;
+  `status`/`stop` при отсутствии стейта.
+- **Харнесс `TestWorkerMaster`** (по образцу `TestHttpServer`): пишет JSON-конфиг и
+  `proc_open` `bin/sconcur-http-server start --configPath=…`; `pid()`, `signal()`, `waitForExit()`,
   чтение лога. Воркером выступает общий демо-сервер
   `tests/servers/http/http-server.php` — HTTP с `reusePort`, `masterPid:
   Worker::masterPid()` и маршрутом `/pid` (отдаёт `getmypid()`), чтобы тест считал
@@ -554,13 +567,9 @@ vendor/bin/sconcur-http-server status --runtimeDir=/run/sconcur >/dev/null \
 
 ## Открытые вопросы
 
-- **Env-фолбэк для `runtimeDir`/`name`** (главное, не реализовано). Сейчас при
-  кастомном `--runtimeDir`/`--name` их надо передавать **во все три команды**
-  (`start`/`status`/`stop`), иначе `stop`/`status` ищут lock/state не там. Решение —
-  читать `SCONCUR_RUNTIME_DIR`/`SCONCUR_NAME` как дефолт (приоритет: флаг → env →
-  встроенный дефолт): задаёшь один раз в окружении/юните — все команды согласованы.
-  Альтернативы: конфиг-файл с дефолтным путём; зафиксированный дефолт `runtimeDir`
-  (напр. `/run/sconcur`). Рекомендован env-фолбэк.
+- ~~**Env-фолбэк для `runtimeDir`/`name`**~~ (**решено**). Все команды берут один
+  `--configPath`, а `runtimeDir`/`name` читаются из конфига — `status`/`stop`
+  автоматически согласованы со `start` без дублирования флагов.
 - **`--daemon`** (стретч, не сделано) — форк мастера в фон (мастеру это можно, он без
   Go-рантайма). Сейчас `start` только foreground (под systemd/docker/guard — норм).
 - **`SIGHUP` rolling reload** (стретч, не сделано) — перезапуск воркеров по одному

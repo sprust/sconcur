@@ -11,9 +11,29 @@ use SConcur\Worker\MasterLock;
 /**
  * Unit coverage of the CLI argument handling — exercised in-process with in-memory
  * streams, no child processes (the supervision loop is covered by WorkerMasterTest).
+ * Every command takes a single --configPath; the JSON config is written to a temp file.
  */
 class MasterCliTest extends TestCase
 {
+    /** @var list<string> */
+    private array $tempFiles = [];
+
+    /** @var list<string> */
+    private array $tempDirs = [];
+
+    protected function tearDown(): void
+    {
+        foreach ($this->tempFiles as $file) {
+            @unlink($file);
+        }
+
+        foreach ($this->tempDirs as $directory) {
+            @rmdir($directory);
+        }
+
+        parent::tearDown();
+    }
+
     public function testNoCommandPrintsUsage(): void
     {
         [$code, , $err] = $this->runCli([]);
@@ -22,36 +42,70 @@ class MasterCliTest extends TestCase
         self::assertStringContainsString('Usage', $err);
     }
 
-    public function testStartRequiresWorker(): void
+    public function testStartRequiresConfigPath(): void
     {
         [$code, , $err] = $this->runCli(['start']);
 
         self::assertSame(MasterCli::EXIT_USAGE, $code);
-        self::assertStringContainsString('--workerScript', $err);
+        self::assertStringContainsString('--configPath', $err);
+    }
+
+    public function testStartRejectsMissingConfigFile(): void
+    {
+        [$code, , $err] = $this->runCli(['start', '--configPath=/no/such/config.json']);
+
+        self::assertSame(MasterCli::EXIT_USAGE, $code);
+        self::assertStringContainsString('not found', $err);
     }
 
     public function testStartRejectsUnknownRestartPolicy(): void
     {
-        [$code, , $err] = $this->runCli(['start', '--workerScript=/tmp/x.php', '--restartPolicy=bogus']);
+        $configPath = $this->writeConfig(['workerScript' => '/tmp/x.php', 'restartPolicy' => 'bogus']);
+
+        [$code, , $err] = $this->runCli(['start', '--configPath=' . $configPath]);
 
         self::assertSame(MasterCli::EXIT_USAGE, $code);
         self::assertStringContainsString('restartPolicy', $err);
     }
 
+    public function testStartRejectsConfigWithoutWorkerScript(): void
+    {
+        $configPath = $this->writeConfig(['workerCount' => 2]);
+
+        [$code, , $err] = $this->runCli(['start', '--configPath=' . $configPath]);
+
+        self::assertSame(MasterCli::EXIT_USAGE, $code);
+        self::assertStringContainsString('workerScript', $err);
+    }
+
     public function testStatusReportsStoppedWhenNoState(): void
     {
-        $directory = sys_get_temp_dir() . '/sc-cli-' . uniqid('', true);
+        $directory  = $this->makeDir();
+        $configPath = $this->writeConfig([
+            'workerScript' => '/tmp/x.php',
+            'runtimeDir'   => $directory,
+            'name'         => 'absent',
+        ]);
 
-        mkdir($directory, 0o775, true);
+        [$code, $out] = $this->runCli(['status', '--configPath=' . $configPath]);
 
-        try {
-            [$code, $out] = $this->runCli(['status', '--runtimeDir=' . $directory, '--name=absent']);
+        self::assertSame(MasterCli::EXIT_NOT_RUNNING, $code);
+        self::assertStringContainsString('stopped', $out);
+    }
 
-            self::assertSame(MasterCli::EXIT_NOT_RUNNING, $code);
-            self::assertStringContainsString('stopped', $out);
-        } finally {
-            @rmdir($directory);
-        }
+    public function testStopReportsNotRunningWhenNoState(): void
+    {
+        $directory  = $this->makeDir();
+        $configPath = $this->writeConfig([
+            'workerScript' => '/tmp/x.php',
+            'runtimeDir'   => $directory,
+            'name'         => 'absent',
+        ]);
+
+        [$code, $out] = $this->runCli(['stop', '--configPath=' . $configPath]);
+
+        self::assertSame(MasterCli::EXIT_OK, $code);
+        self::assertStringContainsString('not running', $out);
     }
 
     public function testStatusReportsRunningWhenLockHeldWithoutState(): void
@@ -60,16 +114,19 @@ class MasterCliTest extends TestCase
         // before it is written): status decides liveness by the lock and still
         // reports "running". A second flock from the same process contends, so
         // holding MasterLock here simulates a running master.
-        $directory = sys_get_temp_dir() . '/sc-cli-' . uniqid('', true);
-
-        mkdir($directory, 0o775, true);
+        $directory  = $this->makeDir();
+        $configPath = $this->writeConfig([
+            'workerScript' => '/tmp/x.php',
+            'runtimeDir'   => $directory,
+            'name'         => 'held',
+        ]);
 
         $lock = new MasterLock(path: $directory . '/held.lock');
 
         $lock->acquire();
 
         try {
-            [$code, $out] = $this->runCli(['status', '--runtimeDir=' . $directory, '--name=held']);
+            [$code, $out] = $this->runCli(['status', '--configPath=' . $configPath]);
 
             self::assertSame(MasterCli::EXIT_OK, $code);
             self::assertStringContainsString('running', $out);
@@ -77,24 +134,32 @@ class MasterCliTest extends TestCase
             $lock->release();
 
             @unlink($directory . '/held.lock');
-            @rmdir($directory);
         }
     }
 
-    public function testStopReportsNotRunningWhenNoState(): void
+    /**
+     * @param array<string, mixed> $config
+     */
+    private function writeConfig(array $config): string
+    {
+        $path = (string) tempnam(sys_get_temp_dir(), 'sc-cli-cfg-');
+
+        file_put_contents($path, (string) json_encode($config));
+
+        $this->tempFiles[] = $path;
+
+        return $path;
+    }
+
+    private function makeDir(): string
     {
         $directory = sys_get_temp_dir() . '/sc-cli-' . uniqid('', true);
 
         mkdir($directory, 0o775, true);
 
-        try {
-            [$code, $out] = $this->runCli(['stop', '--runtimeDir=' . $directory, '--name=absent']);
+        $this->tempDirs[] = $directory;
 
-            self::assertSame(MasterCli::EXIT_OK, $code);
-            self::assertStringContainsString('not running', $out);
-        } finally {
-            @rmdir($directory);
-        }
+        return $directory;
     }
 
     /**

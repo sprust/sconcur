@@ -144,14 +144,9 @@ class WorkerMasterTest extends TestCase
             posix_kill($master->pid(), SIGKILL);
             $master->waitForExit(5.0);
 
-            $options = [
-                'runtimeDir' => $master->runtimeDir(),
-                'name'       => $master->name(),
-            ];
-
             // Liveness is read from the lock, not the stale pid, so status reports
             // stopped — immune to PID reuse of the dead master's pid.
-            [$code, $output] = TestWorkerMaster::runCommand('status', $options);
+            [$code, $output] = TestWorkerMaster::runCommand('status', $master->configPath());
 
             self::assertSame(MasterCli::EXIT_NOT_RUNNING, $code);
             self::assertStringContainsString('stopped', $output);
@@ -218,9 +213,9 @@ class WorkerMasterTest extends TestCase
 
     public function testStartFailsForMissingWorkerScript(): void
     {
-        [$code, $output] = TestWorkerMaster::runCommand('start', [
-            'workerScript' => '/no/such/worker.php',
-        ]);
+        $configPath = TestWorkerMaster::writeConfig(['workerScript' => '/no/such/worker.php']);
+
+        [$code, $output] = TestWorkerMaster::runCommand('start', $configPath);
 
         self::assertSame(MasterCli::EXIT_ERROR, $code);
         self::assertStringContainsString('not found', $output);
@@ -228,10 +223,9 @@ class WorkerMasterTest extends TestCase
 
     public function testStartFailsForNegativeWorkerCount(): void
     {
-        [$code, $output] = TestWorkerMaster::runCommand('start', [
-            'workerScript' => TestWorkerMaster::demoWorkerScript(),
-            'workerCount'  => -1,
-        ]);
+        $configPath = TestWorkerMaster::writeConfig(['workerCount' => -1]);
+
+        [$code, $output] = TestWorkerMaster::runCommand('start', $configPath);
 
         self::assertSame(MasterCli::EXIT_ERROR, $code);
         self::assertStringContainsString('workerCount', $output);
@@ -327,13 +321,12 @@ class WorkerMasterTest extends TestCase
         try {
             // A second master over the same runtime dir + name must fail fast on the
             // lock (it never reaches the supervision loop, so runCommand returns).
-            [$code, $output] = TestWorkerMaster::runCommand('start', [
-                'workerScript' => TestWorkerMaster::demoWorkerScript(),
-                'workerCount'  => 1,
-                'address'      => '127.0.0.1:0',
-                'runtimeDir'   => $master->runtimeDir(),
-                'name'         => $master->name(),
+            $configPath = TestWorkerMaster::writeConfig([
+                'runtimeDir' => $master->runtimeDir(),
+                'name'       => $master->name(),
             ]);
+
+            [$code, $output] = TestWorkerMaster::runCommand('start', $configPath);
 
             self::assertSame(MasterCli::EXIT_ERROR, $code);
             self::assertStringContainsString('lock', $output);
@@ -347,25 +340,22 @@ class WorkerMasterTest extends TestCase
     {
         $master = TestWorkerMaster::start(['workerCount' => 1]);
 
-        $options = [
-            'runtimeDir'   => $master->runtimeDir(),
-            'name'         => $master->name(),
-        ];
+        $configPath = $master->configPath();
 
         try {
-            [$statusCode, $statusOut] = TestWorkerMaster::runCommand('status', $options);
+            [$statusCode, $statusOut] = TestWorkerMaster::runCommand('status', $configPath);
 
             self::assertSame(MasterCli::EXIT_OK, $statusCode);
             self::assertStringContainsString('running', $statusOut);
 
-            [$stopCode, $stopOut] = TestWorkerMaster::runCommand('stop', $options);
+            [$stopCode, $stopOut] = TestWorkerMaster::runCommand('stop', $configPath);
 
             self::assertSame(MasterCli::EXIT_OK, $stopCode);
             self::assertStringContainsString('stopped', $stopOut);
 
             self::assertSame(0, $master->waitForExit(8.0), 'stop should let the master exit cleanly');
 
-            [$afterCode, $afterOut] = TestWorkerMaster::runCommand('status', $options);
+            [$afterCode, $afterOut] = TestWorkerMaster::runCommand('status', $configPath);
 
             self::assertSame(MasterCli::EXIT_NOT_RUNNING, $afterCode);
             self::assertStringContainsString('stopped', $afterOut);
