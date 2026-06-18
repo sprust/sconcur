@@ -66,7 +66,8 @@ vendor/bin/sconcur-http-server start \
 ```
 
 `start` блокируется (foreground) и супервизирует пул, пока не придёт
-`SIGTERM`/`SIGINT`.
+`SIGTERM`/`SIGINT` **или** не будет удалён стейт-файл (см.
+[Graceful shutdown](#graceful-shutdown)).
 
 ## Команды: start / status / stop
 
@@ -84,6 +85,12 @@ vendor/bin/sconcur-http-server stop --runtimeDir=/run/sconcur
 
 Коды возврата: `start` — код мастера на выходе; `status` — `0` (running) /
 `3` (stopped/stale); `stop` — `0` по факту остановки, `1` по таймауту.
+
+> **Один и тот же `--runtimeDir`/`--name` нужно передавать во все три команды** —
+> по ним `status`/`stop` находят lock/state. Если не переопределять — берётся дефолт
+> (`runtimeDir` = временный каталог, `name` = `sconcur-http-server`), и команды
+> согласованы без флагов. (Планируется env-фолбэк `SCONCUR_RUNTIME_DIR`/`SCONCUR_NAME`,
+> чтобы задавать один раз — см. план.)
 
 Программный API (под капотом CLI) — класс `SConcur\Worker\WorkerMaster`:
 
@@ -271,10 +278,23 @@ vendor/bin/sconcur-http-server status --runtimeDir=/run/sconcur >/dev/null \
 `SConcur\Tests\Impl\Worker\TestWorkerMaster` запускает `bin/sconcur-http-server`
 отдельным процессом на loopback-порту, а воркером выступает общий демо-сервер
 (`tests/servers/http/http-server.php`) с `reusePort`, `masterPid` и маршрутом
-`/pid`. Покрытие (`tests/feature/Worker/`): спавн N воркеров и
-обслуживание всеми, перезапуск убитого (`always`), самовыход по `maxRequests` →
-перезапуск, graceful drain in-flight по `SIGTERM`, отказ второго инстанса (lock),
-`status`/`stop`, самозавершение осиротевших воркеров, троттлинг краш-лупа backoff'ом.
+`/pid`.
+
+Покрытие (`tests/feature/Worker/` + `tests/feature/Features/HttpServer/`):
+
+- **Супервизия:** спавн N воркеров и обслуживание всеми; перезапуск убитого
+  (`always`, в т.ч. `signal=` от OOM/`SIGKILL`); самовыход по `maxRequests` →
+  перезапуск; политики `on-failure` (чистый выход не рестартит) и `never`.
+- **Остановка:** graceful drain in-flight по `SIGTERM`; то же по **удалению
+  стейт-файла**; все воркеры гаснут вместе с мастером.
+- **Единственность/состояние:** отказ второго инстанса (lock); `status`/`stop`;
+  `status` после краха мастера → `stopped` (по локу, иммунно к PID-reuse).
+- **Устойчивость:** троттлинг краш-лупа backoff'ом; валидация (нет worker-скрипта,
+  отрицательный `workerCount`); самозавершение осиротевших воркеров.
+- **`masterPid` (изолированно, `HttpServerMasterPidTest`):** при `masterPid` =
+  родитель сервер обслуживает; при чужом — сам штатно гаснет.
+- **Логгер (юнит, `MasterLoggerTest`):** формат строки, контекст-JSON, дневная
+  ротация с удержанием `rotateDays`.
 
 ---
 
