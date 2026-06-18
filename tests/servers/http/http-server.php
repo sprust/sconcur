@@ -41,9 +41,10 @@ use SConcur\Features\Sleeper\Sleeper;
  *   --maxRequests  --reusePort (0/1)
  */
 
-// Spread as named args; address first, overrides take precedence over defaults.
-// masterPid self-terminates the worker if its master dies; null (no
-// --sconcurMasterPid argv flag) disables the check when run standalone.
+// Build the server from argv: each --name=value maps to the matching HttpServer
+// constructor parameter. Under WorkerMaster the injected --masterPid wires the
+// orphan check (the worker self-terminates if its master dies); without it the
+// check is off (standalone run).
 $server = HttpServer::fromArgs($_SERVER['argv']);
 
 $sleeper = new Sleeper();

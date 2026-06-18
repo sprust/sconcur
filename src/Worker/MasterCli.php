@@ -97,10 +97,9 @@ class MasterCli
         }
 
         $this->writeOut(sprintf(
-            'running: pid=%d workers=%d address=%s',
+            'running: pid=%d workers=%d',
             $state->pid,
             $state->workerCount,
-            $state->address ?? '-',
         ));
 
         return self::EXIT_OK;

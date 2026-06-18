@@ -30,9 +30,13 @@ use SConcur\Features\HttpServer\HttpServer;
 class WorkerMaster
 {
     /**
+     * The master injects its pid as this worker argv flag for the orphan check;
+     * HttpServer::fromArgs() maps it onto the HttpServer `masterPid` constructor
+     * parameter (so the `--` prefix and the name must match it).
+     *
      * @see HttpServer::$masterPid
      */
-    protected const string MASTER_PID_ARG = 'masterPid';
+    protected const string MASTER_PID_ARG = '--masterPid';
 
     protected const int TICK_MICROSECONDS = 100_000; // 100 ms supervision tick
 
@@ -346,11 +350,10 @@ class WorkerMaster
     }
 
     /**
-     * Builds the worker command. The master-injected values (its pid for the orphan
-     * check, the slot index) are appended as argv flags — the same channel as the
-     * address and the consumer's workerArgs — so nothing is passed via the
-     * environment. The flags are namespaced (--sconcur*) to avoid clashing with the
-     * consumer's own argv and are read back by the Worker helper.
+     * Builds the worker command. The master appends its pid as the `--masterPid` argv
+     * flag — the same channel as the address and the consumer's workerArgs, no
+     * environment involved — and HttpServer::fromArgs() wires it into the orphan
+     * check.
      *
      * @return list<string>
      */

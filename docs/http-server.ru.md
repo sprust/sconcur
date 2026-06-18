@@ -172,11 +172,27 @@ $server = new HttpServer(
 | `maxRequests` | `0` (без лимита) | Остановить сервер после обработки этого числа запросов — мера против утечек памяти. `0` — выкл. См. [Остановка после N запросов](#остановка-после-n-запросов). |
 | `reusePort` | `false` | Включить `SO_REUSEPORT` — несколько процессов на одном порту. См. [масштабирование на ядра](#масштабирование-на-ядра-so_reuseport). |
 | `onError` | `null` | `Closure(Throwable, Request): ?Response` — наблюдатель ошибок обработчика. |
-| `accessLog` | `null` | `Closure(AccessLogEntry): void` — вызывается после каждого запроса (лог доступа). См. [Access-лог](#access-лог). |
-| `masterPid` | `null` | Если задан — сервер сам штатно останавливается, как только перестаёт быть потомком этого pid (его [мастер](worker-master.ru.md) умер). Для воркера под мастером: `Worker::masterPid()`; `null` — выключено. |
+| `masterPid` | `null` | Если задан — сервер сам штатно останавливается, как только перестаёт быть потомком этого pid (его [мастер](worker-master.ru.md) умер). Под `WorkerMaster` ставится автоматически из флага `--masterPid` через `HttpServer::fromArgs()`; `null` — выключено. |
 
 Значение `0` для `maxConcurrency`/`handlerTimeoutMs` означает «выключено». Для
 прочих таймаутов `0` означает «взять Go-дефолт».
+
+Каждый обработанный запрос пишется строкой access-лога в `STDOUT`
+(`<ISO-время> <метод> <путь> <статус> <мс>ms`) — встроенно и безусловно (не
+настраивается). См. [Access-лог](#access-лог).
+
+### `HttpServer::fromArgs()`
+
+Фабрика, собирающая сервер из `argv` (`$_SERVER['argv']`): каждый `--имя=значение`
+сопоставляется с одноимённым скалярным параметром конструктора (с проверкой типа —
+`int`/`bool`/`float`/`string`), неизвестный флаг → исключение. Используется
+воркер-скриптом под [мастером](worker-master.ru.md), который передаёт параметры
+сервера и `--masterPid` через `argv`:
+
+```php
+$server = HttpServer::fromArgs($_SERVER['argv']);
+$server->serve(static fn (Request $request): Response => new Response(body: 'ok'));
+```
 
 ## API: Request / Response / StreamedResponse
 
@@ -312,31 +328,14 @@ onError: static function (\Throwable $e, Request $request): ?Response {
 
 ## Access-лог
 
-Колбэк `accessLog` вызывается **после** каждого обслуженного запроса (включая
-ошибочные — `4xx`/`5xx`) с объектом `AccessLogEntry`. Формат и место вывода — на
-ваше усмотрение; пишите в stdout/файл/трейсинг как удобно.
+После **каждого** обслуженного запроса (включая ошибочные — `4xx`/`5xx`) сервер
+**встроенно** пишет одну строку в `STDOUT` и сразу её сбрасывает (`fflush`). Лог
+всегда включён и не настраивается.
 
-```php
-use SConcur\Features\HttpServer\Dto\AccessLogEntry;
+Формат строки:
 
-$server = new HttpServer(
-    address: '0.0.0.0:8080',
-    accessLog: static function (AccessLogEntry $entry): void {
-        // время начала запроса с микросекундами
-        $time = date('Y-m-d\TH:i:s', (int) $entry->startedAt)
-            . sprintf('.%06d', (int) (($entry->startedAt - floor($entry->startedAt)) * 1_000_000));
-
-        fwrite(STDOUT, sprintf(
-            "%s %s %s %d %.2fms\n",
-            $time,                // время начала запроса
-            $entry->method,       // метод
-            $entry->path,         // путь
-            $entry->status,       // статус ответа
-            $entry->executionMs,  // время выполнения, мс
-        ));
-        fflush(STDOUT);           // чтобы строка появилась сразу
-    },
-);
+```
+<ISO-время-начала> <метод> <путь> <статус> <мс>ms
 ```
 
 Пример вывода:
@@ -346,10 +345,10 @@ $server = new HttpServer(
 2026-06-14T17:36:26.456789 GET /msleep/30 200 34.77ms
 ```
 
-Поля `AccessLogEntry`: `startedAt` (float, unix-таймстамп начала обработки),
-`method`, `path`, `status` (int), `executionMs` (float). `executionMs` —
-полное время обработки в PHP (до отправки ответа; для стрима — вся длительность
-стрима).
+Время — момент начала обработки (с микросекундами); последнее поле — полное время
+обработки в PHP в миллисекундах (для стрима — вся длительность стрима). Под
+[мастером воркеров](worker-master.ru.md) `STDOUT` воркера перехватывается мастером и
+переписывается в общий лог.
 
 ## Конкурентность и лимиты
 

@@ -7,6 +7,7 @@ namespace SConcur\Features\HttpServer;
 use Closure;
 use InvalidArgumentException;
 use ReflectionClass;
+use ReflectionNamedType;
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\HttpServer\InvalidHandlerResponseException;
 use SConcur\Exceptions\HttpServer\RequestBodyTooLargeException;
@@ -56,7 +57,8 @@ readonly class HttpServer
      * @param null|int                                    $masterPid        if set, the server self-terminates (graceful shutdown) once it is
      *                                                                      no longer a child of this pid — i.e. its WorkerMaster died — so an
      *                                                                      orphaned worker drains and exits instead of holding the port.
-     *                                                                      Pass Worker::masterPid() in a managed worker; null (default) off.
+     *                                                                      Under WorkerMaster this is set automatically from the injected
+     *                                                                      --masterPid flag via fromArgs(); null (default) off.
      *
      * Defaults mirror the Go server defaults.
      */
@@ -92,21 +94,21 @@ readonly class HttpServer
         $parameters = [];
 
         foreach ($rc->getConstructor()?->getParameters() ?? [] as $parameter) {
-            /**
-             * TODO
-             *
-             * @phpstan-ignore-next-line
-             *
-             * Call to an undefined method ReflectionType::getName().
-             * method.notFound
-             */
-            $parameterName = $parameter->getType()?->getName();
+            $type = $parameter->getType();
 
-            if (!in_array($parameterName, $allowedTypes, true)) {
+            // Only scalar, single-typed params can be set from a CLI string; skip
+            // union/intersection types and the closures (onError).
+            if (!$type instanceof ReflectionNamedType) {
                 continue;
             }
 
-            $parameters[$parameter->getName()] = $parameterName;
+            $typeName = $type->getName();
+
+            if (!in_array($typeName, $allowedTypes, true)) {
+                continue;
+            }
+
+            $parameters[$parameter->getName()] = $typeName;
         }
 
         $overrides = [];
@@ -117,11 +119,6 @@ readonly class HttpServer
             }
 
             [$name, $value] = array_pad(explode('=', substr($argument, 2), 2), 2, '');
-
-            // TODO: move to env
-            if (str_starts_with($name, 'sconcur')) {
-                continue;
-            }
 
             $type = $parameters[$name] ?? null;
 
