@@ -35,6 +35,7 @@ class MasterLogger
         protected string $name,
         protected int $rotateDays,
         protected int $masterPid,
+        protected LogTarget $logTo = LogTarget::File,
     ) {
     }
 
@@ -58,8 +59,25 @@ class MasterLogger
         $this->writeLine($level, $workerPid, $workerIndex, $message, $context);
     }
 
+    /**
+     * Flushes buffered lines to the enabled sinks. Called once per supervision tick so
+     * STDOUT (under `docker logs`) and the file stay timely without a syscall per line.
+     */
+    public function flush(): void
+    {
+        if ($this->logTo->toFile() && is_resource($this->handle)) {
+            fflush($this->handle);
+        }
+
+        if ($this->logTo->toStdout()) {
+            fflush(STDOUT);
+        }
+    }
+
     public function close(): void
     {
+        $this->flush();
+
         if (is_resource($this->handle)) {
             fclose($this->handle);
         }
@@ -74,16 +92,12 @@ class MasterLogger
     {
         $this->rotateIfNeeded();
 
-        if (!is_resource($this->handle)) {
-            return;
-        }
-
         $scope = $workerPid === null
             ? sprintf('master: %d', $this->masterPid)
             : sprintf('worker: %d #%d', $workerPid, (int) $workerIndex);
 
         $line = sprintf(
-            '[%s] %s [%s]: %s %s',
+            "[%s] %s [%s]: %s %s\n",
             $this->timestamp(),
             $level,
             $scope,
@@ -91,7 +105,13 @@ class MasterLogger
             $this->encodeContext($context),
         );
 
-        fwrite($this->handle, $line . "\n");
+        if ($this->logTo->toFile() && is_resource($this->handle)) {
+            fwrite($this->handle, $line);
+        }
+
+        if ($this->logTo->toStdout()) {
+            fwrite(STDOUT, $line);
+        }
     }
 
     /**
@@ -106,6 +126,10 @@ class MasterLogger
 
     protected function rotateIfNeeded(): void
     {
+        if (!$this->logTo->toFile()) {
+            return;
+        }
+
         $today = date('Y-m-d');
 
         if ($today === $this->currentDate && is_resource($this->handle)) {

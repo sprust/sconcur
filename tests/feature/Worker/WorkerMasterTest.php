@@ -336,6 +336,30 @@ class WorkerMasterTest extends TestCase
         }
     }
 
+    public function testLogToBothMirrorsTheJournalToStdout(): void
+    {
+        // logTo=both: the master writes its journal to the daily file AND to its own
+        // stdout, so `docker logs` (here: the captured master output) sees it too.
+        $master = TestWorkerMaster::start(['workerCount' => 1, 'logTo' => 'both']);
+
+        try {
+            self::assertGreaterThan(0, $master->workerPid());
+
+            $appeared = $this->waitFor(
+                static fn(): bool => str_contains($master->masterOutput(), 'start workers=1'),
+                timeoutSeconds: 4.0,
+            );
+
+            self::assertTrue($appeared, 'the journal must be mirrored to the master stdout');
+            self::assertStringContainsString('spawned', $master->masterOutput());
+
+            // The file sink still works alongside stdout.
+            self::assertStringContainsString('start workers=1', $master->logText());
+        } finally {
+            $master->stop();
+        }
+    }
+
     public function testStatusAndStopCommands(): void
     {
         $master = TestWorkerMaster::start(['workerCount' => 1]);

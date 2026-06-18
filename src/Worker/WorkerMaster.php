@@ -90,6 +90,7 @@ class WorkerMaster
      * @param int                   $shutdownTimeoutMs   how long to wait for workers to drain before SIGKILL
      * @param int                   $restartBackoffMs    base of the exponential crash-loop backoff
      * @param int                   $maxRestartBackoffMs cap of the crash-loop backoff
+     * @param LogTarget             $logTo               where the master writes its journal (file/stdout/both)
      */
     public function __construct(
         protected readonly string $workerScript,
@@ -106,6 +107,7 @@ class WorkerMaster
         protected readonly int $shutdownTimeoutMs = 10_000,
         protected readonly int $restartBackoffMs = 200,
         protected readonly int $maxRestartBackoffMs = 30_000,
+        protected readonly LogTarget $logTo = LogTarget::File,
     ) {
     }
 
@@ -134,6 +136,7 @@ class WorkerMaster
             name: $this->name,
             rotateDays: $this->rotateDays,
             masterPid: $this->masterPid,
+            logTo: $this->logTo,
         );
 
         $this->lock = new MasterLock(
@@ -424,6 +427,10 @@ class WorkerMaster
                     break;
                 }
             }
+
+            // Flush the log once per tick (not per line) so STDOUT (docker logs) and
+            // the file stay timely without a syscall per access-log line.
+            $this->logger->flush();
 
             usleep(self::TICK_MICROSECONDS);
         }

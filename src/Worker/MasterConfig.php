@@ -39,6 +39,7 @@ readonly class MasterConfig
         protected int $restartBackoffMs,
         protected int $maxRestartBackoffMs,
         protected array $server,
+        protected LogTarget $logTo,
     ) {
     }
 
@@ -97,6 +98,15 @@ readonly class MasterConfig
             );
         }
 
+        $logToValue = (string) ($data['logTo'] ?? LogTarget::File->value);
+        $logTo      = LogTarget::tryFrom($logToValue);
+
+        if ($logTo === null) {
+            throw new InvalidConfigException(
+                message: 'config: "logTo" must be file|stdout|both',
+            );
+        }
+
         $logDir = isset($data['logDir']) ? (string) $data['logDir'] : null;
 
         return new self(
@@ -115,6 +125,7 @@ readonly class MasterConfig
             restartBackoffMs: (int) ($data['restartBackoffMs'] ?? 200),
             maxRestartBackoffMs: (int) ($data['maxRestartBackoffMs'] ?? 30_000),
             server: self::serverParams($data['server'] ?? []),
+            logTo: $logTo,
         );
     }
 
@@ -159,6 +170,7 @@ readonly class MasterConfig
             shutdownTimeoutMs: $this->shutdownTimeoutMs,
             restartBackoffMs: $this->restartBackoffMs,
             maxRestartBackoffMs: $this->maxRestartBackoffMs,
+            logTo: $this->logTo,
         );
     }
 

@@ -133,6 +133,7 @@ new WorkerMaster(
 | `logDir` | `runtimeDir` | Каталог логов. |
 | `name` | `sconcur-http-server` | Префикс имён лога и state-файла. |
 | `rotateDays` | `3` | Сколько дней хранить лог-файлы. |
+| `logTo` | `file` | Куда писать журнал: `file` \| `stdout` \| `both` (для `docker logs` — `stdout`/`both`). |
 | `restartPolicy` | `always` | `always` \| `on-failure` \| `never`. |
 | `shutdownTimeoutMs` | `10000` | Сколько ждать дренаж воркеров до `SIGKILL`. |
 | `restartBackoffMs` | `200` | База экспоненциального backoff при краш-лупе. |
@@ -189,6 +190,7 @@ new WorkerMaster(
   "logDir": "/var/log/sconcur",         // дефолт = runtimeDir
   "name": "sconcur-http-server",        // префикс имён лога и state-файла
   "rotateDays": 3,                      // сколько дней хранить логи
+  "logTo": "file",                      // file | stdout | both (для docker logs — stdout/both)
   "restartPolicy": "always",            // always | on-failure | never
   "shutdownTimeoutMs": 10000,           // ожидание дренажа воркеров до SIGKILL
   "restartBackoffMs": 200,              // база backoff при краш-лупе
@@ -272,9 +274,22 @@ sconcur-http-server-2026-06-18.log
 [2026-06-18 12:05:00.000100] INFO [master: 12345]: shutdown requested; forwarding SIGTERM to workers []
 ```
 
-`stdout`/`stderr` воркеров мастер **перехватывает** и переписывает в тот же файл со
+`stdout`/`stderr` воркеров мастер **перехватывает** и переписывает в тот же журнал со
 скоупом `worker: <pid> #<index>` (stderr → `ERROR`, stdout → `INFO`), поэтому вывод
-падения сохраняется в едином формате рядом с записью о выходе.
+падения (и access-лог воркера) сохраняется в едином формате рядом с записью о выходе.
+
+### Куда писать журнал (`logTo`)
+
+Параметр `logTo` задаёт сток журнала мастера:
+
+- `file` (по умолчанию) — только дневной файл в `logDir`;
+- `stdout` — только в `STDOUT` мастера (его собирает `docker logs`/journald);
+- `both` — и в файл, и в `STDOUT`.
+
+Под `docker logs` нужен `stdout` или `both` (иначе вывод пуст — мастер пишет лишь в
+файл, а stdout контейнера — это stdout мастера). На производительность это не влияет:
+мастер вне горячего пути запроса, записи буферизованы и **флашатся раз в тик
+супервизии (~100 мс)**, а не на каждую строку.
 
 ## Единственный инстанс, состояние и перезапуск из системы
 

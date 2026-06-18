@@ -9,6 +9,7 @@
     "logDir": "/sconcur/tests/storage/logs",
     "name": "sconcur-http-server",
     "rotateDays": 3,
+    "logTo": "both",
     "restartPolicy": "always",
     "shutdownTimeoutMs": 10000,
     "restartBackoffMs": 200,
