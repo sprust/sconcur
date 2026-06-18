@@ -236,6 +236,77 @@ class DownloadTest extends BaseHttpClientTestCase
         self::assertFileDoesNotExist($path);
     }
 
+    public function testTruncatedResponseInCreateModeRemovesPartialFile(): void
+    {
+        // Create mode created the file, so a mid-body failure removes it (the path
+        // did not exist before, like Replace).
+        $path = $this->tempPath();
+
+        $exception = null;
+
+        try {
+            $this->client(new HttpClientOptions(requestTimeoutMs: 5_000))->download(
+                request: $this->request('GET', '/truncated'),
+                path: $path,
+                mode: DownloadFileMode::Create,
+            );
+        } catch (DownloadException $exception) {
+            //
+        }
+
+        self::assertInstanceOf(DownloadException::class, $exception);
+        self::assertFileDoesNotExist($path);
+    }
+
+    public function testTruncatedResponseInAppendModeKeepsFileWithAppendedData(): void
+    {
+        // Append cannot be undone, so a mid-body failure leaves the file: the
+        // original content is kept and the bytes that did arrive are appended.
+        $path = $this->tempPath();
+
+        file_put_contents($path, 'original-');
+
+        $client = $this->client(new HttpClientOptions(requestTimeoutMs: 5_000));
+
+        $exception = null;
+
+        try {
+            $client->download(
+                request: $this->request('GET', '/truncated'),
+                path: $path,
+                mode: DownloadFileMode::Append,
+            );
+        } catch (DownloadException $exception) {
+            //
+        }
+
+        self::assertInstanceOf(DownloadException::class, $exception);
+        self::assertFileExists($path);
+
+        clearstatcache(true, $path);
+
+        $contents = (string) file_get_contents($path);
+
+        self::assertStringStartsWith('original-', $contents);
+        self::assertGreaterThan(strlen('original-'), strlen($contents));
+        self::assertSame(
+            str_repeat('x', strlen($contents) - strlen('original-')),
+            substr($contents, strlen('original-')),
+        );
+
+        // The descriptor is always closed (even on a failed copy), so the path is
+        // immediately reusable — a second download overwrites it cleanly.
+        $client->download(
+            request: $this->request('GET', '/big/64'),
+            path: $path,
+            mode: DownloadFileMode::Replace,
+        );
+
+        clearstatcache(true, $path);
+
+        self::assertSame(64, filesize($path));
+    }
+
     protected function tempPath(): string
     {
         $path = sys_get_temp_dir() . '/sconcur_download_' . getmypid() . '_' . count($this->paths);
