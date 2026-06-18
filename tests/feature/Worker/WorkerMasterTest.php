@@ -85,6 +85,32 @@ class WorkerMasterTest extends TestCase
         }
     }
 
+    public function testOnFailurePolicyRestartsCrashedWorker(): void
+    {
+        // OnFailure: a signal death (SIGKILL, as the OOM killer would send) is a
+        // failure, so the worker must be respawned — the complement of the clean-exit
+        // case above.
+        $master = TestWorkerMaster::start(['workerCount' => 2, 'restartPolicy' => 'on-failure']);
+
+        try {
+            $before = $master->distinctWorkerPids();
+
+            self::assertNotEmpty($before);
+
+            posix_kill($before[0], SIGKILL);
+
+            $restarted = $this->waitFor(
+                static fn(): bool => array_diff($master->distinctWorkerPids(40), $before) !== [],
+                timeoutSeconds: 6.0,
+            );
+
+            self::assertTrue($restarted, 'OnFailure must respawn a worker that died by signal');
+            self::assertStringContainsString('signal=', $master->logText());
+        } finally {
+            $master->stop();
+        }
+    }
+
     public function testNeverPolicyDoesNotRestartKilledWorker(): void
     {
         $master = TestWorkerMaster::start(['workerCount' => 1, 'restartPolicy' => 'never']);

@@ -20,21 +20,27 @@ class MasterStateFile
         return $this->path;
     }
 
-    public function write(MasterState $state): void
+    public function write(MasterState $state): bool
     {
         $json = json_encode($state->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 
         if ($json === false) {
-            return;
+            return false;
         }
 
         $temporaryPath = $this->path . '.' . getmypid() . '.tmp';
 
         if (file_put_contents($temporaryPath, $json . "\n") === false) {
-            return;
+            return false;
         }
 
-        rename($temporaryPath, $this->path);
+        if (!rename($temporaryPath, $this->path)) {
+            @unlink($temporaryPath);
+
+            return false;
+        }
+
+        return true;
     }
 
     public function read(): ?MasterState

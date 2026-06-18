@@ -6,6 +6,7 @@ namespace SConcur\Tests\Feature\Worker;
 
 use PHPUnit\Framework\TestCase;
 use SConcur\Worker\MasterCli;
+use SConcur\Worker\MasterLock;
 
 /**
  * Unit coverage of the CLI argument handling — exercised in-process with in-memory
@@ -49,6 +50,33 @@ class MasterCliTest extends TestCase
             self::assertSame(MasterCli::EXIT_NOT_RUNNING, $code);
             self::assertStringContainsString('stopped', $out);
         } finally {
+            @rmdir($directory);
+        }
+    }
+
+    public function testStatusReportsRunningWhenLockHeldWithoutState(): void
+    {
+        // A live master holds the lock but a state file may be absent (e.g. just
+        // before it is written): status decides liveness by the lock and still
+        // reports "running". A second flock from the same process contends, so
+        // holding MasterLock here simulates a running master.
+        $directory = sys_get_temp_dir() . '/sc-cli-' . uniqid('', true);
+
+        mkdir($directory, 0o775, true);
+
+        $lock = new MasterLock(path: $directory . '/held.lock');
+
+        $lock->acquire();
+
+        try {
+            [$code, $out] = $this->runCli(['status', '--runtimeDir=' . $directory, '--name=held']);
+
+            self::assertSame(MasterCli::EXIT_OK, $code);
+            self::assertStringContainsString('running', $out);
+        } finally {
+            $lock->release();
+
+            @unlink($directory . '/held.lock');
             @rmdir($directory);
         }
     }

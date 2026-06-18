@@ -32,6 +32,8 @@ class WorkerMaster
 
     protected const float HEALTHY_UPTIME_SECONDS = 1.0; // shorter run counts as a fast fail
 
+    protected const float SIGKILL_GRACE_SECONDS = 2.0; // give up waiting this long after SIGKILL
+
     protected MasterLogger $logger;
 
     protected MasterLock $lock;
@@ -60,6 +62,8 @@ class WorkerMaster
     protected bool $killSent = false;
 
     protected float $stopDeadline = 0.0;
+
+    protected float $killDeadline = 0.0;
 
     /**
      * @param string                $workerScript        consumer's worker script (constructs HttpServer and serves)
@@ -135,25 +139,31 @@ class WorkerMaster
         // Acquire the single-instance lock first: a second master fails fast here.
         $this->lock->acquire();
 
-        $restoreSignals = $this->installSignalHandlers();
-
-        $this->logger->master(
-            level: MasterLogger::INFO,
-            message: sprintf(
-                'start workers=%d script=%s runtimeDir=%s',
-                $this->workers,
-                $this->workerScript,
-                $this->runtimeDir,
-            ),
-        );
-
-        $this->writeState();
+        // Everything after the lock is acquired runs under the finally so the lock
+        // and signal handlers are always restored — even if writeState() throws.
+        $restoreSignals = null;
 
         try {
+            $restoreSignals = $this->installSignalHandlers();
+
+            $this->logger->master(
+                level: MasterLogger::INFO,
+                message: sprintf(
+                    'start workers=%d script=%s runtimeDir=%s',
+                    $this->workers,
+                    $this->workerScript,
+                    $this->runtimeDir,
+                ),
+            );
+
+            $this->writeState();
+
             $this->spawnAll();
             $this->supervise();
         } finally {
-            $restoreSignals();
+            if ($restoreSignals !== null) {
+                $restoreSignals();
+            }
 
             $this->stateFile->clear();
             $this->lock->release();
@@ -255,7 +265,7 @@ class WorkerMaster
 
     protected function writeState(): void
     {
-        $this->stateFile->write(
+        $written = $this->stateFile->write(
             new MasterState(
                 pid: $this->masterPid,
                 startedAt: microtime(true),
@@ -264,6 +274,15 @@ class WorkerMaster
                 address: $this->address,
             ),
         );
+
+        // The state file doubles as the control file (its removal is the stop
+        // signal), so a master with no state file would self-stop on the first
+        // tick. Fail fast with a clear error instead of that misleading shutdown.
+        if (!$written) {
+            throw new RuntimePathException(
+                message: 'Cannot write master state file: ' . $this->stateFile->path(),
+            );
+        }
     }
 
     /**
@@ -366,6 +385,18 @@ class WorkerMaster
                 $this->driveShutdown($now);
 
                 if ($this->allSlotsEmpty()) {
+                    break;
+                }
+
+                // A worker that survives even SIGKILL (e.g. stuck in uninterruptible
+                // I/O) must not hang the master forever: after a grace period give up
+                // and exit — the kernel reaps the leftover children once we are gone.
+                if ($this->killSent && $now > $this->killDeadline) {
+                    $this->logger->master(
+                        level: MasterLogger::ERROR,
+                        message: sprintf('%d worker(s) still alive after SIGKILL; exiting anyway', $this->aliveSlotCount()),
+                    );
+
                     break;
                 }
             } else {
@@ -516,7 +547,8 @@ class WorkerMaster
                 $this->signalAll(SIGKILL);
             }
 
-            $this->killSent = true;
+            $this->killSent     = true;
+            $this->killDeadline = $now + self::SIGKILL_GRACE_SECONDS;
         }
     }
 

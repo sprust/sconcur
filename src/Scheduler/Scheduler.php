@@ -262,20 +262,24 @@ class Scheduler
                         continue;
                     }
 
-                    // Re-arm for the next request before handling this one, so the
-                    // listener keeps accepting while the handler runs.
-                    Extension::get()->next(
-                        flowKey: $serverFlowKey,
-                        taskKey: $serverTaskKey,
-                    );
-
                     $payload = $result->payload;
+
+                    ++$dispatchedCount;
+
+                    // Re-arm for the next request before handling this one, so the
+                    // listener keeps accepting while the handler runs — unless this
+                    // request hit the maxRequests limit, in which case we do not pull
+                    // one more (we drain on the next tick instead of bouncing it 503).
+                    if ($maxRequests === 0 || $dispatchedCount < $maxRequests) {
+                        Extension::get()->next(
+                            flowKey: $serverFlowKey,
+                            taskKey: $serverTaskKey,
+                        );
+                    }
 
                     $this->spawn(static function () use ($onRequest, $payload): void {
                         $onRequest($payload);
                     });
-
-                    ++$dispatchedCount;
 
                     continue;
                 }
