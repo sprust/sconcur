@@ -346,7 +346,7 @@ class TestWorkerMaster
 
     private function waitUntilReachable(): bool
     {
-        $deadline = microtime(true) + 6.0;
+        $deadline = microtime(true) + 2.0;
 
         while (microtime(true) < $deadline) {
             if (!$this->isRunning()) {

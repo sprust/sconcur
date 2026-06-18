@@ -12,7 +12,6 @@ use SConcur\Exceptions\Worker\InvalidConfigException;
  * into the worker's argv flags (so the worker still receives everything via
  * arguments — the master is the only thing that reads a config file).
  *
- * Unspecified values fall back to the defaults below. `server.address` becomes the
  * worker's first positional argument; every other `server` entry becomes a
  * `--key=value` flag (booleans render as 1/0).
  */
@@ -131,24 +130,13 @@ readonly class MasterConfig
 
     /**
      * Builds the supervisor. The `server` object is expanded into the worker argv:
-     * `address` is the first positional argument, every other entry a `--key=value`
      * flag; any extra `workerArgs` follow.
      */
     public function toWorkerMaster(): WorkerMaster
     {
-        $address = isset($this->server['address']) ? (string) $this->server['address'] : null;
-
         $workerArgs = [];
 
-        if ($address !== null && $address !== '') {
-            $workerArgs[] = $address;
-        }
-
         foreach ($this->server as $key => $value) {
-            if ($key === 'address') {
-                continue;
-            }
-
             $workerArgs[] = '--' . $key . '=' . $this->scalarToArg($value);
         }
 
@@ -171,7 +159,6 @@ readonly class MasterConfig
             shutdownTimeoutMs: $this->shutdownTimeoutMs,
             restartBackoffMs: $this->restartBackoffMs,
             maxRestartBackoffMs: $this->maxRestartBackoffMs,
-            address: $address,
         );
     }
 

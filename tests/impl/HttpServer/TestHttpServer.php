@@ -39,23 +39,26 @@ class TestHttpServer
      * @param array<string, int|bool> $options       launch options overriding the server
      *        defaults, keyed by HttpServer constructor parameter name (e.g.
      *        'maxRequestBody'); booleans are passed as 0/1
-     * @param int|null                 $port          bind this exact port instead of a free
-     *        one — used to start several SO_REUSEPORT servers on the same port
      * @param bool                     $waitReachable wait until the server answers before
      *        returning (set false when the server is expected to stop immediately)
      */
     public static function start(array $options = [], ?int $port = null, bool $waitReachable = true): self
     {
+        if (isset($options['address'])) {
+            throw new RuntimeException('The "address" option is not supported in tests. Use "port" instead.');
+        }
+
         $port ??= self::freePort();
+        $options['address'] = self::HOST . ':' . $port;
 
         $root      = dirname(__DIR__, 3);
         $extension = $root . '/ext/build/sconcur.so';
         $script    = $root . '/tests/servers/http/http-server.php';
 
-        $command = ['php', '-d', 'extension=' . $extension, $script, self::HOST . ':' . $port];
+        $command = ['php', '-d', 'extension=' . $extension, $script];
 
         foreach ($options as $name => $value) {
-            $command[] = '--' . $name . '=' . (int) $value;
+            $command[] = '--' . $name . '=' . $value;
         }
 
         // Capture stdout to a file so tests can read the server's access log.

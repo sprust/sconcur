@@ -39,7 +39,7 @@ class MasterCliTest extends TestCase
         [$code, , $err] = $this->runCli([]);
 
         self::assertSame(MasterCli::EXIT_USAGE, $code);
-        self::assertStringContainsString('Usage', $err);
+        self::assertStringContainsString('--configPath=<file> is required', $err);
     }
 
     public function testStartRequiresConfigPath(): void

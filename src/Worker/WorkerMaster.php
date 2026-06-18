@@ -10,6 +10,7 @@ use SConcur\Exceptions\Worker\MasterAlreadyRunningException;
 use SConcur\Exceptions\Worker\MissingPcntlException;
 use SConcur\Exceptions\Worker\RuntimePathException;
 use SConcur\Exceptions\Worker\WorkerSpawnException;
+use SConcur\Features\HttpServer\HttpServer;
 
 /**
  * Supervises a pool of worker processes (one per slot), each a separate `php
@@ -28,6 +29,11 @@ use SConcur\Exceptions\Worker\WorkerSpawnException;
  */
 class WorkerMaster
 {
+    /**
+     * @see HttpServer::$masterPid
+     */
+    protected const string MASTER_PID_ARG = 'masterPid';
+
     protected const int TICK_MICROSECONDS = 100_000; // 100 ms supervision tick
 
     protected const float HEALTHY_UPTIME_SECONDS = 1.0; // shorter run counts as a fast fail
@@ -80,7 +86,6 @@ class WorkerMaster
      * @param int                   $shutdownTimeoutMs   how long to wait for workers to drain before SIGKILL
      * @param int                   $restartBackoffMs    base of the exponential crash-loop backoff
      * @param int                   $maxRestartBackoffMs cap of the crash-loop backoff
-     * @param null|string           $address             informational address recorded in the state file
      */
     public function __construct(
         protected readonly string $workerScript,
@@ -97,7 +102,6 @@ class WorkerMaster
         protected readonly int $shutdownTimeoutMs = 10_000,
         protected readonly int $restartBackoffMs = 200,
         protected readonly int $maxRestartBackoffMs = 30_000,
-        protected readonly ?string $address = null,
     ) {
     }
 
@@ -271,7 +275,6 @@ class WorkerMaster
                 startedAt: microtime(true),
                 workerCount: $this->workers,
                 workerScript: $this->workerScript,
-                address: $this->address,
             ),
         );
 
@@ -317,7 +320,7 @@ class WorkerMaster
     {
         try {
             $process = new WorkerProcess(
-                command: $this->buildCommand($index),
+                command: $this->buildCommand(),
                 cwd: $this->cwd,
                 env: $this->buildEnv(),
             );
@@ -351,15 +354,14 @@ class WorkerMaster
      *
      * @return list<string>
      */
-    protected function buildCommand(int $index): array
+    protected function buildCommand(): array
     {
         return [
             $this->phpBinary,
             ...$this->phpArgs,
             $this->workerScript,
             ...$this->workerArgs,
-            Worker::MASTER_PID_ARG . '=' . $this->masterPid,
-            Worker::INDEX_ARG . '=' . $index,
+            static::MASTER_PID_ARG . '=' . $this->masterPid,
         ];
     }
 

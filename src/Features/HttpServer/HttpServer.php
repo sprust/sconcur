@@ -5,11 +5,12 @@ declare(strict_types=1);
 namespace SConcur\Features\HttpServer;
 
 use Closure;
+use InvalidArgumentException;
+use ReflectionClass;
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\HttpServer\InvalidHandlerResponseException;
 use SConcur\Exceptions\HttpServer\RequestBodyTooLargeException;
 use SConcur\Features\FeatureExecutor;
-use SConcur\Features\HttpServer\Dto\AccessLogEntry;
 use SConcur\Features\HttpServer\Dto\Request;
 use SConcur\Features\HttpServer\Dto\Response;
 use SConcur\Features\HttpServer\Dto\ResponseStream;
@@ -52,8 +53,6 @@ readonly class HttpServer
      *                                                                      to send instead of the default 500; returning null (or being absent)
      *                                                                      falls back to a bare 500. Lets the caller log/trace otherwise-swallowed
      *                                                                      errors.
-     * @param null|Closure(AccessLogEntry): void          $accessLog        called after each handled request with its start time, method,
-     *                                                                      path, status and execution time — print or ship it as you like.
      * @param null|int                                    $masterPid        if set, the server self-terminates (graceful shutdown) once it is
      *                                                                      no longer a child of this pid — i.e. its WorkerMaster died — so an
      *                                                                      orphaned worker drains and exits instead of holding the port.
@@ -62,7 +61,7 @@ readonly class HttpServer
      * Defaults mirror the Go server defaults.
      */
     public function __construct(
-        private string $address,
+        private string $address = '0.0.0.0:7832',
         private int $readHeaderTimeoutMs = 10_000,
         private int $readTimeoutMs = 30_000,
         private int $writeTimeoutMs = 30_000,
@@ -74,9 +73,116 @@ readonly class HttpServer
         private int $maxRequests = 0,
         private bool $reusePort = false,
         private ?Closure $onError = null,
-        private ?Closure $accessLog = null,
         private ?int $masterPid = null,
     ) {
+    }
+
+    /**
+     * Create a new server from command line arguments.
+     *
+     * @param array<string, string>                       $argv    Command line arguments.
+     * @param Closure(Throwable, Request): ?Response|null $onError Error handler.
+     */
+    public static function fromArgs(array $argv, ?Closure $onError = null): HttpServer
+    {
+        $allowedTypes = ['int', 'bool', 'float', 'string'];
+
+        $rc = new ReflectionClass(HttpServer::class);
+
+        $parameters = [];
+
+        foreach ($rc->getConstructor()?->getParameters() ?? [] as $parameter) {
+            /**
+             * TODO
+             *
+             * @phpstan-ignore-next-line
+             *
+             * Call to an undefined method ReflectionType::getName().
+             * method.notFound
+             */
+            $parameterName = $parameter->getType()?->getName();
+
+            if (!in_array($parameterName, $allowedTypes, true)) {
+                continue;
+            }
+
+            $parameters[$parameter->getName()] = $parameterName;
+        }
+
+        $overrides = [];
+
+        foreach ($argv as $argument) {
+            if (!str_starts_with($argument, '--')) {
+                continue;
+            }
+
+            [$name, $value] = array_pad(explode('=', substr($argument, 2), 2), 2, '');
+
+            // TODO: move to env
+            if (str_starts_with($name, 'sconcur')) {
+                continue;
+            }
+
+            $type = $parameters[$name] ?? null;
+
+            if ($type === null) {
+                throw new InvalidArgumentException(
+                    sprintf(
+                        'Unknown argument: %s. supported only %s',
+                        $argument,
+                        implode(', ', array_keys($parameters)),
+                    ),
+                );
+            }
+
+            if ($type === 'int') {
+                if (((string) (int) $value) === $value) {
+                    $overrides[$name] = (int) $value;
+                } else {
+                    throw new InvalidArgumentException(
+                        sprintf(
+                            'Invalid integer for %s: %s.',
+                            $name,
+                            $value,
+                        ),
+                    );
+                }
+            } elseif ($type === 'bool') {
+                if ($value === '1') {
+                    $overrides[$name] = true;
+                } elseif ($value === '0') {
+                    $overrides[$name] = false;
+                } else {
+                    throw new InvalidArgumentException(
+                        sprintf(
+                            'Invalid boolean for %s: %s.',
+                            $name,
+                            $value,
+                        ),
+                    );
+                }
+            } elseif ($type === 'float') {
+                if (is_numeric($value)) {
+                    $overrides[$name] = (float) $value;
+                } else {
+                    throw new InvalidArgumentException(
+                        sprintf(
+                            'Invalid float for %s: %s.',
+                            $name,
+                            $value,
+                        ),
+                    );
+                }
+            } else {
+                $overrides[$name] = (string) $value;
+            }
+        }
+
+        if ($onError !== null) {
+            $overrides['onError'] = $onError;
+        }
+
+        return new HttpServer(...$overrides);
     }
 
     /**
@@ -115,15 +221,18 @@ readonly class HttpServer
             );
 
             $onError   = $this->onError;
-            $accessLog = $this->accessLog;
             $masterPid = $this->masterPid;
 
             Scheduler::get()->serve(
                 serverFlowKey: $flowKey,
                 serverTaskKey: $runningTask->key,
                 maxRequests: $this->maxRequests,
-                onRequest: static function (string $payload) use ($handler, $onError, $accessLog): void {
-                    self::handle($handler, $onError, $accessLog, $payload);
+                onRequest: static function (string $payload) use ($handler, $onError): void {
+                    self::handle(
+                        handler: $handler,
+                        onError: $onError,
+                        payload: $payload,
+                    );
                 },
                 shouldStop: static function () use (&$stopRequested, $masterPid): bool {
                     // Stop on a shutdown signal, or when this worker has been orphaned
@@ -214,15 +323,18 @@ readonly class HttpServer
      *
      * @param Closure(Request): (Response|StreamedResponse) $handler
      * @param null|Closure(Throwable, Request): ?Response   $onError
-     * @param null|Closure(AccessLogEntry): void            $accessLog
      */
-    private static function handle(Closure $handler, ?Closure $onError, ?Closure $accessLog, string $payload): void
+    private static function handle(Closure $handler, ?Closure $onError, string $payload): void
     {
         $startedAt = microtime(true);
 
         $request = Request::fromPayload($payload);
 
-        $response = self::resolveResponse($handler, $onError, $request);
+        $response = self::resolveResponse(
+            handler: $handler,
+            onError: $onError,
+            request: $request,
+        );
 
         if ($response instanceof StreamedResponse) {
             self::stream($request, $response, $onError);
@@ -237,17 +349,22 @@ readonly class HttpServer
             );
         }
 
-        if ($accessLog !== null) {
-            $accessLog(
-                new AccessLogEntry(
-                    startedAt: $startedAt,
-                    method: $request->method,
-                    path: $request->path,
-                    status: $response->status,
-                    executionMs: (microtime(true) - $startedAt) * 1000,
-                ),
-            );
-        }
+        $time = date('Y-m-d\TH:i:s', (int) $startedAt)
+            . sprintf('.%06d', (int) (($startedAt - floor($startedAt)) * 1_000_000));
+
+        fwrite(
+            STDOUT,
+            sprintf(
+                "%s %s %s %d %.2fms\n",
+                $time,
+                $request->method,
+                $request->path,
+                $response->status,
+                (microtime(true) - $startedAt) * 1000,
+            ),
+        );
+
+        fflush(STDOUT);
     }
 
     /**
@@ -290,8 +407,11 @@ readonly class HttpServer
      *
      * @param null|Closure(Throwable, Request): ?Response $onError
      */
-    private static function resolveResponse(Closure $handler, ?Closure $onError, Request $request): Response|StreamedResponse
-    {
+    private static function resolveResponse(
+        Closure $handler,
+        ?Closure $onError,
+        Request $request,
+    ): Response|StreamedResponse {
         try {
             $response = $handler($request);
 

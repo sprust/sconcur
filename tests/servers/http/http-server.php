@@ -4,14 +4,12 @@ declare(strict_types=1);
 
 require dirname(__DIR__, 3) . '/vendor/autoload.php';
 
-use SConcur\Features\HttpServer\Dto\AccessLogEntry;
 use SConcur\Features\HttpServer\Dto\Request;
 use SConcur\Features\HttpServer\Dto\Response;
 use SConcur\Features\HttpServer\Dto\ResponseStream;
 use SConcur\Features\HttpServer\Dto\StreamedResponse;
 use SConcur\Features\HttpServer\HttpServer;
 use SConcur\Features\Sleeper\Sleeper;
-use SConcur\Worker\Worker;
 
 /**
  * Demo / test HTTP server. Routes:
@@ -43,68 +41,12 @@ use SConcur\Worker\Worker;
  *   --maxRequests  --reusePort (0/1)
  */
 
-$address = $argv[1] ?? '0.0.0.0:8080';
-
-$sleeper = new Sleeper();
-
-// Accepted launch options — exactly the HttpServer constructor parameter names.
-// Only the ones actually passed override the defaults (named-arg unpacking below).
-$allowedIntOptions = [
-    'readHeaderTimeoutMs',
-    'readTimeoutMs',
-    'writeTimeoutMs',
-    'idleTimeoutMs',
-    'shutdownTimeoutMs',
-    'maxRequestBody',
-    'maxConcurrency',
-    'handlerTimeoutMs',
-    'maxRequests',
-    'masterPid',
-];
-
-$overrides = [];
-
-foreach (array_slice($argv, 2) as $argument) {
-    if (!str_starts_with($argument, '--')) {
-        continue;
-    }
-
-    [$name, $value] = array_pad(explode('=', substr($argument, 2), 2), 2, '');
-
-    if ($name === 'reusePort') {
-        $overrides['reusePort'] = (bool) (int) $value;
-    } elseif (in_array($name, $allowedIntOptions, true)) {
-        $overrides[$name] = (int) $value;
-    }
-}
-
-// Access log: one line per request — start time (with microseconds), method,
-// path, status, duration. Written and flushed straight to stdout so it appears live.
-$accessLog = static function (AccessLogEntry $entry): void {
-    $time = date('Y-m-d\TH:i:s', (int) $entry->startedAt)
-        . sprintf('.%06d', (int) (($entry->startedAt - floor($entry->startedAt)) * 1_000_000));
-
-    fwrite(STDOUT, sprintf(
-        "%s %s %s %d %.2fms\n",
-        $time,
-        $entry->method,
-        $entry->path,
-        $entry->status,
-        $entry->executionMs,
-    ));
-
-    fflush(STDOUT);
-};
-
 // Spread as named args; address first, overrides take precedence over defaults.
 // masterPid self-terminates the worker if its master dies; null (no
 // --sconcurMasterPid argv flag) disables the check when run standalone.
-$server = new HttpServer(...[
-    'address'   => $address,
-    'accessLog' => $accessLog,
-    'masterPid' => Worker::masterPid(),
-    ...$overrides,
-]);
+$server = HttpServer::fromArgs($_SERVER['argv']);
+
+$sleeper = new Sleeper();
 
 $server->serve(static function (Request $request) use ($sleeper): Response|StreamedResponse {
     if ($request->path === '/method') {

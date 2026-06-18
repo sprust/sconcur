@@ -54,22 +54,22 @@ class MasterCli
         $command    = $argv[1] ?? '';
         $configPath = $this->configPath(array_slice($argv, 2));
 
-        return match ($command) {
-            'start'  => $this->start($configPath),
-            'status' => $this->status($configPath),
-            'stop'   => $this->stop($configPath),
-            default  => $this->usage(),
-        };
-    }
-
-    protected function start(string $configPath): int
-    {
         $config = $this->loadConfig($configPath);
 
         if (!$config instanceof MasterConfig) {
             return $config;
         }
 
+        return match ($command) {
+            'start'  => $this->start($config),
+            'status' => $this->status($config),
+            'stop'   => $this->stop($config),
+            default  => $this->usage(),
+        };
+    }
+
+    protected function start(MasterConfig $config): int
+    {
         try {
             return $config->toWorkerMaster()->run();
         } catch (Throwable $exception) {
@@ -77,14 +77,8 @@ class MasterCli
         }
     }
 
-    protected function status(string $configPath): int
+    protected function status(MasterConfig $config): int
     {
-        $config = $this->loadConfig($configPath);
-
-        if (!$config instanceof MasterConfig) {
-            return $config;
-        }
-
         // Liveness is decided by whether a master holds the lock, not by a pid in the
         // state file — the lock is released by the kernel only when the real master
         // dies, so this is immune to a stale state file and PID reuse.
@@ -112,14 +106,8 @@ class MasterCli
         return self::EXIT_OK;
     }
 
-    protected function stop(string $configPath): int
+    protected function stop(MasterConfig $config): int
     {
-        $config = $this->loadConfig($configPath);
-
-        if (!$config instanceof MasterConfig) {
-            return $config;
-        }
-
         $lockPath = $this->lockPath($config);
 
         if (!$this->masterRunning($lockPath)) {
