@@ -173,6 +173,7 @@ $server = new HttpServer(
 | `reusePort` | `false` | Включить `SO_REUSEPORT` — несколько процессов на одном порту. См. [масштабирование на ядра](#масштабирование-на-ядра-so_reuseport). |
 | `onError` | `null` | `Closure(Throwable, Request): ?Response` — наблюдатель ошибок обработчика. |
 | `accessLog` | `null` | `Closure(AccessLogEntry): void` — вызывается после каждого запроса (лог доступа). См. [Access-лог](#access-лог). |
+| `masterPid` | `null` | Если задан — сервер сам штатно останавливается, как только перестаёт быть потомком этого pid (его [мастер](worker-master.ru.md) умер). Для воркера под мастером: `Worker::masterPid()`; `null` — выключено. |
 
 Значение `0` для `maxConcurrency`/`handlerTimeoutMs` означает «выключено». Для
 прочих таймаутов `0` означает «взять Go-дефолт».

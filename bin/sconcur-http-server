@@ -1,0 +1,21 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use SConcur\Worker\MasterCli;
+
+$autoloads = [
+    __DIR__ . '/../vendor/autoload.php',  // running from the repo
+    __DIR__ . '/../../../autoload.php',   // installed as a dependency (vendor/bin)
+];
+
+foreach ($autoloads as $autoload) {
+    if (is_file($autoload)) {
+        require $autoload;
+
+        break;
+    }
+}
+
+exit(new MasterCli()->run($argv));

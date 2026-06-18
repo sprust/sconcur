@@ -54,6 +54,10 @@ readonly class HttpServer
      *                                                                      errors.
      * @param null|Closure(AccessLogEntry): void          $accessLog        called after each handled request with its start time, method,
      *                                                                      path, status and execution time — print or ship it as you like.
+     * @param null|int                                    $masterPid        if set, the server self-terminates (graceful shutdown) once it is
+     *                                                                      no longer a child of this pid — i.e. its WorkerMaster died — so an
+     *                                                                      orphaned worker drains and exits instead of holding the port.
+     *                                                                      Pass Worker::masterPid() in a managed worker; null (default) off.
      *
      * Defaults mirror the Go server defaults.
      */
@@ -71,6 +75,7 @@ readonly class HttpServer
         private bool $reusePort = false,
         private ?Closure $onError = null,
         private ?Closure $accessLog = null,
+        private ?int $masterPid = null,
     ) {
     }
 
@@ -111,6 +116,7 @@ readonly class HttpServer
 
             $onError   = $this->onError;
             $accessLog = $this->accessLog;
+            $masterPid = $this->masterPid;
 
             Scheduler::get()->serve(
                 serverFlowKey: $flowKey,
@@ -119,8 +125,10 @@ readonly class HttpServer
                 onRequest: static function (string $payload) use ($handler, $onError, $accessLog): void {
                     self::handle($handler, $onError, $accessLog, $payload);
                 },
-                shouldStop: static function () use (&$stopRequested): bool {
-                    return $stopRequested;
+                shouldStop: static function () use (&$stopRequested, $masterPid): bool {
+                    // Stop on a shutdown signal, or when this worker has been orphaned
+                    // — its WorkerMaster (parent pid) is gone.
+                    return $stopRequested || ($masterPid !== null && self::isOrphaned($masterPid));
                 },
                 onDrainStart: static function () use ($flowKey): void {
                     // Leave the SO_REUSEPORT group early: stop accepting so new
@@ -176,6 +184,25 @@ readonly class HttpServer
 
             pcntl_async_signals($previousAsync);
         };
+    }
+
+    /**
+     * Whether this worker has been orphaned — its launching master is no longer its
+     * parent. Uses posix_getppid() (immune to PID reuse: the kernel reparents the
+     * worker once the master dies, so getppid stops matching). Falls back to a
+     * signal-0 liveness probe when posix_getppid is unavailable.
+     */
+    private static function isOrphaned(int $masterPid): bool
+    {
+        if (function_exists('posix_getppid')) {
+            return posix_getppid() !== $masterPid;
+        }
+
+        if (function_exists('posix_kill')) {
+            return !@posix_kill($masterPid, 0);
+        }
+
+        return false;
     }
 
     /**

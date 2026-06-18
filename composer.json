@@ -29,6 +29,9 @@
     "suggest": {
         "ext-pcntl": "Required for graceful shutdown of the HTTP server (SIGTERM/SIGINT handling); the server otherwise runs until the process is killed"
     },
+    "bin": [
+        "bin/sconcur-http-server"
+    ],
     "autoload": {
         "psr-4": {
             "SConcur\\": "src/"

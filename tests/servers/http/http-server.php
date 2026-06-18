@@ -11,10 +11,12 @@ use SConcur\Features\HttpServer\Dto\ResponseStream;
 use SConcur\Features\HttpServer\Dto\StreamedResponse;
 use SConcur\Features\HttpServer\HttpServer;
 use SConcur\Features\Sleeper\Sleeper;
+use SConcur\Worker\Worker;
 
 /**
  * Demo / test HTTP server. Routes:
  *   GET  /                  -> 200 "ok"
+ *   GET  /pid               -> 200, body = this process pid (used by the worker-master tests)
  *   *    /method            -> 200, body = request method (GET/POST/...)
  *   *    /echo              -> 200, body = the request body (echo, full read)
  *   *    /upload            -> 200, body = sha256 of the request body (streamed read)
@@ -57,6 +59,7 @@ $allowedIntOptions = [
     'maxConcurrency',
     'handlerTimeoutMs',
     'maxRequests',
+    'masterPid',
 ];
 
 $overrides = [];
@@ -94,7 +97,14 @@ $accessLog = static function (AccessLogEntry $entry): void {
 };
 
 // Spread as named args; address first, overrides take precedence over defaults.
-$server = new HttpServer(...['address' => $address, 'accessLog' => $accessLog, ...$overrides]);
+// masterPid self-terminates the worker if its master dies; null (no
+// SCONCUR_MASTER_PID) disables the check when run standalone.
+$server = new HttpServer(...[
+    'address'   => $address,
+    'accessLog' => $accessLog,
+    'masterPid' => Worker::masterPid(),
+    ...$overrides,
+]);
 
 $server->serve(static function (Request $request) use ($sleeper): Response|StreamedResponse {
     if ($request->path === '/method') {
@@ -135,6 +145,7 @@ $server->serve(static function (Request $request) use ($sleeper): Response|Strea
 
     return match (true) {
         $request->path === '/'        => new Response(body: 'ok'),
+        $request->path === '/pid'     => new Response(body: (string) getmypid()),
         $request->path === '/empty'   => new Response(),
         $request->path === '/cookies' => new Response(
             body: 'cookies',

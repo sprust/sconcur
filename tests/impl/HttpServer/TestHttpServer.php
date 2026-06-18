@@ -36,13 +36,15 @@ class TestHttpServer
     }
 
     /**
-     * @param array<string, int|bool> $options launch options overriding the server
+     * @param array<string, int|bool> $options       launch options overriding the server
      *        defaults, keyed by HttpServer constructor parameter name (e.g.
      *        'maxRequestBody'); booleans are passed as 0/1
-     * @param int|null                 $port    bind this exact port instead of a free
+     * @param int|null                 $port          bind this exact port instead of a free
      *        one — used to start several SO_REUSEPORT servers on the same port
+     * @param bool                     $waitReachable wait until the server answers before
+     *        returning (set false when the server is expected to stop immediately)
      */
-    public static function start(array $options = [], ?int $port = null): self
+    public static function start(array $options = [], ?int $port = null, bool $waitReachable = true): self
     {
         $port ??= self::freePort();
 
@@ -82,7 +84,7 @@ class TestHttpServer
             stdoutFile: $stdoutFile,
         );
 
-        if (!$server->waitUntilReachable()) {
+        if ($waitReachable && !$server->waitUntilReachable()) {
             $server->stop();
 
             throw new RuntimeException(
