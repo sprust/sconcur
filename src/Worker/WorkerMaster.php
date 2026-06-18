@@ -317,9 +317,9 @@ class WorkerMaster
     {
         try {
             $process = new WorkerProcess(
-                command: $this->buildCommand(),
+                command: $this->buildCommand($index),
                 cwd: $this->cwd,
-                env: $this->buildEnv($index),
+                env: $this->buildEnv(),
             );
         } catch (WorkerSpawnException $exception) {
             $backoffMs = $this->nextBackoffMs($index, uptimeSeconds: 0.0);
@@ -343,32 +343,40 @@ class WorkerMaster
     }
 
     /**
+     * Builds the worker command. The master-injected values (its pid for the orphan
+     * check, the slot index) are appended as argv flags — the same channel as the
+     * address and the consumer's workerArgs — so nothing is passed via the
+     * environment. The flags are namespaced (--sconcur*) to avoid clashing with the
+     * consumer's own argv and are read back by the Worker helper.
+     *
      * @return list<string>
      */
-    protected function buildCommand(): array
+    protected function buildCommand(int $index): array
     {
         return [
             $this->phpBinary,
             ...$this->phpArgs,
             $this->workerScript,
             ...$this->workerArgs,
+            Worker::MASTER_PID_ARG . '=' . $this->masterPid,
+            Worker::INDEX_ARG . '=' . $index,
         ];
     }
 
     /**
+     * The worker environment: the inherited environment with the consumer's extra
+     * env merged over it. No master metadata is injected here — that goes via argv
+     * (see buildCommand).
+     *
      * @return array<string, string>
      */
-    protected function buildEnv(int $index): array
+    protected function buildEnv(): array
     {
         $env = getenv();
 
         foreach ($this->env as $key => $value) {
             $env[$key] = $value;
         }
-
-        $env['SCONCUR_WORKER_INDEX'] = (string) $index;
-        $env['SCONCUR_WORKER_COUNT'] = (string) $this->workers;
-        $env['SCONCUR_MASTER_PID']   = (string) $this->masterPid;
 
         return $env;
     }

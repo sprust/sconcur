@@ -98,7 +98,7 @@ $accessLog = static function (AccessLogEntry $entry): void {
 
 // Spread as named args; address first, overrides take precedence over defaults.
 // masterPid self-terminates the worker if its master dies; null (no
-// SCONCUR_MASTER_PID) disables the check when run standalone.
+// --sconcurMasterPid argv flag) disables the check when run standalone.
 $server = new HttpServer(...[
     'address'   => $address,
     'accessLog' => $accessLog,

@@ -128,9 +128,11 @@ new WorkerMaster(
 | `--restartBackoffMs` | `200` | База экспоненциального backoff при краш-лупе. |
 | `--maxRestartBackoffMs` | `30000` | Потолок backoff. |
 
-Мастер передаёт каждому воркеру env: `SCONCUR_WORKER_INDEX` (0..N-1),
-`SCONCUR_WORKER_COUNT`, `SCONCUR_MASTER_PID` — читаются через `Worker::index()`,
-`Worker::count()`, `Worker::masterPid()`.
+Мастер передаёт каждому воркеру свои данные **через `argv`** (тем же каналом, что и
+адрес/`--workerArgs`, без env): флаги `--sconcurMasterPid=<pid>` и
+`--sconcurWorkerIndex=<0..N-1>`, дописанные в конец командной строки воркера и
+читаемые через `Worker::masterPid()` и `Worker::index()`. Имена с префиксом
+`--sconcur*`, чтобы не конфликтовать с собственными аргументами воркера.
 
 ## Политика перезапуска и `maxRequests`
 
