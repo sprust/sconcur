@@ -38,7 +38,7 @@ use SConcur\Features\Sleeper\Sleeper;
  * exactly like the HttpServer constructor parameters, passed as --name=value:
  *   --readHeaderTimeoutMs  --readTimeoutMs  --writeTimeoutMs  --idleTimeoutMs
  *   --shutdownTimeoutMs  --maxRequestBody  --maxConcurrency  --handlerTimeoutMs
- *   --reusePort (0/1)
+ *   --maxRequests  --reusePort (0/1)
  */
 
 $address = $argv[1] ?? '0.0.0.0:8080';
@@ -56,6 +56,7 @@ $allowedIntOptions = [
     'maxRequestBody',
     'maxConcurrency',
     'handlerTimeoutMs',
+    'maxRequests',
 ];
 
 $overrides = [];

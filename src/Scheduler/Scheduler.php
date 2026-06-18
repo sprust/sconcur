@@ -188,6 +188,13 @@ class Scheduler
      * happens after each delivered result, so on an idle server shutdown takes
      * effect on the next event (a bounded waitAny will make it immediate later).
      *
+     * Bounded lifetime: when $maxRequests > 0 the loop starts the same graceful
+     * drain once it has dispatched that many requests — a built-in mitigation for
+     * handler memory leaks, letting a supervisor respawn a fresh process. The
+     * limiting request is dispatched and drained like any in-flight one, and the
+     * listener is closed before draining, so no accepted request is bounced.
+     *
+     * @param int                   $maxRequests  stop after dispatching this many requests (0 = unlimited)
      * @param Closure(string): void $onRequest    receives the raw request payload
      * @param Closure(): bool       $shouldStop   true once a shutdown was requested
      * @param Closure(): void       $onDrainStart called once when draining begins, before
@@ -197,18 +204,21 @@ class Scheduler
     public function serve(
         string $serverFlowKey,
         string $serverTaskKey,
+        int $maxRequests,
         Closure $onRequest,
         Closure $shouldStop,
         Closure $onDrainStart,
     ): void {
         $draining = false;
 
+        $dispatchedCount = 0;
+
         // Whatever ends the loop — clean shutdown, a bind error, or an unexpected
         // throwable out of waitAny()/next() — the listener flow must be stopped so
         // it does not leak for the process lifetime.
         try {
             while (true) {
-                if (!$draining && $shouldStop()) {
+                if (!$draining && ($shouldStop() || ($maxRequests > 0 && $dispatchedCount >= $maxRequests))) {
                     // Stop accepting new requests; keep draining in-flight handlers.
                     $draining = true;
 
@@ -264,6 +274,8 @@ class Scheduler
                     $this->spawn(static function () use ($onRequest, $payload): void {
                         $onRequest($payload);
                     });
+
+                    ++$dispatchedCount;
 
                     continue;
                 }

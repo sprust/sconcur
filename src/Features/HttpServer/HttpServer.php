@@ -38,6 +38,12 @@ readonly class HttpServer
      *                                                                      mid-stream the response is aborted (status is already on the wire).
      *                                                                      Note: a CPU-bound handler still blocks the single-threaded loop;
      *                                                                      this guards handlers waiting on async work.
+     * @param int                                         $maxRequests      stop the server after it has handled this many requests
+     *                                                                      (0 = unlimited). Meant against handler memory leaks: once the
+     *                                                                      count is reached the server shuts down gracefully (closes the
+     *                                                                      listener first, drains in-flight, exits cleanly) so a master /
+     *                                                                      supervisor can respawn a fresh process. Reuses the graceful-
+     *                                                                      shutdown path, so no already-accepted request is bounced.
      * @param bool                                        $reusePort        set SO_REUSEPORT so several processes can bind this same
      *                                                                      address; the kernel load-balances connections across them
      *                                                                      (run one process per core). Linux only; each process must set it.
@@ -61,6 +67,7 @@ readonly class HttpServer
         private int $maxRequestBody = 10_485_760,
         private int $maxConcurrency = 0,
         private int $handlerTimeoutMs = 60_000,
+        private int $maxRequests = 0,
         private bool $reusePort = false,
         private ?Closure $onError = null,
         private ?Closure $accessLog = null,
@@ -108,6 +115,7 @@ readonly class HttpServer
             Scheduler::get()->serve(
                 serverFlowKey: $flowKey,
                 serverTaskKey: $runningTask->key,
+                maxRequests: $this->maxRequests,
                 onRequest: static function (string $payload) use ($handler, $onError, $accessLog): void {
                     self::handle($handler, $onError, $accessLog, $payload);
                 },
