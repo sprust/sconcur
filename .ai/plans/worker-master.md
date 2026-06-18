@@ -1,64 +1,560 @@
 # Мастер воркеров
 
-Статус: **план** (не реализовано).
+Статус: **план** (не реализовано). Краткий пункт — в
+[README → Планы](../../README.md#планы). Пара к
+[`SO_REUSEPORT`](http-server.md) и к фиче
+[«остановка после N запросов»](../../docs/http-server.ru.md#остановка-после-n-запросов).
 
 ## Идея
 
 Долгоживущий **мастер-процесс**-супервизор поднимает и следит за несколькими
 **процессами-воркерами** одного скрипта. Каждый воркер — **отдельный процесс**
 (`pcntl_fork` после загрузки расширения запрещён — Go-рантайм не переживает форк),
-поэтому мастер запускает их через `proc_open`/`exec`. Это пара к
+поэтому мастер запускает их через `proc_open`. Это пара к
 [`SO_REUSEPORT`](http-server.md): воркеры биндят один порт, ядро балансирует
-соединения между ними — получаем масштаб HTTP-сервера на все ядра без внешнего
+соединения между ними — масштаб HTTP-сервера на все ядра без внешнего
 балансировщика.
 
-## Параметры запуска
+Мастер **самодостаточен и универсален**: он умеет супервизировать любой
+скрипт-воркер (не только HTTP-сервер). HTTP + `reusePort` — основной, но не
+единственный сценарий.
 
-Мастеру передаются:
+### Зачем свой мастер, если есть systemd/supervisord
 
-- **путь к PHP-интерпретатору** (например `/usr/bin/php`) — чем запускать воркеры;
-- **путь к скрипту-воркеру** (например `worker.php`) — что запускать;
-- **число воркеров** — опционально; если **не передано**, берётся **количество
-  процессоров (ядер) в системе** (`nproc`).
+Внешний супервизор (systemd template-юнит, `supervisord`, docker `--scale`) —
+валидная альтернатива, и план её не отменяет. Свой мастер нужен там, где хочется:
 
+- **единая точка запуска** «одной командой» без внешней оркестрации (dev, простой
+  прод, контейнер с одним процессом-точкой-входа);
+- **знание о воркерах в рамках одного дерева процессов** — единый graceful, общий
+  лог, согласованный rolling-restart;
+- **тесная связка с фичами библиотеки** — в частности с
+  [`maxRequests`](#связь-с-maxrequests-перезапуск-по-исчерпанию-лимита): воркер сам
+  выходит по лимиту, мастер мгновенно поднимает свежий процесс (см. ниже).
+
+## API (решение по «открытому вопросу»)
+
+Два уровня, библиотека поставляет оба:
+
+1. **Универсальный CLI `bin/sconcur-http-server`** (основной интерфейс) — готовый
+   мастер-скрипт с командами `start | status | stop`. Потребитель **не пишет
+   мастер** — реализует только **свой воркер-скрипт** (тот, что строит `HttpServer`
+   и зовёт `serve()`), и указывает путь к нему. Регистрируется в `composer.json`
+   (`"bin"`), доступен как `vendor/bin/sconcur-http-server`.
+2. **Класс `WorkerMaster`** (программный API под капотом CLI) — для тех, кому нужен
+   мастер внутри своего кода. CLI — тонкая обёртка над ним.
+
+Мастеру **не нужно** расширение `sconcur.so` (он супервизор на
+`pcntl`/`posix`/`proc_open`); расширение грузит **воркер**.
+
+Размещение: `bin/sconcur-http-server` (CLI) + `src/Worker/` → namespace
+`SConcur\Worker\`:
+
+- `MasterCli` — разбор `argv`, диспетчер `start|status|stop` (логика — здесь, чтобы
+  была тестируемой; bin-файл лишь резолвит автозагрузчик и зовёт её).
+- `WorkerMaster` — супервизор (`run()` = `start`).
+- `RestartPolicy` — enum (`Always` | `OnFailure` | `Never`).
+- `Worker` — хелпер для воркер-скрипта (см. ниже).
+- (внутреннее) `WorkerProcess`, `Cpu`, `MasterState`, `MasterLock`, `MasterLogger`.
+
+### CLI: `start | status | stop`
+
+```sh
+# start — захватить lock, поднять воркеры, супервизировать (foreground; блокируется)
+vendor/bin/sconcur-http-server start \
+    --worker=/app/worker.php \           # ОБЯЗАТЕЛЬНО: воркер-скрипт потребителя
+    --workers=8 \                         # по умолчанию = число ядер
+    --address=0.0.0.0:8080 \              # уйдёт в argv воркера
+    --php-arg='-d extension=/app/ext/build/sconcur.so' \  # повторяемый
+    --runtime-dir=/run/sconcur \          # lock + state (по умолч. sys_get_temp_dir)
+    --log-dir=/var/log/sconcur \          # каталог логов
+    --rotate-days=3 \                     # хранить N дней логов (по умолчанию 3)
+    --name=sconcur-http-server \          # префикс лога/стейта (по умолч. так и есть)
+    --restart-policy=always \             # always | on-failure | never
+    --shutdown-timeout-ms=10000
+
+# status — прочитать стейт-файл, проверить живость pid, напечатать состояние
+vendor/bin/sconcur-http-server status --runtime-dir=/run/sconcur
+#   → "running: pid=12345, workers=8, address=0.0.0.0:8080, uptime=3h12m"
+#   → "stopped" | "stale (pid 12345 dead)"  + соответствующий exit-code
+
+# stop — найти pid мастера в стейте, послать SIGTERM, дождаться выхода
+vendor/bin/sconcur-http-server stop --runtime-dir=/run/sconcur
 ```
-master --php=/usr/bin/php --script=worker.php [--workers=N]
+
+Коды возврата: `start` — код мастера на выходе; `status` — `0` если running,
+`3` если stopped/stale (для скриптов-guard'ов); `stop` — `0` по факту остановки.
+
+- **`start` — foreground** (блокируется и супервизирует): удобно для systemd
+  (`ExecStart`), docker (entrypoint) и guard'а. Демонизация (`--daemon`, через
+  `pcntl_fork` — мастеру это можно, он без Go-рантайма) — опционально/стретч.
+- **`stop`/`status`** не поднимают мастер: читают `runtime-dir/<name>-state.json` и
+  работают с pid из него (`posix_kill(pid, SIGTERM|0)`).
+- bin-файл резолвит автозагрузчик и как зависимость (`vendor/autoload.php`), и
+  in-repo; шебанг `#!/usr/bin/env php`.
+
+### Программный API (под капотом CLI)
+
+```php
+use SConcur\Worker\WorkerMaster;
+use SConcur\Worker\RestartPolicy;
+
+$master = new WorkerMaster(
+    workerScript:      __DIR__ . '/worker.php', // что запускать (обязателен)
+    runtimeDir:        '/run/sconcur',           // lock + state-файл (единственный инстанс, перезапуск)
+    logDir:            '/var/log/sconcur',       // каталог логов (см. «Логирование»)
+    name:              'sconcur-http-server',    // префикс лога/стейта
+    rotateDays:        3,                         // хранить N дней лог-файлов
+    workerCount:       0,                        // 0 = число ядер (nproc)
+    phpBinary:         PHP_BINARY,               // чем запускать (по умолч. — текущий интерпретатор)
+    phpArgs:           ['-d', 'extension=' . __DIR__ . '/ext/build/sconcur.so'],
+    workerArgs:        ['0.0.0.0:8080'],         // argv воркер-скрипта
+    env:               [],                        // доп. env (мержится поверх унаследованного)
+    restartPolicy:     RestartPolicy::Always,    // см. «Политика перезапуска»
+    shutdownTimeoutMs: 10_000,                    // сколько ждать дренаж воркеров на остановке
+    restartBackoffMs:  200,                       // база экспоненциального backoff при краш-лупе
+    maxRestartBackoffMs: 30_000,                  // потолок backoff
+);
+
+$master->run(); // блокируется: lock → state → спавн → супервизия → сигналы → выход
+```
+
+Воркер-скрипт (`worker.php`) — **единственное, что пишет потребитель**; для HTTP:
+
+```php
+use SConcur\Worker\Worker;
+
+$index = (int) (getenv('SCONCUR_WORKER_INDEX') ?: 0);
+
+$server = new HttpServer(
+    address:     $argv[1] ?? '0.0.0.0:8080',
+    reusePort:   true,                       // обязателен: иначе 2-й воркер → EADDRINUSE
+    maxRequests: 10_000 + $index * 137,      // джиттер, чтобы воркеры не выходили синхронно (см. нюансы)
+    // Сторож: на каждом тике serve() проверяем, жив ли мастер. Осиротели —
+    // запускаем тот же graceful-дренаж, что и по SIGTERM (см. «Самозавершение
+    // осиротевших воркеров»). Worker::masterAlive() читает SCONCUR_MASTER_PID и
+    // сверяет с posix_getppid().
+    watchdog:    static fn (): bool => Worker::masterAlive(),
+);
+
+$server->serve($handler);
 ```
 
 ## Поток
 
 ```
-master:
-  workers = $argWorkers ?? cpuCount()        // по умолчанию = число ядер
-  for i in 1..workers:
-    proc_open([php, script], ...)            // отдельный процесс-воркер
-  supervise:
-    - следить за живостью; (опц.) перезапускать упавшие
-    - SIGTERM/SIGINT → форвард всем воркерам (graceful), дождаться дренажа, выйти
-  wait all workers
+master.run():
+  assertPcntl()                                  // без pcntl/posix нет graceful → исключение
+  lock = flock(runtimeDir/master.lock, EX|NB)    // занято → MasterAlreadyRunningException
+  count = workerCount ?: Cpu::count()            // по умолчанию = число ядер
+  log("master start", pid, count); writeState(status=running)
+  installSignalHandlers()                        // SIGTERM/SIGINT → stop; SIGHUP → reload (опц.)
+  slots[0..count-1] = spawn()                    // отдельный процесс-воркер на слот; env += MASTER_PID/INDEX/COUNT
+
+  loop (tick ~100мс):
+    dispatchSignals()
+    foreach slot:
+      drainOutput(slot) -> log each line (worker:[pid] [index], stderr=ERROR/stdout=INFO)
+      if slot.process.exited():
+        drainOutput(slot)   // дочитать хвост вывода падения
+        reap(slot); log("worker exit", slot, code|signal, uptime)
+        if !stopping && shouldRestart(policy, exit):
+          slot.respawnAt = now + backoff(slot)   // backoff растёт при быстрых падениях
+    foreach slot where respawnAt<=now && !stopping:
+      slot = spawn(); log("worker spawn", slot, pid); updateState()
+    if stopping:
+      if firstStopTick: signalAll(SIGTERM); deadline = now + shutdownTimeoutMs
+      if now > deadline: signalAll(SIGKILL)       // добиваем зависших
+      if allExited(): break
+    sleep(tick)
+
+  reapAll(); clearState(); releaseLock(); restoreSignals(); exit(0)
 
 worker (script):
-  new HttpServer(address: '0.0.0.0:8080', reusePort: true)->serve($handler)
+  HttpServer(reusePort: true, maxRequests: N, watchdog: Worker::masterAlive)->serve($handler)
+  // стоп по: SIGTERM (graceful, реализовано) | maxRequests (сам выходит 0) |
+  //          watchdog=false, т.е. мастер умер → graceful drain → выход
 ```
 
-## Детали и решения
+## Сущности
 
-- **Не `fork`, а `exec`.** Мастер спавнит воркеры как самостоятельные процессы;
-  каждый инициализирует свой Go-рантайм/`Scheduler` уже в потомке. Сам мастер может
-  не грузить расширение (он только супервизор).
-- **Число ядер.** `nproc` / `/proc/cpuinfo` / `shell_exec('nproc')` или эквивалент.
-- **Воркер-скрипт** поднимает `HttpServer(reusePort: true)` (иначе второй воркер
-  получит `EADDRINUSE`).
-- **Сигналы.** Мастер ловит `SIGTERM`/`SIGINT` и шлёт их всем воркерам (у каждого —
-  свой graceful drain), ждёт их выхода, затем выходит. Раннее закрытие листенера на
-  стороне воркера (уже реализовано) обеспечивает rolling-рестарт без потери трафика.
-- **Перезапуск упавших** воркеров (resilience) — опционально; альтернатива —
-  отдать перезапуск systemd/supervisord.
-- **Проброс** окружения/аргументов воркерам (порт, конфиг) — через `argv`/`env`.
+### PHP (`bin/` + `src/Worker/`)
+
+- **`bin/sconcur-http-server`** — шебанг-скрипт: резолвит автозагрузчик и
+  делегирует в `MasterCli::run($argv)`. Регистрируется в `composer.json` `"bin"`.
+- **`WorkerMaster`** (`readonly`-конфиг в конструкторе; `run()` — изменяемый цикл).
+  Хранит слоты, ставит/снимает обработчики сигналов, гоняет супервизионный цикл.
+- **`WorkerProcess`** — один воркер: `proc_open`-handle, `pid()`, `isRunning()`,
+  `exitInfo()` (код/сигнал, **кэшируется**: `proc_get_status` отдаёт `exitcode`
+  только при первом переходе `running→false`), `signal(int)`, `close()` (reap).
+  Держит **неблокирующие** stdout/stderr-пайпы (`stream_set_blocking(false)`) и
+  отдаёт накопленные строки мастеру для перезаписи в общий лог; пайпы дочитываются
+  до конца после выхода процесса (не потерять хвост вывода падения).
+- **`RestartPolicy`** — enum: `Always`, `OnFailure`, `Never`.
+- **`Cpu::count()`** — число ядер с фолбэками (см. ниже).
+- **`Worker`** — хелпер **для воркер-скрипта** (не для мастера): `masterPid()`
+  (читает `SCONCUR_MASTER_PID`), `masterAlive(): bool` (сверяет с `posix_getppid()`),
+  `index()`/`count()` (из env). Используется как `watchdog` HTTP-сервера.
+- **`MasterCli`** — разбор `argv` и диспетчер `start|status|stop` (тестируемая
+  логика; bin-файл — тонкая обёртка).
+- **`MasterState`** — чтение/запись JSON state-файла `<name>-state.json` (по умолч.
+  `sconcur-http-server-state.json`): pid, `startedAt`, `workerCount`, `workerScript`,
+  `address`, `status`; атомарная запись (temp+rename).
+- **`MasterLock`** — обёртка над `flock(LOCK_EX|LOCK_NB)`: захват при `run()`,
+  удержание хэндла на всё время жизни мастера (ядро снимает лок при смерти).
+- **`MasterLogger`** — один **дневной** файл `<name>-Y-m-d.log` (по умолч.
+  `sconcur-http-server-2000-01-01.log`); формат строки
+  `DATE_TIME TYPE master[pid] [worker:[pid] [index]]: <message>`; на смене суток —
+  новый файл + **подчистка** старше `rotateDays` (по умолч. 3). Методы вроде
+  `master(level, msg)` / `worker(level, pid, index, msg)`.
+- Исключения в `src/Exceptions/Worker/`:
+  - `MissingPcntlException` (`RuntimeException`) — нет `ext-pcntl`/`ext-posix`;
+  - `InvalidWorkerCountException` (`LogicException`) — `workerCount < 0`;
+  - `WorkerSpawnException` (`RuntimeException`) — `proc_open` не смог стартовать
+    процесс (оборачивает контекст: бинарь/скрипт/argv);
+  - `MasterAlreadyRunningException` (`RuntimeException`) — lock занят другим мастером;
+  - `RuntimePathException` (`RuntimeException`) — `runtimeDir`/`logDir` недоступны
+    для записи.
+
+Мастер **не использует** `Extension`/`Scheduler`/корутины — это вне Go-рантайма.
+
+### Зависимость от `HttpServer` (новый параметр)
+
+Для самозавершения осиротевших воркеров `HttpServer` получает опциональный
+**`watchdog: ?Closure(): bool`** — предикат, вызываемый на каждом тике
+серверного цикла (`Scheduler::serve` уже поллит `waitAnyTimeout(250мс)`). Вернул
+`false` → запускается **тот же** graceful-дренаж, что и по сигналу (складывается в
+существующий `shouldStop`: остановиться, если пришёл сигнал **или** watchdog сказал
+«стоп»). Параметр универсален («останавливайся, когда этот предикат ложен») и не
+завязан на мастер — знание о мастере живёт в `Worker::masterAlive()`. Чистый
+PHP-хук, протокол не меняется.
+
+> Альтернатива без правки `HttpServer` (для не-HTTP воркеров): воркер ставит
+> `SIGALRM`-обработчик и `pcntl_alarm(1)`; в нём при `posix_getppid() !== masterPid`
+> шлёт себе `SIGTERM` (который уже превращается в graceful). `watchdog`-хук
+> предпочтительнее как явный и тестируемый.
+
+## Ключевые решения и обоснования
+
+- **`exec`, не `fork`.** Воркер — самостоятельный процесс; свой Go-рантайм/
+  `Scheduler` инициализируется уже в потомке. Мастер не грузит расширение.
+- **Команда — массивом, не строкой.** `proc_open([$php, ...$phpArgs, $script,
+  ...$workerArgs], ...)`. Без `sh -c`-обёртки, иначе PID из `proc_get_status` —
+  это PID шелла, и `posix_kill` не дойдёт до `php` (graceful сломается). Тот же
+  приём уже применён в тест-харнессе `TestHttpServer`.
+- **PID и reaping.** Живость — через `proc_get_status()['running']`; код выхода
+  фиксируем при первом `running=false` и кэшируем; затем `proc_close()` (reap,
+  иначе зомби). На зомби-детей `proc_close` обязателен.
+- **Число ядер.** `Cpu::count()`: сначала `nproc` (`(int) shell_exec('nproc')`),
+  фолбэк — подсчёт `processor` в `/proc/cpuinfo`, затем `1`. Linux-only (как и весь
+  проект). Учитывать cgroup-квоты (контейнеры) — опционально, на будущее.
+- **`reusePort` — обязанность воркера.** Мастер не навязывает его (он универсален),
+  но в доке к HTTP-сценарию это требование: без `reusePort: true` второй воркер
+  получит `EADDRINUSE`. Мастер передаёт `SCONCUR_WORKER_INDEX`/`SCONCUR_WORKER_COUNT`
+  через env — для логов, шардирования и джиттера лимитов.
+
+### Политика перезапуска
+
+`RestartPolicy`:
+
+- **`Always`** (по умолчанию) — перезапуск при **любом** выходе (чистом или
+  аварийном). Естественное поведение супервизора долгоживущего сервера и
+  **обязательное** для связки с `maxRequests` (ниже).
+- **`OnFailure`** — перезапуск только при ненулевом коде или гибели по сигналу;
+  чистый выход (код 0) считается «воркер закончил, не поднимать».
+- **`Never`** — one-shot: отработал — и всё (мастер ждёт остальных и выходит).
+
+#### Связь с `maxRequests` (перезапуск по исчерпанию лимита)
+
+Фича [`HttpServer(maxRequests: N)`](../../docs/http-server.ru.md#остановка-после-n-запросов)
+гасит воркер **штатно, с кодом 0** после N запросов (против утечек памяти). Чтобы
+мастер поднял свежий процесс, нужна политика **`Always`** — поэтому она и дефолт.
+При `OnFailure` чистый выход по лимиту **не** перезапустит воркер (это другой,
+осознанный сценарий — «отработал пачку и хватит»).
+
+Раннее закрытие листенера воркером (уже реализовано) + `SO_REUSEPORT` дают
+**rolling-рестарт без потери трафика**: пока один воркер допросляживает in-flight и
+перезапускается, ядро уводит новые соединения на соседей.
+
+### Защита от краш-лупа (backoff)
+
+`Always` + воркер, падающий сразу на старте (ошибка bind, синтаксис, отсутствие
+`.so`), без защиты дал бы спин «спавн-падение-спавн». Поэтому **per-slot
+экспоненциальный backoff**:
+
+- считаем `uptime = exitedAt - startedAt`;
+- `uptime < healthyUptimeMs` (≈1с) → `consecutiveFastFails++`, иначе сброс в 0;
+- `backoff = min(maxRestartBackoffMs, restartBackoffMs * 2^(fails-1))`;
+- backoff **не блокирует** цикл: ставим `slot.respawnAt = now + backoff`, остальные
+  слоты продолжают супервизироваться;
+- (опц.) после порога подряд-падений — пометить слот «сломан» и/или мастеру выйти с
+  ненулевым кодом, чтобы внешний супервизор/человек заметил «воркер не поднимается».
+
+### Сигналы и graceful shutdown
+
+- **`pcntl_async_signals(true)`** + обработчики `SIGTERM`/`SIGINT` → взводят флаг
+  `stopping`; ставятся **до** первого спавна и **восстанавливаются** на выходе
+  (по образцу `HttpServer::installSignalHandlers`).
+- **Остановка:** `stopping=true` → перестаём перезапускать → один раз шлём `SIGTERM`
+  всем живым → ждём дренажа до `shutdownTimeoutMs` → выживших добиваем `SIGKILL` →
+  `proc_close` всех → `exit(0)`. Идемпотентно к повторному `SIGTERM` во время
+  остановки.
+- **Воркеры дренажатся сами:** каждый получает `SIGTERM`, закрывает листенер,
+  дослуживает in-flight, выходит — мастер лишь ждёт.
+- **Группа процессов.** По умолчанию воркеры — в группе мастера, поэтому
+  терминальный `Ctrl-C` (SIGINT всей группе) долетает и до них напрямую (двойная
+  доставка безвредна — идемпотентно). При `kill -TERM <master-pid>` доставку
+  обеспечивает форвардинг мастера. (Изоляция воркеров в свою группу/сессию —
+  опционально, на будущее; `proc_open` из коробки этого не делает.)
+- **`SIGHUP` → rolling reload** (опционально/стретч): перезапуск воркеров по очереди
+  (TERM одному → дождаться → поднять новый) для горячей перезагрузки кода без
+  простоя. В v1 можно не делать.
+
+### Проброс окружения и аргументов
+
+- `phpArgs` — флаги интерпретатора воркера (главное — `-d extension=…/sconcur.so`).
+- `workerArgs` — `argv` скрипта (адрес, путь к конфигу).
+- `env` — мержится поверх унаследованного; мастер добавляет:
+  - `SCONCUR_WORKER_INDEX` (0..N-1) и `SCONCUR_WORKER_COUNT`;
+  - **`SCONCUR_MASTER_PID`** — pid мастера (для сторожа/лога воркера; см. ниже).
+
+### Самозавершение осиротевших воркеров
+
+Если мастер умрёт внезапно (краш, `SIGKILL`, OOM), воркеры **осиротеют**: ядро
+переподвесит их к init/subreaper, и они продолжат жить, держа порт, — без надзора.
+(Строго говоря, это не «зомби» — зомби это мёртвый-но-не-reaped; здесь живой-но-
+бесхозный, что и есть проблема.) Чтобы такого не было, **воркер сам проверяет
+живость мастера**:
+
+- надёжный признак — **`posix_getppid()`**: воркер запущен прямым потомком мастера
+  (команда массивом, без шелла), значит изначально `getppid() === SCONCUR_MASTER_PID`;
+  после смерти мастера ядро меняет родителя → `getppid()` становится `1` (или pid
+  subreaper). Это **не подвержено переиспользованию PID**, в отличие от
+  `posix_kill($masterPid, 0)`;
+- `SCONCUR_MASTER_PID` передаётся в env и сверяется (`Worker::masterAlive()` =
+  `posix_getppid() === masterPid`), а также пишется в лог воркера для диагностики;
+- осиротев, воркер запускает **свой graceful-дренаж** (через `watchdog`-хук
+  `HttpServer` — см. выше), дослуживает in-flight и выходит. Порт освобождается.
+
+### Логирование (`logDir`, дневная ротация)
+
+**Один дневной файл** на весь пул, без индекса воркера в имени — префикс `name`
+(по умолчанию `sconcur-http-server`) + дата:
+
+```
+sconcur-http-server-2026-06-18.log
+```
+
+На **смене суток** мастер открывает новый дневной файл и **удаляет** файлы старше
+`rotateDays` (по умолчанию **3**) — встроенная ротация по удержанию, без
+`logrotate`. `rotateDays` передаётся параметром (`--rotate-days`); недоступный
+`logDir` → `RuntimePathException`.
+
+**Формат строки** — атрибуция (кто/какой воркер) в самом сообщении, а не в имени
+файла:
+
+```
+DATE_TIME TYPE master[pid] [worker:[pid] [index]]: <message>
+```
+
+- `DATE_TIME` — таймстамп с миллисекундами; `TYPE` — `INFO` | `WARN` | `ERROR`;
+- `master[pid]` — всегда; `worker:[pid] [index]` — только для записей про
+  конкретный воркер.
+
+```
+2026-06-18T12:00:00.123 INFO  master[12345]: start workers=8 script=/app/worker.php
+2026-06-18T12:00:00.130 INFO  master[12345] worker:[12346] [0]: spawned
+2026-06-18T12:00:00.131 INFO  master[12345] worker:[12347] [1]: spawned
+2026-06-18T12:01:00.000 ERROR master[12345] worker:[12346] [0]: exited code=1 uptime=60s; restarting in 200ms
+2026-06-18T12:01:00.005 ERROR master[12345] worker:[12346] [0]: PHP Fatal error: ...   ← перехваченный stderr воркера
+2026-06-18T12:05:00.000 INFO  master[12345]: SIGTERM received, draining
+```
+
+Что пишется:
+
+- старт мастера (pid, число воркеров, `workerScript`, `runtimeDir`);
+- спавн воркера (pid, индекс, команда);
+- выход воркера: **код** или **сигнал** + **аптайм** (штатный выход по
+  `maxRequests`, краш или убит сигналом) + решение о рестарте/`backoff` (или «не
+  перезапускаю»);
+- ошибки мастера (`proc_open` не стартовал, недоступен путь, лок занят);
+- остановка (сигнал, дренаж, добивание, выход);
+- **вывод падения воркера**: мастер **перехватывает stdout/stderr** воркера через
+  пайпы `proc_open` и **переписывает построчно в тот же файл** с префиксом
+  `worker:[pid] [index]` (stderr → `ERROR`, stdout → `INFO`), чтобы трейс/фатал
+  сохранялся в едином формате и сопоставлялся с записью о выходе. Пайпы дренажатся
+  неблокирующе в супервизионном цикле. (Access-лог HTTP-сервера воркер пишет как
+  настроено в его коде.)
+
+### Состояние, единственный инстанс и перезапуск из системы
+
+Три связанных требования решаются парой «эксклюзивный лок + state-файл» в
+`runtimeDir`:
+
+**Единственный инстанс — `flock`, не PID-файл.** На старте `run()` открывает
+`runtimeDir/master.lock` и берёт `flock(LOCK_EX | LOCK_NB)`. Не удалось → уже есть
+живой мастер → `MasterAlreadyRunningException` и выход. Хэндл лока **держится
+открытым** всю жизнь мастера; ядро **снимает лок автоматически при смерти процесса**
+(в т.ч. по `SIGKILL`) — поэтому **нет проблемы протухшего лока**, в отличие от
+«проверить pid в файле». (PID-файл сам по себе подвержен гонке TOCTOU и протуханию;
+`flock` — корректный примитив взаимного исключения. Linux/один хост; NFS-нюансы —
+в открытых вопросах.)
+
+**State-файл (наблюдаемый «флаг») — `runtimeDir/<name>-state.json`** (по умолчанию
+`sconcur-http-server-state.json`). Пишется атомарно (temp + `rename`) на старте и
+обновляется при изменениях (рестарты):
+
+```json
+{
+  "pid": 12345,
+  "startedAt": 1718700000.12,
+  "workerCount": 8,
+  "workerScript": "/app/worker.php",
+  "address": "0.0.0.0:8080",
+  "status": "running"
+}
+```
+
+На **чистом выходе** мастер удаляет state-файл (или ставит `"status":"stopped"`).
+На крахе файл остаётся «протухшим» (pid внутри уже мёртв).
+
+**Перезапуск из системы.** Внешний guard (cron/таймер) поднимает мастер, если тот
+не работает. Проще всего — командой `status` самого CLI (она и проверяет живость
+pid, и отдаёт exit-code), не парся JSON руками:
+
+```sh
+# master-guard.sh, по таймеру (cron */1, systemd timer):
+vendor/bin/sconcur-http-server status --runtime-dir=/run/sconcur >/dev/null \
+  || exec vendor/bin/sconcur-http-server start --worker=/app/worker.php --runtime-dir=/run/sconcur ...
+# status != 0 (stopped/stale) → поднять. Эквивалент «нет файла ИЛИ pid мёртв».
+```
+
+`status` под капотом: нет `<name>-state.json` **или** pid из него не жив
+(`posix_kill(pid, 0)`) → код `3`. Сам `flock` страхует от гонки двух guard'ов:
+если один уже стартует мастер, второй получит `MasterAlreadyRunningException` и
+тихо выйдет.
+
+> **Семантика «всегда поднят».** Guard-модель перезапускает мастер и после
+> **намеренной** остановки (чистый выход → файла нет → guard поднимает снова). Если
+> нужна возможность осознанно «выключить и не поднимать» — нужен отдельный маркер
+> «disabled» или управление через systemd (`enable`/`disable`/`stop`). Это
+> осознанный компромисс flag-файловой модели, отметить в доке.
+
+## Нюансы
+
+- **Синхронный выход по `maxRequests` («thundering herd»).** При ровной нагрузке
+  воркеры считают запросы независимо и могут достичь лимита почти одновременно →
+  одновременный выход/перезапуск → кратковременный провал ёмкости. Митигации:
+  (1) **джиттер** лимита на воркер (`maxRequests + index*k`, см. пример воркера);
+  (2) мастер слегка **разносит** перезапуски (per-slot stagger). С `SO_REUSEPORT`
+  провал и так смягчён (трафик уходит к живым), но джиттер желателен.
+- **Без `pcntl`/`posix` graceful невозможен** — мастер бросает `MissingPcntlException`
+  на старте (в docker-образах проекта оба включены).
+- **`workerCount` валидируется** (`>= 0`); `0` → число ядер. Слишком большое N
+  имеет смысл только при наличии ядер — иначе оверхед контекст-свитчей.
+- **Воркер, не сумевший забиндиться** (нет `reusePort`, занятый порт), упадёт сразу
+  → сработает backoff. Логи мастера должны это показать (код выхода/последний
+  stderr воркера).
+- **stdout/stderr воркеров** мастер перехватывает через неблокирующие пайпы и
+  переписывает построчно в общий дневной лог с префиксом `worker:[pid] [index]`
+  (см. «Логирование»). Частичные строки буферизуются до `\n`; пайпы дочитываются
+  после выхода процесса, чтобы не потерять хвост падения.
+- **`vendor/bin` и пути.** bin-файл резолвит автозагрузчик из обоих расположений
+  (как зависимость и in-repo); пути воркера/каталогов потребитель передаёт
+  абсолютными (cwd мастера под systemd не гарантирован).
+- **Только Linux/NTS/CLI.** Как и вся библиотека.
+
+## Этапы внедрения
+
+1. [ ] `Cpu::count()` + `WorkerProcess` (proc_open массивом, статус/код/сигнал/reap)
+   + исключения `src/Exceptions/Worker/`.
+2. [ ] `WorkerMaster`: спавн N слотов, супервизионный цикл, `RestartPolicy::Always`,
+   проброс `phpArgs`/`workerArgs`/`env` + `SCONCUR_WORKER_INDEX/COUNT/MASTER_PID`.
+3. [ ] Сигналы: установка/восстановление обработчиков, `stopping`-флаг, форвардинг
+   `SIGTERM`, дренаж до `shutdownTimeoutMs`, добивание `SIGKILL`, чистый выход.
+4. [ ] Backoff против краш-лупа (per-slot, неблокирующий).
+5. [ ] **Единственный инстанс + state:** `MasterLock` (`flock EX|NB`),
+   `MasterState` (`<name>-state.json`, атомарно write/update/clear), `runtimeDir`.
+6. [ ] **Логирование:** `MasterLogger` → один дневной `<name>-Y-m-d.log` с
+   ротацией по `rotateDays` (3) и форматом
+   `DATE_TIME TYPE master[pid] [worker:[pid] [index]]: msg`; перехват stdout/stderr
+   воркеров (неблокирующие пайпы) → построчно в тот же файл.
+7. [ ] **CLI `bin/sconcur-http-server`** + `MasterCli`: разбор `argv`, команды
+   `start` (= `WorkerMaster::run`), `status` (стейт + `kill -0`, exit-codes),
+   `stop` (SIGTERM мастеру + ожидание). Регистрация в `composer.json` `"bin"`,
+   резолв автозагрузчика.
+8. [ ] **Самозавершение осиротевших воркеров:** `watchdog: ?Closure(): bool` в
+   `HttpServer` (складывается в `shouldStop` в `Scheduler::serve`); хелпер
+   `SConcur\Worker\Worker` (`masterPid`/`masterAlive`/`index`/`count`).
+9. [ ] (опц.) `SIGHUP` rolling reload; (опц.) `--daemon` (форк мастера); (опц.)
+   изоляция группы процессов; (опц.) порог краш-лупа → выход мастера с ошибкой.
+10. [ ] Документация `docs/worker-master.ru.md` (CLI `start/status/stop`, параметры,
+    связка с `reusePort`/`maxRequests`, сирота-чек, lock+state+guard, ротация логов,
+    отличия от systemd) + пункт в `README` «Планы» → «реализовано» и ссылки из
+    `.ai/README.md`/`docs/http-server.ru.md`. Параметр `watchdog` — также в
+    `docs/http-server.ru.md`.
+
+Версию расширения **не трогаем** — мастер целиком на PHP, протокол PHP↔Go не
+меняется.
+
+## Тестирование
+
+Без зависимости от docker-сервиса — как HTTP-тесты (свои процессы на loopback):
+
+- **`Cpu::count()`** — возвращает `>= 1`.
+- **`WorkerProcess`** — спавн короткого скрипта, `pid()` живой, `exitInfo()` после
+  выхода отдаёт код; `signal()` доходит (PID — это `php`, не шелл).
+- **`MasterCli`** — юнит: разбор `argv` в конфиг; неизвестная команда / нет
+  `--worker` у `start` → понятная ошибка + ненулевой код; маппинг `--rotate-days`,
+  `--name`, `--restart-policy` и т.д.
+- **Харнесс `TestWorkerMaster`** (по образцу `TestHttpServer`): `proc_open`
+  `bin/sconcur-http-server start` с опциями; `pid()`, `signal()`, `waitForExit()`,
+  чтение лога. Воркер-скрипт под `tests/servers/worker/` — HTTP с `reusePort: true`,
+  `watchdog: Worker::masterAlive` и маршрутом `/pid` (отдаёт `getmypid()`), чтобы
+  тест считал уникальные PID за пулом.
+- **Сценарии:**
+  - N воркеров стартуют и **все** обслуживают (набрать ≥N уникальных PID через `/pid`
+    по купле соединений).
+  - **`Always`-рестарт:** убить один воркер (`SIGKILL` по PID из `/pid`) → пул снова
+    выдаёт полный набор PID (появился новый).
+  - **Самовыход по `maxRequests`:** малый лимит → воркер выходит сам → мастер поднял
+    новый (PID сменился), трафик не прерывался (`SO_REUSEPORT`).
+  - **Graceful:** `SIGTERM` мастеру с in-flight `/msleep/...` → запрос дослужен (200),
+    все воркеры вышли, мастер вышел `0` в пределах `shutdownTimeoutMs`.
+  - **Backoff:** воркер-скрипт, падающий мгновенно → мастер **не спинит** (частота
+    спавнов растёт по backoff; проверяем по таймстампам в дневном логе), и не
+    упирается в CPU.
+  - **Единственный инстанс:** второй `start` с тем же `runtimeDir` →
+    `MasterAlreadyRunningException` (ненулевой код); после выхода первого — второй
+    стартует.
+  - **CLI `status`/`stop`:** при работающем мастере `status` → код `0` + «running»;
+    `stop` → SIGTERM мастеру, дренаж, выход; после — `status` → код `3` («stopped»).
+    После `SIGKILL` мастера `status` → код `3` («stale», pid мёртв).
+  - **State-файл:** на старте появляется `sconcur-http-server-state.json` с живым
+    pid; на чистом выходе — удаляется; после `SIGKILL` остаётся «протухшим».
+  - **Сирота-чек:** `SIGKILL` **мастеру** (не воркерам) → воркеры замечают смену
+    `getppid()` и **сами** дренажатся и выходят (порт освобождается); проверяем, что
+    не остаётся живых бесхозных процессов и порт снова свободен.
+  - **Логи и ротация:** единый дневной `sconcur-http-server-Y-m-d.log` содержит
+    строки формата `… master[pid] …` для старта/спавна/выхода/рестарта, а вывод
+    падения воркера — строкой `… worker:[pid] [index]: …` (перехвачен из stderr);
+    файлы старше `rotateDays` подчищаются (тест с подсунутыми «старыми» датами).
+  - (опц.) **`SIGHUP`** rolling reload: PID-ы сменяются по одному, обслуживание не
+    прерывается.
 
 ## Открытые вопросы
 
-- API: отдельный бинарь/CLI или класс `WorkerMaster` в библиотеке?
-- Политика перезапуска (always / on-failure / никогда) и backoff.
-- Health-check / метрики воркеров — связь с roadmap-пунктом «Админка со статистикой».
-- Передача воркерам общих параметров сервера (адрес, лимиты) единообразно.
+- **Изоляция группы процессов** воркеров (`setsid`-аналог) — нужно ли в v1, и как
+  без нативного `setsid` в `proc_open` (возможен крошечный launcher-шим).
+- **Порог краш-лупа** и поведение при его достижении: «сломанный» слот vs выход
+  мастера с ошибкой (чтобы заметил внешний супервизор/guard).
+- **cgroup-aware число ядер** в контейнерах (квоты CPU vs физические ядра).
+- **`flock` на NFS/разных ФС** — на сетевых ФС семантика блокировок ненадёжна;
+  фиксировать «`runtimeDir` — локальная ФС (tmpfs/`/run`)».
+- **Интервал сирота-чека** (тик `watchdog` = период поллинга `serve()`, ~250мс) —
+  достаточно ли; не нужен ли отдельный, более частый таймер.
+- **Намеренная остановка vs guard «всегда поднят»** — нужен ли маркер «disabled»,
+  или это зона ответственности systemd (см. компромисс в разделе про state).
+- **Ротация/формат логов** (`logDir`) — отдать `logrotate` или встроить лимит размера.
+- **Health-check/метрики воркеров** (живость, RPS, рестарты) — стык с state-файлом и
+  roadmap-пунктом «Админка со статистикой сервера».
