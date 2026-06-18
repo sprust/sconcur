@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Worker;
 
 use PHPUnit\Framework\TestCase;
+use SConcur\Tests\Impl\Worker\TestWorkerMaster;
 use SConcur\Worker\MasterCli;
 use SConcur\Worker\MasterLock;
 
@@ -142,7 +143,7 @@ class MasterCliTest extends TestCase
      */
     private function writeConfig(array $config): string
     {
-        $path = (string) tempnam(sys_get_temp_dir(), 'sc-cli-cfg-');
+        $path = (string) tempnam(TestWorkerMaster::storageDir(), 'sc-cli-cfg-');
 
         file_put_contents($path, (string) json_encode($config));
 
@@ -153,7 +154,7 @@ class MasterCliTest extends TestCase
 
     private function makeDir(): string
     {
-        $directory = sys_get_temp_dir() . '/sc-cli-' . uniqid('', true);
+        $directory = TestWorkerMaster::storageDir() . '/sc-cli-' . uniqid('', true);
 
         mkdir($directory, 0o775, true);
 
