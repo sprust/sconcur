@@ -185,6 +185,25 @@ $collection->insertOne(['name' => 'example']);
 `waitAll()` — это `iterator_count(iterate())`; `waitResults()` собирает результаты в
 массив по `callbackKey`.
 
+## Версии, на которых тестировалось
+
+Точные версии окружения (Docker-образы и зависимости), на которых проект
+собирается и проходит тесты в CI:
+
+| Компонент | Версия |
+| --- | --- |
+| PHP | 8.4.15 (NTS, cli) |
+| Go (сборка расширения) | 1.26.1 |
+| MongoDB (сервер) | 8.0.5 |
+| ext-mongodb (PHP-расширение) | 1.21.5 |
+| mongodb/mongodb (composer-пакет) | 1.21.3 |
+| ext-msgpack | 3.0.1 |
+| MySQL (сервер) | 8.4 |
+| go-sql-driver/mysql | 1.8.1 |
+| PostgreSQL (сервер) | 16 |
+| jackc/pgx/v5 | 5.7.2 |
+| go.mongodb.org/mongo-driver/v2 | 2.6.0 |
+
 ## Документация
 
 - [MongoDB](docs/mongodb.ru.md) — операции коллекции (CRUD, агрегация, индексы,
