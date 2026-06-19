@@ -27,6 +27,15 @@ const (
 	defaultReadTimeout          = 30 * time.Second
 	defaultWriteTimeout         = 30 * time.Second
 	defaultIdleTimeout          = 60 * time.Second
+
+	// requestQueueSize buffers accepted requests that have been handed off by
+	// ServeHTTP but not yet pulled by the PHP serve loop (via next()). It is a
+	// smoothing buffer for accept bursts, not the real backpressure: that is
+	// maxConcurrency, which caps in-flight ServeHTTP goroutines (and thus buffered
+	// bodies) before the body is read. With maxConcurrency unset this bounds how
+	// many accepted requests (each holding its inline first chunk) can queue here;
+	// beyond it, ServeHTTP blocks on the send until PHP catches up.
+	requestQueueSize = 1024
 )
 
 // serverConfig holds the resolved tuning for one server instance.
@@ -138,7 +147,7 @@ func newServerState(
 		ctx:       ctx,
 		message:   message,
 		listener:  listener,
-		requests:  make(chan *payloads.RequestEvent, 1024),
+		requests:  make(chan *payloads.RequestEvent, requestQueueSize),
 		startTime: startTime,
 		config:    config,
 		sem:       newSemaphore(config.maxConcurrency),

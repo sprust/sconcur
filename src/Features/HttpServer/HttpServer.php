@@ -82,18 +82,18 @@ readonly class HttpServer
     /**
      * Create a new server from command line arguments.
      *
-     * @param array<string, string>                       $argv    Command line arguments.
+     * @param array<int, string>                          $argv    Command line arguments.
      * @param Closure(Throwable, Request): ?Response|null $onError Error handler.
      */
     public static function fromArgs(array $argv, ?Closure $onError = null): HttpServer
     {
         $allowedTypes = ['int', 'bool', 'float', 'string'];
 
-        $rc = new ReflectionClass(HttpServer::class);
+        $reflectionClass = new ReflectionClass(HttpServer::class);
 
         $parameters = [];
 
-        foreach ($rc->getConstructor()?->getParameters() ?? [] as $parameter) {
+        foreach ($reflectionClass->getConstructor()?->getParameters() ?? [] as $parameter) {
             $type = $parameter->getType();
 
             // Only scalar, single-typed params can be set from a CLI string; skip
@@ -327,38 +327,77 @@ readonly class HttpServer
 
         $request = Request::fromPayload($payload);
 
-        $response = self::resolveResponse(
-            handler: $handler,
-            onError: $onError,
-            request: $request,
-        );
+        // Status is resolved before any write so it is known to the access log even
+        // if the write itself fails (dead connection, handler timeout). resolveResponse
+        // never throws — it always yields a Response/StreamedResponse with a status.
+        $status = 0;
 
-        if ($response instanceof StreamedResponse) {
-            self::stream($request, $response, $onError);
-        } else {
-            FeatureExecutor::exec(
-                payload: RespondPayload::full(
-                    requestId: $request->requestId,
-                    status: $response->status,
-                    headers: $response->headers,
-                    body: $response->body,
-                ),
+        try {
+            $response = self::resolveResponse(
+                handler: $handler,
+                onError: $onError,
+                request: $request,
+            );
+
+            $status = $response->status;
+
+            if ($response instanceof StreamedResponse) {
+                self::stream($request, $response, $onError);
+            } else {
+                FeatureExecutor::exec(
+                    payload: RespondPayload::full(
+                        requestId: $request->requestId,
+                        status: $response->status,
+                        headers: $response->headers,
+                        body: $response->body,
+                    ),
+                );
+            }
+        } finally {
+            // Always log the request — including aborted/timed-out ones, whose write
+            // raised above — so the access log never drops the very requests that
+            // failed. The status is the one that was (or would have been) sent.
+            self::writeAccessLog(
+                request: $request,
+                status: $status,
+                startedAt: $startedAt,
             );
         }
+    }
 
+    /**
+     * Writes one access-log line to STDOUT via the Go side, which flushes it from a
+     * background goroutine — never blocking this single-threaded loop on log I/O.
+     * Method and path are sanitized so a request cannot forge log lines (CR/LF or
+     * other control bytes decoded from the URL would otherwise split the line).
+     */
+    private static function writeAccessLog(Request $request, int $status, float $startedAt): void
+    {
         $time = date('Y-m-d\TH:i:s', (int) $startedAt)
             . sprintf('.%06d', (int) (($startedAt - floor($startedAt)) * 1_000_000));
 
-        // Hand the access-log line to the Go side, which writes it from a background
-        // goroutine — never blocking this single-threaded loop on log I/O.
         Extension::get()->log(sprintf(
             "%s %s %s %d %.2fms\n",
             $time,
-            $request->method,
-            $request->path,
-            $response->status,
+            self::sanitizeLogField($request->method),
+            self::sanitizeLogField($request->path),
+            $status,
             (microtime(true) - $startedAt) * 1000,
         ));
+    }
+
+    /**
+     * Escapes control bytes (C0 range and DEL) as \xNN so a value decoded from the
+     * request URL cannot inject newlines — and thus forge extra access-log lines —
+     * while keeping the field human-readable.
+     */
+    private static function sanitizeLogField(string $value): string
+    {
+        return preg_replace_callback(
+            '/[\x00-\x1F\x7F]/',
+            static fn(array $matches): string => sprintf('\\x%02X', ord($matches[0])),
+            $value,
+        ) ?? $value;
     }
 
     /**
@@ -384,9 +423,15 @@ readonly class HttpServer
         } catch (Throwable $exception) {
             self::notifyOnError($onError, $exception, $request);
         } finally {
-            FeatureExecutor::exec(
-                payload: RespondPayload::end($request->requestId),
-            );
+            try {
+                FeatureExecutor::exec(
+                    payload: RespondPayload::end($request->requestId),
+                );
+            } catch (Throwable) {
+                // Best-effort stream teardown: if the connection is already gone
+                // (aborted/timed out) the end write fails — nothing left to do, and
+                // it must not mask the original failure or skip the access log.
+            }
         }
     }
 
