@@ -386,5 +386,4 @@ vendor/bin/sconcur-http-server status --configPath=/app/master.json >/dev/null \
 
 ---
 
-См. также: [HTTP-сервер](http-server.ru.md),
-[README → Планы](../README.md#планы).
+См. также: [HTTP-сервер](http-server.ru.md).

@@ -32,7 +32,7 @@ use Throwable;
  * concurrently. Outside a WaitGroup the same call works synchronously.
  *
  * The response body is a streaming ResponseBodyStream — it is never buffered whole
- * in the extension. See .ai/plans/http-client.md.
+ * in the extension. See docs/http-client.ru.md.
  */
 readonly class HttpClient implements ClientInterface
 {

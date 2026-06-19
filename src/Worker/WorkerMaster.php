@@ -25,7 +25,7 @@ use SConcur\Features\HttpServer\HttpServer;
  * shutdownTimeoutMs (SIGKILL stragglers), and exiting cleanly.
  *
  * The master itself does NOT load the sconcur extension — it is a plain supervisor.
- * See .ai/plans/worker-master.md.
+ * See docs/worker-master.ru.md.
  */
 class WorkerMaster
 {

@@ -24,7 +24,7 @@ use Throwable;
 /**
  * HTTP server: the network lives in the Go extension, each accepted request is
  * streamed back as a result and handled in its own coroutine (spawn-on-request).
- * See .ai/plans/http-server.md.
+ * See docs/http-server.ru.md.
  */
 readonly class HttpServer
 {
