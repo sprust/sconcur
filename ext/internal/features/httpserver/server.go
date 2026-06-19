@@ -3,13 +3,16 @@ package httpserver_feature
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"sconcur/internal/dto"
 	"sconcur/internal/features/httpserver/payloads"
 	"sconcur/internal/helpers"
+	"sconcur/internal/logger"
 	"sconcur/internal/states"
+	"strings"
 	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
@@ -184,6 +187,18 @@ func newSemaphore(size int) chan struct{} {
 
 // ServeHTTP handles one request: hand it to PHP, wait for the response.
 func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	// The access log is written here on the Go side (from this handler goroutine),
+	// not in PHP: it avoids one PHP->Go cgo crossing per request — the dominant cost
+	// of a tiny request — and covers every outcome, including the 503/504/abandoned
+	// cases PHP never sees. status is set as the response is produced; the deferred
+	// write logs it for every return path (early errors included).
+	start := time.Now()
+	status := 0
+
+	defer func() {
+		logger.Write(formatAccessLine(start, request.Method, request.URL.Path, status))
+	}()
+
 	// Bound concurrency before touching the body, so requests waiting for a slot
 	// hold no body buffer: this caps memory (and goroutines) under load. A waiting
 	// request unblocks when a slot frees or the server stops.
@@ -194,6 +209,7 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		case <-s.ctx.Done():
 			// Shutting down before this request got a slot: answer 503 instead of
 			// resetting the connection.
+			status = http.StatusServiceUnavailable
 			writeServiceUnavailable(writer)
 
 			return
@@ -213,8 +229,10 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		var maxBytesError *http.MaxBytesError
 
 		if errors.As(err, &maxBytesError) {
+			status = http.StatusRequestEntityTooLarge
 			http.Error(writer, "request body too large", http.StatusRequestEntityTooLarge)
 		} else {
+			status = http.StatusBadRequest
 			http.Error(writer, "bad request body", http.StatusBadRequest)
 		}
 
@@ -263,26 +281,30 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	case s.requests <- event:
 	case <-s.ctx.Done():
 		// Shutting down before PHP accepted this request: answer 503.
+		status = http.StatusServiceUnavailable
 		writeServiceUnavailable(writer)
 
 		return
 	}
 
-	s.consumeCommands(writer, pending.commands)
+	status = s.consumeCommands(writer, pending.commands)
 }
 
 // consumeCommands applies the handler's write commands in order until the
 // response is finished (writeFull/writeEnd) or the server is shutting down. Each
 // command's outcome is reported on its done channel so the issuing coroutine
-// gets write backpressure.
-func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan writeCommand) {
+// gets write backpressure. Returns the status sent to the client (for the access
+// log): the one from the full/head command, or 503/504 on a drain/timeout abort.
+func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan writeCommand) int {
 	// Flusher lets a streamed response push each chunk to the client immediately
 	// (chunked transfer); absent only on exotic ResponseWriters.
 	flusher, _ := writer.(http.Flusher)
 
 	// started becomes true once any bytes/headers have gone out, after which the
-	// status can no longer change (so no 503 fallback on shutdown).
+	// status can no longer change (so no 503 fallback on shutdown). status records
+	// what was sent, for the access log.
 	started := false
+	status := 0
 
 	// Bound the total handling time: the whole request — including a streamed
 	// response — must complete within handlerTimeout, otherwise it is cut off.
@@ -313,8 +335,12 @@ func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan 
 					started = true
 				}
 
+				if command.kind == writeFull || command.kind == writeHead {
+					status = normalizeStatus(command.status)
+				}
+
 				if finished {
-					return
+					return status
 				}
 			default:
 			}
@@ -323,18 +349,22 @@ func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan 
 			// answer 503 rather than reset, as long as nothing was written yet.
 			if !started {
 				writeServiceUnavailable(writer)
+
+				return http.StatusServiceUnavailable
 			}
 
-			return
+			return status
 		case <-timeout:
 			// The total deadline elapsed. Before the first write we can still
 			// answer 504; once a response has started the status is already on the
 			// wire, so just abort the (now-truncated) stream and free the slot.
 			if !started {
 				writeGatewayTimeout(writer)
+
+				return http.StatusGatewayTimeout
 			}
 
-			return
+			return status
 		case command := <-commands:
 			finished, err := applyWrite(writer, flusher, command)
 			command.done <- err
@@ -343,8 +373,12 @@ func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan 
 				started = true
 			}
 
+			if command.kind == writeFull || command.kind == writeHead {
+				status = normalizeStatus(command.status)
+			}
+
 			if finished {
-				return
+				return status
 			}
 		}
 	}
@@ -444,15 +478,62 @@ func writeGatewayTimeout(writer http.ResponseWriter) {
 }
 
 func writeStatus(writer http.ResponseWriter, status int) {
+	writer.WriteHeader(normalizeStatus(status))
+}
+
+// normalizeStatus maps the "unset" 0 to 200, matching net/http's WriteHeader default.
+func normalizeStatus(status int) int {
 	if status == 0 {
-		status = http.StatusOK
+		return http.StatusOK
 	}
 
-	writer.WriteHeader(status)
+	return status
 }
 
 func flush(flusher http.Flusher) {
 	if flusher != nil {
 		flusher.Flush()
 	}
+}
+
+// formatAccessLine builds one access-log line for a finished request:
+//
+//	<ISO-start-time> <method> <path> <status> <ms>ms
+//
+// matching the format PHP used before logging moved to the Go side. Method and
+// path are escaped (sanitizeLogField) so a control byte decoded from the URL
+// cannot forge an extra line.
+func formatAccessLine(start time.Time, method string, path string, status int) string {
+	elapsedMs := float64(time.Since(start).Microseconds()) / 1000.0
+
+	return fmt.Sprintf(
+		"%s %s %s %d %.2fms\n",
+		start.Format("2006-01-02T15:04:05.000000"),
+		sanitizeLogField(method),
+		sanitizeLogField(path),
+		status,
+		elapsedMs,
+	)
+}
+
+// sanitizeLogField escapes control bytes (C0 range and DEL) as \xNN so a value
+// decoded from the request URL cannot inject a newline and split the log line.
+func sanitizeLogField(value string) string {
+	if !strings.ContainsFunc(value, func(r rune) bool { return r < 0x20 || r == 0x7F }) {
+		return value
+	}
+
+	var builder strings.Builder
+
+	for index := 0; index < len(value); index++ {
+		char := value[index]
+
+		if char < 0x20 || char == 0x7F {
+			fmt.Fprintf(&builder, "\\x%02X", char)
+		} else {
+			builder.WriteByte(char)
+		}
+	}
+
+	return builder.String()
 }

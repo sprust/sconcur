@@ -28,10 +28,6 @@ use Throwable;
  */
 readonly class HttpServer
 {
-    /** C0 control bytes plus DEL — the characters sanitizeLogField escapes. */
-    private const string CONTROL_CHARS = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F"
-        . "\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1A\x1B\x1C\x1D\x1E\x1F\x7F";
-
     /**
      * @param int                                         $maxRequestBody   request body read limit, in bytes
      * @param int                                         $maxConcurrency   max requests handled at once (0 = unlimited).
@@ -327,87 +323,28 @@ readonly class HttpServer
      */
     private static function handle(Closure $handler, ?Closure $onError, string $payload): void
     {
-        $startedAt = microtime(true);
-
         $request = Request::fromPayload($payload);
 
-        // Status is resolved before any write so it is known to the access log even
-        // if the write itself fails (dead connection, handler timeout). resolveResponse
-        // never throws — it always yields a Response/StreamedResponse with a status.
-        $status = 0;
+        $response = self::resolveResponse(
+            handler: $handler,
+            onError: $onError,
+            request: $request,
+        );
 
-        try {
-            $response = self::resolveResponse(
-                handler: $handler,
-                onError: $onError,
-                request: $request,
-            );
-
-            $status = $response->status;
-
-            if ($response instanceof StreamedResponse) {
-                self::stream($request, $response, $onError);
-            } else {
-                FeatureExecutor::exec(
-                    payload: RespondPayload::full(
-                        requestId: $request->requestId,
-                        status: $response->status,
-                        headers: $response->headers,
-                        body: $response->body,
-                    ),
-                );
-            }
-        } finally {
-            // Always log the request — including aborted/timed-out ones, whose write
-            // raised above — so the access log never drops the very requests that
-            // failed. The status is the one that was (or would have been) sent.
-            self::writeAccessLog(
-                request: $request,
-                status: $status,
-                startedAt: $startedAt,
+        // The access log is written on the Go side (see ext httpserver server.go),
+        // so the per-request hot path here makes no extra PHP->Go crossing for it.
+        if ($response instanceof StreamedResponse) {
+            self::stream($request, $response, $onError);
+        } else {
+            FeatureExecutor::exec(
+                payload: RespondPayload::full(
+                    requestId: $request->requestId,
+                    status: $response->status,
+                    headers: $response->headers,
+                    body: $response->body,
+                ),
             );
         }
-    }
-
-    /**
-     * Writes one access-log line to STDOUT via the Go side, which flushes it from a
-     * background goroutine — never blocking this single-threaded loop on log I/O.
-     * Method and path are sanitized so a request cannot forge log lines (CR/LF or
-     * other control bytes decoded from the URL would otherwise split the line).
-     */
-    private static function writeAccessLog(Request $request, int $status, float $startedAt): void
-    {
-        $time = date('Y-m-d\TH:i:s', (int) $startedAt)
-            . sprintf('.%06d', (int) (($startedAt - floor($startedAt)) * 1_000_000));
-
-        Extension::get()->log(sprintf(
-            "%s %s %s %d %.2fms\n",
-            $time,
-            self::sanitizeLogField($request->method),
-            self::sanitizeLogField($request->path),
-            $status,
-            (microtime(true) - $startedAt) * 1000,
-        ));
-    }
-
-    /**
-     * Escapes control bytes (C0 range and DEL) as \xNN so a value decoded from the
-     * request URL cannot inject newlines — and thus forge extra access-log lines —
-     * while keeping the field human-readable.
-     */
-    private static function sanitizeLogField(string $value): string
-    {
-        // Fast path: almost every method/path has no control bytes, so a single
-        // C-level scan lets the common case skip the regex engine entirely.
-        if (strpbrk($value, self::CONTROL_CHARS) === false) {
-            return $value;
-        }
-
-        return preg_replace_callback(
-            '/[\x00-\x1F\x7F]/',
-            static fn(array $matches): string => sprintf('\\x%02X', ord($matches[0])),
-            $value,
-        ) ?? $value;
     }
 
     /**

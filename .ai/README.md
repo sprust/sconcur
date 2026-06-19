@@ -103,7 +103,7 @@ non-fiber path.)
 **Go extension** (`ext/`):
 - `main.go` — cgo exports (`push`, `wait`, `next`, `waitAny`, `waitAnyTimeout`, `tasksCount`, `stopFlow`, `httpStopAccepting`, `logLine`, `destroy`, `version`)
 - `internal/handler/` — singleton orchestrator routing messages to flows
-- `internal/logger/` — fire-and-forget async log sink: PHP pushes a pre-formatted line via `logLine`, a background goroutine writes it to stdout (buffered, timer-flushed, drops on overflow), so PHP's loop never blocks on log I/O (used by the HttpServer access log)
+- `internal/logger/` — fire-and-forget async log sink: a background goroutine writes pre-formatted lines to stdout (buffered, timer-flushed, drops on overflow), so the loop never blocks on log I/O. The HttpServer access log feeds it directly from the Go response goroutine (no PHP↔Go crossing per request); PHP can also push lines via the `logLine` cgo export
 - `internal/flows/` — `Flows` manages concurrent `Flow` instances; each `Flow` holds tasks and a result channel
 - `internal/tasks/` — individual task unit with context cancellation
 - `internal/states/` — registry of streaming states (cursor batches, HTTP requests, request-body chunks) driven by `next()`
