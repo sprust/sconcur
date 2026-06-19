@@ -28,6 +28,10 @@ use Throwable;
  */
 readonly class HttpServer
 {
+    /** C0 control bytes plus DEL — the characters sanitizeLogField escapes. */
+    private const string CONTROL_CHARS = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F"
+        . "\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1A\x1B\x1C\x1D\x1E\x1F\x7F";
+
     /**
      * @param int                                         $maxRequestBody   request body read limit, in bytes
      * @param int                                         $maxConcurrency   max requests handled at once (0 = unlimited).
@@ -393,6 +397,12 @@ readonly class HttpServer
      */
     private static function sanitizeLogField(string $value): string
     {
+        // Fast path: almost every method/path has no control bytes, so a single
+        // C-level scan lets the common case skip the regex engine entirely.
+        if (strpbrk($value, self::CONTROL_CHARS) === false) {
+            return $value;
+        }
+
         return preg_replace_callback(
             '/[\x00-\x1F\x7F]/',
             static fn(array $matches): string => sprintf('\\x%02X', ord($matches[0])),

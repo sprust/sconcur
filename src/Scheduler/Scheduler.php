@@ -56,6 +56,13 @@ class Scheduler
      */
     protected int $spawnedCount = 0;
 
+    /**
+     * Monotonic counter feeding spawned-coroutine flow keys. A flow key only has
+     * to be unique among live flows in this process, so a never-reused counter is
+     * enough — and far cheaper than uniqid() on the per-request hot path.
+     */
+    protected int $spawnCounter = 0;
+
     public static function get(): Scheduler
     {
         return static::$instance ??= new Scheduler();
@@ -77,7 +84,7 @@ class Scheduler
     {
         $fiber   = new Fiber($callback);
         $fiberId = spl_object_id($fiber);
-        $flowKey = uniqid('sp_', more_entropy: true);
+        $flowKey = 'sp_' . (++$this->spawnCounter);
 
         State::registerFiberFlow(
             fiberId: $fiberId,
