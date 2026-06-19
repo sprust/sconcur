@@ -204,3 +204,9 @@ bench-http-reuseport-io:
 
 bench-http-reuseport-cpu:
 	$(PHP_CLI) php tests/benchmarks/http-reuseport-cpu.php
+
+# Runs on the HOST (needs wrk): one server per core with SO_REUSEPORT inside the
+# php container, wrk pinned to separate cores, hitting the container IP (no NAT).
+# Tunables via env, e.g.: make bench-http-throughput SERVERS=16 DURATION=20
+bench-http-throughput:
+	tests/benchmarks/http-throughput.sh
