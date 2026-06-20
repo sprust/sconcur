@@ -17,6 +17,7 @@ import (
 	"errors"
 	"sconcur/internal/dto"
 	httpserver_feature "sconcur/internal/features/httpserver"
+	socketserver_feature "sconcur/internal/features/socketserver"
 	handler2 "sconcur/internal/handler"
 	"sconcur/internal/logger"
 	"sconcur/internal/types"
@@ -205,6 +206,11 @@ func httpStopAccepting(fk *C.char) {
 	httpserver_feature.StopAccepting(C.GoString(fk))
 }
 
+//export socketStopAccepting
+func socketStopAccepting(fk *C.char) {
+	socketserver_feature.StopAccepting(C.GoString(fk))
+}
+
 //export destroy
 func destroy() {
 	// Flush any buffered log lines before tearing the runtime down.
@@ -215,7 +221,7 @@ func destroy() {
 
 //export version
 func version() *C.char {
-	return C.CString("0.2.3")
+	return C.CString("0.2.4")
 }
 
 func main() {}

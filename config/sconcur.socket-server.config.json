@@ -1,0 +1,28 @@
+{
+    "workerScript": "/sconcur/tests/servers/socket/socket-server.php",
+    "workerCount": 3,
+    "phpBinary": "php",
+    "phpArgs": ["-d", "extension=/sconcur/ext/build/sconcur.so"],
+    "workerArgs": [],
+    "env": {},
+    "runtimeDir": "/sconcur/tests/storage/servers",
+    "logDir": "/sconcur/tests/storage/logs",
+    "name": "sconcur-socket-server",
+    "rotateDays": 3,
+    "logTo": "both",
+    "restartPolicy": "always",
+    "shutdownTimeoutMs": 10000,
+    "restartBackoffMs": 200,
+    "maxRestartBackoffMs": 30000,
+    "server": {
+        "address": "0.0.0.0:9100",
+        "reusePort": true,
+        "maxConnections": 0,
+        "maxConcurrency": 0,
+        "maxMessageBytes": 1048576,
+        "readTimeoutMs": 0,
+        "writeTimeoutMs": 30000,
+        "handlerTimeoutMs": 60000,
+        "shutdownTimeoutMs": 5000
+    }
+}

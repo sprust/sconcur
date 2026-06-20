@@ -9,6 +9,7 @@ import (
 	"sconcur/internal/features/mongodb/connection"
 	"sconcur/internal/features/mongodb/features/collection"
 	"sconcur/internal/features/sleeper"
+	"sconcur/internal/features/socketserver"
 	"sconcur/internal/features/sql"
 	"sconcur/internal/types"
 )
@@ -27,6 +28,8 @@ func DetectMessageHandler(method types.Method) (contracts.FeatureContract, error
 		return sql_feature.GetMysql(), nil
 	case types.MethodPgsql:
 		return sql_feature.GetPgsql(), nil
+	case types.MethodSocketServe, types.MethodSocketRespond:
+		return socketserver_feature.Get(), nil
 	default:
 		return nil, errors.New("unknown method: " + fmt.Sprint(method))
 	}
