@@ -66,7 +66,7 @@ trait ServerRuntimeSupportTrait
 
             if ($type === null) {
                 throw new InvalidServerArgumentException(
-                    sprintf(
+                    message: sprintf(
                         'Unknown argument: %s. supported only %s',
                         $argument,
                         implode(', ', array_keys($parameters)),
@@ -157,7 +157,7 @@ trait ServerRuntimeSupportTrait
         if ($type === 'int') {
             if (((string) (int) $value) !== $value) {
                 throw new InvalidServerArgumentException(
-                    sprintf(
+                    message: sprintf(
                         'Invalid integer for %s: %s.',
                         $name,
                         $value,
@@ -178,7 +178,7 @@ trait ServerRuntimeSupportTrait
             }
 
             throw new InvalidServerArgumentException(
-                sprintf(
+                message: sprintf(
                     'Invalid boolean for %s: %s.',
                     $name,
                     $value,
@@ -189,7 +189,7 @@ trait ServerRuntimeSupportTrait
         if ($type === 'float') {
             if (!is_numeric($value)) {
                 throw new InvalidServerArgumentException(
-                    sprintf(
+                    message: sprintf(
                         'Invalid float for %s: %s.',
                         $name,
                         $value,
