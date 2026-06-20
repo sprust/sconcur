@@ -10,13 +10,13 @@ use SConcur\Exceptions\Worker\MasterAlreadyRunningException;
 use SConcur\Exceptions\Worker\MissingPcntlException;
 use SConcur\Exceptions\Worker\RuntimePathException;
 use SConcur\Exceptions\Worker\WorkerSpawnException;
-use SConcur\Features\HttpServer\HttpServer;
 
 /**
  * Supervises a pool of worker processes (one per slot), each a separate `php
  * workerScript` process spawned via proc_open (pcntl_fork after loading the
- * extension is forbidden). Pairs with the HttpServer SO_REUSEPORT feature: the
- * workers bind one port and the kernel load-balances connections across them.
+ * extension is forbidden). The master is server-agnostic — it supervises any worker
+ * script; with an SO_REUSEPORT-based server, for example, the workers bind one port
+ * and the kernel load-balances connections across them.
  *
  * Lifecycle of run(): acquire a single-instance lock, write the state file, install
  * signal handlers, spawn the workers, then loop — draining each worker's output into
@@ -30,11 +30,10 @@ use SConcur\Features\HttpServer\HttpServer;
 class WorkerMaster
 {
     /**
-     * The master injects its pid as this worker argv flag for the orphan check;
-     * HttpServer::fromArgs() maps it onto the HttpServer `masterPid` constructor
-     * parameter (so the `--` prefix and the name must match it).
-     *
-     * @see HttpServer::$masterPid
+     * The master injects its pid as this worker argv flag (alongside the expanded
+     * `server` flags) so a worker can self-terminate when orphaned. It is just another
+     * `--key=value` argv entry; how — or whether — a worker uses it is up to the
+     * worker script (the bundled HttpServer wires it into its orphan check).
      */
     protected const string MASTER_PID_ARG = '--masterPid';
 
@@ -76,7 +75,7 @@ class WorkerMaster
     protected float $killDeadline = 0.0;
 
     /**
-     * @param string                $workerScript        consumer's worker script (constructs HttpServer and serves)
+     * @param string                $workerScript        consumer's worker script (constructs and runs a server)
      * @param string                $runtimeDir          holds the lock and state file (local fs)
      * @param null|string           $logDir              log directory (defaults to runtimeDir)
      * @param string                $name                prefix for the log and state file names
@@ -96,7 +95,7 @@ class WorkerMaster
         protected readonly string $workerScript,
         protected readonly string $runtimeDir,
         protected readonly ?string $logDir = null,
-        protected readonly string $name = 'sconcur-http-server',
+        protected readonly string $name = 'sconcur-server',
         protected readonly int $rotateDays = 3,
         protected readonly int $workerCount = 0,
         protected readonly string $phpBinary = PHP_BINARY,
@@ -354,9 +353,8 @@ class WorkerMaster
 
     /**
      * Builds the worker command. The master appends its pid as the `--masterPid` argv
-     * flag — the same channel as the address and the consumer's workerArgs, no
-     * environment involved — and HttpServer::fromArgs() wires it into the orphan
-     * check.
+     * flag — the same channel as the expanded `server` flags and the consumer's
+     * workerArgs, no environment involved — for the worker to use as it sees fit.
      *
      * @return list<string>
      */

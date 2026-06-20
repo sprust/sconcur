@@ -8,7 +8,7 @@ use SConcur\Exceptions\Worker\InvalidConfigException;
 use Throwable;
 
 /**
- * The universal master CLI behind bin/sconcur-http-server. Every command takes a
+ * The universal master CLI behind bin/sconcur-server. Every command takes a
  * single --configPath pointing to a JSON master config (see MasterConfig); there are
  * no other flags. Commands: start (run the supervisor in the foreground), status
  * (report whether a master is running, via the lock) or stop (remove the state file —
@@ -223,16 +223,15 @@ class MasterCli
     protected function usage(): int
     {
         $this->writeErr(<<<USAGE
-            Usage: sconcur-http-server <start|status|stop> --configPath=FILE
+            Usage: sconcur-server <start|status|stop> --configPath=FILE
 
               --configPath=FILE   JSON master config (required for every command)
 
             The JSON holds the WorkerMaster parameters (workerScript, workerCount,
             phpArgs, runtimeDir, logDir, name, rotateDays, restartPolicy,
             shutdownTimeoutMs, restartBackoffMs, maxRestartBackoffMs, env) plus a
-            nested "server" object whose keys become the worker's argv flags
-            ("address" is the worker's first positional argument). Unspecified values
-            use their defaults.
+            nested "server" object whose every key becomes a "--key=value" worker argv
+            flag (booleans render as 1/0). Unspecified values use their defaults.
 
             start   run the supervisor (foreground)
             status  report whether a master is running (exit 0 running, 3 stopped/stale)

@@ -10,7 +10,7 @@ use SConcur\Worker\MasterCli;
 use SConcur\Tests\Impl\Worker\TestWorkerMaster;
 
 /**
- * End-to-end coverage of WorkerMaster via the bin/sconcur-http-server CLI: the
+ * End-to-end coverage of WorkerMaster via the bin/sconcur-server CLI: the
  * master spawns demo workers (HttpServer + SO_REUSEPORT + masterPid) and we observe
  * supervision, restarts, graceful shutdown, single-instance, status/stop, orphan
  * self-termination and crash-loop backoff. Each test manages its own master.

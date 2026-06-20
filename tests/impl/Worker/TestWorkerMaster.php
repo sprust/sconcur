@@ -7,7 +7,7 @@ namespace SConcur\Tests\Impl\Worker;
 use RuntimeException;
 
 /**
- * Spawns the universal master CLI (bin/sconcur-http-server) as its own process,
+ * Spawns the universal master CLI (bin/sconcur-server) as its own process,
  * supervising the demo HTTP server (tests/servers/http/http-server.php) on a
  * loopback port, so tests drive a real master they fully control (start it, signal
  * it, read its log/state). The master launches workers with the built extension
@@ -401,7 +401,7 @@ class TestWorkerMaster
 
     private static function binPath(): string
     {
-        return self::root() . '/bin/sconcur-http-server';
+        return self::root() . '/bin/sconcur-server';
     }
 
     private static function workerScript(): string

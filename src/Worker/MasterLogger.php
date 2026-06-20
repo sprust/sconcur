@@ -6,7 +6,7 @@ namespace SConcur\Worker;
 
 /**
  * Writes the master's lifecycle journal to a single per-day file in $logDir, named
- * "<name>-Y-m-d.log" (e.g. sconcur-http-server-2026-06-18.log). On a day change it
+ * "<name>-Y-m-d.log" (e.g. sconcur-server-2026-06-18.log). On a day change it
  * opens the new file and deletes files older than $rotateDays (retention rotation,
  * no logrotate needed).
  *

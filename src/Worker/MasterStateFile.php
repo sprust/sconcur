@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Worker;
 
 /**
- * Reads/writes the master state JSON file (e.g. sconcur-http-server-state.json).
+ * Reads/writes the master state JSON file (e.g. sconcur-server-state.json).
  * Writes are atomic (temp file + rename) so a reader never sees a half-written file.
  */
 class MasterStateFile

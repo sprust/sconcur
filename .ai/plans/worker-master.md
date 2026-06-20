@@ -37,18 +37,18 @@
 
 Два уровня, библиотека поставляет оба:
 
-1. **Универсальный CLI `bin/sconcur-http-server`** (основной интерфейс) — готовый
+1. **Универсальный CLI `bin/sconcur-server`** (основной интерфейс) — готовый
    мастер-скрипт с командами `start | status | stop`. Потребитель **не пишет
    мастер** — реализует только **свой воркер-скрипт** (тот, что строит `HttpServer`
    и зовёт `serve()`), и указывает путь к нему. Регистрируется в `composer.json`
-   (`"bin"`), доступен как `vendor/bin/sconcur-http-server`.
+   (`"bin"`), доступен как `vendor/bin/sconcur-server`.
 2. **Класс `WorkerMaster`** (программный API под капотом CLI) — для тех, кому нужен
    мастер внутри своего кода. CLI — тонкая обёртка над ним.
 
 Мастеру **не нужно** расширение `sconcur.so` (он супервизор на
 `pcntl`/`posix`/`proc_open`); расширение грузит **воркер**.
 
-Размещение: `bin/sconcur-http-server` (CLI) + `src/Worker/` → namespace
+Размещение: `bin/sconcur-server` (CLI) + `src/Worker/` → namespace
 `SConcur\Worker\`:
 
 - `MasterCli` — разбор `argv`, диспетчер `start|status|stop` (логика — здесь, чтобы
@@ -83,15 +83,15 @@
 
 ```sh
 # start — захватить lock, поднять воркеры, супервизировать (foreground; блокируется)
-vendor/bin/sconcur-http-server start --configPath=/app/master.json
+vendor/bin/sconcur-server start --configPath=/app/master.json
 
 # status — жив ли мастер (по локу), напечатать состояние
-vendor/bin/sconcur-http-server status --configPath=/app/master.json
+vendor/bin/sconcur-server status --configPath=/app/master.json
 #   → "running: pid=12345 workers=8 address=0.0.0.0:8080"  (код 0)
 #   → "stopped"                                            (код 3)
 
 # stop — удалить стейт-файл (сигнал остановки), дождаться выхода мастера
-vendor/bin/sconcur-http-server stop --configPath=/app/master.json
+vendor/bin/sconcur-server stop --configPath=/app/master.json
 ```
 
 Коды возврата: `start` — код мастера на выходе; `status` — `0` если running,
@@ -116,7 +116,7 @@ $master = new WorkerMaster(
     workerScript:      __DIR__ . '/worker.php', // что запускать (обязателен)
     runtimeDir:        '/run/sconcur',           // lock + state-файл (единственный инстанс, перезапуск)
     logDir:            '/var/log/sconcur',       // каталог логов (см. «Логирование»)
-    name:              'sconcur-http-server',    // префикс лога/стейта
+    name:              'sconcur-server',    // префикс лога/стейта
     rotateDays:        3,                         // хранить N дней лог-файлов
     workerCount:       0,                        // 0 = число ядер (nproc)
     phpBinary:         PHP_BINARY,               // чем запускать (по умолч. — текущий интерпретатор)
@@ -184,7 +184,7 @@ worker (script):
 
 ### PHP (`bin/` + `src/Worker/`)
 
-- **`bin/sconcur-http-server`** — шебанг-скрипт: резолвит автозагрузчик и
+- **`bin/sconcur-server`** — шебанг-скрипт: резолвит автозагрузчик и
   делегирует в `MasterCli::run($argv)`. Регистрируется в `composer.json` `"bin"`.
 - **`WorkerMaster`** (`readonly`-конфиг в конструкторе; `run()` — изменяемый цикл).
   Хранит слоты, ставит/снимает обработчики сигналов, гоняет супервизионный цикл.
@@ -205,12 +205,12 @@ worker (script):
 - **`MasterCli`** — единственный флаг `--configPath`; диспетчер `start|status|stop` (тестируемая
   логика; bin-файл — тонкая обёртка).
 - **`MasterState`** — чтение/запись JSON state-файла `<name>-state.json` (по умолч.
-  `sconcur-http-server-state.json`): pid, `startedAt`, `workerCount`, `workerScript`,
+  `sconcur-server-state.json`): pid, `startedAt`, `workerCount`, `workerScript`,
   `address`, `status`; атомарная запись (temp+rename).
 - **`MasterLock`** — обёртка над `flock(LOCK_EX|LOCK_NB)`: захват при `run()`,
   удержание хэндла на всё время жизни мастера (ядро снимает лок при смерти).
 - **`MasterLogger`** — один **дневной** файл `<name>-Y-m-d.log` (по умолч.
-  `sconcur-http-server-2000-01-01.log`); формат строки
+  `sconcur-server-2000-01-01.log`); формат строки
   `[Y-m-d H:i:s.uuuuuu] LEVEL [<scope>]: <message> [<context>]`
   (`scope` = `master: pid` | `worker: pid #index`); на смене суток —
   новый файл + **подчистка** старше `rotateDays` (по умолч. 3). Методы вроде
@@ -347,10 +347,10 @@ worker (script):
 ### Логирование (`logDir`, дневная ротация)
 
 **Один дневной файл** на весь пул, без индекса воркера в имени — префикс `name`
-(по умолчанию `sconcur-http-server`) + дата:
+(по умолчанию `sconcur-server`) + дата:
 
 ```
-sconcur-http-server-2026-06-18.log
+sconcur-server-2026-06-18.log
 ```
 
 На **смене суток** мастер открывает новый дневной файл и **удаляет** файлы старше
@@ -410,7 +410,7 @@ sconcur-http-server-2026-06-18.log
 в открытых вопросах.)
 
 **State-файл (наблюдаемый «флаг») — `runtimeDir/<name>-state.json`** (по умолчанию
-`sconcur-http-server-state.json`). Пишется атомарно (temp + `rename`) на старте и
+`sconcur-server-state.json`). Пишется атомарно (temp + `rename`) на старте и
 обновляется при изменениях (рестарты):
 
 ```json
@@ -433,8 +433,8 @@ exit-code):
 
 ```sh
 # master-guard.sh, по таймеру (cron */1, systemd timer):
-vendor/bin/sconcur-http-server status --configPath=/app/master.json >/dev/null \
-  || exec vendor/bin/sconcur-http-server start --configPath=/app/master.json
+vendor/bin/sconcur-server status --configPath=/app/master.json >/dev/null \
+  || exec vendor/bin/sconcur-server start --configPath=/app/master.json
 # status != 0 (stopped/stale) → поднять.
 ```
 
@@ -493,7 +493,7 @@ vendor/bin/sconcur-http-server status --configPath=/app/master.json >/dev/null \
    ротацией по `rotateDays` (3) и форматом
    `[Y-m-d H:i:s.uuuuuu] LEVEL [scope]: msg [ctx]`; перехват stdout/stderr
    воркеров (неблокирующие пайпы) → построчно в тот же файл.
-7. [x] **CLI `bin/sconcur-http-server`** + `MasterCli`: разбор `argv`, команды
+7. [x] **CLI `bin/sconcur-server`** + `MasterCli`: разбор `argv`, команды
    `start` (= `WorkerMaster::run`), `status` (живость по `flock`, exit-codes),
    `stop` (удаление стейт-файла + ожидание освобождения лока). Регистрация в
    `composer.json` `"bin"`,
@@ -523,7 +523,7 @@ vendor/bin/sconcur-http-server status --configPath=/app/master.json >/dev/null \
   нет `workerScript`, неизвестный `restartPolicy` → понятная ошибка + ненулевой код;
   `status`/`stop` при отсутствии стейта.
 - **Харнесс `TestWorkerMaster`** (по образцу `TestHttpServer`): пишет JSON-конфиг и
-  `proc_open` `bin/sconcur-http-server start --configPath=…`; `pid()`, `signal()`, `waitForExit()`,
+  `proc_open` `bin/sconcur-server start --configPath=…`; `pid()`, `signal()`, `waitForExit()`,
   чтение лога. Воркером выступает общий демо-сервер
   `tests/servers/http/http-server.php` — `HttpServer::fromArgs($_SERVER['argv'])` с
   `reusePort`, `--masterPid` и маршрутом `/pid` (отдаёт `getmypid()`), чтобы тест

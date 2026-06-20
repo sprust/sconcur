@@ -12,8 +12,9 @@ use SConcur\Exceptions\Worker\InvalidConfigException;
  * into the worker's argv flags (so the worker still receives everything via
  * arguments — the master is the only thing that reads a config file).
  *
- * worker's first positional argument; every other `server` entry becomes a
- * `--key=value` flag (booleans render as 1/0).
+ * Every `server` entry is forwarded verbatim as a `--key=value` flag (booleans
+ * render as 1/0). The master is server-agnostic: it never inspects or whitelists the
+ * keys, so the same supervisor drives any worker that parses `--key=value` argv.
  */
 readonly class MasterConfig
 {
@@ -113,7 +114,7 @@ readonly class MasterConfig
             workerScript: $workerScript,
             runtimeDir: (string) ($data['runtimeDir'] ?? sys_get_temp_dir()),
             logDir: $logDir,
-            name: (string) ($data['name'] ?? 'sconcur-http-server'),
+            name: (string) ($data['name'] ?? 'sconcur-server'),
             rotateDays: (int) ($data['rotateDays'] ?? 3),
             workerCount: (int) ($data['workerCount'] ?? 0),
             phpBinary: (string) ($data['phpBinary'] ?? PHP_BINARY),
@@ -140,8 +141,8 @@ readonly class MasterConfig
     }
 
     /**
-     * Builds the supervisor. The `server` object is expanded into the worker argv:
-     * flag; any extra `workerArgs` follow.
+     * Builds the supervisor. Every `server` entry is expanded into a `--key=value`
+     * worker argv flag (booleans render as 1/0); any extra raw `workerArgs` follow.
      */
     public function toWorkerMaster(): WorkerMaster
     {
@@ -224,9 +225,13 @@ readonly class MasterConfig
     }
 
     /**
+     * Reads the `server` object. Every entry is forwarded to the worker as a
+     * `--key=value` flag, so a non-scalar value cannot be expressed on argv and is a
+     * config error rather than a silent drop — that keeps the pass-through total.
+     *
      * @return array<string, int|float|string|bool>
      *
-     * @throws InvalidConfigException when present but not an object
+     * @throws InvalidConfigException when present but not an object, or any value is non-scalar
      */
     protected static function serverParams(mixed $value): array
     {
@@ -243,9 +248,17 @@ readonly class MasterConfig
         $params = [];
 
         foreach ($value as $key => $item) {
-            if (is_scalar($item)) {
-                $params[(string) $key] = $item;
+            if (!is_scalar($item)) {
+                throw new InvalidConfigException(
+                    message: sprintf(
+                        'config: "server.%s" must be a scalar (it is forwarded as a --%s=value worker flag)',
+                        (string) $key,
+                        (string) $key,
+                    ),
+                );
             }
+
+            $params[(string) $key] = $item;
         }
 
         return $params;

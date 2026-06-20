@@ -78,6 +78,19 @@ class MasterCliTest extends TestCase
         self::assertStringContainsString('workerScript', $err);
     }
 
+    public function testStartRejectsNonScalarServerValue(): void
+    {
+        $configPath = $this->writeConfig([
+            'workerScript' => '/tmp/x.php',
+            'server'       => ['address' => ['nested' => 1]],
+        ]);
+
+        [$code, , $err] = $this->runCli(['start', '--configPath=' . $configPath]);
+
+        self::assertSame(MasterCli::EXIT_USAGE, $code);
+        self::assertStringContainsString('server.address', $err);
+    }
+
     public function testStatusReportsStoppedWhenNoState(): void
     {
         $directory  = $this->makeDir();
@@ -176,7 +189,7 @@ class MasterCliTest extends TestCase
             self::fail('Could not open in-memory streams.');
         }
 
-        $code = new MasterCli($stdout, $stderr)->run(['sconcur-http-server', ...$args]);
+        $code = new MasterCli($stdout, $stderr)->run(['sconcur-server', ...$args]);
 
         rewind($stdout);
         rewind($stderr);
