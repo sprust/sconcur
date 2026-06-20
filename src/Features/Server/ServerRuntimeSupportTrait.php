@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace SConcur\Features\Server;
 
 use Closure;
-use InvalidArgumentException;
 use ReflectionClass;
 use ReflectionNamedType;
+use SConcur\Exceptions\Server\InvalidServerArgumentException;
 
 /**
  * Shared runtime support for the long-lived servers (HttpServer, SocketServer):
@@ -65,7 +65,7 @@ trait ServerRuntimeSupportTrait
             $type = $parameters[$name] ?? null;
 
             if ($type === null) {
-                throw new InvalidArgumentException(
+                throw new InvalidServerArgumentException(
                     sprintf(
                         'Unknown argument: %s. supported only %s',
                         $argument,
@@ -156,7 +156,7 @@ trait ServerRuntimeSupportTrait
     {
         if ($type === 'int') {
             if (((string) (int) $value) !== $value) {
-                throw new InvalidArgumentException(
+                throw new InvalidServerArgumentException(
                     sprintf(
                         'Invalid integer for %s: %s.',
                         $name,
@@ -177,7 +177,7 @@ trait ServerRuntimeSupportTrait
                 return false;
             }
 
-            throw new InvalidArgumentException(
+            throw new InvalidServerArgumentException(
                 sprintf(
                     'Invalid boolean for %s: %s.',
                     $name,
@@ -188,7 +188,7 @@ trait ServerRuntimeSupportTrait
 
         if ($type === 'float') {
             if (!is_numeric($value)) {
-                throw new InvalidArgumentException(
+                throw new InvalidServerArgumentException(
                     sprintf(
                         'Invalid float for %s: %s.',
                         $name,
