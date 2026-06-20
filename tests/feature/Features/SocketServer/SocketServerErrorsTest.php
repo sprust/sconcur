@@ -6,25 +6,23 @@ namespace SConcur\Tests\Feature\Features\SocketServer;
 
 class SocketServerErrorsTest extends BaseSocketServerTestCase
 {
-    public function testThrowingHandlerSendsNoReplyAndKeepsConnectionUsable(): void
+    public function testThrowingHandlerClosesTheConnection(): void
     {
+        // A handler that throws unwinds and its connection is closed; with no onError
+        // reply the client just sees EOF.
         $connection = $this->connect();
 
-        // A handler that throws takes the default error path: no reply is sent, but
-        // the per-message timer is disarmed and the connection stays healthy, so the
-        // next message is still answered.
         $this->sendFrame($connection, 'throw');
-        $this->sendFrame($connection, 'ping');
 
-        self::assertSame('pong', $this->receiveFrame($connection));
+        self::assertNull($this->receiveFrame($connection));
 
         fclose($connection);
     }
 
-    public function testOnErrorCanSupplyAReply(): void
+    public function testOnErrorCanWriteAFinalFrame(): void
     {
-        // The demo server's onError opts the "throw-handled" failure into a custom
-        // reply instead of staying silent.
+        // The demo server's onError pushes a final frame for the "throw-handled"
+        // failure before the connection is closed.
         self::assertSame('ERR:HANDLED boom', $this->roundtrip('throw-handled'));
     }
 

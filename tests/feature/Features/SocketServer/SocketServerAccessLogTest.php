@@ -35,9 +35,9 @@ class SocketServerAccessLogTest extends TestCase
 
             $output = $server->output();
 
-            // "<date>T<hh:mm:ss>.<microseconds> 127.0.0.1:<port> msgs=2 ok <n>ms"
+            // "<date>T<hh:mm:ss>.<microseconds> 127.0.0.1:<port> frames=2 ok <n>ms"
             self::assertMatchesRegularExpression(
-                '#\dT\d{2}:\d{2}:\d{2}\.\d{6} 127\.0\.0\.1:\d+ msgs=2 ok [\d.]+ms#',
+                '#\dT\d{2}:\d{2}:\d{2}\.\d{6} 127\.0\.0\.1:\d+ frames=2 ok [\d.]+ms#',
                 $output,
             );
         } finally {

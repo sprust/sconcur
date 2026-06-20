@@ -15,15 +15,13 @@ import (
 var _ contracts.StateContract = (*messageState)(nil)
 
 // messageState streams the inbound length-prefixed frames of one connection to PHP,
-// one frame per Next() (modeled on the HTTP request-body state). Each delivered
-// frame signals the connection's write loop that a message went into handling, so
-// the per-message handler timeout can be armed independently of PHP.
+// one frame per Next() (modeled on the HTTP request-body state). The handler reads
+// them via Connection::read().
 type messageState struct {
 	mutex     sync.Mutex
 	message   *dto.Message
 	conn      net.Conn
 	reader    *bufio.Reader
-	pending   *pendingConnection
 	config    serverConfig
 	startTime time.Time
 }
@@ -32,14 +30,12 @@ func newMessageState(
 	message *dto.Message,
 	conn net.Conn,
 	reader *bufio.Reader,
-	pending *pendingConnection,
 	config serverConfig,
 ) *messageState {
 	return &messageState{
 		message:   message,
 		conn:      conn,
 		reader:    reader,
-		pending:   pending,
 		config:    config,
 		startTime: time.Now(),
 	}
@@ -67,10 +63,6 @@ func (s *messageState) Next() *dto.Result {
 
 		return dto.NewErrorResult(s.message, errFactory.ByErr("read frame", err))
 	}
-
-	// Tell the write loop a message is now in flight so it can arm the handler
-	// timeout (non-blocking, capacity-1 channel: at most one in-flight per conn).
-	s.pending.signalMessageStarted()
 
 	return dto.NewSuccessResultWithNext(s.message, string(frame), helpers.CalcExecutionMs(s.startTime))
 }

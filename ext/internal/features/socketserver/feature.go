@@ -105,8 +105,8 @@ func (f *SocketFeature) handleServe(task *tasks.Task) {
 	task.AddResult(result)
 }
 
-// handleRespond routes one write command (a frame, a no-reply ack, or a close) from
-// a PHP handler to the waiting connection's write loop.
+// handleRespond routes one action (write a frame, or close) from a PHP connection
+// handler to the waiting connection's write loop.
 func (f *SocketFeature) handleRespond(task *tasks.Task) {
 	message := task.GetMessage()
 	startTime := time.Now()
@@ -150,9 +150,8 @@ func (f *SocketFeature) handleRespond(task *tasks.Task) {
 	}
 
 	command := writeCommand{
-		kind:  writeKind(payload.Op),
-		close: payload.Close,
-		data:  payload.Data,
+		kind: writeKind(payload.Op),
+		data: payload.Data,
 	}
 
 	if err := f.dispatch(task, pending, command); err != nil {

@@ -15,9 +15,6 @@ type ServePayload struct {
 	ReadTimeoutMs int `json:"rt" msgpack:"rt"`
 	// WriteTimeoutMs bounds writing one response frame.
 	WriteTimeoutMs int `json:"wt" msgpack:"wt"`
-	// HandlerTimeoutMs bounds how long one message handler may take before the
-	// connection is cut off (timer on the Go side, independent of PHP). 0 disables.
-	HandlerTimeoutMs int `json:"hto" msgpack:"hto"`
 	// MaxMessageBytes caps the length of a single inbound frame (guards against a
 	// huge length prefix).
 	MaxMessageBytes int `json:"mmb" msgpack:"mmb"`
@@ -30,16 +27,13 @@ type ServePayload struct {
 	ReusePort bool `json:"rp" msgpack:"rp"`
 }
 
-// RespondPayload is the payload of a socketRespond command — one write a PHP
-// message-handler coroutine sends back for a given message. Op selects the kind of
-// write (0 write a length-prefixed frame, 1 skip — no frame, just acknowledge the
-// message and disarm the handler timer). Close additionally closes the connection
-// after the write.
+// RespondPayload is the payload of a socketRespond command — one action a PHP
+// connection handler performs on its connection. Op selects the kind (0 write a
+// length-prefixed frame to the client, 1 close the connection).
 // PHP: SConcur\Features\SocketServer\Payloads\RespondPayload.
 type RespondPayload struct {
 	ConnectionId string `json:"cid" msgpack:"cid"`
 	Op           int    `json:"op" msgpack:"op"`
-	Close        bool   `json:"cl" msgpack:"cl"`
 	Data         string `json:"dt" msgpack:"dt"`
 }
 

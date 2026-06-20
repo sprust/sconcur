@@ -22,6 +22,10 @@ const (
 	defaultWriteTimeout    = 30 * time.Second
 	defaultShutdownTimeout = 5 * time.Second
 	defaultMaxMessageBytes = 1 << 20 // 1 MiB
+	// drainGrace bounds how long a connection may keep its handler alive after the
+	// listener stops accepting; past it the connection is force-closed so a handler
+	// that never reads (push-only) still unwinds and the server can finish draining.
+	drainGrace = 2 * time.Second
 
 	// readBufferSize is the size of the bufio.Reader wrapping each connection.
 	readBufferSize = 64 << 10 // 64 KiB
@@ -36,20 +40,18 @@ const (
 type serverConfig struct {
 	readTimeout     time.Duration
 	writeTimeout    time.Duration
-	handlerTimeout  time.Duration
 	shutdownTimeout time.Duration
 	maxMessageBytes int
 	maxConcurrency  int
 }
 
 // configFromPayload resolves the tuning from the PHP payload, falling back to the
-// defaults for any zero (unset) value where a default makes sense. readTimeout and
-// handlerTimeout keep 0 as "disabled".
+// defaults for any zero (unset) value where a default makes sense. readTimeout keeps
+// 0 as "disabled".
 func configFromPayload(payload payloads.ServePayload) serverConfig {
 	return serverConfig{
 		readTimeout:     time.Duration(max(payload.ReadTimeoutMs, 0)) * time.Millisecond,
 		writeTimeout:    msOrDefault(payload.WriteTimeoutMs, defaultWriteTimeout),
-		handlerTimeout:  time.Duration(max(payload.HandlerTimeoutMs, 0)) * time.Millisecond,
 		shutdownTimeout: msOrDefault(payload.ShutdownTimeoutMs, defaultShutdownTimeout),
 		maxMessageBytes: intOrDefault(payload.MaxMessageBytes, defaultMaxMessageBytes),
 		maxConcurrency:  max(payload.MaxConcurrency, 0),
@@ -72,45 +74,33 @@ func intOrDefault(value int, fallback int) int {
 	return value
 }
 
-// writeKind tags what a write command does. writeFrame writes one length-prefixed
-// frame; writeSkip writes nothing (a no-reply acknowledgement that just disarms the
-// per-message handler timer).
+// writeKind tags what an action does to the connection. opFrame writes one
+// length-prefixed frame to the client; opClose closes the connection.
 type writeKind int
 
 const (
 	opFrame writeKind = 0
-	opSkip  writeKind = 1
+	opClose writeKind = 1
 )
 
-// writeCommand is one instruction a PHP handler sends for a message. done carries
+// writeCommand is one action a PHP handler performs on its connection. done carries
 // the result of applying it back to the issuing coroutine (nil on success, an error
-// if the client write failed) so the handler gets real write backpressure and stops
-// early on a dead connection. close additionally closes the connection afterwards.
+// if the client write failed) so the handler gets real write backpressure and learns
+// about a dead connection.
 type writeCommand struct {
-	kind  writeKind
-	close bool
-	data  string
-	done  chan error
+	kind writeKind
+	data string
+	done chan error
 }
 
 // pendingConnection is the rendezvous between the connection goroutine (the write
-// loop) and the PHP handler's write commands. abandoned is closed once the write
-// loop stops consuming (handler timeout, server shutdown, or the connection is
-// gone) so a handler that responds late unblocks with an error instead of hanging.
-// messageStarted (capacity 1) is signaled by the inbound reader each time a frame
-// is delivered to PHP, so the write loop can arm the per-message handler timer.
+// loop) and the PHP handler's write/close commands. abandoned is closed once the
+// write loop stops consuming (server shutdown or the connection is gone) so a handler
+// that writes late unblocks with an error instead of hanging on the commands channel.
 type pendingConnection struct {
-	conn           net.Conn
-	commands       chan writeCommand
-	abandoned      chan struct{}
-	messageStarted chan struct{}
-}
-
-func (p *pendingConnection) signalMessageStarted() {
-	select {
-	case p.messageStarted <- struct{}{}:
-	default:
-	}
+	conn      net.Conn
+	commands  chan writeCommand
+	abandoned chan struct{}
 }
 
 // closeRead closes only the read side of the connection (graceful drain): blocked
@@ -220,10 +210,9 @@ func (s *serverState) handleConn(conn net.Conn) {
 	connectionId := nextConnectionId(s.message.FlowKey)
 
 	pending := &pendingConnection{
-		conn:           conn,
-		commands:       make(chan writeCommand),
-		abandoned:      make(chan struct{}),
-		messageStarted: make(chan struct{}, 1),
+		conn:      conn,
+		commands:  make(chan writeCommand),
+		abandoned: make(chan struct{}),
 	}
 
 	pendingConnections.Store(connectionId, pending)
@@ -232,20 +221,20 @@ func (s *serverState) handleConn(conn net.Conn) {
 	inboundKey := connectionId + ":in"
 	reader := bufio.NewReaderSize(conn, readBufferSize)
 
-	_ = states.Get().Register(inboundKey, newMessageState(s.message, conn, reader, pending, s.config))
+	_ = states.Get().Register(inboundKey, newMessageState(s.message, conn, reader, s.config))
 
-	messageCount := 0
+	frameCount := 0
 	status := "ok"
 
 	defer func() {
-		// Once we stop consuming, release a handler still trying to respond.
+		// Once we stop consuming, release a handler still trying to write.
 		close(pending.abandoned)
 		pendingConnections.Delete(connectionId)
 		s.conns.Delete(connectionId)
 		states.Get().DeleteState(inboundKey)
 		_ = conn.Close()
 
-		logger.Write(formatAccessLine(start, remoteAddr, messageCount, status))
+		logger.Write(formatAccessLine(start, remoteAddr, frameCount, status))
 	}()
 
 	event := &payloads.ConnectionEvent{
@@ -262,83 +251,48 @@ func (s *serverState) handleConn(conn net.Conn) {
 		return
 	}
 
-	messageCount, status = s.consumeCommands(conn, pending)
+	frameCount, status = s.consumeCommands(conn, pending)
 }
 
-// consumeCommands applies the handler's write commands for one connection until it
-// closes (a command with close set), the per-message handler timeout fires, or the
-// server shuts down. Each command's outcome is reported on its done channel so the
-// issuing coroutine gets write backpressure. The handler timer is armed when the
-// inbound reader signals a message went into handling and disarmed when its response
-// (or no-reply ack) arrives — so it bounds the time to handle a single message,
-// independently of PHP. Returns the message count and a status for the access log.
+// consumeCommands applies the handler's actions for one connection (write a frame,
+// or close) until the handler closes the connection or the server shuts down. Each
+// command's outcome is reported on its done channel so the issuing coroutine gets
+// write backpressure and learns when the connection is dead. Returns the number of
+// frames written and a status for the access log.
 func (s *serverState) consumeCommands(conn net.Conn, pending *pendingConnection) (int, string) {
-	messageCount := 0
+	frameCount := 0
 	status := "ok"
-
-	var timer *time.Timer
-	var timeout <-chan time.Time
-
-	armTimer := func() {
-		if s.config.handlerTimeout <= 0 {
-			return
-		}
-
-		timer = time.NewTimer(s.config.handlerTimeout)
-		timeout = timer.C
-	}
-
-	disarmTimer := func() {
-		if timer != nil {
-			timer.Stop()
-			timer = nil
-		}
-
-		timeout = nil
-	}
-
-	defer disarmTimer()
 
 	for {
 		select {
 		case <-s.ctx.Done():
-			return messageCount, "shutdown"
-		case <-pending.messageStarted:
-			messageCount++
-			armTimer()
-		case <-timeout:
-			// The handler did not respond in time (a slow async handler or a natively
-			// blocked PHP thread): cut the connection off. The deferred cleanup closes
-			// the connection and the abandoned channel, so a late response unblocks.
-			return messageCount, "handler_timeout"
+			return frameCount, "shutdown"
 		case command := <-pending.commands:
-			disarmTimer()
+			if command.kind == opClose {
+				command.done <- nil
 
-			err := s.applyCommand(conn, command)
+				return frameCount, status
+			}
+
+			err := s.writeFrame(conn, command.data)
 			command.done <- err
 
 			if err != nil {
-				return messageCount, "write_error"
+				return frameCount, "write_error"
 			}
 
-			if command.close {
-				return messageCount, status
-			}
+			frameCount++
 		}
 	}
 }
 
-// applyCommand carries out one write command against the connection.
-func (s *serverState) applyCommand(conn net.Conn, command writeCommand) error {
-	if command.kind == opSkip {
-		return nil
-	}
-
+// writeFrame writes one length-prefixed frame to the client, bounded by writeTimeout.
+func (s *serverState) writeFrame(conn net.Conn, data string) error {
 	if s.config.writeTimeout > 0 {
 		_ = conn.SetWriteDeadline(time.Now().Add(s.config.writeTimeout))
 	}
 
-	return writeFrame(conn, []byte(command.data))
+	return writeFrame(conn, []byte(data))
 }
 
 func (s *serverState) Next() *dto.Result {
@@ -358,15 +312,40 @@ func (s *serverState) Next() *dto.Result {
 }
 
 // stopAccepting closes the listener (so a SO_REUSEPORT sibling takes over new
-// connections) and half-closes the read side of every in-flight connection, so each
-// idle handler loop ends on EOF while a current response can still be written. This
-// is what lets the generic serve loop drain long-lived connections on shutdown.
+// connections) and half-closes the read side of every in-flight connection, so a
+// handler reading in a loop ends on EOF while it can still write a final frame. A
+// push-only handler that never reads would not notice the half-close, so after a
+// bounded grace every connection is force-closed too — its next write fails and the
+// handler unwinds, letting the generic serve loop finish draining.
 func (s *serverState) stopAccepting() {
 	_ = s.listener.Close()
 
 	s.conns.Range(func(_, value any) bool {
 		if pending, ok := value.(*pendingConnection); ok {
 			pending.closeRead()
+		}
+
+		return true
+	})
+
+	go s.forceCloseAfterGrace()
+}
+
+// forceCloseAfterGrace force-closes every still-live connection once the drain grace
+// elapses, unless the server is already fully stopped (ctx done) by then.
+func (s *serverState) forceCloseAfterGrace() {
+	timer := time.NewTimer(drainGrace)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+	case <-s.ctx.Done():
+		return
+	}
+
+	s.conns.Range(func(_, value any) bool {
+		if pending, ok := value.(*pendingConnection); ok {
+			_ = pending.conn.Close()
 		}
 
 		return true
@@ -397,15 +376,17 @@ func (s *serverState) Close() {
 
 // formatAccessLine builds one access-log line for a finished connection:
 //
-//	<ISO-start-time> <remoteAddr> msgs=<n> <status> <ms>ms
-func formatAccessLine(start time.Time, remoteAddr string, messageCount int, status string) string {
+//	<ISO-start-time> <remoteAddr> frames=<n> <status> <ms>ms
+//
+// where frames is the number of frames written to the client over the connection.
+func formatAccessLine(start time.Time, remoteAddr string, frameCount int, status string) string {
 	elapsedMs := float64(time.Since(start).Microseconds()) / 1000.0
 
 	return fmt.Sprintf(
-		"%s %s msgs=%d %s %.2fms\n",
+		"%s %s frames=%d %s %.2fms\n",
 		start.Format("2006-01-02T15:04:05.000000"),
 		remoteAddr,
-		messageCount,
+		frameCount,
 		status,
 		elapsedMs,
 	)
