@@ -213,7 +213,8 @@ $collection->insertOne(['name' => 'example']);
   быстрый старт, параметры, стриминг, graceful shutdown, внутреннее устройство и
   ограничения в отличие от типовых серверов.
 - [Мастер воркеров](docs/worker-master.ru.md) — супервизор пула процессов-воркеров
-  (CLI `start`/`status`/`stop`): масштаб на ядра через `SO_REUSEPORT`, перезапуск
+  (CLI `bin/sconcur-server` `start`/`status`/`stop`): масштаб на ядра через
+  `SO_REUSEPORT`, перезапуск
   упавших и исчерпавших `maxRequests`, graceful shutdown, лог и state-файл,
   единственный инстанс, самозавершение осиротевших воркеров.
 - [HTTP-клиент](docs/http-client.ru.md) — асинхронный PSR-18 клиент со стримингом
