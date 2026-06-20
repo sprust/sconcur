@@ -217,3 +217,9 @@ bench-http-throughput:
 # Tunables via env, e.g.: make bench-http-load-stats SERVERS=12 DURATION=30
 bench-http-load-stats:
 	tests/benchmarks/http-load-stats.sh
+
+# Soak variant: a long, steady-load run (10 min by default) that prints the
+# worker-RSS trend over time and a least-squares leak slope. Override via env,
+# e.g.: make bench-http-load-soak DURATION=3600
+bench-http-load-soak:
+	MODE=soak tests/benchmarks/http-load-stats.sh

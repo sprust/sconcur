@@ -30,8 +30,8 @@ SERVERS=12 WRK_THREADS=4 CONNECTIONS=256 DURATION=20 SAMPLE_INTERVAL=2 \
 
 # soak-режим: длинный устойчивый прогон с трендом RSS во времени и наклоном
 # (MiB/мин) — для детекта МЕДЛЕННОЙ утечки. Дефолты: 10 минут, семпл 15 c.
-MODE=soak make bench-http-load-stats
-MODE=soak DURATION=3600 tests/benchmarks/http-load-stats.sh   # часовой soak
+make bench-http-load-soak               # 10 минут по умолчанию
+DURATION=3600 make bench-http-load-soak # часовой soak
 ```
 
 `MODE=soak` дополнительно печатает таблицу `тренд (elapsed → RSS)` и **наклон**
@@ -87,7 +87,8 @@ throughput).
   позиционирования I/O-bound сценарий — отдельные бенчи `bench-http-reuseport-io`.
 - **Короткий прогон (20 c).** Отсутствие утечки на этой дистанции — хороший знак; для
   медленной утечки и поведения GC/пулов на дистанции есть **soak-режим**
-  (`MODE=soak`, см. «Как запустить») — длинный прогон с трендом RSS и наклоном MiB/мин.
+  (`make bench-http-load-soak`, см. «Как запустить») — длинный прогон с трендом RSS и
+  наклоном MiB/мин.
 
 См. также: [HTTP-сервер](http-server.ru.md), [Мастер воркеров](worker-master.ru.md),
 [SO_REUSEPORT-throughput](../tests/benchmarks/http-throughput.sh).
