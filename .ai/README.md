@@ -8,6 +8,7 @@ here.
 
 - [README.md](../README.md) — project overview and usage
 - [docs/adding-a-feature.ru.md](../docs/adding-a-feature.ru.md) — guide for adding a new feature
+- [docs/adding-a-server.ru.md](../docs/adding-a-server.ru.md) — guide for adding a new server (long-lived streaming feature: listener + serve loop + worker-master integration)
 - [docs/mongodb.ru.md](../docs/mongodb.ru.md) — MongoDB feature: collection operations, cursors, BSON types, concurrency, internals
 - [docs/http-server.ru.md](../docs/http-server.ru.md) — HTTP-server feature: usage, params, internals, limits
 - [docs/worker-master.ru.md](../docs/worker-master.ru.md) — worker master: CLI start/status/stop, restart policy, logging, single-instance, orphan self-termination
