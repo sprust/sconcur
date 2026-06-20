@@ -38,6 +38,10 @@ function httpStopAccepting(string $fk): void
 {
 }
 
+function socketStopAccepting(string $fk): void
+{
+}
+
 function destroy(): void
 {
 }

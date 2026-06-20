@@ -5,9 +5,6 @@ declare(strict_types=1);
 namespace SConcur\Features\HttpServer;
 
 use Closure;
-use InvalidArgumentException;
-use ReflectionClass;
-use ReflectionNamedType;
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\HttpServer\InvalidHandlerResponseException;
 use SConcur\Exceptions\HttpServer\RequestBodyTooLargeException;
@@ -18,6 +15,7 @@ use SConcur\Features\HttpServer\Dto\ResponseStream;
 use SConcur\Features\HttpServer\Dto\StreamedResponse;
 use SConcur\Features\HttpServer\Payloads\RespondPayload;
 use SConcur\Features\HttpServer\Payloads\ServePayload;
+use SConcur\Features\Server\ServerRuntimeSupportTrait;
 use SConcur\Scheduler\Scheduler;
 use Throwable;
 
@@ -28,6 +26,8 @@ use Throwable;
  */
 readonly class HttpServer
 {
+    use ServerRuntimeSupportTrait;
+
     /**
      * @param int                                         $maxRequestBody   request body read limit, in bytes
      * @param int                                         $maxConcurrency   max requests handled at once (0 = unlimited).
@@ -87,93 +87,7 @@ readonly class HttpServer
      */
     public static function fromArgs(array $argv, ?Closure $onError = null): HttpServer
     {
-        $allowedTypes = ['int', 'bool', 'float', 'string'];
-
-        $reflectionClass = new ReflectionClass(HttpServer::class);
-
-        $parameters = [];
-
-        foreach ($reflectionClass->getConstructor()?->getParameters() ?? [] as $parameter) {
-            $type = $parameter->getType();
-
-            // Only scalar, single-typed params can be set from a CLI string; skip
-            // union/intersection types and the closures (onError).
-            if (!$type instanceof ReflectionNamedType) {
-                continue;
-            }
-
-            $typeName = $type->getName();
-
-            if (!in_array($typeName, $allowedTypes, true)) {
-                continue;
-            }
-
-            $parameters[$parameter->getName()] = $typeName;
-        }
-
-        $overrides = [];
-
-        foreach ($argv as $argument) {
-            if (!str_starts_with($argument, '--')) {
-                continue;
-            }
-
-            [$name, $value] = array_pad(explode('=', substr($argument, 2), 2), 2, '');
-
-            $type = $parameters[$name] ?? null;
-
-            if ($type === null) {
-                throw new InvalidArgumentException(
-                    sprintf(
-                        'Unknown argument: %s. supported only %s',
-                        $argument,
-                        implode(', ', array_keys($parameters)),
-                    ),
-                );
-            }
-
-            if ($type === 'int') {
-                if (((string) (int) $value) === $value) {
-                    $overrides[$name] = (int) $value;
-                } else {
-                    throw new InvalidArgumentException(
-                        sprintf(
-                            'Invalid integer for %s: %s.',
-                            $name,
-                            $value,
-                        ),
-                    );
-                }
-            } elseif ($type === 'bool') {
-                if ($value === '1') {
-                    $overrides[$name] = true;
-                } elseif ($value === '0') {
-                    $overrides[$name] = false;
-                } else {
-                    throw new InvalidArgumentException(
-                        sprintf(
-                            'Invalid boolean for %s: %s.',
-                            $name,
-                            $value,
-                        ),
-                    );
-                }
-            } elseif ($type === 'float') {
-                if (is_numeric($value)) {
-                    $overrides[$name] = (float) $value;
-                } else {
-                    throw new InvalidArgumentException(
-                        sprintf(
-                            'Invalid float for %s: %s.',
-                            $name,
-                            $value,
-                        ),
-                    );
-                }
-            } else {
-                $overrides[$name] = (string) $value;
-            }
-        }
+        $overrides = self::parseArgs($argv);
 
         if ($onError !== null) {
             $overrides['onError'] = $onError;
@@ -245,70 +159,6 @@ readonly class HttpServer
         } finally {
             $restoreSignals();
         }
-    }
-
-    /**
-     * Installs SIGTERM/SIGINT handlers that flip $stopRequested so the serve loop
-     * shuts down gracefully, and returns a callback that restores the handlers (and
-     * async-signals mode) that were in place before. Requires ext-pcntl; without it
-     * the server runs until the process is killed and the restorer is a no-op.
-     *
-     * @return Closure(): void
-     */
-    private function installSignalHandlers(bool &$stopRequested): Closure
-    {
-        if (!function_exists('pcntl_async_signals')) {
-            return static function (): void {
-            };
-        }
-
-        $signals = [SIGTERM, SIGINT];
-
-        $previousAsync = pcntl_async_signals();
-
-        /** @var array<int, callable|int> $previousHandlers */
-        $previousHandlers = [];
-
-        foreach ($signals as $signal) {
-            $previousHandlers[$signal] = pcntl_signal_get_handler($signal);
-        }
-
-        pcntl_async_signals(true);
-
-        $handler = static function () use (&$stopRequested): void {
-            $stopRequested = true;
-        };
-
-        foreach ($signals as $signal) {
-            pcntl_signal($signal, $handler);
-        }
-
-        return static function () use ($signals, $previousHandlers, $previousAsync): void {
-            foreach ($signals as $signal) {
-                pcntl_signal($signal, $previousHandlers[$signal]);
-            }
-
-            pcntl_async_signals($previousAsync);
-        };
-    }
-
-    /**
-     * Whether this worker has been orphaned — its launching master is no longer its
-     * parent. Uses posix_getppid() (immune to PID reuse: the kernel reparents the
-     * worker once the master dies, so getppid stops matching). Falls back to a
-     * signal-0 liveness probe when posix_getppid is unavailable.
-     */
-    private static function isOrphaned(int $masterPid): bool
-    {
-        if (function_exists('posix_getppid')) {
-            return posix_getppid() !== $masterPid;
-        }
-
-        if (function_exists('posix_kill')) {
-            return !@posix_kill($masterPid, 0);
-        }
-
-        return false;
     }
 
     /**

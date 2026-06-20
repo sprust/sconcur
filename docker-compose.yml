@@ -12,16 +12,15 @@ services:
       - ./:/sconcur
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    environment:
-      # Where the HTTP-server feature tests reach the running http-server service.
-      - HTTP_SERVER_HOST=http-server
-      - HTTP_SERVER_PORT=${HTTP_SERVER_PORT}
     command: ["sh", "-c", "echo \"Starting infinite wait loop...\"; while sleep 1; do :; done"]
 
-  # Runs the HTTP server (reuses the php image build). The port is published to
-  # the host via env. Rebuild/restart it with `make http-server-restart`.
-  http-server:
-    container_name: sc-http-server
+  # Runs both sconcur master servers (HTTP and socket) under supervisor in one
+  # container (reuses the php image build). Ports are hardcoded (host 28080->8080
+  # for HTTP, 29100->9100 for socket) because the JSON master configs cannot use
+  # env vars. Rebuild/recreate it with `make servers-restart`; control each server
+  # with `make {http,socket}-server-{status,stop,reload}`.
+  servers:
+    container_name: sc-servers
     restart: unless-stopped
     build:
       context: ./docker/php
@@ -34,8 +33,9 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - ${HTTP_SERVER_DOCKER_PORT}:${HTTP_SERVER_PORT}
-    command: ["sh", "-c", "php /sconcur/bin/sconcur-server start --configPath=/sconcur/config/sconcur.http-server.config.json"]
+      - "28080:8080"
+      - "29100:9100"
+    command: ["supervisord", "-c", "/sconcur/docker/servers/config/supervisord.conf"]
 
   mongodb:
     container_name: sc-mongodb

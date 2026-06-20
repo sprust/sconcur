@@ -12,6 +12,7 @@ here.
 - [docs/load-testing.ru.md](../docs/load-testing.ru.md) — load behaviour under all I/O features at once (the `/all` route + `bench-http-load-stats`): memory/CPU results and conclusions
 - [docs/mongodb.ru.md](../docs/mongodb.ru.md) — MongoDB feature: collection operations, cursors, BSON types, concurrency, internals
 - [docs/http-server.ru.md](../docs/http-server.ru.md) — HTTP-server feature: usage, params, internals, limits
+- [docs/socket-server.ru.md](../docs/socket-server.ru.md) — TCP socket-server feature: length-prefix framing, message handler, params, internals, limits
 - [docs/worker-master.ru.md](../docs/worker-master.ru.md) — worker master: CLI start/status/stop, restart policy, logging, single-instance, orphan self-termination
 - [docs/http-client.ru.md](../docs/http-client.ru.md) — HTTP-client feature (PSR-18): usage, options, streaming, internals
 - [docs/mysql.ru.md](../docs/mysql.ru.md) — MySQL / universal SQL feature: usage, bindings, transactions, streaming, internals
@@ -98,12 +99,14 @@ non-fiber path.)
 - `Features/Sleeper/Sleeper` — async sleep
 - `Features/Mongodb/Serialization/DocumentSerializer` — encodes/decodes raw BSON via `ext-mongodb` (`MongoDB\BSON\Document`); values are native `MongoDB\BSON\*` types
 - `Features/HttpServer/` — long-lived HTTP server: `HttpServer::serve()`, `HttpServer::fromArgs()` (build from argv), `Scheduler::serve()`, DTOs (`Request`/`RequestBody`/`Response`/`StreamedResponse`/`ResponseStream`). A built-in access log line per request goes to STDOUT. See [docs/http-server.ru.md](../docs/http-server.ru.md).
+- `Features/SocketServer/` — long-lived TCP server, **push model** over length-prefix framing: `SocketServer::serve(Closure(Connection): void)`, `SocketServer::fromArgs()`, `Dto/Connection` (`read()`/`write()`/`close()` — the handler drives the connection and pushes frames at will), payloads (`ServePayload`/`RespondPayload` with ops frame/close). One coroutine per connection; an access log line per connection goes to STDOUT. Shares `Scheduler::serve()` with HttpServer. See [docs/socket-server.ru.md](../docs/socket-server.ru.md).
+- `Features/Server/ServerRuntimeSupportTrait` — shared server runtime glue used by both `HttpServer` and `SocketServer`: argv→constructor-override parsing (`fromArgs`), SIGTERM/SIGINT handlers, and the orphaned-worker check.
 - `Features/HttpClient/` — async PSR-18 HTTP client with response streaming: `HttpClient` (`ClientInterface`), `HttpClientOptions`, `Payloads/RequestPayload`, `Dto/ResponseBodyStream` (`StreamInterface`). `HttpClient::download()` writes the response body straight to a file on the Go side (`DownloadFileMode`, `Dto/DownloadResult`, `DownloadException`) — never crossing into PHP. See [docs/http-client.ru.md](../docs/http-client.ru.md).
 - `Features/Sql/` — universal SQL feature (driver-agnostic core on Go `database/sql`): `Connection` (`query`/`fetchAll`/`exec`/`begin`), `Transaction`, `Results/{RowsResult,ExecResult}`, command-envelope payloads. `Features/Mysql/Connection` and `Features/Pgsql/Connection` are thin driver facades supplying `MethodEnum::Mysql` / `MethodEnum::Pgsql`. See [docs/mysql.ru.md](../docs/mysql.ru.md) and [docs/pgsql.ru.md](../docs/pgsql.ru.md).
 - `Worker/` — worker master (a process supervisor; does NOT load the extension): `WorkerMaster` (`run()`: spawn/supervise/restart/graceful), `MasterConfig` (loads the `--configPath` JSON, expands the `server` block into worker argv), `MasterCli` (`start`/`status`/`stop` behind `bin/sconcur-server`), `WorkerProcess` (proc_open + output capture), `Cpu`, `MasterLock` (flock single-instance), `MasterState`/`MasterStateFile`, `MasterLogger` (daily rotation), `RestartPolicy`. The master injects its pid as `--masterPid`, which `HttpServer::fromArgs()` wires into the orphan check. See [docs/worker-master.ru.md](../docs/worker-master.ru.md).
 
 **Go extension** (`ext/`):
-- `main.go` — cgo exports (`push`, `wait`, `next`, `waitAny`, `waitAnyTimeout`, `tasksCount`, `stopFlow`, `httpStopAccepting`, `destroy`, `version`)
+- `main.go` — cgo exports (`push`, `wait`, `next`, `waitAny`, `waitAnyTimeout`, `tasksCount`, `stopFlow`, `httpStopAccepting`, `socketStopAccepting`, `destroy`, `version`)
 - `internal/handler/` — singleton orchestrator routing messages to flows
 - `internal/logger/` — fire-and-forget async log sink: a background goroutine writes pre-formatted lines to stdout (buffered, timer-flushed, drops on overflow), so the loop never blocks on log I/O. The HttpServer access log feeds it directly from the Go response goroutine (no PHP↔Go crossing per request)
 - `internal/flows/` — `Flows` manages concurrent `Flow` instances; each `Flow` holds tasks and a result channel
@@ -113,11 +116,12 @@ non-fiber path.)
 - `internal/features/mongodb/` — MongoDB operations via Go driver, with aggregation cursor state management
 - `internal/features/httpserver/` — `net/http.Server` as an http.Handler streaming each request to PHP; response write-commands, request-body streaming, concurrency limit, timeouts, graceful shutdown, SO_REUSEPORT
 - `internal/features/sql/` — driver-agnostic SQL on `database/sql`: one handler dispatches Query/Exec/Begin/Commit/Rollback by the envelope's command; `pools.go` is the `*sql.DB` pool registry (mirrors MongoDB clients), `rows_state.go` streams a SELECT cursor, `transactions.go` pins a `*sql.Tx` to a held begin task (auto-rollback on context cancel). The driver is selected per `Method`: `GetMysql()` registers go-sql-driver/mysql, `GetPgsql()` registers jackc/pgx (error label "pgsql").
+- `internal/features/socketserver/` — raw TCP listener as a streaming state: each accepted connection is one batch streamed to PHP (`ConnectionEvent`); `message_state.go` streams inbound length-prefixed frames (one per `next()` → `Connection::read()`), `server.go` runs the per-connection write loop applying frame/close commands with write-backpressure, `frame.go` is the length-prefix codec, `listen.go` is TCP + `SO_REUSEPORT`. `StopAccepting` closes the listener and half-closes in-flight connections (force-closing push-only ones after a grace) for graceful drain. Push model: no per-message timeout. Two methods, one feature (like httpserver)
 - `internal/features/httpclient/` — `net/http.Client` sending one request as a streaming state: first result carries response metadata + inline first chunk, subsequent results are raw body chunks; reusable transports (keep-alive pool), per-request deadline; optional streamed request body (upload) via an `io.Pipe` fed by `UploadChunk`/`UploadEnd` commands. Sub-operations are selected by a command in the payload envelope (`HttpClientCommand`), like MongoDB — not by separate `MethodEnum` values. `download.go` is the sink path: when the request carries `SinkPath`, the response body is `io.Copy`'d straight into a file (mode→`os.O_*` via `downloadModeToFlags`) and only status+headers return to PHP — the body never crosses the boundary
 - `internal/helpers/` — small shared helpers: `CalcExecutionMs`, and `ReadChunk` (fixed-granularity body chunk reader used by both the HTTP server and client)
 
 **Key enums:**
-- `MethodEnum`: Sleep (1), MongodbCollection (2), HttpServe (3), HttpRespond (4), HttpClient (5), Mysql (6), Pgsql (7)
+- `MethodEnum`: Sleep (1), MongodbCollection (2), HttpServe (3), HttpRespond (4), HttpClient (5), Mysql (6), Pgsql (7), SocketServe (8), SocketRespond (9)
 - `SqlCommandEnum` (sub-operations under a SQL method, selected via the envelope's `cm`): Query (1), Exec (2), Begin (3), Commit (4), Rollback (5)
 - `HttpClientCommand` (sub-operations under HttpClient): Request (1), UploadChunk (2), UploadEnd (3) — selected via the payload envelope's `cm`, like MongoDB's `CommandEnum`
 - `CommandEnum`: InsertOne (1), BulkWrite (2), Aggregate (3), InsertMany (4), CountDocuments (5), UpdateOne (6), FindOne (7), CreateIndex (8), DeleteOne (9), DeleteMany (10), UpdateMany (11), Drop (12), DropIndex (13)
@@ -140,6 +144,7 @@ lifecycle-sensitive tests extend `BaseTestCase`.
 - PHPStan level 6
 - `readonly` classes for DTOs
 - Classes use PascalCase; methods and properties use camelCase; namespaces mirror directory paths (e.g. `SConcur\Features\Sleeper\Sleeper`)
+- All traits must carry the `*Trait` postfix (e.g. `ServerRuntimeSupportTrait`), so a `use` line is recognizable as a trait at a glance
 - Namespace: `SConcur\` → `src/`, test namespaces: `SConcur\Tests\Feature\`, `SConcur\Tests\Impl\`
 - Code must be maximally typed (type hints for parameters, return types, properties)
 - Never abbreviate variable names — use full, descriptive names
@@ -194,7 +199,7 @@ change. **Never bump the major version without the maintainer's approval**; bump
 the minor only when warranted, otherwise the patch. **Bump the version at most
 once per git branch** — the first protocol change on a branch bumps it, later
 commits on the same branch reuse that version (do not move it again). Current:
-`0.2.1`.
+`0.2.4`.
 
 ## Exceptions
 

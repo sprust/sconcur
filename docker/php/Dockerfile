@@ -17,6 +17,7 @@ RUN apt-get update && \
       zip \
       unzip \
       libssl-dev \
+      supervisor \
       wget && \
     rm -rf /var/lib/apt/lists/*
 

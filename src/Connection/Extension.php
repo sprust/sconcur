@@ -19,6 +19,7 @@ use function SConcur\Extension\destroy;
 use function SConcur\Extension\httpStopAccepting;
 use function SConcur\Extension\next;
 use function SConcur\Extension\push;
+use function SConcur\Extension\socketStopAccepting;
 use function SConcur\Extension\stopFlow;
 use function SConcur\Extension\tasksCount;
 use function SConcur\Extension\version;
@@ -33,7 +34,7 @@ class Extension
      * whenever the PHP <-> Go protocol changes (payload keys, exported functions) so
      * an outdated .so is rejected instead of silently misbehaving.
      */
-    private const string REQUIRED_EXTENSION_VERSION = '0.2.3';
+    private const string REQUIRED_EXTENSION_VERSION = '0.2.4';
 
     /**
      * Result frame layout (Go -> PHP), see main.go buildResultFrame. The envelope is
@@ -161,6 +162,16 @@ class Extension
     public function httpStopAccepting(string $flowKey): void
     {
         httpStopAccepting($flowKey);
+    }
+
+    /**
+     * Stops the socket server flow's listener from accepting new connections and
+     * half-closes its in-flight connections, so a SO_REUSEPORT sibling takes over
+     * new connections while this process drains on graceful shutdown.
+     */
+    public function socketStopAccepting(string $flowKey): void
+    {
+        socketStopAccepting($flowKey);
     }
 
     public function destroy(): void

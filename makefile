@@ -4,6 +4,12 @@ DOCKER_COMPOSE = docker compose
 PHP_CLI = $(DOCKER_COMPOSE) exec php
 PHP_EXT = $(PHP_CLI) php -d extension=./ext/build/sconcur.so
 
+# Master-server control inside the `servers` container (both masters run there
+# under supervisor). Each command targets one master by its JSON config.
+SERVERS_CLI = $(DOCKER_COMPOSE) exec servers php /sconcur/bin/sconcur-server
+HTTP_SERVER_CONFIG = /sconcur/config/sconcur.http-server.config.json
+SOCKET_SERVER_CONFIG = /sconcur/config/sconcur.socket-server.config.json
+
 env-copy:
 	cp -i .env.example .env
 
@@ -30,9 +36,29 @@ restart:
 	make stop
 	make up
 
-http-server-restart:
+# Rebuilds the extension and recreates the `servers` container (both master
+# servers under supervisor).
+servers-restart:
 	make ext-build
-	$(DOCKER_COMPOSE) up -d --build --force-recreate http-server
+	$(DOCKER_COMPOSE) up -d --build --force-recreate servers
+
+http-server-status:
+	$(SERVERS_CLI) status --configPath=$(HTTP_SERVER_CONFIG)
+
+http-server-stop:
+	$(SERVERS_CLI) stop --configPath=$(HTTP_SERVER_CONFIG)
+
+http-server-reload:
+	$(SERVERS_CLI) reload --configPath=$(HTTP_SERVER_CONFIG)
+
+socket-server-status:
+	$(SERVERS_CLI) status --configPath=$(SOCKET_SERVER_CONFIG)
+
+socket-server-stop:
+	$(SERVERS_CLI) stop --configPath=$(SOCKET_SERVER_CONFIG)
+
+socket-server-reload:
+	$(SERVERS_CLI) reload --configPath=$(SOCKET_SERVER_CONFIG)
 
 bash-php:
 	$(DOCKER_COMPOSE) exec php bash
@@ -111,6 +137,9 @@ bench-all:
 	make bench-http-client-download
 	make bench-http-reuseport-io
 	make bench-http-reuseport-cpu
+	make bench-socket-throughput
+	make bench-socket-reuseport-io
+	make bench-socket-reuseport-cpu
 
 bench-http-client-download:
 	$(PHP_EXT) tests/benchmarks/http-client-download.php ${c}
@@ -204,6 +233,15 @@ bench-http-reuseport-io:
 
 bench-http-reuseport-cpu:
 	$(PHP_CLI) php tests/benchmarks/http-reuseport-cpu.php
+
+bench-socket-throughput:
+	$(PHP_CLI) php tests/benchmarks/socket-throughput.php
+
+bench-socket-reuseport-io:
+	$(PHP_CLI) php tests/benchmarks/socket-reuseport-io.php
+
+bench-socket-reuseport-cpu:
+	$(PHP_CLI) php tests/benchmarks/socket-reuseport-cpu.php
 
 # Runs on the HOST (needs wrk): one server per core with SO_REUSEPORT inside the
 # php container, wrk pinned to separate cores, hitting the container IP (no NAT).

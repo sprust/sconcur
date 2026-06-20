@@ -10,4 +10,6 @@ const (
 	MethodHttpClient  Method = 5
 	MethodMysql       Method = 6
 	MethodPgsql       Method = 7
+	MethodSocketServe   Method = 8
+	MethodSocketRespond Method = 9
 )
