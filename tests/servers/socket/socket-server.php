@@ -17,6 +17,7 @@ use Throwable;
  *   "pid"             -> push this process pid (used by the worker-master tests)
  *   "upper:<text>"    -> push uppercased <text>
  *   "msleep:<ms>"     -> async sleep <ms>, then push "slept" (concurrency demo)
+ *   "cpu:<n>"         -> a CPU-bound sha256 loop of <n> rounds, then push the digest (bench)
  *   "push:<n>"        -> push <n> frames "p0".."p(n-1)" for one inbound frame (server push)
  *   "stream:<n>"      -> stream <n> frames "s0".."s(n-1)" 60ms apart (async between chunks)
  *   "noreply"         -> read but push nothing, connection stays open
@@ -100,6 +101,22 @@ function handleMessage(Connection $connection, string $data): void
         Sleeper::usleep(microseconds: $milliseconds * 1000);
 
         $connection->write('slept');
+
+        return;
+    }
+
+    if (str_starts_with($data, 'cpu:')) {
+        // CPU-bound sha256 loop that does NOT yield — used by the CPU benchmark to
+        // show SO_REUSEPORT spreading compute across processes/cores.
+        $iterations = (int) substr($data, strlen('cpu:'));
+
+        $value = '';
+
+        for ($index = 0; $index < $iterations; $index++) {
+            $value = hash('sha256', $value . $index);
+        }
+
+        $connection->write($value);
 
         return;
     }
