@@ -140,6 +140,7 @@ lifecycle-sensitive tests extend `BaseTestCase`.
 - PHPStan level 6
 - `readonly` classes for DTOs
 - Classes use PascalCase; methods and properties use camelCase; namespaces mirror directory paths (e.g. `SConcur\Features\Sleeper\Sleeper`)
+- All traits must carry the `*Trait` postfix (e.g. `ServerRuntimeSupportTrait`), so a `use` line is recognizable as a trait at a glance
 - Namespace: `SConcur\` → `src/`, test namespaces: `SConcur\Tests\Feature\`, `SConcur\Tests\Impl\`
 - Code must be maximally typed (type hints for parameters, return types, properties)
 - Never abbreviate variable names — use full, descriptive names
