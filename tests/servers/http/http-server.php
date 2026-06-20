@@ -5,8 +5,6 @@ declare(strict_types=1);
 require dirname(__DIR__, 3) . '/vendor/autoload.php';
 
 use Dotenv\Dotenv;
-use Nyholm\Psr7\Factory\Psr17Factory;
-use SConcur\Features\HttpClient\HttpClient;
 use SConcur\Features\HttpServer\Dto\Request;
 use SConcur\Features\HttpServer\Dto\Response;
 use SConcur\Features\HttpServer\Dto\ResponseStream;
@@ -36,7 +34,7 @@ use SConcur\WaitGroup;
  *   GET  /msleep/{ms}       -> sleeps {ms} (async), then 200 "slept" (concurrency demo)
  *   GET  /native-msleep/{ms} -> blocks the thread {ms} natively (handler-timeout test)
  *   GET  /cpu/{n}           -> runs a CPU-bound sha256 loop of {n} rounds (bench)
- *   GET  /all               -> fans out across EVERY I/O feature concurrently (load test)
+ *   GET  /all               -> fans out across the backend I/O features concurrently (load test)
  *   GET  /throw             -> handler throws -> framework answers 500
  *   GET  /status/{code}     -> responds with the given status code
  *   (anything else)         -> 404 "not found"
@@ -153,16 +151,17 @@ function nativeMsleepRoute(string $path): Response
 }
 
 /**
- * Load-test route: fans out across EVERY async I/O feature concurrently in one
- * request (a nested WaitGroup) — Sleeper, MongoDB, MySQL, PostgreSQL and the
- * HTTP client (which calls this server's own "/"). Used to watch memory/CPU under
- * load with the full feature set exercised at once. Each feature is isolated so a
- * transient backend hiccup degrades just that feature (visible per-feature error
- * rate) instead of failing the whole request. Returns a JSON status map.
+ * Load-test route: fans out across the backend I/O features concurrently in one
+ * request (a nested WaitGroup) — Sleeper, MongoDB, MySQL, PostgreSQL. Used to watch
+ * memory/CPU under load. The HTTP-client feature is intentionally NOT here: hitting
+ * this server's own "/" would make every /all silently serve a second request and
+ * skew the rps number — it is covered by its own benchmarks instead. Each feature is
+ * isolated so a transient backend hiccup degrades just that feature (visible
+ * per-feature error rate) instead of failing the whole request. Returns a JSON map.
  */
 function allFeaturesRoute(): Response
 {
-    [$mongo, $mysql, $pgsql, $httpClient, $factory, $selfUrl] = allFeaturesContext();
+    [$mongo, $mysql, $pgsql] = allFeaturesContext();
 
     $status = [];
 
@@ -193,12 +192,6 @@ function allFeaturesRoute(): Response
         });
     });
 
-    $waitGroup->add(static function () use (&$status, $httpClient, $factory, $selfUrl): void {
-        $status['httpClient'] = allFeatureStatus(static function () use ($httpClient, $factory, $selfUrl): void {
-            $httpClient->sendRequest($factory->createRequest('GET', $selfUrl));
-        });
-    });
-
     $waitGroup->waitResults();
 
     return new Response(
@@ -208,16 +201,16 @@ function allFeaturesRoute(): Response
 }
 
 /**
- * Lazily builds and caches the per-worker connections used by /all on its first
+ * Lazily builds and caches the per-worker DB connections used by /all on its first
  * hit (so the other demo routes never pay for them and never require the backends).
- * The Go side pools the real DB/HTTP connections by URI/DSN, so reusing these
- * objects across requests is cheap.
+ * The Go side pools the real connections by URI/DSN, so reusing these objects across
+ * requests is cheap.
  *
- * @return array{0: \SConcur\Features\Mongodb\Connection\Collection, 1: MysqlConnection, 2: PgsqlConnection, 3: HttpClient, 4: Psr17Factory, 5: string}
+ * @return array{0: \SConcur\Features\Mongodb\Connection\Collection, 1: MysqlConnection, 2: PgsqlConnection}
  */
 function allFeaturesContext(): array
 {
-    /** @var array{0: \SConcur\Features\Mongodb\Connection\Collection, 1: MysqlConnection, 2: PgsqlConnection, 3: HttpClient, 4: Psr17Factory, 5: string}|null $context */
+    /** @var array{0: \SConcur\Features\Mongodb\Connection\Collection, 1: MysqlConnection, 2: PgsqlConnection}|null $context */
     static $context = null;
 
     if ($context !== null) {
@@ -225,8 +218,6 @@ function allFeaturesContext(): array
     }
 
     Dotenv::createImmutable(dirname(__DIR__, 3))->safeLoad();
-
-    $factory = new Psr17Factory();
 
     $context = [
         new MongoClient(
@@ -260,9 +251,6 @@ function allFeaturesContext(): array
                 $_ENV['POSTGRES_DB'],
             ),
         ),
-        new HttpClient(responseFactory: $factory),
-        $factory,
-        allFeaturesSelfUrl(),
     ];
 
     return $context;
@@ -282,23 +270,6 @@ function allFeatureStatus(callable $call): string
     } catch (Throwable $exception) {
         return 'err: ' . $exception->getMessage();
     }
-}
-
-/**
- * The URL the HTTP-client feature hits for /all: this very server's own "/", derived
- * from the --address launch flag (0.0.0.0 → 127.0.0.1).
- */
-function allFeaturesSelfUrl(): string
-{
-    $address = '127.0.0.1:8080';
-
-    foreach ($_SERVER['argv'] as $argument) {
-        if (str_starts_with($argument, '--address=')) {
-            $address = substr($argument, strlen('--address='));
-        }
-    }
-
-    return 'http://' . str_replace('0.0.0.0', '127.0.0.1', $address) . '/';
 }
 
 function truncatedRoute(): Response
