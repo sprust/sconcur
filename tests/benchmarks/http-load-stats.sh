@@ -28,11 +28,23 @@ cd "$(dirname "$0")/../.."
 DOCKER_COMPOSE=${DOCKER_COMPOSE:-docker compose}
 PORT=${PORT:-18080}
 ROUTE=${ROUTE:-/all}
-DURATION=${DURATION:-20}
-CONNECTIONS=${CONNECTIONS:-256}
+# MODE=soak: a long, steady-load run that prints the worker-RSS trend over time and a
+# least-squares slope, to surface a slow memory leak the short run cannot. It only
+# changes the DURATION/SAMPLE_INTERVAL/CONNECTIONS defaults (still overridable).
+MODE=${MODE:-}
+
+if [ "$MODE" = "soak" ]; then
+    DURATION=${DURATION:-600}
+    CONNECTIONS=${CONNECTIONS:-128}
+    SAMPLE_INTERVAL=${SAMPLE_INTERVAL:-15}
+else
+    DURATION=${DURATION:-20}
+    CONNECTIONS=${CONNECTIONS:-256}
+    SAMPLE_INTERVAL=${SAMPLE_INTERVAL:-2}
+fi
+
 WRK_THREADS=${WRK_THREADS:-4}
 MAXCONCURRENCY=${MAXCONCURRENCY:-0}
-SAMPLE_INTERVAL=${SAMPLE_INTERVAL:-2}
 
 EXTENSION=/sconcur/ext/build/sconcur.so
 SCRIPT=/sconcur/tests/servers/http/http-server.php
@@ -75,7 +87,7 @@ stop_servers() {
 trap stop_servers EXIT
 
 echo "=================================================================="
-echo " All-features load + resource benchmark"
+echo " All-features load + resource benchmark${MODE:+  [$MODE]}"
 echo "   host cores      : $CORES"
 echo "   server procs    : $SERVERS  (pinned to cores 0-$(( SERVERS - 1 )), reusePort)"
 echo "   wrk threads     : $WRK_THREADS (pinned to cores $WRK_CPULIST)"
@@ -120,19 +132,23 @@ RSS=$(mktemp)
 trap 'rm -f "$SAMPLES" "$RSS"; stop_servers' EXIT
 
 # Background sampler: container CPU%/MEM (one docker stats call covers all) + summed
-# worker RSS, until the wrk run signals done via the marker file.
+# worker RSS (recorded as "elapsed_seconds total_kb" for the soak trend), until the
+# wrk run signals done via the marker file.
 MARKER=$(mktemp)
+SAMPLE_START=$(date +%s)
 (
     while [ -f "$MARKER" ]; do
         docker stats --no-stream --format '{{.ID}} {{.CPUPerc}} {{.MemUsage}}' $WATCH_CIDS 2>/dev/null >> "$SAMPLES" || true
-        $DOCKER_COMPOSE exec -T php sh -c '
+        elapsed=$(( $(date +%s) - SAMPLE_START ))
+        total_kb=$($DOCKER_COMPOSE exec -T php sh -c '
             total=0
             while read -r pid; do
                 kb=$(awk "/^VmRSS:/{print \$2}" "/proc/$pid/status" 2>/dev/null)
                 [ -n "$kb" ] && total=$(( total + kb ))
             done < "'"$PIDFILE"'"
             echo "$total"
-        ' 2>/dev/null >> "$RSS" || true
+        ' 2>/dev/null | tr -d "[:space:]") || true
+        [ -n "$total_kb" ] && echo "$elapsed $total_kb" >> "$RSS"
         sleep "$SAMPLE_INTERVAL"
     done
 ) &
@@ -171,13 +187,33 @@ echo
 echo "------------------------------------------------------------------"
 echo " Worker RSS (sum across $SERVERS processes) — leak check"
 echo "------------------------------------------------------------------"
-awk '
-    { n++; v[n] = $1; if ($1 > peak) peak = $1 }
+# RSS samples are "elapsed_seconds total_kb". Report first/peak/last/drift plus a
+# least-squares slope (MiB/min) over the run; in soak mode also dump the full trend.
+[ "$MODE" = "soak" ] && TREND=1 || TREND=0
+awk -v trend="$TREND" '
+    {
+        n++; te[n] = $1 + 0; mib[n] = ($2 + 0) / 1024;
+        if (mib[n] > peak) peak = mib[n];
+        st += te[n]; sy += mib[n]; sty += te[n] * mib[n]; stt += te[n] * te[n];
+    }
     END {
         if (n == 0) { print "  (no samples)"; exit }
-        printf "  first: %8.1f MiB\n", v[1]/1024;
-        printf "  peak : %8.1f MiB\n", peak/1024;
-        printf "  last : %8.1f MiB\n", v[n]/1024;
-        printf "  drift: %+.1f MiB (last - first)\n", (v[n]-v[1])/1024;
+        if (trend == "1") {
+            print "  trend (elapsed -> RSS):";
+            for (i = 1; i <= n; i++) printf "    %6ds  %8.1f MiB\n", te[i], mib[i];
+            print "";
+        }
+        printf "  first: %8.1f MiB\n", mib[1];
+        printf "  peak : %8.1f MiB\n", peak;
+        printf "  last : %8.1f MiB\n", mib[n];
+        printf "  drift: %+.1f MiB (last - first)\n", mib[n] - mib[1];
+        denom = n * stt - st * st;
+        if (n >= 2 && denom != 0) {
+            slope = (n * sty - st * sy) / denom * 60;  # MiB per minute
+            verdict = (slope > 0.5) ? "рост — возможна утечка" \
+                    : (slope < -0.5) ? "снижается (GC/возврат памяти)" \
+                    : "стабильно";
+            printf "  slope: %+.2f MiB/min  ->  %s\n", slope, verdict;
+        }
     }
 ' "$RSS"
