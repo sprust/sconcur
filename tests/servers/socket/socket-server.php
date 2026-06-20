@@ -18,6 +18,7 @@ use Throwable;
  *   "upper:<text>"    -> push uppercased <text>
  *   "msleep:<ms>"     -> async sleep <ms>, then push "slept" (concurrency demo)
  *   "push:<n>"        -> push <n> frames "p0".."p(n-1)" for one inbound frame (server push)
+ *   "stream:<n>"      -> stream <n> frames "s0".."s(n-1)" 60ms apart (async between chunks)
  *   "noreply"         -> read but push nothing, connection stays open
  *   "closeafter:<t>"  -> push <t>, then close the connection
  *   "close"           -> close the connection (no push)
@@ -108,6 +109,22 @@ function handleMessage(Connection $connection, string $data): void
 
         for ($index = 0; $index < $count; $index++) {
             $connection->write('p' . $index);
+        }
+
+        return;
+    }
+
+    if (str_starts_with($data, 'stream:')) {
+        $count = (int) substr($data, strlen('stream:'));
+
+        for ($index = 0; $index < $count; $index++) {
+            // Async work between chunks: the first frame flushes immediately, then
+            // the handler cooperatively suspends, so other connections keep running.
+            if ($index > 0) {
+                Sleeper::usleep(microseconds: 60_000);
+            }
+
+            $connection->write('s' . $index);
         }
 
         return;
