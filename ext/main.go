@@ -205,16 +205,6 @@ func httpStopAccepting(fk *C.char) {
 	httpserver_feature.StopAccepting(C.GoString(fk))
 }
 
-// logLine accepts a pre-formatted log line from PHP and hands it to the async logger,
-// which writes it to stdout from a background goroutine. Fire-and-forget: it does not
-// go through the flow/task machinery and returns immediately, so PHP's single-threaded
-// loop never blocks on log I/O.
-//
-//export logLine
-func logLine(text *C.char) {
-	logger.Write(C.GoString(text))
-}
-
 //export destroy
 func destroy() {
 	// Flush any buffered log lines before tearing the runtime down.

@@ -1,6 +1,6 @@
-// Package logger is a fire-and-forget asynchronous log sink for lines pushed from
-// PHP. PHP composes a log line (e.g. an HTTP access-log line) and hands it over via
-// the logLine cgo export; the actual write happens here, off the PHP thread, in a
+// Package logger is a fire-and-forget asynchronous log sink. Callers compose a log
+// line (e.g. the HttpServer access-log line emitted from the Go response goroutine)
+// and hand it to Write; the actual write happens here, off the caller's thread, in a
 // background goroutine. This keeps PHP's single-threaded cooperative loop from ever
 // blocking on log I/O (no synchronous fwrite/fflush per request).
 package logger

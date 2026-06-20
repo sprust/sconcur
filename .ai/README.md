@@ -101,9 +101,9 @@ non-fiber path.)
 - `Worker/` — worker master (a process supervisor; does NOT load the extension): `WorkerMaster` (`run()`: spawn/supervise/restart/graceful), `MasterConfig` (loads the `--configPath` JSON, expands the `server` block into worker argv), `MasterCli` (`start`/`status`/`stop` behind `bin/sconcur-http-server`), `WorkerProcess` (proc_open + output capture), `Cpu`, `MasterLock` (flock single-instance), `MasterState`/`MasterStateFile`, `MasterLogger` (daily rotation), `RestartPolicy`. The master injects its pid as `--masterPid`, which `HttpServer::fromArgs()` wires into the orphan check. See [docs/worker-master.ru.md](../docs/worker-master.ru.md).
 
 **Go extension** (`ext/`):
-- `main.go` — cgo exports (`push`, `wait`, `next`, `waitAny`, `waitAnyTimeout`, `tasksCount`, `stopFlow`, `httpStopAccepting`, `logLine`, `destroy`, `version`)
+- `main.go` — cgo exports (`push`, `wait`, `next`, `waitAny`, `waitAnyTimeout`, `tasksCount`, `stopFlow`, `httpStopAccepting`, `destroy`, `version`)
 - `internal/handler/` — singleton orchestrator routing messages to flows
-- `internal/logger/` — fire-and-forget async log sink: a background goroutine writes pre-formatted lines to stdout (buffered, timer-flushed, drops on overflow), so the loop never blocks on log I/O. The HttpServer access log feeds it directly from the Go response goroutine (no PHP↔Go crossing per request); PHP can also push lines via the `logLine` cgo export
+- `internal/logger/` — fire-and-forget async log sink: a background goroutine writes pre-formatted lines to stdout (buffered, timer-flushed, drops on overflow), so the loop never blocks on log I/O. The HttpServer access log feeds it directly from the Go response goroutine (no PHP↔Go crossing per request)
 - `internal/flows/` — `Flows` manages concurrent `Flow` instances; each `Flow` holds tasks and a result channel
 - `internal/tasks/` — individual task unit with context cancellation
 - `internal/states/` — registry of streaming states (cursor batches, HTTP requests, request-body chunks) driven by `next()`

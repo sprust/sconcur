@@ -17,7 +17,6 @@ use SConcur\Transport\PayloadInterface;
 use Throwable;
 use function SConcur\Extension\destroy;
 use function SConcur\Extension\httpStopAccepting;
-use function SConcur\Extension\logLine;
 use function SConcur\Extension\next;
 use function SConcur\Extension\push;
 use function SConcur\Extension\stopFlow;
@@ -162,17 +161,6 @@ class Extension
     public function httpStopAccepting(string $flowKey): void
     {
         httpStopAccepting($flowKey);
-    }
-
-    /**
-     * Pushes a pre-formatted log line (it should carry its own trailing newline) to
-     * the Go side, which writes it to stdout from a background goroutine. Fire-and-
-     * forget: it does not go through the flow/result machinery and returns
-     * immediately, so the single-threaded loop never blocks on log I/O.
-     */
-    public function log(string $line): void
-    {
-        logLine($line);
     }
 
     public function destroy(): void
