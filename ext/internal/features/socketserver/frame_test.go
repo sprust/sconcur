@@ -49,6 +49,19 @@ func TestReadFrameRejectsOversizeLength(t *testing.T) {
 	}
 }
 
+func TestReadFrameRejectsHighBitLengthWithoutPanicking(t *testing.T) {
+	// A length prefix with the high bit set (0x80000000) must be rejected by the
+	// size check, not become a negative int on a 32-bit build and panic make().
+	header := make([]byte, frameLengthSize)
+	binary.BigEndian.PutUint32(header, 0x80000000)
+
+	_, err := readFrame(bytes.NewReader(header), 16)
+
+	if !errors.Is(err, errFrameTooLarge) {
+		t.Fatalf("expected errFrameTooLarge for an oversize high-bit length, got %v", err)
+	}
+}
+
 func TestReadFrameCleanEofOnFrameBoundary(t *testing.T) {
 	_, err := readFrame(bytes.NewReader(nil), 0)
 

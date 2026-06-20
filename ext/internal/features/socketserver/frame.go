@@ -26,9 +26,12 @@ func readFrame(reader io.Reader, maxBytes int) ([]byte, error) {
 		return nil, err
 	}
 
-	length := int(binary.BigEndian.Uint32(header[:]))
+	// Keep the length unsigned and compare in the uint domain: on a 32-bit build a
+	// length with the high bit set would otherwise become a negative int, slip past
+	// the size check, and panic make() — a remote crash from a crafted prefix.
+	length := binary.BigEndian.Uint32(header[:])
 
-	if maxBytes > 0 && length > maxBytes {
+	if maxBytes > 0 && uint64(length) > uint64(maxBytes) {
 		return nil, errFrameTooLarge
 	}
 
