@@ -22,7 +22,6 @@
         "maxMessageBytes": 1048576,
         "readTimeoutMs": 0,
         "writeTimeoutMs": 30000,
-        "handlerTimeoutMs": 60000,
         "shutdownTimeoutMs": 5000
     }
 }
