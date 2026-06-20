@@ -17,7 +17,9 @@ use Throwable;
  * The consumer writes their worker script, points config.workerScript at it, and puts
  * the server params under config.server.
  *
- * Exit codes: 0 ok; 1 error; 2 usage; 3 not-running (for status/stop and guards).
+ * Exit codes: 0 ok; 1 error (start failed at runtime); 2 usage (missing/unknown
+ * command or invalid config); 3 not-running (only `status` when no master is running).
+ * `stop` is idempotent: it returns 0 whether or not a master was running.
  */
 class MasterCli
 {
@@ -51,7 +53,15 @@ class MasterCli
      */
     public function run(array $argv): int
     {
-        $command    = $argv[1] ?? '';
+        $command = $argv[1] ?? '';
+
+        // Dispatch an empty/unknown command to the usage text before touching the
+        // config, so `sconcur-server` with no args prints the command list instead of
+        // a "--configPath is required" error.
+        if (!in_array($command, ['start', 'status', 'stop'], true)) {
+            return $this->usage();
+        }
+
         $configPath = $this->configPath(array_slice($argv, 2));
 
         $config = $this->loadConfig($configPath);
@@ -64,7 +74,6 @@ class MasterCli
             'start'  => $this->start($config),
             'status' => $this->status($config),
             'stop'   => $this->stop($config),
-            default  => $this->usage(),
         };
     }
 

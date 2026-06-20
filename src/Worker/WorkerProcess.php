@@ -16,6 +16,13 @@ use SConcur\Exceptions\Worker\WorkerSpawnException;
  */
 class WorkerProcess
 {
+    /**
+     * Upper bound on a buffered partial line (no newline yet). A worker spewing a very
+     * long line without a newline must not grow the master's memory without limit;
+     * once the buffer crosses this, it is flushed as a forcibly split line.
+     */
+    protected const int MAX_LINE_BYTES = 1_048_576;
+
     /** @var resource */
     protected mixed $process;
 
@@ -166,6 +173,9 @@ class WorkerProcess
         $this->extractLines($this->stdoutBuffer, isError: false, lines: $lines);
         $this->extractLines($this->stderrBuffer, isError: true, lines: $lines);
 
+        $this->capBuffer($this->stdoutBuffer, isError: false, lines: $lines);
+        $this->capBuffer($this->stderrBuffer, isError: true, lines: $lines);
+
         return $lines;
     }
 
@@ -261,6 +271,22 @@ class WorkerProcess
         }
 
         return $data;
+    }
+
+    /**
+     * Bounds the partial-line buffer: while a still-unterminated line is longer than
+     * MAX_LINE_BYTES, peel off MAX_LINE_BYTES-sized pieces as forcibly split lines, so
+     * a worker that never emits a newline cannot grow the master's memory (or a single
+     * log line) without limit.
+     *
+     * @param list<WorkerOutputLine> $lines
+     */
+    protected function capBuffer(string &$buffer, bool $isError, array &$lines): void
+    {
+        while (strlen($buffer) > self::MAX_LINE_BYTES) {
+            $lines[] = new WorkerOutputLine(isError: $isError, line: substr($buffer, 0, self::MAX_LINE_BYTES));
+            $buffer  = substr($buffer, self::MAX_LINE_BYTES);
+        }
     }
 
     /**

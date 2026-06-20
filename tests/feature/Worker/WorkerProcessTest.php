@@ -112,6 +112,55 @@ class WorkerProcessTest extends TestCase
         }
     }
 
+    public function testCapsAnOverlongLineWithoutNewline(): void
+    {
+        // Emit 2 MiB with no newline, then a real newline + "end". The master must not
+        // buffer the whole 2 MiB as one growing line: it force-splits past its cap. We
+        // drain continuously (the OS pipe is ~64 KiB, so the writer blocks until read).
+        $totalBytes = 2 * 1024 * 1024;
+
+        // The big write blocks until the master drains it (pipe is full), so the cap
+        // fires before the newline arrives; the short pause keeps the newline strictly
+        // after that, making the split deterministic.
+        $process = $this->spawn(
+            sprintf('fwrite(STDOUT, str_repeat("x", %d)); fflush(STDOUT); usleep(100000); fwrite(STDOUT, "\nend\n");', $totalBytes),
+        );
+
+        try {
+            $stdoutLines = [];
+
+            $deadline = microtime(true) + 5.0;
+
+            while (microtime(true) < $deadline) {
+                foreach ($process->drainOutput() as $line) {
+                    if (!$line->isError) {
+                        $stdoutLines[] = $line->line;
+                    }
+                }
+
+                if (!$process->isRunning()) {
+                    break;
+                }
+
+                usleep(5_000);
+            }
+
+            foreach ($process->drainFinalOutput() as $line) {
+                if (!$line->isError) {
+                    $stdoutLines[] = $line->line;
+                }
+            }
+
+            $xLines = array_values(array_filter($stdoutLines, static fn(string $line): bool => trim($line, 'x') === ''));
+
+            self::assertGreaterThanOrEqual(2, count($xLines), 'the overlong line must be force-split into >= 2 pieces');
+            self::assertSame($totalBytes, array_sum(array_map('strlen', $xLines)), 'every x byte is preserved across the split');
+            self::assertContains('end', $stdoutLines, 'the trailing real line still surfaces');
+        } finally {
+            $process->close();
+        }
+    }
+
     private function spawn(string $code): WorkerProcess
     {
         return new WorkerProcess(

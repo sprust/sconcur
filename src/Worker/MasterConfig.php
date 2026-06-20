@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace SConcur\Worker;
 
+use ReflectionClass;
+use ReflectionParameter;
 use SConcur\Exceptions\Worker\InvalidConfigException;
 
 /**
@@ -82,11 +84,23 @@ readonly class MasterConfig
      */
     public static function fromArray(array $data): self
     {
+        self::assertKnownKeys($data);
+
         $workerScript = (string) ($data['workerScript'] ?? '');
 
         if ($workerScript === '') {
             throw new InvalidConfigException(
                 message: 'config: "workerScript" is required',
+            );
+        }
+
+        $name = (string) ($data['name'] ?? 'sconcur-server');
+
+        // The name is a path component (lock/state/log file prefix) and a glob pattern
+        // for log pruning, so restrict it to a safe charset — no "/", no glob meta.
+        if (preg_match('/^[A-Za-z0-9._-]+$/', $name) !== 1) {
+            throw new InvalidConfigException(
+                message: 'config: "name" may contain only letters, digits, ".", "_" and "-"',
             );
         }
 
@@ -114,17 +128,17 @@ readonly class MasterConfig
             workerScript: $workerScript,
             runtimeDir: (string) ($data['runtimeDir'] ?? sys_get_temp_dir()),
             logDir: $logDir,
-            name: (string) ($data['name'] ?? 'sconcur-server'),
-            rotateDays: (int) ($data['rotateDays'] ?? 3),
+            name: $name,
+            rotateDays: self::nonNegativeInt($data, 'rotateDays', 3),
             workerCount: (int) ($data['workerCount'] ?? 0),
             phpBinary: (string) ($data['phpBinary'] ?? PHP_BINARY),
             phpArgs: self::stringList($data['phpArgs'] ?? []),
             workerArgs: self::stringList($data['workerArgs'] ?? []),
             env: self::stringMap($data['env'] ?? []),
             restartPolicy: $restartPolicy,
-            shutdownTimeoutMs: (int) ($data['shutdownTimeoutMs'] ?? 10_000),
-            restartBackoffMs: (int) ($data['restartBackoffMs'] ?? 200),
-            maxRestartBackoffMs: (int) ($data['maxRestartBackoffMs'] ?? 30_000),
+            shutdownTimeoutMs: self::nonNegativeInt($data, 'shutdownTimeoutMs', 10_000),
+            restartBackoffMs: self::nonNegativeInt($data, 'restartBackoffMs', 200),
+            maxRestartBackoffMs: self::nonNegativeInt($data, 'maxRestartBackoffMs', 30_000),
             server: self::serverParams($data['server'] ?? []),
             logTo: $logTo,
         );
@@ -173,6 +187,53 @@ readonly class MasterConfig
             maxRestartBackoffMs: $this->maxRestartBackoffMs,
             logTo: $this->logTo,
         );
+    }
+
+    /**
+     * Rejects unknown top-level keys (a typo like "wokerCount" would otherwise
+     * silently fall back to its default). The set of valid keys is derived from the
+     * constructor parameters by reflection, so it cannot drift from them — every
+     * config key mirrors a constructor parameter by design.
+     *
+     * @param array<string, mixed> $data
+     *
+     * @throws InvalidConfigException an unknown top-level key is present
+     */
+    protected static function assertKnownKeys(array $data): void
+    {
+        $knownKeys = array_map(
+            static fn(ReflectionParameter $parameter): string => $parameter->getName(),
+            new ReflectionClass(self::class)->getConstructor()?->getParameters() ?? [],
+        );
+
+        $unknownKeys = array_diff(array_keys($data), $knownKeys);
+
+        if ($unknownKeys !== []) {
+            throw new InvalidConfigException(
+                message: 'config: unknown key(s): ' . implode(', ', $unknownKeys),
+            );
+        }
+    }
+
+    /**
+     * Reads an optional integer that must not be negative (timeouts, counts, day
+     * retention — a negative value is always an operator mistake).
+     *
+     * @param array<string, mixed> $data
+     *
+     * @throws InvalidConfigException the value is present but negative
+     */
+    protected static function nonNegativeInt(array $data, string $key, int $default): int
+    {
+        $value = (int) ($data[$key] ?? $default);
+
+        if ($value < 0) {
+            throw new InvalidConfigException(
+                message: sprintf('config: "%s" must be >= 0', $key),
+            );
+        }
+
+        return $value;
     }
 
     protected function scalarToArg(int|float|string|bool $value): string

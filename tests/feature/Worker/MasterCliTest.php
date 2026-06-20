@@ -39,7 +39,15 @@ class MasterCliTest extends TestCase
         [$code, , $err] = $this->runCli([]);
 
         self::assertSame(MasterCli::EXIT_USAGE, $code);
-        self::assertStringContainsString('--configPath=<file> is required', $err);
+        self::assertStringContainsString('Usage: sconcur-server', $err);
+    }
+
+    public function testUnknownCommandPrintsUsage(): void
+    {
+        [$code, , $err] = $this->runCli(['bogus', '--configPath=/whatever.json']);
+
+        self::assertSame(MasterCli::EXIT_USAGE, $code);
+        self::assertStringContainsString('Usage: sconcur-server', $err);
     }
 
     public function testStartRequiresConfigPath(): void
@@ -89,6 +97,45 @@ class MasterCliTest extends TestCase
 
         self::assertSame(MasterCli::EXIT_USAGE, $code);
         self::assertStringContainsString('server.address', $err);
+    }
+
+    public function testStartRejectsInvalidName(): void
+    {
+        $configPath = $this->writeConfig([
+            'workerScript' => '/tmp/x.php',
+            'name'         => 'bad/name',
+        ]);
+
+        [$code, , $err] = $this->runCli(['start', '--configPath=' . $configPath]);
+
+        self::assertSame(MasterCli::EXIT_USAGE, $code);
+        self::assertStringContainsString('name', $err);
+    }
+
+    public function testStartRejectsUnknownConfigKey(): void
+    {
+        $configPath = $this->writeConfig([
+            'workerScript' => '/tmp/x.php',
+            'wokerCount'   => 4,
+        ]);
+
+        [$code, , $err] = $this->runCli(['start', '--configPath=' . $configPath]);
+
+        self::assertSame(MasterCli::EXIT_USAGE, $code);
+        self::assertStringContainsString('wokerCount', $err);
+    }
+
+    public function testStartRejectsNegativeTiming(): void
+    {
+        $configPath = $this->writeConfig([
+            'workerScript'      => '/tmp/x.php',
+            'shutdownTimeoutMs' => -1,
+        ]);
+
+        [$code, , $err] = $this->runCli(['start', '--configPath=' . $configPath]);
+
+        self::assertSame(MasterCli::EXIT_USAGE, $code);
+        self::assertStringContainsString('shutdownTimeoutMs', $err);
     }
 
     public function testStatusReportsStoppedWhenNoState(): void
