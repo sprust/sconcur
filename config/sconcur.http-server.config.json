@@ -1,0 +1,30 @@
+{
+    "workerScript": "/sconcur/tests/servers/http/http-server.php",
+    "workerCount": 3,
+    "phpBinary": "php",
+    "phpArgs": ["-d", "extension=/sconcur/ext/build/sconcur.so"],
+    "workerArgs": [],
+    "env": {},
+    "runtimeDir": "/sconcur/tests/storage/servers",
+    "logDir": "/sconcur/tests/storage/logs",
+    "name": "sconcur-http-server",
+    "rotateDays": 3,
+    "logTo": "both",
+    "restartPolicy": "always",
+    "shutdownTimeoutMs": 10000,
+    "restartBackoffMs": 200,
+    "maxRestartBackoffMs": 30000,
+    "server": {
+        "address": "0.0.0.0:8080",
+        "reusePort": true,
+        "maxRequests": 0,
+        "maxConcurrency": 0,
+        "maxRequestBody": 10485760,
+        "readHeaderTimeoutMs": 10000,
+        "readTimeoutMs": 30000,
+        "writeTimeoutMs": 30000,
+        "idleTimeoutMs": 60000,
+        "handlerTimeoutMs": 60000,
+        "shutdownTimeoutMs": 5000
+    }
+}

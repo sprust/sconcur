@@ -56,6 +56,13 @@ class Scheduler
      */
     protected int $spawnedCount = 0;
 
+    /**
+     * Monotonic counter feeding spawned-coroutine flow keys. A flow key only has
+     * to be unique among live flows in this process, so a never-reused counter is
+     * enough — and far cheaper than uniqid() on the per-request hot path.
+     */
+    protected int $spawnCounter = 0;
+
     public static function get(): Scheduler
     {
         return static::$instance ??= new Scheduler();
@@ -77,7 +84,7 @@ class Scheduler
     {
         $fiber   = new Fiber($callback);
         $fiberId = spl_object_id($fiber);
-        $flowKey = uniqid('sp_', more_entropy: true);
+        $flowKey = 'sp_' . (++$this->spawnCounter);
 
         State::registerFiberFlow(
             fiberId: $fiberId,
@@ -188,6 +195,13 @@ class Scheduler
      * happens after each delivered result, so on an idle server shutdown takes
      * effect on the next event (a bounded waitAny will make it immediate later).
      *
+     * Bounded lifetime: when $maxRequests > 0 the loop starts the same graceful
+     * drain once it has dispatched that many requests — a built-in mitigation for
+     * handler memory leaks, letting a supervisor respawn a fresh process. The
+     * limiting request is dispatched and drained like any in-flight one, and the
+     * listener is closed before draining, so no accepted request is bounced.
+     *
+     * @param int                   $maxRequests  stop after dispatching this many requests (0 = unlimited)
      * @param Closure(string): void $onRequest    receives the raw request payload
      * @param Closure(): bool       $shouldStop   true once a shutdown was requested
      * @param Closure(): void       $onDrainStart called once when draining begins, before
@@ -197,18 +211,21 @@ class Scheduler
     public function serve(
         string $serverFlowKey,
         string $serverTaskKey,
+        int $maxRequests,
         Closure $onRequest,
         Closure $shouldStop,
         Closure $onDrainStart,
     ): void {
         $draining = false;
 
+        $dispatchedCount = 0;
+
         // Whatever ends the loop — clean shutdown, a bind error, or an unexpected
         // throwable out of waitAny()/next() — the listener flow must be stopped so
         // it does not leak for the process lifetime.
         try {
             while (true) {
-                if (!$draining && $shouldStop()) {
+                if (!$draining && ($shouldStop() || ($maxRequests > 0 && $dispatchedCount >= $maxRequests))) {
                     // Stop accepting new requests; keep draining in-flight handlers.
                     $draining = true;
 
@@ -252,14 +269,20 @@ class Scheduler
                         continue;
                     }
 
-                    // Re-arm for the next request before handling this one, so the
-                    // listener keeps accepting while the handler runs.
-                    Extension::get()->next(
-                        flowKey: $serverFlowKey,
-                        taskKey: $serverTaskKey,
-                    );
-
                     $payload = $result->payload;
+
+                    ++$dispatchedCount;
+
+                    // Re-arm for the next request before handling this one, so the
+                    // listener keeps accepting while the handler runs — unless this
+                    // request hit the maxRequests limit, in which case we do not pull
+                    // one more (we drain on the next tick instead of bouncing it 503).
+                    if ($maxRequests === 0 || $dispatchedCount < $maxRequests) {
+                        Extension::get()->next(
+                            flowKey: $serverFlowKey,
+                            taskKey: $serverTaskKey,
+                        );
+                    }
 
                     $this->spawn(static function () use ($onRequest, $payload): void {
                         $onRequest($payload);

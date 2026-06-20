@@ -9,6 +9,10 @@
 **со стримингом** (несколько батчей). Конкретная работа фичи скрыта за «вашей
 операцией». Общую архитектуру см. в [README](../README.md).
 
+> Делаете долгоживущий **сетевой сервер** (как `HttpServer`)? Это особый вид
+> стриминговой фичи со своим слушателем и циклом обслуживания — см. отдельное
+> руководство [Как добавить новый сервер](adding-a-server.ru.md).
+
 ---
 
 ## ⚠️ Два обязательных требования
@@ -71,7 +75,7 @@ Payload — это контракт обмена между PHP и Go. Он оф
 // SleeperPayload is the payload of a sleep command.
 // PHP: SConcur\Features\Sleeper\Payloads\SleeperPayload.
 type SleeperPayload struct {
-    Milliseconds int64 `json:"ms" msgpack:"ms"`
+    Microseconds int64 `json:"us" msgpack:"us"`
 }
 ```
 

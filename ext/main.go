@@ -18,6 +18,7 @@ import (
 	"sconcur/internal/dto"
 	httpserver_feature "sconcur/internal/features/httpserver"
 	handler2 "sconcur/internal/handler"
+	"sconcur/internal/logger"
 	"sconcur/internal/types"
 	"unsafe"
 )
@@ -206,6 +207,9 @@ func httpStopAccepting(fk *C.char) {
 
 //export destroy
 func destroy() {
+	// Flush any buffered log lines before tearing the runtime down.
+	logger.Flush()
+
 	handler.Destroy()
 }
 

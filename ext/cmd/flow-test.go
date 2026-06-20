@@ -14,8 +14,8 @@ import (
 
 var handler *handler2.Handler
 
-func sleepPayload(milliseconds int64) []byte {
-	payload, err := msgpack.Marshal(payloads.SleeperPayload{Milliseconds: milliseconds})
+func sleepPayload(microseconds int64) []byte {
+	payload, err := msgpack.Marshal(payloads.SleeperPayload{Microseconds: microseconds})
 
 	if err != nil {
 		log.Fatalf("Error marshaling sleep payload: %v", err)
@@ -54,7 +54,7 @@ func testSleepFlow() {
 		FlowKey: flowKey,
 		Method:  types.Method(1), // Sleep feature
 		TaskKey: taskKey,
-		Payload: sleepPayload(100),
+		Payload: sleepPayload(100_000),
 	}
 
 	err := handler.Push(msg)
@@ -86,7 +86,7 @@ func testMultipleTasks() {
 			FlowKey: flowKey,
 			Method:  types.Method(1),
 			TaskKey: taskKey,
-			Payload: sleepPayload(int64(i * 50)),
+			Payload: sleepPayload(int64(i * 50) * 1000),
 		}
 
 		err := handler.Push(msg)
@@ -119,7 +119,7 @@ func testStopFlow() {
 		FlowKey: flowKey,
 		Method:  types.Method(1),
 		TaskKey: "task_stop",
-		Payload: sleepPayload(2000),
+		Payload: sleepPayload(2_000_000),
 	}
 
 	err := handler.Push(msg)

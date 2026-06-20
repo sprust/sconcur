@@ -55,10 +55,14 @@
   Транспортная гранулярность фиксирована 64 KiB; превышение лимита →
   `RequestBodyTooLargeException` → `413`. Покрыто `TestBodyState*` (Go) и
   `HttpServerRequestStreamTest` (PHP).
-- **Готово (access-лог):** колбэк `accessLog: Closure(AccessLogEntry): void` —
-  вызывается после каждого запроса с полями `startedAt`/`method`/`path`/`status`/
-  `executionMs`. Демо-сервер печатает строку в stdout. Покрыто `HttpServerAccessLogTest`
-  (harness захватывает stdout во временный файл).
+- **Готово (access-лог):** встроенный — после каждого запроса `HttpServer` пишет
+  строку `<ISO-время> <метод> <путь> <статус> <мс>ms` в `STDOUT` (всегда включён).
+  Запись **асинхронная** и целиком на Go-стороне: строку формирует и отдаёт горутина
+  ответа сервера (`internal/features/httpserver`), а пишет фоновая горутина Go (пакет
+  `internal/logger`: буфер + флаш по таймеру + дроп при переполнении), поэтому
+  однопоточный цикл не блокируется на I/O и нет PHP↔Go-перехода на запрос. (Ранее был
+  колбэк `accessLog`/`AccessLogEntry`, затем синхронный `fwrite`+`fflush`, затем
+  cgo-экспорт `logLine` из PHP — все заменены.)
 - **Все пункты плана и ревью закрыты.**
 
 Ключевая реализация (отличие от первоначального наброска): listener — это

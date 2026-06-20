@@ -11,15 +11,6 @@ use Throwable;
 
 class GeneralTest extends BaseTestCase
 {
-    private Sleeper $sleeper;
-
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        $this->sleeper = new Sleeper();
-    }
-
     public function testMulti(): void
     {
         /** @var string[] $events */
@@ -29,40 +20,40 @@ class GeneralTest extends BaseTestCase
             function () use (&$events) {
                 $events[] = '1:start';
 
-                $this->sleeper->msleep(milliseconds: 60);
+                Sleeper::usleep(microseconds: 60000);
 
                 $events[] = '1:woke';
 
-                $this->sleeper->msleep(milliseconds: 180);
+                Sleeper::usleep(microseconds: 180000);
 
                 $events[] = '1:finish';
             },
             function () use (&$events) {
                 $events[] = '2:start';
 
-                $this->sleeper->msleep(milliseconds: 120);
+                Sleeper::usleep(microseconds: 120000);
 
                 // internal flow
                 $callbacks = [
                     function () use (&$events) {
                         $events[] = '2.1:start';
 
-                        $this->sleeper->msleep(milliseconds: 60);
+                        Sleeper::usleep(microseconds: 60000);
 
                         $events[] = '2.1:woke';
 
-                        $this->sleeper->msleep(milliseconds: 180);
+                        Sleeper::usleep(microseconds: 180000);
 
                         $events[] = '2.1:finish';
                     },
                     function () use (&$events) {
                         $events[] = '2.2:start';
 
-                        $this->sleeper->msleep(milliseconds: 120);
+                        Sleeper::usleep(microseconds: 120000);
 
                         $events[] = '2.2:woke';
 
-                        $this->sleeper->msleep(milliseconds: 240);
+                        Sleeper::usleep(microseconds: 240000);
 
                         $events[] = '2.2:finish';
                     },
@@ -84,7 +75,7 @@ class GeneralTest extends BaseTestCase
 
                 $events[] = '2:woke';
 
-                $this->sleeper->msleep(milliseconds: 240);
+                Sleeper::usleep(microseconds: 240000);
 
                 $events[] = '2:finish';
             },
@@ -149,14 +140,14 @@ class GeneralTest extends BaseTestCase
             function () use (&$events) {
                 // The gap must be wide: when the PHP side stalls longer than the
                 // difference, both results are pending and arrive in random order.
-                $this->sleeper->msleep(milliseconds: 100);
+                Sleeper::usleep(microseconds: 100000);
 
                 $events[] = '1:finish';
 
                 return '1';
             },
             function () use (&$events) {
-                $this->sleeper->msleep(milliseconds: 1);
+                Sleeper::usleep(microseconds: 1000);
 
                 $events[] = '2:finish';
 
@@ -196,14 +187,14 @@ class GeneralTest extends BaseTestCase
 
         $callbacks = [
             function () use (&$events) {
-                $this->sleeper->sleep(seconds: 2);
+                Sleeper::sleep(seconds: 2);
 
                 $events[] = '1:finish';
 
                 return '1';
             },
             function () use (&$events) {
-                $this->sleeper->msleep(milliseconds: 1);
+                Sleeper::usleep(microseconds: 1000);
 
                 $events[] = '2:finish';
 
@@ -249,7 +240,7 @@ class GeneralTest extends BaseTestCase
             // Stays suspended past the break: its finally must still run.
             function () use (&$events) {
                 try {
-                    $this->sleeper->sleep(seconds: 2);
+                    Sleeper::sleep(seconds: 2);
 
                     $events[] = '1:finish';
                 } finally {
@@ -257,7 +248,7 @@ class GeneralTest extends BaseTestCase
                 }
             },
             function () use (&$events) {
-                $this->sleeper->msleep(milliseconds: 1);
+                Sleeper::usleep(microseconds: 1000);
 
                 $events[] = '2:finish';
             },
@@ -288,10 +279,10 @@ class GeneralTest extends BaseTestCase
     {
         $callbacks = [
             function () {
-                $this->sleeper->msleep(milliseconds: 1);
+                Sleeper::usleep(microseconds: 1000);
             },
             function () {
-                $this->sleeper->msleep(milliseconds: 1);
+                Sleeper::usleep(microseconds: 1000);
             },
         ];
 
@@ -310,7 +301,7 @@ class GeneralTest extends BaseTestCase
         foreach ($generator as $key => $value) {
             $results[$key] = $value;
 
-            $this->sleeper->msleep(milliseconds: 1);
+            Sleeper::usleep(microseconds: 1000);
         }
 
         self::assertCount(
@@ -323,10 +314,10 @@ class GeneralTest extends BaseTestCase
     {
         $callbacks = [
             function () {
-                $this->sleeper->msleep(milliseconds: 1);
+                Sleeper::usleep(microseconds: 1000);
             },
             function () {
-                $this->sleeper->msleep(milliseconds: 1);
+                Sleeper::usleep(microseconds: 1000);
             },
         ];
 
@@ -352,10 +343,10 @@ class GeneralTest extends BaseTestCase
 
         $callbacks = [
             function () {
-                $this->sleeper->sleep(seconds: 1);
+                Sleeper::sleep(seconds: 1);
             },
             function () use ($exceptionMessage) {
-                $this->sleeper->msleep(milliseconds: 1);
+                Sleeper::usleep(microseconds: 1000);
 
                 throw new Exception($exceptionMessage);
             },
@@ -407,13 +398,13 @@ class GeneralTest extends BaseTestCase
 
         $callbacks = [
             function () use (&$events) {
-                $this->sleeper->msleep(milliseconds: 1);
+                Sleeper::usleep(microseconds: 1000);
 
                 $events['first'] = true;
             },
             function () use (&$events, &$exceptionMessage) {
                 try {
-                    $this->sleeper->msleep(milliseconds: -1);
+                    Sleeper::usleep(microseconds: -1000);
                 } catch (Throwable $exception) {
                     $exceptionMessage = $exception->getMessage();
                 }
@@ -456,7 +447,7 @@ class GeneralTest extends BaseTestCase
 
         $waitGroup->add(callback: function () use (&$exception, $exceptionMessage) {
             try {
-                $this->sleeper->msleep(milliseconds: -1);
+                Sleeper::usleep(microseconds: -1000);
             } catch (TaskErrorException $exception) {
                 throw new Exception($exceptionMessage);
             }
@@ -490,7 +481,7 @@ class GeneralTest extends BaseTestCase
         $callback = function () use (&$events) {
             ++$events['start'];
 
-            $this->sleeper->msleep(milliseconds: 1);
+            Sleeper::usleep(microseconds: 1000);
 
             ++$events['finish'];
         };
@@ -533,7 +524,7 @@ class GeneralTest extends BaseTestCase
         $waitGroup = WaitGroup::create();
 
         $waitGroup->add(callback: function (): string {
-            $this->sleeper->sleep(seconds: 5);
+            Sleeper::sleep(seconds: 5);
 
             return 'should-not-complete';
         });
@@ -561,7 +552,7 @@ class GeneralTest extends BaseTestCase
 
         // Fast outer coroutine.
         $waitGroup->add(function () use (&$events) {
-            $this->sleeper->msleep(milliseconds: 50);
+            Sleeper::usleep(microseconds: 50000);
 
             $events[] = 'outer:fast';
         });
@@ -571,7 +562,7 @@ class GeneralTest extends BaseTestCase
             $inner = WaitGroup::create();
 
             $inner->add(function () use (&$events) {
-                $this->sleeper->msleep(milliseconds: 300);
+                Sleeper::usleep(microseconds: 300000);
 
                 $events[] = 'inner:slow';
             });
@@ -608,7 +599,7 @@ class GeneralTest extends BaseTestCase
 
         // Fast outer coroutine.
         $waitGroup->add(function () use (&$events) {
-            $this->sleeper->msleep(milliseconds: 50);
+            Sleeper::usleep(microseconds: 50000);
 
             $events[] = 'outer:fast';
         });
@@ -619,7 +610,7 @@ class GeneralTest extends BaseTestCase
             $inner = WaitGroup::create();
 
             $inner->add(function () use (&$events): string {
-                $this->sleeper->msleep(milliseconds: 300);
+                Sleeper::usleep(microseconds: 300000);
 
                 $events[] = 'inner:slow';
 
@@ -627,7 +618,7 @@ class GeneralTest extends BaseTestCase
             });
 
             $inner->add(function () use (&$events): string {
-                $this->sleeper->msleep(milliseconds: 320);
+                Sleeper::usleep(microseconds: 320000);
 
                 $events[] = 'inner:slower';
 
@@ -670,13 +661,13 @@ class GeneralTest extends BaseTestCase
         $second = WaitGroup::create();
 
         $first->add(function (): string {
-            $this->sleeper->msleep(milliseconds: 20);
+            Sleeper::usleep(microseconds: 20000);
 
             return 'first';
         });
 
         $second->add(function (): string {
-            $this->sleeper->msleep(milliseconds: 20);
+            Sleeper::usleep(microseconds: 20000);
 
             return 'second';
         });

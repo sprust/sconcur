@@ -4,17 +4,22 @@ declare(strict_types=1);
 
 require dirname(__DIR__, 3) . '/vendor/autoload.php';
 
-use SConcur\Features\HttpServer\Dto\AccessLogEntry;
+use Dotenv\Dotenv;
 use SConcur\Features\HttpServer\Dto\Request;
 use SConcur\Features\HttpServer\Dto\Response;
 use SConcur\Features\HttpServer\Dto\ResponseStream;
 use SConcur\Features\HttpServer\Dto\StreamedResponse;
 use SConcur\Features\HttpServer\HttpServer;
+use SConcur\Features\Mongodb\Connection\Client as MongoClient;
+use SConcur\Features\Mysql\Connection as MysqlConnection;
+use SConcur\Features\Pgsql\Connection as PgsqlConnection;
 use SConcur\Features\Sleeper\Sleeper;
+use SConcur\WaitGroup;
 
 /**
  * Demo / test HTTP server. Routes:
  *   GET  /                  -> 200 "ok"
+ *   GET  /pid               -> 200, body = this process pid (used by the worker-master tests)
  *   *    /method            -> 200, body = request method (GET/POST/...)
  *   *    /echo              -> 200, body = the request body (echo, full read)
  *   *    /upload            -> 200, body = sha256 of the request body (streamed read)
@@ -26,8 +31,10 @@ use SConcur\Features\Sleeper\Sleeper;
  *   GET  /stream            -> 200 chunked, body streamed in parts (streaming demo)
  *   GET  /big/{n}           -> 200, body = {n} bytes of a deterministic pattern
  *   *    /redirect/{n}      -> 302 to /redirect/{n-1} until n=0, then 200 "done"
- *   GET  /msleep/{ms}       -> sleeps {ms}, then 200 "slept" (concurrency demo)
+ *   GET  /msleep/{ms}       -> sleeps {ms} (async), then 200 "slept" (concurrency demo)
+ *   GET  /native-msleep/{ms} -> blocks the thread {ms} natively (handler-timeout test)
  *   GET  /cpu/{n}           -> runs a CPU-bound sha256 loop of {n} rounds (bench)
+ *   GET  /all               -> fans out across the backend I/O features concurrently (load test)
  *   GET  /throw             -> handler throws -> framework answers 500
  *   GET  /status/{code}     -> responds with the given status code
  *   (anything else)         -> 404 "not found"
@@ -38,64 +45,16 @@ use SConcur\Features\Sleeper\Sleeper;
  * exactly like the HttpServer constructor parameters, passed as --name=value:
  *   --readHeaderTimeoutMs  --readTimeoutMs  --writeTimeoutMs  --idleTimeoutMs
  *   --shutdownTimeoutMs  --maxRequestBody  --maxConcurrency  --handlerTimeoutMs
- *   --reusePort (0/1)
+ *   --maxRequests  --reusePort (0/1)
  */
 
-$address = $argv[1] ?? '0.0.0.0:8080';
+// Build the server from argv: each --name=value maps to the matching HttpServer
+// constructor parameter. Under WorkerMaster the injected --masterPid wires the
+// orphan check (the worker self-terminates if its master dies); without it the
+// check is off (standalone run).
+$server = HttpServer::fromArgs($_SERVER['argv']);
 
-$sleeper = new Sleeper();
-
-// Accepted launch options — exactly the HttpServer constructor parameter names.
-// Only the ones actually passed override the defaults (named-arg unpacking below).
-$allowedIntOptions = [
-    'readHeaderTimeoutMs',
-    'readTimeoutMs',
-    'writeTimeoutMs',
-    'idleTimeoutMs',
-    'shutdownTimeoutMs',
-    'maxRequestBody',
-    'maxConcurrency',
-    'handlerTimeoutMs',
-];
-
-$overrides = [];
-
-foreach (array_slice($argv, 2) as $argument) {
-    if (!str_starts_with($argument, '--')) {
-        continue;
-    }
-
-    [$name, $value] = array_pad(explode('=', substr($argument, 2), 2), 2, '');
-
-    if ($name === 'reusePort') {
-        $overrides['reusePort'] = (bool) (int) $value;
-    } elseif (in_array($name, $allowedIntOptions, true)) {
-        $overrides[$name] = (int) $value;
-    }
-}
-
-// Access log: one line per request — start time (with microseconds), method,
-// path, status, duration. Written and flushed straight to stdout so it appears live.
-$accessLog = static function (AccessLogEntry $entry): void {
-    $time = date('Y-m-d\TH:i:s', (int) $entry->startedAt)
-        . sprintf('.%06d', (int) (($entry->startedAt - floor($entry->startedAt)) * 1_000_000));
-
-    fwrite(STDOUT, sprintf(
-        "%s %s %s %d %.2fms\n",
-        $time,
-        $entry->method,
-        $entry->path,
-        $entry->status,
-        $entry->executionMs,
-    ));
-
-    fflush(STDOUT);
-};
-
-// Spread as named args; address first, overrides take precedence over defaults.
-$server = new HttpServer(...['address' => $address, 'accessLog' => $accessLog, ...$overrides]);
-
-$server->serve(static function (Request $request) use ($sleeper): Response|StreamedResponse {
+$server->serve(static function (Request $request): Response|StreamedResponse {
     if ($request->path === '/method') {
         return new Response(body: $request->method);
     }
@@ -134,18 +93,21 @@ $server->serve(static function (Request $request) use ($sleeper): Response|Strea
 
     return match (true) {
         $request->path === '/'        => new Response(body: 'ok'),
+        $request->path === '/pid'     => new Response(body: (string) getmypid()),
         $request->path === '/empty'   => new Response(),
         $request->path === '/cookies' => new Response(
             body: 'cookies',
             headers: ['Set-Cookie' => ['a=1', 'b=2']],
         ),
-        $request->path === '/stream'      => streamRoute($sleeper),
-        $request->path === '/slow-stream' => slowStreamRoute($sleeper),
+        $request->path === '/all'         => allFeaturesRoute(),
+        $request->path === '/stream'      => streamRoute(),
+        $request->path === '/slow-stream' => slowStreamRoute(),
         $request->path === '/truncated'   => truncatedRoute(),
         str_starts_with($request->path, '/big/')      => bigRoute($request->path),
         str_starts_with($request->path, '/redirect/')  => redirectRoute($request->path),
         $request->path === '/throw'       => throw new RuntimeException('boom in handler'),
-        str_starts_with($request->path, '/msleep/') => msleepRoute($sleeper, $request->path),
+        str_starts_with($request->path, '/msleep/') => msleepRoute($request->path),
+        str_starts_with($request->path, '/native-msleep/') => nativeMsleepRoute($request->path),
         str_starts_with($request->path, '/cpu/')    => cpuRoute($request->path),
         str_starts_with($request->path, '/status/') => statusRoute($request->path),
         default => new Response(body: 'not found', status: 404),
@@ -166,13 +128,148 @@ function headerValue(Request $request, string $name): string
     return '';
 }
 
-function msleepRoute(Sleeper $sleeper, string $path): Response
+function msleepRoute(string $path): Response
 {
     $milliseconds = (int) substr($path, strlen('/msleep/'));
 
-    $sleeper->msleep(milliseconds: $milliseconds);
+    Sleeper::usleep(microseconds: $milliseconds * 1000);
 
     return new Response(body: 'slept');
+}
+
+// Native, BLOCKING sleep — unlike the async usleep above it does NOT yield to the
+// scheduler, so it freezes the whole single-threaded server. Used to verify that the
+// Go-side handlerTimeoutMs still answers the client with a 504 even when the PHP
+// handler is blocked natively (the timer fires independently of PHP).
+function nativeMsleepRoute(string $path): Response
+{
+    $milliseconds = (int) substr($path, strlen('/native-msleep/'));
+
+    usleep($milliseconds * 1000);
+
+    return new Response(body: 'native-slept');
+}
+
+/**
+ * Load-test route: fans out across the backend I/O features concurrently in one
+ * request (a nested WaitGroup) — Sleeper, MongoDB, MySQL, PostgreSQL. Used to watch
+ * memory/CPU under load. The HTTP-client feature is intentionally NOT here: hitting
+ * this server's own "/" would make every /all silently serve a second request and
+ * skew the rps number — it is covered by its own benchmarks instead. Each feature is
+ * isolated so a transient backend hiccup degrades just that feature (visible
+ * per-feature error rate) instead of failing the whole request. Returns a JSON map.
+ */
+function allFeaturesRoute(): Response
+{
+    [$mongo, $mysql, $pgsql] = allFeaturesContext();
+
+    $status = [];
+
+    $waitGroup = WaitGroup::create();
+
+    $waitGroup->add(static function () use (&$status): void {
+        $status['sleeper'] = allFeatureStatus(static function (): void {
+            Sleeper::usleep(microseconds: 1000);
+        });
+    });
+
+    $waitGroup->add(static function () use (&$status, $mongo): void {
+        $status['mongodb'] = allFeatureStatus(static function () use ($mongo): void {
+            $mongo->insertOne(['t' => 'load']);
+            $mongo->findOne(filter: ['t' => 'load']);
+        });
+    });
+
+    $waitGroup->add(static function () use (&$status, $mysql): void {
+        $status['mysql'] = allFeatureStatus(static function () use ($mysql): void {
+            $mysql->fetchAll('SELECT 1');
+        });
+    });
+
+    $waitGroup->add(static function () use (&$status, $pgsql): void {
+        $status['pgsql'] = allFeatureStatus(static function () use ($pgsql): void {
+            $pgsql->fetchAll('SELECT 1');
+        });
+    });
+
+    $waitGroup->waitResults();
+
+    return new Response(
+        body: (string) json_encode($status),
+        headers: ['Content-Type' => 'application/json'],
+    );
+}
+
+/**
+ * Lazily builds and caches the per-worker DB connections used by /all on its first
+ * hit (so the other demo routes never pay for them and never require the backends).
+ * The Go side pools the real connections by URI/DSN, so reusing these objects across
+ * requests is cheap.
+ *
+ * @return array{0: \SConcur\Features\Mongodb\Connection\Collection, 1: MysqlConnection, 2: PgsqlConnection}
+ */
+function allFeaturesContext(): array
+{
+    /** @var array{0: \SConcur\Features\Mongodb\Connection\Collection, 1: MysqlConnection, 2: PgsqlConnection}|null $context */
+    static $context = null;
+
+    if ($context !== null) {
+        return $context;
+    }
+
+    Dotenv::createImmutable(dirname(__DIR__, 3))->safeLoad();
+
+    $context = [
+        new MongoClient(
+            uri: sprintf(
+                'mongodb://%s:%s@%s:%s',
+                $_ENV['MONGO_ADMIN_USERNAME'],
+                $_ENV['MONGO_ADMIN_PASSWORD'],
+                $_ENV['MONGO_HOST'],
+                $_ENV['MONGO_PORT'],
+            ),
+        )
+            ->selectDatabase('u-test')
+            ->selectCollection('load_all'),
+        new MysqlConnection(
+            dsn: sprintf(
+                '%s:%s@tcp(%s:%s)/%s?parseTime=true',
+                $_ENV['MYSQL_USER'],
+                $_ENV['MYSQL_PASSWORD'],
+                $_ENV['MYSQL_HOST'],
+                $_ENV['MYSQL_PORT'],
+                $_ENV['MYSQL_DATABASE'],
+            ),
+        ),
+        new PgsqlConnection(
+            dsn: sprintf(
+                'postgres://%s:%s@%s:%s/%s?sslmode=disable',
+                $_ENV['POSTGRES_USER'],
+                $_ENV['POSTGRES_PASSWORD'],
+                $_ENV['POSTGRES_HOST'],
+                $_ENV['POSTGRES_PORT'],
+                $_ENV['POSTGRES_DB'],
+            ),
+        ),
+    ];
+
+    return $context;
+}
+
+/**
+ * Runs one feature call and returns 'ok' or 'err: <message>', so a transient backend
+ * failure degrades that one feature instead of 500-ing the whole /all request — the
+ * load test keeps running and the per-feature error rate stays visible.
+ */
+function allFeatureStatus(callable $call): string
+{
+    try {
+        $call();
+
+        return 'ok';
+    } catch (Throwable $exception) {
+        return 'err: ' . $exception->getMessage();
+    }
 }
 
 function truncatedRoute(): Response
@@ -188,31 +285,31 @@ function truncatedRoute(): Response
     );
 }
 
-function streamRoute(Sleeper $sleeper): StreamedResponse
+function streamRoute(): StreamedResponse
 {
     return new StreamedResponse(
-        writer: static function (ResponseStream $out) use ($sleeper): void {
+        writer: static function (ResponseStream $out): void {
             foreach (['a', 'b', 'c'] as $part) {
                 $out->write("chunk-$part\n");
 
                 // Async work between chunks: other requests keep being served.
-                $sleeper->msleep(milliseconds: 50);
+                Sleeper::usleep(microseconds: 50_000);
             }
         },
         headers: ['Content-Type' => 'text/plain'],
     );
 }
 
-function slowStreamRoute(Sleeper $sleeper): StreamedResponse
+function slowStreamRoute(): StreamedResponse
 {
     // Four chunks 100ms apart (~400ms total): a small handlerTimeoutMs cuts it
     // mid-stream. Used by the handler-timeout test.
     return new StreamedResponse(
-        writer: static function (ResponseStream $out) use ($sleeper): void {
+        writer: static function (ResponseStream $out): void {
             foreach (['p0', 'p1', 'p2', 'p3'] as $part) {
                 $out->write("$part\n");
 
-                $sleeper->msleep(milliseconds: 100);
+                Sleeper::usleep(microseconds: 100_000);
             }
         },
         headers: ['Content-Type' => 'text/plain'],

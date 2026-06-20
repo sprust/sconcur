@@ -204,3 +204,22 @@ bench-http-reuseport-io:
 
 bench-http-reuseport-cpu:
 	$(PHP_CLI) php tests/benchmarks/http-reuseport-cpu.php
+
+# Runs on the HOST (needs wrk): one server per core with SO_REUSEPORT inside the
+# php container, wrk pinned to separate cores, hitting the container IP (no NAT).
+# Tunables via env, e.g.: make bench-http-throughput SERVERS=16 DURATION=20
+bench-http-throughput:
+	tests/benchmarks/http-throughput.sh
+
+# Runs on the HOST (needs wrk + the mongodb/mysql/postgres services up): load the
+# /all route (fans out across EVERY async I/O feature per request) and sample
+# CPU/memory of the server and backend containers + per-worker RSS (leak check).
+# Tunables via env, e.g.: make bench-http-load-stats SERVERS=12 DURATION=30
+bench-http-load-stats:
+	tests/benchmarks/http-load-stats.sh
+
+# Soak variant: a long, steady-load run (10 min by default) that prints the
+# worker-RSS trend over time and a least-squares leak slope. Override via env,
+# e.g.: make bench-http-load-soak DURATION=3600
+bench-http-load-soak:
+	MODE=soak tests/benchmarks/http-load-stats.sh

@@ -50,11 +50,11 @@ func (s *SleepFeature) Handle(task *tasks.Task) {
 		return
 	}
 
-	if payload.Milliseconds <= 0 {
+	if payload.Microseconds <= 0 {
 		task.AddResult(
 			dto.NewErrorResult(
 				message,
-				errFactory.ByText("milliseconds must be greater than zero"),
+				errFactory.ByText("microseconds must be greater than zero"),
 			),
 		)
 
@@ -69,7 +69,7 @@ func (s *SleepFeature) Handle(task *tasks.Task) {
 				errFactory.ByText("closed by task stop"),
 			),
 		)
-	case <-time.After(time.Duration(payload.Milliseconds) * time.Millisecond):
+	case <-time.After(time.Duration(payload.Microseconds) * time.Microsecond):
 		task.AddResult(
 			dto.NewSuccessResult(message, "", helpers.CalcExecutionMs(startTime)),
 		)

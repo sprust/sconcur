@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace SConcur\Features\HttpServer;
 
 use Closure;
+use InvalidArgumentException;
+use ReflectionClass;
+use ReflectionNamedType;
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\HttpServer\InvalidHandlerResponseException;
 use SConcur\Exceptions\HttpServer\RequestBodyTooLargeException;
 use SConcur\Features\FeatureExecutor;
-use SConcur\Features\HttpServer\Dto\AccessLogEntry;
 use SConcur\Features\HttpServer\Dto\Request;
 use SConcur\Features\HttpServer\Dto\Response;
 use SConcur\Features\HttpServer\Dto\ResponseStream;
@@ -22,7 +24,7 @@ use Throwable;
 /**
  * HTTP server: the network lives in the Go extension, each accepted request is
  * streamed back as a result and handled in its own coroutine (spawn-on-request).
- * See .ai/plans/http-server.md.
+ * See docs/http-server.ru.md.
  */
 readonly class HttpServer
 {
@@ -38,6 +40,12 @@ readonly class HttpServer
      *                                                                      mid-stream the response is aborted (status is already on the wire).
      *                                                                      Note: a CPU-bound handler still blocks the single-threaded loop;
      *                                                                      this guards handlers waiting on async work.
+     * @param int                                         $maxRequests      stop the server after it has handled this many requests
+     *                                                                      (0 = unlimited). Meant against handler memory leaks: once the
+     *                                                                      count is reached the server shuts down gracefully (closes the
+     *                                                                      listener first, drains in-flight, exits cleanly) so a master /
+     *                                                                      supervisor can respawn a fresh process. Reuses the graceful-
+     *                                                                      shutdown path, so no already-accepted request is bounced.
      * @param bool                                        $reusePort        set SO_REUSEPORT so several processes can bind this same
      *                                                                      address; the kernel load-balances connections across them
      *                                                                      (run one process per core). Linux only; each process must set it.
@@ -46,13 +54,16 @@ readonly class HttpServer
      *                                                                      to send instead of the default 500; returning null (or being absent)
      *                                                                      falls back to a bare 500. Lets the caller log/trace otherwise-swallowed
      *                                                                      errors.
-     * @param null|Closure(AccessLogEntry): void          $accessLog        called after each handled request with its start time, method,
-     *                                                                      path, status and execution time — print or ship it as you like.
+     * @param null|int                                    $masterPid        if set, the server self-terminates (graceful shutdown) once it is
+     *                                                                      no longer a child of this pid — i.e. its WorkerMaster died — so an
+     *                                                                      orphaned worker drains and exits instead of holding the port.
+     *                                                                      Under WorkerMaster this is set automatically from the injected
+     *                                                                      --masterPid flag via fromArgs(); null (default) off.
      *
      * Defaults mirror the Go server defaults.
      */
     public function __construct(
-        private string $address,
+        private string $address = '0.0.0.0:7832',
         private int $readHeaderTimeoutMs = 10_000,
         private int $readTimeoutMs = 30_000,
         private int $writeTimeoutMs = 30_000,
@@ -61,10 +72,114 @@ readonly class HttpServer
         private int $maxRequestBody = 10_485_760,
         private int $maxConcurrency = 0,
         private int $handlerTimeoutMs = 60_000,
+        private int $maxRequests = 0,
         private bool $reusePort = false,
         private ?Closure $onError = null,
-        private ?Closure $accessLog = null,
+        private ?int $masterPid = null,
     ) {
+    }
+
+    /**
+     * Create a new server from command line arguments.
+     *
+     * @param array<int, string>                          $argv    Command line arguments.
+     * @param Closure(Throwable, Request): ?Response|null $onError Error handler.
+     */
+    public static function fromArgs(array $argv, ?Closure $onError = null): HttpServer
+    {
+        $allowedTypes = ['int', 'bool', 'float', 'string'];
+
+        $reflectionClass = new ReflectionClass(HttpServer::class);
+
+        $parameters = [];
+
+        foreach ($reflectionClass->getConstructor()?->getParameters() ?? [] as $parameter) {
+            $type = $parameter->getType();
+
+            // Only scalar, single-typed params can be set from a CLI string; skip
+            // union/intersection types and the closures (onError).
+            if (!$type instanceof ReflectionNamedType) {
+                continue;
+            }
+
+            $typeName = $type->getName();
+
+            if (!in_array($typeName, $allowedTypes, true)) {
+                continue;
+            }
+
+            $parameters[$parameter->getName()] = $typeName;
+        }
+
+        $overrides = [];
+
+        foreach ($argv as $argument) {
+            if (!str_starts_with($argument, '--')) {
+                continue;
+            }
+
+            [$name, $value] = array_pad(explode('=', substr($argument, 2), 2), 2, '');
+
+            $type = $parameters[$name] ?? null;
+
+            if ($type === null) {
+                throw new InvalidArgumentException(
+                    sprintf(
+                        'Unknown argument: %s. supported only %s',
+                        $argument,
+                        implode(', ', array_keys($parameters)),
+                    ),
+                );
+            }
+
+            if ($type === 'int') {
+                if (((string) (int) $value) === $value) {
+                    $overrides[$name] = (int) $value;
+                } else {
+                    throw new InvalidArgumentException(
+                        sprintf(
+                            'Invalid integer for %s: %s.',
+                            $name,
+                            $value,
+                        ),
+                    );
+                }
+            } elseif ($type === 'bool') {
+                if ($value === '1') {
+                    $overrides[$name] = true;
+                } elseif ($value === '0') {
+                    $overrides[$name] = false;
+                } else {
+                    throw new InvalidArgumentException(
+                        sprintf(
+                            'Invalid boolean for %s: %s.',
+                            $name,
+                            $value,
+                        ),
+                    );
+                }
+            } elseif ($type === 'float') {
+                if (is_numeric($value)) {
+                    $overrides[$name] = (float) $value;
+                } else {
+                    throw new InvalidArgumentException(
+                        sprintf(
+                            'Invalid float for %s: %s.',
+                            $name,
+                            $value,
+                        ),
+                    );
+                }
+            } else {
+                $overrides[$name] = (string) $value;
+            }
+        }
+
+        if ($onError !== null) {
+            $overrides['onError'] = $onError;
+        }
+
+        return new HttpServer(...$overrides);
     }
 
     /**
@@ -103,16 +218,23 @@ readonly class HttpServer
             );
 
             $onError   = $this->onError;
-            $accessLog = $this->accessLog;
+            $masterPid = $this->masterPid;
 
             Scheduler::get()->serve(
                 serverFlowKey: $flowKey,
                 serverTaskKey: $runningTask->key,
-                onRequest: static function (string $payload) use ($handler, $onError, $accessLog): void {
-                    self::handle($handler, $onError, $accessLog, $payload);
+                maxRequests: $this->maxRequests,
+                onRequest: static function (string $payload) use ($handler, $onError): void {
+                    self::handle(
+                        handler: $handler,
+                        onError: $onError,
+                        payload: $payload,
+                    );
                 },
-                shouldStop: static function () use (&$stopRequested): bool {
-                    return $stopRequested;
+                shouldStop: static function () use (&$stopRequested, $masterPid): bool {
+                    // Stop on a shutdown signal, or when this worker has been orphaned
+                    // — its WorkerMaster (parent pid) is gone.
+                    return $stopRequested || ($masterPid !== null && self::isOrphaned($masterPid));
                 },
                 onDrainStart: static function () use ($flowKey): void {
                     // Leave the SO_REUSEPORT group early: stop accepting so new
@@ -171,6 +293,25 @@ readonly class HttpServer
     }
 
     /**
+     * Whether this worker has been orphaned — its launching master is no longer its
+     * parent. Uses posix_getppid() (immune to PID reuse: the kernel reparents the
+     * worker once the master dies, so getppid stops matching). Falls back to a
+     * signal-0 liveness probe when posix_getppid is unavailable.
+     */
+    private static function isOrphaned(int $masterPid): bool
+    {
+        if (function_exists('posix_getppid')) {
+            return posix_getppid() !== $masterPid;
+        }
+
+        if (function_exists('posix_kill')) {
+            return !@posix_kill($masterPid, 0);
+        }
+
+        return false;
+    }
+
+    /**
      * Runs inside a spawned coroutine: decode the request, resolve the handler's
      * result, then send it back to Go. A plain Response is one atomic write; a
      * StreamedResponse is driven head/chunk/end. Resolution is guarded so the
@@ -179,16 +320,19 @@ readonly class HttpServer
      *
      * @param Closure(Request): (Response|StreamedResponse) $handler
      * @param null|Closure(Throwable, Request): ?Response   $onError
-     * @param null|Closure(AccessLogEntry): void            $accessLog
      */
-    private static function handle(Closure $handler, ?Closure $onError, ?Closure $accessLog, string $payload): void
+    private static function handle(Closure $handler, ?Closure $onError, string $payload): void
     {
-        $startedAt = microtime(true);
-
         $request = Request::fromPayload($payload);
 
-        $response = self::resolveResponse($handler, $onError, $request);
+        $response = self::resolveResponse(
+            handler: $handler,
+            onError: $onError,
+            request: $request,
+        );
 
+        // The access log is written on the Go side (see ext httpserver server.go),
+        // so the per-request hot path here makes no extra PHP->Go crossing for it.
         if ($response instanceof StreamedResponse) {
             self::stream($request, $response, $onError);
         } else {
@@ -198,18 +342,6 @@ readonly class HttpServer
                     status: $response->status,
                     headers: $response->headers,
                     body: $response->body,
-                ),
-            );
-        }
-
-        if ($accessLog !== null) {
-            $accessLog(
-                new AccessLogEntry(
-                    startedAt: $startedAt,
-                    method: $request->method,
-                    path: $request->path,
-                    status: $response->status,
-                    executionMs: (microtime(true) - $startedAt) * 1000,
                 ),
             );
         }
@@ -238,9 +370,15 @@ readonly class HttpServer
         } catch (Throwable $exception) {
             self::notifyOnError($onError, $exception, $request);
         } finally {
-            FeatureExecutor::exec(
-                payload: RespondPayload::end($request->requestId),
-            );
+            try {
+                FeatureExecutor::exec(
+                    payload: RespondPayload::end($request->requestId),
+                );
+            } catch (Throwable) {
+                // Best-effort stream teardown: if the connection is already gone
+                // (aborted/timed out) the end write fails — nothing left to do, and
+                // it must not mask the original failure or skip the access log.
+            }
         }
     }
 
@@ -255,8 +393,11 @@ readonly class HttpServer
      *
      * @param null|Closure(Throwable, Request): ?Response $onError
      */
-    private static function resolveResponse(Closure $handler, ?Closure $onError, Request $request): Response|StreamedResponse
-    {
+    private static function resolveResponse(
+        Closure $handler,
+        ?Closure $onError,
+        Request $request,
+    ): Response|StreamedResponse {
         try {
             $response = $handler($request);
 

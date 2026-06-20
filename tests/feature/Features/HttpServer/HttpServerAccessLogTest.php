@@ -36,13 +36,46 @@ class HttpServerAccessLogTest extends TestCase
         }
     }
 
-    private function get(string $url): void
+    /**
+     * A request whose URL-encoded path decodes to a newline must not be able to
+     * forge an extra access-log line: the control bytes are escaped (\xNN) so the
+     * whole request stays on a single line.
+     */
+    public function testEncodedNewlineInPathCannotForgeALogLine(): void
+    {
+        $server = TestHttpServer::start();
+
+        try {
+            // %0A decodes to "\n"; "forged200ms" mimics the tail of a fake access-log
+            // line. Sent path-as-is so curl forwards the raw %0A unchanged. (No spaces
+            // in the path: a raw space would make an invalid request line.)
+            $this->get(
+                $server->baseUrl() . '/inj%0Aforged200ms',
+                pathAsIs: true,
+            );
+
+            usleep(150_000);
+
+            $output = $server->output();
+
+            // The decoded newline is escaped, keeping method/path/status on one line.
+            self::assertStringContainsString('GET /inj\\x0Aforged200ms 404', $output);
+
+            // No raw newline leaked into the path field, so it cannot start a new line.
+            self::assertStringNotContainsString("/inj\nforged", $output);
+        } finally {
+            $server->stop();
+        }
+    }
+
+    private function get(string $url, bool $pathAsIs = false): void
     {
         $curl = curl_init($url);
 
         curl_setopt_array($curl, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT        => 5,
+            CURLOPT_PATH_AS_IS     => $pathAsIs,
         ]);
 
         curl_exec($curl);
