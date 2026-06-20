@@ -563,6 +563,18 @@ vendor/bin/sconcur-server status --configPath=/app/master.json >/dev/null \
 - ~~**Env-фолбэк для `runtimeDir`/`name`**~~ (**решено**). Все команды берут один
   `--configPath`, а `runtimeDir`/`name` читаются из конфига — `status`/`stop`
   автоматически согласованы со `start` без дублирования флагов.
+- **Строгая проверка типов значений конфига** (отложено — находка из ревью). Сейчас
+  `MasterConfig::fromArray` валидирует набор ключей (рефлексия), `name`, тайминги
+  (`>= 0`) и скалярность `server`-значений, но **типы остальных значений** слабые:
+  `(int)`/`(string)`-касты молча коэрсят (`"workerCount": "abc"` → `0`;
+  `"runtimeDir": ["x"]` → warning «Array to string» + `"Array"`), а `stringList`/
+  `stringMap` молча отбрасывают не-массив/не-скалярные элементы. По образцу
+  `HttpServer::fromArgs` (но с учётом, что JSON уже типизирован — проверять
+  `is_int`/`is_string`/`is_array`, а не парсить строку) ввести строгие
+  типизированные ридеры: несоответствие типа → `InvalidConfigException` (`EXIT_USAGE`).
+  Рефлексию для типов **не** использовать — формы массивов (`list<string>` vs
+  `array<string,string>` vs `array<string,scalar>`) она не раскрывает; делать явными
+  helper'ами.
 - **`--daemon`** (стретч, не сделано) — форк мастера в фон (мастеру это можно, он без
   Go-рантайма). Сейчас `start` только foreground (под systemd/docker/guard — норм).
 - **Rolling reload** (**запланировано, отложено** — делать в следующей итерации).
