@@ -12,36 +12,34 @@ $benchmarker = new Benchmarker(
 
 $isLogProcess = $benchmarker->isLogProcess();
 
-$sleeper = new Sleeper();
-
 $benchmarker->run(
-    syncCallback: static function () use ($sleeper, $isLogProcess) {
+    syncCallback: static function () use ($isLogProcess) {
         $item = uniqid();
 
         if ($isLogProcess) {
             echo "$item: sync: start\n";
         }
 
-        $sleeper->msleep(milliseconds: 1);
+        Sleeper::usleep(microseconds: 1000);
 
         if ($isLogProcess) {
             echo "$item: sync: finished\n";
         }
     },
-    asyncCallback: static function () use ($sleeper, $isLogProcess) {
+    asyncCallback: static function () use ($isLogProcess) {
         $item = uniqid();
 
         if ($isLogProcess) {
             echo "$item: start\n";
         }
 
-        $sleeper->sleep(seconds: 1);
+        Sleeper::sleep(seconds: 1);
 
         if ($isLogProcess) {
             echo "$item: woke first\n";
         }
 
-        $sleeper->msleep(milliseconds: 10);
+        Sleeper::usleep(microseconds: 10000);
 
         if ($isLogProcess) {
             echo "$item: woke second\n";

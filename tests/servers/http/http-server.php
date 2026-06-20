@@ -48,9 +48,7 @@ use SConcur\Features\Sleeper\Sleeper;
 // check is off (standalone run).
 $server = HttpServer::fromArgs($_SERVER['argv']);
 
-$sleeper = new Sleeper();
-
-$server->serve(static function (Request $request) use ($sleeper): Response|StreamedResponse {
+$server->serve(static function (Request $request): Response|StreamedResponse {
     if ($request->path === '/method') {
         return new Response(body: $request->method);
     }
@@ -95,13 +93,13 @@ $server->serve(static function (Request $request) use ($sleeper): Response|Strea
             body: 'cookies',
             headers: ['Set-Cookie' => ['a=1', 'b=2']],
         ),
-        $request->path === '/stream'      => streamRoute($sleeper),
-        $request->path === '/slow-stream' => slowStreamRoute($sleeper),
+        $request->path === '/stream'      => streamRoute(),
+        $request->path === '/slow-stream' => slowStreamRoute(),
         $request->path === '/truncated'   => truncatedRoute(),
         str_starts_with($request->path, '/big/')      => bigRoute($request->path),
         str_starts_with($request->path, '/redirect/')  => redirectRoute($request->path),
         $request->path === '/throw'       => throw new RuntimeException('boom in handler'),
-        str_starts_with($request->path, '/msleep/') => msleepRoute($sleeper, $request->path),
+        str_starts_with($request->path, '/msleep/') => msleepRoute($request->path),
         str_starts_with($request->path, '/native-msleep/') => nativeMsleepRoute($request->path),
         str_starts_with($request->path, '/cpu/')    => cpuRoute($request->path),
         str_starts_with($request->path, '/status/') => statusRoute($request->path),
@@ -123,16 +121,16 @@ function headerValue(Request $request, string $name): string
     return '';
 }
 
-function msleepRoute(Sleeper $sleeper, string $path): Response
+function msleepRoute(string $path): Response
 {
     $milliseconds = (int) substr($path, strlen('/msleep/'));
 
-    $sleeper->msleep(milliseconds: $milliseconds);
+    Sleeper::usleep(microseconds: $milliseconds * 1000);
 
     return new Response(body: 'slept');
 }
 
-// Native, BLOCKING sleep — unlike the async msleep above it does NOT yield to the
+// Native, BLOCKING sleep — unlike the async usleep above it does NOT yield to the
 // scheduler, so it freezes the whole single-threaded server. Used to verify that the
 // Go-side handlerTimeoutMs still answers the client with a 504 even when the PHP
 // handler is blocked natively (the timer fires independently of PHP).
@@ -158,31 +156,31 @@ function truncatedRoute(): Response
     );
 }
 
-function streamRoute(Sleeper $sleeper): StreamedResponse
+function streamRoute(): StreamedResponse
 {
     return new StreamedResponse(
-        writer: static function (ResponseStream $out) use ($sleeper): void {
+        writer: static function (ResponseStream $out): void {
             foreach (['a', 'b', 'c'] as $part) {
                 $out->write("chunk-$part\n");
 
                 // Async work between chunks: other requests keep being served.
-                $sleeper->msleep(milliseconds: 50);
+                Sleeper::usleep(microseconds: 50_000);
             }
         },
         headers: ['Content-Type' => 'text/plain'],
     );
 }
 
-function slowStreamRoute(Sleeper $sleeper): StreamedResponse
+function slowStreamRoute(): StreamedResponse
 {
     // Four chunks 100ms apart (~400ms total): a small handlerTimeoutMs cuts it
     // mid-stream. Used by the handler-timeout test.
     return new StreamedResponse(
-        writer: static function (ResponseStream $out) use ($sleeper): void {
+        writer: static function (ResponseStream $out): void {
             foreach (['p0', 'p1', 'p2', 'p3'] as $part) {
                 $out->write("$part\n");
 
-                $sleeper->msleep(milliseconds: 100);
+                Sleeper::usleep(microseconds: 100_000);
             }
         },
         headers: ['Content-Type' => 'text/plain'],

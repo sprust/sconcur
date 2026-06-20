@@ -240,8 +240,6 @@ php -d extension=./build/sconcur.so -r "echo \SConcur\Extension\ping('hello') . 
 ```
 ## example
 ```php
-$sleeper = new \SConcur\Features\Sleeper\Sleeper();
-
 $collection = new \SConcur\Features\Mongodb\Connection\Client('mongodb://localhost:27017')
     ->selectDatabase('example')
     ->selectCollection('example');
@@ -249,16 +247,16 @@ $collection = new \SConcur\Features\Mongodb\Connection\Client('mongodb://localho
 $waitGroup = \SConcur\WaitGroup::create();
 
 $waitGroup->add(
-    function () use ($sleeper) {
-        $sleeper->sleep(seconds: 1);
+    function () {
+        \SConcur\Features\Sleeper\Sleeper::sleep(seconds: 1);
 
         return 1;
     }
 );
 
 $waitGroup->add(
-    function () use ($sleeper) {
-        $sleeper->msleep(milliseconds: 11);
+    function () {
+        \SConcur\Features\Sleeper\Sleeper::usleep(microseconds: 11_000);
 
         return 2;
     }

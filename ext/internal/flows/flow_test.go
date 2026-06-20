@@ -40,7 +40,7 @@ func receive(t *testing.T, flow *Flow, results chan *dto.Result) *dto.Result {
 func TestOnDeliveredCancelsTaskContextAfterDelivery(t *testing.T) {
 	flow, results := newTestFlow("flow")
 
-	payload, err := msgpack.Marshal(map[string]int64{"ms": 1})
+	payload, err := msgpack.Marshal(map[string]int64{"us": 1000})
 
 	if err != nil {
 		t.Fatal(err)

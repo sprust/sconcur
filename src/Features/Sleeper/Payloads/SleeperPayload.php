@@ -13,7 +13,7 @@ use SConcur\Transport\PayloadInterface;
 readonly class SleeperPayload implements PayloadInterface
 {
     public function __construct(
-        private int $milliseconds,
+        protected int $microseconds,
     ) {
     }
 
@@ -28,7 +28,7 @@ readonly class SleeperPayload implements PayloadInterface
     public function getData(): array
     {
         return [
-            'ms' => $this->milliseconds,
+            'us' => $this->microseconds,
         ];
     }
 }

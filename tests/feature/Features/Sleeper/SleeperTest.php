@@ -10,50 +10,41 @@ use Throwable;
 
 class SleeperTest extends BaseAsyncTestCase
 {
-    private Sleeper $sleeper;
-
     private float $startTime = 0;
     private float $endTime   = 0;
-
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        $this->sleeper = new Sleeper();
-    }
 
     protected function on_1_start(): void
     {
         $this->startTime = microtime(true);
 
-        $this->sleeper->msleep(milliseconds: 10);
+        Sleeper::usleep(microseconds: 10000);
     }
 
     protected function on_1_middle(): void
     {
-        $this->sleeper->msleep(milliseconds: 10);
+        Sleeper::usleep(microseconds: 10000);
     }
 
     protected function on_2_start(): void
     {
-        $this->sleeper->msleep(milliseconds: 10);
+        Sleeper::usleep(microseconds: 10000);
     }
 
     protected function on_2_middle(): void
     {
-        $this->sleeper->msleep(milliseconds: 10);
+        Sleeper::usleep(microseconds: 10000);
     }
 
     protected function on_iterate(): void
     {
         $this->endTime = microtime(true);
 
-        $this->sleeper->msleep(milliseconds: 1);
+        Sleeper::usleep(microseconds: 1000);
     }
 
     protected function on_exception(): void
     {
-        $this->sleeper->msleep(milliseconds: -1);
+        Sleeper::usleep(microseconds: -1000);
     }
 
     protected function assertException(Throwable $exception): void

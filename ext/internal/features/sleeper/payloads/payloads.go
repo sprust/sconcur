@@ -6,5 +6,5 @@ package payloads
 // SleeperPayload is the payload of a sleep command.
 // PHP: SConcur\Features\Sleeper\Payloads\SleeperPayload.
 type SleeperPayload struct {
-	Milliseconds int64 `json:"ms" msgpack:"ms"`
+	Microseconds int64 `json:"us" msgpack:"us"`
 }

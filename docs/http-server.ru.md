@@ -89,12 +89,10 @@ php -d extension=./ext/build/sconcur.so server.php
 ```php
 use SConcur\Features\Sleeper\Sleeper;
 
-$sleeper = new Sleeper();
-
-$server->serve(static function (Request $request) use ($sleeper): Response {
+$server->serve(static function (Request $request): Response {
     if ($request->path === '/slow') {
-        $sleeper->msleep(milliseconds: 500); // корутина приостанавливается,
-                                              // другие запросы продолжают обслуживаться
+        Sleeper::usleep(microseconds: 500_000); // корутина приостанавливается,
+                                                 // другие запросы продолжают обслуживаться
         return new Response(body: 'done');
     }
 
@@ -280,14 +278,15 @@ new Response(
 ```php
 use SConcur\Features\HttpServer\Dto\ResponseStream;
 use SConcur\Features\HttpServer\Dto\StreamedResponse;
+use SConcur\Features\Sleeper\Sleeper;
 
 return new StreamedResponse(
     status: 200,
     headers: ['Content-Type' => 'text/event-stream'],
-    writer: static function (ResponseStream $out) use ($sleeper): void {
+    writer: static function (ResponseStream $out): void {
         foreach (range(1, 5) as $i) {
             $out->write("data: event $i\n\n"); // отдаётся и сбрасывается клиенту немедленно
-            $sleeper->msleep(milliseconds: 1000); // между чанками можно делать async-работу
+            Sleeper::sleep(seconds: 1); // между чанками можно делать async-работу
         }
     },
 );

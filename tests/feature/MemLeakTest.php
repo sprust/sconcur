@@ -19,15 +19,6 @@ class MemLeakTest extends BaseTestCase
      */
     private const int MAX_GROWTH_BYTES = 512 * 1024;
 
-    private Sleeper $sleeper;
-
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        $this->sleeper = new Sleeper();
-    }
-
     /**
      * Ported from tests/mem-leak/endless-add.php: a single long-living flow that
      * keeps receiving new tasks while iterating must not grow its memory usage.
@@ -35,7 +26,7 @@ class MemLeakTest extends BaseTestCase
     public function testEndlessAddKeepsMemoryStable(): void
     {
         $callback = function (): void {
-            $this->sleeper->msleep(milliseconds: 1);
+            Sleeper::usleep(microseconds: 1000);
         };
 
         $waitGroup = WaitGroup::create();
@@ -74,7 +65,7 @@ class MemLeakTest extends BaseTestCase
     public function testEndlessBreakKeepsMemoryStable(): void
     {
         $callback = function (): void {
-            $this->sleeper->msleep(milliseconds: 1);
+            Sleeper::usleep(microseconds: 1000);
         };
 
         $baseline = 0;
