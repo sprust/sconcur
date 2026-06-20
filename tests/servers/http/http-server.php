@@ -4,12 +4,19 @@ declare(strict_types=1);
 
 require dirname(__DIR__, 3) . '/vendor/autoload.php';
 
+use Dotenv\Dotenv;
+use Nyholm\Psr7\Factory\Psr17Factory;
+use SConcur\Features\HttpClient\HttpClient;
 use SConcur\Features\HttpServer\Dto\Request;
 use SConcur\Features\HttpServer\Dto\Response;
 use SConcur\Features\HttpServer\Dto\ResponseStream;
 use SConcur\Features\HttpServer\Dto\StreamedResponse;
 use SConcur\Features\HttpServer\HttpServer;
+use SConcur\Features\Mongodb\Connection\Client as MongoClient;
+use SConcur\Features\Mysql\Connection as MysqlConnection;
+use SConcur\Features\Pgsql\Connection as PgsqlConnection;
 use SConcur\Features\Sleeper\Sleeper;
+use SConcur\WaitGroup;
 
 /**
  * Demo / test HTTP server. Routes:
@@ -29,6 +36,7 @@ use SConcur\Features\Sleeper\Sleeper;
  *   GET  /msleep/{ms}       -> sleeps {ms} (async), then 200 "slept" (concurrency demo)
  *   GET  /native-msleep/{ms} -> blocks the thread {ms} natively (handler-timeout test)
  *   GET  /cpu/{n}           -> runs a CPU-bound sha256 loop of {n} rounds (bench)
+ *   GET  /all               -> fans out across EVERY I/O feature concurrently (load test)
  *   GET  /throw             -> handler throws -> framework answers 500
  *   GET  /status/{code}     -> responds with the given status code
  *   (anything else)         -> 404 "not found"
@@ -93,6 +101,7 @@ $server->serve(static function (Request $request): Response|StreamedResponse {
             body: 'cookies',
             headers: ['Set-Cookie' => ['a=1', 'b=2']],
         ),
+        $request->path === '/all'         => allFeaturesRoute(),
         $request->path === '/stream'      => streamRoute(),
         $request->path === '/slow-stream' => slowStreamRoute(),
         $request->path === '/truncated'   => truncatedRoute(),
@@ -141,6 +150,155 @@ function nativeMsleepRoute(string $path): Response
     usleep($milliseconds * 1000);
 
     return new Response(body: 'native-slept');
+}
+
+/**
+ * Load-test route: fans out across EVERY async I/O feature concurrently in one
+ * request (a nested WaitGroup) — Sleeper, MongoDB, MySQL, PostgreSQL and the
+ * HTTP client (which calls this server's own "/"). Used to watch memory/CPU under
+ * load with the full feature set exercised at once. Each feature is isolated so a
+ * transient backend hiccup degrades just that feature (visible per-feature error
+ * rate) instead of failing the whole request. Returns a JSON status map.
+ */
+function allFeaturesRoute(): Response
+{
+    [$mongo, $mysql, $pgsql, $httpClient, $factory, $selfUrl] = allFeaturesContext();
+
+    $status = [];
+
+    $waitGroup = WaitGroup::create();
+
+    $waitGroup->add(static function () use (&$status): void {
+        $status['sleeper'] = allFeatureStatus(static function (): void {
+            Sleeper::usleep(microseconds: 1000);
+        });
+    });
+
+    $waitGroup->add(static function () use (&$status, $mongo): void {
+        $status['mongodb'] = allFeatureStatus(static function () use ($mongo): void {
+            $mongo->insertOne(['t' => 'load']);
+            $mongo->findOne(filter: ['t' => 'load']);
+        });
+    });
+
+    $waitGroup->add(static function () use (&$status, $mysql): void {
+        $status['mysql'] = allFeatureStatus(static function () use ($mysql): void {
+            $mysql->fetchAll('SELECT 1');
+        });
+    });
+
+    $waitGroup->add(static function () use (&$status, $pgsql): void {
+        $status['pgsql'] = allFeatureStatus(static function () use ($pgsql): void {
+            $pgsql->fetchAll('SELECT 1');
+        });
+    });
+
+    $waitGroup->add(static function () use (&$status, $httpClient, $factory, $selfUrl): void {
+        $status['httpClient'] = allFeatureStatus(static function () use ($httpClient, $factory, $selfUrl): void {
+            $httpClient->sendRequest($factory->createRequest('GET', $selfUrl));
+        });
+    });
+
+    $waitGroup->waitResults();
+
+    return new Response(
+        body: (string) json_encode($status),
+        headers: ['Content-Type' => 'application/json'],
+    );
+}
+
+/**
+ * Lazily builds and caches the per-worker connections used by /all on its first
+ * hit (so the other demo routes never pay for them and never require the backends).
+ * The Go side pools the real DB/HTTP connections by URI/DSN, so reusing these
+ * objects across requests is cheap.
+ *
+ * @return array{0: \SConcur\Features\Mongodb\Connection\Collection, 1: MysqlConnection, 2: PgsqlConnection, 3: HttpClient, 4: Psr17Factory, 5: string}
+ */
+function allFeaturesContext(): array
+{
+    /** @var array{0: \SConcur\Features\Mongodb\Connection\Collection, 1: MysqlConnection, 2: PgsqlConnection, 3: HttpClient, 4: Psr17Factory, 5: string}|null $context */
+    static $context = null;
+
+    if ($context !== null) {
+        return $context;
+    }
+
+    Dotenv::createImmutable(dirname(__DIR__, 3))->safeLoad();
+
+    $factory = new Psr17Factory();
+
+    $context = [
+        new MongoClient(
+            uri: sprintf(
+                'mongodb://%s:%s@%s:%s',
+                $_ENV['MONGO_ADMIN_USERNAME'],
+                $_ENV['MONGO_ADMIN_PASSWORD'],
+                $_ENV['MONGO_HOST'],
+                $_ENV['MONGO_PORT'],
+            ),
+        )
+            ->selectDatabase('u-test')
+            ->selectCollection('load_all'),
+        new MysqlConnection(
+            dsn: sprintf(
+                '%s:%s@tcp(%s:%s)/%s?parseTime=true',
+                $_ENV['MYSQL_USER'],
+                $_ENV['MYSQL_PASSWORD'],
+                $_ENV['MYSQL_HOST'],
+                $_ENV['MYSQL_PORT'],
+                $_ENV['MYSQL_DATABASE'],
+            ),
+        ),
+        new PgsqlConnection(
+            dsn: sprintf(
+                'postgres://%s:%s@%s:%s/%s?sslmode=disable',
+                $_ENV['POSTGRES_USER'],
+                $_ENV['POSTGRES_PASSWORD'],
+                $_ENV['POSTGRES_HOST'],
+                $_ENV['POSTGRES_PORT'],
+                $_ENV['POSTGRES_DB'],
+            ),
+        ),
+        new HttpClient(responseFactory: $factory),
+        $factory,
+        allFeaturesSelfUrl(),
+    ];
+
+    return $context;
+}
+
+/**
+ * Runs one feature call and returns 'ok' or 'err: <message>', so a transient backend
+ * failure degrades that one feature instead of 500-ing the whole /all request — the
+ * load test keeps running and the per-feature error rate stays visible.
+ */
+function allFeatureStatus(callable $call): string
+{
+    try {
+        $call();
+
+        return 'ok';
+    } catch (Throwable $exception) {
+        return 'err: ' . $exception->getMessage();
+    }
+}
+
+/**
+ * The URL the HTTP-client feature hits for /all: this very server's own "/", derived
+ * from the --address launch flag (0.0.0.0 → 127.0.0.1).
+ */
+function allFeaturesSelfUrl(): string
+{
+    $address = '127.0.0.1:8080';
+
+    foreach ($_SERVER['argv'] as $argument) {
+        if (str_starts_with($argument, '--address=')) {
+            $address = substr($argument, strlen('--address='));
+        }
+    }
+
+    return 'http://' . str_replace('0.0.0.0', '127.0.0.1', $address) . '/';
 }
 
 function truncatedRoute(): Response

@@ -210,3 +210,10 @@ bench-http-reuseport-cpu:
 # Tunables via env, e.g.: make bench-http-throughput SERVERS=16 DURATION=20
 bench-http-throughput:
 	tests/benchmarks/http-throughput.sh
+
+# Runs on the HOST (needs wrk + the mongodb/mysql/postgres services up): load the
+# /all route (fans out across EVERY async I/O feature per request) and sample
+# CPU/memory of the server and backend containers + per-worker RSS (leak check).
+# Tunables via env, e.g.: make bench-http-load-stats SERVERS=12 DURATION=30
+bench-http-load-stats:
+	tests/benchmarks/http-load-stats.sh

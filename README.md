@@ -249,6 +249,9 @@ $collection->insertOne(['name' => 'example']);
 - [Как добавить новый сервер](docs/adding-a-server.ru.md) — долгоживущий сетевой
   сервер (как `HttpServer`): паттерн Serve/Respond, цикл обслуживания, graceful
   shutdown и `SO_REUSEPORT`, интеграция с мастером воркеров.
+- [Нагрузочное тестирование](docs/load-testing.ru.md) — поведение сервера под
+  нагрузкой всеми I/O-фичами сразу (ручка `/all` + `bench-http-load-stats`):
+  результаты по памяти/CPU и выводы.
 
 ## Build
 ```shell
