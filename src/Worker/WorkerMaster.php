@@ -49,6 +49,8 @@ class WorkerMaster
 
     protected MasterStateFile $stateFile;
 
+    protected MasterReloadFile $reloadFile;
+
     protected int $masterPid = 0;
 
     protected string $cwd = '.';
@@ -65,6 +67,18 @@ class WorkerMaster
     protected array $fastFails = [];
 
     protected bool $stopping = false;
+
+    protected bool $reloading = false;
+
+    /** @var list<int> slot indices still to roll in the current rolling reload */
+    protected array $reloadQueue = [];
+
+    /** slot currently draining for reload (SIGTERM sent, awaiting exit), or -1 if none */
+    protected int $reloadingIndex = -1;
+
+    protected float $reloadDeadline = 0.0;
+
+    protected bool $reloadKillSent = false;
 
     protected bool $termSent = false;
 
@@ -146,6 +160,10 @@ class WorkerMaster
             path: $this->runtimeDir . '/' . $this->name . '-state.json',
         );
 
+        $this->reloadFile = new MasterReloadFile(
+            path: $this->runtimeDir . '/' . $this->name . '.reload',
+        );
+
         // Acquire the single-instance lock first: a second master fails fast here.
         $this->lock->acquire();
 
@@ -167,6 +185,10 @@ class WorkerMaster
             );
 
             $this->writeState();
+
+            // Drop any stale trigger so a leftover file does not fire a spurious reload
+            // of the workers we are about to spawn.
+            $this->reloadFile->clear();
 
             $this->spawnAll();
             $this->supervise();
@@ -414,12 +436,15 @@ class WorkerMaster
                     break;
                 }
             } else {
+                $this->checkReloadSignal();
+                $this->driveReload($now);
                 $this->respawnDue($now);
 
                 // RestartPolicy::Never (or a clean exit under OnFailure): once every
                 // worker has finished and nothing is pending, there is nothing left
-                // to supervise.
-                if ($this->allSlotsEmpty() && $this->respawnAt === []) {
+                // to supervise. A reload in progress keeps the master alive even when a
+                // slot is momentarily empty between the drain and its replacement.
+                if (!$this->reloading && $this->allSlotsEmpty() && $this->respawnAt === []) {
                     $this->logger->master(MasterLogger::INFO, 'all workers finished; exiting');
 
                     break;
@@ -479,6 +504,19 @@ class WorkerMaster
             return;
         }
 
+        // The worker we are rolling for a reload exited on purpose: do not treat it as
+        // a crash (no policy check, no backoff). driveReload() spawns its replacement.
+        if ($this->reloading && $index === $this->reloadingIndex) {
+            $this->logger->worker(
+                level: MasterLogger::INFO,
+                workerPid: $pid,
+                workerIndex: $index,
+                message: sprintf('exited %s uptime=%.1fs (reloading)', $reason, $uptimeSeconds),
+            );
+
+            return;
+        }
+
         if (!$this->restartPolicy->shouldRestart($exitedCleanly)) {
             $this->logger->worker(
                 level: MasterLogger::INFO,
@@ -533,6 +571,108 @@ class WorkerMaster
                 $this->spawn($index);
             }
         }
+    }
+
+    /**
+     * The reload trigger file (written by the `reload` CLI command) asks for a rolling
+     * restart of every worker. Picking up the request snapshots the current slots into
+     * a queue that driveShutdown-style logic then rolls one at a time.
+     */
+    protected function checkReloadSignal(): void
+    {
+        if ($this->reloading || !$this->reloadFile->requested()) {
+            return;
+        }
+
+        $this->reloading      = true;
+        $this->reloadQueue    = array_keys($this->slots);
+        $this->reloadingIndex = -1;
+        $this->reloadKillSent = false;
+
+        $this->logger->master(
+            level: MasterLogger::INFO,
+            message: sprintf('reload requested; rolling %d worker(s)', count($this->reloadQueue)),
+        );
+    }
+
+    /**
+     * Drives the rolling reload: roll one slot at a time so the pool keeps serving
+     * (SO_REUSEPORT siblings cover each draining worker). For the current slot: send
+     * SIGTERM, wait up to shutdownTimeoutMs for it to drain (SIGKILL past that), then
+     * spawn a fresh replacement and advance to the next slot. Clearing the trigger
+     * file signals completion to the waiting CLI.
+     */
+    protected function driveReload(float $now): void
+    {
+        if (!$this->reloading) {
+            return;
+        }
+
+        // A slot is mid-roll: wait for the worker to drain and exit (reapAndLog reaps
+        // it into a null slot), escalating to SIGKILL once its drain deadline passes.
+        if ($this->reloadingIndex !== -1) {
+            $process = $this->slots[$this->reloadingIndex] ?? null;
+
+            if ($process !== null) {
+                if (!$this->reloadKillSent && $now > $this->reloadDeadline) {
+                    $this->logger->worker(
+                        level: MasterLogger::WARN,
+                        workerPid: $process->pid(),
+                        workerIndex: $this->reloadingIndex,
+                        message: 'reload drain timeout; sending SIGKILL',
+                    );
+
+                    $process->signal(SIGKILL);
+
+                    $this->reloadKillSent = true;
+                }
+
+                return;
+            }
+
+            $index = $this->reloadingIndex;
+
+            $this->reloadingIndex = -1;
+            $this->reloadKillSent = false;
+
+            unset($this->respawnAt[$index]);
+
+            $this->spawn($index);
+
+            return;
+        }
+
+        // No slot in flight: finish the reload, or start the next slot in the queue.
+        if ($this->reloadQueue === []) {
+            $this->reloading = false;
+
+            $this->reloadFile->clear();
+
+            $this->logger->master(MasterLogger::INFO, 'reload complete');
+
+            return;
+        }
+
+        $index = array_shift($this->reloadQueue);
+
+        $process = $this->slots[$index] ?? null;
+
+        // An already-empty slot (awaiting a crash respawn): just bring up a fresh one.
+        if ($process === null) {
+            unset($this->respawnAt[$index]);
+
+            $this->spawn($index);
+
+            return;
+        }
+
+        $this->reloadingIndex = $index;
+        $this->reloadKillSent = false;
+        $this->reloadDeadline = $now + $this->shutdownTimeoutMs / 1000;
+
+        $this->logger->worker(MasterLogger::INFO, $process->pid(), $index, 'reloading; sending SIGTERM');
+
+        $process->signal(SIGTERM);
     }
 
     /**

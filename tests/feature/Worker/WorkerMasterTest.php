@@ -435,6 +435,57 @@ class WorkerMasterTest extends TestCase
         }
     }
 
+    public function testReloadRollsEveryWorkerWithoutDowntime(): void
+    {
+        $master = TestWorkerMaster::start(['workerCount' => 2]);
+
+        try {
+            $before = $master->distinctWorkerPids();
+
+            self::assertGreaterThanOrEqual(2, count($before), 'both workers should serve before reload');
+
+            // The reload command blocks until the master has rolled every worker.
+            [$code, $output] = TestWorkerMaster::runCommand('reload', $master->configPath());
+
+            self::assertSame(MasterCli::EXIT_OK, $code, 'reload should succeed: ' . $output);
+            self::assertStringContainsString('reloaded', $output);
+
+            // After a full roll the serving pids are all fresh — disjoint from the old
+            // set — and the server kept answering throughout (master still running).
+            $rolled = $this->waitFor(
+                static function () use ($master, $before): bool {
+                    $after = $master->distinctWorkerPids(40);
+
+                    return count($after) >= 2 && array_intersect($before, $after) === [];
+                },
+                timeoutSeconds: 6.0,
+            );
+
+            self::assertTrue($rolled, 'after reload every worker pid must be fresh and serving');
+            self::assertTrue($master->isRunning());
+
+            [$status, $body] = $master->get('/');
+
+            self::assertSame(200, $status, 'the server must stay reachable after a reload');
+            self::assertSame('ok', $body);
+
+            self::assertStringContainsString('reload requested', $master->logText());
+            self::assertStringContainsString('reload complete', $master->logText());
+        } finally {
+            $master->stop();
+        }
+    }
+
+    public function testReloadReportsNotRunningWithoutMaster(): void
+    {
+        $configPath = TestWorkerMaster::writeConfig(['workerCount' => 1]);
+
+        [$code, $output] = TestWorkerMaster::runCommand('reload', $configPath);
+
+        self::assertSame(MasterCli::EXIT_NOT_RUNNING, $code);
+        self::assertStringContainsString('not running', $output);
+    }
+
     /**
      * Polls $condition until it returns true or the timeout elapses.
      *

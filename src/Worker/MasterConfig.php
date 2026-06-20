@@ -154,6 +154,16 @@ readonly class MasterConfig
         return $this->name;
     }
 
+    public function workerCount(): int
+    {
+        return $this->workerCount;
+    }
+
+    public function shutdownTimeoutMs(): int
+    {
+        return $this->shutdownTimeoutMs;
+    }
+
     /**
      * Builds the supervisor. Every `server` entry is expanded into a `--key=value`
      * worker argv flag (booleans render as 1/0); any extra raw `workerArgs` follow.

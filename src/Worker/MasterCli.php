@@ -11,15 +11,18 @@ use Throwable;
  * The universal master CLI behind bin/sconcur-server. Every command takes a
  * single --configPath pointing to a JSON master config (see MasterConfig); there are
  * no other flags. Commands: start (run the supervisor in the foreground), status
- * (report whether a master is running, via the lock) or stop (remove the state file —
- * the master watches it and shuts the pool down gracefully).
+ * (report whether a master is running, via the lock), stop (remove the state file —
+ * the master watches it and shuts the pool down gracefully) or reload (touch the
+ * reload trigger file — the master rolls its workers one by one, zero-downtime with
+ * SO_REUSEPORT).
  *
  * The consumer writes their worker script, points config.workerScript at it, and puts
  * the server params under config.server.
  *
- * Exit codes: 0 ok; 1 error (start failed at runtime); 2 usage (missing/unknown
- * command or invalid config); 3 not-running (only `status` when no master is running).
- * `stop` is idempotent: it returns 0 whether or not a master was running.
+ * Exit codes: 0 ok; 1 error (start failed at runtime, or reload timed out/failed);
+ * 2 usage (missing/unknown command or invalid config); 3 not-running (`status`, or
+ * `reload` when no master is running). `stop` is idempotent: it returns 0 whether or
+ * not a master was running.
  */
 class MasterCli
 {
@@ -58,7 +61,7 @@ class MasterCli
         // Dispatch an empty/unknown command to the usage text before touching the
         // config, so `sconcur-server` with no args prints the command list instead of
         // a "--configPath is required" error.
-        if (!in_array($command, ['start', 'status', 'stop'], true)) {
+        if (!in_array($command, ['start', 'status', 'stop', 'reload'], true)) {
             return $this->usage();
         }
 
@@ -74,6 +77,7 @@ class MasterCli
             'start'  => $this->start($config),
             'status' => $this->status($config),
             'stop'   => $this->stop($config),
+            'reload' => $this->reload($config),
         };
     }
 
@@ -147,6 +151,66 @@ class MasterCli
         }
 
         return $this->fail('stop timeout; master still running', self::EXIT_ERROR);
+    }
+
+    /**
+     * Requests a rolling restart of the running master's workers via the reload
+     * trigger file, then waits until the master consumes it (deletes it once the roll
+     * completes). No signal — and so no PID-reuse risk — is involved.
+     */
+    protected function reload(MasterConfig $config): int
+    {
+        $lockPath = $this->lockPath($config);
+
+        if (!$this->masterRunning($lockPath)) {
+            $this->writeOut('not running');
+
+            return self::EXIT_NOT_RUNNING;
+        }
+
+        $reloadFile = $this->reloadFile($config);
+
+        if (!$reloadFile->request()) {
+            return $this->fail('cannot write reload trigger: ' . $reloadFile->path(), self::EXIT_ERROR);
+        }
+
+        $deadline = microtime(true) + $this->reloadTimeoutMs($config) / 1000;
+
+        // The master deletes the trigger once the rolling restart finishes; poll for it.
+        while (microtime(true) < $deadline) {
+            if (!$this->masterRunning($lockPath)) {
+                return $this->fail('master exited during reload', self::EXIT_ERROR);
+            }
+
+            if (!$reloadFile->requested()) {
+                $this->writeOut('reloaded');
+
+                return self::EXIT_OK;
+            }
+
+            usleep(100_000);
+        }
+
+        return $this->fail('reload timeout; master still rolling workers', self::EXIT_ERROR);
+    }
+
+    /**
+     * A generous bound on how long the rolling reload may take: each worker may drain
+     * for up to the master's shutdownTimeoutMs before it is killed, and they roll one
+     * at a time.
+     */
+    protected function reloadTimeoutMs(MasterConfig $config): int
+    {
+        $workers = $config->workerCount() > 0 ? $config->workerCount() : Cpu::count();
+
+        return $workers * ($config->shutdownTimeoutMs() + 2_000) + 5_000;
+    }
+
+    protected function reloadFile(MasterConfig $config): MasterReloadFile
+    {
+        return new MasterReloadFile(
+            path: $config->runtimeDir() . '/' . $config->name() . '.reload',
+        );
     }
 
     /**
@@ -232,7 +296,7 @@ class MasterCli
     protected function usage(): int
     {
         $this->writeErr(<<<USAGE
-            Usage: sconcur-server <start|status|stop> --configPath=FILE
+            Usage: sconcur-server <start|status|stop|reload> --configPath=FILE
 
               --configPath=FILE   JSON master config (required for every command)
 
@@ -245,6 +309,7 @@ class MasterCli
             start   run the supervisor (foreground)
             status  report whether a master is running (exit 0 running, 3 stopped/stale)
             stop    remove the state file (the stop signal) and wait for the master to exit
+            reload  roll the workers one by one (zero-downtime restart) and wait for it
             USAGE);
 
         return self::EXIT_USAGE;
