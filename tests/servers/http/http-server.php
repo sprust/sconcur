@@ -26,7 +26,8 @@ use SConcur\Features\Sleeper\Sleeper;
  *   GET  /stream            -> 200 chunked, body streamed in parts (streaming demo)
  *   GET  /big/{n}           -> 200, body = {n} bytes of a deterministic pattern
  *   *    /redirect/{n}      -> 302 to /redirect/{n-1} until n=0, then 200 "done"
- *   GET  /msleep/{ms}       -> sleeps {ms}, then 200 "slept" (concurrency demo)
+ *   GET  /msleep/{ms}       -> sleeps {ms} (async), then 200 "slept" (concurrency demo)
+ *   GET  /native-msleep/{ms} -> blocks the thread {ms} natively (handler-timeout test)
  *   GET  /cpu/{n}           -> runs a CPU-bound sha256 loop of {n} rounds (bench)
  *   GET  /throw             -> handler throws -> framework answers 500
  *   GET  /status/{code}     -> responds with the given status code
@@ -101,6 +102,7 @@ $server->serve(static function (Request $request) use ($sleeper): Response|Strea
         str_starts_with($request->path, '/redirect/')  => redirectRoute($request->path),
         $request->path === '/throw'       => throw new RuntimeException('boom in handler'),
         str_starts_with($request->path, '/msleep/') => msleepRoute($sleeper, $request->path),
+        str_starts_with($request->path, '/native-msleep/') => nativeMsleepRoute($request->path),
         str_starts_with($request->path, '/cpu/')    => cpuRoute($request->path),
         str_starts_with($request->path, '/status/') => statusRoute($request->path),
         default => new Response(body: 'not found', status: 404),
@@ -128,6 +130,19 @@ function msleepRoute(Sleeper $sleeper, string $path): Response
     $sleeper->msleep(milliseconds: $milliseconds);
 
     return new Response(body: 'slept');
+}
+
+// Native, BLOCKING sleep — unlike the async msleep above it does NOT yield to the
+// scheduler, so it freezes the whole single-threaded server. Used to verify that the
+// Go-side handlerTimeoutMs still answers the client with a 504 even when the PHP
+// handler is blocked natively (the timer fires independently of PHP).
+function nativeMsleepRoute(string $path): Response
+{
+    $milliseconds = (int) substr($path, strlen('/native-msleep/'));
+
+    usleep($milliseconds * 1000);
+
+    return new Response(body: 'native-slept');
 }
 
 function truncatedRoute(): Response
