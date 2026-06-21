@@ -14,4 +14,5 @@ enum MethodEnum: int
     case Pgsql       = 7;
     case SocketServe   = 8;
     case SocketRespond = 9;
+    case SocketClient  = 10;
 }

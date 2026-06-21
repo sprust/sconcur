@@ -12,4 +12,5 @@ const (
 	MethodPgsql       Method = 7
 	MethodSocketServe   Method = 8
 	MethodSocketRespond Method = 9
+	MethodSocketClient  Method = 10
 )

@@ -15,6 +15,7 @@ here.
 - [docs/socket-server.ru.md](../docs/socket-server.ru.md) — TCP socket-server feature: length-prefix framing, message handler, params, internals, limits
 - [docs/worker-master.ru.md](../docs/worker-master.ru.md) — worker master: CLI start/status/stop, restart policy, logging, single-instance, orphan self-termination
 - [docs/http-client.ru.md](../docs/http-client.ru.md) — HTTP-client feature (PSR-18): usage, options, streaming, internals
+- [docs/socket-client.ru.md](../docs/socket-client.ru.md) — TCP socket-client feature (dial-side mirror of the socket server): length-prefix framing, Connection read/write/close, params, internals, limits
 - [docs/mysql.ru.md](../docs/mysql.ru.md) — MySQL / universal SQL feature: usage, bindings, transactions, streaming, internals
 - [docs/pgsql.ru.md](../docs/pgsql.ru.md) — PostgreSQL: the SQL feature's second driver; PG-specific differences
 - [.ai/plans/](plans/) — detailed designs for roadmap items
@@ -24,8 +25,14 @@ here.
 The README keeps only a short, one-line-per-item roadmap. Detailed designs for
 roadmap items live in `.ai/plans/` — one Markdown file per plan. When a roadmap
 item grows beyond a sentence (mechanics, API sketch, trade-offs, open
-questions), put the detail in a `.ai/plans/<kebab-name>.md` file and link it
-from the README's `## Планы` bullet instead of inlining it.
+questions), put the detail in a `.ai/plans/<kebab-name>.md` file.
+
+**Plans are a development-only artifact.** Never link to `.ai/plans/*` (or
+reference the `.ai/plans/` directory) from the main `README.md` or from anything
+under `docs/` — those are user-facing. Plan links belong only here, in `.ai/`,
+and in other `.ai/plans/` files. The README's `## Планы` bullets stay one-liners
+with no plan link; once a plan ships, point the README/docs at the feature's
+`docs/*.md` instead.
 
 ## Project
 
@@ -102,6 +109,8 @@ non-fiber path.)
 - `Features/SocketServer/` — long-lived TCP server, **push model** over length-prefix framing: `SocketServer::serve(Closure(Connection): void)`, `SocketServer::fromArgs()`, `Dto/Connection` (`read()`/`write()`/`close()` — the handler drives the connection and pushes frames at will), payloads (`ServePayload`/`RespondPayload` with ops frame/close). One coroutine per connection; an access log line per connection goes to STDOUT. Shares `Scheduler::serve()` with HttpServer. See [docs/socket-server.ru.md](../docs/socket-server.ru.md).
 - `Features/Server/ServerRuntimeSupportTrait` — shared server runtime glue used by both `HttpServer` and `SocketServer`: argv→constructor-override parsing (`fromArgs`), SIGTERM/SIGINT handlers, and the orphaned-worker check.
 - `Features/HttpClient/` — async PSR-18 HTTP client with response streaming: `HttpClient` (`ClientInterface`), `HttpClientOptions`, `Payloads/RequestPayload`, `Dto/ResponseBodyStream` (`StreamInterface`). `HttpClient::download()` writes the response body straight to a file on the Go side (`DownloadFileMode`, `Dto/DownloadResult`, `DownloadException`) — never crossing into PHP. See [docs/http-client.ru.md](../docs/http-client.ru.md).
+- `Features/SocketClient/` — async TCP client (dial-side mirror of `SocketServer`): `SocketClient::connect(string $address): Dto/Connection`, `SocketClientOptions`, command-envelope payloads (`Connect`/`Send`/`Close` via `SocketClientCommandEnum`). `connect()` returns a streaming result (first = `ConnectionMeta`, then inbound frames), so it works on the sync path too (the flow stays alive like HttpClient's body stream). `Dto/Connection` is a thin subclass of the shared `Features/Socket/Dto/AbstractConnection` (also the parent of `SocketServer`'s `Connection`): `read()` pulls inbound frames via `next()`, `write()`/`close()` route by id. See [docs/socket-client.ru.md](../docs/socket-client.ru.md).
+- `Features/Socket/Dto/AbstractConnection` — shared base for both socket `Connection` DTOs (server accept-side and client dial-side): `read()`/`write()`/`close()`/`isClosed()`; subclasses supply the frame/close payloads and the feature's connection-closed exception. Keeps the two features decoupled (both depend on the neutral base, not each other).
 - `Features/Sql/` — universal SQL feature (driver-agnostic core on Go `database/sql`): `Connection` (`query`/`fetchAll`/`exec`/`begin`), `Transaction`, `Results/{RowsResult,ExecResult}`, command-envelope payloads. `Features/Mysql/Connection` and `Features/Pgsql/Connection` are thin driver facades supplying `MethodEnum::Mysql` / `MethodEnum::Pgsql`. See [docs/mysql.ru.md](../docs/mysql.ru.md) and [docs/pgsql.ru.md](../docs/pgsql.ru.md).
 - `Worker/` — worker master (a process supervisor; does NOT load the extension): `WorkerMaster` (`run()`: spawn/supervise/restart/graceful), `MasterConfig` (loads the `--configPath` JSON, expands the `server` block into worker argv), `MasterCli` (`start`/`status`/`stop` behind `bin/sconcur-server`), `WorkerProcess` (proc_open + output capture), `Cpu`, `MasterLock` (flock single-instance), `MasterState`/`MasterStateFile`, `MasterLogger` (daily rotation), `RestartPolicy`. The master injects its pid as `--masterPid`, which `HttpServer::fromArgs()` wires into the orphan check. See [docs/worker-master.ru.md](../docs/worker-master.ru.md).
 
@@ -118,10 +127,13 @@ non-fiber path.)
 - `internal/features/sql/` — driver-agnostic SQL on `database/sql`: one handler dispatches Query/Exec/Begin/Commit/Rollback by the envelope's command; `pools.go` is the `*sql.DB` pool registry (mirrors MongoDB clients), `rows_state.go` streams a SELECT cursor, `transactions.go` pins a `*sql.Tx` to a held begin task (auto-rollback on context cancel). The driver is selected per `Method`: `GetMysql()` registers go-sql-driver/mysql, `GetPgsql()` registers jackc/pgx (error label "pgsql").
 - `internal/features/socketserver/` — raw TCP listener as a streaming state: each accepted connection is one batch streamed to PHP (`ConnectionEvent`); `message_state.go` streams inbound length-prefixed frames (one per `next()` → `Connection::read()`), `server.go` runs the per-connection write loop applying frame/close commands with write-backpressure, `frame.go` is the length-prefix codec, `listen.go` is TCP + `SO_REUSEPORT`. `StopAccepting` closes the listener and half-closes in-flight connections (force-closing push-only ones after a grace) for graceful drain. Push model: no per-message timeout. Two methods, one feature (like httpserver)
 - `internal/features/httpclient/` — `net/http.Client` sending one request as a streaming state: first result carries response metadata + inline first chunk, subsequent results are raw body chunks; reusable transports (keep-alive pool), per-request deadline; optional streamed request body (upload) via an `io.Pipe` fed by `UploadChunk`/`UploadEnd` commands. Sub-operations are selected by a command in the payload envelope (`HttpClientCommand`), like MongoDB — not by separate `MethodEnum` values. `download.go` is the sink path: when the request carries `SinkPath`, the response body is `io.Copy`'d straight into a file (mode→`os.O_*` via `downloadModeToFlags`) and only status+headers return to PHP — the body never crosses the boundary
+- `internal/features/socketclient/` — outbound TCP dialer (dial-side mirror of socketserver): `connect.go` dials with `connectTimeout` and registers a `connectionState` (first `Next()` returns `ConnectionMeta`, subsequent `Next()` stream inbound frames); `feature.go` routes `Connect`/`Send`/`Close` sub-operations (one method, command envelope `SocketClientCommand`) — `Send`/`Close` dispatch to the connection's write loop by id. Dial failures carry the `net:` marker → `SocketClientConnectException`
+- `internal/socket/` — neutral shared TCP code used by both socketserver and socketclient (not by each other): `frame.go` (length-prefix codec `ReadFrame`/`WriteFrame`), `message_state.go` (`MessageState` — inbound frame stream), `connection.go` (`PendingConnection`, write-loop `ConsumeCommands`, `Dispatch` with backpressure, `NextConnectionId`)
 - `internal/helpers/` — small shared helpers: `CalcExecutionMs`, and `ReadChunk` (fixed-granularity body chunk reader used by both the HTTP server and client)
 
 **Key enums:**
-- `MethodEnum`: Sleep (1), MongodbCollection (2), HttpServe (3), HttpRespond (4), HttpClient (5), Mysql (6), Pgsql (7), SocketServe (8), SocketRespond (9)
+- `MethodEnum`: Sleep (1), MongodbCollection (2), HttpServe (3), HttpRespond (4), HttpClient (5), Mysql (6), Pgsql (7), SocketServe (8), SocketRespond (9), SocketClient (10)
+- `SocketClientCommand` (sub-operations under SocketClient): Connect (1), Send (2), Close (3) — selected via the payload envelope's `cm`, like HttpClient
 - `SqlCommandEnum` (sub-operations under a SQL method, selected via the envelope's `cm`): Query (1), Exec (2), Begin (3), Commit (4), Rollback (5)
 - `HttpClientCommand` (sub-operations under HttpClient): Request (1), UploadChunk (2), UploadEnd (3) — selected via the payload envelope's `cm`, like MongoDB's `CommandEnum`
 - `CommandEnum`: InsertOne (1), BulkWrite (2), Aggregate (3), InsertMany (4), CountDocuments (5), UpdateOne (6), FindOne (7), CreateIndex (8), DeleteOne (9), DeleteMany (10), UpdateMany (11), Drop (12), DropIndex (13)
@@ -199,7 +211,7 @@ change. **Never bump the major version without the maintainer's approval**; bump
 the minor only when warranted, otherwise the patch. **Bump the version at most
 once per git branch** — the first protocol change on a branch bumps it, later
 commits on the same branch reuse that version (do not move it again). Current:
-`0.2.4`.
+`0.3.0`.
 
 ## Exceptions
 

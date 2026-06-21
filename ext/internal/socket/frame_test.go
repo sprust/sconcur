@@ -1,4 +1,4 @@
-package socketserver_feature
+package socket
 
 import (
 	"bytes"
@@ -19,14 +19,14 @@ func TestWriteFrameThenReadFrameRoundTrips(t *testing.T) {
 	for _, payload := range cases {
 		var buffer bytes.Buffer
 
-		if err := writeFrame(&buffer, payload); err != nil {
-			t.Fatalf("writeFrame: %v", err)
+		if err := WriteFrame(&buffer, payload); err != nil {
+			t.Fatalf("WriteFrame: %v", err)
 		}
 
-		got, err := readFrame(&buffer, 0)
+		got, err := ReadFrame(&buffer, 0)
 
 		if err != nil {
-			t.Fatalf("readFrame: %v", err)
+			t.Fatalf("ReadFrame: %v", err)
 		}
 
 		if !bytes.Equal(got, payload) {
@@ -38,32 +38,32 @@ func TestWriteFrameThenReadFrameRoundTrips(t *testing.T) {
 func TestReadFrameRejectsOversizeLength(t *testing.T) {
 	var buffer bytes.Buffer
 
-	if err := writeFrame(&buffer, bytes.Repeat([]byte("x"), 100)); err != nil {
-		t.Fatalf("writeFrame: %v", err)
+	if err := WriteFrame(&buffer, bytes.Repeat([]byte("x"), 100)); err != nil {
+		t.Fatalf("WriteFrame: %v", err)
 	}
 
-	_, err := readFrame(&buffer, 16)
+	_, err := ReadFrame(&buffer, 16)
 
-	if !errors.Is(err, errFrameTooLarge) {
-		t.Fatalf("expected errFrameTooLarge, got %v", err)
+	if !errors.Is(err, ErrFrameTooLarge) {
+		t.Fatalf("expected ErrFrameTooLarge, got %v", err)
 	}
 }
 
 func TestReadFrameRejectsHighBitLengthWithoutPanicking(t *testing.T) {
 	// A length prefix with the high bit set (0x80000000) must be rejected by the
 	// size check, not become a negative int on a 32-bit build and panic make().
-	header := make([]byte, frameLengthSize)
+	header := make([]byte, FrameLengthSize)
 	binary.BigEndian.PutUint32(header, 0x80000000)
 
-	_, err := readFrame(bytes.NewReader(header), 16)
+	_, err := ReadFrame(bytes.NewReader(header), 16)
 
-	if !errors.Is(err, errFrameTooLarge) {
-		t.Fatalf("expected errFrameTooLarge for an oversize high-bit length, got %v", err)
+	if !errors.Is(err, ErrFrameTooLarge) {
+		t.Fatalf("expected ErrFrameTooLarge for an oversize high-bit length, got %v", err)
 	}
 }
 
 func TestReadFrameCleanEofOnFrameBoundary(t *testing.T) {
-	_, err := readFrame(bytes.NewReader(nil), 0)
+	_, err := ReadFrame(bytes.NewReader(nil), 0)
 
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("expected io.EOF on an empty stream, got %v", err)
@@ -72,12 +72,12 @@ func TestReadFrameCleanEofOnFrameBoundary(t *testing.T) {
 
 func TestReadFrameUnexpectedEofMidFrame(t *testing.T) {
 	// A header announcing 10 bytes but only 4 present: a truncated frame.
-	header := make([]byte, frameLengthSize)
+	header := make([]byte, FrameLengthSize)
 	binary.BigEndian.PutUint32(header, 10)
 
 	reader := bytes.NewReader(append(header, []byte("abcd")...))
 
-	_, err := readFrame(reader, 0)
+	_, err := ReadFrame(reader, 0)
 
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("expected io.ErrUnexpectedEOF mid-frame, got %v", err)
@@ -87,16 +87,16 @@ func TestReadFrameUnexpectedEofMidFrame(t *testing.T) {
 func TestReadFrameSplitsConcatenatedFrames(t *testing.T) {
 	var buffer bytes.Buffer
 
-	_ = writeFrame(&buffer, []byte("first"))
-	_ = writeFrame(&buffer, []byte("second"))
+	_ = WriteFrame(&buffer, []byte("first"))
+	_ = WriteFrame(&buffer, []byte("second"))
 
-	first, err := readFrame(&buffer, 0)
+	first, err := ReadFrame(&buffer, 0)
 
 	if err != nil || string(first) != "first" {
 		t.Fatalf("first frame: got %q, err %v", first, err)
 	}
 
-	second, err := readFrame(&buffer, 0)
+	second, err := ReadFrame(&buffer, 0)
 
 	if err != nil || string(second) != "second" {
 		t.Fatalf("second frame: got %q, err %v", second, err)

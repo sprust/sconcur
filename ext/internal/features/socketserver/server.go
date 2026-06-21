@@ -9,6 +9,7 @@ import (
 	"sconcur/internal/features/socketserver/payloads"
 	"sconcur/internal/helpers"
 	"sconcur/internal/logger"
+	"sconcur/internal/socket"
 	"sconcur/internal/states"
 	"sync"
 	"time"
@@ -72,48 +73,6 @@ func intOrDefault(value int, fallback int) int {
 	}
 
 	return value
-}
-
-// writeKind tags what an action does to the connection. opFrame writes one
-// length-prefixed frame to the client; opClose closes the connection.
-type writeKind int
-
-const (
-	opFrame writeKind = 0
-	opClose writeKind = 1
-)
-
-// writeCommand is one action a PHP handler performs on its connection. done carries
-// the result of applying it back to the issuing coroutine (nil on success, an error
-// if the client write failed) so the handler gets real write backpressure and learns
-// about a dead connection.
-type writeCommand struct {
-	kind writeKind
-	data string
-	done chan error
-}
-
-// pendingConnection is the rendezvous between the connection goroutine (the write
-// loop) and the PHP handler's write/close commands. abandoned is closed once the
-// write loop stops consuming (server shutdown or the connection is gone) so a handler
-// that writes late unblocks with an error instead of hanging on the commands channel.
-type pendingConnection struct {
-	conn      net.Conn
-	commands  chan writeCommand
-	abandoned chan struct{}
-}
-
-// closeRead closes only the read side of the connection (graceful drain): blocked
-// reads return EOF so an idle handler loop ends, while an in-flight response can
-// still be written. Falls back to a full close if half-close is unavailable.
-func (p *pendingConnection) closeRead() {
-	if tcpConn, ok := p.conn.(*net.TCPConn); ok {
-		_ = tcpConn.CloseRead()
-
-		return
-	}
-
-	_ = p.conn.Close()
 }
 
 // serverState is the streaming state of one socket server: each accepted connection
@@ -207,12 +166,12 @@ func (s *serverState) handleConn(conn net.Conn) {
 		}
 	}
 
-	connectionId := nextConnectionId(s.message.FlowKey)
+	connectionId := socket.NextConnectionId(s.message.FlowKey)
 
-	pending := &pendingConnection{
-		conn:      conn,
-		commands:  make(chan writeCommand),
-		abandoned: make(chan struct{}),
+	pending := &socket.PendingConnection{
+		Conn:      conn,
+		Commands:  make(chan socket.WriteCommand),
+		Abandoned: make(chan struct{}),
 	}
 
 	pendingConnections.Store(connectionId, pending)
@@ -221,14 +180,21 @@ func (s *serverState) handleConn(conn net.Conn) {
 	inboundKey := connectionId + ":in"
 	reader := bufio.NewReaderSize(conn, readBufferSize)
 
-	_ = states.Get().Register(inboundKey, newMessageState(s.message, conn, reader, s.config))
+	_ = states.Get().Register(inboundKey, socket.NewMessageState(
+		s.message,
+		conn,
+		reader,
+		s.config.readTimeout,
+		s.config.maxMessageBytes,
+		errFactory,
+	))
 
 	frameCount := 0
 	status := "ok"
 
 	defer func() {
 		// Once we stop consuming, release a handler still trying to write.
-		close(pending.abandoned)
+		close(pending.Abandoned)
 		pendingConnections.Delete(connectionId)
 		s.conns.Delete(connectionId)
 		states.Get().DeleteState(inboundKey)
@@ -251,48 +217,7 @@ func (s *serverState) handleConn(conn net.Conn) {
 		return
 	}
 
-	frameCount, status = s.consumeCommands(conn, pending)
-}
-
-// consumeCommands applies the handler's actions for one connection (write a frame,
-// or close) until the handler closes the connection or the server shuts down. Each
-// command's outcome is reported on its done channel so the issuing coroutine gets
-// write backpressure and learns when the connection is dead. Returns the number of
-// frames written and a status for the access log.
-func (s *serverState) consumeCommands(conn net.Conn, pending *pendingConnection) (int, string) {
-	frameCount := 0
-	status := "ok"
-
-	for {
-		select {
-		case <-s.ctx.Done():
-			return frameCount, "shutdown"
-		case command := <-pending.commands:
-			if command.kind == opClose {
-				command.done <- nil
-
-				return frameCount, status
-			}
-
-			err := s.writeFrame(conn, command.data)
-			command.done <- err
-
-			if err != nil {
-				return frameCount, "write_error"
-			}
-
-			frameCount++
-		}
-	}
-}
-
-// writeFrame writes one length-prefixed frame to the client, bounded by writeTimeout.
-func (s *serverState) writeFrame(conn net.Conn, data string) error {
-	if s.config.writeTimeout > 0 {
-		_ = conn.SetWriteDeadline(time.Now().Add(s.config.writeTimeout))
-	}
-
-	return writeFrame(conn, []byte(data))
+	frameCount, status = socket.ConsumeCommands(s.ctx, pending, s.config.writeTimeout)
 }
 
 func (s *serverState) Next() *dto.Result {
@@ -321,8 +246,8 @@ func (s *serverState) stopAccepting() {
 	_ = s.listener.Close()
 
 	s.conns.Range(func(_, value any) bool {
-		if pending, ok := value.(*pendingConnection); ok {
-			pending.closeRead()
+		if pending, ok := value.(*socket.PendingConnection); ok {
+			pending.CloseRead()
 		}
 
 		return true
@@ -344,8 +269,8 @@ func (s *serverState) forceCloseAfterGrace() {
 	}
 
 	s.conns.Range(func(_, value any) bool {
-		if pending, ok := value.(*pendingConnection); ok {
-			_ = pending.conn.Close()
+		if pending, ok := value.(*socket.PendingConnection); ok {
+			_ = pending.Conn.Close()
 		}
 
 		return true
