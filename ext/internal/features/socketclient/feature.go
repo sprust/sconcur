@@ -59,35 +59,61 @@ func (f *SocketClientFeature) Handle(task *tasks.Task) {
 	case types.SocketClientConnect:
 		f.handleConnect(task, envelope.Params)
 	case types.SocketClientSend:
-		f.handleRespond(task, envelope.Params, socket.OpFrame)
+		f.handleSend(task, envelope.Params)
 	case types.SocketClientClose:
-		f.handleRespond(task, envelope.Params, socket.OpClose)
+		f.handleClose(task, envelope.Params)
 	default:
 		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("unknown command")))
 	}
 }
 
-// handleRespond routes one action (write a frame, or close) to the connection's write
-// loop, keyed by connection id. Shared by Send (OpFrame) and Close (OpClose).
-func (f *SocketClientFeature) handleRespond(task *tasks.Task, raw msgpack.RawMessage, kind socket.WriteKind) {
+// handleSend pushes one length-prefixed frame to the connection's peer.
+func (f *SocketClientFeature) handleSend(task *tasks.Task, raw msgpack.RawMessage) {
 	message := task.GetMessage()
-	startTime := time.Now()
 
-	var idOnly struct {
-		ConnectionId string `msgpack:"cid"`
-	}
+	var params payloads.SendParams
 
-	if err := msgpack.Unmarshal(raw, &idOnly); err != nil || idOnly.ConnectionId == "" {
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("parse connectionId", err)))
+	if err := msgpack.Unmarshal(raw, &params); err != nil {
+		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("parse send params", err)))
 
 		return
 	}
 
-	value, ok := pendingConnections.Load(idOnly.ConnectionId)
+	f.dispatch(task, params.ConnectionId, socket.WriteCommand{Kind: socket.OpFrame, Data: params.Data})
+}
+
+// handleClose closes the connection.
+func (f *SocketClientFeature) handleClose(task *tasks.Task, raw msgpack.RawMessage) {
+	message := task.GetMessage()
+
+	var params payloads.CloseParams
+
+	if err := msgpack.Unmarshal(raw, &params); err != nil {
+		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("parse close params", err)))
+
+		return
+	}
+
+	f.dispatch(task, params.ConnectionId, socket.WriteCommand{Kind: socket.OpClose})
+}
+
+// dispatch routes one action (write a frame, or close) to the connection's write loop,
+// keyed by connection id, and waits for it to be applied (write backpressure).
+func (f *SocketClientFeature) dispatch(task *tasks.Task, connectionId string, command socket.WriteCommand) {
+	message := task.GetMessage()
+	startTime := time.Now()
+
+	if connectionId == "" {
+		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("empty connectionId")))
+
+		return
+	}
+
+	value, ok := pendingConnections.Load(connectionId)
 
 	if !ok {
 		// The connection is already gone (closed or disconnected): nothing to do.
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("unknown connectionId "+idOnly.ConnectionId)))
+		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("unknown connectionId "+connectionId)))
 
 		return
 	}
@@ -98,26 +124,6 @@ func (f *SocketClientFeature) handleRespond(task *tasks.Task, raw msgpack.RawMes
 		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("bad pending connection")))
 
 		return
-	}
-
-	// A Send carries the frame bytes; a Close ignores them.
-	data := ""
-
-	if kind == socket.OpFrame {
-		var sendParams payloads.SendParams
-
-		if err := msgpack.Unmarshal(raw, &sendParams); err != nil {
-			task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("parse send params", err)))
-
-			return
-		}
-
-		data = sendParams.Data
-	}
-
-	command := socket.WriteCommand{
-		Kind: kind,
-		Data: data,
 	}
 
 	if err := socket.Dispatch(task.GetContext(), pending, command); err != nil {

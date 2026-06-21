@@ -67,7 +67,7 @@ func (s *MessageState) Next() *dto.Result {
 		// A clean connection end (EOF, closed read side on drain, idle timeout):
 		// end the stream so the PHP loop exits and the connection coroutine finishes
 		// without surfacing an error to the handler.
-		if IsConnectionClosed(err) {
+		if isConnectionClosed(err) {
 			return dto.NewSuccessResult(s.message, "", helpers.CalcExecutionMs(s.startTime))
 		}
 
@@ -82,11 +82,11 @@ func (s *MessageState) Close() {
 	// client's connection cleanup); nothing to do here.
 }
 
-// IsConnectionClosed reports whether a read error means the connection has ended
+// isConnectionClosed reports whether a read error means the connection has ended
 // normally (peer closed, our own read side closed on drain, or the idle read
 // deadline elapsed) — all of which finish the stream cleanly rather than as an
 // error the handler must see.
-func IsConnectionClosed(err error) bool {
+func isConnectionClosed(err error) bool {
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
 		return true
 	}

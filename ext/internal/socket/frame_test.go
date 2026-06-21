@@ -52,7 +52,7 @@ func TestReadFrameRejectsOversizeLength(t *testing.T) {
 func TestReadFrameRejectsHighBitLengthWithoutPanicking(t *testing.T) {
 	// A length prefix with the high bit set (0x80000000) must be rejected by the
 	// size check, not become a negative int on a 32-bit build and panic make().
-	header := make([]byte, FrameLengthSize)
+	header := make([]byte, frameLengthSize)
 	binary.BigEndian.PutUint32(header, 0x80000000)
 
 	_, err := ReadFrame(bytes.NewReader(header), 16)
@@ -72,7 +72,7 @@ func TestReadFrameCleanEofOnFrameBoundary(t *testing.T) {
 
 func TestReadFrameUnexpectedEofMidFrame(t *testing.T) {
 	// A header announcing 10 bytes but only 4 present: a truncated frame.
-	header := make([]byte, FrameLengthSize)
+	header := make([]byte, frameLengthSize)
 	binary.BigEndian.PutUint32(header, 10)
 
 	reader := bytes.NewReader(append(header, []byte("abcd")...))

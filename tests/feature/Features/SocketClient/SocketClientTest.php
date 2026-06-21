@@ -109,6 +109,21 @@ class SocketClientTest extends BaseSocketClientTestCase
         $connection->close();
     }
 
+    public function testLargePayloadRoundTrips(): void
+    {
+        $connection = $this->client()->connect($this->address());
+
+        // Far larger than the Go-side 64 KiB read buffer, so the inbound frame is
+        // reassembled across several bufio refills.
+        $payload = random_bytes(256 * 1024);
+
+        $connection->write($payload);
+
+        self::assertSame($payload, $connection->read());
+
+        $connection->close();
+    }
+
     public function testServerPushManyFramesForOneRequest(): void
     {
         $connection = $this->client()->connect($this->address());
@@ -118,6 +133,20 @@ class SocketClientTest extends BaseSocketClientTestCase
         self::assertSame('p0', $connection->read());
         self::assertSame('p1', $connection->read());
         self::assertSame('p2', $connection->read());
+
+        $connection->close();
+    }
+
+    public function testServerStreamsFramesWithAsyncWorkBetween(): void
+    {
+        $connection = $this->client()->connect($this->address());
+
+        // The server pushes s0..s2, sleeping (async) between frames.
+        $connection->write('stream:3');
+
+        self::assertSame('s0', $connection->read());
+        self::assertSame('s1', $connection->read());
+        self::assertSame('s2', $connection->read());
 
         $connection->close();
     }

@@ -196,20 +196,10 @@ func (f *SocketClientFeature) handleConnect(task *tasks.Task, raw msgpack.RawMes
 		cleanup: cleanup,
 	}
 
-	// The write loop applies Send/Close commands until the handler closes the
-	// connection or the flow stops. When it returns, release a late writer and tear
-	// the connection down (DeleteState → connectionState.Close → cleanup).
-	go func() {
-		socket.ConsumeCommands(task.GetContext(), pending, config.writeTimeout)
-
-		close(pending.Abandoned)
-
-		states.Get().DeleteState(message.TaskKey)
-	}()
-
 	// Start the streaming state: the first Next returns the connection metadata with
 	// HasNext=true, keeping the state alive so inbound frames can be pulled via next.
-	// states.Start hooks Close on flow stop / deadline.
+	// states.Start hooks Close on flow stop / deadline. Done before starting the write
+	// loop so a Start failure leaves no goroutine behind.
 	result, err := states.Get().Start(task.GetContext(), message.TaskKey, state)
 
 	if err != nil {
@@ -219,6 +209,19 @@ func (f *SocketClientFeature) handleConnect(task *tasks.Task, raw msgpack.RawMes
 
 		return
 	}
+
+	// The write loop applies Send/Close commands until the handler closes the
+	// connection or the flow stops. When it returns, release a late writer and tear
+	// the connection down (DeleteState → connectionState.Close → cleanup). PHP only
+	// issues Send/Close after it receives this connect result, so the loop is running
+	// before any command can arrive.
+	go func() {
+		socket.ConsumeCommands(task.GetContext(), pending, config.writeTimeout)
+
+		close(pending.Abandoned)
+
+		states.Get().DeleteState(message.TaskKey)
+	}()
 
 	task.AddResult(result)
 }
