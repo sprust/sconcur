@@ -1,4 +1,8 @@
-package socketserver_feature
+// Package socket holds the length-prefix framing and per-connection I/O shared by
+// the socket server (accept-side) and the socket client (dial-side). It is neutral
+// infrastructure with no Method of its own; both features depend on it, not on each
+// other.
+package socket
 
 import (
 	"encoding/binary"
@@ -10,16 +14,16 @@ import (
 // count of the payload that follows.
 const frameLengthSize = 4
 
-// errFrameTooLarge is returned when an inbound frame's declared length exceeds
-// maxMessageBytes, so a malicious or buggy peer cannot make the server allocate an
+// ErrFrameTooLarge is returned when an inbound frame's declared length exceeds
+// maxMessageBytes, so a malicious or buggy peer cannot make us allocate an
 // arbitrarily large buffer.
-var errFrameTooLarge = errors.New("message frame exceeds maxMessageBytes")
+var ErrFrameTooLarge = errors.New("message frame exceeds maxMessageBytes")
 
-// readFrame reads one length-prefixed frame: a uint32 big-endian length followed by
+// ReadFrame reads one length-prefixed frame: a uint32 big-endian length followed by
 // that many payload bytes. A clean io.EOF is returned only when the stream ends
 // exactly on a frame boundary (before any header byte); a mid-frame end surfaces as
 // io.ErrUnexpectedEOF. maxBytes <= 0 means no limit.
-func readFrame(reader io.Reader, maxBytes int) ([]byte, error) {
+func ReadFrame(reader io.Reader, maxBytes int) ([]byte, error) {
 	var header [frameLengthSize]byte
 
 	if _, err := io.ReadFull(reader, header[:]); err != nil {
@@ -32,7 +36,7 @@ func readFrame(reader io.Reader, maxBytes int) ([]byte, error) {
 	length := binary.BigEndian.Uint32(header[:])
 
 	if maxBytes > 0 && uint64(length) > uint64(maxBytes) {
-		return nil, errFrameTooLarge
+		return nil, ErrFrameTooLarge
 	}
 
 	if length == 0 {
@@ -48,9 +52,9 @@ func readFrame(reader io.Reader, maxBytes int) ([]byte, error) {
 	return payload, nil
 }
 
-// writeFrame writes one length-prefixed frame in a single Write call (length prefix
+// WriteFrame writes one length-prefixed frame in a single Write call (length prefix
 // + payload), so a frame is never split into two writes on the wire.
-func writeFrame(writer io.Writer, payload []byte) error {
+func WriteFrame(writer io.Writer, payload []byte) error {
 	buffer := make([]byte, frameLengthSize+len(payload))
 
 	binary.BigEndian.PutUint32(buffer[:frameLengthSize], uint32(len(payload)))

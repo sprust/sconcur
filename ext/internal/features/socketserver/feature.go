@@ -1,18 +1,16 @@
 package socketserver_feature
 
 import (
-	"errors"
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
 	"sconcur/internal/features/socketserver/payloads"
 	"sconcur/internal/helpers"
+	"sconcur/internal/socket"
 	"sconcur/internal/states"
 	"sconcur/internal/tasks"
 	"sconcur/internal/types"
-	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
@@ -33,13 +31,6 @@ var pendingConnections sync.Map
 // serverStates maps a server flow key to its *serverState, so StopAccepting can find
 // the listener and in-flight connections to close on graceful shutdown.
 var serverStates sync.Map
-
-var connectionCounter atomic.Int64
-
-// errAbandoned is returned to a handler coroutine when the write loop has stopped
-// consuming its commands (handler timeout, server shutdown, or the connection is
-// gone), so the coroutine unwinds instead of blocking on the commands channel.
-var errAbandoned = errors.New("connection abandoned")
 
 type SocketFeature struct{}
 
@@ -133,7 +124,7 @@ func (f *SocketFeature) handleRespond(task *tasks.Task) {
 		return
 	}
 
-	pending, ok := value.(*pendingConnection)
+	pending, ok := value.(*socket.PendingConnection)
 
 	if !ok {
 		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("bad pending connection")))
@@ -149,56 +140,18 @@ func (f *SocketFeature) handleRespond(task *tasks.Task) {
 		return
 	}
 
-	command := writeCommand{
-		kind: writeKind(payload.Op),
-		data: payload.Data,
+	command := socket.WriteCommand{
+		Kind: socket.WriteKind(payload.Op),
+		Data: payload.Data,
 	}
 
-	if err := f.dispatch(task, pending, command); err != nil {
+	if err := socket.Dispatch(task.GetContext(), pending, command); err != nil {
 		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("write response", err)))
 
 		return
 	}
 
 	task.AddResult(dto.NewSuccessResult(message, "", helpers.CalcExecutionMs(startTime)))
-}
-
-// dispatch hands one write command to the connection's write loop and waits for it
-// to be applied, so the handler coroutine only continues once the bytes hit the wire
-// (write backpressure). It returns the client write error, if any — including
-// errAbandoned when the write loop has stopped consuming (handler timeout, shutdown
-// or the connection is gone), so the handler coroutine unwinds instead of hanging.
-func (f *SocketFeature) dispatch(task *tasks.Task, pending *pendingConnection, command writeCommand) error {
-	command.done = make(chan error, 1)
-
-	select {
-	case pending.commands <- command:
-	case <-pending.abandoned:
-		return errAbandoned
-	case <-task.GetContext().Done():
-		return nil
-	}
-
-	// Prefer a delivered result over a late abandon signal: if the write was applied,
-	// honor it even if the write loop returned right after.
-	select {
-	case err := <-command.done:
-		return err
-	default:
-	}
-
-	select {
-	case err := <-command.done:
-		return err
-	case <-pending.abandoned:
-		return errAbandoned
-	case <-task.GetContext().Done():
-		return nil
-	}
-}
-
-func nextConnectionId(flowKey string) string {
-	return flowKey + ":c:" + strconv.FormatInt(connectionCounter.Add(1), 10)
 }
 
 // StopAccepting closes the listener of the given server flow and half-closes its
