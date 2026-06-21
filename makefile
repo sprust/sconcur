@@ -137,6 +137,7 @@ bench-all:
 	make bench-http-client-download
 	make bench-http-reuseport-io
 	make bench-http-reuseport-cpu
+	make bench-socket-client
 	make bench-socket-throughput
 	make bench-socket-reuseport-io
 	make bench-socket-reuseport-cpu
@@ -233,6 +234,9 @@ bench-http-reuseport-io:
 
 bench-http-reuseport-cpu:
 	$(PHP_CLI) php tests/benchmarks/http-reuseport-cpu.php
+
+bench-socket-client:
+	$(PHP_EXT) tests/benchmarks/socket-client.php ${c}
 
 bench-socket-throughput:
 	$(PHP_CLI) php tests/benchmarks/socket-throughput.php

@@ -200,7 +200,13 @@ backpressure (`PendingConnection`/`ConsumeCommands`/`Dispatch`). Им польз
   `ext/internal/features/socketclient/connect_test.go` (`connectionState`:
   метаданные → входящие фреймы → чистый конец).
 
-Запуск: `make test c="--filter=SocketClient"`, `make ext-test`.
+- Бенчмарк — `tests/benchmarks/socket-client.php` (`make bench-socket-client`):
+  N round-trip'ов к I/O-эндпоинту (`msleep:<ms>`) демо-сервера; async-прогон через
+  `WaitGroup` показывает «веер» (общее время ≈ одного round-trip), против
+  последовательных native (сырые PHP-сокеты) и sync.
+
+Запуск: `make test c="--filter=SocketClient"`, `make ext-test`,
+`make bench-socket-client c=20`.
 
 ```
 make ext-build && make ext-test && make php-stan && make cs-fixer-check && make test
