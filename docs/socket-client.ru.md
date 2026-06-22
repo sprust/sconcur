@@ -3,11 +3,11 @@
 Асинхронный TCP-клиент с фреймингом length-prefix — зеркальная пара к
 [сокет-серверу](socket-server.ru.md), как [HTTP-клиент](http-client.ru.md) — пара к
 HTTP-серверу. Весь сетевой I/O (DNS, dial, чтение, запись) живёт в Go-расширении:
-`connect()` уходит в горутину, корутина (Fiber) **приостанавливается**, поэтому
+`connect()` уходит в горутину, корутина (Fiber) приостанавливается, поэтому
 десятки соединений набираются «веером». Вне `WaitGroup` тот же API работает
 синхронно (см. [README → Применение](../README.md)).
 
-Модель — **долгоживущее двунаправленное соединение** (а не «запрос-ответ»):
+Модель — долгоживущее двунаправленное соединение (а не «запрос-ответ»):
 приложение набирает соединение, получает объект `Connection` и само ведёт диалог —
 `read()` тянет входящие фреймы, `write()` пушит исходящие, `close()` закрывает.
 
@@ -46,7 +46,7 @@ $reply = $connection->read();          // ?string
 $connection->close();
 ```
 
-`connect()` возвращает открытое `Connection`. Лучше вести весь диалог **внутри** той
+`connect()` возвращает открытое `Connection`. Лучше вести весь диалог внутри той
 же корутины, что и `connect()`: при завершении корутины её флоу останавливается и
 недочитанное соединение на Go-стороне закрывается (та же оговорка, что у
 `HttpClient`/`SocketServer`).
@@ -144,7 +144,7 @@ try {
 
 ## Внутреннее устройство
 
-**PHP** (`src/Features/SocketClient/`):
+PHP (`src/Features/SocketClient/`):
 
 - `SocketClient` — публичный API: `connect()` собирает `ConnectPayload`, через
   `FeatureExecutor::exec()` набирает соединение, декодирует `ConnectionMeta`
@@ -158,7 +158,7 @@ try {
 - `Payloads/` — конверт `Base\BaseSocketClientPayload` (`cm`/`p`) + `Connect`/`Send`/
   `Close` payload'ы, зеркала Go-структур.
 
-**Go** (`ext/internal/features/socketclient/`):
+Go (`ext/internal/features/socketclient/`):
 
 - `payloads/payloads.go` — `Envelope`, `ConnectParams`, `SendParams`, `CloseParams`,
   `ConnectionMeta` (1:1 с PHP).
@@ -168,7 +168,7 @@ try {
   флоу), регистрация стримингового `connectionState` (первый `Next` — метаданные, далее
   — входящие фреймы) и write-loop; очистка на остановке флоу.
 
-**Общий код** (`ext/internal/socket/`, нейтральный, не привязан к серверу/клиенту):
+Общий код (`ext/internal/socket/`, нейтральный, не привязан к серверу/клиенту):
 кодек фреймов (`frame.go`), стрим входящих фреймов (`MessageState`) и цикл записи с
 backpressure (`PendingConnection`/`ConsumeCommands`/`Dispatch`). Им пользуются и
 сокет-сервер, и сокет-клиент — но не друг другом.

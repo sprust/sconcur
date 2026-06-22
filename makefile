@@ -265,3 +265,8 @@ bench-http-load-stats:
 # e.g.: make bench-http-load-soak DURATION=3600
 bench-http-load-soak:
 	MODE=soak tests/benchmarks/http-load-stats.sh
+
+# Baseline variant: same harness against the bare "/" route (no I/O fan-out) —
+# measures the pure HTTP + framework ceiling, the floor under the /all numbers.
+bench-http-load-stats-empty:
+	ROUTE=/ tests/benchmarks/http-load-stats.sh

@@ -7,6 +7,7 @@ here.
 ## Further Reading
 
 - [README.md](../README.md) — project overview and usage
+- [docs/architecture.ru.md](../docs/architecture.ru.md) — internals: Fiber ↔ goroutine, scheduler, layers, task lifecycle (with Mermaid diagrams)
 - [docs/adding-a-feature.ru.md](../docs/adding-a-feature.ru.md) — guide for adding a new feature
 - [docs/adding-a-server.ru.md](../docs/adding-a-server.ru.md) — guide for adding a new server (long-lived streaming feature: listener + serve loop + worker-master integration)
 - [docs/load-testing.ru.md](../docs/load-testing.ru.md) — load behaviour under all I/O features at once (the `/all` route + `bench-http-load-stats`): memory/CPU results and conclusions
@@ -39,7 +40,7 @@ with no plan link; once a plan ships, point the README/docs at the feature's
 SConcur is a PHP concurrency library backed by a custom Go-based PHP extension.
 PHP Fibers suspend while the Go extension executes tasks (MongoDB operations,
 sleep) concurrently via goroutines. Communication between PHP and Go is
-JSON-based.
+MessagePack-based (msgpack-tagged DTOs, `Transport/MessagePackTransport`).
 
 ## Project Structure
 
@@ -126,7 +127,7 @@ non-fiber path.)
 - `internal/features/httpserver/` — `net/http.Server` as an http.Handler streaming each request to PHP; response write-commands, request-body streaming, concurrency limit, timeouts, graceful shutdown, SO_REUSEPORT
 - `internal/features/sql/` — driver-agnostic SQL on `database/sql`: one handler dispatches Query/Exec/Begin/Commit/Rollback by the envelope's command; `pools.go` is the `*sql.DB` pool registry (mirrors MongoDB clients), `rows_state.go` streams a SELECT cursor, `transactions.go` pins a `*sql.Tx` to a held begin task (auto-rollback on context cancel). The driver is selected per `Method`: `GetMysql()` registers go-sql-driver/mysql, `GetPgsql()` registers jackc/pgx (error label "pgsql").
 - `internal/features/socketserver/` — raw TCP listener as a streaming state: each accepted connection is one batch streamed to PHP (`ConnectionEvent`); `message_state.go` streams inbound length-prefixed frames (one per `next()` → `Connection::read()`), `server.go` runs the per-connection write loop applying frame/close commands with write-backpressure, `frame.go` is the length-prefix codec, `listen.go` is TCP + `SO_REUSEPORT`. `StopAccepting` closes the listener and half-closes in-flight connections (force-closing push-only ones after a grace) for graceful drain. Push model: no per-message timeout. Two methods, one feature (like httpserver)
-- `internal/features/httpclient/` — `net/http.Client` sending one request as a streaming state: first result carries response metadata + inline first chunk, subsequent results are raw body chunks; reusable transports (keep-alive pool), per-request deadline; optional streamed request body (upload) via an `io.Pipe` fed by `UploadChunk`/`UploadEnd` commands. Sub-operations are selected by a command in the payload envelope (`HttpClientCommand`), like MongoDB — not by separate `MethodEnum` values. `download.go` is the sink path: when the request carries `SinkPath`, the response body is `io.Copy`'d straight into a file (mode→`os.O_*` via `downloadModeToFlags`) and only status+headers return to PHP — the body never crosses the boundary
+- `internal/features/httpclient/` — `net/http.Client` sending one request as a streaming state: first result carries response metadata + inline first chunk, subsequent results are raw body chunks; reusable transports (keep-alive pool), per-request deadline; optional streamed request body (upload) via an `io.Pipe` fed by `UploadChunk`/`UploadEnd` commands. Sub-operations are selected by a command in the payload envelope (`HttpClientCommand`), like MongoDB — not by separate `MethodEnum` values. `download.go` is the sink path: when the request carries `SinkPath`, the response body is `io.CopyBuffer`'d straight into a file (mode→`os.O_*` via `downloadModeToFlags`) and only status+headers return to PHP — the body never crosses the boundary
 - `internal/features/socketclient/` — outbound TCP dialer (dial-side mirror of socketserver): `connect.go` dials with `connectTimeout` and registers a `connectionState` (first `Next()` returns `ConnectionMeta`, subsequent `Next()` stream inbound frames); `feature.go` routes `Connect`/`Send`/`Close` sub-operations (one method, command envelope `SocketClientCommand`) — `Send`/`Close` dispatch to the connection's write loop by id. Dial failures carry the `net:` marker → `SocketClientConnectException`
 - `internal/socket/` — neutral shared TCP code used by both socketserver and socketclient (not by each other): `frame.go` (length-prefix codec `ReadFrame`/`WriteFrame`), `message_state.go` (`MessageState` — inbound frame stream), `connection.go` (`PendingConnection`, write-loop `ConsumeCommands`, `Dispatch` with backpressure, `NextConnectionId`)
 - `internal/helpers/` — small shared helpers: `CalcExecutionMs`, and `ReadChunk` (fixed-granularity body chunk reader used by both the HTTP server and client)
@@ -201,6 +202,34 @@ lifecycle-sensitive tests extend `BaseTestCase`.
 ### Conditions
 
 - In conditions that mix `&&` and `||` in one expression, and in ternary operators, wrap condition groups in parentheses to remove operator-precedence ambiguity. Simple same-operator conditions need no extra parentheses: `if ($value !== null && $value > 0)` is fine; `if ($a && $b || $c)` needs them.
+
+## Documentation Style
+
+User-facing docs are `README.md` and `docs/*.ru.md` (written in Russian). They
+were deliberately reworked to not read as AI-generated (a contributor flagged the
+old format). When writing or editing docs, hold to these rules:
+
+- **Verify every technical claim against the code before writing it** — class and
+  method names/signatures, option names and defaults, enum cases, CLI flags, file
+  paths, behavioral claims. Fix inaccuracies; never guess.
+- **Minimal bold.** Use `**bold**` only for a genuinely critical warning or a
+  couple of key terms — not one highlight per paragraph (heavy bolding is the top
+  "AI-generated" tell).
+- **Dry, factual tone.** Short sentences; drop gratuitous «ёлочки» around terms
+  and marketing metaphors.
+- **Diagrams in Mermaid** (GitHub renders them). Rules to keep them rendering
+  everywhere, including PhpStorm:
+  - No `<br/>` anywhere — some renderers print it literally. Use single-line node
+    labels (combine ideas with ` — ` or `(...)`); in `sequenceDiagram` use
+    separate `Note over` lines.
+  - For a request+response between two components use one bidirectional edge
+    `A <-->|"..."| B`, never two opposing edges — a 2-cycle makes the layout
+    engine place the blocks side-by-side / reversed.
+  - In `flowchart TB` declare the caller first so it renders on top.
+  - Label edges with the real call/method names from the code.
+- **README is a short "visitor card"**: what it is, for whom, key limits, a quick
+  example, links to `docs/`. Deep internals live under `docs/` (e.g.
+  `docs/architecture.ru.md`), not inline in the README.
 
 ## Extension versioning
 

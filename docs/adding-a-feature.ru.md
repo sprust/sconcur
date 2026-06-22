@@ -1,15 +1,15 @@
 # Как добавить новую фичу верхнего уровня
 
-Фича верхнего уровня — это новый **домен** со своим `Method` (как `Sleeper`). Эталон
+Фича верхнего уровня — это новый домен со своим `Method` (как `Sleeper`). Эталон
 для копирования — `Sleeper`: PHP в `src/Features/Sleeper/` (payloads — в
 `src/Features/Sleeper/Payloads/`), Go в `ext/internal/features/sleeper/` (payloads — в
 `ext/internal/features/sleeper/payloads/`).
 
-Ниже — пошагово, в двух вариантах: **без стриминга** (один результат) и
-**со стримингом** (несколько батчей). Конкретная работа фичи скрыта за «вашей
+Ниже — пошагово, в двух вариантах: без стриминга (один результат) и
+со стримингом (несколько батчей). Конкретная работа фичи скрыта за «вашей
 операцией». Общую архитектуру см. в [README](../README.md).
 
-> Делаете долгоживущий **сетевой сервер** (как `HttpServer`)? Это особый вид
+> Делаете долгоживущий сетевой сервер (как `HttpServer`)? Это особый вид
 > стриминговой фичи со своим слушателем и циклом обслуживания — см. отдельное
 > руководство [Как добавить новый сервер](adding-a-server.ru.md).
 
@@ -28,7 +28,7 @@
    моменту очистки уже отменён.
 
 2. **Передача максимального времени выполнения.** При пуше задачи из PHP нужно
-   передавать предельное время выполнения, а Go-сторона обязана им **ограничить**
+   передавать предельное время выполнения, а Go-сторона обязана им ограничить
    операцию — задача не должна выполняться неограниченно долго. Заложите этот параметр
    в payload фичи. Как его применяют:
    - иногда время и есть суть операции — `Sleeper` (длительность сна);
@@ -47,7 +47,7 @@
 
 ## Соответствие `Method` PHP ↔ Go
 
-Домен — это число, продублированное в двух местах; **оба** должны совпадать:
+Домен — это число, продублированное в двух местах; оба должны совпадать:
 
 - PHP: `SConcur\Features\MethodEnum`
 - Go: `ext/internal/types/method.go` (`Method`)
@@ -59,7 +59,7 @@
 Payload — это контракт обмена между PHP и Go. Он оформляется зеркально с обеих
 сторон, чтобы конвертация «PHP → Go» читалась наглядно.
 
-**Расположение.**
+Расположение:
 - PHP: `src/Features/<Feature>/Payloads/` — по классу на каждый payload.
 - Go: `ext/internal/features/<feature>/payloads/payloads.go` — все типы в одном файле
   пакета `payloads`.
@@ -67,7 +67,7 @@ Payload — это контракт обмена между PHP и Go. Он оф
 Каталог фичи на Go называется так же, как PHP-домен (`Sleeper` → `sleeper`,
 `Mongodb` → `mongodb`).
 
-**Соответствие 1:1.** Каждый PHP `*Payload` имеет Go-структуру с **тем же именем**.
+Соответствие 1:1: каждый PHP `*Payload` имеет Go-структуру с тем же именем.
 Поля Go-структуры — это ключи, которые отдаёт `getData()`; теги `msgpack` (и `json`)
 равны этим коротким ключам. Go декодирует payload именно по `msgpack`-тегам.
 
@@ -79,26 +79,26 @@ type SleeperPayload struct {
 }
 ```
 
-**Кросс-ссылки — обязательны в обе стороны** (комментарием):
+Кросс-ссылки обязательны в обе стороны (комментарием):
 - на Go-структуре: `// PHP: SConcur\Features\<Feature>\Payloads\<Class>`;
 - на PHP-классе (docblock): `Go: payloads.<Type> (ext/internal/features/<feature>/payloads/payloads.go)`.
 
-**Мульти-командные фичи (эталон — `Mongodb`).** Когда один `Method` обслуживает много
+Мульти-командные фичи (эталон — `Mongodb`). Когда один `Method` обслуживает много
 команд, payload двухуровневый:
-- общий **конверт** (envelope) с полем команды и `dt` (сериализованное тело) —
+- общий конверт (envelope) с полем команды и `dt` (сериализованное тело) —
   на Go это один тип `Payload`, на PHP его строит `Base\BaseMongodbPayload`;
-- **содержимое `dt`** — по структуре на команду, имена зеркалят PHP `*Payload`.
+- содержимое `dt` — по структуре на команду, имена зеркалят PHP `*Payload`.
 
 Правила для таких фич:
-- PHP-классы `*PayloadParameters` — это PHP-only удобство для сборки `dt`; **на Go их
-  не переносят**. Их поля раскрывают прямо в соответствующую `*Payload`-структуру на Go
+- PHP-классы `*PayloadParameters` — это PHP-only удобство для сборки `dt`; на Go их
+  не переносят. Их поля раскрывают прямо в соответствующую `*Payload`-структуру на Go
   (поля опций — инлайн).
 - Если `dt` команды — это произвольный пользовательский документ/массив (insert, count,
   runCommand, …) или пусто (drop, list…), Go-структуры у неё нет: `dt` читается как
-  raw BSON в обработчике. Такой случай **помечают комментарием** в `payloads.go`, чтобы
+  raw BSON в обработчике. Такой случай помечают комментарием в `payloads.go`, чтобы
   каждому PHP `*Payload` соответствовала либо Go-структура, либо явная пометка.
 
-**Прочее.** Payload несёт предельное время выполнения (см. требование 2). PHP-payload —
+Прочее: payload несёт предельное время выполнения (см. требование 2). PHP-payload —
 `readonly`, поля типизированы, имена не сокращаются.
 
 Эталоны: `Sleeper` (одна команда) и `Mongodb` (конверт + команды).
@@ -109,14 +109,15 @@ type SleeperPayload struct {
 
 ### PHP
 
-1. **`MethodEnum`** — новый кейс:
+1. `MethodEnum` — новый кейс (число должно быть свободным; на момент написания
+   первое свободное — `11`):
    ```php
-   case Foo = 3;
+   case Foo = 11;
    ```
 
-2. **Payload-класс** `src/Features/Foo/Payloads/FooPayload.php`, реализующий
+2. Payload-класс `src/Features/Foo/Payloads/FooPayload.php`, реализующий
    `PayloadInterface` (оформление — см. «Оформление payloads» выше). `getMethod()`
-   возвращает новый `Method`, `getData()` — параметры (массив/скаляр, сериализуемые в
+   возвращает новый `Method`, `getData()` — параметры массивом (сериализуются в
    MessagePack):
    ```php
    /**
@@ -138,7 +139,7 @@ type SleeperPayload struct {
        /**
         * @return array<string, int>
         */
-       public function getData(): int|float|string|array|null
+       public function getData(): array
        {
            return [
                'p'  => $this->someParam,
@@ -148,7 +149,7 @@ type SleeperPayload struct {
    }
    ```
 
-3. **Публичный API** `src/Features/Foo/Foo.php` — собрать payload и выполнить:
+3. Публичный API `src/Features/Foo/Foo.php` — собрать payload и выполнить:
    ```php
    readonly class Foo
    {
@@ -165,12 +166,12 @@ type SleeperPayload struct {
 
 ### Go
 
-1. **`types/method.go`** — та же константа:
+1. `types/method.go` — та же константа:
    ```go
-   MethodFoo Method = 3
+   MethodFoo Method = 11
    ```
 
-2. **Пакет фичи** `ext/internal/features/foo/feature.go`, реализующий
+2. Пакет фичи `ext/internal/features/foo/feature.go`, реализующий
    `contracts.FeatureContract` (`Handle(task *tasks.Task)`). Внутри: разобрать
    `message.Payload`, выполнить работу на `task.GetContext()`, вернуть результат с
    `ExecutionMs`:
@@ -209,7 +210,7 @@ type SleeperPayload struct {
    ```
    (как у `Sleeper`, фичу обычно делают синглтоном через `sync.Once` + `Get()`.)
 
-3. **Регистрация** в `ext/internal/features/factory.go` — кейс в `DetectMessageHandler`:
+3. Регистрация в `ext/internal/features/factory.go` — кейс в `DetectMessageHandler`:
    ```go
    case types.MethodFoo:
        return foo_feature.Get(), nil
@@ -224,9 +225,9 @@ type SleeperPayload struct {
 
 ### PHP
 
-1. **`MethodEnum`** + **Payload** — как в варианте A.
+1. `MethodEnum` + Payload — как в варианте A.
 
-2. **Публичный API** возвращает `IteratorResult`, обёрнутый вокруг payload — он сам
+2. Публичный API возвращает `IteratorResult`, обёрнутый вокруг payload — он сам
    запросит первый и последующие батчи:
    ```php
    /**
@@ -242,9 +243,9 @@ type SleeperPayload struct {
 
 ### Go
 
-1. **`types/method.go`** — константа (как в A).
+1. `types/method.go` — константа (как в A).
 
-2. **Состояние** `ext/internal/features/foo/state/foo.go`, реализующее
+2. Состояние `ext/internal/features/foo/state/foo.go`, реализующее
    `contracts.StateContract` (`Next() *dto.Result`, `Close()`):
    ```go
    type FooState struct {
@@ -281,7 +282,7 @@ type SleeperPayload struct {
    }
    ```
 
-3. **`Handle`** фичи создаёт состояние и запускает его через реестр состояний;
+3. `Handle` фичи создаёт состояние и запускает его через реестр состояний;
    `states.Get().Start` сам зарегистрирует `Close()` на отмену контекста и вернёт
    первый батч:
    ```go
@@ -301,7 +302,7 @@ type SleeperPayload struct {
    }
    ```
 
-4. **Регистрация** в `factory.go` — как в A.
+4. Регистрация в `factory.go` — как в A.
 
 > Недотянутый поток (ранний `break` на PHP) закрывается автоматически: PHP освобождает
 > поток, контекст задачи отменяется, и хук реестра состояний зовёт `Close()`. Поэтому
@@ -311,11 +312,11 @@ type SleeperPayload struct {
 
 ## Тесты (обязательно)
 
-- **На каждую фичу — отдельный тест.** Если у фичи есть под-операции — тест на каждую.
-- **Все тесты наследуются от `BaseTestCase`** (напрямую или через `BaseAsyncTestCase`).
+- На каждую фичу — отдельный тест. Если у фичи есть под-операции — тест на каждую.
+- Все тесты наследуются от `BaseTestCase` (напрямую или через `BaseAsyncTestCase`).
   `BaseTestCase` управляет жизненным циклом расширения и в `tearDown` проверяет
   отсутствие «висящих» задач — это ловит утечки и забытую отмену контекста.
-- **Тест фичи пишется с родителем `BaseAsyncTestCase`** — он задаёт асинхронный
+- Тест фичи пишется с родителем `BaseAsyncTestCase` — он задаёт асинхронный
   паттерн: два конкурентных таска через `WaitGroup`, проверка порядка событий,
   конкурентности и пути с исключением (синхронного и асинхронного). Реализуйте хуки:
   - `on_1_start` / `on_1_middle`, `on_2_start` / `on_2_middle` — шаги двух тасков

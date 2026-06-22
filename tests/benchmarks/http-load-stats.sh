@@ -93,7 +93,11 @@ echo "   server procs    : $SERVERS  (pinned to cores 0-$(( SERVERS - 1 )), reus
 echo "   wrk threads     : $WRK_THREADS (pinned to cores $WRK_CPULIST)"
 echo "   connections     : $CONNECTIONS"
 echo "   duration        : ${DURATION}s   (sampling every ${SAMPLE_INTERVAL}s)"
-echo "   route           : $ROUTE  (fans out across all I/O features)"
+if [ "$ROUTE" = "/all" ]; then
+    echo "   route           : $ROUTE  (fans out across all I/O features)"
+else
+    echo "   route           : $ROUTE"
+fi
 echo "   target          : http://$IP:$PORT$ROUTE  (container bridge IP, no NAT)"
 echo "=================================================================="
 

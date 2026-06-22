@@ -1,14 +1,16 @@
 # Как добавить новый сервер
 
-**Сервер** — это особый вид фичи: долгоживущий сетевой слушатель, который живёт в
-Go-расширении, **принимает** входящие соединения и **стримит каждое событие в PHP**, а
+Сервер — это особый вид фичи: долгоживущий сетевой слушатель, который живёт в
+Go-расширении, принимает входящие соединения и стримит каждое событие в PHP, а
 PHP обрабатывает его в отдельной корутине и отправляет ответ обратно. Это «инверсия»
 обычной фичи: не PHP вызывает Go и ждёт результат, а Go отдаёт PHP поток входящих
 запросов.
 
-Эталон для копирования — **`HttpServer`**: PHP в `src/Features/HttpServer/`, Go в
-`ext/internal/features/httpserver/`. Эта дока описывает паттерн в общем виде; за полной
-реализацией всегда смотрите на `HttpServer`.
+Эталон для копирования — `HttpServer`: PHP в `src/Features/HttpServer/`, Go в
+`ext/internal/features/httpserver/`. Второй сервер — `SocketServer`
+(`src/Features/SocketServer/`, `ext/internal/features/socketserver/`) — построен по тому
+же паттерну, и общий код двух серверов уже вынесен в переиспользуемый трейт (см. ниже).
+Эта дока описывает паттерн в общем виде; за полной реализацией смотрите на `HttpServer`.
 
 Перед чтением освойте [как добавить обычную фичу](adding-a-feature.ru.md) — сервер
 переиспользует её механику (`Method`, payloads, реестр состояний/стриминг, `next()`) и
@@ -22,22 +24,30 @@ PHP обрабатывает его в отдельной корутине и о
 
 ## Модель: два `Method` на один сервер
 
-Сервер — это **пара методов**, оба обслуживает одна Go-фича (через `switch` по
+Сервер — это пара методов, оба обслуживает одна Go-фича (через `switch` по
 `Method`):
 
-- **`<Server>Serve`** — открыть слушатель и **стримить** принятые запросы в PHP
+- `<Server>Serve` — открыть слушатель и стримить принятые запросы в PHP
   (стриминговое состояние: каждый запрос — очередной «батч», который PHP тянет через
   `next()`).
-- **`<Server>Respond`** — доставить **одну запись ответа** (целиком, либо
+- `<Server>Respond` — доставить одну запись ответа (целиком, либо
   head/chunk/end стрима) от PHP-обработчика обратно в висящее соединение.
 
 Поток данных одного запроса:
 
-```
-клиент → Go listener → ServeHTTP-горутина ─(RequestEvent)→ requests-канал
-   → Next() отдаёт батч в PHP → Scheduler::serve спавнит корутину
-   → handler(Request): Response → RespondPayload (Respond-метод)
-   → handleRespond находит висящее соединение по requestId → пишет в сокет
+```mermaid
+flowchart TB
+    client["клиент"]
+    serve["ServeHTTP-горутина (Go listener)"]
+    sched["Scheduler::serve (PHP)"]
+    handler["handler(Request): Response"]
+    respond["handleRespond (Go)"]
+
+    client <-->|"соединение / ответ в сокет"| serve
+    serve -->|"RequestEvent → requests-канал → Next() отдаёт батч"| sched
+    sched -->|"спавнит корутину"| handler
+    handler -->|"RespondPayload (Respond-метод)"| respond
+    respond -->|"находит соединение по requestId"| serve
 ```
 
 Эталон: `MethodHttpServe` (3) + `MethodHttpRespond` (4), оба → `httpserver_feature`.
@@ -49,17 +59,17 @@ PHP обрабатывает его в отдельной корутине и о
 Помимо двух общих требований к фиче (отмена контекста и предельное время выполнения —
 см. [adding-a-feature.ru.md](adding-a-feature.ru.md)), у сервера есть свои:
 
-1. **Контекст серверного состояния = жизнь сервера.** Контекст задачи `Serve`
+1. Контекст серверного состояния = жизнь сервера. Контекст задачи `Serve`
    (`task.GetContext()`) пробрасывается в `http.Server.BaseContext`, поэтому отмена
-   потока/`stopFlow` обрывает и слушатель, и все висящие соединения. Никакой запрос не
-   должен переживать остановку сервера.
+   потока/`stopFlow` обрывает и слушатель, и все висящие соединения. **Никакой запрос не
+   должен переживать остановку сервера.**
 
-2. **Лимит на запрос, а не только на сервер.** Каждый обработчик ограничивается
+2. Лимит на запрос, а не только на сервер. Каждый обработчик ограничивается
    `handlerTimeoutMs` на Go-стороне (таймер в отдельной горутине, срабатывает
-   **независимо от PHP** — см. [«Таймаут хендлера» в HTTP-сервере](http-server.ru.md)).
+   независимо от PHP — см. [«Таймаут хендлера» в HTTP-сервере](http-server.ru.md)).
    До первой записи → клиент получает `504`; после начала стрима → ответ обрывается.
 
-3. **Graceful-дренаж и осиротевшие воркеры.** Сервер обязан уметь: остановить **приём**
+3. Graceful-дренаж и осиротевшие воркеры. Сервер обязан уметь: остановить приём
    новых соединений, не трогая in-flight (для бесшовного хендовера соседям по
    `SO_REUSEPORT`), и самозавершаться, если его мастер умер (`--masterPid`). См. ниже.
 
@@ -67,12 +77,13 @@ PHP обрабатывает его в отдельной корутине и о
 
 ## Соответствие `Method` (PHP ↔ Go)
 
-Два новых значения, **оба** дублируются с обеих сторон:
+Два новых значения, оба дублируются с обеих сторон:
 
 - PHP: `SConcur\Features\MethodEnum` — `case <Server>Serve = N;` и `case <Server>Respond = N+1;`
 - Go: `ext/internal/types/method.go` — `Method<Server>Serve` и `Method<Server>Respond`.
 
-Регистрация в `ext/internal/features/factory.go` — **один** кейс на оба метода:
+Регистрация в `ext/internal/features/factory.go` (функция `DetectMessageHandler`) — один
+кейс на оба метода:
 
 ```go
 case types.MethodHttpServe, types.MethodHttpRespond:
@@ -87,19 +98,19 @@ case types.MethodHttpServe, types.MethodHttpRespond:
 кросс-ссылки — см. раздел «Оформление payloads» в
 [adding-a-feature.ru.md](adding-a-feature.ru.md)). Серверу нужны минимум три:
 
-1. **`ServePayload`** — адрес слушателя + тюнинг (таймауты в мс, лимиты в байтах,
+1. `ServePayload` — адрес слушателя + тюнинг (таймауты в мс, лимиты в байтах,
    `reusePort`). Эталон: `src/Features/HttpServer/Payloads/ServePayload.php` ↔
    `payloads.ServePayload`.
 
-2. **`RespondPayload`** — одна запись ответа. Поле `op` выбирает вид записи; у
+2. `RespondPayload` — одна запись ответа. Поле `op` выбирает вид записи; у
    `HttpServer` это `OP_FULL`(0) / `OP_HEAD`(1) / `OP_CHUNK`(2) / `OP_END`(3) — фабрики
    `RespondPayload::full()/head()/chunk()/end()`. Заголовки нормализуются в
    `array<string, list<string>>` (мульти-значные). Эталон:
    `src/Features/HttpServer/Payloads/RespondPayload.php` ↔ `payloads.RespondPayload`.
 
-3. **`RequestEvent`** — то, что Go стримит в PHP на каждый запрос (Go-only структура;
+3. `RequestEvent` — то, что Go стримит в PHP на каждый запрос (Go-only структура;
    PHP декодирует её в свой DTO `Request`). Несёт `requestId`, метод/путь/заголовки и
-   **инлайн первый чанк тела** + ключ стриминга остального тела (`BodyKey`, см.
+   инлайн первый чанк тела + ключ стриминга остального тела (`BodyKey`, см.
    «Стриминг тела» ниже). Эталон: `payloads.RequestEvent` (Go) ↔
    `SConcur\Features\HttpServer\Dto\Request`.
 
@@ -113,57 +124,80 @@ case types.MethodHttpServe, types.MethodHttpRespond:
 
 ### DTO
 
-- **`Request`** (`Dto/Request.php`) — `fromPayload(string $payload)` декодит
+- `Request` (`Dto/Request.php`) — `fromPayload(string $payload)` декодит
   `RequestEvent`. Тело — отдельный объект (`RequestBody`) с ленивым дочитыванием
   остатка через `next()`.
-- **`Response`** / **`StreamedResponse`** + **`ResponseStream`** — что возвращает
+- `Response` / `StreamedResponse` + `ResponseStream` — что возвращает
   обработчик. `Response` — один атомарный ответ; `StreamedResponse` — замыкание-писатель,
   которому передаётся `ResponseStream`; каждый `->write($chunk)` шлёт `OP_CHUNK` и ждёт
   флаша (backpressure). DTO — `readonly`.
 
+### Общий трейт `ServerRuntimeSupportTrait`
+
+Argv-разбор, обработчики сигналов и orphan-чек уже вынесены в общий трейт
+`SConcur\Features\Server\ServerRuntimeSupportTrait`
+(`src/Features/Server/ServerRuntimeSupportTrait.php`), который подключают и `HttpServer`,
+и `SocketServer` (`use ServerRuntimeSupportTrait;`). Трейт «лёгкий» (stateless): даёт
+поведение, но не добавляет свойств. Он предоставляет:
+
+- `parseArgs(array $argv): array` — рефлексией собрать скалярные (`int`/`bool`/`float`/
+  `string`) параметры конструктора, для каждого `--имя=значение` привести строку к типу
+  и бросить `InvalidServerArgumentException` на неизвестный аргумент;
+- `installSignalHandlers(bool &$stopRequested): Closure` — поставить SIGTERM/SIGINT и
+  вернуть восстановитель (см. «Сигналы…» ниже);
+- `isOrphaned(int $masterPid): bool` — orphan-чек (см. там же).
+
+Новому серверу обычно достаточно подключить трейт — переписывать эту механику не нужно.
+
 ### `fromArgs()` (для мастера воркеров)
 
 Чтобы сервер запускался под `bin/sconcur-server`, сделайте статический конструктор из
-`argv` — по образцу `HttpServer::fromArgs()` (`HttpServer.php`): рефлексией собрать
-скалярные параметры конструктора, для каждого `--имя=значение` привести строку к типу
-(int/bool/float/string) и бросить на неизвестный аргумент. Мастер прокидывает
-`--masterPid` именно сюда (см. «Интеграция с мастером»).
+`argv` — по образцу `HttpServer::fromArgs()` (`HttpServer.php:88`): он лишь вызывает
+`self::parseArgs($argv)` из трейта, при наличии добавляет `onError` и распаковывает
+результат в конструктор. Мастер прокидывает `--masterPid` именно сюда (см. «Интеграция с
+мастером»).
 
 ### Цикл обслуживания: `serve()`
 
-Публичный `serve(Closure $handler)` (`HttpServer::serve`, `HttpServer.php:193`):
+Публичный `serve(Closure $handler)` (`HttpServer::serve`, `HttpServer.php:107`):
 
-1. Сгенерировать `flowKey`, установить обработчики сигналов (SIGTERM/SIGINT → флаг
+1. Сгенерировать `flowKey`, установить обработчики сигналов через
+   `installSignalHandlers($stopRequested)` (из трейта; SIGTERM/SIGINT → флаг
    `stopRequested`), восстановить их в `finally`.
-2. **Запустить слушатель**: `Extension::get()->push($flowKey, new ServePayload(...))` —
+2. Запустить слушатель: `Extension::get()->push($flowKey, new ServePayload(...))` —
    это стриминговая задача (как курсор), её первый и последующие батчи — входящие
    запросы.
-3. Отдать управление **общему** примитиву `Scheduler::get()->serve(...)`
+3. Отдать управление общему примитиву `Scheduler::get()->serve(...)`
    (`Scheduler.php:211`), передав:
    - `serverFlowKey` / `serverTaskKey` — ключи стрима-слушателя;
    - `maxRequests` — штатно завершиться после N запросов (мера против утечек памяти);
-   - **`onRequest(string $payload)`** — спавн-на-запрос: декодить `Request`, вызвать
+   - `onRequest(string $payload)` — спавн-на-запрос: декодить `Request`, вызвать
      `handler`, отправить ответ (`RespondPayload::full(...)` или
-     head→chunk*→end для стрима). У эталона это `HttpServer::handle()` (`HttpServer.php:324`);
-   - **`shouldStop(): bool`** — `true`, когда пришёл сигнал **или** воркер осиротел
+     head→chunk*→end для стрима). У эталона это `HttpServer::handle()` (`HttpServer.php:174`);
+   - `shouldStop(): bool` — `true`, когда пришёл сигнал или воркер осиротел
      (orphan-чек ниже);
-   - **`onDrainStart()`** — вызывается один раз при начале дренажа: рано закрыть приём,
+   - `onDrainStart()` — вызывается один раз при начале дренажа: рано закрыть приём,
      `Extension::get()->httpStopAccepting($flowKey)`, чтобы новые соединения ушли
      соседям по `SO_REUSEPORT`.
 
 `Scheduler::serve` сам мультиплексирует входящие запросы и async-работу их обработчиков
 в одном `waitAny`-цикле, переармливает стрим через `next()` и на дренаже корректно
-гасит поток (`stopFlow`). **Эту механику переписывать не нужно — она общая.**
+гасит поток (`stopFlow`). Эту механику переписывать не нужно — она общая.
 
 ### Сигналы и самозавершение осиротевших воркеров
 
-- **Сигналы**: `installSignalHandlers()` ставит SIGTERM/SIGINT → `stopRequested = true`
-  (через `pcntl_async_signals`), и `shouldStop()` это видит. Прежние обработчики
-  восстанавливаются в `finally`.
-- **Orphan-чек**: если в конструктор передан `masterPid`, `shouldStop()` дополнительно
-  проверяет `posix_getppid() !== $masterPid` — после смерти мастера ядро меняет
-  родителя, и воркер сам уходит в graceful-дренаж (без подверженности PID-reuse). См.
-  `HttpServer::isOrphaned()` (`HttpServer.php:301`).
+Оба механизма — в трейте `ServerRuntimeSupportTrait`:
+
+- Сигналы: `installSignalHandlers(&$stopRequested)` ставит SIGTERM/SIGINT →
+  `stopRequested = true` (через `pcntl_async_signals`; без ext-pcntl — no-op, а
+  восстановитель пустой), и `shouldStop()` это видит. Прежние обработчики и режим
+  async-signals восстанавливаются возвращённым замыканием в `finally`.
+- Orphan-чек: если в конструктор передан `masterPid`, `shouldStop()` дополнительно
+  проверяет `isOrphaned($masterPid)` — `posix_getppid() !== $masterPid` (после смерти
+  мастера ядро меняет родителя, без подверженности PID-reuse; фолбэк на signal-0 пробу
+  через `posix_kill`, если `posix_getppid` недоступен). См.
+  `ServerRuntimeSupportTrait::isOrphaned()`
+  (`src/Features/Server/ServerRuntimeSupportTrait.php:138`).
 
 ---
 
@@ -172,10 +206,10 @@ case types.MethodHttpServe, types.MethodHttpRespond:
 ### Фича: `Handle` → `handleServe` / `handleRespond`
 
 `ext/internal/features/<server>/feature.go`, реализует `contracts.FeatureContract`.
-`Handle` диспатчит по `Method` (эталон — `feature.go:54`):
+`Handle` диспатчит по `Method` (эталон — `HttpFeature.Handle`, `feature.go:54`):
 
 ```go
-func (f *Feature) Handle(task *tasks.Task) {
+func (f *HttpFeature) Handle(task *tasks.Task) {
     switch task.GetMessage().Method {
     case types.MethodHttpServe:   f.handleServe(task)
     case types.MethodHttpRespond: f.handleRespond(task)
@@ -186,7 +220,7 @@ func (f *Feature) Handle(task *tasks.Task) {
 
 Глобальные карты (синглтон-фича):
 - `pendingRequests sync.Map` — `requestId → *pendingRequest` (канал команд записи).
-  Глобальная, чтобы `Respond` (приходит на **другом** flow) нашёл соединение.
+  Глобальная, чтобы `Respond` (приходит на другом flow) нашёл соединение.
 - `serverStates sync.Map` — `flowKey → *serverState`, чтобы `StopAccepting` нашёл
   слушатель.
 
@@ -197,8 +231,8 @@ func (f *Feature) Handle(task *tasks.Task) {
 1. Разобрать `ServePayload`.
 2. `listener, err := listen(payload.Address, payload.ReusePort)` — TCP-слушатель;
    `reusePort` ставит `SO_REUSEPORT` на сокет (`listen.go`).
-3. `state := newServerState(task.GetContext(), message, listener, ...)` — состояние,
-   реализующее `contracts.StateContract`. Внутри поднимается стандартный
+3. `state := newServerState(task.GetContext(), message, listener, startTime, configFromPayload(payload))` —
+   состояние, реализующее `contracts.StateContract`. Внутри поднимается стандартный
    `net/http.Server` (keep-alive, таймауты, парсинг), у которого `serverState` —
    `http.Handler`; `BaseContext` привязан к `task.GetContext()`.
 4. `serverStates.Store(message.FlowKey, state)` — для раннего закрытия приёма.
@@ -207,9 +241,10 @@ func (f *Feature) Handle(task *tasks.Task) {
    батч.
 
 `serverState` (`server.go`):
-- `ServeHTTP(w, r)` (горутина соединения): сложить `RequestEvent` в буферизованный
-  `requests`-канал, **захватить семафор `maxConcurrency`** (до чтения тела), завести
-  `pendingRequest` в `pendingRequests`, и **ждать** команд записи от PHP, применяя их к
+- `ServeHTTP(w, r)` (горутина соединения): захватить семафор `maxConcurrency`
+  (до чтения тела, чтобы ждущий слота запрос не держал буфер тела), прочитать первый чанк
+  тела, завести `pendingRequest` в `pendingRequests`, отправить `RequestEvent` в
+  буферизованный `requests`-канал и ждать команд записи от PHP, применяя их к
   сокету. На `handlerTimeout`/обрыве — закрыть `abandoned`, чтобы поздний ответ не висел
   вечно. Деферром пишется access-лог (на Go-стороне, без PHP↔Go на запрос).
 - `Next() *dto.Result` — отдать следующий `RequestEvent` из канала как батч
@@ -229,28 +264,29 @@ func (f *Feature) Handle(task *tasks.Task) {
 
 ### Раннее закрытие приёма + `SO_REUSEPORT`
 
-`StopAccepting(flowKey)` (`feature.go:215`) находит `serverState` и закрывает **только
-слушатель** (`http.Server.Shutdown` в фоне), не отменяя in-flight. На пуле
-`SO_REUSEPORT` ядро тут же раздаёт новые соединения соседям, пока этот процесс
+`StopAccepting(flowKey)` (`feature.go:215`) находит `serverState` и вызывает его
+`stopAccepting()` (`server.go:407`), который закрывает только слушатель
+(`http.Server.Shutdown` в отдельной горутине на фоновом контексте), не отменяя in-flight.
+На пуле `SO_REUSEPORT` ядро тут же раздаёт новые соединения соседям, пока этот процесс
 дренажит. Это вызывается из PHP-`onDrainStart`.
 
 ### Стриминг тела запроса
 
-Если тело больше инлайнового первого чанка — Go кладёт остаток в **отдельное
-стриминговое состояние** и отдаёт его ключ в `RequestEvent.BodyKey`; PHP дочитывает
-куски через тот же общий `next()`-механизм (как курсор Mongo). Эталон —
-`body_state.go` и `RequestBody`. Гранулярность транспортного чанка фиксирована
-(64 KiB).
+Если тело больше инлайнового первого чанка — Go кладёт остаток в отдельное
+стриминговое состояние (`bodyState`, регистрируется под ключом `<requestId>:body`) и
+отдаёт этот ключ в `RequestEvent.BodyKey`; PHP дочитывает куски через тот же общий
+`next()`-механизм (как курсор Mongo). Эталон — `body_state.go` и `RequestBody`.
+Гранулярность транспортного чанка фиксирована (`defaultRequestBodyChunkSize`, 64 KiB).
 
 ---
 
 ## cgo-экспорт `StopAccepting` (единственный «серверный» экспорт)
 
 Общие экспорты (`push`, `next`, `stopFlow`, `waitAnyTimeout`, `waitAny`) сервер
-переиспользует. Дополнительно ему нужен **свой** экспорт раннего закрытия приёма —
+переиспользует. Дополнительно ему нужен свой экспорт раннего закрытия приёма —
 у `serverStates` каждого сервера своя карта, поэтому `httpStopAccepting` чужой сервер
-переиспользовать не может. Заведите `<server>StopAccepting` по той же цепочке, что и
-`httpStopAccepting`:
+переиспользовать не может (ср. `socketStopAccepting` у `SocketServer`). Заведите
+`<server>StopAccepting` по той же цепочке, что и `httpStopAccepting`:
 
 - `ext/main.go` — `//export <server>StopAccepting` → `<server>_feature.StopAccepting(...)`;
 - `ext/sconcur.c` — `PHP_FUNCTION`, `arginfo`, регистрация `ZEND_NS_FE` и строка в шапке;
@@ -288,7 +324,7 @@ func (f *Feature) Handle(task *tasks.Task) {
 
 ## Тесты (обязательно)
 
-- **Поднимайте реальный процесс сервера** на loopback и бейте по нему `curl`'ом —
+- Поднимайте реальный процесс сервера на loopback и бейте по нему `curl`'ом —
   эталон инфраструктуры: `tests/impl/HttpServer/TestHttpServer.php` (spawn через
   `proc_open`, свободный порт, чтение access-лога) и
   `tests/feature/Features/HttpServer/BaseHttpServerTestCase.php` (свой сервер на класс,
@@ -306,16 +342,17 @@ func (f *Feature) Handle(task *tasks.Task) {
 ## Чеклист
 
 PHP:
-- [ ] `MethodEnum` — **два** значения (`<Server>Serve`, `<Server>Respond`).
+- [ ] `MethodEnum` — два значения (`<Server>Serve`, `<Server>Respond`).
 - [ ] Payloads: `ServePayload`, `RespondPayload` (+ кросс-ссылки `Go: payloads.<Type>`).
 - [ ] DTO: `Request` (`fromPayload`), `Response`/`StreamedResponse`/`ResponseStream`.
-- [ ] `fromArgs()` (рефлексия argv) — для мастера; принимает `--masterPid`.
+- [ ] `use ServerRuntimeSupportTrait;` — `parseArgs`/`installSignalHandlers`/`isOrphaned`.
+- [ ] `fromArgs()` через `self::parseArgs($argv)` — для мастера; принимает `--masterPid`.
 - [ ] `serve()`: запуск слушателя через `push(ServePayload)` + `Scheduler::serve(...)`
-      с `onRequest`/`shouldStop`/`onDrainStart`; обработка сигналов + orphan-чек.
+      с `onRequest`/`shouldStop`/`onDrainStart`; сигналы + orphan-чек (из трейта).
 - [ ] Тесты от `BaseHttpServerTestCase`-аналога (реальный процесс + `curl`).
 
 Go:
-- [ ] Те же **две** константы в `types/method.go`.
+- [ ] Те же две константы в `types/method.go`.
 - [ ] Payload-структуры в `payloads.go` + `RequestEvent`; зеркалят PHP 1:1.
 - [ ] Фича: `Handle`-switch → `handleServe` (listen → `serverState`/`StateContract` →
       `states.Get().Start`) и `handleRespond` (rendezvous по `requestId` + write-backpressure).
