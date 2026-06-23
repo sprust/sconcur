@@ -424,4 +424,5 @@ vendor/bin/sconcur-server status --configPath=/app/master.json >/dev/null \
 
 ---
 
-См. также: [HTTP-сервер](http-server.ru.md).
+См. также: [HTTP-сервер](http-server.ru.md),
+[Админ-статистика сервера](admin-stats.ru.md).

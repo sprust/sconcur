@@ -431,10 +431,20 @@ class TestWorkerMaster
             return;
         }
 
+        // Recurse: workers write their snapshots into a <runtimeDir>/stats subdir,
+        // so a flat unlink would leave it (and the runtime dir) behind.
         foreach ((array) glob($dir . '/*') as $entry) {
-            if (is_string($entry)) {
-                @unlink($entry);
+            if (!is_string($entry)) {
+                continue;
             }
+
+            if (is_dir($entry)) {
+                self::removeDir($entry);
+
+                continue;
+            }
+
+            @unlink($entry);
         }
 
         @rmdir($dir);

@@ -2,6 +2,7 @@ package httpserver_feature
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"sconcur/internal/dto"
 	"sconcur/internal/features/httpserver/payloads"
+	"sconcur/internal/features/httpserver/stats"
 	"sconcur/internal/helpers"
 	"sconcur/internal/logger"
 	"sconcur/internal/states"
@@ -51,6 +53,11 @@ type serverConfig struct {
 	handlerTimeout    time.Duration
 	maxRequestBody    int64
 	maxConcurrency    int
+	// adminToken gates the admin statistics endpoint (empty = off); statsDir and
+	// serverName locate and scope the per-worker snapshot files.
+	adminToken string
+	statsDir   string
+	serverName string
 }
 
 // configFromPayload resolves the tuning from the PHP payload, falling back to the
@@ -66,6 +73,9 @@ func configFromPayload(payload payloads.ServePayload) serverConfig {
 		// 0 stays 0 (disabled/unlimited); a negative value is treated the same.
 		handlerTimeout: time.Duration(max(payload.HandlerTimeoutMs, 0)) * time.Millisecond,
 		maxConcurrency: max(payload.MaxConcurrency, 0),
+		adminToken:     payload.AdminToken,
+		statsDir:       payload.StatsDir,
+		serverName:     payload.ServerName,
 	}
 }
 
@@ -137,6 +147,8 @@ type serverState struct {
 	// unlimited. Acquired before the body is read, released when ServeHTTP returns,
 	// so it caps goroutines, buffered bodies and (transitively) PHP coroutines.
 	sem chan struct{}
+	// stats collects this worker's request counters and writes its snapshot file.
+	stats *stats.Collector
 }
 
 func newServerState(
@@ -154,7 +166,10 @@ func newServerState(
 		startTime: startTime,
 		config:    config,
 		sem:       newSemaphore(config.maxConcurrency),
+		stats:     stats.NewCollector(config.serverName, config.statsDir, startTime),
 	}
+
+	state.stats.Start()
 
 	state.httpServer = &http.Server{
 		Handler:           state,
@@ -199,6 +214,16 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		logger.Write(formatAccessLine(start, request.Method, request.URL.Path, status))
 	}()
 
+	// Admin statistics endpoint: when a token is configured, this server answers
+	// the aggregated pool statistics itself (reading the shared snapshot files),
+	// without ever crossing into PHP. Off by default — the path then flows on as a
+	// normal request.
+	if s.config.adminToken != "" && request.URL.Path == stats.AdminStatsPath {
+		status = s.serveAdminStats(writer, request)
+
+		return
+	}
+
 	// Bound concurrency before touching the body, so requests waiting for a slot
 	// hold no body buffer: this caps memory (and goroutines) under load. A waiting
 	// request unblocks when a slot frees or the server stops.
@@ -217,6 +242,11 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	}
 
 	requestId := nextRequestId(s.message.FlowKey)
+
+	// Track the request for the statistics: count it and its duration on return,
+	// and keep it in the in-flight set (with its start) for the age buckets.
+	s.stats.RequestBegan(requestId, start)
+	defer s.stats.RequestEnded(requestId, start)
 
 	// Read only the first chunk inline (bounded by maxRequestBody): small bodies
 	// arrive whole with the event (no extra round-trips), large ones stream the
@@ -288,6 +318,41 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	}
 
 	status = s.consumeCommands(writer, pending.commands)
+}
+
+// serveAdminStats answers the admin statistics request entirely on the Go side
+// and returns the status sent (for the access log). An unauthorized request gets
+// a 404 — not a 401 — so the endpoint's existence is not revealed to a caller
+// without the token. With a valid token, only GET is served (405 otherwise).
+func (s *serverState) serveAdminStats(writer http.ResponseWriter, request *http.Request) int {
+	if !stats.AuthorizeBearer(request.Header.Get("Authorization"), s.config.adminToken) {
+		http.NotFound(writer, request)
+
+		return http.StatusNotFound
+	}
+
+	if request.Method != http.MethodGet {
+		http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+
+		return http.StatusMethodNotAllowed
+	}
+
+	response := stats.Aggregate(s.config.statsDir, s.config.serverName, time.Now())
+
+	body, err := json.Marshal(response)
+
+	if err != nil {
+		http.Error(writer, "stats error", http.StatusInternalServerError)
+
+		return http.StatusInternalServerError
+	}
+
+	writer.Header().Set("Content-Type", "application/json")
+	writer.WriteHeader(http.StatusOK)
+
+	_, _ = writer.Write(body)
+
+	return http.StatusOK
 }
 
 // consumeCommands applies the handler's write commands in order until the
@@ -415,6 +480,8 @@ func (s *serverState) stopAccepting() {
 // cancelled by the time the state is closed.
 func (s *serverState) Close() {
 	serverStates.Delete(s.message.FlowKey)
+
+	s.stats.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.config.shutdownTimeout)
 	defer cancel()

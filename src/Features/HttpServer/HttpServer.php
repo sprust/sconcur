@@ -59,6 +59,16 @@ readonly class HttpServer
      *                                                                      orphaned worker drains and exits instead of holding the port.
      *                                                                      Under WorkerMaster this is set automatically from the injected
      *                                                                      --masterPid flag via fromArgs(); null (default) off.
+     * @param string                                      $adminToken       when non-empty, the server registers the admin statistics
+     *                                                                      endpoint (GET /sconcur-server-api/admin/stats) and serves it itself
+     *                                                                      on the Go side to a request carrying this token as
+     *                                                                      "Authorization: Bearer <token>". Empty (default) leaves it off.
+     *                                                                      fromArgs() reads it from the SCONCUR_ADMIN_TOKEN env.
+     * @param string                                      $statsDir         directory for the per-worker snapshot files the stats endpoint
+     *                                                                      aggregates (empty = sys_get_temp_dir()/sconcur/stats). Workers of
+     *                                                                      one reuse-port pool must share this dir to be aggregated together.
+     * @param string                                      $serverName       snapshot file prefix and aggregation scope: only servers of the
+     *                                                                      same name are summed together (default "sconcur-server").
      *
      * Defaults mirror the Go server defaults.
      */
@@ -76,6 +86,9 @@ readonly class HttpServer
         private bool $reusePort = false,
         private ?Closure $onError = null,
         private ?int $masterPid = null,
+        private string $adminToken = '',
+        private string $statsDir = '',
+        private string $serverName = 'sconcur-server',
     ) {
     }
 
@@ -93,6 +106,30 @@ readonly class HttpServer
             $overrides['onError'] = $onError;
         }
 
+        // Stats config comes from the environment, unless an explicit --flag already
+        // set it. Via env (not argv) so the WorkerMaster — which is server-agnostic
+        // and forwards the same flags to every worker — can supply it without a
+        // non-HTTP worker rejecting an unknown argument. The master injects
+        // SCONCUR_STATS_DIR/SCONCUR_SERVER_NAME from its runtimeDir/name; the admin
+        // token is set by the operator (no token → endpoint off).
+        $environmentDefaults = [
+            'adminToken' => 'SCONCUR_ADMIN_TOKEN',
+            'statsDir'   => 'SCONCUR_STATS_DIR',
+            'serverName' => 'SCONCUR_SERVER_NAME',
+        ];
+
+        foreach ($environmentDefaults as $parameter => $environmentName) {
+            if (isset($overrides[$parameter])) {
+                continue;
+            }
+
+            $environmentValue = getenv($environmentName);
+
+            if (is_string($environmentValue) && $environmentValue !== '') {
+                $overrides[$parameter] = $environmentValue;
+            }
+        }
+
         return new HttpServer(...$overrides);
     }
 
@@ -107,6 +144,10 @@ readonly class HttpServer
     public function serve(Closure $handler): void
     {
         $flowKey = uniqid('http_', more_entropy: true);
+
+        $statsDir = $this->statsDir !== ''
+            ? $this->statsDir
+            : sys_get_temp_dir() . '/sconcur/stats';
 
         $stopRequested = false;
 
@@ -128,6 +169,9 @@ readonly class HttpServer
                     maxConcurrency: $this->maxConcurrency,
                     handlerTimeoutMs: $this->handlerTimeoutMs,
                     reusePort: $this->reusePort,
+                    adminToken: $this->adminToken,
+                    statsDir: $statsDir,
+                    serverName: $this->serverName,
                 ),
             );
 

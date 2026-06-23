@@ -180,6 +180,15 @@ readonly class MasterConfig
             $workerArgs[] = $workerArg;
         }
 
+        // Forward the stats location/scope to workers via env (not argv) so the
+        // server-agnostic master does not feed a non-HTTP worker an unknown --flag:
+        // HttpServer::fromArgs reads these, others ignore them. The operator's own
+        // env wins on a key collision (left operand of +).
+        $env = $this->env + [
+            'SCONCUR_STATS_DIR'   => $this->runtimeDir . '/stats',
+            'SCONCUR_SERVER_NAME' => $this->name,
+        ];
+
         return new WorkerMaster(
             workerScript: $this->workerScript,
             runtimeDir: $this->runtimeDir,
@@ -190,7 +199,7 @@ readonly class MasterConfig
             phpBinary: $this->phpBinary,
             phpArgs: $this->phpArgs,
             workerArgs: $workerArgs,
-            env: $this->env,
+            env: $env,
             restartPolicy: $this->restartPolicy,
             shutdownTimeoutMs: $this->shutdownTimeoutMs,
             restartBackoffMs: $this->restartBackoffMs,
