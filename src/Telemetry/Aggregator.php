@@ -8,7 +8,7 @@ use SConcur\Telemetry\Dto\Aggregate;
 use SConcur\Telemetry\Dto\Connections;
 use SConcur\Telemetry\Dto\Memory;
 use SConcur\Telemetry\Dto\Requests;
-use SConcur\Telemetry\Dto\Snapshot;
+use SConcur\Telemetry\Dto\StoredSnapshot;
 use SConcur\Telemetry\Dto\Totals;
 use SConcur\Telemetry\Dto\WorkerEntry;
 
@@ -16,8 +16,9 @@ use SConcur\Telemetry\Dto\WorkerEntry;
  * Sums the live worker snapshots into the pool view. Ports the Go aggregator
  * (former ext/internal/stats/aggregate.go fillTotals): summed process metrics,
  * request average weighted by completed, only the workload section actually present.
- * A worker whose snapshot is older than hungThresholdMs is flagged hung (alive but
- * its serve loop stopped pushing).
+ * A snapshot whose receipt is older than hungThresholdMs flags its worker hung — the
+ * age is measured against the master's own receipt clock (skew-immune), so it does
+ * not depend on the worker's stamped updatedAtMs.
  */
 class Aggregator
 {
@@ -27,9 +28,9 @@ class Aggregator
     }
 
     /**
-     * @param list<Snapshot> $snapshots
+     * @param list<StoredSnapshot> $storedSnapshots
      */
-    public function aggregate(array $snapshots, string $name, int $nowMs, string $generatedAt): Aggregate
+    public function aggregate(array $storedSnapshots, string $name, int $nowMs, string $generatedAt): Aggregate
     {
         $workers     = [];
         $workersHung = 0;
@@ -52,8 +53,9 @@ class Aggregator
         $active         = 0;
         $totalAccepted  = 0;
 
-        foreach ($snapshots as $snapshot) {
-            $snapshotAgeMs = $nowMs - $snapshot->updatedAtMs;
+        foreach ($storedSnapshots as $storedSnapshot) {
+            $snapshot      = $storedSnapshot->snapshot;
+            $snapshotAgeMs = $nowMs - $storedSnapshot->receivedAtMs;
             $hung          = $snapshotAgeMs > $this->hungThresholdMs;
 
             if ($hung) {

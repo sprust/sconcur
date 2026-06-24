@@ -46,6 +46,9 @@ class PanelServer
     /** @var array<int, bool> client id => true once it is an open SSE stream */
     protected array $sse = [];
 
+    /** @var array<int, bool> client id => true once its single request has been handled */
+    protected array $handled = [];
+
     /** @var array<int, bool> client id => true once the response is fully queued (close after flush) */
     protected array $closing = [];
 
@@ -247,6 +250,14 @@ class PanelServer
             return;
         }
 
+        // One request per connection: responses are Connection: close and SSE is a
+        // one-shot upgrade. Once handled, ignore any further bytes so a second TCP
+        // segment cannot re-parse the same buffered head and queue a duplicate
+        // response (or re-emit the SSE headers).
+        if ($this->handled[$id] ?? false) {
+            return;
+        }
+
         $this->inputs[$id] .= $chunk;
 
         if (strlen($this->inputs[$id]) > self::MAX_REQUEST_BYTES) {
@@ -261,7 +272,12 @@ class PanelServer
             return;
         }
 
-        $this->handleRequest($id, substr($this->inputs[$id], 0, $headerEnd));
+        $head = substr($this->inputs[$id], 0, $headerEnd);
+
+        $this->handled[$id] = true;
+        $this->inputs[$id]  = '';
+
+        $this->handleRequest($id, $head);
     }
 
     protected function handleRequest(int $id, string $head): void
@@ -396,7 +412,6 @@ class PanelServer
     {
         $reason = match ($status) {
             200     => 'OK',
-            400     => 'Bad Request',
             404     => 'Not Found',
             405     => 'Method Not Allowed',
             default => 'OK',
@@ -446,7 +461,7 @@ class PanelServer
             fclose($this->clients[$id]);
         }
 
-        unset($this->clients[$id], $this->inputs[$id], $this->outputs[$id], $this->sse[$id], $this->closing[$id]);
+        unset($this->clients[$id], $this->inputs[$id], $this->outputs[$id], $this->sse[$id], $this->handled[$id], $this->closing[$id]);
     }
 
     protected function log(string $message): void

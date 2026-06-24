@@ -59,8 +59,10 @@ type WorkloadProvider interface {
 }
 
 // Snapshot is one worker's statistics, pushed as the "s" field of a snapshot frame.
-// UpdatedAtMs is epoch-ms so the collector can compute the snapshot age (and a hung
-// flag). The collector keys workers by the connection (and Pid for display).
+// UpdatedAtMs is the worker's own epoch-ms stamp at sample time (informational —
+// the collector ages a snapshot from its own receipt time, which is immune to
+// worker/collector clock skew). The collector keys workers by the connection (and
+// Pid for display).
 type Snapshot struct {
 	Name          string       `json:"name"`
 	Pid           int          `json:"pid"`

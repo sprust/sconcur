@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use SConcur\Exceptions\Telemetry\FrameTooLargeException;
 use SConcur\Telemetry\Aggregator;
 use SConcur\Telemetry\Dto\Snapshot;
+use SConcur\Telemetry\Dto\StoredSnapshot;
 use SConcur\Telemetry\FrameCodec;
 use SConcur\Telemetry\Render\HtmlRenderer;
 use SConcur\Telemetry\Render\JsonRenderer;
@@ -49,8 +50,8 @@ class TelemetryCoreTest extends TestCase
 
         $aggregate = $this->aggregateOf(
             [
-                $this->requestsSnapshot(pid: 11, updatedAtMs: $now, completed: 10, avgMs: 2.0),
-                $this->requestsSnapshot(pid: 12, updatedAtMs: $now, completed: 30, avgMs: 6.0),
+                $this->stored($this->requestsSnapshot(pid: 11, updatedAtMs: $now, completed: 10, avgMs: 2.0), $now),
+                $this->stored($this->requestsSnapshot(pid: 12, updatedAtMs: $now, completed: 30, avgMs: 6.0), $now),
             ],
             'srv',
             $now,
@@ -70,8 +71,10 @@ class TelemetryCoreTest extends TestCase
     {
         $now = 1_750_000_000_000;
 
+        // Age is measured from the receipt time (second arg), not the worker stamp:
+        // a frame received 20s ago is hung regardless of its own updatedAtMs.
         $aggregate = $this->aggregateOf(
-            [$this->requestsSnapshot(pid: 11, updatedAtMs: $now - 20_000, completed: 1, avgMs: 1.0)],
+            [$this->stored($this->requestsSnapshot(pid: 11, updatedAtMs: $now, completed: 1, avgMs: 1.0), $now - 20_000)],
             'srv',
             $now,
         );
@@ -86,7 +89,7 @@ class TelemetryCoreTest extends TestCase
         $now = 1_750_000_000_000;
 
         $aggregate = $this->aggregateOf(
-            [$this->requestsSnapshot(pid: 12346, updatedAtMs: $now, completed: 42, avgMs: 2.4)],
+            [$this->stored($this->requestsSnapshot(pid: 12346, updatedAtMs: $now, completed: 42, avgMs: 2.4), $now)],
             'srv',
             $now,
         );
@@ -124,7 +127,7 @@ class TelemetryCoreTest extends TestCase
 
         self::assertNotNull($snapshot);
 
-        $metrics = (new PrometheusRenderer())->render($this->aggregateOf([$snapshot], 'po"ol', $now));
+        $metrics = (new PrometheusRenderer())->render($this->aggregateOf([$this->stored($snapshot, $now)], 'po"ol', $now));
 
         self::assertStringContainsString('sconcur_pool_connections_active{name="po\"ol"} 3', $metrics);
         self::assertStringNotContainsString('sconcur_pool_requests', $metrics);
@@ -136,11 +139,19 @@ class TelemetryCoreTest extends TestCase
     }
 
     /**
-     * @param list<Snapshot> $snapshots
+     * @param list<StoredSnapshot> $storedSnapshots
      */
-    protected function aggregateOf(array $snapshots, string $name, int $nowMs): \SConcur\Telemetry\Dto\Aggregate
+    protected function aggregateOf(array $storedSnapshots, string $name, int $nowMs): \SConcur\Telemetry\Dto\Aggregate
     {
-        return (new Aggregator())->aggregate($snapshots, $name, $nowMs, '2026-01-01T00:00:00+00:00');
+        return (new Aggregator())->aggregate($storedSnapshots, $name, $nowMs, '2026-01-01T00:00:00+00:00');
+    }
+
+    protected function stored(Snapshot $snapshot, int $receivedAtMs): StoredSnapshot
+    {
+        return new StoredSnapshot(
+            snapshot: $snapshot,
+            receivedAtMs: $receivedAtMs,
+        );
     }
 
     protected function requestsSnapshot(int $pid, int $updatedAtMs, int $completed, float $avgMs): Snapshot

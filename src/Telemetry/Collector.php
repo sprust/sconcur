@@ -22,6 +22,14 @@ class Collector
 
     protected const int MAX_FRAME_BYTES = 1_048_576;
 
+    /**
+     * Cap on concurrently accepted worker connections. A pool has one connection per
+     * worker (≈ cores), so this is generous headroom; it bounds the listener against a
+     * misbehaving local peer opening connections without pushing (the socket is 0600,
+     * same-uid only, but the cap keeps the failure mode finite rather than unbounded).
+     */
+    protected const int MAX_CONNECTIONS = 1_024;
+
     /** @var null|resource the unix listener, or null until start() */
     protected $listener = null;
 
@@ -140,6 +148,14 @@ class Collector
             return;
         }
 
+        if (count($this->connections) >= self::MAX_CONNECTIONS) {
+            // At the cap: refuse rather than grow unbounded. A live worker redials on
+            // its next interval, so a transient overflow self-heals.
+            fclose($connection);
+
+            return;
+        }
+
         stream_set_blocking($connection, false);
 
         $id = (int) $connection;
@@ -188,13 +204,24 @@ class Collector
             return;
         }
 
+        // Honour the frame envelope: only "snapshot" frames carry an "s" snapshot.
+        // Unknown future kinds (worker.start/stop, ...) are ignored, not misread.
+        if (($decoded['t'] ?? null) !== 'snapshot') {
+            return;
+        }
+
         $snapshot = Snapshot::fromDecoded($decoded['s'] ?? null);
 
         if ($snapshot === null) {
             return;
         }
 
-        $this->store->put($id, $snapshot);
+        $this->store->put($id, $snapshot, $this->nowMs());
+    }
+
+    protected function nowMs(): int
+    {
+        return (int) (microtime(true) * 1000);
     }
 
     protected function dropConnection(int $id): void

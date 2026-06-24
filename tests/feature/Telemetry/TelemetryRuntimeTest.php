@@ -152,6 +152,52 @@ class TelemetryRuntimeTest extends TestCase
         $runtime->stop();
     }
 
+    public function testNonSnapshotFrameIsIgnored(): void
+    {
+        $socketPath = $this->directory . '/t.sock';
+        $port       = $this->freeTcpPort();
+
+        $runtime = new TelemetryRuntime(
+            socketPath: $socketPath,
+            panelPort: $port,
+            adminToken: 'secret',
+            name: 'srv',
+        );
+
+        $runtime->start();
+
+        $worker = stream_socket_client('unix://' . $socketPath, $errno, $errstr, 1.0);
+
+        self::assertIsResource($worker);
+
+        // An unknown envelope kind (future worker.start/stop, ...) carrying a payload
+        // must not be misread as a snapshot.
+        $body = (string) json_encode([
+            't' => 'worker.bogus',
+            's' => ['name' => 'srv', 'pid' => 7, 'updatedAtMs' => (int) (microtime(true) * 1000), 'requests' => ['completed' => 99]],
+        ]);
+
+        fwrite($worker, pack('N', strlen($body)) . $body);
+        fflush($worker);
+
+        for ($tick = 0; $tick < 5; $tick++) {
+            $runtime->poll(20_000);
+        }
+
+        [$status, $responseBody] = $this->httpGet($port, '/api/stats', ['Authorization: Bearer secret', 'Accept: application/json'], $runtime);
+
+        self::assertSame(200, $status);
+
+        /** @var array<string, mixed> $decoded */
+        $decoded = json_decode($responseBody, true);
+
+        self::assertSame(0, $decoded['workersTotal']);
+
+        fclose($worker);
+
+        $runtime->stop();
+    }
+
     protected function freeTcpPort(): int
     {
         $listener = stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
