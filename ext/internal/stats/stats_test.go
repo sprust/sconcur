@@ -558,6 +558,36 @@ func TestRenderHTMLConnectionsHungAndDashes(t *testing.T) {
 	}
 }
 
+func TestPruneDeadFilesRechecksLiveness(t *testing.T) {
+	dir := t.TempDir()
+
+	reusedPath := filepath.Join(dir, "reused.json")
+	deadPath := filepath.Join(dir, "dead.json")
+
+	if err := os.WriteFile(reusedPath, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write reused: %v", err)
+	}
+
+	if err := os.WriteFile(deadPath, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write dead: %v", err)
+	}
+
+	// reusedPath was scanned as dead, but by prune time its pid is alive again (pid
+	// reused by a fresh worker) — it must be kept. deadPath stays genuinely dead.
+	pruneDeadFiles(dir, []deadSnapshot{
+		{path: reusedPath, pid: os.Getpid()},
+		{path: deadPath, pid: 2147483647}, // above pid_max → no such process
+	})
+
+	if _, err := os.Stat(reusedPath); err != nil {
+		t.Errorf("file of a reused (now-alive) pid was deleted: %v", err)
+	}
+
+	if _, err := os.Stat(deadPath); !os.IsNotExist(err) {
+		t.Errorf("file of a genuinely dead pid was not pruned: %v", err)
+	}
+}
+
 func TestCollectorEmptyStatsDirIsNoop(t *testing.T) {
 	collector := NewCollector("srv", "", time.Now(), fakeProvider{})
 

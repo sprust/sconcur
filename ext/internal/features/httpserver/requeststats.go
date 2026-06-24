@@ -3,7 +3,6 @@ package httpserver_feature
 import (
 	"sconcur/internal/stats"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -12,9 +11,17 @@ import (
 // id (with each request's start, for the exclusive age buckets). It implements
 // stats.WorkloadProvider, so the shared Collector folds it into each snapshot.
 type requestStats struct {
-	completed           atomic.Int64
-	totalDurationMicros atomic.Int64
-	inFlight            sync.Map
+	// completedMutex guards the (completed, totalDurationMicros) pair: a snapshot
+	// must read both together to compute a consistent average. Two independent
+	// atomics could be read between a completed++ and its duration add, skewing
+	// avgMs. The critical section is two integer adds, so contention between
+	// concurrent request completions is negligible. The in-flight set stays
+	// lock-free (sync.Map).
+	completedMutex      sync.Mutex
+	completed           int64
+	totalDurationMicros int64
+
+	inFlight sync.Map
 }
 
 // requestBegan records a request entering handling, keyed by its id for the
@@ -27,8 +34,11 @@ func (requestStats *requestStats) requestBegan(requestId string, start time.Time
 // its duration to the completed counters.
 func (requestStats *requestStats) requestEnded(requestId string, start time.Time) {
 	requestStats.inFlight.Delete(requestId)
-	requestStats.completed.Add(1)
-	requestStats.totalDurationMicros.Add(time.Since(start).Microseconds())
+
+	requestStats.completedMutex.Lock()
+	requestStats.completed++
+	requestStats.totalDurationMicros += time.Since(start).Microseconds()
+	requestStats.completedMutex.Unlock()
 }
 
 // WorkloadSnapshot reads the counters and buckets the in-flight requests by age
@@ -36,8 +46,10 @@ func (requestStats *requestStats) requestEnded(requestId string, start time.Time
 func (requestStats *requestStats) WorkloadSnapshot() stats.Workload {
 	now := time.Now()
 
-	completed := requestStats.completed.Load()
-	totalMicros := requestStats.totalDurationMicros.Load()
+	requestStats.completedMutex.Lock()
+	completed := requestStats.completed
+	totalMicros := requestStats.totalDurationMicros
+	requestStats.completedMutex.Unlock()
 
 	averageMs := 0.0
 

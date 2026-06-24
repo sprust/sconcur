@@ -1,6 +1,8 @@
 package httpserver_feature
 
 import (
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 )
@@ -66,5 +68,44 @@ func TestRequestStatsAverageZeroWhenNoneCompleted(t *testing.T) {
 
 	if workload.Requests.Completed != 0 {
 		t.Errorf("Completed = %d, want 0", workload.Requests.Completed)
+	}
+}
+
+// TestRequestStatsConcurrentCompletions hammers requestEnded from many goroutines
+// (as net/http does, one per request) and checks the counters stay consistent:
+// every completion is counted and the in-flight set drains. Run with -race to also
+// catch a regression in the (completed, totalDurationMicros) pair locking.
+func TestRequestStatsConcurrentCompletions(t *testing.T) {
+	requestStats := &requestStats{}
+
+	start := time.Now()
+
+	const total = 200
+
+	var waitGroup sync.WaitGroup
+
+	waitGroup.Add(total)
+
+	for index := 0; index < total; index++ {
+		go func(index int) {
+			defer waitGroup.Done()
+
+			requestId := strconv.Itoa(index)
+
+			requestStats.requestBegan(requestId, start)
+			requestStats.requestEnded(requestId, start)
+		}(index)
+	}
+
+	waitGroup.Wait()
+
+	workload := requestStats.WorkloadSnapshot()
+
+	if workload.Requests.Completed != total {
+		t.Errorf("Completed = %d, want %d", workload.Requests.Completed, total)
+	}
+
+	if workload.Requests.InFlight != 0 {
+		t.Errorf("InFlight = %d, want 0", workload.Requests.InFlight)
 	}
 }

@@ -49,7 +49,7 @@ func Aggregate(statsDir string, name string, now time.Time) AggregateResponse {
 		return response
 	}
 
-	var deadFiles []string
+	var deadFiles []deadSnapshot
 
 	for _, file := range files {
 		snapshot, ok := readSnapshot(file)
@@ -63,7 +63,7 @@ func Aggregate(statsDir string, name string, now time.Time) AggregateResponse {
 		}
 
 		if !isProcessAlive(snapshot.Pid) {
-			deadFiles = append(deadFiles, file)
+			deadFiles = append(deadFiles, deadSnapshot{path: file, pid: snapshot.Pid})
 
 			continue
 		}
@@ -166,11 +166,23 @@ func fillTotals(response *AggregateResponse) {
 	}
 }
 
+// deadSnapshot is a snapshot file whose owning pid was not alive at scan time,
+// carried to pruneDeadFiles so it can re-check liveness just before deleting.
+type deadSnapshot struct {
+	path string
+	pid  int
+}
+
 // pruneDeadFiles removes the snapshot files of crashed workers. It takes a
 // non-blocking exclusive lock on a shared lock file so two concurrent aggregators
 // do not race on the deletes; if the lock is held, pruning is simply skipped this
 // time (another aggregator is already doing it).
-func pruneDeadFiles(statsDir string, deadFiles []string) {
+//
+// Liveness is re-checked under the lock, immediately before each delete: between
+// the scan and here a dead pid could have been reused by a fresh worker of the
+// same pool, which writes the same <name>-stats-<pid>.json file. If the pid is
+// alive again, that file belongs to the live worker — skip it, do not delete.
+func pruneDeadFiles(statsDir string, deadFiles []deadSnapshot) {
 	if len(deadFiles) == 0 {
 		return
 	}
@@ -189,8 +201,12 @@ func pruneDeadFiles(statsDir string, deadFiles []string) {
 
 	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 
-	for _, file := range deadFiles {
-		_ = os.Remove(file)
+	for _, dead := range deadFiles {
+		if isProcessAlive(dead.pid) {
+			continue
+		}
+
+		_ = os.Remove(dead.path)
 	}
 }
 
