@@ -80,6 +80,7 @@ func Aggregate(statsDir string, name string, now time.Time) AggregateResponse {
 			CpuPercent:    snapshot.CpuPercent,
 			Goroutines:    snapshot.Goroutines,
 			Requests:      snapshot.Requests,
+			Connections:   snapshot.Connections,
 		})
 	}
 
@@ -109,12 +110,17 @@ func readSnapshot(file string) (Snapshot, bool) {
 }
 
 // fillTotals sums the worker entries into response.Totals and the worker/hung
-// counts. The average request time is weighted by each worker's completed count;
-// CPU percent is a plain sum of the per-process percentages.
+// counts. Only the workload section present in the snapshots is filled: HTTP pools
+// fill Requests (average weighted by completed), socket pools fill Connections.
 func fillTotals(response *AggregateResponse) {
 	response.WorkersTotal = len(response.Workers)
 
+	var requestsTotal Requests
+	var connectionsTotal Connections
 	var weightedDurationMs float64
+
+	hasRequests := false
+	hasConnections := false
 
 	for _, worker := range response.Workers {
 		if worker.Hung {
@@ -127,17 +133,36 @@ func fillTotals(response *AggregateResponse) {
 		response.Totals.CpuPercent += worker.CpuPercent
 		response.Totals.Goroutines += worker.Goroutines
 
-		response.Totals.Requests.Completed += worker.Requests.Completed
-		response.Totals.Requests.InFlight += worker.Requests.InFlight
-		response.Totals.Requests.InFlight1to5s += worker.Requests.InFlight1to5s
-		response.Totals.Requests.InFlight5to15s += worker.Requests.InFlight5to15s
-		response.Totals.Requests.InFlightOver15s += worker.Requests.InFlightOver15s
+		if worker.Requests != nil {
+			hasRequests = true
 
-		weightedDurationMs += worker.Requests.AvgMs * float64(worker.Requests.Completed)
+			requestsTotal.Completed += worker.Requests.Completed
+			requestsTotal.InFlight += worker.Requests.InFlight
+			requestsTotal.InFlight1to5s += worker.Requests.InFlight1to5s
+			requestsTotal.InFlight5to15s += worker.Requests.InFlight5to15s
+			requestsTotal.InFlightOver15s += worker.Requests.InFlightOver15s
+
+			weightedDurationMs += worker.Requests.AvgMs * float64(worker.Requests.Completed)
+		}
+
+		if worker.Connections != nil {
+			hasConnections = true
+
+			connectionsTotal.Active += worker.Connections.Active
+			connectionsTotal.TotalAccepted += worker.Connections.TotalAccepted
+		}
 	}
 
-	if response.Totals.Requests.Completed > 0 {
-		response.Totals.Requests.AvgMs = weightedDurationMs / float64(response.Totals.Requests.Completed)
+	if hasRequests {
+		if requestsTotal.Completed > 0 {
+			requestsTotal.AvgMs = weightedDurationMs / float64(requestsTotal.Completed)
+		}
+
+		response.Totals.Requests = &requestsTotal
+	}
+
+	if hasConnections {
+		response.Totals.Connections = &connectionsTotal
 	}
 }
 

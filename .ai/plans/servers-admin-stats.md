@@ -1,9 +1,10 @@
 # Статистика серверов (HTTP + socket)
 
-Статус: **v1 реализовано** (перехват на основном HTTP-порту, только http-сервер).
-**v2 — спланировано, ждёт апрува**: выделенный stats-HTTP-сервер на своём порту
-(`/api/stats`), общая логика в нейтральном пакете, поддержка socket-сервера.
-Документация — [docs/admin-stats.ru.md](../../docs/admin-stats.ru.md).
+Статус: **v2 реализовано** — выделенный stats-HTTP-сервер на своём порту
+(`/api/stats`), общая логика в нейтральном пакете `ext/internal/stats`, поддержка
+HTTP и socket-серверов; перехват на основном порту убран. Тесты зелёные,
+документация обновлена ([docs/admin-stats.ru.md](../../docs/admin-stats.ru.md),
+[docs/adding-a-server.ru.md](../../docs/adding-a-server.ru.md)).
 Ветка: `feature/servers-admin`.
 
 ## Идея

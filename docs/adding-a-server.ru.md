@@ -322,6 +322,40 @@ func (f *HttpFeature) Handle(task *tasks.Task) {
 
 ---
 
+## Статистика
+
+Чтобы новый сервер из коробки собирал и отдавал статистику (как HTTP и socket),
+подключите нейтральный пакет `ext/internal/stats` — он даёт снапшот-писатель,
+агрегатор и выделенный stats-HTTP-сервер на `GET /api/stats`. Детали для
+пользователя — [Статистика сервера](admin-stats.ru.md).
+
+PHP-сторона:
+
+- `ServePayload` += `adminToken`/`statsDir`/`serverName`/`statsPort` (ключи
+  `at`/`sd`/`sn`/`sp`), зеркалят Go-payload.
+- Конструктор сервера += те же четыре параметра; в `fromArgs()` вызовите
+  `self::applyStatsEnvironment($overrides)` (метод трейта) — он читает
+  `SCONCUR_ADMIN_TOKEN`/`SCONCUR_STATS_PORT`/`SCONCUR_STATS_DIR`/`SCONCUR_SERVER_NAME`
+  из env. В `serve()` отрезолвьте дефолт `statsDir` и передайте поля в `ServePayload`.
+
+Go-сторона:
+
+- Заведите свой тип-счётчик (workload), реализующий `stats.WorkloadProvider`
+  (`WorkloadSnapshot() stats.Workload`) — у HTTP это `requestStats` (секция
+  `Requests`), у socket `connectionStats` (секция `Connections`). Инкрементируйте
+  его в обработчике соединения/запроса.
+- В `serverConfig` протащите `adminToken`/`statsDir`/`serverName`/`statsPort`; в
+  `newServerState` создайте `collector := stats.NewCollector(name, statsDir,
+  startTime, provider)` и `collector.Start()`, а также
+  `state.statsServer = stats.MaybeStartServer(statsPort, adminToken, statsDir, serverName)`.
+- В `Close()` вызовите `collector.Stop()` и `statsServer.Close()` (оба безопасны на
+  выключенной конфигурации).
+
+Снапшот-писатель работает при заданном `statsDir`; stats-сервер — только когда
+заданы и порт, и токен. Ошибка бинда порта логируется и не роняет основной сервер.
+
+---
+
 ## Тесты (обязательно)
 
 - Поднимайте реальный процесс сервера на loopback и бейте по нему `curl`'ом —
@@ -349,6 +383,8 @@ PHP:
 - [ ] `fromArgs()` через `self::parseArgs($argv)` — для мастера; принимает `--masterPid`.
 - [ ] `serve()`: запуск слушателя через `push(ServePayload)` + `Scheduler::serve(...)`
       с `onRequest`/`shouldStop`/`onDrainStart`; сигналы + orphan-чек (из трейта).
+- [ ] Статистика: `ServePayload` += `at`/`sd`/`sn`/`sp`, конструктор += 4 параметра,
+      `self::applyStatsEnvironment()` в `fromArgs()`, проброс в `ServePayload`.
 - [ ] Тесты от `BaseHttpServerTestCase`-аналога (реальный процесс + `curl`).
 
 Go:
@@ -358,6 +394,8 @@ Go:
       `states.Get().Start`) и `handleRespond` (rendezvous по `requestId` + write-backpressure).
 - [ ] `serverStates`/`pendingRequests`-карты; `StopAccepting(flowKey)`; `SO_REUSEPORT` в `listen`.
 - [ ] `BaseContext` = контекст задачи; `handlerTimeout`; access-лог на Go-стороне.
+- [ ] Статистика: `stats.WorkloadProvider`-счётчик, `stats.NewCollector` + `Start`,
+      `stats.MaybeStartServer` в `newServerState`, `Stop`/`Close` в `Close`.
 - [ ] Регистрация в `features/factory.go` (один кейс на оба метода).
 
 cgo / протокол:

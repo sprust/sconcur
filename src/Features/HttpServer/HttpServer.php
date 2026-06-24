@@ -59,16 +59,18 @@ readonly class HttpServer
      *                                                                      orphaned worker drains and exits instead of holding the port.
      *                                                                      Under WorkerMaster this is set automatically from the injected
      *                                                                      --masterPid flag via fromArgs(); null (default) off.
-     * @param string                                      $adminToken       when non-empty, the server registers the admin statistics
-     *                                                                      endpoint (GET /sconcur-server-api/admin/stats) and serves it itself
-     *                                                                      on the Go side to a request carrying this token as
-     *                                                                      "Authorization: Bearer <token>". Empty (default) leaves it off.
-     *                                                                      fromArgs() reads it from the SCONCUR_ADMIN_TOKEN env.
+     * @param string                                      $adminToken       gates the dedicated stats server (with $statsPort): when both are
+     *                                                                      set, each worker binds the stats port (SO_REUSEPORT) and serves
+     *                                                                      GET /api/stats to a request with "Authorization: Bearer <token>".
+     *                                                                      Empty (default) off. fromArgs() reads it from SCONCUR_ADMIN_TOKEN.
      * @param string                                      $statsDir         directory for the per-worker snapshot files the stats endpoint
      *                                                                      aggregates (empty = sys_get_temp_dir()/sconcur/stats). Workers of
      *                                                                      one reuse-port pool must share this dir to be aggregated together.
      * @param string                                      $serverName       snapshot file prefix and aggregation scope: only servers of the
      *                                                                      same name are summed together (default "sconcur-server").
+     * @param int                                         $statsPort        port for the dedicated stats HTTP server (0 = off). With a token
+     *                                                                      set, each worker binds it via SO_REUSEPORT and serves GET
+     *                                                                      /api/stats. fromArgs() reads it from SCONCUR_STATS_PORT.
      *
      * Defaults mirror the Go server defaults.
      */
@@ -89,6 +91,7 @@ readonly class HttpServer
         private string $adminToken = '',
         private string $statsDir = '',
         private string $serverName = 'sconcur-server',
+        private int $statsPort = 0,
     ) {
     }
 
@@ -106,29 +109,7 @@ readonly class HttpServer
             $overrides['onError'] = $onError;
         }
 
-        // Stats config comes from the environment, unless an explicit --flag already
-        // set it. Via env (not argv) so the WorkerMaster — which is server-agnostic
-        // and forwards the same flags to every worker — can supply it without a
-        // non-HTTP worker rejecting an unknown argument. The master injects
-        // SCONCUR_STATS_DIR/SCONCUR_SERVER_NAME from its runtimeDir/name; the admin
-        // token is set by the operator (no token → endpoint off).
-        $environmentDefaults = [
-            'adminToken' => 'SCONCUR_ADMIN_TOKEN',
-            'statsDir'   => 'SCONCUR_STATS_DIR',
-            'serverName' => 'SCONCUR_SERVER_NAME',
-        ];
-
-        foreach ($environmentDefaults as $parameter => $environmentName) {
-            if (isset($overrides[$parameter])) {
-                continue;
-            }
-
-            $environmentValue = getenv($environmentName);
-
-            if (is_string($environmentValue) && $environmentValue !== '') {
-                $overrides[$parameter] = $environmentValue;
-            }
-        }
+        $overrides = self::applyStatsEnvironment($overrides);
 
         return new HttpServer(...$overrides);
     }
@@ -172,6 +153,7 @@ readonly class HttpServer
                     adminToken: $this->adminToken,
                     statsDir: $statsDir,
                     serverName: $this->serverName,
+                    statsPort: $this->statsPort,
                 ),
             );
 

@@ -5,7 +5,8 @@
     "phpArgs": ["-d", "extension=/sconcur/ext/build/sconcur.so"],
     "workerArgs": [],
     "env": {
-        "SCONCUR_ADMIN_TOKEN": "23c30b4089383dd332585af6f02ff65de38179d52546b770942bd63e9894c3ec"
+        "SCONCUR_ADMIN_TOKEN": "23c30b4089383dd332585af6f02ff65de38179d52546b770942bd63e9894c3ec",
+        "SCONCUR_STATS_PORT": "8081"
     },
     "runtimeDir": "/sconcur/tests/storage/servers",
     "logDir": "/sconcur/tests/storage/logs",

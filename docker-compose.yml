@@ -34,7 +34,9 @@ services:
       - "host.docker.internal:host-gateway"
     ports:
       - "28080:8080"
+      - "28081:8081"
       - "29100:9100"
+      - "29101:9101"
     command: ["supervisord", "-c", "/sconcur/docker/servers/config/supervisord.conf"]
 
   mongodb:

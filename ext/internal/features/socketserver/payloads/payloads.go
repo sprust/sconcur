@@ -25,6 +25,19 @@ type ServePayload struct {
 	// ReusePort sets SO_REUSEPORT so several processes can bind the same address and
 	// the kernel load-balances connections across them (process-per-core).
 	ReusePort bool `json:"rp" msgpack:"rp"`
+	// AdminToken gates the dedicated stats server: with both a token and a stats
+	// port set, each worker binds the port (SO_REUSEPORT) and serves GET /api/stats
+	// to a request carrying this token as "Authorization: Bearer <token>".
+	AdminToken string `json:"at" msgpack:"at"`
+	// StatsDir is the directory each worker writes its snapshot file into and the
+	// stats endpoint reads to aggregate. Empty disables the stats writer.
+	StatsDir string `json:"sd" msgpack:"sd"`
+	// ServerName is the snapshot file prefix and the aggregation scope: only files
+	// of the same name are summed together (so distinct pools do not mix).
+	ServerName string `json:"sn" msgpack:"sn"`
+	// StatsPort is the port the dedicated stats server binds (0 = off). The stats
+	// server runs only when both this and AdminToken are set.
+	StatsPort int `json:"sp" msgpack:"sp"`
 }
 
 // RespondPayload is the payload of a socketRespond command — one action a PHP

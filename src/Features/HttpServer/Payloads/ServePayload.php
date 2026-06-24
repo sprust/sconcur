@@ -29,6 +29,7 @@ readonly class ServePayload implements PayloadInterface
         private string $adminToken,
         private string $statsDir,
         private string $serverName,
+        private int $statsPort,
     ) {
     }
 
@@ -56,6 +57,7 @@ readonly class ServePayload implements PayloadInterface
             'at'  => $this->adminToken,
             'sd'  => $this->statsDir,
             'sn'  => $this->serverName,
+            'sp'  => $this->statsPort,
         ];
     }
 }

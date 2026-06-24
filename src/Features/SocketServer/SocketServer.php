@@ -46,6 +46,18 @@ readonly class SocketServer
      *                                                                   no longer a child of this pid — i.e. its WorkerMaster died. Under
      *                                                                   WorkerMaster this is set automatically from the injected
      *                                                                   --masterPid flag via fromArgs(); null (default) off.
+     * @param string                                    $adminToken      gates the dedicated stats server (with $statsPort): when both are
+     *                                                                   set, each worker binds the stats port (SO_REUSEPORT) and serves
+     *                                                                   GET /api/stats to "Authorization: Bearer <token>". Empty (default)
+     *                                                                   off. fromArgs() reads it from SCONCUR_ADMIN_TOKEN.
+     * @param string                                    $statsDir        directory for the per-worker snapshot files the stats endpoint
+     *                                                                   aggregates (empty = sys_get_temp_dir()/sconcur/stats). Workers of
+     *                                                                   one reuse-port pool must share this dir to be aggregated together.
+     * @param string                                    $serverName      snapshot file prefix and aggregation scope: only servers of the
+     *                                                                   same name are summed together (default "sconcur-server").
+     * @param int                                       $statsPort       port for the dedicated stats HTTP server (0 = off). With a token
+     *                                                                   set, each worker binds it via SO_REUSEPORT and serves GET
+     *                                                                   /api/stats. fromArgs() reads it from SCONCUR_STATS_PORT.
      *
      * Defaults mirror the Go server defaults.
      */
@@ -60,6 +72,10 @@ readonly class SocketServer
         private bool $reusePort = false,
         private ?Closure $onError = null,
         private ?int $masterPid = null,
+        private string $adminToken = '',
+        private string $statsDir = '',
+        private string $serverName = 'sconcur-server',
+        private int $statsPort = 0,
     ) {
     }
 
@@ -79,6 +95,8 @@ readonly class SocketServer
             $overrides['onError'] = $onError;
         }
 
+        $overrides = self::applyStatsEnvironment($overrides);
+
         return new SocketServer(...$overrides);
     }
 
@@ -94,6 +112,10 @@ readonly class SocketServer
     public function serve(Closure $handler): void
     {
         $flowKey = uniqid('sock_', more_entropy: true);
+
+        $statsDir = $this->statsDir !== ''
+            ? $this->statsDir
+            : sys_get_temp_dir() . '/sconcur/stats';
 
         $stopRequested = false;
 
@@ -112,6 +134,10 @@ readonly class SocketServer
                     maxConcurrency: $this->maxConcurrency,
                     shutdownTimeoutMs: $this->shutdownTimeoutMs,
                     reusePort: $this->reusePort,
+                    adminToken: $this->adminToken,
+                    statsDir: $statsDir,
+                    serverName: $this->serverName,
+                    statsPort: $this->statsPort,
                 ),
             );
 

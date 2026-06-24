@@ -85,6 +85,50 @@ trait ServerRuntimeSupportTrait
     }
 
     /**
+     * Fills the stats-related constructor overrides from the environment, unless an
+     * explicit --flag already set them: the admin token, stats dir/name and stats
+     * port. Shared by the servers' fromArgs(). Via env (not argv) so the
+     * server-agnostic WorkerMaster can supply stats config without feeding a
+     * non-matching worker an unknown --flag. The master injects
+     * SCONCUR_STATS_DIR/SCONCUR_SERVER_NAME from its runtimeDir/name; the operator
+     * sets SCONCUR_ADMIN_TOKEN and SCONCUR_STATS_PORT.
+     *
+     * @param array<string, int|bool|float|string> $overrides
+     *
+     * @return array<string, int|bool|float|string>
+     */
+    protected static function applyStatsEnvironment(array $overrides): array
+    {
+        $stringDefaults = [
+            'adminToken' => 'SCONCUR_ADMIN_TOKEN',
+            'statsDir'   => 'SCONCUR_STATS_DIR',
+            'serverName' => 'SCONCUR_SERVER_NAME',
+        ];
+
+        foreach ($stringDefaults as $parameter => $environmentName) {
+            if (isset($overrides[$parameter])) {
+                continue;
+            }
+
+            $environmentValue = getenv($environmentName);
+
+            if (is_string($environmentValue) && $environmentValue !== '') {
+                $overrides[$parameter] = $environmentValue;
+            }
+        }
+
+        if (!isset($overrides['statsPort'])) {
+            $environmentPort = getenv('SCONCUR_STATS_PORT');
+
+            if (is_string($environmentPort) && $environmentPort !== '') {
+                $overrides['statsPort'] = (int) $environmentPort;
+            }
+        }
+
+        return $overrides;
+    }
+
+    /**
      * Installs SIGTERM/SIGINT handlers that flip $stopRequested so the serve loop
      * shuts down gracefully, and returns a callback that restores the handlers (and
      * async-signals mode) that were in place before. Requires ext-pcntl; without it

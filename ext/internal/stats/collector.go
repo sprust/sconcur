@@ -6,25 +6,19 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"sync"
-	"sync/atomic"
 	"time"
 )
 
-// Collector accumulates one worker's request counters and periodically writes the
-// worker's snapshot file. It is created per server instance, started with Start
-// and stopped with Stop (which removes the file for a clean exit).
+// Collector periodically writes one worker's snapshot file. It owns the universal
+// process metrics; the feature-specific workload section comes from the
+// WorkloadProvider it is built with. Create per server instance, Start to launch
+// the writer, Stop to end it and remove the file (clean exit leaves no orphan).
 type Collector struct {
 	name      string
 	statsDir  string
 	pid       int
 	startTime time.Time
-
-	completed           atomic.Int64
-	totalDurationMicros atomic.Int64
-	// inFlight maps a request id to its start time, so a snapshot can bucket the
-	// currently-running requests by age.
-	inFlight sync.Map
+	provider  WorkloadProvider
 
 	cpu  cpuSampler
 	stop chan struct{}
@@ -32,34 +26,22 @@ type Collector struct {
 }
 
 // NewCollector builds a collector for one server. name and statsDir define the
-// snapshot file path <statsDir>/<name>-stats-<pid>.json.
-func NewCollector(name string, statsDir string, startTime time.Time) *Collector {
+// snapshot file path <statsDir>/<name>-stats-<pid>.json; provider supplies the
+// feature-specific counters at each snapshot.
+func NewCollector(name string, statsDir string, startTime time.Time, provider WorkloadProvider) *Collector {
 	return &Collector{
 		name:      name,
 		statsDir:  statsDir,
 		pid:       os.Getpid(),
 		startTime: startTime,
+		provider:  provider,
 		stop:      make(chan struct{}),
 		done:      make(chan struct{}),
 	}
 }
 
-// RequestBegan records a request entering handling, keyed by its id for the
-// in-flight age buckets.
-func (collector *Collector) RequestBegan(requestId string, start time.Time) {
-	collector.inFlight.Store(requestId, start)
-}
-
-// RequestEnded records a finished request: drop it from the in-flight set and add
-// its duration to the completed counters (for the running average).
-func (collector *Collector) RequestEnded(requestId string, start time.Time) {
-	collector.inFlight.Delete(requestId)
-	collector.completed.Add(1)
-	collector.totalDurationMicros.Add(time.Since(start).Microseconds())
-}
-
 // Start writes an initial snapshot (so the file exists promptly) and launches the
-// background writer loop.
+// background writer loop. A collector with no statsDir does nothing.
 func (collector *Collector) Start() {
 	if collector.statsDir == "" {
 		return
@@ -111,6 +93,8 @@ func (collector *Collector) filePath() string {
 func (collector *Collector) writeSnapshot() {
 	now := time.Now()
 
+	workload := collector.provider.WorkloadSnapshot()
+
 	snapshot := Snapshot{
 		Name:          collector.name,
 		Pid:           collector.pid,
@@ -119,7 +103,8 @@ func (collector *Collector) writeSnapshot() {
 		Memory:        readMemory(),
 		CpuPercent:    collector.cpu.sample(now),
 		Goroutines:    runtime.NumGoroutine(),
-		Requests:      collector.snapshotRequests(now),
+		Requests:      workload.Requests,
+		Connections:   workload.Connections,
 	}
 
 	data, err := json.Marshal(snapshot)
@@ -138,47 +123,4 @@ func (collector *Collector) writeSnapshot() {
 	if err := os.Rename(temporaryPath, path); err != nil {
 		_ = os.Remove(temporaryPath)
 	}
-}
-
-// snapshotRequests reads the request counters and buckets the in-flight requests
-// by age (exclusive buckets).
-func (collector *Collector) snapshotRequests(now time.Time) Requests {
-	completed := collector.completed.Load()
-	totalMicros := collector.totalDurationMicros.Load()
-
-	averageMs := 0.0
-
-	if completed > 0 {
-		averageMs = float64(totalMicros) / float64(completed) / 1000.0
-	}
-
-	requests := Requests{
-		Completed: completed,
-		AvgMs:     averageMs,
-	}
-
-	collector.inFlight.Range(func(_ any, value any) bool {
-		start, ok := value.(time.Time)
-
-		if !ok {
-			return true
-		}
-
-		age := now.Sub(start)
-
-		requests.InFlight++
-
-		switch {
-		case age >= 15*time.Second:
-			requests.InFlightOver15s++
-		case age >= 5*time.Second:
-			requests.InFlight5to15s++
-		case age >= 1*time.Second:
-			requests.InFlight1to5s++
-		}
-
-		return true
-	})
-
-	return requests
 }
