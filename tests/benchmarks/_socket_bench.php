@@ -2,67 +2,50 @@
 
 declare(strict_types=1);
 
-// Reuse the generic process helpers (benchRoot, benchAliveCount, benchStopServers).
-require_once __DIR__ . '/_http_bench.php';
-
 /**
- * Helpers for the socket-server benchmarks: spawn N demo socket servers on one
- * port, drive concurrent length-prefix-framed round-trips, measure, tear down.
- */
-
-/**
- * Spawns $workers demo socket servers on $host:$port (SO_REUSEPORT when >1) and
- * waits until the port answers.
+ * Helpers for the socket-server benchmarks: resolve the running `servers` container
+ * socket pool (3 reusePort workers), check it is reachable, and drive concurrent
+ * length-prefix-framed round-trips.
  *
- * @return array<int, resource>
+ * The pool is the master-supervised server from docker-compose's `servers`
+ * container. Benchmarks run inside the `php` container, so the pool is reachable
+ * by its compose service hostname (`servers`) over the internal docker network,
+ * bypassing the published-port NAT.
  */
-function socketBenchSpawnServers(string $host, int $port, int $workers, bool $reusePort): array
+
+/**
+ * Host of the socket server pool (compose service hostname by default; override with
+ * BENCH_SOCKET_HOST, e.g. 127.0.0.1 to hit the published port from the host).
+ */
+function socketBenchHost(): string
 {
-    $root      = benchRoot();
-    $extension = $root . '/ext/build/sconcur.so';
-    $script    = $root . '/tests/servers/socket/socket-server.php';
+    return getenv('BENCH_SOCKET_HOST') ?: 'servers';
+}
 
-    $command = ['php', '-d', 'extension=' . $extension, $script, "--address=$host:$port"];
+/**
+ * Port of the socket server pool (the in-container listen port by default; override
+ * with BENCH_SOCKET_PORT, e.g. 29100 for the published host port).
+ */
+function socketBenchPort(): int
+{
+    return (int) (getenv('BENCH_SOCKET_PORT') ?: 9100);
+}
 
-    if ($reusePort) {
-        $command[] = '--reusePort=1';
+/**
+ * Aborts the benchmark with a clear hint if the socket server pool is unreachable.
+ */
+function socketBenchRequireServers(string $host, int $port): void
+{
+    $connection = @fsockopen($host, $port, $errno, $errstr, 2.0);
+
+    if (!is_resource($connection)) {
+        fwrite(STDERR, "socket server pool not reachable at $host:$port ($errstr).\n");
+        fwrite(STDERR, "Start the `servers` container with `make up` (or `make servers-restart` to rebuild it).\n");
+
+        exit(1);
     }
 
-    $descriptors = [0 => ['pipe', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']];
-
-    $procs = [];
-
-    for ($i = 0; $i < $workers; $i++) {
-        $proc = proc_open($command, $descriptors, $pipes, $root);
-
-        if (!is_resource($proc)) {
-            fwrite(STDERR, "failed to spawn socket worker $i\n");
-            exit(1);
-        }
-
-        fclose($pipes[0]);
-
-        $procs[] = $proc;
-    }
-
-    $deadline = microtime(true) + 5.0;
-
-    while (microtime(true) < $deadline) {
-        $connection = @fsockopen($host, $port, $errno, $errstr, 0.2);
-
-        if (is_resource($connection)) {
-            fclose($connection);
-
-            return $procs;
-        }
-
-        usleep(50_000);
-    }
-
-    benchStopServers($procs);
-
-    fwrite(STDERR, "socket servers not reachable on $host:$port\n");
-    exit(1);
+    fclose($connection);
 }
 
 /**

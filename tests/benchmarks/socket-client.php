@@ -9,7 +9,7 @@ require_once __DIR__ . '/_socket_bench.php';
 
 /**
  * Socket-client benchmark: N length-prefix-framed round-trips to an I/O-bound
- * endpoint ("msleep:<ms>") of a real SConcur demo socket server. The async run fires
+ * endpoint ("msleep:<ms>") of the running `servers` socket pool. The async run fires
  * them «веером» through a WaitGroup — its total time stays ≈ one round-trip, while
  * native (raw PHP sockets) and sync (SocketClient outside a WaitGroup) run
  * sequentially and scale with N.
@@ -21,33 +21,27 @@ $benchmarker = new Benchmarker(
     name: 'socket-client',
 );
 
-$host    = '127.0.0.1';
-$port    = socketClientBenchFreePort($host);
+$host    = socketBenchHost();
+$port    = socketBenchPort();
 $sleepMs = 100;
 $message = "msleep:$sleepMs";
 $address = "$host:$port";
 
-// One demo server (no SO_REUSEPORT): the async fan-out is served by the server's own
-// per-connection concurrency, not by sibling processes.
-$procs = socketBenchSpawnServers($host, $port, 1, false);
+socketBenchRequireServers($host, $port);
 
 $client = new SocketClient();
 
-try {
-    $benchmarker->run(
-        nativeCallback: static function () use ($host, $port, $message): void {
-            socketClientBenchNativeRoundTrip($host, $port, $message);
-        },
-        syncCallback: static function () use ($client, $address, $message): void {
-            socketClientBenchRoundTrip($client, $address, $message);
-        },
-        asyncCallback: static function () use ($client, $address, $message): void {
-            socketClientBenchRoundTrip($client, $address, $message);
-        },
-    );
-} finally {
-    benchStopServers($procs);
-}
+$benchmarker->run(
+    nativeCallback: static function () use ($host, $port, $message): void {
+        socketClientBenchNativeRoundTrip($host, $port, $message);
+    },
+    syncCallback: static function () use ($client, $address, $message): void {
+        socketClientBenchRoundTrip($client, $address, $message);
+    },
+    asyncCallback: static function () use ($client, $address, $message): void {
+        socketClientBenchRoundTrip($client, $address, $message);
+    },
+);
 
 /**
  * One SConcur SocketClient round-trip: connect, send one frame, read one reply,
@@ -124,24 +118,4 @@ function socketClientBenchReadExactly(mixed $socket, int $length): string
     }
 
     return $buffer;
-}
-
-/**
- * Allocates a free TCP port on $host by binding an ephemeral socket and reading back
- * the assigned port.
- */
-function socketClientBenchFreePort(string $host): int
-{
-    $socket = stream_socket_server("tcp://$host:0", $errno, $errstr);
-
-    if ($socket === false) {
-        fwrite(STDERR, "could not allocate a port: $errstr\n");
-        exit(1);
-    }
-
-    $name = (string) stream_socket_get_name($socket, false);
-
-    fclose($socket);
-
-    return (int) substr($name, (int) strrpos($name, ':') + 1);
 }
