@@ -52,6 +52,26 @@ class HttpServerStatsTest extends TestCase
 
             // The token travels in the Authorization header, never logged.
             self::assertStringNotContainsString(self::TOKEN, $master->logText());
+
+            // Default representation (curl sends Accept: */*, no JSON/HTML preference)
+            // is the Prometheus text exposition, not JSON.
+            [$metricsStatus, $metricsBody] = $this->request(
+                url: "http://127.0.0.1:{$statsPort}" . self::PATH,
+                headers: ['Authorization: Bearer ' . self::TOKEN],
+            );
+
+            self::assertSame(200, $metricsStatus);
+            self::assertStringContainsString('sconcur_pool_workers', $metricsBody);
+            self::assertNull(json_decode($metricsBody, true), 'metrics body must not be JSON');
+
+            // A valid token but a non-GET method → 405.
+            [$postStatus] = $this->request(
+                url: "http://127.0.0.1:{$statsPort}" . self::PATH,
+                headers: ['Authorization: Bearer ' . self::TOKEN],
+                method: 'POST',
+            );
+
+            self::assertSame(405, $postStatus);
         } finally {
             $master->stop();
         }
@@ -144,18 +164,24 @@ class HttpServerStatsTest extends TestCase
      *
      * @return array{int, string}
      */
-    private function request(string $url, array $headers): array
+    private function request(string $url, array $headers, string $method = 'GET'): array
     {
         $curl = curl_init($url);
 
-        curl_setopt_array($curl, [
+        $options = [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_HTTPHEADER     => $headers,
             CURLOPT_FORBID_REUSE   => true,
             CURLOPT_FRESH_CONNECT  => true,
             CURLOPT_CONNECTTIMEOUT => 1,
             CURLOPT_TIMEOUT        => 3,
-        ]);
+        ];
+
+        if ($method !== 'GET') {
+            $options[CURLOPT_CUSTOMREQUEST] = $method;
+        }
+
+        curl_setopt_array($curl, $options);
 
         $body   = curl_exec($curl);
         $status = (int) curl_getinfo($curl, CURLINFO_HTTP_CODE);

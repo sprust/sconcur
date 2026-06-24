@@ -126,9 +126,11 @@ readonly class HttpServer
     {
         $flowKey = uniqid('http_', more_entropy: true);
 
-        $statsDir = $this->statsDir !== ''
-            ? $this->statsDir
-            : sys_get_temp_dir() . '/sconcur/stats';
+        $statsDir = self::resolveStatsDir(
+            statsDir: $this->statsDir,
+            adminToken: $this->adminToken,
+            statsPort: $this->statsPort,
+        );
 
         $stopRequested = false;
 

@@ -361,6 +361,211 @@ func TestServerNegotiatesFormat(t *testing.T) {
 	}
 }
 
+func TestNegotiateFormat(t *testing.T) {
+	cases := []struct {
+		accept string
+		want   responseFormat
+	}{
+		{"application/json", formatJSON},
+		{"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", formatHTML},
+		{"text/html", formatHTML},
+		{"application/json, text/html", formatJSON}, // explicit JSON wins over html
+		{"", formatMetrics},                         // no header → metrics
+		{"*/*", formatMetrics},                      // curl default → metrics
+		{"text/plain;version=0.0.4", formatMetrics}, // Prometheus scraper → metrics
+	}
+
+	for _, testCase := range cases {
+		if got := negotiateFormat(testCase.accept); got != testCase.want {
+			t.Errorf("negotiateFormat(%q) = %d, want %d", testCase.accept, got, testCase.want)
+		}
+	}
+}
+
+func TestServerRejectsNonGetWith405(t *testing.T) {
+	dir := t.TempDir()
+
+	writeSnapshotFile(t, dir, "srv", Snapshot{
+		Name:        "srv",
+		Pid:         os.Getpid(),
+		UpdatedAtMs: time.Now().UnixMilli(),
+	})
+
+	address := "127.0.0.1:" + strconv.Itoa(freePort(t))
+
+	server, err := NewServer(address, "secret", dir, "srv")
+
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	defer server.Close()
+
+	request, err := http.NewRequest(http.MethodPost, "http://"+address+StatsPath, nil)
+
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	request.Header.Set("Authorization", "Bearer secret")
+
+	response, err := http.DefaultClient.Do(request)
+
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+
+	defer response.Body.Close()
+
+	// A valid token but a non-GET method is 405 (the path exists for this caller).
+	if response.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("POST status = %d, want 405", response.StatusCode)
+	}
+}
+
+func TestMaybeStartServerGating(t *testing.T) {
+	dir := t.TempDir()
+
+	// No port → not started.
+	if server := MaybeStartServer(0, "secret", dir, "srv"); server != nil {
+		server.Close()
+		t.Error("MaybeStartServer started with port 0, want nil")
+	}
+
+	// No token → not started.
+	if server := MaybeStartServer(freePort(t), "", dir, "srv"); server != nil {
+		server.Close()
+		t.Error("MaybeStartServer started without a token, want nil")
+	}
+
+	// Bind failure (port out of range) → logged, returns nil, never panics.
+	if server := MaybeStartServer(99999999, "secret", dir, "srv"); server != nil {
+		server.Close()
+		t.Error("MaybeStartServer started on an invalid port, want nil")
+	}
+
+	// Both set and bindable → started; Close is safe.
+	server := MaybeStartServer(freePort(t), "secret", dir, "srv")
+
+	if server == nil {
+		t.Fatal("MaybeStartServer returned nil with a valid port and token")
+	}
+
+	server.Close()
+}
+
+func TestAggregateEmptyPool(t *testing.T) {
+	response := Aggregate(t.TempDir(), "srv", time.Now())
+
+	if response.WorkersTotal != 0 || response.WorkersHung != 0 {
+		t.Errorf("empty pool counts = %d/%d, want 0/0", response.WorkersTotal, response.WorkersHung)
+	}
+
+	// Workers must be a non-nil empty slice so it renders as [] in JSON, not null.
+	if response.Workers == nil {
+		t.Error("Workers is nil, want an empty slice")
+	}
+
+	if len(response.Workers) != 0 {
+		t.Errorf("Workers = %d entries, want 0", len(response.Workers))
+	}
+
+	if response.Totals.Requests != nil || response.Totals.Connections != nil {
+		t.Error("empty pool must have no workload section in totals")
+	}
+}
+
+func TestRenderMetricsConnectionsAndEscaping(t *testing.T) {
+	response := AggregateResponse{
+		GeneratedAt:  "2026-01-01T00:00:00Z",
+		Name:         `po"ol`, // exercises label escaping
+		WorkersTotal: 2,
+		WorkersHung:  1,
+		Totals: Totals{
+			Memory:      Memory{RssBytes: 100, GoRuntimeBytes: 40, NonExtensionBytes: 60},
+			CpuPercent:  5,
+			Goroutines:  7,
+			Connections: &Connections{Active: 3, TotalAccepted: 50},
+		},
+		Workers: []WorkerEntry{
+			{Pid: 11, Connections: &Connections{Active: 1, TotalAccepted: 20}},
+			{Pid: 12, Hung: true, Connections: &Connections{Active: 2, TotalAccepted: 30}},
+		},
+	}
+
+	body := string(renderMetrics(response))
+
+	wants := []string{
+		`sconcur_pool_workers{name="po\"ol"} 2`,
+		`sconcur_pool_workers_hung{name="po\"ol"} 1`,
+		`sconcur_pool_connections_active{name="po\"ol"} 3`,
+		`sconcur_pool_connections_accepted_total{name="po\"ol"} 50`,
+		`sconcur_worker_connections_active{name="po\"ol",pid="11"} 1`,
+		`sconcur_worker_hung{name="po\"ol",pid="12"} 1`,
+		"# TYPE sconcur_pool_connections_accepted_total counter",
+	}
+
+	for _, want := range wants {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics output missing %q\n--- got ---\n%s", want, body)
+		}
+	}
+
+	// A connections pool must not emit request metrics.
+	if strings.Contains(body, "sconcur_pool_requests") {
+		t.Errorf("connections pool emitted request metrics:\n%s", body)
+	}
+}
+
+func TestRenderHTMLConnectionsHungAndDashes(t *testing.T) {
+	response := AggregateResponse{
+		GeneratedAt:  "2026-01-01T00:00:00Z",
+		Name:         "sock",
+		WorkersTotal: 2,
+		WorkersHung:  1,
+		Totals: Totals{
+			Connections: &Connections{Active: 3, TotalAccepted: 50},
+		},
+		Workers: []WorkerEntry{
+			{Pid: 11, Hung: true, Connections: &Connections{Active: 2, TotalAccepted: 30}},
+			{Pid: 12}, // no Connections section → dashes
+		},
+	}
+
+	body, err := renderHTML(response)
+
+	if err != nil {
+		t.Fatalf("renderHTML: %v", err)
+	}
+
+	page := string(body)
+
+	wants := []string{
+		"<th>active</th>", // connections columns chosen
+		"<th>accepted</th>",
+		`class="hung"`, // hung worker highlighted
+		"—",            // worker without a connections section shows dashes
+	}
+
+	for _, want := range wants {
+		if !strings.Contains(page, want) {
+			t.Errorf("html output missing %q\n--- got ---\n%s", want, page)
+		}
+	}
+
+	if strings.Contains(page, "completed") {
+		t.Errorf("connections pool HTML showed request columns:\n%s", page)
+	}
+}
+
+func TestCollectorEmptyStatsDirIsNoop(t *testing.T) {
+	collector := NewCollector("srv", "", time.Now(), fakeProvider{})
+
+	// Must not panic, must not block, must write no file.
+	collector.Start()
+	collector.Stop()
+}
+
 // doGet performs a GET with an optional Authorization header and returns the
 // status and body.
 func doGet(t *testing.T, url string, authorization string) (int, string) {

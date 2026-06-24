@@ -129,6 +129,27 @@ trait ServerRuntimeSupportTrait
     }
 
     /**
+     * Resolves the snapshot directory. An explicit $statsDir is always honoured.
+     * Otherwise the default temp directory is used only when the dedicated stats
+     * endpoint is enabled (both a token and a port are set) — so a server with no
+     * stats configured writes no snapshot files at all. This matters because the
+     * orphan-file pruning only runs while serving a stats request: without an
+     * endpoint nothing would ever clean a crashed worker's leftover snapshot.
+     */
+    protected static function resolveStatsDir(string $statsDir, string $adminToken, int $statsPort): string
+    {
+        if ($statsDir !== '') {
+            return $statsDir;
+        }
+
+        if ($adminToken !== '' && $statsPort > 0) {
+            return sys_get_temp_dir() . '/sconcur/stats';
+        }
+
+        return '';
+    }
+
+    /**
      * Installs SIGTERM/SIGINT handlers that flip $stopRequested so the serve loop
      * shuts down gracefully, and returns a callback that restores the handlers (and
      * async-signals mode) that were in place before. Requires ext-pcntl; without it
