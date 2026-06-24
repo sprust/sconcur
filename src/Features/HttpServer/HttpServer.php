@@ -29,48 +29,43 @@ readonly class HttpServer
     use ServerRuntimeSupportTrait;
 
     /**
-     * @param int                                         $maxRequestBody   request body read limit, in bytes
-     * @param int                                         $maxConcurrency   max requests handled at once (0 = unlimited).
-     *                                                                      Bounds goroutines, buffered request bodies (memory) and request
-     *                                                                      coroutines; excess connections wait for a free slot. Set it to
-     *                                                                      cap resource use under load.
-     * @param int                                         $handlerTimeoutMs max total time to handle a request, including a streamed
-     *                                                                      response, before it is cut off and the slot freed (default 60s;
-     *                                                                      0 disables). If nothing was written yet the client gets a 504;
-     *                                                                      mid-stream the response is aborted (status is already on the wire).
-     *                                                                      Note: a CPU-bound handler still blocks the single-threaded loop;
-     *                                                                      this guards handlers waiting on async work.
-     * @param int                                         $maxRequests      stop the server after it has handled this many requests
-     *                                                                      (0 = unlimited). Meant against handler memory leaks: once the
-     *                                                                      count is reached the server shuts down gracefully (closes the
-     *                                                                      listener first, drains in-flight, exits cleanly) so a master /
-     *                                                                      supervisor can respawn a fresh process. Reuses the graceful-
-     *                                                                      shutdown path, so no already-accepted request is bounced.
-     * @param bool                                        $reusePort        set SO_REUSEPORT so several processes can bind this same
-     *                                                                      address; the kernel load-balances connections across them
-     *                                                                      (run one process per core). Linux only; each process must set it.
-     * @param null|Closure(Throwable, Request): ?Response $onError          observes a handler
-     *                                                                      failure (exception or a non-Response return). It may return a Response
-     *                                                                      to send instead of the default 500; returning null (or being absent)
-     *                                                                      falls back to a bare 500. Lets the caller log/trace otherwise-swallowed
-     *                                                                      errors.
-     * @param null|int                                    $masterPid        if set, the server self-terminates (graceful shutdown) once it is
-     *                                                                      no longer a child of this pid — i.e. its WorkerMaster died — so an
-     *                                                                      orphaned worker drains and exits instead of holding the port.
-     *                                                                      Under WorkerMaster this is set automatically from the injected
-     *                                                                      --masterPid flag via fromArgs(); null (default) off.
-     * @param string                                      $adminToken       gates the dedicated stats server (with $statsPort): when both are
-     *                                                                      set, each worker binds the stats port (SO_REUSEPORT) and serves
-     *                                                                      GET /api/stats to a request with "Authorization: Bearer <token>".
-     *                                                                      Empty (default) off. fromArgs() reads it from SCONCUR_ADMIN_TOKEN.
-     * @param string                                      $statsDir         directory for the per-worker snapshot files the stats endpoint
-     *                                                                      aggregates (empty = sys_get_temp_dir()/sconcur/stats). Workers of
-     *                                                                      one reuse-port pool must share this dir to be aggregated together.
-     * @param string                                      $serverName       snapshot file prefix and aggregation scope: only servers of the
-     *                                                                      same name are summed together (default "sconcur-server").
-     * @param int                                         $statsPort        port for the dedicated stats HTTP server (0 = off). With a token
-     *                                                                      set, each worker binds it via SO_REUSEPORT and serves GET
-     *                                                                      /api/stats. fromArgs() reads it from SCONCUR_STATS_PORT.
+     * @param int                                         $maxRequestBody      request body read limit, in bytes
+     * @param int                                         $maxConcurrency      max requests handled at once (0 = unlimited).
+     *                                                                         Bounds goroutines, buffered request bodies (memory) and request
+     *                                                                         coroutines; excess connections wait for a free slot. Set it to
+     *                                                                         cap resource use under load.
+     * @param int                                         $handlerTimeoutMs    max total time to handle a request, including a streamed
+     *                                                                         response, before it is cut off and the slot freed (default 60s;
+     *                                                                         0 disables). If nothing was written yet the client gets a 504;
+     *                                                                         mid-stream the response is aborted (status is already on the wire).
+     *                                                                         Note: a CPU-bound handler still blocks the single-threaded loop;
+     *                                                                         this guards handlers waiting on async work.
+     * @param int                                         $maxRequests         stop the server after it has handled this many requests
+     *                                                                         (0 = unlimited). Meant against handler memory leaks: once the
+     *                                                                         count is reached the server shuts down gracefully (closes the
+     *                                                                         listener first, drains in-flight, exits cleanly) so a master /
+     *                                                                         supervisor can respawn a fresh process. Reuses the graceful-
+     *                                                                         shutdown path, so no already-accepted request is bounced.
+     * @param bool                                        $reusePort           set SO_REUSEPORT so several processes can bind this same
+     *                                                                         address; the kernel load-balances connections across them
+     *                                                                         (run one process per core). Linux only; each process must set it.
+     * @param null|Closure(Throwable, Request): ?Response $onError             observes a handler
+     *                                                                         failure (exception or a non-Response return). It may return a Response
+     *                                                                         to send instead of the default 500; returning null (or being absent)
+     *                                                                         falls back to a bare 500. Lets the caller log/trace otherwise-swallowed
+     *                                                                         errors.
+     * @param null|int                                    $masterPid           if set, the server self-terminates (graceful shutdown) once it is
+     *                                                                         no longer a child of this pid — i.e. its WorkerMaster died — so an
+     *                                                                         orphaned worker drains and exits instead of holding the port.
+     *                                                                         Under WorkerMaster this is set automatically from the injected
+     *                                                                         --masterPid flag via fromArgs(); null (default) off.
+     * @param string                                      $telemetrySocket     unix socket of the stats collector the worker pushes snapshots
+     *                                                                         to (empty = push off). Best-effort and lossy: an absent collector
+     *                                                                         never affects serving. fromArgs() reads it from
+     *                                                                         SCONCUR_TELEMETRY_SOCKET (the master injects it from runtimeDir/name).
+     * @param string                                      $serverName          labels the pushed snapshot — the pool scope the collector
+     *                                                                         aggregates by (default "sconcur-server").
+     * @param int                                         $telemetryIntervalMs snapshot sample/push cadence in ms (0 = default).
      *
      * Defaults mirror the Go server defaults.
      */
@@ -88,10 +83,9 @@ readonly class HttpServer
         private bool $reusePort = false,
         private ?Closure $onError = null,
         private ?int $masterPid = null,
-        private string $adminToken = '',
-        private string $statsDir = '',
+        private string $telemetrySocket = '',
         private string $serverName = 'sconcur-server',
-        private int $statsPort = 0,
+        private int $telemetryIntervalMs = 0,
     ) {
     }
 
@@ -109,7 +103,7 @@ readonly class HttpServer
             $overrides['onError'] = $onError;
         }
 
-        $overrides = self::applyStatsEnvironment($overrides);
+        $overrides = self::applyTelemetryEnvironment($overrides);
 
         return new HttpServer(...$overrides);
     }
@@ -125,12 +119,6 @@ readonly class HttpServer
     public function serve(Closure $handler): void
     {
         $flowKey = uniqid('http_', more_entropy: true);
-
-        $statsDir = self::resolveStatsDir(
-            statsDir: $this->statsDir,
-            adminToken: $this->adminToken,
-            statsPort: $this->statsPort,
-        );
 
         $stopRequested = false;
 
@@ -152,10 +140,9 @@ readonly class HttpServer
                     maxConcurrency: $this->maxConcurrency,
                     handlerTimeoutMs: $this->handlerTimeoutMs,
                     reusePort: $this->reusePort,
-                    adminToken: $this->adminToken,
-                    statsDir: $statsDir,
+                    telemetrySocket: $this->telemetrySocket,
                     serverName: $this->serverName,
-                    statsPort: $this->statsPort,
+                    telemetryIntervalMs: $this->telemetryIntervalMs,
                 ),
             );
 

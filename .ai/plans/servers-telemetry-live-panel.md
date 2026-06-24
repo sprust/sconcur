@@ -219,11 +219,12 @@ Payload `ServePayload` (PHP + Go): убрать `sp`/`at`/`sd`; оставить
   JSON/Prometheus паритет; `/events` шлёт SSE; auth 404 без токена, 405 на не-GET.
 - Регресс: существующие worker-master тесты зелёные после перевода цикла на select.
 
-## Отложено (обязательный follow-up)
+## Выполнено (бывш. обязательный follow-up)
 
-- Убрать STW `runtime.ReadMemStats` (перевод на `runtime/metrics` без
-  stop-the-world), затем вернуть единую каденцию вместо процессного под-сэмпла. Не
-  опционально — против зависаний воркера.
+- STW `runtime.ReadMemStats` убран: память Go-рантайма читается через
+  `runtime/metrics` (`/memory/classes/total:bytes`) без stop-the-world. Двойная
+  каденция схлопнута обратно в единую (`telemetryIntervalMs`, 1s); `tpi`/процессный
+  под-сэмпл удалён из payload'ов, конфигов и env.
 
 ## Решения (закрыто)
 

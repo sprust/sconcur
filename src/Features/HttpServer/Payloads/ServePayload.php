@@ -26,10 +26,9 @@ readonly class ServePayload implements PayloadInterface
         private int $maxConcurrency,
         private int $handlerTimeoutMs,
         private bool $reusePort,
-        private string $adminToken,
-        private string $statsDir,
+        private string $telemetrySocket,
         private string $serverName,
-        private int $statsPort,
+        private int $telemetryIntervalMs,
     ) {
     }
 
@@ -54,10 +53,9 @@ readonly class ServePayload implements PayloadInterface
             'mc'  => $this->maxConcurrency,
             'hto' => $this->handlerTimeoutMs,
             'rp'  => $this->reusePort,
-            'at'  => $this->adminToken,
-            'sd'  => $this->statsDir,
+            'ts'  => $this->telemetrySocket,
             'sn'  => $this->serverName,
-            'sp'  => $this->statsPort,
+            'ti'  => $this->telemetryIntervalMs,
         ];
     }
 }

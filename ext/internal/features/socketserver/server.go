@@ -45,14 +45,12 @@ type serverConfig struct {
 	shutdownTimeout time.Duration
 	maxMessageBytes int
 	maxConcurrency  int
-	// adminToken gates the dedicated stats server (empty = off); statsDir and
-	// serverName locate and scope the per-worker snapshot files; statsPort is the
-	// port the stats server binds (0 = off). The stats server runs only when both a
-	// port and a token are set.
-	adminToken string
-	statsDir   string
-	serverName string
-	statsPort  int
+	// telemetrySocket is the collector's unix socket the worker pushes snapshots to
+	// (empty = push off); serverName labels the snapshot (pool scope);
+	// telemetryIntervalMs is the snapshot sampling/push cadence (0 = default).
+	telemetrySocket     string
+	serverName          string
+	telemetryIntervalMs int
 }
 
 // configFromPayload resolves the tuning from the PHP payload, falling back to the
@@ -65,10 +63,9 @@ func configFromPayload(payload payloads.ServePayload) serverConfig {
 		shutdownTimeout: msOrDefault(payload.ShutdownTimeoutMs, defaultShutdownTimeout),
 		maxMessageBytes: intOrDefault(payload.MaxMessageBytes, defaultMaxMessageBytes),
 		maxConcurrency:  max(payload.MaxConcurrency, 0),
-		adminToken:      payload.AdminToken,
-		statsDir:        payload.StatsDir,
-		serverName:      payload.ServerName,
-		statsPort:       payload.StatsPort,
+		telemetrySocket:     payload.TelemetrySocket,
+		serverName:          payload.ServerName,
+		telemetryIntervalMs: payload.TelemetryIntervalMs,
 	}
 }
 
@@ -108,11 +105,10 @@ type serverState struct {
 	// waitGroup tracks live handleConn goroutines so Close can drain them.
 	waitGroup sync.WaitGroup
 	// connectionStats holds this worker's connection counters (the stats workload);
-	// collector writes its snapshot file; statsServer is the optional dedicated
-	// stats endpoint (nil when no stats port/token is configured).
+	// pusher samples the snapshot and pushes it to the collector (no-op when no
+	// telemetry socket is configured).
 	connectionStats *connectionStats
-	collector       *stats.Collector
-	statsServer     *stats.Server
+	pusher          *stats.Pusher
 }
 
 func newServerState(
@@ -133,11 +129,16 @@ func newServerState(
 		connections:     make(chan *payloads.ConnectionEvent, connectionQueueSize),
 		sem:             newSemaphore(config.maxConcurrency),
 		connectionStats: connectionStats,
-		collector:       stats.NewCollector(config.serverName, config.statsDir, startTime, connectionStats),
+		pusher: stats.NewPusher(
+			config.serverName,
+			config.telemetrySocket,
+			config.telemetryIntervalMs,
+			startTime,
+			connectionStats,
+		),
 	}
 
-	state.collector.Start()
-	state.statsServer = stats.MaybeStartServer(config.statsPort, config.adminToken, config.statsDir, config.serverName)
+	state.pusher.Start()
 
 	go state.acceptLoop()
 
@@ -314,8 +315,7 @@ func (s *serverState) forceCloseAfterGrace() {
 func (s *serverState) Close() {
 	serverStates.Delete(s.message.FlowKey)
 
-	s.collector.Stop()
-	s.statsServer.Close()
+	s.pusher.Stop()
 
 	_ = s.listener.Close()
 

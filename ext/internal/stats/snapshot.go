@@ -1,37 +1,21 @@
-// Package stats implements server statistics shared by the long-lived servers
-// (HTTP and socket): each worker process periodically writes its own snapshot
-// file into a shared directory, and a dedicated stats HTTP server (one per worker,
-// bound with SO_REUSEPORT on its own port) serves the aggregated view of the whole
-// pool by reading every sibling's file.
+// Package stats produces one worker's statistics snapshot and pushes it, framed,
+// over a unix socket to an external collector (the PHP worker master, or any other
+// supervisor that speaks the same contract). Aggregation, the live panel and the
+// /api/stats HTTP endpoint live in the collector, not here — this package only
+// samples and pushes.
 //
-// The whole feature lives on the Go side — the PHP cooperative loop is never
-// involved, not at snapshot time and not when a stats request is served.
+// The whole feature lives on the Go side of a worker — the PHP cooperative loop is
+// never involved. Pushing is best-effort and lossy: if the collector is absent the
+// frame is dropped and the worker keeps serving traffic unaffected.
 //
-// Why out-of-band files and not the listener socket: with SO_REUSEPORT each worker
-// is a separate process with its own counters, and the kernel routes a stats
-// request to a single random worker. Reading the shared snapshot files lets that
-// one worker still answer for the whole pool.
+// Wire contract (so a third-party collector can consume it): a unix SOCK_STREAM
+// connection carrying length-prefixed frames (internal/socket codec — 4-byte
+// big-endian length + body); each body is UTF-8 JSON {"t":"snapshot","s":<Snapshot>}.
 //
 // The process-level metrics (memory, CPU, goroutines, uptime) are universal; the
 // workload section is feature-specific and supplied through a WorkloadProvider
 // (HTTP fills Requests, socket fills Connections).
 package stats
-
-import "time"
-
-// StatsPath is the only route the dedicated stats server answers.
-const StatsPath = "/api/stats"
-
-const (
-	// snapshotInterval is how often a worker rewrites its own snapshot file.
-	// Hard-coded (not configurable) on purpose.
-	snapshotInterval = 5 * time.Second
-
-	// hungThreshold marks a worker whose snapshot has not been refreshed for this
-	// long as "hung": its process is alive but its serve loop stopped updating
-	// (3 missed ticks). Such a file is reported, never pruned.
-	hungThreshold = 15 * time.Second
-)
 
 // Memory holds the process memory split. RssBytes is the whole process resident
 // set (with the extension); GoRuntimeBytes is the Go runtime's own footprint;
@@ -74,9 +58,9 @@ type WorkloadProvider interface {
 	WorkloadSnapshot() Workload
 }
 
-// Snapshot is one worker's statistics, written to
-// <statsDir>/<name>-stats-<pid>.json. UpdatedAtMs is epoch-ms so a reader can
-// compute the snapshot age (and the hung flag).
+// Snapshot is one worker's statistics, pushed as the "s" field of a snapshot frame.
+// UpdatedAtMs is epoch-ms so the collector can compute the snapshot age (and a hung
+// flag). The collector keys workers by the connection (and Pid for display).
 type Snapshot struct {
 	Name          string       `json:"name"`
 	Pid           int          `json:"pid"`
@@ -87,40 +71,4 @@ type Snapshot struct {
 	Goroutines    int          `json:"goroutines"`
 	Requests      *Requests    `json:"requests,omitempty"`
 	Connections   *Connections `json:"connections,omitempty"`
-}
-
-// WorkerEntry is one worker in the aggregated response: its last snapshot plus
-// the derived SnapshotAgeMs and Hung flag.
-type WorkerEntry struct {
-	Pid           int          `json:"pid"`
-	Hung          bool         `json:"hung"`
-	SnapshotAgeMs int64        `json:"snapshotAgeMs"`
-	UptimeSeconds float64      `json:"uptimeSeconds"`
-	Memory        Memory       `json:"memory"`
-	CpuPercent    float64      `json:"cpuPercent"`
-	Goroutines    int          `json:"goroutines"`
-	Requests      *Requests    `json:"requests,omitempty"`
-	Connections   *Connections `json:"connections,omitempty"`
-}
-
-// Totals is the pool-wide sum. CpuPercent is the sum of per-process percentages
-// (so it may exceed 100%); Requests.AvgMs is weighted by each worker's Completed.
-// Only the workload section present in the pool's snapshots is filled.
-type Totals struct {
-	Memory      Memory       `json:"memory"`
-	CpuPercent  float64      `json:"cpuPercent"`
-	Goroutines  int          `json:"goroutines"`
-	Requests    *Requests    `json:"requests,omitempty"`
-	Connections *Connections `json:"connections,omitempty"`
-}
-
-// AggregateResponse is the JSON body returned by the stats endpoint. GeneratedAt
-// is a human-readable RFC3339 timestamp of when the response was built.
-type AggregateResponse struct {
-	GeneratedAt  string        `json:"generatedAt"`
-	Name         string        `json:"name"`
-	WorkersTotal int           `json:"workersTotal"`
-	WorkersHung  int           `json:"workersHung"`
-	Totals       Totals        `json:"totals"`
-	Workers      []WorkerEntry `json:"workers"`
 }

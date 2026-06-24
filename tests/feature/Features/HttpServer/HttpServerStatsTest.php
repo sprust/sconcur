@@ -8,10 +8,11 @@ use PHPUnit\Framework\TestCase;
 use SConcur\Tests\Impl\Worker\TestWorkerMaster;
 
 /**
- * Covers the dedicated stats server for an HTTP pool: with SCONCUR_ADMIN_TOKEN and
- * SCONCUR_STATS_PORT set, every worker binds the stats port (SO_REUSEPORT) and
- * serves GET /api/stats, aggregating the whole pool from the shared snapshot files.
- * Served entirely on the Go side.
+ * End-to-end coverage of the telemetry panel for an HTTP pool: with panelPort and
+ * adminToken set, the master collects each worker's pushed snapshot over a unix
+ * socket and serves the aggregate at GET /api/stats on the panel port. The aggregate
+ * carries a requests section. Exercises the whole chain (worker pusher → master
+ * collector → panel) with the real extension.
  */
 class HttpServerStatsTest extends TestCase
 {
@@ -20,13 +21,10 @@ class HttpServerStatsTest extends TestCase
 
     public function testServesAggregatedHttpStatistics(): void
     {
-        $statsPort = self::freePort();
+        $panelPort = self::freePort();
 
         $master = TestWorkerMaster::start(
-            env: [
-                'SCONCUR_ADMIN_TOKEN' => self::TOKEN,
-                'SCONCUR_STATS_PORT'  => (string) $statsPort,
-            ],
+            options: ['panelPort' => $panelPort, 'adminToken' => self::TOKEN],
         );
 
         try {
@@ -34,15 +32,13 @@ class HttpServerStatsTest extends TestCase
             $master->get('/');
             $master->get('/');
 
-            [$status, $body] = $this->getStats($statsPort, 'Bearer ' . self::TOKEN);
+            [$status, $body] = $this->getStats($panelPort, 'Bearer ' . self::TOKEN);
 
             self::assertSame(200, $status);
 
             $data = json_decode($body, true);
 
             self::assertIsArray($data);
-            self::assertArrayHasKey('workersTotal', $data);
-            self::assertGreaterThanOrEqual(1, $data['workersTotal']);
             self::assertArrayHasKey('totals', $data);
             self::assertIsArray($data['totals']);
             self::assertArrayHasKey('requests', $data['totals'], 'an HTTP pool reports a requests section');
@@ -50,13 +46,13 @@ class HttpServerStatsTest extends TestCase
             self::assertArrayHasKey('memory', $data['totals']);
             self::assertArrayHasKey('goroutines', $data['totals']);
 
-            // The token travels in the Authorization header, never logged.
+            // The token travels in the Authorization header / config, never the log.
             self::assertStringNotContainsString(self::TOKEN, $master->logText());
 
-            // Default representation (curl sends Accept: */*, no JSON/HTML preference)
-            // is the Prometheus text exposition, not JSON.
+            // Default representation (curl sends Accept: */*) is the Prometheus text
+            // exposition, not JSON.
             [$metricsStatus, $metricsBody] = $this->request(
-                url: "http://127.0.0.1:{$statsPort}" . self::PATH,
+                url: "http://127.0.0.1:{$panelPort}" . self::PATH,
                 headers: ['Authorization: Bearer ' . self::TOKEN],
             );
 
@@ -66,7 +62,7 @@ class HttpServerStatsTest extends TestCase
 
             // A valid token but a non-GET method → 405.
             [$postStatus] = $this->request(
-                url: "http://127.0.0.1:{$statsPort}" . self::PATH,
+                url: "http://127.0.0.1:{$panelPort}" . self::PATH,
                 headers: ['Authorization: Bearer ' . self::TOKEN],
                 method: 'POST',
             );
@@ -79,28 +75,25 @@ class HttpServerStatsTest extends TestCase
 
     public function testRejectsMissingOrWrongTokenWith404(): void
     {
-        $statsPort = self::freePort();
+        $panelPort = self::freePort();
 
         $master = TestWorkerMaster::start(
-            env: [
-                'SCONCUR_ADMIN_TOKEN' => self::TOKEN,
-                'SCONCUR_STATS_PORT'  => (string) $statsPort,
-            ],
+            options: ['panelPort' => $panelPort, 'adminToken' => self::TOKEN],
         );
 
         try {
-            // Reach the stats port first with a valid token, then probe the bad cases.
-            [$okStatus] = $this->getStats($statsPort, 'Bearer ' . self::TOKEN);
+            // Reach the panel first with a valid token, then probe the bad cases.
+            [$okStatus] = $this->getStats($panelPort, 'Bearer ' . self::TOKEN);
 
             self::assertSame(200, $okStatus);
 
-            [$missingStatus, $missingBody] = $this->request("http://127.0.0.1:{$statsPort}" . self::PATH, []);
+            [$missingStatus, $missingBody] = $this->request("http://127.0.0.1:{$panelPort}" . self::PATH, []);
 
             self::assertSame(404, $missingStatus);
             self::assertStringNotContainsString('workersTotal', $missingBody);
 
             [$wrongStatus] = $this->request(
-                url: "http://127.0.0.1:{$statsPort}" . self::PATH,
+                url: "http://127.0.0.1:{$panelPort}" . self::PATH,
                 headers: ['Authorization: Bearer not-the-token'],
             );
 
@@ -110,54 +103,40 @@ class HttpServerStatsTest extends TestCase
         }
     }
 
-    public function testNoStatsServerWithoutPort(): void
-    {
-        // Token but no stats port: no dedicated server is bound. The main HTTP port no
-        // longer intercepts the path either, so it 404s as a normal unknown route.
-        $master = TestWorkerMaster::start(
-            env: ['SCONCUR_ADMIN_TOKEN' => self::TOKEN],
-        );
-
-        try {
-            [$status, $body] = $master->get(self::PATH);
-
-            self::assertSame(404, $status);
-            self::assertStringContainsString('not found', $body);
-        } finally {
-            $master->stop();
-        }
-    }
-
     /**
-     * Polls the stats port until it answers (the workers may still be booting), then
-     * returns [status, body].
+     * Polls the panel until it reports at least one worker (workers push on an
+     * interval, so the pool fills in shortly after start), then returns [status, body].
      *
      * @return array{int, string}
      */
     private function getStats(int $port, string $authorization): array
     {
-        $deadline = microtime(true) + 5.0;
+        $deadline = microtime(true) + 10.0;
 
         $result = [0, ''];
 
         while (microtime(true) < $deadline) {
             $result = $this->request(
                 url: "http://127.0.0.1:{$port}" . self::PATH,
-                headers: $authorization === '' ? [] : ['Authorization: ' . $authorization, 'Accept: application/json'],
+                headers: ['Authorization: ' . $authorization, 'Accept: application/json'],
             );
 
-            if ($result[0] !== 0) {
-                return $result;
+            if ($result[0] === 200) {
+                $data = json_decode($result[1], true);
+
+                if (is_array($data) && is_int($data['workersTotal'] ?? null) && $data['workersTotal'] >= 1) {
+                    return $result;
+                }
             }
 
-            usleep(100_000);
+            usleep(200_000);
         }
 
         return $result;
     }
 
     /**
-     * Performs a GET with optional headers and returns [status, body]; [0, ''] when
+     * Performs a request with optional headers and returns [status, body]; [0, ''] when
      * the connection fails.
      *
      * @param list<string> $headers

@@ -163,6 +163,8 @@ new WorkerMaster(
 | `shutdownTimeoutMs` | `10000` | Сколько ждать дренаж воркеров до `SIGKILL`. |
 | `restartBackoffMs` | `200` | База экспоненциального backoff при краш-лупе. |
 | `maxRestartBackoffMs` | `30000` | Потолок backoff. |
+| `panelPort` | `0` (выкл.) | Порт встроенной [телеметри-панели](admin-stats.ru.md) (`/api/stats`, `/`, `/events`). Нужен вместе с `adminToken`. |
+| `adminToken` | пусто (выкл.) | Bearer-токен панели; нужен вместе с `panelPort`. |
 | `server` | `{}` | Объект параметров сервера → разворачивается в `argv` воркера (см. ниже). |
 
 Блок `server` — принцип передачи. Мастер раскрывает его в `argv` воркера:
@@ -204,6 +206,8 @@ argv-флаг; как (и нужно ли) его использовать, ре
   "shutdownTimeoutMs": 10000,           // ожидание дренажа воркеров до SIGKILL
   "restartBackoffMs": 200,              // база backoff при краш-лупе
   "maxRestartBackoffMs": 30000,         // потолок backoff
+  "panelPort": 0,                       // порт телеметри-панели (0 = выкл.); с adminToken
+  "adminToken": "",                     // Bearer-токен панели (с panelPort)
 
   // --- параметры сервера → разворачиваются в argv воркера (--ключ=значение) ---
   // Набор ключей задаёт сам сервер (см. «Поддерживаемые серверы»);

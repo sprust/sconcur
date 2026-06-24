@@ -8,10 +8,10 @@ use PHPUnit\Framework\TestCase;
 use SConcur\Tests\Impl\Worker\TestWorkerMaster;
 
 /**
- * Covers the dedicated stats server for a socket pool: a socket server has no HTTP
- * routes, so the only way it exposes statistics is the dedicated stats HTTP server
- * (GET /api/stats on SCONCUR_STATS_PORT). The aggregate carries a connections
- * section rather than requests.
+ * End-to-end coverage of the telemetry panel for a socket pool: a socket server has
+ * no HTTP routes, so the master's panel (GET /api/stats on panelPort) is the only way
+ * it exposes statistics. The aggregate carries a connections section rather than
+ * requests. Exercises the worker pusher → master collector → panel chain.
  */
 class SocketServerStatsTest extends TestCase
 {
@@ -20,38 +20,35 @@ class SocketServerStatsTest extends TestCase
 
     public function testServesAggregatedSocketStatistics(): void
     {
-        $statsPort = self::freePort();
+        $panelPort = self::freePort();
 
         $master = TestWorkerMaster::start(
             options: [
                 'workerScript' => self::socketWorkerScript(),
                 'name'         => 'sconcur-socket-server',
-            ],
-            env: [
-                'SCONCUR_ADMIN_TOKEN' => self::TOKEN,
-                'SCONCUR_STATS_PORT'  => (string) $statsPort,
+                'panelPort'    => $panelPort,
+                'adminToken'   => self::TOKEN,
             ],
             // The socket pool's main port speaks no HTTP, so the http /pid probe does
-            // not apply; getStats() waits for the dedicated stats port instead.
+            // not apply; getStats() waits for the panel to fill instead.
             waitReachable: false,
         );
 
         try {
-            [$status, $body] = $this->getStats($statsPort, 'Bearer ' . self::TOKEN);
+            [$status, $body] = $this->getStats($panelPort, 'Bearer ' . self::TOKEN);
 
             self::assertSame(200, $status);
 
             $data = json_decode($body, true);
 
             self::assertIsArray($data);
-            self::assertGreaterThanOrEqual(1, $data['workersTotal']);
             self::assertArrayHasKey('connections', $data['totals'], 'a socket pool reports a connections section');
             self::assertArrayNotHasKey('requests', $data['totals'], 'a socket pool has no requests section');
             self::assertArrayHasKey('active', $data['totals']['connections']);
             self::assertArrayHasKey('totalAccepted', $data['totals']['connections']);
 
             // Missing token → 404.
-            [$missingStatus] = $this->request("http://127.0.0.1:{$statsPort}" . self::PATH, []);
+            [$missingStatus] = $this->request("http://127.0.0.1:{$panelPort}" . self::PATH, []);
 
             self::assertSame(404, $missingStatus);
         } finally {
@@ -65,28 +62,32 @@ class SocketServerStatsTest extends TestCase
     }
 
     /**
-     * Polls the stats port until it answers (the workers may still be booting), then
-     * returns [status, body].
+     * Polls the panel until it reports at least one worker (workers push on an
+     * interval), then returns [status, body].
      *
      * @return array{int, string}
      */
     private function getStats(int $port, string $authorization): array
     {
-        $deadline = microtime(true) + 5.0;
+        $deadline = microtime(true) + 10.0;
 
         $result = [0, ''];
 
         while (microtime(true) < $deadline) {
             $result = $this->request(
                 url: "http://127.0.0.1:{$port}" . self::PATH,
-                headers: $authorization === '' ? [] : ['Authorization: ' . $authorization, 'Accept: application/json'],
+                headers: ['Authorization: ' . $authorization, 'Accept: application/json'],
             );
 
-            if ($result[0] !== 0) {
-                return $result;
+            if ($result[0] === 200) {
+                $data = json_decode($result[1], true);
+
+                if (is_array($data) && is_int($data['workersTotal'] ?? null) && $data['workersTotal'] >= 1) {
+                    return $result;
+                }
             }
 
-            usleep(100_000);
+            usleep(200_000);
         }
 
         return $result;

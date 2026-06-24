@@ -325,18 +325,20 @@ func (f *HttpFeature) Handle(task *tasks.Task) {
 ## Статистика
 
 Чтобы новый сервер из коробки собирал и отдавал статистику (как HTTP и socket),
-подключите нейтральный пакет `ext/internal/stats` — он даёт снапшот-писатель,
-агрегатор и выделенный stats-HTTP-сервер на `GET /api/stats`. Детали для
-пользователя — [Статистика сервера](admin-stats.ru.md).
+подключите нейтральный пакет `ext/internal/stats` — он даёт сэмплер процессных
+метрик и `Pusher`, который шлёт снапшоты в коллектор мастера. Агрегацию и панель
+несёт мастер (`src/Telemetry`); сервер только пушит. Детали для пользователя —
+[Статистика сервера](admin-stats.ru.md).
 
 PHP-сторона:
 
-- `ServePayload` += `adminToken`/`statsDir`/`serverName`/`statsPort` (ключи
-  `at`/`sd`/`sn`/`sp`), зеркалят Go-payload.
-- Конструктор сервера += те же четыре параметра; в `fromArgs()` вызовите
-  `self::applyStatsEnvironment($overrides)` (метод трейта) — он читает
-  `SCONCUR_ADMIN_TOKEN`/`SCONCUR_STATS_PORT`/`SCONCUR_STATS_DIR`/`SCONCUR_SERVER_NAME`
-  из env. В `serve()` отрезолвьте дефолт `statsDir` и передайте поля в `ServePayload`.
+- `ServePayload` += `telemetrySocket`/`serverName`/`telemetryIntervalMs` (ключи
+  `ts`/`sn`/`ti`), зеркалят Go-payload.
+- Конструктор сервера += те же три параметра; в `fromArgs()` вызовите
+  `self::applyTelemetryEnvironment($overrides)` (метод трейта) — он читает
+  `SCONCUR_TELEMETRY_SOCKET`/`SCONCUR_SERVER_NAME`/`SCONCUR_TELEMETRY_INTERVAL_MS`.
+  Передайте поля в `ServePayload` (мастер инжектит `SCONCUR_TELEMETRY_SOCKET`, когда
+  телеметрия включена).
 
 Go-сторона:
 
@@ -344,15 +346,14 @@ Go-сторона:
   (`WorkloadSnapshot() stats.Workload`) — у HTTP это `requestStats` (секция
   `Requests`), у socket `connectionStats` (секция `Connections`). Инкрементируйте
   его в обработчике соединения/запроса.
-- В `serverConfig` протащите `adminToken`/`statsDir`/`serverName`/`statsPort`; в
-  `newServerState` создайте `collector := stats.NewCollector(name, statsDir,
-  startTime, provider)` и `collector.Start()`, а также
-  `state.statsServer = stats.MaybeStartServer(statsPort, adminToken, statsDir, serverName)`.
-- В `Close()` вызовите `collector.Stop()` и `statsServer.Close()` (оба безопасны на
-  выключенной конфигурации).
+- В `serverConfig` протащите `telemetrySocket`/`serverName`/`telemetryIntervalMs`; в
+  `newServerState` создайте `pusher := stats.NewPusher(name, telemetrySocket,
+  intervalMs, startTime, provider)` и `pusher.Start()`.
+- В `Close()` вызовите `pusher.Stop()` (безопасен на выключенной конфигурации —
+  пустой `telemetrySocket`).
 
-Снапшот-писатель работает при заданном `statsDir`; stats-сервер — только когда
-заданы и порт, и токен. Ошибка бинда порта логируется и не роняет основной сервер.
+`Pusher` работает при заданном `telemetrySocket`; он best-effort — нет коллектора,
+кадр дропается, сервер не страдает.
 
 ---
 
@@ -394,8 +395,8 @@ Go:
       `states.Get().Start`) и `handleRespond` (rendezvous по `requestId` + write-backpressure).
 - [ ] `serverStates`/`pendingRequests`-карты; `StopAccepting(flowKey)`; `SO_REUSEPORT` в `listen`.
 - [ ] `BaseContext` = контекст задачи; `handlerTimeout`; access-лог на Go-стороне.
-- [ ] Статистика: `stats.WorkloadProvider`-счётчик, `stats.NewCollector` + `Start`,
-      `stats.MaybeStartServer` в `newServerState`, `Stop`/`Close` в `Close`.
+- [ ] Статистика: `stats.WorkloadProvider`-счётчик, `stats.NewPusher` + `Start` в
+      `newServerState`, `pusher.Stop()` в `Close`.
 - [ ] Регистрация в `features/factory.go` (один кейс на оба метода).
 
 cgo / протокол:

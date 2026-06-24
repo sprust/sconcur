@@ -85,24 +85,23 @@ trait ServerRuntimeSupportTrait
     }
 
     /**
-     * Fills the stats-related constructor overrides from the environment, unless an
-     * explicit --flag already set them: the admin token, stats dir/name and stats
-     * port. Shared by the servers' fromArgs(). Via env (not argv) so the
-     * server-agnostic WorkerMaster can supply stats config without feeding a
-     * non-matching worker an unknown --flag. The master injects
-     * SCONCUR_STATS_DIR/SCONCUR_SERVER_NAME from its runtimeDir/name; the operator
-     * sets SCONCUR_ADMIN_TOKEN and SCONCUR_STATS_PORT.
+     * Fills the telemetry-related constructor overrides from the environment, unless
+     * an explicit --flag already set them: the collector socket, the pool name and
+     * the two sampling cadences. Shared by the servers' fromArgs(). Via env (not
+     * argv) so the server-agnostic WorkerMaster can supply telemetry config without
+     * feeding a non-matching worker an unknown --flag. The master injects
+     * SCONCUR_TELEMETRY_SOCKET/SCONCUR_SERVER_NAME from its runtimeDir/name; the
+     * operator may set the cadences.
      *
      * @param array<string, int|bool|float|string> $overrides
      *
      * @return array<string, int|bool|float|string>
      */
-    protected static function applyStatsEnvironment(array $overrides): array
+    protected static function applyTelemetryEnvironment(array $overrides): array
     {
         $stringDefaults = [
-            'adminToken' => 'SCONCUR_ADMIN_TOKEN',
-            'statsDir'   => 'SCONCUR_STATS_DIR',
-            'serverName' => 'SCONCUR_SERVER_NAME',
+            'telemetrySocket' => 'SCONCUR_TELEMETRY_SOCKET',
+            'serverName'      => 'SCONCUR_SERVER_NAME',
         ];
 
         foreach ($stringDefaults as $parameter => $environmentName) {
@@ -117,36 +116,23 @@ trait ServerRuntimeSupportTrait
             }
         }
 
-        if (!isset($overrides['statsPort'])) {
-            $environmentPort = getenv('SCONCUR_STATS_PORT');
+        $integerDefaults = [
+            'telemetryIntervalMs' => 'SCONCUR_TELEMETRY_INTERVAL_MS',
+        ];
 
-            if (is_string($environmentPort) && $environmentPort !== '') {
-                $overrides['statsPort'] = (int) $environmentPort;
+        foreach ($integerDefaults as $parameter => $environmentName) {
+            if (isset($overrides[$parameter])) {
+                continue;
+            }
+
+            $environmentValue = getenv($environmentName);
+
+            if (is_string($environmentValue) && $environmentValue !== '') {
+                $overrides[$parameter] = (int) $environmentValue;
             }
         }
 
         return $overrides;
-    }
-
-    /**
-     * Resolves the snapshot directory. An explicit $statsDir is always honoured.
-     * Otherwise the default temp directory is used only when the dedicated stats
-     * endpoint is enabled (both a token and a port are set) — so a server with no
-     * stats configured writes no snapshot files at all. This matters because the
-     * orphan-file pruning only runs while serving a stats request: without an
-     * endpoint nothing would ever clean a crashed worker's leftover snapshot.
-     */
-    protected static function resolveStatsDir(string $statsDir, string $adminToken, int $statsPort): string
-    {
-        if ($statsDir !== '') {
-            return $statsDir;
-        }
-
-        if ($adminToken !== '' && $statsPort > 0) {
-            return sys_get_temp_dir() . '/sconcur/stats';
-        }
-
-        return '';
     }
 
     /**

@@ -2,7 +2,7 @@ package stats
 
 import (
 	"os"
-	"runtime"
+	"runtime/metrics"
 	"strconv"
 	"strings"
 	"time"
@@ -13,17 +13,18 @@ import (
 // default), so we use it directly rather than pulling in cgo for sysconf.
 const clockTicksPerSecond = 100.0
 
+// goRuntimeMetric is the runtime/metrics name for all memory the Go runtime has
+// mapped read-write — the equivalent of runtime.MemStats.Sys, but read without a
+// stop-the-world (ReadMemStats stops the world; metrics.Read does not).
+const goRuntimeMetric = "/memory/classes/total:bytes"
+
 // readMemory builds the process memory split: the whole resident set from the OS
-// (/proc/self/status VmRSS), the Go runtime's own footprint (runtime.MemStats),
-// and the remainder attributed to the non-extension side (PHP interpreter).
+// (/proc/self/status VmRSS), the Go runtime's own footprint (runtime/metrics), and
+// the remainder attributed to the non-extension side (PHP interpreter).
 func readMemory() Memory {
 	rssBytes := readRssBytes()
 
-	var memStats runtime.MemStats
-
-	runtime.ReadMemStats(&memStats)
-
-	goRuntimeBytes := int64(memStats.Sys)
+	goRuntimeBytes := readGoRuntimeBytes()
 
 	nonExtensionBytes := rssBytes - goRuntimeBytes
 
@@ -36,6 +37,21 @@ func readMemory() Memory {
 		GoRuntimeBytes:    goRuntimeBytes,
 		NonExtensionBytes: nonExtensionBytes,
 	}
+}
+
+// readGoRuntimeBytes reads the Go runtime's total mapped memory via runtime/metrics,
+// which (unlike runtime.ReadMemStats) does not stop the world — so sampling it on the
+// hot push cadence does not pause the worker's request handlers.
+func readGoRuntimeBytes() int64 {
+	samples := []metrics.Sample{{Name: goRuntimeMetric}}
+
+	metrics.Read(samples)
+
+	if samples[0].Value.Kind() != metrics.KindUint64 {
+		return 0
+	}
+
+	return int64(samples[0].Value.Uint64())
 }
 
 // readRssBytes reads the resident set size from /proc/self/status (the VmRSS
