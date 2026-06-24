@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sconcur/internal/logger"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -94,18 +95,66 @@ func (server *Server) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 
 	response := Aggregate(server.statsDir, server.serverName, time.Now())
 
-	body, err := json.Marshal(response)
+	switch negotiateFormat(request.Header.Get("Accept")) {
+	case formatJSON:
+		body, err := json.Marshal(response)
 
-	if err != nil {
-		http.Error(writer, "stats error", http.StatusInternalServerError)
+		if err != nil {
+			http.Error(writer, "stats error", http.StatusInternalServerError)
 
-		return
+			return
+		}
+
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusOK)
+
+		_, _ = writer.Write(body)
+
+	case formatHTML:
+		body, err := renderHTML(response)
+
+		if err != nil {
+			http.Error(writer, "stats error", http.StatusInternalServerError)
+
+			return
+		}
+
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		writer.WriteHeader(http.StatusOK)
+
+		_, _ = writer.Write(body)
+
+	default:
+		writer.Header().Set("Content-Type", metricsContentType)
+		writer.WriteHeader(http.StatusOK)
+
+		_, _ = writer.Write(renderMetrics(response))
+	}
+}
+
+// responseFormat is the negotiated representation of the stats response.
+type responseFormat int
+
+const (
+	// formatMetrics is the default: Prometheus text exposition format.
+	formatMetrics responseFormat = iota
+	formatJSON
+	formatHTML
+)
+
+// negotiateFormat picks the response format from the Accept header. An explicit
+// application/json wins (API clients), then text/html (browsers); anything else —
+// including no header, */*, or text/plain (Prometheus scrapers) — gets metrics.
+func negotiateFormat(accept string) responseFormat {
+	if strings.Contains(accept, "application/json") {
+		return formatJSON
 	}
 
-	writer.Header().Set("Content-Type", "application/json")
-	writer.WriteHeader(http.StatusOK)
+	if strings.Contains(accept, "text/html") {
+		return formatHTML
+	}
 
-	_, _ = writer.Write(body)
+	return formatMetrics
 }
 
 // Close gracefully shuts the stats server down. Safe to call on a nil receiver, so

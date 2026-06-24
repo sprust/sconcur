@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -266,11 +267,15 @@ func TestServerServesAggregate(t *testing.T) {
 
 	baseUrl := "http://" + address
 
-	// Valid token → 200 + aggregate JSON.
-	status, body := doGet(t, baseUrl+StatsPath, "Bearer secret")
+	// Valid token + Accept: application/json → 200 + aggregate JSON.
+	status, contentType, body := getStats(t, baseUrl+StatsPath, "Bearer secret", "application/json")
 
 	if status != 200 {
 		t.Fatalf("valid token status = %d, want 200", status)
+	}
+
+	if !strings.Contains(contentType, "application/json") {
+		t.Errorf("content type = %q, want application/json", contentType)
 	}
 
 	var response AggregateResponse
@@ -296,6 +301,63 @@ func TestServerServesAggregate(t *testing.T) {
 	// Unknown path → 404.
 	if status, _ := doGet(t, baseUrl+"/other", "Bearer secret"); status != 404 {
 		t.Errorf("unknown path status = %d, want 404", status)
+	}
+}
+
+func TestServerNegotiatesFormat(t *testing.T) {
+	dir := t.TempDir()
+
+	writeSnapshotFile(t, dir, "srv", Snapshot{
+		Name:        "srv",
+		Pid:         os.Getpid(),
+		UpdatedAtMs: time.Now().UnixMilli(),
+		Requests:    &Requests{Completed: 42},
+	})
+
+	address := "127.0.0.1:" + strconv.Itoa(freePort(t))
+
+	server, err := NewServer(address, "secret", dir, "srv")
+
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	defer server.Close()
+
+	url := "http://" + address + StatsPath
+
+	// Accept: text/html → 200 HTML page.
+	status, contentType, body := getStats(t, url, "Bearer secret", "text/html,application/xhtml+xml")
+
+	if status != 200 {
+		t.Fatalf("html status = %d, want 200", status)
+	}
+
+	if !strings.Contains(contentType, "text/html") {
+		t.Errorf("html content type = %q, want text/html", contentType)
+	}
+
+	if !strings.Contains(body, "<table") || !strings.Contains(body, "srv") {
+		t.Errorf("html body does not look like the stats page: %s", body)
+	}
+
+	// No Accept → 200 Prometheus metrics (the default).
+	status, contentType, body = getStats(t, url, "Bearer secret", "")
+
+	if status != 200 {
+		t.Fatalf("metrics status = %d, want 200", status)
+	}
+
+	if !strings.Contains(contentType, "text/plain") {
+		t.Errorf("metrics content type = %q, want text/plain", contentType)
+	}
+
+	if !strings.Contains(body, `sconcur_pool_requests_completed_total{name="srv"} 42`) {
+		t.Errorf("metrics body missing the completed total: %s", body)
+	}
+
+	if !strings.Contains(body, "sconcur_pool_workers{") {
+		t.Errorf("metrics body missing the pool workers gauge: %s", body)
 	}
 }
 
@@ -325,4 +387,36 @@ func doGet(t *testing.T, url string, authorization string) (int, string) {
 	body, _ := io.ReadAll(response.Body)
 
 	return response.StatusCode, string(body)
+}
+
+// getStats performs a GET with an Authorization and an optional Accept header and
+// returns the status, the Content-Type and the body.
+func getStats(t *testing.T, url string, authorization string, accept string) (int, string, string) {
+	t.Helper()
+
+	request, err := http.NewRequest(http.MethodGet, url, nil)
+
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	if authorization != "" {
+		request.Header.Set("Authorization", authorization)
+	}
+
+	if accept != "" {
+		request.Header.Set("Accept", accept)
+	}
+
+	response, err := http.DefaultClient.Do(request)
+
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+
+	defer response.Body.Close()
+
+	body, _ := io.ReadAll(response.Body)
+
+	return response.StatusCode, response.Header.Get("Content-Type"), string(body)
 }
