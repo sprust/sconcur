@@ -139,7 +139,7 @@ non-fiber path.)
 - `SocketClientCommand` (sub-operations under SocketClient): Connect (1), Send (2), Close (3) — selected via the payload envelope's `cm`, like HttpClient
 - `SqlCommandEnum` (sub-operations under a SQL method, selected via the envelope's `cm`): Query (1), Exec (2), Begin (3), Commit (4), Rollback (5)
 - `HttpClientCommand` (sub-operations under HttpClient): Request (1), UploadChunk (2), UploadEnd (3) — selected via the payload envelope's `cm`, like MongoDB's `CommandEnum`
-- `CommandEnum`: InsertOne (1), BulkWrite (2), Aggregate (3), InsertMany (4), CountDocuments (5), UpdateOne (6), FindOne (7), CreateIndex (8), DeleteOne (9), DeleteMany (10), UpdateMany (11), Drop (12), DropIndex (13)
+- `CommandEnum`: InsertOne (1), BulkWrite (2), Aggregate (3), InsertMany (4), CountDocuments (5), UpdateOne (6), FindOne (7), CreateIndex (8), DeleteOne (9), DeleteMany (10), UpdateMany (11), Drop (12), DropIndex (13), Find (14), Distinct (15), FindOneAndUpdate (16), FindOneAndDelete (17), FindOneAndReplace (18), ReplaceOne (19), EstimatedDocumentCount (20), CreateIndexes (21), ListIndexes (22), ListCollections (23), ListDatabases (24), RenameCollection (25), RunCommand (26)
 
 ## Test Structure
 
@@ -242,7 +242,7 @@ change. **Never bump the major version without the maintainer's approval**; bump
 the minor only when warranted, otherwise the patch. **Bump the version at most
 once per git branch** — the first protocol change on a branch bumps it, later
 commits on the same branch reuse that version (do not move it again). Current:
-`0.3.0`.
+`0.3.1`.
 
 ## Exceptions
 
