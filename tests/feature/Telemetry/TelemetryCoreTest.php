@@ -7,6 +7,7 @@ namespace SConcur\Tests\Feature\Telemetry;
 use PHPUnit\Framework\TestCase;
 use SConcur\Exceptions\Telemetry\FrameTooLargeException;
 use SConcur\Telemetry\Aggregator;
+use SConcur\Telemetry\Dto\MasterInfo;
 use SConcur\Telemetry\Dto\Snapshot;
 use SConcur\Telemetry\Dto\StoredSnapshot;
 use SConcur\Telemetry\FrameCodec;
@@ -114,6 +115,47 @@ class TelemetryCoreTest extends TestCase
         self::assertStringContainsString('completed', $html);
     }
 
+    public function testMasterSectionAndStartTimesRender(): void
+    {
+        $now         = 1_750_000_000_000;
+        $startedAtMs = $now - 5_000;
+
+        $master = new MasterInfo(
+            pid: 4242,
+            startedAtMs: $now - 60_000,
+            uptimeSeconds: 60.0,
+            rssBytes: 52_428_800,
+            cpuPercent: 7.5,
+        );
+
+        $aggregate = $this->aggregateOf(
+            [$this->stored($this->requestsSnapshot(pid: 11, updatedAtMs: $now, completed: 1, avgMs: 1.0, startedAtMs: $startedAtMs), $now)],
+            'srv',
+            $now,
+            $master,
+        );
+
+        /** @var array<string, mixed> $json */
+        $json = json_decode((new JsonRenderer())->render($aggregate), true);
+
+        self::assertArrayHasKey('master', $json);
+        self::assertSame(4242, $json['master']['pid']);
+        self::assertStringEndsWith('+00:00', (string) $json['master']['startedAt']);
+        self::assertSame(52_428_800, $json['master']['memory']['rssBytes']);
+        self::assertStringEndsWith('+00:00', (string) $json['workers'][0]['startedAt']);
+
+        $metrics = (new PrometheusRenderer())->render($aggregate);
+
+        self::assertStringContainsString('sconcur_master_memory_rss_bytes{name="srv"} 52428800', $metrics);
+        self::assertStringContainsString('sconcur_master_cpu_percent{name="srv"} 7.5', $metrics);
+        self::assertStringContainsString('sconcur_worker_start_time_seconds{name="srv",pid="11"} ' . intdiv($startedAtMs, 1000), $metrics);
+
+        $html = (new HtmlRenderer())->render($aggregate);
+
+        self::assertStringContainsString('<caption>Master</caption>', $html);
+        self::assertStringContainsString('started (UTC)', $html);
+    }
+
     public function testPrometheusEscapesLabelAndOmitsOtherWorkload(): void
     {
         $now = 1_750_000_000_000;
@@ -141,9 +183,9 @@ class TelemetryCoreTest extends TestCase
     /**
      * @param list<StoredSnapshot> $storedSnapshots
      */
-    protected function aggregateOf(array $storedSnapshots, string $name, int $nowMs): \SConcur\Telemetry\Dto\Aggregate
+    protected function aggregateOf(array $storedSnapshots, string $name, int $nowMs, ?MasterInfo $master = null): \SConcur\Telemetry\Dto\Aggregate
     {
-        return (new Aggregator())->aggregate($storedSnapshots, $name, $nowMs, '2026-01-01T00:00:00+00:00');
+        return (new Aggregator())->aggregate($storedSnapshots, $name, $nowMs, '2026-01-01T00:00:00+00:00', $master);
     }
 
     protected function stored(Snapshot $snapshot, int $receivedAtMs): StoredSnapshot
@@ -154,12 +196,13 @@ class TelemetryCoreTest extends TestCase
         );
     }
 
-    protected function requestsSnapshot(int $pid, int $updatedAtMs, int $completed, float $avgMs): Snapshot
+    protected function requestsSnapshot(int $pid, int $updatedAtMs, int $completed, float $avgMs, int $startedAtMs = 0): Snapshot
     {
         $snapshot = Snapshot::fromDecoded([
             'name'        => 'srv',
             'pid'         => $pid,
             'updatedAtMs' => $updatedAtMs,
+            'startedAtMs' => $startedAtMs,
             'memory'      => ['rssBytes' => 1000, 'goRuntimeBytes' => 400, 'nonExtensionBytes' => 600],
             'cpuPercent'  => 5.0,
             'goroutines'  => 3,

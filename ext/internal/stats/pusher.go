@@ -151,6 +151,7 @@ func (pusher *Pusher) buildSnapshot(now time.Time) Snapshot {
 		Name:          pusher.name,
 		Pid:           pusher.pid,
 		UpdatedAtMs:   now.UnixMilli(),
+		StartedAtMs:   pusher.startTime.UnixMilli(),
 		UptimeSeconds: now.Sub(pusher.startTime).Seconds(),
 		Memory:        readMemory(),
 		CpuPercent:    pusher.cpu.sample(now),

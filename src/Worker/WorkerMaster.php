@@ -54,6 +54,8 @@ class WorkerMaster
 
     protected int $masterPid = 0;
 
+    protected float $startedAt = 0.0;
+
     protected string $cwd = '.';
 
     protected int $workers = 0;
@@ -149,6 +151,7 @@ class WorkerMaster
         $this->ensureDirectories();
 
         $this->masterPid = (int) getmypid();
+        $this->startedAt = microtime(true);
         $this->cwd       = getcwd() ?: '.';
         $this->workers   = $this->resolveWorkerCount();
 
@@ -316,7 +319,7 @@ class WorkerMaster
         $written = $this->stateFile->write(
             new MasterState(
                 pid: $this->masterPid,
-                startedAt: microtime(true),
+                startedAt: $this->startedAt,
                 workerCount: $this->workers,
                 workerScript: $this->workerScript,
             ),
@@ -500,6 +503,7 @@ class WorkerMaster
             panelPort: $this->panelPort,
             adminToken: $this->adminToken,
             name: $this->name,
+            masterStartedAtMs: (int) ($this->startedAt * 1000),
             logError: static function (string $message) use ($logger): void {
                 $logger->master(MasterLogger::ERROR, $message);
             },

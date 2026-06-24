@@ -20,6 +20,7 @@ readonly class Aggregate
         public int $workersHung,
         public Totals $totals,
         public array $workers,
+        public ?MasterInfo $master = null,
     ) {
     }
 
@@ -28,16 +29,23 @@ readonly class Aggregate
      */
     public function toArray(): array
     {
-        return [
+        $data = [
             'generatedAt'  => $this->generatedAt,
             'name'         => $this->name,
             'workersTotal' => $this->workersTotal,
             'workersHung'  => $this->workersHung,
-            'totals'       => $this->totals->toArray(),
-            'workers'      => array_map(
-                static fn(WorkerEntry $worker): array => $worker->toArray(),
-                $this->workers,
-            ),
         ];
+
+        if ($this->master !== null) {
+            $data['master'] = $this->master->toArray();
+        }
+
+        $data['totals']  = $this->totals->toArray();
+        $data['workers'] = array_map(
+            static fn(WorkerEntry $worker): array => $worker->toArray(),
+            $this->workers,
+        );
+
+        return $data;
     }
 }

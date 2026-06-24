@@ -63,7 +63,8 @@ class HtmlRenderer
 </head>
 <body>
 <h1>' . $name . '</h1>
-<div class="meta">' . $this->escape($aggregate->generatedAt) . ' · workers ' . $aggregate->workersTotal . $hungMeta . '</div>';
+<div class="meta">' . $this->escape($aggregate->generatedAt) . ' · workers ' . $aggregate->workersTotal . $hungMeta . '</div>'
+            . $this->masterTable($aggregate);
 
         if ($requests !== null) {
             $workloadTotalsHead = '<th>completed</th><th>avg ms</th><th>in-flight</th><th>1–5s</th><th>5–15s</th><th>&gt;15s</th>';
@@ -111,7 +112,7 @@ class HtmlRenderer
 <table>
 <caption>Workers</caption>
 <tr>
-<th>pid</th><th>uptime s</th><th>snap age ms</th><th>CPU %</th><th>RSS, MiB</th><th>goroutines</th>
+<th>pid</th><th>started (UTC)</th><th>uptime s</th><th>snap age ms</th><th>CPU %</th><th>RSS, MiB</th><th>goroutines</th>
 ' . $workloadWorkersHead . '
 </tr>' . $rows . '
 </table>
@@ -119,6 +120,30 @@ class HtmlRenderer
 </html>';
 
         return $head . $totalsTable . $workersTable;
+    }
+
+    protected function masterTable(Aggregate $aggregate): string
+    {
+        $master = $aggregate->master;
+
+        if ($master === null) {
+            return '';
+        }
+
+        return '
+<table>
+<caption>Master</caption>
+<tr>
+<th>pid</th><th>started (UTC)</th><th>uptime s</th><th>CPU %</th><th>RSS, MiB</th>
+</tr>
+<tr>
+<td>' . $master->pid . '</td>
+<td>' . $this->utc($master->startedAtMs) . '</td>
+<td>' . $this->f1($master->uptimeSeconds) . '</td>
+<td>' . $this->f1($master->cpuPercent) . '</td>
+<td>' . $this->mib($master->rssBytes) . '</td>
+</tr>
+</table>';
     }
 
     protected function workerRow(WorkerEntry $worker, bool $hasRequests): string
@@ -139,6 +164,7 @@ class HtmlRenderer
         return '
 <tr' . $class . '>
 <td>' . $worker->pid . $pidMark . '</td>
+<td>' . $this->utc($worker->startedAtMs) . '</td>
 <td>' . $this->f1($worker->uptimeSeconds) . '</td>
 <td>' . $worker->snapshotAgeMs . '</td>
 <td>' . $this->f1($worker->cpuPercent) . '</td>
@@ -151,6 +177,11 @@ class HtmlRenderer
     protected function escape(string $value): string
     {
         return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
+    }
+
+    protected function utc(int $milliseconds): string
+    {
+        return $milliseconds > 0 ? gmdate('Y-m-d H:i:s', intdiv($milliseconds, 1000)) : '—';
     }
 
     protected function mib(int $bytes): string

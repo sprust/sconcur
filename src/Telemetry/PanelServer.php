@@ -67,6 +67,7 @@ class PanelServer
         protected readonly string $name,
         protected readonly Store $store,
         protected readonly Aggregator $aggregator,
+        protected readonly MasterMetrics $masterMetrics,
         protected readonly ?Closure $logError = null,
     ) {
         $this->jsonRenderer       = new JsonRenderer();
@@ -447,7 +448,13 @@ class PanelServer
 
     protected function buildAggregate(int $nowMs): Aggregate
     {
-        return $this->aggregator->aggregate($this->store->all(), $this->name, $nowMs, gmdate('c', intdiv($nowMs, 1000)));
+        return $this->aggregator->aggregate(
+            storedSnapshots: $this->store->all(),
+            name: $this->name,
+            nowMs: $nowMs,
+            generatedAt: gmdate('c', intdiv($nowMs, 1000)),
+            master: $this->masterMetrics->snapshot($nowMs),
+        );
     }
 
     protected function nowMs(): int

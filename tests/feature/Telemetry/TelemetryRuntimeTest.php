@@ -44,11 +44,14 @@ class TelemetryRuntimeTest extends TestCase
         $socketPath = $this->directory . '/t.sock';
         $port       = $this->freeTcpPort();
 
+        $masterStartedAtMs = 1_700_000_000_000;
+
         $runtime = new TelemetryRuntime(
             socketPath: $socketPath,
             panelPort: $port,
             adminToken: 'secret',
             name: 'srv',
+            masterStartedAtMs: $masterStartedAtMs,
         );
 
         $runtime->start();
@@ -61,6 +64,7 @@ class TelemetryRuntimeTest extends TestCase
             'name'        => 'srv',
             'pid'         => 4242,
             'updatedAtMs' => (int) (microtime(true) * 1000),
+            'startedAtMs' => (int) (microtime(true) * 1000) - 1_000,
             'requests'    => ['completed' => 42, 'avgMs' => 2.4, 'inFlight' => 1],
         ];
 
@@ -84,6 +88,15 @@ class TelemetryRuntimeTest extends TestCase
         self::assertSame('srv', $decoded['name']);
         self::assertSame(42, $decoded['totals']['requests']['completed']);
         self::assertSame(4242, $decoded['workers'][0]['pid']);
+
+        // The worker carries its serve start as a UTC datetime.
+        self::assertStringEndsWith('+00:00', (string) $decoded['workers'][0]['startedAt']);
+
+        // The master section reports the supervisor's own metrics, start datetime in UTC.
+        self::assertArrayHasKey('master', $decoded);
+        self::assertSame((int) getmypid(), $decoded['master']['pid']);
+        self::assertSame(gmdate('c', intdiv($masterStartedAtMs, 1000)), $decoded['master']['startedAt']);
+        self::assertArrayHasKey('rssBytes', $decoded['master']['memory']);
 
         // Wrong/missing token must be 404 (the endpoint is hidden).
         [$statusNoToken] = $this->httpGet($port, '/api/stats', [], $runtime);

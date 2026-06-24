@@ -6,6 +6,7 @@ namespace SConcur\Telemetry;
 
 use SConcur\Telemetry\Dto\Aggregate;
 use SConcur\Telemetry\Dto\Connections;
+use SConcur\Telemetry\Dto\MasterInfo;
 use SConcur\Telemetry\Dto\Memory;
 use SConcur\Telemetry\Dto\Requests;
 use SConcur\Telemetry\Dto\StoredSnapshot;
@@ -30,8 +31,13 @@ class Aggregator
     /**
      * @param list<StoredSnapshot> $storedSnapshots
      */
-    public function aggregate(array $storedSnapshots, string $name, int $nowMs, string $generatedAt): Aggregate
-    {
+    public function aggregate(
+        array $storedSnapshots,
+        string $name,
+        int $nowMs,
+        string $generatedAt,
+        ?MasterInfo $master = null,
+    ): Aggregate {
         $workers     = [];
         $workersHung = 0;
 
@@ -88,6 +94,7 @@ class Aggregator
                 pid: $snapshot->pid,
                 hung: $hung,
                 snapshotAgeMs: $snapshotAgeMs,
+                startedAtMs: $snapshot->startedAtMs,
                 uptimeSeconds: $snapshot->uptimeSeconds,
                 memory: $snapshot->memory,
                 cpuPercent: $snapshot->cpuPercent,
@@ -133,6 +140,7 @@ class Aggregator
             workersHung: $workersHung,
             totals: $totals,
             workers: $workers,
+            master: $master,
         );
     }
 }

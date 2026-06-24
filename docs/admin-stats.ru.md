@@ -135,9 +135,10 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 
 ## Метрики
 
-Источник всех чисел — Go-сторона воркера (`/proc`, `runtime`, собственные счётчики).
-Процессные метрики общие для обоих серверов; workload-секция своя: у HTTP —
-`requests`, у socket — `connections`.
+Источник воркерских чисел — Go-сторона воркера (`/proc`, `runtime`, собственные
+счётчики). Процессные метрики общие для обоих серверов; workload-секция своя: у HTTP —
+`requests`, у socket — `connections`. Секцию `master` (метрики самого процесса-мастера)
+снимает PHP-сторона мастера из своего `/proc`.
 
 | Поле | Что это | Источник |
 |---|---|---|
@@ -146,6 +147,7 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 | `memory.nonExtensionBytes` | остаток без расширения (PHP + интерпретатор) | `rssBytes − goRuntimeBytes` |
 | `cpuPercent` | загрузка CPU процессом за интервал | диф `/proc/self/stat` |
 | `goroutines` | число горутин процесса | `runtime.NumGoroutine()` |
+| `startedAt` | дата-время старта serve-цикла воркера (UTC) | старт serve-цикла |
 | `uptimeSeconds` | время жизни serve-цикла | старт serve-цикла |
 | `requests.completed` | обслужено запросов (HTTP) | счётчик |
 | `requests.avgMs` | средняя длительность запроса | сумма / число |
@@ -153,6 +155,14 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 | `requests.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | из них по возрасту [1с,5с) / [5с,15с) / ≥15с | возраст in-flight |
 | `connections.active` | открытых соединений сейчас (socket) | счётчик |
 | `connections.totalAccepted` | принято соединений за всё время (socket) | счётчик |
+| `master.pid` | pid процесса-мастера | мастер |
+| `master.startedAt` | дата-время старта мастера (UTC) | старт `run()` мастера |
+| `master.uptimeSeconds` | время жизни мастера | старт мастера |
+| `master.memory.rssBytes` | RSS процесса-мастера | `/proc/self/status` `VmRSS` |
+| `master.cpuPercent` | загрузка CPU мастером за интервал (~1с) | диф `/proc/self/stat` |
+
+Все поля дата-времени (`generatedAt`, `startedAt`, …) — в UTC (ISO-8601 со смещением
+`+00:00`).
 
 Бакеты длительности эксклюзивны: запрос в работе 7с попадает только в `inFlight5to15s`.
 В `totals` `requests.avgMs` взвешен по `completed` воркеров, а `cpuPercent` — сумма
@@ -175,6 +185,13 @@ JSON-ответ HTTP-пула (с секцией `requests`):
   "name": "sconcur-http-server",
   "workersTotal": 8,
   "workersHung": 0,
+  "master": {
+    "pid": 12340,
+    "startedAt": "2026-06-24T11:00:00+00:00",
+    "uptimeSeconds": 3600.0,
+    "memory": { "rssBytes": 16777216 },
+    "cpuPercent": 0.6
+  },
   "totals": {
     "memory": { "rssBytes": 335544320, "goRuntimeBytes": 100663296, "nonExtensionBytes": 234881024 },
     "cpuPercent": 28.4,
@@ -186,6 +203,7 @@ JSON-ответ HTTP-пула (с секцией `requests`):
       "pid": 12346,
       "hung": false,
       "snapshotAgeMs": 600,
+      "startedAt": "2026-06-24T11:54:47+00:00",
       "uptimeSeconds": 312.5,
       "memory": { "rssBytes": 41943040, "goRuntimeBytes": 12582912, "nonExtensionBytes": 29360128 },
       "cpuPercent": 3.7,
@@ -203,14 +221,18 @@ JSON-ответ HTTP-пула (с секцией `requests`):
 "connections": { "active": 12, "totalAccepted": 34567 }
 ```
 
-В формате Prometheus (формат по умолчанию) — суммарные `sconcur_pool_*` и
-по-воркерные `sconcur_worker_*` (с label `pid`); у socket-пула вместо `requests`-метрик
-идут `connections`-метрики:
+В формате Prometheus (формат по умолчанию) — суммарные `sconcur_pool_*`, метрики
+мастера `sconcur_master_*` и по-воркерные `sconcur_worker_*` (с label `pid`); у
+socket-пула вместо `requests`-метрик идут `connections`-метрики. Дата-время старта
+отдаётся как unix-секунды (`*_start_time_seconds`) — строки Prometheus не несёт:
 
 ```text
 # HELP sconcur_pool_requests_completed_total Requests completed across the pool.
 # TYPE sconcur_pool_requests_completed_total counter
 sconcur_pool_requests_completed_total{name="sconcur-http-server"} 843210
+sconcur_master_start_time_seconds{name="sconcur-http-server"} 1750762800
+sconcur_master_memory_rss_bytes{name="sconcur-http-server"} 16777216
+sconcur_worker_start_time_seconds{name="sconcur-http-server",pid="12346"} 1750766087
 sconcur_worker_requests_completed_total{name="sconcur-http-server",pid="12346"} 105432
 ```
 

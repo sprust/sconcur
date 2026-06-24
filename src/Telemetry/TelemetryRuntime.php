@@ -27,11 +27,15 @@ class TelemetryRuntime
 
     protected PanelServer $panel;
 
+    protected MasterMetrics $masterMetrics;
+
     protected bool $enabled = false;
 
     protected int $lastSsePushMs = 0;
 
     /**
+     * @param int                        $masterStartedAtMs the master's serve start (epoch ms),
+     *                                                      reported as the master's start datetime
      * @param null|Closure(string): void $logError
      */
     public function __construct(
@@ -39,10 +43,12 @@ class TelemetryRuntime
         int $panelPort,
         string $adminToken,
         string $name,
+        int $masterStartedAtMs = 0,
         ?Closure $logError = null,
     ) {
-        $this->store     = new Store();
-        $this->collector = new Collector(
+        $this->store         = new Store();
+        $this->masterMetrics = new MasterMetrics($masterStartedAtMs);
+        $this->collector     = new Collector(
             socketPath: $socketPath,
             store: $this->store,
             logError: $logError,
@@ -53,6 +59,7 @@ class TelemetryRuntime
             name: $name,
             store: $this->store,
             aggregator: new Aggregator(),
+            masterMetrics: $this->masterMetrics,
             logError: $logError,
         );
     }
@@ -92,6 +99,10 @@ class TelemetryRuntime
         $nowMs = (int) (microtime(true) * 1000);
 
         if ($nowMs - $this->lastSsePushMs >= self::SSE_PUSH_INTERVAL_MS) {
+            // Refresh the master's rolling CPU% on the same 1s cadence (one consistent
+            // interval), then emit the SSE tick carrying the fresh master section.
+            $this->masterMetrics->sample($nowMs / 1000);
+
             $this->panel->pushSse($nowMs);
 
             $this->lastSsePushMs = $nowMs;

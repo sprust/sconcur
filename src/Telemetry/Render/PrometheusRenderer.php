@@ -38,6 +38,15 @@ class PrometheusRenderer
         $output .= $this->family('sconcur_pool_cpu_percent', 'Pool CPU usage (sum of per-process percentages).', 'gauge', $poolLabels, $this->float($totals->cpuPercent));
         $output .= $this->family('sconcur_pool_goroutines', 'Pool goroutine count.', 'gauge', $poolLabels, (string) $totals->goroutines);
 
+        $master = $aggregate->master;
+
+        if ($master !== null) {
+            $output .= $this->family('sconcur_master_start_time_seconds', 'Master process start (unix seconds).', 'gauge', $poolLabels, (string) intdiv($master->startedAtMs, 1000));
+            $output .= $this->family('sconcur_master_uptime_seconds', 'Master process uptime, in seconds.', 'gauge', $poolLabels, $this->float($master->uptimeSeconds));
+            $output .= $this->family('sconcur_master_memory_rss_bytes', 'Master process resident set size.', 'gauge', $poolLabels, (string) $master->rssBytes);
+            $output .= $this->family('sconcur_master_cpu_percent', 'Master process CPU usage percent.', 'gauge', $poolLabels, $this->float($master->cpuPercent));
+        }
+
         if ($totals->requests !== null) {
             $requests = $totals->requests;
 
@@ -69,6 +78,7 @@ class PrometheusRenderer
         $processMetrics = [
             ['sconcur_worker_hung', 'Whether the worker is flagged hung (1) or not (0).', fn(WorkerEntry $worker): string => $worker->hung ? '1' : '0'],
             ['sconcur_worker_snapshot_age_ms', "Age of the worker's last snapshot, in milliseconds.", fn(WorkerEntry $worker): string => (string) $worker->snapshotAgeMs],
+            ['sconcur_worker_start_time_seconds', 'Worker serve-loop start (unix seconds).', fn(WorkerEntry $worker): string => (string) intdiv($worker->startedAtMs, 1000)],
             ['sconcur_worker_uptime_seconds', 'Worker serve-loop uptime, in seconds.', fn(WorkerEntry $worker): string => $this->float($worker->uptimeSeconds)],
             ['sconcur_worker_cpu_percent', 'Worker CPU usage percent.', fn(WorkerEntry $worker): string => $this->float($worker->cpuPercent)],
             ['sconcur_worker_goroutines', 'Worker goroutine count.', fn(WorkerEntry $worker): string => (string) $worker->goroutines],
