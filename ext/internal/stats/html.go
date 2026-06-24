@@ -70,7 +70,7 @@ const htmlSource = `<!doctype html>
 <table>
 <caption>Workers</caption>
 <tr>
-<th>pid</th><th>uptime s</th><th>age ms</th><th>CPU %</th><th>RSS, MiB</th><th>goroutines</th>
+<th>pid</th><th>uptime s</th><th>snap age ms</th><th>CPU %</th><th>RSS, MiB</th><th>goroutines</th>
 {{if .Totals.Requests}}<th>completed</th><th>avg ms</th><th>in-flight</th>{{end}}
 {{if .Totals.Connections}}<th>active</th><th>accepted</th>{{end}}
 </tr>

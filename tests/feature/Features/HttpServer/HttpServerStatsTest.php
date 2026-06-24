@@ -123,7 +123,7 @@ class HttpServerStatsTest extends TestCase
         while (microtime(true) < $deadline) {
             $result = $this->request(
                 url: "http://127.0.0.1:{$port}" . self::PATH,
-                headers: $authorization === '' ? [] : ['Authorization: ' . $authorization],
+                headers: $authorization === '' ? [] : ['Authorization: ' . $authorization, 'Accept: application/json'],
             );
 
             if ($result[0] !== 0) {
