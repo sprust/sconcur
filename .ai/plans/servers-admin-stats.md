@@ -1,213 +1,158 @@
-# Админка: статистика серверов (API)
+# Статистика серверов (HTTP + socket)
 
-Статус: **реализовано** (Go + PHP + тесты зелёные), документация написана
-([docs/admin-stats.ru.md](../../docs/admin-stats.ru.md)). Веб-панель решено не
-делать — фича ограничена ручкой. Ветка: `feature/servers-admin`.
-Пара к [мастеру воркеров](worker-master.md) и
-[`SO_REUSEPORT`](http-server.md). Первый этап общей фичи «админка со статистикой
-сервера» (см. README, раздел «Планы») — реализуем только API; веб-панель позже.
+Статус: **v1 реализовано** (перехват на основном HTTP-порту, только http-сервер).
+**v2 — спланировано, ждёт апрува**: выделенный stats-HTTP-сервер на своём порту
+(`/api/stats`), общая логика в нейтральном пакете, поддержка socket-сервера.
+Документация — [docs/admin-stats.ru.md](../../docs/admin-stats.ru.md).
+Ветка: `feature/servers-admin`.
 
 ## Идея
 
-Собрать агрегированную статистику по всему пулу HTTP-серверов, поднятых через
-`SO_REUSEPORT` (с мастером или без него), и отдать её одной HTTP-ручкой.
+Агрегированная статистика по всему пулу серверов (HTTP или socket), поднятому
+через `SO_REUSEPORT`. Каждый воркер пишет свой снапшот в общий каталог per-pid
+файлом; запрос на ручку обслуживает тот воркер, что его поймал, читая и суммируя
+файлы всех воркеров своего `name`. Всё на стороне Go — PHP не участвует ни при
+запросе, ни при сборе.
 
-Ключевая проблема reuse-port: каждый воркер — отдельный процесс со своим
-Go-рантаймом и своими счётчиками, а ядро балансирует соединения. Запрос на общий
-порт попадает ровно в один случайный воркер — он знает только свой срез. Поэтому
-**нельзя отдавать стату через сам reuse-port-сокет**; агрегация идёт out-of-band.
+## v1 (реализовано)
 
-Решение: каждый воркер пишет свой снапшот в общий каталог per-pid файлами;
-admin-запрос обслуживает тот воркер, что его поймал, читая и суммируя **общие
-файлы** (не лезя в сокеты соседей). Раз агрегация out-of-band — «кто поймал, тот
-и ответил» полностью корректно, любой воркер отдаёт полную картину.
+Перехват пути `/sconcur-server-api/admin/stats` на основном HTTP reuse-порту,
+Bearer-токен из `SCONCUR_ADMIN_TOKEN`. Снапшот-писатель (5s) + агрегатор живут в
+`ext/internal/features/httpserver/stats/`. Только HTTP-сервер.
 
-## Принципиальное решение: всё на Go-стороне
+## v2 (этот план)
 
-Вся фича живёт в расширении (Go). PHP не участвует ни при admin-запросе, ни при
-сборке статы:
+### Что меняется
 
-- `serverState.ServeHTTP` (`ext/internal/features/httpserver/server.go`) —
-  единственная точка входа каждого запроса на Go-стороне, **до** перехода в PHP.
-  Там и перехватываем admin-ручку, и инструментируем метрики.
-- Снапшот пишет Go-горутина по таймеру; admin-запрос Go обслуживает сам, читая
-  каталог. Кооперативный PHP-цикл не трогается, нет ни одного PHP→Go перехода на
-  путь запроса.
+1. Новая env-переменная `SCONCUR_STATS_PORT`. Если заданы **и порт, и токен** —
+   каждый воркер поднимает отдельный HTTP-сервер на этом порту (`SO_REUSEPORT`,
+   так все воркеры пула делят порт), маршрут `GET /api/stats`, Bearer-auth →
+   агрегат. Ошибка бинда stats-порта логируется и **не роняет основной сервер**.
+2. Та же возможность у **socket-сервера** — для него выделенный HTTP-сервер это
+   единственный способ отдать статистику (у socket нет HTTP-маршрутов).
+3. Общая логика вынесена в нейтральный пакет `ext/internal/stats/` (рядом с
+   `internal/socket`, `internal/helpers`), используется обоими серверами.
+4. Перехват на основном HTTP-порту (`/sconcur-server-api/admin/stats`) —
+   **убирается** (заменяется выделенным портом). См. «Открытый вопрос».
+5. Версию расширения **не бампаем** — уже `0.3.1` на этой ветке (правило «один
+   раз на ветку»), хотя payload'ы снова меняются.
 
-Почти все метрики Go получает нативно (`/proc`, `runtime`, собственные счётчики
-запросов). PHP-фид не нужен — «память без расширения» считается как
-`RSS − goRuntime` (см. ниже).
+### Решение по старой ручке
 
-## Источник данных по метрикам
+Перехват `/sconcur-server-api/admin/stats` на основном HTTP-порту **убираем**
+полностью. Остаётся единственный механизм — выделенный порт + `/api/stats`
+(один путь для http и socket, изоляция admin-трафика).
 
-| Метрика | Источник (Go) |
-|---|---|
-| `rssBytes` (с экстеншеном, весь процесс) | `/proc/self/status` → `VmRSS` |
-| `goRuntimeBytes` (вклад Go-рантайма) | `runtime.ReadMemStats` → `Sys` |
-| `nonExtensionBytes` (без экстеншена ≈ PHP+интерпретатор) | `rssBytes − goRuntimeBytes` |
-| `cpuPercent` | диф `utime+stime` из `/proc/self/stat` между тиками снапшота |
-| `uptimeSeconds` | `serverState.startTime` |
-| `goroutines` | `runtime.NumGoroutine()` |
-| `requests.completed`, `requests.avgMs` | счётчик + сумма длительностей в `defer` `ServeHTTP` |
-| `requests.inFlight` + бакеты | `sync.Map` requestId→startTime, бакетим `now−start` на снапшоте |
-| корутины в разрезе фич | **отложено** (нужна интроспекция `flows`) |
+### Нейтральный пакет `ext/internal/stats/`
 
-## Параметры (зафиксированы)
+- `snapshot.go` — типы `Memory`, `Requests`, `Connections`, `Snapshot`
+  (опциональные `*Requests`/`*Connections` — workload-секция), типы агрегата,
+  константы (интервал 5s, hung-порог 15s, `StatsPath = "/api/stats"`).
+- `metrics.go` — процессные метрики (`/proc`, `runtime`) — перенос из v1.
+- `collector.go` — `Collector`: процессные метрики + `WorkloadProvider`; писатель
+  (5s, atomic temp+rename, удаление файла на остановке). Перенос + обобщение v1.
+- `aggregate.go` — `Aggregate()` (чтение, прун мёртвых pid под flock, метка hung,
+  сумма процессных метрик + сумма присутствующей workload-секции) и
+  `AuthorizeBearer()`. Перенос + обобщение v1.
+- `server.go` — `Server`: выделенный HTTP stats-сервер. `NewServer(address, token,
+  statsDir, serverName)` биндит reuse-port, обслуживает `GET /api/stats` (Bearer,
+  404 при несовпадении, 405 на не-GET) → `Aggregate`. `Close()`.
+- `listen.go` — reuse-port TCP listen (self-contained ~20 строк; дублирование с
+  httpserver/socketserver listen.go намеренно не трогаем — отдельный рефактор).
 
-- Путь ручки — константа `/sconcur-server-api/admin/stats` (зарезервирован).
-- Авторизация — `Authorization: Bearer <token>`, сравнение
-  `subtle.ConstantTimeCompare`. Токен берётся из env `SCONCUR_ADMIN_TOKEN`.
-  Нет токена → ручка не регается, путь идёт в PHP как обычный (fail-closed).
-  Неверный/отсутствующий токен при заданном → `404` (не `401` — не раскрываем
-  существование ручки). Токен **не** в URL (не течёт в access-лог).
-- Период сбора снапшота — **хардкод 5s** на Go-стороне, без кастомизации.
-- Бакеты in-flight **эксклюзивные** (запрос ровно в одном):
-  `inFlight1to5s` = [1s,5s), `inFlight5to15s` = [5s,15s), `inFlightOver15s` = ≥15s.
-- `hung` = снапшот устарел: `now − updatedAtMs > 15s` (3 пропущенных тика по 5s).
-- Каталог статы — `<runtimeDir>/stats/`, имя файла `<name>-stats-<pid>.json`.
-  Scope агрегации — файлы с тем же `name`, что у отвечающего воркера.
+Workload-абстракция (feature-specific часть снапшота):
 
-## Формат: файл статы одного воркера
+```go
+type Workload struct {
+    Requests    *Requests    `json:"requests,omitempty"`
+    Connections *Connections `json:"connections,omitempty"`
+}
 
-`<runtimeDir>/stats/<name>-stats-<pid>.json` — атомарно (temp+rename), удаляется
-на graceful-выходе; краш оставляет → пруним по живости pid.
-
-```json
-{
-  "name": "sconcur-server",
-  "pid": 12346,
-  "updatedAtMs": 1750000000123,
-  "uptimeSeconds": 312.5,
-  "memory": {
-    "rssBytes": 41943040,
-    "goRuntimeBytes": 12582912,
-    "nonExtensionBytes": 29360128
-  },
-  "cpuPercent": 3.7,
-  "goroutines": 24,
-  "requests": {
-    "completed": 105432,
-    "avgMs": 2.4,
-    "inFlight": 7,
-    "inFlight1to5s": 2,
-    "inFlight5to15s": 1,
-    "inFlightOver15s": 0
-  }
+type WorkloadProvider interface {
+    WorkloadSnapshot() Workload
 }
 ```
 
-## Формат: ответ ручки
+### httpserver
 
-`GET /sconcur-server-api/admin/stats` + `Authorization: Bearer <token>` →
-`200 application/json`. Агрегатор читает все `<name>-stats-*.json` своего `name`,
-под flock (`stats/.prune.lock`, non-blocking) удаляет файлы **мёртвых** pid
-(`kill(pid,0)`), живые-но-устаревшие по mtime метит `hung` и **не** удаляет.
-`totals.requests.avgMs` — взвешенное по `completed`; `totals.cpuPercent` — сумма
-по воркерам (может быть >100% — это сумма per-process %). `generatedAt` —
-человекочитаемое дата-время момента сборки ответа (RFC3339, напр.
-`2026-06-24T12:00:00+00:00`). В файле снапшота `updatedAtMs` остаётся epoch-ms —
-по нему агрегатор считает `snapshotAgeMs` и `hung`.
+- Счётчики запросов (completed, сумма длительностей, in-flight реестр + бакеты)
+  выносятся из `Collector` в локальный тип `requestStats` (реализует
+  `WorkloadProvider`, возвращает `Workload{Requests: ...}`).
+- `serverState`: `*stats.Collector` (provider = `requestStats`) + опционально
+  `*stats.Server` (если порт+токен). Старт в `newServerState`/`handleServe`, стоп
+  в `Close`.
+- Удаляются `serveAdminStats` и перехват admin-пути в `ServeHTTP`.
+- `ServePayload` += `sp` (statsPort); `at`/`sd`/`sn` остаются.
 
-```json
-{
-  "generatedAt": "2026-06-24T12:00:00+00:00",
-  "name": "sconcur-server",
-  "workersTotal": 8,
-  "workersHung": 1,
-  "totals": {
-    "memory": {
-      "rssBytes": 335544320,
-      "goRuntimeBytes": 100663296,
-      "nonExtensionBytes": 234881024
-    },
-    "cpuPercent": 28.4,
-    "goroutines": 192,
-    "requests": {
-      "completed": 843210,
-      "avgMs": 2.6,
-      "inFlight": 41,
-      "inFlight1to5s": 12,
-      "inFlight5to15s": 4,
-      "inFlightOver15s": 1
-    }
-  },
-  "workers": [
-    {
-      "pid": 12346,
-      "hung": false,
-      "snapshotAgeMs": 1200,
-      "uptimeSeconds": 312.5,
-      "memory": { "rssBytes": 41943040, "goRuntimeBytes": 12582912, "nonExtensionBytes": 29360128 },
-      "cpuPercent": 3.7,
-      "goroutines": 24,
-      "requests": { "completed": 105432, "avgMs": 2.4, "inFlight": 7, "inFlight1to5s": 2, "inFlight5to15s": 1, "inFlightOver15s": 0 }
-    }
-  ]
-}
+### socketserver
+
+- Новый локальный тип `connectionStats` (реализует `WorkloadProvider`):
+  `active` = текущее число соединений (`len` по `s.conns`), `totalAccepted` =
+  atomic-счётчик принятых. Инкремент в `handleConn`.
+- `serverState`: `*stats.Collector` (provider = `connectionStats`) + опционально
+  `*stats.Server`. Старт/стоп как у httpserver.
+- `ServePayload` (socket) += `at`/`sd`/`sn`/`sp`.
+
+### PHP
+
+- `HttpServer`: += `statsPort` параметр; `fromArgs` читает `SCONCUR_STATS_PORT`;
+  `ServePayload` += `sp`.
+- `SocketServer`: += `adminToken`/`statsDir`/`serverName`/`statsPort`; `fromArgs`
+  читает те же 4 env; `serve` резолвит дефолт `statsDir`; `ServePayload` (socket)
+  += `at`/`sd`/`sn`/`sp`.
+- `MasterConfig`: по порту изменений нет — оператор задаёт `SCONCUR_STATS_PORT` (и
+  `SCONCUR_ADMIN_TOKEN`) в блоке `env`; `SCONCUR_STATS_DIR`/`SCONCUR_SERVER_NAME`
+  мастер уже инжектит из `runtimeDir`/`name`.
+
+### Конфигурация (env, читают оба сервера)
+
+| Переменная | Назначение | Кто задаёт |
+|---|---|---|
+| `SCONCUR_ADMIN_TOKEN` | токен ручки | оператор (env-блок) |
+| `SCONCUR_STATS_PORT` | порт выделенного stats-сервера | оператор (env-блок) |
+| `SCONCUR_STATS_DIR` | каталог снапшотов | мастер (из runtimeDir) |
+| `SCONCUR_SERVER_NAME` | имя/scope агрегации | мастер (из name) |
+
+Снапшот-писатель работает при заданном `statsDir`. Выделенный сервер — при
+заданных порте **и** токене. Разные пулы (http и socket) должны использовать
+**разные** stats-порты и `SCONCUR_SERVER_NAME` — иначе reuse-port отдаст запрос
+случайному воркеру чужого пула.
+
+### Формат снапшота (добавка для socket)
+
+К общим процессным метрикам добавляется одна из workload-секций (http → первая,
+socket → вторая):
+
+```text
+"requests":    { "completed": 105432, "avgMs": 2.4, "inFlight": 7, "inFlight1to5s": 2, "inFlight5to15s": 1, "inFlightOver15s": 0 }
+"connections": { "active": 12, "totalAccepted": 34567 }
 ```
 
-## Изменения по слоям
-
-### Go (`ext/`)
-
-1. `internal/features/httpserver/server.go` — в `serverState`: счётчики
-   `requestsCompleted`/сумма длительностей (инкремент в существующем `defer`
-   `ServeHTTP`), `sync.Map` in-flight стартов. В начале `ServeHTTP` — перехват
-   admin-пути: токен задан, путь совпал, Bearer прошёл → агрегируем и отвечаем
-   Go-стороной, в PHP не уходим.
-2. Новый пакет/файлы фичи статы (напр. `internal/features/httpserver/stats/`):
-   - сбор метрик процесса (`/proc/self/status`, `/proc/self/stat`, `runtime`);
-   - писатель снапшота (горутина, тик 5s, atomic temp+rename, удаление своего
-     файла на остановке);
-   - агрегатор (чтение каталога, прун мёртвых pid под flock, метка `hung`,
-     суммирование + per-worker, сериализация ответа).
-3. `internal/features/httpserver/payloads` — `ServePayload` += `AdminToken`,
-   `StatsDir`, `ServerName`.
-4. Горутина-писатель стартует/гасится вместе с `serverState`
-   (старт в `handleServe`, стоп в `Close`).
-
-### PHP (`src/`)
-
-5. `Features/HttpServer/Payloads/ServePayload.php` — добавить поля
-   `adminToken`/`statsDir`/`serverName` + ключи `at`/`sd`/`sn` в `getData()`.
-6. `Features/HttpServer/HttpServer.php` — конструктор принимает
-   `adminToken`/`statsDir`/`serverName`; `fromArgs()` читает
-   `SCONCUR_ADMIN_TOKEN` из env и `statsDir`/`name`; прокидывает в `Scheduler::serve`
-   → `ServePayload`.
-7. `Worker/MasterConfig.php` — форвардить `runtimeDir`+`name` в argv воркера
-   (для `statsDir`/`serverName`), чтобы оператор не дублировал их в блоке `server`.
-
-### Версия расширения
-
-8. Протокольное изменение (`ServePayload`) → бамп **0.3.0 → 0.3.1** один раз на
-   ветке: `ext/main.go` `version()` + `Extension::REQUIRED_EXTENSION_VERSION`.
+Агрегат `totals` содержит ту секцию(и), что присутствует в снапшотах пула.
 
 ## Тесты
 
-- Go: снапшот пишется/обновляется/удаляется на выходе; агрегатор суммирует N
-  файлов; прун мёртвого pid; метка `hung` для устаревшего; эксклюзивность бакетов.
-- PHP feature (`tests/feature/...`, харнесс `TestWorkerMaster`): поднять пул,
-  `GET /sconcur-server-api/admin/stats` с токеном → `200` + агрегат; без/неверный
-  токен → `404`; токен не появляется в access-логе; при отсутствии env-токена
-  путь обслуживается обычным PHP-хендлером.
-- В тестовый конфиг HTTP-сервера нужно добавить admin-токен: воркеры тестового
-  пула (`tests/servers/http/http-server.php` через `TestWorkerMaster`) должны
-  получать `SCONCUR_ADMIN_TOKEN` — задать его через блок `env` мастер-конфига
-  (мастер форвардит env воркерам), чтобы ручка регалась. Тест без токена проверяет
-  fail-closed отдельным конфигом без этого env.
+- Go `internal/stats`: перенос v1-тестов; новый тест `Server` (`NewServer` →
+  `GET /api/stats` с Bearer → 200/404/405); агрегация с socket-workload.
+- PHP feature: `TestWorkerMaster` параметризовать воркер-скриптом (сейчас хардкод
+  http demo), чтобы поднять и socket-пул (`tests/servers/socket/socket-server.php`).
+  Тест: http-пул и socket-пул с `SCONCUR_STATS_PORT`+`SCONCUR_ADMIN_TOKEN` →
+  `GET http://<stats-port>/api/stats` с Bearer → 200 + агрегат (для socket в
+  ответе `connections`); без/неверный токен → 404.
 
 ## Документация
 
-Отдельным шагом после кода (конвенция де-AI): новый раздел в
-[docs/http-server.ru.md](../../docs/http-server.ru.md) или отдельный
-`docs/admin-stats.ru.md`, плюс ссылка из `.ai/README.md`. README — одна строка в
-«Планах» при готовности.
+- Переписать `docs/admin-stats.ru.md` под v2: выделенный порт, `/api/stats`,
+  `SCONCUR_STATS_PORT`, поддержка socket-сервера, секция `connections`.
+- Обновить `docs/adding-a-server.ru.md` (гайд по добавлению нового сервера):
+  добавить шаг про подключение статистики — новый сервер должен создавать
+  `stats.Collector` со своим `WorkloadProvider` и поднимать `stats.Server` при
+  заданных `SCONCUR_STATS_PORT`+`SCONCUR_ADMIN_TOKEN` (как это делают http и
+  socket), чтобы любой новый сервер из коробки собирал и отдавал стату.
 
-## Отложено (на потом)
+## Отложено
 
-- Корутины в разрезе фич (отдельный показатель — нужна интроспекция `flows`).
-- Перцентили длительности (p50/p95) вместо/вдобавок к `avgMs`.
-- CLI `sconcur-server stats` поверх тех же файлов (для socket-only пулов и
-  headless): сейчас ручка только HTTP.
-
-Веб-панель решено не делать: фича ограничена HTTP-ручкой со статистикой.
+- Корутины в разрезе фич.
+- Перцентили длительности (p50/p95).
+- Извлечение reuse-port listen в общий хелпер (сейчас три копии).
+- CLI `sconcur-server stats`.
