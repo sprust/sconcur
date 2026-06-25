@@ -216,25 +216,29 @@ class PanelServer
             return;
         }
 
-        $client = @stream_socket_accept($this->listener, 0);
+        // Drain the whole accept backlog in one pass (the listener is level-triggered);
+        // a non-blocking accept returns false once the backlog is empty.
+        while (true) {
+            $client = @stream_socket_accept($this->listener, 0);
 
-        if ($client === false) {
-            return;
+            if ($client === false) {
+                return;
+            }
+
+            if (count($this->clients) >= self::MAX_CLIENTS) {
+                fclose($client);
+
+                return;
+            }
+
+            stream_set_blocking($client, false);
+
+            $id = (int) $client;
+
+            $this->clients[$id] = $client;
+            $this->inputs[$id]  = '';
+            $this->outputs[$id] = '';
         }
-
-        if (count($this->clients) >= self::MAX_CLIENTS) {
-            fclose($client);
-
-            return;
-        }
-
-        stream_set_blocking($client, false);
-
-        $id = (int) $client;
-
-        $this->clients[$id] = $client;
-        $this->inputs[$id]  = '';
-        $this->outputs[$id] = '';
     }
 
     /**

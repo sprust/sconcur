@@ -117,8 +117,10 @@ class TelemetryRuntime
             return;
         }
 
-        $except = [];
-        $ready  = @stream_select($read, $write, $except, 0, $timeoutMicros);
+        $except  = [];
+        $seconds = intdiv($timeoutMicros, 1_000_000);
+        $micros  = $timeoutMicros % 1_000_000;
+        $ready   = @stream_select($read, $write, $except, $seconds, $micros);
 
         if ($ready === false || $ready === 0) {
             return;

@@ -20,7 +20,13 @@ class Collector
 {
     protected const int READ_CHUNK_BYTES = 65_536;
 
-    protected const int MAX_FRAME_BYTES = 1_048_576;
+    /**
+     * Cap on a single declared frame length. A worker snapshot is well under 1 KiB, so
+     * 64 KiB is ample headroom; it also bounds the per-connection inbound buffer (an
+     * incomplete frame is held until complete) so a misbehaving peer cannot make the
+     * collector buffer megabytes per connection.
+     */
+    protected const int MAX_FRAME_BYTES = 65_536;
 
     /**
      * Cap on concurrently accepted worker connections. A pool has one connection per
@@ -142,26 +148,31 @@ class Collector
             return;
         }
 
-        $connection = @stream_socket_accept($this->listener, 0);
+        // Drain the whole accept backlog in one pass — the listener is level-triggered,
+        // but accepting one peer per tick would stretch a pool's warm-up over many
+        // ticks. A non-blocking accept returns false once the backlog is empty.
+        while (true) {
+            $connection = @stream_socket_accept($this->listener, 0);
 
-        if ($connection === false) {
-            return;
+            if ($connection === false) {
+                return;
+            }
+
+            if (count($this->connections) >= self::MAX_CONNECTIONS) {
+                // At the cap: refuse rather than grow unbounded. A live worker redials on
+                // its next interval, so a transient overflow self-heals.
+                fclose($connection);
+
+                return;
+            }
+
+            stream_set_blocking($connection, false);
+
+            $id = (int) $connection;
+
+            $this->connections[$id] = $connection;
+            $this->buffers[$id]     = '';
         }
-
-        if (count($this->connections) >= self::MAX_CONNECTIONS) {
-            // At the cap: refuse rather than grow unbounded. A live worker redials on
-            // its next interval, so a transient overflow self-heals.
-            fclose($connection);
-
-            return;
-        }
-
-        stream_set_blocking($connection, false);
-
-        $id = (int) $connection;
-
-        $this->connections[$id] = $connection;
-        $this->buffers[$id]     = '';
     }
 
     /**

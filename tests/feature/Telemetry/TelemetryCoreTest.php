@@ -38,6 +38,15 @@ class TelemetryCoreTest extends TestCase
         FrameCodec::extractFrames(pack('N', 5000) . 'xxxxx', 100);
     }
 
+    public function testExtractFramesRejectsHighBitFrameLength(): void
+    {
+        // A length with the high bit set (0xFFFFFFFF) must be rejected, not fed as a
+        // (possibly negative on 32-bit) length into substr().
+        $this->expectException(FrameTooLargeException::class);
+
+        FrameCodec::extractFrames("\xFF\xFF\xFF\xFF" . 'xxxx', 65_536);
+    }
+
     public function testSnapshotFromDecodedRejectsMalformed(): void
     {
         self::assertNull(Snapshot::fromDecoded('not an array'));
@@ -66,6 +75,78 @@ class TelemetryCoreTest extends TestCase
         self::assertSame(5.0, $aggregate->totals->requests->avgMs);
         self::assertSame(2000, $aggregate->totals->memory->rssBytes);
         self::assertNull($aggregate->totals->connections);
+    }
+
+    public function testAggregatorAveragesZeroWhenNothingCompleted(): void
+    {
+        $now = 1_750_000_000_000;
+
+        // A requests section present but with completed = 0 must not divide by zero.
+        $snapshot = Snapshot::fromDecoded([
+            'name'        => 'srv',
+            'pid'         => 5,
+            'updatedAtMs' => $now,
+            'requests'    => ['completed' => 0, 'avgMs' => 0.0, 'inFlight' => 4],
+        ]);
+
+        self::assertNotNull($snapshot);
+
+        $aggregate = $this->aggregateOf([$this->stored($snapshot, $now)], 'srv', $now);
+
+        self::assertNotNull($aggregate->totals->requests);
+        self::assertSame(0, $aggregate->totals->requests->completed);
+        self::assertSame(0.0, $aggregate->totals->requests->avgMs);
+        self::assertSame(4, $aggregate->totals->requests->inFlight);
+    }
+
+    public function testAggregatorSumsConnectionsOnlyPool(): void
+    {
+        $now = 1_750_000_000_000;
+
+        $first  = Snapshot::fromDecoded(['name' => 'srv', 'pid' => 1, 'updatedAtMs' => $now, 'connections' => ['active' => 2, 'totalAccepted' => 10]]);
+        $second = Snapshot::fromDecoded(['name' => 'srv', 'pid' => 2, 'updatedAtMs' => $now, 'connections' => ['active' => 5, 'totalAccepted' => 40]]);
+
+        self::assertNotNull($first);
+        self::assertNotNull($second);
+
+        $aggregate = $this->aggregateOf(
+            [$this->stored($first, $now), $this->stored($second, $now)],
+            'srv',
+            $now,
+        );
+
+        self::assertNull($aggregate->totals->requests, 'a connections-only pool has no requests section');
+        self::assertNotNull($aggregate->totals->connections);
+        self::assertSame(7, $aggregate->totals->connections->active);
+        self::assertSame(50, $aggregate->totals->connections->totalAccepted);
+    }
+
+    public function testAggregatorKeepsBothWorkloadSectionsInAMixedPool(): void
+    {
+        $now = 1_750_000_000_000;
+
+        $httpWorker   = $this->requestsSnapshot(pid: 1, updatedAtMs: $now, completed: 4, avgMs: 3.0);
+        $socketWorker = Snapshot::fromDecoded(['name' => 'srv', 'pid' => 2, 'updatedAtMs' => $now, 'connections' => ['active' => 6, 'totalAccepted' => 12]]);
+
+        self::assertNotNull($socketWorker);
+
+        $aggregate = $this->aggregateOf(
+            [$this->stored($httpWorker, $now), $this->stored($socketWorker, $now)],
+            'srv',
+            $now,
+        );
+
+        // A heterogeneous pool surfaces both sections in the totals; each worker keeps
+        // only its own section.
+        self::assertNotNull($aggregate->totals->requests);
+        self::assertSame(4, $aggregate->totals->requests->completed);
+        self::assertNotNull($aggregate->totals->connections);
+        self::assertSame(6, $aggregate->totals->connections->active);
+
+        self::assertNotNull($aggregate->workers[0]->requests);
+        self::assertNull($aggregate->workers[0]->connections);
+        self::assertNull($aggregate->workers[1]->requests);
+        self::assertNotNull($aggregate->workers[1]->connections);
     }
 
     public function testAggregatorFlagsHungBySnapshotAge(): void

@@ -211,6 +211,407 @@ class TelemetryRuntimeTest extends TestCase
         $runtime->stop();
     }
 
+    public function testQueryTokenAuthorizesStats(): void
+    {
+        $socketPath = $this->directory . '/t.sock';
+        $port       = $this->freeTcpPort();
+
+        $runtime = $this->startedRuntime($socketPath, $port);
+
+        $worker = $this->connectWorker($socketPath);
+
+        fwrite($worker, $this->snapshotFrame(['name' => 'srv', 'pid' => 4242, 'updatedAtMs' => $this->nowMs(), 'requests' => ['completed' => 7, 'avgMs' => 1.0, 'inFlight' => 0]]));
+        fflush($worker);
+
+        $this->pump($runtime);
+
+        // No Authorization header — the token rides the query string (so a browser can
+        // open the panel). Must authorize just like the Bearer header.
+        [$status, $body] = $this->httpGet($port, '/api/stats?token=secret', ['Accept: application/json'], $runtime);
+
+        self::assertSame(200, $status);
+
+        /** @var array<string, mixed> $decoded */
+        $decoded = json_decode($body, true);
+
+        self::assertSame('srv', $decoded['name']);
+        self::assertSame(7, $decoded['totals']['requests']['completed']);
+
+        // A wrong query token is still hidden as 404.
+        [$wrongStatus] = $this->httpGet($port, '/api/stats?token=nope', ['Accept: application/json'], $runtime);
+
+        self::assertSame(404, $wrongStatus);
+
+        fclose($worker);
+
+        $runtime->stop();
+    }
+
+    public function testHtmlPanelRouteServesPage(): void
+    {
+        $socketPath = $this->directory . '/t.sock';
+        $port       = $this->freeTcpPort();
+
+        $runtime = $this->startedRuntime($socketPath, $port);
+
+        $worker = $this->connectWorker($socketPath);
+
+        fwrite($worker, $this->snapshotFrame(['name' => 'srv', 'pid' => 4242, 'updatedAtMs' => $this->nowMs(), 'requests' => ['completed' => 3, 'avgMs' => 1.0, 'inFlight' => 0]]));
+        fflush($worker);
+
+        $this->pump($runtime);
+
+        // The browser-facing live panel at GET /?token= must return the HTML page (with
+        // the meta-refresh wiring), not the metrics/JSON representation.
+        [$status, $body] = $this->httpGet($port, '/?token=secret', [], $runtime);
+
+        self::assertSame(200, $status);
+        self::assertStringContainsString('<!doctype html>', $body);
+        self::assertStringContainsString('<caption>Workers</caption>', $body);
+        self::assertStringContainsString('http-equiv="refresh"', $body);
+
+        fclose($worker);
+
+        $runtime->stop();
+    }
+
+    public function testSseStreamsAggregateAndPushesPeriodically(): void
+    {
+        $socketPath = $this->directory . '/t.sock';
+        $port       = $this->freeTcpPort();
+
+        $runtime = $this->startedRuntime($socketPath, $port);
+
+        $worker = $this->connectWorker($socketPath);
+
+        fwrite($worker, $this->snapshotFrame(['name' => 'srv', 'pid' => 4242, 'updatedAtMs' => $this->nowMs(), 'requests' => ['completed' => 5, 'avgMs' => 1.0, 'inFlight' => 0]]));
+        fflush($worker);
+
+        $this->pump($runtime);
+
+        $client  = $this->connectPanel($port);
+        $request = "GET /events HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer secret\r\n\r\n";
+
+        for ($written = 0; $written < strlen($request);) {
+            $runtime->poll(10_000);
+
+            $chunk = @fwrite($client, substr($request, $written));
+
+            if ($chunk === false) {
+                break;
+            }
+
+            $written += $chunk;
+        }
+
+        // The SSE upgrade headers plus the immediate first event arrive without waiting
+        // for the periodic tick.
+        $buffer = $this->pumpRead(
+            $client,
+            $runtime,
+            static fn(string $accumulated): bool => str_contains($accumulated, "\n\n") && substr_count($accumulated, 'data: ') >= 1,
+        );
+
+        self::assertStringContainsString('text/event-stream', $buffer);
+        self::assertStringContainsString('data: ', $buffer);
+
+        $firstEvent = $this->firstSseData($buffer);
+
+        self::assertSame('srv', $firstEvent['name']);
+        self::assertSame(1, $firstEvent['workersTotal']);
+
+        // The runtime pushes a fresh aggregate on its ~1s cadence: after the interval a
+        // second event must arrive on the same open stream.
+        usleep(1_100_000);
+
+        $buffer = $this->pumpRead(
+            $client,
+            $runtime,
+            static fn(string $accumulated): bool => substr_count($accumulated, 'data: ') >= 2,
+            timeoutSeconds: 3.0,
+            seed: $buffer,
+        );
+
+        self::assertGreaterThanOrEqual(2, substr_count($buffer, 'data: '), 'the SSE stream must push periodically');
+
+        fclose($client);
+        fclose($worker);
+
+        $runtime->stop();
+    }
+
+    public function testOversizeFrameDropsTheConnection(): void
+    {
+        $socketPath = $this->directory . '/t.sock';
+        $port       = $this->freeTcpPort();
+
+        $runtime = $this->startedRuntime($socketPath, $port);
+
+        $worker = $this->connectWorker($socketPath);
+
+        // Declare a frame far above the collector's cap. The collector must drop the
+        // connection rather than buffer it, so nothing is ever stored.
+        fwrite($worker, pack('N', 5_000_000) . str_repeat('x', 64));
+        fflush($worker);
+
+        $this->pump($runtime);
+
+        [$status, $body] = $this->httpGet($port, '/api/stats', ['Authorization: Bearer secret', 'Accept: application/json'], $runtime);
+
+        self::assertSame(200, $status);
+
+        /** @var array<string, mixed> $decoded */
+        $decoded = json_decode($body, true);
+
+        self::assertSame(0, $decoded['workersTotal'], 'an oversize frame must not be ingested');
+
+        fclose($worker);
+
+        $runtime->stop();
+    }
+
+    public function testFrameSplitAcrossReadsIsIngested(): void
+    {
+        $socketPath = $this->directory . '/t.sock';
+        $port       = $this->freeTcpPort();
+
+        $runtime = $this->startedRuntime($socketPath, $port);
+
+        $worker = $this->connectWorker($socketPath);
+
+        $frame = $this->snapshotFrame(['name' => 'srv', 'pid' => 99, 'updatedAtMs' => $this->nowMs(), 'requests' => ['completed' => 13, 'avgMs' => 1.0, 'inFlight' => 0]]);
+        $split = intdiv(strlen($frame), 2);
+
+        // First half: an incomplete frame must not yet produce a worker.
+        fwrite($worker, substr($frame, 0, $split));
+        fflush($worker);
+
+        $this->pump($runtime, 3);
+
+        [, $partialBody] = $this->httpGet($port, '/api/stats', ['Authorization: Bearer secret', 'Accept: application/json'], $runtime);
+        /** @var array<string, mixed> $partial */
+        $partial = json_decode($partialBody, true);
+
+        self::assertSame(0, $partial['workersTotal'], 'a half-arrived frame must not be ingested');
+
+        // Second half completes the frame across reads — the collector reassembles it.
+        fwrite($worker, substr($frame, $split));
+        fflush($worker);
+
+        $this->pump($runtime, 3);
+
+        [$status, $body] = $this->httpGet($port, '/api/stats', ['Authorization: Bearer secret', 'Accept: application/json'], $runtime);
+
+        self::assertSame(200, $status);
+
+        /** @var array<string, mixed> $decoded */
+        $decoded = json_decode($body, true);
+
+        self::assertSame(1, $decoded['workersTotal']);
+        self::assertSame(13, $decoded['totals']['requests']['completed']);
+
+        fclose($worker);
+
+        $runtime->stop();
+    }
+
+    public function testOversizeRequestHeaderIsDropped(): void
+    {
+        $socketPath = $this->directory . '/t.sock';
+        $port       = $this->freeTcpPort();
+
+        $runtime = $this->startedRuntime($socketPath, $port);
+
+        $client = $this->connectPanel($port);
+
+        // A request whose header never terminates and grows past the cap must be
+        // dropped, not buffered without bound.
+        $flood    = str_repeat('a', 20_000);
+        $deadline = microtime(true) + 2.0;
+        $written  = 0;
+
+        while ($written < strlen($flood) && microtime(true) < $deadline) {
+            $runtime->poll(10_000);
+
+            $chunk = @fwrite($client, substr($flood, $written));
+
+            if ($chunk === false || $chunk === 0) {
+                break;
+            }
+
+            $written += $chunk;
+        }
+
+        // The server closed its side — the client now sees EOF.
+        $closed = false;
+
+        $deadline = microtime(true) + 2.0;
+
+        while (microtime(true) < $deadline) {
+            $runtime->poll(10_000);
+
+            $chunk = @fread($client, 8_192);
+
+            if ($chunk === '' && feof($client)) {
+                $closed = true;
+
+                break;
+            }
+        }
+
+        self::assertTrue($closed, 'the oversize request connection must be dropped');
+
+        fclose($client);
+
+        // The panel survived and still serves a well-formed request.
+        [$status] = $this->httpGet($port, '/api/stats', ['Authorization: Bearer secret', 'Accept: application/json'], $runtime);
+
+        self::assertSame(200, $status);
+
+        $runtime->stop();
+    }
+
+    public function testBindFailureDisablesRuntime(): void
+    {
+        $socketPath = $this->directory . '/t.sock';
+        $port       = $this->freeTcpPort();
+
+        // Occupy the panel port so the runtime's panel listener fails to bind.
+        $occupier = stream_socket_server('tcp://0.0.0.0:' . $port, $errno, $errstr);
+
+        self::assertIsResource($occupier, 'occupier bind failed: ' . $errstr);
+
+        $runtime = new TelemetryRuntime(
+            socketPath: $socketPath,
+            panelPort: $port,
+            adminToken: 'secret',
+            name: 'srv',
+        );
+
+        $runtime->start();
+
+        // A half-open plane is never left behind: the collector socket it had already
+        // bound is torn down and unlinked.
+        self::assertFileDoesNotExist($socketPath);
+
+        // A disabled runtime degrades poll() to a plain sleep and stop() is a no-op —
+        // neither must throw.
+        $runtime->poll(1_000);
+        $runtime->stop();
+
+        fclose($occupier);
+    }
+
+    protected function startedRuntime(string $socketPath, int $port, string $token = 'secret', string $name = 'srv'): TelemetryRuntime
+    {
+        $runtime = new TelemetryRuntime(
+            socketPath: $socketPath,
+            panelPort: $port,
+            adminToken: $token,
+            name: $name,
+        );
+
+        $runtime->start();
+
+        return $runtime;
+    }
+
+    /**
+     * @return resource
+     */
+    protected function connectWorker(string $socketPath)
+    {
+        $worker = stream_socket_client('unix://' . $socketPath, $errno, $errstr, 1.0);
+
+        self::assertIsResource($worker, 'worker unix connect failed: ' . $errstr);
+
+        return $worker;
+    }
+
+    /**
+     * @return resource
+     */
+    protected function connectPanel(int $port)
+    {
+        $client = stream_socket_client('tcp://127.0.0.1:' . $port, $errno, $errstr, 2.0);
+
+        self::assertIsResource($client, 'panel connect failed: ' . $errstr);
+
+        stream_set_blocking($client, false);
+
+        return $client;
+    }
+
+    /**
+     * @param array<string, mixed> $snapshot
+     */
+    protected function snapshotFrame(array $snapshot): string
+    {
+        $body = (string) json_encode(['t' => 'snapshot', 's' => $snapshot]);
+
+        return pack('N', strlen($body)) . $body;
+    }
+
+    protected function pump(TelemetryRuntime $runtime, int $ticks = 5): void
+    {
+        for ($tick = 0; $tick < $ticks; $tick++) {
+            $runtime->poll(20_000);
+        }
+    }
+
+    protected function nowMs(): int
+    {
+        return (int) (microtime(true) * 1000);
+    }
+
+    /**
+     * Pumps the runtime while draining a non-blocking client until $done(buffer) holds
+     * or the deadline passes, returning everything read (prepended with $seed).
+     *
+     * @param resource              $client
+     * @param callable(string):bool $done
+     */
+    protected function pumpRead($client, TelemetryRuntime $runtime, callable $done, float $timeoutSeconds = 2.0, string $seed = ''): string
+    {
+        $buffer   = $seed;
+        $deadline = microtime(true) + $timeoutSeconds;
+
+        while (microtime(true) < $deadline) {
+            $runtime->poll(10_000);
+
+            $chunk = @fread($client, 8_192);
+
+            if (is_string($chunk) && $chunk !== '') {
+                $buffer .= $chunk;
+            }
+
+            if ($done($buffer)) {
+                break;
+            }
+        }
+
+        return $buffer;
+    }
+
+    /**
+     * Decodes the first `data: {...}` SSE event in $buffer.
+     *
+     * @return array<string, mixed>
+     */
+    protected function firstSseData(string $buffer): array
+    {
+        foreach (explode("\n", $buffer) as $line) {
+            if (str_starts_with($line, 'data: ')) {
+                /** @var array<string, mixed> $decoded */
+                $decoded = json_decode(trim(substr($line, strlen('data: '))), true);
+
+                return $decoded;
+            }
+        }
+
+        self::fail('no SSE data event found');
+    }
+
     protected function freeTcpPort(): int
     {
         $listener = stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);

@@ -38,7 +38,10 @@ class FrameCodec
 
             $frameLength = $header[1];
 
-            if ($maxFrameBytes > 0 && $frameLength > $maxFrameBytes) {
+            // On a 32-bit build unpack('N') of a length with the high bit set yields a
+            // negative int; treat it (and any over-limit length) as a misbehaving peer
+            // rather than feeding a negative length into substr().
+            if ($frameLength < 0 || ($maxFrameBytes > 0 && $frameLength > $maxFrameBytes)) {
                 throw new FrameTooLargeException(
                     message: sprintf('telemetry frame of %d bytes exceeds the %d limit', $frameLength, $maxFrameBytes),
                 );
