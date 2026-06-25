@@ -1,9 +1,16 @@
-name: Build
+name: Build & Release
 
 on:
   push:
     branches:
       - master
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   check-and-build:
@@ -35,24 +42,17 @@ jobs:
         if: failure()
         run: docker compose logs --tail=100
 
-      - name: Create Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Move latest tag
         run: |
-          # Delete existing 'latest' release if it exists
-          gh release delete latest --yes || true
-          # We delete Latest tag if it exists
-          git tag -d latest || true
-          git push origin :refs/tags/latest || true
-          # We create a new tag
           git tag -f latest
           git push -f origin latest
 
-      - name: Upload Release Asset
-        uses: softprops/action-gh-release@v1
+      - name: Publish latest release
+        uses: softprops/action-gh-release@v2
         with:
           files: ./ext/build/sconcur.so
           tag_name: latest
           name: Latest Build
           body: Automatically collected latest version
+          make_latest: true
           token: ${{ secrets.GITHUB_TOKEN }}
