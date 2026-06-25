@@ -693,15 +693,19 @@ shutdown.
 
 ## Запуск в Docker
 
-В `docker-compose.yml` есть отдельный сервис `http-server` (демо-сервер из
-`tests/servers/http/http-server.php`). Порт публикуется на хост через `.env`
-(`HTTP_SERVER_PORT`/`HTTP_SERVER_DOCKER_PORT`). Пересобрать и перезапустить:
+В `docker-compose.yml` есть сервис `servers`: он под supervisor поднимает обоих
+мастеров — HTTP и socket (`tests/servers/http/http-server.php` и
+`tests/servers/socket/socket-server.php` через `bin/sconcur-server`). Порты
+захардкожены в compose (HTTP — `28080:8080`), так как JSON-конфиги мастеров не
+умеют переменные окружения. Пересобрать и перезапустить:
 
 ```shell
-make http-server-restart
+make servers-restart
 ```
 
-Это пересобирает расширение (`make ext-build`) и пересоздаёт контейнер.
+Это пересобирает расширение (`make ext-build`) и пересоздаёт контейнер `servers`.
+Управление каждым мастером — `make http-server-{status,stop,reload}` (и
+`socket-server-*`).
 
 ## Тестирование
 
@@ -734,4 +738,5 @@ in-flight), остановка после N запросов (`maxRequests`).
 ---
 
 См. также: [README → Принцип работы](../README.md#принцип-работы),
+[Админ-статистика сервера](admin-stats.ru.md),
 [Как добавить новую фичу](adding-a-feature.ru.md).

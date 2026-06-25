@@ -25,6 +25,8 @@ readonly class MasterConfig
      * @param list<string>                         $phpArgs    interpreter flags for the worker
      * @param list<string>                         $workerArgs extra raw worker argv flags
      * @param array<string, string>                $env        extra env merged over the inherited one
+     * @param int                                  $panelPort  telemetry panel port (0 = telemetry off)
+     * @param string                               $adminToken Bearer token gating the panel (required with panelPort)
      */
     public function __construct(
         protected string $workerScript,
@@ -43,6 +45,8 @@ readonly class MasterConfig
         protected int $maxRestartBackoffMs,
         protected array $server,
         protected LogTarget $logTo,
+        protected int $panelPort,
+        protected string $adminToken,
     ) {
     }
 
@@ -141,6 +145,8 @@ readonly class MasterConfig
             maxRestartBackoffMs: self::nonNegativeInt($data, 'maxRestartBackoffMs', 30_000),
             server: self::serverParams($data['server'] ?? []),
             logTo: $logTo,
+            panelPort: self::nonNegativeInt($data, 'panelPort', 0),
+            adminToken: (string) ($data['adminToken'] ?? ''),
         );
     }
 
@@ -180,6 +186,23 @@ readonly class MasterConfig
             $workerArgs[] = $workerArg;
         }
 
+        // Forward the pool scope to workers via env (not argv) so the server-agnostic
+        // master does not feed a non-matching worker an unknown --flag:
+        // HttpServer/SocketServer::fromArgs read it, others ignore it. The operator's
+        // own env wins on a key collision (left operand of +).
+        $env = $this->env + [
+            'SCONCUR_SERVER_NAME' => $this->name,
+        ];
+
+        // Only point workers at the collector socket when telemetry is actually on
+        // (panel port + token) — otherwise they would dial a socket nobody listens on
+        // every interval. The master listens on this exact path (see WorkerMaster).
+        if ($this->telemetryEnabled()) {
+            $env += [
+                'SCONCUR_TELEMETRY_SOCKET' => $this->runtimeDir . '/' . $this->name . '.telemetry.sock',
+            ];
+        }
+
         return new WorkerMaster(
             workerScript: $this->workerScript,
             runtimeDir: $this->runtimeDir,
@@ -190,13 +213,20 @@ readonly class MasterConfig
             phpBinary: $this->phpBinary,
             phpArgs: $this->phpArgs,
             workerArgs: $workerArgs,
-            env: $this->env,
+            env: $env,
             restartPolicy: $this->restartPolicy,
             shutdownTimeoutMs: $this->shutdownTimeoutMs,
             restartBackoffMs: $this->restartBackoffMs,
             maxRestartBackoffMs: $this->maxRestartBackoffMs,
             logTo: $this->logTo,
+            panelPort: $this->panelPort,
+            adminToken: $this->adminToken,
         );
+    }
+
+    protected function telemetryEnabled(): bool
+    {
+        return $this->panelPort > 0 && $this->adminToken !== '';
     }
 
     /**

@@ -10,6 +10,7 @@ use SConcur\Exceptions\Worker\MasterAlreadyRunningException;
 use SConcur\Exceptions\Worker\MissingPcntlException;
 use SConcur\Exceptions\Worker\RuntimePathException;
 use SConcur\Exceptions\Worker\WorkerSpawnException;
+use SConcur\Telemetry\TelemetryRuntime;
 
 /**
  * Supervises a pool of worker processes (one per slot), each a separate `php
@@ -53,6 +54,8 @@ class WorkerMaster
 
     protected int $masterPid = 0;
 
+    protected float $startedAt = 0.0;
+
     protected string $cwd = '.';
 
     protected int $workers = 0;
@@ -88,6 +91,8 @@ class WorkerMaster
 
     protected float $killDeadline = 0.0;
 
+    protected ?TelemetryRuntime $telemetry = null;
+
     /**
      * @param string                $workerScript        consumer's worker script (constructs and runs a server)
      * @param string                $runtimeDir          holds the lock and state file (local fs)
@@ -104,6 +109,11 @@ class WorkerMaster
      * @param int                   $restartBackoffMs    base of the exponential crash-loop backoff
      * @param int                   $maxRestartBackoffMs cap of the crash-loop backoff
      * @param LogTarget             $logTo               where the master writes its journal (file/stdout/both)
+     * @param int                   $panelPort           port for the embedded telemetry panel (0 = telemetry off). With a
+     *                                                   token set, the master collects worker snapshots over a unix socket
+     *                                                   and serves GET /api/stats and the live panel on this port.
+     * @param string                $adminToken          Bearer token gating the telemetry panel; required (with panelPort)
+     *                                                   to enable telemetry. Empty = off.
      */
     public function __construct(
         protected readonly string $workerScript,
@@ -121,6 +131,8 @@ class WorkerMaster
         protected readonly int $restartBackoffMs = 200,
         protected readonly int $maxRestartBackoffMs = 30_000,
         protected readonly LogTarget $logTo = LogTarget::File,
+        protected readonly int $panelPort = 0,
+        protected readonly string $adminToken = '',
     ) {
     }
 
@@ -139,6 +151,7 @@ class WorkerMaster
         $this->ensureDirectories();
 
         $this->masterPid = (int) getmypid();
+        $this->startedAt = microtime(true);
         $this->cwd       = getcwd() ?: '.';
         $this->workers   = $this->resolveWorkerCount();
 
@@ -190,9 +203,15 @@ class WorkerMaster
             // of the workers we are about to spawn.
             $this->reloadFile->clear();
 
+            // Bring up the telemetry plane before the workers so the collector socket
+            // exists when they first try to push.
+            $this->startTelemetry();
+
             $this->spawnAll();
             $this->supervise();
         } finally {
+            $this->telemetry?->stop();
+
             if ($restoreSignals !== null) {
                 $restoreSignals();
             }
@@ -300,7 +319,7 @@ class WorkerMaster
         $written = $this->stateFile->write(
             new MasterState(
                 pid: $this->masterPid,
-                startedAt: microtime(true),
+                startedAt: $this->startedAt,
                 workerCount: $this->workers,
                 workerScript: $this->workerScript,
             ),
@@ -455,8 +474,47 @@ class WorkerMaster
             // the file stay timely without a syscall per access-log line.
             $this->logger->flush();
 
-            usleep(self::TICK_MICROSECONDS);
+            // Pace the loop. When telemetry is on, the tick is spent servicing its
+            // sockets (select with the tick as timeout) instead of a blind sleep —
+            // supervision keeps its cadence and is never blocked on telemetry I/O.
+            if ($this->telemetry !== null) {
+                $this->telemetry->poll(self::TICK_MICROSECONDS);
+            } else {
+                usleep(self::TICK_MICROSECONDS);
+            }
         }
+    }
+
+    /**
+     * Brings up the embedded telemetry plane (collector unix socket + HTTP/SSE panel)
+     * when a panel port and an admin token are configured. A bind failure disables
+     * telemetry (logged) but never stops the master.
+     */
+    protected function startTelemetry(): void
+    {
+        if ($this->panelPort <= 0 || $this->adminToken === '') {
+            return;
+        }
+
+        $logger = $this->logger;
+
+        $this->telemetry = new TelemetryRuntime(
+            socketPath: $this->runtimeDir . '/' . $this->name . '.telemetry.sock',
+            panelPort: $this->panelPort,
+            adminToken: $this->adminToken,
+            name: $this->name,
+            masterStartedAtMs: (int) ($this->startedAt * 1000),
+            logError: static function (string $message) use ($logger): void {
+                $logger->master(MasterLogger::ERROR, $message);
+            },
+        );
+
+        $this->telemetry->start();
+
+        $this->logger->master(
+            level: MasterLogger::INFO,
+            message: sprintf('telemetry enabled (panel :%d)', $this->panelPort),
+        );
     }
 
     /**

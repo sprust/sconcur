@@ -1,0 +1,14 @@
+info:
+  name: msleep
+  type: http
+  seq: 19
+
+http:
+  method: GET
+  url: http://localhost:28080/msleep/100
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

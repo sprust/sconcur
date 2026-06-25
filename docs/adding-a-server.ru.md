@@ -152,14 +152,14 @@ Argv-разбор, обработчики сигналов и orphan-чек уж
 ### `fromArgs()` (для мастера воркеров)
 
 Чтобы сервер запускался под `bin/sconcur-server`, сделайте статический конструктор из
-`argv` — по образцу `HttpServer::fromArgs()` (`HttpServer.php:88`): он лишь вызывает
+`argv` — по образцу `HttpServer::fromArgs()` (`HttpServer.php:104`): он лишь вызывает
 `self::parseArgs($argv)` из трейта, при наличии добавляет `onError` и распаковывает
 результат в конструктор. Мастер прокидывает `--masterPid` именно сюда (см. «Интеграция с
 мастером»).
 
 ### Цикл обслуживания: `serve()`
 
-Публичный `serve(Closure $handler)` (`HttpServer::serve`, `HttpServer.php:107`):
+Публичный `serve(Closure $handler)` (`HttpServer::serve`, `HttpServer.php:125`):
 
 1. Сгенерировать `flowKey`, установить обработчики сигналов через
    `installSignalHandlers($stopRequested)` (из трейта; SIGTERM/SIGINT → флаг
@@ -173,7 +173,7 @@ Argv-разбор, обработчики сигналов и orphan-чек уж
    - `maxRequests` — штатно завершиться после N запросов (мера против утечек памяти);
    - `onRequest(string $payload)` — спавн-на-запрос: декодить `Request`, вызвать
      `handler`, отправить ответ (`RespondPayload::full(...)` или
-     head→chunk*→end для стрима). У эталона это `HttpServer::handle()` (`HttpServer.php:174`);
+     head→chunk*→end для стрима). У эталона это `HttpServer::handle()` (`HttpServer.php:200`);
    - `shouldStop(): bool` — `true`, когда пришёл сигнал или воркер осиротел
      (orphan-чек ниже);
    - `onDrainStart()` — вызывается один раз при начале дренажа: рано закрыть приём,
@@ -197,7 +197,7 @@ Argv-разбор, обработчики сигналов и orphan-чек уж
   мастера ядро меняет родителя, без подверженности PID-reuse; фолбэк на signal-0 пробу
   через `posix_kill`, если `posix_getppid` недоступен). См.
   `ServerRuntimeSupportTrait::isOrphaned()`
-  (`src/Features/Server/ServerRuntimeSupportTrait.php:138`).
+  (`src/Features/Server/ServerRuntimeSupportTrait.php:182`).
 
 ---
 
@@ -265,7 +265,7 @@ func (f *HttpFeature) Handle(task *tasks.Task) {
 ### Раннее закрытие приёма + `SO_REUSEPORT`
 
 `StopAccepting(flowKey)` (`feature.go:215`) находит `serverState` и вызывает его
-`stopAccepting()` (`server.go:407`), который закрывает только слушатель
+`stopAccepting()` (`server.go:438`), который закрывает только слушатель
 (`http.Server.Shutdown` в отдельной горутине на фоновом контексте), не отменяя in-flight.
 На пуле `SO_REUSEPORT` ядро тут же раздаёт новые соединения соседям, пока этот процесс
 дренажит. Это вызывается из PHP-`onDrainStart`.
@@ -322,6 +322,41 @@ func (f *HttpFeature) Handle(task *tasks.Task) {
 
 ---
 
+## Статистика
+
+Чтобы новый сервер из коробки собирал и отдавал статистику (как HTTP и socket),
+подключите нейтральный пакет `ext/internal/stats` — он даёт сэмплер процессных
+метрик и `Pusher`, который шлёт снапшоты в коллектор мастера. Агрегацию и панель
+несёт мастер (`src/Telemetry`); сервер только пушит. Детали для пользователя —
+[Статистика сервера](admin-stats.ru.md).
+
+PHP-сторона:
+
+- `ServePayload` += `telemetrySocket`/`serverName`/`telemetryIntervalMs` (ключи
+  `ts`/`sn`/`ti`), зеркалят Go-payload.
+- Конструктор сервера += те же три параметра; в `fromArgs()` вызовите
+  `self::applyTelemetryEnvironment($overrides)` (метод трейта) — он читает
+  `SCONCUR_TELEMETRY_SOCKET`/`SCONCUR_SERVER_NAME`/`SCONCUR_TELEMETRY_INTERVAL_MS`.
+  Передайте поля в `ServePayload` (мастер инжектит `SCONCUR_TELEMETRY_SOCKET`, когда
+  телеметрия включена).
+
+Go-сторона:
+
+- Заведите свой тип-счётчик (workload), реализующий `stats.WorkloadProvider`
+  (`WorkloadSnapshot() stats.Workload`) — у HTTP это `requestStats` (секция
+  `Requests`), у socket `connectionStats` (секция `Connections`). Инкрементируйте
+  его в обработчике соединения/запроса.
+- В `serverConfig` протащите `telemetrySocket`/`serverName`/`telemetryIntervalMs`; в
+  `newServerState` создайте `pusher := stats.NewPusher(name, telemetrySocket,
+  intervalMs, startTime, provider)` и `pusher.Start()`.
+- В `Close()` вызовите `pusher.Stop()` (безопасен на выключенной конфигурации —
+  пустой `telemetrySocket`).
+
+`Pusher` работает при заданном `telemetrySocket`; он best-effort — нет коллектора,
+кадр дропается, сервер не страдает.
+
+---
+
 ## Тесты (обязательно)
 
 - Поднимайте реальный процесс сервера на loopback и бейте по нему `curl`'ом —
@@ -349,6 +384,8 @@ PHP:
 - [ ] `fromArgs()` через `self::parseArgs($argv)` — для мастера; принимает `--masterPid`.
 - [ ] `serve()`: запуск слушателя через `push(ServePayload)` + `Scheduler::serve(...)`
       с `onRequest`/`shouldStop`/`onDrainStart`; сигналы + orphan-чек (из трейта).
+- [ ] Статистика: `ServePayload` += `at`/`sd`/`sn`/`sp`, конструктор += 4 параметра,
+      `self::applyStatsEnvironment()` в `fromArgs()`, проброс в `ServePayload`.
 - [ ] Тесты от `BaseHttpServerTestCase`-аналога (реальный процесс + `curl`).
 
 Go:
@@ -358,6 +395,8 @@ Go:
       `states.Get().Start`) и `handleRespond` (rendezvous по `requestId` + write-backpressure).
 - [ ] `serverStates`/`pendingRequests`-карты; `StopAccepting(flowKey)`; `SO_REUSEPORT` в `listen`.
 - [ ] `BaseContext` = контекст задачи; `handlerTimeout`; access-лог на Go-стороне.
+- [ ] Статистика: `stats.WorkloadProvider`-счётчик, `stats.NewPusher` + `Start` в
+      `newServerState`, `pusher.Stop()` в `Close`.
 - [ ] Регистрация в `features/factory.go` (один кейс на оба метода).
 
 cgo / протокол:

@@ -24,28 +24,35 @@ readonly class SocketServer
     use ServerRuntimeSupportTrait;
 
     /**
-     * @param int                                       $readTimeoutMs   idle timeout while reading the next inbound frame
-     *                                                                   (0 = disabled). A push-only handler that never reads is unaffected.
-     * @param int                                       $writeTimeoutMs  max time to write one frame to the client before it fails.
-     * @param int                                       $maxMessageBytes max length of a single inbound frame (guards against a huge
-     *                                                                   length prefix); an oversize frame ends the connection's input.
-     * @param int                                       $maxConcurrency  max connections handled at once (0 = unlimited). Bounds
-     *                                                                   goroutines and connection coroutines; excess connections wait
-     *                                                                   for a free slot.
-     * @param int                                       $maxConnections  stop the server after it has handled this many connections
-     *                                                                   (0 = unlimited). Meant against handler memory leaks: once reached
-     *                                                                   the server shuts down gracefully so a master can respawn a fresh
-     *                                                                   process. Reuses the graceful-shutdown path.
-     * @param bool                                      $reusePort       set SO_REUSEPORT so several processes can bind this same address;
-     *                                                                   the kernel load-balances connections across them (run one process
-     *                                                                   per core). Linux only; each process must set it.
-     * @param null|Closure(Throwable, Connection): void $onError         observes an uncaught handler failure (for logging/tracing); the
-     *                                                                   connection is closed afterwards. The hook may itself write a final
-     *                                                                   frame to the connection before it is closed.
-     * @param null|int                                  $masterPid       if set, the server self-terminates (graceful shutdown) once it is
-     *                                                                   no longer a child of this pid — i.e. its WorkerMaster died. Under
-     *                                                                   WorkerMaster this is set automatically from the injected
-     *                                                                   --masterPid flag via fromArgs(); null (default) off.
+     * @param int                                       $readTimeoutMs       idle timeout while reading the next inbound frame
+     *                                                                       (0 = disabled). A push-only handler that never reads is unaffected.
+     * @param int                                       $writeTimeoutMs      max time to write one frame to the client before it fails.
+     * @param int                                       $maxMessageBytes     max length of a single inbound frame (guards against a huge
+     *                                                                       length prefix); an oversize frame ends the connection's input.
+     * @param int                                       $maxConcurrency      max connections handled at once (0 = unlimited). Bounds
+     *                                                                       goroutines and connection coroutines; excess connections wait
+     *                                                                       for a free slot.
+     * @param int                                       $maxConnections      stop the server after it has handled this many connections
+     *                                                                       (0 = unlimited). Meant against handler memory leaks: once reached
+     *                                                                       the server shuts down gracefully so a master can respawn a fresh
+     *                                                                       process. Reuses the graceful-shutdown path.
+     * @param bool                                      $reusePort           set SO_REUSEPORT so several processes can bind this same address;
+     *                                                                       the kernel load-balances connections across them (run one process
+     *                                                                       per core). Linux only; each process must set it.
+     * @param null|Closure(Throwable, Connection): void $onError             observes an uncaught handler failure (for logging/tracing); the
+     *                                                                       connection is closed afterwards. The hook may itself write a final
+     *                                                                       frame to the connection before it is closed.
+     * @param null|int                                  $masterPid           if set, the server self-terminates (graceful shutdown) once it is
+     *                                                                       no longer a child of this pid — i.e. its WorkerMaster died. Under
+     *                                                                       WorkerMaster this is set automatically from the injected
+     *                                                                       --masterPid flag via fromArgs(); null (default) off.
+     * @param string                                    $telemetrySocket     unix socket of the stats collector the worker pushes snapshots
+     *                                                                       to (empty = push off). Best-effort and lossy: an absent collector
+     *                                                                       never affects serving. fromArgs() reads it from
+     *                                                                       SCONCUR_TELEMETRY_SOCKET (the master injects it from runtimeDir/name).
+     * @param string                                    $serverName          labels the pushed snapshot — the pool scope the collector
+     *                                                                       aggregates by (default "sconcur-server").
+     * @param int                                       $telemetryIntervalMs snapshot sample/push cadence in ms (0 = default).
      *
      * Defaults mirror the Go server defaults.
      */
@@ -60,6 +67,9 @@ readonly class SocketServer
         private bool $reusePort = false,
         private ?Closure $onError = null,
         private ?int $masterPid = null,
+        private string $telemetrySocket = '',
+        private string $serverName = 'sconcur-server',
+        private int $telemetryIntervalMs = 0,
     ) {
     }
 
@@ -78,6 +88,8 @@ readonly class SocketServer
         if ($onError !== null) {
             $overrides['onError'] = $onError;
         }
+
+        $overrides = self::applyTelemetryEnvironment($overrides);
 
         return new SocketServer(...$overrides);
     }
@@ -112,6 +124,9 @@ readonly class SocketServer
                     maxConcurrency: $this->maxConcurrency,
                     shutdownTimeoutMs: $this->shutdownTimeoutMs,
                     reusePort: $this->reusePort,
+                    telemetrySocket: $this->telemetrySocket,
+                    serverName: $this->serverName,
+                    telemetryIntervalMs: $this->telemetryIntervalMs,
                 ),
             );
 

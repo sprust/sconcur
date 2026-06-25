@@ -85,6 +85,57 @@ trait ServerRuntimeSupportTrait
     }
 
     /**
+     * Fills the telemetry-related constructor overrides from the environment, unless
+     * an explicit --flag already set them: the collector socket, the pool name and
+     * the two sampling cadences. Shared by the servers' fromArgs(). Via env (not
+     * argv) so the server-agnostic WorkerMaster can supply telemetry config without
+     * feeding a non-matching worker an unknown --flag. The master injects
+     * SCONCUR_TELEMETRY_SOCKET/SCONCUR_SERVER_NAME from its runtimeDir/name; the
+     * operator may set the cadences.
+     *
+     * @param array<string, int|bool|float|string> $overrides
+     *
+     * @return array<string, int|bool|float|string>
+     */
+    protected static function applyTelemetryEnvironment(array $overrides): array
+    {
+        $stringDefaults = [
+            'telemetrySocket' => 'SCONCUR_TELEMETRY_SOCKET',
+            'serverName'      => 'SCONCUR_SERVER_NAME',
+        ];
+
+        foreach ($stringDefaults as $parameter => $environmentName) {
+            if (isset($overrides[$parameter])) {
+                continue;
+            }
+
+            $environmentValue = getenv($environmentName);
+
+            if (is_string($environmentValue) && $environmentValue !== '') {
+                $overrides[$parameter] = $environmentValue;
+            }
+        }
+
+        $integerDefaults = [
+            'telemetryIntervalMs' => 'SCONCUR_TELEMETRY_INTERVAL_MS',
+        ];
+
+        foreach ($integerDefaults as $parameter => $environmentName) {
+            if (isset($overrides[$parameter])) {
+                continue;
+            }
+
+            $environmentValue = getenv($environmentName);
+
+            if (is_string($environmentValue) && $environmentValue !== '') {
+                $overrides[$parameter] = (int) $environmentValue;
+            }
+        }
+
+        return $overrides;
+    }
+
+    /**
      * Installs SIGTERM/SIGINT handlers that flip $stopRequested so the serve loop
      * shuts down gracefully, and returns a callback that restores the handlers (and
      * async-signals mode) that were in place before. Requires ext-pcntl; without it

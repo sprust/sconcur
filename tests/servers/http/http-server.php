@@ -11,6 +11,7 @@ use SConcur\Features\HttpServer\Dto\ResponseStream;
 use SConcur\Features\HttpServer\Dto\StreamedResponse;
 use SConcur\Features\HttpServer\HttpServer;
 use SConcur\Features\Mongodb\Connection\Client as MongoClient;
+use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Features\Mysql\Connection as MysqlConnection;
 use SConcur\Features\Pgsql\Connection as PgsqlConnection;
 use SConcur\Features\Sleeper\Sleeper;
@@ -206,11 +207,11 @@ function allFeaturesRoute(): Response
  * The Go side pools the real connections by URI/DSN, so reusing these objects across
  * requests is cheap.
  *
- * @return array{0: \SConcur\Features\Mongodb\Connection\Collection, 1: MysqlConnection, 2: PgsqlConnection}
+ * @return array{0: Collection, 1: MysqlConnection, 2: PgsqlConnection}
  */
 function allFeaturesContext(): array
 {
-    /** @var array{0: \SConcur\Features\Mongodb\Connection\Collection, 1: MysqlConnection, 2: PgsqlConnection}|null $context */
+    /** @var array{0: Collection, 1: MysqlConnection, 2: PgsqlConnection}|null $context */
     static $context = null;
 
     if ($context !== null) {

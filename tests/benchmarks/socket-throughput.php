@@ -3,29 +3,22 @@
 declare(strict_types=1);
 
 // Throughput benchmark: many concurrent connections each doing back-to-back ping
-// round-trips (a 4-byte frame each way). Measures the raw round-trips/sec the
-// socket server sustains — i.e. the per-frame PHP<->Go overhead — for one server
-// vs an SO_REUSEPORT pool (one process per core).
+// round-trips (a 4-byte frame each way) against the running `servers` socket pool.
+// Measures the raw round-trips/sec the pool sustains — i.e. the per-frame PHP<->Go
+// overhead under concurrency.
 
 require __DIR__ . '/_socket_bench.php';
 
-$host        = '127.0.0.1';
+$host        = socketBenchHost();
+$port        = socketBenchPort();
 $connections = 50;
 $perConn     = 2000;
-$workers     = max(1, (int) trim((string) shell_exec('nproc')));
 
-$run = static function (int $servers, int $port) use ($host, $connections, $perConn): void {
-    $procs = socketBenchSpawnServers($host, $port, $servers, reusePort: $servers > 1);
-    $alive = benchAliveCount($procs);
+socketBenchRequireServers($host, $port);
 
-    [$elapsed, $ok] = socketBenchThroughput($host, $port, $connections, $perConn, 'ping');
+[$elapsed, $ok] = socketBenchThroughput($host, $port, $connections, $perConn, 'ping');
 
-    benchStopServers($procs);
-
-    $rps = $elapsed > 0 ? $ok / $elapsed : 0;
-
-    printf("  %2d server(s) (%d alive): %8.3f s  %10.0f rt/s  (%d round-trips)\n", $servers, $alive, $elapsed, $rps, $ok);
-};
+$rps = $elapsed > 0 ? $ok / $elapsed : 0;
 
 printf(
     "Throughput: %d connections x %d ping round-trips (%d total)\n",
@@ -33,8 +26,6 @@ printf(
     $perConn,
     $connections * $perConn,
 );
-
-$run(1, 18190);
-$run($workers, 18191);
+printf("  servers pool: %8.3f s  %10.0f rt/s  (%d round-trips)\n", $elapsed, $rps, $ok);
 
 echo str_repeat('-', 80) . "\n";

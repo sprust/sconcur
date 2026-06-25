@@ -1,0 +1,18 @@
+info:
+  name: upload
+  type: http
+  seq: 4
+
+http:
+  method: POST
+  url: http://localhost:28080/upload
+  body:
+    type: text
+    data: |-
+      stream me in 8KiB pieces
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

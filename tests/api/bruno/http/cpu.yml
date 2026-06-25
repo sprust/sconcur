@@ -1,0 +1,14 @@
+info:
+  name: cpu
+  type: http
+  seq: 21
+
+http:
+  method: GET
+  url: http://localhost:28080/cpu/1000
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

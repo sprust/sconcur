@@ -1,16 +1,21 @@
-name: Check
+name: Build & Release
 
 on:
-  pull_request:
+  push:
     branches:
       - master
-    types: [ opened, synchronize, reopened, ready_for_review ]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  check:
+  check-and-build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: github.event.pull_request.draft == false
 
     steps:
       - uses: actions/checkout@v6
@@ -36,3 +41,18 @@ jobs:
       - name: Show container logs on failure
         if: failure()
         run: docker compose logs --tail=100
+
+      - name: Move latest tag
+        run: |
+          git tag -f latest
+          git push -f origin latest
+
+      - name: Publish latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./ext/build/sconcur.so
+          tag_name: latest
+          name: Latest Build
+          body: Automatically collected latest version
+          make_latest: true
+          token: ${{ secrets.GITHUB_TOKEN }}

@@ -10,11 +10,11 @@ require_once __DIR__ . '/_benchmarker.php';
 require_once __DIR__ . '/_http_bench.php';
 
 /**
- * HTTP-client download benchmark: N downloads of a 4 MiB body to files. The sink
- * path copies the body to disk inside the Go extension (io.Copy) and never buffers
- * it in PHP; the async run fans the downloads out through a WaitGroup, so its total
- * time stays ≈ one download while native/sync scale with N. Native is a streamed
- * copy from PHP's HTTP stream wrapper into a file.
+ * HTTP-client download benchmark: N downloads of a 4 MiB body to files from the
+ * running `servers` HTTP pool. The sink path copies the body to disk inside the Go
+ * extension (io.Copy) and never buffers it in PHP; the async run fans the downloads
+ * out through a WaitGroup, so its total time stays ≈ one download while native/sync
+ * scale with N. Native is a streamed copy from PHP's HTTP stream wrapper into a file.
  *
  * Usage: php -d extension=ext/build/sconcur.so tests/benchmarks/http-client-download.php [total] [logProcess]
  */
@@ -25,13 +25,11 @@ $benchmarker = new Benchmarker(
     name: 'http-client-download',
 );
 
-$host    = '127.0.0.1';
-$port    = downloadBenchFreePort($host);
+$host    = benchHttpHost();
+$port    = benchHttpPort();
 $baseUrl = "http://$host:$port/big/" . DOWNLOAD_BENCH_SIZE_BYTES;
 
-// One demo server (no SO_REUSEPORT): the async fan-out is served by its own
-// concurrency, not by sibling processes.
-$procs = benchSpawnServers($host, $port, 1, false);
+benchRequireHttpServers($host, $port);
 
 $storageDirectory = sys_get_temp_dir();
 
@@ -77,29 +75,7 @@ try {
         },
     );
 } finally {
-    benchStopServers($procs);
-
     foreach (glob($storageDirectory . '/sconcur_download_bench_*') ?: [] as $path) {
         unlink($path);
     }
-}
-
-/**
- * Allocates a free TCP port on $host by binding an ephemeral socket and reading
- * back the assigned port.
- */
-function downloadBenchFreePort(string $host): int
-{
-    $socket = stream_socket_server("tcp://$host:0", $errno, $errstr);
-
-    if ($socket === false) {
-        fwrite(STDERR, "could not allocate a port: $errstr\n");
-        exit(1);
-    }
-
-    $name = (string) stream_socket_get_name($socket, false);
-
-    fclose($socket);
-
-    return (int) substr($name, (int) strrpos($name, ':') + 1);
 }

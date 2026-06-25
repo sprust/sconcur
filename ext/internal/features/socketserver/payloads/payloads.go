@@ -25,6 +25,13 @@ type ServePayload struct {
 	// ReusePort sets SO_REUSEPORT so several processes can bind the same address and
 	// the kernel load-balances connections across them (process-per-core).
 	ReusePort bool `json:"rp" msgpack:"rp"`
+	// TelemetrySocket is the collector's unix socket the worker pushes snapshots to
+	// (empty = push off). Under the master it is injected from runtimeDir/name.
+	TelemetrySocket string `json:"ts" msgpack:"ts"`
+	// ServerName labels the snapshot (the pool scope the collector aggregates by).
+	ServerName string `json:"sn" msgpack:"sn"`
+	// TelemetryIntervalMs is the snapshot-sample/push cadence (0 = default).
+	TelemetryIntervalMs int `json:"ti" msgpack:"ti"`
 }
 
 // RespondPayload is the payload of a socketRespond command — one action a PHP

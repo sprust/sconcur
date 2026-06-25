@@ -12,6 +12,7 @@ import (
 	"sconcur/internal/helpers"
 	"sconcur/internal/logger"
 	"sconcur/internal/states"
+	"sconcur/internal/stats"
 	"strings"
 	"time"
 
@@ -51,6 +52,12 @@ type serverConfig struct {
 	handlerTimeout    time.Duration
 	maxRequestBody    int64
 	maxConcurrency    int
+	// telemetrySocket is the collector's unix socket the worker pushes snapshots to
+	// (empty = push off); serverName labels the snapshot (pool scope);
+	// telemetryIntervalMs is the snapshot sampling/push cadence (0 = default).
+	telemetrySocket     string
+	serverName          string
+	telemetryIntervalMs int
 }
 
 // configFromPayload resolves the tuning from the PHP payload, falling back to the
@@ -66,6 +73,9 @@ func configFromPayload(payload payloads.ServePayload) serverConfig {
 		// 0 stays 0 (disabled/unlimited); a negative value is treated the same.
 		handlerTimeout: time.Duration(max(payload.HandlerTimeoutMs, 0)) * time.Millisecond,
 		maxConcurrency: max(payload.MaxConcurrency, 0),
+		telemetrySocket:     payload.TelemetrySocket,
+		serverName:          payload.ServerName,
+		telemetryIntervalMs: payload.TelemetryIntervalMs,
 	}
 }
 
@@ -137,6 +147,11 @@ type serverState struct {
 	// unlimited. Acquired before the body is read, released when ServeHTTP returns,
 	// so it caps goroutines, buffered bodies and (transitively) PHP coroutines.
 	sem chan struct{}
+	// requestStats holds this worker's request counters (the stats workload);
+	// pusher samples the snapshot and pushes it to the collector (no-op when no
+	// telemetry socket is configured).
+	requestStats *requestStats
+	pusher       *stats.Pusher
 }
 
 func newServerState(
@@ -146,15 +161,27 @@ func newServerState(
 	startTime time.Time,
 	config serverConfig,
 ) *serverState {
+	requestStats := &requestStats{}
+
 	state := &serverState{
-		ctx:       ctx,
-		message:   message,
-		listener:  listener,
-		requests:  make(chan *payloads.RequestEvent, requestQueueSize),
-		startTime: startTime,
-		config:    config,
-		sem:       newSemaphore(config.maxConcurrency),
+		ctx:          ctx,
+		message:      message,
+		listener:     listener,
+		requests:     make(chan *payloads.RequestEvent, requestQueueSize),
+		startTime:    startTime,
+		config:       config,
+		sem:          newSemaphore(config.maxConcurrency),
+		requestStats: requestStats,
+		pusher: stats.NewPusher(
+			config.serverName,
+			config.telemetrySocket,
+			config.telemetryIntervalMs,
+			startTime,
+			requestStats,
+		),
 	}
+
+	state.pusher.Start()
 
 	state.httpServer = &http.Server{
 		Handler:           state,
@@ -217,6 +244,11 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	}
 
 	requestId := nextRequestId(s.message.FlowKey)
+
+	// Track the request for the statistics: count it and its duration on return,
+	// and keep it in the in-flight set (with its start) for the age buckets.
+	s.requestStats.requestBegan(requestId, start)
+	defer s.requestStats.requestEnded(requestId, start)
 
 	// Read only the first chunk inline (bounded by maxRequestBody): small bodies
 	// arrive whole with the event (no extra round-trips), large ones stream the
@@ -415,6 +447,8 @@ func (s *serverState) stopAccepting() {
 // cancelled by the time the state is closed.
 func (s *serverState) Close() {
 	serverStates.Delete(s.message.FlowKey)
+
+	s.pusher.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.config.shutdownTimeout)
 	defer cancel()

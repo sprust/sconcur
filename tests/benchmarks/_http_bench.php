@@ -3,68 +3,48 @@
 declare(strict_types=1);
 
 /**
- * Helpers for the HTTP-server SO_REUSEPORT benchmarks: spawn N demo-server
- * worker processes on one port, fire concurrent requests, measure, tear down.
+ * Helpers for the HTTP-server benchmarks: resolve the running `servers` container
+ * HTTP pool (3 reusePort workers), check it is reachable, fire concurrent requests.
+ *
+ * The pool is the master-supervised server from docker-compose's `servers`
+ * container. Benchmarks run inside the `php` container, so the pool is reachable
+ * by its compose service hostname (`servers`) over the internal docker network,
+ * bypassing the published-port NAT.
  */
 
-function benchRoot(): string
+/**
+ * Host of the HTTP server pool (compose service hostname by default; override with
+ * BENCH_HTTP_HOST, e.g. 127.0.0.1 to hit the published port from the host).
+ */
+function benchHttpHost(): string
 {
-    return dirname(__DIR__, 2);
+    return getenv('BENCH_HTTP_HOST') ?: 'servers';
 }
 
 /**
- * Spawns $workers demo servers on $host:$port (with SO_REUSEPORT when >1) and
- * waits until the port answers.
- *
- * @return array<int, resource>
+ * Port of the HTTP server pool (the in-container listen port by default; override
+ * with BENCH_HTTP_PORT, e.g. 28080 for the published host port).
  */
-function benchSpawnServers(string $host, int $port, int $workers, bool $reusePort): array
+function benchHttpPort(): int
 {
-    $root      = benchRoot();
-    $extension = $root . '/ext/build/sconcur.so';
-    $script    = $root . '/tests/servers/http/http-server.php';
+    return (int) (getenv('BENCH_HTTP_PORT') ?: 8080);
+}
 
-    $command = ['php', '-d', 'extension=' . $extension, $script, "--address=$host:$port"];
+/**
+ * Aborts the benchmark with a clear hint if the HTTP server pool is unreachable.
+ */
+function benchRequireHttpServers(string $host, int $port): void
+{
+    $connection = @fsockopen($host, $port, $errno, $errstr, 2.0);
 
-    if ($reusePort) {
-        $command[] = '--reusePort=1';
+    if (!is_resource($connection)) {
+        fwrite(STDERR, "HTTP server pool not reachable at $host:$port ($errstr).\n");
+        fwrite(STDERR, "Start the `servers` container with `make up` (or `make servers-restart` to rebuild it).\n");
+
+        exit(1);
     }
 
-    $descriptors = [0 => ['pipe', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']];
-
-    $procs = [];
-
-    for ($i = 0; $i < $workers; $i++) {
-        $proc = proc_open($command, $descriptors, $pipes, $root);
-
-        if (!is_resource($proc)) {
-            fwrite(STDERR, "failed to spawn worker $i\n");
-            exit(1);
-        }
-
-        fclose($pipes[0]);
-
-        $procs[] = $proc;
-    }
-
-    $deadline = microtime(true) + 5.0;
-
-    while (microtime(true) < $deadline) {
-        $connection = @fsockopen($host, $port, $errno, $errstr, 0.2);
-
-        if (is_resource($connection)) {
-            fclose($connection);
-
-            return $procs;
-        }
-
-        usleep(50_000);
-    }
-
-    benchStopServers($procs);
-
-    fwrite(STDERR, "servers not reachable on $host:$port\n");
-    exit(1);
+    fclose($connection);
 }
 
 /**
@@ -107,34 +87,4 @@ function benchFireConcurrent(string $url, int $count): array
     curl_multi_close($multi);
 
     return [$elapsed, $ok];
-}
-
-/**
- * @param array<int, resource> $procs
- */
-function benchAliveCount(array $procs): int
-{
-    $alive = 0;
-
-    foreach ($procs as $proc) {
-        if (proc_get_status($proc)['running']) {
-            $alive++;
-        }
-    }
-
-    return $alive;
-}
-
-/**
- * @param array<int, resource> $procs
- */
-function benchStopServers(array $procs): void
-{
-    foreach ($procs as $proc) {
-        if (proc_get_status($proc)['running']) {
-            proc_terminate($proc, SIGKILL);
-        }
-
-        proc_close($proc);
-    }
 }

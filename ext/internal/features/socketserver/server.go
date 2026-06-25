@@ -11,6 +11,7 @@ import (
 	"sconcur/internal/logger"
 	"sconcur/internal/socket"
 	"sconcur/internal/states"
+	"sconcur/internal/stats"
 	"sync"
 	"time"
 
@@ -44,6 +45,12 @@ type serverConfig struct {
 	shutdownTimeout time.Duration
 	maxMessageBytes int
 	maxConcurrency  int
+	// telemetrySocket is the collector's unix socket the worker pushes snapshots to
+	// (empty = push off); serverName labels the snapshot (pool scope);
+	// telemetryIntervalMs is the snapshot sampling/push cadence (0 = default).
+	telemetrySocket     string
+	serverName          string
+	telemetryIntervalMs int
 }
 
 // configFromPayload resolves the tuning from the PHP payload, falling back to the
@@ -56,6 +63,9 @@ func configFromPayload(payload payloads.ServePayload) serverConfig {
 		shutdownTimeout: msOrDefault(payload.ShutdownTimeoutMs, defaultShutdownTimeout),
 		maxMessageBytes: intOrDefault(payload.MaxMessageBytes, defaultMaxMessageBytes),
 		maxConcurrency:  max(payload.MaxConcurrency, 0),
+		telemetrySocket:     payload.TelemetrySocket,
+		serverName:          payload.ServerName,
+		telemetryIntervalMs: payload.TelemetryIntervalMs,
 	}
 }
 
@@ -94,6 +104,11 @@ type serverState struct {
 	conns sync.Map
 	// waitGroup tracks live handleConn goroutines so Close can drain them.
 	waitGroup sync.WaitGroup
+	// connectionStats holds this worker's connection counters (the stats workload);
+	// pusher samples the snapshot and pushes it to the collector (no-op when no
+	// telemetry socket is configured).
+	connectionStats *connectionStats
+	pusher          *stats.Pusher
 }
 
 func newServerState(
@@ -103,15 +118,27 @@ func newServerState(
 	startTime time.Time,
 	config serverConfig,
 ) *serverState {
+	connectionStats := &connectionStats{}
+
 	state := &serverState{
-		ctx:         ctx,
-		message:     message,
-		listener:    listener,
-		config:      config,
-		startTime:   startTime,
-		connections: make(chan *payloads.ConnectionEvent, connectionQueueSize),
-		sem:         newSemaphore(config.maxConcurrency),
+		ctx:             ctx,
+		message:         message,
+		listener:        listener,
+		config:          config,
+		startTime:       startTime,
+		connections:     make(chan *payloads.ConnectionEvent, connectionQueueSize),
+		sem:             newSemaphore(config.maxConcurrency),
+		connectionStats: connectionStats,
+		pusher: stats.NewPusher(
+			config.serverName,
+			config.telemetrySocket,
+			config.telemetryIntervalMs,
+			startTime,
+			connectionStats,
+		),
 	}
+
+	state.pusher.Start()
 
 	go state.acceptLoop()
 
@@ -165,6 +192,11 @@ func (s *serverState) handleConn(conn net.Conn) {
 			return
 		}
 	}
+
+	// Count this connection for the statistics (active + lifetime total) once it has
+	// a concurrency slot, releasing the active count when it finishes.
+	s.connectionStats.connectionOpened()
+	defer s.connectionStats.connectionClosed()
 
 	connectionId := socket.NextConnectionId(s.message.FlowKey)
 
@@ -282,6 +314,8 @@ func (s *serverState) forceCloseAfterGrace() {
 // already cancelled by the time the state is closed.
 func (s *serverState) Close() {
 	serverStates.Delete(s.message.FlowKey)
+
+	s.pusher.Stop()
 
 	_ = s.listener.Close()
 

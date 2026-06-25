@@ -135,12 +135,12 @@ bench-all:
 	make bench-http-client
 	make bench-http-client-google
 	make bench-http-client-download
-	make bench-http-reuseport-io
-	make bench-http-reuseport-cpu
+	make bench-http-server-io
+	make bench-http-server-cpu
 	make bench-socket-client
 	make bench-socket-throughput
-	make bench-socket-reuseport-io
-	make bench-socket-reuseport-cpu
+	make bench-socket-server-io
+	make bench-socket-server-cpu
 
 bench-http-client-download:
 	$(PHP_EXT) tests/benchmarks/http-client-download.php ${c}
@@ -229,11 +229,11 @@ bench-http-client:
 bench-http-client-google:
 	$(PHP_EXT) tests/benchmarks/http-client-google.php ${c}
 
-bench-http-reuseport-io:
-	$(PHP_CLI) php tests/benchmarks/http-reuseport-io.php
+bench-http-server-io:
+	$(PHP_CLI) php tests/benchmarks/http-server-io.php
 
-bench-http-reuseport-cpu:
-	$(PHP_CLI) php tests/benchmarks/http-reuseport-cpu.php
+bench-http-server-cpu:
+	$(PHP_CLI) php tests/benchmarks/http-server-cpu.php
 
 bench-socket-client:
 	$(PHP_EXT) tests/benchmarks/socket-client.php ${c}
@@ -241,11 +241,11 @@ bench-socket-client:
 bench-socket-throughput:
 	$(PHP_CLI) php tests/benchmarks/socket-throughput.php
 
-bench-socket-reuseport-io:
-	$(PHP_CLI) php tests/benchmarks/socket-reuseport-io.php
+bench-socket-server-io:
+	$(PHP_CLI) php tests/benchmarks/socket-server-io.php
 
-bench-socket-reuseport-cpu:
-	$(PHP_CLI) php tests/benchmarks/socket-reuseport-cpu.php
+bench-socket-server-cpu:
+	$(PHP_CLI) php tests/benchmarks/socket-server-cpu.php
 
 # Runs on the HOST (needs wrk): one server per core with SO_REUSEPORT inside the
 # php container, wrk pinned to separate cores, hitting the container IP (no NAT).
