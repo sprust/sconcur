@@ -143,7 +143,7 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 | Поле | Что это | Источник |
 |---|---|---|
 | `memory.rssBytes` | RSS всего процесса (с расширением) | `/proc/self/status` `VmRSS` |
-| `memory.goRuntimeBytes` | память Go-рантайма | `runtime.MemStats.Sys` |
+| `memory.goRuntimeBytes` | память Go-рантайма | `runtime/metrics` (`/memory/classes/total:bytes`) |
 | `memory.nonExtensionBytes` | остаток без расширения (PHP + интерпретатор) | `rssBytes − goRuntimeBytes` |
 | `cpuPercent` | загрузка CPU процессом за интервал | диф `/proc/self/stat` |
 | `goroutines` | число горутин процесса | `runtime.NumGoroutine()` |
