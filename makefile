@@ -95,6 +95,9 @@ check:
 	make test
 	make ext-test
 
+status:
+	$(PHP_EXT) bin/sconcur-status ${c}
+
 test:
 	$(PHP_EXT) vendor/bin/phpunit \
 		-d memory_limit=512M \
