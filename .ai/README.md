@@ -7,6 +7,7 @@ here.
 ## Further Reading
 
 - [README.md](../README.md) — project overview and usage
+- [docs/cli.ru.md](../docs/cli.ru.md) — console commands: `bin/sconcur-load` (download the matching extension .so), `bin/sconcur-status` (check install/version, `--json`), `bin/sconcur-server` (worker master, brief + link)
 - [docs/architecture.ru.md](../docs/architecture.ru.md) — internals: Fiber ↔ goroutine, scheduler, layers, task lifecycle (with Mermaid diagrams)
 - [docs/adding-a-feature.ru.md](../docs/adding-a-feature.ru.md) — guide for adding a new feature
 - [docs/adding-a-server.ru.md](../docs/adding-a-server.ru.md) — guide for adding a new server (long-lived streaming feature: listener + serve loop + worker-master integration)

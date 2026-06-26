@@ -104,6 +104,9 @@ $collection->insertOne(['name' => 'example']);
 
 ## Документация
 
+- [Консольные команды](docs/cli.ru.md) — `bin/sconcur-load` (скачать собранное
+  расширение нужной версии), `bin/sconcur-status` (проверить установку и версию,
+  с `--json`), `bin/sconcur-server` (мастер воркеров, кратко со ссылкой).
 - [Архитектура](docs/architecture.ru.md) — устройство изнутри: связка
   Fiber ↔ goroutine, планировщик, слои, жизненный цикл задачи.
 - [MongoDB](docs/mongodb.ru.md) — операции коллекции (CRUD, агрегация, индексы,
