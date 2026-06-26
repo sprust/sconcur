@@ -61,14 +61,17 @@ class Connection extends AbstractConnection
         }
 
         // The first byte is the message-type marker (0 text, 1 binary); the rest is the
-        // message payload.
-        $this->lastMessageBinary = $payload[0] === self::BINARY_MARKER;
+        // message payload. The Go side always prefixes the marker, so a non-null payload
+        // is at least one byte; the empty-string guard keeps it defensive either way.
+        $this->lastMessageBinary = ($payload !== '' && $payload[0] === self::BINARY_MARKER);
 
         return substr($payload, 1);
     }
 
     /**
      * Whether the message returned by the last read() was binary (otherwise text).
+     * Only meaningful right after a read() that returned a message; after read() has
+     * returned null the value still reflects the previous message.
      */
     public function lastMessageWasBinary(): bool
     {

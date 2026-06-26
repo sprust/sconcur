@@ -51,9 +51,16 @@ class TestWsServer
      *        defaults, keyed by WsServer constructor parameter name; booleans are passed as 0/1
      * @param bool                            $waitReachable wait until the server accepts a
      *        connection before returning (set false when it is expected to stop early)
+     * @param null|string                     $serverScript  path to the server script to spawn
+     *        (defaults to the demo server); used to run a variant that sets array-typed options
+     *        (e.g. subprotocols) that cannot be passed through argv
      */
-    public static function start(array $options = [], ?int $port = null, bool $waitReachable = true): self
-    {
+    public static function start(
+        array $options = [],
+        ?int $port = null,
+        bool $waitReachable = true,
+        ?string $serverScript = null,
+    ): self {
         if (isset($options['address'])) {
             throw new RuntimeException('The "address" option is not supported in tests. Use "port" instead.');
         }
@@ -63,7 +70,7 @@ class TestWsServer
 
         $root      = dirname(__DIR__, 3);
         $extension = $root . '/ext/build/sconcur.so';
-        $script    = $root . '/tests/servers/ws/ws-server.php';
+        $script    = $serverScript ?? $root . '/tests/servers/ws/ws-server.php';
 
         $command = ['php', '-d', 'extension=' . $extension, $script];
 

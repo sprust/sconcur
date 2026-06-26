@@ -54,7 +54,7 @@ $connection->close();
 | `lastMessageWasBinary(): bool` | был ли последний прочитанный `read()` бинарным (иначе text) |
 | `close(): void` | закрыть соединение (идемпотентно, best-effort) |
 | `isClosed(): bool` | закрыто ли соединение |
-| `id`, `remoteAddr`, `localAddr`, `subprotocol` | идентификатор, адреса и согласованный subprotocol |
+| `id`, `remoteAddr`, `localAddr`, `subprotocol` | идентификатор, адреса и согласованный subprotocol. `remoteAddr` — host из URL подключения (может быть без порта), `localAddr` на dial-стороне сейчас всегда пуст |
 
 Внутри диалога можно делать асинхронные вызовы (Sleeper, Mongodb, SQL, HTTP-клиент)
 между чтениями/записями — корутина кооперативно приостанавливается, другие соединения

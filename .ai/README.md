@@ -251,7 +251,7 @@ change. **Never bump the major version without the maintainer's approval**; bump
 the minor only when warranted, otherwise the patch. **Bump the version at most
 once per git branch** — the first protocol change on a branch bumps it, later
 commits on the same branch reuse that version (do not move it again). Current:
-`0.3.1`.
+`0.4.0`.
 
 ## Exceptions
 
