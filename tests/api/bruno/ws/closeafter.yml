@@ -1,0 +1,15 @@
+info:
+  name: closeafter
+  type: websocket
+  seq: 12
+
+websocket:
+  url: ws://localhost:29200/
+  message:
+    type: text
+    data: closeafter:bye
+  auth: inherit
+
+settings:
+  timeout: 0
+  keepAliveInterval: 0

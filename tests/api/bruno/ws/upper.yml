@@ -1,0 +1,15 @@
+info:
+  name: upper
+  type: websocket
+  seq: 4
+
+websocket:
+  url: ws://localhost:29200/
+  message:
+    type: text
+    data: upper:hello
+  auth: inherit
+
+settings:
+  timeout: 0
+  keepAliveInterval: 0

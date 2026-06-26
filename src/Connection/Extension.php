@@ -26,15 +26,19 @@ use function SConcur\Extension\version;
 use function SConcur\Extension\wait;
 use function SConcur\Extension\waitAny;
 use function SConcur\Extension\waitAnyTimeout;
+use function SConcur\Extension\wsStopAccepting;
 
 class Extension
 {
     /**
-     * Minimum "sconcur" extension version this package is compatible with. Bump it
-     * whenever the PHP <-> Go protocol changes (payload keys, exported functions) so
-     * an outdated .so is rejected instead of silently misbehaving.
+     * The exact "sconcur" extension version this package is built against. The PHP
+     * package and the Go extension are versioned and released together, so the loaded
+     * .so must match this exactly (see checkExtension); bump it whenever the PHP <-> Go
+     * protocol changes (payload keys, exported functions) so a mismatched .so is
+     * rejected instead of silently misbehaving. Public so tooling (bin/sconcur-status)
+     * can report the version the package expects.
      */
-    private const string REQUIRED_EXTENSION_VERSION = '0.3.1';
+    public const string REQUIRED_EXTENSION_VERSION = '0.4.0';
 
     /**
      * Result frame layout (Go -> PHP), see main.go buildResultFrame. The envelope is
@@ -174,6 +178,16 @@ class Extension
         socketStopAccepting($flowKey);
     }
 
+    /**
+     * Stops the WebSocket server flow's listener from accepting new connections and
+     * drains its in-flight connections, so a SO_REUSEPORT sibling takes over new
+     * connections while this process drains on graceful shutdown.
+     */
+    public function wsStopAccepting(string $flowKey): void
+    {
+        wsStopAccepting($flowKey);
+    }
+
     public function destroy(): void
     {
         destroy();
@@ -263,10 +277,10 @@ class Extension
 
         $loadedVersion = version();
 
-        if (version_compare($loadedVersion, self::REQUIRED_EXTENSION_VERSION, '<')) {
+        if (version_compare($loadedVersion, self::REQUIRED_EXTENSION_VERSION, '!=')) {
             throw new IncompatibleExtensionVersionException(
                 message: sprintf(
-                    'The loaded "sconcur" extension version %s is older than the required %s.',
+                    'The loaded "sconcur" extension version %s does not match the required %s.',
                     $loadedVersion,
                     self::REQUIRED_EXTENSION_VERSION,
                 ),

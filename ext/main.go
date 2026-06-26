@@ -18,6 +18,7 @@ import (
 	"sconcur/internal/dto"
 	httpserver_feature "sconcur/internal/features/httpserver"
 	socketserver_feature "sconcur/internal/features/socketserver"
+	wsserver_feature "sconcur/internal/features/wsserver"
 	handler2 "sconcur/internal/handler"
 	"sconcur/internal/logger"
 	"sconcur/internal/types"
@@ -211,6 +212,11 @@ func socketStopAccepting(fk *C.char) {
 	socketserver_feature.StopAccepting(C.GoString(fk))
 }
 
+//export wsStopAccepting
+func wsStopAccepting(fk *C.char) {
+	wsserver_feature.StopAccepting(C.GoString(fk))
+}
+
 //export destroy
 func destroy() {
 	// Flush any buffered log lines before tearing the runtime down.
@@ -221,7 +227,7 @@ func destroy() {
 
 //export version
 func version() *C.char {
-	return C.CString("0.3.1")
+	return C.CString("0.4.0")
 }
 
 func main() {}

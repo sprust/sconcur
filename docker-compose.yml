@@ -37,6 +37,8 @@ services:
       - "28081:8081"
       - "29100:9100"
       - "29101:9101"
+      - "29200:9200"
+      - "29201:9201"
     command: ["supervisord", "-c", "/sconcur/docker/servers/config/supervisord.conf"]
 
   mongodb:

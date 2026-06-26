@@ -1,0 +1,15 @@
+info:
+  name: bin
+  type: websocket
+  seq: 5
+
+websocket:
+  url: ws://localhost:29200/
+  message:
+    type: text
+    data: bin:hello
+  auth: inherit
+
+settings:
+  timeout: 0
+  keepAliveInterval: 0

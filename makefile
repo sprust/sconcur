@@ -9,6 +9,7 @@ PHP_EXT = $(PHP_CLI) php -d extension=./ext/build/sconcur.so
 SERVERS_CLI = $(DOCKER_COMPOSE) exec servers php /sconcur/bin/sconcur-server
 HTTP_SERVER_CONFIG = /sconcur/config/sconcur.http-server.config.json
 SOCKET_SERVER_CONFIG = /sconcur/config/sconcur.socket-server.config.json
+WS_SERVER_CONFIG = /sconcur/config/sconcur.ws-server.config.json
 
 env-copy:
 	cp -i .env.example .env
@@ -60,6 +61,15 @@ socket-server-stop:
 socket-server-reload:
 	$(SERVERS_CLI) reload --configPath=$(SOCKET_SERVER_CONFIG)
 
+ws-server-status:
+	$(SERVERS_CLI) status --configPath=$(WS_SERVER_CONFIG)
+
+ws-server-stop:
+	$(SERVERS_CLI) stop --configPath=$(WS_SERVER_CONFIG)
+
+ws-server-reload:
+	$(SERVERS_CLI) reload --configPath=$(WS_SERVER_CONFIG)
+
 bash-php:
 	$(DOCKER_COMPOSE) exec php bash
 
@@ -84,6 +94,9 @@ check:
 	make php-stan
 	make test
 	make ext-test
+
+status:
+	$(PHP_EXT) bin/sconcur-status ${c}
 
 test:
 	$(PHP_EXT) vendor/bin/phpunit \
@@ -141,6 +154,10 @@ bench-all:
 	make bench-socket-throughput
 	make bench-socket-server-io
 	make bench-socket-server-cpu
+	make bench-ws-client
+	make bench-ws-throughput
+	make bench-ws-server-io
+	make bench-ws-server-cpu
 
 bench-http-client-download:
 	$(PHP_EXT) tests/benchmarks/http-client-download.php ${c}
@@ -247,6 +264,18 @@ bench-socket-server-io:
 bench-socket-server-cpu:
 	$(PHP_CLI) php tests/benchmarks/socket-server-cpu.php
 
+bench-ws-client:
+	$(PHP_EXT) tests/benchmarks/ws-client.php ${c}
+
+bench-ws-throughput:
+	$(PHP_CLI) php tests/benchmarks/ws-throughput.php
+
+bench-ws-server-io:
+	$(PHP_CLI) php tests/benchmarks/ws-server-io.php
+
+bench-ws-server-cpu:
+	$(PHP_CLI) php tests/benchmarks/ws-server-cpu.php
+
 # Runs on the HOST (needs wrk): one server per core with SO_REUSEPORT inside the
 # php container, wrk pinned to separate cores, hitting the container IP (no NAT).
 # Tunables via env, e.g.: make bench-http-throughput SERVERS=16 DURATION=20
@@ -270,3 +299,22 @@ bench-http-load-soak:
 # measures the pure HTTP + framework ceiling, the floor under the /all numbers.
 bench-http-load-stats-empty:
 	ROUTE=/ tests/benchmarks/http-load-stats.sh
+
+# WebSocket load test: spawn a ws-server pool (SO_REUSEPORT, one per core) and drive
+# it with the Go ws-load generator on the "all" message (fans out across EVERY async
+# I/O feature per message), sampling CPU/memory + per-worker RSS (leak check). Both
+# the pool and the generator run in the php container (no host tooling needed).
+# Tunables via env, e.g.: make bench-ws-load-stats SERVERS=12 DURATION=30
+bench-ws-load-stats:
+	tests/benchmarks/ws-load-stats.sh
+
+# Soak variant: a long, steady-load run (10 min by default) that prints the
+# worker-RSS trend over time and a least-squares leak slope. Override via env,
+# e.g.: make bench-ws-load-soak DURATION=3600
+bench-ws-load-soak:
+	MODE=soak tests/benchmarks/ws-load-stats.sh
+
+# Baseline variant: same harness against the bare "ping" message (no I/O fan-out) —
+# measures the pure WebSocket + framework ceiling, the floor under the "all" numbers.
+bench-ws-load-stats-empty:
+	MSG=ping tests/benchmarks/ws-load-stats.sh

@@ -15,4 +15,7 @@ enum MethodEnum: int
     case SocketServe   = 8;
     case SocketRespond = 9;
     case SocketClient  = 10;
+    case WsServe   = 11;
+    case WsRespond = 12;
+    case WsClient  = 13;
 }

@@ -1,0 +1,15 @@
+info:
+  name: stream
+  type: websocket
+  seq: 10
+
+websocket:
+  url: ws://localhost:29200/
+  message:
+    type: text
+    data: stream:3
+  auth: inherit
+
+settings:
+  timeout: 0
+  keepAliveInterval: 0

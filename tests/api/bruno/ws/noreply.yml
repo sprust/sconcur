@@ -1,0 +1,15 @@
+info:
+  name: noreply
+  type: websocket
+  seq: 11
+
+websocket:
+  url: ws://localhost:29200/
+  message:
+    type: text
+    data: noreply
+  auth: inherit
+
+settings:
+  timeout: 0
+  keepAliveInterval: 0

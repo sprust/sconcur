@@ -1,0 +1,62 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use SConcur\Connection\Extension;
+
+$autoloads = [
+    __DIR__ . '/../vendor/autoload.php',  // running from the repo
+    __DIR__ . '/../../../autoload.php',   // installed as a dependency (vendor/bin)
+];
+
+foreach ($autoloads as $autoload) {
+    if (is_file($autoload)) {
+        require $autoload;
+
+        break;
+    }
+}
+
+// --json prints a single machine-readable line (for CI: gate on "ready", tag a release
+// with the version); the default is a human-readable report. The exit code is 0 when
+// ready and 1 otherwise, so a pipeline can branch on it without parsing.
+$asJson = in_array('--json', $argv, true);
+
+// The version the PHP package is built against; the loaded extension must match it
+// exactly (Extension::checkExtension), so this doubles as the release version.
+$packageVersion = Extension::REQUIRED_EXTENSION_VERSION;
+
+$extensionInstalled = extension_loaded('sconcur');
+
+$extensionVersion = ($extensionInstalled && function_exists('SConcur\Extension\version'))
+    ? \SConcur\Extension\version()
+    : null;
+
+$ready = $extensionInstalled
+    && $extensionVersion !== null
+    && version_compare($extensionVersion, $packageVersion, '==');
+
+if ($asJson) {
+    echo json_encode(
+        [
+            'extension_installed' => $extensionInstalled,
+            'package_version'     => $packageVersion,
+            'extension_version'   => $extensionVersion,
+            'ready'               => $ready,
+        ],
+        JSON_THROW_ON_ERROR,
+    ), PHP_EOL;
+
+    exit($ready ? 0 : 1);
+}
+
+$yesNo = static fn (bool $value): string => $value ? 'yes' : 'no';
+
+echo 'sconcur status', PHP_EOL;
+echo sprintf('  extension installed:  %s', $yesNo($extensionInstalled)), PHP_EOL;
+echo sprintf('  package version:      %s', $packageVersion), PHP_EOL;
+echo sprintf('  extension version:    %s', $extensionVersion ?? 'n/a'), PHP_EOL;
+echo sprintf('  ready:                %s', $yesNo($ready)), PHP_EOL;
+
+exit($ready ? 0 : 1);

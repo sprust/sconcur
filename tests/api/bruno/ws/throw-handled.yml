@@ -1,0 +1,15 @@
+info:
+  name: throw-handled
+  type: websocket
+  seq: 15
+
+websocket:
+  url: ws://localhost:29200/
+  message:
+    type: text
+    data: throw-handled
+  auth: inherit
+
+settings:
+  timeout: 0
+  keepAliveInterval: 0

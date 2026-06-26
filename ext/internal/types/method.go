@@ -13,4 +13,7 @@ const (
 	MethodSocketServe   Method = 8
 	MethodSocketRespond Method = 9
 	MethodSocketClient  Method = 10
+	MethodWsServe    Method = 11
+	MethodWsRespond  Method = 12
+	MethodWsClient   Method = 13
 )

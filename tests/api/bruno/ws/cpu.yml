@@ -1,0 +1,15 @@
+info:
+  name: cpu
+  type: websocket
+  seq: 8
+
+websocket:
+  url: ws://localhost:29200/
+  message:
+    type: text
+    data: cpu:200000
+  auth: inherit
+
+settings:
+  timeout: 0
+  keepAliveInterval: 0

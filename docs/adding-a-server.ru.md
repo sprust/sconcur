@@ -10,7 +10,10 @@ PHP обрабатывает его в отдельной корутине и о
 `ext/internal/features/httpserver/`. Второй сервер — `SocketServer`
 (`src/Features/SocketServer/`, `ext/internal/features/socketserver/`) — построен по тому
 же паттерну, и общий код двух серверов уже вынесен в переиспользуемый трейт (см. ниже).
-Эта дока описывает паттерн в общем виде; за полной реализацией смотрите на `HttpServer`.
+Третий — `WsServer` ([WebSocket-сервер](websocket-server.ru.md)) — гибрид: листенер и
+рукопожатие он берёт у `HttpServer` (`net/http.Server` + `Upgrade`), а после апгрейда
+работает по push-модели `SocketServer`. Эта дока описывает паттерн в общем виде; за полной
+реализацией смотрите на `HttpServer`.
 
 Перед чтением освойте [как добавить обычную фичу](adding-a-feature.ru.md) — сервер
 переиспользует её механику (`Method`, payloads, реестр состояний/стриминг, `next()`) и

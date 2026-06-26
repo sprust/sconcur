@@ -131,6 +131,13 @@ $collection->insertOne(['name' => 'example']);
   фреймингом length-prefix (зеркало сокет-сервера): `connect()` → `Connection`
   (read/write/close), конкурентность веером, параметры/таймауты, обработка ошибок,
   внутреннее устройство.
+- [WebSocket-сервер](docs/websocket-server.ru.md) — долгоживущий WS-сервер (гибрид
+  HTTP-Upgrade листенера и push-модели сокет-сервера): text/binary сообщения,
+  `Connection` read/write/close, keepalive-ping, параметры, graceful shutdown /
+  `SO_REUSEPORT`, ограничения.
+- [WebSocket-клиент](docs/websocket-client.ru.md) — асинхронный WS-клиент (зеркало
+  WS-сервера): `connect()` → `Connection` (read/write/close, text/binary),
+  конкурентность веером, параметры/таймауты, обработка ошибок, внутреннее устройство.
 - [MySQL (универсальная SQL-фича)](docs/mysql.ru.md) — запросы с биндингами,
   стриминг SELECT, транзакции; пул соединений и устройство.
 - [PostgreSQL](docs/pgsql.ru.md) — второй драйвер той же SQL-фичи; отличия PG

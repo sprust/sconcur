@@ -1,0 +1,15 @@
+info:
+  name: pid
+  type: websocket
+  seq: 6
+
+websocket:
+  url: ws://localhost:29200/
+  message:
+    type: text
+    data: pid
+  auth: inherit
+
+settings:
+  timeout: 0
+  keepAliveInterval: 0

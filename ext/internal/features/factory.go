@@ -12,6 +12,8 @@ import (
 	"sconcur/internal/features/socketclient"
 	"sconcur/internal/features/socketserver"
 	"sconcur/internal/features/sql"
+	"sconcur/internal/features/wsclient"
+	"sconcur/internal/features/wsserver"
 	"sconcur/internal/types"
 )
 
@@ -33,6 +35,10 @@ func DetectMessageHandler(method types.Method) (contracts.FeatureContract, error
 		return socketserver_feature.Get(), nil
 	case types.MethodSocketClient:
 		return socketclient_feature.Get(), nil
+	case types.MethodWsServe, types.MethodWsRespond:
+		return wsserver_feature.Get(), nil
+	case types.MethodWsClient:
+		return wsclient_feature.Get(), nil
 	default:
 		return nil, errors.New("unknown method: " + fmt.Sprint(method))
 	}

@@ -1,0 +1,15 @@
+info:
+  name: echo
+  type: websocket
+  seq: 3
+
+websocket:
+  url: ws://localhost:29200/
+  message:
+    type: text
+    data: echo-me
+  auth: inherit
+
+settings:
+  timeout: 0
+  keepAliveInterval: 0
