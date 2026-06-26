@@ -187,8 +187,13 @@ Go (`ext/internal/features/wsclient/`):
   `SConcur\Tests\Impl\WsServer\TestWsServer`.
 - Go-тесты — `ext/internal/features/wsclient/connect_test.go` (`connectionState`:
   метаданные → входящие сообщения → чистый конец).
+- Бенчмарк — `tests/benchmarks/ws-client.php` (`make bench-ws-client`): N round-trip'ов
+  к I/O-эндпоинту (`msleep:<ms>`) демо-сервера; async-прогон через `WaitGroup` показывает
+  «веер» (общее время ≈ одного round-trip), против последовательных native (сырой
+  WS-фрейминг на PHP) и sync. Серверные бенчи пула — `make bench-ws-server-io` /
+  `bench-ws-server-cpu` / `bench-ws-throughput`.
 
-Запуск: `make test c="--filter=WsClient"`, `make ext-test`.
+Запуск: `make test c="--filter=WsClient"`, `make ext-test`, `make bench-ws-client c=20`.
 
 ```
 make ext-build && make ext-test && make php-stan && make cs-fixer-check && make test

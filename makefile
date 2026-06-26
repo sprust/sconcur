@@ -151,6 +151,10 @@ bench-all:
 	make bench-socket-throughput
 	make bench-socket-server-io
 	make bench-socket-server-cpu
+	make bench-ws-client
+	make bench-ws-throughput
+	make bench-ws-server-io
+	make bench-ws-server-cpu
 
 bench-http-client-download:
 	$(PHP_EXT) tests/benchmarks/http-client-download.php ${c}
@@ -256,6 +260,18 @@ bench-socket-server-io:
 
 bench-socket-server-cpu:
 	$(PHP_CLI) php tests/benchmarks/socket-server-cpu.php
+
+bench-ws-client:
+	$(PHP_EXT) tests/benchmarks/ws-client.php ${c}
+
+bench-ws-throughput:
+	$(PHP_CLI) php tests/benchmarks/ws-throughput.php
+
+bench-ws-server-io:
+	$(PHP_CLI) php tests/benchmarks/ws-server-io.php
+
+bench-ws-server-cpu:
+	$(PHP_CLI) php tests/benchmarks/ws-server-cpu.php
 
 # Runs on the HOST (needs wrk): one server per core with SO_REUSEPORT inside the
 # php container, wrk pinned to separate cores, hitting the container IP (no NAT).
