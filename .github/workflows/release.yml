@@ -42,17 +42,13 @@ jobs:
         if: failure()
         run: docker compose logs --tail=100
 
-      - name: Move latest tag
+      - name: Recreate latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git tag -f latest
-          git push -f origin latest
-
-      - name: Publish latest release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ./ext/build/sconcur.so
-          tag_name: latest
-          name: Latest Build
-          body: Automatically collected latest version
-          make_latest: true
-          token: ${{ secrets.GITHUB_TOKEN }}
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest ./ext/build/sconcur.so \
+            --target "$GITHUB_SHA" \
+            --title "Latest Build" \
+            --notes "Automatically collected latest version" \
+            --latest
