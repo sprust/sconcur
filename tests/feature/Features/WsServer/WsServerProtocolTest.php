@@ -156,6 +156,34 @@ class WsServerProtocolTest extends BaseWsServerTestCase
         $this->assertStringContainsString('426', $statusLine);
     }
 
+    public function testUpgradeOnWrongPathIsRejected(): void
+    {
+        // A valid WebSocket upgrade, but to a path the server does not serve (default
+        // path is "/"): the request is answered 404 before the handshake, and the server
+        // keeps serving the right path.
+        $connection = @fsockopen(self::server()->host(), self::server()->port(), $errno, $errstr, 5.0);
+
+        $this->assertIsResource($connection);
+
+        fwrite(
+            $connection,
+            "GET /nope HTTP/1.1\r\n"
+            . 'Host: ' . self::server()->host() . "\r\n"
+            . "Upgrade: websocket\r\n"
+            . "Connection: Upgrade\r\n"
+            . 'Sec-WebSocket-Key: ' . base64_encode(random_bytes(16)) . "\r\n"
+            . "Sec-WebSocket-Version: 13\r\n"
+            . "Connection: close\r\n\r\n",
+        );
+
+        $statusLine = (string) fgets($connection);
+
+        fclose($connection);
+
+        $this->assertStringContainsString('404', $statusLine);
+        $this->assertSame('pong', $this->roundtrip('ping'));
+    }
+
     public function testServerKeepsServingAcrossConnections(): void
     {
         $this->assertSame('pong', $this->roundtrip('ping'));

@@ -201,6 +201,101 @@ func TestNonWebSocketRequestRejected(t *testing.T) {
 	}
 }
 
+// TestUpgradeOnConfiguredPathOnly verifies a path restriction: an upgrade to the
+// configured path succeeds, while another path is answered 404 (the dial fails).
+func TestUpgradeOnConfiguredPathOnly(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	state, url := newTestServer(t, ctx, payloads.ServePayload{Path: "/chat"})
+	defer state.Close()
+
+	serveEcho(ctx, state)
+
+	dialCtx, dialCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer dialCancel()
+
+	// Wrong path → 404, dial fails.
+	if conn, _, err := websocket.Dial(dialCtx, url, nil); err == nil {
+		_ = conn.CloseNow()
+
+		t.Fatal("expected the dial to the wrong path to fail (404)")
+	}
+
+	// Configured path → upgrade succeeds.
+	conn, _, err := websocket.Dial(dialCtx, url+"chat", nil)
+
+	if err != nil {
+		t.Fatalf("dial to the configured path: %v", err)
+	}
+
+	_ = conn.CloseNow()
+}
+
+// TestOriginCheckRejectsForeignOrigin verifies that with allowedOrigins set, a request
+// carrying a foreign Origin is rejected (403, dial fails), while a request whose Origin
+// matches an allowed pattern is upgraded.
+func TestOriginCheckRejectsForeignOrigin(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	state, url := newTestServer(t, ctx, payloads.ServePayload{AllowedOrigins: []string{"good.example"}})
+	defer state.Close()
+
+	serveEcho(ctx, state)
+
+	dialCtx, dialCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer dialCancel()
+
+	foreign := &websocket.DialOptions{HTTPHeader: http.Header{"Origin": []string{"http://evil.example"}}}
+
+	if conn, _, err := websocket.Dial(dialCtx, url, foreign); err == nil {
+		_ = conn.CloseNow()
+
+		t.Fatal("expected a foreign Origin to be rejected (403)")
+	}
+
+	allowed := &websocket.DialOptions{HTTPHeader: http.Header{"Origin": []string{"http://good.example"}}}
+
+	conn, _, err := websocket.Dial(dialCtx, url, allowed)
+
+	if err != nil {
+		t.Fatalf("dial with an allowed Origin: %v", err)
+	}
+
+	_ = conn.CloseNow()
+}
+
+// TestIdleTimeoutEndsConnection verifies the idle read timeout ends an idle connection.
+func TestIdleTimeoutEndsConnection(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	state, url := newTestServer(t, ctx, payloads.ServePayload{IdleTimeoutMs: 100, PingIntervalMs: 0})
+	defer state.Close()
+
+	serveEcho(ctx, state)
+
+	dialCtx, dialCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer dialCancel()
+
+	conn, _, err := websocket.Dial(dialCtx, url, nil)
+
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	defer func() { _ = conn.CloseNow() }()
+
+	// Send nothing: the server's idle timeout must end the connection, observed as a
+	// read error on the client.
+	_, _, err = conn.Read(dialCtx)
+
+	if err == nil {
+		t.Fatal("expected the idle timeout to end the connection")
+	}
+}
+
 // TestMaxConcurrency verifies the in-flight limiter never lets more than the cap of
 // connections be handled at once, while still reaching the cap in parallel.
 func TestMaxConcurrency(t *testing.T) {

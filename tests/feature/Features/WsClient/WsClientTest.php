@@ -188,6 +188,28 @@ class WsClientTest extends BaseWsClientTestCase
         $connection->close();
     }
 
+    public function testReadKeepsReturningNullAfterInboundEnded(): void
+    {
+        $connection = $this->client()->connect($this->url());
+
+        $connection->write('close');
+
+        self::assertNull($connection->read());
+        // Idempotent: once the inbound stream ended, every later read is null too.
+        self::assertNull($connection->read());
+
+        $connection->close();
+    }
+
+    public function testConnectToWrongPathThrows(): void
+    {
+        $this->expectException(WsClientConnectException::class);
+
+        // The server serves only "/"; a valid upgrade to another path is answered 404,
+        // which the dial surfaces as a connect failure.
+        $this->client()->connect($this->url() . 'nope');
+    }
+
     public function testWriteAfterCloseThrows(): void
     {
         $connection = $this->client()->connect($this->url());
