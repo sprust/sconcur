@@ -9,6 +9,7 @@ PHP_EXT = $(PHP_CLI) php -d extension=./ext/build/sconcur.so
 SERVERS_CLI = $(DOCKER_COMPOSE) exec servers php /sconcur/bin/sconcur-server
 HTTP_SERVER_CONFIG = /sconcur/config/sconcur.http-server.config.json
 SOCKET_SERVER_CONFIG = /sconcur/config/sconcur.socket-server.config.json
+WS_SERVER_CONFIG = /sconcur/config/sconcur.ws-server.config.json
 
 env-copy:
 	cp -i .env.example .env
@@ -59,6 +60,15 @@ socket-server-stop:
 
 socket-server-reload:
 	$(SERVERS_CLI) reload --configPath=$(SOCKET_SERVER_CONFIG)
+
+ws-server-status:
+	$(SERVERS_CLI) status --configPath=$(WS_SERVER_CONFIG)
+
+ws-server-stop:
+	$(SERVERS_CLI) stop --configPath=$(WS_SERVER_CONFIG)
+
+ws-server-reload:
+	$(SERVERS_CLI) reload --configPath=$(WS_SERVER_CONFIG)
 
 bash-php:
 	$(DOCKER_COMPOSE) exec php bash

@@ -1,0 +1,17 @@
+info:
+  name: ping
+  type: ws
+  seq: 2
+
+ws:
+  url: ws://localhost:29200/
+  messages:
+    - name: ping
+      type: text
+      content: ping
+    - name: upper
+      type: text
+      content: "upper:hello"
+
+settings:
+  encodeUrl: true

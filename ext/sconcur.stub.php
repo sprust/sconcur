@@ -42,6 +42,10 @@ function socketStopAccepting(string $fk): void
 {
 }
 
+function wsStopAccepting(string $fk): void
+{
+}
+
 function destroy(): void
 {
 }

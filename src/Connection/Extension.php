@@ -26,6 +26,7 @@ use function SConcur\Extension\version;
 use function SConcur\Extension\wait;
 use function SConcur\Extension\waitAny;
 use function SConcur\Extension\waitAnyTimeout;
+use function SConcur\Extension\wsStopAccepting;
 
 class Extension
 {
@@ -34,7 +35,7 @@ class Extension
      * whenever the PHP <-> Go protocol changes (payload keys, exported functions) so
      * an outdated .so is rejected instead of silently misbehaving.
      */
-    private const string REQUIRED_EXTENSION_VERSION = '0.3.1';
+    private const string REQUIRED_EXTENSION_VERSION = '0.4.0';
 
     /**
      * Result frame layout (Go -> PHP), see main.go buildResultFrame. The envelope is
@@ -172,6 +173,16 @@ class Extension
     public function socketStopAccepting(string $flowKey): void
     {
         socketStopAccepting($flowKey);
+    }
+
+    /**
+     * Stops the WebSocket server flow's listener from accepting new connections and
+     * drains its in-flight connections, so a SO_REUSEPORT sibling takes over new
+     * connections while this process drains on graceful shutdown.
+     */
+    public function wsStopAccepting(string $flowKey): void
+    {
+        wsStopAccepting($flowKey);
     }
 
     public function destroy(): void

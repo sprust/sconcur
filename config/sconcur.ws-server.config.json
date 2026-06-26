@@ -1,0 +1,31 @@
+{
+    "workerScript": "/sconcur/tests/servers/ws/ws-server.php",
+    "workerCount": 3,
+    "phpBinary": "php",
+    "phpArgs": ["-d", "extension=/sconcur/ext/build/sconcur.so"],
+    "workerArgs": [],
+    "panelPort": 9201,
+    "adminToken": "23c30b4089383dd332585af6f02ff65de38179d52546b770942bd63e9894c3ec",
+    "runtimeDir": "/sconcur/tests/storage/servers",
+    "logDir": "/sconcur/tests/storage/logs",
+    "name": "sconcur-ws-server",
+    "rotateDays": 3,
+    "logTo": "both",
+    "restartPolicy": "always",
+    "shutdownTimeoutMs": 10000,
+    "restartBackoffMs": 200,
+    "maxRestartBackoffMs": 30000,
+    "server": {
+        "address": "0.0.0.0:9200",
+        "reusePort": true,
+        "path": "/",
+        "maxConnections": 0,
+        "maxConcurrency": 0,
+        "maxMessageBytes": 1048576,
+        "handshakeTimeoutMs": 10000,
+        "idleTimeoutMs": 0,
+        "writeTimeoutMs": 30000,
+        "pingIntervalMs": 30000,
+        "shutdownTimeoutMs": 5000
+    }
+}
