@@ -4,6 +4,24 @@ on:
   push:
     branches:
       - master
+    # Build & release only when something that affects the build, `make check` or
+    # the resolved version actually changes. A push touching none of these paths
+    # (e.g. docs-only) skips the whole workflow. Keep this list in sync with new
+    # build inputs — an omitted path means no release on a real change.
+    paths:
+      - '**.php'                        # src, tests, bin, config, cs-fixer.dist.php
+      - '**.go'                         # Go extension sources
+      - 'ext/**'                        # go.mod / go.sum, headers, build scripts
+      - 'composer.json'
+      - 'composer.lock'
+      - 'makefile'
+      - 'ext-build.sh'
+      - 'ext-test.sh'
+      - 'phpstan.neon'
+      - 'docker/**'
+      - 'docker-compose.yml'
+      - '.env.example'
+      - '.github/workflows/release.yml'
 
 permissions:
   contents: write
