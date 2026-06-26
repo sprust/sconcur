@@ -4,9 +4,15 @@ declare(strict_types=1);
 
 require dirname(__DIR__, 3) . '/vendor/autoload.php';
 
+use Dotenv\Dotenv;
+use SConcur\Features\Mongodb\Connection\Client as MongoClient;
+use SConcur\Features\Mongodb\Connection\Collection;
+use SConcur\Features\Mysql\Connection as MysqlConnection;
+use SConcur\Features\Pgsql\Connection as PgsqlConnection;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Features\WsServer\Dto\Connection;
 use SConcur\Features\WsServer\WsServer;
+use SConcur\WaitGroup;
 use Throwable;
 
 /**
@@ -22,6 +28,7 @@ use Throwable;
  *   "push:<n>"        -> push <n> messages "p0".."p(n-1)" for one inbound message (server push)
  *   "stream:<n>"      -> stream <n> messages "s0".."s(n-1)" 60ms apart (async between messages)
  *   "bin:<text>"      -> push <text> back as a binary message
+ *   "all"             -> fan out across the backend I/O features concurrently (load test)
  *   "noreply"         -> read but push nothing, connection stays open
  *   "closeafter:<t>"  -> push <t>, then close the connection
  *   "close"           -> close the connection (no push)
@@ -162,6 +169,127 @@ function handleMessage(Connection $connection, string $data): void
         return;
     }
 
+    if ($data === 'all') {
+        // Load-test command: fan out across the backend I/O features concurrently.
+        $connection->write(allFeaturesStatus());
+
+        return;
+    }
+
     // Default: echo the message back, preserving its text/binary type.
     $connection->write($data, binary: $connection->lastMessageWasBinary());
+}
+
+/**
+ * Load-test fan-out: runs the backend I/O features concurrently in one message (a
+ * nested WaitGroup) — Sleeper, MongoDB, MySQL, PostgreSQL — and returns a JSON status
+ * map. Mirrors the HTTP demo server's /all route; used to watch memory/CPU under load.
+ * Each feature is isolated so a transient backend hiccup degrades just that feature.
+ */
+function allFeaturesStatus(): string
+{
+    [$mongo, $mysql, $pgsql] = allFeaturesContext();
+
+    $status = [];
+
+    $waitGroup = WaitGroup::create();
+
+    $waitGroup->add(static function () use (&$status): void {
+        $status['sleeper'] = allFeatureStatus(static function (): void {
+            Sleeper::usleep(microseconds: 1000);
+        });
+    });
+
+    $waitGroup->add(static function () use (&$status, $mongo): void {
+        $status['mongodb'] = allFeatureStatus(static function () use ($mongo): void {
+            $mongo->insertOne(['t' => 'load']);
+            $mongo->findOne(filter: ['t' => 'load']);
+        });
+    });
+
+    $waitGroup->add(static function () use (&$status, $mysql): void {
+        $status['mysql'] = allFeatureStatus(static function () use ($mysql): void {
+            $mysql->fetchAll('SELECT 1');
+        });
+    });
+
+    $waitGroup->add(static function () use (&$status, $pgsql): void {
+        $status['pgsql'] = allFeatureStatus(static function () use ($pgsql): void {
+            $pgsql->fetchAll('SELECT 1');
+        });
+    });
+
+    $waitGroup->waitResults();
+
+    return (string) json_encode($status);
+}
+
+/**
+ * Lazily builds and caches the per-worker DB connections used by "all" on its first
+ * use (so the other demo commands never pay for them and never require the backends).
+ * The Go side pools the real connections by URI/DSN, so reusing these objects is cheap.
+ *
+ * @return array{0: Collection, 1: MysqlConnection, 2: PgsqlConnection}
+ */
+function allFeaturesContext(): array
+{
+    /** @var array{0: Collection, 1: MysqlConnection, 2: PgsqlConnection}|null $context */
+    static $context = null;
+
+    if ($context !== null) {
+        return $context;
+    }
+
+    Dotenv::createImmutable(dirname(__DIR__, 3))->safeLoad();
+
+    $context = [
+        new MongoClient(
+            uri: sprintf(
+                'mongodb://%s:%s@%s:%s',
+                $_ENV['MONGO_ADMIN_USERNAME'],
+                $_ENV['MONGO_ADMIN_PASSWORD'],
+                $_ENV['MONGO_HOST'],
+                $_ENV['MONGO_PORT'],
+            ),
+        )
+            ->selectDatabase('u-test')
+            ->selectCollection('load_all'),
+        new MysqlConnection(
+            dsn: sprintf(
+                '%s:%s@tcp(%s:%s)/%s?parseTime=true',
+                $_ENV['MYSQL_USER'],
+                $_ENV['MYSQL_PASSWORD'],
+                $_ENV['MYSQL_HOST'],
+                $_ENV['MYSQL_PORT'],
+                $_ENV['MYSQL_DATABASE'],
+            ),
+        ),
+        new PgsqlConnection(
+            dsn: sprintf(
+                'postgres://%s:%s@%s:%s/%s?sslmode=disable',
+                $_ENV['POSTGRES_USER'],
+                $_ENV['POSTGRES_PASSWORD'],
+                $_ENV['POSTGRES_HOST'],
+                $_ENV['POSTGRES_PORT'],
+                $_ENV['POSTGRES_DB'],
+            ),
+        ),
+    ];
+
+    return $context;
+}
+
+/**
+ * Runs one feature call and returns 'ok' or 'err: <message>', so a transient backend
+ * failure degrades that one feature instead of failing the whole "all" message.
+ */
+function allFeatureStatus(callable $call): string
+{
+    try {
+        $call();
+
+        return 'ok';
+    } catch (Throwable $exception) {
+        return 'err: ' . $exception->getMessage();
+    }
 }

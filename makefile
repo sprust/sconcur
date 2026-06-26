@@ -296,3 +296,22 @@ bench-http-load-soak:
 # measures the pure HTTP + framework ceiling, the floor under the /all numbers.
 bench-http-load-stats-empty:
 	ROUTE=/ tests/benchmarks/http-load-stats.sh
+
+# WebSocket load test: spawn a ws-server pool (SO_REUSEPORT, one per core) and drive
+# it with the Go ws-load generator on the "all" message (fans out across EVERY async
+# I/O feature per message), sampling CPU/memory + per-worker RSS (leak check). Both
+# the pool and the generator run in the php container (no host tooling needed).
+# Tunables via env, e.g.: make bench-ws-load-stats SERVERS=12 DURATION=30
+bench-ws-load-stats:
+	tests/benchmarks/ws-load-stats.sh
+
+# Soak variant: a long, steady-load run (10 min by default) that prints the
+# worker-RSS trend over time and a least-squares leak slope. Override via env,
+# e.g.: make bench-ws-load-soak DURATION=3600
+bench-ws-load-soak:
+	MODE=soak tests/benchmarks/ws-load-stats.sh
+
+# Baseline variant: same harness against the bare "ping" message (no I/O fan-out) —
+# measures the pure WebSocket + framework ceiling, the floor under the "all" numbers.
+bench-ws-load-stats-empty:
+	MSG=ping tests/benchmarks/ws-load-stats.sh

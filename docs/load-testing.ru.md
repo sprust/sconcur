@@ -149,5 +149,45 @@ CPU пропорционален нагрузке, а не прибит к 100 %
   (наклон −0.08 MiB/мин). Для абсолютной уверенности на проде — многочасовой прогон:
   `make bench-http-load-soak` (`MODE=soak`), напр. `DURATION=3600` и дольше.
 
-См. также: [HTTP-сервер](http-server.ru.md), [Мастер воркеров](worker-master.ru.md),
+## WebSocket-сервер под нагрузкой
+
+У WebSocket-сервера есть та же связка нагрузка + ресурсы, но `wrk` тут не годится (он
+только HTTP), поэтому генератор нагрузки — свой: `ext/cmd/ws-load` (Go, на
+`coder/websocket`), WS-аналог `wrk`. Он держит N постоянных соединений, гоняет по ним
+back-to-back round-trip'ы и печатает throughput и латентность p50/p90/p99.
+
+Инструменты:
+- команда `all` демо-сервера (`tests/servers/ws/ws-server.php`) — на каждое сообщение
+  конкурентно (вложенный `WaitGroup`) гоняет те же бэкенд-I/O-фичи, что и HTTP-`/all`:
+  `Sleeper`, MongoDB (insert + findOne), MySQL (`SELECT 1`), PostgreSQL (`SELECT 1`).
+  Соединения к БД создаются лениво, один раз на воркер;
+- скрипт `tests/benchmarks/ws-load-stats.sh` (`make bench-ws-load-stats`) — поднимает пул
+  ws-серверов (`SO_REUSEPORT`, по процессу на ядро) в контейнере `php`, гонит по нему
+  `ext/cmd/ws-load` и во время прогона семплит `docker stats` плюс суммарный RSS воркеров
+  (детект утечки), той же логикой, что и `http-load-stats.sh`.
+
+Отличие от HTTP-варианта: и пул, и генератор живут в контейнере `php` (WebSocket не
+требует хостовых утилит), пиннятся на непересекающиеся ядра (`taskset`), генератор бьёт по
+пулу через loopback (`127.0.0.1`, без NAT).
+
+```sh
+make bench-ws-load-stats
+# тюнинг через env:
+SERVERS=12 CONNECTIONS=256 DURATION=20 SAMPLE_INTERVAL=2 tests/benchmarks/ws-load-stats.sh
+
+# базовый прогон по "ping" (потолок самого фреймворка, без I/O):
+make bench-ws-load-stats-empty
+
+# soak-режим (длинный устойчивый прогон с трендом RSS и наклоном MiB/мин):
+make bench-ws-load-soak               # 10 минут по умолчанию
+DURATION=3600 make bench-ws-load-soak # часовой soak
+```
+
+Метрики читаются так же, как у HTTP: `ping` против `all` показывает цену
+фичевого фан-аута (round-trip PHP↔Go на каждую фичу), а наклон RSS в soak-режиме —
+авторитетный вердикт по утечке (короткий прогон даёт шум прогрева). Стороны WS-сервера и
+HTTP-сервера здесь устроены одинаково, поэтому и выводы переносятся.
+
+См. также: [HTTP-сервер](http-server.ru.md), [WebSocket-сервер](websocket-server.ru.md),
+[Мастер воркеров](worker-master.ru.md),
 [SO_REUSEPORT-throughput](../tests/benchmarks/http-throughput.sh).
