@@ -86,26 +86,12 @@ jobs:
 
           # Fully recreate the versioned release so re-pushing the same version refreshes
           # its asset, target commit and date (delete + create; --cleanup-tag moves the
-          # tag to the new commit). --latest=false keeps the "Latest" marker off it (it
-          # is a semver tag, so gh would otherwise auto-mark it) — the rolling `latest`
-          # release below owns that marker. --generate-notes auto-builds the changelog
-          # from PRs/commits between previous_tag and this release.
+          # tag to the new commit). --latest marks it as the GitHub "Latest" release
+          # (what /releases/latest resolves to). --generate-notes auto-builds the
+          # changelog from PRs/commits between previous_tag and this release.
           gh release delete "$tag" --yes --cleanup-tag || true
           gh release create "$tag" ./ext/build/sconcur.so \
             --target "$GITHUB_SHA" \
             --title "$tag" \
             "${notes_args[@]}" \
-            --latest=false
-
-      - name: Recreate latest release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Created last and marked --latest so the rolling `latest` release keeps the
-          # GitHub "Latest" marker (what /releases/latest resolves to).
-          gh release delete latest --yes --cleanup-tag || true
-          gh release create latest ./ext/build/sconcur.so \
-            --target "$GITHUB_SHA" \
-            --title "Latest Build" \
-            --notes "Automatically collected latest version" \
             --latest
