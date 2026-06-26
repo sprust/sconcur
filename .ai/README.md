@@ -253,6 +253,18 @@ once per git branch** — the first protocol change on a branch bumps it, later
 commits on the same branch reuse that version (do not move it again). Current:
 `0.4.0`.
 
+**All three version sources must be equal** — bump them together, in the same
+commit:
+
+1. `ext/main.go` → `version()` (the Go extension's reported version)
+2. `src/Connection/Extension.php` → `REQUIRED_EXTENSION_VERSION`
+3. `composer.json` → `"version"`
+
+The release CI derives the release tag from the extension version (via
+`bin/sconcur-status`), so a drift between these would ship a mislabeled release.
+`tests/feature/Connection/VersionConsistencyTest.php` enforces the equality —
+it fails the build if any of the three diverges.
+
 ## Exceptions
 
 Concept: callable signatures stay clean of `@throws` noise, so the public API

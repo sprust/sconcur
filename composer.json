@@ -2,7 +2,7 @@
     "name": "sconcur/sconcur",
     "description": "PHP concurrency library backed by an extension written in Go",
     "license": "MIT",
-    "version": "0.0.1",
+    "version": "0.4.0",
     "authors": [
         {
             "name": "Pavel",
@@ -30,6 +30,7 @@
         "ext-pcntl": "Required for graceful shutdown of the HTTP server (SIGTERM/SIGINT handling); the server otherwise runs until the process is killed"
     },
     "bin": [
+        "bin/sconcur-load",
         "bin/sconcur-server",
         "bin/sconcur-status"
     ],

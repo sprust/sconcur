@@ -1,0 +1,135 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use SConcur\Connection\Extension;
+
+$autoloads = [
+    __DIR__ . '/../vendor/autoload.php',  // running from the repo
+    __DIR__ . '/../../../autoload.php',   // installed as a dependency (vendor/bin)
+];
+
+foreach ($autoloads as $autoload) {
+    if (is_file($autoload)) {
+        require $autoload;
+
+        break;
+    }
+}
+
+// Downloads the "sconcur" Go extension (.so) matching the version this PHP package is
+// built against (Extension::REQUIRED_EXTENSION_VERSION), so the loaded extension passes
+// Extension::checkExtension. The first argument is the full local target path.
+$fail = static function (string $message): never {
+    fwrite(STDERR, 'sconcur-load: ' . $message . PHP_EOL);
+
+    exit(1);
+};
+
+$targetArgument = $argv[1] ?? null;
+
+if ($targetArgument === null || $targetArgument === '') {
+    $fail('the first argument must be a full local target path (file or directory).');
+}
+
+// A directory target saves the file under its canonical name; otherwise the argument is
+// the exact destination file path.
+$targetPath = is_dir($targetArgument)
+    ? rtrim($targetArgument, '/') . '/sconcur.so'
+    : $targetArgument;
+
+$targetDirectory = dirname($targetPath);
+
+if (!is_dir($targetDirectory)) {
+    $fail(sprintf('target directory "%s" does not exist.', $targetDirectory));
+}
+
+// Check up-front that we can write where the file will land, so a long download does not
+// fail at the final step. An existing target must be overwritable; otherwise the
+// directory must be writable to create it.
+if (file_exists($targetPath)) {
+    if (!is_writable($targetPath)) {
+        $fail(sprintf('target file "%s" is not writable.', $targetPath));
+    }
+} elseif (!is_writable($targetDirectory)) {
+    $fail(sprintf('target directory "%s" is not writable.', $targetDirectory));
+}
+
+$version = Extension::REQUIRED_EXTENSION_VERSION;
+
+$downloadUrl = sprintf(
+    'https://github.com/sprust/sconcur/releases/download/v%s/sconcur.so',
+    $version,
+);
+
+// Download into a sibling temp file first, then atomically rename into place, so the
+// target is never left as a half-written file.
+$temporaryPath = $targetPath . '.tmp';
+
+echo sprintf('Downloading sconcur extension v%s', $version), PHP_EOL;
+echo sprintf('  from: %s', $downloadUrl), PHP_EOL;
+echo sprintf('  to:   %s', $targetPath), PHP_EOL;
+
+$context = stream_context_create(
+    [
+        'http' => [
+            'method'          => 'GET',
+            'follow_location' => 1,  // GitHub redirects the release asset to its CDN
+            'max_redirects'   => 5,
+            'timeout'         => 300,
+            'ignore_errors'   => true,
+            'user_agent'      => 'sconcur-load',
+        ],
+    ],
+);
+
+$source = @fopen($downloadUrl, 'rb', false, $context);
+
+if ($source === false) {
+    $fail(sprintf('could not open the download stream: %s', $downloadUrl));
+}
+
+// $http_response_header is populated by the HTTP stream wrapper after fopen.
+$statusCode = 0;
+
+foreach ($http_response_header ?? [] as $headerLine) {
+    if (preg_match('#^HTTP/\S+\s+(\d{3})#', $headerLine, $matches) === 1) {
+        $statusCode = (int) $matches[1];
+    }
+}
+
+if ($statusCode !== 200) {
+    fclose($source);
+
+    $fail(sprintf('download failed with HTTP status %d for %s', $statusCode, $downloadUrl));
+}
+
+$destination = @fopen($temporaryPath, 'wb');
+
+if ($destination === false) {
+    fclose($source);
+
+    $fail(sprintf('could not open the temporary file for writing: %s', $temporaryPath));
+}
+
+$copiedBytes = stream_copy_to_stream($source, $destination);
+
+fclose($source);
+fclose($destination);
+
+if ($copiedBytes === false || $copiedBytes === 0) {
+    @unlink($temporaryPath);
+
+    $fail('the downloaded file is empty.');
+}
+
+if (!@rename($temporaryPath, $targetPath)) {
+    @unlink($temporaryPath);
+
+    $fail(sprintf('could not move the downloaded file into place: %s', $targetPath));
+}
+
+echo sprintf('Done: %s (%d bytes).', $targetPath, $copiedBytes), PHP_EOL;
+
+exit(0);
