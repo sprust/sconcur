@@ -1,13 +1,13 @@
 info:
-  name: ping
+  name: msleep
   type: websocket
-  seq: 2
+  seq: 7
 
 websocket:
   url: ws://localhost:29200/
   message:
     type: text
-    data: ping
+    data: msleep:200
   auth: inherit
 
 settings:

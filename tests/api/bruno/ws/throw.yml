@@ -1,13 +1,13 @@
 info:
-  name: ping
+  name: throw
   type: websocket
-  seq: 2
+  seq: 14
 
 websocket:
   url: ws://localhost:29200/
   message:
     type: text
-    data: ping
+    data: throw
   auth: inherit
 
 settings:

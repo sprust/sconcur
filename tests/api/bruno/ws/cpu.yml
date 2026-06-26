@@ -1,13 +1,13 @@
 info:
-  name: ping
+  name: cpu
   type: websocket
-  seq: 2
+  seq: 8
 
 websocket:
   url: ws://localhost:29200/
   message:
     type: text
-    data: ping
+    data: cpu:200000
   auth: inherit
 
 settings:
