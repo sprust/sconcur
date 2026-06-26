@@ -19,6 +19,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Full history + all tags: needed to resolve the previous version tag for
+          # strict version-to-version release notes.
+          fetch-depth: 0
 
       - name: Prepare environment
         run: cp .env.example .env
@@ -64,16 +68,33 @@ jobs:
         run: |
           tag="${{ steps.version.outputs.tag }}"
 
+          # Previous version tag = the highest v* tag strictly below the current one, so
+          # the notes cover strictly the previous version → this version. Empty on the
+          # very first versioned release, where we let --generate-notes fall back to its
+          # automatic base. (bkp/latest and other non-v tags are ignored.)
+          previous_tag=$( { git tag -l 'v*'; echo "$tag"; } | sort -V -u \
+            | awk -v current="$tag" '$0 == current { print previous; exit } { previous = $0 }' )
+
+          notes_args=(--generate-notes)
+
+          if [ -n "$previous_tag" ]; then
+            echo "Generating notes from $previous_tag to $tag."
+            notes_args+=(--notes-start-tag "$previous_tag")
+          else
+            echo "No previous version tag found; using automatic notes base."
+          fi
+
           # Fully recreate the versioned release so re-pushing the same version refreshes
           # its asset, target commit and date (delete + create; --cleanup-tag moves the
           # tag to the new commit). --latest=false keeps the "Latest" marker off it (it
           # is a semver tag, so gh would otherwise auto-mark it) — the rolling `latest`
-          # release below owns that marker.
+          # release below owns that marker. --generate-notes auto-builds the changelog
+          # from PRs/commits between previous_tag and this release.
           gh release delete "$tag" --yes --cleanup-tag || true
           gh release create "$tag" ./ext/build/sconcur.so \
             --target "$GITHUB_SHA" \
             --title "$tag" \
-            --notes "sconcur extension $tag" \
+            "${notes_args[@]}" \
             --latest=false
 
       - name: Recreate latest release
