@@ -29,6 +29,15 @@
 - **Готово (стриминг ответов):** respond переведён на команды записи
   (`op` full/head/chunk/end) с round-trip-подтверждением (write backpressure);
   chunked/SSE через `http.Flusher`; PHP `StreamedResponse` + `ResponseStream::write`.
+- **Готово (PSR-7 публичный контракт):** позже нативные DTO `Request`/`Response`/
+  `StreamedResponse`/`ResponseStream` сняты, surface переведён на PSR-7 (зеркало
+  PSR-18 клиента): `serve(Closure(ServerRequestInterface): ResponseInterface)`,
+  две инъецируемые PSR-17 фабрики в конструкторе/`fromArgs`. Запрос строится из
+  Go-события через `ServerRequestFactoryInterface`; тело — `Dto/RequestBodyStream`
+  (ленивый `StreamInterface` поверх `Dto/RequestBody`). Стриминг ответа выражается
+  телом-`StreamInterface` неизвестного размера (`getSize() === null`), которое
+  фреймворк дренажит чанками — отдельного `StreamedResponse` больше нет. Go-протокол
+  (`op` full/head/chunk/end) не менялся, версия расширения не бампалась.
 - **Готово (лимит конкурентности):** `HttpServer(maxConcurrency: N)` — семафор в Go
   `ServeHTTP` до чтения тела; ограничивает горутины, память (тела) и PHP-корутины разом.
 - **Готово (503 при дренаже):** запрос, принятый но не отвеченный к моменту остановки,

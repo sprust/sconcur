@@ -5,20 +5,21 @@ declare(strict_types=1);
 require dirname(__DIR__, 3) . '/vendor/autoload.php';
 
 use Dotenv\Dotenv;
-use SConcur\Features\HttpServer\Dto\Request;
-use SConcur\Features\HttpServer\Dto\Response;
-use SConcur\Features\HttpServer\Dto\ResponseStream;
-use SConcur\Features\HttpServer\Dto\StreamedResponse;
+use Nyholm\Psr7\Factory\Psr17Factory;
+use Psr\Http\Message\ResponseInterface;
+use Psr\Http\Message\ServerRequestInterface;
 use SConcur\Features\HttpServer\HttpServer;
 use SConcur\Features\Mongodb\Connection\Client as MongoClient;
 use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Features\Mysql\Connection as MysqlConnection;
 use SConcur\Features\Pgsql\Connection as PgsqlConnection;
 use SConcur\Features\Sleeper\Sleeper;
+use SConcur\Tests\Impl\HttpServer\GeneratorStream;
 use SConcur\WaitGroup;
 
 /**
- * Demo / test HTTP server. Routes:
+ * Demo / test HTTP server. The handler is PSR-7: it receives a ServerRequestInterface
+ * and returns a ResponseInterface (built here with nyholm/psr7). Routes:
  *   GET  /                  -> 200 "ok"
  *   GET  /pid               -> 200, body = this process pid (used by the worker-master tests)
  *   *    /method            -> 200, body = request method (GET/POST/...)
@@ -49,106 +50,146 @@ use SConcur\WaitGroup;
  *   --maxRequests  --reusePort (0/1)
  */
 
+// A single nyholm factory plays both PSR-17 roles the server needs (it builds the
+// request handed to the handler and the fallback error responses).
+$psr17Factory = new Psr17Factory();
+
 // Build the server from argv: each --name=value maps to the matching HttpServer
 // constructor parameter. Under WorkerMaster the injected --masterPid wires the
 // orphan check (the worker self-terminates if its master dies); without it the
 // check is off (standalone run).
-$server = HttpServer::fromArgs($_SERVER['argv']);
+$server = HttpServer::fromArgs(
+    argv: $_SERVER['argv'],
+    serverRequestFactory: $psr17Factory,
+    responseFactory: $psr17Factory,
+);
 
-$server->serve(static function (Request $request): Response|StreamedResponse {
-    if ($request->path === '/method') {
-        return new Response(body: $request->method);
+$server->serve(static function (ServerRequestInterface $request) use ($psr17Factory): ResponseInterface {
+    $path   = $request->getUri()->getPath();
+    $method = $request->getMethod();
+
+    if ($path === '/method') {
+        return text($psr17Factory, $method);
     }
 
-    if ($request->path === '/echo') {
-        return new Response(body: $request->body->contents());
+    if ($path === '/echo') {
+        return text($psr17Factory, $request->getBody()->getContents());
     }
 
-    if ($request->path === '/upload') {
+    if ($path === '/upload') {
         // Stream the body in fixed 8 KiB pieces (never buffering it whole) and
         // return its sha256, so a test can verify every byte arrived in order.
         $hash = hash_init('sha256');
 
-        while (($chunk = $request->body->read(8192)) !== null) {
+        $body = $request->getBody();
+
+        while (($chunk = $body->read(8192)) !== '') {
             hash_update($hash, $chunk);
         }
 
-        return new Response(body: hash_final($hash));
+        return text($psr17Factory, hash_final($hash));
     }
 
-    if ($request->path === '/query') {
-        return new Response(body: $request->query);
+    if ($path === '/query') {
+        return text($psr17Factory, $request->getUri()->getQuery());
     }
 
-    if ($request->path === '/echo-header') {
-        return new Response(body: headerValue($request, 'X-Echo'));
+    if ($path === '/echo-header') {
+        // Join with "," (not getHeaderLine()'s ", ") so a test can assert the exact bytes.
+        return text($psr17Factory, implode(',', $request->getHeader('X-Echo')));
     }
 
-    if ($request->path === '/meta') {
-        return new Response(body: "$request->proto $request->host");
+    if ($path === '/meta') {
+        return text($psr17Factory, 'HTTP/' . $request->getProtocolVersion() . ' ' . $request->getHeaderLine('Host'));
     }
 
-    if ($request->method !== 'GET') {
-        return new Response(body: 'method not allowed', status: 405);
+    if ($method !== 'GET') {
+        return text($psr17Factory, 'method not allowed', 405);
     }
 
     return match (true) {
-        $request->path === '/'        => new Response(body: 'ok'),
-        $request->path === '/pid'     => new Response(body: (string) getmypid()),
-        $request->path === '/empty'   => new Response(),
-        $request->path === '/cookies' => new Response(
-            body: 'cookies',
-            headers: ['Set-Cookie' => ['a=1', 'b=2']],
+        $path === '/'        => text($psr17Factory, 'ok'),
+        $path === '/pid'     => text($psr17Factory, (string) getmypid()),
+        $path === '/empty'   => text($psr17Factory),
+        $path === '/cookies' => text(
+            $psr17Factory,
+            'cookies',
+            200,
+            ['Set-Cookie' => ['a=1', 'b=2']],
         ),
-        $request->path === '/all'         => allFeaturesRoute(),
-        $request->path === '/stream'      => streamRoute(),
-        $request->path === '/slow-stream' => slowStreamRoute(),
-        $request->path === '/truncated'   => truncatedRoute(),
-        str_starts_with($request->path, '/big/')      => bigRoute($request->path),
-        str_starts_with($request->path, '/redirect/')  => redirectRoute($request->path),
-        $request->path === '/throw'       => throw new RuntimeException('boom in handler'),
-        str_starts_with($request->path, '/msleep/') => msleepRoute($request->path),
-        str_starts_with($request->path, '/native-msleep/') => nativeMsleepRoute($request->path),
-        str_starts_with($request->path, '/cpu/')    => cpuRoute($request->path),
-        str_starts_with($request->path, '/status/') => statusRoute($request->path),
-        default => new Response(body: 'not found', status: 404),
+        $path === '/all'         => allFeaturesRoute($psr17Factory),
+        $path === '/stream'      => streamRoute($psr17Factory),
+        $path === '/slow-stream' => slowStreamRoute($psr17Factory),
+        $path === '/truncated'   => truncatedRoute($psr17Factory),
+        str_starts_with($path, '/big/')       => bigRoute($psr17Factory, $path),
+        str_starts_with($path, '/redirect/')  => redirectRoute($psr17Factory, $path),
+        $path === '/throw'       => throw new RuntimeException('boom in handler'),
+        str_starts_with($path, '/msleep/') => msleepRoute($psr17Factory, $path),
+        str_starts_with($path, '/native-msleep/') => nativeMsleepRoute($psr17Factory, $path),
+        str_starts_with($path, '/cpu/')    => cpuRoute($psr17Factory, $path),
+        str_starts_with($path, '/status/') => statusRoute($psr17Factory, $path),
+        default => text($psr17Factory, 'not found', 404),
     };
 });
 
 /**
- * Returns the value(s) of a request header (case-insensitive), joined by ",".
+ * Builds a plain response: status, optional headers, optional body. A header value
+ * may be a string or a list of strings (e.g. several Set-Cookie entries).
+ *
+ * @param array<string, string|array<int, string>> $headers
  */
-function headerValue(Request $request, string $name): string
+function text(Psr17Factory $factory, string $body = '', int $status = 200, array $headers = []): ResponseInterface
 {
-    foreach ($request->headers as $headerName => $values) {
-        if (strcasecmp($headerName, $name) === 0) {
-            return implode(',', $values);
-        }
+    $response = $factory->createResponse($status);
+
+    foreach ($headers as $name => $value) {
+        $response = $response->withHeader($name, $value);
     }
 
-    return '';
+    if ($body !== '') {
+        $response = $response->withBody($factory->createStream($body));
+    }
+
+    return $response;
 }
 
-function msleepRoute(string $path): Response
+/**
+ * Builds a streamed response: the body is a GeneratorStream of unknown size, so the
+ * server drains it chunk by chunk (chunked transfer) instead of one atomic write.
+ *
+ * @param array<string, string|array<int, string>> $headers
+ */
+function streamResponse(Psr17Factory $factory, Generator $chunks, array $headers = []): ResponseInterface
+{
+    $response = $factory->createResponse(200);
+
+    foreach ($headers as $name => $value) {
+        $response = $response->withHeader($name, $value);
+    }
+
+    return $response->withBody(new GeneratorStream($chunks));
+}
+
+function msleepRoute(Psr17Factory $factory, string $path): ResponseInterface
 {
     $milliseconds = (int) substr($path, strlen('/msleep/'));
 
     Sleeper::usleep(microseconds: $milliseconds * 1000);
 
-    return new Response(body: 'slept');
+    return text($factory, 'slept');
 }
 
 // Native, BLOCKING sleep — unlike the async usleep above it does NOT yield to the
 // scheduler, so it freezes the whole single-threaded server. Used to verify that the
 // Go-side handlerTimeoutMs still answers the client with a 504 even when the PHP
 // handler is blocked natively (the timer fires independently of PHP).
-function nativeMsleepRoute(string $path): Response
+function nativeMsleepRoute(Psr17Factory $factory, string $path): ResponseInterface
 {
     $milliseconds = (int) substr($path, strlen('/native-msleep/'));
 
     usleep($milliseconds * 1000);
 
-    return new Response(body: 'native-slept');
+    return text($factory, 'native-slept');
 }
 
 /**
@@ -160,7 +201,7 @@ function nativeMsleepRoute(string $path): Response
  * isolated so a transient backend hiccup degrades just that feature (visible
  * per-feature error rate) instead of failing the whole request. Returns a JSON map.
  */
-function allFeaturesRoute(): Response
+function allFeaturesRoute(Psr17Factory $factory): ResponseInterface
 {
     [$mongo, $mysql, $pgsql] = allFeaturesContext();
 
@@ -195,9 +236,11 @@ function allFeaturesRoute(): Response
 
     $waitGroup->waitResults();
 
-    return new Response(
-        body: (string) json_encode($status),
-        headers: ['Content-Type' => 'application/json'],
+    return text(
+        $factory,
+        (string) json_encode($status),
+        200,
+        ['Content-Type' => 'application/json'],
     );
 }
 
@@ -273,53 +316,61 @@ function allFeatureStatus(callable $call): string
     }
 }
 
-function truncatedRoute(): Response
+function truncatedRoute(Psr17Factory $factory): ResponseInterface
 {
     // Declares a Content-Length far larger than the body actually sent, so net/http
     // closes the connection short and the client gets an unexpected EOF mid-body.
     // The server stays alive (no exit). Used by the download connection-drop test.
     $body = str_repeat('x', 16_384);
 
-    return new Response(
-        body: $body,
-        headers: ['Content-Length' => [(string) (strlen($body) * 4)]],
+    return text(
+        $factory,
+        $body,
+        200,
+        ['Content-Length' => [(string) (strlen($body) * 4)]],
     );
 }
 
-function streamRoute(): StreamedResponse
+function streamRoute(Psr17Factory $factory): ResponseInterface
 {
-    return new StreamedResponse(
-        writer: static function (ResponseStream $out): void {
-            foreach (['a', 'b', 'c'] as $part) {
-                $out->write("chunk-$part\n");
+    $chunks = (static function (): Generator {
+        foreach (['a', 'b', 'c'] as $part) {
+            yield "chunk-$part\n";
 
-                // Async work between chunks: other requests keep being served.
-                Sleeper::usleep(microseconds: 50_000);
-            }
-        },
-        headers: ['Content-Type' => 'text/plain'],
+            // Async work between chunks: other requests keep being served.
+            Sleeper::usleep(microseconds: 50_000);
+        }
+    })();
+
+    return streamResponse(
+        $factory,
+        $chunks,
+        ['Content-Type' => 'text/plain'],
     );
 }
 
-function slowStreamRoute(): StreamedResponse
+function slowStreamRoute(Psr17Factory $factory): ResponseInterface
 {
     // Four chunks 100ms apart (~400ms total): a small handlerTimeoutMs cuts it
     // mid-stream. Used by the handler-timeout test.
-    return new StreamedResponse(
-        writer: static function (ResponseStream $out): void {
-            foreach (['p0', 'p1', 'p2', 'p3'] as $part) {
-                $out->write("$part\n");
+    $chunks = (static function (): Generator {
+        foreach (['p0', 'p1', 'p2', 'p3'] as $part) {
+            yield "$part\n";
 
-                Sleeper::usleep(microseconds: 100_000);
-            }
-        },
-        headers: ['Content-Type' => 'text/plain'],
+            Sleeper::usleep(microseconds: 100_000);
+        }
+    })();
+
+    return streamResponse(
+        $factory,
+        $chunks,
+        ['Content-Type' => 'text/plain'],
     );
 }
 
 // CPU-bound route: a sha256 loop that does NOT yield to the scheduler — used by
 // the CPU benchmark to show SO_REUSEPORT spreading compute across processes/cores.
-function cpuRoute(string $path): Response
+function cpuRoute(Psr17Factory $factory, string $path): ResponseInterface
 {
     $iterations = (int) substr($path, strlen('/cpu/'));
 
@@ -329,7 +380,7 @@ function cpuRoute(string $path): Response
         $value = hash('sha256', $value . $i);
     }
 
-    return new Response(body: $value);
+    return text($factory, $value);
 }
 
 /**
@@ -337,7 +388,7 @@ function cpuRoute(string $path): Response
  * client can verify a large (multi-chunk) response arrives complete and in order.
  * The same pattern is reproducible on the test side.
  */
-function bigRoute(string $path): Response
+function bigRoute(Psr17Factory $factory, string $path): ResponseInterface
 {
     $size = (int) substr($path, strlen('/big/'));
 
@@ -345,7 +396,7 @@ function bigRoute(string $path): Response
         $size = 0;
     }
 
-    return new Response(body: bigBody($size));
+    return text($factory, bigBody($size));
 }
 
 function bigBody(int $size): string
@@ -360,28 +411,29 @@ function bigBody(int $size): string
  * "done". Lets a client test redirect following, a redirect cap and no-follow.
  * The Location is relative on purpose — clients must resolve it against the URL.
  */
-function redirectRoute(string $path): Response
+function redirectRoute(Psr17Factory $factory, string $path): ResponseInterface
 {
     $remaining = (int) substr($path, strlen('/redirect/'));
 
     if ($remaining <= 0) {
-        return new Response(body: 'done');
+        return text($factory, 'done');
     }
 
-    return new Response(
-        body: 'redirecting',
-        status: 302,
-        headers: ['Location' => ['/redirect/' . ($remaining - 1)]],
+    return text(
+        $factory,
+        'redirecting',
+        302,
+        ['Location' => ['/redirect/' . ($remaining - 1)]],
     );
 }
 
-function statusRoute(string $path): Response
+function statusRoute(Psr17Factory $factory, string $path): ResponseInterface
 {
     $code = (int) substr($path, strlen('/status/'));
 
     if ($code < 100 || $code > 599) {
-        return new Response(body: 'bad status', status: 400);
+        return text($factory, 'bad status', 400);
     }
 
-    return new Response(body: 'status ' . $code, status: $code);
+    return text($factory, 'status ' . $code, $code);
 }

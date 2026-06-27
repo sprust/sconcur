@@ -248,7 +248,7 @@ class HttpClientTest extends BaseHttpClientTestCase
 
     public function testGetSizeIsNullForChunkedResponse(): void
     {
-        // /stream is a flushed StreamedResponse: chunked transfer, no Content-Length.
+        // /stream is a flushed streamed response: chunked transfer, no Content-Length.
         $response = $this->client()->sendRequest(
             $this->request(
                 method: 'GET',
