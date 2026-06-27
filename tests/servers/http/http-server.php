@@ -25,6 +25,9 @@ use SConcur\WaitGroup;
  *   *    /method            -> 200, body = request method (GET/POST/...)
  *   *    /echo              -> 200, body = the request body (echo, full read)
  *   *    /upload            -> 200, body = sha256 of the request body (streamed read)
+ *   POST /files/upload?name= -> 201, streams the body to disk, JSON {saved,bytes,sha256}
+ *   GET  /files/download?name= -> streams a previously uploaded file back (attachment), 404 if missing
+ *   GET  /image?name=        -> serves an image from tests/storage/images inline (default sample.png)
  *   *    /query             -> 200, body = the raw query string
  *   *    /echo-header       -> 200, body = the "X-Echo" request header (joined)
  *   *    /meta              -> 200, body = "<proto> <host>" (connection metadata)
@@ -64,7 +67,14 @@ $server = HttpServer::fromArgs(
     responseFactory: $psr17Factory,
 );
 
-$server->serve(static function (ServerRequestInterface $request) use ($psr17Factory): ResponseInterface {
+// Where uploads land (ephemeral, shared across reuse-port workers via the temp dir;
+// not committed) and where the committed sample images live.
+$uploadDir = sys_get_temp_dir() . '/sconcur-uploads';
+$imageDir  = dirname(__DIR__, 2) . '/storage/images';
+
+@mkdir($uploadDir, 0777, true);
+
+$server->serve(static function (ServerRequestInterface $request) use ($psr17Factory, $uploadDir, $imageDir): ResponseInterface {
     $path   = $request->getUri()->getPath();
     $method = $request->getMethod();
 
@@ -103,6 +113,10 @@ $server->serve(static function (ServerRequestInterface $request) use ($psr17Fact
         return text($psr17Factory, 'HTTP/' . $request->getProtocolVersion() . ' ' . $request->getHeaderLine('Host'));
     }
 
+    if ($path === '/files/upload' && $method === 'POST') {
+        return filesUploadRoute($psr17Factory, $request, $uploadDir);
+    }
+
     if ($method !== 'GET') {
         return text($psr17Factory, 'method not allowed', 405);
     }
@@ -117,7 +131,9 @@ $server->serve(static function (ServerRequestInterface $request) use ($psr17Fact
             200,
             ['Set-Cookie' => ['a=1', 'b=2']],
         ),
-        $path === '/all'         => allFeaturesRoute($psr17Factory),
+        $path === '/all'              => allFeaturesRoute($psr17Factory),
+        $path === '/files/download'   => filesDownloadRoute($psr17Factory, $uploadDir, $request),
+        $path === '/image'            => imageRoute($psr17Factory, $imageDir, $request),
         $path === '/stream'      => streamRoute($psr17Factory),
         $path === '/slow-stream' => slowStreamRoute($psr17Factory),
         $path === '/truncated'   => truncatedRoute($psr17Factory),
@@ -168,6 +184,134 @@ function streamResponse(Psr17Factory $factory, Generator $chunks, array $headers
     }
 
     return $response->withBody(new GeneratorStream($chunks));
+}
+
+/**
+ * Streams the request body straight to a file on disk in fixed pieces (never
+ * buffering it whole), then returns JSON with the saved size and sha256 — a file
+ * upload into a long-lived server.
+ */
+function filesUploadRoute(Psr17Factory $factory, ServerRequestInterface $request, string $uploadDir): ResponseInterface
+{
+    $name   = basename((string) ($request->getQueryParams()['name'] ?? ''));
+    $target = $uploadDir . '/' . ($name !== '' ? $name : 'upload.bin');
+
+    $handle = fopen($target, 'wb');
+
+    if ($handle === false) {
+        return text($factory, 'cannot open upload target', 500);
+    }
+
+    $body = $request->getBody();
+
+    $bytes = 0;
+    $hash  = hash_init('sha256');
+
+    while (($chunk = $body->read(8192)) !== '') {
+        fwrite($handle, $chunk);
+        hash_update($hash, $chunk);
+
+        $bytes += strlen($chunk);
+    }
+
+    fclose($handle);
+
+    return text(
+        $factory,
+        (string) json_encode([
+            'saved'  => basename($target),
+            'bytes'  => $bytes,
+            'sha256' => hash_final($hash),
+        ]),
+        201,
+        ['Content-Type' => 'application/json'],
+    );
+}
+
+/**
+ * Streams a previously uploaded file from disk back to the client as an attachment.
+ * The body is built from the file via the PSR-17 stream factory (size known → one
+ * write); 404 if the file does not exist.
+ */
+function filesDownloadRoute(Psr17Factory $factory, string $uploadDir, ServerRequestInterface $request): ResponseInterface
+{
+    $name   = basename((string) ($request->getQueryParams()['name'] ?? ''));
+    $source = $uploadDir . '/' . $name;
+
+    if ($name === '' || !is_file($source)) {
+        return text($factory, 'not found', 404);
+    }
+
+    return fileResponse(
+        $factory,
+        $source,
+        'application/octet-stream',
+        'attachment; filename="' . $name . '"',
+    );
+}
+
+/**
+ * Serves an image from tests/storage/images inline (Content-Type guessed from the
+ * extension), so a browser displays it directly. Defaults to sample.png.
+ */
+function imageRoute(Psr17Factory $factory, string $imageDir, ServerRequestInterface $request): ResponseInterface
+{
+    $name = basename((string) ($request->getQueryParams()['name'] ?? '')) ?: 'sample.png';
+
+    $source = $imageDir . '/' . $name;
+
+    if (!is_file($source)) {
+        return text($factory, 'image not found', 404);
+    }
+
+    return fileResponse(
+        $factory,
+        $source,
+        imageMimeType($source),
+        'inline',
+    );
+}
+
+/**
+ * Builds a response that serves a file from disk: the body is read from the file via
+ * the PSR-17 stream factory, and Content-Length is set from the known size so the
+ * client gets the length up front (no needless chunked encoding for large files).
+ */
+function fileResponse(
+    Psr17Factory $factory,
+    string $source,
+    string $contentType,
+    string $contentDisposition,
+): ResponseInterface {
+    $stream = $factory->createStreamFromFile($source, 'rb');
+    $size   = $stream->getSize();
+
+    $response = $factory->createResponse(200)
+        ->withHeader('Content-Type', $contentType)
+        ->withHeader('Content-Disposition', $contentDisposition)
+        ->withBody($stream);
+
+    if ($size !== null) {
+        $response = $response->withHeader('Content-Length', (string) $size);
+    }
+
+    return $response;
+}
+
+/**
+ * Maps a file extension to an image MIME type (a tiny allow-list, default
+ * application/octet-stream) — keeps the demo free of a fileinfo dependency.
+ */
+function imageMimeType(string $path): string
+{
+    return match (strtolower(pathinfo($path, PATHINFO_EXTENSION))) {
+        'png'         => 'image/png',
+        'jpg', 'jpeg' => 'image/jpeg',
+        'gif'         => 'image/gif',
+        'webp'        => 'image/webp',
+        'svg'         => 'image/svg+xml',
+        default       => 'application/octet-stream',
+    };
 }
 
 function msleepRoute(Psr17Factory $factory, string $path): ResponseInterface

@@ -162,6 +162,40 @@ return $factory->createResponse(200)
     ->withBody($factory->createStream('ok'));
 ```
 
+### Файлы: загрузка на диск, скачивание, отдача картинки
+
+Тело запроса — `StreamInterface`, поэтому загрузку пишут на диск кусками, не держа
+файл в памяти. Ответ-файл строят из `StreamInterface` поверх файла (`createStreamFromFile()`
+у PSR-17 фабрики): размер известен, ответ уходит одной записью, а явный
+`Content-Length` избавляет от лишнего chunked для крупных файлов.
+
+```php
+// Загрузка: стримим тело запроса в файл кусками.
+$handle = fopen($target, 'wb');
+$body   = $request->getBody();
+
+while (($chunk = $body->read(8192)) !== '') {
+    fwrite($handle, $chunk);
+}
+
+fclose($handle);
+
+// Скачивание / отдача картинки: тело — файловый поток, длина известна.
+$stream = $factory->createStreamFromFile($path, 'rb');
+
+return $factory->createResponse(200)
+    ->withHeader('Content-Type', 'image/png')      // image/* → браузер покажет inline
+    ->withHeader('Content-Disposition', 'inline')  // attachment; filename="..." — для скачивания
+    ->withHeader('Content-Length', (string) $stream->getSize())
+    ->withBody($stream);
+```
+
+Готовые маршруты есть в демо-сервере (`tests/servers/http/http-server.php`):
+`POST /files/upload?name=` стримит тело во временный файл и отдаёт JSON
+`{saved,bytes,sha256}`; `GET /files/download?name=` отдаёт ранее загруженный файл
+вложением (`attachment`); `GET /image?name=` отдаёт картинку из `tests/storage/images`
+inline (по умолчанию `sample.png`), так что её видно прямо в браузере.
+
 ### Сервер с тюнингом
 
 ```php
@@ -769,10 +803,10 @@ $server = TestHttpServer::start(['maxConcurrency' => 2, 'handlerTimeoutMs' => 20
 `BaseHttpServerTestCase` поднимает по серверу на тест-класс; переопределите
 `serverOptions()` для нужных настроек. Демо-сервер
 (`tests/servers/http/http-server.php`) содержит маршруты под все сценарии тестов:
-`/`, `/pid`, `/method`, `/echo`, `/upload`, `/query`, `/echo-header`, `/meta`,
-`/empty`, `/cookies`, `/all`, `/stream`, `/slow-stream`, `/truncated`, `/big/{size}`,
-`/redirect/{n}`, `/throw`, `/msleep/{ms}`, `/native-msleep/{ms}`, `/cpu/{n}`,
-`/status/{code}`.
+`/`, `/pid`, `/method`, `/echo`, `/upload`, `/files/upload`, `/files/download`,
+`/image`, `/query`, `/echo-header`, `/meta`, `/empty`, `/cookies`, `/all`, `/stream`,
+`/slow-stream`, `/truncated`, `/big/{size}`, `/redirect/{n}`, `/throw`, `/msleep/{ms}`,
+`/native-msleep/{ms}`, `/cpu/{n}`, `/status/{code}`.
 
 Покрытие (`tests/feature/Features/HttpServer/`): маршрутизация и методы, query и
 заголовки запроса, бинарное тело, мульти-заголовки ответа, стриминг, лимит
