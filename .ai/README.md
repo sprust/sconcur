@@ -110,7 +110,7 @@ non-fiber path.)
 - `Features/Mongodb/Connection/{Client,Database,Collection}` — MongoDB operations (insert, update, delete, find, aggregate, indexes, bulk write)
 - `Features/Sleeper/Sleeper` — async sleep
 - `Features/Mongodb/Serialization/DocumentSerializer` — encodes/decodes raw BSON via `ext-mongodb` (`MongoDB\BSON\Document`); values are native `MongoDB\BSON\*` types
-- `Features/HttpServer/` — long-lived HTTP server: `HttpServer::serve()`, `HttpServer::fromArgs()` (build from argv), `Scheduler::serve()`, DTOs (`Request`/`RequestBody`/`Response`/`StreamedResponse`/`ResponseStream`). A built-in access log line per request goes to STDOUT. See [docs/http-server.ru.md](../docs/http-server.ru.md).
+- `Features/HttpServer/` — long-lived HTTP server with a PSR-7 surface (mirror of the PSR-18 HttpClient): `HttpServer::serve(Closure(ServerRequestInterface): ResponseInterface)`, `HttpServer::fromArgs()` (build from argv; both take injected PSR-17 `ServerRequestFactoryInterface` + `ResponseFactoryInterface`, so the library is implementation-agnostic), `Scheduler::serve()`. The request is built from the Go event via the factory; its body is `Dto/RequestBodyStream` (a lazy `StreamInterface` over `Dto/RequestBody`). A response whose body has unknown size (`getSize() === null`) is streamed chunk by chunk (chunked/SSE) with write backpressure. Payloads `ServePayload`/`RespondPayload`. A built-in access log line per request goes to STDOUT. See [docs/http-server.ru.md](../docs/http-server.ru.md).
 - `Features/SocketServer/` — long-lived TCP server, **push model** over length-prefix framing: `SocketServer::serve(Closure(Connection): void)`, `SocketServer::fromArgs()`, `Dto/Connection` (`read()`/`write()`/`close()` — the handler drives the connection and pushes frames at will), payloads (`ServePayload`/`RespondPayload` with ops frame/close). One coroutine per connection; an access log line per connection goes to STDOUT. Shares `Scheduler::serve()` with HttpServer. See [docs/socket-server.ru.md](../docs/socket-server.ru.md).
 - `Features/Server/ServerRuntimeSupportTrait` — shared server runtime glue used by both `HttpServer` and `SocketServer`: argv→constructor-override parsing (`fromArgs`), SIGTERM/SIGINT handlers, and the orphaned-worker check.
 - `Features/HttpClient/` — async PSR-18 HTTP client with response streaming: `HttpClient` (`ClientInterface`), `HttpClientOptions`, `Payloads/RequestPayload`, `Dto/ResponseBodyStream` (`StreamInterface`). `HttpClient::download()` writes the response body straight to a file on the Go side (`DownloadFileMode`, `Dto/DownloadResult`, `DownloadException`) — never crossing into PHP. See [docs/http-client.ru.md](../docs/http-client.ru.md).
@@ -252,7 +252,7 @@ change. **Never bump the major version without the maintainer's approval**; bump
 the minor only when warranted, otherwise the patch. **Bump the version at most
 once per git branch** — the first protocol change on a branch bumps it, later
 commits on the same branch reuse that version (do not move it again). Current:
-`0.4.0`.
+`0.5.0`.
 
 **All three version sources must be equal** — bump them together, in the same
 commit:

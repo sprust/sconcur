@@ -35,18 +35,26 @@
 `worker.php` (ваш скрипт):
 
 ```php
-use SConcur\Features\HttpServer\Dto\Request;
-use SConcur\Features\HttpServer\Dto\Response;
+use Nyholm\Psr7\Factory\Psr17Factory;
+use Psr\Http\Message\ResponseInterface;
+use Psr\Http\Message\ServerRequestInterface;
 use SConcur\Features\HttpServer\HttpServer;
 
 require __DIR__ . '/vendor/autoload.php';
 
+$factory = new Psr17Factory();
+
 // fromArgs() собирает HttpServer из argv: мастер передаёт сюда ключи блока
 // `server` флагами --ключ=значение и свой pid флагом --masterPid (самозавершение,
-// если мастер умер).
-$server = HttpServer::fromArgs($_SERVER['argv']);
+// если мастер умер). PSR-17 фабрики передаются аргументами (через argv только скаляры).
+$server = HttpServer::fromArgs(
+    argv: $_SERVER['argv'],
+    serverRequestFactory: $factory,
+    responseFactory: $factory,
+);
 
-$server->serve(static fn (Request $request): Response => new Response(body: 'ok'));
+$server->serve(static fn (ServerRequestInterface $request): ResponseInterface =>
+    $factory->createResponse(200)->withBody($factory->createStream('ok')));
 ```
 
 > **`reusePort: true` нужно задать в блоке `server` конфига мастера — иначе 2-й воркер

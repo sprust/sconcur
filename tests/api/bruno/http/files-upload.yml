@@ -1,0 +1,22 @@
+info:
+  name: files-upload
+  type: http
+  seq: 24
+
+http:
+  method: POST
+  url: http://localhost:28080/files/upload?name=demo.bin
+  params:
+    - name: name
+      value: demo.bin
+      type: query
+  body:
+    type: text
+    data: |-
+      upload me to disk, then read me back via files-download
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
