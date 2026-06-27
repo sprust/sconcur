@@ -528,9 +528,11 @@ flowchart TB
 
 ```php
 $server = new HttpServer(
-    address:        '0.0.0.0:8080',
-    reusePort:      true,
-    maxConcurrency: 256, // лимит — на КАЖДЫЙ процесс
+    serverRequestFactory: $factory,
+    responseFactory:      $factory,
+    address:              '0.0.0.0:8080',
+    reusePort:            true,
+    maxConcurrency:       256, // лимит — на КАЖДЫЙ процесс
 );
 
 $server->serve($handler);
@@ -593,8 +595,10 @@ systemd удобнее запускать как template-юнит (`server@1`, 
 
 ```php
 $server = new HttpServer(
-    address:     '0.0.0.0:8080',
-    maxRequests: 10_000, // после 10 000 запросов — graceful-остановка и выход
+    serverRequestFactory: $factory,
+    responseFactory:      $factory,
+    address:              '0.0.0.0:8080',
+    maxRequests:          10_000, // после 10 000 запросов — graceful-остановка и выход
 );
 
 $server->serve($handler);

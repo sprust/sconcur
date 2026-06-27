@@ -127,13 +127,22 @@ case types.MethodHttpServe, types.MethodHttpRespond:
 
 ### DTO
 
-- `Request` (`Dto/Request.php`) — `fromPayload(string $payload)` декодит
-  `RequestEvent`. Тело — отдельный объект (`RequestBody`) с ленивым дочитыванием
-  остатка через `next()`.
-- `Response` / `StreamedResponse` + `ResponseStream` — что возвращает
-  обработчик. `Response` — один атомарный ответ; `StreamedResponse` — замыкание-писатель,
-  которому передаётся `ResponseStream`; каждый `->write($chunk)` шлёт `OP_CHUNK` и ждёт
-  флаша (backpressure). DTO — `readonly`.
+Выбор формы запроса/ответа — за вами. Два готовых примера в репозитории:
+
+- HTTP-сервер отдаёт наружу PSR-7: обработчик принимает
+  `Psr\Http\Message\ServerRequestInterface` и возвращает `ResponseInterface`
+  (см. [HTTP-сервер](http-server.ru.md)). Запрос собирается из `RequestEvent` в
+  `HttpServer::decodeRequest()` через инъецированную PSR-17 фабрику; тело —
+  `Dto/RequestBodyStream` (ленивый `StreamInterface` поверх `Dto/RequestBody` с
+  дочитыванием остатка через `next()`). Ответ известного размера уходит одним
+  `OP_FULL`, ответ-`StreamInterface` неизвестного размера — `OP_HEAD`/`OP_CHUNK`/`OP_END`.
+- Socket/WS-серверы используют свои `readonly`-DTO вместо PSR-7 — например
+  `Dto/Connection` с `read()`/`write()`/`close()` (push-модель). Берите ту форму,
+  что естественна для фичи.
+
+В обоих случаях payload запроса от Go декодится из `RequestEvent`, а ответ
+кодируется в `RespondPayload` (`OP_FULL`/`OP_HEAD`/`OP_CHUNK`/`OP_END`), и каждая
+команда подтверждается обратно — это и даёт backpressure записи.
 
 ### Общий трейт `ServerRuntimeSupportTrait`
 
@@ -155,14 +164,14 @@ Argv-разбор, обработчики сигналов и orphan-чек уж
 ### `fromArgs()` (для мастера воркеров)
 
 Чтобы сервер запускался под `bin/sconcur-server`, сделайте статический конструктор из
-`argv` — по образцу `HttpServer::fromArgs()` (`HttpServer.php:104`): он лишь вызывает
+`argv` — по образцу `HttpServer::fromArgs()` (`HttpServer.php:117`): он лишь вызывает
 `self::parseArgs($argv)` из трейта, при наличии добавляет `onError` и распаковывает
 результат в конструктор. Мастер прокидывает `--masterPid` именно сюда (см. «Интеграция с
 мастером»).
 
 ### Цикл обслуживания: `serve()`
 
-Публичный `serve(Closure $handler)` (`HttpServer::serve`, `HttpServer.php:125`):
+Публичный `serve(Closure $handler)` (`HttpServer::serve`, `HttpServer.php:145`):
 
 1. Сгенерировать `flowKey`, установить обработчики сигналов через
    `installSignalHandlers($stopRequested)` (из трейта; SIGTERM/SIGINT → флаг
@@ -174,9 +183,9 @@ Argv-разбор, обработчики сигналов и orphan-чек уж
    (`Scheduler.php:211`), передав:
    - `serverFlowKey` / `serverTaskKey` — ключи стрима-слушателя;
    - `maxRequests` — штатно завершиться после N запросов (мера против утечек памяти);
-   - `onRequest(string $payload)` — спавн-на-запрос: декодить `Request`, вызвать
+   - `onRequest(string $payload)` — спавн-на-запрос: декодить запрос, вызвать
      `handler`, отправить ответ (`RespondPayload::full(...)` или
-     head→chunk*→end для стрима). У эталона это `HttpServer::handle()` (`HttpServer.php:200`);
+     head→chunk*→end для стрима). У эталона это `HttpServer::handle()` (`HttpServer.php:225`);
    - `shouldStop(): bool` — `true`, когда пришёл сигнал или воркер осиротел
      (orphan-чек ниже);
    - `onDrainStart()` — вызывается один раз при начале дренажа: рано закрыть приём,
@@ -382,7 +391,8 @@ Go-сторона:
 PHP:
 - [ ] `MethodEnum` — два значения (`<Server>Serve`, `<Server>Respond`).
 - [ ] Payloads: `ServePayload`, `RespondPayload` (+ кросс-ссылки `Go: payloads.<Type>`).
-- [ ] DTO: `Request` (`fromPayload`), `Response`/`StreamedResponse`/`ResponseStream`.
+- [ ] Форма запроса/ответа: свои `readonly`-DTO (как socket/ws `Dto/Connection`) либо
+      PSR-7 наружу (как HttpServer: `ServerRequestInterface` → `ResponseInterface`).
 - [ ] `use ServerRuntimeSupportTrait;` — `parseArgs`/`installSignalHandlers`/`isOrphaned`.
 - [ ] `fromArgs()` через `self::parseArgs($argv)` — для мастера; принимает `--masterPid`.
 - [ ] `serve()`: запуск слушателя через `push(ServePayload)` + `Scheduler::serve(...)`
