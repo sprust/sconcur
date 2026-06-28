@@ -80,11 +80,22 @@ jobs:
         if: failure()
         run: docker compose logs --tail=100
 
-      - name: Recreate versioned release
+      - name: Create versioned release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${{ steps.version.outputs.tag }}"
+
+          # Published version tags are immutable: moving a tag that Packagist (and
+          # consumers) already resolved changes a released version's source reference,
+          # which Packagist blocks. If the tag already exists on origin, this version was
+          # already released — skip. To ship again, bump the version (the version lives in
+          # one place and VersionConsistencyTest keeps the three copies in lockstep), which
+          # produces a new tag on the next push.
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::notice::$tag already released; skipping. Bump the version to release again."
+            exit 0
+          fi
 
           # Previous version tag = the highest v* tag strictly below the current one, so
           # the notes cover strictly the previous version → this version. Empty on the
@@ -102,12 +113,10 @@ jobs:
             echo "No previous version tag found; using automatic notes base."
           fi
 
-          # Fully recreate the versioned release so re-pushing the same version refreshes
-          # its asset, target commit and date (delete + create; --cleanup-tag moves the
-          # tag to the new commit). --latest marks it as the GitHub "Latest" release
-          # (what /releases/latest resolves to). --generate-notes auto-builds the
-          # changelog from PRs/commits between previous_tag and this release.
-          gh release delete "$tag" --yes --cleanup-tag || true
+          # Create the release once, tagging the current commit. The tag is never moved
+          # afterwards (see the immutability guard above). --latest marks it as the GitHub
+          # "Latest" release (what /releases/latest resolves to). --generate-notes
+          # auto-builds the changelog from PRs/commits between previous_tag and this release.
           gh release create "$tag" ./ext/build/sconcur.so \
             --target "$GITHUB_SHA" \
             --title "$tag" \
