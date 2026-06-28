@@ -130,6 +130,18 @@ readonly class SocketServer
                 ),
             );
 
+            self::logServerEvent(
+                sprintf(
+                    'sconcur socket server listening on %s pid=%d version=%s maxConcurrency=%d maxConnections=%d reusePort=%d',
+                    $this->address,
+                    getmypid(),
+                    Extension::REQUIRED_EXTENSION_VERSION,
+                    $this->maxConcurrency,
+                    $this->maxConnections,
+                    (int) $this->reusePort,
+                ),
+            );
+
             $onError   = $this->onError;
             $masterPid = $this->masterPid;
 
@@ -153,6 +165,9 @@ readonly class SocketServer
                     // Leave the SO_REUSEPORT group early: stop accepting and drain
                     // in-flight connections so new connections go to siblings.
                     Extension::get()->socketStopAccepting($flowKey);
+                },
+                onShutdownStep: static function (string $step): void {
+                    self::logServerEvent('sconcur socket server shutdown: ' . $step);
                 },
             );
         } finally {

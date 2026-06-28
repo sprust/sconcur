@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Features\Server;
 
 use Closure;
+use DateTimeImmutable;
 use ReflectionClass;
 use ReflectionNamedType;
 use SConcur\Exceptions\Server\InvalidServerArgumentException;
@@ -178,6 +179,21 @@ trait ServerRuntimeSupportTrait
 
             pcntl_async_signals($previousAsync);
         };
+    }
+
+    /**
+     * Writes one server lifecycle line to stdout, prefixed with a microsecond ISO
+     * timestamp (same shape as the Go access log), so the startup banner and the
+     * graceful-shutdown steps land in the same stream a supervisor already captures.
+     */
+    protected static function logServerEvent(string $message): void
+    {
+        fwrite(STDOUT, (new DateTimeImmutable())->format('Y-m-d\TH:i:s.u') . ' ' . $message . PHP_EOL);
+
+        // Flush now: when stdout is redirected to a file (a supervised worker) it is block
+        // buffered, so the startup banner would otherwise not surface until the buffer fills
+        // or the process exits.
+        fflush(STDOUT);
     }
 
     /**

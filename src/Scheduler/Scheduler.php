@@ -201,12 +201,15 @@ class Scheduler
      * limiting request is dispatched and drained like any in-flight one, and the
      * listener is closed before draining, so no accepted request is bounced.
      *
-     * @param int                   $maxRequests  stop after dispatching this many requests (0 = unlimited)
-     * @param Closure(string): void $onRequest    receives the raw request payload
-     * @param Closure(): bool       $shouldStop   true once a shutdown was requested
-     * @param Closure(): void       $onDrainStart called once when draining begins, before
-     *                                            in-flight handlers finish (e.g. to stop the
-     *                                            listener from accepting so siblings take over)
+     * @param int                   $maxRequests    stop after dispatching this many requests (0 = unlimited)
+     * @param Closure(string): void $onRequest      receives the raw request payload
+     * @param Closure(): bool       $shouldStop     true once a shutdown was requested
+     * @param Closure(): void       $onDrainStart   called once when draining begins, before
+     *                                              in-flight handlers finish (e.g. to stop the
+     *                                              listener from accepting so siblings take over)
+     * @param Closure(string): void $onShutdownStep receives a human-readable graceful-shutdown
+     *                                              step (drain begin, fully drained, stopped) for
+     *                                              the caller to log
      */
     public function serve(
         string $serverFlowKey,
@@ -215,6 +218,7 @@ class Scheduler
         Closure $onRequest,
         Closure $shouldStop,
         Closure $onDrainStart,
+        Closure $onShutdownStep,
     ): void {
         $draining = false;
 
@@ -229,12 +233,20 @@ class Scheduler
                     // Stop accepting new requests; keep draining in-flight handlers.
                     $draining = true;
 
+                    $reason = ($maxRequests > 0 && $dispatchedCount >= $maxRequests) ? 'limit' : 'signal';
+
+                    $onShutdownStep(
+                        sprintf('stop accepting (reason=%s), draining %d in-flight', $reason, $this->spawnedCount),
+                    );
+
                     // Close the listener up front so the kernel reroutes new
                     // connections to SO_REUSEPORT siblings while we drain.
                     $onDrainStart();
                 }
 
                 if ($draining && $this->spawnedCount === 0) {
+                    $onShutdownStep('drained all in-flight');
+
                     break;
                 }
 
@@ -296,6 +308,8 @@ class Scheduler
         } finally {
             // Stop the listener and abort any connections not yet answered.
             Extension::get()->stopFlow($serverFlowKey);
+
+            $onShutdownStep('stopped');
         }
     }
 

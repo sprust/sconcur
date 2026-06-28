@@ -152,6 +152,18 @@ readonly class WsServer
                 ),
             );
 
+            self::logServerEvent(
+                sprintf(
+                    'sconcur ws server listening on %s pid=%d version=%s maxConcurrency=%d maxConnections=%d reusePort=%d',
+                    $this->address,
+                    getmypid(),
+                    Extension::REQUIRED_EXTENSION_VERSION,
+                    $this->maxConcurrency,
+                    $this->maxConnections,
+                    (int) $this->reusePort,
+                ),
+            );
+
             $onError   = $this->onError;
             $masterPid = $this->masterPid;
 
@@ -175,6 +187,9 @@ readonly class WsServer
                     // Leave the SO_REUSEPORT group early: stop accepting and drain
                     // in-flight connections so new connections go to siblings.
                     Extension::get()->wsStopAccepting($flowKey);
+                },
+                onShutdownStep: static function (string $step): void {
+                    self::logServerEvent('sconcur ws server shutdown: ' . $step);
                 },
             );
         } finally {

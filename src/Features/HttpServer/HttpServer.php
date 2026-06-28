@@ -172,6 +172,18 @@ readonly class HttpServer
                 ),
             );
 
+            self::logServerEvent(
+                sprintf(
+                    'sconcur http server listening on %s pid=%d version=%s maxConcurrency=%d maxRequests=%d reusePort=%d',
+                    $this->address,
+                    getmypid(),
+                    Extension::REQUIRED_EXTENSION_VERSION,
+                    $this->maxConcurrency,
+                    $this->maxRequests,
+                    (int) $this->reusePort,
+                ),
+            );
+
             $onError              = $this->onError;
             $masterPid            = $this->masterPid;
             $serverRequestFactory = $this->serverRequestFactory;
@@ -204,6 +216,9 @@ readonly class HttpServer
                     // Leave the SO_REUSEPORT group early: stop accepting so new
                     // connections go to sibling processes, then drain in-flight.
                     Extension::get()->httpStopAccepting($flowKey);
+                },
+                onShutdownStep: static function (string $step): void {
+                    self::logServerEvent('sconcur http server shutdown: ' . $step);
                 },
             );
         } finally {
