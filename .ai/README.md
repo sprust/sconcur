@@ -23,6 +23,7 @@ here.
 - [docs/websocket-client.ru.md](../docs/websocket-client.ru.md) — WebSocket-client feature (dial-side mirror of the WebSocket server): connect/read/write/close, text/binary, params, internals, limits
 - [docs/mysql.ru.md](../docs/mysql.ru.md) — MySQL / universal SQL feature: usage, bindings, transactions, streaming, internals
 - [docs/pgsql.ru.md](../docs/pgsql.ru.md) — PostgreSQL: the SQL feature's second driver; PG-specific differences
+- [docs/coroutine-context.ru.md](../docs/coroutine-context.ru.md) — per-coroutine context: framework-neutral key-value store bound to the current fiber, isolated between concurrent coroutines, read-through inherited by children
 - [.ai/plans/](plans/) — detailed designs for roadmap items
 
 ## Plans
@@ -104,7 +105,8 @@ non-fiber path.)
 - `WaitGroup` — main API: `add()`, `iterate()`, `waitAll()`, `waitResults()`
 - `Scheduler/Scheduler` — process-wide cooperative scheduler (single `waitAny` loop, resumes coroutines, wakes nested-group waiters)
 - `Scheduler/Coroutine` — a tracked fiber: id, fiber, owning group, callback key
-- `State` — static registry mapping Fibers ↔ flows ↔ tasks
+- `State` — static registry mapping Fibers ↔ flows ↔ tasks, and the per-coroutine context store (own key-value map + parent link per fiber id, read-through to the process root; released in `unRegisterFiber`)
+- `Context/Context` — static entry point `Context::current(): CoroutineContext` to the current coroutine's context (root outside any fiber); `Context/CoroutineContext` is the framework-neutral `find`/`has`/`set`/`forget` contract. Parent links are recorded in `Scheduler::spawn` / `WaitGroup::add`. See [docs/coroutine-context.ru.md](../docs/coroutine-context.ru.md)
 - `Connection/Extension` — singleton wrapping Go extension's exported C functions (`push`, `wait`, `waitAny`, `next`, `stopFlow`, etc.)
 - `Features/FeatureExecutor` — coordinates feature execution, detects async context via `Fiber::getCurrent()`
 - `Features/Mongodb/Connection/{Client,Database,Collection}` — MongoDB operations (insert, update, delete, find, aggregate, indexes, bulk write)
