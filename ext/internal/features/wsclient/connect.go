@@ -111,18 +111,33 @@ func (s *connectionState) Next() *dto.Result {
 
 	s.mutex.Unlock()
 
+	// Prefer an already-received message over shutdown. With a buffered message and ctx
+	// both ready, a plain select would pick a case at random and could drop the buffered
+	// message, returning EOF while data was waiting. A non-blocking check first guarantees
+	// a message that arrived before the context was cancelled is still delivered.
 	select {
 	case message, ok := <-s.messages:
-		if !ok {
-			// The read goroutine ended (peer closed, oversize message, idle timeout,
-			// shutdown): end the stream so the caller's read() returns null.
-			return dto.NewSuccessResult(s.message, "", helpers.CalcExecutionMs(s.startTime))
-		}
+		return s.resultFromMessage(message, ok)
+	default:
+	}
 
-		return dto.NewSuccessResultWithNext(s.message, ws.EncodeInbound(message), helpers.CalcExecutionMs(s.startTime))
+	select {
+	case message, ok := <-s.messages:
+		return s.resultFromMessage(message, ok)
 	case <-s.ctx.Done():
 		return dto.NewSuccessResult(s.message, "", helpers.CalcExecutionMs(s.startTime))
 	}
+}
+
+// resultFromMessage turns a receive from the messages channel into a Next() result: a
+// delivered message (more to come), or end-of-stream when the channel is closed (the read
+// goroutine ended: peer closed, oversize message, idle timeout, shutdown).
+func (s *connectionState) resultFromMessage(message ws.InboundMessage, ok bool) *dto.Result {
+	if !ok {
+		return dto.NewSuccessResult(s.message, "", helpers.CalcExecutionMs(s.startTime))
+	}
+
+	return dto.NewSuccessResultWithNext(s.message, ws.EncodeInbound(message), helpers.CalcExecutionMs(s.startTime))
 }
 
 func (s *connectionState) Close() {

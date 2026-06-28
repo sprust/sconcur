@@ -101,6 +101,61 @@ func TestConnectionStateStreamsInboundAfterMetadata(t *testing.T) {
 	}
 }
 
+// TestConnectionStateDeliversBufferedMessageWhenContextDone guards the inbound select:
+// when a message is already buffered and the context is also done, Next must still deliver
+// the buffered message instead of ending the stream. A plain select over both ready cases
+// picks at random and could drop the message; the loop runs enough iterations that the
+// pre-fix code would hit the wrong branch and flake.
+func TestConnectionStateDeliversBufferedMessageWhenContextDone(t *testing.T) {
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for iteration := 0; iteration < 1000; iteration++ {
+		messages := make(chan ws.InboundMessage, 1)
+		messages <- ws.InboundMessage{Binary: false, Data: []byte("buffered")}
+
+		state := newTestConnectionState("flow:c:race", messages)
+		state.ctx = cancelledCtx
+		state.metaSent = true
+
+		result := state.Next()
+
+		if result.IsError {
+			t.Fatalf("iteration %d: unexpected error: %s", iteration, result.Payload)
+		}
+
+		if !result.HasNext || result.Payload[1:] != "buffered" {
+			t.Fatalf(
+				"iteration %d: a buffered message must be delivered before the context-done EOF; got hasNext=%v payload=%q",
+				iteration,
+				result.HasNext,
+				result.Payload,
+			)
+		}
+	}
+}
+
+// TestConnectionStateEndsStreamOnContextDoneWhenNoMessage confirms a done context still
+// ends the stream when nothing is buffered (the caller's read() returns null).
+func TestConnectionStateEndsStreamOnContextDoneWhenNoMessage(t *testing.T) {
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	state := newTestConnectionState("flow:c:done", make(chan ws.InboundMessage))
+	state.ctx = cancelledCtx
+	state.metaSent = true
+
+	result := state.Next()
+
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Payload)
+	}
+
+	if result.HasNext {
+		t.Fatal("a done context with no buffered message must end the stream (HasNext=false)")
+	}
+}
+
 // TestConnectionStateCloseRunsCleanup checks Close invokes the cleanup hook (which the
 // feature uses to drop the connection from the registry and close the socket).
 func TestConnectionStateCloseRunsCleanup(t *testing.T) {

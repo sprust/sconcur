@@ -44,15 +44,21 @@ func newMessageState(
 }
 
 func (s *messageState) Next() *dto.Result {
+	// Prefer an already-received message over draining/shutdown. With a buffered message
+	// and drain (or ctx) both ready, a plain three-way select would pick a case at random
+	// and could drop the buffered message, returning EOF while data was waiting. A
+	// non-blocking check first guarantees a message that arrived before the drain signal
+	// is still delivered — the half-close semantic: stop new input, but flush what was
+	// already read so the handler can answer it before unwinding.
 	select {
 	case message, ok := <-s.messages:
-		if !ok {
-			// The read goroutine ended (peer closed, oversize message, idle timeout,
-			// shutdown): end the stream so the handler's read() returns null.
-			return dto.NewSuccessResult(s.message, "", helpers.CalcExecutionMs(s.startTime))
-		}
+		return s.resultFromMessage(message, ok)
+	default:
+	}
 
-		return dto.NewSuccessResultWithNext(s.message, ws.EncodeInbound(message), helpers.CalcExecutionMs(s.startTime))
+	select {
+	case message, ok := <-s.messages:
+		return s.resultFromMessage(message, ok)
 	case <-s.drain:
 		// Draining: stop delivering input so the handler ends, like a read half-close.
 		return dto.NewSuccessResult(s.message, "", helpers.CalcExecutionMs(s.startTime))
@@ -60,6 +66,17 @@ func (s *messageState) Next() *dto.Result {
 		// Server stopped: end the stream so the handler's read() returns null.
 		return dto.NewSuccessResult(s.message, "", helpers.CalcExecutionMs(s.startTime))
 	}
+}
+
+// resultFromMessage turns a receive from the messages channel into a Next() result: a
+// delivered message (more to come), or end-of-stream when the channel is closed (the read
+// goroutine ended: peer closed, oversize message, idle timeout, shutdown).
+func (s *messageState) resultFromMessage(message ws.InboundMessage, ok bool) *dto.Result {
+	if !ok {
+		return dto.NewSuccessResult(s.message, "", helpers.CalcExecutionMs(s.startTime))
+	}
+
+	return dto.NewSuccessResultWithNext(s.message, ws.EncodeInbound(message), helpers.CalcExecutionMs(s.startTime))
 }
 
 func (s *messageState) Close() {
