@@ -94,6 +94,14 @@ class Scheduler
             ),
         );
 
+        // Inherit the context of whoever spawned us — the current fiber, or the
+        // root when spawned outside any fiber (the server loop). Recorded before
+        // start() so the handler's first run already sees the inherited keys.
+        State::registerCoroutineContext(
+            fiberId: $fiberId,
+            parentFiberId: State::currentContextFiberId(),
+        );
+
         $coroutine = new Coroutine(
             id: $fiberId,
             fiber: $fiber,

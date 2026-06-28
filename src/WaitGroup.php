@@ -70,6 +70,14 @@ class WaitGroup
             ),
         );
 
+        // The child inherits the context of the coroutine adding it (the current
+        // fiber), or the root when added outside any fiber. Recorded before
+        // start() so the child's first run already sees the inherited keys.
+        State::registerCoroutineContext(
+            fiberId: $fiberId,
+            parentFiberId: State::currentContextFiberId(),
+        );
+
         $this->members[$fiberId] = $callbackKey;
 
         Scheduler::get()->register(

@@ -2,7 +2,7 @@
     "name": "sconcur/sconcur",
     "description": "PHP concurrency library backed by an extension written in Go",
     "license": "MIT",
-    "version": "0.5.1",
+    "version": "0.6.0",
     "authors": [
         {
             "name": "Pavel",

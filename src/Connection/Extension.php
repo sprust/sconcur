@@ -38,7 +38,7 @@ class Extension
      * rejected instead of silently misbehaving. Public so tooling (bin/sconcur-status)
      * can report the version the package expects.
      */
-    public const string REQUIRED_EXTENSION_VERSION = '0.5.1';
+    public const string REQUIRED_EXTENSION_VERSION = '0.6.0';
 
     /**
      * Result frame layout (Go -> PHP), see main.go buildResultFrame. The envelope is
