@@ -12,6 +12,7 @@ here.
 - [docs/adding-a-feature.ru.md](../docs/adding-a-feature.ru.md) — guide for adding a new feature
 - [docs/adding-a-server.ru.md](../docs/adding-a-server.ru.md) — guide for adding a new server (long-lived streaming feature: listener + serve loop + worker-master integration)
 - [docs/load-testing.ru.md](../docs/load-testing.ru.md) — load behaviour under all I/O features at once (the `/all` route + `bench-http-load-stats`): memory/CPU results and conclusions
+- [docs/benchmarks.ru.md](../docs/benchmarks.ru.md) — per-feature benchmarks (native/sync/async): PHP↔Go boundary cost on in-memory DBs and the concurrent-fan-out win, with metric tables (`make bench-*`)
 - [docs/mongodb.ru.md](../docs/mongodb.ru.md) — MongoDB feature: collection operations, cursors, BSON types, concurrency, internals
 - [docs/http-server.ru.md](../docs/http-server.ru.md) — HTTP-server feature: usage, params, internals, limits
 - [docs/socket-server.ru.md](../docs/socket-server.ru.md) — TCP socket-server feature: length-prefix framing, message handler, params, internals, limits

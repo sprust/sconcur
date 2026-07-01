@@ -154,6 +154,8 @@ $collection->insertOne(['name' => 'example']);
 - [Нагрузочное тестирование](docs/load-testing.ru.md) — поведение сервера под
   нагрузкой всеми I/O-фичами сразу (ручка `/all` + `bench-http-load-stats`):
   результаты по памяти/CPU и выводы.
+- [Бенчмарки фич](docs/benchmarks.ru.md) — замеры по каждой фиче (native/sync/async):
+  цена границы PHP↔Go на in-memory БД и выигрыш конкурентного веера, таблицы метрик.
 
 ## Build
 ```shell
