@@ -297,6 +297,7 @@ re-throwing. Rules:
 
 - Always wait for explicit user approval before committing or pushing
 - Always propose a commit message before committing
+- Never create a git branch without an explicit, direct instruction from the user. Work on and commit to the current branch (normally `master`); creating any branch on your own is forbidden
 - Before implementing any task, propose a plan and wait for explicit user approval before starting
 - After any PHP changes, run analyzers (`make php-stan`, `make cs-fixer-check`) and tests (`make test`). Fix any errors automatically without asking
 
