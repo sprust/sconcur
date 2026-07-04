@@ -123,6 +123,14 @@ ext-build:
 ext-test:
 	$(PHP_CLI) sh ./ext-test.sh
 
+# Resets the DB backends to a clean state before a benchmark session: drops the
+# named data volumes and recreates the containers. Without it writes accumulate
+# across runs (the DB data lives on disk now, not tmpfs) and the numbers drift.
+bench-reset:
+	$(DOCKER_COMPOSE) rm -sf mongodb mysql postgres
+	docker volume rm -f sconcur-php_mongodb-data sconcur-php_mongodb-configdb sconcur-php_mysql-data sconcur-php_postgres-data
+	$(DOCKER_COMPOSE) up -d --wait mongodb mysql postgres
+
 bench-all:
 	make bench-sleep
 	make bench-mongodb-insertOne
