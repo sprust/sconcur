@@ -35,22 +35,36 @@ class WaitGroup
     protected array $ready = [];
 
     /**
+     * Callbacks added while the group was at its concurrency limit, not launched
+     * yet (no fiber, nothing sent to Go). Drained by fillSlots() as members finish.
+     * Keyed by callback key, in add() order; each entry keeps the callback and the
+     * context parent to inherit at launch time.
+     *
+     * @var array<string, array{callback: Closure, parentContextFiberId: int}>
+     */
+    protected array $pending = [];
+
+    /**
      * First failure raised by a coroutine of this group; rethrown from iterate().
      */
     protected ?Throwable $failure = null;
 
     protected string $flowKey;
 
-    protected function __construct()
+    /**
+     * @param int $maxConcurrency max simultaneously live (launched, unfinished) members;
+     *                            0 = unlimited. Extra add()s queue and launch as slots free.
+     */
+    protected function __construct(protected int $maxConcurrency = 256)
     {
         ++static::$counter;
 
         $this->flowKey = (string) static::$counter;
     }
 
-    public static function create(): WaitGroup
+    public static function create(int $maxConcurrency = 256): WaitGroup
     {
-        return new WaitGroup();
+        return new WaitGroup(maxConcurrency: $maxConcurrency);
     }
 
     /**
@@ -58,58 +72,64 @@ class WaitGroup
      */
     public function add(Closure $callback): string
     {
-        $fiber       = new Fiber($callback);
-        $fiberId     = spl_object_id($fiber);
         $callbackKey = uniqid(more_entropy: true);
 
-        State::registerFiberFlow(
-            fiberId: $fiberId,
-            flow: new CurrentFlow(
-                isAsync: true,
-                key: $this->flowKey,
-            ),
-        );
+        // Capture the context to inherit now (the coroutine adding this, or the
+        // root outside any fiber), so a deferred launch still inherits the adder's
+        // keys rather than whatever context the scheduler happens to run it under.
+        $parentContextFiberId = State::currentContextFiberId();
 
-        // The child inherits the context of the coroutine adding it (the current
-        // fiber), or the root when added outside any fiber. Recorded before
-        // start() so the child's first run already sees the inherited keys.
-        State::registerCoroutineContext(
-            fiberId: $fiberId,
-            parentFiberId: State::currentContextFiberId(),
-        );
-
-        $this->members[$fiberId] = $callbackKey;
-
-        Scheduler::get()->register(
-            new Coroutine(
-                id: $fiberId,
-                fiber: $fiber,
-                group: $this,
+        if ($this->hasFreeSlot()) {
+            $this->launch(
                 callbackKey: $callbackKey,
-            ),
-        );
-
-        try {
-            // First run up to the first suspend. May happen nested inside another
-            // coroutine; that is fine — it ends at a suspend that returns here.
-            $fiber->start();
-        } catch (Throwable $exception) {
-            $this->discard($fiberId);
-
-            throw new CallbackExecutionException(
-                message: $exception->getMessage(),
-                previous: $exception,
+                callback: $callback,
+                parentContextFiberId: $parentContextFiberId,
             );
-        }
-
-        // Synchronous callback (no async call): its result is ready immediately.
-        if ($fiber->isTerminated()) {
-            $this->ready[$callbackKey] = $fiber->getReturn();
-
-            $this->discard($fiberId);
+        } else {
+            // At capacity: queue it. Nothing is created or sent to Go until a slot
+            // frees and the scheduler calls fillSlots().
+            $this->pending[$callbackKey] = [
+                'callback'             => $callback,
+                'parentContextFiberId' => $parentContextFiberId,
+            ];
         }
 
         return $callbackKey;
+    }
+
+    /**
+     * Launches the queued coroutines into the slots freed by finished members.
+     * Called by the scheduler (from forget()) after a member completes or fails, so
+     * the scheduler stays the single place coroutines are started and resumed.
+     */
+    public function fillSlots(): void
+    {
+        // A failed group is about to unwind through iterate()'s finally (stop());
+        // do not launch anything more into it.
+        if ($this->failure !== null) {
+            return;
+        }
+
+        while ($this->pending !== [] && $this->hasFreeSlot()) {
+            $callbackKey = array_key_first($this->pending);
+            $queued      = $this->pending[$callbackKey];
+
+            unset($this->pending[$callbackKey]);
+
+            try {
+                $this->launch(
+                    callbackKey: $callbackKey,
+                    callback: $queued['callback'],
+                    parentContextFiberId: $queued['parentContextFiberId'],
+                );
+            } catch (CallbackExecutionException $exception) {
+                // A deferred callback threw before its first suspend: its failure
+                // belongs to the group (surfaced at iterate()), not to the scheduler.
+                $this->markFailure($exception);
+
+                return;
+            }
+        }
     }
 
     public function waitAll(): int
@@ -187,6 +207,7 @@ class WaitGroup
 
         $this->members = [];
         $this->ready   = [];
+        $this->pending = [];
         $this->failure = null;
 
         Scheduler::get()->clearGroupWaiter($this->flowKey);
@@ -245,6 +266,74 @@ class WaitGroup
     public function removeMember(int $fiberId): void
     {
         unset($this->members[$fiberId]);
+    }
+
+    /**
+     * Whether another member may be launched right now. maxConcurrency 0 = unlimited.
+     */
+    protected function hasFreeSlot(): bool
+    {
+        return $this->maxConcurrency === 0 || count($this->members) < $this->maxConcurrency;
+    }
+
+    /**
+     * Creates the fiber, registers it in State/Scheduler and runs it up to its
+     * first suspend. Shared by the immediate add() path and the deferred fillSlots()
+     * path. Throws CallbackExecutionException if the callback throws before
+     * suspending — add() lets it propagate; fillSlots() turns it into a failure.
+     *
+     * @param Closure(): mixed $callback
+     */
+    protected function launch(string $callbackKey, Closure $callback, int $parentContextFiberId): void
+    {
+        $fiber   = new Fiber($callback);
+        $fiberId = spl_object_id($fiber);
+
+        State::registerFiberFlow(
+            fiberId: $fiberId,
+            flow: new CurrentFlow(
+                isAsync: true,
+                key: $this->flowKey,
+            ),
+        );
+
+        // Recorded before start() so the child's first run already sees the
+        // inherited keys.
+        State::registerCoroutineContext(
+            fiberId: $fiberId,
+            parentFiberId: $parentContextFiberId,
+        );
+
+        $this->members[$fiberId] = $callbackKey;
+
+        Scheduler::get()->register(
+            new Coroutine(
+                id: $fiberId,
+                fiber: $fiber,
+                group: $this,
+                callbackKey: $callbackKey,
+            ),
+        );
+
+        try {
+            // First run up to the first suspend. May happen nested inside another
+            // coroutine; that is fine — it ends at a suspend that returns here.
+            $fiber->start();
+        } catch (Throwable $exception) {
+            $this->discard($fiberId);
+
+            throw new CallbackExecutionException(
+                message: $exception->getMessage(),
+                previous: $exception,
+            );
+        }
+
+        // Synchronous callback (no async call): its result is ready immediately.
+        if ($fiber->isTerminated()) {
+            $this->ready[$callbackKey] = $fiber->getReturn();
+
+            $this->discard($fiberId);
+        }
     }
 
     private function discard(int $fiberId): void

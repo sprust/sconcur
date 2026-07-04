@@ -424,6 +424,11 @@ class Scheduler
 
             $coroutine->group->removeMember($coroutine->id);
 
+            // This member freed a slot: let the group launch the next queued
+            // coroutine (if any). Keeping launch in the scheduler preserves the
+            // invariant that coroutines are only ever started/resumed from here.
+            $coroutine->group->fillSlots();
+
             return;
         }
 
