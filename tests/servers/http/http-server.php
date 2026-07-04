@@ -338,12 +338,13 @@ function nativeMsleepRoute(Psr17Factory $factory, string $path): ResponseInterfa
 
 /**
  * Load-test route: fans out across the backend I/O features concurrently in one
- * request (a nested WaitGroup) — Sleeper, MongoDB, MySQL, PostgreSQL. Used to watch
+ * request (a nested WaitGroup) — MongoDB, MySQL, PostgreSQL. Used to watch
  * memory/CPU under load. The HTTP-client feature is intentionally NOT here: hitting
  * this server's own "/" would make every /all silently serve a second request and
  * skew the rps number — it is covered by its own benchmarks instead. Each feature is
- * isolated so a transient backend hiccup degrades just that feature (visible
- * per-feature error rate) instead of failing the whole request. Returns a JSON map.
+ * isolated so a transient backend hiccup stays visible per feature in the JSON map,
+ * but any failed feature turns the response into a 500 — load tools (wrk) then count
+ * the request as an error instead of silently passing it as a 200.
  */
 function allFeaturesRoute(Psr17Factory $factory): ResponseInterface
 {
@@ -352,12 +353,6 @@ function allFeaturesRoute(Psr17Factory $factory): ResponseInterface
     $status = [];
 
     $waitGroup = WaitGroup::create();
-
-    $waitGroup->add(static function () use (&$status): void {
-        $status['sleeper'] = allFeatureStatus(static function (): void {
-            Sleeper::usleep(microseconds: 1000);
-        });
-    });
 
     $waitGroup->add(static function () use (&$status, $mongo): void {
         $status['mongodb'] = allFeatureStatus(static function () use ($mongo): void {
@@ -390,10 +385,20 @@ function allFeaturesRoute(Psr17Factory $factory): ResponseInterface
 
     $waitGroup->waitResults();
 
+    $statusCode = 200;
+
+    foreach ($status as $featureStatus) {
+        if ($featureStatus !== 'ok') {
+            $statusCode = 500;
+
+            break;
+        }
+    }
+
     return text(
         $factory,
         (string) json_encode($status),
-        200,
+        $statusCode,
         ['Content-Type' => 'application/json'],
     );
 }

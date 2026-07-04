@@ -18,8 +18,8 @@ use Spiral\RoadRunner\Worker;
  * of the two benchmark routes of tests/servers/http/http-server.php, but on
  * NATIVE drivers, sequentially (a RoadRunner worker has no internal concurrency):
  *   GET /    -> 200 "ok"
- *   GET /all -> usleep(1000), MongoDB insertOne+findOne (mongodb/mongodb),
- *               MySQL INSERT + SELECT 1 (PDO), PostgreSQL INSERT + SELECT 1 (PDO);
+ *   GET /all -> MongoDB insertOne+findOne (mongodb/mongodb), MySQL INSERT +
+ *               SELECT 1 (PDO), PostgreSQL INSERT + SELECT 1 (PDO);
  *               per-feature error isolation, same JSON status map
  *   (anything else) -> 404 "not found"
  *
@@ -84,20 +84,15 @@ function rrText(Psr17Factory $factory, string $body = '', int $status = 200): Re
 
 /**
  * Native, sequential copy of allFeaturesRoute() from http-server.php: the same
- * four features against the same backends, each isolated so a transient backend
- * hiccup degrades just that feature; returns the same JSON status map. The
- * mandatory usleep(1000) is the sequential price a native worker pays for the
- * sleep the SConcur fan-out overlaps.
+ * three features against the same backends, each isolated so a transient backend
+ * hiccup stays visible per feature in the JSON map, but any failed feature turns
+ * the response into a 500 (load tools then count the request as an error).
  */
 function rrAllFeaturesRoute(Psr17Factory $factory): ResponseInterface
 {
     [$mongo, $mysql, $pgsql] = rrAllFeaturesContext();
 
     $status = [];
-
-    $status['sleeper'] = rrAllFeatureStatus(static function (): void {
-        usleep(1000);
-    });
 
     $status['mongodb'] = rrAllFeatureStatus(static function () use ($mongo): void {
         $mongo->insertOne(['t' => 'load']);
@@ -120,7 +115,17 @@ function rrAllFeaturesRoute(Psr17Factory $factory): ResponseInterface
         $pgsql->query('SELECT 1')->fetchAll();
     });
 
-    return rrText($factory, (string) json_encode($status));
+    $statusCode = 200;
+
+    foreach ($status as $featureStatus) {
+        if ($featureStatus !== 'ok') {
+            $statusCode = 500;
+
+            break;
+        }
+    }
+
+    return rrText($factory, (string) json_encode($status), $statusCode);
 }
 
 /**
