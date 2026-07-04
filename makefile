@@ -159,6 +159,9 @@ bench-all:
 	make bench-ws-server-io
 	make bench-ws-server-cpu
 
+bench-db-lifecycle:
+	$(PHP_EXT) tests/benchmarks/db-lifecycle.php ${c} ${runs} ${pool}
+
 bench-http-client-download:
 	$(PHP_EXT) tests/benchmarks/http-client-download.php ${c}
 

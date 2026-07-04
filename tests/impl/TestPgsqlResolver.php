@@ -74,6 +74,31 @@ class TestPgsqlResolver
         }
     }
 
+    /**
+     * Creates a freshly named benchmark table (used by the db-lifecycle bench,
+     * which isolates every mode/run on its own uniquely named table). The id is
+     * supplied explicitly by the caller (no SERIAL), so read/delete by id are
+     * deterministic across native/sync/async.
+     */
+    public static function createBenchmarkTable(string $tableName): void
+    {
+        $pdo = static::getPdo();
+
+        $pdo->exec("DROP TABLE IF EXISTS $tableName");
+        $pdo->exec(
+            "CREATE TABLE $tableName (
+                id INT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                amount INT NOT NULL
+            )",
+        );
+    }
+
+    public static function dropBenchmarkTable(string $tableName): void
+    {
+        static::getPdo()->exec("DROP TABLE IF EXISTS $tableName");
+    }
+
     protected static function getDsn(): string
     {
         if (static::$dsn !== null) {
