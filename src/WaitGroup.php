@@ -20,6 +20,14 @@ class WaitGroup
     protected static int $counter = 0;
 
     /**
+     * Monotonic counter feeding callback keys. A callback key only has to be
+     * unique among this process's live callbacks, so a never-reused counter is
+     * enough — and far cheaper than uniqid() on the fan-out hot path (same
+     * reasoning as Scheduler::$spawnCounter).
+     */
+    protected static int $callbackKeyCounter = 0;
+
+    /**
      * Live coroutines of this group: fiber id => callback key.
      *
      * @var array<int, string>
@@ -76,7 +84,7 @@ class WaitGroup
      */
     public function add(Closure $callback): string
     {
-        $callbackKey = uniqid(more_entropy: true);
+        $callbackKey = 'cb_' . (++static::$callbackKeyCounter);
 
         // Capture the context to inherit now (the coroutine adding this, or the
         // root outside any fiber), so a deferred launch still inherits the adder's
