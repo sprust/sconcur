@@ -264,6 +264,9 @@ function allFeaturesContext(): array
         )
             ->selectDatabase('u-test')
             ->selectCollection('load_all'),
+        // Pool cap mirrors the HTTP demo server: the Go-side pool is per worker
+        // process, and an unbounded pool under the load harness exhausts the DB
+        // server limits (PostgreSQL max_connections=100).
         new MysqlConnection(
             dsn: sprintf(
                 '%s:%s@tcp(%s:%s)/%s?parseTime=true',
@@ -273,6 +276,7 @@ function allFeaturesContext(): array
                 $_ENV['MYSQL_PORT'],
                 $_ENV['MYSQL_DATABASE'],
             ),
+            maxOpenConns: 5,
         ),
         new PgsqlConnection(
             dsn: sprintf(
@@ -283,6 +287,7 @@ function allFeaturesContext(): array
                 $_ENV['POSTGRES_PORT'],
                 $_ENV['POSTGRES_DB'],
             ),
+            maxOpenConns: 5,
         ),
     ];
 

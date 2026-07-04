@@ -98,9 +98,14 @@ check:
 status:
 	$(PHP_EXT) bin/sconcur-status ${c}
 
+# --log-junit persists the failing test's name for the rare flaky failure that
+# only fires on the first run after heavy host activity — see
+# .ai/plans/flaky-test-hunt.ru.md. Inspect /tmp/sconcur-phpunit.xml (in the php
+# container) after a failed run.
 test:
 	$(PHP_EXT) vendor/bin/phpunit \
 		-d memory_limit=512M \
+		--log-junit /tmp/sconcur-phpunit.xml \
 		--colors=auto \
 		--testdox \
 		--display-incomplete \
