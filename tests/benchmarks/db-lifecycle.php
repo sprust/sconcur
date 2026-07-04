@@ -121,8 +121,11 @@ function measurePhase(int $count, Closure $operation, bool $fanout): array
  */
 function runLifecycle(int $count, array $operations, bool $fanout): array
 {
-    // Unmeasured warm-up: a few reads over the seeded table prime the pool and fibers.
-    runPhase(count: min(10, $count), operation: $operations['read'], fanout: $fanout);
+    // Unmeasured warm-up (same rules as Benchmarker): sequential modes prime the
+    // connection with a few reads; the fan-out mode runs one full-width fan so the
+    // measured fan does not pay the pool ramp-up (the Go pool and the mongo driver
+    // open connections on demand up to the fan width).
+    runPhase(count: $fanout ? $count : min(20, $count), operation: $operations['read'], fanout: $fanout);
 
     return [
         'read'   => measurePhase(count: $count, operation: $operations['read'], fanout: $fanout),
