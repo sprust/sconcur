@@ -20,6 +20,8 @@ if (iterator_count($driverCollection->listIndexes()) > 0) {
 $index = 0;
 
 $benchmarker->run(
+    // No warm-up: every call creates a real index and MongoDB caps a collection
+    // at 64 indexes — 3 modes x 20 fits, warm-up extras would not.
     nativeCallback: static function () use ($driverCollection, &$index) {
         ++$index;
 
@@ -54,6 +56,7 @@ $benchmarker->run(
             name: $indexName,
         );
     },
+    warmup: false,
 );
 
 function makeFilter(mixed $objectId, mixed $dateTime): array

@@ -7,6 +7,8 @@ namespace SConcur\Scheduler;
 use Closure;
 use Fiber;
 use SConcur\Connection\Extension;
+use SConcur\Dto\PendingNextDto;
+use SConcur\Dto\PendingPushDto;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\CallbackExecutionException;
 use SConcur\Exceptions\FiberStateException;
@@ -65,7 +67,78 @@ class Scheduler
 
     public static function get(): Scheduler
     {
-        return static::$instance ??= new Scheduler();
+        if (static::$instance === null) {
+            static::$instance = new Scheduler();
+
+            // exit()/die() with live coroutines: unwind them while the extension
+            // is still alive. Shutdown functions run before object destructors
+            // (and also on fatal errors, where destructors are skipped), so the
+            // coroutines' finally blocks and the flow teardown run
+            // deterministically instead of racing the Extension destructor.
+            register_shutdown_function(static function (): void {
+                try {
+                    static::$instance?->shutdown();
+                } catch (Throwable) {
+                    // A shutdown-path failure must not mask the script's own exit.
+                }
+            });
+        }
+
+        return static::$instance;
+    }
+
+    /**
+     * Unwinds every live coroutine (FlowStoppedException, like WaitGroup::stop)
+     * and stops their flows. Called from the shutdown handler registered in
+     * get(): it turns exit()/die() with unfinished coroutines into a
+     * deterministic cancellation — finally blocks run, transactions roll back,
+     * cursors and flows are released. The results of unfinished tasks are lost
+     * either way; finishing or stopping the work explicitly stays the
+     * recommended path.
+     */
+    public function shutdown(): void
+    {
+        // Collect first: unwinding mutates the registry (stop() detaches members).
+        $groups  = [];
+        $spawned = [];
+
+        foreach ($this->coroutines as $coroutine) {
+            if ($coroutine->group !== null) {
+                $groups[spl_object_id($coroutine->group)] = $coroutine->group;
+            } else {
+                $spawned[] = $coroutine;
+            }
+        }
+
+        foreach ($groups as $group) {
+            try {
+                $group->stop();
+            } catch (Throwable) {
+                // Best-effort: shutdown must reach every remaining group.
+            }
+        }
+
+        foreach ($spawned as $coroutine) {
+            unset($this->coroutines[$coroutine->id]);
+
+            if ($coroutine->fiber->isSuspended()) {
+                try {
+                    $coroutine->fiber->throw(new FlowStoppedException(message: 'Flow stopped'));
+                } catch (Throwable) {
+                    // The unwinding handler may surface an exception (or fiber
+                    // switching may be forbidden in a fatal-error shutdown); it
+                    // must not stop the remaining coroutines.
+                }
+            }
+
+            if ($this->spawnedCount > 0) {
+                --$this->spawnedCount;
+            }
+
+            State::deleteFlow($coroutine->flowKey);
+        }
+
+        $this->groupWaiters = [];
     }
 
     public function register(Coroutine $coroutine): void
@@ -116,7 +189,13 @@ class Scheduler
 
         try {
             // Run up to the first suspend (its first async call), like WaitGroup::add.
-            $fiber->start();
+            $suspendValue = $fiber->start();
+
+            $this->dispatchPendingTask(
+                fiber: $fiber,
+                fiberId: $fiberId,
+                suspendValue: $suspendValue,
+            );
         } catch (Throwable) {
             // Groupless: nowhere to report. Clean up and keep the loop alive.
             $this->forget($coroutine);
@@ -322,6 +401,51 @@ class Scheduler
     }
 
     /**
+     * Performs the Go-side push/next for a coroutine that suspended with a
+     * pending task (PendingPushDto / PendingNextDto). Runs on the resuming side —
+     * the scheduler loop or the code that started the fiber — so the cgo call
+     * happens off the coroutine's stack: a fan-out of N live fibers that each
+     * crossed the PHP<->Go boundary degrades quadratically (see
+     * .ai/plans/async-fan-out-optimization.ru.md).
+     *
+     * A push failure is thrown back into the coroutine at its suspend point,
+     * where it surfaces as TaskExecutionException; the coroutine may catch it
+     * and suspend with another pending task, hence the loop. Whatever escapes
+     * the coroutine propagates to the caller like any start()/resume() failure.
+     * A suspend without a pending task (e.g. awaitGroup) is left untouched.
+     */
+    public function dispatchPendingTask(Fiber $fiber, int $fiberId, mixed $suspendValue): void
+    {
+        while ($suspendValue instanceof PendingPushDto || $suspendValue instanceof PendingNextDto) {
+            try {
+                if ($suspendValue instanceof PendingPushDto) {
+                    $runningTask = Extension::get()->push(
+                        flowKey: $suspendValue->flowKey,
+                        payload: $suspendValue->payload,
+                    );
+                } else {
+                    $runningTask = Extension::get()->next(
+                        flowKey: $suspendValue->flowKey,
+                        taskKey: $suspendValue->taskKey,
+                    );
+                }
+            } catch (Throwable $exception) {
+                $suspendValue = $fiber->throw($exception);
+
+                continue;
+            }
+
+            State::addFiberTask(
+                flowKey: $suspendValue->flowKey,
+                taskKey: $runningTask->key,
+                fiberId: $fiberId,
+            );
+
+            return;
+        }
+    }
+
+    /**
      * One scheduler step: take the first ready result of any flow and resume the
      * coroutine it belongs to.
      */
@@ -366,7 +490,13 @@ class Scheduler
     protected function resumeCoroutine(Coroutine $coroutine, mixed $resumeValue): void
     {
         try {
-            $coroutine->fiber->resume($resumeValue);
+            $suspendValue = $coroutine->fiber->resume($resumeValue);
+
+            $this->dispatchPendingTask(
+                fiber: $coroutine->fiber,
+                fiberId: $coroutine->id,
+                suspendValue: $suspendValue,
+            );
         } catch (Throwable $exception) {
             $this->failCoroutine($coroutine, $exception);
 
@@ -423,6 +553,11 @@ class Scheduler
             State::unRegisterFiber($coroutine->id);
 
             $coroutine->group->removeMember($coroutine->id);
+
+            // This member freed a slot: let the group launch the next queued
+            // coroutine (if any). Keeping launch in the scheduler preserves the
+            // invariant that coroutines are only ever started/resumed from here.
+            $coroutine->group->fillSlots();
 
             return;
         }

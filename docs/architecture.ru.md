@@ -9,14 +9,19 @@
 
 `WaitGroup` — публичный API группы корутин поверх PHP Fibers. Каждое
 замыкание-таск оборачивается в `Fiber`; когда внутри корутины вызывается
-асинхронная фича, корутина приостанавливается (`Fiber::suspend()`), а задача
-уходит в Go и выполняется в отдельной горутине.
+асинхронная фича, корутина приостанавливается, передавая наружу отложенную
+задачу (`Fiber::suspend(PendingPushDto)`). Отправку в Go выполняет принявшая
+управление сторона — `WaitGroup::launch` или планировщик — через
+`Scheduler::dispatchPendingTask()` со своего стека, и задача выполняется в
+отдельной горутине. cgo никогда не вызывается со стека корутины: веер из N
+живых фиберов, каждый из которых пересёк границу PHP↔Go, деградировал
+квадратично.
 
 Ожиданием и возобновлением управляет единый процессный `Scheduler` (синглтон,
 `Scheduler::get()`) — единственное место, которое ждёт расширение и возобновляет
 корутины. Он крутит `Extension::waitAny()` и получает первый готовый результат
-любого флоу: все горутины пушат результаты в один общий канал на стороне Go.
-По `taskKey` планировщик находит нужную корутину и возобновляет её.
+любого флоу: все горутины пушат результаты в один общий буферизованный канал на
+стороне Go. По `taskKey` планировщик находит нужную корутину и возобновляет её.
 
 Поскольку все возобновления идут из планировщика, корутины не вкладываются друг
 в друга по стеку вызовов. Благодаря этому вложенный `WaitGroup` внутри корутины
@@ -36,18 +41,18 @@ sequenceDiagram
     participant Go as Расширение (Go)
 
     WG->>WG: add(fnA) → Fiber → start()
-    Note over WG: Sleeper::sleep() → FeatureExecutor::exec()
-    WG->>Go: push(flow, taskA)
+    Note over WG: Sleeper::sleep() → exec() → Fiber::suspend(PendingPushDto)
+    WG->>S: dispatchPendingTask(fiberA)
+    S->>Go: push(flow, taskA)
     Go->>Go: go Handle(taskA): sleep
-    WG-->>S: Fiber::suspend() — управление к Scheduler
 
     WG->>WG: add(fnB) → Fiber → start()
-    Note over WG: Collection::insertOne() → exec()
-    WG->>Go: push(flow, taskB)
+    Note over WG: Collection::insertOne() → exec() → Fiber::suspend(PendingPushDto)
+    WG->>S: dispatchPendingTask(fiberB)
+    S->>Go: push(flow, taskB)
     Go->>Go: go Handle(taskB): insert
-    WG-->>S: Fiber::suspend()
     Note over Go: горутины A и B выполняются параллельно
-    Note over Go: результаты идут в общий канал results
+    Note over Go: результаты идут в общий буферизованный канал results
 
     WG->>S: iterate() → Scheduler::run()
     S->>Go: waitAny()
@@ -82,7 +87,8 @@ flowchart TB
 
         WG -->|"тело корутины вызывает фичу"| F
         F -->|"exec / next"| FE
-        FE -->|"push задачи"| EXT
+        FE -->|"Fiber::suspend(PendingPushDto / PendingNextDto)"| SCH
+        SCH -->|"dispatchPendingTask: push задачи"| EXT
         WG -.->|"делегирует ожидание"| SCH
         SCH -.->|"находит Fiber по taskKey, resume"| ST
     end
@@ -110,19 +116,27 @@ flowchart TB
 - `WaitGroup` — публичный API: `add()`, `iterate()`, `waitAll()`,
   `waitResults()`. Каждый экземпляр владеет уникальным `flowKey`. Тонкий клиент
   планировщика: хранит свои корутины и отдаёт их результаты по мере готовности.
+  Опциональный `maxConcurrency` (`create(maxConcurrency: N)`, 0 = без лимита,
+  дефолт) ограничивает число одновременно живых корутин — backpressure по памяти
+  и пулам соединений; лишние `add()` ждут в очереди и запускаются по мере
+  освобождения слотов.
 - `Scheduler` (`src/Scheduler/`) — единый процессный планировщик (синглтон):
   общий реестр корутин (`Coroutine`), один цикл `waitAny`, возобновление корутин
-  по `taskKey` и пробуждение тех, кто ждёт завершения вложенной группы
-  (`awaitGroup`).
+  по `taskKey`, пробуждение тех, кто ждёт завершения вложенной группы
+  (`awaitGroup`), и отправка отложенных задач в Go (`dispatchPendingTask`) — cgo
+  не вызывается со стека корутины.
 - `State` (`src/State.php`) — статический реестр связей `Fiber ↔ flow ↔ task`.
 - `FeatureExecutor` — точка входа для фич; определяет async-контекст через
-  `State::getCurrentFlow()`, отправляет задачу в Go и приостанавливает корутину.
+  `State::getCurrentFlow()` и приостанавливает корутину, передавая отложенную
+  задачу (`PendingPushDto`/`PendingNextDto`) резюмеру — на async-пути сам в Go
+  не ходит.
 - `Connection\Extension` — синглтон-обёртка над экспортированными C-функциями
   Go-расширения (`push`, `waitAny`, `wait`, `next`, `stopFlow`, `destroy` и др.).
 - Go: `Handler → Flows → Flow → Task` — каждая задача исполняется в своей
-  горутине; результаты всех флоу идут в один общий канал, откуда
+  горутине; результаты всех флоу идут в один общий буферизованный канал, откуда
   `Handler.WaitAny()` отдаёт первый готовый (`Wait(flowKey)` остаётся для
-  синхронного пути).
+  синхронного пути). Результат остановленного флоу, оставшийся в буфере,
+  дропается на приёме.
 
 ## Жизненный цикл одной задачи
 
@@ -134,17 +148,24 @@ flowchart TB
    `FeatureExecutor::exec($payload)`:
    - `State::getCurrentFlow()` определяет, что мы внутри зарегистрированной
      корутины (`isAsync = true`);
-   - `Extension::push()` формирует `taskKey = flowKey:counter` и через cgo `push`
-     отправляет задачу в Go;
-   - связь `task → fiber` сохраняется в `State`;
-   - `Fiber::suspend()` возвращает управление — дальше эту корутину возобновляет
-     только `Scheduler`.
+   - корутина приостанавливается, передавая отложенную задачу наружу:
+     `Fiber::suspend(new PendingPushDto(flowKey, payload))` — управление
+     возвращается туда, откуда её запустили (`WaitGroup::launch` или
+     планировщик);
+   - принявшая сторона вызывает `Scheduler::dispatchPendingTask()`:
+     `Extension::push()` формирует `taskKey = flowKey:counter`, через cgo
+     отправляет задачу в Go и сохраняет связь `task → fiber` в `State`. cgo
+     при этом не вызывается со стека корутины (веер из множества живых
+     пересёкших границу фиберов деградировал квадратично); ошибка отправки
+     бросается обратно в корутину в точку suspend;
+   - дальше эту корутину возобновляет только `Scheduler`.
 3. Если корутина завершилась не приостановившись (синхронный таск), её результат
    сразу попадает в очередь готовых результатов группы. Иначе она остаётся живой
    корутиной (в группе и в реестре `Scheduler`).
 4. На стороне Go `push → Handler.Push → Flows.InitFlow → Flow.HandleMessage`
    создаёт `Task` и запускает горутину с обработчиком фичи. Результат уходит в
-   общий канал результатов.
+   общий буферизованный канал результатов, и горутина завершается, не дожидаясь,
+   пока PHP его заберёт.
 5. `WaitGroup::iterate()` (генератор) отдаёт готовые результаты, а пока есть
    незавершённые корутины — делегирует ожидание планировщику:
    - на верхнем уровне (вне Fiber) крутит `Scheduler::run()` — цикл

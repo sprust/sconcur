@@ -41,6 +41,11 @@ services:
       - "29201:9201"
     command: ["supervisord", "-c", "/sconcur/docker/servers/config/supervisord.conf"]
 
+  # DB data lives in tmpfs (fast tests, state wiped on container restart). For
+  # benchmark sessions on real disk-backed backends: comment the tmpfs blocks,
+  # uncomment the named-volume mounts and the top-level `volumes:` section, and
+  # reset the state between sessions with `make bench-reset` (writes accumulate
+  # across runs otherwise).
   mongodb:
     container_name: sc-mongodb
     image: mongo:8.0.5
@@ -60,6 +65,9 @@ services:
     tmpfs:
       - /data/db:rw,noexec,nosuid,size=1024m
       - /data/configdb:rw,noexec,nosuid,size=512m
+    # volumes:
+    #   - mongodb-data:/data/db
+    #   - mongodb-configdb:/data/configdb
 
   mysql:
     container_name: sc-mysql
@@ -80,6 +88,8 @@ services:
       start_period: 15s
     tmpfs:
       - /var/lib/mysql:rw,noexec,nosuid,size=1024m
+    # volumes:
+    #   - mysql-data:/var/lib/mysql
 
   postgres:
     container_name: sc-postgres
@@ -99,3 +109,11 @@ services:
       start_period: 10s
     tmpfs:
       - /var/lib/postgresql/data:rw,noexec,nosuid,size=1024m
+    # volumes:
+    #   - postgres-data:/var/lib/postgresql/data
+
+# volumes:
+#   mongodb-data:
+#   mongodb-configdb:
+#   mysql-data:
+#   postgres-data:

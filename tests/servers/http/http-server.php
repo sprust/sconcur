@@ -5,6 +5,8 @@ declare(strict_types=1);
 require dirname(__DIR__, 3) . '/vendor/autoload.php';
 
 use Dotenv\Dotenv;
+use MongoDB\Client as NativeMongoClient;
+use MongoDB\Collection as NativeMongoCollection;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
@@ -40,6 +42,8 @@ use SConcur\WaitGroup;
  *   GET  /native-msleep/{ms} -> blocks the thread {ms} natively (handler-timeout test)
  *   GET  /cpu/{n}           -> runs a CPU-bound sha256 loop of {n} rounds (bench)
  *   GET  /all               -> fans out across the backend I/O features concurrently (load test)
+ *   GET  /all-native        -> the same operations on NATIVE drivers, sequentially (exactly the
+ *                              RoadRunner reference worker's /all) — isolates the server layer
  *   GET  /throw             -> handler throws -> framework answers 500
  *   GET  /status/{code}     -> responds with the given status code
  *   (anything else)         -> 404 "not found"
@@ -132,6 +136,7 @@ $server->serve(static function (ServerRequestInterface $request) use ($psr17Fact
             ['Set-Cookie' => ['a=1', 'b=2']],
         ),
         $path === '/all'              => allFeaturesRoute($psr17Factory),
+        $path === '/all-native'       => allFeaturesNativeRoute($psr17Factory),
         $path === '/files/download'   => filesDownloadRoute($psr17Factory, $uploadDir, $request),
         $path === '/image'            => imageRoute($psr17Factory, $imageDir, $request),
         $path === '/stream'      => streamRoute($psr17Factory),
@@ -338,12 +343,13 @@ function nativeMsleepRoute(Psr17Factory $factory, string $path): ResponseInterfa
 
 /**
  * Load-test route: fans out across the backend I/O features concurrently in one
- * request (a nested WaitGroup) — Sleeper, MongoDB, MySQL, PostgreSQL. Used to watch
+ * request (a nested WaitGroup) — MongoDB, MySQL, PostgreSQL. Used to watch
  * memory/CPU under load. The HTTP-client feature is intentionally NOT here: hitting
  * this server's own "/" would make every /all silently serve a second request and
  * skew the rps number — it is covered by its own benchmarks instead. Each feature is
- * isolated so a transient backend hiccup degrades just that feature (visible
- * per-feature error rate) instead of failing the whole request. Returns a JSON map.
+ * isolated so a transient backend hiccup stays visible per feature in the JSON map,
+ * but any failed feature turns the response into a 500 — load tools (wrk) then count
+ * the request as an error instead of silently passing it as a 200.
  */
 function allFeaturesRoute(Psr17Factory $factory): ResponseInterface
 {
@@ -352,12 +358,6 @@ function allFeaturesRoute(Psr17Factory $factory): ResponseInterface
     $status = [];
 
     $waitGroup = WaitGroup::create();
-
-    $waitGroup->add(static function () use (&$status): void {
-        $status['sleeper'] = allFeatureStatus(static function (): void {
-            Sleeper::usleep(microseconds: 1000);
-        });
-    });
 
     $waitGroup->add(static function () use (&$status, $mongo): void {
         $status['mongodb'] = allFeatureStatus(static function () use ($mongo): void {
@@ -368,22 +368,42 @@ function allFeaturesRoute(Psr17Factory $factory): ResponseInterface
 
     $waitGroup->add(static function () use (&$status, $mysql): void {
         $status['mysql'] = allFeatureStatus(static function () use ($mysql): void {
+            $mysql->exec(
+                sql: 'INSERT INTO load_all (t) VALUES (?)',
+                bindings: ['load'],
+            );
+
             $mysql->fetchAll('SELECT 1');
         });
     });
 
     $waitGroup->add(static function () use (&$status, $pgsql): void {
         $status['pgsql'] = allFeatureStatus(static function () use ($pgsql): void {
+            $pgsql->exec(
+                sql: 'INSERT INTO load_all (t) VALUES ($1)',
+                bindings: ['load'],
+            );
+
             $pgsql->fetchAll('SELECT 1');
         });
     });
 
     $waitGroup->waitResults();
 
+    $statusCode = 200;
+
+    foreach ($status as $featureStatus) {
+        if ($featureStatus !== 'ok') {
+            $statusCode = 500;
+
+            break;
+        }
+    }
+
     return text(
         $factory,
         (string) json_encode($status),
-        200,
+        $statusCode,
         ['Content-Type' => 'application/json'],
     );
 }
@@ -392,7 +412,8 @@ function allFeaturesRoute(Psr17Factory $factory): ResponseInterface
  * Lazily builds and caches the per-worker DB connections used by /all on its first
  * hit (so the other demo routes never pay for them and never require the backends).
  * The Go side pools the real connections by URI/DSN, so reusing these objects across
- * requests is cheap.
+ * requests is cheap. Also makes sure the load_all tables exist (the /all SQL write
+ * targets; mirrored by the RoadRunner reference worker in tests/servers/roadrunner).
  *
  * @return array{0: Collection, 1: MysqlConnection, 2: PgsqlConnection}
  */
@@ -419,6 +440,10 @@ function allFeaturesContext(): array
         )
             ->selectDatabase('u-test')
             ->selectCollection('load_all'),
+        // The Go-side pool is per worker process; the load harness runs up to
+        // ~nproc workers, so an unbounded pool exhausts the DB server limits
+        // (PostgreSQL max_connections=100 -> "too many clients" -> 500s under
+        // load). 5 conns x 16 processes stays under the limit for both DBs.
         new MysqlConnection(
             dsn: sprintf(
                 '%s:%s@tcp(%s:%s)/%s?parseTime=true',
@@ -428,6 +453,7 @@ function allFeaturesContext(): array
                 $_ENV['MYSQL_PORT'],
                 $_ENV['MYSQL_DATABASE'],
             ),
+            maxOpenConns: 5,
         ),
         new PgsqlConnection(
             dsn: sprintf(
@@ -438,8 +464,12 @@ function allFeaturesContext(): array
                 $_ENV['POSTGRES_PORT'],
                 $_ENV['POSTGRES_DB'],
             ),
+            maxOpenConns: 5,
         ),
     ];
+
+    $context[1]->exec(sql: 'CREATE TABLE IF NOT EXISTS load_all (id BIGINT AUTO_INCREMENT PRIMARY KEY, t VARCHAR(16) NOT NULL)');
+    $context[2]->exec(sql: 'CREATE TABLE IF NOT EXISTS load_all (id BIGSERIAL PRIMARY KEY, t VARCHAR(16) NOT NULL)');
 
     return $context;
 }
@@ -458,6 +488,121 @@ function allFeatureStatus(callable $call): string
     } catch (Throwable $exception) {
         return 'err: ' . $exception->getMessage();
     }
+}
+
+/**
+ * Native counterpart of /all: exactly the RoadRunner reference worker's route
+ * (tests/servers/roadrunner/rr-worker.php) — the same operations on NATIVE drivers
+ * (mongodb/mongodb + PDO), sequentially, no SConcur features. Blocks the worker for
+ * the duration of the request, like a RoadRunner worker would. Comparing /all-native
+ * here with /all here and with RoadRunner's /all isolates the server/transport layer
+ * from the driver stack. Same JSON status map, same 500 on any failed feature.
+ */
+function allFeaturesNativeRoute(Psr17Factory $factory): ResponseInterface
+{
+    [$mongo, $mysql, $pgsql] = allFeaturesNativeContext();
+
+    $status = [];
+
+    $status['mongodb'] = allFeatureStatus(static function () use ($mongo): void {
+        $mongo->insertOne(['t' => 'load']);
+        $mongo->findOne(['t' => 'load']);
+    });
+
+    $status['mysql'] = allFeatureStatus(static function () use ($mysql): void {
+        $statement = $mysql->prepare('INSERT INTO load_all (t) VALUES (?)');
+
+        $statement->execute(['load']);
+
+        $mysql->query('SELECT 1')->fetchAll();
+    });
+
+    $status['pgsql'] = allFeatureStatus(static function () use ($pgsql): void {
+        $statement = $pgsql->prepare('INSERT INTO load_all (t) VALUES (?)');
+
+        $statement->execute(['load']);
+
+        $pgsql->query('SELECT 1')->fetchAll();
+    });
+
+    $statusCode = 200;
+
+    foreach ($status as $featureStatus) {
+        if ($featureStatus !== 'ok') {
+            $statusCode = 500;
+
+            break;
+        }
+    }
+
+    return text(
+        $factory,
+        (string) json_encode($status),
+        $statusCode,
+        ['Content-Type' => 'application/json'],
+    );
+}
+
+/**
+ * Lazily builds and caches the per-worker NATIVE connections used by /all-native on
+ * its first hit (mirror of rrAllFeaturesContext() in the RoadRunner worker): the same
+ * .env, backends and load_all targets as /all, but mongodb/mongodb + PDO. One
+ * connection per worker process, like a RoadRunner worker holds.
+ *
+ * @return array{0: NativeMongoCollection, 1: PDO, 2: PDO}
+ */
+function allFeaturesNativeContext(): array
+{
+    /** @var array{0: NativeMongoCollection, 1: PDO, 2: PDO}|null $context */
+    static $context = null;
+
+    if ($context !== null) {
+        return $context;
+    }
+
+    Dotenv::createImmutable(dirname(__DIR__, 3))->safeLoad();
+
+    $mongo = new NativeMongoClient(
+        sprintf(
+            'mongodb://%s:%s@%s:%s',
+            $_ENV['MONGO_ADMIN_USERNAME'],
+            $_ENV['MONGO_ADMIN_PASSWORD'],
+            $_ENV['MONGO_HOST'],
+            $_ENV['MONGO_PORT'],
+        ),
+    )
+        ->selectCollection('u-test', 'load_all');
+
+    $mysql = new PDO(
+        sprintf(
+            'mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4',
+            $_ENV['MYSQL_HOST'],
+            $_ENV['MYSQL_PORT'],
+            $_ENV['MYSQL_DATABASE'],
+        ),
+        $_ENV['MYSQL_USER'],
+        $_ENV['MYSQL_PASSWORD'],
+        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION],
+    );
+
+    $pgsql = new PDO(
+        sprintf(
+            'pgsql:host=%s;port=%s;dbname=%s',
+            $_ENV['POSTGRES_HOST'],
+            $_ENV['POSTGRES_PORT'],
+            $_ENV['POSTGRES_DB'],
+        ),
+        $_ENV['POSTGRES_USER'],
+        $_ENV['POSTGRES_PASSWORD'],
+        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION],
+    );
+
+    $mysql->exec('CREATE TABLE IF NOT EXISTS load_all (id BIGINT AUTO_INCREMENT PRIMARY KEY, t VARCHAR(16) NOT NULL)');
+    $pgsql->exec('CREATE TABLE IF NOT EXISTS load_all (id BIGSERIAL PRIMARY KEY, t VARCHAR(16) NOT NULL)');
+
+    $context = [$mongo, $mysql, $pgsql];
+
+    return $context;
 }
 
 function truncatedRoute(Psr17Factory $factory): ResponseInterface

@@ -1,0 +1,26 @@
+# RoadRunner reference server for the honest comparison with the SConcur HTTP
+# server (docs/benchmarks.ru.md, "Сравнение с RoadRunner"). The worker serves
+# native-driver copies of the / and /all benchmark routes.
+#
+# Run from the repo root inside the php container (or via `make rr-serve`):
+#   rr serve -c tests/servers/roadrunner/.rr.yaml
+#
+# Tunables (env): RR_HTTP_PORT (default 18081 — the SConcur load pool uses
+# 18080), RR_NUM_WORKERS (default 16, as in the documented comparison run).
+
+version: '3'
+
+# The command's working directory is this config's directory, so the path is
+# relative to tests/servers/roadrunner.
+server:
+  command: 'php rr-worker.php'
+
+http:
+  address: '0.0.0.0:${RR_HTTP_PORT:-18081}'
+
+  pool:
+    num_workers: ${RR_NUM_WORKERS:-16}
+
+logs:
+  mode: production
+  level: error

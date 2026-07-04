@@ -98,9 +98,14 @@ check:
 status:
 	$(PHP_EXT) bin/sconcur-status ${c}
 
+# --log-junit persists the failing test's name for the rare flaky failure that
+# only fires on the first run after heavy host activity — see
+# .ai/plans/flaky-test-hunt.ru.md. Inspect /tmp/sconcur-phpunit.xml (in the php
+# container) after a failed run.
 test:
 	$(PHP_EXT) vendor/bin/phpunit \
 		-d memory_limit=512M \
+		--log-junit /tmp/sconcur-phpunit.xml \
 		--colors=auto \
 		--testdox \
 		--display-incomplete \
@@ -117,6 +122,14 @@ ext-build:
 
 ext-test:
 	$(PHP_CLI) sh ./ext-test.sh
+
+# Resets the DB backends to a clean state before a benchmark session: drops the
+# named data volumes and recreates the containers. Without it writes accumulate
+# across runs (the DB data lives on disk now, not tmpfs) and the numbers drift.
+bench-reset:
+	$(DOCKER_COMPOSE) rm -sf mongodb mysql postgres
+	docker volume rm -f sconcur-php_mongodb-data sconcur-php_mongodb-configdb sconcur-php_mysql-data sconcur-php_postgres-data
+	$(DOCKER_COMPOSE) up -d --wait mongodb mysql postgres
 
 bench-all:
 	make bench-sleep
@@ -158,6 +171,9 @@ bench-all:
 	make bench-ws-throughput
 	make bench-ws-server-io
 	make bench-ws-server-cpu
+
+bench-db-lifecycle:
+	$(PHP_EXT) tests/benchmarks/db-lifecycle.php ${c} ${runs} ${pool}
 
 bench-http-client-download:
 	$(PHP_EXT) tests/benchmarks/http-client-download.php ${c}
@@ -282,6 +298,15 @@ bench-ws-server-cpu:
 bench-http-throughput:
 	tests/benchmarks/http-throughput.sh
 
+# RoadRunner reference server (native drivers, tests/servers/roadrunner) for the
+# honest / and /all comparison. Foreground; stop with Ctrl+C. Tunables:
+# make rr-serve RR_HTTP_PORT=18082 RR_NUM_WORKERS=8
+RR_HTTP_PORT ?= 18081
+RR_NUM_WORKERS ?= 16
+
+rr-serve:
+	$(DOCKER_COMPOSE) exec -e RR_HTTP_PORT=$(RR_HTTP_PORT) -e RR_NUM_WORKERS=$(RR_NUM_WORKERS) php rr serve -c tests/servers/roadrunner/.rr.yaml
+
 # Runs on the HOST (needs wrk + the mongodb/mysql/postgres services up): load the
 # /all route (fans out across EVERY async I/O feature per request) and sample
 # CPU/memory of the server and backend containers + per-worker RSS (leak check).
@@ -299,6 +324,19 @@ bench-http-load-soak:
 # measures the pure HTTP + framework ceiling, the floor under the /all numbers.
 bench-http-load-stats-empty:
 	ROUTE=/ tests/benchmarks/http-load-stats.sh
+
+# RoadRunner counterparts of the three targets above: the same harness against
+# the native-driver reference stack (tests/servers/roadrunner), so the numbers
+# are directly comparable. Tunables via env, e.g.: make bench-rr-load-stats
+# WORKERS=12 DURATION=30
+bench-rr-load-stats:
+	tests/benchmarks/rr-load-stats.sh
+
+bench-rr-load-soak:
+	MODE=soak tests/benchmarks/rr-load-stats.sh
+
+bench-rr-load-stats-empty:
+	ROUTE=/ tests/benchmarks/rr-load-stats.sh
 
 # WebSocket load test: spawn a ws-server pool (SO_REUSEPORT, one per core) and drive
 # it with the Go ws-load generator on the "all" message (fans out across EVERY async

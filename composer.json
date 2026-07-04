@@ -2,7 +2,7 @@
     "name": "sconcur/sconcur",
     "description": "PHP concurrency library backed by an extension written in Go",
     "license": "MIT",
-    "version": "0.6.0",
+    "version": "0.6.1",
     "authors": [
         {
             "name": "Pavel",
@@ -24,7 +24,9 @@
         "vlucas/phpdotenv": "^5.6",
         "mongodb/mongodb": "^1.21",
         "friendsofphp/php-cs-fixer": "^3.91",
-        "nyholm/psr7": "^1.8"
+        "nyholm/psr7": "^1.8",
+        "spiral/roadrunner-http": "^4.1",
+        "spiral/roadrunner-worker": "^3.6"
     },
     "suggest": {
         "ext-pcntl": "Required for graceful shutdown of the HTTP server (SIGTERM/SIGINT handling); the server otherwise runs until the process is killed"

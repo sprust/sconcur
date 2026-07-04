@@ -89,10 +89,15 @@ Rebuild the extension with `make ext-build` before running tests that depend on
 
 **Execution flow:**
 `WaitGroup::add(closure)` → `Fiber::start()` → Fiber suspends on
-`FeatureExecutor::exec()` → `Extension::push()` sends task to Go → Go goroutine
-executes → result sent via shared channel → `Scheduler` retrieves it with
+`FeatureExecutor::exec()` handing over a pending task
+(`PendingPushDto`/`PendingNextDto`) → the resumer (`WaitGroup::launch` /
+`Scheduler`) performs `Extension::push()` via
+`Scheduler::dispatchPendingTask()` off the fiber stack → Go goroutine executes →
+result sent via shared channel → `Scheduler` retrieves it with
 `Extension::waitAny()` and resumes the owning Fiber → `WaitGroup::iterate()`
-yields result.
+yields result. (cgo is never called from a coroutine's stack — N live
+boundary-crossing fibers made the fan-out quadratic, see
+`.ai/plans/async-fan-out-optimization.ru.md`.)
 
 **Concurrency / nested coroutines:** a single process-wide `Scheduler` is the
 only place that waits on the extension (`waitAny`, the first ready result of any
@@ -104,7 +109,7 @@ non-fiber path.)
 
 **PHP layer** (`src/`):
 - `WaitGroup` — main API: `add()`, `iterate()`, `waitAll()`, `waitResults()`
-- `Scheduler/Scheduler` — process-wide cooperative scheduler (single `waitAny` loop, resumes coroutines, wakes nested-group waiters)
+- `Scheduler/Scheduler` — process-wide cooperative scheduler (single `waitAny` loop, resumes coroutines, wakes nested-group waiters); `shutdown()` unwinds all live coroutines (FlowStoppedException) from the shutdown handler registered in `get()`, so `exit()` with unfinished work cancels deterministically
 - `Scheduler/Coroutine` — a tracked fiber: id, fiber, owning group, callback key
 - `State` — static registry mapping Fibers ↔ flows ↔ tasks, and the per-coroutine context store (own key-value map + parent link per fiber id, read-through to the process root; released in `unRegisterFiber`)
 - `Context/Context` — static entry point `Context::current(): CoroutineContext` to the current coroutine's context (root outside any fiber); `Context/CoroutineContext` is the framework-neutral `find`/`has`/`set`/`forget` contract. Parent links are recorded in `Scheduler::spawn` / `WaitGroup::add`. See [docs/coroutine-context.ru.md](../docs/coroutine-context.ru.md)

@@ -30,6 +30,7 @@ readonly class Benchmarker
         ?Closure $nativeCallback = null,
         ?Closure $syncCallback = null,
         ?Closure $asyncCallback = null,
+        bool $warmup = true,
     ): void {
         echo str_repeat('*', 80) . "\n";
         echo str_repeat('*', 80) . "\n";
@@ -61,6 +62,38 @@ readonly class Benchmarker
         if (!is_null($asyncCallback)) {
             for ($index = 0; $index < $this->total; $index++) {
                 $asyncCallbacks["$this->name: $index"] = $asyncCallback;
+            }
+        }
+
+        // Warm-up (discarded): native/sync run a few sequential calls, async runs
+        // one full-size fan. This is symmetric to native, which enters the
+        // measurement with an established connection (and usually a prepared
+        // statement) anyway; without it the async fan pays the whole backend
+        // connection-pool ramp-up inside the measured phase (Go database/sql and
+        // the mongo driver open connections on demand up to the fan width).
+        if ($warmup) {
+            $this->logProcess("\n\n---- Warm-up ----\n");
+
+            $sequentialWarmupCount = min(20, $this->total);
+
+            for ($index = 0; $index < $sequentialWarmupCount; $index++) {
+                if (!is_null($nativeCallback)) {
+                    $nativeCallback();
+                }
+
+                if (!is_null($syncCallback)) {
+                    $syncCallback();
+                }
+            }
+
+            if (!is_null($asyncCallback)) {
+                $warmupGroup = WaitGroup::create();
+
+                for ($index = 0; $index < $this->total; $index++) {
+                    $warmupGroup->add(callback: $asyncCallback);
+                }
+
+                $warmupGroup->waitAll();
             }
         }
 
