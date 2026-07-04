@@ -155,6 +155,73 @@ pgsql delete 512 → 408, mongodb read 521 → 393, mongodb delete 456 → 354.
 по образцу `Scheduler::$spawnCounter`) вместо `uniqid(more_entropy: true)` на
 каждый `add()`.
 
+## Фаза 2: async быстрее native на in-memory (ресёрч 2026-07-04)
+
+Вопрос: почему на in-memory дешёвых операциях async всё ещё проигрывает native
+(mysql selectOne 40.4 vs 3.7 мс на 100 вызовов и т.п.), если пол границы уже
+~22 мкс/оп (веер `Sleeper::usleep(1)`), то есть ниже цены нативной операции?
+
+Эксперименты (контейнер, микробенчи на живых БД; веер = 100 операций):
+
+| Замер | мкс/оп |
+| --- | ---: |
+| native PDO mysql, prepared execute+fetch | 38.0 |
+| sconcur sync mysql fetchAll (тёплое 1 соединение) | 266 |
+| async веер mysql, холодный пул | 470 |
+| async веер mysql, частично прогретый пул (2–3-й веер) | 150–157 |
+| async веер mysql, полностью прогретый пул (5–6-й веер) | **27–46** |
+| native pgsql (из таблиц доки) | ~54 |
+| async веер pgsql, холодный пул | 970 |
+| async веер pgsql, тёплый пул (дефолтный stmt-cache pgx) | **62** |
+| async веер pgsql, `simple_protocol` | 184 (хуже — не брать) |
+| native mongo findOne / insertOne | 111 / 57 |
+| async веер mongo findOne холодный / тёплый | 503 / **71** |
+| async веер mongo insertOne тёплый | **47** |
+
+Выводы — «async медленнее native на in-memory» в текущих таблицах почти целиком
+артефакт методики и настроек, а не архитектуры:
+
+1. Холодный пул. `Benchmarker` не греет: sync-фаза держит 1 соединение, а
+   async-веер открывает до `maxOpenConns` соединений прямо в замере (плюс у Go
+   `database/sql` дефолт MaxIdleConns=2 — между веерами пул схлопывается и
+   хендшейки повторяются). Цена — 3–15× (pg: 970 → 62 мкс).
+2. MySQL и round-trip'ы: гипотеза про Prepare+Execute+Close не подтвердилась —
+   фасад `Mysql\Connection` уже добавляет `interpolateParams=true` в DSN по
+   умолчанию (`withInterpolateParams`), и пулы в Go ключуются по DSN, поэтому
+   в эксперименте «plain» и «interp» соединения делили один интерполированный
+   пул. Наблюдавшаяся разница 150 → 27 мкс между веерами — продолжение
+   прогрева (пул, кэши сервера), а не флаг. По wire-протоколу mysql-путь уже
+   в паритете с PDO (1 round-trip).
+3. PostgreSQL: дефолтный режим pgx (кэш prepared statement) уже оптимален,
+   `simple_protocol` хуже.
+4. Mongo: тот же эффект прогрева пула Go-драйвера.
+
+На тёплых пулах async веером обгоняет native уже на in-memory: mysql 27–46 vs
+38, mongo findOne 71 vs 111, insertOne 47 vs 57; pgsql — паритет (62 vs ~54).
+
+### Шаги фазы 2 (скорректированы после проверки кода)
+
+1. `Benchmarker`: фаза прогрева перед замером — несколько sync-операций + один
+   отбрасываемый async-веер полного размера (сделано; `warmup: false` у
+   `mongodb-createIndex` — лимит 64 индексов на коллекцию). Это честно: native
+   тоже входит в замер с готовым соединением и prepared statement.
+2. Библиотека: если задан `maxOpenConns`, а `maxIdleConns` нет — дефолт
+   `maxIdleConns = maxOpenConns` (иначе Go держит 2 idle и пул схлопывается
+   между веерами). Чистый PHP (`Sql\Connection`), протокол не меняется
+   (сделано).
+3. `interpolateParams` — ничего делать не нужно: уже дефолт фасада
+   `Mysql\Connection`, задокументирован в `docs/mysql.ru.md`.
+4. Mongo-бенчи: прогрев закрывается пунктом 1 (отбрасываемый веер прогревает
+   пул драйвера до ширины веера).
+5. Переснять таблицы БД: ожидание — async ≥ native на большинстве in-memory
+   строк. Сделано: async обгоняет native в 13 строках (mongo insertOne 14.1 vs
+   19.3, insertMany ×4.4, count/bulkWrite/updateMany ~×7, createIndex; mysql
+   insert 4.0 vs 7.2, delete 5.5 vs 7.0; оба клиентских ~×40), на остальных
+   разрыв упал с ~10× до ~1.5–2× (mysql selectOne 5.2 vs 3.5 — было 40.4).
+6. `/all`: повторный wrk-замер — кап пула теперь держит 5 idle-соединений
+   (пункт 2). Сделано: 3 190 → 3 884 rps (+22%), p50 72 → 63 мс; RoadRunner
+   впереди ~1.5× (было ~1.9×).
+
 ## Этапы
 
 1. Этап 1 (без изменения протокола, без бампа): п.1 + п.2 + п.5 — выполнен,

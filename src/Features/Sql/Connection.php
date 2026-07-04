@@ -37,11 +37,16 @@ abstract readonly class Connection
         ?int $maxIdleConns = null,
         ?int $connMaxLifetimeMs = null,
     ) {
+        // With maxOpenConns set but maxIdleConns left default, Go's database/sql
+        // keeps only 2 idle connections: a concurrent fan-out opens the pool up
+        // to the cap and then drops it back to 2, so the next fan pays the
+        // connection handshakes again. Defaulting idle to the cap keeps the pool
+        // warm between fan-outs.
         $this->connection = new ConnectionDto(
             dsn: $dsn,
             timeoutMs: $timeoutMs ?: 30000,
             maxOpenConns: $maxOpenConns ?: 0,
-            maxIdleConns: $maxIdleConns ?: 0,
+            maxIdleConns: $maxIdleConns ?: ($maxOpenConns ?: 0),
             connMaxLifetimeMs: $connMaxLifetimeMs ?: 0,
         );
     }
