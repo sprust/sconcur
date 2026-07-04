@@ -1,3 +1,5 @@
+[English](adding-a-feature.md) | Русский
+
 # Как добавить новую фичу верхнего уровня
 
 Фича верхнего уровня — это новый домен со своим `Method` (как `Sleeper`). Эталон
@@ -7,7 +9,7 @@
 
 Ниже — пошагово, в двух вариантах: без стриминга (один результат) и
 со стримингом (несколько батчей). Конкретная работа фичи скрыта за «вашей
-операцией». Общую архитектуру см. в [README](../README.md).
+операцией». Общую архитектуру см. в [README](../README.ru.md).
 
 > Делаете долгоживущий сетевой сервер (как `HttpServer`)? Это особый вид
 > стриминговой фичи со своим слушателем и циклом обслуживания — см. отдельное
@@ -110,9 +112,9 @@ type SleeperPayload struct {
 ### PHP
 
 1. `MethodEnum` — новый кейс (число должно быть свободным; на момент написания
-   первое свободное — `11`):
+   первое свободное — `14`):
    ```php
-   case Foo = 11;
+   case Foo = 14;
    ```
 
 2. Payload-класс `src/Features/Foo/Payloads/FooPayload.php`, реализующий
@@ -126,8 +128,8 @@ type SleeperPayload struct {
    readonly class FooPayload implements PayloadInterface
    {
        public function __construct(
-           private int $someParam,
-           private int $timeoutMs, // обязательный предельный срок выполнения
+           protected int $someParam,
+           protected int $timeoutMs, // обязательный предельный срок выполнения
        ) {
        }
 
@@ -168,7 +170,7 @@ type SleeperPayload struct {
 
 1. `types/method.go` — та же константа:
    ```go
-   MethodFoo Method = 11
+   MethodFoo Method = 14
    ```
 
 2. Пакет фичи `ext/internal/features/foo/feature.go`, реализующий

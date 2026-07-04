@@ -31,7 +31,7 @@ use Throwable;
  * the library stays implementation-agnostic — the mirror of the PSR-18 HttpClient).
  * Streaming responses (chunked / SSE) are expressed by returning a response whose
  * body is a lazy StreamInterface of unknown size; the framework drains it chunk by
- * chunk with write backpressure. See docs/http-server.ru.md.
+ * chunk with write backpressure. See docs/http-server.md.
  */
 readonly class HttpServer
 {

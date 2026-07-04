@@ -20,7 +20,7 @@ use Throwable;
  *
  * connect() returns a long-lived Connection the caller drives itself: read() pulls
  * inbound messages, write() pushes messages (text or binary), close() ends it. See
- * docs/websocket-client.ru.md.
+ * docs/websocket-client.md.
  */
 readonly class WsClient
 {

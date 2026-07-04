@@ -1,3 +1,5 @@
+[English](coroutine-context.md) | Русский
+
 # Контекст корутины
 
 `SConcur\Context\Context` — key-value хранилище, привязанное к текущей корутине

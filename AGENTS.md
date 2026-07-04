@@ -7,4 +7,4 @@ architecture, code style, and workflow rules.
 
 See also:
 - [README.md](README.md) — project overview and usage
-- [docs/adding-a-feature.ru.md](docs/adding-a-feature.ru.md) — guide for adding a new feature
+- [docs/adding-a-feature.md](docs/adding-a-feature.md) — guide for adding a new feature

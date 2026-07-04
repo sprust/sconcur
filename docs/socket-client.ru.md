@@ -1,3 +1,5 @@
+[English](socket-client.md) | Русский
+
 # Сокет-клиент (TCP)
 
 Асинхронный TCP-клиент с фреймингом length-prefix — зеркальная пара к
@@ -5,7 +7,7 @@
 HTTP-серверу. Весь сетевой I/O (DNS, dial, чтение, запись) живёт в Go-расширении:
 `connect()` уходит в горутину, корутина (Fiber) приостанавливается, поэтому
 десятки соединений набираются «веером». Вне `WaitGroup` тот же API работает
-синхронно (см. [README → Применение](../README.md)).
+синхронно (см. [README → Применение](../README.ru.md)).
 
 Модель — долгоживущее двунаправленное соединение (а не «запрос-ответ»):
 приложение набирает соединение, получает объект `Connection` и само ведёт диалог —
@@ -162,8 +164,8 @@ Go (`ext/internal/features/socketclient/`):
 
 - `payloads/payloads.go` — `Envelope`, `ConnectParams`, `SendParams`, `CloseParams`,
   `ConnectionMeta` (1:1 с PHP).
-- `feature.go` — `SocketClientFeature` (singleton): диспетчер команд; `handleRespond`
-  маршрутизирует `Send`/`Close` по `cid` в write-loop соединения.
+- `feature.go` — `SocketClientFeature` (singleton): диспетчер команд; `handleSend`/`handleClose`
+  через `dispatch` маршрутизируют `Send`/`Close` по `cid` в write-loop соединения.
 - `connect.go` — `handleConnect`: dial с `connectTimeout` (отменяемый контекстом
   флоу), регистрация стримингового `connectionState` (первый `Next` — метаданные, далее
   — входящие фреймы) и write-loop; очистка на остановке флоу.
@@ -187,7 +189,7 @@ backpressure (`PendingConnection`/`ConsumeCommands`/`Dispatch`). Им польз
 | Авто-reconnect | на стороне приложения. |
 
 Общие ограничения библиотеки (только CLI, только Linux, только NTS, нельзя
-`pcntl_fork` после загрузки расширения) — см. [README](../README.md).
+`pcntl_fork` после загрузки расширения) — см. [README](../README.ru.md).
 
 ## Тестирование
 

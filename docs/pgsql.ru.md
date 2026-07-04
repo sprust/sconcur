@@ -1,3 +1,5 @@
+[English](pgsql.md) | Русский
+
 # PostgreSQL (поверх универсальной SQL-фичи)
 
 PgSQL — второй драйвер той же SQL-фичи поверх Go `database/sql` (драйвер

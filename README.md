@@ -1,164 +1,171 @@
+English | [Русский](README.ru.md)
+
 # SConcur
 
-> ⚠️ Экспериментальный проект, не для продакшена. Очередная попытка
-> сделать PHP асинхронным, но без расширения на C, а на Go.
+> ⚠️ Experimental project, not for production. Yet another attempt to make
+> PHP asynchronous, but without a C extension — with one written in Go.
 
-Библиотека конкурентности для PHP поверх собственного расширения на Go. PHP-фаза
-(Fiber) приостанавливается, пока Go-расширение выполняет задачу (операции
-MongoDB, sleep и т.п.) конкурентно в горутинах. Обмен между PHP и Go идёт через
+A concurrency library for PHP on top of a custom Go extension. The PHP side
+(a Fiber) suspends while the Go extension runs the task (MongoDB operations,
+sleep, and so on) concurrently in goroutines. PHP and Go exchange data over
 MessagePack.
 
-## Содержание
+## Contents
 
-- [Идея](#идея)
-- [Применение и ограничения](#применение-и-ограничения)
-- [Как это работает](#как-это-работает)
-- [Версии, на которых тестировалось](#версии-на-которых-тестировалось)
-- [Документация](#документация)
+- [Idea](#idea)
+- [Use and limitations](#use-and-limitations)
+- [How it works](#how-it-works)
+- [Tested versions](#tested-versions)
+- [Documentation](#documentation)
 - [Build](#build)
 - [echo test](#echo-test)
 - [example](#example)
-- [Планы](#планы)
+- [Roadmap](#roadmap)
 
-## Идея
+## Idea
 
-Идея SConcur — вынести I/O-операции (MongoDB, sleep и т.п.) в Go-часть и
-выполнять их параллельно. PHP по своей природе синхронен: запросы к БД блокируют
-процесс по очереди. Здесь каждая I/O-операция уходит в Go и исполняется в
-отдельной горутине, поэтому десятки запросов летят веером, и общее время
-ограничено самой медленной операцией, а не их суммой. PHP остаётся тонким
-слоем-оркестратором, вся конкурентность живёт в Go.
+The idea of SConcur is to move I/O operations (MongoDB, sleep, and so on) into
+the Go side and run them in parallel. PHP is synchronous by nature: database
+queries block the process one after another. Here every I/O operation goes to Go
+and runs in a separate goroutine, so dozens of queries fan out and the total
+time is bound by the slowest operation, not by their sum. PHP stays a thin
+orchestration layer; all concurrency lives in Go.
 
-Почему именно Go:
+Why Go specifically:
 
-- Удобная модель конкурентности: горутины и каналы дают дешёвый параллелизм. Одна
-  задача — одна горутина, результаты собираются через канал. Не нужны внешний
-  event-loop, пул потоков или callback-ад.
-- Простота добавления фич: чтобы подключить новую I/O-операцию, достаточно
-  написать обычный синхронный Go-обработчик, рантайм сам выполнит его конкурентно.
-- Зрелая экосистема: драйверы и библиотеки Go переиспользуются напрямую.
+- A convenient concurrency model: goroutines and channels give cheap
+  parallelism. One task — one goroutine, results collected over a channel. No
+  external event loop, thread pool, or callback hell needed.
+- Easy to add features: to plug in a new I/O operation you just write an ordinary
+  synchronous Go handler, and the runtime runs it concurrently on its own.
+- A mature ecosystem: Go drivers and libraries are reused directly.
 
-## Применение и ограничения
+## Use and limitations
 
-- Только CLI. Библиотека рассчитана на долгоживущие CLI-процессы (воркеры,
-  демоны, скрипты, консольные команды). С PHP-FPM использовать нельзя:
-  расширение держит Go-рантайм и горутины на уровне процесса, а модель FPM
-  (короткий запрос-ответ, общие процессы пула) этому противоречит.
-- Нельзя `pcntl_fork` после загрузки расширения. Go-рантайм и его горутины не
-  переживают `fork`: дочерний процесс получит неработоспособный рантайм
-  (зависания, падения). Если нужен пул воркеров — форкайтесь до первого обращения
-  к расширению либо запускайте отдельные процессы (`exec`), а расширение
-  инициализируйте уже в потомке.
-- Только NTS (non-thread-safe). ZTS-сборка PHP не поддерживается.
-- Только Linux. Расширение и библиотека используют специфику Linux (определение
-  числа ядер, сигналы/`posix`, `SO_REUSEPORT`, `flock` мастера и т.д.). Другие ОС
-  не поддерживаются.
-- `exit()`/`die()` при активных задачах безопасен, но теряет их результаты.
-  Shutdown-хендлер разматывает незавершённые корутины (finally-блоки выполняются,
-  транзакции откатываются, курсоры и флоу освобождаются), после чего процесс
-  завершается штатно. Результаты незавершённых задач при этом пропадают, поэтому
-  лучше довести их до конца или остановить явно (`WaitGroup::stop()`).
-- Конкурентный режим необязателен. Любую фичу, которая ходит в Go-часть
-  (`Sleeper`, `MongoDB` и т.д.), можно вызывать и вне `WaitGroup` — как обычный
-  синхронный вызов. Вне Fiber `FeatureExecutor` определяет неасинхронный контекст
-  и просто дожидается результата (`Extension::wait`), возвращая его сразу. Удобно,
-  когда конкурентность не нужна, а единый API хочется сохранить.
+- CLI only. The library targets long-lived CLI processes (workers, daemons,
+  scripts, console commands). It cannot be used with PHP-FPM: the extension holds
+  the Go runtime and goroutines at the process level, which contradicts the FPM
+  model (a short request-response, shared pool processes).
+- No `pcntl_fork` after the extension is loaded. The Go runtime and its
+  goroutines do not survive `fork`: the child process gets a broken runtime
+  (hangs, crashes). If you need a worker pool — fork before the first call into
+  the extension, or launch separate processes (`exec`) and initialize the
+  extension in the child.
+- NTS (non-thread-safe) only. A ZTS build of PHP is not supported.
+- Linux only. The extension and the library rely on Linux specifics (core-count
+  detection, signals/`posix`, `SO_REUSEPORT`, the master's `flock`, and so on).
+  Other operating systems are not supported.
+- `exit()`/`die()` with active tasks is safe but loses their results. The
+  shutdown handler unwinds unfinished coroutines (finally blocks run,
+  transactions roll back, cursors and flows are released), after which the
+  process exits normally. The results of unfinished tasks are lost in the
+  process, so it is better to run them to completion or stop them explicitly
+  (`WaitGroup::stop()`).
+- Concurrent mode is optional. Any feature that goes into the Go side
+  (`Sleeper`, `MongoDB`, and so on) can also be called outside a `WaitGroup` — as
+  an ordinary synchronous call. Outside a Fiber, `FeatureExecutor` detects the
+  non-async context and simply waits for the result (`Extension::wait`),
+  returning it immediately. Handy when you do not need concurrency but want to
+  keep a single API.
 
 ```php
-// синхронно, без WaitGroup — вернёт результат сразу
+// synchronous, without WaitGroup — returns the result immediately
 $collection->insertOne(['name' => 'example']);
 ```
 
-## Как это работает
+## How it works
 
-Коротко: `WaitGroup` оборачивает каждое замыкание в `Fiber`. При вызове
-асинхронной фичи корутина приостанавливается, а задача уходит в Go и исполняется
-в отдельной горутине. Единый процессный `Scheduler` ждёт расширение
-(`waitAny`), получает первый готовый результат любого флоу и возобновляет нужную
-корутину по `taskKey`. Результаты приходят в порядке завершения задач, а не в
-порядке `add()`.
+In short: `WaitGroup` wraps each closure in a `Fiber`. When an async feature is
+called, the coroutine suspends and the task goes to Go and runs in a separate
+goroutine. A single process-wide `Scheduler` waits on the extension
+(`waitAny`), gets the first ready result of any flow, and resumes the right
+coroutine by `taskKey`. Results arrive in task-completion order, not in `add()`
+order.
 
-Число одновременно живых корутин группы по умолчанию не ограничено. Если нужен
-backpressure (память, пул соединений БД), задайте лимит:
-`WaitGroup::create(maxConcurrency: N)` — лишние `add()` встают в очередь и
-запускаются по мере освобождения слотов.
+The number of concurrently live coroutines in a group is unlimited by default.
+If you need backpressure (memory, a DB connection pool), set a limit:
+`WaitGroup::create(maxConcurrency: N)` — excess `add()` calls queue and start as
+slots free up.
 
-Подробный разбор — со схемами «PHP Fiber ↔ Go goroutine», слоями и жизненным
-циклом задачи — в [docs/architecture.ru.md](docs/architecture.ru.md).
+A detailed walkthrough — with the "PHP Fiber ↔ Go goroutine" diagrams, the
+layers, and the task lifecycle — is in
+[docs/architecture.md](docs/architecture.md).
 
-## Версии, на которых тестировалось
+## Tested versions
 
-Точные версии окружения (Docker-образы и зависимости), на которых проект
-собирается и проходит тесты в CI:
+The exact environment versions (Docker images and dependencies) the project is
+built and tested against in CI:
 
-| Компонент | Версия |
+| Component | Version |
 | --- | --- |
 | PHP | 8.4.15 (NTS, cli) |
-| Go (сборка расширения) | 1.26.1 |
-| MongoDB (сервер) | 8.0.5 |
-| ext-mongodb (PHP-расширение) | 1.21.5 |
-| mongodb/mongodb (composer-пакет) | 1.21.3 |
+| Go (extension build) | 1.26.1 |
+| MongoDB (server) | 8.0.5 |
+| ext-mongodb (PHP extension) | 1.21.5 |
+| mongodb/mongodb (composer package) | 1.21.3 |
 | ext-msgpack | 3.0.1 |
-| MySQL (сервер) | 8.4 |
+| MySQL (server) | 8.4 |
 | go-sql-driver/mysql | 1.8.1 |
-| PostgreSQL (сервер) | 16 |
+| PostgreSQL (server) | 16 |
 | jackc/pgx/v5 | 5.7.2 |
 | go.mongodb.org/mongo-driver/v2 | 2.6.0 |
 
-## Документация
+## Documentation
 
-- [Консольные команды](docs/cli.ru.md) — `bin/sconcur-load` (скачать собранное
-  расширение нужной версии), `bin/sconcur-status` (проверить установку и версию,
-  с `--json`), `bin/sconcur-server` (мастер воркеров, кратко со ссылкой).
-- [Архитектура](docs/architecture.ru.md) — устройство изнутри: связка
-  Fiber ↔ goroutine, планировщик, слои, жизненный цикл задачи.
-- [MongoDB](docs/mongodb.ru.md) — операции коллекции (CRUD, агрегация, индексы,
-  bulkWrite), курсоры со стримингом, результаты, типы BSON, конкурентность,
-  таймауты и внутреннее устройство.
-- [HTTP-сервер](docs/http-server.ru.md) — долгоживущий демон, запрос в корутине:
-  быстрый старт, параметры, стриминг, graceful shutdown, внутреннее устройство и
-  ограничения в отличие от типовых серверов.
-- [Сокет-сервер (TCP)](docs/socket-server.ru.md) — долгоживущий TCP-сервер с
-  фреймингом length-prefix, модель «сообщение → ответ»: быстрый старт, обработчик,
-  параметры, конкурентность, graceful shutdown / `SO_REUSEPORT`, ограничения.
-- [Мастер воркеров](docs/worker-master.ru.md) — супервизор пула процессов-воркеров
-  (CLI `bin/sconcur-server` `start`/`status`/`reload`/`stop`): масштаб на ядра
-  через `SO_REUSEPORT`, перезапуск упавших и исчерпавших `maxRequests`, graceful
-  shutdown, лог и state-файл, единственный инстанс, самозавершение осиротевших
-  воркеров.
-- [Статистика сервера](docs/admin-stats.ru.md) — воркеры пушат снапшоты в мастер
-  по unix-сокету, мастер на своём порту отдаёт агрегат по пулу `SO_REUSEPORT` (HTTP
-  или socket): ручка `GET /api/stats` (метрики/JSON/HTML), живая панель, SSE,
-  Bearer-токен.
-- [HTTP-клиент](docs/http-client.ru.md) — асинхронный PSR-18 клиент со стримингом
-  ответа: быстрый старт, конкурентность веером, параметры/таймауты, обработка
-  ошибок PSR-18, внутреннее устройство.
-- [Сокет-клиент (TCP)](docs/socket-client.ru.md) — асинхронный TCP-клиент с
-  фреймингом length-prefix (зеркало сокет-сервера): `connect()` → `Connection`
-  (read/write/close), конкурентность веером, параметры/таймауты, обработка ошибок,
-  внутреннее устройство.
-- [WebSocket-сервер](docs/websocket-server.ru.md) — долгоживущий WS-сервер (гибрид
-  HTTP-Upgrade листенера и push-модели сокет-сервера): text/binary сообщения,
-  `Connection` read/write/close, keepalive-ping, параметры, graceful shutdown /
-  `SO_REUSEPORT`, ограничения.
-- [WebSocket-клиент](docs/websocket-client.ru.md) — асинхронный WS-клиент (зеркало
-  WS-сервера): `connect()` → `Connection` (read/write/close, text/binary),
-  конкурентность веером, параметры/таймауты, обработка ошибок, внутреннее устройство.
-- [MySQL (универсальная SQL-фича)](docs/mysql.ru.md) — запросы с биндингами,
-  стриминг SELECT, транзакции; пул соединений и устройство.
-- [PostgreSQL](docs/pgsql.ru.md) — второй драйвер той же SQL-фичи; отличия PG
-  (плейсхолдеры `$1`, `RETURNING`, `BOOLEAN`).
-- [Как добавить новую фичу верхнего уровня](docs/adding-a-feature.ru.md) —
-  пошагово (со стримингом и без), с обязательными требованиями: отмена контекста
-  и передача предельного времени выполнения.
-- [Как добавить новый сервер](docs/adding-a-server.ru.md) — долгоживущий сетевой
-  сервер (как `HttpServer`): паттерн Serve/Respond, цикл обслуживания, graceful
-  shutdown и `SO_REUSEPORT`, интеграция с мастером воркеров.
-- [Нагрузочное тестирование](docs/load-testing.ru.md) — поведение сервера под
-  нагрузкой всеми I/O-фичами сразу (ручка `/all` + `bench-http-load-stats`):
-  результаты по памяти/CPU и выводы.
-- [Бенчмарки фич](docs/benchmarks.ru.md) — замеры по каждой фиче (native/sync/async):
-  цена границы PHP↔Go на in-memory БД и выигрыш конкурентного веера, таблицы метрик.
+- [Console commands](docs/cli.md) — `bin/sconcur-load` (download the prebuilt
+  extension of the required version), `bin/sconcur-status` (check the install and
+  version, with `--json`), `bin/sconcur-server` (worker master, brief with a
+  link).
+- [Architecture](docs/architecture.md) — internals: the Fiber ↔ goroutine link,
+  the scheduler, the layers, the task lifecycle.
+- [MongoDB](docs/mongodb.md) — collection operations (CRUD, aggregation, indexes,
+  bulkWrite), streaming cursors, results, BSON types, concurrency, timeouts, and
+  internals.
+- [HTTP server](docs/http-server.md) — a long-lived daemon, a request in a
+  coroutine: quick start, params, streaming, graceful shutdown, internals, and
+  how it differs from typical servers.
+- [Socket server (TCP)](docs/socket-server.md) — a long-lived TCP server with
+  length-prefix framing, a "message → response" model: quick start, the handler,
+  params, concurrency, graceful shutdown / `SO_REUSEPORT`, limitations.
+- [Worker master](docs/worker-master.md) — a supervisor for a pool of worker
+  processes (CLI `bin/sconcur-server` `start`/`status`/`reload`/`stop`): scaling
+  across cores via `SO_REUSEPORT`, restarting crashed workers and ones that
+  exhausted `maxRequests`, graceful shutdown, the log and the state file, a single
+  instance, self-termination of orphaned workers.
+- [Server statistics](docs/admin-stats.md) — workers push snapshots to the master
+  over a unix socket, and the master serves the pool aggregate on its own port
+  across the `SO_REUSEPORT` pool (HTTP or socket): the `GET /api/stats` endpoint
+  (metrics/JSON/HTML), a live panel, SSE, a Bearer token.
+- [HTTP client](docs/http-client.md) — an async PSR-18 client with response
+  streaming: quick start, fan-out concurrency, params/timeouts, PSR-18 error
+  handling, internals.
+- [Socket client (TCP)](docs/socket-client.md) — an async TCP client with
+  length-prefix framing (a mirror of the socket server): `connect()` →
+  `Connection` (read/write/close), fan-out concurrency, params/timeouts, error
+  handling, internals.
+- [WebSocket server](docs/websocket-server.md) — a long-lived WS server (a hybrid
+  of an HTTP-Upgrade listener and the socket server's push model): text/binary
+  messages, `Connection` read/write/close, keepalive ping, params, graceful
+  shutdown / `SO_REUSEPORT`, limitations.
+- [WebSocket client](docs/websocket-client.md) — an async WS client (a mirror of
+  the WS server): `connect()` → `Connection` (read/write/close, text/binary),
+  fan-out concurrency, params/timeouts, error handling, internals.
+- [MySQL (the universal SQL feature)](docs/mysql.md) — queries with bindings,
+  SELECT streaming, transactions; the connection pool and internals.
+- [PostgreSQL](docs/pgsql.md) — the second driver of the same SQL feature; PG
+  specifics (`$1` placeholders, `RETURNING`, `BOOLEAN`).
+- [How to add a new top-level feature](docs/adding-a-feature.md) — step by step
+  (with and without streaming), with the mandatory requirements: context
+  cancellation and passing the execution deadline.
+- [How to add a new server](docs/adding-a-server.md) — a long-lived network
+  server (like `HttpServer`): the Serve/Respond pattern, the serve loop, graceful
+  shutdown and `SO_REUSEPORT`, integration with the worker master.
+- [Load testing](docs/load-testing.md) — server behavior under load with all I/O
+  features at once (the `/all` route + `bench-http-load-stats`): memory/CPU
+  results and conclusions.
+- [Feature benchmarks](docs/benchmarks.md) — per-feature measurements
+  (native/sync/async): the cost of the PHP↔Go boundary on in-memory DBs and the
+  concurrent fan-out win, with metric tables.
 
 ## Build
 ```shell
@@ -225,11 +232,12 @@ foreach ($iterator as $key => $item) {
 }
 ```
 
-## Планы
+## Roadmap
 
-Краткий список направлений развития.
+A short list of development directions.
 
-- Авто-восстановление зависших воркеров — watchdog мастера по heartbeat:
-  `SIGKILL` и respawn воркера, у которого завис PHP-поток (нативный блок/CPU-цикл).
-- Разнести ядро и фичи по отдельным пакетам — core отдельно, фичи плагинами поверх.
-- Остановка отдельной корутины из любой точки (а не только всего флоу).
+- Auto-recovery of stuck workers — a master watchdog by heartbeat: `SIGKILL` and
+  respawn a worker whose PHP thread has hung (a native block/CPU loop).
+- Split the core and the features into separate packages — the core on its own,
+  features as plugins on top.
+- Stopping a single coroutine from anywhere (not just the whole flow).

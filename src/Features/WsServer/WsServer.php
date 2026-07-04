@@ -19,7 +19,7 @@ use Throwable;
  * streamed back as a result and handled in its own coroutine, while every other request
  * is answered 426 Upgrade Required. After the upgrade the connection is a bidirectional
  * message stream — the handler reads inbound messages and pushes messages to the client
- * at any time (server push), both text and binary. See docs/websocket-server.ru.md.
+ * at any time (server push), both text and binary. See docs/websocket-server.md.
  */
 readonly class WsServer
 {

@@ -20,7 +20,7 @@ use Throwable;
  * synchronously.
  *
  * connect() returns a long-lived Connection the caller drives itself: read() pulls
- * inbound frames, write() pushes frames, close() ends it. See docs/socket-client.ru.md.
+ * inbound frames, write() pushes frames, close() ends it. See docs/socket-client.md.
  */
 readonly class SocketClient
 {

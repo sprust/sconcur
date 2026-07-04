@@ -1,3 +1,5 @@
+[English](adding-a-server.md) | Русский
+
 # Как добавить новый сервер
 
 Сервер — это особый вид фичи: долгоживущий сетевой слушатель, который живёт в
@@ -180,12 +182,12 @@ Argv-разбор, обработчики сигналов и orphan-чек уж
    это стриминговая задача (как курсор), её первый и последующие батчи — входящие
    запросы.
 3. Отдать управление общему примитиву `Scheduler::get()->serve(...)`
-   (`Scheduler.php:211`), передав:
+   (`Scheduler.php:301`), передав:
    - `serverFlowKey` / `serverTaskKey` — ключи стрима-слушателя;
    - `maxRequests` — штатно завершиться после N запросов (мера против утечек памяти);
    - `onRequest(string $payload)` — спавн-на-запрос: декодить запрос, вызвать
      `handler`, отправить ответ (`RespondPayload::full(...)` или
-     head→chunk*→end для стрима). У эталона это `HttpServer::handle()` (`HttpServer.php:225`);
+     head→chunk*→end для стрима). У эталона это `HttpServer::handle()` (`HttpServer.php:240`);
    - `shouldStop(): bool` — `true`, когда пришёл сигнал или воркер осиротел
      (orphan-чек ниже);
    - `onDrainStart()` — вызывается один раз при начале дренажа: рано закрыть приём,
@@ -209,7 +211,7 @@ Argv-разбор, обработчики сигналов и orphan-чек уж
   мастера ядро меняет родителя, без подверженности PID-reuse; фолбэк на signal-0 пробу
   через `posix_kill`, если `posix_getppid` недоступен). См.
   `ServerRuntimeSupportTrait::isOrphaned()`
-  (`src/Features/Server/ServerRuntimeSupportTrait.php:182`).
+  (`src/Features/Server/ServerRuntimeSupportTrait.php:205`).
 
 ---
 
@@ -277,7 +279,7 @@ func (f *HttpFeature) Handle(task *tasks.Task) {
 ### Раннее закрытие приёма + `SO_REUSEPORT`
 
 `StopAccepting(flowKey)` (`feature.go:215`) находит `serverState` и вызывает его
-`stopAccepting()` (`server.go:438`), который закрывает только слушатель
+`stopAccepting()` (`server.go:439`), который закрывает только слушатель
 (`http.Server.Shutdown` в отдельной горутине на фоновом контексте), не отменяя in-flight.
 На пуле `SO_REUSEPORT` ядро тут же раздаёт новые соединения соседям, пока этот процесс
 дренажит. Это вызывается из PHP-`onDrainStart`.
@@ -397,8 +399,8 @@ PHP:
 - [ ] `fromArgs()` через `self::parseArgs($argv)` — для мастера; принимает `--masterPid`.
 - [ ] `serve()`: запуск слушателя через `push(ServePayload)` + `Scheduler::serve(...)`
       с `onRequest`/`shouldStop`/`onDrainStart`; сигналы + orphan-чек (из трейта).
-- [ ] Статистика: `ServePayload` += `at`/`sd`/`sn`/`sp`, конструктор += 4 параметра,
-      `self::applyStatsEnvironment()` в `fromArgs()`, проброс в `ServePayload`.
+- [ ] Статистика: `ServePayload` += `ts`/`sn`/`ti`, конструктор += 3 параметра,
+      `self::applyTelemetryEnvironment()` в `fromArgs()`, проброс в `ServePayload`.
 - [ ] Тесты от `BaseHttpServerTestCase`-аналога (реальный процесс + `curl`).
 
 Go:

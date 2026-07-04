@@ -17,7 +17,7 @@ use Throwable;
  * TCP socket server: the network lives in the Go extension, each accepted connection
  * is streamed back as a result and handled in its own coroutine. The handler drives
  * the connection itself — it reads inbound frames and pushes frames to the client at
- * any time (server push), both length-prefix framed. See docs/socket-server.ru.md.
+ * any time (server push), both length-prefix framed. See docs/socket-server.md.
  */
 readonly class SocketServer
 {

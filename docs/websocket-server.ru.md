@@ -1,3 +1,5 @@
+[English](websocket-server.md) | Русский
+
 # WebSocket-сервер
 
 Долгоживущий WebSocket-сервер: сеть живёт в Go-расширении, каждое апгрейднутое
@@ -265,4 +267,4 @@ $server->serve(static function (Connection $connection): void {
   graceful-остановка.
 - `permessage-deflate` (сжатие) и TLS пока не включены.
 - Общие ограничения библиотеки (только CLI, только Linux, только NTS, нельзя
-  `pcntl_fork` после загрузки расширения) — см. [README](../README.md).
+  `pcntl_fork` после загрузки расширения) — см. [README](../README.ru.md).

@@ -26,7 +26,7 @@ use SConcur\Telemetry\TelemetryRuntime;
  * shutdownTimeoutMs (SIGKILL stragglers), and exiting cleanly.
  *
  * The master itself does NOT load the sconcur extension — it is a plain supervisor.
- * See docs/worker-master.ru.md.
+ * See docs/worker-master.md.
  */
 class WorkerMaster
 {
