@@ -285,6 +285,15 @@ bench-ws-server-cpu:
 bench-http-throughput:
 	tests/benchmarks/http-throughput.sh
 
+# RoadRunner reference server (native drivers, tests/servers/roadrunner) for the
+# honest / and /all comparison. Foreground; stop with Ctrl+C. Tunables:
+# make rr-serve RR_HTTP_PORT=18082 RR_NUM_WORKERS=8
+RR_HTTP_PORT ?= 18081
+RR_NUM_WORKERS ?= 16
+
+rr-serve:
+	$(DOCKER_COMPOSE) exec -e RR_HTTP_PORT=$(RR_HTTP_PORT) -e RR_NUM_WORKERS=$(RR_NUM_WORKERS) php rr serve -c tests/servers/roadrunner/.rr.yaml
+
 # Runs on the HOST (needs wrk + the mongodb/mysql/postgres services up): load the
 # /all route (fans out across EVERY async I/O feature per request) and sample
 # CPU/memory of the server and backend containers + per-worker RSS (leak check).
@@ -302,6 +311,19 @@ bench-http-load-soak:
 # measures the pure HTTP + framework ceiling, the floor under the /all numbers.
 bench-http-load-stats-empty:
 	ROUTE=/ tests/benchmarks/http-load-stats.sh
+
+# RoadRunner counterparts of the three targets above: the same harness against
+# the native-driver reference stack (tests/servers/roadrunner), so the numbers
+# are directly comparable. Tunables via env, e.g.: make bench-rr-load-stats
+# WORKERS=12 DURATION=30
+bench-rr-load-stats:
+	tests/benchmarks/rr-load-stats.sh
+
+bench-rr-load-soak:
+	MODE=soak tests/benchmarks/rr-load-stats.sh
+
+bench-rr-load-stats-empty:
+	ROUTE=/ tests/benchmarks/rr-load-stats.sh
 
 # WebSocket load test: spawn a ws-server pool (SO_REUSEPORT, one per core) and drive
 # it with the Go ws-load generator on the "all" message (fans out across EVERY async

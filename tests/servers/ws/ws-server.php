@@ -209,12 +209,22 @@ function allFeaturesStatus(): string
 
     $waitGroup->add(static function () use (&$status, $mysql): void {
         $status['mysql'] = allFeatureStatus(static function () use ($mysql): void {
+            $mysql->exec(
+                sql: 'INSERT INTO load_all (t) VALUES (?)',
+                bindings: ['load'],
+            );
+
             $mysql->fetchAll('SELECT 1');
         });
     });
 
     $waitGroup->add(static function () use (&$status, $pgsql): void {
         $status['pgsql'] = allFeatureStatus(static function () use ($pgsql): void {
+            $pgsql->exec(
+                sql: 'INSERT INTO load_all (t) VALUES ($1)',
+                bindings: ['load'],
+            );
+
             $pgsql->fetchAll('SELECT 1');
         });
     });
@@ -275,6 +285,9 @@ function allFeaturesContext(): array
             ),
         ),
     ];
+
+    $context[1]->exec(sql: 'CREATE TABLE IF NOT EXISTS load_all (id BIGINT AUTO_INCREMENT PRIMARY KEY, t VARCHAR(16) NOT NULL)');
+    $context[2]->exec(sql: 'CREATE TABLE IF NOT EXISTS load_all (id BIGSERIAL PRIMARY KEY, t VARCHAR(16) NOT NULL)');
 
     return $context;
 }

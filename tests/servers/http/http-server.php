@@ -368,12 +368,22 @@ function allFeaturesRoute(Psr17Factory $factory): ResponseInterface
 
     $waitGroup->add(static function () use (&$status, $mysql): void {
         $status['mysql'] = allFeatureStatus(static function () use ($mysql): void {
+            $mysql->exec(
+                sql: 'INSERT INTO load_all (t) VALUES (?)',
+                bindings: ['load'],
+            );
+
             $mysql->fetchAll('SELECT 1');
         });
     });
 
     $waitGroup->add(static function () use (&$status, $pgsql): void {
         $status['pgsql'] = allFeatureStatus(static function () use ($pgsql): void {
+            $pgsql->exec(
+                sql: 'INSERT INTO load_all (t) VALUES ($1)',
+                bindings: ['load'],
+            );
+
             $pgsql->fetchAll('SELECT 1');
         });
     });
@@ -392,7 +402,8 @@ function allFeaturesRoute(Psr17Factory $factory): ResponseInterface
  * Lazily builds and caches the per-worker DB connections used by /all on its first
  * hit (so the other demo routes never pay for them and never require the backends).
  * The Go side pools the real connections by URI/DSN, so reusing these objects across
- * requests is cheap.
+ * requests is cheap. Also makes sure the load_all tables exist (the /all SQL write
+ * targets; mirrored by the RoadRunner reference worker in tests/servers/roadrunner).
  *
  * @return array{0: Collection, 1: MysqlConnection, 2: PgsqlConnection}
  */
@@ -440,6 +451,9 @@ function allFeaturesContext(): array
             ),
         ),
     ];
+
+    $context[1]->exec(sql: 'CREATE TABLE IF NOT EXISTS load_all (id BIGINT AUTO_INCREMENT PRIMARY KEY, t VARCHAR(16) NOT NULL)');
+    $context[2]->exec(sql: 'CREATE TABLE IF NOT EXISTS load_all (id BIGSERIAL PRIMARY KEY, t VARCHAR(16) NOT NULL)');
 
     return $context;
 }
