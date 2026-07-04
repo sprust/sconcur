@@ -109,7 +109,7 @@ non-fiber path.)
 
 **PHP layer** (`src/`):
 - `WaitGroup` — main API: `add()`, `iterate()`, `waitAll()`, `waitResults()`
-- `Scheduler/Scheduler` — process-wide cooperative scheduler (single `waitAny` loop, resumes coroutines, wakes nested-group waiters)
+- `Scheduler/Scheduler` — process-wide cooperative scheduler (single `waitAny` loop, resumes coroutines, wakes nested-group waiters); `shutdown()` unwinds all live coroutines (FlowStoppedException) from the shutdown handler registered in `get()`, so `exit()` with unfinished work cancels deterministically
 - `Scheduler/Coroutine` — a tracked fiber: id, fiber, owning group, callback key
 - `State` — static registry mapping Fibers ↔ flows ↔ tasks, and the per-coroutine context store (own key-value map + parent link per fiber id, read-through to the process root; released in `unRegisterFiber`)
 - `Context/Context` — static entry point `Context::current(): CoroutineContext` to the current coroutine's context (root outside any fiber); `Context/CoroutineContext` is the framework-neutral `find`/`has`/`set`/`forget` contract. Parent links are recorded in `Scheduler::spawn` / `WaitGroup::add`. See [docs/coroutine-context.ru.md](../docs/coroutine-context.ru.md)

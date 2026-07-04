@@ -67,7 +67,78 @@ class Scheduler
 
     public static function get(): Scheduler
     {
-        return static::$instance ??= new Scheduler();
+        if (static::$instance === null) {
+            static::$instance = new Scheduler();
+
+            // exit()/die() with live coroutines: unwind them while the extension
+            // is still alive. Shutdown functions run before object destructors
+            // (and also on fatal errors, where destructors are skipped), so the
+            // coroutines' finally blocks and the flow teardown run
+            // deterministically instead of racing the Extension destructor.
+            register_shutdown_function(static function (): void {
+                try {
+                    static::$instance?->shutdown();
+                } catch (Throwable) {
+                    // A shutdown-path failure must not mask the script's own exit.
+                }
+            });
+        }
+
+        return static::$instance;
+    }
+
+    /**
+     * Unwinds every live coroutine (FlowStoppedException, like WaitGroup::stop)
+     * and stops their flows. Called from the shutdown handler registered in
+     * get(): it turns exit()/die() with unfinished coroutines into a
+     * deterministic cancellation — finally blocks run, transactions roll back,
+     * cursors and flows are released. The results of unfinished tasks are lost
+     * either way; finishing or stopping the work explicitly stays the
+     * recommended path.
+     */
+    public function shutdown(): void
+    {
+        // Collect first: unwinding mutates the registry (stop() detaches members).
+        $groups  = [];
+        $spawned = [];
+
+        foreach ($this->coroutines as $coroutine) {
+            if ($coroutine->group !== null) {
+                $groups[spl_object_id($coroutine->group)] = $coroutine->group;
+            } else {
+                $spawned[] = $coroutine;
+            }
+        }
+
+        foreach ($groups as $group) {
+            try {
+                $group->stop();
+            } catch (Throwable) {
+                // Best-effort: shutdown must reach every remaining group.
+            }
+        }
+
+        foreach ($spawned as $coroutine) {
+            unset($this->coroutines[$coroutine->id]);
+
+            if ($coroutine->fiber->isSuspended()) {
+                try {
+                    $coroutine->fiber->throw(new FlowStoppedException(message: 'Flow stopped'));
+                } catch (Throwable) {
+                    // The unwinding handler may surface an exception (or fiber
+                    // switching may be forbidden in a fatal-error shutdown); it
+                    // must not stop the remaining coroutines.
+                }
+            }
+
+            if ($this->spawnedCount > 0) {
+                --$this->spawnedCount;
+            }
+
+            State::deleteFlow($coroutine->flowKey);
+        }
+
+        $this->groupWaiters = [];
     }
 
     public function register(Coroutine $coroutine): void
