@@ -89,10 +89,15 @@ Rebuild the extension with `make ext-build` before running tests that depend on
 
 **Execution flow:**
 `WaitGroup::add(closure)` → `Fiber::start()` → Fiber suspends on
-`FeatureExecutor::exec()` → `Extension::push()` sends task to Go → Go goroutine
-executes → result sent via shared channel → `Scheduler` retrieves it with
+`FeatureExecutor::exec()` handing over a pending task
+(`PendingPushDto`/`PendingNextDto`) → the resumer (`WaitGroup::launch` /
+`Scheduler`) performs `Extension::push()` via
+`Scheduler::dispatchPendingTask()` off the fiber stack → Go goroutine executes →
+result sent via shared channel → `Scheduler` retrieves it with
 `Extension::waitAny()` and resumes the owning Fiber → `WaitGroup::iterate()`
-yields result.
+yields result. (cgo is never called from a coroutine's stack — N live
+boundary-crossing fibers made the fan-out quadratic, see
+`.ai/plans/async-fan-out-optimization.ru.md`.)
 
 **Concurrency / nested coroutines:** a single process-wide `Scheduler` is the
 only place that waits on the extension (`waitAny`, the first ready result of any

@@ -53,16 +53,20 @@ class WaitGroup
 
     /**
      * @param int $maxConcurrency max simultaneously live (launched, unfinished) members;
-     *                            0 = unlimited. Extra add()s queue and launch as slots free.
+     *                            0 = unlimited (default). Extra add()s queue and launch as
+     *                            slots free. The limit is a resource backpressure knob
+     *                            (memory, DB connection pools, in-flight Go tasks): since
+     *                            cgo calls left the fiber stacks (dispatchPendingTask) the
+     *                            fan-out scales linearly and needs no cap for speed.
      */
-    protected function __construct(protected int $maxConcurrency = 256)
+    protected function __construct(protected int $maxConcurrency = 0)
     {
         ++static::$counter;
 
         $this->flowKey = (string) static::$counter;
     }
 
-    public static function create(int $maxConcurrency = 256): WaitGroup
+    public static function create(int $maxConcurrency = 0): WaitGroup
     {
         return new WaitGroup(maxConcurrency: $maxConcurrency);
     }
@@ -318,7 +322,16 @@ class WaitGroup
         try {
             // First run up to the first suspend. May happen nested inside another
             // coroutine; that is fine — it ends at a suspend that returns here.
-            $fiber->start();
+            // An async call suspends with a pending task instead of pushing to Go
+            // from the fiber stack; the push is performed here, on the adder's
+            // stack (the root at the top level).
+            $suspendValue = $fiber->start();
+
+            Scheduler::get()->dispatchPendingTask(
+                fiber: $fiber,
+                fiberId: $fiberId,
+                suspendValue: $suspendValue,
+            );
         } catch (Throwable $exception) {
             $this->discard($fiberId);
 

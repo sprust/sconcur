@@ -7,6 +7,8 @@ namespace SConcur\Scheduler;
 use Closure;
 use Fiber;
 use SConcur\Connection\Extension;
+use SConcur\Dto\PendingNextDto;
+use SConcur\Dto\PendingPushDto;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\CallbackExecutionException;
 use SConcur\Exceptions\FiberStateException;
@@ -116,7 +118,13 @@ class Scheduler
 
         try {
             // Run up to the first suspend (its first async call), like WaitGroup::add.
-            $fiber->start();
+            $suspendValue = $fiber->start();
+
+            $this->dispatchPendingTask(
+                fiber: $fiber,
+                fiberId: $fiberId,
+                suspendValue: $suspendValue,
+            );
         } catch (Throwable) {
             // Groupless: nowhere to report. Clean up and keep the loop alive.
             $this->forget($coroutine);
@@ -322,6 +330,51 @@ class Scheduler
     }
 
     /**
+     * Performs the Go-side push/next for a coroutine that suspended with a
+     * pending task (PendingPushDto / PendingNextDto). Runs on the resuming side —
+     * the scheduler loop or the code that started the fiber — so the cgo call
+     * happens off the coroutine's stack: a fan-out of N live fibers that each
+     * crossed the PHP<->Go boundary degrades quadratically (see
+     * .ai/plans/async-fan-out-optimization.ru.md).
+     *
+     * A push failure is thrown back into the coroutine at its suspend point,
+     * where it surfaces as TaskExecutionException; the coroutine may catch it
+     * and suspend with another pending task, hence the loop. Whatever escapes
+     * the coroutine propagates to the caller like any start()/resume() failure.
+     * A suspend without a pending task (e.g. awaitGroup) is left untouched.
+     */
+    public function dispatchPendingTask(Fiber $fiber, int $fiberId, mixed $suspendValue): void
+    {
+        while ($suspendValue instanceof PendingPushDto || $suspendValue instanceof PendingNextDto) {
+            try {
+                if ($suspendValue instanceof PendingPushDto) {
+                    $runningTask = Extension::get()->push(
+                        flowKey: $suspendValue->flowKey,
+                        payload: $suspendValue->payload,
+                    );
+                } else {
+                    $runningTask = Extension::get()->next(
+                        flowKey: $suspendValue->flowKey,
+                        taskKey: $suspendValue->taskKey,
+                    );
+                }
+            } catch (Throwable $exception) {
+                $suspendValue = $fiber->throw($exception);
+
+                continue;
+            }
+
+            State::addFiberTask(
+                flowKey: $suspendValue->flowKey,
+                taskKey: $runningTask->key,
+                fiberId: $fiberId,
+            );
+
+            return;
+        }
+    }
+
+    /**
      * One scheduler step: take the first ready result of any flow and resume the
      * coroutine it belongs to.
      */
@@ -366,7 +419,13 @@ class Scheduler
     protected function resumeCoroutine(Coroutine $coroutine, mixed $resumeValue): void
     {
         try {
-            $coroutine->fiber->resume($resumeValue);
+            $suspendValue = $coroutine->fiber->resume($resumeValue);
+
+            $this->dispatchPendingTask(
+                fiber: $coroutine->fiber,
+                fiberId: $coroutine->id,
+                suspendValue: $suspendValue,
+            );
         } catch (Throwable $exception) {
             $this->failCoroutine($coroutine, $exception);
 
