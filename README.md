@@ -40,6 +40,46 @@ Why Go specifically:
   synchronous Go handler, and the runtime runs it concurrently on its own.
 - A mature ecosystem: Go drivers and libraries are reused directly.
 
+### Why this approach helps with new features
+
+Adding an I/O feature here is cheaper than in the classic PHP-async stacks
+(Swoole, ReactPHP, AMPHP):
+
+- One API for sync and async, no function coloring. The same call
+  (`$collection->insertOne(...)`, `$client->sendRequest(...)`) works both inside
+  a `WaitGroup` (concurrent) and outside it (an ordinary blocking call).
+  Concurrency is chosen by the caller — by wrapping code in a `WaitGroup` — not by
+  the feature author. There is no separate async variant of every method to
+  maintain.
+- No searching for or waiting on async drivers/extensions. Concurrency lives in
+  Go, so a mature synchronous Go driver is reused as-is (mongo-driver, pgx,
+  go-sql-driver, `net/http`, coder/websocket) and runs in parallel right away.
+- A feature is ordinary synchronous Go code. The handler is written as plain
+  blocking Go — no promises, callbacks, or event-loop reasoning. The runtime runs
+  it on a goroutine and streams the result back. Adding a feature means "write a
+  normal Go function".
+- A minimal, stable C glue interface. The PHP↔Go boundary is a handful of generic
+  cgo functions (`push`, `wait`, `waitAny`, `next`, `stopFlow`, plus the
+  `version`/`destroy` lifecycle). Every feature rides that same transport: a
+  feature is not a new C symbol but data — a new `MethodEnum`/`CommandEnum`, a
+  MessagePack payload DTO, and a Go handler. The fragile C ABI stays frozen;
+  adding a feature never touches it, so the export set does not grow and there is
+  no per-operation cgo work. (A new long-lived server adds at most one control
+  function such as `httpStopAccepting` for graceful drain.)
+- One transport and one streaming model for everything. The wire format is
+  uniform (MessagePack DTOs), and the streaming states (`next()`) are reused:
+  MongoDB cursors, HTTP bodies, socket frames, WS messages all travel over the
+  same mechanism with backpressure. A new streaming feature does not reinvent the
+  protocol or the backpressure.
+- A feature gets the whole runtime for free. The handler plugs into the shared
+  `Scheduler` automatically: concurrency, nested coroutines, context
+  cancellation, deadline propagation, and graceful shutdown with unwinding — none
+  of the lifecycle has to be reimplemented inside the feature.
+- Standard PHP contracts, framework-neutral. Client/server features expose PSR
+  interfaces (PSR-7/17 for the HTTP server, PSR-18 for the HTTP client), the
+  factories are injected, and the coroutine context is framework-agnostic, so a
+  feature drops into any application without adapters.
+
 ## Use and limitations
 
 - CLI only. The library targets long-lived CLI processes (workers, daemons,
@@ -241,3 +281,6 @@ A short list of development directions.
 - Split the core and the features into separate packages — the core on its own,
   features as plugins on top.
 - Stopping a single coroutine from anywhere (not just the whole flow).
+- Optimize synchronous-mode execution — a call made outside a coroutine goes to
+  Go directly, bypassing the scheduler and the Fiber machinery, to cut the
+  overhead of the sync path.
