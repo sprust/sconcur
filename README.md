@@ -82,10 +82,14 @@ Adding an I/O feature here is cheaper than in the classic PHP-async stacks
 
 ## Use and limitations
 
-- CLI only. The library targets long-lived CLI processes (workers, daemons,
-  scripts, console commands). It cannot be used with PHP-FPM: the extension holds
-  the Go runtime and goroutines at the process level, which contradicts the FPM
-  model (a short request-response, shared pool processes).
+- CLI only (the `cli` SAPI) — this is about the SAPI, not about "no web". The
+  library targets long-lived CLI processes: workers, daemons, console commands —
+  and the HTTP, WebSocket and socket servers themselves, which are ordinary PHP
+  scripts started from the console that listen on a port on their own (no FPM in
+  the chain; the model of RoadRunner / Swoole / ReactPHP). It cannot be used with
+  PHP-FPM or mod_php: the extension holds the Go runtime and goroutines at the
+  process level, which contradicts the FPM model (a short request-response,
+  shared pool processes).
 - No `pcntl_fork` after the extension is loaded. The Go runtime and its
   goroutines do not survive `fork`: the child process gets a broken runtime
   (hangs, crashes). If you need a worker pool — fork before the first call into
