@@ -28,7 +28,7 @@ func envelopePayload(t *testing.T, command types.HttpClientCommand, params any) 
 		t.Fatalf("marshal params: %v", err)
 	}
 
-	data, err := msgpack.Marshal(payloads.Envelope{Command: int(command), Params: raw})
+	data, err := msgpack.Marshal(payloads.Envelope{Command: command, Params: raw})
 
 	if err != nil {
 		t.Fatalf("marshal envelope: %v", err)

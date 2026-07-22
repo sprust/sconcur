@@ -1,19 +1,19 @@
 package types
 
-type Method int
+type Method string
 
 const (
-	MethodSleep       Method = 1
-	MethodMongodb     Method = 2
-	MethodHttpServe   Method = 3
-	MethodHttpRespond Method = 4
-	MethodHttpClient  Method = 5
-	MethodMysql       Method = 6
-	MethodPgsql       Method = 7
-	MethodSocketServe   Method = 8
-	MethodSocketRespond Method = 9
-	MethodSocketClient  Method = 10
-	MethodWsServe    Method = 11
-	MethodWsRespond  Method = 12
-	MethodWsClient   Method = 13
+	MethodSleep       Method = "sl"
+	MethodMongodb     Method = "mng"
+	MethodHttpServe   Method = "hs"
+	MethodHttpRespond Method = "hr"
+	MethodHttpClient  Method = "hc"
+	MethodMysql       Method = "my"
+	MethodPgsql       Method = "pg"
+	MethodSocketServe   Method = "ss"
+	MethodSocketRespond Method = "sr"
+	MethodSocketClient  Method = "sc"
+	MethodWsServe    Method = "wss"
+	MethodWsRespond  Method = "wsr"
+	MethodWsClient   Method = "wsc"
 )

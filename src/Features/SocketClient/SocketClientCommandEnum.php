@@ -11,14 +11,14 @@ namespace SConcur\Features\SocketClient;
  *
  * Go: types.SocketClientCommand (ext/internal/types/socketclient.go).
  */
-enum SocketClientCommandEnum: int
+enum SocketClientCommandEnum: string
 {
     /** Dial the remote address and open a streaming connection. */
-    case Connect = 1;
+    case Connect = 'con';
 
     /** Push one length-prefixed frame to the peer. */
-    case Send = 2;
+    case Send = 'snd';
 
     /** Close the connection. */
-    case Close = 3;
+    case Close = 'cls';
 }

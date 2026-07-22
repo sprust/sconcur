@@ -19,9 +19,9 @@ const defaultDownloadBufferSizeBytes = 64 << 10
 
 // Download modes, mirrored from PHP DownloadFileMode.
 const (
-	downloadModeReplace = 1 // create or truncate
-	downloadModeCreate  = 2 // create, fail if exists
-	downloadModeAppend  = 3 // create or append
+	downloadModeReplace = "rpl" // create or truncate
+	downloadModeCreate  = "crt" // create, fail if exists
+	downloadModeAppend  = "app" // create or append
 )
 
 // downloadMeta is the single result of a download: the response status, the raw
@@ -37,7 +37,7 @@ type downloadMeta struct {
 
 // downloadModeToFlags maps a DownloadFileMode to os.OpenFile flags — the single
 // source of those platform constants on the Go side.
-func downloadModeToFlags(mode int) (int, bool) {
+func downloadModeToFlags(mode string) (int, bool) {
 	switch mode {
 	case downloadModeReplace:
 		return os.O_WRONLY | os.O_CREATE | os.O_TRUNC, true

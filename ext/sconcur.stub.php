@@ -6,7 +6,7 @@ function ping(string $str): string
 {
 }
 
-function push(string $fk, int $mt, string $tk, string $pl): string
+function push(string $fk, string $mt, string $tk, string $pl): string
 {
 }
 

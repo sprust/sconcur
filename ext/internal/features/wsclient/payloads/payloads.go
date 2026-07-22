@@ -7,13 +7,17 @@
 // ConnectParams / SendParams / CloseParams).
 package payloads
 
-import "github.com/vmihailenco/msgpack/v5"
+import (
+	"sconcur/internal/types"
+
+	"github.com/vmihailenco/msgpack/v5"
+)
 
 // Envelope is the command envelope decoded from the msgpack message.
 // PHP: SConcur\Features\WsClient\Payloads\Base\BaseWsClientPayload.
 type Envelope struct {
-	Command int                `json:"cm" msgpack:"cm"`
-	Params  msgpack.RawMessage `json:"p" msgpack:"p"`
+	Command types.WsClientCommand `json:"cm" msgpack:"cm"`
+	Params  msgpack.RawMessage    `json:"p" msgpack:"p"`
 }
 
 // ConnectParams is the `p` content of a Connect command — the remote ws:// URL and the

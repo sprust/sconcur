@@ -11,14 +11,14 @@ namespace SConcur\Features\HttpClient;
  *
  * Go: types.HttpClientCommand (ext/internal/types/httpclient.go).
  */
-enum HttpClientCommandEnum: int
+enum HttpClientCommandEnum: string
 {
     /** Open a request (buffered body, or the start of a streamed-body upload). */
-    case Request = 1;
+    case Request = 'req';
 
     /** Append a chunk to a streamed request body. */
-    case UploadChunk = 2;
+    case UploadChunk = 'upc';
 
     /** Close a streamed request body: no more chunks. */
-    case UploadEnd = 3;
+    case UploadEnd = 'upe';
 }

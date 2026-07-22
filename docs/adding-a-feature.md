@@ -110,10 +110,10 @@ References: `Sleeper` (a single command) and `Mongodb` (envelope + commands).
 
 ### PHP
 
-1. `MethodEnum` — a new case (the number must be free; at the time of writing the
-   first free one is `14`):
+1. `MethodEnum` — a new case (the 2-3 letter string value must be free and
+   recognizable):
    ```php
-   case Foo = 14;
+   case Foo = 'foo';
    ```
 
 2. The payload class `src/Features/Foo/Payloads/FooPayload.php`, implementing
@@ -169,7 +169,7 @@ References: `Sleeper` (a single command) and `Mongodb` (envelope + commands).
 
 1. `types/method.go` — the same constant:
    ```go
-   MethodFoo Method = 14
+   MethodFoo Method = "foo"
    ```
 
 2. The feature package `ext/internal/features/foo/feature.go`, implementing

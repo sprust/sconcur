@@ -2,20 +2,20 @@
 
 namespace SConcur\Features;
 
-enum MethodEnum: int
+enum MethodEnum: string
 {
-    case Unknown     = 0;
-    case Sleep       = 1;
-    case Mongodb     = 2;
-    case HttpServe   = 3;
-    case HttpRespond = 4;
-    case HttpClient  = 5;
-    case Mysql       = 6;
-    case Pgsql       = 7;
-    case SocketServe   = 8;
-    case SocketRespond = 9;
-    case SocketClient  = 10;
-    case WsServe   = 11;
-    case WsRespond = 12;
-    case WsClient  = 13;
+    case Unknown     = 'unk';
+    case Sleep       = 'sl';
+    case Mongodb     = 'mng';
+    case HttpServe   = 'hs';
+    case HttpRespond = 'hr';
+    case HttpClient  = 'hc';
+    case Mysql       = 'my';
+    case Pgsql       = 'pg';
+    case SocketServe   = 'ss';
+    case SocketRespond = 'sr';
+    case SocketClient  = 'sc';
+    case WsServe   = 'wss';
+    case WsRespond = 'wsr';
+    case WsClient  = 'wsc';
 }

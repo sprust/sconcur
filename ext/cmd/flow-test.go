@@ -52,7 +52,7 @@ func testSleepFlow() {
 	// Push a sleep task
 	msg := &dto.Message{
 		FlowKey: flowKey,
-		Method:  types.Method(1), // Sleep feature
+		Method:  types.MethodSleep,
 		TaskKey: taskKey,
 		Payload: sleepPayload(100_000),
 	}
@@ -84,7 +84,7 @@ func testMultipleTasks() {
 		taskKey := fmt.Sprintf("task%d", i)
 		msg := &dto.Message{
 			FlowKey: flowKey,
-			Method:  types.Method(1),
+			Method:  types.MethodSleep,
 			TaskKey: taskKey,
 			Payload: sleepPayload(int64(i * 50) * 1000),
 		}
@@ -117,7 +117,7 @@ func testStopFlow() {
 
 	msg := &dto.Message{
 		FlowKey: flowKey,
-		Method:  types.Method(1),
+		Method:  types.MethodSleep,
 		TaskKey: "task_stop",
 		Payload: sleepPayload(2_000_000),
 	}

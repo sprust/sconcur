@@ -56,7 +56,7 @@ flowchart TB
     respond -->|"finds connection by requestId"| serve
 ```
 
-Reference: `MethodHttpServe` (3) + `MethodHttpRespond` (4), both → `httpserver_feature`.
+Reference: `MethodHttpServe` (`hs`) + `MethodHttpRespond` (`hr`), both → `httpserver_feature`.
 
 ---
 
@@ -87,7 +87,7 @@ deadline — see [adding-a-feature.md](adding-a-feature.md)), a server has its o
 
 Two new values, both mirrored on each side:
 
-- PHP: `SConcur\Features\MethodEnum` — `case <Server>Serve = N;` and `case <Server>Respond = N+1;`
+- PHP: `SConcur\Features\MethodEnum` — `case <Server>Serve = '<xx>s';` and `case <Server>Respond = '<xx>r';` (free 2-3 letter string values)
 - Go: `ext/internal/types/method.go` — `Method<Server>Serve` and `Method<Server>Respond`.
 
 Registration in `ext/internal/features/factory.go` (the `DetectMessageHandler`

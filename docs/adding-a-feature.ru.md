@@ -111,10 +111,10 @@ type SleeperPayload struct {
 
 ### PHP
 
-1. `MethodEnum` — новый кейс (число должно быть свободным; на момент написания
-   первое свободное — `14`):
+1. `MethodEnum` — новый кейс (строковое значение из 2-3 букв должно быть
+   свободным и узнаваемым):
    ```php
-   case Foo = 14;
+   case Foo = 'foo';
    ```
 
 2. Payload-класс `src/Features/Foo/Payloads/FooPayload.php`, реализующий
@@ -170,7 +170,7 @@ type SleeperPayload struct {
 
 1. `types/method.go` — та же константа:
    ```go
-   MethodFoo Method = 14
+   MethodFoo Method = "foo"
    ```
 
 2. Пакет фичи `ext/internal/features/foo/feature.go`, реализующий

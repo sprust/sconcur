@@ -55,7 +55,7 @@ flowchart TB
     respond -->|"находит соединение по requestId"| serve
 ```
 
-Эталон: `MethodHttpServe` (3) + `MethodHttpRespond` (4), оба → `httpserver_feature`.
+Эталон: `MethodHttpServe` (`hs`) + `MethodHttpRespond` (`hr`), оба → `httpserver_feature`.
 
 ---
 
@@ -84,7 +84,7 @@ flowchart TB
 
 Два новых значения, оба дублируются с обеих сторон:
 
-- PHP: `SConcur\Features\MethodEnum` — `case <Server>Serve = N;` и `case <Server>Respond = N+1;`
+- PHP: `SConcur\Features\MethodEnum` — `case <Server>Serve = '<xx>s';` и `case <Server>Respond = '<xx>r';` (свободные строковые значения из 2-3 букв)
 - Go: `ext/internal/types/method.go` — `Method<Server>Serve` и `Method<Server>Respond`.
 
 Регистрация в `ext/internal/features/factory.go` (функция `DetectMessageHandler`) — один

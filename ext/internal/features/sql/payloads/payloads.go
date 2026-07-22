@@ -3,12 +3,16 @@
 // PHP getData()/getCommandData() methods; the Go side decodes by msgpack tag.
 package payloads
 
-import "github.com/vmihailenco/msgpack/v5"
+import (
+	"sconcur/internal/types"
+
+	"github.com/vmihailenco/msgpack/v5"
+)
 
 // Envelope wraps every SQL command: the sub-operation, the connection settings and
 // the command body. PHP: SConcur\Features\Sql\Payloads\Base\BaseSqlPayload.
 type Envelope struct {
-	Command           int                `json:"cm"  msgpack:"cm"`
+	Command           types.SqlCommand   `json:"cm"  msgpack:"cm"`
 	Dsn               string             `json:"dsn" msgpack:"dsn"`
 	TimeoutMs         int                `json:"to"  msgpack:"to"`
 	MaxOpenConns      int                `json:"mo"  msgpack:"mo"`

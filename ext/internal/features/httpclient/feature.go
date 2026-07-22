@@ -58,7 +58,7 @@ func (f *HttpClientFeature) Handle(task *tasks.Task) {
 		return
 	}
 
-	switch types.HttpClientCommand(envelope.Command) {
+	switch envelope.Command {
 	case types.HttpClientRequest:
 		f.handleRequest(task, envelope.Params)
 	case types.HttpClientUploadChunk:

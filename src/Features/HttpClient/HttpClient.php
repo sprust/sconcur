@@ -224,7 +224,7 @@ readonly class HttpClient implements ClientInterface
         bool $streamBody,
         string $requestId,
         string $sinkPath = '',
-        int $sinkMode = 0,
+        string $sinkMode = '',
         int $sinkPerm = 0,
         int $downloadBufferSizeBytes = 0,
     ): RequestPayload {

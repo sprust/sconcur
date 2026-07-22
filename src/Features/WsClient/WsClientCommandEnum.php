@@ -10,14 +10,14 @@ namespace SConcur\Features\WsClient;
  *
  * Go: types.WsClientCommand (ext/internal/types/wsclient.go).
  */
-enum WsClientCommandEnum: int
+enum WsClientCommandEnum: string
 {
     /** Dial the remote ws:// URL and open a streaming connection. */
-    case Connect = 1;
+    case Connect = 'con';
 
     /** Push one message (text or binary) to the peer. */
-    case Send = 2;
+    case Send = 'snd';
 
     /** Close the connection. */
-    case Close = 3;
+    case Close = 'cls';
 }

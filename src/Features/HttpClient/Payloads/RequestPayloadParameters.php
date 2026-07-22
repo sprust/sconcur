@@ -38,7 +38,7 @@ readonly class RequestPayloadParameters implements PayloadParametersInterface
         protected int $idleConnTimeoutMs,
         protected int $tlsHandshakeTimeoutMs,
         protected string $sinkPath = '',
-        protected int $sinkMode = 0,
+        protected string $sinkMode = '',
         protected int $sinkPerm = 0,
         protected int $downloadBufferSizeBytes = 0,
     ) {
