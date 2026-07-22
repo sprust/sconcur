@@ -15,8 +15,8 @@ MessagePack.
 - [Idea](#idea)
 - [Example](#example)
 - [What it replaces](#what-it-replaces)
-- [Why Go specifically](#why-go-specifically)
 - [How it works](#how-it-works)
+- [Why Go specifically](#why-go-specifically)
 - [Use and limitations](#use-and-limitations)
 - [Tested versions](#tested-versions)
 - [Documentation](#documentation)
@@ -103,6 +103,24 @@ Long-lived servers:
 | `stream_socket_server` | `Features\SocketServer\SocketServer` | TCP server |
 | Ratchet, Workerman (WS) | `Features\WsServer\WsServer` | WebSocket server |
 
+## How it works
+
+In short: `WaitGroup` wraps each closure in a `Fiber`. When an async feature is
+called, the coroutine suspends and the task goes to Go and runs in a separate
+goroutine. A single process-wide `Scheduler` waits on the extension
+(`waitAny`), gets the first ready result of any flow, and resumes the right
+coroutine by `taskKey`. Results arrive in task-completion order, not in `add()`
+order.
+
+The number of concurrently live coroutines in a group is unlimited by default.
+If you need backpressure (memory, a DB connection pool), set a limit:
+`WaitGroup::create(maxConcurrency: N)` — excess `add()` calls queue and start as
+slots free up.
+
+A detailed walkthrough — with the "PHP Fiber ↔ Go goroutine" diagrams, the
+layers, and the task lifecycle — is in
+[docs/architecture.md](docs/architecture.md).
+
 ## Why Go specifically
 
 - A convenient concurrency model: goroutines and channels give cheap
@@ -152,33 +170,17 @@ Adding an I/O feature here is cheaper than in the classic PHP-async stacks
   factories are injected, and the coroutine context is framework-agnostic, so a
   feature drops into any application without adapters.
 
-## How it works
-
-In short: `WaitGroup` wraps each closure in a `Fiber`. When an async feature is
-called, the coroutine suspends and the task goes to Go and runs in a separate
-goroutine. A single process-wide `Scheduler` waits on the extension
-(`waitAny`), gets the first ready result of any flow, and resumes the right
-coroutine by `taskKey`. Results arrive in task-completion order, not in `add()`
-order.
-
-The number of concurrently live coroutines in a group is unlimited by default.
-If you need backpressure (memory, a DB connection pool), set a limit:
-`WaitGroup::create(maxConcurrency: N)` — excess `add()` calls queue and start as
-slots free up.
-
-A detailed walkthrough — with the "PHP Fiber ↔ Go goroutine" diagrams, the
-layers, and the task lifecycle — is in
-[docs/architecture.md](docs/architecture.md).
-
 ## Use and limitations
 
 - CLI only (the `cli` SAPI) — this is about the SAPI, not about "no web". The
-  library targets long-lived CLI processes: workers, daemons, console commands —
+  library targets long-lived CLI processes: workers, daemons, console commands,
   and the HTTP, WebSocket and socket servers themselves, which are ordinary PHP
   scripts started from the console that listen on a port on their own (no FPM in
-  the chain; the model of RoadRunner / Swoole / ReactPHP). It cannot be used with
-  PHP-FPM or mod_php: the extension holds the Go runtime and goroutines at the
-  process level, which contradicts the FPM model (a short request-response,
+  the chain; the model of Swoole / ReactPHP). It also drops into any long-lived
+  process you already run — including a RoadRunner worker: load the extension in
+  the worker and use `WaitGroup` in your request-handling code. It cannot be used
+  with PHP-FPM or mod_php: the extension holds the Go runtime and goroutines at
+  the process level, which contradicts the FPM model (a short request-response,
   shared pool processes).
 - No `pcntl_fork` after the extension is loaded. The Go runtime and its
   goroutines do not survive `fork`: the child process gets a broken runtime
