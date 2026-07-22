@@ -55,7 +55,7 @@ func (f *WsClientFeature) Handle(task *tasks.Task) {
 		return
 	}
 
-	switch types.WsClientCommand(envelope.Command) {
+	switch envelope.Command {
 	case types.WsClientConnect:
 		f.handleConnect(task, envelope.Params)
 	case types.WsClientSend:

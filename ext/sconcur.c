@@ -5,7 +5,7 @@
 /*
  * arginfo:
  *  - ping(string name)
- *  - push(string flowKey, int method, string taskKey, string payload)
+ *  - push(string flowKey, string method, string taskKey, string payload)
  *  - next(string flowKey, string taskKey)
  *  - wait(string flowKey)
  *  - waitAny()
@@ -24,10 +24,10 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_ping, 0, 0, 1)
     ZEND_ARG_TYPE_INFO(0, name, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
-// push(string flowKey, int method, string taskKey, string payload)
+// push(string flowKey, string method, string taskKey, string payload)
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_push, 0, 0, 4)
     ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
-    ZEND_ARG_TYPE_INFO(0, method, IS_LONG, 0)
+    ZEND_ARG_TYPE_INFO(0, method, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, taskKey, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, payload, IS_STRING, 0)
 ZEND_END_ARG_INFO()
@@ -105,21 +105,21 @@ PHP_FUNCTION(ping)
     free(response);
 }
 
-// PHP: SConcur\Extension\push(string $flowKey, int $method, string $taskKey, string $payload): string
+// PHP: SConcur\Extension\push(string $flowKey, string $method, string $taskKey, string $payload): string
 PHP_FUNCTION(push)
 {
-    zend_long method;
-    char *flow_key = NULL, *task_key = NULL, *payload = NULL;
-    size_t flow_key_len, task_key_len, payload_len;
+    char *flow_key = NULL, *method = NULL, *task_key = NULL, *payload = NULL;
+    size_t flow_key_len, method_len, task_key_len, payload_len;
 
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "slss", &flow_key, &flow_key_len, &method, &task_key, &task_key_len, &payload, &payload_len) == FAILURE) {
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "ssss", &flow_key, &flow_key_len, &method, &method_len, &task_key, &task_key_len, &payload, &payload_len) == FAILURE) {
         RETURN_THROWS();
     }
 
     char *response = push(
         flow_key,
         (int)flow_key_len,
-        (int)method,
+        method,
+        (int)method_len,
         task_key,
         (int)task_key_len,
         payload,

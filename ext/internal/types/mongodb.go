@@ -1,32 +1,32 @@
 package types
 
-type MongodbCommand int
+type MongodbCommand string
 
 const (
-	MongodbInsertOne              MongodbCommand = 1
-	MongodbBulkWrite              MongodbCommand = 2
-	MongodbAggregate              MongodbCommand = 3
-	MongodbInsertMany             MongodbCommand = 4
-	MongodbCountDocuments         MongodbCommand = 5
-	MongodbUpdateOne              MongodbCommand = 6
-	MongodbFindOne                MongodbCommand = 7
-	MongodbCreateIndex            MongodbCommand = 8
-	MongodbDeleteOne              MongodbCommand = 9
-	MongodbDeleteMany             MongodbCommand = 10
-	MongodbUpdateMany             MongodbCommand = 11
-	MongodbDrop                   MongodbCommand = 12
-	MongodbDropIndex              MongodbCommand = 13
-	MongodbFind                   MongodbCommand = 14
-	MongodbDistinct               MongodbCommand = 15
-	MongodbFindOneAndUpdate       MongodbCommand = 16
-	MongodbFindOneAndDelete       MongodbCommand = 17
-	MongodbFindOneAndReplace      MongodbCommand = 18
-	MongodbReplaceOne             MongodbCommand = 19
-	MongodbEstimatedDocumentCount MongodbCommand = 20
-	MongodbCreateIndexes          MongodbCommand = 21
-	MongodbListIndexes            MongodbCommand = 22
-	MongodbListCollections        MongodbCommand = 23
-	MongodbListDatabases          MongodbCommand = 24
-	MongodbRenameCollection       MongodbCommand = 25
-	MongodbRunCommand             MongodbCommand = 26
+	MongodbInsertOne              MongodbCommand = "ino"
+	MongodbBulkWrite              MongodbCommand = "bw"
+	MongodbAggregate              MongodbCommand = "agg"
+	MongodbInsertMany             MongodbCommand = "inm"
+	MongodbCountDocuments         MongodbCommand = "cnt"
+	MongodbUpdateOne              MongodbCommand = "upo"
+	MongodbFindOne                MongodbCommand = "fno"
+	MongodbCreateIndex            MongodbCommand = "cix"
+	MongodbDeleteOne              MongodbCommand = "dlo"
+	MongodbDeleteMany             MongodbCommand = "dlm"
+	MongodbUpdateMany             MongodbCommand = "upm"
+	MongodbDrop                   MongodbCommand = "drp"
+	MongodbDropIndex              MongodbCommand = "dix"
+	MongodbFind                   MongodbCommand = "fnd"
+	MongodbDistinct               MongodbCommand = "dst"
+	MongodbFindOneAndUpdate       MongodbCommand = "fou"
+	MongodbFindOneAndDelete       MongodbCommand = "fod"
+	MongodbFindOneAndReplace      MongodbCommand = "for"
+	MongodbReplaceOne             MongodbCommand = "rpo"
+	MongodbEstimatedDocumentCount MongodbCommand = "edc"
+	MongodbCreateIndexes          MongodbCommand = "cxs"
+	MongodbListIndexes            MongodbCommand = "lix"
+	MongodbListCollections        MongodbCommand = "lcl"
+	MongodbListDatabases          MongodbCommand = "ldb"
+	MongodbRenameCollection       MongodbCommand = "rnc"
+	MongodbRunCommand             MongodbCommand = "run"
 )

@@ -10,11 +10,11 @@ namespace SConcur\Features\Sql;
  *
  * Go: types.SqlCommand (ext/internal/types/sql.go).
  */
-enum SqlCommandEnum: int
+enum SqlCommandEnum: string
 {
-    case Query    = 1;
-    case Exec     = 2;
-    case Begin    = 3;
-    case Commit   = 4;
-    case Rollback = 5;
+    case Query    = 'qry';
+    case Exec     = 'exe';
+    case Begin    = 'beg';
+    case Commit   = 'cmt';
+    case Rollback = 'rlb';
 }

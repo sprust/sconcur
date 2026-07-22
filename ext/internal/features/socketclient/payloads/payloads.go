@@ -8,14 +8,18 @@
 // parameters (decoded into ConnectParams / SendParams / CloseParams).
 package payloads
 
-import "github.com/vmihailenco/msgpack/v5"
+import (
+	"sconcur/internal/types"
+
+	"github.com/vmihailenco/msgpack/v5"
+)
 
 // Envelope is the command envelope decoded from the msgpack message.
 // PHP: SConcur\Features\SocketClient\Payloads\Base\BaseSocketClientPayload (cm from
 // the command enum, p from the parameters' getData()).
 type Envelope struct {
-	Command int                `json:"cm" msgpack:"cm"`
-	Params  msgpack.RawMessage `json:"p" msgpack:"p"`
+	Command types.SocketClientCommand `json:"cm" msgpack:"cm"`
+	Params  msgpack.RawMessage        `json:"p" msgpack:"p"`
 }
 
 // ConnectParams is the `p` content of a Connect command — the remote address and the

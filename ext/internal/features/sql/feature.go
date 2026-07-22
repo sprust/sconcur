@@ -55,7 +55,7 @@ func (f *SqlFeature) Handle(task *tasks.Task) {
 		return
 	}
 
-	switch types.SqlCommand(envelope.Command) {
+	switch envelope.Command {
 	case types.SqlQuery:
 		f.handleQuery(task, &envelope)
 	case types.SqlExec:

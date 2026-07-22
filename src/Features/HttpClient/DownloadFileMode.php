@@ -11,14 +11,14 @@ namespace SConcur\Features\HttpClient;
  *
  * Go: download mode constants (ext/internal/features/httpclient/download.go).
  */
-enum DownloadFileMode: int
+enum DownloadFileMode: string
 {
     /** Create the file, or truncate it if it already exists (like `w`). */
-    case Replace = 1;
+    case Replace = 'rpl';
 
     /** Create the file, failing if it already exists (like `x`). */
-    case Create = 2;
+    case Create = 'crt';
 
     /** Create the file, or append to it if it already exists (like `a`). */
-    case Append = 3;
+    case Append = 'app';
 }

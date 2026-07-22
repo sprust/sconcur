@@ -6,7 +6,7 @@ import (
 )
 
 func TestDownloadModeToFlags(t *testing.T) {
-	cases := map[int]int{
+	cases := map[string]int{
 		downloadModeReplace: os.O_WRONLY | os.O_CREATE | os.O_TRUNC,
 		downloadModeCreate:  os.O_WRONLY | os.O_CREATE | os.O_EXCL,
 		downloadModeAppend:  os.O_WRONLY | os.O_CREATE | os.O_APPEND,
@@ -16,17 +16,17 @@ func TestDownloadModeToFlags(t *testing.T) {
 		flags, ok := downloadModeToFlags(mode)
 
 		if !ok {
-			t.Fatalf("mode %d reported as invalid", mode)
+			t.Fatalf("mode %q reported as invalid", mode)
 		}
 
 		if flags != expected {
-			t.Fatalf("mode %d flags = %d, want %d", mode, flags, expected)
+			t.Fatalf("mode %q flags = %d, want %d", mode, flags, expected)
 		}
 	}
 
-	for _, mode := range []int{0, 4, 99, -1} {
+	for _, mode := range []string{"", "nope", "1", "w"} {
 		if _, ok := downloadModeToFlags(mode); ok {
-			t.Fatalf("mode %d should be invalid", mode)
+			t.Fatalf("mode %q should be invalid", mode)
 		}
 	}
 }

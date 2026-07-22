@@ -38,14 +38,14 @@ class Extension
      * rejected instead of silently misbehaving. Public so tooling (bin/sconcur-status)
      * can report the version the package expects.
      */
-    public const string REQUIRED_EXTENSION_VERSION = '0.6.1';
+    public const string REQUIRED_EXTENSION_VERSION = '0.7.0';
 
     /**
      * Result frame layout (Go -> PHP), see main.go buildResultFrame. The envelope is
      * a fixed binary header, not MessagePack; only the feature payload stays
-     * MessagePack and is decoded once by the feature. Header: flags(1) + method(1) +
-     * execMs(uint32) + flowKeyLen(uint16) + taskKeyLen(uint16), then flowKey, taskKey
-     * and the raw payload (the rest).
+     * MessagePack and is decoded once by the feature. Header: flags(1) +
+     * methodLen(1) + execMs(uint32) + flowKeyLen(uint16) + taskKeyLen(uint16), then
+     * method, flowKey, taskKey and the raw payload (the rest).
      */
     private const int FRAME_HEADER_SIZE   = 10;
     private const int FRAME_FLAG_ERROR    = 1 << 0;
@@ -213,7 +213,7 @@ class Extension
         try {
             // The envelope is a fixed binary header; the payload (the rest) is the
             // feature's MessagePack bytes, decoded later by the feature itself.
-            $header = unpack('Cflags/Cmethod/NexecutionMs/nflowKeyLen/ntaskKeyLen', $response);
+            $header = unpack('Cflags/CmethodLen/NexecutionMs/nflowKeyLen/ntaskKeyLen', $response);
 
             if ($header === false) {
                 throw new UnexpectedResponseFormatException(
@@ -221,7 +221,9 @@ class Extension
                 );
             }
 
-            $offset  = self::FRAME_HEADER_SIZE;
+            $offset = self::FRAME_HEADER_SIZE;
+            $method = substr($response, $offset, $header['methodLen']);
+            $offset += $header['methodLen'];
             $flowKey = substr($response, $offset, $header['flowKeyLen']);
             $offset += $header['flowKeyLen'];
             $taskKey = substr($response, $offset, $header['taskKeyLen']);
@@ -230,7 +232,7 @@ class Extension
 
             return new TaskResultDto(
                 flowKey: $flowKey,
-                method: MethodEnum::from($header['method']),
+                method: MethodEnum::from($method),
                 key: $taskKey,
                 isError: ($header['flags'] & self::FRAME_FLAG_ERROR) !== 0,
                 payload: $payload,

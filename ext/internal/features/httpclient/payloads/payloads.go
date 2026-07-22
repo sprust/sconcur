@@ -8,14 +8,18 @@
 // parameters (decoded into RequestParams / UploadParams).
 package payloads
 
-import "github.com/vmihailenco/msgpack/v5"
+import (
+	"sconcur/internal/types"
+
+	"github.com/vmihailenco/msgpack/v5"
+)
 
 // Envelope is the command envelope decoded from the msgpack message.
 // PHP: SConcur\Features\HttpClient\Payloads\Base\BaseHttpClientPayload (cm from the
 // command enum, p from the parameters' getData()).
 type Envelope struct {
-	Command int                `json:"cm" msgpack:"cm"`
-	Params  msgpack.RawMessage `json:"p" msgpack:"p"`
+	Command types.HttpClientCommand `json:"cm" msgpack:"cm"`
+	Params  msgpack.RawMessage      `json:"p" msgpack:"p"`
 }
 
 // RequestParams is the `p` content of a Request command — one request to send, plus
@@ -60,7 +64,7 @@ type RequestParams struct {
 	// downloadModeToFlags); SinkPerm is the create permission (0 → 0644);
 	// DownloadBufferSizeBytes is the io.Copy buffer in bytes (≤0 → default).
 	SinkPath                string `json:"sp"  msgpack:"sp"`
-	SinkMode                int    `json:"sm"  msgpack:"sm"`
+	SinkMode                string `json:"sm"  msgpack:"sm"`
 	SinkPerm                int    `json:"spm" msgpack:"spm"`
 	DownloadBufferSizeBytes int    `json:"dbs" msgpack:"dbs"`
 }

@@ -55,7 +55,7 @@ func (f *SocketClientFeature) Handle(task *tasks.Task) {
 		return
 	}
 
-	switch types.SocketClientCommand(envelope.Command) {
+	switch envelope.Command {
 	case types.SocketClientConnect:
 		f.handleConnect(task, envelope.Params)
 	case types.SocketClientSend:

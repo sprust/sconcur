@@ -151,13 +151,14 @@ non-fiber path.)
 - `internal/socket/` — neutral shared TCP code used by both socketserver and socketclient (not by each other): `frame.go` (length-prefix codec `ReadFrame`/`WriteFrame`), `message_state.go` (`MessageState` — inbound frame stream), `connection.go` (`PendingConnection`, write-loop `ConsumeCommands`, `Dispatch` with backpressure, `NextConnectionId`)
 - `internal/helpers/` — small shared helpers: `CalcExecutionMs`, and `ReadChunk` (fixed-granularity body chunk reader used by both the HTTP server and client)
 
-**Key enums:**
-- `MethodEnum`: Sleep (1), MongodbCollection (2), HttpServe (3), HttpRespond (4), HttpClient (5), Mysql (6), Pgsql (7), SocketServe (8), SocketRespond (9), SocketClient (10), WsServe (11), WsRespond (12), WsClient (13)
-- `SocketClientCommand` (sub-operations under SocketClient): Connect (1), Send (2), Close (3) — selected via the payload envelope's `cm`, like HttpClient
-- `WsClientCommand` (sub-operations under WsClient): Connect (1), Send (2), Close (3) — selected via the payload envelope's `cm`, like SocketClient
-- `SqlCommandEnum` (sub-operations under a SQL method, selected via the envelope's `cm`): Query (1), Exec (2), Begin (3), Commit (4), Rollback (5)
-- `HttpClientCommand` (sub-operations under HttpClient): Request (1), UploadChunk (2), UploadEnd (3) — selected via the payload envelope's `cm`, like MongoDB's `CommandEnum`
-- `CommandEnum`: InsertOne (1), BulkWrite (2), Aggregate (3), InsertMany (4), CountDocuments (5), UpdateOne (6), FindOne (7), CreateIndex (8), DeleteOne (9), DeleteMany (10), UpdateMany (11), Drop (12), DropIndex (13), Find (14), Distinct (15), FindOneAndUpdate (16), FindOneAndDelete (17), FindOneAndReplace (18), ReplaceOne (19), EstimatedDocumentCount (20), CreateIndexes (21), ListIndexes (22), ListCollections (23), ListDatabases (24), RenameCollection (25), RunCommand (26)
+**Key enums** (string-backed; the 2-3 letter values cross the PHP↔Go boundary):
+- `MethodEnum`: Sleep (`sl`), Mongodb (`mng`), HttpServe (`hs`), HttpRespond (`hr`), HttpClient (`hc`), Mysql (`my`), Pgsql (`pg`), SocketServe (`ss`), SocketRespond (`sr`), SocketClient (`sc`), WsServe (`wss`), WsRespond (`wsr`), WsClient (`wsc`)
+- `SocketClientCommand` (sub-operations under SocketClient): Connect (`con`), Send (`snd`), Close (`cls`) — selected via the payload envelope's `cm`, like HttpClient
+- `WsClientCommand` (sub-operations under WsClient): Connect (`con`), Send (`snd`), Close (`cls`) — selected via the payload envelope's `cm`, like SocketClient
+- `SqlCommandEnum` (sub-operations under a SQL method, selected via the envelope's `cm`): Query (`qry`), Exec (`exe`), Begin (`beg`), Commit (`cmt`), Rollback (`rlb`)
+- `HttpClientCommand` (sub-operations under HttpClient): Request (`req`), UploadChunk (`upc`), UploadEnd (`upe`) — selected via the payload envelope's `cm`, like MongoDB's `CommandEnum`
+- `CommandEnum`: InsertOne (`ino`), BulkWrite (`bw`), Aggregate (`agg`), InsertMany (`inm`), CountDocuments (`cnt`), UpdateOne (`upo`), FindOne (`fno`), CreateIndex (`cix`), DeleteOne (`dlo`), DeleteMany (`dlm`), UpdateMany (`upm`), Drop (`drp`), DropIndex (`dix`), Find (`fnd`), Distinct (`dst`), FindOneAndUpdate (`fou`), FindOneAndDelete (`fod`), FindOneAndReplace (`for`), ReplaceOne (`rpo`), EstimatedDocumentCount (`edc`), CreateIndexes (`cxs`), ListIndexes (`lix`), ListCollections (`lcl`), ListDatabases (`ldb`), RenameCollection (`rnc`), RunCommand (`run`)
+- `DownloadFileMode` (HttpClient download sink, the `sm` field): Replace (`rpl`), Create (`crt`), Append (`app`)
 
 ## Test Structure
 

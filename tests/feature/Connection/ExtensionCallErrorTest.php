@@ -21,7 +21,7 @@ class ExtensionCallErrorTest extends BaseTestCase
     {
         $flowKey = uniqid();
 
-        $response = push($flowKey, 99, 'task-1', 'payload');
+        $response = push($flowKey, 'nope', 'task-1', 'payload');
 
         self::assertStringStartsWith('error:', $response);
 
@@ -36,7 +36,7 @@ class ExtensionCallErrorTest extends BaseTestCase
 
         $this->expectException(ExtensionCallException::class);
 
-        $checkCallResponse->invoke(null, 'flow', 'error: push: unknown method: 99');
+        $checkCallResponse->invoke(null, 'flow', 'error: push: unknown method: nope');
     }
 
     public function testSuccessResponsePasses(): void

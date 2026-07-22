@@ -48,7 +48,7 @@ func TestOnDeliveredCancelsTaskContextAfterDelivery(t *testing.T) {
 
 	msg := &dto.Message{
 		FlowKey: "flow",
-		Method:  types.Method(1), // sleep
+		Method:  types.MethodSleep,
 		TaskKey: "task-1",
 		Payload: payload,
 	}
@@ -87,7 +87,7 @@ func TestHandleMessageUnknownMethodLeavesFlowStateUntouched(t *testing.T) {
 
 	msg := &dto.Message{
 		FlowKey: "flow",
-		Method:  types.Method(99),
+		Method:  types.Method("nope"),
 		TaskKey: "task-1",
 	}
 

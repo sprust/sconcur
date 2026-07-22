@@ -31,11 +31,12 @@ import (
 // its envelope as separate arguments. Must match Extension::parseWaitResponse.
 //
 //	[0]      flags    uint8  (bit0 isError, bit1 hasNext)
-//	[1]      method   uint8
+//	[1]      method   length uint8
 //	[2:6]    execMs   uint32 (big-endian)
 //	[6:8]    flowKey  length uint16 (big-endian)
 //	[8:10]   taskKey  length uint16 (big-endian)
-//	[10:]    flowKey bytes, then taskKey bytes, then the raw payload (the rest)
+//	[10:]    method bytes, then flowKey bytes, then taskKey bytes, then the raw
+//	         payload (the rest)
 const (
 	frameHeaderSize  = 10
 	frameFlagError   = 1 << 0
@@ -45,11 +46,12 @@ const (
 // buildResultFrame serializes a result envelope as the fixed binary header followed
 // by the raw (already-encoded) payload bytes.
 func buildResultFrame(result *dto.Result) []byte {
+	method := []byte(result.Method)
 	flowKey := []byte(result.FlowKey)
 	taskKey := []byte(result.TaskKey)
 	payload := []byte(result.Payload)
 
-	frame := make([]byte, frameHeaderSize+len(flowKey)+len(taskKey)+len(payload))
+	frame := make([]byte, frameHeaderSize+len(method)+len(flowKey)+len(taskKey)+len(payload))
 
 	var flags byte
 
@@ -62,12 +64,13 @@ func buildResultFrame(result *dto.Result) []byte {
 	}
 
 	frame[0] = flags
-	frame[1] = byte(result.Method)
+	frame[1] = byte(len(method))
 	binary.BigEndian.PutUint32(frame[2:6], uint32(result.ExecutionMs))
 	binary.BigEndian.PutUint16(frame[6:8], uint16(len(flowKey)))
 	binary.BigEndian.PutUint16(frame[8:10], uint16(len(taskKey)))
 
 	offset := frameHeaderSize
+	offset += copy(frame[offset:], method)
 	offset += copy(frame[offset:], flowKey)
 	offset += copy(frame[offset:], taskKey)
 	copy(frame[offset:], payload)
@@ -101,7 +104,8 @@ func ping(str *C.char) *C.char {
 func push(
 	fk *C.char,
 	fkLen C.int,
-	mt C.int,
+	mt *C.char,
+	mtLen C.int,
 	tk *C.char,
 	tkLen C.int,
 	pl unsafe.Pointer,
@@ -109,7 +113,7 @@ func push(
 ) *C.char {
 	msg := &dto.Message{
 		FlowKey: C.GoStringN(fk, fkLen),
-		Method:  types.Method(mt),
+		Method:  types.Method(C.GoStringN(mt, mtLen)),
 		TaskKey: C.GoStringN(tk, tkLen),
 		Payload: C.GoBytes(pl, plLen),
 		IsNext:  false,
@@ -227,7 +231,7 @@ func destroy() {
 
 //export version
 func version() *C.char {
-	return C.CString("0.6.1")
+	return C.CString("0.7.0")
 }
 
 func main() {}
