@@ -307,3 +307,7 @@ A short list of development directions.
 - Optimize synchronous-mode execution — a call made outside a coroutine goes to
   Go directly, bypassing the scheduler and the Fiber machinery, to cut the
   overhead of the sync path.
+- Explore a cross-process concurrency mode — have the extension hold and spread
+  the concurrency across several processes instead of only within a single one, so
+  a fan-out can use multiple processes (and CPU cores) rather than the goroutines
+  of one process.
