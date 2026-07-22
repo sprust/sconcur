@@ -13,25 +13,97 @@ MessagePack.
 ## Содержание
 
 - [Идея](#идея)
-- [Применение и ограничения](#применение-и-ограничения)
+- [Пример](#пример)
+- [Что заменяет](#что-заменяет)
+- [Почему именно Go](#почему-именно-go)
 - [Как это работает](#как-это-работает)
+- [Применение и ограничения](#применение-и-ограничения)
 - [Версии, на которых тестировалось](#версии-на-которых-тестировалось)
 - [Документация](#документация)
 - [Build](#build)
 - [echo test](#echo-test)
-- [example](#example)
 - [Планы](#планы)
 
 ## Идея
 
-Идея SConcur — вынести I/O-операции (MongoDB, sleep и т.п.) в Go-часть и
-выполнять их параллельно. PHP по своей природе синхронен: запросы к БД блокируют
-процесс по очереди. Здесь каждая I/O-операция уходит в Go и исполняется в
-отдельной горутине, поэтому десятки запросов летят веером, и общее время
+Обычный PHP синхронен: `sleep()`, запрос через PDO, HTTP-вызов — каждая операция
+блокирует процесс, и выполняются они строго по очереди. Две операции по секунде
+занимают две секунды.
+
+SConcur выполняет такие операции одновременно. Блокирующие вызовы заменяются на
+аналоги из SConcur (см. [Что заменяет](#что-заменяет)), оборачиваются в корутины,
+и сама работа уходит в Go и исполняется параллельно в горутинах. Общее время
 ограничено самой медленной операцией, а не их суммой. PHP остаётся тонким
 слоем-оркестратором, вся конкурентность живёт в Go.
 
-Почему именно Go:
+## Пример
+
+Две корутины работают одновременно, каждая — операция на секунду.
+Последовательно это заняло бы около двух секунд, конкурентно — около одной.
+
+```php
+use SConcur\WaitGroup;
+use SConcur\Features\Sleeper\Sleeper;
+
+$start = microtime(true);
+
+$waitGroup = WaitGroup::create();
+
+// корутина 1: операция на секунду (вместо блокирующего sleep())
+$waitGroup->add(function () {
+    Sleeper::sleep(seconds: 1);
+
+    return 1;
+});
+
+// корутина 2: ещё одна такая же операция
+$waitGroup->add(function () {
+    Sleeper::sleep(seconds: 1);
+
+    return 2;
+});
+
+$waitGroup->waitResults();
+
+$seconds = round(microtime(true) - $start, 2);
+
+echo "готово за {$seconds} c" . PHP_EOL;
+```
+
+Вывод:
+
+```
+готово за 1 c
+```
+
+Две секундные операции выполнились параллельно — около 1 c вместо 2.
+
+## Что заменяет
+
+Сейчас SConcur предоставляет аналоги для перечисленных ниже инструментов.
+
+Операции и клиенты — обёрнутые в корутину (`$waitGroup->add()`), работают
+конкурентно, а не блокируют процесс:
+
+| Обычный PHP | SConcur | Что меняется |
+| --- | --- | --- |
+| `sleep()`, `usleep()` | `Sleeper::sleep()`, `Sleeper::usleep()` | пауза на секунды или микросекунды |
+| `PDO` / `mysqli` (MySQL) | `Features\Mysql\Connection` | запросы, транзакции, стриминг SELECT; пул соединений в Go |
+| `PDO` (PostgreSQL) | `Features\Pgsql\Connection` | та же SQL-фича на драйвере pgx |
+| `mongodb/mongodb`, `ext-mongodb` | `Features\Mongodb\Connection\*` | CRUD, агрегации, курсоры (BSON-типы остаются нативными `ext-mongodb`) |
+| `curl`, `file_get_contents`, Guzzle | `Features\HttpClient\HttpClient` (PSR-18) | стриминг ответа, скачивание в файл на стороне Go |
+| `fsockopen`, `stream_socket_client` | `Features\SocketClient\SocketClient` | TCP с length-prefix кадрами |
+| WS-клиент (библиотека) | `Features\WsClient\WsClient` | обмен text/binary сообщениями |
+
+Долгоживущие серверы:
+
+| Обычный PHP | SConcur | Что меняется |
+| --- | --- | --- |
+| PHP-FPM, RoadRunner, Workerman | `Features\HttpServer\HttpServer` (PSR-7) | HTTP-сервер |
+| `stream_socket_server` | `Features\SocketServer\SocketServer` | TCP-сервер |
+| Ratchet, Workerman (WS) | `Features\WsServer\WsServer` | WebSocket-сервер |
+
+## Почему именно Go
 
 - Удобная модель конкурентности: горутины и каналы дают дешёвый параллелизм. Одна
   задача — одна горутина, результаты собираются через канал. Не нужны внешний
@@ -79,6 +151,23 @@ ReactPHP, AMPHP):
   инъектируются, а контекст корутины нейтрален — фича встраивается в любое
   приложение без адаптеров.
 
+## Как это работает
+
+Коротко: `WaitGroup` оборачивает каждое замыкание в `Fiber`. При вызове
+асинхронной фичи корутина приостанавливается, а задача уходит в Go и исполняется
+в отдельной горутине. Единый процессный `Scheduler` ждёт расширение
+(`waitAny`), получает первый готовый результат любого флоу и возобновляет нужную
+корутину по `taskKey`. Результаты приходят в порядке завершения задач, а не в
+порядке `add()`.
+
+Число одновременно живых корутин группы по умолчанию не ограничено. Если нужен
+backpressure (память, пул соединений БД), задайте лимит:
+`WaitGroup::create(maxConcurrency: N)` — лишние `add()` встают в очередь и
+запускаются по мере освобождения слотов.
+
+Подробный разбор — со схемами «PHP Fiber ↔ Go goroutine», слоями и жизненным
+циклом задачи — в [docs/architecture.ru.md](docs/architecture.ru.md).
+
 ## Применение и ограничения
 
 - Только CLI (SAPI `cli`) — это про SAPI, а не про «без веба». Библиотека
@@ -113,23 +202,6 @@ ReactPHP, AMPHP):
 // синхронно, без WaitGroup — вернёт результат сразу
 $collection->insertOne(['name' => 'example']);
 ```
-
-## Как это работает
-
-Коротко: `WaitGroup` оборачивает каждое замыкание в `Fiber`. При вызове
-асинхронной фичи корутина приостанавливается, а задача уходит в Go и исполняется
-в отдельной горутине. Единый процессный `Scheduler` ждёт расширение
-(`waitAny`), получает первый готовый результат любого флоу и возобновляет нужную
-корутину по `taskKey`. Результаты приходят в порядке завершения задач, а не в
-порядке `add()`.
-
-Число одновременно живых корутин группы по умолчанию не ограничено. Если нужен
-backpressure (память, пул соединений БД), задайте лимит:
-`WaitGroup::create(maxConcurrency: N)` — лишние `add()` встают в очередь и
-запускаются по мере освобождения слотов.
-
-Подробный разбор — со схемами «PHP Fiber ↔ Go goroutine», слоями и жизненным
-циклом задачи — в [docs/architecture.ru.md](docs/architecture.ru.md).
 
 ## Версии, на которых тестировалось
 
@@ -215,61 +287,6 @@ rm -f build/sconcur.so build/sconcur.h && \
 ```shell
 php -d extension=./build/sconcur.so -r "echo \SConcur\Extension\ping('hello') . PHP_EOL;"
 ```
-## example
-```php
-$collection = new \SConcur\Features\Mongodb\Connection\Client('mongodb://localhost:27017')
-    ->selectDatabase('example')
-    ->selectCollection('example');
-
-$waitGroup = \SConcur\WaitGroup::create();
-
-$waitGroup->add(
-    function () {
-        \SConcur\Features\Sleeper\Sleeper::sleep(seconds: 1);
-
-        return 1;
-    }
-);
-
-$waitGroup->add(
-    function () {
-        \SConcur\Features\Sleeper\Sleeper::usleep(microseconds: 11_000);
-
-        return 2;
-    }
-);
-
-$waitGroup->add(
-    function () use ($collection) {
-        $collection->insertOne(['name' => 'example']);
-
-        return 3;
-    }
-);
-
-$waitGroup->add(
-    function () use ($collection) {
-        $iterator = $collection->aggregate([
-            [
-                '$match' => ['name' => 'example'],
-            ],
-        ]);
-
-        foreach ($iterator as $item) {
-            echo $item['name'] . PHP_EOL;
-        }
-
-        return 4;
-    }
-);
-
-$iterator = $waitGroup->iterate();
-
-foreach ($iterator as $key => $item) {
-    echo "result: $item" . PHP_EOL;
-}
-```
-
 ## Планы
 
 Краткий список направлений развития.

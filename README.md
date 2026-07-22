@@ -13,25 +13,97 @@ MessagePack.
 ## Contents
 
 - [Idea](#idea)
-- [Use and limitations](#use-and-limitations)
+- [Example](#example)
+- [What it replaces](#what-it-replaces)
+- [Why Go specifically](#why-go-specifically)
 - [How it works](#how-it-works)
+- [Use and limitations](#use-and-limitations)
 - [Tested versions](#tested-versions)
 - [Documentation](#documentation)
 - [Build](#build)
 - [echo test](#echo-test)
-- [example](#example)
 - [Roadmap](#roadmap)
 
 ## Idea
 
-The idea of SConcur is to move I/O operations (MongoDB, sleep, and so on) into
-the Go side and run them in parallel. PHP is synchronous by nature: database
-queries block the process one after another. Here every I/O operation goes to Go
-and runs in a separate goroutine, so dozens of queries fan out and the total
+Regular PHP is synchronous: `sleep()`, a PDO query, an HTTP call — each one
+blocks the process, and they run strictly one after another. Two one-second
+operations take two seconds.
+
+SConcur runs such operations at the same time. You swap the blocking calls for
+SConcur equivalents (see [What it replaces](#what-it-replaces)), wrap them in
+coroutines, and the work moves into Go and runs in parallel goroutines. The total
 time is bound by the slowest operation, not by their sum. PHP stays a thin
 orchestration layer; all concurrency lives in Go.
 
-Why Go specifically:
+## Example
+
+Two coroutines run at the same time, each a one-second operation. Sequentially
+this would be about two seconds; concurrently it is about one.
+
+```php
+use SConcur\WaitGroup;
+use SConcur\Features\Sleeper\Sleeper;
+
+$start = microtime(true);
+
+$waitGroup = WaitGroup::create();
+
+// coroutine 1: a one-second operation (instead of the blocking sleep())
+$waitGroup->add(function () {
+    Sleeper::sleep(seconds: 1);
+
+    return 1;
+});
+
+// coroutine 2: the same operation again
+$waitGroup->add(function () {
+    Sleeper::sleep(seconds: 1);
+
+    return 2;
+});
+
+$waitGroup->waitResults();
+
+$seconds = round(microtime(true) - $start, 2);
+
+echo "done in {$seconds} s" . PHP_EOL;
+```
+
+Output:
+
+```
+done in 1 s
+```
+
+Two one-second operations ran in parallel — about 1 s instead of 2.
+
+## What it replaces
+
+SConcur currently provides equivalents for the tools listed below.
+
+Operations and clients — wrapped in a coroutine (`$waitGroup->add()`), they run
+concurrently instead of blocking the process:
+
+| Native PHP | SConcur | What changes |
+| --- | --- | --- |
+| `sleep()`, `usleep()` | `Sleeper::sleep()`, `Sleeper::usleep()` | pause for seconds or microseconds |
+| `PDO` / `mysqli` (MySQL) | `Features\Mysql\Connection` | queries, transactions, SELECT streaming; a connection pool in Go |
+| `PDO` (PostgreSQL) | `Features\Pgsql\Connection` | the same SQL feature on the pgx driver |
+| `mongodb/mongodb`, `ext-mongodb` | `Features\Mongodb\Connection\*` | CRUD, aggregation, cursors (BSON types stay native `ext-mongodb`) |
+| `curl`, `file_get_contents`, Guzzle | `Features\HttpClient\HttpClient` (PSR-18) | response streaming, download straight to a file on the Go side |
+| `fsockopen`, `stream_socket_client` | `Features\SocketClient\SocketClient` | TCP with length-prefix framing |
+| a WS client library | `Features\WsClient\WsClient` | text/binary messages |
+
+Long-lived servers:
+
+| Native PHP | SConcur | What changes |
+| --- | --- | --- |
+| PHP-FPM, RoadRunner, Workerman | `Features\HttpServer\HttpServer` (PSR-7) | HTTP server |
+| `stream_socket_server` | `Features\SocketServer\SocketServer` | TCP server |
+| Ratchet, Workerman (WS) | `Features\WsServer\WsServer` | WebSocket server |
+
+## Why Go specifically
 
 - A convenient concurrency model: goroutines and channels give cheap
   parallelism. One task — one goroutine, results collected over a channel. No
@@ -80,6 +152,24 @@ Adding an I/O feature here is cheaper than in the classic PHP-async stacks
   factories are injected, and the coroutine context is framework-agnostic, so a
   feature drops into any application without adapters.
 
+## How it works
+
+In short: `WaitGroup` wraps each closure in a `Fiber`. When an async feature is
+called, the coroutine suspends and the task goes to Go and runs in a separate
+goroutine. A single process-wide `Scheduler` waits on the extension
+(`waitAny`), gets the first ready result of any flow, and resumes the right
+coroutine by `taskKey`. Results arrive in task-completion order, not in `add()`
+order.
+
+The number of concurrently live coroutines in a group is unlimited by default.
+If you need backpressure (memory, a DB connection pool), set a limit:
+`WaitGroup::create(maxConcurrency: N)` — excess `add()` calls queue and start as
+slots free up.
+
+A detailed walkthrough — with the "PHP Fiber ↔ Go goroutine" diagrams, the
+layers, and the task lifecycle — is in
+[docs/architecture.md](docs/architecture.md).
+
 ## Use and limitations
 
 - CLI only (the `cli` SAPI) — this is about the SAPI, not about "no web". The
@@ -116,24 +206,6 @@ Adding an I/O feature here is cheaper than in the classic PHP-async stacks
 // synchronous, without WaitGroup — returns the result immediately
 $collection->insertOne(['name' => 'example']);
 ```
-
-## How it works
-
-In short: `WaitGroup` wraps each closure in a `Fiber`. When an async feature is
-called, the coroutine suspends and the task goes to Go and runs in a separate
-goroutine. A single process-wide `Scheduler` waits on the extension
-(`waitAny`), gets the first ready result of any flow, and resumes the right
-coroutine by `taskKey`. Results arrive in task-completion order, not in `add()`
-order.
-
-The number of concurrently live coroutines in a group is unlimited by default.
-If you need backpressure (memory, a DB connection pool), set a limit:
-`WaitGroup::create(maxConcurrency: N)` — excess `add()` calls queue and start as
-slots free up.
-
-A detailed walkthrough — with the "PHP Fiber ↔ Go goroutine" diagrams, the
-layers, and the task lifecycle — is in
-[docs/architecture.md](docs/architecture.md).
 
 ## Tested versions
 
@@ -221,61 +293,6 @@ rm -f build/sconcur.so build/sconcur.h && \
 ```shell
 php -d extension=./build/sconcur.so -r "echo \SConcur\Extension\ping('hello') . PHP_EOL;"
 ```
-## example
-```php
-$collection = new \SConcur\Features\Mongodb\Connection\Client('mongodb://localhost:27017')
-    ->selectDatabase('example')
-    ->selectCollection('example');
-
-$waitGroup = \SConcur\WaitGroup::create();
-
-$waitGroup->add(
-    function () {
-        \SConcur\Features\Sleeper\Sleeper::sleep(seconds: 1);
-
-        return 1;
-    }
-);
-
-$waitGroup->add(
-    function () {
-        \SConcur\Features\Sleeper\Sleeper::usleep(microseconds: 11_000);
-
-        return 2;
-    }
-);
-
-$waitGroup->add(
-    function () use ($collection) {
-        $collection->insertOne(['name' => 'example']);
-
-        return 3;
-    }
-);
-
-$waitGroup->add(
-    function () use ($collection) {
-        $iterator = $collection->aggregate([
-            [
-                '$match' => ['name' => 'example'],
-            ],
-        ]);
-
-        foreach ($iterator as $item) {
-            echo $item['name'] . PHP_EOL;
-        }
-
-        return 4;
-    }
-);
-
-$iterator = $waitGroup->iterate();
-
-foreach ($iterator as $key => $item) {
-    echo "result: $item" . PHP_EOL;
-}
-```
-
 ## Roadmap
 
 A short list of development directions.

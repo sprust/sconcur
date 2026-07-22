@@ -280,8 +280,7 @@ required version in `src/Connection/Extension.php`
 change. **Never bump the major version without the maintainer's approval**; bump
 the minor only when warranted, otherwise the patch. **Bump the version at most
 once per git branch** — the first protocol change on a branch bumps it, later
-commits on the same branch reuse that version (do not move it again). Current:
-`0.5.0`.
+commits on the same branch reuse that version (do not move it again).
 
 **All three version sources must be equal** — bump them together, in the same
 commit:
