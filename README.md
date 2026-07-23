@@ -10,6 +10,9 @@ A concurrency library for PHP on top of a custom Go extension. The PHP side
 sleep, and so on) concurrently in goroutines. PHP and Go exchange data over
 MessagePack.
 
+> 📊 Numbers right away: [feature benchmarks](docs/benchmarks.md) (the "In short"
+> summary at the top) and [behaviour under load](docs/load-testing.md).
+
 ## Contents
 
 - [Idea](#idea)

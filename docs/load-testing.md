@@ -134,22 +134,6 @@ worker RSS did not budge. The data is accumulated by the DB, while the SConcur s
    (slow queries, network latency) both are amortized and SConcur's strong side is
    revealed — fan-out I/O concurrency.
 
-## About "CPU through the roof"
-
-High CPU under load is saturation, not an anomaly. `wrk` drives the server to its maximum:
-on the empty route ~1200 % (≈ all 12 cores at 100 %) means "we found the CPU ceiling", not a
-bug or a leak. The meaningful metric is not the CPU % itself but throughput and CPU per
-request: under saturation CPU % is at the ceiling, the differences show in throughput. In
-production the server runs below saturation, and CPU is proportional to load rather than
-pinned at 100 %.
-
-`/all` is heavy by design: a 3-way fan-out, each feature a PHP↔Go round-trip (msgpack +
-fiber spawn/scheduling) plus a disk write. On disk backends the ceiling is fsync-bound
-(~2.7k rps at ~740 % CPU, not CPU-saturated); under an in-cache or slow-network profile the
-picture shifts. The HTTP client is deliberately excluded from `/all` (see the intro): its
-self-hit would double the served load and skew the rps (previously it made `/all` show only
-~1.7k rps).
-
 ## Caveats
 
 - Synthetic, on a laptop. A consumer CPU (P+E cores, HyperThreading, all-core throttling)

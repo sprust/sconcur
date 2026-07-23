@@ -15,6 +15,7 @@ on a specific machine and depend on hardware, DB settings and load.
 
 ## Contents
 
+- [In short](#in-short)
 - [Environment](#environment)
 - [Conversion overhead (the PHP↔Go boundary)](#conversion-overhead-the-phpgo-boundary)
 - [Methodology](#methodology)
@@ -26,6 +27,17 @@ on a specific machine and depend on hardware, DB settings and load.
   - [HTTP throughput: `/` vs `/all`](#http-throughput--vs-all)
   - [Comparison with RoadRunner (native drivers)](#comparison-with-roadrunner-native-drivers)
 - [Conclusions](#conclusions)
+
+## In short
+
+- The fan-out (`async`) wins wherever an operation has a real price — an fsync per
+  write, server-side work over the dataset, a network wait: SQL writes ~3–18×, heavy
+  reads (`count`) ~2–7.5×, clients with a 100 ms delay ~44×, `/all` vs RoadRunner ~6×.
+- Cheap point operations stay with the native driver (`selectOne`/`findOne`,
+  `selectMany`, MongoDB single-document operations): the PHP↔Go boundary costs more
+  than the operation itself, and there is nothing to overlap.
+- A single call through SConcur is always more expensive than the native one (the
+  boundary conversion) — the gain comes from concurrency only.
 
 ## Environment
 
@@ -321,8 +333,8 @@ inside the SConcur server. It isolates the server/transport layer from the drive
 | --- | --- | ---: | --- | --- | ---: | :---: |
 | `/` (empty) | SConcur | ≈67 100 | 3.7 / 6.3 / 8.8 ms | ~1210% / ~1210% | ~256 MiB | +42% ✅ |
 | `/` (empty) | RoadRunner | ≈47 100 | 5.3 / 5.9 / 6.7 ms | ~1060% / ~1075% | ~230 MiB | — |
-| `/all` | SConcur (fan-out) | ≈2 680 | 87 / 165 / 267 ms | ~740% / ~765% | ~287 MiB | +483% ✅ |
-| `/all` | RoadRunner (sequential) | ≈460 | 561 / 589 / 603 ms | ~160% / ~175% | ~237 MiB | — |
+| `/all` | SConcur (SConcur, async) | ≈2 680 | 87 / 165 / 267 ms | ~740% / ~765% | ~287 MiB | +483% ✅ |
+| `/all` | RoadRunner (native drivers, sequential) | ≈460 | 561 / 589 / 603 ms | ~160% / ~175% | ~237 MiB | — |
 | `/all-native` | SConcur (native drivers, sequential) | ≈457 | 556 / 745 / 832 ms | ~140% / ~160% | ~265 MiB | — |
 
 On the empty handle SConcur is ~1.4× faster: the price of a request across the PHP↔Go
