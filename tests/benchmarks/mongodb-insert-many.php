@@ -10,6 +10,10 @@ $benchmarker = new Benchmarker(
     name: 'mongodb-insert-many',
 );
 
+// Inserts land in a collection already holding the seeded dataset — a realistic
+// batch insert into a non-empty collection.
+TestMongodbResolver::seedBenchmarkCollection(documents: $benchmarker->getDatasetRows());
+
 $driverCollection  = TestMongodbResolver::getDriverBenchmarkCollection();
 $sconcurCollection = TestMongodbResolver::getSconcurBenchmarkCollection();
 

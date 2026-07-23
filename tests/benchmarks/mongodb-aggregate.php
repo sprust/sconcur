@@ -10,6 +10,10 @@ $benchmarker = new Benchmarker(
     name: 'mongodb-aggregate',
 );
 
+// The $match stage matches every seeded document (shared IIID, bool = true);
+// $limit stops the scan after the first 30 hits on the seeded dataset.
+TestMongodbResolver::seedBenchmarkCollection(documents: $benchmarker->getDatasetRows());
+
 $driverCollection  = TestMongodbResolver::getDriverBenchmarkCollection();
 $sconcurCollection = TestMongodbResolver::getSconcurBenchmarkCollection();
 

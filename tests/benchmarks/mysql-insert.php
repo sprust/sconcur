@@ -10,7 +10,9 @@ $benchmarker = new Benchmarker(
     name: 'mysql-insert',
 );
 
-TestMysqlResolver::prepareBenchmarkTable();
+// Inserts land in a table already holding the seeded dataset — a realistic
+// insert into a non-empty table with a primary key.
+TestMysqlResolver::prepareBenchmarkTable(rows: $benchmarker->getDatasetRows());
 
 $table = TestMysqlResolver::$benchmarkTable;
 

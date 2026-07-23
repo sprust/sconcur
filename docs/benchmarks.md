@@ -52,7 +52,8 @@ Before a benchmark session the DB state is reset with `make bench-reset`
 (removes the volumes and recreates the containers): without a reset, writes accumulate
 between runs and the numbers drift.
 
-All numbers were taken on 2026-07-22 on an idle machine.
+The client and server numbers were taken on 2026-07-22, the DB numbers on
+2026-07-23 (with the cold-dataset methodology below), on an idle machine.
 
 ## Conversion overhead (the PHP↔Go boundary)
 
@@ -64,7 +65,7 @@ price per operation, on top of the cgo call and goroutine dispatch.
 
 On cheap reads from the DB cache this overhead is visible directly as the gap between
 `native` and `sync` (both run sequentially, but `sync` goes through Go): for example,
-`pgsql-selectOne` 3.4 → 10.2 ms over 100 calls, `mysql-selectOne` 11.2 → 49.9 ms. The
+`pgsql-selectOne` 3.8 → 10.2 ms over 100 calls, `mysql-selectOne` 3.9 → 15.2 ms. The
 query itself is almost instant, so the conversion price dominates. On a «slow» operation
 (fsync, network, a heavy query) the same fixed surcharge becomes a small fraction of the
 total time, and the gap in percent shrinks.
@@ -85,16 +86,31 @@ Three modes were measured per feature:
 - `async` — SConcur inside a `WaitGroup`: N coroutines are fanned out, the scheduler
   collects results as they become ready.
 
-Each DB benchmark (MongoDB, MySQL, PostgreSQL) was run 10 times and each client/server
-benchmark 3 times; the tables show the median. Every DB run starts from a reset state —
-the MongoDB `benchmark` collection is dropped before each run, and the SQL benchmark table
-is recreated inside the run — so the runs are independent and the median is not skewed by
-the harness accumulating data across runs. The number of calls (`count`) per mode: 100 for
-DB operations, 50 for client I/O benchmarks (each call is a 100 ms sleep on the server),
-20 for `mongodb-createIndex`. About that 20 specifically: `native`, `sync` and `async`
-each create `count` indexes on the shared `u-test.benchmark` collection (dropped at the
-run's start), and MongoDB's limit is 64 indexes per collection; 3×20 = 60 per run fits,
-3×100 = 300 does not. All runs are `make bench-<name> c=<count>`.
+Each DB benchmark (MongoDB, MySQL, PostgreSQL) was run 5 times and each client/server
+benchmark 3 times; the tables show the median. Every DB run starts cold: before the
+measurement the benchmark table/collection is dropped and reseeded to a dataset of
+100 000 rows/documents by the native driver in batches (multi-row `INSERT`s in one
+transaction for SQL, ids 1..N, the PG sequence advanced past them; chunked `insertMany`
+for MongoDB with an integer `_id` 1..N and fields matching the benchmark filters). The
+runs are fully independent — nothing accumulates between runs or between modes.
+
+Point operations work on distinct ids: each mode gets its own id range inside the seeded
+dataset, and every call (warm-up included) hits its own row/document. So
+`selectOne`/`findOne`/`updateOne`/`update`/`deleteOne`/`delete` never share a hot row,
+every delete actually removes a row, and a shared-row lock cannot serialize the fan-out.
+`selectMany` reads a 100-row window sliding over the mode's range;
+`insert`/`insertOne`/`insertMany`/`transaction` insert into the table already holding the
+dataset; `count`/`updateMany`/`aggregate` work over the whole dataset (the seeded
+documents match their filters).
+
+The number of calls (`count`) per mode: 100 by default, 50 for client I/O benchmarks
+(each call is a 100 ms sleep on the server). Three MongoDB benchmarks are bounded by the
+operation's nature: `createIndex` 20 (MongoDB caps a collection at 64 indexes, 3×20 = 60
+per run fits), `bulkWrite` 20 (the bulk filters are unindexed — each call scans the
+dataset several times) and `updateMany` 10 (each call rewrites all 100 000 documents).
+Single runs are `make bench-<name> c=<count>`; the whole DB session (5 cold runs per
+benchmark plus the median/min/max aggregation) is `make bench-db-runs`
+(`tests/benchmarks/db-bench-runs.sh`).
 
 Before measuring — a warm-up (discarded): a few sequential native/sync calls and one
 full-size async fan-out. This levels the field: native enters the measurement with an
@@ -113,7 +129,7 @@ The tables carry an `async vs native` comparison — the signed percent
 driver and ❌ when it is slower. In the client tables it is a separate column; in the DB
 tables the percent sits in parentheses right in the cell it refers to — the median, min
 and max columns each carry their own (computed on the medians and on the per-mode min and
-max values over the 10 runs), which shows the spread of the comparison across runs. In the
+max values over the runs), which shows the spread of the comparison across runs. In the
 RoadRunner comparison the `vs RoadRunner` column is
 `(SConcur − RoadRunner) / RoadRunner` on throughput (✅ = SConcur higher). The sub-50 ms
 rows are noise-sensitive: their sign can flip between runs — a sign flip between the
@@ -121,73 +137,82 @@ rows are noise-sensitive: their sign can flip between runs — a sign flip betwe
 
 ## MongoDB
 
-Median of 10 runs, 100 calls per mode (except `createIndex` — 20). In the median/min/max
-cells — `native / sync / async`, ms (min and max are per mode over the 10 runs); in
+Median of 5 runs against a cold dataset of 100 000 documents; 100 calls per mode (except
+`bulkWrite` — 20, `createIndex` — 20 and `updateMany` — 10). In the median/min/max
+cells — `native / sync / async`, ms (min and max are per mode over the 5 runs); in
 parentheses — the `async vs native` percent for that cell. Memory — peak per mode, MB.
 
 | Operation | count | native / sync / async, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
 | --- | ---: | ---: | ---: | ---: | --- |
-| insertOne | 100 | 16.1 / 87.3 / 30.3 (−88% ❌) | 5.8 / 11.0 / 6.2 (−7% ❌) | 53.6 / 133 / 37.2 (+31% ✅) | 6 / 6 / 6 |
-| insertMany | 100 | 30.3 / 72.3 / 32.2 (−6% ❌) | 23.7 / 33.3 / 12.4 (+48% ✅) | 53.4 / 225 / 96.3 (−80% ❌) | 6 / 6 / 6 |
-| bulkWrite | 100 | 196 / 465 / 57.5 (+71% ✅) | 193 / 299 / 46.2 (+76% ✅) | 320 / 732 / 106 (+67% ✅) | 6 / 6 / 6 |
-| updateOne | 100 | 10.6 / 25.7 / 18.8 (−77% ❌) | 6.6 / 15.7 / 8.0 (−21% ❌) | 34.7 / 162 / 41.8 (−20% ❌) | 6 / 6 / 6 |
-| updateMany | 100 | 2389 / 2423 / 339 (+86% ✅) | 2291 / 2368 / 317 (+86% ✅) | 2418 / 2482 / 350 (+86% ✅) | 6 / 6 / 6 |
-| deleteOne | 100 | 24.4 / 63.5 / 52.2 (−114% ❌) | 21.2 / 25.7 / 22.4 (−6% ❌) | 32.5 / 178 / 94.9 (−192% ❌) | 6 / 6 / 6 |
-| findOne | 100 | 11.8 / 75.5 / 29.5 (−150% ❌) | 7.6 / 18.3 / 5.3 (+30% ✅) | 74.0 / 133 / 37.6 (+49% ✅) | 6 / 6 / 6 |
-| aggregate | 100 | 15.4 / 51.8 / 36.5 (−137% ❌) | 11.7 / 28.9 / 7.6 (+35% ✅) | 19.3 / 212 / 50.8 (−163% ❌) | 6 / 6 / 6 |
-| count | 100 | 342 / 377 / 51.0 (+85% ✅) | 330 / 362 / 49.5 (+85% ✅) | 393 / 606 / 54.3 (+86% ✅) | 6 / 6 / 6 |
-| command | 100 | 5.9 / 14.9 / 12.3 (−108% ❌) | 3.6 / 9.2 / 3.3 (+8% ✅) | 24.7 / 84.5 / 29.3 (−19% ❌) | 6 / 6 / 6 |
-| createIndex | 20 | 1211 / 1117 / 1063 (+12% ✅) | 1084 / 1042 / 938 (+13% ✅) | 1271 / 1204 / 1277 (0%) | 4 / 4 / 4 |
+| insertOne | 100 | 7.7 / 43.5 / 23.6 (−207% ❌) | 5.2 / 11.3 / 5.1 (+3% ✅) | 14.1 / 96.9 / 31.5 (−123% ❌) | 10 / 10 / 10 |
+| insertMany | 100 | 30.6 / 123 / 66.9 (−119% ❌) | 24.3 / 48.7 / 55.1 (−127% ❌) | 37.7 / 149 / 88.5 (−135% ❌) | 10 / 10 / 10 |
+| bulkWrite | 20 | 3458 / 3559 / 536 (+85% ✅) | 3425 / 3461 / 521 (+85% ✅) | 3555 / 3656 / 537 (+85% ✅) | 8 / 8 / 8 |
+| updateOne | 100 | 8.1 / 22.9 / 15.3 (−88% ❌) | 6.2 / 11.6 / 10.8 (−73% ❌) | 22.4 / 129 / 32.5 (−45% ❌) | 10 / 10 / 10 |
+| updateMany | 10 | 1741 / 1695 / 317 (+82% ✅) | 1695 / 1664 / 310 (+82% ✅) | 1785 / 1729 / 323 (+82% ✅) | 8 / 8 / 8 |
+| deleteOne | 100 | 6.9 / 12.9 / 9.3 (−36% ❌) | 5.6 / 12.7 / 8.9 (−58% ❌) | 31.5 / 46.5 / 36.1 (−15% ❌) | 10 / 10 / 10 |
+| findOne | 100 | 9.2 / 13.9 / 10.0 (−8% ❌) | 6.1 / 9.6 / 6.3 (−4% ❌) | 20.1 / 61.2 / 28.0 (−39% ❌) | 10 / 10 / 10 |
+| aggregate | 100 | 16.0 / 84.0 / 44.8 (−179% ❌) | 13.1 / 29.1 / 23.0 (−75% ❌) | 18.2 / 143 / 48.9 (−169% ❌) | 10 / 10 / 10 |
+| count | 100 | 2282 / 2388 / 327 (+86% ✅) | 2242 / 2324 / 320 (+86% ✅) | 2295 / 2452 / 336 (+85% ✅) | 10 / 10 / 10 |
+| command | 100 | 8.9 / 23.6 / 24.5 (−176% ❌) | 5.5 / 15.2 / 3.8 (+31% ✅) | 19.7 / 75.1 / 29.2 (−48% ❌) | 6 / 6 / 6 |
+| createIndex | 20 | 2194 / 2209 / 1620 (+26% ✅) | 2128 / 2150 / 1571 (+26% ✅) | 2225 / 2217 / 1796 (+19% ✅) | 8 / 8 / 8 |
 
-async beats native on the server-bound bulk operations: `count` (51.0 ms vs 342, ~7×),
-`updateMany` (339 vs 2389, ~7×), `bulkWrite` (57.5 vs 196, ~3.4×), `createIndex` (1063 vs
-1211): 100 concurrent operations load the connection pool and the server cores in
-parallel, while native runs them strictly one after another. The cheap single-document
-operations stay with native — `insertOne`, `updateOne`, `deleteOne`, `findOne`,
-`aggregate`, `insertMany` and the no-op `command`: there the operation is a fast in-memory
-one, and spawning a coroutine with the msgpack exchange costs more than it (there is no I/O
-wait to overlap — each call is independent and quick). The dataset for the heavy operations
-grows within a run (the warm-up and the earlier modes fill the collection before
-`updateMany`/`count` run), so their absolutes are comparable only within a row; native goes
-first — on the smaller collection.
+async beats native where a call makes the server chew through the dataset: `count`
+(327 ms vs 2282, ~7×; every call counts all 100k documents), `updateMany` (317 vs 1741,
+~5.5×; every call rewrites all 100k), `bulkWrite` (536 vs 3458, ~6.5×; the unindexed bulk
+filters scan the collection several times per call) and `createIndex` (1620 vs 2194;
+every index is built over the 100k documents) — heavy server-side work overlaps across
+the connection pool and the server cores instead of queuing one call after another. The
+point single-document operations stay with native — `insertOne`, `updateOne`,
+`deleteOne`, `findOne` (each call hits its own `_id`), `insertMany`, `aggregate`
+(`$limit 30` stops the scan early) and the no-op `command`: MongoDB pays no per-operation
+fsync on the default write concern, so even a write is a fast in-memory operation with no
+I/O wait to overlap, and the conversion at the boundary costs more than the operation
+itself.
 
 ## MySQL
 
-100 calls per mode, median of 10 runs. Columns as for MongoDB.
+Median of 5 runs against a cold dataset of 100 000 rows, 100 calls per mode. Columns as
+for MongoDB.
 
 | Operation | count | native / sync / async, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
 | --- | ---: | ---: | ---: | ---: | --- |
-| insert | 100 | 631 / 694 / 48.5 (+92% ✅) | 590 / 617 / 28.9 (+95% ✅) | 670 / 734 / 62.6 (+91% ✅) | 4 / 4 / 6 |
-| selectOne | 100 | 11.2 / 49.9 / 23.1 (−106% ❌) | 3.2 / 9.4 / 3.2 (0%) | 21.0 / 90.8 / 29.4 (−40% ❌) | 4 / 4 / 6 |
-| selectMany | 100 | 6.7 / 67.2 / 43.7 (−552% ❌) | 6.2 / 23.7 / 11.5 (−85% ❌) | 43.2 / 180 / 54.5 (−26% ❌) | 6 / 6 / 8 |
-| count | 100 | 24.6 / 63.8 / 55.6 (−126% ❌) | 13.2 / 20.9 / 19.2 (−45% ❌) | 81.0 / 167 / 66.5 (+18% ✅) | 4 / 4 / 6 |
-| update | 100 | 655 / 733 / 633 (+3% ✅) | 602 / 676 / 597 (+1% ✅) | 702 / 751 / 644 (+8% ✅) | 4 / 4 / 6 |
-| delete | 100 | 7.8 / 12.2 / 4.3 (+45% ✅) | 3.1 / 7.4 / 2.7 (+13% ✅) | 21.6 / 67.3 / 26.3 (−22% ❌) | 4 / 4 / 6 |
-| transaction | 100 | 670 / 832 / 77.9 (+88% ✅) | 641 / 786 / 34.9 (+95% ✅) | 705 / 874 / 88.4 (+87% ✅) | 4 / 4 / 6 |
+| insert | 100 | 642 / 718 / 45.8 (+93% ✅) | 608 / 669 / 40.7 (+93% ✅) | 653 / 723 / 54.2 (+92% ✅) | 6 / 6 / 6 |
+| selectOne | 100 | 3.9 / 15.2 / 4.3 (−11% ❌) | 3.5 / 8.6 / 3.5 (0%) | 25.2 / 52.3 / 23.2 (+8% ✅) | 6 / 6 / 6 |
+| selectMany | 100 | 8.5 / 72.7 / 54.8 (−546% ❌) | 7.7 / 30.3 / 19.0 (−147% ❌) | 23.8 / 150 / 57.2 (−141% ❌) | 6 / 6 / 8 |
+| count | 100 | 147 / 164 / 76.2 (+48% ✅) | 142 / 150 / 75.5 (+47% ✅) | 166 / 167 / 93.8 (+44% ✅) | 6 / 6 / 6 |
+| update | 100 | 624 / 678 / 41.1 (+93% ✅) | 609 / 667 / 27.5 (+95% ✅) | 660 / 725 / 42.7 (+94% ✅) | 6 / 6 / 6 |
+| delete | 100 | 637 / 694 / 40.5 (+94% ✅) | 617 / 678 / 28.8 (+95% ✅) | 642 / 701 / 44.1 (+93% ✅) | 6 / 6 / 6 |
+| transaction | 100 | 666 / 783 / 69.1 (+90% ✅) | 614 / 775 / 58.9 (+90% ✅) | 686 / 871 / 72.5 (+89% ✅) | 6 / 6 / 6 |
 
 ## PostgreSQL
 
-100 calls per mode, median of 10 runs. Columns as above.
+Median of 5 runs against a cold dataset of 100 000 rows, 100 calls per mode. Columns as
+above.
 
 | Operation | count | native / sync / async, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
 | --- | ---: | ---: | ---: | ---: | --- |
-| insert | 100 | 131 / 184 / 16.5 (+87% ✅) | 114 / 165 / 8.2 (+93% ✅) | 177 / 197 / 27.1 (+85% ✅) | 4 / 4 / 6 |
-| selectOne | 100 | 3.4 / 10.2 / 8.7 (−156% ❌) | 2.7 / 7.9 / 4.1 (−52% ❌) | 6.1 / 22.0 / 17.2 (−182% ❌) | 4 / 4 / 6 |
-| selectMany | 100 | 6.0 / 37.4 / 34.5 (−475% ❌) | 5.6 / 21.8 / 11.1 (−98% ❌) | 9.5 / 80.8 / 60.5 (−537% ❌) | 6 / 6 / 8 |
-| count | 100 | 3.3 / 9.4 / 6.4 (−94% ❌) | 2.9 / 6.7 / 3.3 (−14% ❌) | 8.9 / 20.1 / 17.0 (−91% ❌) | 4 / 4 / 6 |
-| update | 100 | 136 / 194 / 155 (−14% ❌) | 101 / 116 / 140 (−39% ❌) | 153 / 210 / 163 (−7% ❌) | 4 / 4 / 6 |
-| delete | 100 | 3.0 / 7.0 / 4.4 (−47% ❌) | 2.6 / 5.7 / 3.2 (−23% ❌) | 4.4 / 12.4 / 14.9 (−239% ❌) | 4 / 4 / 6 |
-| transaction | 100 | 169 / 248 / 47.8 (+72% ✅) | 106 / 147 / 9.7 (+91% ✅) | 176 / 339 / 57.3 (+67% ✅) | 6 / 6 / 6 |
+| insert | 100 | 132 / 165 / 23.9 (+82% ✅) | 101 / 122 / 6.4 (+94% ✅) | 142 / 206 / 27.4 (+81% ✅) | 6 / 6 / 6 |
+| selectOne | 100 | 3.8 / 10.2 / 6.0 (−57% ❌) | 3.1 / 8.3 / 4.5 (−46% ❌) | 5.3 / 14.4 / 11.8 (−123% ❌) | 6 / 6 / 6 |
+| selectMany | 100 | 8.8 / 55.6 / 47.3 (−436% ❌) | 6.9 / 28.0 / 12.7 (−84% ❌) | 12.7 / 92.1 / 50.6 (−298% ❌) | 6 / 6 / 8 |
+| count | 100 | 314 / 314 / 41.6 (+87% ✅) | 284 / 305 / 40.4 (+86% ✅) | 359 / 337 / 45.2 (+87% ✅) | 6 / 6 / 6 |
+| update | 100 | 126 / 162 / 7.0 (+94% ✅) | 102 / 112 / 5.9 (+94% ✅) | 137 / 190 / 34.5 (+75% ✅) | 6 / 6 / 6 |
+| delete | 100 | 132 / 176 / 22.8 (+83% ✅) | 121 / 129 / 5.6 (+95% ✅) | 144 / 189 / 30.5 (+79% ✅) | 6 / 6 / 6 |
+| transaction | 100 | 151 / 306 / 47.5 (+69% ✅) | 119 / 188 / 42.0 (+65% ✅) | 170 / 350 / 58.1 (+66% ✅) | 6 / 6 / 6 |
 
-The disk flips the SQL picture on writes: every committed write pays an fsync,
+The disk flips the SQL picture on writes: every committed write pays an fsync, the
 sequential modes sum it over all 100 calls, and the fan-out overlaps it. async is faster
-than native on mysql `insert` by ~13× (48.5 vs 631 ms), `transaction` by ~9× (77.9 vs
-670); on pgsql `insert` by ~8× (16.5 vs 131), `transaction` by ~4× (47.8 vs 169). The
-exception is `update`: the benchmark hits the same row, the lock on it serializes even
-the fan-out (mysql 633 vs 655 — almost no gain). Cheap reads from the cache stay with
-native (`selectOne` pgsql 8.7 vs 3.4): there is nothing to overlap, and `sync` shows the
-pure per-call price of the boundary. `delete` hits a fixed id: the row is deleted by the
-first call, the other 99 are no-ops without a write, so the row is cheap in all modes.
+than native on mysql `insert` ~14× (45.8 vs 642 ms), `update` ~15× (41.1 vs 624),
+`delete` ~16× (40.5 vs 637), `transaction` ~10× (69.1 vs 666); on pgsql `insert` ~5.5×
+(23.9 vs 132), `update` ~18× (7.0 vs 126), `delete` ~6× (22.8 vs 132), `transaction` ~3×
+(47.5 vs 151). With every call hitting its own row, `update` and `delete` behave exactly
+like `insert` — the same-row artifacts of the old methodology (a lock serializing the
+fan-out, no-op deletes of an already-deleted id) are gone by construction. `count` over
+the 100 000-row table also goes to async: mysql 76.2 vs 147 (~2×), pgsql 41.6 vs 314
+(~7.5×; PostgreSQL's `COUNT(*)` scans the heap) — a read that makes the server do real
+work is worth fanning out too. What stays with native are the cheap point reads from the
+cache (`selectOne`: pgsql 6.0 vs 3.8, mysql 4.3 vs 3.9 — almost even) and `selectMany`
+(100 rows per call — the row-set conversion at the boundary dominates: mysql 54.8 vs 8.5,
+pgsql 47.3 vs 8.8).
 
 ## Clients (HTTP / Socket / WebSocket)
 
@@ -330,15 +355,16 @@ advantage goes to SConcur.
   driver — the price of conversion at the PHP↔Go boundary (MessagePack + BSON for MongoDB
   + cgo). It is most noticeable on cheap reads from the cache, where the query itself is
   almost instant.
-- The fan-out gain (`async`) is directly proportional to the price of waiting for an
-  operation — it overlaps it rather than summing it. On disk backends this is first of all
-  fsync: async beats native on writes — mysql `insert` ~13× and `transaction` ~9×, pgsql
-  `insert` ~8× and `transaction` ~4×, the server-bound mongo `count`/`updateMany` ~7× and
-  `bulkWrite` ~3×. What stays with native are the cheap in-memory reads (`selectOne`,
-  `findOne`, `count`), the single-document mongo operations (`insertOne`, `updateOne`,
-  `deleteOne`, `aggregate`, `command`) and lock-bound writes to a single row (`update` of a
-  fixed id — the lock serializes even the fan-out): there the boundary overhead exceeds the
-  operation, with no I/O wait to overlap.
+- The fan-out gain (`async`) is directly proportional to the price of an operation — an
+  I/O wait (fsync, a network RTT) or real server-side work — which it overlaps instead of
+  summing. On disk-backed SQL every write wins: mysql `insert`/`update`/`delete` ~14–16×
+  and `transaction` ~10×, pgsql `update` ~18×, `insert`/`delete` ~5–6× and `transaction`
+  ~3×. On the 100k dataset the heavy reads win too: pgsql `count` ~7.5×, mongo `count`
+  ~7×, `updateMany` ~5.5×, `bulkWrite` ~6.5×, mysql `count` ~2×. What stays with native
+  are the cheap point operations with nothing to overlap: `selectOne`/`findOne`,
+  `selectMany` (the row-set conversion at the boundary dominates) and MongoDB's
+  single-document operations (`insertOne`, `updateOne`, `deleteOne` — no per-operation
+  fsync on the default write concern): there the boundary overhead exceeds the operation.
 - The connection pool is decisive: a cold pool cost the fan-out 3–15× (opening connections
   inside the measurement), which is why the methodology includes a warm-up, and
   `maxIdleConns` defaults to `maxOpenConns` — otherwise Go keeps 2 idle and the pool
@@ -353,5 +379,6 @@ advantage goes to SConcur.
   layer does not lose to the native stack (≈457 ≈ RoadRunner). The fan-out only loses
   where operations have no real I/O price (memory/hot cache over loopback — the cheap read
   rows in the DB tables).
-- async memory stays 2–4 MB above the synchronous path (live coroutine fibers) and grows
-  with the result size (`selectMany` — 8 MB), but stays modest.
+- Memory is practically flat across the modes: the DB tables show equal per-mode peaks
+  (`selectMany` +2 MB for the result sets) — the coroutine fibers of a 100-wide fan-out
+  do not move the peak noticeably.

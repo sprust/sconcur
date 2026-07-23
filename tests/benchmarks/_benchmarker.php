@@ -14,16 +14,38 @@ readonly class Benchmarker
 {
     private int $total;
     private bool $logProcess;
+    private int $datasetRows;
 
     public function __construct(private string $name)
     {
-        $this->total      = (int) ($_SERVER['argv'][1] ?? 5);
-        $this->logProcess = (bool) ((int) ($_SERVER['argv'][2] ?? 0));
+        $this->total       = (int) ($_SERVER['argv'][1] ?? 5);
+        $this->logProcess  = (bool) ((int) ($_SERVER['argv'][2] ?? 0));
+        $this->datasetRows = (int) (getenv('SCONCUR_BENCH_DATASET') ?: 100000);
     }
 
     public function isLogProcess(): bool
     {
         return $this->logProcess;
+    }
+
+    /**
+     * Size of the pre-seeded dataset (rows/documents) a DB benchmark works
+     * against. Overridable via SCONCUR_BENCH_DATASET for smoke runs.
+     */
+    public function getDatasetRows(): int
+    {
+        return $this->datasetRows;
+    }
+
+    /**
+     * Base id of a mode's private id range inside the seeded dataset. Every
+     * callback invocation (warm-up included) gets a sequential call index, so
+     * `base + callIndex + 1` yields an id no other mode touches — reads,
+     * updates and deletes hit their own rows and never turn into no-ops.
+     */
+    public function getModeIdBase(int $modeNumber): int
+    {
+        return intdiv($this->datasetRows, 3) * $modeNumber;
     }
 
     public function run(
@@ -37,6 +59,11 @@ readonly class Benchmarker
 
         echo "Benchmarking $this->name...\n";
         echo "Total call:\t$this->total\n";
+        echo "Dataset rows:\t$this->datasetRows\n";
+
+        $nativeCallIndex = 0;
+        $syncCallIndex   = 0;
+        $asyncCallIndex  = 0;
 
         /** @var Closure[] $nativeCallbacks */
         $nativeCallbacks = [];
@@ -78,11 +105,11 @@ readonly class Benchmarker
 
             for ($index = 0; $index < $sequentialWarmupCount; $index++) {
                 if (!is_null($nativeCallback)) {
-                    $nativeCallback();
+                    $nativeCallback($nativeCallIndex++);
                 }
 
                 if (!is_null($syncCallback)) {
-                    $syncCallback();
+                    $syncCallback($syncCallIndex++);
                 }
             }
 
@@ -90,7 +117,9 @@ readonly class Benchmarker
                 $warmupGroup = WaitGroup::create();
 
                 for ($index = 0; $index < $this->total; $index++) {
-                    $warmupGroup->add(callback: $asyncCallback);
+                    $warmupCallIndex = $asyncCallIndex++;
+
+                    $warmupGroup->add(callback: static fn() => $asyncCallback($warmupCallIndex));
                 }
 
                 $warmupGroup->waitAll();
@@ -114,7 +143,7 @@ readonly class Benchmarker
 
                 unset($nativeCallbacks[$key]);
 
-                $callback();
+                $callback($nativeCallIndex++);
 
                 $key = "$this->name: $key";
 
@@ -142,7 +171,7 @@ readonly class Benchmarker
 
                 unset($syncCallbacks[$key]);
 
-                $callback();
+                $callback($syncCallIndex++);
 
                 $key = "$this->name: $key";
 
@@ -168,7 +197,9 @@ readonly class Benchmarker
             $callbackKeys = [];
 
             foreach ($asyncCallbacks as $key => $callback) {
-                $taskKey = $waitGroup->add(callback: $callback);
+                $taskCallIndex = $asyncCallIndex++;
+
+                $taskKey = $waitGroup->add(callback: static fn() => $callback($taskCallIndex));
 
                 $callbackKeys[$taskKey] = $key;
             }

@@ -10,6 +10,10 @@ $benchmarker = new Benchmarker(
     name: 'mongodb-bulk-write',
 );
 
+// The bulk operations filter on unindexed fields, so every operation scans the
+// seeded dataset — run this benchmark with a small call count.
+TestMongodbResolver::seedBenchmarkCollection(documents: $benchmarker->getDatasetRows());
+
 $driverCollection  = TestMongodbResolver::getDriverBenchmarkCollection();
 $sconcurCollection = TestMongodbResolver::getSconcurBenchmarkCollection();
 

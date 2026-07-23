@@ -10,7 +10,7 @@ $benchmarker = new Benchmarker(
     name: 'pgsql-count',
 );
 
-TestPgsqlResolver::prepareBenchmarkTable(rows: 100);
+TestPgsqlResolver::prepareBenchmarkTable(rows: $benchmarker->getDatasetRows());
 
 $table = TestPgsqlResolver::$benchmarkTable;
 

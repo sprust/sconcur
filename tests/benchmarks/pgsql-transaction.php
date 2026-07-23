@@ -10,7 +10,8 @@ $benchmarker = new Benchmarker(
     name: 'pgsql-transaction',
 );
 
-TestPgsqlResolver::prepareBenchmarkTable();
+// Transactions run against a table already holding the seeded dataset.
+TestPgsqlResolver::prepareBenchmarkTable(rows: $benchmarker->getDatasetRows());
 
 $table = TestPgsqlResolver::$benchmarkTable;
 

@@ -10,61 +10,48 @@ $benchmarker = new Benchmarker(
     name: 'mongodb-update-one',
 );
 
+TestMongodbResolver::seedBenchmarkCollection(documents: $benchmarker->getDatasetRows());
+
 $driverCollection  = TestMongodbResolver::getDriverBenchmarkCollection();
 $sconcurCollection = TestMongodbResolver::getSconcurBenchmarkCollection();
 
-$driverData = makeDocument(
-    objectId: TestMongodbResolver::getDriverObjectId(),
-    dateTime: TestMongodbResolver::getDriverDateTime(),
-);
+$driverUpdate = [
+    '$set' => [
+        'date' => TestMongodbResolver::getDriverDateTime(),
+    ],
+];
 
-$sconcurDate = makeDocument(
-    objectId: TestMongodbResolver::getSconcurObjectId(),
-    dateTime: TestMongodbResolver::getSconcurDateTime(),
-);
+$sconcurUpdate = [
+    '$set' => [
+        'date' => TestMongodbResolver::getSconcurDateTime(),
+    ],
+];
+
+// Every call updates its own document by `_id` out of the seeded dataset
+// (per-mode id ranges), so a shared-document lock never serializes the fan-out.
+$nativeIdBase = $benchmarker->getModeIdBase(modeNumber: 0);
+$syncIdBase   = $benchmarker->getModeIdBase(modeNumber: 1);
+$asyncIdBase  = $benchmarker->getModeIdBase(modeNumber: 2);
 
 $benchmarker->run(
-    nativeCallback: static function () use ($driverCollection, $driverData) {
+    nativeCallback: static function (int $callIndex) use ($driverCollection, $driverUpdate, $nativeIdBase) {
         return $driverCollection
             ->updateOne(
-                filter: $driverData['filter'],
-                update: $driverData['update'],
-                options: $driverData['options'],
+                filter: ['_id' => $nativeIdBase + $callIndex + 1],
+                update: $driverUpdate,
             )
             ->getModifiedCount();
     },
-    syncCallback: static function () use ($sconcurCollection, $sconcurDate) {
+    syncCallback: static function (int $callIndex) use ($sconcurCollection, $sconcurUpdate, $syncIdBase) {
         return $sconcurCollection->updateOne(
-            filter: $sconcurDate['filter'],
-            update: $sconcurDate['update'],
-            upsert: $sconcurDate['upsert'] ?? false,
+            filter: ['_id' => $syncIdBase + $callIndex + 1],
+            update: $sconcurUpdate,
         )->modifiedCount;
     },
-    asyncCallback: static function () use ($sconcurCollection, $sconcurDate) {
+    asyncCallback: static function (int $callIndex) use ($sconcurCollection, $sconcurUpdate, $asyncIdBase) {
         return $sconcurCollection->updateOne(
-            filter: $sconcurDate['filter'],
-            update: $sconcurDate['update'],
-            upsert: $sconcurDate['upsert'] ?? false,
+            filter: ['_id' => $asyncIdBase + $callIndex + 1],
+            update: $sconcurUpdate,
         )->modifiedCount;
     },
 );
-
-/**
- * @return array{filter: array, update: array, options: array}
- */
-function makeDocument(mixed $objectId, mixed $dateTime): array
-{
-    return [
-        'filter' => [
-            'IIID' => $objectId,
-        ],
-        'update' => [
-            '$set' => [
-                'date' => $dateTime,
-            ],
-        ],
-        'options' => [
-            'upsert' => true,
-        ],
-    ];
-}

@@ -10,7 +10,7 @@ $benchmarker = new Benchmarker(
     name: 'mysql-delete',
 );
 
-TestMysqlResolver::prepareBenchmarkTable(rows: 1);
+TestMysqlResolver::prepareBenchmarkTable(rows: $benchmarker->getDatasetRows());
 
 $table = TestMysqlResolver::$benchmarkTable;
 
@@ -19,24 +19,28 @@ $connection = TestMysqlResolver::getConnection(maxOpenConns: 50);
 $pdo       = TestMysqlResolver::getPdo();
 $pdoDelete = $pdo->prepare("DELETE FROM $table WHERE id = ?");
 
-// Like the MongoDB delete-one benchmark, the filter is fixed: the first call
-// removes the row and later ones are no-ops, but each still measures the round-trip.
+// Every call deletes its own row of the seeded dataset (per-mode id ranges), so
+// each call is a real delete paying a real commit — no no-op calls.
+$nativeIdBase = $benchmarker->getModeIdBase(modeNumber: 0);
+$syncIdBase   = $benchmarker->getModeIdBase(modeNumber: 1);
+$asyncIdBase  = $benchmarker->getModeIdBase(modeNumber: 2);
+
 $benchmarker->run(
-    nativeCallback: static function () use ($pdoDelete): int {
-        $pdoDelete->execute([1]);
+    nativeCallback: static function (int $callIndex) use ($pdoDelete, $nativeIdBase): int {
+        $pdoDelete->execute([$nativeIdBase + $callIndex + 1]);
 
         return $pdoDelete->rowCount();
     },
-    syncCallback: static function () use ($connection, $table): int {
+    syncCallback: static function (int $callIndex) use ($connection, $table, $syncIdBase): int {
         return $connection->exec(
             sql: "DELETE FROM $table WHERE id = ?",
-            bindings: [1],
+            bindings: [$syncIdBase + $callIndex + 1],
         )->affectedRows;
     },
-    asyncCallback: static function () use ($connection, $table): int {
+    asyncCallback: static function (int $callIndex) use ($connection, $table, $asyncIdBase): int {
         return $connection->exec(
             sql: "DELETE FROM $table WHERE id = ?",
-            bindings: [1],
+            bindings: [$asyncIdBase + $callIndex + 1],
         )->affectedRows;
     },
 );

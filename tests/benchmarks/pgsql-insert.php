@@ -10,7 +10,9 @@ $benchmarker = new Benchmarker(
     name: 'pgsql-insert',
 );
 
-TestPgsqlResolver::prepareBenchmarkTable();
+// Inserts land in a table already holding the seeded dataset — a realistic
+// insert into a non-empty table with a primary key.
+TestPgsqlResolver::prepareBenchmarkTable(rows: $benchmarker->getDatasetRows());
 
 $table = TestPgsqlResolver::$benchmarkTable;
 

@@ -10,6 +10,11 @@ $benchmarker = new Benchmarker(
     name: 'mongodb-update-many',
 );
 
+// The filter below matches every seeded document (they all carry the shared
+// IIID), so a single call rewrites the whole dataset — run this benchmark with
+// a small call count.
+TestMongodbResolver::seedBenchmarkCollection(documents: $benchmarker->getDatasetRows());
+
 $driverCollection  = TestMongodbResolver::getDriverBenchmarkCollection();
 $sconcurCollection = TestMongodbResolver::getSconcurBenchmarkCollection();
 

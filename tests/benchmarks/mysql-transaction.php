@@ -10,7 +10,8 @@ $benchmarker = new Benchmarker(
     name: 'mysql-transaction',
 );
 
-TestMysqlResolver::prepareBenchmarkTable();
+// Transactions run against a table already holding the seeded dataset.
+TestMysqlResolver::prepareBenchmarkTable(rows: $benchmarker->getDatasetRows());
 
 $table = TestMysqlResolver::$benchmarkTable;
 

@@ -175,6 +175,12 @@ bench-all:
 bench-db-lifecycle:
 	$(PHP_EXT) tests/benchmarks/db-lifecycle.php ${c} ${runs} ${pool}
 
+# Re-measures all DB benchmarks for docs/benchmarks.md: several runs per bench,
+# each against a cold seeded dataset, aggregated to median/min/max markdown
+# rows. Tunables via env, e.g.: make bench-db-runs RUNS=2 DATASET=1000
+bench-db-runs:
+	tests/benchmarks/db-bench-runs.sh
+
 bench-http-client-download:
 	$(PHP_EXT) tests/benchmarks/http-client-download.php ${c}
 

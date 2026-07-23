@@ -10,6 +10,9 @@ $benchmarker = new Benchmarker(
     name: 'mongodb-create-index',
 );
 
+// Every index is built over the seeded dataset (a real full-collection scan).
+TestMongodbResolver::seedBenchmarkCollection(documents: $benchmarker->getDatasetRows());
+
 $driverCollection  = TestMongodbResolver::getDriverBenchmarkCollection();
 $sconcurCollection = TestMongodbResolver::getSconcurBenchmarkCollection();
 

@@ -62,6 +62,46 @@ class TestMongodbResolver
             ->selectCollection(static::$benchmarkName);
     }
 
+    /**
+     * Drops and reseeds the benchmark collection with $documents documents
+     * (batched insertMany via the native driver, outside any measurement).
+     * `_id` is an explicit integer 1..$documents, so point reads/updates/deletes
+     * by key are deterministic; `IIID`/`bool`/`date` match the filters the
+     * benchmark scripts use, so scans/counts work over the whole dataset.
+     */
+    public static function seedBenchmarkCollection(int $documents): void
+    {
+        $collection = static::getDriverBenchmarkCollection();
+
+        $collection->drop();
+
+        if ($documents <= 0) {
+            return;
+        }
+
+        $objectId  = static::getDriverObjectId();
+        $dateTime  = static::getDriverDateTime();
+        $chunkSize = 10000;
+
+        for ($chunkStart = 1; $chunkStart <= $documents; $chunkStart += $chunkSize) {
+            $chunkEnd = min($chunkStart + $chunkSize - 1, $documents);
+            $chunk    = [];
+
+            for ($documentId = $chunkStart; $documentId <= $chunkEnd; ++$documentId) {
+                $chunk[] = [
+                    '_id'    => $documentId,
+                    'IIID'   => $objectId,
+                    'bool'   => true,
+                    'uniq'   => "seed-$documentId",
+                    'date'   => $dateTime,
+                    'amount' => $documentId,
+                ];
+            }
+
+            $collection->insertMany($chunk, ['ordered' => false]);
+        }
+    }
+
     public static function getDriverObjectId(?string $id = null): ObjectId
     {
         return new ObjectId($id ?: static::$objectId);

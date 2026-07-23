@@ -10,6 +10,10 @@ $benchmarker = new Benchmarker(
     name: 'mongodb-count',
 );
 
+// The filter below matches every seeded document (shared IIID, seed date in the
+// past), so each call counts the whole dataset.
+TestMongodbResolver::seedBenchmarkCollection(documents: $benchmarker->getDatasetRows());
+
 $driverCollection  = TestMongodbResolver::getDriverBenchmarkCollection();
 $sconcurCollection = TestMongodbResolver::getSconcurBenchmarkCollection();
 

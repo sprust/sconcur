@@ -66,12 +66,37 @@ class TestPgsqlResolver
             return;
         }
 
-        // PDO uses `?` placeholders (it maps them to PG's $1, $2 internally).
-        $statement = $pdo->prepare("INSERT INTO $table (name, amount) VALUES (?, ?)");
+        static::seedBenchmarkTable(rows: $rows);
+    }
 
-        for ($index = 1; $index <= $rows; ++$index) {
-            $statement->execute(["row-$index", $index]);
+    /**
+     * Seeds id = 1..$rows with batched multi-row inserts inside one transaction:
+     * a large dataset (100k rows) seeded row-by-row would spend minutes on
+     * per-statement commits, while a batch costs a couple of seconds. The SERIAL
+     * sequence is advanced past the seeded ids so later inserts do not collide.
+     */
+    protected static function seedBenchmarkTable(int $rows): void
+    {
+        $pdo       = static::getPdo();
+        $table     = static::$benchmarkTable;
+        $chunkSize = 5000;
+
+        $pdo->beginTransaction();
+
+        for ($chunkStart = 1; $chunkStart <= $rows; $chunkStart += $chunkSize) {
+            $chunkEnd = min($chunkStart + $chunkSize - 1, $rows);
+            $values   = [];
+
+            for ($rowId = $chunkStart; $rowId <= $chunkEnd; ++$rowId) {
+                $values[] = "($rowId, 'row-$rowId', $rowId)";
+            }
+
+            $pdo->exec("INSERT INTO $table (id, name, amount) VALUES " . implode(',', $values));
         }
+
+        $pdo->commit();
+
+        $pdo->exec("SELECT setval(pg_get_serial_sequence('$table', 'id'), $rows)");
     }
 
     /**

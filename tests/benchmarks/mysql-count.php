@@ -10,7 +10,7 @@ $benchmarker = new Benchmarker(
     name: 'mysql-count',
 );
 
-TestMysqlResolver::prepareBenchmarkTable(rows: 100);
+TestMysqlResolver::prepareBenchmarkTable(rows: $benchmarker->getDatasetRows());
 
 $table = TestMysqlResolver::$benchmarkTable;
 
