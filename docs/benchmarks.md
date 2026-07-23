@@ -108,31 +108,36 @@ collapse between fan-outs.
 Memory — the peak RSS of the PHP process (`memory_get_peak_usage`) per mode, not per
 call.
 
-Each DB and client table carries an `async vs native` column — the signed percent
+The tables carry an `async vs native` comparison — the signed percent
 `(native − async) / native`, with ✅ when the fan-out (`async`) is faster than the native
-driver and ❌ when it is slower. In the RoadRunner comparison the `vs RoadRunner` column is
+driver and ❌ when it is slower. In the client tables it is a separate column; in the DB
+tables the percent sits in parentheses right in the cell it refers to — the median, min
+and max columns each carry their own (computed on the medians and on the per-mode min and
+max values over the 10 runs), which shows the spread of the comparison across runs. In the
+RoadRunner comparison the `vs RoadRunner` column is
 `(SConcur − RoadRunner) / RoadRunner` on throughput (✅ = SConcur higher). The sub-50 ms
-rows are noise-sensitive: their sign can flip between runs.
+rows are noise-sensitive: their sign can flip between runs — a sign flip between the
+`min` and `max` values of a row marks exactly that.
 
 ## MongoDB
 
 Median of 10 runs, 100 calls per mode (except `createIndex` — 20). In the median/min/max
-cells — `native / sync / async`, ms (min and max are per mode over the 10 runs). Memory —
-peak per mode, MB.
+cells — `native / sync / async`, ms (min and max are per mode over the 10 runs); in
+parentheses — the `async vs native` percent for that cell. Memory — peak per mode, MB.
 
-| Operation | count | native / sync / async, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB | async vs native |
-| --- | ---: | ---: | ---: | ---: | --- | :---: |
-| insertOne | 100 | 16.1 / 87.3 / 30.3 | 5.8 / 11.0 / 6.2 | 53.6 / 133 / 37.2 | 6 / 6 / 6 | −88% ❌ |
-| insertMany | 100 | 30.3 / 72.3 / 32.2 | 23.7 / 33.3 / 12.4 | 53.4 / 225 / 96.3 | 6 / 6 / 6 | −6% ❌ |
-| bulkWrite | 100 | 196 / 465 / 57.5 | 193 / 299 / 46.2 | 320 / 732 / 106 | 6 / 6 / 6 | +71% ✅ |
-| updateOne | 100 | 10.6 / 25.7 / 18.8 | 6.6 / 15.7 / 8.0 | 34.7 / 162 / 41.8 | 6 / 6 / 6 | −77% ❌ |
-| updateMany | 100 | 2389 / 2423 / 339 | 2291 / 2368 / 317 | 2418 / 2482 / 350 | 6 / 6 / 6 | +86% ✅ |
-| deleteOne | 100 | 24.4 / 63.5 / 52.2 | 21.2 / 25.7 / 22.4 | 32.5 / 178 / 94.9 | 6 / 6 / 6 | −114% ❌ |
-| findOne | 100 | 11.8 / 75.5 / 29.5 | 7.6 / 18.3 / 5.3 | 74.0 / 133 / 37.6 | 6 / 6 / 6 | −150% ❌ |
-| aggregate | 100 | 15.4 / 51.8 / 36.5 | 11.7 / 28.9 / 7.6 | 19.3 / 212 / 50.8 | 6 / 6 / 6 | −137% ❌ |
-| count | 100 | 342 / 377 / 51.0 | 330 / 362 / 49.5 | 393 / 606 / 54.3 | 6 / 6 / 6 | +85% ✅ |
-| command | 100 | 5.9 / 14.9 / 12.3 | 3.6 / 9.2 / 3.3 | 24.7 / 84.5 / 29.3 | 6 / 6 / 6 | −108% ❌ |
-| createIndex | 20 | 1211 / 1117 / 1063 | 1084 / 1042 / 938 | 1271 / 1204 / 1277 | 4 / 4 / 4 | +12% ✅ |
+| Operation | count | native / sync / async, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
+| --- | ---: | ---: | ---: | ---: | --- |
+| insertOne | 100 | 16.1 / 87.3 / 30.3 (−88% ❌) | 5.8 / 11.0 / 6.2 (−7% ❌) | 53.6 / 133 / 37.2 (+31% ✅) | 6 / 6 / 6 |
+| insertMany | 100 | 30.3 / 72.3 / 32.2 (−6% ❌) | 23.7 / 33.3 / 12.4 (+48% ✅) | 53.4 / 225 / 96.3 (−80% ❌) | 6 / 6 / 6 |
+| bulkWrite | 100 | 196 / 465 / 57.5 (+71% ✅) | 193 / 299 / 46.2 (+76% ✅) | 320 / 732 / 106 (+67% ✅) | 6 / 6 / 6 |
+| updateOne | 100 | 10.6 / 25.7 / 18.8 (−77% ❌) | 6.6 / 15.7 / 8.0 (−21% ❌) | 34.7 / 162 / 41.8 (−20% ❌) | 6 / 6 / 6 |
+| updateMany | 100 | 2389 / 2423 / 339 (+86% ✅) | 2291 / 2368 / 317 (+86% ✅) | 2418 / 2482 / 350 (+86% ✅) | 6 / 6 / 6 |
+| deleteOne | 100 | 24.4 / 63.5 / 52.2 (−114% ❌) | 21.2 / 25.7 / 22.4 (−6% ❌) | 32.5 / 178 / 94.9 (−192% ❌) | 6 / 6 / 6 |
+| findOne | 100 | 11.8 / 75.5 / 29.5 (−150% ❌) | 7.6 / 18.3 / 5.3 (+30% ✅) | 74.0 / 133 / 37.6 (+49% ✅) | 6 / 6 / 6 |
+| aggregate | 100 | 15.4 / 51.8 / 36.5 (−137% ❌) | 11.7 / 28.9 / 7.6 (+35% ✅) | 19.3 / 212 / 50.8 (−163% ❌) | 6 / 6 / 6 |
+| count | 100 | 342 / 377 / 51.0 (+85% ✅) | 330 / 362 / 49.5 (+85% ✅) | 393 / 606 / 54.3 (+86% ✅) | 6 / 6 / 6 |
+| command | 100 | 5.9 / 14.9 / 12.3 (−108% ❌) | 3.6 / 9.2 / 3.3 (+8% ✅) | 24.7 / 84.5 / 29.3 (−19% ❌) | 6 / 6 / 6 |
+| createIndex | 20 | 1211 / 1117 / 1063 (+12% ✅) | 1084 / 1042 / 938 (+13% ✅) | 1271 / 1204 / 1277 (0%) | 4 / 4 / 4 |
 
 async beats native on the server-bound bulk operations: `count` (51.0 ms vs 342, ~7×),
 `updateMany` (339 vs 2389, ~7×), `bulkWrite` (57.5 vs 196, ~3.4×), `createIndex` (1063 vs
@@ -150,29 +155,29 @@ first — on the smaller collection.
 
 100 calls per mode, median of 10 runs. Columns as for MongoDB.
 
-| Operation | count | native / sync / async, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB | async vs native |
-| --- | ---: | ---: | ---: | ---: | --- | :---: |
-| insert | 100 | 631 / 694 / 48.5 | 590 / 617 / 28.9 | 670 / 734 / 62.6 | 4 / 4 / 6 | +92% ✅ |
-| selectOne | 100 | 11.2 / 49.9 / 23.1 | 3.2 / 9.4 / 3.2 | 21.0 / 90.8 / 29.4 | 4 / 4 / 6 | −106% ❌ |
-| selectMany | 100 | 6.7 / 67.2 / 43.7 | 6.2 / 23.7 / 11.5 | 43.2 / 180 / 54.5 | 6 / 6 / 8 | −552% ❌ |
-| count | 100 | 24.6 / 63.8 / 55.6 | 13.2 / 20.9 / 19.2 | 81.0 / 167 / 66.5 | 4 / 4 / 6 | −126% ❌ |
-| update | 100 | 655 / 733 / 633 | 602 / 676 / 597 | 702 / 751 / 644 | 4 / 4 / 6 | +3% ✅ |
-| delete | 100 | 7.8 / 12.2 / 4.3 | 3.1 / 7.4 / 2.7 | 21.6 / 67.3 / 26.3 | 4 / 4 / 6 | +45% ✅ |
-| transaction | 100 | 670 / 832 / 77.9 | 641 / 786 / 34.9 | 705 / 874 / 88.4 | 4 / 4 / 6 | +88% ✅ |
+| Operation | count | native / sync / async, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
+| --- | ---: | ---: | ---: | ---: | --- |
+| insert | 100 | 631 / 694 / 48.5 (+92% ✅) | 590 / 617 / 28.9 (+95% ✅) | 670 / 734 / 62.6 (+91% ✅) | 4 / 4 / 6 |
+| selectOne | 100 | 11.2 / 49.9 / 23.1 (−106% ❌) | 3.2 / 9.4 / 3.2 (0%) | 21.0 / 90.8 / 29.4 (−40% ❌) | 4 / 4 / 6 |
+| selectMany | 100 | 6.7 / 67.2 / 43.7 (−552% ❌) | 6.2 / 23.7 / 11.5 (−85% ❌) | 43.2 / 180 / 54.5 (−26% ❌) | 6 / 6 / 8 |
+| count | 100 | 24.6 / 63.8 / 55.6 (−126% ❌) | 13.2 / 20.9 / 19.2 (−45% ❌) | 81.0 / 167 / 66.5 (+18% ✅) | 4 / 4 / 6 |
+| update | 100 | 655 / 733 / 633 (+3% ✅) | 602 / 676 / 597 (+1% ✅) | 702 / 751 / 644 (+8% ✅) | 4 / 4 / 6 |
+| delete | 100 | 7.8 / 12.2 / 4.3 (+45% ✅) | 3.1 / 7.4 / 2.7 (+13% ✅) | 21.6 / 67.3 / 26.3 (−22% ❌) | 4 / 4 / 6 |
+| transaction | 100 | 670 / 832 / 77.9 (+88% ✅) | 641 / 786 / 34.9 (+95% ✅) | 705 / 874 / 88.4 (+87% ✅) | 4 / 4 / 6 |
 
 ## PostgreSQL
 
 100 calls per mode, median of 10 runs. Columns as above.
 
-| Operation | count | native / sync / async, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB | async vs native |
-| --- | ---: | ---: | ---: | ---: | --- | :---: |
-| insert | 100 | 131 / 184 / 16.5 | 114 / 165 / 8.2 | 177 / 197 / 27.1 | 4 / 4 / 6 | +87% ✅ |
-| selectOne | 100 | 3.4 / 10.2 / 8.7 | 2.7 / 7.9 / 4.1 | 6.1 / 22.0 / 17.2 | 4 / 4 / 6 | −156% ❌ |
-| selectMany | 100 | 6.0 / 37.4 / 34.5 | 5.6 / 21.8 / 11.1 | 9.5 / 80.8 / 60.5 | 6 / 6 / 8 | −475% ❌ |
-| count | 100 | 3.3 / 9.4 / 6.4 | 2.9 / 6.7 / 3.3 | 8.9 / 20.1 / 17.0 | 4 / 4 / 6 | −94% ❌ |
-| update | 100 | 136 / 194 / 155 | 101 / 116 / 140 | 153 / 210 / 163 | 4 / 4 / 6 | −14% ❌ |
-| delete | 100 | 3.0 / 7.0 / 4.4 | 2.6 / 5.7 / 3.2 | 4.4 / 12.4 / 14.9 | 4 / 4 / 6 | −47% ❌ |
-| transaction | 100 | 169 / 248 / 47.8 | 106 / 147 / 9.7 | 176 / 339 / 57.3 | 6 / 6 / 6 | +72% ✅ |
+| Operation | count | native / sync / async, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
+| --- | ---: | ---: | ---: | ---: | --- |
+| insert | 100 | 131 / 184 / 16.5 (+87% ✅) | 114 / 165 / 8.2 (+93% ✅) | 177 / 197 / 27.1 (+85% ✅) | 4 / 4 / 6 |
+| selectOne | 100 | 3.4 / 10.2 / 8.7 (−156% ❌) | 2.7 / 7.9 / 4.1 (−52% ❌) | 6.1 / 22.0 / 17.2 (−182% ❌) | 4 / 4 / 6 |
+| selectMany | 100 | 6.0 / 37.4 / 34.5 (−475% ❌) | 5.6 / 21.8 / 11.1 (−98% ❌) | 9.5 / 80.8 / 60.5 (−537% ❌) | 6 / 6 / 8 |
+| count | 100 | 3.3 / 9.4 / 6.4 (−94% ❌) | 2.9 / 6.7 / 3.3 (−14% ❌) | 8.9 / 20.1 / 17.0 (−91% ❌) | 4 / 4 / 6 |
+| update | 100 | 136 / 194 / 155 (−14% ❌) | 101 / 116 / 140 (−39% ❌) | 153 / 210 / 163 (−7% ❌) | 4 / 4 / 6 |
+| delete | 100 | 3.0 / 7.0 / 4.4 (−47% ❌) | 2.6 / 5.7 / 3.2 (−23% ❌) | 4.4 / 12.4 / 14.9 (−239% ❌) | 4 / 4 / 6 |
+| transaction | 100 | 169 / 248 / 47.8 (+72% ✅) | 106 / 147 / 9.7 (+91% ✅) | 176 / 339 / 57.3 (+67% ✅) | 6 / 6 / 6 |
 
 The disk flips the SQL picture on writes: every committed write pays an fsync,
 sequential modes sum it over all 100 calls, and the fan-out overlaps it. async is faster
