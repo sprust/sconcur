@@ -307,11 +307,14 @@ bench-http-throughput:
 # RoadRunner reference server (native drivers, tests/servers/roadrunner) for the
 # honest / and /all comparison. Foreground; stop with Ctrl+C. Tunables:
 # make rr-serve RR_HTTP_PORT=18082 RR_NUM_WORKERS=8
+# The /all-sconcur route needs the extension in the workers:
+# make rr-serve RR_WORKER_CMD='php -d extension=/sconcur/ext/build/sconcur.so rr-worker.php'
 RR_HTTP_PORT ?= 18081
 RR_NUM_WORKERS ?= 16
+RR_WORKER_CMD ?=
 
 rr-serve:
-	$(DOCKER_COMPOSE) exec -e RR_HTTP_PORT=$(RR_HTTP_PORT) -e RR_NUM_WORKERS=$(RR_NUM_WORKERS) php rr serve -c tests/servers/roadrunner/.rr.yaml
+	$(DOCKER_COMPOSE) exec -e RR_HTTP_PORT=$(RR_HTTP_PORT) -e RR_NUM_WORKERS=$(RR_NUM_WORKERS) -e RR_WORKER_CMD="$(RR_WORKER_CMD)" php rr serve -c tests/servers/roadrunner/.rr.yaml
 
 # Runs on the HOST (needs wrk + the mongodb/mysql/postgres services up): load the
 # /all route (fans out across EVERY async I/O feature per request) and sample
@@ -337,6 +340,13 @@ bench-http-load-stats-empty:
 # WORKERS=12 DURATION=30
 bench-rr-load-stats:
 	tests/benchmarks/rr-load-stats.sh
+
+# SConcur fan-out INSIDE the RoadRunner worker: the same rr pool and harness,
+# but the route is /all-sconcur (the SConcur features fanned out in a WaitGroup)
+# and the workers load the sconcur extension. Comparable head-to-head with
+# bench-rr-load-stats at the same WORKERS count.
+bench-rr-sconcur-load-stats:
+	ROUTE=/all-sconcur RR_WORKER_CMD='php -d extension=/sconcur/ext/build/sconcur.so rr-worker.php' tests/benchmarks/rr-load-stats.sh
 
 bench-rr-load-soak:
 	MODE=soak tests/benchmarks/rr-load-stats.sh

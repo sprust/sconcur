@@ -303,14 +303,18 @@ To understand the price of the approach, the same two handles were measured on
 [RoadRunner](https://roadrunner.dev) 2025.1.15 — a mature Go application server for PHP.
 The conditions are identical: the same `php` container (PHP 8.4.15 NTS), 12 workers,
 `wrk` 4 threads / 256 connections / 20 s, 3 runs, hitting the bridge IP. The RoadRunner
-worker deliberately does not use SConcur — the same functionality is built on native
-drivers:
+worker's `/all` deliberately does not use SConcur — the same functionality is built on
+native drivers:
 
 - `/` — the PSR-7 worker returns `200 "ok"`.
 - `/all` — the same set of operations as SConcur, but natively and sequentially (the
   worker has no internal concurrency): MongoDB `insertOne`+`findOne`
   (`mongodb/mongodb`), MySQL `INSERT`+`SELECT 1` (`PDO`), PostgreSQL `INSERT`+`SELECT 1`
   (`PDO`), the response — the same JSON map of statuses.
+- `/all-sconcur` — the same three features, but through SConcur fanned out in a nested
+  `WaitGroup` inside the same RoadRunner worker (the worker loads the extension) —
+  the "SConcur inside a RoadRunner worker" scenario; the run is
+  `make bench-rr-sconcur-load-stats`.
 
 The reference RoadRunner server is committed in `tests/servers/roadrunner/` (config,
 PSR-7 worker with native copies of both handles); the `rr` binary is installed when the
@@ -325,7 +329,7 @@ inserts into MongoDB/MySQL/PostgreSQL per run, all responses `200` — since 202
 failed feature turns the response into a 500, and there were none) — rather than
 responding for nothing.
 
-The third `/all` row is the `/all-native` handle of the SConcur server: an exact copy of
+The `/all-native` row is the SConcur server's handle: an exact copy of
 the RoadRunner worker (the same native drivers, sequentially, without SConcur features)
 inside the SConcur server. It isolates the server/transport layer from the driver stack.
 
@@ -335,6 +339,7 @@ inside the SConcur server. It isolates the server/transport layer from the drive
 | `/` (empty) | RoadRunner | ≈47 100 | 5.3 / 5.9 / 6.7 ms | ~1060% / ~1075% | ~230 MiB | — |
 | `/all` | SConcur (SConcur, async) | ≈2 680 | 87 / 165 / 267 ms | ~740% / ~765% | ~287 MiB | +483% ✅ |
 | `/all` | RoadRunner (native drivers, sequential) | ≈460 | 561 / 589 / 603 ms | ~160% / ~175% | ~237 MiB | — |
+| `/all-sconcur` | RoadRunner (SConcur, async) | ≈583 | 442 / 469 / 522 ms | ~540% / ~600% | ~363 MiB | +32% ✅ |
 | `/all-native` | SConcur (native drivers, sequential) | ≈457 | 556 / 745 / 832 ms | ~140% / ~160% | ~265 MiB | — |
 
 On the empty handle SConcur is ~1.4× faster: the price of a request across the PHP↔Go
@@ -353,6 +358,18 @@ sequential code inside the SConcur server gives the same ≈457 rps as RoadRunne
 with the same latencies — SConcur's server/transport does not lose to the native stack,
 and the sixfold gap is created exactly by the execution model (sequential fsyncs vs ones
 overlapped by the fan-out).
+
+The `/all-sconcur` row is the reverse experiment — the SConcur fan-out inside the
+RoadRunner worker. The fan-out overlaps the request's three fsyncs, so the request time
+tends to the maximum of the three instead of their sum: +32% rps, p50 down from 586 to
+442 ms. Further it cannot go: a RoadRunner worker serves one request at a time, so
+unlike the cooperative SConcur server (≈2 680 rps) it cannot park dozens of requests on
+I/O — the ceiling stays workers × request time. Worker memory rises to ≈363 MiB over 12
+workers (the extension's Go runtime in every worker). This is the "complement
+RoadRunner, not replace it" scenario: an existing RR application gains in-request
+fan-out concurrency without changing its server model. (The `/all-sconcur`/`/all` pair
+was measured in a separate session on 2026-07-24; native `/all` gave ≈443 rps / p50
+586 ms there, and the row's percent is computed against that same-session baseline.)
 
 The applicability boundary of the fan-out runs along the price of waiting for an
 operation. Where there is none (data in memory or a hot cache over local loopback), the
@@ -388,7 +405,9 @@ advantage goes to SConcur.
   the empty HTTP handle — ~67k rps (~1.4× faster than RoadRunner).
 - Comparison with RoadRunner on disk backends: `/all` fanned out — ~6× faster than the
   sequential native worker (≈2 680 vs ≈460 rps); `/all-native` shows that SConcur's server
-  layer does not lose to the native stack (≈457 ≈ RoadRunner). The fan-out only loses
+  layer does not lose to the native stack (≈457 ≈ RoadRunner). Inside the RoadRunner
+  worker the SConcur fan-out (`/all-sconcur`) gives +32% rps and −25% p50 — capped by the
+  one-request-per-worker model. The fan-out only loses
   where operations have no real I/O price (memory/hot cache over loopback — the cheap read
   rows in the DB tables).
 - Memory is practically flat across the modes: the DB tables show equal per-mode peaks

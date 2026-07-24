@@ -4,7 +4,7 @@
 # but the server is the RoadRunner reference stack (tests/servers/roadrunner —
 # native drivers, no SConcur) instead of the SConcur demo-server pool. Starts one
 # `rr serve` managing WORKERS php workers in the `php` container, drives it with
-# wrk on the same route (/all by default: usleep + MongoDB insert/findOne +
+# wrk on the same route (/all by default: MongoDB insert/findOne +
 # MySQL/PostgreSQL INSERT + SELECT 1, sequentially per request), and samples
 # CPU/memory of the server and backend containers throughout, plus the summed
 # RSS of the php worker processes (leak check).
@@ -21,7 +21,9 @@
 #   WORKERS=8 CONNECTIONS=256 DURATION=20 tests/benchmarks/rr-load-stats.sh
 #
 # Tunables (env): WORKERS, WRK_THREADS, CONNECTIONS, DURATION, PORT, ROUTE (=/all),
-#   SAMPLE_INTERVAL (resource-sampling period, s), MODE (=soak for the long run).
+#   SAMPLE_INTERVAL (resource-sampling period, s), MODE (=soak for the long run),
+#   RR_WORKER_CMD (the full worker command — the /all-sconcur route needs the
+#   sconcur extension loaded; see `make bench-rr-sconcur-load-stats`).
 set -euo pipefail
 
 # Force the C locale so "." is the decimal separator everywhere (docker stats emits
@@ -33,6 +35,7 @@ cd "$(dirname "$0")/../.."
 DOCKER_COMPOSE=${DOCKER_COMPOSE:-docker compose}
 PORT=${PORT:-18081}
 ROUTE=${ROUTE:-/all}
+RR_WORKER_CMD=${RR_WORKER_CMD:-}
 # MODE=soak: a long, steady-load run that prints the worker-RSS trend over time and a
 # least-squares slope, to surface a slow memory leak the short run cannot. It only
 # changes the DURATION/SAMPLE_INTERVAL/CONNECTIONS defaults (still overridable).
@@ -103,6 +106,8 @@ echo "   connections     : $CONNECTIONS"
 echo "   duration        : ${DURATION}s   (sampling every ${SAMPLE_INTERVAL}s)"
 if [ "$ROUTE" = "/all" ]; then
     echo "   route           : $ROUTE  (all I/O features, native, sequential)"
+elif [ "$ROUTE" = "/all-sconcur" ]; then
+    echo "   route           : $ROUTE  (all I/O features, SConcur fan-out in the RR worker)"
 else
     echo "   route           : $ROUTE"
 fi
@@ -119,8 +124,10 @@ if curl -fsS -o /dev/null --max-time 2 "http://$IP:$PORT/" 2>/dev/null; then
 fi
 
 # Start one rr process; its php workers inherit the affinity mask. RR_HTTP_PORT /
-# RR_NUM_WORKERS are expanded by the .rr.yaml itself.
-$DOCKER_COMPOSE exec -T php sh -c '
+# RR_NUM_WORKERS / RR_WORKER_CMD are expanded by the .rr.yaml itself
+# (RR_WORKER_CMD goes through `docker exec -e` — it contains spaces; an empty
+# value makes the config fall back to the plain native worker command).
+$DOCKER_COMPOSE exec -T -e RR_WORKER_CMD="$RR_WORKER_CMD" php sh -c '
     : > "'"$STDERRLOG"'"
     cd /sconcur
     RR_HTTP_PORT='"$PORT"' RR_NUM_WORKERS='"$WORKERS"' \

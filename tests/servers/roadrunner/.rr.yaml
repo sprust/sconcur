@@ -6,14 +6,19 @@
 #   rr serve -c tests/servers/roadrunner/.rr.yaml
 #
 # Tunables (env): RR_HTTP_PORT (default 18081 — the SConcur load pool uses
-# 18080), RR_NUM_WORKERS (default 16, as in the documented comparison run).
+# 18080), RR_NUM_WORKERS (default 16, as in the documented comparison run),
+# RR_WORKER_CMD (the full worker command; the default keeps the native
+# reference extension-free. The /all-sconcur route needs the extension:
+# RR_WORKER_CMD='php -d extension=/sconcur/ext/build/sconcur.so rr-worker.php').
+# The whole command lives in one variable because an empty placeholder inside
+# the command line would leave an empty argv token and kill the worker spawn.
 
 version: '3'
 
 # The command's working directory is this config's directory, so the path is
 # relative to tests/servers/roadrunner.
 server:
-  command: 'php rr-worker.php'
+  command: '${RR_WORKER_CMD:-php rr-worker.php}'
 
 http:
   address: '0.0.0.0:${RR_HTTP_PORT:-18081}'
