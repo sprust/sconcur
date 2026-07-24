@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sconcur/internal/dto"
 	"sconcur/internal/features"
 	"sconcur/internal/flows"
@@ -21,6 +22,25 @@ var ErrWaitTimeout = errors.New("wait timeout")
 // rendezvous costing two futex wake-ups per result, which dominates the fan-out
 // coordination price. Backpressure still applies past the buffer.
 const resultsBufferSize = 1024
+
+// waitSpinIterations bounds the spin-before-park in WaitAny. The single PHP
+// thread serializes every result through a blocking cgo WaitAny; when the buffer
+// drains empty it parks on the channel and a finishing goroutine must wake the
+// cgo-locked thread across the boundary — a futex round-trip that costs ~20-30us
+// and adds ~30us of wall latency per op, dominating fan-out coordination once
+// results stop arriving faster than PHP drains them (see
+// .ai/plans/park-wake-coordination.ru.md). Under a live fan-out the next result
+// is usually only a scheduler hop away, so a few runtime.Gosched() yields before
+// parking let the producer goroutine deliver it, skipping the park/wake.
+//
+// The count is deliberately tiny. A plain (no-yield) busy poll does not catch the
+// result — the producer needs a yield to run and deliver — while a large Gosched
+// spin is ruinous: on a cgo-locked thread each Gosched is ~microseconds, so a
+// spinful (e.g. 256) burns ~1ms of CPU per park when the result is actually far
+// away (a low-concurrency trickle, measured ~8x CPU there). Eight yields recover
+// most of the trickle latency while capping wasted CPU on a far result to tens of
+// microseconds; past them WaitAny falls through to the blocking select.
+const waitSpinIterations = 8
 
 type Handler struct {
 	ctx       context.Context
@@ -62,6 +82,28 @@ func (h *Handler) Push(msg *dto.Message) error {
 func (h *Handler) WaitAny() (*dto.Result, error) {
 	if result := h.popAnyPending(); result != nil {
 		return result, nil
+	}
+
+	// Spin-before-park: try a few non-blocking receives, yielding to let a
+	// producer goroutine deliver a near-ready result, before falling through to
+	// the blocking select. This skips parking the cgo-locked PHP thread and the
+	// cross-boundary futex wake-up that dominates coordination once the buffer
+	// drains empty. The yield count is tiny on purpose (see waitSpinIterations).
+	for spin := 0; spin < waitSpinIterations; spin++ {
+		select {
+		case result, ok := <-h.results:
+			if !ok {
+				return nil, errors.New("results channel closed")
+			}
+
+			if !h.deliver(result) {
+				continue
+			}
+
+			return result, nil
+		default:
+			runtime.Gosched()
+		}
 	}
 
 	for {
