@@ -39,6 +39,26 @@ func NewFlow(handlerCtx context.Context, key string, results chan *dto.Result) *
 	}
 }
 
+// reset re-arms a pooled Flow for a new flow key, reusing the struct and its
+// activeTasks backing map (cleared, not reallocated). Flow keys are globally
+// unique and never reused (uniqid / monotonic sp_N counters), so a struct
+// reused under a new key is invisible to any stale result of the old key: that
+// result routes by its own string key, which GetFlow no longer knows, so it is
+// dropped before ever reaching this flow. A fresh cancel context is derived —
+// a cancelled context cannot be reused. Called only from Flows.InitFlow, which
+// holds the Flows lock and only pools flows already detached from the registry.
+func (f *Flow) reset(handlerCtx context.Context, key string, results chan *dto.Result) {
+	ctx, ctxCancel := context.WithCancel(handlerCtx)
+
+	f.ctx = ctx
+	f.ctxCancel = ctxCancel
+	f.key = key
+	f.results = results
+
+	clear(f.activeTasks)
+	f.tasksCount.Store(0)
+}
+
 func (f *Flow) HandleMessage(msg *dto.Message) error {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
