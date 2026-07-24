@@ -3,6 +3,7 @@ package wsserver_feature
 import (
 	"context"
 	"testing"
+	"time"
 
 	"sconcur/internal/dto"
 	"sconcur/internal/ws"
@@ -76,7 +77,8 @@ func TestMessageStateDeliversBufferedMessageWhenContextDone(t *testing.T) {
 }
 
 // TestMessageStateEndsStreamOnDrainWhenNoMessage confirms drain still half-closes the
-// stream when nothing is buffered, so an idle handler's read() returns null.
+// stream when nothing is buffered and nothing arrives, so an idle handler's read()
+// returns null (after the bounded first-message window, since nothing was delivered).
 func TestMessageStateEndsStreamOnDrainWhenNoMessage(t *testing.T) {
 	drain := make(chan struct{})
 	close(drain)
@@ -91,5 +93,69 @@ func TestMessageStateEndsStreamOnDrainWhenNoMessage(t *testing.T) {
 
 	if result.HasNext {
 		t.Fatal("draining with no buffered message must end the stream (HasNext=false)")
+	}
+}
+
+// TestMessageStateWaitsForFirstMessageAfterDrain guards the second race window of the
+// flaky maxConnections test: the limiting connection is drained right after dispatch,
+// and its opening message may still be on the wire when the handler's read() reaches
+// Next(). A connection that has not delivered anything yet must give that first
+// message a bounded window (firstMessageDrainGrace) instead of returning EOF at once.
+func TestMessageStateWaitsForFirstMessageAfterDrain(t *testing.T) {
+	drain := make(chan struct{})
+	close(drain)
+
+	messages := make(chan ws.InboundMessage, 1)
+
+	state := newMessageState(context.Background(), &dto.Message{}, messages, drain)
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+
+		messages <- ws.InboundMessage{Binary: false, Data: []byte("ping")}
+	}()
+
+	result := state.Next()
+
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Payload)
+	}
+
+	if !result.HasNext || result.Payload[1:] != "ping" {
+		t.Fatalf(
+			"the first in-flight message must be delivered within the drain window; got hasNext=%v payload=%q",
+			result.HasNext,
+			result.Payload,
+		)
+	}
+}
+
+// TestMessageStateImmediateEofOnDrainAfterFirstDelivery confirms the window applies
+// only to a connection's first message: once something was delivered, drain keeps the
+// immediate half-close so shutdown stays fast for long-lived connections.
+func TestMessageStateImmediateEofOnDrainAfterFirstDelivery(t *testing.T) {
+	drain := make(chan struct{})
+
+	messages := make(chan ws.InboundMessage, 1)
+	messages <- ws.InboundMessage{Binary: false, Data: []byte("ping")}
+
+	state := newMessageState(context.Background(), &dto.Message{}, messages, drain)
+
+	if first := state.Next(); !first.HasNext {
+		t.Fatal("the buffered first message must be delivered")
+	}
+
+	close(drain)
+
+	eofStartTime := time.Now()
+
+	result := state.Next()
+
+	if result.HasNext {
+		t.Fatal("after the first delivery, drain must end the stream (HasNext=false)")
+	}
+
+	if elapsed := time.Since(eofStartTime); elapsed >= firstMessageDrainGrace {
+		t.Fatalf("the drain EOF must be immediate after the first delivery, took %s", elapsed)
 	}
 }
