@@ -42,6 +42,8 @@ use SConcur\WaitGroup;
  *   GET  /native-msleep/{ms} -> blocks the thread {ms} natively (handler-timeout test)
  *   GET  /cpu/{n}           -> runs a CPU-bound sha256 loop of {n} rounds (bench)
  *   GET  /all               -> fans out across the backend I/O features concurrently (load test)
+ *   GET  /all-nowg          -> the same SConcur features, sequentially, NO WaitGroup — measures
+ *                              cross-request concurrency alone (each call still yields)
  *   GET  /all-native        -> the same operations on NATIVE drivers, sequentially (exactly the
  *                              RoadRunner reference worker's /all) — isolates the server layer
  *   GET  /throw             -> handler throws -> framework answers 500
@@ -136,6 +138,7 @@ $server->serve(static function (ServerRequestInterface $request) use ($psr17Fact
             ['Set-Cookie' => ['a=1', 'b=2']],
         ),
         $path === '/all'              => allFeaturesRoute($psr17Factory),
+        $path === '/all-nowg'         => allFeaturesNoWaitGroupRoute($psr17Factory),
         $path === '/all-native'       => allFeaturesNativeRoute($psr17Factory),
         $path === '/files/download'   => filesDownloadRoute($psr17Factory, $uploadDir, $request),
         $path === '/image'            => imageRoute($psr17Factory, $imageDir, $request),
@@ -389,6 +392,61 @@ function allFeaturesRoute(Psr17Factory $factory): ResponseInterface
     });
 
     $waitGroup->waitResults();
+
+    $statusCode = 200;
+
+    foreach ($status as $featureStatus) {
+        if ($featureStatus !== 'ok') {
+            $statusCode = 500;
+
+            break;
+        }
+    }
+
+    return text(
+        $factory,
+        (string) json_encode($status),
+        $statusCode,
+        ['Content-Type' => 'application/json'],
+    );
+}
+
+/**
+ * The /all operations on the same SConcur features, but sequentially and with NO
+ * WaitGroup: every call suspends this request's coroutine one by one, so the
+ * per-request latency is the sum of the operations while the server keeps handling
+ * other requests between the suspends. Comparing /all-nowg with /all isolates the
+ * intra-request fan-out win from the cross-request (spawn-per-request) concurrency.
+ * Same JSON status map, same 500 on any failed feature.
+ */
+function allFeaturesNoWaitGroupRoute(Psr17Factory $factory): ResponseInterface
+{
+    [$mongo, $mysql, $pgsql] = allFeaturesContext();
+
+    $status = [];
+
+    $status['mongodb'] = allFeatureStatus(static function () use ($mongo): void {
+        $mongo->insertOne(['t' => 'load']);
+        $mongo->findOne(filter: ['t' => 'load']);
+    });
+
+    $status['mysql'] = allFeatureStatus(static function () use ($mysql): void {
+        $mysql->exec(
+            sql: 'INSERT INTO load_all (t) VALUES (?)',
+            bindings: ['load'],
+        );
+
+        $mysql->fetchAll('SELECT 1');
+    });
+
+    $status['pgsql'] = allFeatureStatus(static function () use ($pgsql): void {
+        $pgsql->exec(
+            sql: 'INSERT INTO load_all (t) VALUES ($1)',
+            bindings: ['load'],
+        );
+
+        $pgsql->fetchAll('SELECT 1');
+    });
 
     $statusCode = 200;
 

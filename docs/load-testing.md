@@ -15,6 +15,11 @@ Tools:
   covered by its own benches). Connections are created lazily, once per worker (the Go side
   pools them by URI/DSN), so the other demo routes do not pay for them and do not require
   running DBs;
+- the `/all-nowg` route of the same server — the same six operations, but sequentially and
+  with no `WaitGroup`: every feature call suspends the request's coroutine one at a time,
+  so the only concurrency left is the cross-request one (spawn-per-request). The comparison
+  counterpart of `/all`: it isolates what the intra-request fan-out buys on top of
+  request-level concurrency (run it via `ROUTE=/all-nowg tests/benchmarks/http-load-stats.sh`);
 - the `tests/benchmarks/http-load-stats.sh` script (`make bench-http-load-stats`) — brings
   up a pool of servers (`SO_REUSEPORT`, one process per core), runs `wrk` against `/all`,
   and during the run samples `docker stats` (CPU%/MEM for the server and DB containers)
@@ -113,6 +118,44 @@ noise. There is no slow leak. The `mongodb` container's MEM meanwhile grew to ~3
 the unbounded `insert`s of the `/all` route into the `load_all` collection; the SConcur
 worker RSS did not budge. The data is accumulated by the DB, while the SConcur side is stable
 (the `load_all` collection can be dropped after the runs).
+
+## Fan-out vs sequential calls (`/all` vs `/all-nowg`)
+
+Same machine and parameters (12 servers / 4 wrk cores, 256 connections, 20 s), disk-backed
+backends, state reset (`make bench-reset`) between runs. `/all-nowg` performs the same six
+DB operations as `/all`, but one after another with no `WaitGroup` — the per-request
+latency is the sum of the operations, while between the suspends the worker keeps handling
+other requests.
+
+| Metric | `/all` (fan-out) | `/all-nowg` (sequential) |
+|---|---|---|
+| Throughput | 2 620 req/sec | 2 570 req/sec (−2 %) |
+| Latency | p50 87.6 · p90 174.8 · p99 294.8 ms | p50 90.8 · p90 164.5 · p99 261.2 ms |
+| Servers CPU (`php`) | avg 717 % | avg 503 % (−30 %) |
+| Worker RSS drift (20 s) | +3.3 MiB | +0.0 MiB |
+
+Single connection (1 server / 1 wrk thread / 1 connection / 5 s):
+
+| Metric | `/all` (fan-out) | `/all-nowg` (sequential) |
+|---|---|---|
+| Latency avg | 9.9 ms | 12.2 ms (+23 %) |
+| Throughput | 101 req/sec | 82 req/sec |
+
+Reading:
+
+1. Under saturation the throughput is the same. The ceiling is set by the backends' disk
+   commits, and 256 in-flight request coroutines keep them busy with no help from the
+   intra-request fan-out — features called outside a `WaitGroup` still suspend and yield,
+   so the request-level concurrency alone saturates the DBs.
+2. What the fan-out buys is per-request latency. At low concurrency the three feature
+   blocks overlap their disk commits: 9.9 ms against 12.2 ms at a single connection.
+3. Sequential calls are cheaper in CPU: no `WaitGroup` and no 3 extra coroutines per
+   request — avg 503 % against 717 % for the same rps, roughly two cores of headroom.
+4. On tmpfs (in-memory) backends the picture flips. The operations are sub-millisecond,
+   the per-request fan-out machinery costs more than the parallelism returns, and the
+   sequential route is faster outright: 6 200 against 3 860 req/sec under the same load,
+   0.9 against 1.5 ms at a single connection. Fan out when the request has genuinely slow
+   I/O to overlap; for a handful of fast calls a plain sequence is lighter.
 
 ## Conclusions
 
