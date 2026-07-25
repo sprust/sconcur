@@ -111,10 +111,48 @@ with `Scheduler::get()->switch(quantumMs: 1)` inside. The test starts a heavy
 light one completes while the heavy one is still in flight (the `/native-msleep`
 counter-example already proves the opposite for non-yielding code).
 
+## Automatic preemption (phase 2, decided)
+
+Owner decisions: mechanism — the VM-interrupt variant (option 1); active only when the
+worker runs under a server; enabled by default there. The signal/pcntl variant is
+rejected (the Go runtime owns process signals — pcntl handlers would fight it).
+
+Mechanism (the Swoole/pcntl-dispatch pattern, on top of the cooperative core above —
+automatic mode is just another signal source for the same switched queue):
+
+- `ext/sconcur.c` MINIT: save the original `zend_interrupt_function`, install ours
+  (always chain to the saved one — pcntl compatibility). MSHUTDOWN restores.
+- New exports `armPreemption(quantumMs)` / `disarmPreemption()`: arming starts a Go
+  timer goroutine that periodically sets `EG(vm_interrupt)` (an atomic store; NTS —
+  one executor-globals symbol, the C glue exposes a setter Go calls). New exports =
+  a PHP↔Go protocol change → minor extension version bump, once on this branch.
+- The interrupt handler runs on the PHP thread at an opcode boundary. Guards first:
+  preemption armed; `Fiber::getCurrent()` is a scheduler-tracked coroutine; no active
+  `EG(exception)`; not inside the scheduler's own loop. Then it force-parks the
+  coroutine — semantically `Scheduler::switch(quantumMs: 0)` — via a userland
+  callback the Scheduler registers on arming (resolved once, e.g.
+  `Scheduler::preempt()`).
+- Server wiring: `Scheduler::serve()` arms after the listener starts and disarms in
+  its `finally`. A new server option `preemptionQuantumMs` (argv-overridable like the
+  rest) with default 5; `0` disables. CLI/library mode never arms — there the
+  cooperative `switch()` stays the only source.
+- What it buys over manual `switch()`: every userland loop is preemptible, including
+  third-party code, at opcode granularity. What stays non-preemptible: single
+  monolithic internal calls (`preg_match` on a huge subject, `json_decode` of a huge
+  blob) — interrupts only fire between opcodes.
+- Semantics note for the docs: with preemption on, switch points become invisible —
+  non-atomic read-modify-write of shared state inside a handler can interleave.
+  Server-only scope plus the `preemptionQuantumMs: 0` opt-out is the mitigation.
+
+Next step before shipping phase 2: stress tests of suspend-from-interrupt — unwinding
+through `finally`/destructors, JIT'ed hot loops (opcache inserts interrupt checks on
+back-edges), high-frequency quanta, preempt-vs-feature-suspend interleaving, graceful
+shutdown while preempted.
+
 ## Out of scope / follow-ups
 
-- Automatic preemption experiments (signal/tick-based) — separate plan if ever.
 - Docs on shipping: a "CPU-bound handlers" subsection in `docs/http-server.md` (+ru)
   and a note in `docs/benchmarks.md`'s verdict table row about CPU-bound (the ❌ stays,
   with "latency can be smoothed with Scheduler::switch()" pointing at the server doc).
-- No extension version bump: the PHP↔Go protocol is untouched.
+- Phase 1 (cooperative switch()) needs no extension version bump: the PHP↔Go protocol
+  is untouched. Phase 2 bumps the minor once (new exports).
