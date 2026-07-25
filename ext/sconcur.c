@@ -1,6 +1,77 @@
 #include <php.h>
 #include <stdlib.h>
+#include <zend_atomic.h>
 #include "_cgo_export.h"
+
+/*
+ * Preemption plumbing (see .ai/plans/coroutine-switcher.md, phase 2).
+ *
+ * A Go timer goroutine periodically requests a VM interrupt; on the next opcode
+ * boundary the engine calls sconcur_interrupt_function on the PHP thread, which
+ * invokes the PHP callback registered by armPreemption() (the Scheduler's
+ * preempt hook that parks the current coroutine). The original interrupt
+ * handler is always chained so pcntl signal dispatch keeps working.
+ */
+
+static void (*sconcur_original_interrupt_function)(zend_execute_data *execute_data) = NULL;
+
+/* Written only on the PHP thread (armPreemption/disarmPreemption). */
+static int sconcur_preemption_armed = 0;
+
+static zval sconcur_preemption_callback;
+
+/*
+ * Called from the Go timer goroutine (a non-PHP thread): atomically requests a
+ * VM interrupt on the single (NTS) PHP thread. The engine clears the flag and
+ * calls zend_interrupt_function at the next opcode boundary.
+ */
+void sconcur_request_vm_interrupt(void)
+{
+    zend_atomic_bool_store(&EG(vm_interrupt), 1);
+}
+
+static void sconcur_preemption_release_callback(void)
+{
+    if (Z_TYPE(sconcur_preemption_callback) != IS_UNDEF) {
+        zval_ptr_dtor(&sconcur_preemption_callback);
+        ZVAL_UNDEF(&sconcur_preemption_callback);
+    }
+}
+
+static void sconcur_interrupt_function(zend_execute_data *execute_data)
+{
+    /*
+     * Never preempt while an autoload is in flight: the engine tracks the class
+     * being loaded in EG(in_autoload), and parking the fiber mid-autoload makes
+     * every other coroutine that asks for the same class fail with "class not
+     * found" (the per-class in-progress guard blocks a second autoload attempt).
+     */
+    if (sconcur_preemption_armed
+        && Z_TYPE(sconcur_preemption_callback) != IS_UNDEF
+        && !EG(exception)
+        && !zend_atomic_bool_load(&EG(timed_out))
+        && (EG(in_autoload) == NULL || zend_hash_num_elements(EG(in_autoload)) == 0)
+    ) {
+        zval retval;
+
+        ZVAL_UNDEF(&retval);
+
+        if (call_user_function(NULL, NULL, &sconcur_preemption_callback, &retval, 0, NULL) == SUCCESS) {
+            zval_ptr_dtor(&retval);
+        }
+
+        /*
+         * An exception thrown by the callback (e.g. FlowStoppedException
+         * unwinding a stopped coroutine) stays in EG(exception): the engine
+         * propagates it at the interrupted opcode — the same semantics as a
+         * throwing pcntl signal handler.
+         */
+    }
+
+    if (sconcur_original_interrupt_function != NULL) {
+        sconcur_original_interrupt_function(execute_data);
+    }
+}
 
 /*
  * arginfo:
@@ -82,6 +153,16 @@ ZEND_END_ARG_INFO()
 
 // version()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_version, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+// armPreemption(int quantumMs, callable callback)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_armPreemption, 0, 0, 2)
+    ZEND_ARG_TYPE_INFO(0, quantumMs, IS_LONG, 0)
+    ZEND_ARG_TYPE_INFO(0, callback, IS_CALLABLE, 0)
+ZEND_END_ARG_INFO()
+
+// disarmPreemption()
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_disarmPreemption, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
 /*
@@ -307,6 +388,52 @@ PHP_FUNCTION(version)
     free(response);
 }
 
+// PHP: SConcur\Extension\armPreemption(int $quantumMs, callable $callback): void
+// Registers the preempt callback and starts the Go-side interrupt timer. Re-arming
+// replaces the previous timer and callback.
+PHP_FUNCTION(armPreemption)
+{
+    zend_long quantum_ms;
+    zval *callback;
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "lz", &quantum_ms, &callback) == FAILURE) {
+        RETURN_THROWS();
+    }
+
+    if (quantum_ms <= 0) {
+        zend_throw_error(NULL, "armPreemption expects a positive quantumMs");
+        RETURN_THROWS();
+    }
+
+    if (!zend_is_callable(callback, 0, NULL)) {
+        zend_throw_error(NULL, "armPreemption expects a callable");
+        RETURN_THROWS();
+    }
+
+    preemptionDisarm();
+    sconcur_preemption_release_callback();
+
+    ZVAL_COPY(&sconcur_preemption_callback, callback);
+
+    sconcur_preemption_armed = 1;
+
+    preemptionArm((int)quantum_ms);
+}
+
+// PHP: SConcur\Extension\disarmPreemption(): void
+PHP_FUNCTION(disarmPreemption)
+{
+    if (zend_parse_parameters_none() == FAILURE) {
+        RETURN_THROWS();
+    }
+
+    preemptionDisarm();
+
+    sconcur_preemption_armed = 0;
+
+    sconcur_preemption_release_callback();
+}
+
 /*
  * Регистрация функций с неймспейсом SConcur\Extension
  */
@@ -324,8 +451,33 @@ static const zend_function_entry sconcur_functions[] = {
     ZEND_NS_FE("SConcur\\Extension", wsStopAccepting, arginfo_sconcur_wsStopAccepting)
     ZEND_NS_FE("SConcur\\Extension", destroy, arginfo_sconcur_destroy)
     ZEND_NS_FE("SConcur\\Extension", version, arginfo_sconcur_version)
+    ZEND_NS_FE("SConcur\\Extension", armPreemption, arginfo_sconcur_armPreemption)
+    ZEND_NS_FE("SConcur\\Extension", disarmPreemption, arginfo_sconcur_disarmPreemption)
     PHP_FE_END
 };
+
+PHP_MINIT_FUNCTION(sconcur)
+{
+    ZVAL_UNDEF(&sconcur_preemption_callback);
+
+    sconcur_original_interrupt_function = zend_interrupt_function;
+    zend_interrupt_function             = sconcur_interrupt_function;
+
+    return SUCCESS;
+}
+
+PHP_MSHUTDOWN_FUNCTION(sconcur)
+{
+    preemptionDisarm();
+
+    sconcur_preemption_armed = 0;
+
+    sconcur_preemption_release_callback();
+
+    zend_interrupt_function = sconcur_original_interrupt_function;
+
+    return SUCCESS;
+}
 
 /*
  * Описание модуля
@@ -334,8 +486,8 @@ zend_module_entry sconcur_module_entry = {
     STANDARD_MODULE_HEADER,
     "sconcur",
     sconcur_functions,
-    NULL,  // MINIT
-    NULL,  // MSHUTDOWN
+    PHP_MINIT(sconcur),
+    PHP_MSHUTDOWN(sconcur),
     NULL,  // RINIT
     NULL,  // RSHUTDOWN
     NULL,  // MINFO

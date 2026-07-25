@@ -128,9 +128,13 @@ automatic mode is just another signal source for the same switched queue):
   a PHP↔Go protocol change → minor extension version bump, once on this branch.
 - The interrupt handler runs on the PHP thread at an opcode boundary. Guards first:
   preemption armed; `Fiber::getCurrent()` is a scheduler-tracked coroutine; no active
-  `EG(exception)`; not inside the scheduler's own loop. Then it force-parks the
-  coroutine — semantically `Scheduler::switch(quantumMs: 0)` — via a userland
-  callback the Scheduler registers on arming (resolved once, e.g.
+  `EG(exception)`; not inside the scheduler's own loop; and never while an autoload
+  is in flight (`EG(in_autoload)` non-empty) — parking a fiber mid-autoload makes
+  every other coroutine that asks for the same class fail with "class not found"
+  (the engine's per-class in-progress guard blocks the second autoload attempt;
+  found via the HttpServerMaxConcurrencyTest flake during implementation). Then it
+  force-parks the coroutine — semantically `Scheduler::switch(quantumMs: 0)` — via a
+  userland callback the Scheduler registers on arming (resolved once, e.g.
   `Scheduler::preempt()`).
 - Server wiring: `Scheduler::serve()` arms after the listener starts and disarms in
   its `finally`. A new server option `preemptionQuantumMs` (argv-overridable like the

@@ -53,3 +53,11 @@ function destroy(): void
 function version(): string
 {
 }
+
+function armPreemption(int $quantumMs, callable $callback): void
+{
+}
+
+function disarmPreemption(): void
+{
+}

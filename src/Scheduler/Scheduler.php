@@ -356,6 +356,28 @@ class Scheduler
     }
 
     /**
+     * The automatic-preemption hook: invoked by the extension's interrupt handler
+     * between opcodes while a server has preemption armed (see
+     * Extension::armPreemption and .ai/plans/coroutine-switcher.md, phase 2).
+     * Force-parks the current coroutine; a no-op outside tracked coroutines (the
+     * scheduler's own loop, the sync path), so only handler code is preempted.
+     */
+    public function preempt(): void
+    {
+        $currentFiber = Fiber::getCurrent();
+
+        if ($currentFiber === null) {
+            return;
+        }
+
+        if (!array_key_exists(spl_object_id($currentFiber), $this->coroutines)) {
+            return;
+        }
+
+        $this->switch(quantumMs: 0);
+    }
+
+    /**
      * Serves a streaming flow whose batches are incoming requests (the HTTP
      * server). Each request is dispatched to a freshly spawned coroutine
      * (spawn-on-request); results of every other flow resume their coroutines.
@@ -374,15 +396,21 @@ class Scheduler
      * limiting request is dispatched and drained like any in-flight one, and the
      * listener is closed before draining, so no accepted request is bounced.
      *
-     * @param int                   $maxRequests    stop after dispatching this many requests (0 = unlimited)
-     * @param Closure(string): void $onRequest      receives the raw request payload
-     * @param Closure(): bool       $shouldStop     true once a shutdown was requested
-     * @param Closure(): void       $onDrainStart   called once when draining begins, before
-     *                                              in-flight handlers finish (e.g. to stop the
-     *                                              listener from accepting so siblings take over)
-     * @param Closure(string): void $onShutdownStep receives a human-readable graceful-shutdown
-     *                                              step (drain begin, fully drained, stopped) for
-     *                                              the caller to log
+     * @param int                   $maxRequests         stop after dispatching this many requests (0 = unlimited)
+     * @param Closure(string): void $onRequest           receives the raw request payload
+     * @param Closure(): bool       $shouldStop          true once a shutdown was requested
+     * @param Closure(): void       $onDrainStart        called once when draining begins, before
+     *                                                   in-flight handlers finish (e.g. to stop the
+     *                                                   listener from accepting so siblings take over)
+     * @param Closure(string): void $onShutdownStep      receives a human-readable graceful-shutdown
+     *                                                   step (drain begin, fully drained, stopped) for
+     *                                                   the caller to log
+     * @param int                   $preemptionQuantumMs arm automatic preemption with this quantum
+     *                                                   while serving: the extension's timer requests
+     *                                                   a VM interrupt every quantum and preempt()
+     *                                                   parks the running handler coroutine, so a
+     *                                                   CPU-bound handler cannot starve the others
+     *                                                   (0 disables)
      */
     public function serve(
         string $serverFlowKey,
@@ -392,10 +420,18 @@ class Scheduler
         Closure $shouldStop,
         Closure $onDrainStart,
         Closure $onShutdownStep,
+        int $preemptionQuantumMs = 0,
     ): void {
         $draining = false;
 
         $dispatchedCount = 0;
+
+        if ($preemptionQuantumMs > 0) {
+            Extension::get()->armPreemption(
+                quantumMs: $preemptionQuantumMs,
+                preemptCallback: $this->preempt(...),
+            );
+        }
 
         // Whatever ends the loop — clean shutdown, a bind error, or an unexpected
         // throwable out of waitAny()/next() — the listener flow must be stopped so
@@ -485,6 +521,10 @@ class Scheduler
                 $this->resumeByResult($result);
             }
         } finally {
+            if ($preemptionQuantumMs > 0) {
+                Extension::get()->disarmPreemption();
+            }
+
             // Stop the listener and abort any connections not yet answered.
             Extension::get()->stopFlow($serverFlowKey);
 
