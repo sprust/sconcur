@@ -281,6 +281,8 @@ $collection->insertOne(['name' => 'example']);
   результаты по памяти/CPU и выводы.
 - [Бенчмарки фич](docs/benchmarks.ru.md) — замеры по каждой фиче (native/sync/async):
   цена границы PHP↔Go на in-memory БД и выигрыш конкурентного веера, таблицы метрик.
+- [Позиционирование](docs/positioning.ru.md) — SConcur против php-fpm и RoadRunner:
+  модели исполнения, ресурсы на ту же нагрузку, честные пределы и что когда выбирать.
 
 ## Build
 ```shell

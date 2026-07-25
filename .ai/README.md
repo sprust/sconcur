@@ -13,6 +13,7 @@ here.
 - [docs/adding-a-server.md](../docs/adding-a-server.md) — guide for adding a new server (long-lived streaming feature: listener + serve loop + worker-master integration)
 - [docs/load-testing.md](../docs/load-testing.md) — load behaviour under all I/O features at once (the `/all` route + `bench-http-load-stats`): memory/CPU results and conclusions
 - [docs/benchmarks.md](../docs/benchmarks.md) — per-feature benchmarks (native/sync/async): PHP↔Go boundary cost on in-memory DBs and the concurrent-fan-out win, with metric tables (`make bench-*`)
+- [docs/positioning.md](../docs/positioning.md) — SConcur vs php-fpm and RoadRunner: execution models, resources to hold the same load (Little's-law math on the measured numbers), honest limits, when to choose what
 - [docs/mongodb.md](../docs/mongodb.md) — MongoDB feature: collection operations, cursors, BSON types, concurrency, internals
 - [docs/http-server.md](../docs/http-server.md) — HTTP-server feature: usage, params, internals, limits
 - [docs/socket-server.md](../docs/socket-server.md) — TCP socket-server feature: length-prefix framing, message handler, params, internals, limits

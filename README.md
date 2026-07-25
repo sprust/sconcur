@@ -287,6 +287,9 @@ built and tested against in CI:
 - [Feature benchmarks](docs/benchmarks.md) — per-feature measurements
   (native/sync/async): the cost of the PHP↔Go boundary on in-memory DBs and the
   concurrent fan-out win, with metric tables.
+- [Positioning](docs/positioning.md) — SConcur vs php-fpm and RoadRunner: the
+  execution models, resources needed to hold the same load, honest limits and
+  when to choose what.
 
 ## Build
 ```shell
