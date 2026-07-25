@@ -42,7 +42,7 @@ that measured it.
 | MongoDB with concurrency | the only concurrent MongoDB path in PHP — [tables](#mongodb) | ✅ |
 | Cheap point queries, one at a time (as a library) | slower than the native driver: the [boundary](#conversion-overhead-the-phpgo-boundary) costs more than the query itself | ❌ |
 | Megabyte payloads per operation | ~1.5–2.3 ms per MB each way, and a wide fan of large results holds them all in RAM — [payload size](#payload-size) | ❌ |
-| CPU-bound handlers | no gain: PHP stays single-threaded, a busy handler blocks the process — [servers](#servers-http--socket--websocket) | ❌ |
+| CPU-bound handlers | no gain: PHP stays single-threaded, a busy handler blocks the process — [servers](#servers-http--socket--websocket); the latency (not the throughput) is smoothed by [coroutine switching](coroutine-switching.md) | ❌ |
 
 The point-query ❌ is about the call price inside one process — a library call compared
 to the native driver. As a server SConcur wins even with many small operations: every

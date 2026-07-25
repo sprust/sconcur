@@ -26,6 +26,7 @@ here.
 - [docs/mysql.md](../docs/mysql.md) — MySQL / universal SQL feature: usage, bindings, transactions, streaming, internals
 - [docs/pgsql.md](../docs/pgsql.md) — PostgreSQL: the SQL feature's second driver; PG-specific differences
 - [docs/coroutine-context.md](../docs/coroutine-context.md) — per-coroutine context: framework-neutral key-value store bound to the current fiber, isolated between concurrent coroutines, read-through inherited by children
+- [docs/coroutine-switching.md](../docs/coroutine-switching.md) — coroutine switching for CPU-bound code: cooperative `Scheduler::switch()` (quantum, switched queue) and the servers' automatic VM-interrupt preemption (`preemptionQuantumMs`, default on; guards: autoload, suspend transitions)
 - [.ai/plans/](plans/) — detailed designs for roadmap items
 
 ## Plans

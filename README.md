@@ -240,6 +240,9 @@ built and tested against in CI:
   link).
 - [Architecture](docs/architecture.md) — internals: the Fiber ↔ goroutine link,
   the scheduler, the layers, the task lifecycle.
+- [Coroutine switching](docs/coroutine-switching.md) — `Scheduler::switch()` for
+  CPU-bound loops and the servers' automatic preemption: mechanics, quantum,
+  guards, limits.
 - [MongoDB](docs/mongodb.md) — collection operations (CRUD, aggregation, indexes,
   bulkWrite), streaming cursors, results, BSON types, concurrency, timeouts, and
   internals.
