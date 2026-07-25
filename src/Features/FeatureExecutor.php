@@ -174,11 +174,18 @@ readonly class FeatureExecutor
      */
     protected static function suspend(PendingPushDto|PendingNextDto $pendingTask): TaskResultDto
     {
-        if (Fiber::getCurrent() === null) {
+        $currentFiber = Fiber::getCurrent();
+
+        if ($currentFiber === null) {
             throw new OutsideFiberException(
                 message: 'Can\'t wait outside of fiber.',
             );
         }
+
+        // Guard the suspend transition against automatic preemption: parked
+        // between here and the Fiber::suspend below, the coroutine would re-enter
+        // this path out of order (see State::markSuspending).
+        State::markSuspending(spl_object_id($currentFiber));
 
         try {
             $result = Fiber::suspend($pendingTask);
@@ -187,6 +194,8 @@ readonly class FeatureExecutor
                 message: $exception->getMessage(),
                 previous: $exception,
             );
+        } finally {
+            State::clearSuspending();
         }
 
         if ($result instanceof TaskResultDto) {

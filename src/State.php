@@ -67,6 +67,34 @@ class State
      */
     protected static array $syncTaskFlows = [];
 
+    /**
+     * Fiber id of a coroutine currently inside a suspend transition — between
+     * announcing a suspend (registering a group waiter, entering
+     * FeatureExecutor::suspend or Scheduler::switch) and the Fiber::suspend call
+     * itself. Automatic preemption must not park a coroutine inside that window:
+     * the interleaving desynchronizes the suspend bookkeeping (a waiter woken
+     * before it suspended, a switch queue entry for a coroutine that went on to
+     * await a task result). Only one coroutine runs at a time, so a single slot
+     * is enough; it matters only while its owner is running, so an unconditional
+     * clear after any suspend returns is safe.
+     */
+    protected static ?int $suspendingFiberId = null;
+
+    public static function markSuspending(int $fiberId): void
+    {
+        static::$suspendingFiberId = $fiberId;
+    }
+
+    public static function clearSuspending(): void
+    {
+        static::$suspendingFiberId = null;
+    }
+
+    public static function isSuspending(int $fiberId): bool
+    {
+        return static::$suspendingFiberId === $fiberId;
+    }
+
     public static function registerFiberFlow(int $fiberId, CurrentFlow $flow): void
     {
         static::$fiberFlows[$fiberId]             = $flow;

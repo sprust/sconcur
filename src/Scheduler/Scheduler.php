@@ -281,6 +281,11 @@ class Scheduler
             throw new FiberStateException(message: 'awaitGroup called outside of a fiber.');
         }
 
+        // Preemption must not park this coroutine between the waiter
+        // registration and the suspend: the wake would land on the switch
+        // parking and the real suspend below would then hang forever.
+        State::markSuspending(spl_object_id($current));
+
         $this->groupWaiters[$group->key()] = spl_object_id($current);
 
         try {
@@ -294,6 +299,8 @@ class Scheduler
                 message: $exception->getMessage(),
                 previous: $exception,
             );
+        } finally {
+            State::clearSuspending();
         }
     }
 
@@ -340,8 +347,12 @@ class Scheduler
 
         $this->lastSwitchNs[$fiberId] = $nowNs;
 
+        // Also guards against a nested preemption landing between here and the
+        // suspend (the park itself is a suspend transition).
+        State::markSuspending($fiberId);
+
         try {
-            Fiber::suspend(new PendingSwitchDto());
+            $resumeValue = Fiber::suspend(new PendingSwitchDto());
         } catch (FlowStoppedException $exception) {
             // The coroutine was stopped while parked; let the unwind propagate.
             throw $exception;
@@ -349,6 +360,17 @@ class Scheduler
             throw new FiberStateException(
                 message: $exception->getMessage(),
                 previous: $exception,
+            );
+        } finally {
+            State::clearSuspending();
+        }
+
+        // The switch queue resumes with null and nothing else may resume a
+        // parked coroutine; anything different means the suspend bookkeeping
+        // desynchronized — fail loudly instead of continuing on garbage.
+        if ($resumeValue !== null) {
+            throw new FiberStateException(
+                message: 'Unexpected resume value delivered to a switch-parked coroutine.',
             );
         }
 
@@ -370,7 +392,16 @@ class Scheduler
             return;
         }
 
-        if (!array_key_exists(spl_object_id($currentFiber), $this->coroutines)) {
+        $fiberId = spl_object_id($currentFiber);
+
+        if (!array_key_exists($fiberId, $this->coroutines)) {
+            return;
+        }
+
+        // Never park a coroutine inside a suspend transition (registering a
+        // waiter / handing over a pending task): the interleaving desynchronizes
+        // the suspend bookkeeping. It is about to yield by itself anyway.
+        if (State::isSuspending($fiberId)) {
             return;
         }
 
@@ -548,38 +579,66 @@ class Scheduler
      */
     public function dispatchPendingTask(Fiber $fiber, int $fiberId, mixed $suspendValue): void
     {
-        if ($suspendValue instanceof PendingSwitchDto) {
-            $this->switchedCoroutines[] = $fiberId;
+        // The dispatch may run on a coroutine's stack (a nested WaitGroup::add
+        // starts members from inside the parent coroutine). Preempting the
+        // caller between push() and addFiberTask() would let the task's result
+        // arrive with no owner mapping, so the whole dispatch is a suspend
+        // transition for the calling fiber (no-op outside fibers).
+        $callingFiber = Fiber::getCurrent();
 
-            return;
+        if ($callingFiber !== null) {
+            State::markSuspending(spl_object_id($callingFiber));
         }
 
-        while ($suspendValue instanceof PendingPushDto || $suspendValue instanceof PendingNextDto) {
-            try {
-                if ($suspendValue instanceof PendingPushDto) {
-                    $runningTask = Extension::get()->push(
-                        flowKey: $suspendValue->flowKey,
-                        payload: $suspendValue->payload,
-                    );
-                } else {
-                    $runningTask = Extension::get()->next(
-                        flowKey: $suspendValue->flowKey,
-                        taskKey: $suspendValue->taskKey,
-                    );
+        try {
+            while (true) {
+                if ($suspendValue instanceof PendingSwitchDto) {
+                    $this->switchedCoroutines[] = $fiberId;
+
+                    return;
                 }
-            } catch (Throwable $exception) {
-                $suspendValue = $fiber->throw($exception);
 
-                continue;
+                if (!($suspendValue instanceof PendingPushDto) && !($suspendValue instanceof PendingNextDto)) {
+                    return;
+                }
+
+                try {
+                    if ($suspendValue instanceof PendingPushDto) {
+                        $runningTask = Extension::get()->push(
+                            flowKey: $suspendValue->flowKey,
+                            payload: $suspendValue->payload,
+                        );
+                    } else {
+                        $runningTask = Extension::get()->next(
+                            flowKey: $suspendValue->flowKey,
+                            taskKey: $suspendValue->taskKey,
+                        );
+                    }
+                } catch (Throwable $exception) {
+                    $suspendValue = $fiber->throw($exception);
+
+                    // The throw ran the coroutine's handlers, whose own suspend
+                    // transitions may have cleared the window — re-assert it for
+                    // the next loop iteration.
+                    if ($callingFiber !== null) {
+                        State::markSuspending(spl_object_id($callingFiber));
+                    }
+
+                    continue;
+                }
+
+                State::addFiberTask(
+                    flowKey: $suspendValue->flowKey,
+                    taskKey: $runningTask->key,
+                    fiberId: $fiberId,
+                );
+
+                return;
             }
-
-            State::addFiberTask(
-                flowKey: $suspendValue->flowKey,
-                taskKey: $runningTask->key,
-                fiberId: $fiberId,
-            );
-
-            return;
+        } finally {
+            if ($callingFiber !== null) {
+                State::clearSuspending();
+            }
         }
     }
 

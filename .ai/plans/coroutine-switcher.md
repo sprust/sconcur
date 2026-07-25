@@ -148,10 +148,29 @@ automatic mode is just another signal source for the same switched queue):
   non-atomic read-modify-write of shared state inside a handler can interleave.
   Server-only scope plus the `preemptionQuantumMs: 0` opt-out is the mitigation.
 
-Next step before shipping phase 2: stress tests of suspend-from-interrupt — unwinding
-through `finally`/destructors, JIT'ed hot loops (opcache inserts interrupt checks on
-back-edges), high-frequency quanta, preempt-vs-feature-suspend interleaving, graceful
-shutdown while preempted.
+Stress findings (fixed during the stress phase, guards now in the code):
+
+- Suspend-transition windows. Preempting a coroutine between "announced a suspend"
+  and the `Fiber::suspend` itself desynchronizes the bookkeeping: a group waiter woken
+  onto its switch parking then hangs on the real suspend; a coroutine parked inside
+  `dispatchPendingTask` between `push()` and `State::addFiberTask()` (the dispatch runs
+  on the parent coroutine's stack for nested `WaitGroup::add`) loses its result ("No
+  coroutine for result"). Fix: `State::markSuspending()/clearSuspending()` mark the
+  window in `FeatureExecutor::suspend`, `Scheduler::awaitGroup`, `Scheduler::switch`
+  and around `dispatchPendingTask` (re-asserted after `fiber->throw`, whose handlers
+  may clear it); `preempt()` no-ops inside the window. One slot is enough — only one
+  coroutine runs at a time.
+- `dispatchPendingTask` now handles `PendingSwitchDto` on every loop iteration: a
+  coroutine parked by preemption inside its own error-handling (resumed via
+  `fiber->throw`) used to fall out of the loop unqueued.
+- `switch()` validates the resume value (only `null` is legal) — a desync now fails
+  loudly instead of feeding a foreign value into a parked coroutine.
+
+Stress coverage: `SchedulerPreemptionStressTest` (1 ms quantum: CPU+IO chaos with
+nested groups ×3 rounds, stop-unwind through finally/destructors of 20 crunchers,
+arm/disarm cycling ×200) plus a server-level script (mixed /cpu, /cpu-switch, /msleep,
+/stream load at `preemptionQuantumMs=1`, zero failed responses, graceful SIGTERM under
+load in ~600 ms, flat RSS; repeated with opcache JIT (tracing) — identical results).
 
 ## Out of scope / follow-ups
 
