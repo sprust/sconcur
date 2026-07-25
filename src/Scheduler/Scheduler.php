@@ -9,6 +9,7 @@ use Fiber;
 use SConcur\Connection\Extension;
 use SConcur\Dto\PendingNextDto;
 use SConcur\Dto\PendingPushDto;
+use SConcur\Dto\PendingSwitchDto;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\CallbackExecutionException;
 use SConcur\Exceptions\FiberStateException;
@@ -34,6 +35,13 @@ class Scheduler
      */
     private const int SERVE_POLL_INTERVAL_MS = 250;
 
+    /**
+     * Default quantum of switch(): a coroutine yields at most once per this many
+     * milliseconds, so the call can sit inside a hot loop and cost one hrtime()
+     * comparison in the common case.
+     */
+    private const int DEFAULT_SWITCH_QUANTUM_MS = 5;
+
     protected static ?Scheduler $instance = null;
 
     /**
@@ -57,6 +65,24 @@ class Scheduler
      * server loop. Used to drain in-flight requests on graceful shutdown.
      */
     protected int $spawnedCount = 0;
+
+    /**
+     * FIFO of fiber ids parked by switch() (a cooperative yield). Drained by the
+     * scheduler loops once nothing else is deliverable right now; entries whose
+     * coroutine has been unwound meanwhile (stop/shutdown) are skipped as stale.
+     *
+     * @var array<int, int>
+     */
+    protected array $switchedCoroutines = [];
+
+    /**
+     * Per-coroutine timestamps of the last actual switch() yield (hrtime(true)
+     * nanoseconds), driving the switch quantum. Keyed by fiber id; released in
+     * forget()/detach() with the coroutine.
+     *
+     * @var array<int, int>
+     */
+    protected array $lastSwitchNs = [];
 
     /**
      * Monotonic counter feeding spawned-coroutine flow keys. A flow key only has
@@ -138,7 +164,9 @@ class Scheduler
             State::deleteFlow($coroutine->flowKey);
         }
 
-        $this->groupWaiters = [];
+        $this->groupWaiters       = [];
+        $this->switchedCoroutines = [];
+        $this->lastSwitchNs       = [];
     }
 
     public function register(Coroutine $coroutine): void
@@ -217,7 +245,7 @@ class Scheduler
     {
         $coroutine = $this->coroutines[$fiberId] ?? null;
 
-        unset($this->coroutines[$fiberId]);
+        unset($this->coroutines[$fiberId], $this->lastSwitchNs[$fiberId]);
 
         return $coroutine;
     }
@@ -267,6 +295,64 @@ class Scheduler
                 previous: $exception,
             );
         }
+    }
+
+    /**
+     * Cooperative yield for CPU-bound coroutine code: parks the current coroutine
+     * and lets everything that is ready make progress — delivered results resume
+     * their coroutines, the server loop keeps accepting new requests — then the
+     * coroutine is resumed. Turns "a heavy handler starves all in-flight
+     * neighbours" into "a heavy handler adds them at most a quantum of delay".
+     * Throughput is unchanged (the PHP thread is still one); this is a latency
+     * tool. See .ai/plans/coroutine-switcher.md.
+     *
+     * Cheap no-op (returns false) outside a fiber, from an untracked fiber, and
+     * while the quantum has not elapsed — so the call can sit inside a hot loop:
+     * the first call starts the quantum, later calls cost one hrtime() comparison
+     * until it runs out. $quantumMs <= 0 forces a yield on every call.
+     */
+    public function switch(int $quantumMs = self::DEFAULT_SWITCH_QUANTUM_MS): bool
+    {
+        $currentFiber = Fiber::getCurrent();
+
+        if ($currentFiber === null) {
+            return false;
+        }
+
+        $fiberId = spl_object_id($currentFiber);
+
+        if (!array_key_exists($fiberId, $this->coroutines)) {
+            return false;
+        }
+
+        $nowNs = hrtime(true);
+
+        if ($quantumMs > 0) {
+            $lastSwitchNs = $this->lastSwitchNs[$fiberId] ?? null;
+
+            if ($lastSwitchNs === null || (($nowNs - $lastSwitchNs) < ($quantumMs * 1_000_000))) {
+                // The first call only starts the quantum; later ones wait it out.
+                $this->lastSwitchNs[$fiberId] ??= $nowNs;
+
+                return false;
+            }
+        }
+
+        $this->lastSwitchNs[$fiberId] = $nowNs;
+
+        try {
+            Fiber::suspend(new PendingSwitchDto());
+        } catch (FlowStoppedException $exception) {
+            // The coroutine was stopped while parked; let the unwind propagate.
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw new FiberStateException(
+                message: $exception->getMessage(),
+                previous: $exception,
+            );
+        }
+
+        return true;
     }
 
     /**
@@ -340,10 +426,16 @@ class Scheduler
                 // Poll rather than block forever: on an idle server this is the
                 // only way the loop notices a shutdown signal (it flips a flag the
                 // blocking cgo waitAny would not return for). A timeout just loops
-                // back to re-check shouldStop()/drain above.
-                $result = Extension::get()->waitAnyTimeout(self::SERVE_POLL_INTERVAL_MS);
+                // back to re-check shouldStop()/drain above. With coroutines parked
+                // by switch() the poll is non-blocking: results keep priority, and
+                // a pause with nothing deliverable resumes the queue head.
+                $result = Extension::get()->waitAnyTimeout(
+                    $this->switchedCoroutines === [] ? self::SERVE_POLL_INTERVAL_MS : 0,
+                );
 
                 if ($result === null) {
+                    $this->resumeNextSwitched();
+
                     continue;
                 }
 
@@ -416,6 +508,12 @@ class Scheduler
      */
     public function dispatchPendingTask(Fiber $fiber, int $fiberId, mixed $suspendValue): void
     {
+        if ($suspendValue instanceof PendingSwitchDto) {
+            $this->switchedCoroutines[] = $fiberId;
+
+            return;
+        }
+
         while ($suspendValue instanceof PendingPushDto || $suspendValue instanceof PendingNextDto) {
             try {
                 if ($suspendValue instanceof PendingPushDto) {
@@ -447,11 +545,49 @@ class Scheduler
 
     /**
      * One scheduler step: take the first ready result of any flow and resume the
-     * coroutine it belongs to.
+     * coroutine it belongs to. With coroutines parked by switch() the step never
+     * blocks: a deliverable result keeps priority, an empty poll resumes the
+     * queue head instead.
      */
     protected function tick(): void
     {
-        $this->resumeByResult(Extension::get()->waitAny());
+        if ($this->switchedCoroutines === []) {
+            $this->resumeByResult(Extension::get()->waitAny());
+
+            return;
+        }
+
+        $result = Extension::get()->waitAnyTimeout(0);
+
+        if ($result !== null) {
+            $this->resumeByResult($result);
+
+            return;
+        }
+
+        $this->resumeNextSwitched();
+    }
+
+    /**
+     * Resumes the oldest coroutine parked by switch(), skipping stale entries
+     * whose coroutine was unwound (stop/shutdown) while parked. No-op on an
+     * empty queue.
+     */
+    protected function resumeNextSwitched(): void
+    {
+        while ($this->switchedCoroutines !== []) {
+            $fiberId = array_shift($this->switchedCoroutines);
+
+            $coroutine = $this->coroutines[$fiberId] ?? null;
+
+            if ($coroutine === null) {
+                continue;
+            }
+
+            $this->resumeCoroutine($coroutine, null);
+
+            return;
+        }
     }
 
     /**
@@ -547,7 +683,7 @@ class Scheduler
 
     protected function forget(Coroutine $coroutine): void
     {
-        unset($this->coroutines[$coroutine->id]);
+        unset($this->coroutines[$coroutine->id], $this->lastSwitchNs[$coroutine->id]);
 
         if ($coroutine->group !== null) {
             State::unRegisterFiber($coroutine->id);
