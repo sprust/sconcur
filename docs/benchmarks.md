@@ -8,8 +8,9 @@ concurrent run gains. The numbers are a reference, not a guarantee: they were ta
 on a specific machine and depend on hardware, DB settings and load.
 
 > The `sync` column carries a fixed overhead that is not inherent to the approach: a
-> synchronous call (outside a `WaitGroup`) still goes through the scheduler and the Fiber
-> machinery. Cutting it is on the roadmap (see the [README](../README.md#roadmap)), after
+> synchronous call (outside a `WaitGroup` and outside the servers — in a server handler
+> every request already runs in its own coroutine) still goes through the scheduler and
+> the Fiber machinery. Cutting it is on the roadmap (see the [README](../README.md#roadmap)), after
 > which a call outside a coroutine would go into Go directly. Until then the `sync` numbers
 > are not representative — the meaningful comparison is `native` vs `async`.
 
