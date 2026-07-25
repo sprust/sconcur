@@ -15,7 +15,7 @@ on a specific machine and depend on hardware, DB settings and load.
 
 ## Contents
 
-- [In short](#in-short)
+- [Is SConcur for you?](#is-sconcur-for-you)
 - [Environment](#environment)
 - [Conversion overhead (the PHP↔Go boundary)](#conversion-overhead-the-phpgo-boundary)
 - [Methodology](#methodology)
@@ -29,16 +29,41 @@ on a specific machine and depend on hardware, DB settings and load.
   - [Comparison with RoadRunner (native drivers)](#comparison-with-roadrunner-native-drivers)
 - [Conclusions](#conclusions)
 
-## In short
+## Is SConcur for you?
+
+Match your workload against the measured effects; every number links to the section
+that measured it.
+
+| Your workload | Measured effect | Verdict |
+| --- | --- | :---: |
+| A high-concurrency I/O-bound HTTP/WS service | [~6× RoadRunner's rps](#comparison-with-roadrunner-native-drivers) on the same hardware; the same load takes ~5× less memory than RoadRunner, ~15–30× less than php-fpm — [positioning](positioning.md) | ✅ |
+| A request/job fans out into several DB or network operations | SQL writes [~3–18×](#mysql) faster, heavy reads [~2–7.5×](#mongodb), network waits [~44×](#clients-http--socket--websocket) | ✅ |
+| MongoDB with concurrency | the only concurrent MongoDB path in PHP — [tables](#mongodb) | ✅ |
+| Cheap point queries, one at a time (as a library) | slower than the native driver: the [boundary](#conversion-overhead-the-phpgo-boundary) costs more than the query itself | ❌ |
+| Megabyte payloads per operation | ~1.5–2.3 ms per MB each way, and a wide fan of large results holds them all in RAM — [payload size](#payload-size) | ❌ |
+| CPU-bound handlers | no gain: PHP stays single-threaded, a busy handler blocks the process — [servers](#servers-http--socket--websocket) | ❌ |
+
+The point-query ❌ is about the call price inside one process — a library call compared
+to the native driver. As a server SConcur wins even with many small operations: every
+handler runs in its own coroutine, so sequential feature calls overlap across requests
+with no `WaitGroup` — the sequential `/all-nowg` handle holds ≈2 570 rps against
+RoadRunner's ≈460 on the same operations
+([load testing](load-testing.md#fan-out-vs-sequential-calls-all-vs-all-nowg)). Only on
+microsecond cache hits does the edge reduce to the server layer itself (~1.4× on the
+empty handle) — it never turns into a loss.
+
+Three rules behind the table:
 
 - The fan-out (`async`) wins wherever an operation has a real price — an fsync per
-  write, server-side work over the dataset, a network wait: SQL writes ~3–18×, heavy
-  reads (`count`) ~2–7.5×, clients with a 100 ms delay ~44×, `/all` vs RoadRunner ~6×.
-- Cheap point operations stay with the native driver (`selectOne`/`findOne`,
-  `selectMany`, MongoDB single-document operations): the PHP↔Go boundary costs more
+  write, server-side work over the dataset, a network wait. The higher that price, the
+  bigger the win.
+- Cheap point operations stay with the native driver: the PHP↔Go boundary costs more
   than the operation itself, and there is nothing to overlap.
 - A single call through SConcur is always more expensive than the native one (the
   boundary conversion) — the gain comes from concurrency only.
+
+How SConcur relates to php-fpm and RoadRunner as an execution model — resources,
+limits, when to choose what — is a separate doc: [positioning](positioning.md).
 
 ## Environment
 
@@ -150,6 +175,10 @@ rows are noise-sensitive: their sign can flip between runs — a sign flip betwe
 
 ## MongoDB
 
+In one line: fan out what makes the server work — `count` ~7×, `bulkWrite` ~6.5×,
+`updateMany` ~5.5×, `createIndex` +26%; single-document operations stay with the
+native driver.
+
 Median of 5 runs against a cold dataset of 100 000 documents; 100 calls per mode (except
 `bulkWrite` — 20, `createIndex` — 20 and `updateMany` — 10). In the median/min/max
 cells — `native / sync / async`, ms (min and max are per mode over the 5 runs); in
@@ -184,6 +213,9 @@ itself.
 
 ## MySQL
 
+In one line: every disk write fanned out is ~10–16× faster (the fsyncs overlap),
+`transaction` ~10×, `count` ~2×; cheap reads stay with PDO.
+
 Median of 5 runs against a cold dataset of 100 000 rows, 100 calls per mode. Columns as
 for MongoDB.
 
@@ -198,6 +230,9 @@ for MongoDB.
 | transaction | 100 | 666 / 783 / 69.1 (+90% ✅) | 614 / 775 / 58.9 (+90% ✅) | 686 / 871 / 72.5 (+89% ✅) | 6 / 6 / 6 |
 
 ## PostgreSQL
+
+In one line: writes fanned out are ~3–18× faster, `count` ~7.5×; point reads stay
+with PDO.
 
 Median of 5 runs against a cold dataset of 100 000 rows, 100 calls per mode. Columns as
 above.
@@ -228,6 +263,10 @@ cache (`selectOne`: pgsql 6.0 vs 3.8, mysql 4.3 vs 3.9 — almost even) and `sel
 pgsql 47.3 vs 8.8).
 
 ## Payload size
+
+In one line: up to ~64 KB per operation the boundary tax is negligible; megabyte
+blobs belong to the native driver, and a wide fan of large results pays
+RSS ≈ fan width × payload.
 
 How the numbers scale with the size of the data one operation carries. On the async
 path the payload crosses the PHP↔Go boundary twice — as MessagePack-packed bindings (or
@@ -300,6 +339,9 @@ What the sizes show:
 
 ## Clients (HTTP / Socket / WebSocket)
 
+In one line: network waits fan out almost perfectly — 50 calls of 100 ms complete in
+~120 ms (~44×), a 4 MiB download to file ~6× faster with flat memory.
+
 Here the point of the concurrent mode is visible. `native` and `sync` hit the delayed
 endpoint sequentially, `async` — fanned out. The `msleep` endpoint holds the connection
 for 100 ms; 50 calls in sequence ≈ 5 s, while fanned out ≈ one call.
@@ -316,6 +358,10 @@ one. `download` downloads a 4 MiB body straight to a file on the Go side (not bu
 in PHP), so memory is flat, and the fan-out still speeds it up ~6×.
 
 ## Servers (HTTP / Socket / WebSocket)
+
+In one line: one cooperative process overlaps any number of I/O waits (100 × 1 s
+sleeps finish in ~1 s); CPU-bound requests rely on the per-core pool, not on the
+scheduler.
 
 A pool of 3 workers (`SO_REUSEPORT`), 100 concurrent requests/connections per run
 (throughput — 50 connections × 2000 round-trips). Median of 3 runs, all responses
@@ -370,6 +416,9 @@ the empty handle the ceiling hits CPU; `/all` on disk backends already hits not 
 them writes) with the pool capped at 5 connections per process.
 
 ### Comparison with RoadRunner (native drivers)
+
+In one line: even on empty responses (~1.4× ahead), ~6× ahead once requests do real
+I/O — the worker model waits serially, the fan-out overlaps.
 
 To understand the price of the approach, the same two handles were measured on
 [RoadRunner](https://roadrunner.dev) 2025.1.15 — a mature Go application server for PHP.
