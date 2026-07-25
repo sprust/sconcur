@@ -22,6 +22,7 @@ on a specific machine and depend on hardware, DB settings and load.
 - [MongoDB](#mongodb)
 - [MySQL](#mysql)
 - [PostgreSQL](#postgresql)
+- [Payload size](#payload-size)
 - [Clients (HTTP / Socket / WebSocket)](#clients-http--socket--websocket)
 - [Servers (HTTP / Socket / WebSocket)](#servers-http--socket--websocket)
   - [HTTP throughput: `/` vs `/all`](#http-throughput--vs-all)
@@ -225,6 +226,77 @@ work is worth fanning out too. What stays with native are the cheap point reads 
 cache (`selectOne`: pgsql 6.0 vs 3.8, mysql 4.3 vs 3.9 — almost even) and `selectMany`
 (100 rows per call — the row-set conversion at the boundary dominates: mysql 54.8 vs 8.5,
 pgsql 47.3 vs 8.8).
+
+## Payload size
+
+How the numbers scale with the size of the data one operation carries. On the async
+path the payload crosses the PHP↔Go boundary twice — as MessagePack-packed bindings (or
+a BSON document) on the way in and as the result buffer on the way out — so the boundary
+tax grows with the payload while the fan-out gain does not.
+
+Six dedicated benches (`tests/benchmarks/{mongodb,mysql,pgsql}-payload-{write,read}.php`)
+move an incompressible base64 payload of `SCONCUR_BENCH_PAYLOAD_BYTES` bytes per call
+(default 1024). Write inserts its own row/document per call into a fresh
+table/collection (per-mode id ranges); read re-reads one hot row per mode, so the DB
+serves it from cache and the measured path is transfer + decode, not disk. Single runs:
+`make bench-mysql-payloadWrite p=65536 c=100` (`p` — payload bytes, `c` — calls).
+
+The tables below: median of 5 cold runs on disk-backed backends, columns as in the DB
+tables above; 1 MB uses 50 calls per mode (the async fan holds every in-flight result in
+memory at once — see the reading below).
+
+Payload 1 KB, 100 calls:
+
+| Operation | median n/s/a, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
+| --- | ---: | ---: | ---: | --- |
+| mongodb insertOne | 20.6 / 81.9 / 32.5 (−58% ❌) | 10.7 / 15.4 / 8.2 (+23% ✅) | 27.9 / 129 / 36.5 (−31% ❌) | 6 / 6 / 6 |
+| mongodb findOne | 13.8 / 48.3 / 28.5 (−106% ❌) | 6.7 / 11.1 / 15.2 (−127% ❌) | 25.8 / 73.2 / 32.6 (−26% ❌) | 6 / 6 / 6 |
+| mysql insert | 753 / 812 / 125 (+83% ✅) | 704 / 787 / 119 (+83% ✅) | 762 / 874 / 137 (+82% ✅) | 6 / 6 / 6 |
+| mysql selectOne | 8.3 / 17.9 / 16.9 (−102% ❌) | 3.2 / 12.6 / 3.3 (−5% ❌) | 26.2 / 52.1 / 26.1 (0%) | 6 / 6 / 6 |
+| pgsql insert | 134 / 183 / 19.1 (+86% ✅) | 105 / 124 / 7.3 (+93% ✅) | 141 / 200 / 25.6 (+82% ✅) | 4 / 4 / 6 |
+| pgsql selectOne | 3.2 / 9.9 / 7.0 (−122% ❌) | 2.9 / 8.4 / 4.2 (−46% ❌) | 9.5 / 23.5 / 18.9 (−99% ❌) | 6 / 6 / 6 |
+
+Payload 64 KB, 100 calls:
+
+| Operation | median n/s/a, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
+| --- | ---: | ---: | ---: | --- |
+| mongodb insertOne | 21.5 / 102 / 45.7 (−112% ❌) | 17.6 / 41.9 / 14.2 (+19% ✅) | 46.8 / 246 / 74.3 (−59% ❌) | 6 / 6 / 6 |
+| mongodb findOne | 12.3 / 73.3 / 54.4 (−342% ❌) | 11.5 / 29.6 / 22.4 (−94% ❌) | 14.2 / 141 / 58.9 (−316% ❌) | 6 / 6 / 12 |
+| mysql insert | 1658 / 1596 / 200 (+88% ✅) | 1192 / 1312 / 162 (+86% ✅) | 1814 / 1829 / 218 (+88% ✅) | 6 / 6 / 6 |
+| mysql selectOne | 7.5 / 64.9 / 47.6 (−537% ❌) | 6.4 / 29.9 / 10.9 (−71% ❌) | 33.1 / 172 / 52.2 (−58% ❌) | 6 / 6 / 12 |
+| pgsql insert | 249 / 388 / 81.9 (+67% ✅) | 164 / 329 / 52.8 (+68% ✅) | 373 / 555 / 116 (+69% ✅) | 6 / 6 / 6 |
+| pgsql selectOne | 10.9 / 30.2 / 36.6 (−237% ❌) | 10.7 / 23.0 / 26.9 (−150% ❌) | 13.7 / 42.1 / 46.4 (−240% ❌) | 6 / 6 / 12 |
+
+Payload 1 MB, 50 calls:
+
+| Operation | median n/s/a, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
+| --- | ---: | ---: | ---: | --- |
+| mongodb insertOne | 95.5 / 258 / 84.7 (+11% ✅) | 90.3 / 208 / 79.7 (+12% ✅) | 132 / 489 / 96.5 (+27% ✅) | 6 / 10 / 10 |
+| mongodb findOne | 78.2 / 153 / 111 (−42% ❌) | 74.8 / 149 / 107 (−43% ❌) | 79.4 / 180 / 119 (−50% ❌) | 8 / 10 / 108 |
+| mysql insert | 1773 / 1886 / 650 (+63% ✅) | 1642 / 1741 / 296 (+82% ✅) | 1948 / 2093 / 690 (+65% ✅) | 10 / 10 / 10 |
+| mysql selectOne | 36.7 / 153 / 99.6 (−172% ❌) | 36.1 / 133 / 88.5 (−145% ❌) | 67.9 / 219 / 114 (−68% ❌) | 12 / 16 / 114 |
+| pgsql insert | 319 / 489 / 339 (−6% ❌) | 289 / 446 / 247 (+15% ✅) | 429 / 775 / 398 (+7% ✅) | 8 / 8 / 8 |
+| pgsql selectOne | 84.9 / 179 / 93.5 (−10% ❌) | 81.4 / 171 / 89.6 (−10% ❌) | 90.2 / 346 / 96.2 (−7% ❌) | 8 / 10 / 108 |
+
+What the sizes show:
+
+1. Writes: the fan-out wins as long as fsync dominates, but the margin shrinks as the
+   payload grows. mysql insert: +83% → +88% → +63%; pgsql insert: +86% → +67% → −6% at
+   1 MB — PostgreSQL commits a large row relatively cheaply (TOAST), and the transfer
+   cost catches up with the overlap gain. The mongo write has no per-operation fsync and
+   is fast on its own, so there is little to overlap (−58% → −112% → +11%).
+2. Reads: native leads at every size, as expected — a point read has nothing to
+   overlap, and the payload pays the boundary both ways. The boundary tax by the
+   sync−native gap: ~1.5–2.3 ms per 1 MB of payload (mongo 1.5, pgsql 1.9, mysql 2.3),
+   i.e. ~0.1 ms at 64 KB — negligible on small data, visible on megabyte blobs.
+3. **Memory is the main finding.** The async Memory column at 1 MB reads: 108–114 MB
+   against 8–12 MB for native. A fan of 50 concurrent 1 MB reads holds every in-flight
+   result at once — RSS grows as fan width × payload. Cap the fan width when fanning out
+   large result sets.
+4. The practical rule: SConcur pays off on many small-to-medium operations run
+   concurrently (up to ~64 KB the boundary tax is near zero); moving megabyte blobs is a
+   job for the native driver or for paths that never cross the boundary (like
+   `HttpClient::download()`).
 
 ## Clients (HTTP / Socket / WebSocket)
 

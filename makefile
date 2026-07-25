@@ -262,6 +262,28 @@ bench-pgsql-delete:
 bench-pgsql-transaction:
 	$(PHP_EXT) tests/benchmarks/pgsql-transaction.php ${c}
 
+# Payload-size benches: p = payload bytes per operation (default 1024), c = calls.
+# E.g.: make bench-mysql-payloadWrite p=1048576 c=50
+PHP_EXT_PAYLOAD = $(DOCKER_COMPOSE) exec -e SCONCUR_BENCH_PAYLOAD_BYTES=$(p) php php -d extension=./ext/build/sconcur.so
+
+bench-mongodb-payloadWrite:
+	$(PHP_EXT_PAYLOAD) tests/benchmarks/mongodb-payload-write.php ${c}
+
+bench-mongodb-payloadRead:
+	$(PHP_EXT_PAYLOAD) tests/benchmarks/mongodb-payload-read.php ${c}
+
+bench-mysql-payloadWrite:
+	$(PHP_EXT_PAYLOAD) tests/benchmarks/mysql-payload-write.php ${c}
+
+bench-mysql-payloadRead:
+	$(PHP_EXT_PAYLOAD) tests/benchmarks/mysql-payload-read.php ${c}
+
+bench-pgsql-payloadWrite:
+	$(PHP_EXT_PAYLOAD) tests/benchmarks/pgsql-payload-write.php ${c}
+
+bench-pgsql-payloadRead:
+	$(PHP_EXT_PAYLOAD) tests/benchmarks/pgsql-payload-read.php ${c}
+
 bench-http-client:
 	$(PHP_EXT) tests/benchmarks/http-client.php ${c}
 
