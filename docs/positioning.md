@@ -48,7 +48,7 @@ Three rules behind the table:
 | Framework bootstrap | every request | once | once |
 | I/O wait | occupies the worker | occupies the worker | overlaps (the fiber yields) |
 | Throughput ceiling on I/O-bound load | workers × request time | same, minus the bootstrap | bounded by the backends, not by the waits |
-| A CPU-bound request | blocks 1 worker of N | blocks 1 worker of N | blocks the process with all its in-flight requests |
+| A CPU-bound request | blocks 1 worker of N | blocks 1 worker of N | slows the whole process; the neighbours' delay is bounded by [preemption](coroutine-switching.md) |
 | Memory under concurrency | RSS × workers, grows with in-flight | RSS × workers, grows with in-flight | ~50 MiB × per-core processes, flat |
 
 php-fpm and RoadRunner share the trait that matters under load: a request occupies a
@@ -117,10 +117,14 @@ zero. With short waits the difference shrinks accordingly.
 
 ## Honest limits
 
-- CPU-bound PHP blocks the whole process with all its in-flight requests — worse than
-  the per-worker isolation of fpm/RoadRunner. Mitigations: the per-core pool spreads
-  requests, the Go-side `handlerTimeoutMs` still answers 504, `maxRequests` recycles
-  workers; a watchdog for hung workers is on the roadmap.
+- CPU-bound PHP loads the whole process with all its in-flight requests — worse than
+  the per-worker isolation of fpm/RoadRunner. Mitigations:
+  [automatic preemption](coroutine-switching.md) (on by default in the servers) bounds
+  the neighbours' latency for userland CPU code, the per-core pool spreads requests,
+  the Go-side `handlerTimeoutMs` still answers 504, `maxRequests` recycles workers; a
+  watchdog for hung workers is on the roadmap. A native blocking call or a single
+  monolithic internal call still freezes the process — preemption cannot interrupt
+  those.
 - The boundary tax (~50 µs per call) makes cheap point reads slower than the native
   driver at any dataset size; moving large payloads costs ~1.5–2.3 ms per MB each way,
   and a fan of large results holds them all in flight at once (RSS ≈ fan width ×

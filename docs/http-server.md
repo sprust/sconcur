@@ -484,10 +484,13 @@ current one suspends on an SConcur async feature (`Fiber::suspend()`).
 
 Which leads to the main rule:
 
-> **Handlers must be I/O-bound through SConcur features.** Any blocking or CPU-heavy
-> work in a handler (native `sleep()`, synchronous PDO/`curl`, a heavy computation,
-> reading a file) freezes the whole server — all other requests wait. Only async
-> SConcur calls yield control.
+> **Handlers must be I/O-bound through SConcur features.** A native blocking call in
+> a handler (`sleep()`, synchronous PDO/`curl`, reading a file) freezes the whole
+> server — all other requests wait; only async SConcur calls yield control. CPU-heavy
+> PHP code is the exception: by default the server preempts it every
+> `preemptionQuantumMs` (see [coroutine switching](coroutine-switching.md)), so it
+> delays the neighbours by at most the quantum — but a single monolithic internal
+> call (a huge `preg_match`, `json_decode`) is still not interruptible.
 
 ### `maxConcurrency`
 
@@ -512,11 +515,13 @@ mid-way.
 
 The deadline and the `504` response live on the Go side (a timer in `consumeCommands`),
 so it fires independently of PHP — the client gets a `504` even if the handler hung on a
-native blocking call (`sleep()`, synchronous PDO/`curl`) or in a CPU-bound loop. But
-this only saves the client (a correct code + freeing the connection and the
-`maxConcurrency` slot), not the server: there is no preemption in a cooperative model,
-so a stuck handler keeps holding the single PHP thread — all other requests are not
-served the whole time (and also get a `504` by the deadline). Runaway handlers are
+native blocking call (`sleep()`, synchronous PDO/`curl`) or in a CPU-bound loop. For a
+handler stuck in a native call this only saves the client (a correct code + freeing the
+connection and the `maxConcurrency` slot), not the server: nothing can preempt a native
+call, so the handler keeps holding the single PHP thread — all other requests are not
+served the whole time (and also get a `504` by the deadline). A userland CPU loop is a
+softer case: [automatic preemption](coroutine-switching.md) (on by default) parks it
+every quantum, so the neighbours keep being served, just slower. Runaway handlers are
 guarded at the process level: a worker pool (`SO_REUSEPORT`) + `maxRequests` for
 recycling — see [Scaling across cores](#scaling-across-cores-so_reuseport) and
 [docs/worker-master.md](worker-master.md).
@@ -775,7 +780,7 @@ fired, the handler gets an error (`abandoned`) and unwinds cleanly instead of ha
 | TLS / HTTPS | ❌ not yet | Plain TCP only. Terminate TLS in front (nginx/HAProxy/a balancer). |
 | HTTP/2, WebSocket | ❌ no | `net/http` without TLS is HTTP/1.1; h2c and WebSocket are not enabled. |
 | Multi-core parallelism in one process | ❌ no | One process = one PHP thread. Scale with several processes via [`SO_REUSEPORT`](#scaling-across-cores-so_reuseport). |
-| CPU-bound handlers | ⚠️ dangerous | They block the whole server: no preemption. I/O-bound only, through SConcur features. |
+| CPU-bound handlers | ⚠️ limited | Neighbours' latency is bounded by [automatic preemption](coroutine-switching.md) (on by default); throughput still comes from the per-core pool, and a monolithic internal call is not preemptible. |
 | Synchronous I/O in a handler | ⚠️ dangerous | Native `sleep`/PDO/`curl`/files freeze the loop. Use the async SConcur features. |
 | Streaming the request body | ✅ yes | `$request->getBody()->read()` pulls chunks; the body is not buffered whole (see [Request body](#request-body-streaminterface)). |
 | Router / middleware | ❌ no | A low-level `(ServerRequestInterface): ResponseInterface` (PSR-7) contract. A ready PSR-15 middleware stack can be layered on top yourself. |

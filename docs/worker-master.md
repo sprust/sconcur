@@ -276,12 +276,13 @@ check is disabled.
 
 ## Stuck worker
 
-A handler that goes into a native blocking call (`sleep()`, synchronous PDO/`curl`) or
-into a CPU-bound loop freezes the worker's single PHP thread — the cooperative model
-does not preempt it (see the "Handler timeout" section in the
-[HTTP server doc](http-server.md)). `handlerTimeoutMs` on the Go side will return `504`
-to clients, but the worker itself will not terminate — it stays `running` and silently
-drops out of service.
+A handler that goes into a native blocking call (`sleep()`, synchronous PDO/`curl`)
+or into a single monolithic internal call (a huge `preg_match`, `json_decode`)
+freezes the worker's single PHP thread — nothing can preempt a native call. (A
+userland CPU loop is a different case: the servers preempt it by default, see
+[coroutine switching](coroutine-switching.md).) `handlerTimeoutMs` on the Go side
+will return `504` to clients, but the worker itself will not terminate — it stays
+`running` and silently drops out of service.
 
 Such a worker can only be terminated by killing the process:
 
