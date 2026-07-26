@@ -42,6 +42,14 @@ class Scheduler
      */
     private const int DEFAULT_SWITCH_QUANTUM_MS = 5;
 
+    /**
+     * How many ready results one waitAnyBatch crossing may drain. Bounds the
+     * peak multiframe size and, in the serve loop, the time between
+     * shouldStop() checks; a batch never waits to fill up, so the value only
+     * caps a burst.
+     */
+    private const int WAIT_BATCH_SIZE = 64;
+
     protected static ?Scheduler $instance = null;
 
     /**
@@ -88,6 +96,17 @@ class Scheduler
      * @var array<int, int>
      */
     protected array $lastSwitchNs = [];
+
+    /**
+     * Ready results pulled from the extension in one waitAnyBatch crossing but
+     * not consumed yet. The loops take one result per iteration from here (all
+     * the per-event logic is unchanged) and cross into Go only when the queue
+     * is empty. A queued result can go stale — handling an earlier result of
+     * the same batch may stop its flow — see resumeByResult().
+     *
+     * @var list<TaskResultDto>
+     */
+    protected array $readyResults = [];
 
     /**
      * Monotonic counter feeding spawned-coroutine flow keys. A flow key only has
@@ -172,6 +191,7 @@ class Scheduler
         $this->groupWaiters       = [];
         $this->switchedCoroutines = [];
         $this->lastSwitchNs       = [];
+        $this->readyResults       = [];
     }
 
     public function register(Coroutine $coroutine): void
@@ -524,12 +544,14 @@ class Scheduler
 
                 // Poll rather than block forever: on an idle server this is the
                 // only way the loop notices a shutdown signal (it flips a flag the
-                // blocking cgo waitAny would not return for). A timeout just loops
+                // blocking cgo wait would not return for). A timeout just loops
                 // back to re-check shouldStop()/drain above. With coroutines parked
                 // by switch() the poll is non-blocking: results keep priority, and
-                // a pause with nothing deliverable resumes the queue head.
-                $result = Extension::get()->waitAnyTimeout(
-                    $this->switchedCoroutines === [] ? self::SERVE_POLL_INTERVAL_MS : 0,
+                // a pause with nothing deliverable resumes the queue head. Results
+                // arrive in batches (one crossing) and are consumed one per
+                // iteration, so the per-event logic below is unchanged.
+                $result = $this->takeReadyResult(
+                    timeoutMs: $this->switchedCoroutines === [] ? self::SERVE_POLL_INTERVAL_MS : 0,
                 );
 
                 if ($result === null) {
@@ -690,20 +712,16 @@ class Scheduler
     }
 
     /**
-     * One scheduler step: take the first ready result of any flow and resume the
-     * coroutine it belongs to. With coroutines parked by switch() the step never
-     * blocks: a deliverable result keeps priority, an empty poll resumes the
-     * queue head instead.
+     * One scheduler step: take the next ready result and resume the coroutine it
+     * belongs to. With coroutines parked by switch() the step never blocks: a
+     * deliverable result keeps priority, an empty poll resumes the queue head
+     * instead.
      */
     protected function tick(): void
     {
-        if ($this->switchedCoroutines === []) {
-            $this->resumeByResult(Extension::get()->waitAny());
-
-            return;
-        }
-
-        $result = Extension::get()->waitAnyTimeout(0);
+        $result = $this->takeReadyResult(
+            timeoutMs: $this->switchedCoroutines === [] ? null : 0,
+        );
 
         if ($result !== null) {
             $this->resumeByResult($result);
@@ -712,6 +730,37 @@ class Scheduler
         }
 
         $this->resumeNextSwitched();
+    }
+
+    /**
+     * Takes the next ready result: from the local queue first, otherwise by
+     * draining a fresh batch from the extension in one cgo crossing
+     * (Extension::waitAnyBatch). $timeoutMs bounds the wait for the batch's
+     * first result (null = block indefinitely); null is returned only on a
+     * timeout with an empty queue.
+     */
+    protected function takeReadyResult(?int $timeoutMs): ?TaskResultDto
+    {
+        if ($this->readyResults !== []) {
+            return array_shift($this->readyResults);
+        }
+
+        if ($timeoutMs === null) {
+            $this->readyResults = Extension::get()->waitAnyBatch(self::WAIT_BATCH_SIZE);
+        } else {
+            $results = Extension::get()->waitAnyTimeoutBatch(
+                timeoutMs: $timeoutMs,
+                maxResults: self::WAIT_BATCH_SIZE,
+            );
+
+            if ($results === null) {
+                return null;
+            }
+
+            $this->readyResults = $results;
+        }
+
+        return array_shift($this->readyResults);
     }
 
     /**
@@ -737,7 +786,12 @@ class Scheduler
     }
 
     /**
-     * Routes a delivered result to the coroutine that issued its task.
+     * Routes a delivered result to the coroutine that issued its task. A result
+     * with no known owner is dropped silently — it is a legitimate leftover,
+     * not a desync: results arrive in batches, and handling an earlier result
+     * of the same batch may have stopped this result's flow (WaitGroup::stop,
+     * shutdown, a server drain). The Go side filters such results at delivery,
+     * but a batch crosses the boundary before the stop happens.
      */
     protected function resumeByResult(TaskResultDto $result): void
     {
@@ -747,17 +801,13 @@ class Scheduler
         );
 
         if ($fiberId === null) {
-            throw new FiberStateException(
-                message: "No coroutine for result [flow: {$result->flowKey}, task: {$result->key}].",
-            );
+            return;
         }
 
         $coroutine = $this->coroutines[$fiberId] ?? null;
 
         if ($coroutine === null) {
-            throw new FiberStateException(
-                message: "Coroutine [id: {$fiberId}] not found for delivered result.",
-            );
+            return;
         }
 
         $this->resumeCoroutine($coroutine, $result);

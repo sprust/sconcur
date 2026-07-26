@@ -61,6 +61,12 @@ type Handler struct {
 	// Only touched from Wait/WaitAny, which the single-threaded PHP caller
 	// serializes. Remove once PHP moves fully to WaitAny.
 	pending map[string][]*dto.Result
+
+	// batchBuffer is reused across WaitAnyBatch calls to avoid a per-wait slice
+	// allocation. Safe because the single-threaded PHP caller serializes the
+	// batch waits and the previous batch is fully consumed (framed and copied
+	// across the boundary) before the next wait starts.
+	batchBuffer []*dto.Result
 }
 
 func NewHandler() *Handler {
@@ -122,6 +128,74 @@ func (h *Handler) WaitAny() (*dto.Result, error) {
 			return result, nil
 		}
 	}
+}
+
+// WaitAnyBatch returns the first ready result of any flow — blocking for it
+// exactly like WaitAny — plus every further result that is already ready, up to
+// max in total. One cgo crossing then carries the whole batch to PHP, saving a
+// crossing, a frame copy and a userland call per result after the first.
+func (h *Handler) WaitAnyBatch(max int) ([]*dto.Result, error) {
+	first, err := h.WaitAny()
+
+	if err != nil {
+		return nil, err
+	}
+
+	return h.drainReady(first, max), nil
+}
+
+// WaitAnyTimeoutBatch is WaitAnyBatch with a deadline for the first result:
+// ErrWaitTimeout when nothing became ready in time, otherwise the first result
+// plus the already-ready tail.
+func (h *Handler) WaitAnyTimeoutBatch(ms int, max int) ([]*dto.Result, error) {
+	first, err := h.WaitAnyTimeout(ms)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return h.drainReady(first, max), nil
+}
+
+// drainReady collects the already-ready tail of a batch after its blocking
+// first result: pending leftovers first, then a non-blocking drain of the
+// results channel. Every channel result passes deliver() exactly like on the
+// single-result path; the batch never waits for more results to appear.
+func (h *Handler) drainReady(first *dto.Result, max int) []*dto.Result {
+	results := append(h.batchBuffer[:0], first)
+
+	defer func() {
+		h.batchBuffer = results
+	}()
+
+	for len(results) < max {
+		result := h.popAnyPending()
+
+		if result == nil {
+			break
+		}
+
+		results = append(results, result)
+	}
+
+	for len(results) < max {
+		select {
+		case result, ok := <-h.results:
+			if !ok {
+				return results
+			}
+
+			if !h.deliver(result) {
+				continue
+			}
+
+			results = append(results, result)
+		default:
+			return results
+		}
+	}
+
+	return results
 }
 
 // WaitAnyTimeout is WaitAny with a deadline: it returns ErrWaitTimeout if no
