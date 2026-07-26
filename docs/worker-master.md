@@ -333,6 +333,13 @@ log with the scope `worker: <pid> #<index>` (stderr → `ERROR`, stdout → `INF
 crash output (and the worker's access log) is preserved in a single format next to the
 exit record.
 
+The master forces `-d display_errors=stderr` into every worker command (ahead of
+`phpArgs`), so PHP's own error output — a parse error, a missing extension, an
+out-of-memory fatal — always reaches the journal at `ERROR`, even when the
+deployment `php.ini` sets `display_errors=Off`. Without it such a worker would die
+leaving only `exited code=255` behind. A later `-d` wins, so `phpArgs` can override
+this deliberately.
+
 ### Where to write the log (`logTo`)
 
 The `logTo` parameter sets the sink for the master's log:

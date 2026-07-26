@@ -41,8 +41,8 @@ class TestWorkerMaster
      * master is driven by a JSON config file (--configPath); $options set master-level
      * keys, $server sets the nested server block, $workerArgs are extra raw worker argv.
      *
-     * @param array<string, int|string> $options       master-level config keys (override defaults)
-     * @param array<string, int|string> $env           extra env for the master (inherited by workers)
+     * @param array<string, int|string|list<string>> $options       master-level config keys (override defaults)
+     * @param array<string, int|string>               $env           extra env for the master (inherited by workers)
      * @param list<string>              $workerArgs    extra worker argv (e.g. ['--maxRequests=3'])
      * @param int|null                  $port          bind this exact port (default: a free one)
      * @param bool                      $waitReachable wait until a worker answers before returning
