@@ -7,6 +7,39 @@ high load, and where it pays off. The numbers come from
 [feature benchmarks](benchmarks.md) and [load testing](load-testing.md) — the same
 hardware, the same handles, RoadRunner measured side by side under an identical harness.
 
+## Is SConcur for you?
+
+Match your workload against the measured effects; every number links to the section
+that measured it.
+
+| Your workload | Measured effect | Verdict |
+| --- | --- | :---: |
+| A high-concurrency I/O-bound HTTP/WS service | [~6× RoadRunner's rps](benchmarks.md#comparison-with-roadrunner-native-drivers) on the same hardware; the same load takes ~5× less memory than RoadRunner, ~15–30× less than php-fpm — [resources](#resources-to-hold-the-same-load) | ✅ |
+| A request/job fans out into several DB or network operations | SQL writes [~3–18×](benchmarks.md#mysql) faster, heavy reads [~2–7.5×](benchmarks.md#mongodb), network waits [~44×](benchmarks.md#clients-http--socket--websocket) | ✅ |
+| MongoDB with concurrency | the only concurrent MongoDB path in PHP — [tables](benchmarks.md#mongodb) | ✅ |
+| Cheap point queries, one at a time (as a library) | slower than the native driver: the [boundary](benchmarks.md#conversion-overhead-the-phpgo-boundary) costs more than the query itself | ❌ |
+| Megabyte payloads per operation | ~1.5–2.3 ms per MB each way, and a wide fan of large results holds them all in RAM — [payload size](benchmarks.md#payload-size) | ❌ |
+| CPU-bound handlers | no gain: PHP stays single-threaded, a busy handler blocks the process — [servers](benchmarks.md#servers-http--socket--websocket); the latency (not the throughput) is smoothed by [coroutine switching](coroutine-switching.md) | ❌ |
+
+The point-query ❌ is about the call price inside one process — a library call compared
+to the native driver. As a server SConcur wins even with many small operations: every
+handler runs in its own coroutine, so sequential feature calls overlap across requests
+with no `WaitGroup` — the sequential `/all-nowg` handle holds ≈2 570 rps against
+RoadRunner's ≈460 on the same operations
+([load testing](load-testing.md#fan-out-vs-sequential-calls-all-vs-all-nowg)). Only on
+microsecond cache hits does the edge reduce to the server layer itself (~1.4× on the
+empty handle) — it never turns into a loss.
+
+Three rules behind the table:
+
+- The fan-out (`async`) wins wherever an operation has a real price — an fsync per
+  write, server-side work over the dataset, a network wait. The higher that price, the
+  bigger the win.
+- Cheap point operations stay with the native driver: the PHP↔Go boundary costs more
+  than the operation itself, and there is nothing to overlap.
+- A single call through SConcur is always more expensive than the native one (the
+  boundary conversion) — the gain comes from concurrency only.
+
 ## Execution models
 
 | | php-fpm | RoadRunner | SConcur |

@@ -19,7 +19,8 @@ milliseconds of processor time. What changes is who waits for it. Without
 switching, one CPU-bound request freezes all in-flight neighbours for its whole
 runtime; with switching their delay is bounded by the quantum. Throughput for
 CPU-bound load still comes from the per-core process pool (`SO_REUSEPORT`, see
-[worker master](worker-master.md)) — the benchmarks-doc verdict on CPU-bound
+[worker master](worker-master.md)) — the
+[positioning verdict](positioning.md#is-sconcur-for-you) on CPU-bound
 workloads stands.
 
 ## `Scheduler::switch()` — the explicit switch point
@@ -169,5 +170,5 @@ quantum bounds the delay between opcodes, not inside one internal call.
 - [HTTP server](http-server.md), [Socket server](socket-server.md),
   [WebSocket server](websocket-server.md) — the servers arming preemption.
 - [Architecture](architecture.md) — the scheduler, fibers and flows.
-- [Feature benchmarks](benchmarks.md) — the CPU-bound verdict this feature
-  softens (latency, not throughput).
+- [Positioning](positioning.md#is-sconcur-for-you) — the CPU-bound verdict this
+  feature softens (latency, not throughput).

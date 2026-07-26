@@ -10,8 +10,9 @@
 MongoDB, sleep и т.п.) конкурентно в горутинах. Обмен между PHP и Go идёт через
 MessagePack.
 
-> 📊 Цифры сразу: [бенчмарки по фичам](docs/benchmarks.ru.md) (таблица-вердикт
-> «Нужен ли вам SConcur» в начале доки) и
+> 📊 Цифры сразу: таблица-вердикт
+> [«Нужен ли вам SConcur»](docs/positioning.ru.md#нужен-ли-вам-sconcur),
+> [бенчмарки по фичам](docs/benchmarks.ru.md) и
 > [поведение под нагрузкой](docs/load-testing.ru.md).
 
 ## Содержание

@@ -20,7 +20,8 @@
 CPU-bound запрос замораживает всех in-flight соседей на всё время своей работы;
 с переключением их задержка ограничена квантом. Throughput для CPU-bound
 нагрузки по-прежнему даёт per-core пул процессов (`SO_REUSEPORT`, см.
-[мастер воркеров](worker-master.ru.md)) — вердикт дока бенчмарков по CPU-bound
+[мастер воркеров](worker-master.ru.md)) — вердикт
+[позиционирования](positioning.ru.md#нужен-ли-вам-sconcur) по CPU-bound
 нагрузке остаётся в силе.
 
 ## `Scheduler::switch()` — явная точка переключения
@@ -172,5 +173,5 @@ Interrupt-обработчик отказывается парковать ко�
 - [HTTP-сервер](http-server.ru.md), [Socket-сервер](socket-server.ru.md),
   [WebSocket-сервер](websocket-server.ru.md) — серверы, взводящие преемпцию.
 - [Архитектура](architecture.ru.md) — планировщик, файберы и флоу.
-- [Бенчмарки фич](benchmarks.ru.md) — вердикт по CPU-bound, который эта фича
-  смягчает (латентность, не throughput).
+- [Позиционирование](positioning.ru.md#нужен-ли-вам-sconcur) — вердикт по
+  CPU-bound, который эта фича смягчает (латентность, не throughput).
