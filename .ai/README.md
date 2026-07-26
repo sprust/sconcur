@@ -34,7 +34,10 @@ here.
 The README keeps only a short, one-line-per-item roadmap. Detailed designs for
 roadmap items live in `.ai/plans/` — one Markdown file per plan. When a roadmap
 item grows beyond a sentence (mechanics, API sketch, trade-offs, open
-questions), put the detail in a `.ai/plans/<kebab-name>.md` file.
+questions), put the detail in a `.ai/plans/<kebab-name>.md` file. **Plans are
+written in Russian** (a maintainer decision; the `.ru.md` suffix on some older
+plan files is historical — new plans use plain `.md` names with Russian
+content). Code identifiers, paths and code blocks stay as-is.
 
 **Plans are a development-only artifact.** Never link to `.ai/plans/*` (or
 reference the `.ai/plans/` directory) from the main `README.md` or from anything

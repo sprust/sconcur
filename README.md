@@ -309,6 +309,9 @@ php -d extension=./build/sconcur.so -r "echo \SConcur\Extension\ping('hello') . 
 
 A short list of development directions.
 
+- The `Std` feature — SConcur equivalents of standard PHP functions that block
+  the worker or are CPU-bound non-preemptible monoliths (sleep, json, hash,
+  gzip, password hashing, file I/O), executed in Go; absorbs `Sleeper`.
 - Auto-recovery of stuck workers — a master watchdog by heartbeat: `SIGKILL` and
   respawn a worker whose PHP thread has hung (a native block/CPU loop).
 - Split the core and the features into separate packages — the core on its own,
