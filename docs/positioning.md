@@ -54,8 +54,9 @@ Three rules behind the table:
 php-fpm and RoadRunner share the trait that matters under load: a request occupies a
 worker for its full duration, I/O waits included. RoadRunner removes the per-request
 bootstrap and keeps connections alive, which buys 2–10× on light endpoints — but the
-worker-per-request model stays. SConcur breaks exactly that: a request parked on I/O
-costs a suspended fiber, not a worker.
+worker-per-request model stays. SConcur keeps the same long-lived-worker gains (the
+app bootstraps once per worker, connections live in the Go-side pools) and breaks the
+remaining trait: a request parked on I/O costs a suspended fiber, not a worker.
 
 ## Throughput on the same hardware
 

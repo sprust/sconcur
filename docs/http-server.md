@@ -46,6 +46,14 @@ The base model is spawn-on-request: for each request event a new handler corouti
 created. Inside a handler you can make ordinary asynchronous SConcur calls (MongoDB,
 Sleeper, …) — they run concurrently with the handling of other requests.
 
+The worker is a long-lived process: everything created before `serve()` — the
+framework bootstrap, the DI container, config, connections — is built once and reused
+by every request, like in RoadRunner and unlike php-fpm's per-request bootstrap. The
+flip side is the usual one for long-lived workers: state survives between requests
+(globals persist, leaks accumulate), so keep request-scoped state in the
+[coroutine context](coroutine-context.md) or local to the handler, and let
+`maxRequests` recycle the process.
+
 ```mermaid
 flowchart TB
     Client["client"]
