@@ -21,10 +21,7 @@ class SchedulerPreemptionStressTest extends BaseTestCase
 {
     public function testMixedCpuAndIoChaosUnderHighFrequencyPreemption(): void
     {
-        Extension::get()->armPreemption(
-            quantumMs: 1,
-            preemptCallback: Scheduler::get()->preempt(...),
-        );
+        Scheduler::get()->enablePreemption(quantumMs: 1);
 
         try {
             foreach (range(1, 3) as $round) {
@@ -78,7 +75,7 @@ class SchedulerPreemptionStressTest extends BaseTestCase
                 }
             }
         } finally {
-            Extension::get()->disarmPreemption();
+            Scheduler::get()->disablePreemption();
         }
 
         $this->assertNoTasksCount();
@@ -86,10 +83,7 @@ class SchedulerPreemptionStressTest extends BaseTestCase
 
     public function testStopUnwindsPreemptedCpuCoroutines(): void
     {
-        Extension::get()->armPreemption(
-            quantumMs: 1,
-            preemptCallback: Scheduler::get()->preempt(...),
-        );
+        Scheduler::get()->enablePreemption(quantumMs: 1);
 
         try {
             $finallyCount = 0;
@@ -137,7 +131,7 @@ class SchedulerPreemptionStressTest extends BaseTestCase
             self::assertSame(20, DestructorProbe::$destroyedCount);
             self::assertFalse($waitGroup->isLive());
         } finally {
-            Extension::get()->disarmPreemption();
+            Scheduler::get()->disablePreemption();
         }
 
         $this->assertNoTasksCount();

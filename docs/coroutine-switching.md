@@ -63,30 +63,27 @@ and I/O completions are never delayed by parked crunchers.
 ### Arming automatic preemption manually
 
 The servers arm the preemption timer themselves (see the next section). In CLI
-scripts and library code nothing arms it, but the same plumbing is available
-directly when a long-running script wants preemption without a server:
+scripts and library code nothing arms it, but a long-running script can enable
+the same machinery with one call:
 
 ```php
-use SConcur\Connection\Extension;
 use SConcur\Scheduler\Scheduler;
 
-Extension::get()->armPreemption(
-    quantumMs: 5,
-    preemptCallback: Scheduler::get()->preempt(...),
-);
+Scheduler::get()->enablePreemption();   // quantum 5 ms by default
 
 try {
     // CPU-bound coroutines are preemptible here even without switch() calls
 } finally {
-    Extension::get()->disarmPreemption();
+    Scheduler::get()->disablePreemption();
 }
 ```
 
-`Scheduler::preempt()` is the same hook the servers register: it parks only
-scheduler-tracked coroutines and respects every safety guard listed below, so
-the scheduler loop and synchronous code are never interrupted. Re-arming
-replaces the previous timer and callback. Always disarm in `finally`: the timer
-keeps firing until `disarmPreemption()` or process shutdown.
+`enablePreemption(int $quantumMs = 5)` registers the scheduler's preempt hook
+with the extension's interrupt timer — the same wiring the servers use: it
+parks only scheduler-tracked coroutines and respects every safety guard listed
+below, so the scheduler loop and synchronous code are never interrupted.
+Re-enabling replaces the previous timer. Always disable in `finally`: the timer
+keeps firing until `disablePreemption()` or process shutdown.
 
 ## Automatic preemption — the servers' default
 

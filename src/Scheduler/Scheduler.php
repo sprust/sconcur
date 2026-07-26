@@ -421,6 +421,29 @@ class Scheduler
     }
 
     /**
+     * Enables automatic preemption: the extension's timer requests a VM interrupt
+     * every $quantumMs and the preempt() hook parks the currently running tracked
+     * coroutine, so CPU-bound code — including code that never calls switch() —
+     * cannot starve the other coroutines. The convenience wrapper over
+     * Extension::armPreemption for CLI scripts and library code; the servers
+     * enable it themselves while serving (the preemptionQuantumMs option).
+     * Re-enabling replaces the previous timer. Always pair with
+     * disablePreemption() (e.g. in finally): the timer keeps firing until then.
+     */
+    public function enablePreemption(int $quantumMs = self::DEFAULT_SWITCH_QUANTUM_MS): void
+    {
+        Extension::get()->armPreemption(
+            quantumMs: $quantumMs,
+            preemptCallback: $this->preempt(...),
+        );
+    }
+
+    public function disablePreemption(): void
+    {
+        Extension::get()->disarmPreemption();
+    }
+
+    /**
      * Serves a streaming flow whose batches are incoming requests (the HTTP
      * server). Each request is dispatched to a freshly spawned coroutine
      * (spawn-on-request); results of every other flow resume their coroutines.
@@ -470,10 +493,7 @@ class Scheduler
         $dispatchedCount = 0;
 
         if ($preemptionQuantumMs > 0) {
-            Extension::get()->armPreemption(
-                quantumMs: $preemptionQuantumMs,
-                preemptCallback: $this->preempt(...),
-            );
+            $this->enablePreemption(quantumMs: $preemptionQuantumMs);
         }
 
         // Whatever ends the loop — clean shutdown, a bind error, or an unexpected
@@ -565,7 +585,7 @@ class Scheduler
             }
         } finally {
             if ($preemptionQuantumMs > 0) {
-                Extension::get()->disarmPreemption();
+                $this->disablePreemption();
             }
 
             // Stop the listener and abort any connections not yet answered.
