@@ -1,120 +1,200 @@
-# Coroutine switcher: `Scheduler::switch()`
+# Переключатель корутин: `Scheduler::switch()`
 
-Cooperative yield for CPU-bound coroutine code. A handler crunching data in a loop
-calls `Scheduler::get()->switch()` periodically; the scheduler parks the coroutine,
-lets everything that is ready make progress (delivered results, new incoming server
-requests), then resumes it. The Swoole preemptive-scheduler effect, achieved
-cooperatively and purely on the PHP side.
+Кооперативная уступка для CPU-bound кода в корутинах. Обработчик, молотящий данные
+в цикле, периодически вызывает `Scheduler::get()->switch()`; планировщик паркует
+корутину, даёт продвинуться всему готовому (доставленным результатам, новым входящим
+запросам сервера), затем резюмит её. Эффект преемптивного планировщика Swoole,
+достигнутый кооперативно и целиком на PHP-стороне.
 
-## Goal and non-goals
+## Цель и не-цели
 
-- Goal: latency fairness. A CPU-heavy handler stops starving the other in-flight
-  coroutines of its process; neighbours' p99 becomes bounded by the switch quantum
-  instead of the heavy handler's full runtime. Graceful shutdown also stays responsive
-  during heavy handlers.
-- Non-goal: throughput. The PHP thread is still one; total CPU work is unchanged (plus
-  a small switching cost). The benchmarks-doc verdict "CPU-bound → per-core pool"
-  stays.
-- Non-goal: preempting code that does not call `switch()` (third-party loops, a single
-  huge `json_decode`/`preg_match`). Automatic preemption (`pcntl_alarm` +
-  `Fiber::suspend()` from the signal handler) is a separate experiment, not this plan.
+- Цель: честность по латентности. CPU-тяжёлый обработчик перестаёт морить голодом
+  остальные корутины своего процесса; p99 соседей ограничивается квантом переключения,
+  а не полным временем работы тяжёлого обработчика. Graceful shutdown тоже остаётся
+  отзывчивым во время тяжёлых обработчиков.
+- Не-цель: throughput. PHP-поток по-прежнему один; суммарная CPU-работа не меняется
+  (плюс небольшая цена переключений). Вердикт из доки бенчмарков «CPU-bound →
+  per-core пул» остаётся в силе.
+- Не-цель: преемпция кода, который не вызывает `switch()` (циклы сторонних библиотек,
+  один огромный `json_decode`/`preg_match`). Автоматическая преемпция (`pcntl_alarm` +
+  `Fiber::suspend()` из обработчика сигнала) — отдельный эксперимент, не этот план.
 
 ## API
 
-`Scheduler::switch(int $quantumMs = 5): bool` — instance method (called as
-`Scheduler::get()->switch()`; `switch` is a valid method name since PHP 7).
+`Scheduler::switch(int $quantumMs = 5): bool` — метод экземпляра (вызывается как
+`Scheduler::get()->switch()`; `switch` — валидное имя метода начиная с PHP 7).
 
-- Returns `true` when the coroutine actually yielded, `false` when the call was a
-  cheap no-op.
-- No-op cases: called outside a fiber (the sync path — callers need no guards); called
-  from a fiber the scheduler does not track; the quantum has not elapsed yet.
-- Quantum: the first `switch()` call of a coroutine records the timestamp and returns
-  `false` (the quantum starts counting there); each later call yields only when
-  `hrtime(true) - lastSwitchNs >= quantumMs * 1_000_000`, then re-records. So the call
-  can sit inside a hot loop: in the common case it costs one `hrtime()` and one
-  comparison.
-- `quantumMs <= 0` — always yield (tests, explicit switch points).
+- Возвращает `true`, когда корутина действительно уступила, `false` — когда вызов был
+  дешёвым no-op.
+- Случаи no-op: вызов вне файбера (синхронный путь — вызывающему коду не нужны
+  проверки); вызов из файбера, который планировщик не отслеживает; квант ещё не истёк.
+- Квант: первый вызов `switch()` в корутине записывает метку времени и возвращает
+  `false` (отсчёт кванта начинается там); каждый последующий уступает только когда
+  `hrtime(true) - lastSwitchNs >= quantumMs * 1_000_000`. Поэтому вызов может стоять
+  в горячем цикле: в типичном случае он стоит один `hrtime()` и одно сравнение. Метка
+  перезаписывается при резюме после уступки, а НЕ при парковке: квант меряет
+  собственное время работы корутины. Замер от парковки позволял времени ожидания в
+  очереди съедать следующий квант — возобновлённая корутина снова парковалась на
+  первом же вызове `switch()`, и два одинаковых CPU-цикла перекашивались примерно до
+  9:1 (найдено пробой честности при ревью; регрессионный тест —
+  `testQuantumSharesCpuFairlyBetweenTwoLoops`).
+- `quantumMs <= 0` — уступать всегда (тесты, явные точки переключения).
 
-No extension changes: parking and resuming is pure scheduler bookkeeping, and the
-non-blocking poll it needs already exists (`Extension::waitAnyTimeout(0)` —
-`popAnyPending` first, then an immediately-firing timer → `null`).
+Расширение не меняется: парковка и резюм — чистая бухгалтерия планировщика, а нужный
+неблокирующий опрос уже существует (`Extension::waitAnyTimeout(0)` — сначала
+`popAnyPending`, затем мгновенно срабатывающий таймер → `null`).
 
-## Mechanics
+## Механика
 
-New pieces in `Scheduler`:
+Новые части в `Scheduler`:
 
-- `Dto/PendingSwitchDto` — an empty marker DTO the yielding coroutine suspends with
-  (the third pending kind after `PendingPushDto`/`PendingNextDto`).
-- `protected array $switchedCoroutines = []` — FIFO of fiber ids parked by `switch()`.
-- `protected array $lastSwitchNs = []` — per-fiber-id quantum timestamps
-  (`Coroutine` is readonly, so the map lives here); entries are released in
-  `forget()`/`detach()` and cleared in `shutdown()`.
+- `Dto/PendingSwitchDto` — пустой DTO-маркер, с которым уступающая корутина
+  подвешивается (третий вид pending после `PendingPushDto`/`PendingNextDto`).
+- `protected array $switchedCoroutines = []` — FIFO id файберов, припаркованных
+  `switch()`.
+- `protected array $lastSwitchNs = []` — метки кванта по id файбера (`Coroutine`
+  readonly, поэтому карта живёт здесь); записи освобождаются в `forget()`/`detach()`
+  и очищаются в `shutdown()`.
 
-Flow:
+Поток:
 
-1. `switch()` passes the guards → `Fiber::suspend(new PendingSwitchDto())`. Error
-   handling mirrors `awaitGroup`: `FlowStoppedException` is re-thrown as-is (a
-   stop/shutdown unwinding through the parked coroutine), any other `Throwable` wraps
-   into `FiberStateException`.
-2. The resuming side sees the suspend value. `dispatchPendingTask()` gets a new
-   branch: `PendingSwitchDto` → append the fiber id to `$switchedCoroutines`, return.
-   (Today a suspend value it does not recognize is ignored — the awaitGroup contract —
-   so the new branch is additive.)
-3. Draining. Results always take priority; a parked coroutine resumes only when
-   nothing is deliverable right now:
-   - `tick()` (the `run()` loop): queue empty → blocking `waitAny()` as today. Queue
-     non-empty → `waitAnyTimeout(0)`; a result resumes its owner, `null` resumes the
-     queue head.
-   - `serve()`: poll timeout becomes `switchedCoroutines === [] ? 250 : 0`; on a
-     `null` result with a non-empty queue, resume the queue head and loop. Incoming
-     requests keep being accepted between switches — a parked heavy handler does not
-     stop `spawn`-on-request.
-4. Resume value is `null`; `switch()` returns `true` after the resume. One parked
-   coroutine is resumed per loop iteration, so deliverable results interleave with the
-   queue and two CPU loops round-robin each other.
+1. `switch()` проходит гварды → `Fiber::suspend(new PendingSwitchDto())`. Обработка
+   ошибок зеркалит `awaitGroup`: `FlowStoppedException` перебрасывается как есть
+   (stop/shutdown разматывается через припаркованную корутину), любой другой
+   `Throwable` оборачивается в `FiberStateException`.
+2. Резюмящая сторона видит suspend-значение. В `dispatchPendingTask()` появляется
+   новая ветка: `PendingSwitchDto` → добавить id файбера в `$switchedCoroutines`,
+   вернуться. (Сегодня нераспознанное suspend-значение игнорируется — контракт
+   awaitGroup, — так что новая ветка аддитивна.)
+3. Дренаж. Результаты всегда в приоритете; припаркованная корутина резюмится, только
+   когда доставлять сейчас нечего:
+   - `tick()` (цикл `run()`): очередь пуста → блокирующий `waitAny()` как сегодня.
+     Очередь непуста → `waitAnyTimeout(0)`; результат резюмит своего владельца,
+     `null` резюмит голову очереди.
+   - `serve()`: таймаут опроса становится `switchedCoroutines === [] ? 250 : 0`; при
+     `null`-результате с непустой очередью — резюмить голову очереди и продолжить
+     цикл. Входящие запросы продолжают приниматься между переключениями —
+     припаркованный тяжёлый обработчик не останавливает spawn-on-request.
+4. Резюм-значение — `null`; `switch()` возвращает `true` после резюма. За одну
+   итерацию цикла резюмится одна припаркованная корутина, поэтому доставляемые
+   результаты чередуются с очередью, а два CPU-цикла ходят по кругу друг за другом.
 
-Edge cases:
+Краевые случаи:
 
-- `WaitGroup::stop()` / `Scheduler::shutdown()` while parked: the fiber is suspended,
-  so the existing unwind (`fiber->throw(FlowStoppedException)`) works; the queue entry
-  goes stale. The drain skips ids missing from `$this->coroutines`
-  (`resumeNextSwitched()` loops until it finds a live one or empties the queue).
-- A parked coroutine's group must not report "settled" early: parking does not touch
-  group bookkeeping — the coroutine stays a live member (exactly like one awaiting a
-  task result), so `isLive()`/`wakeGroupWaiters` semantics are unchanged.
-- Livelock: impossible by construction — every drain iteration first polls for a
-  deliverable result with `waitAnyTimeout(0)`.
-- Re-entrancy: `switch()` from the outermost (non-scheduler) code path is a no-op by
-  the fiber guard; nested `WaitGroup` coroutines are ordinary tracked fibers and just
-  work.
+- `WaitGroup::stop()` / `Scheduler::shutdown()` во время парковки: файбер подвешен,
+  поэтому существующая размотка (`fiber->throw(FlowStoppedException)`) работает.
+  Запись в очереди вычищается сразу в `detach()`/`forget()` — протухший id опасен, а
+  не просто шум: spl_object_id переиспользуется после освобождения файбера, и
+  оставшаяся запись могла бы совпасть с новенькой корутиной, ожидающей результат
+  задачи, и резюмить её с null вне очереди. Пропуск id, отсутствующих в
+  `$this->coroutines` (`resumeNextSwitched()`), остаётся защитной сеткой.
+- Группа припаркованной корутины не должна раньше времени считаться «завершённой»:
+  парковка не трогает бухгалтерию группы — корутина остаётся живым участником (ровно
+  как ожидающая результат задачи), так что семантика `isLive()`/`wakeGroupWaiters`
+  не меняется.
+- Лайвлок: невозможен по построению — каждая итерация дренажа сначала опрашивает
+  доставляемый результат через `waitAnyTimeout(0)`.
+- Реентерабельность: `switch()` из самого внешнего (непланировщикового) пути кода —
+  no-op по гварду файбера; вложенные корутины `WaitGroup` — обычные отслеживаемые
+  файберы и просто работают.
 
-## Tests
+## Тесты
 
-`tests/feature/Scheduler/SchedulerSwitchTest.php` (BaseAsyncTestCase where the event
-framework helps):
+`tests/feature/Scheduler/SchedulerSwitchTest.php` (BaseAsyncTestCase там, где помогает
+событийный фреймворк):
 
-- `switch()` outside a fiber returns `false` (and changes nothing).
-- Interleaving: coroutine A appends events in a loop calling
-  `switch(quantumMs: 0)`; coroutine B appends one event. B's event lands between A's
-  iterations, not after them all.
-- Quantum: with a large `quantumMs` the first call returns `false` and a tight second
-  call returns `false`; with `quantumMs: 0` calls return `true` (after the first).
-- Round-robin: two switching CPU coroutines interleave each other's events.
-- Stop while parked: `WaitGroup::stop()` with a coroutine parked in `switch()` unwinds
-  it (FlowStoppedException path), no scheduler-state leak
-  (`switchedCoroutines`/`lastSwitchNs` clean).
+- `switch()` вне файбера возвращает `false` (и ничего не меняет).
+- Чередование: корутина A добавляет события в цикле с вызовом
+  `switch(quantumMs: 0)`; корутина B добавляет одно событие. Событие B попадает между
+  итерациями A, а не после них всех.
+- Квант: с большим `quantumMs` первый вызов возвращает `false` и немедленный второй
+  тоже `false`; при `quantumMs: 0` вызовы возвращают `true` (после первого).
+- Round-robin: две переключающиеся CPU-корутины чередуют события друг друга.
+- Stop во время парковки: `WaitGroup::stop()` с корутиной, припаркованной в
+  `switch()`, разматывает её (путь FlowStoppedException), без утечки состояния
+  планировщика (`switchedCoroutines`/`lastSwitchNs` чистые).
 
-Server-level E2E (`tests/feature/Features/HttpServer/`): a new demo route
-`/cpu-switch/{n}` in `tests/servers/http/http-server.php` — the `/cpu/{n}` sha256 loop
-with `Scheduler::get()->switch(quantumMs: 1)` inside. The test starts a heavy
-`/cpu-switch` request, then a `/ping`-style request while it runs, and asserts the
-light one completes while the heavy one is still in flight (the `/native-msleep`
-counter-example already proves the opposite for non-yielding code).
+E2E уровня сервера (`tests/feature/Features/HttpServer/`): новый демо-роут
+`/cpu-switch/{n}` в `tests/servers/http/http-server.php` — sha256-цикл `/cpu/{n}` с
+`Scheduler::get()->switch(quantumMs: 1)` внутри. Тест запускает тяжёлый запрос
+`/cpu-switch`, затем лёгкий запрос типа `/ping`, пока тот выполняется, и проверяет,
+что лёгкий завершается, пока тяжёлый ещё в полёте (контрпример `/native-msleep` уже
+доказывает обратное для неуступающего кода).
 
-## Out of scope / follow-ups
+## Автоматическая преемпция (фаза 2, решено)
 
-- Automatic preemption experiments (signal/tick-based) — separate plan if ever.
-- Docs on shipping: a "CPU-bound handlers" subsection in `docs/http-server.md` (+ru)
-  and a note in `docs/benchmarks.md`'s verdict table row about CPU-bound (the ❌ stays,
-  with "latency can be smoothed with Scheduler::switch()" pointing at the server doc).
-- No extension version bump: the PHP↔Go protocol is untouched.
+Решения владельца: механизм — вариант с VM-interrupt (вариант 1); активна только
+когда воркер работает под сервером; там включена по умолчанию. Вариант с
+сигналами/pcntl отклонён (сигналами процесса владеет Go-рантайм — pcntl-обработчики
+воевали бы с ним).
+
+Механизм (паттерн Swoole/pcntl-dispatch поверх кооперативного ядра выше —
+автоматический режим просто ещё один источник сигналов для той же очереди
+переключений):
+
+- `ext/sconcur.c` MINIT: сохранить исходную `zend_interrupt_function`, установить
+  свою (всегда чейнить сохранённую — совместимость с pcntl). MSHUTDOWN восстанавливает.
+- Новые экспорты `armPreemption(quantumMs)` / `disarmPreemption()`: взведение
+  запускает Go-горутину-таймер, периодически ставящую `EG(vm_interrupt)` (атомарная
+  запись; NTS — один символ executor-globals, C-глю даёт сеттер, который зовёт Go).
+  Новые экспорты = изменение протокола PHP↔Go → минорный бамп версии расширения,
+  один раз на этой ветке.
+- Обработчик прерывания выполняется на PHP-потоке на границе опкодов. Сначала гварды:
+  преемпция взведена; `Fiber::getCurrent()` — отслеживаемая планировщиком корутина;
+  нет активного `EG(exception)`; не внутри собственного цикла планировщика; и никогда
+  во время автозагрузки (`EG(in_autoload)` непуст) — парковка файбера посреди
+  автолоада заставляет каждую другую корутину, запросившую тот же класс, падать с
+  «class not found» (пер-классовый гвард «в процессе» в движке блокирует вторую
+  попытку автолоада; найдено через флак HttpServerMaxConcurrencyTest во время
+  реализации). Затем принудительная парковка корутины — семантически
+  `Scheduler::switch(quantumMs: 0)` — через userland-коллбэк, который Scheduler
+  регистрирует при взведении (резолвится один раз, например `Scheduler::preempt()`).
+- Проводка в серверах: `Scheduler::serve()` взводит после старта листенера и
+  развзводит в своём `finally`. Новая серверная опция `preemptionQuantumMs`
+  (переопределяемая через argv, как остальные) с дефолтом 5; `0` отключает.
+  CLI/библиотечный режим никогда не взводит — там кооперативный `switch()` остаётся
+  единственным источником.
+- Что это даёт сверх ручного `switch()`: каждый userland-цикл становится
+  преемптируемым, включая сторонний код, с гранулярностью опкода. Что остаётся
+  непреемптируемым: одиночные монолитные внутренние вызовы (`preg_match` по огромной
+  строке, `json_decode` огромного блоба) — прерывания срабатывают только между
+  опкодами.
+- Замечание о семантике для доков: со включённой преемпцией точки переключения
+  становятся невидимыми — неатомарный read-modify-write разделяемого состояния внутри
+  обработчика может чередоваться. Смягчение — область действия «только серверы» плюс
+  опт-аут `preemptionQuantumMs: 0`.
+
+Находки стресса (исправлены в стресс-фазе, гварды теперь в коде):
+
+- Окна suspend-перехода. Преемпция корутины между «объявила suspend» и самим
+  `Fiber::suspend` рассинхронизирует бухгалтерию: ожидающий группы, разбуженный на
+  свою switch-парковку, затем виснет на настоящем suspend; корутина, припаркованная
+  внутри `dispatchPendingTask` между `push()` и `State::addFiberTask()` (диспатч
+  выполняется на стеке родительской корутины при вложенном `WaitGroup::add`), теряет
+  свой результат («No coroutine for result»). Фикс:
+  `State::markSuspending()/clearSuspending()` помечают окно в
+  `FeatureExecutor::suspend`, `Scheduler::awaitGroup`, `Scheduler::switch` и вокруг
+  `dispatchPendingTask` (повторно выставляется после `fiber->throw`, чьи обработчики
+  могут его снять); `preempt()` внутри окна — no-op. Одного слота достаточно —
+  одновременно выполняется только одна корутина.
+- `dispatchPendingTask` теперь обрабатывает `PendingSwitchDto` на каждой итерации
+  цикла: корутина, припаркованная преемпцией внутри собственной обработки ошибок
+  (резюмированная через `fiber->throw`), раньше выпадала из цикла неочередённой.
+- `switch()` валидирует резюм-значение (легален только `null`) — рассинхрон теперь
+  падает громко, вместо того чтобы скормить чужое значение припаркованной корутине.
+
+Стресс-покрытие: `SchedulerPreemptionStressTest` (квант 1 мс: CPU+IO-хаос с
+вложенными группами ×3 раунда, stop-размотка через finally/деструкторы 20
+числодробилок, циклы arm/disarm ×200) плюс скрипт уровня сервера (смешанная нагрузка
+/cpu, /cpu-switch, /msleep, /stream при `preemptionQuantumMs=1`, ноль неудачных
+ответов, graceful SIGTERM под нагрузкой за ~600 мс, плоский RSS; повторено с opcache
+JIT (tracing) — результаты идентичны).
+
+## Вне рамок / продолжения
+
+- Доки при поставке: подраздел «CPU-bound обработчики» в `docs/http-server.md` (+ru)
+  и примечание в строке вердикт-таблицы `docs/benchmarks.md` про CPU-bound (❌
+  остаётся, с «латентность можно сгладить Scheduler::switch()» и ссылкой на доку
+  сервера).
+- Фаза 1 (кооперативный switch()) не требует бампа версии расширения: протокол
+  PHP↔Go не тронут. Фаза 2 бампает минор один раз (новые экспорты).

@@ -10,6 +10,9 @@ typedef struct {
 	int len;
 	char *err;
 } buffer_result_t;
+
+// Defined in sconcur.c: atomically requests a VM interrupt on the PHP thread.
+extern void sconcur_request_vm_interrupt(void);
 */
 import "C"
 import (
@@ -22,6 +25,8 @@ import (
 	handler2 "sconcur/internal/handler"
 	"sconcur/internal/logger"
 	"sconcur/internal/types"
+	"sync"
+	"time"
 	"unsafe"
 )
 
@@ -93,6 +98,54 @@ var handler *handler2.Handler
 
 func init() {
 	handler = handler2.NewHandler()
+}
+
+// Preemption timer (see .ai/plans/coroutine-switcher.md, phase 2): while armed, a
+// goroutine periodically requests a VM interrupt so the C-side handler can park
+// the currently running coroutine between opcodes.
+var (
+	preemptionMutex sync.Mutex
+	preemptionStop  chan struct{}
+)
+
+//export preemptionArm
+func preemptionArm(quantumMs C.int) {
+	preemptionMutex.Lock()
+	defer preemptionMutex.Unlock()
+
+	if preemptionStop != nil {
+		close(preemptionStop)
+	}
+
+	stop := make(chan struct{})
+	preemptionStop = stop
+
+	interval := time.Duration(int(quantumMs)) * time.Millisecond
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				C.sconcur_request_vm_interrupt()
+			}
+		}
+	}()
+}
+
+//export preemptionDisarm
+func preemptionDisarm() {
+	preemptionMutex.Lock()
+	defer preemptionMutex.Unlock()
+
+	if preemptionStop != nil {
+		close(preemptionStop)
+		preemptionStop = nil
+	}
 }
 
 //export ping
@@ -223,7 +276,9 @@ func wsStopAccepting(fk *C.char) {
 
 //export destroy
 func destroy() {
-	// Flush any buffered log lines before tearing the runtime down.
+	// Stop the preemption timer and flush any buffered log lines before tearing
+	// the runtime down.
+	preemptionDisarm()
 	logger.Flush()
 
 	handler.Destroy()
@@ -231,7 +286,7 @@ func destroy() {
 
 //export version
 func version() *C.char {
-	return C.CString("0.7.2")
+	return C.CString("0.8.0")
 }
 
 func main() {}

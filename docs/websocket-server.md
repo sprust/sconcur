@@ -157,10 +157,13 @@ connections work in parallel. `maxConcurrency` limits the number of connections 
 once (a slot is held for the whole lifetime of a connection); excess upgrades wait for a
 free slot.
 
-> CPU-bound / native block. A heavy synchronous handler (native `sleep`, a CPU loop)
-> freezes the single PHP thread — the cooperative model does not preempt it. There is no
-> per-message timeout in the push model; the bounds are set by the idle timeout,
-> `writeTimeoutMs`, the keepalive ping, and the graceful stop.
+> CPU-bound / native block. A handler stuck in a native call (`sleep`, synchronous
+> PDO/`curl`) freezes the single PHP thread — nothing preempts a native call. A
+> userland CPU loop is preempted by default
+> ([automatic preemption](coroutine-switching.md), `preemptionQuantumMs`), so it only
+> delays the neighbours by the quantum. There is no per-message timeout in the push
+> model; the bounds are set by the idle timeout, `writeTimeoutMs`, the keepalive ping,
+> and the graceful stop.
 
 ## Keepalive and timeouts
 

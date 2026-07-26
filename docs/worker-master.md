@@ -276,12 +276,13 @@ check is disabled.
 
 ## Stuck worker
 
-A handler that goes into a native blocking call (`sleep()`, synchronous PDO/`curl`) or
-into a CPU-bound loop freezes the worker's single PHP thread — the cooperative model
-does not preempt it (see the "Handler timeout" section in the
-[HTTP server doc](http-server.md)). `handlerTimeoutMs` on the Go side will return `504`
-to clients, but the worker itself will not terminate — it stays `running` and silently
-drops out of service.
+A handler that goes into a native blocking call (`sleep()`, synchronous PDO/`curl`)
+or into a single monolithic internal call (a huge `preg_match`, `json_decode`)
+freezes the worker's single PHP thread — nothing can preempt a native call. (A
+userland CPU loop is a different case: the servers preempt it by default, see
+[coroutine switching](coroutine-switching.md).) `handlerTimeoutMs` on the Go side
+will return `504` to clients, but the worker itself will not terminate — it stays
+`running` and silently drops out of service.
 
 Such a worker can only be terminated by killing the process:
 
@@ -332,6 +333,13 @@ The master intercepts the workers' `stdout`/`stderr` and rewrites them into the 
 log with the scope `worker: <pid> #<index>` (stderr → `ERROR`, stdout → `INFO`), so the
 crash output (and the worker's access log) is preserved in a single format next to the
 exit record.
+
+The master forces `-d display_errors=stderr` into every worker command (ahead of
+`phpArgs`), so PHP's own error output — a parse error, a missing extension, an
+out-of-memory fatal — always reaches the journal at `ERROR`, even when the
+deployment `php.ini` sets `display_errors=Off`. Without it such a worker would die
+leaving only `exited code=255` behind. A later `-d` wins, so `phpArgs` can override
+this deliberately.
 
 ### Where to write the log (`logTo`)
 

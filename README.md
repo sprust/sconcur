@@ -10,8 +10,9 @@ A concurrency library for PHP on top of a custom Go extension. The PHP side
 sleep, and so on) concurrently in goroutines. PHP and Go exchange data over
 MessagePack.
 
-> 📊 Numbers right away: [feature benchmarks](docs/benchmarks.md) (the
-> "Is SConcur for you?" verdict table at the top) and
+> 📊 Numbers right away: the
+> ["Is SConcur for you?" verdict table](docs/positioning.md#is-sconcur-for-you),
+> [feature benchmarks](docs/benchmarks.md) and
 > [behaviour under load](docs/load-testing.md).
 
 ## Contents
@@ -240,6 +241,9 @@ built and tested against in CI:
   link).
 - [Architecture](docs/architecture.md) — internals: the Fiber ↔ goroutine link,
   the scheduler, the layers, the task lifecycle.
+- [Coroutine switching](docs/coroutine-switching.md) — `Scheduler::switch()` for
+  CPU-bound loops and the servers' automatic preemption: mechanics, quantum,
+  guards, limits.
 - [MongoDB](docs/mongodb.md) — collection operations (CRUD, aggregation, indexes,
   bulkWrite), streaming cursors, results, BSON types, concurrency, timeouts, and
   internals.
@@ -306,6 +310,9 @@ php -d extension=./build/sconcur.so -r "echo \SConcur\Extension\ping('hello') . 
 
 A short list of development directions.
 
+- The `Std` feature — SConcur equivalents of standard PHP functions that block
+  the worker or are CPU-bound non-preemptible monoliths (sleep, json, hash,
+  gzip, password hashing, file I/O), executed in Go; absorbs `Sleeper`.
 - Auto-recovery of stuck workers — a master watchdog by heartbeat: `SIGKILL` and
   respawn a worker whose PHP thread has hung (a native block/CPU loop).
 - Split the core and the features into separate packages — the core on its own,

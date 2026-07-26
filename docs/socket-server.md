@@ -130,10 +130,13 @@ coroutine without blocking the others.
 the connection's whole lifetime); excess connections are accepted on the socket but
 not handled until a slot frees up.
 
-> **CPU-bound / native block.** A heavy synchronous handler (native `sleep`, a CPU
-> loop) freezes the single PHP thread — the cooperative model does not preempt it. In
-> the push model there is no per-message timeout (there is no notion of a "request");
-> the boundaries are the idle `readTimeoutMs`, `writeTimeoutMs`, and graceful shutdown.
+> **CPU-bound / native block.** A handler stuck in a native call (`sleep`, synchronous
+> PDO/`curl`) freezes the single PHP thread — nothing preempts a native call. A
+> userland CPU loop is preempted by default
+> ([automatic preemption](coroutine-switching.md), `preemptionQuantumMs`), so it only
+> delays the neighbours by the quantum. In the push model there is no per-message
+> timeout (there is no notion of a "request"); the boundaries are the idle
+> `readTimeoutMs`, `writeTimeoutMs`, and graceful shutdown.
 
 ## Error handling
 

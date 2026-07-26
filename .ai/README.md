@@ -26,6 +26,7 @@ here.
 - [docs/mysql.md](../docs/mysql.md) — MySQL / universal SQL feature: usage, bindings, transactions, streaming, internals
 - [docs/pgsql.md](../docs/pgsql.md) — PostgreSQL: the SQL feature's second driver; PG-specific differences
 - [docs/coroutine-context.md](../docs/coroutine-context.md) — per-coroutine context: framework-neutral key-value store bound to the current fiber, isolated between concurrent coroutines, read-through inherited by children
+- [docs/coroutine-switching.md](../docs/coroutine-switching.md) — coroutine switching for CPU-bound code: cooperative `Scheduler::switch()` (quantum, switched queue) and the servers' automatic VM-interrupt preemption (`preemptionQuantumMs`, default on; guards: autoload, suspend transitions)
 - [.ai/plans/](plans/) — detailed designs for roadmap items
 
 ## Plans
@@ -33,7 +34,10 @@ here.
 The README keeps only a short, one-line-per-item roadmap. Detailed designs for
 roadmap items live in `.ai/plans/` — one Markdown file per plan. When a roadmap
 item grows beyond a sentence (mechanics, API sketch, trade-offs, open
-questions), put the detail in a `.ai/plans/<kebab-name>.md` file.
+questions), put the detail in a `.ai/plans/<kebab-name>.md` file. **Plans are
+written in Russian** (a maintainer decision; the `.ru.md` suffix on some older
+plan files is historical — new plans use plain `.md` names with Russian
+content). Code identifiers, paths and code blocks stay as-is.
 
 **Plans are a development-only artifact.** Never link to `.ai/plans/*` (or
 reference the `.ai/plans/` directory) from the main `README.md` or from anything

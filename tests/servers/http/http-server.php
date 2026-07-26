@@ -16,6 +16,7 @@ use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Features\Mysql\Connection as MysqlConnection;
 use SConcur\Features\Pgsql\Connection as PgsqlConnection;
 use SConcur\Features\Sleeper\Sleeper;
+use SConcur\Scheduler\Scheduler;
 use SConcur\Tests\Impl\HttpServer\GeneratorStream;
 use SConcur\WaitGroup;
 
@@ -41,6 +42,7 @@ use SConcur\WaitGroup;
  *   GET  /msleep/{ms}       -> sleeps {ms} (async), then 200 "slept" (concurrency demo)
  *   GET  /native-msleep/{ms} -> blocks the thread {ms} natively (handler-timeout test)
  *   GET  /cpu/{n}           -> runs a CPU-bound sha256 loop of {n} rounds (bench)
+ *   GET  /cpu-switch/{n}    -> the same loop, but yielding via Scheduler::switch() (fairness demo)
  *   GET  /all               -> fans out across the backend I/O features concurrently (load test)
  *   GET  /all-nowg          -> the same SConcur features, sequentially, NO WaitGroup — measures
  *                              cross-request concurrency alone (each call still yields)
@@ -150,6 +152,7 @@ $server->serve(static function (ServerRequestInterface $request) use ($psr17Fact
         $path === '/throw'       => throw new RuntimeException('boom in handler'),
         str_starts_with($path, '/msleep/') => msleepRoute($psr17Factory, $path),
         str_starts_with($path, '/native-msleep/') => nativeMsleepRoute($psr17Factory, $path),
+        str_starts_with($path, '/cpu-switch/') => cpuSwitchRoute($psr17Factory, $path),
         str_starts_with($path, '/cpu/')    => cpuRoute($psr17Factory, $path),
         str_starts_with($path, '/status/') => statusRoute($psr17Factory, $path),
         default => text($psr17Factory, 'not found', 404),
@@ -713,6 +716,26 @@ function slowStreamRoute(Psr17Factory $factory): ResponseInterface
         $chunks,
         ['Content-Type' => 'text/plain'],
     );
+}
+
+// CPU-bound route that cooperates: the same sha256 loop as /cpu/{n}, but calling
+// Scheduler::switch() each iteration (1 ms quantum), so concurrent light requests
+// keep progressing while this one crunches — the fairness counterpart of /cpu.
+function cpuSwitchRoute(Psr17Factory $factory, string $path): ResponseInterface
+{
+    $iterations = (int) substr($path, strlen('/cpu-switch/'));
+
+    $scheduler = Scheduler::get();
+
+    $value = '';
+
+    for ($i = 0; $i < $iterations; $i++) {
+        $scheduler->switch(quantumMs: 1);
+
+        $value = hash('sha256', $value . $i);
+    }
+
+    return text($factory, $value);
 }
 
 // CPU-bound route: a sha256 loop that does NOT yield to the scheduler — used by

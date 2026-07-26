@@ -435,6 +435,52 @@ class WorkerMasterTest extends TestCase
         }
     }
 
+    public function testWorkerFatalErrorTextIsLoggedEvenWithDisplayErrorsOff(): void
+    {
+        // A worker dying on startup must leave its reason in the journal even when
+        // the deployment php.ini says display_errors=Off (the production
+        // recommendation): the master forces display_errors=stderr into the worker
+        // command, so the fatal text arrives on stderr and is logged at ERROR.
+        $workerScript = (string) tempnam(sys_get_temp_dir(), 'sc-fatal-worker-');
+        $iniPath      = (string) tempnam(sys_get_temp_dir(), 'sc-worker-ini-');
+
+        file_put_contents($workerScript, "<?php\nthrow new RuntimeException('boom on worker startup');\n");
+        file_put_contents($iniPath, "display_errors=Off\n");
+
+        $master = TestWorkerMaster::start(
+            options: [
+                'workerScript'  => $workerScript,
+                'workerCount'   => 1,
+                'restartPolicy' => 'never',
+                'phpArgs'       => [
+                    '-c',
+                    $iniPath,
+                ],
+            ],
+            waitReachable: false,
+        );
+
+        try {
+            // policy=never + a crash: the master exits once its only worker is done.
+            $exitCode = $master->waitForExit(8.0);
+
+            $logText = $master->logText();
+
+            self::assertSame(0, $exitCode, 'the master should finish on its own: ' . $logText);
+            self::assertStringContainsString('boom on worker startup', $logText);
+            self::assertMatchesRegularExpression(
+                '/ERROR \[worker: \d+ #0\]: [^\n]*boom on worker startup/',
+                $logText,
+                'the fatal text must be logged at ERROR (stderr), not INFO',
+            );
+        } finally {
+            $master->stop();
+
+            @unlink($workerScript);
+            @unlink($iniPath);
+        }
+    }
+
     public function testReloadRollsEveryWorkerWithoutDowntime(): void
     {
         $master = TestWorkerMaster::start(['workerCount' => 2]);

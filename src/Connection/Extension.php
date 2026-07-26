@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Connection;
 
+use Closure;
 use SConcur\Dto\RunningTaskDto;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\ExtensionCallException;
@@ -15,7 +16,9 @@ use SConcur\Features\MethodEnum;
 use SConcur\Transport\MessagePackTransport;
 use SConcur\Transport\PayloadInterface;
 use Throwable;
+use function SConcur\Extension\armPreemption;
 use function SConcur\Extension\destroy;
+use function SConcur\Extension\disarmPreemption;
 use function SConcur\Extension\httpStopAccepting;
 use function SConcur\Extension\next;
 use function SConcur\Extension\push;
@@ -38,7 +41,7 @@ class Extension
      * rejected instead of silently misbehaving. Public so tooling (bin/sconcur-status)
      * can report the version the package expects.
      */
-    public const string REQUIRED_EXTENSION_VERSION = '0.7.2';
+    public const string REQUIRED_EXTENSION_VERSION = '0.8.0';
 
     /**
      * Result frame layout (Go -> PHP), see main.go buildResultFrame. The envelope is
@@ -196,6 +199,22 @@ class Extension
     public function version(): string
     {
         return version();
+    }
+
+    /**
+     * Starts automatic preemption: the extension's timer requests a VM interrupt
+     * every $quantumMs, and the engine calls $preemptCallback between opcodes on
+     * the PHP thread (the Scheduler's preempt hook parking the current
+     * coroutine). Re-arming replaces the previous timer and callback.
+     */
+    public function armPreemption(int $quantumMs, Closure $preemptCallback): void
+    {
+        armPreemption($quantumMs, $preemptCallback);
+    }
+
+    public function disarmPreemption(): void
+    {
+        disarmPreemption();
     }
 
     protected static function parseWaitResponse(string $response, string $errorContext, float $start): TaskResultDto

@@ -397,12 +397,21 @@ class WorkerMaster
      * flag — the same channel as the expanded `server` flags and the consumer's
      * workerArgs, no environment involved — for the worker to use as it sees fit.
      *
+     * `display_errors=stderr` is forced ahead of the consumer's phpArgs so a dying
+     * worker always explains itself: with the production-ini `display_errors=Off` a
+     * fatal (parse error, missing extension, OOM) would leave nothing in the journal
+     * but "exited code=255", and with the CLI default (`On` = stdout) the error text
+     * would be logged as INFO instead of ERROR. A later `-d` wins, so phpArgs can
+     * still override this deliberately.
+     *
      * @return list<string>
      */
     protected function buildCommand(): array
     {
         return [
             $this->phpBinary,
+            '-d',
+            'display_errors=stderr',
             ...$this->phpArgs,
             $this->workerScript,
             ...$this->workerArgs,

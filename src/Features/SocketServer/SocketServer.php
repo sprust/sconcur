@@ -53,6 +53,11 @@ readonly class SocketServer
      * @param string                                    $serverName          labels the pushed snapshot — the pool scope the collector
      *                                                                       aggregates by (default "sconcur-server").
      * @param int                                       $telemetryIntervalMs snapshot sample/push cadence in ms (0 = default).
+     * @param int                                       $preemptionQuantumMs automatic-preemption quantum: while serving, the
+     *                                                                       extension interrupts the VM every quantum and parks the
+     *                                                                       running handler coroutine, so a CPU-bound handler cannot
+     *                                                                       starve the other in-flight connections. Enabled by default
+     *                                                                       (5 ms); 0 disables.
      *
      * Defaults mirror the Go server defaults.
      */
@@ -70,6 +75,7 @@ readonly class SocketServer
         private string $telemetrySocket = '',
         private string $serverName = 'sconcur-server',
         private int $telemetryIntervalMs = 0,
+        private int $preemptionQuantumMs = 5,
     ) {
     }
 
@@ -169,6 +175,7 @@ readonly class SocketServer
                 onShutdownStep: static function (string $step): void {
                     self::logServerEvent('sconcur socket server shutdown: ' . $step);
                 },
+                preemptionQuantumMs: $this->preemptionQuantumMs,
             );
         } finally {
             $restoreSignals();
