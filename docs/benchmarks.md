@@ -30,6 +30,7 @@ The quick workload-matching verdict table ("Is SConcur for you?") lives in
 - [Servers (HTTP / Socket / WebSocket)](#servers-http--socket--websocket)
   - [HTTP throughput: `/` vs `/all`](#http-throughput--vs-all)
   - [Comparison with RoadRunner (native drivers)](#comparison-with-roadrunner-native-drivers)
+  - [Point query: the worker-count ladder vs RoadRunner](#point-query-the-worker-count-ladder-vs-roadrunner)
 - [Conclusions](#conclusions)
 
 ## Environment
@@ -465,6 +466,50 @@ sequential native code has nothing to overlap and it wins — this is visible in
 read rows in the DB tables. As soon as an operation gains a delay — an fsync on disk, as
 here, or a network RTT — sequential code sums it, the fan-out overlaps it, and the
 advantage goes to SConcur.
+
+### Point query: the worker-count ladder vs RoadRunner
+
+A separate probe (2026-07-26, an ad-hoc handle not kept in the demo servers): one
+point SELECT per request — `SELECT id, t FROM bench_seed WHERE id = ?` with a random
+id out of 1 000 seeded rows, JSON response. SConcur runs it through the MySQL feature
+with no `WaitGroup` (cross-request overlap only); RoadRunner through PDO. Disk-backed
+MySQL, default `max_connections = 151`; the SConcur per-process pool is sized to fit
+the server limit (≈150 / process count). The same wrk harness (4 threads / 256
+connections / 20 s), both stacks measured within one session — cross-session drift
+of the absolute numbers reaches ±20%, only in-session comparisons are meaningful.
+
+| Workers | RoadRunner rps / p50 / p99 | SConcur rps / p50 / p99 (pool) | SConcur rps |
+| ---: | --- | --- | :---: |
+| 1 | 5 248 / 47.6 ms / 65.8 ms | 6 581 / 38.2 ms / 68.1 ms (150) | +25% |
+| 3 | 10 561 / 23.8 ms / 29.3 ms | 13 518 / 17.1 ms / 39.5 ms (50×3) | +28% |
+| 8 | 23 696 / 10.6 ms / 13.1 ms | 26 482 / 9.6 ms / 17.8 ms (18×8) | +12% |
+| 16 | 29 084 / 8.6 ms / 11.5 ms | 28 105 / 8.4 ms / 32.5 ms (9×16) | −3% |
+
+What the ladder shows:
+
+- The advantage tapers with pool size: +25–28% on 1–3 workers, +12% on 8, parity at
+  the full per-core pool. In-process overlap adds throughput while each worker is
+  saturated with waiting clients; at the full pool both servers meet at the shared
+  hardware ceiling (MySQL plus total CPU), where the execution model stops mattering.
+  SConcur saturates first — it spends more CPU per request (the PHP↔Go boundary):
+  going 8 → 16 workers buys it +6% against RoadRunner's +23%.
+- One SConcur process is bound by its single PHP thread (a steady 101% CPU): ≈6.6k
+  rps, and a pool beyond ~64 connections adds nothing.
+- RoadRunner's tails are consistently tighter at every pool size (p99 11.5 ms vs
+  32.5 ms at 16): a dequeued request owns its worker outright, while SConcur
+  multiplexes dozens of in-flight requests per thread.
+- Pool sizing: the Go-side pool lives per process, so the DB connection budget is
+  divided across the processes. 16 processes × a 150-connection pool against
+  `max_connections = 151` turned a third of the responses into "Too many
+  connections" errors. The useful pool size is the expected in-flight per process
+  (clients / processes) plus a small margin; raising `max_connections` to 500 and
+  inflating the pools to 480 total moved nothing (±1%) — the ceiling is CPU, and the
+  idle connections only cost the DB memory (≈ +90 MiB).
+
+This is the same boundary the cheap-point-query row of the verdict table draws
+([positioning](positioning.md#is-sconcur-for-you)): with nothing to overlap inside a
+request, the models converge — SConcur's remaining edge is holding the same load on
+fewer processes, not a higher ceiling.
 
 ## Conclusions
 
