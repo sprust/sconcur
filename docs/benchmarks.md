@@ -469,9 +469,10 @@ advantage goes to SConcur.
 
 ### Point query: the worker-count ladder vs RoadRunner
 
-A separate probe (2026-07-26, an ad-hoc handle not kept in the demo servers): one
-point SELECT per request — `SELECT id, t FROM bench_seed WHERE id = ?` with a random
-id out of 1 000 seeded rows, JSON response. SConcur runs it through the MySQL feature
+A separate probe (2026-07-26, the `/db` handle of the demo servers — it seeds its
+1 000-row table on the first hit): one point SELECT per request —
+`SELECT id, t FROM bench_seed WHERE id = ?` with a random id out of 1 000 seeded
+rows, JSON response; `?n=` runs several sequential SELECTs per request. SConcur runs it through the MySQL feature
 with no `WaitGroup` (cross-request overlap only); RoadRunner through PDO. Disk-backed
 MySQL, default `max_connections = 151`; the SConcur per-process pool is sized to fit
 the server limit (≈150 / process count). The same wrk harness (4 threads / 256

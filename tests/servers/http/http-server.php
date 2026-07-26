@@ -43,6 +43,8 @@ use SConcur\WaitGroup;
  *   GET  /native-msleep/{ms} -> blocks the thread {ms} natively (handler-timeout test)
  *   GET  /cpu/{n}           -> runs a CPU-bound sha256 loop of {n} rounds (bench)
  *   GET  /cpu-switch/{n}    -> the same loop, but yielding via Scheduler::switch() (fairness demo)
+ *   GET  /db?n={q}          -> {q} sequential point SELECTs on MySQL (default 1), JSON row —
+ *                              the point-query ladder bench vs RoadRunner (docs/benchmarks.md)
  *   GET  /all               -> fans out across the backend I/O features concurrently (load test)
  *   GET  /all-nowg          -> the same SConcur features, sequentially, NO WaitGroup — measures
  *                              cross-request concurrency alone (each call still yields)
@@ -139,6 +141,7 @@ $server->serve(static function (ServerRequestInterface $request) use ($psr17Fact
             200,
             ['Set-Cookie' => ['a=1', 'b=2']],
         ),
+        $path === '/db'               => dbPointSelectRoute($psr17Factory, $request),
         $path === '/all'              => allFeaturesRoute($psr17Factory),
         $path === '/all-nowg'         => allFeaturesNoWaitGroupRoute($psr17Factory),
         $path === '/all-native'       => allFeaturesNativeRoute($psr17Factory),
@@ -357,6 +360,71 @@ function nativeMsleepRoute(Psr17Factory $factory, string $path): ResponseInterfa
  * but any failed feature turns the response into a 500 — load tools (wrk) then count
  * the request as an error instead of silently passing it as a 200.
  */
+// Point-query bench route (the worker-count ladder vs RoadRunner in
+// docs/benchmarks.md): ?n= sequential point SELECTs per request (default 1)
+// through the SConcur MySQL feature, no WaitGroup — cross-request overlap only.
+// The pool is sized for the connection budget divided across a 16-worker
+// reuse-port pool under MySQL's default max_connections=151 (16 × 9 = 144).
+function dbPointSelectRoute(Psr17Factory $factory, ServerRequestInterface $request): ResponseInterface
+{
+    $queryCount = max(1, (int) ($request->getQueryParams()['n'] ?? 1));
+
+    $mysql = dbPointSelectContext();
+    $rows  = [];
+
+    for ($queryIndex = 0; $queryIndex < $queryCount; $queryIndex++) {
+        $rows = $mysql->fetchAll(
+            sql: 'SELECT id, t FROM bench_seed WHERE id = ?',
+            bindings: [random_int(1, 1000)],
+        );
+    }
+
+    return text($factory, (string) json_encode($rows));
+}
+
+// Lazily builds the /db connection on the first hit and makes sure the seeded
+// table exists (1 000 fixed-shape rows), so the handle works out of the box.
+function dbPointSelectContext(): MysqlConnection
+{
+    static $mysql = null;
+
+    if ($mysql !== null) {
+        return $mysql;
+    }
+
+    Dotenv::createImmutable(dirname(__DIR__, 3))->safeLoad();
+
+    $mysql = new MysqlConnection(
+        dsn: sprintf(
+            '%s:%s@tcp(%s:%s)/%s?parseTime=true',
+            $_ENV['MYSQL_USER'],
+            $_ENV['MYSQL_PASSWORD'],
+            $_ENV['MYSQL_HOST'],
+            $_ENV['MYSQL_PORT'],
+            $_ENV['MYSQL_DATABASE'],
+        ),
+        maxOpenConns: 9,
+    );
+
+    $mysql->exec(sql: 'CREATE TABLE IF NOT EXISTS bench_seed (id BIGINT PRIMARY KEY, t VARCHAR(64) NOT NULL)');
+
+    $seededRows = $mysql->fetchAll('SELECT COUNT(*) AS c FROM bench_seed');
+
+    if ((int) ($seededRows[0]['c'] ?? 0) < 1000) {
+        for ($id = 1; $id <= 1000; $id++) {
+            $mysql->exec(
+                sql: 'INSERT IGNORE INTO bench_seed (id, t) VALUES (?, ?)',
+                bindings: [
+                    $id,
+                    'row-' . $id . '-' . str_repeat('x', 20),
+                ],
+            );
+        }
+    }
+
+    return $mysql;
+}
+
 function allFeaturesRoute(Psr17Factory $factory): ResponseInterface
 {
     [$mongo, $mysql, $pgsql] = allFeaturesContext();

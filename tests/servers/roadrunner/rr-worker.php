@@ -9,6 +9,7 @@ use MongoDB\Client as NativeMongoClient;
 use MongoDB\Collection as NativeMongoCollection;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use Psr\Http\Message\ResponseInterface;
+use Psr\Http\Message\ServerRequestInterface;
 use SConcur\Features\Mongodb\Connection\Client as SconcurMongoClient;
 use SConcur\Features\Mongodb\Connection\Collection as SconcurMongoCollection;
 use SConcur\Features\Mysql\Connection as SconcurMysqlConnection;
@@ -22,6 +23,8 @@ use Spiral\RoadRunner\Worker;
  * server (docs/benchmarks.ru.md, "Сравнение с RoadRunner"). Serves exact copies
  * of the benchmark routes of tests/servers/http/http-server.php:
  *   GET /    -> 200 "ok"
+ *   GET /db?n={q} -> {q} sequential point SELECTs on MySQL via PDO (default 1) —
+ *               the point-query ladder bench (docs/benchmarks.md)
  *   GET /all -> MongoDB insertOne+findOne (mongodb/mongodb), MySQL INSERT +
  *               SELECT 1 (PDO), PostgreSQL INSERT + SELECT 1 (PDO) — NATIVE
  *               drivers, sequentially (a RoadRunner worker has no internal
@@ -66,6 +69,7 @@ while (true) {
 
         $response = match ($path) {
             '/'            => rrText($psr17Factory, 'ok'),
+            '/db'          => rrDbPointSelectRoute($psr17Factory, $request),
             '/all'         => rrAllFeaturesRoute($psr17Factory),
             '/all-sconcur' => rrAllFeaturesSconcurRoute($psr17Factory),
             default        => rrText($psr17Factory, 'not found', 404),
@@ -98,6 +102,56 @@ function rrText(Psr17Factory $factory, string $body = '', int $status = 200): Re
  * hiccup stays visible per feature in the JSON map, but any failed feature turns
  * the response into a 500 (load tools then count the request as an error).
  */
+// Point-query bench route (the worker-count ladder vs RoadRunner in
+// docs/benchmarks.md): ?n= sequential point SELECTs per request (default 1)
+// through native PDO — the sequential-worker counterpart of the SConcur /db.
+function rrDbPointSelectRoute(Psr17Factory $factory, ServerRequestInterface $request): ResponseInterface
+{
+    [, $mysql] = rrAllFeaturesContext();
+
+    rrDbPointSelectSeed($mysql);
+
+    parse_str($request->getUri()->getQuery(), $queryParams);
+
+    $queryCount = max(1, (int) ($queryParams['n'] ?? 1));
+
+    $statement = $mysql->prepare('SELECT id, t FROM bench_seed WHERE id = ?');
+
+    $rows = [];
+
+    for ($queryIndex = 0; $queryIndex < $queryCount; $queryIndex++) {
+        $statement->execute([random_int(1, 1000)]);
+
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    return rrText($factory, (string) json_encode($rows));
+}
+
+// Makes sure the seeded table exists (1 000 fixed-shape rows, once per worker),
+// so the handle works out of the box — the mirror of dbPointSelectContext() in
+// http-server.php.
+function rrDbPointSelectSeed(PDO $mysql): void
+{
+    static $seeded = false;
+
+    if ($seeded) {
+        return;
+    }
+
+    $mysql->exec('CREATE TABLE IF NOT EXISTS bench_seed (id BIGINT PRIMARY KEY, t VARCHAR(64) NOT NULL)');
+
+    if ((int) $mysql->query('SELECT COUNT(*) FROM bench_seed')->fetchColumn() < 1000) {
+        $insert = $mysql->prepare('INSERT IGNORE INTO bench_seed (id, t) VALUES (?, ?)');
+
+        for ($id = 1; $id <= 1000; $id++) {
+            $insert->execute([$id, 'row-' . $id . '-' . str_repeat('x', 20)]);
+        }
+    }
+
+    $seeded = true;
+}
+
 function rrAllFeaturesRoute(Psr17Factory $factory): ResponseInterface
 {
     [$mongo, $mysql, $pgsql] = rrAllFeaturesContext();
