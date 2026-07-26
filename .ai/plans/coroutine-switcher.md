@@ -30,9 +30,13 @@ cooperatively and purely on the PHP side.
   from a fiber the scheduler does not track; the quantum has not elapsed yet.
 - Quantum: the first `switch()` call of a coroutine records the timestamp and returns
   `false` (the quantum starts counting there); each later call yields only when
-  `hrtime(true) - lastSwitchNs >= quantumMs * 1_000_000`, then re-records. So the call
-  can sit inside a hot loop: in the common case it costs one `hrtime()` and one
-  comparison.
+  `hrtime(true) - lastSwitchNs >= quantumMs * 1_000_000`. So the call can sit inside a
+  hot loop: in the common case it costs one `hrtime()` and one comparison. The
+  timestamp is re-recorded at the resume from the yield, NOT at the park: the quantum
+  measures the coroutine's own run time. Measuring from the park let the queue waiting
+  time eat the next quantum — a resumed coroutine re-parked on its first `switch()`
+  call and two identical CPU loops skewed to roughly 9:1 (found by a fairness probe
+  during review; `testQuantumSharesCpuFairlyBetweenTwoLoops` is the regression test).
 - `quantumMs <= 0` — always yield (tests, explicit switch points).
 
 No extension changes: parking and resuming is pure scheduler bookkeeping, and the
@@ -76,9 +80,12 @@ Flow:
 Edge cases:
 
 - `WaitGroup::stop()` / `Scheduler::shutdown()` while parked: the fiber is suspended,
-  so the existing unwind (`fiber->throw(FlowStoppedException)`) works; the queue entry
-  goes stale. The drain skips ids missing from `$this->coroutines`
-  (`resumeNextSwitched()` loops until it finds a live one or empties the queue).
+  so the existing unwind (`fiber->throw(FlowStoppedException)`) works. The queue entry
+  is purged eagerly in `detach()`/`forget()` — a stale id is dangerous, not just
+  noise: spl_object_id is reused once the fiber is freed, so a leftover entry could
+  match a brand-new coroutine parked on a task result and resume it with null out of
+  turn. The drain's skip of ids missing from `$this->coroutines`
+  (`resumeNextSwitched()`) remains as a defensive net.
 - A parked coroutine's group must not report "settled" early: parking does not touch
   group bookkeeping — the coroutine stays a live member (exactly like one awaiting a
   task result), so `isLive()`/`wakeGroupWaiters` semantics are unchanged.

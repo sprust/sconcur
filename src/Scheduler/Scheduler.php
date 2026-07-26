@@ -68,17 +68,22 @@ class Scheduler
 
     /**
      * FIFO of fiber ids parked by switch() (a cooperative yield). Drained by the
-     * scheduler loops once nothing else is deliverable right now; entries whose
-     * coroutine has been unwound meanwhile (stop/shutdown) are skipped as stale.
+     * scheduler loops once nothing else is deliverable right now. A coroutine
+     * unwound while parked (stop/shutdown) is purged from the queue immediately
+     * (detach/forget): spl_object_id is reused after the fiber is freed, so a
+     * stale id left behind could resume a future unrelated coroutine.
      *
      * @var array<int, int>
      */
     protected array $switchedCoroutines = [];
 
     /**
-     * Per-coroutine timestamps of the last actual switch() yield (hrtime(true)
-     * nanoseconds), driving the switch quantum. Keyed by fiber id; released in
-     * forget()/detach() with the coroutine.
+     * Per-coroutine hrtime(true) timestamps starting the current switch quantum:
+     * recorded when the coroutine resumes from a switch() yield (and by its first
+     * switch() call). Measuring from the resume — not the park — keeps queue
+     * waiting time out of the quantum, so identical CPU loops share the thread
+     * evenly. Keyed by fiber id; released in forget()/detach() with the
+     * coroutine.
      *
      * @var array<int, int>
      */
@@ -247,6 +252,8 @@ class Scheduler
 
         unset($this->coroutines[$fiberId], $this->lastSwitchNs[$fiberId]);
 
+        $this->purgeSwitchedCoroutine($fiberId);
+
         return $coroutine;
     }
 
@@ -316,7 +323,9 @@ class Scheduler
      * Cheap no-op (returns false) outside a fiber, from an untracked fiber, and
      * while the quantum has not elapsed — so the call can sit inside a hot loop:
      * the first call starts the quantum, later calls cost one hrtime() comparison
-     * until it runs out. $quantumMs <= 0 forces a yield on every call.
+     * until it runs out. The quantum measures the coroutine's run time since it
+     * was last resumed, not wall time since it last parked. $quantumMs <= 0
+     * forces a yield on every call.
      */
     public function switch(int $quantumMs = self::DEFAULT_SWITCH_QUANTUM_MS): bool
     {
@@ -328,13 +337,12 @@ class Scheduler
 
         $fiberId = spl_object_id($currentFiber);
 
-        if (!array_key_exists($fiberId, $this->coroutines)) {
+        if (!isset($this->coroutines[$fiberId])) {
             return false;
         }
 
-        $nowNs = hrtime(true);
-
         if ($quantumMs > 0) {
+            $nowNs        = hrtime(true);
             $lastSwitchNs = $this->lastSwitchNs[$fiberId] ?? null;
 
             if ($lastSwitchNs === null || (($nowNs - $lastSwitchNs) < ($quantumMs * 1_000_000))) {
@@ -344,8 +352,6 @@ class Scheduler
                 return false;
             }
         }
-
-        $this->lastSwitchNs[$fiberId] = $nowNs;
 
         // Also guards against a nested preemption landing between here and the
         // suspend (the park itself is a suspend transition).
@@ -374,6 +380,12 @@ class Scheduler
             );
         }
 
+        // The quantum counts the coroutine's own run time, so it starts at the
+        // resume, not at the park: time spent waiting in the switched queue must
+        // not eat the next quantum, or a resumed coroutine would immediately
+        // re-park and the CPU share of two identical loops would skew heavily.
+        $this->lastSwitchNs[$fiberId] = hrtime(true);
+
         return true;
     }
 
@@ -394,7 +406,7 @@ class Scheduler
 
         $fiberId = spl_object_id($currentFiber);
 
-        if (!array_key_exists($fiberId, $this->coroutines)) {
+        if (!isset($this->coroutines[$fiberId])) {
             return;
         }
 
@@ -643,6 +655,21 @@ class Scheduler
     }
 
     /**
+     * Drops a fiber id from the switched queue when its coroutine leaves the
+     * scheduler. Required, not cosmetic: spl_object_id is reused once the fiber
+     * is freed, so a stale queue entry could later match a brand-new coroutine
+     * parked on a task result and resume it with null out of turn.
+     */
+    protected function purgeSwitchedCoroutine(int $fiberId): void
+    {
+        $queueIndex = array_search($fiberId, $this->switchedCoroutines, true);
+
+        if ($queueIndex !== false) {
+            unset($this->switchedCoroutines[$queueIndex]);
+        }
+    }
+
+    /**
      * One scheduler step: take the first ready result of any flow and resume the
      * coroutine it belongs to. With coroutines parked by switch() the step never
      * blocks: a deliverable result keeps priority, an empty poll resumes the
@@ -668,9 +695,9 @@ class Scheduler
     }
 
     /**
-     * Resumes the oldest coroutine parked by switch(), skipping stale entries
-     * whose coroutine was unwound (stop/shutdown) while parked. No-op on an
-     * empty queue.
+     * Resumes the oldest coroutine parked by switch(). No-op on an empty queue.
+     * Unwound coroutines are purged from the queue eagerly (detach/forget); the
+     * skip below is a defensive net for an id that slipped through anyway.
      */
     protected function resumeNextSwitched(): void
     {
@@ -783,6 +810,8 @@ class Scheduler
     protected function forget(Coroutine $coroutine): void
     {
         unset($this->coroutines[$coroutine->id], $this->lastSwitchNs[$coroutine->id]);
+
+        $this->purgeSwitchedCoroutine($coroutine->id);
 
         if ($coroutine->group !== null) {
             State::unRegisterFiber($coroutine->id);

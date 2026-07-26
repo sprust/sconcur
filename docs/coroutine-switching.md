@@ -47,7 +47,10 @@ cheap no-op (`false`) costing one `hrtime()` comparison:
 - outside a fiber (the synchronous path) — no-op, callers need no guards;
 - from a fiber the scheduler does not track — no-op;
 - while the quantum has not elapsed — no-op. The first call only starts the
-  quantum; later calls yield once at most every `$quantumMs` milliseconds.
+  quantum; a later call yields once the coroutine has run for `$quantumMs`
+  milliseconds since it was last resumed. Time spent parked in the queue does
+  not count against the next quantum, so identical CPU loops share the thread
+  evenly.
 
 `quantumMs <= 0` forces a yield on every call (explicit switch points, tests).
 

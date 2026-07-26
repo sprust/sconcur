@@ -124,6 +124,57 @@ class SchedulerSwitchTest extends BaseTestCase
         $this->assertNoTasksCount();
     }
 
+    public function testQuantumSharesCpuFairlyBetweenTwoLoops(): void
+    {
+        // Two identical CPU loops with a real (non-zero) quantum must end up
+        // with comparable iteration counts. Regression: when the quantum was
+        // measured from the park instead of the resume, the queue waiting time
+        // ate the next quantum and the shares skewed to roughly 9:1.
+        $iterationCounts = [
+            'first'  => 0,
+            'second' => 0,
+        ];
+
+        $deadlineNs = hrtime(true) + 200_000_000;
+
+        $waitGroup = WaitGroup::create();
+
+        foreach (['first', 'second'] as $name) {
+            $waitGroup->add(
+                callback: static function () use (&$iterationCounts, $name, $deadlineNs): void {
+                    $scheduler = Scheduler::get();
+
+                    $digest = $name;
+
+                    while (hrtime(true) < $deadlineNs) {
+                        $scheduler->switch(quantumMs: 5);
+
+                        $digest = hash('sha256', $digest);
+
+                        ++$iterationCounts[$name];
+                    }
+                },
+            );
+        }
+
+        $waitGroup->waitAll();
+
+        $maxIterations = max($iterationCounts);
+        $minIterations = min($iterationCounts);
+
+        self::assertGreaterThan(0, $minIterations);
+        self::assertLessThan(
+            $minIterations * 2,
+            $maxIterations,
+            sprintf(
+                'The CPU shares diverged (%s): the switch quantum is not fair.',
+                json_encode($iterationCounts),
+            ),
+        );
+
+        $this->assertNoTasksCount();
+    }
+
     public function testStopUnwindsParkedCoroutine(): void
     {
         $finallyRan = false;
