@@ -100,8 +100,10 @@ status:
 
 # --log-junit persists the failing test's name for the rare flaky failure that
 # only fires on the first run after heavy host activity — see
-# .ai/plans/flaky-test-hunt.ru.md. Inspect /tmp/sconcur-phpunit.xml (in the php
-# container) after a failed run.
+# .ai/plans/flaky-test-hunt.ru.md. A failed run's report is copied to
+# .phpunit-failed/ (gitignored, survives container restarts) with a timestamped
+# name, so a one-off failure is never lost to the next run overwriting
+# /tmp/sconcur-phpunit.xml.
 test:
 	$(PHP_EXT) vendor/bin/phpunit \
 		-d memory_limit=512M \
@@ -115,7 +117,10 @@ test:
 		--display-errors \
 		--display-notices \
 		--display-warnings \
-		tests ${c}
+		tests ${c} || ( \
+			$(PHP_CLI) sh -c 'mkdir -p .phpunit-failed && cp /tmp/sconcur-phpunit.xml .phpunit-failed/sconcur-phpunit-$$(date +%Y%m%d-%H%M%S).xml'; \
+			exit 1 \
+		)
 
 ext-build:
 	$(PHP_CLI) sh ./ext-build.sh
