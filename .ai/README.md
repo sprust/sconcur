@@ -138,7 +138,7 @@ non-fiber path.)
 - `Telemetry/` — the master-side stats collector and live panel (pure PHP, no extension): `TelemetryRuntime` (`poll()` orchestrator driven by the master loop), `Collector` (unix-socket listener decoding pushed frames into `Store`), `PanelServer` (non-blocking HTTP/SSE serving `GET /api/stats`, `/`, `/events` with Bearer auth), `FrameCodec`, `Aggregator`, `Dto/*` (`Snapshot`/`Aggregate`/...), `Render/*` (`Json`/`Prometheus`/`Html`). Consumes the `internal/stats` push protocol. See [docs/admin-stats.md](../docs/admin-stats.md).
 
 **Go extension** (`ext/`):
-- `main.go` — cgo exports (`push`, `wait`, `next`, `waitAny`, `waitAnyTimeout`, `waitAnyBatch`, `waitAnyTimeoutBatch`, `tasksCount`, `stopFlow`, `httpStopAccepting`, `socketStopAccepting`, `destroy`, `version`)
+- `main.go` — cgo exports (`ping`, `push`, `wait`, `next`, `waitAny`, `waitAnyTimeout`, `waitAnyBatch`, `waitAnyTimeoutBatch`, `tasksCount`, `stopFlow`, `httpStopAccepting`, `socketStopAccepting`, `wsStopAccepting`, `preemptionArm`, `preemptionDisarm`, `destroy`, `version`)
 - `internal/handler/` — singleton orchestrator routing messages to flows
 - `internal/logger/` — fire-and-forget async log sink: a background goroutine writes pre-formatted lines to stdout (buffered, timer-flushed, drops on overflow), so the loop never blocks on log I/O. The HttpServer access log feeds it directly from the Go response goroutine (no PHP↔Go crossing per request)
 - `internal/flows/` — `Flows` manages concurrent `Flow` instances; each `Flow` holds tasks and a result channel

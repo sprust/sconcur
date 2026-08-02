@@ -261,3 +261,77 @@ func TestDrainReadyClearsStaleBatchBufferTail(t *testing.T) {
 		t.Fatal("Destroy must drop batchBuffer so the retained results are released")
 	}
 }
+
+// The batch must hand out the Wait(flowKey)-buffered leftovers before draining
+// the channel: pending entries are older pulls, so cross-call FIFO holds.
+func TestWaitAnyBatchDrainsPendingLeftoversFirst(t *testing.T) {
+	h := NewHandler()
+	defer h.Destroy()
+
+	if err := h.Push(sleepMessage(t, "fast", "fast-1", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Push(sleepMessage(t, "slow", "slow-1", 60)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait(slow) pulls the ready "fast" result off the channel and buffers it
+	// into pending while waiting for its own flow.
+	if _, err := h.Wait("slow"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.Push(sleepMessage(t, "late", "late-1", 1)); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(30 * time.Millisecond)
+
+	batch, err := h.WaitAnyBatch(64)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(batch) != 2 {
+		t.Fatalf("expected the pending leftover plus the channel result, got %d", len(batch))
+	}
+	if batch[0].FlowKey != "fast" {
+		t.Fatalf("the pending leftover must come first, got %s", batch[0].FlowKey)
+	}
+	if batch[1].FlowKey != "late" {
+		t.Fatalf("the channel result must follow, got %s", batch[1].FlowKey)
+	}
+}
+
+// A result whose flow was stopped between publish and drain must be filtered
+// out mid-batch by deliver(), exactly like on the singular path.
+func TestWaitAnyBatchFiltersStoppedFlowResults(t *testing.T) {
+	h := NewHandler()
+	defer h.Destroy()
+
+	if err := h.Push(sleepMessage(t, "stopped", "s-1", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Push(sleepMessage(t, "alive", "a-1", 1)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both results sit in the buffered channel; stopping the flow retires its
+	// key, so the drain must drop the stopped flow's result on delivery.
+	time.Sleep(30 * time.Millisecond)
+
+	h.StopFlow("stopped")
+
+	batch, err := h.WaitAnyBatch(64)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(batch) != 1 || batch[0].FlowKey != "alive" {
+		t.Fatalf("expected only the alive flow's result, got %+v", batch)
+	}
+
+	if h.GetTasksCount() != 0 {
+		t.Fatalf("expected zero tasks after the drain, got %d", h.GetTasksCount())
+	}
+}

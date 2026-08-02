@@ -7,6 +7,7 @@ namespace SConcur\Tests\Feature\Connection;
 use ReflectionMethod;
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\TaskErrorException;
+use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\Sleeper\Payloads\SleeperPayload;
 use SConcur\Tests\Feature\BaseTestCase;
 
@@ -94,6 +95,128 @@ class WaitAnyBatchTest extends BaseTestCase
         self::assertNull($results, 'an idle extension must time out, not block or return results');
         self::assertGreaterThanOrEqual(0.045, $elapsed);
         self::assertLessThan(1.0, $elapsed);
+    }
+
+    public function testTimeoutBatchDrainsReadyResults(): void
+    {
+        $flowKeys = [];
+
+        foreach (range(1, 3) as $index) {
+            $flowKey    = 'timeout-batch-' . $index;
+            $flowKeys[] = $flowKey;
+
+            $this->extension->push(
+                flowKey: $flowKey,
+                payload: new SleeperPayload(microseconds: 1),
+            );
+        }
+
+        usleep(100_000);
+
+        $results = $this->extension->waitAnyTimeoutBatch(
+            timeoutMs: 1_000,
+            maxResults: 64,
+        );
+
+        self::assertNotNull($results, 'ready results must arrive through the timeout variant too');
+        self::assertCount(3, $results);
+
+        foreach ($results as $result) {
+            self::assertFalse($result->isError, "task {$result->key} must succeed, got: {$result->payload}");
+        }
+
+        foreach ($flowKeys as $flowKey) {
+            $this->extension->stopFlow($flowKey);
+        }
+
+        $this->assertNoTasksCount();
+    }
+
+    public function testErrorResultTravelsInsideABatch(): void
+    {
+        $this->extension->push(
+            flowKey: 'batch-ok',
+            payload: new SleeperPayload(microseconds: 1),
+        );
+
+        // microseconds: 0 is rejected by the Go-side sleeper with an error result.
+        $this->extension->push(
+            flowKey: 'batch-bad',
+            payload: new SleeperPayload(microseconds: 0),
+        );
+
+        usleep(100_000);
+
+        $results = $this->extension->waitAnyBatch(64);
+
+        self::assertCount(2, $results);
+
+        $resultsByFlow = [];
+
+        foreach ($results as $result) {
+            $resultsByFlow[$result->flowKey] = $result;
+        }
+
+        self::assertFalse($resultsByFlow['batch-ok']->isError);
+        self::assertTrue($resultsByFlow['batch-bad']->isError);
+        self::assertStringContainsString(
+            'microseconds must be greater than zero',
+            $resultsByFlow['batch-bad']->payload,
+        );
+
+        $this->extension->stopFlow('batch-ok');
+        $this->extension->stopFlow('batch-bad');
+
+        $this->assertNoTasksCount();
+    }
+
+    /**
+     * A frame whose declared field lengths do not fit its boundary must fail
+     * loudly instead of silently slicing the neighbour frames' bytes into the
+     * payload.
+     */
+    public function testFrameLengthsPastTheFrameBoundaryFailLoudly(): void
+    {
+        $method = 'sl';
+
+        $lyingFrame = pack('CCNnn', 0, strlen($method), 0, 999, 4) . $method . 'flow' . 'task';
+        $batch      = pack('n', 1) . pack('N', strlen($lyingFrame)) . $lyingFrame;
+
+        $this->expectException(UnexpectedResponseFormatException::class);
+
+        self::parseWaitBatchResponse(
+            response: $batch,
+            errorContext: 'waitAnyBatch',
+            start: microtime(true),
+        );
+    }
+
+    public function testFrameLengthPastTheResponseFailsLoudly(): void
+    {
+        $frame = self::buildResultFrame(taskKey: 'task');
+        $batch = pack('n', 1) . pack('N', strlen($frame) + 50) . $frame;
+
+        $this->expectException(UnexpectedResponseFormatException::class);
+
+        self::parseWaitBatchResponse(
+            response: $batch,
+            errorContext: 'waitAnyBatch',
+            start: microtime(true),
+        );
+    }
+
+    public function testTrailingBatchBytesFailLoudly(): void
+    {
+        $frame = self::buildResultFrame(taskKey: 'task');
+        $batch = pack('n', 1) . pack('N', strlen($frame)) . $frame . 'junk';
+
+        $this->expectException(UnexpectedResponseFormatException::class);
+
+        self::parseWaitBatchResponse(
+            response: $batch,
+            errorContext: 'waitAnyBatch',
+            start: microtime(true),
+        );
     }
 
     /**

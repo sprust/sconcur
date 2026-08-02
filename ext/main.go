@@ -18,6 +18,7 @@ import "C"
 import (
 	"encoding/binary"
 	"errors"
+	"math"
 	"sconcur/internal/dto"
 	httpserver_feature "sconcur/internal/features/httpserver"
 	socketserver_feature "sconcur/internal/features/socketserver"
@@ -84,15 +85,29 @@ func buildResultFrame(result *dto.Result) []byte {
 	return appendResultFrame(make([]byte, 0, resultFrameSize(result)), result)
 }
 
-// frameResult builds the buffer_result_t carrying a framed result.
-func frameResult(result *dto.Result) C.buffer_result_t {
-	frame := buildResultFrame(result)
+// bufferFromFrame wraps framed bytes into the buffer_result_t crossing the
+// boundary. C.int is 32-bit: a frame past 2 GiB would truncate into a negative
+// length and crash the PHP side on RETVAL_STRINGL — answer with an error
+// instead (the result is lost either way; a loud error beats a segfault).
+func bufferFromFrame(frame []byte) C.buffer_result_t {
+	if len(frame) > math.MaxInt32 {
+		return C.buffer_result_t{
+			data: nil,
+			len:  0,
+			err:  C.CString("error: result frame exceeds the 2 GiB boundary limit"),
+		}
+	}
 
 	return C.buffer_result_t{
 		data: C.CBytes(frame),
 		len:  C.int(len(frame)),
 		err:  nil,
 	}
+}
+
+// frameResult builds the buffer_result_t carrying a framed result.
+func frameResult(result *dto.Result) C.buffer_result_t {
+	return bufferFromFrame(buildResultFrame(result))
 }
 
 // buildResultBatchFrame concatenates result frames into the multiframe the PHP
@@ -120,13 +135,7 @@ func buildResultBatchFrame(results []*dto.Result) []byte {
 
 // frameResultBatch builds the buffer_result_t carrying a framed result batch.
 func frameResultBatch(results []*dto.Result) C.buffer_result_t {
-	batch := buildResultBatchFrame(results)
-
-	return C.buffer_result_t{
-		data: C.CBytes(batch),
-		len:  C.int(len(batch)),
-		err:  nil,
-	}
+	return bufferFromFrame(buildResultBatchFrame(results))
 }
 
 var handler *handler2.Handler

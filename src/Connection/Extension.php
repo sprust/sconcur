@@ -305,6 +305,20 @@ class Extension
                 );
             }
 
+            // The declared lengths must fit the frame: on a corrupt frame a
+            // blind substr chain would silently slice bytes of the NEIGHBOUR
+            // frames into this result's payload instead of failing loudly.
+            $declaredLength = self::FRAME_HEADER_SIZE
+                + $header['methodLen']
+                + $header['flowKeyLen']
+                + $header['taskKeyLen'];
+
+            if ($declaredLength > $frameLength || ($offset + $frameLength) > strlen($response)) {
+                throw new UnexpectedResponseFormatException(
+                    message: 'Result frame lengths exceed the frame boundary.',
+                );
+            }
+
             $cursor = $offset + self::FRAME_HEADER_SIZE;
             $method = substr($response, $cursor, $header['methodLen']);
             $cursor += $header['methodLen'];
@@ -359,39 +373,58 @@ class Extension
             );
         }
 
-        $header = unpack('ncount', $response);
+        // A structurally corrupt frame fails the whole batch loudly (the
+        // already-parsed prefix included): the frames are machine-built by the
+        // version-locked extension, so a mismatch is a protocol bug — partial
+        // delivery would only hide it behind a few silently hung coroutines.
+        try {
+            $header = unpack('ncount', $response);
 
-        if ($header === false || $header['count'] < 1) {
-            throw new UnexpectedResponseFormatException(
-                message: 'Could not unpack result batch header.',
-            );
-        }
-
-        $results = [];
-        $offset  = 2;
-
-        for ($frameIndex = 0; $frameIndex < $header['count']; $frameIndex++) {
-            $frameHeader = unpack('NframeLength', $response, $offset);
-
-            if ($frameHeader === false) {
+            if ($header === false || $header['count'] < 1) {
                 throw new UnexpectedResponseFormatException(
-                    message: 'Could not unpack result batch frame length.',
+                    message: 'Could not unpack result batch header.',
                 );
             }
 
-            $offset += 4;
+            $results = [];
+            $offset  = 2;
 
-            $results[] = static::parseResultFrame(
-                response: $response,
-                offset: $offset,
-                frameLength: $frameHeader['frameLength'],
-                start: ($frameIndex === 0) ? $start : $crossingEnd,
+            for ($frameIndex = 0; $frameIndex < $header['count']; $frameIndex++) {
+                $frameHeader = unpack('NframeLength', $response, $offset);
+
+                if ($frameHeader === false) {
+                    throw new UnexpectedResponseFormatException(
+                        message: 'Could not unpack result batch frame length.',
+                    );
+                }
+
+                $offset += 4;
+
+                $results[] = static::parseResultFrame(
+                    response: $response,
+                    offset: $offset,
+                    frameLength: $frameHeader['frameLength'],
+                    start: ($frameIndex === 0) ? $start : $crossingEnd,
+                );
+
+                $offset += $frameHeader['frameLength'];
+            }
+
+            if ($offset !== strlen($response)) {
+                throw new UnexpectedResponseFormatException(
+                    message: 'Result batch has trailing bytes past the last frame.',
+                );
+            }
+
+            return $results;
+        } catch (UnexpectedResponseFormatException|TaskErrorException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw new UnexpectedResponseFormatException(
+                message: $exception->getMessage(),
+                previous: $exception,
             );
-
-            $offset += $frameHeader['frameLength'];
         }
-
-        return $results;
     }
 
     protected static function checkCallResponse(string $flowKey, string $response): void

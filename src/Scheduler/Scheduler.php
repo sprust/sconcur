@@ -109,6 +109,12 @@ class Scheduler
     protected array $readyResults = [];
 
     /**
+     * Counts the delivered results that found no owning coroutine and were
+     * dropped (see resumeByResult / droppedResultsCount).
+     */
+    protected int $droppedResultsCount = 0;
+
+    /**
      * Monotonic counter feeding spawned-coroutine flow keys. A flow key only has
      * to be unique among live flows in this process, so a never-reused counter is
      * enough — and far cheaper than uniqid() on the per-request hot path.
@@ -612,6 +618,13 @@ class Scheduler
             // Stop the listener and abort any connections not yet answered.
             Extension::get()->stopFlow($serverFlowKey);
 
+            // Results still queued from the last drained batch are left in
+            // place deliberately: they may belong to live coroutines outside
+            // this loop (a group built before serve() and iterated after), and
+            // the next scheduler cycle delivers or drops each one correctly.
+            // Clearing here would hang such a group; the held memory is at most
+            // one batch.
+
             $onShutdownStep('stopped');
         }
     }
@@ -693,6 +706,18 @@ class Scheduler
                 State::clearSuspending();
             }
         }
+    }
+
+    /**
+     * How many delivered results were dropped for having no owner. A non-zero
+     * value is normal in stop/drain scenarios (a batch crosses the boundary
+     * before the stop lands), but a steadily growing value with no stops in
+     * sight is the signature of a routing desync — the silent drop is exactly
+     * where such a bug would otherwise hide.
+     */
+    public function droppedResultsCount(): int
+    {
+        return $this->droppedResultsCount;
     }
 
     /**
@@ -800,12 +825,16 @@ class Scheduler
         );
 
         if ($fiberId === null) {
+            ++$this->droppedResultsCount;
+
             return;
         }
 
         $coroutine = $this->coroutines[$fiberId] ?? null;
 
         if ($coroutine === null) {
+            ++$this->droppedResultsCount;
+
             return;
         }
 
