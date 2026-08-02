@@ -20,10 +20,12 @@ live fibers, each having crossed the PHP↔Go boundary, degraded quadratically.
 
 Waiting and resumption are managed by a single process-wide `Scheduler`
 (singleton, `Scheduler::get()`) — the only place that waits on the extension and
-resumes coroutines. It spins `Extension::waitAny()` and receives the first ready
-result of any flow: all goroutines push their results into one shared buffered
-channel on the Go side. By `taskKey` the scheduler finds the right coroutine and
-resumes it.
+resumes coroutines. It spins the `waitAny` wait point
+(`Extension::waitAnyBatch()`): all goroutines push their results into one shared
+buffered channel on the Go side; the call blocks for the first ready result of
+any flow and drains every further already-ready result in the same cgo crossing
+(up to 64). The scheduler consumes the batch one result per step — by `taskKey`
+it finds the right coroutine and resumes it.
 
 Because every resumption comes from the scheduler, coroutines do not nest on
 each other's call stack. Thanks to this, a nested `WaitGroup` inside a coroutine
@@ -173,7 +175,8 @@ Key entities:
 5. `WaitGroup::iterate()` (a generator) hands out ready results, and while there
    are unfinished coroutines it delegates waiting to the scheduler:
    - at the top level (outside a Fiber) it spins `Scheduler::run()` — the
-     `Extension::waitAny()` loop (the first ready result of any flow);
+     `waitAny` loop (`Extension::waitAnyBatch()`, ready results drained in
+     batches);
    - a nested `iterate()` (inside a coroutine) cooperatively suspends
      (`Scheduler::awaitGroup()`), not blocking the outer flow.
 6. By `taskKey` the scheduler finds the coroutine (`State::pullFiberByTask`) and

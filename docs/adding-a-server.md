@@ -103,7 +103,7 @@ case types.MethodHttpServe, types.MethodHttpRespond:
 ## Payloads (PHP ↔ Go)
 
 Written like an ordinary feature's (mirrored, `msgpack` tags = short keys,
-cross-references — see the "Writing payloads" section in
+cross-references — see the "Laying out payloads (PHP ↔ Go)" section in
 [adding-a-feature.md](adding-a-feature.md)). A server needs at least three:
 
 1. `ServePayload` — the listener address + tuning (timeouts in ms, limits in bytes,
@@ -117,10 +117,11 @@ cross-references — see the "Writing payloads" section in
    `src/Features/HttpServer/Payloads/RespondPayload.php` ↔ `payloads.RespondPayload`.
 
 3. `RequestEvent` — what Go streams into PHP for each request (a Go-only struct;
-   PHP decodes it into its own DTO `Request`). It carries `requestId`, the
+   PHP decodes it straight into the handler's request object — the PSR-7
+   `ServerRequestInterface` built by the injected factory). It carries `requestId`, the
    method/path/headers and the inline first body chunk + a streaming key for the rest
    of the body (`BodyKey`, see "Request body streaming" below). Reference:
-   `payloads.RequestEvent` (Go) ↔ `SConcur\Features\HttpServer\Dto\Request`.
+   `payloads.RequestEvent` (Go) ↔ the decode in `HttpServer::handle()`.
 
 > `requestId` is the end-to-end identifier: Go generates it on accept (`flowKey:r:<n>`),
 > puts it into `RequestEvent`, PHP returns it in every `RespondPayload`, and Go uses it
@@ -170,14 +171,14 @@ necessary.
 ### `fromArgs()` (for the worker master)
 
 To have the server launched under `bin/sconcur-server`, add a static constructor from
-`argv` — modelled on `HttpServer::fromArgs()` (`HttpServer.php:117`): it only calls
+`argv` — modelled on `HttpServer::fromArgs()` (`HttpServer.php:123`): it only calls
 `self::parseArgs($argv)` from the trait, adds `onError` if present, and unpacks the
 result into the constructor. The master passes `--masterPid` right here (see
 "Integration with the master").
 
 ### The serving loop: `serve()`
 
-The public `serve(Closure $handler)` (`HttpServer::serve`, `HttpServer.php:145`):
+The public `serve(Closure $handler)` (`HttpServer::serve`, `HttpServer.php:151`):
 
 1. Generate a `flowKey`, install signal handlers via
    `installSignalHandlers($stopRequested)` (from the trait; SIGTERM/SIGINT → the
@@ -186,14 +187,14 @@ The public `serve(Closure $handler)` (`HttpServer::serve`, `HttpServer.php:145`)
    this is a streaming task (like a cursor), its first and subsequent batches are
    the incoming requests.
 3. Hand control to the shared primitive `Scheduler::get()->serve(...)`
-   (`Scheduler.php:301`), passing:
+   (`Scheduler.php:501`), passing:
    - `serverFlowKey` / `serverTaskKey` — the keys of the listener stream;
    - `maxRequests` — cleanly finish after N requests (a measure against memory
      leaks);
    - `onRequest(string $payload)` — spawn-on-request: decode the request, call
      `handler`, send the response (`RespondPayload::full(...)` or
      head→chunk*→end for a stream). In the reference this is `HttpServer::handle()`
-     (`HttpServer.php:240`);
+     (`HttpServer.php:247`);
    - `shouldStop(): bool` — `true` when a signal has arrived or the worker is
      orphaned (orphan check below);
    - `onDrainStart()` — called once when the drain begins: stop accepting early,
@@ -201,7 +202,8 @@ The public `serve(Closure $handler)` (`HttpServer::serve`, `HttpServer.php:145`)
      `SO_REUSEPORT` siblings.
 
 `Scheduler::serve` itself multiplexes the incoming requests and the async work of
-their handlers in a single `waitAny` loop, re-arms the stream via `next()`, and on
+their handlers in a single wait loop (`waitAnyTimeoutBatch`: ready results drained
+in batches, consumed one per step), re-arms the stream via `next()`, and on
 drain shuts the flow down cleanly (`stopFlow`). This mechanic does not need to be
 rewritten — it is shared.
 
@@ -309,8 +311,8 @@ shared `next()` mechanism (like a Mongo cursor). Reference — `body_state.go` a
 
 ## The cgo export `StopAccepting` (the only "server" export)
 
-The shared exports (`push`, `next`, `stopFlow`, `waitAnyTimeout`, `waitAny`) a server
-reuses. It additionally needs its own export for the early stop of accepting — each
+The shared exports (`push`, `next`, `stopFlow`, `waitAnyBatch`, `waitAnyTimeoutBatch`)
+a server reuses. It additionally needs its own export for the early stop of accepting — each
 server's `serverStates` is its own map, so another server's `httpStopAccepting` cannot
 be reused (cf. `socketStopAccepting` in `SocketServer`). Add
 `<server>StopAccepting` along the same chain as `httpStopAccepting`:

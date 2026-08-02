@@ -42,6 +42,27 @@ const resultsBufferSize = 1024
 // microseconds; past them WaitAny falls through to the blocking select.
 const waitSpinIterations = 8
 
+// batchMaxCap caps one batch at what the multiframe's uint16 count field can
+// carry. Without the cap a larger max would silently truncate the count: PHP
+// would parse fewer frames than the buffer holds, while the excess results are
+// already delivered on this side — lost with no error anywhere.
+const batchMaxCap = 65535
+
+// clampBatchMax normalizes the PHP-supplied batch size into [1, batchMaxCap]:
+// the blocking first result always ships (so the floor is 1), and the ceiling
+// protects the uint16 count field.
+func clampBatchMax(max int) int {
+	if max < 1 {
+		return 1
+	}
+
+	if max > batchMaxCap {
+		return batchMaxCap
+	}
+
+	return max
+}
+
 type Handler struct {
 	ctx       context.Context
 	ctxCancel context.CancelFunc
@@ -61,6 +82,12 @@ type Handler struct {
 	// Only touched from Wait/WaitAny, which the single-threaded PHP caller
 	// serializes. Remove once PHP moves fully to WaitAny.
 	pending map[string][]*dto.Result
+
+	// batchBuffer is reused across WaitAnyBatch calls to avoid a per-wait slice
+	// allocation. Safe because the single-threaded PHP caller serializes the
+	// batch waits and the previous batch is fully consumed (framed and copied
+	// across the boundary) before the next wait starts.
+	batchBuffer []*dto.Result
 }
 
 func NewHandler() *Handler {
@@ -122,6 +149,80 @@ func (h *Handler) WaitAny() (*dto.Result, error) {
 			return result, nil
 		}
 	}
+}
+
+// WaitAnyBatch returns the first ready result of any flow — blocking for it
+// exactly like WaitAny — plus every further result that is already ready, up to
+// max in total. One cgo crossing then carries the whole batch to PHP, saving a
+// crossing, a frame copy and a userland call per result after the first.
+func (h *Handler) WaitAnyBatch(max int) ([]*dto.Result, error) {
+	first, err := h.WaitAny()
+
+	if err != nil {
+		return nil, err
+	}
+
+	return h.drainReady(first, clampBatchMax(max)), nil
+}
+
+// WaitAnyTimeoutBatch is WaitAnyBatch with a deadline for the first result:
+// ErrWaitTimeout when nothing became ready in time, otherwise the first result
+// plus the already-ready tail.
+func (h *Handler) WaitAnyTimeoutBatch(ms int, max int) ([]*dto.Result, error) {
+	first, err := h.WaitAnyTimeout(ms)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return h.drainReady(first, clampBatchMax(max)), nil
+}
+
+// drainReady collects the already-ready tail of a batch after its blocking
+// first result: pending leftovers first, then a non-blocking drain of the
+// results channel. Every channel result passes deliver() exactly like on the
+// single-result path; the batch never waits for more results to appear.
+func (h *Handler) drainReady(first *dto.Result, max int) []*dto.Result {
+	results := append(h.batchBuffer[:0], first)
+
+	defer func() {
+		// Nil the backing array's slots past this batch's length: they still
+		// point at the previous batch's results, and after framing this buffer
+		// would be their only retainer — one burst of large payloads would stay
+		// pinned through an arbitrarily long trickle of small batches.
+		clear(results[len(results):cap(results)])
+
+		h.batchBuffer = results
+	}()
+
+	for len(results) < max {
+		result := h.popAnyPending()
+
+		if result == nil {
+			break
+		}
+
+		results = append(results, result)
+	}
+
+	for len(results) < max {
+		select {
+		case result, ok := <-h.results:
+			if !ok {
+				return results
+			}
+
+			if !h.deliver(result) {
+				continue
+			}
+
+			results = append(results, result)
+		default:
+			return results
+		}
+	}
+
+	return results
 }
 
 // WaitAnyTimeout is WaitAny with a deadline: it returns ErrWaitTimeout if no
@@ -286,6 +387,10 @@ func (h *Handler) fresh() {
 	// result (or the task's context is cancelled).
 	h.results = make(chan *dto.Result, resultsBufferSize)
 	h.pending = make(map[string][]*dto.Result)
+
+	// Dropped, not reused: a Destroy must release the previous life's results
+	// retained in the buffer's backing array.
+	h.batchBuffer = nil
 
 	h.flows = flows.NewFlows()
 }

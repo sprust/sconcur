@@ -117,6 +117,10 @@ Push в другие соединения (broadcast/чат/pub-sub) в этой
 | `reusePort` | `false` | `SO_REUSEPORT` — пул процессов на один порт (Linux) |
 | `onError` | `null` | хук ошибки обработчика |
 | `masterPid` | `null` | orphan-чек под мастером |
+| `telemetrySocket` | `''` (выкл.) | unix-сокет для снапшотов статистики, инжектируется мастером ([статистика](admin-stats.ru.md)) |
+| `serverName` | `'sconcur-server'` | имя воркера в снапшотах статистики |
+| `telemetryIntervalMs` | `0` | период сэмпла/пуша статистики (`0` — дефолт пушера, 1000 мс) |
+| `preemptionQuantumMs` | `5` | квант автоматической преемпции (`0` — выкл.), см. [переключение корутин](coroutine-switching.ru.md) |
 
 ## Конкурентность
 
@@ -155,7 +159,7 @@ $server = new SocketServer(
 );
 ```
 
-`Connection::write` в обычном коде бросает `ConnectionClosedException`, когда клиент
+`Connection::write` в обычном коде бросает `SocketServerConnectionClosedException`, когда клиент
 уже отключился — обработчик может его поймать и остановить пуш-цикл, либо дать ему
 размотать корутину.
 
@@ -182,7 +186,7 @@ $server = new SocketServer(
 только листенер запущен:
 
 ```
-2026-06-28T12:00:00.000000 sconcur socket server listening on 0.0.0.0:8090 pid=12345 version=0.5.1 maxConcurrency=0 maxConnections=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur socket server listening on 0.0.0.0:9100 pid=12345 version=0.9.0 maxConcurrency=0 maxConnections=0 reusePort=0
 ```
 
 В ней адрес, pid процесса, версия расширения и ключевые лимиты. При graceful shutdown —

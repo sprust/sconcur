@@ -89,8 +89,10 @@ vendor/bin/sconcur-server start --configPath=/app/master.json
 ```
 
 `start` blocks (foreground) and supervises the pool until it receives
-`SIGTERM`/`SIGINT` or the state file is removed (see
-[Graceful shutdown](#graceful-shutdown)).
+`SIGTERM`/`SIGINT`, the state file is removed (see
+[Graceful shutdown](#graceful-shutdown)), or every worker has finished with
+nothing left to restart (`restartPolicy: never`, or clean exits under
+`on-failure`).
 
 ## Commands: start / status / stop / reload
 
@@ -113,7 +115,7 @@ vendor/bin/sconcur-server reload --configPath=/app/master.json
 ```
 
 Exit codes: `start` — the master's exit code; `status` — `0` (running) /
-`3` (stopped/stale); `stop` — `0` once the master has stopped, `1` on timeout; `reload`
+`3` (stopped/stale); `stop` — `0` once the master has stopped (or none was running), `1` on timeout; `reload`
 — `0` once the roll completes, `3` if the master is not running, `1` on timeout/error.
 
 > The same `--configPath` across all commands guarantees consistent
@@ -125,13 +127,13 @@ Exit codes: `start` — the master's exit code; `status` — `0` (running) /
 it sends each `SIGTERM` (which leaves the `SO_REUSEPORT` group early and drains
 in-flight), waits for it to exit up to `shutdownTimeoutMs` (otherwise `SIGKILL`), and
 brings up a fresh process as a replacement. While one worker drains, the rest hold
-traffic — so with N>1 the roll is downtime-free. A fresh `php worker.php` picks up the
+traffic — so with N>1 the roll is downtime-free (a single-worker pool has a brief gap:
+kill-then-spawn). A fresh `php worker.php` picks up the
 new worker-script code from disk — this is the zero-downtime deployment scenario. Once
 done, the master removes the trigger file, and the command returns `reloaded`.
 
 > `reload` restarts the worker processes but does not re-read the master config
-> (`workerCount`/arguments do not change on the fly). A single-worker pool has a brief
-> gap on reload (kill-then-spawn) — zero-downtime is achieved with `N>1`.
+> (`workerCount`/arguments do not change on the fly).
 
 Programmatic API (behind the CLI) — the `SConcur\Worker\WorkerMaster` class:
 
@@ -150,7 +152,8 @@ new WorkerMaster(
 
 ## Parameters
 
-The JSON config keys match the `WorkerMaster` constructor parameter names exactly. Any
+The JSON config keys match the `MasterConfig` constructor parameter names exactly
+(every key but the `server` block mirrors a `WorkerMaster` constructor parameter). Any
 key left unset takes its default.
 
 The config is validated strictly (an error → exit code `2`): an unknown top-level key
@@ -446,7 +449,7 @@ Coverage (`tests/feature/Worker/` + `tests/feature/Features/HttpServer/`):
   negative `workerCount`); self-termination of orphaned workers.
 - `masterPid` (in isolation, `HttpServerMasterPidTest`): when `masterPid` = the parent,
   the server serves; when it is a foreign one, it shuts down cleanly on its own.
-- Logger (unit, `MasterLoggerTest`): the line format, the context JSON, daily rotation
+- Logger (`MasterLoggerTest`): the line format, the context JSON, daily rotation
   with `rotateDays` retention.
 
 ---

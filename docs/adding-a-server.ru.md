@@ -114,10 +114,11 @@ case types.MethodHttpServe, types.MethodHttpRespond:
    `src/Features/HttpServer/Payloads/RespondPayload.php` ↔ `payloads.RespondPayload`.
 
 3. `RequestEvent` — то, что Go стримит в PHP на каждый запрос (Go-only структура;
-   PHP декодирует её в свой DTO `Request`). Несёт `requestId`, метод/путь/заголовки и
-   инлайн первый чанк тела + ключ стриминга остального тела (`BodyKey`, см.
-   «Стриминг тела» ниже). Эталон: `payloads.RequestEvent` (Go) ↔
-   `SConcur\Features\HttpServer\Dto\Request`.
+   PHP декодирует её сразу в объект запроса обработчика — PSR-7
+   `ServerRequestInterface`, построенный инжектированной фабрикой). Несёт
+   `requestId`, метод/путь/заголовки и инлайн первый чанк тела + ключ стриминга
+   остального тела (`BodyKey`, см. «Стриминг тела» ниже). Эталон:
+   `payloads.RequestEvent` (Go) ↔ декодирование в `HttpServer::handle()`.
 
 > `requestId` — сквозной идентификатор: Go генерит его на приёме (`flowKey:r:<n>`),
 > кладёт в `RequestEvent`, PHP возвращает его в каждом `RespondPayload`, и Go по нему
@@ -166,14 +167,14 @@ Argv-разбор, обработчики сигналов и orphan-чек уж
 ### `fromArgs()` (для мастера воркеров)
 
 Чтобы сервер запускался под `bin/sconcur-server`, сделайте статический конструктор из
-`argv` — по образцу `HttpServer::fromArgs()` (`HttpServer.php:117`): он лишь вызывает
+`argv` — по образцу `HttpServer::fromArgs()` (`HttpServer.php:123`): он лишь вызывает
 `self::parseArgs($argv)` из трейта, при наличии добавляет `onError` и распаковывает
 результат в конструктор. Мастер прокидывает `--masterPid` именно сюда (см. «Интеграция с
 мастером»).
 
 ### Цикл обслуживания: `serve()`
 
-Публичный `serve(Closure $handler)` (`HttpServer::serve`, `HttpServer.php:145`):
+Публичный `serve(Closure $handler)` (`HttpServer::serve`, `HttpServer.php:151`):
 
 1. Сгенерировать `flowKey`, установить обработчики сигналов через
    `installSignalHandlers($stopRequested)` (из трейта; SIGTERM/SIGINT → флаг
@@ -182,12 +183,12 @@ Argv-разбор, обработчики сигналов и orphan-чек уж
    это стриминговая задача (как курсор), её первый и последующие батчи — входящие
    запросы.
 3. Отдать управление общему примитиву `Scheduler::get()->serve(...)`
-   (`Scheduler.php:301`), передав:
+   (`Scheduler.php:501`), передав:
    - `serverFlowKey` / `serverTaskKey` — ключи стрима-слушателя;
    - `maxRequests` — штатно завершиться после N запросов (мера против утечек памяти);
    - `onRequest(string $payload)` — спавн-на-запрос: декодить запрос, вызвать
      `handler`, отправить ответ (`RespondPayload::full(...)` или
-     head→chunk*→end для стрима). У эталона это `HttpServer::handle()` (`HttpServer.php:240`);
+     head→chunk*→end для стрима). У эталона это `HttpServer::handle()` (`HttpServer.php:247`);
    - `shouldStop(): bool` — `true`, когда пришёл сигнал или воркер осиротел
      (orphan-чек ниже);
    - `onDrainStart()` — вызывается один раз при начале дренажа: рано закрыть приём,
@@ -195,7 +196,9 @@ Argv-разбор, обработчики сигналов и orphan-чек уж
      соседям по `SO_REUSEPORT`.
 
 `Scheduler::serve` сам мультиплексирует входящие запросы и async-работу их обработчиков
-в одном `waitAny`-цикле, переармливает стрим через `next()` и на дренаже корректно
+в одном цикле ожидания (`waitAnyTimeoutBatch`: готовые результаты выгребаются
+пачкой, потребляются по одному за шаг), переармливает стрим через `next()` и на
+дренаже корректно
 гасит поток (`stopFlow`). Эту механику переписывать не нужно — она общая.
 
 ### Сигналы и самозавершение осиротевших воркеров
@@ -296,7 +299,7 @@ func (f *HttpFeature) Handle(task *tasks.Task) {
 
 ## cgo-экспорт `StopAccepting` (единственный «серверный» экспорт)
 
-Общие экспорты (`push`, `next`, `stopFlow`, `waitAnyTimeout`, `waitAny`) сервер
+Общие экспорты (`push`, `next`, `stopFlow`, `waitAnyBatch`, `waitAnyTimeoutBatch`) сервер
 переиспользует. Дополнительно ему нужен свой экспорт раннего закрытия приёма —
 у `serverStates` каждого сервера своя карта, поэтому `httpStopAccepting` чужой сервер
 переиспользовать не может (ср. `socketStopAccepting` у `SocketServer`). Заведите

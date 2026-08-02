@@ -3,5 +3,6 @@
 
 .env
 .phpunit.result.cache
+/.phpunit-failed
 .php-cs-fixer.cache
 /.bench-runs

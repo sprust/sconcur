@@ -54,6 +54,14 @@ function version(): string
 {
 }
 
+function waitAnyBatch(int $maxResults): string
+{
+}
+
+function waitAnyTimeoutBatch(int $timeoutMs, int $maxResults): string
+{
+}
+
 function armPreemption(int $quantumMs, callable $callback): void
 {
 }

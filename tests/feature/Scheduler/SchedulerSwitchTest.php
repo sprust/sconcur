@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Scheduler;
 
+use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Scheduler\Scheduler;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\WaitGroup;
@@ -207,6 +208,56 @@ class SchedulerSwitchTest extends BaseTestCase
 
         self::assertTrue($finallyRan);
         self::assertFalse($waitGroup->isLive());
+
+        $this->assertNoTasksCount();
+    }
+
+    /**
+     * A switch()-parked coroutine and a batch of prefetched results must not
+     * starve each other: queued results keep priority, the parked coroutine is
+     * resumed once nothing is deliverable, and everything completes.
+     */
+    public function testSwitchedCoroutineProgressesWithBatchedResults(): void
+    {
+        $waitGroup = WaitGroup::create();
+
+        $waitGroup->add(
+            callback: static function (): string {
+                for ($yieldIndex = 0; $yieldIndex < 5; $yieldIndex++) {
+                    Scheduler::get()->switch(quantumMs: 0);
+                }
+
+                return 'switcher';
+            },
+        );
+
+        foreach (range(1, 3) as $sleeperIndex) {
+            $waitGroup->add(
+                callback: static function () use ($sleeperIndex): string {
+                    Sleeper::usleep(microseconds: 1);
+
+                    return 'sleeper-' . $sleeperIndex;
+                },
+            );
+        }
+
+        // Let the sleeper results pile up so the first crossing drains them as
+        // one batch while the switcher sits parked in the queue.
+        usleep(50_000);
+
+        $results = array_values($waitGroup->waitResults());
+
+        sort($results);
+
+        self::assertSame(
+            [
+                'sleeper-1',
+                'sleeper-2',
+                'sleeper-3',
+                'switcher',
+            ],
+            $results,
+        );
 
         $this->assertNoTasksCount();
     }

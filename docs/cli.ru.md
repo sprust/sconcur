@@ -73,11 +73,9 @@ RUN vendor/bin/sconcur-load "$(php-config --extension-dir)/sconcur.so" \
     && echo "extension=sconcur.so" > /usr/local/etc/php/conf.d/docker-php-ext-sconcur.ini
 ```
 
-Скрипт качает ассет из версионного релиза `v<версия>`, где версия — ровно та, под
-которую собран пакет (`Extension::REQUIRED_EXTENSION_VERSION`), так что расширение
-и пакет не разойдутся по версии. Скользящего релиза `latest` нет (CI помечает
-«Latest» сам версионный релиз), поэтому качать по `.../releases/latest/download/...`
-не следует — только по точному тегу, что скрипт и делает.
+Скользящего релиза `latest` нет (CI помечает «Latest» сам версионный релиз),
+поэтому качать по `.../releases/latest/download/...` не следует — только по
+точному тегу `v<версия>`, что скрипт и делает.
 
 ### Установка в образ до `composer install`
 
@@ -101,9 +99,9 @@ RUN set -eux; \
     echo "extension=sconcur.so" > /usr/local/etc/php/conf.d/docker-php-ext-sconcur.ini
 ```
 
-В `composer.lock` версия может храниться с префиксом `v` (`v0.4.0`), поэтому
+В `composer.lock` версия может храниться с префиксом `v` (`v0.9.0`), поэтому
 ведущий `v` срезается (`sed 's/^v//'`), а в URL он добавляется обратно (`v${version}`)
-— иначе вышло бы `vv0.4.0`. Требуются `jq` и `curl` в этом слое сборки.
+— иначе вышло бы `vv0.9.0`. Требуются `jq` и `curl` в этом слое сборки.
 
 ## sconcur-status — проверить установку
 
@@ -115,12 +113,12 @@ RUN set -eux; \
 vendor/bin/sconcur-status
 #   sconcur status
 #     extension installed:  yes
-#     package version:      0.4.0
-#     extension version:    0.4.0
+#     package version:      0.9.0
+#     extension version:    0.9.0
 #     ready:                yes
 
 vendor/bin/sconcur-status --json
-#   {"extension_installed":true,"package_version":"0.4.0","extension_version":"0.4.0","ready":true}
+#   {"extension_installed":true,"package_version":"0.9.0","extension_version":"0.9.0","ready":true}
 ```
 
 Расширение должно быть подключено к тому же процессу, иначе оно не видно скрипту:

@@ -229,8 +229,11 @@ type SleeperPayload struct {
 
 1. `MethodEnum` + Payload — как в варианте A.
 
-2. Публичный API возвращает `IteratorResult`, обёрнутый вокруг payload — он сам
-   запросит первый и последующие батчи:
+2. Публичный API возвращает итератор-результат, обёрнутый вокруг payload — он сам
+   запросит первый и последующие батчи. (`IteratorResult` здесь —
+   `Features\Mongodb\Results\IteratorResult`, показан как образец: он декодирует
+   батчи Mongo-BSON-сериализатором, так что новая фича пишет свой аналог под свой
+   формат payload.)
    ```php
    /**
     * @return Iterator<int, mixed>
@@ -247,7 +250,8 @@ type SleeperPayload struct {
 
 1. `types/method.go` — константа (как в A).
 
-2. Состояние `ext/internal/features/foo/state/foo.go`, реализующее
+2. Состояние — файл в пакете фичи (например, `rows_state.go` в `sql`,
+   `message_state.go` в `wsserver`; у mongodb они лежат в `states/`), реализующее
    `contracts.StateContract` (`Next() *dto.Result`, `Close()`):
    ```go
    type FooState struct {
@@ -292,7 +296,7 @@ type SleeperPayload struct {
        message := task.GetMessage()
        // ... разбор message.Payload ...
 
-       state := state.New(task.GetContext(), message /*, параметры */)
+       state := newFooState(task.GetContext(), message /*, параметры */)
 
        result, err := states.Get().Start(task.GetContext(), message.TaskKey, state)
        if err != nil {

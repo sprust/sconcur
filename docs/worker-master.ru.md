@@ -87,8 +87,10 @@ vendor/bin/sconcur-server start --configPath=/app/master.json
 ```
 
 `start` блокируется (foreground) и супервизирует пул, пока не придёт
-`SIGTERM`/`SIGINT` или не будет удалён стейт-файл (см.
-[Graceful shutdown](#graceful-shutdown)).
+`SIGTERM`/`SIGINT`, не будет удалён стейт-файл (см.
+[Graceful shutdown](#graceful-shutdown)) или все воркеры не завершатся без
+кандидатов на перезапуск (`restartPolicy: never` либо чистые выходы при
+`on-failure`).
 
 ## Команды: start / status / stop / reload
 
@@ -111,7 +113,7 @@ vendor/bin/sconcur-server reload --configPath=/app/master.json
 ```
 
 Коды возврата: `start` — код мастера на выходе; `status` — `0` (running) /
-`3` (stopped/stale); `stop` — `0` по факту остановки, `1` по таймауту; `reload` —
+`3` (stopped/stale); `stop` — `0` по факту остановки (или если мастер не был запущен), `1` по таймауту; `reload` —
 `0` по завершении переката, `3` если мастер не запущен, `1` по таймауту/ошибке.
 
 > Один и тот же `--configPath` во всех командах гарантирует согласованные
@@ -123,13 +125,13 @@ vendor/bin/sconcur-server reload --configPath=/app/master.json
 воркеров: каждому шлёт `SIGTERM` (тот рано выходит из `SO_REUSEPORT`-группы и
 дренажит in-flight), ждёт выхода до `shutdownTimeoutMs` (иначе `SIGKILL`) и поднимает
 свежий процесс на замену. Пока один воркер дренажит, остальные держат трафик —
-поэтому при N>1 перекат без простоя. Свежий `php worker.php` подхватывает
+поэтому при N>1 перекат без простоя (пул из одного воркера имеет краткий зазор:
+kill-then-spawn). Свежий `php worker.php` подхватывает
 новый код воркер-скрипта с диска — это сценарий zero-downtime деплоя. По завершении
 мастер удаляет триггер-файл, и команда возвращает `reloaded`.
 
 > `reload` перезапускает процессы-воркеры, но не перечитывает конфиг мастера
-> (`workerCount`/аргументы не меняются на лету). Пул из одного воркера при reload
-> имеет краткий зазор (kill-then-spawn) — zero-downtime достигается при `N>1`.
+> (`workerCount`/аргументы не меняются на лету).
 
 Программный API (под капотом CLI) — класс `SConcur\Worker\WorkerMaster`:
 
@@ -148,7 +150,8 @@ new WorkerMaster(
 
 ## Параметры
 
-Ключи JSON-конфига точно совпадают с именами параметров конструктора `WorkerMaster`.
+Ключи JSON-конфига точно совпадают с именами параметров конструктора `MasterConfig`
+(все ключи, кроме блока `server`, зеркалят параметры конструктора `WorkerMaster`).
 Любой незаданный ключ берёт дефолт.
 
 Конфиг валидируется строго (ошибка → код выхода `2`): неизвестный top-level ключ
@@ -441,7 +444,7 @@ vendor/bin/sconcur-server status --configPath=/app/master.json >/dev/null \
   отрицательный `workerCount`); самозавершение осиротевших воркеров.
 - `masterPid` (изолированно, `HttpServerMasterPidTest`): при `masterPid` =
   родитель сервер обслуживает; при чужом — сам штатно гаснет.
-- Логгер (юнит, `MasterLoggerTest`): формат строки, контекст-JSON, дневная
+- Логгер (`MasterLoggerTest`): формат строки, контекст-JSON, дневная
   ротация с удержанием `rotateDays`.
 
 ---

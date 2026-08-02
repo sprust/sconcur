@@ -18,6 +18,7 @@ import "C"
 import (
 	"encoding/binary"
 	"errors"
+	"math"
 	"sconcur/internal/dto"
 	httpserver_feature "sconcur/internal/features/httpserver"
 	socketserver_feature "sconcur/internal/features/socketserver"
@@ -48,16 +49,14 @@ const (
 	frameFlagHasNext = 1 << 1
 )
 
-// buildResultFrame serializes a result envelope as the fixed binary header followed
-// by the raw (already-encoded) payload bytes.
-func buildResultFrame(result *dto.Result) []byte {
-	method := []byte(result.Method)
-	flowKey := []byte(result.FlowKey)
-	taskKey := []byte(result.TaskKey)
-	payload := []byte(result.Payload)
+// resultFrameSize is the framed size of one result.
+func resultFrameSize(result *dto.Result) int {
+	return frameHeaderSize + len(result.Method) + len(result.FlowKey) + len(result.TaskKey) + len(result.Payload)
+}
 
-	frame := make([]byte, frameHeaderSize+len(method)+len(flowKey)+len(taskKey)+len(payload))
-
+// appendResultFrame appends a result envelope to dst as the fixed binary header
+// followed by the raw (already-encoded) payload bytes.
+func appendResultFrame(dst []byte, result *dto.Result) []byte {
 	var flags byte
 
 	if result.IsError {
@@ -68,30 +67,75 @@ func buildResultFrame(result *dto.Result) []byte {
 		flags |= frameFlagHasNext
 	}
 
-	frame[0] = flags
-	frame[1] = byte(len(method))
-	binary.BigEndian.PutUint32(frame[2:6], uint32(result.ExecutionMs))
-	binary.BigEndian.PutUint16(frame[6:8], uint16(len(flowKey)))
-	binary.BigEndian.PutUint16(frame[8:10], uint16(len(taskKey)))
+	dst = append(dst, flags, byte(len(result.Method)))
+	dst = binary.BigEndian.AppendUint32(dst, uint32(result.ExecutionMs))
+	dst = binary.BigEndian.AppendUint16(dst, uint16(len(result.FlowKey)))
+	dst = binary.BigEndian.AppendUint16(dst, uint16(len(result.TaskKey)))
+	dst = append(dst, result.Method...)
+	dst = append(dst, result.FlowKey...)
+	dst = append(dst, result.TaskKey...)
+	dst = append(dst, result.Payload...)
 
-	offset := frameHeaderSize
-	offset += copy(frame[offset:], method)
-	offset += copy(frame[offset:], flowKey)
-	offset += copy(frame[offset:], taskKey)
-	copy(frame[offset:], payload)
-
-	return frame
+	return dst
 }
 
-// frameResult builds the buffer_result_t carrying a framed result.
-func frameResult(result *dto.Result) C.buffer_result_t {
-	frame := buildResultFrame(result)
+// buildResultFrame serializes a result envelope as the fixed binary header followed
+// by the raw (already-encoded) payload bytes.
+func buildResultFrame(result *dto.Result) []byte {
+	return appendResultFrame(make([]byte, 0, resultFrameSize(result)), result)
+}
+
+// bufferFromFrame wraps framed bytes into the buffer_result_t crossing the
+// boundary. C.int is 32-bit: a frame past 2 GiB would truncate into a negative
+// length and crash the PHP side on RETVAL_STRINGL — answer with an error
+// instead (the result is lost either way; a loud error beats a segfault).
+func bufferFromFrame(frame []byte) C.buffer_result_t {
+	if len(frame) > math.MaxInt32 {
+		return C.buffer_result_t{
+			data: nil,
+			len:  0,
+			err:  C.CString("error: result frame exceeds the 2 GiB boundary limit"),
+		}
+	}
 
 	return C.buffer_result_t{
 		data: C.CBytes(frame),
 		len:  C.int(len(frame)),
 		err:  nil,
 	}
+}
+
+// frameResult builds the buffer_result_t carrying a framed result.
+func frameResult(result *dto.Result) C.buffer_result_t {
+	return bufferFromFrame(buildResultFrame(result))
+}
+
+// buildResultBatchFrame concatenates result frames into the multiframe the PHP
+// side iterates: [count uint16][frameLen uint32][frame]... (big-endian), each
+// inner frame in the exact single-result buildResultFrame format. One exact
+// allocation, each frame written in place. Must match
+// Extension::parseWaitBatchResponse.
+func buildResultBatchFrame(results []*dto.Result) []byte {
+	total := 2
+
+	for _, result := range results {
+		total += 4 + resultFrameSize(result)
+	}
+
+	batch := make([]byte, 2, total)
+	binary.BigEndian.PutUint16(batch[0:2], uint16(len(results)))
+
+	for _, result := range results {
+		batch = binary.BigEndian.AppendUint32(batch, uint32(resultFrameSize(result)))
+		batch = appendResultFrame(batch, result)
+	}
+
+	return batch
+}
+
+// frameResultBatch builds the buffer_result_t carrying a framed result batch.
+func frameResultBatch(results []*dto.Result) C.buffer_result_t {
+	return bufferFromFrame(buildResultBatchFrame(results))
 }
 
 var handler *handler2.Handler
@@ -178,7 +222,9 @@ func push(
 		return C.CString("error: push: " + err.Error())
 	}
 
-	return C.CString("")
+	// NULL, not an allocated empty string: success is the hot path, and the C
+	// side turns NULL into the interned empty string — no malloc/free per push.
+	return nil
 }
 
 //export next
@@ -195,7 +241,8 @@ func next(fk *C.char, tk *C.char) *C.char {
 		return C.CString("error: next: " + err.Error())
 	}
 
-	return C.CString("")
+	// NULL on success, like push: the C side interns the empty string.
+	return nil
 }
 
 //export wait
@@ -226,6 +273,42 @@ func waitAny() C.buffer_result_t {
 	}
 
 	return frameResult(res)
+}
+
+//export waitAnyBatch
+func waitAnyBatch(max C.int) C.buffer_result_t {
+	results, err := handler.WaitAnyBatch(int(max))
+
+	if err != nil {
+		return C.buffer_result_t{
+			data: nil,
+			len:  0,
+			err:  C.CString("error: " + err.Error()),
+		}
+	}
+
+	return frameResultBatch(results)
+}
+
+//export waitAnyTimeoutBatch
+func waitAnyTimeoutBatch(ms C.int, max C.int) C.buffer_result_t {
+	results, err := handler.WaitAnyTimeoutBatch(int(ms), int(max))
+
+	if err != nil {
+		// A timeout is not an error: signal it with a distinct, non-"error:"
+		// sentinel the PHP side maps to "no results yet".
+		if errors.Is(err, handler2.ErrWaitTimeout) {
+			return C.buffer_result_t{data: nil, len: 0, err: C.CString("timeout")}
+		}
+
+		return C.buffer_result_t{
+			data: nil,
+			len:  0,
+			err:  C.CString("error: " + err.Error()),
+		}
+	}
+
+	return frameResultBatch(results)
 }
 
 //export waitAnyTimeout
@@ -286,7 +369,7 @@ func destroy() {
 
 //export version
 func version() *C.char {
-	return C.CString("0.8.0")
+	return C.CString("0.9.0")
 }
 
 func main() {}

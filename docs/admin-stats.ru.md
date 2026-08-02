@@ -78,7 +78,7 @@ flowchart TB
 }
 ```
 
-Воркер-скрипт остаётся прежним — `HttpServer::fromArgs($_SERVER['argv'])` (или
+Воркер-скрипт остаётся прежним — `HttpServer::fromArgs(...)` (или
 `SocketServer::fromArgs(...)`) сам подхватит инжектируемые мастером env. Запрос на
 порт панели:
 

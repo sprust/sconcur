@@ -123,6 +123,17 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_waitAnyTimeout, 0, 0, 1)
     ZEND_ARG_TYPE_INFO(0, timeoutMs, IS_LONG, 0)
 ZEND_END_ARG_INFO()
 
+// waitAnyBatch(int maxResults)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_waitAnyBatch, 0, 0, 1)
+    ZEND_ARG_TYPE_INFO(0, maxResults, IS_LONG, 0)
+ZEND_END_ARG_INFO()
+
+// waitAnyTimeoutBatch(int timeoutMs, int maxResults)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_waitAnyTimeoutBatch, 0, 0, 2)
+    ZEND_ARG_TYPE_INFO(0, timeoutMs, IS_LONG, 0)
+    ZEND_ARG_TYPE_INFO(0, maxResults, IS_LONG, 0)
+ZEND_END_ARG_INFO()
+
 // tasksCount()
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_tasksCount, 0, 0, 0)
 ZEND_END_ARG_INFO()
@@ -207,6 +218,12 @@ PHP_FUNCTION(push)
         (int)payload_len
     );
 
+    /* NULL means success (the hot path): return the interned empty string
+     * instead of copying and freeing a malloc'ed one on every push. */
+    if (response == NULL) {
+        RETURN_EMPTY_STRING();
+    }
+
     RETVAL_STRING(response);
     free(response);
 }
@@ -222,6 +239,11 @@ PHP_FUNCTION(next)
     }
 
     char *response = next(flow_key, task_key);
+
+    /* NULL means success, like push. */
+    if (response == NULL) {
+        RETURN_EMPTY_STRING();
+    }
 
     RETVAL_STRING(response);
     free(response);
@@ -286,6 +308,54 @@ PHP_FUNCTION(waitAnyTimeout)
     }
 
     response = waitAnyTimeout((int)timeout_ms);
+
+    if (response.err != NULL) {
+        RETVAL_STRING(response.err);
+        free(response.err);
+        return;
+    }
+
+    RETVAL_STRINGL((char *)response.data, response.len);
+    free(response.data);
+}
+
+// PHP: SConcur\Extension\waitAnyBatch(int $maxResults): string
+// Returns a result multiframe: the first ready result (blocking, like waitAny)
+// plus every already-ready result up to $maxResults in one crossing.
+PHP_FUNCTION(waitAnyBatch)
+{
+    zend_long max_results;
+    buffer_result_t response;
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "l", &max_results) == FAILURE) {
+        RETURN_THROWS();
+    }
+
+    response = waitAnyBatch((int)max_results);
+
+    if (response.err != NULL) {
+        RETVAL_STRING(response.err);
+        free(response.err);
+        return;
+    }
+
+    RETVAL_STRINGL((char *)response.data, response.len);
+    free(response.data);
+}
+
+// PHP: SConcur\Extension\waitAnyTimeoutBatch(int $timeoutMs, int $maxResults): string
+// Returns the literal "timeout" when no result became ready in time.
+PHP_FUNCTION(waitAnyTimeoutBatch)
+{
+    zend_long timeout_ms;
+    zend_long max_results;
+    buffer_result_t response;
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "ll", &timeout_ms, &max_results) == FAILURE) {
+        RETURN_THROWS();
+    }
+
+    response = waitAnyTimeoutBatch((int)timeout_ms, (int)max_results);
 
     if (response.err != NULL) {
         RETVAL_STRING(response.err);
@@ -444,6 +514,8 @@ static const zend_function_entry sconcur_functions[] = {
     ZEND_NS_FE("SConcur\\Extension", wait, arginfo_sconcur_wait)
     ZEND_NS_FE("SConcur\\Extension", waitAny, arginfo_sconcur_waitAny)
     ZEND_NS_FE("SConcur\\Extension", waitAnyTimeout, arginfo_sconcur_waitAnyTimeout)
+    ZEND_NS_FE("SConcur\\Extension", waitAnyBatch, arginfo_sconcur_waitAnyBatch)
+    ZEND_NS_FE("SConcur\\Extension", waitAnyTimeoutBatch, arginfo_sconcur_waitAnyTimeoutBatch)
     ZEND_NS_FE("SConcur\\Extension", tasksCount, arginfo_sconcur_tasksCount)
     ZEND_NS_FE("SConcur\\Extension", stopFlow, arginfo_sconcur_stopFlow)
     ZEND_NS_FE("SConcur\\Extension", httpStopAccepting, arginfo_sconcur_httpStopAccepting)

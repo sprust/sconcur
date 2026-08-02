@@ -87,8 +87,8 @@ Two one-second operations ran in parallel — about 1 s instead of 2.
 
 SConcur currently provides equivalents for the tools listed below.
 
-Operations and clients — wrapped in a coroutine (`$waitGroup->add()`), they run
-concurrently instead of blocking the process:
+Operations and clients — wrapped in a coroutine (`$waitGroup->add()` +
+`$waitGroup->wait*()`), they run concurrently instead of blocking the process:
 
 | Native PHP | SConcur | What changes |
 | --- | --- | --- |
@@ -113,9 +113,10 @@ Long-lived servers:
 In short: `WaitGroup` wraps each closure in a `Fiber`. When an async feature is
 called, the coroutine suspends and the task goes to Go and runs in a separate
 goroutine. A single process-wide `Scheduler` waits on the extension
-(`waitAny`), gets the first ready result of any flow, and resumes the right
-coroutine by `taskKey`. Results arrive in task-completion order, not in `add()`
-order.
+(`waitAnyBatch`): it blocks for the first ready result of any flow, drains the
+already-ready ones with it in the same crossing, and resumes the right
+coroutines by `taskKey`. Results arrive in task-completion order, not in
+`add()` order.
 
 The number of concurrently live coroutines in a group is unlimited by default.
 If you need backpressure (memory, a DB connection pool), set a limit:
@@ -154,7 +155,7 @@ Adding an I/O feature here is cheaper than in the classic PHP-async stacks
   it on a goroutine and streams the result back. Adding a feature means "write a
   normal Go function".
 - A minimal, stable C glue interface. The PHP↔Go boundary is a handful of generic
-  cgo functions (`push`, `wait`, `waitAny`, `next`, `stopFlow`, plus the
+  cgo functions (`push`, `wait`, `waitAny`/`waitAnyBatch`, `next`, `stopFlow`, plus the
   `version`/`destroy` lifecycle). Every feature rides that same transport: a
   feature is not a new C symbol but data — a new `MethodEnum`/`CommandEnum`, a
   MessagePack payload DTO, and a Go handler. The fragile C ABI stays frozen;
@@ -290,21 +291,22 @@ built and tested against in CI:
   features at once (the `/all` route + `bench-http-load-stats`): memory/CPU
   results and conclusions.
 - [Feature benchmarks](docs/benchmarks.md) — per-feature measurements
-  (native/sync/async): the cost of the PHP↔Go boundary on in-memory DBs and the
-  concurrent fan-out win, with metric tables.
+  (native/sync/async): the cost of the PHP↔Go boundary and the concurrent
+  fan-out win on disk-backed DBs, with metric tables.
 - [Positioning](docs/positioning.md) — SConcur vs php-fpm and RoadRunner: the
   execution models, resources needed to hold the same load, honest limits and
   when to choose what.
 
 ## Build
 ```shell
-rm -f build/sconcur.so build/sconcur.h && \
+cd ext && \
+  rm -f build/sconcur.so build/sconcur.h && \
   CGO_CFLAGS=$(php-config --includes) \
   go build -buildmode=c-shared -o build/sconcur.so .
 ```
 ## echo test
 ```shell
-php -d extension=./build/sconcur.so -r "echo \SConcur\Extension\ping('hello') . PHP_EOL;"
+php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello') . PHP_EOL;"
 ```
 ## Roadmap
 

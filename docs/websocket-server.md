@@ -146,6 +146,10 @@ The `WsServer` constructor (defaults mirror Go):
 | `subprotocols` | `[]` | negotiable WebSocket subprotocols |
 | `onError` | `null` | handler error hook |
 | `masterPid` | `null` | orphan check under the master |
+| `telemetrySocket` | `''` (off) | unix socket for stats snapshots, injected by the master ([stats](admin-stats.md)) |
+| `serverName` | `'sconcur-server'` | worker name in the stats snapshots |
+| `telemetryIntervalMs` | `0` | stats sample/push cadence (`0` — pusher default, 1000 ms) |
+| `preemptionQuantumMs` | `5` | automatic-preemption quantum (`0` — off), see [coroutine switching](coroutine-switching.md) |
 
 `allowedOrigins`/`subprotocols` are arrays, so they are not expanded from the master's
 argv; set them in the worker script code if needed.
@@ -219,7 +223,7 @@ which the Go side writes on each connection's close). On start — a single line
 as the listener is up:
 
 ```
-2026-06-28T12:00:00.000000 sconcur ws server listening on 0.0.0.0:9200 pid=12345 version=0.5.1 maxConcurrency=0 maxConnections=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur ws server listening on 0.0.0.0:9200 pid=12345 version=0.9.0 maxConcurrency=0 maxConnections=0 reusePort=0
 ```
 
 It carries the address, the process pid, the extension version, and the key limits. On
