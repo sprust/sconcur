@@ -42,6 +42,27 @@ const resultsBufferSize = 1024
 // microseconds; past them WaitAny falls through to the blocking select.
 const waitSpinIterations = 8
 
+// batchMaxCap caps one batch at what the multiframe's uint16 count field can
+// carry. Without the cap a larger max would silently truncate the count: PHP
+// would parse fewer frames than the buffer holds, while the excess results are
+// already delivered on this side — lost with no error anywhere.
+const batchMaxCap = 65535
+
+// clampBatchMax normalizes the PHP-supplied batch size into [1, batchMaxCap]:
+// the blocking first result always ships (so the floor is 1), and the ceiling
+// protects the uint16 count field.
+func clampBatchMax(max int) int {
+	if max < 1 {
+		return 1
+	}
+
+	if max > batchMaxCap {
+		return batchMaxCap
+	}
+
+	return max
+}
+
 type Handler struct {
 	ctx       context.Context
 	ctxCancel context.CancelFunc
@@ -141,7 +162,7 @@ func (h *Handler) WaitAnyBatch(max int) ([]*dto.Result, error) {
 		return nil, err
 	}
 
-	return h.drainReady(first, max), nil
+	return h.drainReady(first, clampBatchMax(max)), nil
 }
 
 // WaitAnyTimeoutBatch is WaitAnyBatch with a deadline for the first result:
@@ -154,7 +175,7 @@ func (h *Handler) WaitAnyTimeoutBatch(ms int, max int) ([]*dto.Result, error) {
 		return nil, err
 	}
 
-	return h.drainReady(first, max), nil
+	return h.drainReady(first, clampBatchMax(max)), nil
 }
 
 // drainReady collects the already-ready tail of a batch after its blocking
@@ -165,6 +186,12 @@ func (h *Handler) drainReady(first *dto.Result, max int) []*dto.Result {
 	results := append(h.batchBuffer[:0], first)
 
 	defer func() {
+		// Nil the backing array's slots past this batch's length: they still
+		// point at the previous batch's results, and after framing this buffer
+		// would be their only retainer — one burst of large payloads would stay
+		// pinned through an arbitrarily long trickle of small batches.
+		clear(results[len(results):cap(results)])
+
 		h.batchBuffer = results
 	}()
 
@@ -360,6 +387,10 @@ func (h *Handler) fresh() {
 	// result (or the task's context is cancelled).
 	h.results = make(chan *dto.Result, resultsBufferSize)
 	h.pending = make(map[string][]*dto.Result)
+
+	// Dropped, not reused: a Destroy must release the previous life's results
+	// retained in the buffer's backing array.
+	h.batchBuffer = nil
 
 	h.flows = flows.NewFlows()
 }

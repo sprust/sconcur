@@ -196,7 +196,7 @@ class Extension
 
         return static::parseWaitBatchResponse(
             response: $response,
-            errorContext: 'waitAnyBatch',
+            errorContext: 'waitAnyTimeoutBatch',
             start: $start,
         );
     }
@@ -343,6 +343,12 @@ class Extension
      */
     protected static function parseWaitBatchResponse(string $response, string $errorContext, float $start): array
     {
+        // The tail results of a batch were already ready when the crossing
+        // returned: only the first frame waited from $start, the rest waited
+        // for nothing — mirroring the per-call semantics of the singular
+        // waitAny, where a ready result's own wait returns immediately.
+        $crossingEnd = microtime(true);
+
         if (str_starts_with($response, 'error:')) {
             throw new TaskErrorException(
                 message: sprintf(
@@ -379,7 +385,7 @@ class Extension
                 response: $response,
                 offset: $offset,
                 frameLength: $frameHeader['frameLength'],
-                start: $start,
+                start: ($frameIndex === 0) ? $start : $crossingEnd,
             );
 
             $offset += $frameHeader['frameLength'];

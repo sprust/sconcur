@@ -103,8 +103,12 @@ status:
 # .ai/plans/flaky-test-hunt.ru.md. A failed run's report is copied to
 # .phpunit-failed/ (gitignored, survives container restarts) with a timestamped
 # name, so a one-off failure is never lost to the next run overwriting
-# /tmp/sconcur-phpunit.xml.
+# /tmp/sconcur-phpunit.xml. The stale report is removed up front: phpunit
+# writes the XML at the end of the run, so a run that dies before that
+# (a native segfault) would otherwise preserve the PREVIOUS run's report
+# under a fresh timestamp — evidence pointing at the wrong test.
 test:
+	$(PHP_CLI) sh -c 'rm -f /tmp/sconcur-phpunit.xml'
 	$(PHP_EXT) vendor/bin/phpunit \
 		-d memory_limit=512M \
 		--log-junit /tmp/sconcur-phpunit.xml \
