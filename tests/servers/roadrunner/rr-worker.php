@@ -25,6 +25,8 @@ use Spiral\RoadRunner\Worker;
  *   GET /    -> 200 "ok"
  *   GET /db?n={q} -> {q} sequential point SELECTs on MySQL via PDO (default 1) —
  *               the point-query ladder bench (docs/benchmarks.md)
+ *   GET /db-rw -> INSERT one row + COUNT(*) + point SELECT of a random id within
+ *               that count via PDO, JSON {count, record} — the read-write ladder bench
  *   GET /all -> MongoDB insertOne+findOne (mongodb/mongodb), MySQL INSERT +
  *               SELECT 1 (PDO), PostgreSQL INSERT + SELECT 1 (PDO) — NATIVE
  *               drivers, sequentially (a RoadRunner worker has no internal
@@ -70,6 +72,7 @@ while (true) {
         $response = match ($path) {
             '/'            => rrText($psr17Factory, 'ok'),
             '/db'          => rrDbPointSelectRoute($psr17Factory, $request),
+            '/db-rw'       => rrDbReadWriteRoute($psr17Factory),
             '/all'         => rrAllFeaturesRoute($psr17Factory),
             '/all-sconcur' => rrAllFeaturesSconcurRoute($psr17Factory),
             default        => rrText($psr17Factory, 'not found', 404),
@@ -146,6 +149,96 @@ function rrDbPointSelectSeed(PDO $mysql): void
 
         for ($id = 1; $id <= 1000; $id++) {
             $insert->execute([$id, 'row-' . $id . '-' . str_repeat('x', 20)]);
+        }
+    }
+
+    $seeded = true;
+}
+
+// Read-write bench route (the worker-count ladder vs RoadRunner in
+// docs/benchmarks.md): one INSERT, then COUNT(*), then a point SELECT of a
+// random id within that count via native PDO — the sequential-worker
+// counterpart of the SConcur /db-rw.
+function rrDbReadWriteRoute(Psr17Factory $factory): ResponseInterface
+{
+    [, $mysql] = rrAllFeaturesContext();
+
+    rrDbReadWriteSeed($mysql);
+
+    $mysql
+        ->prepare('INSERT INTO bench_rw (title, quantity, price, active, created_date) VALUES (?, ?, ?, ?, ?)')
+        ->execute([
+            uniqid('row-'),
+            random_int(1, 1_000_000),
+            random_int(1, 1_000_000) / 100,
+            random_int(0, 1),
+            date('Y-m-d'),
+        ]);
+
+    $rowCount = (int) $mysql->query('SELECT COUNT(*) FROM bench_rw')->fetchColumn();
+
+    $select = $mysql->prepare('SELECT id, title, quantity, price, active, created_date FROM bench_rw WHERE id = ?');
+
+    $select->execute([random_int(1, max(1, $rowCount))]);
+
+    $record = $select->fetch(PDO::FETCH_ASSOC);
+
+    $responseBody = json_encode([
+        'count'  => $rowCount,
+        'record' => ($record === false) ? null : $record,
+    ]);
+
+    return rrText($factory, (string) $responseBody);
+}
+
+// Makes sure the read-write table exists and is seeded (10 000 fixed-shape rows
+// across five typed columns, multi-row batches so a cold disk-backed MySQL
+// seeds in seconds) — the mirror of dbReadWriteContext() in http-server.php.
+// INSERT IGNORE with explicit ids keeps concurrent seeding by workers
+// idempotent.
+function rrDbReadWriteSeed(PDO $mysql): void
+{
+    static $seeded = false;
+
+    if ($seeded) {
+        return;
+    }
+
+    $mysql->exec(<<<'SQL'
+        CREATE TABLE IF NOT EXISTS bench_rw (
+            id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            title VARCHAR(64) NOT NULL,
+            quantity INT NOT NULL,
+            price DOUBLE NOT NULL,
+            active TINYINT(1) NOT NULL,
+            created_date DATE NOT NULL
+        )
+        SQL);
+
+    if ((int) $mysql->query('SELECT COUNT(*) FROM bench_rw')->fetchColumn() < 10_000) {
+        $baseDate = new DateTimeImmutable('2026-01-01');
+
+        for ($batchStart = 1; $batchStart <= 10_000; $batchStart += 1_000) {
+            $placeholders = [];
+            $bindings     = [];
+
+            for ($id = $batchStart; $id < $batchStart + 1_000; $id++) {
+                $placeholders[] = '(?, ?, ?, ?, ?, ?)';
+
+                $bindings[] = $id;
+                $bindings[] = 'row-' . $id;
+                $bindings[] = $id;
+                $bindings[] = $id / 100;
+                $bindings[] = $id % 2;
+                $bindings[] = $baseDate->modify('+' . ($id % 365) . ' days')->format('Y-m-d');
+            }
+
+            $mysql
+                ->prepare(
+                    'INSERT IGNORE INTO bench_rw (id, title, quantity, price, active, created_date) VALUES '
+                        . implode(', ', $placeholders),
+                )
+                ->execute($bindings);
         }
     }
 

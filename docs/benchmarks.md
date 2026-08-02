@@ -31,6 +31,7 @@ The quick workload-matching verdict table ("Is SConcur for you?") lives in
   - [HTTP throughput: `/` vs `/all`](#http-throughput--vs-all)
   - [Comparison with RoadRunner (native drivers)](#comparison-with-roadrunner-native-drivers)
   - [Point query: the worker-count ladder vs RoadRunner](#point-query-the-worker-count-ladder-vs-roadrunner)
+    - [Write and read: `/db-rw`](#write-and-read-db-rw)
 - [Conclusions](#conclusions)
 
 ## Environment
@@ -511,6 +512,47 @@ This is the same boundary the cheap-point-query row of the verdict table draws
 ([positioning](positioning.md#is-sconcur-for-you)): with nothing to overlap inside a
 request, the models converge — SConcur's remaining edge is holding the same load on
 fewer processes, not a higher ceiling.
+
+#### Write and read: `/db-rw`
+
+A second run of the same ladder (2026-08-02), now with a write. The demo servers'
+`/db-rw` handle does, per request: an INSERT of one row, a COUNT(*), and a point
+SELECT of a random id within that count; the response is JSON with the count and
+every column of the found record. The `bench_rw` table seeds on the first hit:
+10 000 rows across five typed columns (string, int, float, bool, date); ids are
+contiguous (seed 1..10 000, then AUTO_INCREMENT, no deletes), so a random id in
+[1, COUNT(*)] hits an existing row. SConcur runs the three operations through the
+MySQL feature sequentially, no `WaitGroup` (cross-request overlap only);
+RoadRunner through PDO. The table is reset to the 10 000 seed rows before each
+run (an equal start); during a run it grows with the inserts, so the faster stack
+makes its own COUNT(*) heavier — the comparison is conservative. Conditions are
+otherwise the point-query ladder's: disk-backed MySQL, wrk 4 threads / 256
+connections / 20 s, the same per-process pools, both stacks within one session.
+
+| Workers | RoadRunner rps / p50 / p99 | SConcur rps / p50 / p99 (pool) | SConcur rps |
+| ---: | --- | --- | :---: |
+| 1 | 95 / 0.99 s / 1.97 s | 2 366 / 99 ms / 261 ms (150) | ×25 |
+| 3 | 204 / 1.25 s / 1.33 s | 2 494 / 91 ms / 336 ms (50×3) | ×12 |
+| 8 | 423 / 608 ms / 748 ms | 2 496 / 90 ms / 384 ms (18×8) | ×5.9 |
+| 16 | 739 / 346 ms / 433 ms | 2 446 / 92 ms / 372 ms (9×16) | ×3.3 |
+
+What the write changes:
+
+- One disk commit per request flips the ladder. On the point SELECT the models
+  converged at the shared ceiling; here SConcur reaches ~2.4–2.5k rps with a
+  single worker and stays flat: cross-request overlap folds the commits of dozens
+  of in-flight requests into group commits, and the ceiling becomes MySQL itself
+  (the mysql container burns ~1200% CPU against ~90–210% for php), not the PHP
+  thread.
+- RoadRunner scales almost linearly with workers — each worker adds one more
+  concurrent commit stream (95 → 204 → 423 → 739 rps) — but even 16 workers stay
+  3.3× behind; parity would take around 50 processes.
+- RoadRunner's latencies at small pools are queueing, not work: 256 wrk
+  connections share 1–3 workers, and p50 reaches ~1–1.25 s against SConcur's
+  ~90–100 ms.
+- The applicability boundary is the fan-out's, one level up: as soon as the
+  request contains an operation with real waiting (here the insert's disk
+  commit), overlap decides — even with no `WaitGroup` inside the request.
 
 ## Conclusions
 

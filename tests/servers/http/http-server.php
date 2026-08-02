@@ -45,6 +45,8 @@ use SConcur\WaitGroup;
  *   GET  /cpu-switch/{n}    -> the same loop, but yielding via Scheduler::switch() (fairness demo)
  *   GET  /db?n={q}          -> {q} sequential point SELECTs on MySQL (default 1), JSON row —
  *                              the point-query ladder bench vs RoadRunner (docs/benchmarks.md)
+ *   GET  /db-rw             -> INSERT one row + COUNT(*) + point SELECT of a random id within
+ *                              that count, JSON {count, record} — the read-write ladder bench
  *   GET  /all               -> fans out across the backend I/O features concurrently (load test)
  *   GET  /all-nowg          -> the same SConcur features, sequentially, NO WaitGroup — measures
  *                              cross-request concurrency alone (each call still yields)
@@ -142,6 +144,7 @@ $server->serve(static function (ServerRequestInterface $request) use ($psr17Fact
             ['Set-Cookie' => ['a=1', 'b=2']],
         ),
         $path === '/db'               => dbPointSelectRoute($psr17Factory, $request),
+        $path === '/db-rw'            => dbReadWriteRoute($psr17Factory),
         $path === '/all'              => allFeaturesRoute($psr17Factory),
         $path === '/all-nowg'         => allFeaturesNoWaitGroupRoute($psr17Factory),
         $path === '/all-native'       => allFeaturesNativeRoute($psr17Factory),
@@ -392,17 +395,8 @@ function dbPointSelectContext(): MysqlConnection
         return $mysql;
     }
 
-    Dotenv::createImmutable(dirname(__DIR__, 3))->safeLoad();
-
     $mysql = new MysqlConnection(
-        dsn: sprintf(
-            '%s:%s@tcp(%s:%s)/%s?parseTime=true',
-            $_ENV['MYSQL_USER'],
-            $_ENV['MYSQL_PASSWORD'],
-            $_ENV['MYSQL_HOST'],
-            $_ENV['MYSQL_PORT'],
-            $_ENV['MYSQL_DATABASE'],
-        ),
+        dsn: dbMysqlDsn(),
         maxOpenConns: 9,
     );
 
@@ -418,6 +412,118 @@ function dbPointSelectContext(): MysqlConnection
                     $id,
                     'row-' . $id . '-' . str_repeat('x', 20),
                 ],
+            );
+        }
+    }
+
+    return $mysql;
+}
+
+// The MySQL DSN shared by the /db* bench routes (Go driver format).
+function dbMysqlDsn(): string
+{
+    Dotenv::createImmutable(dirname(__DIR__, 3))->safeLoad();
+
+    return sprintf(
+        '%s:%s@tcp(%s:%s)/%s?parseTime=true',
+        $_ENV['MYSQL_USER'],
+        $_ENV['MYSQL_PASSWORD'],
+        $_ENV['MYSQL_HOST'],
+        $_ENV['MYSQL_PORT'],
+        $_ENV['MYSQL_DATABASE'],
+    );
+}
+
+// Read-write bench route (the worker-count ladder vs RoadRunner in
+// docs/benchmarks.md): one INSERT, then COUNT(*), then a point SELECT of a
+// random id within that count, JSON {count, record} — a minimal write+read mix
+// against a 10 000-row seeded table with five typed columns.
+function dbReadWriteRoute(Psr17Factory $factory): ResponseInterface
+{
+    $mysql = dbReadWriteContext();
+
+    $mysql->exec(
+        sql: 'INSERT INTO bench_rw (title, quantity, price, active, created_date) VALUES (?, ?, ?, ?, ?)',
+        bindings: [
+            uniqid('row-'),
+            random_int(1, 1_000_000),
+            random_int(1, 1_000_000) / 100,
+            random_int(0, 1),
+            date('Y-m-d'),
+        ],
+    );
+
+    $countRows = $mysql->fetchAll('SELECT COUNT(*) AS c FROM bench_rw');
+    $rowCount  = (int) ($countRows[0]['c'] ?? 0);
+
+    $recordRows = $mysql->fetchAll(
+        sql: 'SELECT id, title, quantity, price, active, created_date FROM bench_rw WHERE id = ?',
+        bindings: [random_int(1, max(1, $rowCount))],
+    );
+
+    $responseBody = json_encode([
+        'count'  => $rowCount,
+        'record' => $recordRows[0] ?? null,
+    ]);
+
+    return text($factory, (string) $responseBody);
+}
+
+// Lazily builds the /db-rw connection on the first hit and seeds the table:
+// 10 000 fixed-shape rows across five typed columns (string, int, float, bool,
+// date), inserted in multi-row batches so a cold disk-backed MySQL seeds in
+// seconds, not minutes. Ids are explicit (1..10 000) and INSERT IGNORE keeps
+// concurrent seeding by reuse-port workers idempotent; rows inserted by the
+// route continue the sequence (AUTO_INCREMENT), so ids stay contiguous and a
+// random id in [1, COUNT(*)] always hits a row.
+function dbReadWriteContext(): MysqlConnection
+{
+    static $mysql = null;
+
+    if ($mysql !== null) {
+        return $mysql;
+    }
+
+    $mysql = new MysqlConnection(
+        dsn: dbMysqlDsn(),
+        maxOpenConns: 9,
+    );
+
+    $mysql->exec(sql: <<<'SQL'
+        CREATE TABLE IF NOT EXISTS bench_rw (
+            id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            title VARCHAR(64) NOT NULL,
+            quantity INT NOT NULL,
+            price DOUBLE NOT NULL,
+            active TINYINT(1) NOT NULL,
+            created_date DATE NOT NULL
+        )
+        SQL);
+
+    $seededRows = $mysql->fetchAll('SELECT COUNT(*) AS c FROM bench_rw');
+
+    if ((int) ($seededRows[0]['c'] ?? 0) < 10_000) {
+        $baseDate = new DateTimeImmutable('2026-01-01');
+
+        for ($batchStart = 1; $batchStart <= 10_000; $batchStart += 1_000) {
+            $placeholders = [];
+            $bindings     = [];
+
+            for ($id = $batchStart; $id < $batchStart + 1_000; $id++) {
+                $placeholders[] = '(?, ?, ?, ?, ?, ?)';
+
+                $bindings[] = $id;
+                $bindings[] = 'row-' . $id;
+                $bindings[] = $id;
+                $bindings[] = $id / 100;
+                $bindings[] = $id % 2;
+                $bindings[] = $baseDate->modify('+' . ($id % 365) . ' days')->format('Y-m-d');
+            }
+
+            $mysql->exec(
+                sql: 'INSERT IGNORE INTO bench_rw (id, title, quantity, price, active, created_date) VALUES '
+                    . implode(', ', $placeholders),
+                bindings: $bindings,
             );
         }
     }
