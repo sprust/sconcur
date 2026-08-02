@@ -148,6 +148,10 @@ Go-стороне).
 | `subprotocols` | `[]` | согласуемые WebSocket-subprotocol'ы |
 | `onError` | `null` | хук ошибки обработчика |
 | `masterPid` | `null` | orphan-чек под мастером |
+| `telemetrySocket` | `''` (выкл.) | unix-сокет для снапшотов статистики, инжектируется мастером ([статистика](admin-stats.ru.md)) |
+| `serverName` | `'sconcur-server'` | имя воркера в снапшотах статистики |
+| `telemetryIntervalMs` | `0` | период сэмпла/пуша статистики (`0` — дефолт пушера, 1000 мс) |
+| `preemptionQuantumMs` | `5` | квант автоматической преемпции (`0` — выкл.), см. [переключение корутин](coroutine-switching.ru.md) |
 
 `allowedOrigins`/`subprotocols` — массивы, поэтому не разворачиваются из argv мастера;
 задавайте их в коде воркер-скрипта при необходимости.
@@ -220,7 +224,7 @@ $server = new WsServer(
 только листенер запущен:
 
 ```
-2026-06-28T12:00:00.000000 sconcur ws server listening on 0.0.0.0:9200 pid=12345 version=0.5.1 maxConcurrency=0 maxConnections=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur ws server listening on 0.0.0.0:9200 pid=12345 version=0.9.0 maxConcurrency=0 maxConnections=0 reusePort=0
 ```
 
 В ней адрес, pid процесса, версия расширения и ключевые лимиты. При graceful shutdown —

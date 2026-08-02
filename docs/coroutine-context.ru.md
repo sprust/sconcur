@@ -79,8 +79,8 @@ $group->waitAll();
 
 Локальная карта создаётся лениво (при первом `set`) и освобождается вместе с
 корутиной — там же, где библиотека снимает per-fiber учёт
-(`State::unRegisterFiber`, через `Scheduler::forget`/`detach` и
-`State::deleteFlow`). После завершения N корутин в памяти не остаётся N контекстов.
+(`State::unRegisterFiber` — через `Scheduler::forget`, `WaitGroup::discard` после
+`detach` или `State::deleteFlow`). После завершения N корутин в памяти не остаётся N контекстов.
 Корневой контекст не удаляется.
 
 ## Ограничения

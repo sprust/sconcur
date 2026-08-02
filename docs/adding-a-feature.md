@@ -228,8 +228,11 @@ Routing `next` to the state is shared across all features, no separate setup is 
 
 1. `MethodEnum` + Payload — as in variant A.
 
-2. The public API returns an `IteratorResult` wrapped around the payload — it will itself
-   request the first and subsequent batches:
+2. The public API returns an iterator result wrapped around the payload — it will
+   itself request the first and subsequent batches. (`IteratorResult` here is
+   Mongodb's `Features\Mongodb\Results\IteratorResult`, shown as the pattern: it
+   decodes batches with the Mongo BSON serializer, so a new feature writes its own
+   equivalent over its payload format.)
    ```php
    /**
     * @return Iterator<int, mixed>
@@ -246,7 +249,8 @@ Routing `next` to the state is shared across all features, no separate setup is 
 
 1. `types/method.go` — the constant (as in A).
 
-2. The state `ext/internal/features/foo/state/foo.go`, implementing
+2. The state — a file in the feature package (e.g. `rows_state.go` in `sql`,
+   `message_state.go` in `wsserver`; mongodb keeps them under `states/`), implementing
    `contracts.StateContract` (`Next() *dto.Result`, `Close()`):
    ```go
    type FooState struct {
@@ -291,7 +295,7 @@ Routing `next` to the state is shared across all features, no separate setup is 
        message := task.GetMessage()
        // ... parse message.Payload ...
 
-       state := state.New(task.GetContext(), message /*, parameters */)
+       state := newFooState(task.GetContext(), message /*, parameters */)
 
        result, err := states.Get().Start(task.GetContext(), message.TaskKey, state)
        if err != nil {

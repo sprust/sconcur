@@ -38,7 +38,7 @@ extension; PHP stays a thin orchestration layer. The implementation is in
 
 The network stack (accepting connections, HTTP parsing, keep-alive, timeouts, writing
 the response) runs in Go on a standard `net/http.Server`. Each accepted request
-becomes an ordinary "result" and reaches PHP through the same single `waitAny` channel
+becomes an ordinary "result" and reaches PHP through the same shared result channel (drained by the scheduler's `waitAnyBatch`)
 as the results of all other tasks (Mongo, Sleeper). Because of that the server reuses
 the existing scheduler (`Scheduler`) and does not introduce a second event loop.
 
@@ -246,6 +246,10 @@ are in milliseconds. The PHP defaults mirror the Go defaults.
 | `reusePort` | `false` | Enable `SO_REUSEPORT` — several processes on one port. See [scaling across cores](#scaling-across-cores-so_reuseport). |
 | `onError` | `null` | `Closure(Throwable, ServerRequestInterface): ?ResponseInterface` — observer of handler errors. |
 | `masterPid` | `null` | If set, the server gracefully stops itself as soon as it stops being a child of this pid (its [master](worker-master.md) died). Under `WorkerMaster` this is set automatically from the `--masterPid` flag via `HttpServer::fromArgs()`; `null` — off. |
+| `telemetrySocket` | `''` (off) | Path of the unix socket the worker pushes stats snapshots to; injected by the master when the [stats panel](admin-stats.md) is enabled. |
+| `serverName` | `'sconcur-server'` | The worker's name in the stats snapshots. |
+| `telemetryIntervalMs` | `0` | Snapshot sample/push cadence; `0` — the pusher's default (1000 ms). |
+| `preemptionQuantumMs` | `5` | Automatic-preemption quantum while serving — a CPU-bound handler coroutine is parked every quantum; `0` — off. See [coroutine switching](coroutine-switching.md). |
 
 A value of `0` for `maxConcurrency`/`handlerTimeoutMs` means "off". For the other
 timeouts `0` means "take the Go default".
@@ -465,7 +469,7 @@ Besides the access log the server writes lifecycle lines to `STDOUT`. At startup
 line, as soon as the listener is up:
 
 ```
-2026-06-28T12:00:00.000000 sconcur http server listening on 0.0.0.0:8080 pid=12345 version=0.5.1 maxConcurrency=0 maxRequests=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur http server listening on 0.0.0.0:8080 pid=12345 version=0.9.0 maxConcurrency=0 maxRequests=0 reusePort=0
 ```
 
 It carries the address, the process pid, the extension version and the key limits. On
@@ -487,7 +491,8 @@ written by the PHP side (unlike the access log) and flushed immediately. Under a
 ### One process = one thread
 
 The PHP part is single-threaded and cooperative: a single `Scheduler` runs the
-`waitAny` loop and resumes coroutines. Control passes to another coroutine only when the
+wait loop (`waitAnyBatch`: the first ready result plus the already-ready tail in one
+cgo crossing, consumed one per step) and resumes coroutines. Control passes to another coroutine only when the
 current one suspends on an SConcur async feature (`Fiber::suspend()`).
 
 Which leads to the main rule:
@@ -691,7 +696,7 @@ Details:
 - `ext-pcntl` is required. Without it graceful shutdown does not work — the process is
   killed hard (which breaks the "do not abort active tasks" rule). In the project's
   Docker images `pcntl` is enabled.
-- On an idle server shutdown fires quickly: the `serve()` loop polls `waitAny` at a
+- On an idle server shutdown fires quickly: the `serve()` loop polls `waitAnyTimeoutBatch` at a
   250 ms interval and notices the signal even without traffic.
 
 ## Internals
@@ -707,7 +712,7 @@ sequenceDiagram
     PHP->>Go: push(ServePayload, MethodHttpServe)
     Note over Go: handleServe — net.Listen + net/http.Server.Serve()
     Note over Go: serverState is the http.Handler (streaming state)
-    Note over PHP: Scheduler::serve() — waitAnyTimeout(250ms) loop
+    Note over PHP: Scheduler::serve() — waitAnyTimeoutBatch(250ms) loop
     Client->>Go: HTTP request
     Note over Go: ServeHTTP — acquire slot, read body, RequestEvent into the requests channel
     Go-->>PHP: request event (batch, HasNext=true)
@@ -726,7 +731,7 @@ sequenceDiagram
 - `Features/HttpServer/HttpServer` — the public API: `serve($handler)`. Generates a
   `flowKey`, installs the signal handlers, pushes the listener task, starts the
   scheduler's server loop.
-- `Scheduler/Scheduler::serve()` — the server loop on top of `waitAnyTimeout()`:
+- `Scheduler/Scheduler::serve()` — the server loop on top of `waitAnyTimeoutBatch()`:
   dispatches three kinds of result — a request event (→ `spawn` a handler in a new
   per-request flow), a task result (→ resume a coroutine by `taskKey`) and the
   completion/error of the server flow. Draining and `stopFlow` at shutdown.
@@ -812,13 +817,14 @@ shutdown.
   truncation.
 - Memory. Without `maxConcurrency` the number of concurrent handlers and buffered bodies
   is unbounded — under a flood of large bodies OOM is possible. Set a limit.
-- Idle shutdown fires within ~250 ms (the `waitAny` polling interval).
+- Idle shutdown fires within ~250 ms (the `waitAnyTimeoutBatch` polling interval).
 
 ## Running in Docker
 
-`docker-compose.yml` has a `servers` service: under supervisor it brings up both
-masters — HTTP and socket (`tests/servers/http/http-server.php` and
-`tests/servers/socket/socket-server.php` via `bin/sconcur-server`). The ports are
+`docker-compose.yml` has a `servers` service: under supervisor it brings up three
+masters — HTTP, socket and WebSocket (`tests/servers/http/http-server.php`,
+`tests/servers/socket/socket-server.php` and `tests/servers/ws/ws-server.php` via
+`bin/sconcur-server`). The ports are
 hard-coded in compose (HTTP — `28080:8080`), since the masters' JSON configs cannot use
 environment variables. Rebuild and restart:
 
@@ -828,7 +834,7 @@ make servers-restart
 
 This rebuilds the extension (`make ext-build`) and recreates the `servers` container.
 Each master is managed via `make http-server-{status,stop,reload}` (and
-`socket-server-*`).
+`socket-server-*`, `ws-server-*`).
 
 ## Testing
 

@@ -13,8 +13,8 @@ Documents are exchanged with the Go side as raw BSON and decoded natively by the
 therefore arrive as native `MongoDB\BSON\*` types (`ObjectId`, `UTCDateTime`,
 `Decimal128`, …), and documents and arrays as plain PHP arrays.
 
-> The `ext-mongodb` extension is required (used only for BSON encoding on the PHP
-> side; networking is done by Go).
+> The `ext-mongodb` extension is required (used only for BSON encoding/decoding on
+> the PHP side; networking is done by Go).
 
 ## Contents
 
@@ -328,7 +328,7 @@ Both parameters are set on the `Client` and are part of the pool key.
 
 ## Limits
 
-- The `ext-mongodb` extension is required (for BSON types and encoding).
+- The `ext-mongodb` extension is required (for BSON types and encoding/decoding).
 - A `find`/`aggregate` cursor should be either read to the end or interrupted
   (`break`) — it holds a resource on the server until closed.
 - The library's general limits apply: CLI/NTS only, no `pcntl_fork` after the

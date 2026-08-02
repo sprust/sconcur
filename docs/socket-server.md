@@ -119,6 +119,10 @@ The `SocketServer` constructor (defaults mirror Go):
 | `reusePort` | `false` | `SO_REUSEPORT` — a process pool on one port (Linux) |
 | `onError` | `null` | handler-error hook |
 | `masterPid` | `null` | orphan check under the master |
+| `telemetrySocket` | `''` (off) | unix socket for stats snapshots, injected by the master ([stats](admin-stats.md)) |
+| `serverName` | `'sconcur-server'` | worker name in the stats snapshots |
+| `telemetryIntervalMs` | `0` | stats sample/push cadence (`0` — pusher default, 1000 ms) |
+| `preemptionQuantumMs` | `5` | automatic-preemption quantum (`0` — off), see [coroutine switching](coroutine-switching.md) |
 
 ## Concurrency
 
@@ -157,7 +161,7 @@ $server = new SocketServer(
 );
 ```
 
-In ordinary code `Connection::write` throws `ConnectionClosedException` once the client
+In ordinary code `Connection::write` throws `SocketServerConnectionClosedException` once the client
 has already disconnected — the handler can catch it and stop the push loop, or let it
 unwind the coroutine.
 
@@ -184,7 +188,7 @@ which the Go side writes when each connection closes). On startup — one line, 
 as the listener is up:
 
 ```
-2026-06-28T12:00:00.000000 sconcur socket server listening on 0.0.0.0:8090 pid=12345 version=0.5.1 maxConcurrency=0 maxConnections=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur socket server listening on 0.0.0.0:9100 pid=12345 version=0.9.0 maxConcurrency=0 maxConnections=0 reusePort=0
 ```
 
 It carries the address, the process pid, the extension version, and the key limits. On

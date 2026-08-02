@@ -467,14 +467,13 @@ class Scheduler
      * Serves a streaming flow whose batches are incoming requests (the HTTP
      * server). Each request is dispatched to a freshly spawned coroutine
      * (spawn-on-request); results of every other flow resume their coroutines.
-     * The single waitAny loop multiplexes incoming requests and the async work
-     * their handlers do.
+     * The single wait loop (waitAnyTimeoutBatch, consumed one result per step)
+     * multiplexes incoming requests and the async work their handlers do.
      *
      * Graceful shutdown: once $shouldStop() returns true the loop stops accepting
      * new requests and keeps running only to drain the in-flight handlers; when
      * the last one finishes it stops the server flow and returns. The check
-     * happens after each delivered result, so on an idle server shutdown takes
-     * effect on the next event (a bounded waitAny will make it immediate later).
+     * happens after each delivered result and on every poll timeout.
      *
      * Bounded lifetime: when $maxRequests > 0 the loop starts the same graceful
      * drain once it has dispatched that many requests — a built-in mitigation for

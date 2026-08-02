@@ -54,7 +54,7 @@ A request is a streaming state. The first result carries the response metadata
 body chunks. `ResponseBodyStream` pulls them on demand.
 
 - `sendRequest()` inside a coroutine suspends it without blocking the other
-  requests (the same `Scheduler`, the same `waitAny`);
+  requests (the same `Scheduler`, the same `waitAnyBatch` wait point);
 - outside a Fiber it works synchronously (`Extension::wait`) — a single API;
 - an unfinished response (early `break`, object destruction) is cleaned up by the
   streaming-state machinery: context cancellation → `Close()` → `resp.Body.Close`.
@@ -215,7 +215,7 @@ implementation:
 - `close()` / `detach()` / `__destruct()` — release the Go flow on an early
   abandonment of the body.
 
-The transport granularity is fixed (64 KiB): a body ≤ that size arrives inline with
+The transport granularity is the `chunkSize` option (default 64 KiB): a body ≤ that size arrives inline with
 the first result without extra round-trips; a larger one comes in pieces per
 round-trip, and `read($length)` slices them to the application's size.
 
@@ -265,8 +265,9 @@ Timeout. The whole operation (connect + download) is bounded by `requestTimeoutM
 (see options) — raise it for large files. A flow stop or deadline aborts
 `io.CopyBuffer` and closes the file.
 
-Limitation. `download()` is incompatible with request-body streaming
-(`streamRequestBody`) — a rare case; a normal download is a GET/small POST.
+Limitation. `download()` ignores request-body streaming (`streamRequestBody` is
+forced off, the body is buffered) — a rare case; a normal download is a GET/small
+POST.
 
 ## Error handling (PSR-18)
 

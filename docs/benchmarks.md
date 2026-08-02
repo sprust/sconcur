@@ -482,10 +482,10 @@ of the absolute numbers reaches ±20%, only in-session comparisons are meaningfu
 
 | Workers | RoadRunner rps / p50 / p99 | SConcur rps / p50 / p99 (pool) | SConcur rps |
 | ---: | --- | --- | :---: |
-| 1 | 5 248 / 47.6 ms / 65.8 ms | 6 581 / 38.2 ms / 68.1 ms (150) | +25% |
-| 3 | 10 561 / 23.8 ms / 29.3 ms | 13 518 / 17.1 ms / 39.5 ms (50×3) | +28% |
-| 8 | 23 696 / 10.6 ms / 13.1 ms | 26 482 / 9.6 ms / 17.8 ms (18×8) | +12% |
-| 16 | 29 084 / 8.6 ms / 11.5 ms | 28 105 / 8.4 ms / 32.5 ms (9×16) | −3% |
+| 1 | 5 248 / 47.6 ms / 65.8 ms | 6 581 / 38.2 ms / 68.1 ms (150) | +25% ✅ |
+| 3 | 10 561 / 23.8 ms / 29.3 ms | 13 518 / 17.1 ms / 39.5 ms (50×3) | +28% ✅ |
+| 8 | 23 696 / 10.6 ms / 13.1 ms | 26 482 / 9.6 ms / 17.8 ms (18×8) | +12% ✅ |
+| 16 | 29 084 / 8.6 ms / 11.5 ms | 28 105 / 8.4 ms / 32.5 ms (9×16) | −3% ❌ |
 
 What the ladder shows:
 
@@ -531,10 +531,10 @@ connections / 20 s, the same per-process pools, both stacks within one session.
 
 | Workers | RoadRunner rps / p50 / p99 | SConcur rps / p50 / p99 (pool) | SConcur rps |
 | ---: | --- | --- | :---: |
-| 1 | 95 / 0.99 s / 1.97 s | 2 366 / 99 ms / 261 ms (150) | ×25 |
-| 3 | 204 / 1.25 s / 1.33 s | 2 494 / 91 ms / 336 ms (50×3) | ×12 |
-| 8 | 423 / 608 ms / 748 ms | 2 496 / 90 ms / 384 ms (18×8) | ×5.9 |
-| 16 | 739 / 346 ms / 433 ms | 2 446 / 92 ms / 372 ms (9×16) | ×3.3 |
+| 1 | 95 / 0.99 s / 1.97 s | 2 366 / 99 ms / 261 ms (150) | ×25 ✅ |
+| 3 | 204 / 1.25 s / 1.33 s | 2 494 / 91 ms / 336 ms (50×3) | ×12 ✅ |
+| 8 | 423 / 608 ms / 748 ms | 2 496 / 90 ms / 384 ms (18×8) | ×5.9 ✅ |
+| 16 | 739 / 346 ms / 433 ms | 2 446 / 92 ms / 372 ms (9×16) | ×3.3 ✅ |
 
 What the write changes:
 

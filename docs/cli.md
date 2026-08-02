@@ -75,13 +75,9 @@ RUN vendor/bin/sconcur-load "$(php-config --extension-dir)/sconcur.so" \
     && echo "extension=sconcur.so" > /usr/local/etc/php/conf.d/docker-php-ext-sconcur.ini
 ```
 
-The script downloads the asset from the versioned release `v<version>`, where the
-version is exactly the one the package is built against
-(`Extension::REQUIRED_EXTENSION_VERSION`), so the extension and the package cannot
-drift apart in version. There is no rolling `latest` release (CI marks the
-versioned release itself as "Latest"), so you should not download via
-`.../releases/latest/download/...` — only by the exact tag, which is what the
-script does.
+There is no rolling `latest` release (CI marks the versioned release itself as
+"Latest"), so you should not download via `.../releases/latest/download/...` —
+only by the exact tag `v<version>`, which is what the script does.
 
 ### Installing into the image before `composer install`
 
@@ -106,9 +102,9 @@ RUN set -eux; \
     echo "extension=sconcur.so" > /usr/local/etc/php/conf.d/docker-php-ext-sconcur.ini
 ```
 
-In `composer.lock` the version may be stored with a `v` prefix (`v0.4.0`), so the
+In `composer.lock` the version may be stored with a `v` prefix (`v0.9.0`), so the
 leading `v` is stripped (`sed 's/^v//'`) and added back in the URL (`v${version}`)
-— otherwise it would become `vv0.4.0`. `jq` and `curl` are required in this build
+— otherwise it would become `vv0.9.0`. `jq` and `curl` are required in this build
 layer.
 
 ## sconcur-status — check the installation
@@ -121,12 +117,12 @@ report; with `--json` — a single machine-readable line.
 vendor/bin/sconcur-status
 #   sconcur status
 #     extension installed:  yes
-#     package version:      0.4.0
-#     extension version:    0.4.0
+#     package version:      0.9.0
+#     extension version:    0.9.0
 #     ready:                yes
 
 vendor/bin/sconcur-status --json
-#   {"extension_installed":true,"package_version":"0.4.0","extension_version":"0.4.0","ready":true}
+#   {"extension_installed":true,"package_version":"0.9.0","extension_version":"0.9.0","ready":true}
 ```
 
 The extension must be enabled for the same process, otherwise the script cannot

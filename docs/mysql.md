@@ -92,12 +92,15 @@ The `Connection` constructor:
 | Parameter           | Default | Purpose |
 |---------------------|--------------|------------|
 | `dsn`               | —            | driver connection string |
-| `timeoutMs`         | 30000        | deadline for a single query/exec operation |
+| `timeoutMs`         | 30000        | deadline for one exec; for a query — for the whole cursor lifetime (see below) |
 | `maxOpenConns`      | 0 (no limit)   | pool `SetMaxOpenConns` |
 | `maxIdleConns`      | = `maxOpenConns` | pool `SetMaxIdleConns` |
 | `connMaxLifetimeMs` | 0 (no limit)   | pool `SetConnMaxLifetime` |
 
-`timeoutMs` bounds each individual query/exec (a mandatory execution deadline). It
+`timeoutMs` bounds each individual exec; for a query it is carried into the
+streaming cursor and bounds its whole lifetime — every `next()` batch and the
+PHP-side consumption included, so a slow `foreach` over a large result can hit it
+mid-iteration. It
 does not apply to the lifetime of the transaction itself — a transaction lives
 until commit/rollback or a flow stop.
 
@@ -152,7 +155,7 @@ the desired degree of parallelism.
   and reused across tasks. The sweeper walks the registry once a minute; a pool with
   no owners and no access for longer than 5 minutes is closed.
 - SELECT streaming (`rows_state.go`) — the `rowsState` state holds a `*sql.Rows` and
-  gives out rows in batches (`batchSize`, default 50) with a one-row look-ahead to
+  gives out rows in batches (`batchSize` comes from the PHP side, default 50 there; `<= 0` — one unbounded batch) with a one-row look-ahead to
   detect whether a next batch exists. It is closed on exhaustion, an early `break`
   or a flow stop (`Close` closes the `*sql.Rows`, clears the deadline and returns the
   connection to the pool).

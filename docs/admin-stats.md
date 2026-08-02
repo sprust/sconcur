@@ -80,7 +80,7 @@ worker.
 }
 ```
 
-The worker script stays the same — `HttpServer::fromArgs($_SERVER['argv'])` (or
+The worker script stays the same — `HttpServer::fromArgs(...)` (or
 `SocketServer::fromArgs(...)`) picks up the env injected by the master on its own. A
 request to the panel port:
 

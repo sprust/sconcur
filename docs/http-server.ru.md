@@ -38,8 +38,9 @@ Go-расширении; PHP остаётся тонким слоем-оркес
 
 Сетевой стек (приём соединений, парсинг HTTP, keep-alive, таймауты, запись ответа)
 работает в Go на стандартном `net/http.Server`. Каждый принятый запрос
-превращается в обычный «результат» и приходит в PHP через тот же единый канал
-`waitAny`, что и результаты всех остальных задач (Mongo, Sleeper). Благодаря этому
+превращается в обычный «результат» и приходит в PHP через тот же общий канал
+результатов (планировщик выгребает его `waitAnyBatch`), что и результаты всех
+остальных задач (Mongo, Sleeper). Благодаря этому
 сервер переиспользует существующий планировщик (`Scheduler`) и не вводит второй
 event-loop.
 
@@ -245,6 +246,10 @@ $server = new HttpServer(
 | `reusePort` | `false` | Включить `SO_REUSEPORT` — несколько процессов на одном порту. См. [масштабирование на ядра](#масштабирование-на-ядра-so_reuseport). |
 | `onError` | `null` | `Closure(Throwable, ServerRequestInterface): ?ResponseInterface` — наблюдатель ошибок обработчика. |
 | `masterPid` | `null` | Если задан — сервер сам штатно останавливается, как только перестаёт быть потомком этого pid (его [мастер](worker-master.ru.md) умер). Под `WorkerMaster` ставится автоматически из флага `--masterPid` через `HttpServer::fromArgs()`; `null` — выключено. |
+| `telemetrySocket` | `''` (выкл.) | Путь unix-сокета, куда воркер пушит снапшоты статистики; инжектируется мастером при включённой [панели статистики](admin-stats.ru.md). |
+| `serverName` | `'sconcur-server'` | Имя воркера в снапшотах статистики. |
+| `telemetryIntervalMs` | `0` | Период сэмпла/пуша снапшотов; `0` — дефолт пушера (1000 мс). |
+| `preemptionQuantumMs` | `5` | Квант автоматической преемпции во время serve — CPU-bound корутина обработчика паркуется каждый квант; `0` — выключено. См. [переключение корутин](coroutine-switching.ru.md). |
 
 Значение `0` для `maxConcurrency`/`handlerTimeoutMs` означает «выключено». Для
 прочих таймаутов `0` означает «взять Go-дефолт».
@@ -463,7 +468,7 @@ hello-world). Сам вывод асинхронный: фоновая гору�
 строка, как только листенер запущен:
 
 ```
-2026-06-28T12:00:00.000000 sconcur http server listening on 0.0.0.0:8080 pid=12345 version=0.5.1 maxConcurrency=0 maxRequests=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur http server listening on 0.0.0.0:8080 pid=12345 version=0.9.0 maxConcurrency=0 maxRequests=0 reusePort=0
 ```
 
 В ней адрес, pid процесса, версия расширения и ключевые лимиты. При graceful shutdown —
@@ -484,8 +489,9 @@ PHP-сторона (в отличие от access-лога) и сразу фла
 
 ### Один процесс = один поток
 
-PHP-часть однопоточная и кооперативная: единый `Scheduler` гоняет цикл `waitAny`
-и возобновляет корутины. Управление переходит другой корутине только когда текущая
+PHP-часть однопоточная и кооперативная: единый `Scheduler` гоняет цикл ожидания
+(`waitAnyBatch`: первый готовый результат плюс уже готовый хвост за один
+cgo-переход, потребляются по одному за шаг) и возобновляет корутины. Управление переходит другой корутине только когда текущая
 приостанавливается на асинхронной фиче SConcur (`Fiber::suspend()`).
 
 Из этого следует главное правило:
@@ -691,7 +697,7 @@ $server->serve($handler);
 - Требуется `ext-pcntl`. Без него graceful shutdown не работает — процесс завершится
   жёстко (что нарушает правило «не обрывать активные задачи»). В Docker-образах
   проекта `pcntl` включён.
-- На idle-сервере shutdown срабатывает быстро: цикл `serve()` поллит `waitAny` с
+- На idle-сервере shutdown срабатывает быстро: цикл `serve()` поллит `waitAnyTimeoutBatch` с
   интервалом 250 мс и замечает сигнал даже без трафика.
 
 ## Внутреннее устройство
@@ -707,7 +713,7 @@ sequenceDiagram
     PHP->>Go: push(ServePayload, MethodHttpServe)
     Note over Go: handleServe — net.Listen + net/http.Server.Serve()
     Note over Go: serverState — это http.Handler (стриминговое состояние)
-    Note over PHP: Scheduler::serve() — цикл waitAnyTimeout(250ms)
+    Note over PHP: Scheduler::serve() — цикл waitAnyTimeoutBatch(250ms)
     Client->>Go: HTTP-запрос
     Note over Go: ServeHTTP — захват слота, чтение тела, RequestEvent в канал requests
     Go-->>PHP: событие-запрос (батч, HasNext=true)
@@ -726,7 +732,7 @@ sequenceDiagram
 - `Features/HttpServer/HttpServer` — публичный API: `serve($handler)`. Генерирует
   `flowKey`, ставит обработчики сигналов, пушит задачу-листенер, запускает серверный
   цикл планировщика.
-- `Scheduler/Scheduler::serve()` — серверный цикл поверх `waitAnyTimeout()`:
+- `Scheduler/Scheduler::serve()` — серверный цикл поверх `waitAnyTimeoutBatch()`:
   диспетчеризует три вида результата — событие-запрос (→ `spawn` обработчика в новом
   per-request flow), результат задачи (→ возобновление корутины по `taskKey`) и
   завершение/ошибку серверного потока. Дренаж и `stopFlow` при shutdown.
@@ -814,13 +820,14 @@ shutdown.
   усечения.
 - Память. Без `maxConcurrency` число одновременных обработчиков и буферизованных тел
   не ограничено — под флудом крупными телами возможен OOM. Задавайте лимит.
-- Idle-shutdown срабатывает в пределах ~250 мс (интервал поллинга `waitAny`).
+- Idle-shutdown срабатывает в пределах ~250 мс (интервал поллинга `waitAnyTimeoutBatch`).
 
 ## Запуск в Docker
 
-В `docker-compose.yml` есть сервис `servers`: он под supervisor поднимает обоих
-мастеров — HTTP и socket (`tests/servers/http/http-server.php` и
-`tests/servers/socket/socket-server.php` через `bin/sconcur-server`). Порты
+В `docker-compose.yml` есть сервис `servers`: он под supervisor поднимает трёх
+мастеров — HTTP, socket и WebSocket (`tests/servers/http/http-server.php`,
+`tests/servers/socket/socket-server.php` и `tests/servers/ws/ws-server.php` через
+`bin/sconcur-server`). Порты
 захардкожены в compose (HTTP — `28080:8080`), так как JSON-конфиги мастеров не
 умеют переменные окружения. Пересобрать и перезапустить:
 
@@ -830,7 +837,7 @@ make servers-restart
 
 Это пересобирает расширение (`make ext-build`) и пересоздаёт контейнер `servers`.
 Управление каждым мастером — `make http-server-{status,stop,reload}` (и
-`socket-server-*`).
+`socket-server-*`, `ws-server-*`).
 
 ## Тестирование
 

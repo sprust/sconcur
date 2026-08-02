@@ -79,8 +79,8 @@ $group->waitAll();
 
 The local map is created lazily (on the first `set`) and freed together with the
 coroutine — in the same place where the library drops its per-fiber accounting
-(`State::unRegisterFiber`, via `Scheduler::forget`/`detach` and
-`State::deleteFlow`). After N coroutines finish, N contexts do not remain in
+(`State::unRegisterFiber` — via `Scheduler::forget`, `WaitGroup::discard` after a
+`detach`, or `State::deleteFlow`). After N coroutines finish, N contexts do not remain in
 memory. The root context is not removed.
 
 ## Limits

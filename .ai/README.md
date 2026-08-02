@@ -12,7 +12,7 @@ here.
 - [docs/adding-a-feature.md](../docs/adding-a-feature.md) — guide for adding a new feature
 - [docs/adding-a-server.md](../docs/adding-a-server.md) — guide for adding a new server (long-lived streaming feature: listener + serve loop + worker-master integration)
 - [docs/load-testing.md](../docs/load-testing.md) — load behaviour under all I/O features at once (the `/all` route + `bench-http-load-stats`): memory/CPU results and conclusions
-- [docs/benchmarks.md](../docs/benchmarks.md) — per-feature benchmarks (native/sync/async): PHP↔Go boundary cost on in-memory DBs and the concurrent-fan-out win, with metric tables (`make bench-*`)
+- [docs/benchmarks.md](../docs/benchmarks.md) — per-feature benchmarks (native/sync/async): PHP↔Go boundary cost and the concurrent-fan-out win on disk-backed DBs, with metric tables (`make bench-*`)
 - [docs/positioning.md](../docs/positioning.md) — SConcur vs php-fpm and RoadRunner: execution models, resources to hold the same load (Little's-law math on the measured numbers), honest limits, when to choose what
 - [docs/mongodb.md](../docs/mongodb.md) — MongoDB feature: collection operations, cursors, BSON types, concurrency, internals
 - [docs/http-server.md](../docs/http-server.md) — HTTP-server feature: usage, params, internals, limits
@@ -99,14 +99,16 @@ Rebuild the extension with `make ext-build` before running tests that depend on
 `Scheduler`) performs `Extension::push()` via
 `Scheduler::dispatchPendingTask()` off the fiber stack → Go goroutine executes →
 result sent via shared channel → `Scheduler` retrieves it with
-`Extension::waitAny()` and resumes the owning Fiber → `WaitGroup::iterate()`
+`Extension::waitAnyBatch()` (the first ready result plus the already-ready tail
+in one crossing) and resumes the owning Fiber → `WaitGroup::iterate()`
 yields result. (cgo is never called from a coroutine's stack — N live
 boundary-crossing fibers made the fan-out quadratic, see
 `.ai/plans/async-fan-out-optimization.ru.md`.)
 
 **Concurrency / nested coroutines:** a single process-wide `Scheduler` is the
-only place that waits on the extension (`waitAny`, the first ready result of any
-flow) and resumes fibers, so coroutines never nest on each other's call stack.
+only place that waits on the extension (`waitAnyBatch` — blocks for the first
+ready result of any flow, drains the ready tail with it) and resumes fibers, so
+coroutines never nest on each other's call stack.
 A nested `WaitGroup` inside a coroutine cooperatively suspends (`awaitGroup`)
 instead of blocking, so nested coroutines run concurrently with each other and
 with the outer flow. (`Extension::wait(flowKey)` remains for the synchronous,
