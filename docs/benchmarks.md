@@ -531,10 +531,10 @@ connections / 20 s, the same per-process pools, both stacks within one session.
 
 | Workers | RoadRunner rps / p50 / p99 | SConcur rps / p50 / p99 (pool) | SConcur rps |
 | ---: | --- | --- | :---: |
-| 1 | 95 / 0.99 s / 1.97 s | 2 366 / 99 ms / 261 ms (150) | ×25 ✅ |
-| 3 | 204 / 1.25 s / 1.33 s | 2 494 / 91 ms / 336 ms (50×3) | ×12 ✅ |
-| 8 | 423 / 608 ms / 748 ms | 2 496 / 90 ms / 384 ms (18×8) | ×5.9 ✅ |
-| 16 | 739 / 346 ms / 433 ms | 2 446 / 92 ms / 372 ms (9×16) | ×3.3 ✅ |
+| 1 | 97 / 0.96 s / 1.99 s | 2 371 / 98 ms / 303 ms (150) | ×24 ✅ |
+| 3 | 205 / 1.25 s / 1.30 s | 2 522 / 89 ms / 378 ms (50×3) | ×12 ✅ |
+| 8 | 413 / 624 ms / 681 ms | 2 514 / 89 ms / 364 ms (18×8) | ×6.1 ✅ |
+| 16 | 691 / 376 ms / 473 ms | 2 426 / 93 ms / 343 ms (9×16) | ×3.5 ✅ |
 
 What the write changes:
 
@@ -545,8 +545,8 @@ What the write changes:
   (the mysql container burns ~1200% CPU against ~90–210% for php), not the PHP
   thread.
 - RoadRunner scales almost linearly with workers — each worker adds one more
-  concurrent commit stream (95 → 204 → 423 → 739 rps) — but even 16 workers stay
-  3.3× behind; parity would take around 50 processes.
+  concurrent commit stream (97 → 205 → 413 → 691 rps) — but even 16 workers stay
+  3.5× behind; parity would take around 55 processes.
 - RoadRunner's latencies at small pools are queueing, not work: 256 wrk
   connections share 1–3 workers, and p50 reaches ~1–1.25 s against SConcur's
   ~90–100 ms.
