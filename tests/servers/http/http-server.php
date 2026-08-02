@@ -382,7 +382,13 @@ function dbPointSelectRoute(Psr17Factory $factory, ServerRequestInterface $reque
         );
     }
 
-    return text($factory, (string) json_encode($rows));
+    $responseBody = json_encode($rows);
+
+    if ($responseBody === false) {
+        return text($factory, 'json encode failed', 500);
+    }
+
+    return text($factory, $responseBody);
 }
 
 // Lazily builds the /db connection on the first hit and makes sure the seeded
@@ -466,7 +472,11 @@ function dbReadWriteRoute(Psr17Factory $factory): ResponseInterface
         'record' => $recordRows[0] ?? null,
     ]);
 
-    return text($factory, (string) $responseBody);
+    if ($responseBody === false) {
+        return text($factory, 'json encode failed', 500);
+    }
+
+    return text($factory, $responseBody);
 }
 
 // Lazily builds the /db-rw connection on the first hit and seeds the table:
