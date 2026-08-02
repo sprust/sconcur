@@ -218,6 +218,12 @@ PHP_FUNCTION(push)
         (int)payload_len
     );
 
+    /* NULL means success (the hot path): return the interned empty string
+     * instead of copying and freeing a malloc'ed one on every push. */
+    if (response == NULL) {
+        RETURN_EMPTY_STRING();
+    }
+
     RETVAL_STRING(response);
     free(response);
 }
@@ -233,6 +239,11 @@ PHP_FUNCTION(next)
     }
 
     char *response = next(flow_key, task_key);
+
+    /* NULL means success, like push. */
+    if (response == NULL) {
+        RETURN_EMPTY_STRING();
+    }
 
     RETVAL_STRING(response);
     free(response);

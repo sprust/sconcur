@@ -13,7 +13,10 @@ import (
 func sleepMessage(t *testing.T, flowKey, taskKey string, ms int64) *dto.Message {
 	t.Helper()
 
-	payload, err := msgpack.Marshal(map[string]int64{"ms": ms})
+	// The sleeper's payload key is "us" (microseconds, see SleeperPayload). With
+	// a wrong key the value decodes as 0 and every task returns an instant
+	// error, turning the cross-flow ordering assertions into a coin flip.
+	payload, err := msgpack.Marshal(map[string]int64{"us": ms * 1000})
 
 	if err != nil {
 		t.Fatal(err)

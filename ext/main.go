@@ -213,7 +213,9 @@ func push(
 		return C.CString("error: push: " + err.Error())
 	}
 
-	return C.CString("")
+	// NULL, not an allocated empty string: success is the hot path, and the C
+	// side turns NULL into the interned empty string — no malloc/free per push.
+	return nil
 }
 
 //export next
@@ -230,7 +232,8 @@ func next(fk *C.char, tk *C.char) *C.char {
 		return C.CString("error: next: " + err.Error())
 	}
 
-	return C.CString("")
+	// NULL on success, like push: the C side interns the empty string.
+	return nil
 }
 
 //export wait
