@@ -166,6 +166,41 @@ $server->serve(static function (ServerRequestInterface $request) use ($psr17Fact
 });
 
 /**
+ * Per-process lazy singleton for the bench contexts. A plain `static $x ??= build()`
+ * is not enough here: requests run as concurrent coroutines and preemption can
+ * interrupt the builder mid-way, so dozens of them would enter it at once and each
+ * open its own connections (a burst of ~90 PostgreSQL connects at the start of a
+ * load run hit `max_connections` and turned ~0.2% of /all-native responses into
+ * 500s). The first coroutine marks the key as building, the rest park on
+ * `Scheduler::switch()` until the value is there.
+ */
+function serverOnce(string $key, Closure $factory): mixed
+{
+    /** @var array<string, mixed> $values */
+    static $values = [];
+    /** @var array<string, true> $building */
+    static $building = [];
+
+    while (isset($building[$key])) {
+        Scheduler::switch();
+    }
+
+    if (array_key_exists($key, $values)) {
+        return $values[$key];
+    }
+
+    $building[$key] = true;
+
+    try {
+        $values[$key] = $factory();
+    } finally {
+        unset($building[$key]);
+    }
+
+    return $values[$key];
+}
+
+/**
  * Builds a plain response: status, optional headers, optional body. A header value
  * may be a string or a list of strings (e.g. several Set-Cookie entries).
  *
@@ -395,34 +430,41 @@ function dbPointSelectRoute(Psr17Factory $factory, ServerRequestInterface $reque
 // table exists (1 000 fixed-shape rows), so the handle works out of the box.
 function dbPointSelectContext(): MysqlConnection
 {
-    static $mysql = null;
+    /** @var MysqlConnection */
+    return serverOnce('db-point-select', static function (): MysqlConnection {
+        $mysql = new MysqlConnection(
+            dsn: dbMysqlDsn(),
+            maxOpenConns: dbPoolSize(),
+        );
 
-    if ($mysql !== null) {
-        return $mysql;
-    }
+        $mysql->exec(sql: 'CREATE TABLE IF NOT EXISTS bench_seed (id BIGINT PRIMARY KEY, t VARCHAR(64) NOT NULL)');
 
-    $mysql = new MysqlConnection(
-        dsn: dbMysqlDsn(),
-        maxOpenConns: 9,
-    );
+        $seededRows = $mysql->fetchAll('SELECT COUNT(*) AS c FROM bench_seed');
 
-    $mysql->exec(sql: 'CREATE TABLE IF NOT EXISTS bench_seed (id BIGINT PRIMARY KEY, t VARCHAR(64) NOT NULL)');
-
-    $seededRows = $mysql->fetchAll('SELECT COUNT(*) AS c FROM bench_seed');
-
-    if ((int) ($seededRows[0]['c'] ?? 0) < 1000) {
-        for ($id = 1; $id <= 1000; $id++) {
-            $mysql->exec(
-                sql: 'INSERT IGNORE INTO bench_seed (id, t) VALUES (?, ?)',
-                bindings: [
-                    $id,
-                    'row-' . $id . '-' . str_repeat('x', 20),
-                ],
-            );
+        if ((int) ($seededRows[0]['c'] ?? 0) < 1000) {
+            for ($id = 1; $id <= 1000; $id++) {
+                $mysql->exec(
+                    sql: 'INSERT IGNORE INTO bench_seed (id, t) VALUES (?, ?)',
+                    bindings: [
+                        $id,
+                        'row-' . $id . '-' . str_repeat('x', 20),
+                    ],
+                );
+            }
         }
-    }
 
-    return $mysql;
+        return $mysql;
+    });
+}
+
+// The per-process pool of the /db* bench routes. The DB connection budget is
+// divided across the reuse-port pool, so the useful size depends on how many
+// server processes the run starts: the default 9 fits a 16-worker pool under
+// MySQL's default max_connections=151 (16 x 9 = 144), and the ladder runs pass
+// their own value (tests/benchmarks/http-load-stats.sh, DB_POOL_SIZE).
+function dbPoolSize(): int
+{
+    return max(1, (int) (getenv('SCONCUR_DB_POOL_SIZE') ?: 9));
 }
 
 // The MySQL DSN shared by the /db* bench routes (Go driver format).
@@ -488,57 +530,54 @@ function dbReadWriteRoute(Psr17Factory $factory): ResponseInterface
 // random id in [1, COUNT(*)] always hits a row.
 function dbReadWriteContext(): MysqlConnection
 {
-    static $mysql = null;
+    /** @var MysqlConnection */
+    return serverOnce('db-read-write', static function (): MysqlConnection {
+        $mysql = new MysqlConnection(
+            dsn: dbMysqlDsn(),
+            maxOpenConns: dbPoolSize(),
+        );
 
-    if ($mysql !== null) {
-        return $mysql;
-    }
+        $mysql->exec(sql: <<<'SQL'
+            CREATE TABLE IF NOT EXISTS bench_rw (
+                id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(64) NOT NULL,
+                quantity INT NOT NULL,
+                price DOUBLE NOT NULL,
+                active TINYINT(1) NOT NULL,
+                created_date DATE NOT NULL
+            )
+            SQL);
 
-    $mysql = new MysqlConnection(
-        dsn: dbMysqlDsn(),
-        maxOpenConns: 9,
-    );
+        $seededRows = $mysql->fetchAll('SELECT COUNT(*) AS c FROM bench_rw');
 
-    $mysql->exec(sql: <<<'SQL'
-        CREATE TABLE IF NOT EXISTS bench_rw (
-            id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-            title VARCHAR(64) NOT NULL,
-            quantity INT NOT NULL,
-            price DOUBLE NOT NULL,
-            active TINYINT(1) NOT NULL,
-            created_date DATE NOT NULL
-        )
-        SQL);
+        if ((int) ($seededRows[0]['c'] ?? 0) < 10_000) {
+            $baseDate = new DateTimeImmutable('2026-01-01');
 
-    $seededRows = $mysql->fetchAll('SELECT COUNT(*) AS c FROM bench_rw');
+            for ($batchStart = 1; $batchStart <= 10_000; $batchStart += 1_000) {
+                $placeholders = [];
+                $bindings     = [];
 
-    if ((int) ($seededRows[0]['c'] ?? 0) < 10_000) {
-        $baseDate = new DateTimeImmutable('2026-01-01');
+                for ($id = $batchStart; $id < $batchStart + 1_000; $id++) {
+                    $placeholders[] = '(?, ?, ?, ?, ?, ?)';
 
-        for ($batchStart = 1; $batchStart <= 10_000; $batchStart += 1_000) {
-            $placeholders = [];
-            $bindings     = [];
+                    $bindings[] = $id;
+                    $bindings[] = 'row-' . $id;
+                    $bindings[] = $id;
+                    $bindings[] = $id / 100;
+                    $bindings[] = $id % 2;
+                    $bindings[] = $baseDate->modify('+' . ($id % 365) . ' days')->format('Y-m-d');
+                }
 
-            for ($id = $batchStart; $id < $batchStart + 1_000; $id++) {
-                $placeholders[] = '(?, ?, ?, ?, ?, ?)';
-
-                $bindings[] = $id;
-                $bindings[] = 'row-' . $id;
-                $bindings[] = $id;
-                $bindings[] = $id / 100;
-                $bindings[] = $id % 2;
-                $bindings[] = $baseDate->modify('+' . ($id % 365) . ' days')->format('Y-m-d');
+                $mysql->exec(
+                    sql: 'INSERT IGNORE INTO bench_rw (id, title, quantity, price, active, created_date) VALUES '
+                        . implode(', ', $placeholders),
+                    bindings: $bindings,
+                );
             }
-
-            $mysql->exec(
-                sql: 'INSERT IGNORE INTO bench_rw (id, title, quantity, price, active, created_date) VALUES '
-                    . implode(', ', $placeholders),
-                bindings: $bindings,
-            );
         }
-    }
 
-    return $mysql;
+        return $mysql;
+    });
 }
 
 function allFeaturesRoute(Psr17Factory $factory): ResponseInterface
@@ -664,59 +703,55 @@ function allFeaturesNoWaitGroupRoute(Psr17Factory $factory): ResponseInterface
  */
 function allFeaturesContext(): array
 {
-    /** @var array{0: Collection, 1: MysqlConnection, 2: PgsqlConnection}|null $context */
-    static $context = null;
+    /** @var array{0: Collection, 1: MysqlConnection, 2: PgsqlConnection} */
+    return serverOnce('all-features', static function (): array {
+        Dotenv::createImmutable(dirname(__DIR__, 3))->safeLoad();
 
-    if ($context !== null) {
+        $context = [
+            new MongoClient(
+                uri: sprintf(
+                    'mongodb://%s:%s@%s:%s',
+                    $_ENV['MONGO_ADMIN_USERNAME'],
+                    $_ENV['MONGO_ADMIN_PASSWORD'],
+                    $_ENV['MONGO_HOST'],
+                    $_ENV['MONGO_PORT'],
+                ),
+            )
+                ->selectDatabase('u-test')
+                ->selectCollection('load_all'),
+            // The Go-side pool is per worker process; the load harness runs up to
+            // ~nproc workers, so an unbounded pool exhausts the DB server limits
+            // (PostgreSQL max_connections=100 -> "too many clients" -> 500s under
+            // load). 5 conns x 16 processes stays under the limit for both DBs.
+            new MysqlConnection(
+                dsn: sprintf(
+                    '%s:%s@tcp(%s:%s)/%s?parseTime=true',
+                    $_ENV['MYSQL_USER'],
+                    $_ENV['MYSQL_PASSWORD'],
+                    $_ENV['MYSQL_HOST'],
+                    $_ENV['MYSQL_PORT'],
+                    $_ENV['MYSQL_DATABASE'],
+                ),
+                maxOpenConns: 5,
+            ),
+            new PgsqlConnection(
+                dsn: sprintf(
+                    'postgres://%s:%s@%s:%s/%s?sslmode=disable',
+                    $_ENV['POSTGRES_USER'],
+                    $_ENV['POSTGRES_PASSWORD'],
+                    $_ENV['POSTGRES_HOST'],
+                    $_ENV['POSTGRES_PORT'],
+                    $_ENV['POSTGRES_DB'],
+                ),
+                maxOpenConns: 5,
+            ),
+        ];
+
+        $context[1]->exec(sql: 'CREATE TABLE IF NOT EXISTS load_all (id BIGINT AUTO_INCREMENT PRIMARY KEY, t VARCHAR(16) NOT NULL)');
+        $context[2]->exec(sql: 'CREATE TABLE IF NOT EXISTS load_all (id BIGSERIAL PRIMARY KEY, t VARCHAR(16) NOT NULL)');
+
         return $context;
-    }
-
-    Dotenv::createImmutable(dirname(__DIR__, 3))->safeLoad();
-
-    $context = [
-        new MongoClient(
-            uri: sprintf(
-                'mongodb://%s:%s@%s:%s',
-                $_ENV['MONGO_ADMIN_USERNAME'],
-                $_ENV['MONGO_ADMIN_PASSWORD'],
-                $_ENV['MONGO_HOST'],
-                $_ENV['MONGO_PORT'],
-            ),
-        )
-            ->selectDatabase('u-test')
-            ->selectCollection('load_all'),
-        // The Go-side pool is per worker process; the load harness runs up to
-        // ~nproc workers, so an unbounded pool exhausts the DB server limits
-        // (PostgreSQL max_connections=100 -> "too many clients" -> 500s under
-        // load). 5 conns x 16 processes stays under the limit for both DBs.
-        new MysqlConnection(
-            dsn: sprintf(
-                '%s:%s@tcp(%s:%s)/%s?parseTime=true',
-                $_ENV['MYSQL_USER'],
-                $_ENV['MYSQL_PASSWORD'],
-                $_ENV['MYSQL_HOST'],
-                $_ENV['MYSQL_PORT'],
-                $_ENV['MYSQL_DATABASE'],
-            ),
-            maxOpenConns: 5,
-        ),
-        new PgsqlConnection(
-            dsn: sprintf(
-                'postgres://%s:%s@%s:%s/%s?sslmode=disable',
-                $_ENV['POSTGRES_USER'],
-                $_ENV['POSTGRES_PASSWORD'],
-                $_ENV['POSTGRES_HOST'],
-                $_ENV['POSTGRES_PORT'],
-                $_ENV['POSTGRES_DB'],
-            ),
-            maxOpenConns: 5,
-        ),
-    ];
-
-    $context[1]->exec(sql: 'CREATE TABLE IF NOT EXISTS load_all (id BIGINT AUTO_INCREMENT PRIMARY KEY, t VARCHAR(16) NOT NULL)');
-    $context[2]->exec(sql: 'CREATE TABLE IF NOT EXISTS load_all (id BIGSERIAL PRIMARY KEY, t VARCHAR(16) NOT NULL)');
-
-    return $context;
+    });
 }
 
 /**
@@ -798,56 +833,50 @@ function allFeaturesNativeRoute(Psr17Factory $factory): ResponseInterface
  */
 function allFeaturesNativeContext(): array
 {
-    /** @var array{0: NativeMongoCollection, 1: PDO, 2: PDO}|null $context */
-    static $context = null;
+    /** @var array{0: NativeMongoCollection, 1: PDO, 2: PDO} */
+    return serverOnce('all-features-native', static function (): array {
+        Dotenv::createImmutable(dirname(__DIR__, 3))->safeLoad();
 
-    if ($context !== null) {
-        return $context;
-    }
+        $mongo = new NativeMongoClient(
+            sprintf(
+                'mongodb://%s:%s@%s:%s',
+                $_ENV['MONGO_ADMIN_USERNAME'],
+                $_ENV['MONGO_ADMIN_PASSWORD'],
+                $_ENV['MONGO_HOST'],
+                $_ENV['MONGO_PORT'],
+            ),
+        )
+            ->selectCollection('u-test', 'load_all');
 
-    Dotenv::createImmutable(dirname(__DIR__, 3))->safeLoad();
+        $mysql = new PDO(
+            sprintf(
+                'mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4',
+                $_ENV['MYSQL_HOST'],
+                $_ENV['MYSQL_PORT'],
+                $_ENV['MYSQL_DATABASE'],
+            ),
+            $_ENV['MYSQL_USER'],
+            $_ENV['MYSQL_PASSWORD'],
+            [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION],
+        );
 
-    $mongo = new NativeMongoClient(
-        sprintf(
-            'mongodb://%s:%s@%s:%s',
-            $_ENV['MONGO_ADMIN_USERNAME'],
-            $_ENV['MONGO_ADMIN_PASSWORD'],
-            $_ENV['MONGO_HOST'],
-            $_ENV['MONGO_PORT'],
-        ),
-    )
-        ->selectCollection('u-test', 'load_all');
+        $pgsql = new PDO(
+            sprintf(
+                'pgsql:host=%s;port=%s;dbname=%s',
+                $_ENV['POSTGRES_HOST'],
+                $_ENV['POSTGRES_PORT'],
+                $_ENV['POSTGRES_DB'],
+            ),
+            $_ENV['POSTGRES_USER'],
+            $_ENV['POSTGRES_PASSWORD'],
+            [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION],
+        );
 
-    $mysql = new PDO(
-        sprintf(
-            'mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4',
-            $_ENV['MYSQL_HOST'],
-            $_ENV['MYSQL_PORT'],
-            $_ENV['MYSQL_DATABASE'],
-        ),
-        $_ENV['MYSQL_USER'],
-        $_ENV['MYSQL_PASSWORD'],
-        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION],
-    );
+        $mysql->exec('CREATE TABLE IF NOT EXISTS load_all (id BIGINT AUTO_INCREMENT PRIMARY KEY, t VARCHAR(16) NOT NULL)');
+        $pgsql->exec('CREATE TABLE IF NOT EXISTS load_all (id BIGSERIAL PRIMARY KEY, t VARCHAR(16) NOT NULL)');
 
-    $pgsql = new PDO(
-        sprintf(
-            'pgsql:host=%s;port=%s;dbname=%s',
-            $_ENV['POSTGRES_HOST'],
-            $_ENV['POSTGRES_PORT'],
-            $_ENV['POSTGRES_DB'],
-        ),
-        $_ENV['POSTGRES_USER'],
-        $_ENV['POSTGRES_PASSWORD'],
-        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION],
-    );
-
-    $mysql->exec('CREATE TABLE IF NOT EXISTS load_all (id BIGINT AUTO_INCREMENT PRIMARY KEY, t VARCHAR(16) NOT NULL)');
-    $pgsql->exec('CREATE TABLE IF NOT EXISTS load_all (id BIGSERIAL PRIMARY KEY, t VARCHAR(16) NOT NULL)');
-
-    $context = [$mongo, $mysql, $pgsql];
-
-    return $context;
+        return [$mongo, $mysql, $pgsql];
+    });
 }
 
 function truncatedRoute(Psr17Factory $factory): ResponseInterface

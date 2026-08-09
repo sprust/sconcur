@@ -1,23 +1,30 @@
 #!/usr/bin/env bash
 #
-# All-features load + resource benchmark. Spawns N demo HTTP-server processes
-# (SO_REUSEPORT, one per core) in the `php` container, drives them with wrk on the
-# /all route (which fans out across EVERY async I/O feature — Sleeper, MongoDB,
-# MySQL, PostgreSQL, HTTP-client — concurrently per request), and samples CPU/memory
-# of the server and backend containers throughout, plus per-worker RSS (leak check).
+# Swoole counterpart of http-load-stats.sh / rr-load-stats.sh: the same load +
+# resource harness, but the server is the Swoole reference stack
+# (tests/servers/swoole — native drivers on the coroutine runtime, no SConcur).
+# Starts one swoole master managing WORKERS coroutine workers in the `php`
+# container, drives it with wrk on the same route (/all by default: MongoDB
+# insert/findOne + MySQL/PostgreSQL INSERT + SELECT 1, sequentially per request),
+# and samples CPU/memory of the server and backend containers throughout, plus
+# the summed RSS of the swoole processes (leak check).
 #
-# Same honesty rules as http-throughput.sh: servers and the load generator are pinned
-# to disjoint cores (taskset), and wrk hits the container bridge IP directly (no NAT).
+# Same honesty rules as the other two harnesses: the swoole master (workers
+# inherit its affinity) and the load generator are pinned to disjoint cores
+# (taskset), and wrk hits the container bridge IP directly (no NAT). Numbers are
+# directly comparable with http-load-stats.sh / rr-load-stats.sh runs at the same
+# WORKERS/SERVERS count.
 #
-# Run from the HOST (wrk + docker live there); servers run in the container.
+# Run from the HOST (wrk + docker live there); the server runs in the container.
 #
 # Usage:
-#   tests/benchmarks/http-load-stats.sh
-#   SERVERS=8 CONNECTIONS=256 DURATION=20 tests/benchmarks/http-load-stats.sh
+#   tests/benchmarks/swoole-load-stats.sh
+#   WORKERS=8 CONNECTIONS=256 DURATION=20 tests/benchmarks/swoole-load-stats.sh
 #
-# Tunables (env): SERVERS, WRK_THREADS, CONNECTIONS, DURATION, PORT, ROUTE (=/all),
-#   MAXCONCURRENCY, DB_POOL_SIZE (the /db* pool per process), SAMPLE_INTERVAL
-#   (resource-sampling period, s).
+# Tunables (env): WORKERS, WRK_THREADS, CONNECTIONS, DURATION, PORT,
+#   ROUTE (=/all; /all-coro is the coroutine fan-out variant), DB_POOL_SIZE (the
+#   /db* pool per worker), ALL_POOL_SIZE (the /all pools per worker),
+#   SAMPLE_INTERVAL (resource-sampling period, s), MODE (=soak for the long run).
 set -euo pipefail
 
 # Force the C locale so "." is the decimal separator everywhere (docker stats emits
@@ -27,8 +34,10 @@ export LC_ALL=C
 cd "$(dirname "$0")/../.."
 
 DOCKER_COMPOSE=${DOCKER_COMPOSE:-docker compose}
-PORT=${PORT:-18080}
+PORT=${PORT:-18082}
 ROUTE=${ROUTE:-/all}
+DB_POOL_SIZE=${DB_POOL_SIZE:-9}
+ALL_POOL_SIZE=${ALL_POOL_SIZE:-5}
 # MODE=soak: a long, steady-load run that prints the worker-RSS trend over time and a
 # least-squares slope, to surface a slow memory leak the short run cannot. It only
 # changes the DURATION/SAMPLE_INTERVAL/CONNECTIONS defaults (still overridable).
@@ -45,26 +54,24 @@ else
 fi
 
 WRK_THREADS=${WRK_THREADS:-4}
-MAXCONCURRENCY=${MAXCONCURRENCY:-0}
-# The /db* routes size their per-process MySQL pool from this (the DB connection
-# budget is split across the reuse-port pool, so the useful value depends on
-# SERVERS — the worker-count ladder in docs/benchmarks.md walks it).
-DB_POOL_SIZE=${DB_POOL_SIZE:-9}
 
-EXTENSION=/sconcur/ext/build/sconcur.so
-SCRIPT=/sconcur/tests/servers/http/http-server.php
-PIDFILE=/tmp/sc-http-load-$PORT.pids
-STDERRLOG=/tmp/sc-http-load-$PORT.err
+SCRIPT=/sconcur/tests/servers/swoole/swoole-server.php
+PIDFILE=/tmp/sc-swoole-load-$PORT.pid
+STDERRLOG=/tmp/sc-swoole-load-$PORT.err
 
 command -v wrk >/dev/null || { echo "wrk not found on host (apt-get install wrk)"; exit 1; }
 
 CORES=$(nproc)
-: "${SERVERS:=$(( CORES - WRK_THREADS ))}"
-(( SERVERS >= 1 )) || SERVERS=1
+# One swoole worker per server core, like the SConcur pool and the rr pool
+# (SERVERS accepted as an alias so all three harnesses take the same variable).
+: "${WORKERS:=${SERVERS:-$(( CORES - WRK_THREADS ))}}"
+(( WORKERS >= 1 )) || WORKERS=1
 
-if (( SERVERS < CORES )); then
-    WRK_CPULIST="${SERVERS}-$(( CORES - 1 ))"
+if (( WORKERS < CORES )); then
+    SWOOLE_CPULIST="0-$(( WORKERS - 1 ))"
+    WRK_CPULIST="${WORKERS}-$(( CORES - 1 ))"
 else
+    SWOOLE_CPULIST="0-$(( CORES - 1 ))"
     WRK_CPULIST="$(( CORES - WRK_THREADS ))-$(( CORES - 1 ))"
 fi
 
@@ -82,69 +89,79 @@ PG_CID=$($DOCKER_COMPOSE ps -q postgres 2>/dev/null || true)
 WATCH=$(printf 'php\t%s\nmongodb\t%s\nmysql\t%s\npostgres\t%s\n' "$PHP_CID" "$MONGO_CID" "$MYSQL_CID" "$PG_CID" | awk -F'\t' '$2!=""')
 WATCH_CIDS=$(printf '%s\n' "$WATCH" | awk -F'\t' '{print $2}')
 
-stop_servers() {
+stop_server() {
+    # Killing the swoole master is enough: it terminates its workers itself.
     $DOCKER_COMPOSE exec -T php sh -c '
         [ -f "'"$PIDFILE"'" ] || exit 0
-        while read -r pid; do kill "$pid" 2>/dev/null || true; done < "'"$PIDFILE"'"
+        kill "$(cat "'"$PIDFILE"'")" 2>/dev/null || true
         rm -f "'"$PIDFILE"'"
     ' 2>/dev/null || true
 }
-trap stop_servers EXIT
+trap stop_server EXIT
 
 echo "=================================================================="
-echo " All-features load + resource benchmark${MODE:+  [$MODE]}"
+echo " Swoole (coroutine workers, native drivers) load + resource benchmark${MODE:+  [$MODE]}"
 echo "   host cores      : $CORES"
-echo "   server procs    : $SERVERS  (pinned to cores 0-$(( SERVERS - 1 )), reusePort)"
+echo "   swoole workers  : $WORKERS  (one master, pinned to cores $SWOOLE_CPULIST)"
 echo "   wrk threads     : $WRK_THREADS (pinned to cores $WRK_CPULIST)"
 echo "   connections     : $CONNECTIONS"
 echo "   duration        : ${DURATION}s   (sampling every ${SAMPLE_INTERVAL}s)"
 if [ "$ROUTE" = "/all" ]; then
-    echo "   route           : $ROUTE  (fans out across all I/O features)"
+    echo "   route           : $ROUTE  (all I/O features, native, sequential in-request)"
+elif [ "$ROUTE" = "/all-coro" ]; then
+    echo "   route           : $ROUTE  (all I/O features, Swoole coroutine fan-out)"
 else
     echo "   route           : $ROUTE"
 fi
-echo "   db pool / proc  : $DB_POOL_SIZE  (the /db* routes)"
+echo "   pools / worker  : db=$DB_POOL_SIZE  all=$ALL_POOL_SIZE"
 echo "   target          : http://$IP:$PORT$ROUTE  (container bridge IP, no NAT)"
 echo "=================================================================="
 
-stop_servers
+stop_server
 
-# Spawn one server per core (synchronous exec so the pidfile is fully written).
+# A stale server on the port would silently absorb the load (the readiness check
+# below cannot tell instances apart), so refuse to start over one.
+if curl -fsS -o /dev/null --max-time 2 "http://$IP:$PORT/" 2>/dev/null; then
+    echo "something already answers on $IP:$PORT — stop it first (stale swoole?)" >&2
+    exit 1
+fi
+
+# Start one swoole master; its workers inherit the affinity mask. The extension is
+# built into the image but not enabled globally, so it is loaded per run.
 $DOCKER_COMPOSE exec -T php sh -c '
-    : > "'"$PIDFILE"'"
     : > "'"$STDERRLOG"'"
-    i=0
-    while [ "$i" -lt "'"$SERVERS"'" ]; do
-        SCONCUR_DB_POOL_SIZE='"$DB_POOL_SIZE"' \
-        taskset -c "$i" php -d extension='"$EXTENSION"' '"$SCRIPT"' \
-            --address=0.0.0.0:'"$PORT"' --reusePort=1 --maxConcurrency='"$MAXCONCURRENCY"' \
-            >/dev/null 2>>"'"$STDERRLOG"'" &
-        echo $! >> "'"$PIDFILE"'"
-        i=$(( i + 1 ))
-    done
+    cd /sconcur
+    SWOOLE_HTTP_PORT='"$PORT"' SWOOLE_NUM_WORKERS='"$WORKERS"' \
+        SWOOLE_DB_POOL_SIZE='"$DB_POOL_SIZE"' SWOOLE_ALL_POOL_SIZE='"$ALL_POOL_SIZE"' \
+        taskset -c '"$SWOOLE_CPULIST"' php -d extension=swoole.so '"$SCRIPT"' \
+        >/dev/null 2>>"'"$STDERRLOG"'" &
+    echo $! > "'"$PIDFILE"'"
 '
 
-# Wait until /all answers (the lazy feature init + backend connects happen here).
+# Wait until the route answers (worker spawn + lazy backend connects and the bench
+# table seeding happen here).
 ready=0
 for _ in $(seq 1 150); do
     if curl -fsS -o /dev/null --max-time 3 "http://$IP:$PORT$ROUTE" 2>/dev/null; then ready=1; break; fi
     sleep 0.2
 done
 if (( ready != 1 )); then
-    echo "servers did not become reachable / $ROUTE did not answer on $IP:$PORT" >&2
+    echo "swoole did not become reachable / $ROUTE did not answer on $IP:$PORT" >&2
     $DOCKER_COMPOSE exec -T php sh -c 'tail -n 20 "'"$STDERRLOG"'" 2>/dev/null' >&2 || true
     exit 1
 fi
-echo "servers up; $ROUTE answers. starting load + sampling..."
+echo "swoole up; $ROUTE answers. starting load + sampling..."
 echo
 
 SAMPLES=$(mktemp)
 RSS=$(mktemp)
-trap 'rm -f "$SAMPLES" "$RSS"; stop_servers' EXIT
+trap 'rm -f "$SAMPLES" "$RSS"; stop_server' EXIT
 
 # Background sampler: container CPU%/MEM (one docker stats call covers all) + summed
-# worker RSS (recorded as "elapsed_seconds total_kb" for the soak trend), until the
-# wrk run signals done via the marker file.
+# RSS of the swoole processes (master + workers, recorded as "elapsed_seconds
+# total_kb" for the soak trend), until the wrk run signals done via the marker file.
+# Processes are re-discovered from /proc each sample (swoole may respawn workers;
+# procps is not installed in the container, so no pgrep).
 MARKER=$(mktemp)
 SAMPLE_START=$(date +%s)
 (
@@ -153,10 +170,12 @@ SAMPLE_START=$(date +%s)
         elapsed=$(( $(date +%s) - SAMPLE_START ))
         total_kb=$($DOCKER_COMPOSE exec -T php sh -c '
             total=0
-            while read -r pid; do
-                kb=$(awk "/^VmRSS:/{print \$2}" "/proc/$pid/status" 2>/dev/null)
-                [ -n "$kb" ] && total=$(( total + kb ))
-            done < "'"$PIDFILE"'"
+            for d in /proc/[0-9]*; do
+                if tr "\0" " " < "$d/cmdline" 2>/dev/null | grep -q "swoole-server.php"; then
+                    kb=$(awk "/^VmRSS:/{print \$2}" "$d/status" 2>/dev/null)
+                    [ -n "$kb" ] && total=$(( total + kb ))
+                fi
+            done
             echo "$total"
         ' 2>/dev/null | tr -d "[:space:]") || true
         [ -n "$total_kb" ] && echo "$elapsed $total_kb" >> "$RSS"
@@ -196,7 +215,7 @@ done
 
 echo
 echo "------------------------------------------------------------------"
-echo " Worker RSS (sum across $SERVERS processes) — leak check"
+echo " Swoole RSS (master + $WORKERS workers) — leak check"
 echo "------------------------------------------------------------------"
 # RSS samples are "elapsed_seconds total_kb". Report first/peak/last/drift plus a
 # least-squares slope (MiB/min) over the run; in soak mode also dump the full trend.

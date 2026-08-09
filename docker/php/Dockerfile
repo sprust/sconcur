@@ -59,6 +59,24 @@ RUN docker-php-ext-install zip pcntl pdo_mysql mysqli pdo_pgsql sockets && \
     pie install mongodb/mongodb-extension:1.21.5 && \
     pie install msgpack/msgpack-php:3.0.1
 
+# Swoole — the second reference server for the comparison (tests/servers/swoole,
+# docs/benchmarks.ru.md). Pinned to the version the documented comparison ran on.
+# Built after the bundled extensions above: the coroutine runtime hooks are only
+# as complete as the build (sockets/mysqlnd/curl need those headers, pgsql needs
+# libpq). Deliberately NOT enabled via docker-php-ext-enable — the test suite and
+# every other benchmark must keep running on a stock PHP, so the swoole server
+# loads it explicitly with `php -d extension=swoole.so`.
+ENV SWOOLE_VERSION="6.2.2"
+
+RUN pecl install --configureoptions '\
+      enable-sockets="yes" \
+      enable-mysqlnd="yes" \
+      enable-swoole-curl="yes" \
+      enable-swoole-pgsql="yes" \
+      enable-brotli="no"' \
+    "swoole-${SWOOLE_VERSION}" && \
+    rm -rf /tmp/pear
+
 # Check if user and group doesn't exist before creating
 RUN getent group "$GROUP_ID" || addgroup --gid "$GROUP_ID" user
 RUN getent passwd "$USER_ID" || adduser --disabled-password --gecos '' --uid "$USER_ID" --gid "$GROUP_ID" user

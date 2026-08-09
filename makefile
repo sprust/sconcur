@@ -347,6 +347,24 @@ RR_WORKER_CMD ?=
 rr-serve:
 	$(DOCKER_COMPOSE) exec -e RR_HTTP_PORT=$(RR_HTTP_PORT) -e RR_NUM_WORKERS=$(RR_NUM_WORKERS) -e RR_WORKER_CMD="$(RR_WORKER_CMD)" php rr serve -c tests/servers/roadrunner/.rr.yaml
 
+# Swoole reference server (native drivers on coroutine workers,
+# tests/servers/swoole) — the second reference stack of the comparison.
+# Foreground; stop with Ctrl+C. The swoole extension is built into the php image
+# but not enabled globally, so it is loaded per run. Tunables:
+# make swoole-serve SWOOLE_HTTP_PORT=18083 SWOOLE_NUM_WORKERS=8
+SWOOLE_HTTP_PORT ?= 18082
+SWOOLE_NUM_WORKERS ?= 16
+SWOOLE_DB_POOL_SIZE ?= 9
+SWOOLE_ALL_POOL_SIZE ?= 5
+
+swoole-serve:
+	$(DOCKER_COMPOSE) exec \
+		-e SWOOLE_HTTP_PORT=$(SWOOLE_HTTP_PORT) \
+		-e SWOOLE_NUM_WORKERS=$(SWOOLE_NUM_WORKERS) \
+		-e SWOOLE_DB_POOL_SIZE=$(SWOOLE_DB_POOL_SIZE) \
+		-e SWOOLE_ALL_POOL_SIZE=$(SWOOLE_ALL_POOL_SIZE) \
+		php php -d extension=swoole.so tests/servers/swoole/swoole-server.php
+
 # Runs on the HOST (needs wrk + the mongodb/mysql/postgres services up): load the
 # /all route (fans out across EVERY async I/O feature per request) and sample
 # CPU/memory of the server and backend containers + per-worker RSS (leak check).
@@ -384,6 +402,26 @@ bench-rr-load-soak:
 
 bench-rr-load-stats-empty:
 	ROUTE=/ tests/benchmarks/rr-load-stats.sh
+
+# Swoole counterparts of the same targets: the same harness against the coroutine
+# reference stack (tests/servers/swoole), so all three servers are directly
+# comparable at the same worker count. Tunables via env, e.g.:
+# make bench-swoole-load-stats WORKERS=12 DURATION=30
+bench-swoole-load-stats:
+	tests/benchmarks/swoole-load-stats.sh
+
+# Swoole's own in-request fan-out: the same pool and harness, but the route is
+# /all-coro (the three features in a Swoole Coroutine\WaitGroup). Head-to-head
+# with bench-swoole-load-stats at the same WORKERS count, the mirror of the
+# /all vs /all-sconcur pair on RoadRunner.
+bench-swoole-coro-load-stats:
+	ROUTE=/all-coro tests/benchmarks/swoole-load-stats.sh
+
+bench-swoole-load-soak:
+	MODE=soak tests/benchmarks/swoole-load-stats.sh
+
+bench-swoole-load-stats-empty:
+	ROUTE=/ tests/benchmarks/swoole-load-stats.sh
 
 # WebSocket load test: spawn a ws-server pool (SO_REUSEPORT, one per core) and drive
 # it with the Go ws-load generator on the "all" message (fans out across EVERY async

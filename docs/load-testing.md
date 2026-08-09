@@ -27,7 +27,12 @@ Tools:
 - the `tests/benchmarks/rr-load-stats.sh` script (`make bench-rr-load-stats`) — the same
   harness, but the server is a RoadRunner reference on native drivers
   (`tests/servers/roadrunner/`): a single `rr serve` with its own worker pool, the same
-  pinning and sampling rules, its numbers are directly comparable with `http-load-stats.sh`.
+  pinning and sampling rules, its numbers are directly comparable with `http-load-stats.sh`;
+- the `tests/benchmarks/swoole-load-stats.sh` script (`make bench-swoole-load-stats`) —
+  the same harness against the second reference stack, a Swoole coroutine server on
+  native drivers (`tests/servers/swoole/`): one master with its worker pool, the runtime
+  hooks making PDO non-blocking, and `ROUTE=/all-coro`
+  (`make bench-swoole-coro-load-stats`) for its own in-request fan-out.
 
 ## How to run
 

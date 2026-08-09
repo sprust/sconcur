@@ -104,7 +104,7 @@ Long-lived servers:
 
 | Native PHP | SConcur | What changes |
 | --- | --- | --- |
-| PHP-FPM, RoadRunner, Workerman | `Features\HttpServer\HttpServer` (PSR-7) | HTTP server |
+| PHP-FPM, RoadRunner, Swoole, Workerman | `Features\HttpServer\HttpServer` (PSR-7) | HTTP server |
 | `stream_socket_server` | `Features\SocketServer\SocketServer` | TCP server |
 | Ratchet, Workerman (WS) | `Features\WsServer\WsServer` | WebSocket server |
 

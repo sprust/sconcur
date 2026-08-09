@@ -14,7 +14,7 @@ that measured it.
 
 | Your workload | Measured effect | Verdict |
 | --- | --- | :---: |
-| A high-concurrency I/O-bound HTTP/WS service | [~6× RoadRunner's rps](benchmarks.md#comparison-with-roadrunner-native-drivers) on the same hardware; the same load takes ~5× less memory than RoadRunner, ~15–30× less than php-fpm — [resources](#resources-to-hold-the-same-load) | ✅ |
+| A high-concurrency I/O-bound HTTP/WS service | [~6× RoadRunner's rps](benchmarks.md#comparison-with-roadrunner-and-swoole) on the same hardware; the same load takes ~5× less memory than RoadRunner, ~15–30× less than php-fpm — [resources](#resources-to-hold-the-same-load) | ✅ |
 | A request/job fans out into several DB or network operations | SQL writes [~3–18×](benchmarks.md#mysql) faster, heavy reads [~2–7.5×](benchmarks.md#mongodb), network waits [~44×](benchmarks.md#clients-http--socket--websocket) | ✅ |
 | MongoDB with concurrency | the only concurrent MongoDB path in PHP — [tables](benchmarks.md#mongodb) | ✅ |
 | Cheap point queries, one at a time (as a library) | slower than the native driver: the [boundary](benchmarks.md#conversion-overhead-the-phpgo-boundary) costs more than the query itself | ❌ |
@@ -61,22 +61,24 @@ remaining trait: a request parked on I/O costs a suspended fiber, not a worker.
 ## Throughput on the same hardware
 
 12 workers each, `wrk` 4 threads / 256 connections / 20 s, disk-backed backends
-(details and the honesty checks in [benchmarks](benchmarks.md#comparison-with-roadrunner-native-drivers)):
+(details and the honesty checks in [benchmarks](benchmarks.md#comparison-with-roadrunner-and-swoole)):
 
 | Handle | Server | Requests/sec | p50 | CPU avg | MEM peak |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `/` (empty) | SConcur | ≈67 100 | 3.7 ms | ~1210% | ~256 MiB |
-| `/` (empty) | RoadRunner | ≈47 100 | 5.3 ms | ~1060% | ~230 MiB |
-| `/all` (3 features, 6 DB ops) | SConcur | ≈2 680 | 87 ms | ~740% | ~287 MiB |
-| `/all` | RoadRunner (native drivers) | ≈460 | 561 ms | ~160% | ~237 MiB |
+| `/` (empty) | SConcur | ≈64 100 | 3.9 ms | ~1210% | ~217 MiB |
+| `/` (empty) | RoadRunner | ≈46 600 | 5.4 ms | ~1050% | ~228 MiB |
+| `/all` (3 features, 6 DB ops) | SConcur | ≈2 681 | 86 ms | ~735% | ~249 MiB |
+| `/all` | RoadRunner (native drivers) | ≈448 | 573 ms | ~158% | ~232 MiB |
 
 On the empty handle the gap is ~1.4×: RoadRunner pays an IPC hop proxy → worker per
 request, SConcur pays the PHP↔Go boundary — comparable prices. On `/all` the gap is ~6×
 and structural: the sequential worker folds 3 disk commits into a chain and idles at
-~160% CPU while all 12 workers sit in that chain; the fan-out overlaps the same commits
-within and across requests. The `/all-native` control row in the benchmark doc (the same
-sequential code inside the SConcur server → the same ≈460 rps) proves the gap comes from
-the execution model, not the server layer.
+~158% CPU while all 12 workers sit in that chain; the fan-out overlaps the same commits
+within and across requests. That the gap comes from the execution model and not from the
+driver stack is shown by the third server in the same session: Swoole, on the same
+native drivers but with coroutine workers, lands at the same ≈2 670 rps as SConcur — the
+[three-way table](benchmarks.md#comparison-with-roadrunner-and-swoole) also holds the
+prices each model pays for it.
 
 ## Resources to hold the same load
 
@@ -85,7 +87,7 @@ model needs a worker per in-flight request; SConcur needs a fiber. That is where
 resource difference lives — not in CPU.
 
 CPU per request is comparable: on `/all` SConcur spends ~2.8 cores per 1 000 rps against
-RoadRunner's ~3.5; on the empty handle 0.18 against 0.23. SConcur does not save CPU —
+RoadRunner's ~3.5; on the empty handle 0.19 against 0.23. SConcur does not save CPU —
 the DB work is the same — it saves everything tied to a parked worker.
 
 To hold the measured ≈2 680 rps of the `/all` workload:
@@ -113,8 +115,10 @@ zero. With short waits the difference shrinks accordingly.
 - Memory stability: a 10-minute soak (1.74M requests) holds worker RSS flat, slope
   +0.11 MiB/min = noise ([load testing](load-testing.md)).
 - Async MongoDB with the official Go driver — Swoole has no coroutine MongoDB path
-  (`ext-mongodb`/libmongoc bypasses its runtime hooks), RoadRunner has no in-request
-  concurrency at all.
+  (`ext-mongodb`/libmongoc bypasses its runtime hooks), which is why its own fan-out
+  over the same three features gains only
+  [+13%](benchmarks.md#comparison-with-roadrunner-and-swoole) while the MongoDB call
+  blocks the worker; RoadRunner has no in-request concurrency at all.
 
 ## Honest limits
 

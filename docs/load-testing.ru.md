@@ -26,7 +26,12 @@
 - скрипт `tests/benchmarks/rr-load-stats.sh` (`make bench-rr-load-stats`) — тот же
   гарнесс, но сервер — RoadRunner-эталон на нативных драйверах
   (`tests/servers/roadrunner/`): один `rr serve` со своим пулом воркеров, те же
-  правила pinning'а и семплинга, цифры сравнимы с `http-load-stats.sh` напрямую.
+  правила pinning'а и семплинга, цифры сравнимы с `http-load-stats.sh` напрямую;
+- скрипт `tests/benchmarks/swoole-load-stats.sh` (`make bench-swoole-load-stats`) — тот
+  же гарнесс по второму эталону, корутинному серверу Swoole на нативных драйверах
+  (`tests/servers/swoole/`): один мастер со своим пулом воркеров, runtime-хуки делают
+  `PDO` неблокирующим, а `ROUTE=/all-coro` (`make bench-swoole-coro-load-stats`) даёт
+  его собственный веер внутри запроса.
 
 ## Как запустить
 

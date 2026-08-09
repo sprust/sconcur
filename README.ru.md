@@ -104,7 +104,7 @@ echo "готово за {$seconds} c" . PHP_EOL;
 
 | Обычный PHP | SConcur | Что меняется |
 | --- | --- | --- |
-| PHP-FPM, RoadRunner, Workerman | `Features\HttpServer\HttpServer` (PSR-7) | HTTP-сервер |
+| PHP-FPM, RoadRunner, Swoole, Workerman | `Features\HttpServer\HttpServer` (PSR-7) | HTTP-сервер |
 | `stream_socket_server` | `Features\SocketServer\SocketServer` | TCP-сервер |
 | Ratchet, Workerman (WS) | `Features\WsServer\WsServer` | WebSocket-сервер |
 

@@ -29,8 +29,8 @@ The quick workload-matching verdict table ("Is SConcur for you?") lives in
 - [Clients (HTTP / Socket / WebSocket)](#clients-http--socket--websocket)
 - [Servers (HTTP / Socket / WebSocket)](#servers-http--socket--websocket)
   - [HTTP throughput: `/` vs `/all`](#http-throughput--vs-all)
-  - [Comparison with RoadRunner (native drivers)](#comparison-with-roadrunner-native-drivers)
-  - [Point query: the worker-count ladder vs RoadRunner](#point-query-the-worker-count-ladder-vs-roadrunner)
+  - [Comparison with RoadRunner and Swoole](#comparison-with-roadrunner-and-swoole)
+  - [Point query: the worker-count ladder](#point-query-the-worker-count-ladder)
     - [Write and read: `/db-rw`](#write-and-read-db-rw)
 - [Conclusions](#conclusions)
 
@@ -137,8 +137,9 @@ driver and ❌ when it is slower. In the client tables it is a separate column; 
 tables the percent sits in parentheses right in the cell it refers to — the median, min
 and max columns each carry their own (computed on the medians and on the per-mode min and
 max values over the runs), which shows the spread of the comparison across runs. In the
-RoadRunner comparison the `vs RoadRunner` column is
-`(SConcur − RoadRunner) / RoadRunner` on throughput (✅ = SConcur higher). The sub-50 ms
+server comparison the `vs RoadRunner` and `vs Swoole` columns are the signed percent on
+throughput against that stack's row of the same handle (`(row − baseline) / baseline`,
+✅ = the row is higher); a reference stack's own rows carry `—`. The sub-50 ms
 rows are noise-sensitive: their sign can flip between runs — a sign flip between the
 `min` and `max` values of a row marks exactly that.
 
@@ -384,175 +385,233 @@ the empty handle the ceiling hits CPU; `/all` on disk backends already hits not 
 (~740% of 1200) but fsync: each request is a fan-out of 3 features (6 DB operations, 3 of
 them writes) with the pool capped at 5 connections per process.
 
-### Comparison with RoadRunner (native drivers)
+### Comparison with RoadRunner and Swoole
 
-In one line: even on empty responses (~1.4× ahead), ~6× ahead once requests do real
-I/O — the worker model waits serially, the fan-out overlaps.
+In one line: three execution models on the same handles — the worker model
+(RoadRunner) loses ~6× as soon as a request does real I/O, while the two concurrent
+models (SConcur and Swoole) land together at the top; on empty responses Swoole's C
+event loop is ahead of everything.
 
-To understand the price of the approach, the same two handles were measured on
-[RoadRunner](https://roadrunner.dev) 2025.1.15 — a mature Go application server for PHP.
+Two reference stacks are measured next to SConcur, both on native drivers:
+
+- [RoadRunner](https://roadrunner.dev) 2025.1.15 — a mature Go application server for
+  PHP: a request occupies a worker for its whole duration, there is no concurrency
+  inside a worker.
+- [Swoole](https://swoole.com) 6.2.2 — a coroutine application server: one worker
+  serves many requests at once, and the blocking drivers become non-blocking through
+  the runtime hooks (`hook_flags => SWOOLE_HOOK_ALL`).
+
 The conditions are identical: the same `php` container (PHP 8.4.15 NTS), 12 workers,
-`wrk` 4 threads / 256 connections / 20 s, 3 runs, hitting the bridge IP. The RoadRunner
-worker's `/all` deliberately does not use SConcur — the same functionality is built on
-native drivers:
+`wrk` 4 threads / 256 connections / 20 s, 3 runs (median), hitting the bridge IP, DB
+data on disk. All three stacks were measured in one session (2026-08-09) — only
+in-session numbers are comparable, cross-session drift of the absolute values reaches
+±20%.
 
-- `/` — the PSR-7 worker returns `200 "ok"`.
-- `/all` — the same set of operations as SConcur, but natively and sequentially (the
-  worker has no internal concurrency): MongoDB `insertOne`+`findOne`
-  (`mongodb/mongodb`), MySQL `INSERT`+`SELECT 1` (`PDO`), PostgreSQL `INSERT`+`SELECT 1`
-  (`PDO`), the response — the same JSON map of statuses.
-- `/all-sconcur` — the same three features, but through SConcur fanned out in a nested
-  `WaitGroup` inside the same RoadRunner worker (the worker loads the extension) —
-  the "SConcur inside a RoadRunner worker" scenario; the run is
-  `make bench-rr-sconcur-load-stats`.
+The handles are copies of each other, only the driver stack and the execution model
+differ:
 
-The reference RoadRunner server is committed in `tests/servers/roadrunner/` (config,
-PSR-7 worker with native copies of both handles); the `rr` binary is installed when the
-`php` container is built, launch is `make rr-serve`. The load measurement on it is
-`tests/benchmarks/rr-load-stats.sh` (`make bench-rr-load-stats`, for `/` —
-`make bench-rr-load-stats-empty`): the same harness as `http-load-stats.sh` (core
-pinning, wrk over the bridge IP, CPU/memory sampling and worker RSS), so the numbers are
-directly comparable at the same number of workers.
+- `/` — `200 "ok"`.
+- `/all` — MongoDB `insertOne`+`findOne`, MySQL `INSERT`+`SELECT 1`, PostgreSQL
+  `INSERT`+`SELECT 1`, the response is a JSON map of per-feature statuses. SConcur
+  fans the three features out in a nested `WaitGroup`; RoadRunner and Swoole run them
+  sequentially inside the request on native drivers (`mongodb/mongodb` + `PDO`) — a
+  RoadRunner worker has no in-request concurrency, and a Swoole worker overlaps
+  requests with each other instead.
+- `/all-coro` (Swoole) — the same three features fanned out in a
+  `Swoole\Coroutine\WaitGroup`: Swoole's own answer to the SConcur fan-out
+  (`make bench-swoole-coro-load-stats`).
+- `/all-sconcur` (RoadRunner) — the same three features through SConcur fanned out in
+  a nested `WaitGroup` inside the RoadRunner worker (the worker loads the extension) —
+  the "SConcur inside a RoadRunner worker" scenario
+  (`make bench-rr-sconcur-load-stats`).
 
-Honesty check: under load both stacks actually did the work (hundreds of thousands of
-inserts into MongoDB/MySQL/PostgreSQL per run, all responses `200` — since 2026-07-04 a
-failed feature turns the response into a 500, and there were none) — rather than
-responding for nothing.
+Both reference servers are committed: `tests/servers/roadrunner/` (config + PSR-7
+worker) and `tests/servers/swoole/` (`Swoole\Http\Server`); the `rr` binary and the
+`swoole` extension are installed when the `php` container is built (the extension is
+not enabled globally — the server is started with `-d extension=swoole.so`), launch is
+`make rr-serve` / `make swoole-serve`. The load harnesses —
+`tests/benchmarks/rr-load-stats.sh` and `tests/benchmarks/swoole-load-stats.sh`
+(`make bench-rr-load-stats` / `make bench-swoole-load-stats`, for `/` the `-empty`
+variants) — are copies of `http-load-stats.sh` (core pinning, wrk over the bridge IP,
+CPU/memory sampling and worker RSS), so the numbers are directly comparable at the
+same number of workers.
 
-The `/all-native` row is the SConcur server's handle: an exact copy of
-the RoadRunner worker (the same native drivers, sequentially, without SConcur features)
-inside the SConcur server. It isolates the server/transport layer from the driver stack.
+Pools per worker process: SConcur 5 connections per SQL feature, Swoole a
+`Swoole\Database\PDOPool` of 5 (a PDO handle cannot be shared between concurrent
+coroutines), RoadRunner one PDO per worker (it needs no pool — one request at a time).
 
-| Handle | Server | Requests/sec | p50 / p90 / p99 | CPU avg / peak | MEM peak | vs RoadRunner |
-| --- | --- | ---: | --- | --- | ---: | :---: |
-| `/` (empty) | SConcur | ≈67 100 | 3.7 / 6.3 / 8.8 ms | ~1210% / ~1210% | ~256 MiB | +42% ✅ |
-| `/` (empty) | RoadRunner | ≈47 100 | 5.3 / 5.9 / 6.7 ms | ~1060% / ~1075% | ~230 MiB | — |
-| `/all` | SConcur (SConcur, async) | ≈2 680 | 87 / 165 / 267 ms | ~740% / ~765% | ~287 MiB | +483% ✅ |
-| `/all` | RoadRunner (native drivers, sequential) | ≈460 | 561 / 589 / 603 ms | ~160% / ~175% | ~237 MiB | — |
-| `/all-sconcur` | RoadRunner (SConcur, async) | ≈583 | 442 / 469 / 522 ms | ~540% / ~600% | ~363 MiB | +32% ✅ |
-| `/all-native` | SConcur (native drivers, sequential) | ≈457 | 556 / 745 / 832 ms | ~140% / ~160% | ~265 MiB | — |
+Honesty checks: under load every stack actually did the work — hundreds of thousands
+of inserts into MongoDB/MySQL/PostgreSQL per run, and every response was `200` (a
+failed feature turns the response into a 500, and there were none). The one row that
+is not what it seems is Swoole's `/`: there the load generator is the limit, not the
+server — the 4 `wrk` threads sat at 398% CPU while the server used ~257% of its
+1200% budget. Given 8 generator threads the same handle answered ≈865 000 rps, so the
+figure in the table is a floor.
 
-On the empty handle SConcur is ~1.4× faster: the price of a request across the PHP↔Go
-boundary is low (tasks go into Go off the scheduler stack, the result channel is
-buffered), while RoadRunner pays the IPC hop proxy → worker on every request.
+| Handle | Server | Requests/sec | p50 / p90 / p99 | CPU avg / peak | MEM peak | vs RoadRunner | vs Swoole |
+| --- | --- | ---: | --- | --- | ---: | :---: | :---: |
+| `/` (empty) | Swoole | ≈353 000 | 0.4 / 0.4 / 0.7 ms | ~257% / ~264% | ~72 MiB | — | — |
+| `/` (empty) | SConcur | ≈64 100 | 3.9 / 6.7 / 9.1 ms | ~1210% / ~1212% | ~217 MiB | +38% ✅ | −82% ❌ |
+| `/` (empty) | RoadRunner | ≈46 600 | 5.4 / 6.0 / 6.9 ms | ~1050% / ~1062% | ~228 MiB | — | — |
+| `/all-coro` | Swoole (coroutine fan-out) | ≈3 030 | 83 / 204 / 303 ms | ~263% / ~275% | ~137 MiB | — | — |
+| `/all` | SConcur (fan-out in a `WaitGroup`) | ≈2 681 | 86 / 166 / 269 ms | ~735% / ~751% | ~249 MiB | +499% ✅ | — |
+| `/all` | Swoole (native drivers, sequential in-request) | ≈2 671 | 80 / 267 / 322 ms | ~237% / ~249% | ~126 MiB | — | — |
+| `/all-sconcur` | RoadRunner (SConcur fan-out in the worker) | ≈586 | 435 / 462 / 589 ms | ~592% / ~647% | ~360 MiB | +31% ✅ | — |
+| `/all` | RoadRunner (native drivers, sequential) | ≈448 | 573 / 611 / 711 ms | ~158% / ~167% | ~232 MiB | — | — |
 
-On `/all` with disk backends the picture reversed radically: **SConcur is ~6× faster than
-RoadRunner** (≈2 680 vs ≈460 rps). The reason is fsync: 3 writes per request in the
-sequential worker fold into a chain of disk commits (p50 ≈ 0.56 s, CPU idles at ~160%),
-and all 12 workers hit that chain at once. SConcur's fan-out overlaps those same fsyncs
-onto each other and onto neighbouring requests — a cooperative worker serves dozens of
-requests parked on I/O while the disk works.
+The `vs Swoole` column is filled on the empty handle only. On `/all` the two stacks do
+not run the same workload: one of the three features, MongoDB, has no coroutine path in
+Swoole (`ext-mongodb`/libmongoc is outside the runtime hooks), so its call blocks the
+whole worker while SConcur overlaps it like the other two. The rows are still worth
+reading side by side — that is what the text below does — but a percent between them
+would compare a concurrent stack with a partly sequential one.
 
-The `/all-native` row confirms it is not about the server layer: the same native
-sequential code inside the SConcur server gives the same ≈457 rps as RoadRunner (≈460),
-with the same latencies — SConcur's server/transport does not lose to the native stack,
-and the sixfold gap is created exactly by the execution model (sequential fsyncs vs ones
-overlapped by the fan-out).
+On the empty handle the ranking is the price of the transport. Swoole answers from a C
+event loop in the same process as the PHP closure and is ahead of both by a wide margin
+(and by CPU: ~257% against SConcur's saturated ~1210%). SConcur is ~1.4× RoadRunner:
+crossing the PHP↔Go boundary is cheap (tasks go into Go off the scheduler stack, the
+result channel is buffered), while RoadRunner pays the IPC hop proxy → worker on every
+request.
+
+On `/all` with disk backends the worker model breaks down: **both concurrent servers
+are ~6× faster than RoadRunner** (≈2 680 / ≈2 670 vs ≈448 rps) and land level with each
+other — Swoole doing so with one of its three features still blocking. The reason is
+fsync: 3 writes per request in a sequential worker fold into a chain of disk commits
+(p50 ≈ 0.57 s, CPU idling at ~158%), and all 12 workers hit that chain at once. Both
+SConcur and Swoole overlap those same fsyncs across dozens of requests parked on I/O in
+one process — a different mechanism (fibers plus goroutines against coroutines plus
+hooked drivers), the same effect, and the ceiling stops being the server: it becomes the
+disk.
+
+Where they differ is the price and the coverage:
+
+- CPU and memory go to Swoole: ~237% against ~735% and ~126 MiB against ~249 MiB at the
+  same throughput. Part of that saving lands on the backends — at equal rps the DB
+  containers burn ~1.5–2× more CPU under the Swoole stack (mongodb ~217% vs ~106%).
+  SConcur pays for the boundary: MessagePack plus cgo on every operation.
+- The in-request fan-out goes to SConcur. Swoole's own fan-out (`/all-coro`) adds only
+  +13% over its sequential route (≈3 030 vs ≈2 671), because `ext-mongodb` is outside
+  the runtime hooks (libmongoc drives its own sockets from C): the MongoDB call blocks
+  the whole worker, and the fan-out can only overlap the two SQL features. SConcur's
+  `WaitGroup` overlaps all three — MongoDB included, through the Go driver.
+- Tails: Swoole holds the better median (80 vs 86 ms) and the worse p90/p99
+  (267/322 vs 166/269 ms) — the blocking MongoDB call inside a coroutine worker is
+  a head-of-line block for everything else in that process.
 
 The `/all-sconcur` row is the reverse experiment — the SConcur fan-out inside the
 RoadRunner worker. The fan-out overlaps the request's three fsyncs, so the request time
-tends to the maximum of the three instead of their sum: +32% rps, p50 down from 586 to
-442 ms. Further it cannot go: a RoadRunner worker serves one request at a time, so
-unlike the cooperative SConcur server (≈2 680 rps) it cannot park dozens of requests on
-I/O — the ceiling stays workers × request time. Worker memory rises to ≈363 MiB over 12
-workers (the extension's Go runtime in every worker). This is the "complement
-RoadRunner, not replace it" scenario: an existing RR application gains in-request
-fan-out concurrency without changing its server model. (The `/all-sconcur`/`/all` pair
-was measured in a separate session on 2026-07-24; native `/all` gave ≈443 rps / p50
-586 ms there, and the row's percent is computed against that same-session baseline.)
+tends to the maximum of the three instead of their sum: +31% rps, p50 down from 573 to
+435 ms. Further it cannot go: a RoadRunner worker serves one request at a time, so
+unlike a cooperative server it cannot park dozens of requests on I/O — the ceiling
+stays workers × request time. Worker memory rises to ≈360 MiB over 12 workers (the
+extension's Go runtime in every worker). This is the "complement RoadRunner, not
+replace it" scenario: an existing RR application gains in-request fan-out concurrency
+without changing its server model.
 
 The applicability boundary of the fan-out runs along the price of waiting for an
 operation. Where there is none (data in memory or a hot cache over local loopback), the
 sequential native code has nothing to overlap and it wins — this is visible in the cheap
 read rows in the DB tables. As soon as an operation gains a delay — an fsync on disk, as
-here, or a network RTT — sequential code sums it, the fan-out overlaps it, and the
-advantage goes to SConcur.
+here, or a network RTT — sequential code sums it, the concurrent models overlap it.
 
-### Point query: the worker-count ladder vs RoadRunner
+### Point query: the worker-count ladder
 
-A separate probe (2026-07-26, the `/db` handle of the demo servers — it seeds its
-1 000-row table on the first hit): one point SELECT per request —
-`SELECT id, t FROM bench_seed WHERE id = ?` with a random id out of 1 000 seeded
-rows, JSON response; `?n=` runs several sequential SELECTs per request. SConcur runs it through the MySQL feature
-with no `WaitGroup` (cross-request overlap only); RoadRunner through PDO. Disk-backed
-MySQL, default `max_connections = 151`; the SConcur per-process pool is sized to fit
-the server limit (≈150 / process count). The same wrk harness (4 threads / 256
-connections / 20 s), both stacks measured within one session — cross-session drift
-of the absolute numbers reaches ±20%, only in-session comparisons are meaningful.
+The same three stacks on the cheapest possible request (2026-08-09, one session, the
+`/db` handle of the demo servers — it seeds its 1 000-row table on the first hit): one
+point SELECT per request — `SELECT id, t FROM bench_seed WHERE id = ?` with a random id
+out of 1 000 seeded rows, JSON response; `?n=` runs several sequential SELECTs per
+request. SConcur runs it through the MySQL feature with no `WaitGroup` (cross-request
+overlap only), RoadRunner and Swoole through PDO. Disk-backed MySQL, default
+`max_connections = 151`; the per-process pool of SConcur and Swoole is sized to fit the
+server limit (≈150 / process count), RoadRunner holds one connection per worker. The
+same wrk harness (4 threads / 256 connections / 20 s), all three stacks within one
+session — cross-session drift of the absolute numbers reaches ±20%, only in-session
+comparisons are meaningful.
 
-| Workers | RoadRunner rps / p50 / p99 | SConcur rps / p50 / p99 (pool) | SConcur rps |
-| ---: | --- | --- | :---: |
-| 1 | 5 248 / 47.6 ms / 65.8 ms | 6 581 / 38.2 ms / 68.1 ms (150) | +25% ✅ |
-| 3 | 10 561 / 23.8 ms / 29.3 ms | 13 518 / 17.1 ms / 39.5 ms (50×3) | +28% ✅ |
-| 8 | 23 696 / 10.6 ms / 13.1 ms | 26 482 / 9.6 ms / 17.8 ms (18×8) | +12% ✅ |
-| 16 | 29 084 / 8.6 ms / 11.5 ms | 28 105 / 8.4 ms / 32.5 ms (9×16) | −3% ❌ |
+| Workers | RoadRunner rps / p50 / p99 | SConcur rps / p50 / p99 (pool) | Swoole rps / p50 / p99 (pool) | SConcur vs RR | SConcur vs Swoole |
+| ---: | --- | --- | --- | :---: | :---: |
+| 1 | 5 280 / 47.3 ms / 62.9 ms | 6 444 / 39.0 ms / 71.3 ms (150) | 46 225 / 5.4 ms / 7.2 ms (150) | +22% ✅ | −86% ❌ |
+| 3 | 10 282 / 24.4 ms / 31.2 ms | 13 061 / 17.2 ms / 38.9 ms (50×3) | 100 686 / 2.5 ms / 3.8 ms (50×3) | +27% ✅ | −87% ❌ |
+| 8 | 23 665 / 10.6 ms / 12.6 ms | 25 517 / 9.8 ms / 19.7 ms (18×8) | 123 359 / 1.9 ms / 6.3 ms (18×8) | +8% ✅ | −79% ❌ |
+| 16 | 28 272 / 8.7 ms / 74.2 ms | 27 487 / 8.9 ms / 27.9 ms (9×16) | 113 880 / 2.0 ms / 7.2 ms (9×16) | −3% ❌ | −76% ❌ |
 
 What the ladder shows:
 
-- The advantage tapers with pool size: +25–28% on 1–3 workers, +12% on 8, parity at
-  the full per-core pool. In-process overlap adds throughput while each worker is
-  saturated with waiting clients; at the full pool both servers meet at the shared
-  hardware ceiling (MySQL plus total CPU), where the execution model stops mattering.
-  SConcur saturates first — it spends more CPU per request (the PHP↔Go boundary):
-  going 8 → 16 workers buys it +6% against RoadRunner's +23%.
-- One SConcur process is bound by its single PHP thread (a steady 101% CPU): ≈6.6k
-  rps, and a pool beyond ~64 connections adds nothing.
-- RoadRunner's tails are consistently tighter at every pool size (p99 11.5 ms vs
-  32.5 ms at 16): a dequeued request owns its worker outright, while SConcur
-  multiplexes dozens of in-flight requests per thread.
-- Pool sizing: the Go-side pool lives per process, so the DB connection budget is
-  divided across the processes. 16 processes × a 150-connection pool against
-  `max_connections = 151` turned a third of the responses into "Too many
-  connections" errors. The useful pool size is the expected in-flight per process
-  (clients / processes) plus a small margin; raising `max_connections` to 500 and
-  inflating the pools to 480 total moved nothing (±1%) — the ceiling is CPU, and the
-  idle connections only cost the DB memory (≈ +90 MiB).
+- Against RoadRunner the SConcur advantage tapers with pool size: +22% on one worker,
+  +27% on 3, +8% on 8, parity (−3%) at the full per-core pool. In-process overlap adds
+  throughput while each worker is saturated with waiting clients; at the full pool both
+  meet at the shared hardware ceiling (MySQL plus total CPU), where the execution model
+  stops mattering. SConcur saturates first — it spends more CPU per request (the PHP↔Go
+  boundary): going 8 → 16 workers buys it +8% against RoadRunner's +19%.
+- Swoole is 4–7× ahead of both, and this is the row where SConcur's price is the most
+  visible. Both saturate one PHP thread on a single worker (~101% CPU), but that thread
+  buys ≈6.4k rps for SConcur (~156 µs of CPU per request) against ≈46k for Swoole
+  (~21 µs): the hooked `mysqlnd` never leaves the process, while every SConcur operation
+  pays MessagePack plus cgo. The work moves to the database accordingly — at one worker
+  the mysql container burns ~194% CPU under Swoole against ~35% under SConcur.
+- Swoole saturates around 8 workers (123k rps) and gives a little back at 16 (114k) —
+  past that point the bottleneck is MySQL and the shared cores, not the server.
+- Tails: RoadRunner is tight until the full pool and then breaks (p99 74 ms at 16
+  workers); SConcur multiplexes dozens of in-flight requests per thread and holds
+  p99 28 ms; Swoole stays under 8 ms everywhere.
+- Pool sizing: the pool lives per process, so the DB connection budget is divided across
+  the processes. 16 processes × a 150-connection pool against `max_connections = 151`
+  turns a third of the responses into "Too many connections" errors. The useful pool
+  size is the expected in-flight per process (clients / processes) plus a small margin;
+  raising `max_connections` to 500 and inflating the pools to 480 total moved nothing
+  (±1%) — the ceiling is CPU, and the idle connections only cost the DB memory
+  (≈ +90 MiB).
+- Open item: from 3 workers up, 0.06–0.24% of the SConcur responses on this handle came
+  back non-2xx (and 0.8–2.6% on `/db-rw` below). RoadRunner and Swoole had none under
+  the same load. Shrinking the pools to fit the connection budget with room to spare
+  (46×3, 17×8, 8×16) left both the throughput and the error share unchanged, so the
+  connection limit is not the cause; the cause is not identified yet.
 
 This is the same boundary the cheap-point-query row of the verdict table draws
 ([positioning](positioning.md#is-sconcur-for-you)): with nothing to overlap inside a
-request, the models converge — SConcur's remaining edge is holding the same load on
-fewer processes, not a higher ceiling.
+request, the model stops paying for itself — SConcur's remaining edge over the worker
+model is holding the same load on fewer processes, and against a coroutine server on
+hooked native drivers there is no edge at all.
 
 #### Write and read: `/db-rw`
 
-A second run of the same ladder (2026-08-02), now with a write. The demo servers'
-`/db-rw` handle does, per request: an INSERT of one row, a COUNT(*), and a point
-SELECT of a random id within that count; the response is JSON with the count and
-every column of the found record. The `bench_rw` table seeds on the first hit:
-10 000 rows across five typed columns (string, int, float, bool, date); ids are
-contiguous (seed 1..10 000, then AUTO_INCREMENT, no deletes), so a random id in
-[1, COUNT(*)] hits an existing row. SConcur runs the three operations through the
-MySQL feature sequentially, no `WaitGroup` (cross-request overlap only);
-RoadRunner through PDO. The table is reset to the 10 000 seed rows before each
-run (an equal start); during a run it grows with the inserts, so the faster stack
-makes its own COUNT(*) heavier — the comparison is conservative. Conditions are
-otherwise the point-query ladder's: disk-backed MySQL, wrk 4 threads / 256
-connections / 20 s, the same per-process pools, both stacks within one session.
+The same ladder with a write in the request. The demo servers' `/db-rw` handle does,
+per request: an INSERT of one row, a COUNT(*), and a point SELECT of a random id within
+that count; the response is JSON with the count and every column of the found record.
+The `bench_rw` table seeds on the first hit: 10 000 rows across five typed columns
+(string, int, float, bool, date); ids are contiguous (seed 1..10 000, then
+AUTO_INCREMENT, no deletes), so a random id in [1, COUNT(*)] hits an existing row. All
+three stacks run the three operations sequentially inside the request — SConcur through
+the MySQL feature with no `WaitGroup`, RoadRunner and Swoole through PDO. The table is
+reset to the 10 000 seed rows before each run (an equal start); during a run it grows
+with the inserts, so the faster stack makes its own COUNT(*) heavier — the comparison is
+conservative. Conditions are otherwise the point-query ladder's.
 
-| Workers | RoadRunner rps / p50 / p99 | SConcur rps / p50 / p99 (pool) | SConcur rps |
-| ---: | --- | --- | :---: |
-| 1 | 97 / 0.96 s / 1.99 s | 2 371 / 98 ms / 303 ms (150) | ×24 ✅ |
-| 3 | 205 / 1.25 s / 1.30 s | 2 522 / 89 ms / 378 ms (50×3) | ×12 ✅ |
-| 8 | 413 / 624 ms / 681 ms | 2 514 / 89 ms / 364 ms (18×8) | ×6.1 ✅ |
-| 16 | 691 / 376 ms / 473 ms | 2 426 / 93 ms / 343 ms (9×16) | ×3.5 ✅ |
+| Workers | RoadRunner rps / p50 / p99 | SConcur rps / p50 / p99 (pool) | Swoole rps / p50 / p99 (pool) | SConcur vs RR | SConcur vs Swoole |
+| ---: | --- | --- | --- | :---: | :---: |
+| 1 | 96 / 1.03 s / 1.98 s | 2 299 / 99 ms / 380 ms (150) | 2 657 / 87 ms / 337 ms (150) | ×24 ✅ | −13% ❌ |
+| 3 | 204 / 1.24 s / 1.46 s | 2 523 / 89 ms / 376 ms (50×3) | 2 681 / 88 ms / 347 ms (50×3) | ×12 ✅ | −6% ❌ |
+| 8 | 425 / 606 ms / 657 ms | 2 497 / 89 ms / 362 ms (18×8) | 2 654 / 87 ms / 304 ms (18×8) | ×5.9 ✅ | −6% ❌ |
+| 16 | 754 / 343 ms / 433 ms | 2 520 / 91 ms / 347 ms (9×16) | 2 593 / 88 ms / 323 ms (9×16) | ×3.3 ✅ | −3% ❌ |
 
 What the write changes:
 
-- One disk commit per request flips the ladder. On the point SELECT the models
-  converged at the shared ceiling; here SConcur reaches ~2.4–2.5k rps with a
-  single worker and stays flat: cross-request overlap folds the commits of dozens
-  of in-flight requests into group commits, and the ceiling becomes MySQL itself
-  (the mysql container burns ~1200% CPU against ~90–210% for php), not the PHP
-  thread.
-- RoadRunner scales almost linearly with workers — each worker adds one more
-  concurrent commit stream (97 → 205 → 413 → 691 rps) — but even 16 workers stay
-  3.5× behind; parity would take around 55 processes.
-- RoadRunner's latencies at small pools are queueing, not work: 256 wrk
-  connections share 1–3 workers, and p50 reaches ~1–1.25 s against SConcur's
-  ~90–100 ms.
-- The applicability boundary is the fan-out's, one level up: as soon as the
-  request contains an operation with real waiting (here the insert's disk
-  commit), overlap decides — even with no `WaitGroup` inside the request.
+- One disk commit per request flips the ladder. On the point SELECT Swoole was 4–7×
+  ahead; here both concurrent stacks stand on the same ceiling from the first worker on
+  (≈2.3–2.7k rps, flat across the whole ladder) — cross-request overlap folds the
+  commits of dozens of in-flight requests into group commits, and the limit becomes
+  MySQL itself: the mysql container burns ~1 300–1 380% CPU while php sits at 24–62%
+  (Swoole) and 93–211% (SConcur). Swoole keeps a 6–16% edge, which is the boundary tax,
+  not a different ceiling.
+- RoadRunner scales almost linearly with workers — each worker adds one more concurrent
+  commit stream (96 → 204 → 425 → 754 rps) — but even 16 workers stay 3.3× behind;
+  parity would take around 55 processes.
+- RoadRunner's latencies at small pools are queueing, not work: 256 wrk connections
+  share 1–3 workers, and p50 reaches ~1–1.24 s against ~90 ms for both concurrent
+  stacks.
+- The applicability boundary is the fan-out's, one level up: as soon as the request
+  contains an operation with real waiting (here the insert's disk commit), overlap
+  decides — even with no `WaitGroup` inside the request.
 
 ## Conclusions
 
@@ -578,14 +637,17 @@ What the write changes:
   wait the fan-out gives ~44×.
 - The PHP↔Go boundary on the fan-out is cheap (tasks go into Go off the scheduler stack,
   the result channel is buffered): socket/ws server throughput — ~120–154k round-trips/s,
-  the empty HTTP handle — ~67k rps (~1.4× faster than RoadRunner).
-- Comparison with RoadRunner on disk backends: `/all` fanned out — ~6× faster than the
-  sequential native worker (≈2 680 vs ≈460 rps); `/all-native` shows that SConcur's server
-  layer does not lose to the native stack (≈457 ≈ RoadRunner). Inside the RoadRunner
-  worker the SConcur fan-out (`/all-sconcur`) gives +32% rps and −25% p50 — capped by the
-  one-request-per-worker model. The fan-out only loses
-  where operations have no real I/O price (memory/hot cache over loopback — the cheap read
-  rows in the DB tables).
+  the empty HTTP handle — ~64k rps (~1.4× faster than RoadRunner).
+- Comparison with RoadRunner and Swoole on disk backends: on `/all` both concurrent
+  models are ~6× the sequential worker (SConcur ≈2 681, Swoole ≈2 671 vs RoadRunner
+  ≈448 rps) and stand level with each other — where a request waits, the ceiling is the
+  disk, not the server. The price differs: Swoole holds it on ~237% CPU against ~735%,
+  but its own in-request fan-out adds only +13% because `ext-mongodb` is outside its
+  runtime hooks, while the SConcur `WaitGroup` overlaps all three features. On cheap
+  point queries the ranking reverses — one Swoole worker holds ≈46k rps against
+  SConcur's ≈6.4k on the same core, and that gap is the boundary tax. Inside a
+  RoadRunner worker the SConcur fan-out (`/all-sconcur`) gives +31% rps and −24% p50 —
+  capped by the one-request-per-worker model.
 - Memory is practically flat across the modes: the DB tables show equal per-mode peaks
   (`selectMany` +2 MB for the result sets) — the coroutine fibers of a 100-wide fan-out
   do not move the peak noticeably.
