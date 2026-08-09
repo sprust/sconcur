@@ -1,0 +1,237 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Phase 0 of .ai/plans/php-go-boundary-batching.md — attribution of today's cost
+ * of one result taken through waitAny, on the PHP side of the boundary.
+ *
+ * It splits the per-result price into: a bare cgo crossing, the Go-built frame
+ * plus its copies, the PHP frame parsing into a TaskResultDto, and — separately —
+ * the scheduler's coroutine coordination (suspend -> waitAny -> resume).
+ *
+ * Both wall and CPU time are reported: the sleeper's own Go timer shows up in
+ * wall but burns almost no CPU, so the coordination rows must be read on the CPU
+ * column (the same choice the 2026-07-02 profile made).
+ *
+ * Run: php -d extension=./ext/build/sconcur.so tests/benchmarks/boundary-profile.php
+ */
+
+use SConcur\Connection\Extension;
+use SConcur\Features\Sleeper\Payloads\SleeperPayload;
+use SConcur\Features\Sleeper\Sleeper;
+use SConcur\Tests\Impl\TestApplication;
+use SConcur\WaitGroup;
+
+use function SConcur\Extension\tasksCount;
+use function SConcur\Extension\waitAny as rawWaitAny;
+
+error_reporting(E_ALL);
+ini_set('memory_limit', '1024M');
+
+require_once __DIR__ . '/../../vendor/autoload.php';
+
+TestApplication::init();
+
+const RESULTS    = 1000;   // must stay under the Go results buffer (1024)
+const COROUTINES = 500;
+const REPEATS    = 7;      // measurements per case, the median is reported
+
+$extension = Extension::get();
+
+/**
+ * Takes whatever results a case left behind, so the next case starts from an
+ * empty buffer. Without it a leftover makes the next waitAny return instantly
+ * (or, the other way round, park waiting for a result that is not coming) and
+ * the numbers swing by an order of magnitude between runs.
+ */
+$drain = static function (): void {
+    while (tasksCount() > 0) {
+        rawWaitAny();
+    }
+
+    gc_collect_cycles();
+};
+
+/**
+ * Seeds RESULTS finished results into the Go-side buffer: pushes sleeper tasks
+ * with the smallest allowed delay and waits until every one of them has produced
+ * its result, so the measured loop only pays for taking them across the boundary.
+ */
+$seedResults = static function () use ($extension): void {
+    $flowKey = 'profile-' . uniqid();
+    $payload = new SleeperPayload(microseconds: 1);
+
+    for ($i = 0; $i < RESULTS; $i++) {
+        $extension->push($flowKey, $payload);
+    }
+
+    usleep(300_000);
+};
+
+/**
+ * @param callable(): void $case
+ *
+ * @return array{wall: float, cpu: float} microseconds per operation, median of REPEATS
+ */
+$measure = static function (callable $case, int $operations, ?callable $setUp = null) use ($drain): array {
+    $walls = [];
+    $cpus  = [];
+
+    for ($repeat = 0; $repeat < REPEATS; $repeat++) {
+        if ($setUp !== null) {
+            $setUp();
+        }
+
+        $usageBefore = getrusage();
+        $start       = hrtime(true);
+
+        $case();
+
+        $wall       = (hrtime(true) - $start) / 1000 / $operations;
+        $usageAfter = getrusage();
+
+        $cpuMicroseconds = ($usageAfter['ru_utime.tv_sec'] - $usageBefore['ru_utime.tv_sec']) * 1_000_000
+            + ($usageAfter['ru_utime.tv_usec'] - $usageBefore['ru_utime.tv_usec'])
+            + ($usageAfter['ru_stime.tv_sec'] - $usageBefore['ru_stime.tv_sec']) * 1_000_000
+            + ($usageAfter['ru_stime.tv_usec'] - $usageBefore['ru_stime.tv_usec']);
+
+        $walls[] = $wall;
+        $cpus[]  = $cpuMicroseconds / $operations;
+
+        $drain();
+    }
+
+    sort($walls);
+    sort($cpus);
+
+    $middle = intdiv(REPEATS, 2);
+
+    return ['wall' => $walls[$middle], 'cpu' => $cpus[$middle]];
+};
+
+$report = [];
+
+// 1. Bare cgo crossing — the floor every call pays.
+$report['cgo crossing (tasksCount)'] = $measure(
+    case: static function (): void {
+        for ($i = 0; $i < RESULTS; $i++) {
+            tasksCount();
+        }
+    },
+    operations: RESULTS,
+);
+
+// 2. Raw waitAny: cgo crossing + Go frame build + C.CBytes + zend_string copy,
+//    without any PHP-side parsing.
+$report['raw waitAny (cgo + frame + copies)'] = $measure(
+    case: static function (): void {
+        for ($i = 0; $i < RESULTS; $i++) {
+            rawWaitAny();
+        }
+    },
+    operations: RESULTS,
+    setUp: $seedResults,
+);
+
+// 3. Full single-result path: the same plus parseWaitResponse + TaskResultDto.
+$report['waitAny (full path -> TaskResultDto)'] = $measure(
+    case: static function () use ($extension): void {
+        for ($i = 0; $i < RESULTS; $i++) {
+            $extension->waitAny();
+        }
+    },
+    operations: RESULTS,
+    setUp: $seedResults,
+);
+
+// 4. Batched path: one crossing carries up to 64 results.
+$report['waitAnyBatch(64) (per result)'] = $measure(
+    case: static function () use ($extension): void {
+        $taken = 0;
+
+        while ($taken < RESULTS) {
+            $taken += count($extension->waitAnyBatch(64));
+        }
+    },
+    operations: RESULTS,
+    setUp: $seedResults,
+);
+
+// 5. PHP-side frame parsing in isolation, on one captured frame.
+$seedResults();
+$frame = rawWaitAny();
+
+while (tasksCount() > 0) {
+    rawWaitAny();
+}
+
+$parseFrame = Closure::bind(
+    static fn (string $response): object => Extension::parseWaitResponse($response, 'profile', microtime(true)),
+    null,
+    Extension::class,
+);
+
+$report['parseWaitResponse (PHP only)'] = $measure(
+    case: static function () use ($parseFrame, $frame): void {
+        for ($i = 0; $i < RESULTS; $i++) {
+            $parseFrame($frame);
+        }
+    },
+    operations: RESULTS,
+);
+
+// 6. Scheduler coordination: a fan-out of coroutines that never suspend versus
+//    one where every coroutine suspends on the cheapest possible feature call.
+//    Read the CPU column — the sleeper's Go timer inflates wall, not CPU.
+$report['coroutine, no suspend (fiber machinery)'] = $measure(
+    case: static function (): void {
+        $waitGroup = WaitGroup::create();
+
+        for ($i = 0; $i < COROUTINES; $i++) {
+            $waitGroup->add(static fn (): int => 1);
+        }
+
+        $waitGroup->waitAll();
+    },
+    operations: COROUTINES,
+);
+
+$report['coroutine, suspends on usleep(1)'] = $measure(
+    case: static function (): void {
+        $waitGroup = WaitGroup::create();
+
+        for ($i = 0; $i < COROUTINES; $i++) {
+            $waitGroup->add(static function (): int {
+                Sleeper::usleep(microseconds: 1);
+
+                return 1;
+            });
+        }
+
+        $waitGroup->waitAll();
+    },
+    operations: COROUTINES,
+);
+
+// 7. Synchronous path: push + wait + stopFlow per call (phase 2's target).
+$report['sync feature call (push+wait+stopFlow)'] = $measure(
+    case: static function (): void {
+        for ($i = 0; $i < RESULTS; $i++) {
+            Sleeper::usleep(microseconds: 1);
+        }
+    },
+    operations: RESULTS,
+);
+
+echo PHP_EOL . 'boundary profile — microseconds per operation (median of ' . REPEATS . ')' . PHP_EOL . PHP_EOL;
+
+$width = max(array_map(strlen(...), array_keys($report)));
+
+printf("  %-{$width}s  %10s  %10s\n", '', 'wall, us', 'cpu, us');
+
+foreach ($report as $name => $timing) {
+    printf("  %-{$width}s  %10.3f  %10.3f\n", $name, $timing['wall'], $timing['cpu']);
+}
+
+echo PHP_EOL;
