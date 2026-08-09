@@ -1,14 +1,12 @@
 [English](pgsql.md) | Русский
 
-# PostgreSQL (поверх универсальной SQL-фичи)
+# PostgreSQL (на универсальной SQL-фиче)
 
 PgSQL — второй драйвер той же SQL-фичи поверх Go `database/sql` (драйвер
-`jackc/pgx`). Ядро (`SConcur\Features\Sql`) общее с MySQL; `SConcur\Features\Pgsql\Connection`
-— тонкий фасад, задающий драйвер. Поведение (стриминг, пул, транзакции,
-конкурентность) идентично — см. [docs/mysql.ru.md](mysql.ru.md). Здесь — только
-отличия PostgreSQL.
-
-## Быстрый старт
+`jackc/pgx`). Ядро (`SConcur\Features\Sql`) общее с MySQL, а
+`SConcur\Features\Pgsql\Connection` — тонкий фасад, задающий драйвер. Стриминг,
+пул, транзакции и конкурентность ведут себя одинаково — см.
+[docs/mysql.ru.md](mysql.ru.md); здесь описаны только отличия PostgreSQL.
 
 ```php
 $connection = new \SConcur\Features\Pgsql\Connection(
@@ -28,33 +26,29 @@ echo $result->affectedRows;
 
 ## Отличия от MySQL
 
-- Плейсхолдеры — `$1, $2, …` (нумерованные), а не `?`. Биндинги — позиционный
-  список, передаётся в драйвер как есть.
+- Плейсхолдеры нумерованные `$1, $2, …`, а не `?`. Биндинги остаются позиционным
+  списком.
 - DSN — формат pgx/libpq: `postgres://user:pass@host:port/dbname?sslmode=...`
-  (или keyword/value `host=… port=… user=… dbname=…`). Полезные параметры:
-  `sslmode`, `connect_timeout` (сек).
-- Нет last-insert-id: `exec()->lastInsertId` всегда `0`. Чтобы получить id
-  вставленной строки, используйте `INSERT … RETURNING id` и читайте его как строку
-  результата:
+  (либо keyword/value `host=… port=… user=… dbname=…`). Полезные параметры:
+  `sslmode`, `connect_timeout` (в секундах).
+- Нет last-insert-id: `exec()->lastInsertId` всегда `0`. Используйте
+  `INSERT … RETURNING id` и читайте его как строку результата:
   ```php
   $rows = $connection->fetchAll('INSERT INTO users (name) VALUES ($1) RETURNING id', ['Ann']);
   $id = $rows[0]['id'];
   ```
-- `BOOLEAN` — настоящий тип: возвращается как PHP `bool` (`true`/`false`), а не
-  как `0/1` (в MySQL это `TINYINT(1)` → `int`).
-- `NUMERIC`/`DECIMAL` — строка (точность сохраняется), как и в MySQL.
-- Без `interpolateParams` — у pgx нет такого флага; запросы идут расширенным
-  протоколом (prepared) по умолчанию.
-- Транзакция прерывается при ошибке: после ошибочного запроса внутри
-  транзакции PostgreSQL переводит её в aborted-состояние, и дальнейшие команды до
-  `rollback()` завершатся ошибкой `current transaction is aborted`. Делайте
-  `rollback()` (он разрешён) и начинайте заново.
+- `BOOLEAN` — настоящий тип и приходит PHP-шным `bool`, а не `0/1` (в MySQL это
+  `TINYINT(1)` → `int`). `NUMERIC`/`DECIMAL` — строка, как и в MySQL.
+- Нет `interpolateParams` — у pgx такого флага нет, запросы по умолчанию идут
+  через расширенный (prepared) протокол.
+- Транзакция аварийна после ошибки: PostgreSQL переводит её в aborted-состояние, и
+  дальнейшие команды падают с `current transaction is aborted` до `rollback()`.
 
 ## Ограничения
 
-- Бинарные данные с NUL-байтами в `BYTEA` через биндинг: значение-строка
-  передаётся как текст, и PostgreSQL отвергает невалидный UTF-8 (`0x00`). Для
-  произвольных бинарных данных кодируйте их (например, в hex/base64) и
-  декодируйте на стороне БД/приложения. ASCII-байты в `BYTEA` работают.
-- Прочие ограничения и устройство (пул, стриминг, отмена, типы значений) —
-  общие с MySQL, см. [docs/mysql.ru.md](mysql.ru.md).
+Бинарные данные с NUL-байтами в `BYTEA` через биндинг не работают: строковое
+значение передаётся текстом, а PostgreSQL отвергает невалидный UTF-8 (`0x00`).
+Кодируйте произвольные бинарные данные (hex, base64) и декодируйте на стороне БД
+или приложения; ASCII-байты в `BYTEA` работают. Прочие ограничения и внутреннее
+устройство (пул, стриминг, отмена, типы значений) общие с
+[MySQL](mysql.ru.md).

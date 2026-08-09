@@ -75,17 +75,9 @@ $seconds = round(microtime(true) - $start, 2);
 echo "done in {$seconds} s" . PHP_EOL;
 ```
 
-Output:
-
-```
-done in 1 s
-```
-
-Two one-second operations ran in parallel — about 1 s instead of 2.
+Output: `done in 1 s` — two one-second operations ran in parallel.
 
 ## What it replaces
-
-SConcur currently provides equivalents for the tools listed below.
 
 Operations and clients — wrapped in a coroutine (`$waitGroup->add()` +
 `$waitGroup->wait*()`), they run concurrently instead of blocking the process:
@@ -110,105 +102,78 @@ Long-lived servers:
 
 ## How it works
 
-In short: `WaitGroup` wraps each closure in a `Fiber`. When an async feature is
-called, the coroutine suspends and the task goes to Go and runs in a separate
-goroutine. A single process-wide `Scheduler` waits on the extension
-(`waitAnyBatch`): it blocks for the first ready result of any flow, drains the
-already-ready ones with it in the same crossing, and resumes the right
-coroutines by `taskKey`. Results arrive in task-completion order, not in
-`add()` order.
+`WaitGroup` wraps each closure in a `Fiber`. When an async feature is called, the
+coroutine suspends and the task goes to Go, into its own goroutine. A single
+process-wide `Scheduler` waits on the extension (`waitAnyBatch`): it blocks for
+the first ready result of any flow, drains the already-ready ones with it in the
+same crossing, and resumes the right coroutines by `taskKey`. Results arrive in
+task-completion order, not in `add()` order.
 
 The number of concurrently live coroutines in a group is unlimited by default.
-If you need backpressure (memory, a DB connection pool), set a limit:
+For backpressure (memory, a DB connection pool) set a limit:
 `WaitGroup::create(maxConcurrency: N)` — excess `add()` calls queue and start as
 slots free up.
 
-A detailed walkthrough — with the "PHP Fiber ↔ Go goroutine" diagrams, the
-layers, and the task lifecycle — is in
-[docs/architecture.md](docs/architecture.md).
+Details — the "PHP Fiber ↔ Go goroutine" diagrams, the layers and the task
+lifecycle — in [docs/architecture.md](docs/architecture.md).
 
 ## Why Go specifically
 
-- A convenient concurrency model: goroutines and channels give cheap
-  parallelism. One task — one goroutine, results collected over a channel. No
-  external event loop, thread pool, or callback hell needed.
-- Easy to add features: to plug in a new I/O operation you just write an ordinary
-  synchronous Go handler, and the runtime runs it concurrently on its own.
-- A mature ecosystem: Go drivers and libraries are reused directly.
+The whole concurrency model reduces to one primitive: a channel. Every task runs
+in its own goroutine, and the results of all goroutines of all flows land in one
+shared buffered channel. PHP runs no event loop and polls nothing — the single
+process-wide `Scheduler` blocks reading a message from that channel
+(`waitAnyBatch`) and wakes on the first ready result, taking the already-ready
+tail with it in the same crossing. Which task finished first is decided by the
+channel; PHP only resumes the matching coroutine by `taskKey`.
 
-### Why this approach helps with new features
+Everything else follows from that:
 
-Adding an I/O feature here is cheaper than in the classic PHP-async stacks
-(Swoole, ReactPHP, AMPHP):
-
-- One API for sync and async, no function coloring. The same call
-  (`$collection->insertOne(...)`, `$client->sendRequest(...)`) works both inside
-  a `WaitGroup` (concurrent) and outside it (an ordinary blocking call).
-  Concurrency is chosen by the caller — by wrapping code in a `WaitGroup` — not by
-  the feature author. There is no separate async variant of every method to
-  maintain.
-- No searching for or waiting on async drivers/extensions. Concurrency lives in
-  Go, so a mature synchronous Go driver is reused as-is (mongo-driver, pgx,
-  go-sql-driver, `net/http`, coder/websocket) and runs in parallel right away.
-- A feature is ordinary synchronous Go code. The handler is written as plain
-  blocking Go — no promises, callbacks, or event-loop reasoning. The runtime runs
-  it on a goroutine and streams the result back. Adding a feature means "write a
-  normal Go function".
-- A minimal, stable C glue interface. The PHP↔Go boundary is a handful of generic
-  cgo functions (`push`, `wait`, `waitAny`/`waitAnyBatch`, `next`, `stopFlow`, plus the
-  `version`/`destroy` lifecycle). Every feature rides that same transport: a
-  feature is not a new C symbol but data — a new `MethodEnum`/`CommandEnum`, a
-  MessagePack payload DTO, and a Go handler. The fragile C ABI stays frozen;
-  adding a feature never touches it, so the export set does not grow and there is
-  no per-operation cgo work. (A new long-lived server adds at most one control
-  function such as `httpStopAccepting` for graceful drain.)
-- One transport and one streaming model for everything. The wire format is
-  uniform (MessagePack DTOs), and the streaming states (`next()`) are reused:
-  MongoDB cursors, HTTP bodies, socket frames, WS messages all travel over the
-  same mechanism with backpressure. A new streaming feature does not reinvent the
-  protocol or the backpressure.
-- A feature gets the whole runtime for free. The handler plugs into the shared
-  `Scheduler` automatically: concurrency, nested coroutines, context
-  cancellation, deadline propagation, and graceful shutdown with unwinding — none
-  of the lifecycle has to be reimplemented inside the feature.
-- Standard PHP contracts, framework-neutral. Client/server features expose PSR
-  interfaces (PSR-7/17 for the HTTP server, PSR-18 for the HTTP client), the
-  factories are injected, and the coroutine context is framework-agnostic, so a
-  feature drops into any application without adapters.
+- A feature is ordinary synchronous Go code. You write a blocking handler; the
+  runtime runs it on a goroutine and puts the result into the channel. No
+  promises, no callbacks, no event-loop reasoning.
+- Mature drivers are reused as-is — mongo-driver, pgx, go-sql-driver, `net/http`,
+  coder/websocket — and run concurrently right away. No waiting for async drivers
+  or extensions.
+- The C glue is frozen: `push`, `wait`, `waitAny`/`waitAnyBatch`, `next`,
+  `stopFlow` plus the `version`/`destroy` lifecycle. A new feature is data (a
+  `MethodEnum` value, a MessagePack payload DTO, a Go handler), not a new C
+  symbol, so the export set never grows. A new long-lived server adds at most one
+  control function, like `httpStopAccepting` for the graceful drain.
+- One transport and one streaming model for everything: MessagePack DTOs plus the
+  streaming states behind `next()` — MongoDB cursors, HTTP bodies, socket frames,
+  WS messages all travel the same mechanism with backpressure.
+- One API for sync and async, no function coloring. The same call works inside a
+  `WaitGroup` (concurrent) and outside it (an ordinary blocking call);
+  concurrency is chosen by the caller, not by the feature author.
+- A feature gets the runtime for free: nested coroutines, context cancellation,
+  deadline propagation, graceful shutdown with unwinding.
+- Client and server features expose PSR interfaces (PSR-7/17, PSR-18) with
+  injected factories, so they drop into any application without adapters.
 
 ## Use and limitations
 
-- CLI only (the `cli` SAPI) — this is about the SAPI, not about "no web". The
-  library targets long-lived CLI processes: workers, daemons, console commands,
-  and the HTTP, WebSocket and socket servers themselves, which are ordinary PHP
-  scripts started from the console that listen on a port on their own (no FPM in
-  the chain; the model of Swoole / ReactPHP). It also drops into any long-lived
-  process you already run — including a RoadRunner worker: load the extension in
-  the worker and use `WaitGroup` in your request-handling code. It cannot be used
-  with PHP-FPM or mod_php: the extension holds the Go runtime and goroutines at
-  the process level, which contradicts the FPM model (a short request-response,
-  shared pool processes).
-- No `pcntl_fork` after the extension is loaded. The Go runtime and its
-  goroutines do not survive `fork`: the child process gets a broken runtime
-  (hangs, crashes). If you need a worker pool — fork before the first call into
-  the extension, or launch separate processes (`exec`) and initialize the
-  extension in the child.
-- NTS (non-thread-safe) only. A ZTS build of PHP is not supported.
-- Linux only. The extension and the library rely on Linux specifics (core-count
-  detection, signals/`posix`, `SO_REUSEPORT`, the master's `flock`, and so on).
-  Other operating systems are not supported.
+- CLI only (the `cli` SAPI) — about the SAPI, not about "no web". The target is
+  long-lived CLI processes: workers, daemons, console commands, and the HTTP,
+  WebSocket and socket servers themselves, which are ordinary PHP scripts that
+  listen on a port on their own (the Swoole / ReactPHP model). It also drops into
+  a long-lived process you already run, including a RoadRunner worker. PHP-FPM
+  and mod_php are impossible: the extension holds the Go runtime at process
+  level, which contradicts the FPM model.
+- No `pcntl_fork` after the extension is loaded. The Go runtime does not survive
+  a `fork` (the child hangs or crashes). Fork before the first call into the
+  extension, or launch separate processes (`exec`).
+- NTS (non-thread-safe) only; a ZTS build is not supported.
+- Linux only — core-count detection, signals/`posix`, `SO_REUSEPORT`, the
+  master's `flock`.
 - `exit()`/`die()` with active tasks is safe but loses their results. The
   shutdown handler unwinds unfinished coroutines (finally blocks run,
-  transactions roll back, cursors and flows are released), after which the
-  process exits normally. The results of unfinished tasks are lost in the
-  process, so it is better to run them to completion or stop them explicitly
+  transactions roll back, cursors and flows are released), then the process exits
+  normally. Better to run tasks to completion or stop them explicitly
   (`WaitGroup::stop()`).
-- Concurrent mode is optional. Any feature that goes into the Go side
-  (`Sleeper`, `MongoDB`, and so on) can also be called outside a `WaitGroup` — as
-  an ordinary synchronous call. Outside a Fiber, `FeatureExecutor` detects the
-  non-async context and simply waits for the result (`Extension::wait`),
-  returning it immediately. Handy when you do not need concurrency but want to
-  keep a single API.
+- Concurrent mode is optional. Any feature can be called outside a `WaitGroup` as
+  an ordinary synchronous call: outside a Fiber `FeatureExecutor` detects the
+  non-async context and simply waits for the result (`Extension::wait`).
 
 ```php
 // synchronous, without WaitGroup — returns the result immediately
@@ -217,8 +182,7 @@ $collection->insertOne(['name' => 'example']);
 
 ## Tested versions
 
-The exact environment versions (Docker images and dependencies) the project is
-built and tested against in CI:
+The environment the project is built and tested against in CI:
 
 | Component | Version |
 | --- | --- |
@@ -236,66 +200,41 @@ built and tested against in CI:
 
 ## Documentation
 
-- [Console commands](docs/cli.md) — `bin/sconcur-load` (download the prebuilt
-  extension of the required version), `bin/sconcur-status` (check the install and
-  version, with `--json`), `bin/sconcur-server` (worker master, brief with a
-  link).
-- [Architecture](docs/architecture.md) — internals: the Fiber ↔ goroutine link,
-  the scheduler, the layers, the task lifecycle.
-- [Coroutine switching](docs/coroutine-switching.md) — `Scheduler::switch()` for
-  CPU-bound loops and the servers' automatic preemption: mechanics, quantum,
-  guards, limits.
-- [MongoDB](docs/mongodb.md) — collection operations (CRUD, aggregation, indexes,
-  bulkWrite), streaming cursors, results, BSON types, concurrency, timeouts, and
-  internals.
-- [HTTP server](docs/http-server.md) — a long-lived daemon, a request in a
-  coroutine: quick start, params, streaming, graceful shutdown, internals, and
-  how it differs from typical servers.
-- [Socket server (TCP)](docs/socket-server.md) — a long-lived TCP server with
-  length-prefix framing, a "message → response" model: quick start, the handler,
-  params, concurrency, graceful shutdown / `SO_REUSEPORT`, limitations.
-- [Worker master](docs/worker-master.md) — a supervisor for a pool of worker
-  processes (CLI `bin/sconcur-server` `start`/`status`/`reload`/`stop`): scaling
-  across cores via `SO_REUSEPORT`, restarting crashed workers and ones that
-  exhausted `maxRequests`, graceful shutdown, the log and the state file, a single
-  instance, self-termination of orphaned workers.
-- [Server statistics](docs/admin-stats.md) — workers push snapshots to the master
-  over a unix socket, and the master serves the pool aggregate on its own port
-  across the `SO_REUSEPORT` pool (HTTP or socket): the `GET /api/stats` endpoint
-  (metrics/JSON/HTML), a live panel, SSE, a Bearer token.
-- [HTTP client](docs/http-client.md) — an async PSR-18 client with response
-  streaming: quick start, fan-out concurrency, params/timeouts, PSR-18 error
-  handling, internals.
-- [Socket client (TCP)](docs/socket-client.md) — an async TCP client with
-  length-prefix framing (a mirror of the socket server): `connect()` →
-  `Connection` (read/write/close), fan-out concurrency, params/timeouts, error
-  handling, internals.
-- [WebSocket server](docs/websocket-server.md) — a long-lived WS server (a hybrid
-  of an HTTP-Upgrade listener and the socket server's push model): text/binary
-  messages, `Connection` read/write/close, keepalive ping, params, graceful
-  shutdown / `SO_REUSEPORT`, limitations.
-- [WebSocket client](docs/websocket-client.md) — an async WS client (a mirror of
-  the WS server): `connect()` → `Connection` (read/write/close, text/binary),
-  fan-out concurrency, params/timeouts, error handling, internals.
-- [MySQL (the universal SQL feature)](docs/mysql.md) — queries with bindings,
-  SELECT streaming, transactions; the connection pool and internals.
-- [PostgreSQL](docs/pgsql.md) — the second driver of the same SQL feature; PG
-  specifics (`$1` placeholders, `RETURNING`, `BOOLEAN`).
-- [How to add a new top-level feature](docs/adding-a-feature.md) — step by step
-  (with and without streaming), with the mandatory requirements: context
-  cancellation and passing the execution deadline.
-- [How to add a new server](docs/adding-a-server.md) — a long-lived network
-  server (like `HttpServer`): the Serve/Respond pattern, the serve loop, graceful
-  shutdown and `SO_REUSEPORT`, integration with the worker master.
-- [Load testing](docs/load-testing.md) — server behavior under load with all I/O
-  features at once (the `/all` route + `bench-http-load-stats`): memory/CPU
-  results and conclusions.
+- [Console commands](docs/cli.md) — `sconcur-load`, `sconcur-status`,
+  `sconcur-server`.
+- [Architecture](docs/architecture.md) — Fiber ↔ goroutine, the scheduler, the
+  layers, the task lifecycle.
+- [Coroutine switching](docs/coroutine-switching.md) — `Scheduler::switch()` and
+  the servers' automatic preemption for CPU-bound code.
+- [Coroutine context](docs/coroutine-context.md) — per-coroutine key-value store.
+- [MongoDB](docs/mongodb.md) — collection operations, cursors, BSON types.
+- [MySQL](docs/mysql.md) — the universal SQL feature: bindings, streaming,
+  transactions, the pool.
+- [PostgreSQL](docs/pgsql.md) — the same feature's second driver; PG specifics.
+- [HTTP server](docs/http-server.md) — PSR-7 daemon, a request per coroutine.
+- [Socket server (TCP)](docs/socket-server.md) — length-prefix framing, push
+  model.
+- [WebSocket server](docs/websocket-server.md) — HTTP-Upgrade listener + push
+  model.
+- [HTTP client](docs/http-client.md) — async PSR-18 client with response
+  streaming.
+- [Socket client (TCP)](docs/socket-client.md) — the socket server's dial-side
+  mirror.
+- [WebSocket client](docs/websocket-client.md) — the WS server's dial-side
+  mirror.
+- [Worker master](docs/worker-master.md) — a supervisor for a pool of workers
+  (`bin/sconcur-server`).
+- [Server statistics](docs/admin-stats.md) — `GET /api/stats`, live panel, SSE,
+  Prometheus.
+- [How to add a new feature](docs/adding-a-feature.md) — step by step, with and
+  without streaming.
+- [How to add a new server](docs/adding-a-server.md) — the Serve/Respond pattern
+  and the serve loop.
 - [Feature benchmarks](docs/benchmarks.md) — per-feature measurements
-  (native/sync/async): the cost of the PHP↔Go boundary and the concurrent
-  fan-out win on disk-backed DBs, with metric tables.
-- [Positioning](docs/positioning.md) — SConcur vs php-fpm and RoadRunner: the
-  execution models, resources needed to hold the same load, honest limits and
-  when to choose what.
+  (native/sync/async).
+- [Load testing](docs/load-testing.md) — server behaviour under load with all I/O
+  features at once.
+- [Positioning](docs/positioning.md) — SConcur vs php-fpm, RoadRunner and Swoole.
 
 ## Build
 ```shell
@@ -310,20 +249,14 @@ php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello'
 ```
 ## Roadmap
 
-A short list of development directions.
-
 - The `Std` feature — SConcur equivalents of standard PHP functions that block
-  the worker or are CPU-bound non-preemptible monoliths (sleep, json, hash,
-  gzip, password hashing, file I/O), executed in Go; absorbs `Sleeper`.
+  the worker or are CPU-bound non-preemptible monoliths (sleep, json, hash, gzip,
+  password hashing, file I/O), executed in Go; absorbs `Sleeper`.
 - Auto-recovery of stuck workers — a master watchdog by heartbeat: `SIGKILL` and
-  respawn a worker whose PHP thread has hung (a native block/CPU loop).
-- Split the core and the features into separate packages — the core on its own,
-  features as plugins on top.
-- Stopping a single coroutine from anywhere (not just the whole flow).
-- Optimize synchronous-mode execution — a call made outside a coroutine goes to
-  Go directly, bypassing the scheduler and the Fiber machinery, to cut the
-  overhead of the sync path.
-- Explore a cross-process concurrency mode — have the extension hold and spread
-  the concurrency across several processes instead of only within a single one, so
-  a fan-out can use multiple processes (and CPU cores) rather than the goroutines
-  of one process.
+  respawn a worker whose PHP thread has hung.
+- Split the core and the features into separate packages.
+- Stopping a single coroutine from anywhere, not just the whole flow.
+- Optimize the synchronous path — a call outside a coroutine goes to Go directly,
+  bypassing the scheduler and the Fiber machinery.
+- Explore a cross-process concurrency mode, so a fan-out can use several
+  processes (and cores) instead of the goroutines of one process.

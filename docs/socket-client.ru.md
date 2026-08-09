@@ -2,36 +2,17 @@
 
 # Сокет-клиент (TCP)
 
-Асинхронный TCP-клиент с фреймингом length-prefix — зеркальная пара к
-[сокет-серверу](socket-server.ru.md), как [HTTP-клиент](http-client.ru.md) — пара к
-HTTP-серверу. Весь сетевой I/O (DNS, dial, чтение, запись) живёт в Go-расширении:
-`connect()` уходит в горутину, корутина (Fiber) приостанавливается, поэтому
-десятки соединений набираются «веером». Вне `WaitGroup` тот же API работает
-синхронно (см. [README → Применение](../README.ru.md)).
+Асинхронный TCP-клиент с фреймингом length-prefix — зеркало
+[сокет-сервера](socket-server.ru.md) со стороны dial, как
+[HTTP-клиент](http-client.ru.md) — пара к HTTP-серверу. Весь сетевой I/O (DNS,
+dial, чтение, запись) живёт в Go-расширении: `connect()` уходит в горутину,
+корутина приостанавливается, поэтому десятки соединений поднимаются веером. Вне
+`WaitGroup` тот же API работает синхронно.
 
-Модель — долгоживущее двунаправленное соединение (а не «запрос-ответ»):
-приложение набирает соединение, получает объект `Connection` и само ведёт диалог —
-`read()` тянет входящие фреймы, `write()` пушит исходящие, `close()` закрывает.
-
-## Содержание
-
-- [Фрейминг](#фрейминг)
-- [Быстрый старт](#быстрый-старт)
-- [Connection: read / write / close](#connection-read--write--close)
-- [Конкурентность («веер»)](#конкурентность-веер)
-- [Параметры и таймауты](#параметры-и-таймауты)
-- [Обработка ошибок](#обработка-ошибок)
-- [Внутреннее устройство](#внутреннее-устройство)
-- [Чего нет в v1](#чего-нет-в-v1)
-- [Тестирование](#тестирование)
-
-## Фрейминг
-
-Поток байтов соединения нарезается на фреймы по схеме **length-prefix**: `uint32`
-big-endian длина payload, затем сам payload. Тот же формат в обе стороны, бинарно
-безопасно, с естественным лимитом `maxMessageBytes`. Это ровно тот же кодек, что у
-сокет-сервера (общий код на Go — пакет `ext/internal/socket`), поэтому SConcur-клиент
-и SConcur-сервер совместимы «из коробки».
+Модель — долгоживущее двунаправленное соединение, а не «запрос-ответ»: приложение
+дозванивается, получает `Connection` и само ведёт диалог. Кодек фрейминга общий с
+сокет-сервером (`ext/internal/socket`), поэтому клиент и сервер SConcur совместимы
+из коробки.
 
 ## Быстрый старт
 
@@ -48,10 +29,9 @@ $reply = $connection->read();          // ?string
 $connection->close();
 ```
 
-`connect()` возвращает открытое `Connection`. Лучше вести весь диалог внутри той
-же корутины, что и `connect()`: при завершении корутины её флоу останавливается и
-недочитанное соединение на Go-стороне закрывается (та же оговорка, что у
-`HttpClient`/`SocketServer`).
+Весь диалог лучше вести внутри той же корутины, что и `connect()`: когда корутина
+завершается, её флоу останавливается и незавершённое соединение на Go-стороне
+закрывается (та же оговорка, что у `HttpClient`/`SocketServer`).
 
 ## Connection: read / write / close
 
@@ -60,17 +40,17 @@ $connection->close();
 
 | Член | Описание |
 | --- | --- |
-| `read(): ?string` | следующий входящий фрейм; `null` — пир закрыл свою сторону (EOF), соединение завершено или входной лимит превышен. Кооперативно приостанавливает корутину до прихода фрейма |
-| `write(string $data): void` | запушить фрейм пиру (с backpressure: ждёт флаша). Бросает `SocketClientConnectionClosedException`, если соединение разорвано |
+| `read(): ?string` | следующий входящий кадр; `null` — пир закрыл свою сторону (EOF), соединение завершилось или превышен лимит входа. Кооперативно приостанавливает корутину |
+| `write(string $data): void` | запушить кадр пиру (с backpressure: ждёт сброса). Бросает `SocketClientConnectionClosedException`, если соединение порвано |
 | `close(): void` | закрыть соединение (идемпотентно, best-effort) |
 | `isClosed(): bool` | закрыто ли соединение |
-| `id`, `remoteAddr`, `localAddr` | идентификатор и адреса соединения |
+| `id`, `remoteAddr`, `localAddr` | идентификатор и адреса |
 
-Внутри диалога можно делать асинхронные вызовы (Sleeper, Mongodb, SQL, HTTP-клиент)
-между чтениями/записями — корутина кооперативно приостанавливается, другие соединения
+Между чтениями и записями можно делать асинхронные вызовы (Sleeper, Mongodb, SQL,
+HTTP-клиент) — корутина приостанавливается кооперативно, другие соединения
 продолжают работать.
 
-## Конкурентность («веер»)
+## Конкурентность веером
 
 ```php
 use SConcur\WaitGroup;
@@ -92,29 +72,23 @@ foreach ($addresses as $address) {
 }
 
 /** @var array<int|string, ?string> $replies */
-$replies = $waitGroup->waitResults(); // общее время ≈ самого медленного соединения
+$replies = $waitGroup->waitResults(); // суммарное время ≈ самому медленному соединению
 ```
-
-Каждое соединение живёт в своей корутине: `connect/read/write` кооперативно
-приостанавливают её, остальные соединения продолжают обслуживаться.
 
 ## Параметры и таймауты
 
-`SConcur\Features\SocketClient\SocketClientOptions` (`readonly`), все таймауты в мс.
-Дефолты PHP зеркалят Go. У долгоживущего соединения нет единого «времени операции» —
-его роль играют таймауты dial/read/write (как у `SocketServer`, у которого тоже нет
-per-message-таймаута).
+`SConcur\Features\SocketClient\SocketClientOptions` (`readonly`), все таймауты в
+мс; дефолты PHP зеркалят Go. У долгоживущего соединения нет единого «времени
+операции» — эту роль играют таймауты dial/read/write.
 
 | Параметр | Дефолт | Назначение |
 | --- | --- | --- |
-| `connectTimeoutMs` | `10000` | предел установки TCP-соединения (dial). |
-| `readTimeoutMs` | `0` (выкл) | idle-таймаут ожидания входящего фрейма в `read()`. |
-| `writeTimeoutMs` | `30000` | максимум на запись одного фрейма. |
-| `maxMessageBytes` | `1048576` (1 MiB) | лимит длины одного входящего фрейма; превышение завершает ввод (`read()` → `null`). |
+| `connectTimeoutMs` | `10000` | предел установления TCP-соединения (dial) |
+| `readTimeoutMs` | `0` (выкл.) | idle-таймаут ожидания входящего кадра в `read()` |
+| `writeTimeoutMs` | `30000` | максимальное время записи одного кадра |
+| `maxMessageBytes` | `1048576` (1 MiB) | лимит длины входящего кадра; превышение завершает вход (`read()` → `null`) |
 
 ```php
-use SConcur\Features\SocketClient\SocketClientOptions;
-
 $client = new SocketClient(new SocketClientOptions(
     connectTimeoutMs: 5_000,
     readTimeoutMs:    30_000,
@@ -127,89 +101,48 @@ $client = new SocketClient(new SocketClientOptions(
 
 | Случай | Исключение |
 | --- | --- |
-| Не удалось набрать соединение (refused / DNS-fail / connect-timeout) | `SConcur\Exceptions\SocketClient\SocketClientConnectException` (бросает `connect()`) |
-| `write()` в разорванное соединение | `SConcur\Exceptions\SocketClient\SocketClientConnectionClosedException` |
+| Не удалось дозвониться (refused / DNS-fail / connect-timeout) | `SConcur\Exceptions\SocketClient\SocketClientConnectException`, бросает `connect()` |
+| `write()` в порванное соединение | `SConcur\Exceptions\SocketClient\SocketClientConnectionClosedException` |
 | Пир закрыл соединение / EOF / idle-таймаут / превышен `maxMessageBytes` | не исключение — `read()` возвращает `null` |
 
 Go-сторона помечает сетевые сбои маркером `net:`, и он сохраняется в сообщении
-исключения (удобно для логирования/ретраев).
-
-```php
-use SConcur\Exceptions\SocketClient\SocketClientConnectException;
-
-try {
-    $connection = $client->connect('127.0.0.1:9100');
-} catch (SocketClientConnectException $exception) {
-    // ретрай / логирование; $exception->getMessage() содержит маркер "net:"
-}
-```
+исключения (удобно для логов и ретраев).
 
 ## Внутреннее устройство
 
-PHP (`src/Features/SocketClient/`):
+PHP (`src/Features/SocketClient/`): `SocketClient::connect()` собирает
+`ConnectPayload`, дозванивается через `FeatureExecutor::exec()`, декодирует
+`ConnectionMeta` (`cid`/`ra`/`la`) и строит `Dto\Connection`, у которого ключ
+входящего потока — ключ результата connect. `Dto\Connection` — тонкий наследник
+`Features\Socket\Dto\AbstractConnection` (общего с сокет-сервером), подставляющий
+`SendPayload`/`ClosePayload` и парное исключение; `SocketClientCommandEnum` и
+`Payloads/` — конверт `Connect`/`Send`/`Close`, зеркало Go-структур.
 
-- `SocketClient` — публичный API: `connect()` собирает `ConnectPayload`, через
-  `FeatureExecutor::exec()` набирает соединение, декодирует `ConnectionMeta`
-  (`cid`/`ra`/`la`) и строит `Dto\Connection` с ключом входящего стрима = ключу
-  результата connect.
-- `SocketClientOptions` — `readonly` DTO опций.
-- `SocketClientCommandEnum` — под-операции конверта: `Connect`/`Send`/`Close`.
-- `Dto\Connection` — тонкий наследник `Features\Socket\Dto\AbstractConnection`
-  (общего с сокет-сервером): подставляет `SendPayload`/`ClosePayload` и парное
-  исключение.
-- `Payloads/` — конверт `Base\BaseSocketClientPayload` (`cm`/`p`) + `Connect`/`Send`/
-  `Close` payload'ы, зеркала Go-структур.
+Go (`ext/internal/features/socketclient/`): `connect.go` дозванивается с
+`connectTimeout` (отменяем контекстом флоу) и регистрирует стриминговый
+`connectionState` — первый `Next` даёт метаданные, дальше идут входящие кадры —
+плюс цикл записи, очищаемый при остановке флоу; `feature.go` диспетчеризует
+команды, маршрутизируя `Send`/`Close` по `cid` в этот цикл. Кодек кадров,
+`MessageState` и цикл записи с backpressure живут в нейтральном
+`ext/internal/socket/`, общем с сокет-сервером.
 
-Go (`ext/internal/features/socketclient/`):
-
-- `payloads/payloads.go` — `Envelope`, `ConnectParams`, `SendParams`, `CloseParams`,
-  `ConnectionMeta` (1:1 с PHP).
-- `feature.go` — `SocketClientFeature` (singleton): диспетчер команд; `handleSend`/`handleClose`
-  через `dispatch` маршрутизируют `Send`/`Close` по `cid` в write-loop соединения.
-- `connect.go` — `handleConnect`: dial с `connectTimeout` (отменяемый контекстом
-  флоу), регистрация стримингового `connectionState` (первый `Next` — метаданные, далее
-  — входящие фреймы) и write-loop; очистка на остановке флоу.
-
-Общий код (`ext/internal/socket/`, нейтральный, не привязан к серверу/клиенту):
-кодек фреймов (`frame.go`), стрим входящих фреймов (`MessageState`) и цикл записи с
-backpressure (`PendingConnection`/`ConsumeCommands`/`Dispatch`). Им пользуются и
-сокет-сервер, и сокет-клиент — но не друг другом.
-
-Чтение входящих фреймов — это `next()` по стриминговому состоянию connect (как тело
-ответа у `HttpClient`); запись/закрытие — `exec(Send/Close)` с маршрутизацией по `cid`
-в write-loop (как `Respond` у сокет-сервера).
+То есть чтение входящих кадров — это `next()` по стриминговому состоянию connect
+(как тело ответа у `HttpClient`), а запись и закрытие — `exec(Send/Close)` с
+маршрутизацией по `cid` (как `Respond` у сервера).
 
 ## Чего нет в v1
 
-| Что | Комментарий |
-| --- | --- |
-| TLS | позже опцией (как у `HttpClient`). |
-| Unix-сокеты | только TCP (как у `SocketServer`). |
-| Пул / keep-alive соединений | каждый `connect()` — новое соединение. |
-| Авто-reconnect | на стороне приложения. |
-
-Общие ограничения библиотеки (только CLI, только Linux, только NTS, нельзя
-`pcntl_fork` после загрузки расширения) — см. [README](../README.ru.md).
+TLS (позже, опцией), unix-сокеты (только TCP), пул соединений и keep-alive (каждый
+`connect()` — новое соединение) и авто-переподключение (на стороне приложения).
+Общие ограничения библиотеки — см. [README](../README.ru.md).
 
 ## Тестирование
 
-- PHP feature-тесты — `tests/feature/Features/SocketClient/`: краевые/ошибочные случаи
-  (`SocketClientTest`) и контракт конкурентности на `BaseAsyncTestCase`
-  (`SocketClientConcurrencyTest`). Цель — реальный SConcur `SocketServer`
-  (`tests/servers/socket/socket-server.php`), поднимаемый через
-  `SConcur\Tests\Impl\SocketServer\TestSocketServer`.
-- Go-тесты — `ext/internal/socket/` (кодек, `MessageState`, write-loop) и
-  `ext/internal/features/socketclient/connect_test.go` (`connectionState`:
-  метаданные → входящие фреймы → чистый конец).
+PHP feature-тесты лежат в `tests/feature/Features/SocketClient/` — edge- и
+error-случаи плюс контракт конкурентности на `BaseAsyncTestCase`, против реального
+`SocketServer` SConcur, поднятого через `TestSocketServer`. Go-тесты покрывают
+общий пакет `ext/internal/socket/` и `connect_test.go`. Бенчмарк
+(`make bench-socket-client c=20`) гоняет N round-trip'ов к ручке `msleep`
+демо-сервера: async-веер против последовательных native (сырые сокеты PHP) и sync.
 
-- Бенчмарк — `tests/benchmarks/socket-client.php` (`make bench-socket-client`):
-  N round-trip'ов к I/O-эндпоинту (`msleep:<ms>`) демо-сервера; async-прогон через
-  `WaitGroup` показывает «веер» (общее время ≈ одного round-trip), против
-  последовательных native (сырые PHP-сокеты) и sync.
-
-Запуск: `make test c="--filter=SocketClient"`, `make ext-test`,
-`make bench-socket-client c=20`.
-
-```
-make ext-build && make ext-test && make php-stan && make cs-fixer-check && make test
-```
+Запуск: `make test c="--filter=SocketClient"`, `make ext-test`.

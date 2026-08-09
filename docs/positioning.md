@@ -1,16 +1,13 @@
 English | [Русский](positioning.ru.md)
 
-# Positioning: SConcur vs php-fpm and RoadRunner
+# Positioning: SConcur vs php-fpm, RoadRunner and Swoole
 
-What SConcur changes in the PHP execution model, what that costs in resources under
-high load, and where it pays off. The numbers come from
-[feature benchmarks](benchmarks.md) and [load testing](load-testing.md) — the same
-hardware, the same handles, RoadRunner measured side by side under an identical harness.
+What SConcur changes in the PHP execution model, what that costs in resources, and
+where it pays off. The numbers come from [benchmarks](benchmarks.md) and
+[load testing](load-testing.md) — the same hardware, the same handles, the
+reference stacks measured side by side under an identical harness.
 
 ## Is SConcur for you?
-
-Match your workload against the measured effects; every number links to the section
-that measured it.
 
 | Your workload | Measured effect | Verdict |
 | --- | --- | :---: |
@@ -21,24 +18,24 @@ that measured it.
 | Megabyte payloads per operation | ~1.5–2.3 ms per MB each way, and a wide fan of large results holds them all in RAM — [payload size](benchmarks.md#payload-size) | ❌ |
 | CPU-bound handlers | no gain: PHP stays single-threaded, a busy handler blocks the process — [servers](benchmarks.md#servers-http--socket--websocket); the latency (not the throughput) is smoothed by [coroutine switching](coroutine-switching.md) | ❌ |
 
-The point-query ❌ is about the call price inside one process — a library call compared
-to the native driver. As a server SConcur wins even with many small operations: every
-handler runs in its own coroutine, so sequential feature calls overlap across requests
-with no `WaitGroup` — the sequential `/all-nowg` handle holds ≈2 570 rps against
-RoadRunner's ≈460 on the same operations
-([load testing](load-testing.md#fan-out-vs-sequential-calls-all-vs-all-nowg)). Only on
-microsecond cache hits does the edge reduce to the server layer itself (~1.4× on the
-empty handle) — it never turns into a loss.
-
 Three rules behind the table:
 
-- The fan-out (`async`) wins wherever an operation has a real price — an fsync per
-  write, server-side work over the dataset, a network wait. The higher that price, the
+- The fan-out wins wherever an operation has a real price — an fsync per write,
+  server-side work over the dataset, a network wait. The higher the price, the
   bigger the win.
-- Cheap point operations stay with the native driver: the PHP↔Go boundary costs more
-  than the operation itself, and there is nothing to overlap.
-- A single call through SConcur is always more expensive than the native one (the
-  boundary conversion) — the gain comes from concurrency only.
+- Cheap point operations stay with the native driver: the boundary costs more than
+  the operation, and there is nothing to overlap.
+- A single call through SConcur is always more expensive than the native one; the
+  gain comes from concurrency only.
+
+The point-query ❌ is about the call price inside one process. As a server SConcur
+wins even with many small operations: every handler runs in its own coroutine, so
+sequential feature calls overlap across requests with no `WaitGroup` — the
+sequential `/all-nowg` handle holds ≈2 570 rps against RoadRunner's ≈460 on the
+same operations
+([load testing](load-testing.md#fan-out-vs-sequential-calls-all-vs-all-nowg)). Only
+on microsecond cache hits does the edge shrink to the server layer itself (~1.4× on
+the empty handle) — it never turns into a loss.
 
 ## Execution models
 
@@ -51,17 +48,17 @@ Three rules behind the table:
 | A CPU-bound request | blocks 1 worker of N | blocks 1 worker of N | slows the whole process; the neighbours' delay is bounded by [preemption](coroutine-switching.md) |
 | Memory under concurrency | RSS × workers, grows with in-flight | RSS × workers, grows with in-flight | ~50 MiB × per-core processes, flat |
 
-php-fpm and RoadRunner share the trait that matters under load: a request occupies a
-worker for its full duration, I/O waits included. RoadRunner removes the per-request
-bootstrap and keeps connections alive, which buys 2–10× on light endpoints — but the
-worker-per-request model stays. SConcur keeps the same long-lived-worker gains (the
-app bootstraps once per worker, connections live in the Go-side pools) and breaks the
-remaining trait: a request parked on I/O costs a suspended fiber, not a worker.
+php-fpm and RoadRunner share the trait that matters under load: a request occupies
+a worker for its full duration, I/O waits included. RoadRunner removes the
+per-request bootstrap and keeps connections alive, which buys 2–10× on light
+endpoints — but the worker-per-request model stays. SConcur keeps the
+long-lived-worker gains and breaks that trait: a request parked on I/O costs a
+suspended fiber, not a worker.
 
 ## Throughput on the same hardware
 
 12 workers each, `wrk` 4 threads / 256 connections / 20 s, disk-backed backends
-(details and the honesty checks in [benchmarks](benchmarks.md#comparison-with-roadrunner-and-swoole)):
+(details in [benchmarks](benchmarks.md#comparison-with-roadrunner-and-swoole)):
 
 | Handle | Server | Requests/sec | p50 | CPU avg | MEM peak |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -71,90 +68,76 @@ remaining trait: a request parked on I/O costs a suspended fiber, not a worker.
 | `/all` | RoadRunner (native drivers) | ≈448 | 573 ms | ~158% | ~232 MiB |
 
 On the empty handle the gap is ~1.4×: RoadRunner pays an IPC hop proxy → worker per
-request, SConcur pays the PHP↔Go boundary — comparable prices. On `/all` the gap is ~6×
-and structural: the sequential worker folds 3 disk commits into a chain and idles at
-~158% CPU while all 12 workers sit in that chain; the fan-out overlaps the same commits
-within and across requests. That the gap comes from the execution model and not from the
-driver stack is shown by the third server in the same session: Swoole, on the same
-native drivers but with coroutine workers, lands at the same ≈2 670 rps as SConcur — the
-[three-way table](benchmarks.md#comparison-with-roadrunner-and-swoole) also holds the
-prices each model pays for it.
+request, SConcur pays the PHP↔Go boundary — comparable prices. On `/all` the gap is
+~6× and structural: the sequential worker folds 3 disk commits into a chain and
+idles at ~158% CPU while all 12 workers sit in that chain; the fan-out overlaps the
+same commits within and across requests. That the gap comes from the execution
+model and not from the driver stack is shown by the third server in the same
+session: Swoole, on native drivers but with coroutine workers, lands at the same
+≈2 670 rps as SConcur.
 
 ## Resources to hold the same load
 
 The number of requests in flight is throughput × latency (Little's law). The worker
-model needs a worker per in-flight request; SConcur needs a fiber. That is where the
-resource difference lives — not in CPU.
-
-CPU per request is comparable: on `/all` SConcur spends ~2.8 cores per 1 000 rps against
-RoadRunner's ~3.5; on the empty handle 0.19 against 0.23. SConcur does not save CPU —
-the DB work is the same — it saves everything tied to a parked worker.
+model needs a worker per in-flight request; SConcur needs a fiber. That is where
+the resource difference lives — not in CPU, which is comparable per request: on
+`/all` SConcur spends ~2.8 cores per 1 000 rps against RoadRunner's ~3.5, on the
+empty handle 0.19 against 0.23.
 
 To hold the measured ≈2 680 rps of the `/all` workload:
 
-- SConcur (measured): 12 per-core processes, ~620 MiB of worker RSS total (~52 MiB
-  each), flat regardless of concurrency.
-- RoadRunner (linear extrapolation from 460 rps at 12 workers): ~70 workers. The bare
-  PSR-7 worker of the reference stack is ~20 MiB → ~1.4 GiB, about 5× more memory. Also
-  70 workers × 3 backends = 210 DB connections — PostgreSQL's default
-  `max_connections = 100` is already broken (SConcur pools per process on the Go side;
-  the run fit in a cap of 5 per process).
-- php-fpm (model, no fpm reference in this repo): the same ~70 workers, but a worker
-  with a booted framework is 60–120 MiB → 4–8 GiB, i.e. 15–30×, plus the per-request
-  bootstrap CPU (at 10 ms of bootstrap, 2 680 rps costs ~27 cores of pure framework
-  boot). In practice fpm does not reach this throughput on this hardware at all.
+- SConcur (measured): 12 per-core processes, ~620 MiB of worker RSS total
+  (~52 MiB each), flat regardless of concurrency.
+- RoadRunner (linear extrapolation from 460 rps at 12 workers): ~70 workers. A bare
+  PSR-7 worker is ~20 MiB → ~1.4 GiB, about 5× more memory. Also 70 workers × 3
+  backends = 210 DB connections, so PostgreSQL's default `max_connections = 100`
+  is already broken (SConcur pools per process on the Go side and fit in a cap of 5
+  per process).
+- php-fpm (model, no fpm reference in this repo): the same ~70 workers, but a
+  worker with a booted framework is 60–120 MiB → 4–8 GiB, i.e. 15–30×, plus the
+  per-request bootstrap CPU (at 10 ms of bootstrap, 2 680 rps costs ~27 cores of
+  pure framework boot). In practice fpm does not reach this throughput on this
+  hardware at all.
 
 The longer the I/O waits (external APIs at 200–500 ms, slow queries), the worse the
 worker model's arithmetic: workers scale with latency, a suspended fiber costs near
-zero. With short waits the difference shrinks accordingly.
-
-## What the measurements support
-
-- I/O fan-out: 50 waits of 100 ms overlap into ~120 ms (~44×); disk-backed SQL writes
-  win 5–18× ([benchmarks](benchmarks.md)).
-- Memory stability: a 10-minute soak (1.74M requests) holds worker RSS flat, slope
-  +0.11 MiB/min = noise ([load testing](load-testing.md)).
-- Async MongoDB with the official Go driver — Swoole has no coroutine MongoDB path
-  (`ext-mongodb`/libmongoc bypasses its runtime hooks), which is why its own fan-out
-  over the same three features gains only
-  [+13%](benchmarks.md#comparison-with-roadrunner-and-swoole) while the MongoDB call
-  blocks the worker; RoadRunner has no in-request concurrency at all.
+zero.
 
 ## Honest limits
 
-- CPU-bound PHP loads the whole process with all its in-flight requests — worse than
-  the per-worker isolation of fpm/RoadRunner. Mitigations:
-  [automatic preemption](coroutine-switching.md) (on by default in the servers) bounds
-  the neighbours' latency for userland CPU code, the per-core pool spreads requests,
-  the Go-side `handlerTimeoutMs` still answers 504, `maxRequests` recycles workers; a
-  watchdog for hung workers is on the roadmap. A native blocking call or a single
-  monolithic internal call still freezes the process — preemption cannot interrupt
-  those.
+- CPU-bound PHP loads the whole process with all its in-flight requests — worse
+  than the per-worker isolation of fpm/RoadRunner. Mitigations:
+  [automatic preemption](coroutine-switching.md) bounds the neighbours' latency for
+  userland CPU code, the per-core pool spreads requests, `handlerTimeoutMs` still
+  answers 504, `maxRequests` recycles workers; a watchdog for hung workers is on
+  the roadmap. A native blocking call or a single monolithic internal call still
+  freezes the process — preemption cannot interrupt those.
 - The boundary tax (~50 µs per call) makes cheap point reads slower than the native
-  driver at any dataset size; moving large payloads costs ~1.5–2.3 ms per MB each way,
-  and a fan of large results holds them all in flight at once (RSS ≈ fan width ×
-  payload) — cap the fan width on big data
-  ([payload-size benchmarks](benchmarks.md#payload-size)).
+  driver at any dataset size; moving large payloads costs ~1.5–2.3 ms per MB each
+  way, and a fan of large results holds them all in flight at once (RSS ≈ fan width
+  × payload) — cap the fan width on big data
+  ([payload size](benchmarks.md#payload-size)).
 - The gains apply only to code that goes through the SConcur API. PDO-based ORMs
-  (Eloquent, Doctrine) gain nothing until their queries are ported — which shapes where
-  adoption is realistic: new services and hand-written query code, not drop-in
-  framework migrations.
+  (Eloquent, Doctrine) gain nothing until their queries are ported — which shapes
+  where adoption is realistic: new services and hand-written query code, not
+  drop-in framework migrations.
 
 ## When to choose what
 
 - php-fpm — classic request/response sites with cheap short requests, the simplest
   operations story, shared hosting.
-- RoadRunner — an existing framework app that wants to drop the per-request bootstrap
-  without touching how it talks to databases.
+- RoadRunner — an existing framework app that wants to drop the per-request
+  bootstrap without touching how it talks to databases.
+- Swoole — the same concurrency effect on native drivers and cheaper per request,
+  as long as the drivers you need are covered by its runtime hooks (`ext-mongodb`
+  is not).
 - SConcur — I/O-intensive services where the request fans out or waits a lot:
   aggregators and BFF gateways, MongoDB-heavy backends, queue consumers and ETL,
-  handlers making many external calls. Code is written against the SConcur API, so it
-  fits new services best.
+  handlers making many external calls. Code is written against the SConcur API, so
+  it fits new services best.
 
-## Outlook
-
-The technology side is proven by the measurements above; how far the project goes is
-decided by ecosystem bridges rather than by the extension. The directions that matter:
-framework integration packages (Laravel/Symfony), splitting the core and features into
-separate packages, optimizing the synchronous path, and the hung-worker watchdog — see
-the roadmap in the [README](../README.md).
+The technology side is proven by the measurements above; how far the project goes
+is decided by ecosystem bridges rather than by the extension — framework
+integration packages, splitting the core and features into separate packages,
+optimizing the synchronous path, and the hung-worker watchdog (see the
+[roadmap](../README.md#roadmap)).

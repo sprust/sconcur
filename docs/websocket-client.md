@@ -2,27 +2,15 @@ English | [Русский](websocket-client.ru.md)
 
 # WebSocket client
 
-An asynchronous WebSocket client — the mirror pair of the [WebSocket server](websocket-server.md),
-just as the [socket client](socket-client.md) is the pair of the socket server. All network I/O (dial,
-upgrade handshake, read, write) lives in the Go extension: `connect()` goes into a
-goroutine, the coroutine (Fiber) suspends, so dozens of connections are dialed
-"fanned out". Outside a `WaitGroup` the same API works synchronously (see
-[README → Usage](../README.md)).
+An asynchronous WebSocket client — the dial-side mirror of the
+[WebSocket server](websocket-server.md), just as the
+[socket client](socket-client.md) is the pair of the socket server. All network I/O
+(dial, upgrade handshake, read, write) lives in the Go extension: `connect()` goes
+into a goroutine, the coroutine suspends, so dozens of connections are dialed
+fanned out. Outside a `WaitGroup` the same API works synchronously.
 
-The model is a long-lived bidirectional connection: the application dials a connection,
-gets a `Connection` object and drives the conversation itself — `read()` pulls inbound messages,
-`write()` sends outbound ones (text or binary), `close()` closes.
-
-## Contents
-
-- [Quick start](#quick-start)
-- [Connection: read / write / close](#connection-read--write--close)
-- [Concurrency ("fan-out")](#concurrency-fan-out)
-- [Parameters and timeouts](#parameters-and-timeouts)
-- [Error handling](#error-handling)
-- [Internals](#internals)
-- [Not in v1](#not-in-v1)
-- [Testing](#testing)
+The model is a long-lived bidirectional connection: the application dials, gets a
+`Connection` and drives the conversation itself.
 
 ## Quick start
 
@@ -39,10 +27,10 @@ $reply = $connection->read();          // ?string
 $connection->close();
 ```
 
-`connect()` takes a full `ws://host:port/path` URL and returns an open
-`Connection`. It is best to drive the whole conversation inside the same coroutine as
-`connect()`: when the coroutine finishes its flow is stopped and the unread connection on the
-Go side is closed (the same caveat as with `HttpClient`/`SocketClient`).
+`connect()` takes a full `ws://host:port/path` URL. Best to drive the whole
+conversation inside the same coroutine as `connect()`: when the coroutine finishes,
+its flow is stopped and the unread connection on the Go side is closed (the same
+caveat as with `HttpClient`/`SocketClient`).
 
 ## Connection: read / write / close
 
@@ -51,18 +39,18 @@ Go side is closed (the same caveat as with `HttpClient`/`SocketClient`).
 
 | Member | Description |
 | --- | --- |
-| `read(): ?string` | the next inbound message; `null` — the peer closed its side, the connection ended, or `maxMessageBytes` was exceeded. Cooperatively suspends the coroutine until a message arrives |
-| `write(string $data, bool $binary = false): void` | send a message to the peer (with backpressure: waits for the flush). Text by default, `binary: true` — binary. Throws `WsClientConnectionClosedException` if the connection is gone |
-| `lastMessageWasBinary(): bool` | whether the last `read()` was binary (otherwise text) |
+| `read(): ?string` | the next inbound message; `null` — the peer closed its side, the connection ended, or `maxMessageBytes` was exceeded. Cooperatively suspends the coroutine |
+| `write(string $data, bool $binary = false): void` | send a message (with backpressure: waits for the flush). Text by default. Throws `WsClientConnectionClosedException` if the connection is gone |
+| `lastMessageWasBinary(): bool` | whether the last `read()` was binary |
 | `close(): void` | close the connection (idempotent, best-effort) |
 | `isClosed(): bool` | whether the connection is closed |
-| `id`, `remoteAddr`, `localAddr`, `subprotocol` | identifier, addresses and the negotiated subprotocol. `remoteAddr` is the host from the connection URL (may be without a port), `localAddr` on the dial side is currently always empty |
+| `id`, `remoteAddr`, `localAddr`, `subprotocol` | identifier, addresses and the negotiated subprotocol. `remoteAddr` is the host from the connection URL (may be without a port); `localAddr` on the dial side is currently always empty |
 
-Inside the conversation you can make asynchronous calls (Sleeper, Mongodb, SQL, HTTP client)
-between reads/writes — the coroutine cooperatively suspends, other connections
-keep working.
+Between reads and writes you can make asynchronous calls (Sleeper, Mongodb, SQL,
+HTTP client) — the coroutine suspends cooperatively, other connections keep
+working.
 
-## Concurrency ("fan-out")
+## Fan-out concurrency
 
 ```php
 use SConcur\WaitGroup;
@@ -87,14 +75,11 @@ foreach ($urls as $url) {
 $replies = $waitGroup->waitResults(); // total time ≈ the slowest connection
 ```
 
-Each connection lives in its own coroutine: `connect/read/write` cooperatively
-suspend it, the other connections keep being served.
-
 ## Parameters and timeouts
 
-`SConcur\Features\WsClient\WsClientOptions` (`readonly`), all timeouts in ms. The PHP defaults
-mirror Go. A long-lived connection has no single "operation time" — its role is played by
-the dial/read/write timeouts (as with `WsServer`, which also has no per-message timeout).
+`SConcur\Features\WsClient\WsClientOptions` (`readonly`), all timeouts in ms; the
+PHP defaults mirror Go. A long-lived connection has no single "operation time" —
+that role is played by the dial/read/write timeouts.
 
 | Parameter | Default | Purpose |
 | --- | --- | --- |
@@ -105,8 +90,6 @@ the dial/read/write timeouts (as with `WsServer`, which also has no per-message 
 | `subprotocols` | `[]` | WebSocket subprotocols offered in the handshake |
 
 ```php
-use SConcur\Features\WsClient\WsClientOptions;
-
 $client = new WsClient(new WsClientOptions(
     connectTimeoutMs: 5_000,
     readTimeoutMs:    30_000,
@@ -120,83 +103,47 @@ $client = new WsClient(new WsClientOptions(
 
 | Case | Exception |
 | --- | --- |
-| Failed to dial the connection (refused / DNS-fail / connect-timeout / upgrade rejection) | `SConcur\Exceptions\WsClient\WsClientConnectException` (thrown by `connect()`) |
+| Failed to dial (refused / DNS-fail / connect-timeout / upgrade rejection) | `SConcur\Exceptions\WsClient\WsClientConnectException`, thrown by `connect()` |
 | `write()` to a broken connection | `SConcur\Exceptions\WsClient\WsClientConnectionClosedException` |
 | Peer closed the connection / idle timeout / `maxMessageBytes` exceeded | not an exception — `read()` returns `null` |
 
-The Go side marks network failures with a `net:` marker, and it is preserved in the exception
-message (handy for logging/retries).
-
-```php
-use SConcur\Exceptions\WsClient\WsClientConnectException;
-
-try {
-    $connection = $client->connect('ws://127.0.0.1:9200/');
-} catch (WsClientConnectException $exception) {
-    // retry / logging; $exception->getMessage() contains the "net:" marker
-}
-```
+The Go side marks network failures with a `net:` marker, preserved in the exception
+message.
 
 ## Internals
 
-PHP (`src/Features/WsClient/`):
+PHP (`src/Features/WsClient/`): `WsClient::connect()` assembles a `ConnectPayload`,
+dials via `FeatureExecutor::exec()`, decodes `ConnectionMeta`
+(`cid`/`ra`/`la`/`su`) and builds a `Dto\Connection` whose inbound stream key is
+the connect result key. That `Dto\Connection` descends from
+`Features\Socket\Dto\AbstractConnection`: `read()` strips the one-byte type marker
+(text/binary) and `write()` carries the message type through `SendPayload`.
+`WsClientCommandEnum` and `Payloads/` are the `Connect`/`Send`/`Close` envelope,
+a mirror of the Go structs.
 
-- `WsClient` — the public API: `connect()` assembles a `ConnectPayload`, dials the connection
-  via `FeatureExecutor::exec()`, decodes `ConnectionMeta`
-  (`cid`/`ra`/`la`/`su`) and builds `Dto\Connection` with the inbound stream key = the connect
-  result key.
-- `WsClientOptions` — a `readonly` options DTO.
-- `WsClientCommandEnum` — envelope sub-operations: `Connect`/`Send`/`Close`.
-- `Dto\Connection` — a descendant of `Features\Socket\Dto\AbstractConnection`: `read()` strips
-  the one-byte type marker (text/binary), `write()` carries the message type through `SendPayload`,
-  plus the paired exception.
-- `Payloads/` — the `Base\BaseWsClientPayload` (`cm`/`p`) envelope + `Connect`/`Send`/`Close`
-  payloads, mirrors of the Go structs.
-
-Go (`ext/internal/features/wsclient/`):
-
-- `payloads/payloads.go` — `Envelope`, `ConnectParams`, `SendParams`, `CloseParams`,
-  `ConnectionMeta` (1:1 with PHP).
-- `feature.go` — `WsClientFeature` (singleton): a command dispatcher; `Send`/`Close`
-  are routed by `cid` to the connection's write loop.
-- `connect.go` — `handleConnect`: `websocket.Dial` with `connectTimeout` (cancellable
-  by the flow context), registration of a streaming `connectionState` (the first `Next` —
-  metadata, then — inbound messages) and the write loop; cleanup on flow stop.
-
-Shared code (`ext/internal/ws/`, neutral, not tied to server/client): the write loop
-with backpressure (`PendingConnection`/`ConsumeCommands`/`Dispatch`) and the message-type codec
-(`EncodeInbound`/`MessageTypeFromCode`). Both the WS server and the WS client use them — but not
-each other (like `ext/internal/socket` for the socket-server/client pair).
+Go (`ext/internal/features/wsclient/`): `connect.go` runs `websocket.Dial` with
+`connectTimeout` (cancellable by the flow context) and registers a streaming
+`connectionState` — the first `Next` is the metadata, then inbound messages from a
+read goroutine — plus the write loop, cleaned up on flow stop; `feature.go`
+dispatches the commands by `cid`. The backpressured write loop and the message-type
+codec live in the neutral `ext/internal/ws/`, shared with the WS server (like
+`ext/internal/socket` for the raw TCP pair).
 
 ## Not in v1
 
-| What | Comment |
-| --- | --- |
-| TLS (`wss://`) | later as an option (like `HttpClient`) |
-| `permessage-deflate` | the library can do it, not enabled yet |
-| Connection pool / keep-alive | each `connect()` — a new connection |
-| Auto-reconnect | on the application side |
-
-The library's general limits (CLI only, Linux only, NTS only, no
-`pcntl_fork` after the extension is loaded) — see [README](../README.md).
+TLS (`wss://`), `permessage-deflate` (the library can do it, not enabled yet), a
+connection pool / keep-alive (each `connect()` is a new connection) and
+auto-reconnect (application side). The library's general limits — see the
+[README](../README.md).
 
 ## Testing
 
-- PHP feature tests — `tests/feature/Features/WsClient/`: edge/error cases
-  (`WsClientTest`) and the concurrency contract on `BaseAsyncTestCase`
-  (`WsClientConcurrencyTest`). The target is a real SConcur `WsServer`
-  (`tests/servers/ws/ws-server.php`), spawned via
-  `SConcur\Tests\Impl\WsServer\TestWsServer`.
-- Go tests — `ext/internal/features/wsclient/connect_test.go` (`connectionState`:
-  metadata → inbound messages → clean end).
-- Benchmark — `tests/benchmarks/ws-client.php` (`make bench-ws-client`): N round-trips
-  to the I/O endpoint (`msleep:<ms>`) of the demo server; the async run via `WaitGroup` shows
-  the "fan-out" (total time ≈ one round-trip), against sequential native (raw
-  WS framing in PHP) and sync. The server-side pool benches — `make bench-ws-server-io` /
-  `bench-ws-server-cpu` / `bench-ws-throughput`.
+PHP feature tests are in `tests/feature/Features/WsClient/` — edge and error cases
+plus the concurrency contract on `BaseAsyncTestCase`, against a real SConcur
+`WsServer` spawned via `TestWsServer`; the Go side is covered by
+`connect_test.go`. The benchmark (`make bench-ws-client c=20`) runs N round-trips
+to the demo server's `msleep` endpoint, async fan-out against sequential native
+(raw WS framing in PHP) and sync; server-side pool benches are
+`make bench-ws-server-io` / `bench-ws-server-cpu` / `bench-ws-throughput`.
 
-Run: `make test c="--filter=WsClient"`, `make ext-test`, `make bench-ws-client c=20`.
-
-```
-make ext-build && make ext-test && make php-stan && make cs-fixer-check && make test
-```
+Run: `make test c="--filter=WsClient"`, `make ext-test`.

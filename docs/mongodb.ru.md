@@ -3,31 +3,17 @@
 # MongoDB
 
 Асинхронная работа с MongoDB поверх официального Go-драйвера. Каждая операция
-уходит в Go-расширение и выполняется в горутине, пока корутина приостановлена.
-В `WaitGroup` операции идут параллельно, и общее время ограничено самой медленной,
-а не суммой. Вне `WaitGroup` тот же API работает синхронно.
+уходит в Go-расширение и выполняется в горутине, пока корутина приостановлена;
+внутри `WaitGroup` операции идут параллельно, и общее время ограничено самой
+медленной. Вне `WaitGroup` тот же API работает синхронно.
 
-Документы обмениваются с Go-частью как сырой BSON и декодируются нативно через
-расширение `ext-mongodb` — тем же кодом, что и официальный драйвер. Поэтому
-значения приходят нативными типами `MongoDB\BSON\*` (`ObjectId`, `UTCDateTime`,
-`Decimal128`, …), а документы и массивы — обычными PHP-массивами.
+Документы обмениваются с Go-стороной сырым BSON и декодируются нативно
+расширением `ext-mongodb` — тем же кодом, что использует официальный драйвер.
+Поэтому значения приходят нативными типами `MongoDB\BSON\*` (`ObjectId`,
+`UTCDateTime`, `Decimal128`, …), а документы и массивы — обычными PHP-массивами.
 
-> Требуется расширение `ext-mongodb` (используется только для BSON-кодирования и
-> декодирования на стороне PHP; сетевую работу выполняет Go).
-
-## Оглавление
-
-- [Быстрый старт](#быстрый-старт)
-- [Подключение](#подключение)
-- [Документы и типы BSON](#документы-и-типы-bson)
-- [Операции коллекции](#операции-коллекции)
-- [Результаты](#результаты)
-- [Курсоры и стриминг](#курсоры-и-стриминг)
-- [База данных](#база-данных)
-- [Конкурентность](#конкурентность)
-- [Таймауты](#таймауты)
-- [Внутреннее устройство](#внутреннее-устройство)
-- [Ограничения](#ограничения)
+> Требуется `ext-mongodb` — только для кодирования/декодирования BSON на стороне
+> PHP; сеть держит Go.
 
 ## Быстрый старт
 
@@ -48,10 +34,7 @@ foreach ($collection->find(['age' => ['$gt' => 18]]) as $document) {
 }
 ```
 
-В `WaitGroup::add(...)` те же вызовы исполняются конкурентно (см.
-[Конкурентность](#конкурентность)).
-
-## Подключение
+## Соединение
 
 `Client` → `Database` → `Collection`:
 
@@ -61,21 +44,19 @@ $database   = $client->selectDatabase('app');
 $collection = $database->selectCollection('users');
 ```
 
-Конструктор `Client`:
+| Параметр `Client` | Дефолт | Назначение |
+|---|---|---|
+| `uri` | — | строка подключения MongoDB |
+| `timeoutMs` | 30000 | дедлайн операции; Go применяет его как CSOT драйвера (`SetTimeout`), превышение даёт ошибку вида `mongodb: … deadline exceeded` |
+| `serverSelectionTimeoutMs` | 10000 | сколько ждать доступный сервер (`SetServerSelectionTimeout`), чтобы недоступная MongoDB падала быстро, а не висела на дефолтных 30 c драйвера |
 
-| Параметр                   | По умолчанию | Назначение |
-|----------------------------|--------------|------------|
-| `uri`                      | —            | строка подключения MongoDB |
-| `timeoutMs`                | 30000        | предельное время операции (CSOT) |
-| `serverSelectionTimeoutMs` | 10000        | сколько ждать доступный сервер |
-
-Клиенты переиспользуются на стороне Go по ключу `uri + timeoutMs + serverSelectionTimeoutMs`
-— создавать `Client` на каждый запрос дёшево (см.
-[Внутреннее устройство](#внутреннее-устройство)).
+Клиенты переиспользуются на Go-стороне по ключу
+`uri + timeoutMs + serverSelectionTimeoutMs`, поэтому создавать `Client` на запрос
+дёшево.
 
 ## Документы и типы BSON
 
-Документ — это PHP-массив; вложенные документы/массивы — тоже массивы. Скалярные
+Документ — это PHP-массив; вложенные документы и массивы тоже массивы. Скалярные
 BSON-значения используют типы официального драйвера:
 
 ```php
@@ -85,7 +66,7 @@ use MongoDB\BSON\UTCDateTime;
 $collection->insertOne([
     '_id'       => new ObjectId(),
     'name'      => 'Ann',
-    'createdAt' => new UTCDateTime(),       // now
+    'createdAt' => new UTCDateTime(),       // сейчас
     'tags'      => ['a', 'b'],
 ]);
 
@@ -97,17 +78,12 @@ $document['tags'];      // ['a', 'b']
 
 ## Операции коллекции
 
-### Вставка
-
 ```php
-$collection->insertOne(['name' => 'Ann']);                 // InsertOneResult
-$collection->insertMany([['name' => 'Ann'], ['name' => 'Bob']]); // InsertManyResult
-```
+// вставка
+$collection->insertOne(['name' => 'Ann']);                        // InsertOneResult
+$collection->insertMany([['name' => 'Ann'], ['name' => 'Bob']]);  // InsertManyResult
 
-### Чтение
-
-```php
-// один документ (или null)
+// чтение
 $collection->findOne(
     filter: ['name' => 'Ann'],
     projection: ['name' => 1, '_id' => 0],   // опц.
@@ -115,8 +91,7 @@ $collection->findOne(
     collation: ['locale' => 'en'],           // опц.
 );
 
-// курсор (Iterator), батчами
-$collection->find(
+$collection->find(                            // курсор (Iterator), батчами
     filter: ['age' => ['$gt' => 18]],
     projection: null,
     sort: ['age' => 1],
@@ -127,8 +102,7 @@ $collection->find(
     collation: null,
 );
 
-// агрегация — курсор (Iterator)
-$collection->aggregate(
+$collection->aggregate(                       // курсор (Iterator)
     pipeline: [
         ['$match' => ['age' => ['$gt' => 18]]],
         ['$group' => ['_id' => '$city', 'count' => ['$sum' => 1]]],
@@ -136,19 +110,13 @@ $collection->aggregate(
     batchSize: 50,
 );
 
-$collection->distinct('city', filter: ['age' => ['$gt' => 18]]); // array значений
-```
+$collection->distinct('city', filter: ['age' => ['$gt' => 18]]);  // массив значений
 
-### Подсчёт
+// подсчёт
+$collection->countDocuments(['age' => ['$gt' => 18]]);  // int (точно)
+$collection->estimatedDocumentCount();                  // int (по метаданным, быстро)
 
-```php
-$collection->countDocuments(['age' => ['$gt' => 18]]); // int (точный)
-$collection->estimatedDocumentCount();                 // int (по метаданным, быстро)
-```
-
-### Изменение
-
-```php
+// изменение
 $collection->updateOne(
     filter: ['name' => 'Ann'],
     update: ['$set' => ['age' => 31]],
@@ -156,62 +124,45 @@ $collection->updateOne(
     arrayFilters: null,
     hint: null,
     collation: null,
-); // UpdateResult
+);                                                       // UpdateResult
 
 $collection->updateMany(filter: ['active' => true], update: ['$inc' => ['score' => 1]]);
-
 $collection->replaceOne(filter: ['name' => 'Ann'], replacement: ['name' => 'Ann', 'age' => 31], upsert: false);
-
-$collection->deleteOne(['name' => 'Ann']);  // DeleteResult
+$collection->deleteOne(['name' => 'Ann']);               // DeleteResult
 $collection->deleteMany(['active' => false]);
-```
 
-### Find-and-modify (возвращают документ или `null`)
-
-```php
+// find-and-modify (возвращает документ или null)
 $collection->findOneAndUpdate(
     filter: ['name' => 'Ann'],
     update: ['$inc' => ['age' => 1]],
     projection: null,
     upsert: false,
-    returnDocument: true,   // true — вернуть новую версию, false — прежнюю
+    returnDocument: true,   // true — новая версия, false — предыдущая
     arrayFilters: null,
     hint: null,
     collation: null,
 );
 
-$collection->findOneAndReplace(
-    filter: ['name' => 'Ann'],
-    replacement: ['name' => 'Ann', 'age' => 31],
-    returnDocument: true,
-);
-
+$collection->findOneAndReplace(filter: ['name' => 'Ann'], replacement: ['name' => 'Ann', 'age' => 31], returnDocument: true);
 $collection->findOneAndDelete(filter: ['name' => 'Ann']);
-```
 
-### Индексы
-
-```php
+// индексы
 $collection->createIndex(['name' => 1], name: null);     // имя индекса (string)
 $collection->createIndexes([
     ['keys' => ['name' => 1]],
     ['keys' => ['city' => 1, 'age' => -1], 'name' => 'city_age'],
-]);                                                       // array имён
-$collection->listIndexes();                              // array документов индексов
-$collection->dropIndex(['name' => 1]);                   // по ключам или по имени-строке
-$collection->makeIndexNameByKeys(['name' => 1]);         // вычислить имя индекса локально
-```
+]);                                                       // массив имён
+$collection->listIndexes();                               // массив документов индексов
+$collection->dropIndex(['name' => 1]);                    // по ключам или по строке имени
+$collection->makeIndexNameByKeys(['name' => 1]);          // вычислить имя локально
 
-### Коллекция целиком
-
-```php
+// вся коллекция
 $collection->drop();
 $collection->rename(target: 'users_archive', dropTarget: false);
 ```
 
-### bulkWrite
-
-Список операций — каждая это map `['<тип>' => [аргументы...]]`:
+`bulkWrite` принимает список операций, каждая — карта
+`['<тип>' => [аргументы...]]`:
 
 ```php
 $collection->bulkWrite([
@@ -224,15 +175,19 @@ $collection->bulkWrite([
 ]); // BulkWriteResult
 ```
 
-Третий элемент у `updateOne`/`updateMany`/`replaceOne` — опции (`['upsert' => bool]`).
-Неизвестный тип операции бросает `InvalidMongodbBulkWriteOperationException`.
+Третий элемент `updateOne`/`updateMany`/`replaceOne` — опции
+(`['upsert' => bool]`); неизвестный тип операции бросает
+`InvalidMongodbBulkWriteOperationException`.
+
+`Database` даёт `listCollections()` (имена коллекций), `command(['ping' => 1])`
+(произвольная команда → документ результата) и `selectCollection()`.
 
 ## Результаты
 
 | Метод | Результат | Поля |
-|-------|-----------|------|
+|--------|--------|--------|
 | `insertOne` | `InsertOneResult` | `insertedId` (`ObjectId\|string\|int\|float\|null`) |
-| `insertMany` | `InsertManyResult` | `insertedIds` (array), `insertedCount` (int) |
+| `insertMany` | `InsertManyResult` | `insertedIds`, `insertedCount` |
 | `updateOne`/`updateMany`/`replaceOne` | `UpdateResult` | `matchedCount`, `modifiedCount`, `upsertedCount`, `upsertedId` |
 | `deleteOne`/`deleteMany` | `DeleteResult` | `deletedCount` |
 | `bulkWrite` | `BulkWriteResult` | `insertedCount`, `matchedCount`, `modifiedCount`, `deletedCount`, `upsertedCount`, `upsertedIds` |
@@ -244,38 +199,26 @@ $collection->bulkWrite([
 ## Курсоры и стриминг
 
 `find()` и `aggregate()` возвращают `Iterator`, который лениво тянет следующие
-батчи из Go (по `batchSize`) — большая выборка не буферизуется целиком ни в
+батчи из Go (по `batchSize`), поэтому крупная выборка не буферизуется целиком ни в
 расширении, ни в PHP:
 
 ```php
 foreach ($collection->find(['active' => true], batchSize: 100) as $document) {
-    // обрабатывается батчами по 100
     if ($enough) {
         break; // ранний выход — курсор корректно закрывается
     }
 }
 ```
 
-Ранний `break`, исключение или остановка `WaitGroup` закрывают курсор на стороне
-Go (`cursor.Close` → `killCursors`). Каждый курсор в конкурентных потоках независим.
-
-## База данных
-
-```php
-$database = $client->selectDatabase('app');
-
-$database->listCollections();              // array имён коллекций
-$database->command(['ping' => 1]);         // произвольная команда → документ-результат
-$database->selectCollection('users');
-```
+Ранний `break`, исключение или остановка `WaitGroup` закрывают курсор на
+Go-стороне (`cursor.Close` → `killCursors`). Каждый курсор в конкурентных флоу
+независим.
 
 ## Конкурентность
 
-В `WaitGroup` операции разных корутин выполняются параллельно:
+Внутри `WaitGroup` операции из разных корутин идут параллельно:
 
 ```php
-use SConcur\WaitGroup;
-
 $waitGroup = WaitGroup::create();
 
 $waitGroup->add(fn () => $collection->insertOne(['name' => 'Ann']));
@@ -293,39 +236,26 @@ $waitGroup->add(function () use ($collection) {
 $waitGroup->waitAll();
 ```
 
-Выигрыш тем больше, чем дороже и латентнее операции (тяжёлые агрегации, удалённый
-кластер): общее время стремится к самой медленной операции, а не к их сумме.
-
-## Таймауты
-
-- `timeoutMs` — предельное время операции; Go применяет его как CSOT драйвера
-  (`SetTimeout`). Превышение → ошибка вида `mongodb: … deadline exceeded`.
-- `serverSelectionTimeoutMs` — сколько ждать доступный сервер
-  (`SetServerSelectionTimeout`), чтобы недоступный MongoDB не подвешивал задачу на
-  драйверный дефолт (30s). Недостижимый сервер падает быстро.
-
-Оба параметра задаются на `Client` и входят в ключ пула.
+Выигрыш растёт с ценой операций — общее время стремится к самой медленной, а не к
+их сумме. Что это значит в цифрах (и где нативный драйвер всё же выигрывает) — в
+[бенчмарках](benchmarks.ru.md#mongodb).
 
 ## Внутреннее устройство
 
-- Официальный Go-драйвер. Все операции выполняет `go.mongodb.org/mongo-driver/v2`
-  в горутине; блокирующий драйвер используется как есть, конкурентность даёт рантайм.
-- Пул клиентов (`ext/internal/features/mongodb/connection`) — `*mongo.Client`
-  по ключу `uri + timeoutMs + serverSelectionTimeoutMs`, с refcount и вытеснением
-  простаивающих клиентов (TTL 5 минут, проверка раз в минуту). In-flight операции
-  клиент не отключают: владелец держит его живым, пока операция или курсор активны.
+- Все операции выполняет `go.mongodb.org/mongo-driver/v2` в горутине: блокирующий
+  драйвер берётся как есть, конкурентность даёт рантайм.
+- Пул клиентов (`ext/internal/features/mongodb/connection`) — `*mongo.Client` на
+  ключ `uri + timeoutMs + serverSelectionTimeoutMs`, с refcount и вытеснением
+  простаивающих клиентов (TTL 5 минут, проверка раз в минуту). Операции в полёте
+  клиента не отключают.
 - Курсоры (`states/find_state`, `states/aggregation_state`) — Go держит курсор
-  как состояние и отдаёт батчи по запросу `next`; закрывается при исчерпании,
-  раннем выходе или остановке потока. Закрытие идёт на свежем контексте, т.к.
-  контекст задачи к тому моменту может быть отменён.
-- Обмен документами — сырой BSON, декодирование нативное через `ext-mongodb`
-  (`MongoDB\BSON\Document`).
+  состоянием и отдаёт батчи по запросу `next`; закрывается при исчерпании, раннем
+  выходе или остановке флоу. Закрытие идёт на свежем контексте, потому что
+  контекст задачи к этому моменту уже отменён.
 
 ## Ограничения
 
-- Требуется расширение `ext-mongodb` (для BSON-типов, кодирования и декодирования).
-- Курсор `find`/`aggregate` стоит либо дочитать, либо прервать (`break`) — он держит
-  ресурс на сервере до закрытия.
-- Применимы общие ограничения библиотеки: только CLI/NTS, никаких `pcntl_fork`
-  после загрузки расширения, не завершать процесс при активных задачах/курсорах
-  (см. [README](../README.ru.md)).
+- Требуется `ext-mongodb` (типы BSON и кодирование/декодирование).
+- Курсор `find`/`aggregate` нужно либо дочитать, либо прервать (`break`) — до
+  закрытия он держит ресурс на сервере.
+- Действуют общие ограничения библиотеки — см. [README](../README.ru.md).

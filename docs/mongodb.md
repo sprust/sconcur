@@ -2,33 +2,18 @@ English | [Русский](mongodb.ru.md)
 
 # MongoDB
 
-Asynchronous MongoDB work on top of the official Go driver. Each operation goes
-to the Go extension and runs in a goroutine while the coroutine is suspended.
-Inside a `WaitGroup` operations run in parallel, and the total time is bounded by
-the slowest one, not by their sum. Outside a `WaitGroup` the same API works
-synchronously.
+Asynchronous MongoDB on top of the official Go driver. Each operation goes into the
+Go extension and runs in a goroutine while the coroutine is suspended; inside a
+`WaitGroup` operations run in parallel and the total time is bounded by the slowest
+one. Outside a `WaitGroup` the same API works synchronously.
 
-Documents are exchanged with the Go side as raw BSON and decoded natively by the
-`ext-mongodb` extension — the same code the official driver uses. Values
-therefore arrive as native `MongoDB\BSON\*` types (`ObjectId`, `UTCDateTime`,
-`Decimal128`, …), and documents and arrays as plain PHP arrays.
+Documents are exchanged with the Go side as raw BSON and decoded natively by
+`ext-mongodb` — the same code the official driver uses. Values therefore arrive as
+native `MongoDB\BSON\*` types (`ObjectId`, `UTCDateTime`, `Decimal128`, …), and
+documents and arrays as plain PHP arrays.
 
-> The `ext-mongodb` extension is required (used only for BSON encoding/decoding on
-> the PHP side; networking is done by Go).
-
-## Contents
-
-- [Quick start](#quick-start)
-- [Connection](#connection)
-- [Documents and BSON types](#documents-and-bson-types)
-- [Collection operations](#collection-operations)
-- [Results](#results)
-- [Cursors and streaming](#cursors-and-streaming)
-- [Database](#database)
-- [Concurrency](#concurrency)
-- [Timeouts](#timeouts)
-- [Internals](#internals)
-- [Limits](#limits)
+> `ext-mongodb` is required — for BSON encoding/decoding on the PHP side only; the
+> networking is done by Go.
 
 ## Quick start
 
@@ -49,9 +34,6 @@ foreach ($collection->find(['age' => ['$gt' => 18]]) as $document) {
 }
 ```
 
-Inside `WaitGroup::add(...)` the same calls run concurrently (see
-[Concurrency](#concurrency)).
-
 ## Connection
 
 `Client` → `Database` → `Collection`:
@@ -62,20 +44,19 @@ $database   = $client->selectDatabase('app');
 $collection = $database->selectCollection('users');
 ```
 
-`Client` constructor:
+| `Client` parameter | Default | Purpose |
+|---|---|---|
+| `uri` | — | MongoDB connection string |
+| `timeoutMs` | 30000 | operation deadline; Go applies it as the driver's CSOT (`SetTimeout`), exceeding it gives an error like `mongodb: … deadline exceeded` |
+| `serverSelectionTimeoutMs` | 10000 | how long to wait for an available server (`SetServerSelectionTimeout`), so an unreachable MongoDB fails fast instead of hanging on the driver default of 30 s |
 
-| Parameter                  | Default | Purpose |
-|----------------------------|---------|---------|
-| `uri`                      | —       | MongoDB connection string |
-| `timeoutMs`                | 30000   | operation deadline (CSOT) |
-| `serverSelectionTimeoutMs` | 10000   | how long to wait for an available server |
-
-Clients are reused on the Go side by the key `uri + timeoutMs + serverSelectionTimeoutMs`
-— creating a `Client` per request is cheap (see [Internals](#internals)).
+Clients are reused on the Go side by the key
+`uri + timeoutMs + serverSelectionTimeoutMs`, so creating a `Client` per request is
+cheap.
 
 ## Documents and BSON types
 
-A document is a PHP array; nested documents/arrays are arrays too. Scalar BSON
+A document is a PHP array; nested documents and arrays are arrays too. Scalar BSON
 values use the official driver's types:
 
 ```php
@@ -97,17 +78,12 @@ $document['tags'];      // ['a', 'b']
 
 ## Collection operations
 
-### Insert
-
 ```php
-$collection->insertOne(['name' => 'Ann']);                 // InsertOneResult
-$collection->insertMany([['name' => 'Ann'], ['name' => 'Bob']]); // InsertManyResult
-```
+// insert
+$collection->insertOne(['name' => 'Ann']);                        // InsertOneResult
+$collection->insertMany([['name' => 'Ann'], ['name' => 'Bob']]);  // InsertManyResult
 
-### Read
-
-```php
-// one document (or null)
+// read
 $collection->findOne(
     filter: ['name' => 'Ann'],
     projection: ['name' => 1, '_id' => 0],   // opt.
@@ -115,8 +91,7 @@ $collection->findOne(
     collation: ['locale' => 'en'],           // opt.
 );
 
-// cursor (Iterator), in batches
-$collection->find(
+$collection->find(                            // cursor (Iterator), in batches
     filter: ['age' => ['$gt' => 18]],
     projection: null,
     sort: ['age' => 1],
@@ -127,8 +102,7 @@ $collection->find(
     collation: null,
 );
 
-// aggregation — cursor (Iterator)
-$collection->aggregate(
+$collection->aggregate(                       // cursor (Iterator)
     pipeline: [
         ['$match' => ['age' => ['$gt' => 18]]],
         ['$group' => ['_id' => '$city', 'count' => ['$sum' => 1]]],
@@ -136,19 +110,13 @@ $collection->aggregate(
     batchSize: 50,
 );
 
-$collection->distinct('city', filter: ['age' => ['$gt' => 18]]); // array of values
-```
+$collection->distinct('city', filter: ['age' => ['$gt' => 18]]);  // array of values
 
-### Count
+// count
+$collection->countDocuments(['age' => ['$gt' => 18]]);  // int (exact)
+$collection->estimatedDocumentCount();                  // int (from metadata, fast)
 
-```php
-$collection->countDocuments(['age' => ['$gt' => 18]]); // int (exact)
-$collection->estimatedDocumentCount();                 // int (from metadata, fast)
-```
-
-### Modify
-
-```php
+// modify
 $collection->updateOne(
     filter: ['name' => 'Ann'],
     update: ['$set' => ['age' => 31]],
@@ -156,62 +124,44 @@ $collection->updateOne(
     arrayFilters: null,
     hint: null,
     collation: null,
-); // UpdateResult
+);                                                       // UpdateResult
 
 $collection->updateMany(filter: ['active' => true], update: ['$inc' => ['score' => 1]]);
-
 $collection->replaceOne(filter: ['name' => 'Ann'], replacement: ['name' => 'Ann', 'age' => 31], upsert: false);
-
-$collection->deleteOne(['name' => 'Ann']);  // DeleteResult
+$collection->deleteOne(['name' => 'Ann']);               // DeleteResult
 $collection->deleteMany(['active' => false]);
-```
 
-### Find-and-modify (return a document or `null`)
-
-```php
+// find-and-modify (returns a document or null)
 $collection->findOneAndUpdate(
     filter: ['name' => 'Ann'],
     update: ['$inc' => ['age' => 1]],
     projection: null,
     upsert: false,
-    returnDocument: true,   // true — return the new version, false — the previous one
+    returnDocument: true,   // true — the new version, false — the previous one
     arrayFilters: null,
     hint: null,
     collation: null,
 );
 
-$collection->findOneAndReplace(
-    filter: ['name' => 'Ann'],
-    replacement: ['name' => 'Ann', 'age' => 31],
-    returnDocument: true,
-);
-
+$collection->findOneAndReplace(filter: ['name' => 'Ann'], replacement: ['name' => 'Ann', 'age' => 31], returnDocument: true);
 $collection->findOneAndDelete(filter: ['name' => 'Ann']);
-```
 
-### Indexes
-
-```php
+// indexes
 $collection->createIndex(['name' => 1], name: null);     // index name (string)
 $collection->createIndexes([
     ['keys' => ['name' => 1]],
     ['keys' => ['city' => 1, 'age' => -1], 'name' => 'city_age'],
 ]);                                                       // array of names
-$collection->listIndexes();                              // array of index documents
-$collection->dropIndex(['name' => 1]);                   // by keys or by name string
-$collection->makeIndexNameByKeys(['name' => 1]);         // compute the index name locally
-```
+$collection->listIndexes();                               // array of index documents
+$collection->dropIndex(['name' => 1]);                    // by keys or by name string
+$collection->makeIndexNameByKeys(['name' => 1]);          // compute the name locally
 
-### Whole collection
-
-```php
+// whole collection
 $collection->drop();
 $collection->rename(target: 'users_archive', dropTarget: false);
 ```
 
-### bulkWrite
-
-A list of operations — each a map `['<type>' => [arguments...]]`:
+`bulkWrite` takes a list of operations, each a map `['<type>' => [arguments...]]`:
 
 ```php
 $collection->bulkWrite([
@@ -225,15 +175,18 @@ $collection->bulkWrite([
 ```
 
 The third element of `updateOne`/`updateMany`/`replaceOne` is options
-(`['upsert' => bool]`). An unknown operation type throws
+(`['upsert' => bool]`); an unknown operation type throws
 `InvalidMongodbBulkWriteOperationException`.
+
+`Database` gives `listCollections()` (collection names), `command(['ping' => 1])`
+(an arbitrary command → result document) and `selectCollection()`.
 
 ## Results
 
 | Method | Result | Fields |
 |--------|--------|--------|
 | `insertOne` | `InsertOneResult` | `insertedId` (`ObjectId\|string\|int\|float\|null`) |
-| `insertMany` | `InsertManyResult` | `insertedIds` (array), `insertedCount` (int) |
+| `insertMany` | `InsertManyResult` | `insertedIds`, `insertedCount` |
 | `updateOne`/`updateMany`/`replaceOne` | `UpdateResult` | `matchedCount`, `modifiedCount`, `upsertedCount`, `upsertedId` |
 | `deleteOne`/`deleteMany` | `DeleteResult` | `deletedCount` |
 | `bulkWrite` | `BulkWriteResult` | `insertedCount`, `matchedCount`, `modifiedCount`, `deletedCount`, `upsertedCount`, `upsertedIds` |
@@ -244,13 +197,12 @@ The third element of `updateOne`/`updateMany`/`replaceOne` is options
 
 ## Cursors and streaming
 
-`find()` and `aggregate()` return an `Iterator` that lazily pulls the next
-batches from Go (by `batchSize`) — a large result set is not buffered whole
-either in the extension or in PHP:
+`find()` and `aggregate()` return an `Iterator` that lazily pulls the next batches
+from Go (by `batchSize`), so a large result set is not buffered whole either in the
+extension or in PHP:
 
 ```php
 foreach ($collection->find(['active' => true], batchSize: 100) as $document) {
-    // processed in batches of 100
     if ($enough) {
         break; // early exit — the cursor is closed correctly
     }
@@ -261,23 +213,11 @@ An early `break`, an exception, or a `WaitGroup` stop closes the cursor on the G
 side (`cursor.Close` → `killCursors`). Each cursor in concurrent flows is
 independent.
 
-## Database
-
-```php
-$database = $client->selectDatabase('app');
-
-$database->listCollections();              // array of collection names
-$database->command(['ping' => 1]);         // an arbitrary command → result document
-$database->selectCollection('users');
-```
-
 ## Concurrency
 
-Inside a `WaitGroup`, operations from different coroutines run in parallel:
+Inside a `WaitGroup` operations from different coroutines run in parallel:
 
 ```php
-use SConcur\WaitGroup;
-
 $waitGroup = WaitGroup::create();
 
 $waitGroup->add(fn () => $collection->insertOne(['name' => 'Ann']));
@@ -295,42 +235,26 @@ $waitGroup->add(function () use ($collection) {
 $waitGroup->waitAll();
 ```
 
-The gain grows the more expensive and latent the operations are (heavy
-aggregations, a remote cluster): the total time approaches the slowest operation
-rather than their sum.
-
-## Timeouts
-
-- `timeoutMs` — the operation deadline; Go applies it as the driver's CSOT
-  (`SetTimeout`). Exceeding it → an error like `mongodb: … deadline exceeded`.
-- `serverSelectionTimeoutMs` — how long to wait for an available server
-  (`SetServerSelectionTimeout`), so that an unreachable MongoDB does not hang the
-  task on the driver default (30s). An unreachable server fails fast.
-
-Both parameters are set on the `Client` and are part of the pool key.
+The gain grows with the price of the operations — the total time approaches the
+slowest one rather than their sum. What that means in numbers (and where the native
+driver still wins) is in the [benchmarks](benchmarks.md#mongodb).
 
 ## Internals
 
-- Official Go driver. All operations are run by `go.mongodb.org/mongo-driver/v2`
-  in a goroutine; the blocking driver is used as-is, concurrency comes from the
-  runtime.
-- Client pool (`ext/internal/features/mongodb/connection`) — a `*mongo.Client`
-  per key `uri + timeoutMs + serverSelectionTimeoutMs`, with refcounting and
-  eviction of idle clients (TTL 5 minutes, checked once a minute). In-flight
-  operations do not disconnect the client: the owner keeps it alive while an
-  operation or a cursor is active.
+- All operations are run by `go.mongodb.org/mongo-driver/v2` in a goroutine: the
+  blocking driver is used as-is, concurrency comes from the runtime.
+- Client pool (`ext/internal/features/mongodb/connection`) — a `*mongo.Client` per
+  key `uri + timeoutMs + serverSelectionTimeoutMs`, with refcounting and eviction
+  of idle clients (TTL 5 minutes, checked once a minute). In-flight operations do
+  not disconnect the client.
 - Cursors (`states/find_state`, `states/aggregation_state`) — Go holds the cursor
   as state and hands out batches on a `next` request; it is closed on exhaustion,
   early exit, or a flow stop. Closing runs on a fresh context, because the task
   context may already be cancelled by then.
-- Document exchange is raw BSON, decoded natively by `ext-mongodb`
-  (`MongoDB\BSON\Document`).
 
 ## Limits
 
-- The `ext-mongodb` extension is required (for BSON types and encoding/decoding).
-- A `find`/`aggregate` cursor should be either read to the end or interrupted
-  (`break`) — it holds a resource on the server until closed.
-- The library's general limits apply: CLI/NTS only, no `pcntl_fork` after the
-  extension is loaded, do not terminate the process while tasks/cursors are
-  active (see [README](../README.md)).
+- `ext-mongodb` is required (BSON types and encoding/decoding).
+- A `find`/`aggregate` cursor should be read to the end or interrupted (`break`) —
+  it holds a resource on the server until closed.
+- The library's general limits apply — see the [README](../README.md).
