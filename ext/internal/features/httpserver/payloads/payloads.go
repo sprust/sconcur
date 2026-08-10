@@ -4,6 +4,10 @@
 // MessagePack.
 package payloads
 
+import (
+	"github.com/vmihailenco/msgpack/v5"
+)
+
 // ServePayload is the payload of an httpStart command — the listener address and
 // the server tuning parameters (all timeouts in milliseconds, body limit in
 // bytes). Defaults are supplied by the PHP side.
@@ -67,4 +71,69 @@ type RequestEvent struct {
 	RemoteAddr string `json:"ra" msgpack:"ra"`
 	Host       string `json:"ho" msgpack:"ho"`
 	Proto      string `json:"pr" msgpack:"pr"`
+}
+
+var _ msgpack.CustomEncoder = (*RequestEvent)(nil)
+
+// EncodeMsgpack writes the event by hand instead of through the reflection
+// encoder: one event is marshaled per accepted request, and the reflective
+// walk (plus its allocations) was a measurable slice of the request cost
+// (the attribution plan, phase 5). The wire bytes stay a plain msgpack map
+// with the same keys as the struct tags, so the PHP side is unaffected.
+// Keep the keys in sync with the tags above.
+func (e *RequestEvent) EncodeMsgpack(encoder *msgpack.Encoder) error {
+	if err := encoder.EncodeMapLen(10); err != nil {
+		return err
+	}
+
+	fields := [...]struct {
+		key   string
+		value string
+	}{
+		{"rid", e.RequestId},
+		{"mt", e.Method},
+		{"pt", e.Path},
+		{"qr", e.Query},
+		{"bd", e.Body},
+		{"bk", e.BodyKey},
+		{"ra", e.RemoteAddr},
+		{"ho", e.Host},
+		{"pr", e.Proto},
+	}
+
+	for _, field := range fields {
+		if err := encoder.EncodeString(field.key); err != nil {
+			return err
+		}
+
+		if err := encoder.EncodeString(field.value); err != nil {
+			return err
+		}
+	}
+
+	if err := encoder.EncodeString("hd"); err != nil {
+		return err
+	}
+
+	if err := encoder.EncodeMapLen(len(e.Headers)); err != nil {
+		return err
+	}
+
+	for name, values := range e.Headers {
+		if err := encoder.EncodeString(name); err != nil {
+			return err
+		}
+
+		if err := encoder.EncodeArrayLen(len(values)); err != nil {
+			return err
+		}
+
+		for _, value := range values {
+			if err := encoder.EncodeString(value); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
