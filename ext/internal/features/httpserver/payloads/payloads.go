@@ -46,6 +46,9 @@ type RespondPayload struct {
 	Status    int                 `json:"st" msgpack:"st"`
 	Headers   map[string][]string `json:"hd" msgpack:"hd"`
 	Body      string              `json:"bd" msgpack:"bd"`
+	// NoResult marks a fire-and-forget write: publish no task result for it (the
+	// PHP coroutine does not await one — the final write of a full response).
+	NoResult bool `json:"nr" msgpack:"nr"`
 }
 
 // RequestEvent is what the server emits to PHP for each accepted request (it is

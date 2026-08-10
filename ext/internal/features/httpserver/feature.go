@@ -7,7 +7,6 @@ import (
 	"sconcur/internal/errs"
 	"sconcur/internal/features/httpserver/payloads"
 	"sconcur/internal/helpers"
-	"sconcur/internal/states"
 	"sconcur/internal/tasks"
 	"sconcur/internal/types"
 	"strconv"
@@ -92,17 +91,23 @@ func (f *HttpFeature) handleServe(task *tasks.Task) {
 	// (close the listener) without cancelling in-flight requests. Cleaned in Close.
 	serverStates.Store(message.FlowKey, state)
 
-	result, err := states.Get().Start(task.GetContext(), message.TaskKey, state)
+	// The request stream is self-pumping: every accepted request is published as
+	// a stream result as soon as the previous one is consumed, so PHP never pays
+	// a next() crossing (plus a task and a goroutine) per request. Backpressure
+	// is layered: AddResult blocks on the shared results buffer, the requests
+	// channel buffers accepts, and beyond that ServeHTTP itself blocks. The
+	// stream ends with the first no-next result (server stopped).
+	go func() {
+		for {
+			result := state.Next()
 
-	if err != nil {
-		state.Close()
+			task.AddResult(result)
 
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("serve", err)))
-
-		return
-	}
-
-	task.AddResult(result)
+			if !result.HasNext {
+				return
+			}
+		}
+	}()
 }
 
 // handleRespond routes one write command (a one-shot response, or a head/chunk/
@@ -161,6 +166,19 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 		body:    payload.Body,
 	}
 
+	// A fire-and-forget write (the final write of a full response): the PHP
+	// coroutine does not await this task — it finishes (and stops its flow)
+	// right after the push, possibly before this goroutine runs, so the
+	// handover must not select on the already-cancelled flow context, and no
+	// result is published — success or failure. A failed write was equally
+	// invisible before (the coroutine died after it and the groupless spawn
+	// dropped the error).
+	if payload.NoResult {
+		f.dispatchFireAndForget(pending, command)
+
+		return
+	}
+
 	if err := f.dispatch(task, pending, command); err != nil {
 		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("write response", err)))
 
@@ -168,6 +186,20 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 	}
 
 	task.AddResult(dto.NewSuccessResult(message, "", helpers.CalcExecutionMs(startTime)))
+}
+
+// dispatchFireAndForget hands a write command to the connection goroutine
+// without flow-context abort and without waiting for the write outcome. The
+// connection-side guards still bound the handover: pending.abandoned closes as
+// soon as ServeHTTP stops consuming (handler timeout, dead connection), so this
+// never hangs past the request's own lifetime.
+func (f *HttpFeature) dispatchFireAndForget(pending *pendingRequest, command writeCommand) {
+	command.done = make(chan error, 1)
+
+	select {
+	case pending.commands <- command:
+	case <-pending.abandoned:
+	}
 }
 
 // dispatch hands one write command to the connection goroutine and waits for it

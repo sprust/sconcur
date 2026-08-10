@@ -227,6 +227,7 @@ readonly class HttpServer
                     self::logServerEvent('sconcur http server shutdown: ' . $step);
                 },
                 preemptionQuantumMs: $this->preemptionQuantumMs,
+                serverAutoStreams: true,
             );
         } finally {
             $restoreSignals();
@@ -270,8 +271,13 @@ readonly class HttpServer
         //
         // A known-size body is sent whole in one write; an unknown-size (null) body
         // is a streaming StreamInterface, drained chunk by chunk with backpressure.
+        //
+        // The full write is fire-and-forget (execNoResult): the coroutine ends
+        // right after it, a write failure was already invisible to the handler
+        // (the groupless spawn drops it), so awaiting the result only cost a
+        // park/wake round-trip per request.
         if ($body->getSize() !== null) {
-            FeatureExecutor::exec(
+            FeatureExecutor::execNoResult(
                 payload: RespondPayload::full(
                     requestId: $requestId,
                     status: $response->getStatusCode(),
@@ -390,7 +396,9 @@ readonly class HttpServer
 
         $protocolVersion = str_starts_with($proto, 'HTTP/') ? substr($proto, 5) : $proto;
 
-        if ($protocolVersion !== '') {
+        // PSR-7 withers clone the request; skip the clone when the factory's
+        // default already matches (HTTP/1.1 — the overwhelmingly common case).
+        if ($protocolVersion !== '' && $request->getProtocolVersion() !== $protocolVersion) {
             $request = $request->withProtocolVersion($protocolVersion);
         }
 

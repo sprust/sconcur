@@ -1156,9 +1156,7 @@ function runLadderServer(string $mode, array $argv): void
                 return;
             }
 
-            // Re-arm for the next request before answering this one.
-            $extension->next(flowKey: $flowKey, taskKey: $serverTask->key);
-
+            // No re-arm: the Go server pumps the next request event itself.
             if ($mode === 'l1') {
                 $respond($result->payload);
             } elseif ($mode === 'l2h') {

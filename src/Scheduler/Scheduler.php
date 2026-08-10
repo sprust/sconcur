@@ -517,6 +517,10 @@ class Scheduler
      *                                                   parks the running handler coroutine, so a
      *                                                   CPU-bound handler cannot starve the others
      *                                                   (0 disables)
+     * @param bool                  $serverAutoStreams   the Go side pumps the next stream event on its
+     *                                                   own (the HTTP server), so the loop must not
+     *                                                   re-arm with next() per event; false for the
+     *                                                   pull-paced streams (socket/ws servers)
      */
     public function serve(
         string $serverFlowKey,
@@ -527,6 +531,7 @@ class Scheduler
         Closure $onDrainStart,
         Closure $onShutdownStep,
         int $preemptionQuantumMs = 0,
+        bool $serverAutoStreams = false,
     ): void {
         $draining = false;
 
@@ -653,7 +658,9 @@ class Scheduler
                     // listener keeps accepting while the handler runs — unless this
                     // request hit the maxRequests limit, in which case we do not pull
                     // one more (we drain on the next tick instead of bouncing it 503).
-                    if ($maxRequests === 0 || $dispatchedCount < $maxRequests) {
+                    // An auto-streaming server (HTTP) pumps the next event itself,
+                    // so no crossing is spent here.
+                    if (!$serverAutoStreams && ($maxRequests === 0 || $dispatchedCount < $maxRequests)) {
                         Extension::get()->next(
                             flowKey: $serverFlowKey,
                             taskKey: $serverTaskKey,
@@ -745,6 +752,19 @@ class Scheduler
                     // The throw ran the coroutine's handlers, whose own suspend
                     // transitions may have cleared the window — re-assert it for
                     // the next loop iteration.
+                    if ($callingFiber !== null) {
+                        State::markSuspending(spl_object_id($callingFiber));
+                    }
+
+                    continue;
+                }
+
+                // Fire-and-forget push (execNoResult): no result will ever come
+                // to resume this fiber — resume it here and keep dispatching
+                // whatever it suspends with next.
+                if ($suspendValue instanceof PendingPushDto && !$suspendValue->awaitResult) {
+                    $suspendValue = $fiber->resume(null);
+
                     if ($callingFiber !== null) {
                         State::markSuspending(spl_object_id($callingFiber));
                     }

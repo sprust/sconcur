@@ -458,13 +458,12 @@ sequenceDiagram
     Note over PHP: Scheduler::serve() — waitAnyTimeoutBatch(250ms) loop
     Client->>Go: HTTP request
     Note over Go: ServeHTTP — acquire slot, read body, RequestEvent into the requests channel
-    Go-->>PHP: request event (batch, HasNext=true)
-    Note over PHP: next() rearms the listener, spawn(coroutine) — handle($handler)
-    PHP->>Go: exec(RespondPayload::full, MethodHttpRespond)
+    Go-->>PHP: request event (batch, HasNext=true; the stream pumps itself)
+    Note over PHP: spawn(coroutine) — handle($handler)
+    PHP->>Go: execNoResult(RespondPayload::full, MethodHttpRespond)
     Note over Go: handleRespond — dispatch writeCommand, ServeHTTP writes status+headers+body
     Go->>Client: response
-    Go-->>PHP: ack (response written)
-    Note over PHP: coroutine finished, the flow is cleaned up
+    Note over PHP: coroutine finished right after the push, the flow is cleaned up
 ```
 
 PHP: `HttpServer::serve()` generates a `flowKey`, installs signal handlers, pushes
@@ -482,17 +481,22 @@ signal}`) and `serverStates` (`flowKey → serverState`, for `StopAccepting`);
 concurrency semaphore, handler timeout, 503/504 and graceful `Shutdown`;
 `listen.go` is the TCP listener and `SO_REUSEPORT`.
 
-The listener is modelled as a streaming state (each accepted request is the next
-batch with `HasNext=true`, rearmed by `next()`) because emitting an event with an
-arbitrary `taskKey` straight into the shared channel would break task accounting.
-Each request is handled in its own flow, so a handler's sub-tasks are isolated and
+The listener is a self-pumping stream: a Go-side goroutine publishes every
+accepted request as the next batch result (`HasNext=true`), so PHP pays no
+`next()` crossing per request. Backpressure is layered — the shared results
+buffer, the requests channel, and beyond that `ServeHTTP` itself blocks. Each
+request is handled in its own flow, so a handler's sub-tasks are isolated and
 stopping one request does not take down the server.
 
 The response is a sequence of write commands over `MethodHttpRespond`: `full` (a
-one-shot response), or `head` → `chunk`* → `end` for a stream. Each command is
-acknowledged only after it is applied — that is the write backpressure. If the
-connection dropped or the timeout fired, the handler gets an `abandoned` error and
-unwinds cleanly instead of hanging.
+one-shot response), or `head` → `chunk`* → `end` for a stream. Streaming
+commands are acknowledged only after they are applied — that is the write
+backpressure. The one-shot `full` write is fire-and-forget: the coroutine ends
+right after handing it over (a failure of the final write was unobservable to
+the handler anyway), and the handover itself is bounded by the connection-side
+guards (`abandoned`, handler timeout). On the streaming path, if the connection
+dropped or the timeout fired, the handler gets an `abandoned` error and unwinds
+cleanly instead of hanging.
 
 ## What's missing compared to typical servers
 

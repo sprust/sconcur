@@ -61,6 +61,54 @@ readonly class FeatureExecutor
         );
     }
 
+    /**
+     * Fire-and-forget variant of exec(): the task is pushed and the coroutine
+     * continues immediately — no result is awaited, and the Go side (told by the
+     * payload itself, e.g. RespondPayload::full) publishes none. Only for
+     * operations whose outcome the caller cannot observe anyway: the final write
+     * of a full HTTP response already fails silently today (the coroutine dies
+     * after it, and a groupless spawn drops the failure). Outside a fiber it
+     * falls back to the awaiting exec(), so the sync path keeps its semantics.
+     */
+    public static function execNoResult(PayloadInterface $payload): void
+    {
+        $currentFlow = State::getCurrentFlow();
+
+        if (!$currentFlow->isAsync) {
+            static::exec($payload);
+
+            return;
+        }
+
+        $currentFiber = Fiber::getCurrent();
+
+        if ($currentFiber === null) {
+            throw new OutsideFiberException(
+                message: 'Can\'t wait outside of fiber.',
+            );
+        }
+
+        State::markSuspending(spl_object_id($currentFiber));
+
+        try {
+            // The dispatcher performs the push off this fiber's stack and resumes
+            // the fiber right away (no result mapping is registered). A push
+            // failure is thrown back into this suspend, like in suspend().
+            Fiber::suspend(new PendingPushDto(
+                flowKey: $currentFlow->key,
+                payload: $payload,
+                awaitResult: false,
+            ));
+        } catch (Throwable $exception) {
+            throw new TaskExecutionException(
+                message: $exception->getMessage(),
+                previous: $exception,
+            );
+        } finally {
+            State::clearSuspending();
+        }
+    }
+
     public static function next(string $taskKey): TaskResultDto
     {
         $currentFlow = State::getCurrentFlow();
