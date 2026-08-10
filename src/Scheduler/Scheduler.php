@@ -518,9 +518,10 @@ class Scheduler
      *                                                   CPU-bound handler cannot starve the others
      *                                                   (0 disables)
      * @param bool                  $serverAutoStreams   the Go side pumps the next stream event on its
-     *                                                   own (the HTTP server), so the loop must not
-     *                                                   re-arm with next() per event; false for the
-     *                                                   pull-paced streams (socket/ws servers)
+     *                                                   own (all three servers do), so the loop must
+     *                                                   not re-arm with next() per event; false keeps
+     *                                                   the pull-paced protocol for a caller that
+     *                                                   still needs it
      */
     public function serve(
         string $serverFlowKey,
