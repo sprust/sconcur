@@ -109,24 +109,15 @@ func runTaskProtected(task *tasks.Task, handle func(task *tasks.Task)) {
 
 // OnDelivered runs the post-delivery bookkeeping for a result that has just
 // been pulled from the shared channel by the handler: drop the task from the
-// active set, decrement the counter and release the task context.
-//
-// The initial task of a multi-batch find/aggregate is the exception: its
-// context owns the cursor state lifetime (states.Start hooks AfterFunc on it),
-// so it must live until the state is finished or the flow is stopped.
+// active set and decrement the counter. Tasks share the flow context (no
+// per-task cancel to release); a cursor state hooked on it by states.Start is
+// cleaned up when its stream ends (handleNext) or when the flow stops.
 func (f *Flow) OnDelivered(result *dto.Result) {
 	f.mutex.Lock()
-
-	task := f.activeTasks[result.TaskKey]
+	defer f.mutex.Unlock()
 
 	delete(f.activeTasks, result.TaskKey)
 	f.tasksCount.Add(-1)
-
-	f.mutex.Unlock()
-
-	if task != nil && (task.GetMessage().IsNext || !result.HasNext) {
-		task.Cancel()
-	}
 }
 
 func (f *Flow) Count() int {

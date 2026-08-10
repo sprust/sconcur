@@ -14,11 +14,26 @@ import (
 	"sconcur/internal/logger"
 	"sconcur/internal/states"
 	"sconcur/internal/stats"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
+
+// handlerTimerPool reuses the per-request handlerTimeout timers: a NewTimer per
+// request was a top allocation site (the attribution plan, phase 5). Reuse is
+// safe since Go 1.23 — Stop/Reset discard a pending send, so a recycled timer
+// can never deliver a stale expiry.
+var handlerTimerPool = sync.Pool{
+	New: func() any {
+		timer := time.NewTimer(time.Hour)
+		timer.Stop()
+
+		return timer
+	},
+}
 
 // benchLadderL0 short-circuits every request with a constant 200 "ok" written
 // directly from the connection goroutine — PHP is never called. Rung L0 of the
@@ -361,8 +376,13 @@ func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan 
 	var timeout <-chan time.Time
 
 	if s.config.handlerTimeout > 0 {
-		timer := time.NewTimer(s.config.handlerTimeout)
-		defer timer.Stop()
+		timer := handlerTimerPool.Get().(*time.Timer)
+		timer.Reset(s.config.handlerTimeout)
+
+		defer func() {
+			timer.Stop()
+			handlerTimerPool.Put(timer)
+		}()
 
 		timeout = timer.C
 	}
@@ -556,14 +576,24 @@ func flush(flusher http.Flusher) {
 func formatAccessLine(start time.Time, method string, path string, status int) string {
 	elapsedMs := float64(time.Since(start).Microseconds()) / 1000.0
 
-	return fmt.Sprintf(
-		"%s %s %s %d %.2fms\n",
-		start.Format("2006-01-02T15:04:05.000000"),
-		sanitizeLogField(method),
-		sanitizeLogField(path),
-		status,
-		elapsedMs,
-	)
+	method = sanitizeLogField(method)
+	path = sanitizeLogField(path)
+
+	// Appended by hand instead of Sprintf: the access line is built on every
+	// request and was a top allocation site (the attribution plan, phase 5).
+	line := make([]byte, 0, len(method)+len(path)+48)
+	line = start.AppendFormat(line, "2006-01-02T15:04:05.000000")
+	line = append(line, ' ')
+	line = append(line, method...)
+	line = append(line, ' ')
+	line = append(line, path...)
+	line = append(line, ' ')
+	line = strconv.AppendInt(line, int64(status), 10)
+	line = append(line, ' ')
+	line = strconv.AppendFloat(line, elapsedMs, 'f', 2, 64)
+	line = append(line, "ms\n"...)
+
+	return string(line)
 }
 
 // sanitizeLogField escapes control bytes (C0 range and DEL) as \xNN so a value

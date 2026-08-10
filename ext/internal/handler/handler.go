@@ -16,6 +16,19 @@ import (
 // loop checks for a shutdown signal between waits).
 var ErrWaitTimeout = errors.New("wait timeout")
 
+// waitTimerPool reuses the WaitAnyTimeout deadline timers: the PHP serve loop
+// issues one waitAnyTimeoutBatch per crossing, and a NewTimer per call was a
+// top allocation site (the attribution plan, phase 5). Reuse is safe since
+// Go 1.23 — Stop/Reset discard a pending send.
+var waitTimerPool = sync.Pool{
+	New: func() any {
+		timer := time.NewTimer(time.Hour)
+		timer.Stop()
+
+		return timer
+	},
+}
+
 // resultsBufferSize buffers the shared results channel so a finished task's
 // goroutine publishes its result and exits instead of parking in AddResult until
 // the PHP side pulls it: an unbuffered send into a blocking cgo receive is a
@@ -233,8 +246,13 @@ func (h *Handler) WaitAnyTimeout(ms int) (*dto.Result, error) {
 		return result, nil
 	}
 
-	timer := time.NewTimer(time.Duration(ms) * time.Millisecond)
-	defer timer.Stop()
+	timer := waitTimerPool.Get().(*time.Timer)
+	timer.Reset(time.Duration(ms) * time.Millisecond)
+
+	defer func() {
+		timer.Stop()
+		waitTimerPool.Put(timer)
+	}()
 
 	for {
 		select {
