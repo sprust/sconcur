@@ -22,6 +22,7 @@ extension; PHP stays a thin orchestration layer. Implementation:
 - [Logs](#logs)
 - [Concurrency and limits](#concurrency-and-limits)
 - [Scaling across cores (SO_REUSEPORT)](#scaling-across-cores-so_reuseport)
+- [OPcache and JIT](#opcache-and-jit)
 - [Stopping after N requests](#stopping-after-n-requests)
 - [Graceful shutdown](#graceful-shutdown)
 - [Internals](#internals)
@@ -404,6 +405,24 @@ Caveats:
 - `SO_REUSEPORT` lets another process with the same UID bind the port and
   intercept part of the connections; keep that in mind in a multi-tenant
   environment.
+
+## OPcache and JIT
+
+A CLI process runs without OPcache by default (`opcache.enable_cli=0`), so a
+worker interprets every opcode on every request. Enabling OPcache with the
+tracing JIT is a free win for a long-lived worker:
+
+```ini
+opcache.enable_cli=1
+opcache.jit=tracing
+opcache.jit_buffer_size=128M
+```
+
+(the same three values work as `php -d` flags). Measured on the demo server:
+~8% less CPU per request on the empty route, 4–9% on the DB routes — the JIT
+compiles exactly the per-request orchestration code (scheduler loop, PSR-7
+building) that dominates the PHP side. Applies equally to the socket and
+WebSocket servers and to any long-lived SConcur process.
 
 ## Stopping after N requests
 
