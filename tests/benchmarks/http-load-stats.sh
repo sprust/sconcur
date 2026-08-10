@@ -18,7 +18,9 @@
 # Tunables (env): SERVERS, WRK_THREADS, CONNECTIONS, DURATION, PORT, ROUTE (=/all),
 #   MAXCONCURRENCY, DB_POOL_SIZE (the /db* pool per process), SAMPLE_INTERVAL
 #   (resource-sampling period, s), GOMAXPROCS (forwarded to each worker's Go
-#   runtime; empty = Go default, i.e. all cores).
+#   runtime; empty = Go default, i.e. all cores), SERVER_ENV (extra VAR=value
+#   assignments for the worker environment, space-separated), SERVER_ARGS (extra
+#   --flags appended to the server command line, e.g. --ladder=l1).
 set -euo pipefail
 
 # Force the C locale so "." is the decimal separator everywhere (docker stats emits
@@ -119,8 +121,9 @@ $DOCKER_COMPOSE exec -T php sh -c '
     while [ "$i" -lt "'"$SERVERS"'" ]; do
         SCONCUR_DB_POOL_SIZE='"$DB_POOL_SIZE"' \
         GOMAXPROCS='"${GOMAXPROCS:-}"' \
-        taskset -c "$i" php -d extension='"$EXTENSION"' '"$SCRIPT"' \
+        env '"${SERVER_ENV:-}"' taskset -c "$i" php -d extension='"$EXTENSION"' '"$SCRIPT"' \
             --address=0.0.0.0:'"$PORT"' --reusePort=1 --maxConcurrency='"$MAXCONCURRENCY"' \
+            '"${SERVER_ARGS:-}"' \
             >/dev/null 2>>"'"$STDERRLOG"'" &
         echo $! >> "'"$PIDFILE"'"
         i=$(( i + 1 ))

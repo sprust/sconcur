@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sconcur/internal/dto"
 	"sconcur/internal/features/httpserver/payloads"
 	"sconcur/internal/helpers"
@@ -18,6 +19,14 @@ import (
 
 	"github.com/vmihailenco/msgpack/v5"
 )
+
+// benchLadderL0 short-circuits every request with a constant 200 "ok" written
+// directly from the connection goroutine — PHP is never called. Rung L0 of the
+// attribution ladder (.ai/plans/cpu-per-request-attribution.ru.md): the floor
+// the Go server gives without PHP, with the access log kept for parity with the
+// other rungs. Bench-only; off unless the worker starts with
+// SCONCUR_HTTP_BENCH_L0=1.
+var benchLadderL0 = os.Getenv("SCONCUR_HTTP_BENCH_L0") == "1"
 
 // Default server tuning, used as a fallback when the PHP side sends a zero value.
 // The PHP side normally supplies these (its defaults mirror them).
@@ -225,6 +234,13 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	defer func() {
 		logger.Write(formatAccessLine(start, request.Method, request.URL.Path, status))
 	}()
+
+	if benchLadderL0 {
+		status = http.StatusOK
+		_, _ = io.WriteString(writer, "ok")
+
+		return
+	}
 
 	// Bound concurrency before touching the body, so requests waiting for a slot
 	// hold no body buffer: this caps memory (and goroutines) under load. A waiting

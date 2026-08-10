@@ -10,13 +10,17 @@ use MongoDB\Collection as NativeMongoCollection;
 use Nyholm\Psr7\Factory\Psr17Factory;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
+use SConcur\Connection\Extension;
 use SConcur\Features\HttpServer\HttpServer;
+use SConcur\Features\HttpServer\Payloads\RespondPayload;
+use SConcur\Features\HttpServer\Payloads\ServePayload;
 use SConcur\Features\Mongodb\Connection\Client as MongoClient;
 use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Features\Mysql\Connection as MysqlConnection;
 use SConcur\Features\Pgsql\Connection as PgsqlConnection;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Scheduler\Scheduler;
+use SConcur\Transport\MessagePackTransport;
 use SConcur\Tests\Impl\HttpServer\GeneratorStream;
 use SConcur\WaitGroup;
 
@@ -63,7 +67,42 @@ use SConcur\WaitGroup;
  *   --readHeaderTimeoutMs  --readTimeoutMs  --writeTimeoutMs  --idleTimeoutMs
  *   --shutdownTimeoutMs  --maxRequestBody  --maxConcurrency  --handlerTimeoutMs
  *   --maxRequests  --reusePort (0/1)
+ *
+ * Bench-only: --ladder=l1|l2|l2f runs the attribution-ladder loop instead of the
+ * normal server (see runLadderServer below).
  */
+
+// Attribution-ladder bench modes (.ai/plans/cpu-per-request-attribution.ru.md,
+// phase 4): --ladder=l1 answers every request 200 "ok" inline from the loop (no
+// Fiber), --ladder=l2 answers the same from a fresh Fiber per request. Both talk
+// to the extension directly — no Scheduler, no PSR-7, no HttpServer::serve().
+// The option is stripped from argv before fromArgs(), which rejects unknown args.
+$ladderMode = '';
+
+$_SERVER['argv'] = array_values(array_filter(
+    $_SERVER['argv'],
+    static function (string $argument) use (&$ladderMode): bool {
+        if (str_starts_with($argument, '--ladder=')) {
+            $ladderMode = substr($argument, strlen('--ladder='));
+
+            return false;
+        }
+
+        return true;
+    },
+));
+
+if (!in_array($ladderMode, ['', 'l1', 'l2', 'l2f'], true)) {
+    fwrite(STDERR, sprintf('unknown --ladder mode: %s (supported: l1, l2, l2f)%s', $ladderMode, PHP_EOL));
+
+    exit(1);
+}
+
+if ($ladderMode !== '') {
+    runLadderServer(mode: $ladderMode, argv: $_SERVER['argv']);
+
+    exit(0);
+}
 
 // A single nyholm factory plays both PSR-17 roles the server needs (it builds the
 // request handed to the handler and the fallback error responses).
@@ -1019,4 +1058,137 @@ function statusRoute(Psr17Factory $factory, string $path): ResponseInterface
     }
 
     return text($factory, 'status ' . $code, $code);
+}
+
+/**
+ * Attribution-ladder serve loop (.ai/plans/cpu-per-request-attribution.ru.md,
+ * phase 4). Speaks to the extension directly: push the listener flow, pull
+ * results with waitAnyBatch(), re-arm with next() and answer every request with
+ * a constant 200 "ok" — inline in l1; in l2 from a fresh Fiber per request that
+ * suspends with the pending respond so the push stays off the fiber stack
+ * (production-shaped); in l2f with the push on the fiber stack (the known
+ * pathological boundary crossing, kept as a reproducible reference). The delta
+ * to the L3 full server isolates the Scheduler + PSR-7 overhead, l2 − l1 the
+ * Fiber create/suspend/resume/destroy cost.
+ *
+ * Bench-only: no signal handling (kill ends the process), no graceful drain.
+ *
+ * @param array<int, string> $argv
+ */
+function runLadderServer(string $mode, array $argv): void
+{
+    $address   = '0.0.0.0:7832';
+    $reusePort = false;
+
+    foreach ($argv as $argument) {
+        if (str_starts_with($argument, '--address=')) {
+            $address = substr($argument, strlen('--address='));
+        }
+
+        if (str_starts_with($argument, '--reusePort=')) {
+            $reusePort = substr($argument, strlen('--reusePort=')) === '1';
+        }
+    }
+
+    $extension = Extension::get();
+    $flowKey   = uniqid('http_ladder_', more_entropy: true);
+
+    // Mirrors the HttpServer constructor defaults; telemetry off.
+    $serverTask = $extension->push(
+        flowKey: $flowKey,
+        payload: new ServePayload(
+            address: $address,
+            readHeaderTimeoutMs: 10_000,
+            readTimeoutMs: 30_000,
+            writeTimeoutMs: 30_000,
+            idleTimeoutMs: 60_000,
+            shutdownTimeoutMs: 5_000,
+            maxRequestBody: 10_485_760,
+            maxConcurrency: 0,
+            handlerTimeoutMs: 60_000,
+            reusePort: $reusePort,
+            telemetrySocket: '',
+            serverName: 'sconcur-ladder',
+            telemetryIntervalMs: 0,
+        ),
+    );
+
+    fwrite(
+        STDERR,
+        sprintf('sconcur http ladder (%s) listening on %s pid=%d%s', $mode, $address, getmypid(), PHP_EOL),
+    );
+
+    $respond = static function (string $requestPayload) use ($extension, $flowKey): void {
+        $requestId = (string) (MessagePackTransport::unpack($requestPayload)['rid'] ?? '');
+
+        $extension->push(
+            flowKey: $flowKey,
+            payload: RespondPayload::full(
+                requestId: $requestId,
+                status: 200,
+                headers: [],
+                body: 'ok',
+            ),
+        );
+    };
+
+    while (true) {
+        $results = $extension->waitAnyBatch(maxResults: 256);
+
+        foreach ($results as $result) {
+            // Completion results of the respond pushes need no handling.
+            if ($result->flowKey !== $flowKey || $result->key !== $serverTask->key) {
+                continue;
+            }
+
+            // The listener stream ended: a stop, or a bind error.
+            if (!$result->hasNext) {
+                if ($result->isError) {
+                    fwrite(STDERR, sprintf('ladder server error: %s%s', $result->payload, PHP_EOL));
+                }
+
+                return;
+            }
+
+            // Re-arm for the next request before answering this one.
+            $extension->next(flowKey: $flowKey, taskKey: $serverTask->key);
+
+            if ($mode === 'l1') {
+                $respond($result->payload);
+            } elseif ($mode === 'l2') {
+                // Production-shaped Fiber rung: the fiber suspends with its
+                // pending respond payload, the loop performs the cgo push off
+                // the fiber stack (like Scheduler::dispatchPendingTask) and
+                // resumes the fiber to completion.
+                $fiber = new Fiber(static function (string $requestPayload): void {
+                    $requestId = (string) (MessagePackTransport::unpack($requestPayload)['rid'] ?? '');
+
+                    Fiber::suspend(RespondPayload::full(
+                        requestId: $requestId,
+                        status: 200,
+                        headers: [],
+                        body: 'ok',
+                    ));
+                });
+
+                $pendingRespond = $fiber->start($result->payload);
+
+                if (!$pendingRespond instanceof RespondPayload) {
+                    fwrite(STDERR, 'ladder l2: fiber did not suspend with a RespondPayload' . PHP_EOL);
+
+                    exit(1);
+                }
+
+                $extension->push(flowKey: $flowKey, payload: $pendingRespond);
+
+                $fiber->resume();
+            } else {
+                // l2f: the pathological reference — the same respond, but the
+                // cgo push happens ON the fiber stack. Reproduces the
+                // known-quadratic boundary-crossing cost the scheduler exists
+                // to avoid (.ai/plans/async-fan-out-optimization.ru.md).
+                (new Fiber($respond))->start($result->payload);
+            }
+        }
+    }
 }
