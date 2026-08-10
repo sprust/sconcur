@@ -27,7 +27,7 @@ flowchart TB
     handler["handler(Connection): void — read/write loop"]
 
     client <-->|"HTTP Upgrade, then WS messages"| serve
-    serve -->|"ConnectionEvent → next() yields the connection, then one message at a time"| sched
+    serve -->|"ConnectionEvent (self-pumping stream), then messages via next()"| sched
     sched -->|"spawns a coroutine per connection"| handler
     handler -->|"write/close routed by id back to the connection"| serve
 ```

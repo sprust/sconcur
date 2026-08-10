@@ -454,7 +454,7 @@ sequenceDiagram
 
     PHP->>Go: push(ServePayload, MethodHttpServe)
     Note over Go: handleServe — net.Listen + net/http.Server.Serve()
-    Note over Go: serverState is the http.Handler (streaming state)
+    Note over Go: serverState is the http.Handler (self-pumping request stream)
     Note over PHP: Scheduler::serve() — waitAnyTimeoutBatch(250ms) loop
     Client->>Go: HTTP request
     Note over Go: ServeHTTP — acquire slot, read body, RequestEvent into the requests channel

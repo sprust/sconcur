@@ -139,8 +139,9 @@ Go extension (`ext/`):
 - `internal/handler/` — singleton orchestrator routing messages to flows
 - `internal/flows/`, `internal/tasks/` — concurrent `Flow` instances holding tasks
   and a result channel; individual task units with context cancellation
-- `internal/states/` — registry of streaming states (cursor batches, HTTP
-  requests, request-body chunks) driven by `next()`
+- `internal/states/` — registry of streaming states (cursor batches,
+  request-body chunks, client message streams) driven by `next()`; the server
+  accept streams are self-pumping and bypass it
 - `internal/logger/` — fire-and-forget async log sink: a background goroutine
   writes pre-formatted lines to stdout (buffered, timer-flushed, drops on
   overflow), so the loop never blocks on log I/O

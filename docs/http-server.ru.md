@@ -460,7 +460,7 @@ sequenceDiagram
 
     PHP->>Go: push(ServePayload, MethodHttpServe)
     Note over Go: handleServe — net.Listen + net/http.Server.Serve()
-    Note over Go: serverState — это http.Handler (стриминговое состояние)
+    Note over Go: serverState — это http.Handler (самокачающийся поток запросов)
     Note over PHP: Scheduler::serve() — цикл waitAnyTimeoutBatch(250ms)
     Client->>Go: HTTP-запрос
     Note over Go: ServeHTTP — захват слота, чтение тела, RequestEvent в канал requests

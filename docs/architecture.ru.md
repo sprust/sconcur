@@ -143,9 +143,10 @@ flowchart TB
    `FeatureExecutor::exec($payload)` приостанавливает её с
    `PendingPushDto(flowKey, payload)`. Принявшая сторона вызывает
    `Scheduler::dispatchPendingTask()`: `Extension::push()` формирует
-   `taskKey = flowKey:counter`, через cgo отправляет задачу в Go и сохраняет
-   связь `task → fiber` в `State`. Ошибка отправки бросается обратно в корутину в
-   точку suspend. Дальше её возобновляет только `Scheduler`.
+   `taskKey = flowKey:counter` и через cgo отправляет задачу в Go вместе с id
+   корутины-владельца; ожидаемые ключи flow/task записываются на `Coroutine`.
+   Ошибка отправки бросается обратно в корутину в точку suspend. Дальше её
+   возобновляет только `Scheduler`.
 3. Корутина, завершившаяся не приостановившись, кладёт результат сразу в очередь
    готовых результатов группы; иначе остаётся живой в группе и реестре
    планировщика.
@@ -156,9 +157,10 @@ flowchart TB
 5. `WaitGroup::iterate()` отдаёт готовые результаты и делегирует ожидание: на
    верхнем уровне крутит `Scheduler::run()` (цикл `waitAnyBatch`), а вложенный
    `iterate()` кооперативно приостанавливается через `Scheduler::awaitGroup()`.
-6. По `taskKey` планировщик находит корутину (`State::pullFiberByTask`), и
-   `resume($taskResult)` возвращает `TaskResultDto` из `Fiber::suspend()` внутри
-   `FeatureExecutor`.
+6. Кадр результата несёт id владельца обратно; планировщик проверяет, что
+   корутина всё ещё ждёт именно эту пару flow/task (id переиспользуются после
+   освобождения файбера), и `resume($taskResult)` возвращает `TaskResultDto` из
+   `Fiber::suspend()` внутри `FeatureExecutor`.
 7. Завершившаяся корутина отдаёт `callbackKey ⇒ <return value>`; снова
    приостановившаяся (курсор запросил следующий батч через `next`) остаётся в
    цикле. По завершении `finally → stop()` разматывает остальные и очищает

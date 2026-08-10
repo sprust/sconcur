@@ -9,7 +9,7 @@ reading inbound frames and pushing frames to the client at any time, rather than
 "one response per message".
 
 The design reference is the [HTTP server](http-server.md): the socket server reuses
-its machinery (streaming state, `Scheduler::serve`) and runs under the same
+its machinery (the self-pumping accept stream, `Scheduler::serve`) and runs under the same
 [worker master](worker-master.md).
 
 ## Framing

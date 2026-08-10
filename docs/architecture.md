@@ -142,9 +142,10 @@ Key entities:
    `FeatureExecutor::exec($payload)` suspends it with
    `PendingPushDto(flowKey, payload)`. The receiving side calls
    `Scheduler::dispatchPendingTask()`: `Extension::push()` forms
-   `taskKey = flowKey:counter`, sends the task to Go over cgo and stores the
-   `task → fiber` link in `State`. A push error is thrown back into the coroutine
-   at the suspend point. From then on only the `Scheduler` resumes it.
+   `taskKey = flowKey:counter` and sends the task to Go over cgo together with
+   the coroutine's id; the awaited flow/task keys are recorded on the
+   `Coroutine`. A push error is thrown back into the coroutine at the suspend
+   point. From then on only the `Scheduler` resumes it.
 3. A coroutine that finished without suspending puts its result straight into the
    group's ready queue; otherwise it stays live in the group and the scheduler
    registry.
@@ -155,9 +156,10 @@ Key entities:
 5. `WaitGroup::iterate()` hands out ready results and delegates waiting: at the
    top level it spins `Scheduler::run()` (the `waitAnyBatch` loop), while a
    nested `iterate()` cooperatively suspends via `Scheduler::awaitGroup()`.
-6. By `taskKey` the scheduler finds the coroutine (`State::pullFiberByTask`) and
-   `resume($taskResult)` returns `TaskResultDto` out of `Fiber::suspend()` inside
-   `FeatureExecutor`.
+6. The result frame carries the owner id back; the scheduler checks the
+   coroutine still awaits exactly this flow/task (ids are reused once a fiber is
+   freed) and `resume($taskResult)` returns `TaskResultDto` out of
+   `Fiber::suspend()` inside `FeatureExecutor`.
 7. A finished coroutine yields `callbackKey ⇒ <return value>`; one that suspended
    again (a cursor requesting the next batch via `next`) stays in the loop. On
    completion `finally → stop()` unwinds the rest and clears `State` and the Go

@@ -27,7 +27,7 @@ flowchart TB
     handler["handler(Connection): void — цикл read/write"]
 
     client <-->|"HTTP Upgrade, дальше WS-сообщения"| serve
-    serve -->|"ConnectionEvent → next() отдаёт соединение, затем по сообщению"| sched
+    serve -->|"ConnectionEvent (самокачающийся поток), затем сообщения через next()"| sched
     sched -->|"спавнит корутину на соединение"| handler
     handler -->|"write/close маршрутизируются по id обратно в соединение"| serve
 ```

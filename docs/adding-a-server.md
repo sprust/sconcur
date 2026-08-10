@@ -25,7 +25,8 @@ A server is a pair of methods, both served by one Go feature (via a `switch` on
 `Method`):
 
 - `<Server>Serve` — open the listener and stream accepted requests into PHP (a
-  streaming state: each request is the next batch that PHP pulls via `next()`);
+  self-pumping stream: a Go-side goroutine publishes each request as the next
+  stream result, no per-request `next()` crossing);
 - `<Server>Respond` — deliver one response record (whole, or head/chunk/end of a
   stream) from the PHP handler back to the waiting connection.
 
@@ -136,9 +137,8 @@ batches are the incoming requests — and hands control to the shared
   `SO_REUSEPORT` siblings.
 
 `Scheduler::serve` itself multiplexes the incoming requests and the async work of
-their handlers in a single wait loop (`waitAnyTimeoutBatch`), re-arms the stream via
-`next()`, and on drain shuts the flow down cleanly (`stopFlow`). This mechanic is
-shared and does not need rewriting.
+their handlers in a single wait loop (`waitAnyTimeoutBatch`) and on drain shuts the
+flow down cleanly (`stopFlow`). This mechanic is shared and does not need rewriting.
 
 ## Go side
 
