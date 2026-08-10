@@ -35,6 +35,9 @@ class Scheduler
      */
     private const int SERVE_POLL_INTERVAL_MS = 250;
 
+    /** How often a stalled graceful drain reports what it is still waiting for. */
+    private const int DRAIN_DIAGNOSTIC_INTERVAL_SECONDS = 5;
+
     /**
      * Default quantum of switch(): a coroutine yields at most once per this many
      * milliseconds, so the call can sit inside a hot loop and cost one hrtime()
@@ -319,6 +322,18 @@ class Scheduler
         // parking and the real suspend below would then hang forever.
         State::markSuspending(spl_object_id($current));
 
+        // Preemption may have parked this coroutine after the caller's
+        // liveness check but before the markSuspending above; while it was
+        // parked, the scheduler kept delivering results, so the group may have
+        // settled by now — its wake ran with no waiter registered and will
+        // never come again. Suspending would hang forever; return instead and
+        // let iterate() re-check ready/members.
+        if (!$group->isLive() || $group->hasReadyOrFailure()) {
+            State::clearSuspending();
+
+            return;
+        }
+
         $this->groupWaiters[$group->key()] = spl_object_id($current);
 
         try {
@@ -515,6 +530,8 @@ class Scheduler
     ): void {
         $draining = false;
 
+        $lastDrainDiagnosticAt = 0.0;
+
         $dispatchedCount = 0;
 
         if ($preemptionQuantumMs > 0) {
@@ -529,6 +546,8 @@ class Scheduler
                 if (!$draining && ($shouldStop() || ($maxRequests > 0 && $dispatchedCount >= $maxRequests))) {
                     // Stop accepting new requests; keep draining in-flight handlers.
                     $draining = true;
+
+                    $lastDrainDiagnosticAt = microtime(true);
 
                     $reason = ($maxRequests > 0 && $dispatchedCount >= $maxRequests) ? 'limit' : 'signal';
 
@@ -560,6 +579,46 @@ class Scheduler
                 );
 
                 if ($result === null) {
+                    // A stalled drain is otherwise silent: report what the loop
+                    // still waits for, so a worker stuck on a lost result is
+                    // diagnosable from its log instead of hanging namelessly.
+                    if (
+                        $draining
+                        && (microtime(true) - $lastDrainDiagnosticAt) >= self::DRAIN_DIAGNOSTIC_INTERVAL_SECONDS
+                    ) {
+                        $lastDrainDiagnosticAt = microtime(true);
+
+                        $coroutineStates = [];
+
+                        foreach ($this->coroutines as $trackedCoroutine) {
+                            $fiberState = $trackedCoroutine->fiber->isTerminated()
+                                ? 'terminated'
+                                : ($trackedCoroutine->fiber->isSuspended() ? 'suspended' : 'running');
+
+                            $coroutineStates[] = sprintf(
+                                '%s%s=%s',
+                                $trackedCoroutine->flowKey !== '' ? $trackedCoroutine->flowKey : 'member',
+                                $trackedCoroutine->callbackKey !== '' ? '/' . $trackedCoroutine->callbackKey : '',
+                                $fiberState,
+                            );
+
+                            if (count($coroutineStates) >= 8) {
+                                break;
+                            }
+                        }
+
+                        $onShutdownStep(sprintf(
+                            'drain stalled: %d in-flight, %d go tasks, %d dropped, tracked=[%s], waiters=[%s], switched=%d, parked on [%s]',
+                            $this->spawnedCount,
+                            Extension::get()->count(),
+                            $this->droppedResultsCount,
+                            implode(', ', $coroutineStates),
+                            implode(', ', array_keys($this->groupWaiters)),
+                            count($this->switchedCoroutines),
+                            implode(', ', State::pendingFiberTasks()),
+                        ));
+                    }
+
                     $this->resumeNextSwitched();
 
                     continue;

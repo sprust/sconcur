@@ -258,6 +258,30 @@ class State
         return $fiberId;
     }
 
+    /**
+     * Snapshot of the task keys coroutines are currently parked on, as
+     * "flowKey:taskKey" strings — a shutdown diagnostic logged by serve() when
+     * a drain stalls (results these coroutines wait for never arrived).
+     *
+     * @return array<int, string>
+     */
+    public static function pendingFiberTasks(int $limit = 10): array
+    {
+        $pending = [];
+
+        foreach (static::$fiberTasks as $flowKey => $tasks) {
+            foreach ($tasks as $taskKey => $fiberId) {
+                $pending[] = $flowKey . ':' . $taskKey;
+
+                if (count($pending) >= $limit) {
+                    return $pending;
+                }
+            }
+        }
+
+        return $pending;
+    }
+
     public static function registerSyncTaskFlow(string $taskKey, string $flowKey): void
     {
         static::$syncTaskFlows[$taskKey] = $flowKey;

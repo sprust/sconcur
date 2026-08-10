@@ -92,8 +92,8 @@ $_SERVER['argv'] = array_values(array_filter(
     },
 ));
 
-if (!in_array($ladderMode, ['', 'l1', 'l2', 'l2f'], true)) {
-    fwrite(STDERR, sprintf('unknown --ladder mode: %s (supported: l1, l2, l2f)%s', $ladderMode, PHP_EOL));
+if (!in_array($ladderMode, ['', 'l1', 'l2', 'l2f', 'l2h'], true)) {
+    fwrite(STDERR, sprintf('unknown --ladder mode: %s (supported: l1, l2, l2f, l2h)%s', $ladderMode, PHP_EOL));
 
     exit(1);
 }
@@ -1093,6 +1093,12 @@ function runLadderServer(string $mode, array $argv): void
     $extension = Extension::get();
     $flowKey   = uniqid('http_ladder_', more_entropy: true);
 
+    // The l2h rung reuses the real (private) HttpServer::decodeRequest via
+    // reflection, so the pipeline under test is the production code, not a
+    // copy; the invoke overhead is ~0.4 us and is noted in the plan.
+    $psr17Factory  = new Psr17Factory();
+    $decodeRequest = new ReflectionMethod(HttpServer::class, 'decodeRequest');
+
     // Mirrors the HttpServer constructor defaults; telemetry off.
     $serverTask = $extension->push(
         flowKey: $flowKey,
@@ -1155,6 +1161,37 @@ function runLadderServer(string $mode, array $argv): void
 
             if ($mode === 'l1') {
                 $respond($result->payload);
+            } elseif ($mode === 'l2h') {
+                // l2 plus the full production handle pipeline inside the fiber:
+                // decodeRequest -> PSR-7 request, nyholm response, headers into
+                // the respond payload. L3 − l2h isolates the Scheduler/State
+                // overhead, l2h − l2 the PHP handle pipeline under real load.
+                $fiber = new Fiber(static function (string $requestPayload) use ($psr17Factory, $decodeRequest): void {
+                    [$requestId, $request] = $decodeRequest->invoke(null, $psr17Factory, $requestPayload);
+
+                    $response = $psr17Factory->createResponse(200);
+
+                    $response->getBody()->write('ok');
+
+                    Fiber::suspend(RespondPayload::full(
+                        requestId: $requestId,
+                        status: $response->getStatusCode(),
+                        headers: $response->getHeaders(),
+                        body: (string) $response->getBody(),
+                    ));
+                });
+
+                $pendingRespond = $fiber->start($result->payload);
+
+                if (!$pendingRespond instanceof RespondPayload) {
+                    fwrite(STDERR, 'ladder l2h: fiber did not suspend with a RespondPayload' . PHP_EOL);
+
+                    exit(1);
+                }
+
+                $extension->push(flowKey: $flowKey, payload: $pendingRespond);
+
+                $fiber->resume();
             } elseif ($mode === 'l2') {
                 // Production-shaped Fiber rung: the fiber suspends with its
                 // pending respond payload, the loop performs the cgo push off
