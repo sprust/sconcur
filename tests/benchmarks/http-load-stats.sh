@@ -17,7 +17,8 @@
 #
 # Tunables (env): SERVERS, WRK_THREADS, CONNECTIONS, DURATION, PORT, ROUTE (=/all),
 #   MAXCONCURRENCY, DB_POOL_SIZE (the /db* pool per process), SAMPLE_INTERVAL
-#   (resource-sampling period, s).
+#   (resource-sampling period, s), GOMAXPROCS (forwarded to each worker's Go
+#   runtime; empty = Go default, i.e. all cores).
 set -euo pipefail
 
 # Force the C locale so "." is the decimal separator everywhere (docker stats emits
@@ -104,6 +105,7 @@ else
     echo "   route           : $ROUTE"
 fi
 echo "   db pool / proc  : $DB_POOL_SIZE  (the /db* routes)"
+[ -n "${GOMAXPROCS:-}" ] && echo "   GOMAXPROCS      : $GOMAXPROCS  (per worker)"
 echo "   target          : http://$IP:$PORT$ROUTE  (container bridge IP, no NAT)"
 echo "=================================================================="
 
@@ -116,6 +118,7 @@ $DOCKER_COMPOSE exec -T php sh -c '
     i=0
     while [ "$i" -lt "'"$SERVERS"'" ]; do
         SCONCUR_DB_POOL_SIZE='"$DB_POOL_SIZE"' \
+        GOMAXPROCS='"${GOMAXPROCS:-}"' \
         taskset -c "$i" php -d extension='"$EXTENSION"' '"$SCRIPT"' \
             --address=0.0.0.0:'"$PORT"' --reusePort=1 --maxConcurrency='"$MAXCONCURRENCY"' \
             >/dev/null 2>>"'"$STDERRLOG"'" &
