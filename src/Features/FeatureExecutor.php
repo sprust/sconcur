@@ -217,8 +217,8 @@ readonly class FeatureExecutor
      * A push failure is thrown back into this suspend by the dispatcher and
      * surfaces as TaskExecutionException, exactly like any resume-time failure.
      * The task key is unknown here (the push happens on the resuming side); result
-     * routing is guaranteed by the State::addFiberTask mapping the dispatcher
-     * registers at push time.
+     * routing is guaranteed by the owner id the dispatcher sends with the push —
+     * the Go side carries it back in the result frame.
      */
     protected static function suspend(PendingPushDto|PendingNextDto $pendingTask): TaskResultDto
     {

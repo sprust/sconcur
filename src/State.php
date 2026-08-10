@@ -51,13 +51,6 @@ class State
     protected static array $flowFibers = [];
 
     /**
-     * array<$flowKey, array<$taskKey, $fiberId>>
-     *
-     * @var array<string, array<string, int>>
-     */
-    protected static array $fiberTasks = [];
-
-    /**
      * Flows created for synchronous (non-fiber) iterable operations. Such a flow
      * lives until its cursor is exhausted or the iterator is released.
      *
@@ -240,48 +233,6 @@ class State
         );
     }
 
-    public static function addFiberTask(string $flowKey, string $taskKey, int $fiberId): void
-    {
-        static::$fiberTasks[$flowKey][$taskKey] = $fiberId;
-    }
-
-    public static function pullFiberByTask(string $flowKey, string $taskKey): ?int
-    {
-        if (!array_key_exists($flowKey, static::$fiberTasks)) {
-            return null;
-        }
-
-        $fiberId = static::$fiberTasks[$flowKey][$taskKey] ?? null;
-
-        unset(static::$fiberTasks[$flowKey][$taskKey]);
-
-        return $fiberId;
-    }
-
-    /**
-     * Snapshot of the task keys coroutines are currently parked on, as
-     * "flowKey:taskKey" strings — a shutdown diagnostic logged by serve() when
-     * a drain stalls (results these coroutines wait for never arrived).
-     *
-     * @return array<int, string>
-     */
-    public static function pendingFiberTasks(int $limit = 10): array
-    {
-        $pending = [];
-
-        foreach (static::$fiberTasks as $flowKey => $tasks) {
-            foreach ($tasks as $taskKey => $fiberId) {
-                $pending[] = $flowKey . ':' . $taskKey;
-
-                if (count($pending) >= $limit) {
-                    return $pending;
-                }
-            }
-        }
-
-        return $pending;
-    }
-
     public static function registerSyncTaskFlow(string $taskKey, string $flowKey): void
     {
         static::$syncTaskFlows[$taskKey] = $flowKey;
@@ -300,10 +251,14 @@ class State
         Extension::get()->stopFlow($flowKey);
     }
 
-    public static function deleteFlow(string $flowKey): void
+    /**
+     * @param bool $stopExtensionFlow false skips the Go-side stopFlow crossing —
+     *                                for a flow that was never created there (a
+     *                                spawned coroutine that only fired detached
+     *                                fire-and-forget pushes)
+     */
+    public static function deleteFlow(string $flowKey, bool $stopExtensionFlow = true): void
     {
-        unset(static::$fiberTasks[$flowKey]);
-
         if (isset(static::$flowFibers[$flowKey])) {
             foreach (static::$flowFibers[$flowKey] as $fiberId => $_) {
                 static::unRegisterFiber($fiberId);
@@ -318,7 +273,9 @@ class State
             }
         }
 
-        Extension::get()->stopFlow($flowKey);
+        if ($stopExtensionFlow) {
+            Extension::get()->stopFlow($flowKey);
+        }
     }
 
     protected static function newFlowKey(): string

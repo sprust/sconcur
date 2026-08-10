@@ -41,10 +41,12 @@ import (
 //	[2:6]    execMs   uint32 (big-endian)
 //	[6:8]    flowKey  length uint16 (big-endian)
 //	[8:10]   taskKey  length uint16 (big-endian)
-//	[10:]    method bytes, then flowKey bytes, then taskKey bytes, then the raw
+//	[10:18]  ownerId  uint64 (big-endian; the PHP coroutine awaiting this
+//	         result, 0 = none — lets the PHP side route without a task map)
+//	[18:]    method bytes, then flowKey bytes, then taskKey bytes, then the raw
 //	         payload (the rest)
 const (
-	frameHeaderSize  = 10
+	frameHeaderSize  = 18
 	frameFlagError   = 1 << 0
 	frameFlagHasNext = 1 << 1
 )
@@ -71,6 +73,7 @@ func appendResultFrame(dst []byte, result *dto.Result) []byte {
 	dst = binary.BigEndian.AppendUint32(dst, uint32(result.ExecutionMs))
 	dst = binary.BigEndian.AppendUint16(dst, uint16(len(result.FlowKey)))
 	dst = binary.BigEndian.AppendUint16(dst, uint16(len(result.TaskKey)))
+	dst = binary.BigEndian.AppendUint64(dst, uint64(result.OwnerId))
 	dst = append(dst, result.Method...)
 	dst = append(dst, result.FlowKey...)
 	dst = append(dst, result.TaskKey...)
@@ -207,6 +210,7 @@ func push(
 	tkLen C.int,
 	pl unsafe.Pointer,
 	plLen C.int,
+	ownerId C.longlong,
 ) *C.char {
 	msg := &dto.Message{
 		FlowKey: C.GoStringN(fk, fkLen),
@@ -214,6 +218,7 @@ func push(
 		TaskKey: C.GoStringN(tk, tkLen),
 		Payload: C.GoBytes(pl, plLen),
 		IsNext:  false,
+		OwnerId: int64(ownerId),
 	}
 
 	err := handler.Push(msg)
@@ -228,11 +233,12 @@ func push(
 }
 
 //export next
-func next(fk *C.char, tk *C.char) *C.char {
+func next(fk *C.char, tk *C.char, ownerId C.longlong) *C.char {
 	msg := &dto.Message{
 		FlowKey: C.GoString(fk),
 		TaskKey: C.GoString(tk),
 		IsNext:  true,
+		OwnerId: int64(ownerId),
 	}
 
 	err := handler.Push(msg)

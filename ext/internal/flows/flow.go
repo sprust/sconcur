@@ -85,14 +85,15 @@ func (f *Flow) HandleMessage(msg *dto.Message) error {
 	f.activeTasks[msg.TaskKey] = task
 	f.tasksCount.Add(1)
 
-	go runTaskProtected(task, handle)
+	go RunTaskProtected(task, handle)
 
 	return nil
 }
 
-// runTaskProtected converts a panic into a task error result:
+// RunTaskProtected converts a panic into a task error result:
 // an unrecovered panic in a c-shared library aborts the whole PHP process.
-func runTaskProtected(task *tasks.Task, handle func(task *tasks.Task)) {
+// Exported for the handler's detached (flowless) task path.
+func RunTaskProtected(task *tasks.Task, handle func(task *tasks.Task)) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			task.AddResult(

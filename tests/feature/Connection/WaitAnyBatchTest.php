@@ -179,7 +179,7 @@ class WaitAnyBatchTest extends BaseTestCase
     {
         $method = 'sl';
 
-        $lyingFrame = pack('CCNnn', 0, strlen($method), 0, 999, 4) . $method . 'flow' . 'task';
+        $lyingFrame = pack('CCNnnJ', 0, strlen($method), 0, 999, 4, 0) . $method . 'flow' . 'task';
         $batch      = pack('n', 1) . pack('N', strlen($lyingFrame)) . $lyingFrame;
 
         $this->expectException(UnexpectedResponseFormatException::class);
@@ -264,8 +264,9 @@ class WaitAnyBatchTest extends BaseTestCase
 
     /**
      * Builds one result frame in the documented layout (flags + methodLen +
-     * execMs + flowKeyLen + taskKeyLen, then method, flowKey, taskKey, payload)
-     * — must stay in sync with buildResultFrame in ext/main.go.
+     * execMs + flowKeyLen + taskKeyLen + ownerFiberId(uint64), then method,
+     * flowKey, taskKey, payload) — must stay in sync with buildResultFrame in
+     * ext/main.go.
      */
     protected static function buildResultFrame(string $taskKey): string
     {
@@ -274,12 +275,13 @@ class WaitAnyBatchTest extends BaseTestCase
         $payload = 'payload-' . $taskKey;
 
         $header = pack(
-            'CCNnn',
+            'CCNnnJ',
             0,
             strlen($method),
             0,
             strlen($flowKey),
             strlen($taskKey),
+            0,
         );
 
         return $header . $method . $flowKey . $taskKey . $payload;

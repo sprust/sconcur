@@ -594,8 +594,12 @@ class Scheduler
                         $lastDrainDiagnosticAt = microtime(true);
 
                         $coroutineStates = [];
+                        $parkedTaskKeys  = [];
 
                         foreach ($this->coroutines as $trackedCoroutine) {
+                            if ($trackedCoroutine->awaitedTaskKey !== '' && count($parkedTaskKeys) < 10) {
+                                $parkedTaskKeys[] = $trackedCoroutine->awaitedFlowKey . ':' . $trackedCoroutine->awaitedTaskKey;
+                            }
                             $fiberState = $trackedCoroutine->fiber->isTerminated()
                                 ? 'terminated'
                                 : ($trackedCoroutine->fiber->isSuspended() ? 'suspended' : 'running');
@@ -620,7 +624,7 @@ class Scheduler
                             implode(', ', $coroutineStates),
                             implode(', ', array_keys($this->groupWaiters)),
                             count($this->switchedCoroutines),
-                            implode(', ', State::pendingFiberTasks()),
+                            implode(', ', $parkedTaskKeys),
                         ));
                     }
 
@@ -713,8 +717,8 @@ class Scheduler
     {
         // The dispatch may run on a coroutine's stack (a nested WaitGroup::add
         // starts members from inside the parent coroutine). Preempting the
-        // caller between push() and addFiberTask() would let the task's result
-        // arrive with no owner mapping, so the whole dispatch is a suspend
+        // caller between push() and the awaited-keys bookkeeping would let the
+        // task's result arrive with no owner mapping, so the whole dispatch is a suspend
         // transition for the calling fiber (no-op outside fibers).
         $callingFiber = Fiber::getCurrent();
 
@@ -736,14 +740,20 @@ class Scheduler
 
                 try {
                     if ($suspendValue instanceof PendingPushDto) {
+                        // A fire-and-forget push is detached: the empty flow key
+                        // tells the Go side to run the task without a flow (no
+                        // stopFlow crossing will follow), and no owner is set —
+                        // no result will ever come.
                         $runningTask = Extension::get()->push(
-                            flowKey: $suspendValue->flowKey,
+                            flowKey: $suspendValue->awaitResult ? $suspendValue->flowKey : '',
                             payload: $suspendValue->payload,
+                            ownerFiberId: $suspendValue->awaitResult ? $fiberId : 0,
                         );
                     } else {
                         $runningTask = Extension::get()->next(
                             flowKey: $suspendValue->flowKey,
                             taskKey: $suspendValue->taskKey,
+                            ownerFiberId: $fiberId,
                         );
                     }
                 } catch (Throwable $exception) {
@@ -772,11 +782,17 @@ class Scheduler
                     continue;
                 }
 
-                State::addFiberTask(
-                    flowKey: $suspendValue->flowKey,
-                    taskKey: $runningTask->key,
-                    fiberId: $fiberId,
-                );
+                // The result routes back via the frame-carried ownerFiberId; the
+                // awaited keys stored on the coroutine validate it (spl_object_id
+                // reuse safety), and flowUsed records that this coroutine's flow
+                // exists on the Go side and needs a stopFlow at cleanup.
+                $coroutine = $this->coroutines[$fiberId] ?? null;
+
+                if ($coroutine !== null) {
+                    $coroutine->awaitedFlowKey = $suspendValue->flowKey;
+                    $coroutine->awaitedTaskKey = $runningTask->key;
+                    $coroutine->flowUsed       = true;
+                }
 
                 return;
             }
@@ -889,33 +905,33 @@ class Scheduler
     }
 
     /**
-     * Routes a delivered result to the coroutine that issued its task. A result
-     * with no known owner is dropped silently — it is a legitimate leftover,
-     * not a desync: results arrive in batches, and handling an earlier result
-     * of the same batch may have stopped this result's flow (WaitGroup::stop,
-     * shutdown, a server drain). The Go side filters such results at delivery,
-     * but a batch crosses the boundary before the stop happens.
+     * Routes a delivered result to the coroutine that issued its task, by the
+     * frame-carried ownerFiberId (set at push time). The stored awaited keys
+     * must match exactly: spl_object_id is reused once a fiber is freed, so a
+     * stale result whose owner id now belongs to a different coroutine must be
+     * dropped, not delivered out of turn. A result with no live matching owner
+     * is dropped silently — it is a legitimate leftover, not a desync: results
+     * arrive in batches, and handling an earlier result of the same batch may
+     * have stopped this result's flow (WaitGroup::stop, shutdown, a server
+     * drain). The Go side filters such results at delivery, but a batch crosses
+     * the boundary before the stop happens.
      */
     protected function resumeByResult(TaskResultDto $result): void
     {
-        $fiberId = State::pullFiberByTask(
-            flowKey: $result->flowKey,
-            taskKey: $result->key,
-        );
+        $coroutine = $this->coroutines[$result->ownerFiberId] ?? null;
 
-        if ($fiberId === null) {
+        if (
+            $coroutine === null
+            || $coroutine->awaitedTaskKey !== $result->key
+            || $coroutine->awaitedFlowKey !== $result->flowKey
+        ) {
             ++$this->droppedResultsCount;
 
             return;
         }
 
-        $coroutine = $this->coroutines[$fiberId] ?? null;
-
-        if ($coroutine === null) {
-            ++$this->droppedResultsCount;
-
-            return;
-        }
+        $coroutine->awaitedFlowKey = '';
+        $coroutine->awaitedTaskKey = '';
 
         $this->resumeCoroutine($coroutine, $result);
     }
@@ -1004,10 +1020,15 @@ class Scheduler
         }
 
         // Spawned coroutine owns a per-coroutine flow; stop it (Go side + State),
-        // which also unregisters the fiber.
+        // which also unregisters the fiber. A coroutine that only fired detached
+        // (fire-and-forget) pushes never created its flow on the Go side, so the
+        // stopFlow crossing is skipped and only the PHP registries are cleaned.
         --$this->spawnedCount;
 
-        State::deleteFlow($coroutine->flowKey);
+        State::deleteFlow(
+            flowKey: $coroutine->flowKey,
+            stopExtensionFlow: $coroutine->flowUsed,
+        );
     }
 
     protected function wakeGroupWaiters(WaitGroup $group): void

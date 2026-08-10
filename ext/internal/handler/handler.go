@@ -7,6 +7,7 @@ import (
 	"sconcur/internal/dto"
 	"sconcur/internal/features"
 	"sconcur/internal/flows"
+	"sconcur/internal/tasks"
 	"sync"
 	"time"
 )
@@ -111,6 +112,34 @@ func NewHandler() *Handler {
 }
 
 func (h *Handler) Push(msg *dto.Message) error {
+	// Detached fire-and-forget task (empty flow key): the caller awaits no
+	// result and the task needs no cancellation scope of its own, so no flow is
+	// created and no stopFlow crossing will ever follow. Used by the
+	// fire-and-forget respond of a full HTTP response.
+	//
+	// Runs synchronously on the calling (PHP) thread, not in a goroutine: the
+	// write-command handover rides an unbuffered channel, so by the time this
+	// push returns the connection goroutine has accepted the command and the
+	// write is guaranteed to happen — a graceful drain that stops the server
+	// flow right after the coroutine ends can no longer outrun the response.
+	// Detached handlers must therefore never block (the respond handover is
+	// bounded by the connection-side guards).
+	if msg.FlowKey == "" {
+		if msg.IsNext {
+			return errors.New("next requires a flow key")
+		}
+
+		featureHandler, err := features.DetectMessageHandler(msg.Method)
+
+		if err != nil {
+			return err
+		}
+
+		flows.RunTaskProtected(tasks.NewTask(h.ctx, h.results, msg), featureHandler.Handle)
+
+		return nil
+	}
+
 	flow := h.flows.InitFlow(h.ctx, msg.FlowKey, h.results)
 
 	return flow.HandleMessage(msg)
