@@ -377,10 +377,12 @@ session.
   `max_connections = 151` turns a third of the responses into "Too many connections".
   The useful size is the expected in-flight per process plus a small margin; raising
   `max_connections` to 500 and inflating the pools moved nothing (±1%).
-- Open item: from 3 workers up, 0.06–0.24% of the SConcur responses on this handle
-  came back non-2xx (0.8–2.6% on `/db-rw` below); RoadRunner and Swoole had none.
-  Shrinking the pools changed neither the throughput nor the error share, so the
-  connection limit is not the cause; the cause is not identified yet.
+- The non-2xx responses (0.06–0.24% here, 0.8–2.6% on `/db-rw`) that RoadRunner
+  and Swoole did not have turned out to be a demo-server bug, not the library:
+  `serverOnce()` in `tests/servers/http/http-server.php` called
+  `Scheduler::switch()` statically, so coroutines that hit the lazy DB-context
+  build window at the start of a run failed with a 500. With the fix — zero
+  non-2xx on both handles.
 
 This is the same boundary the cheap-point-query row of the verdict table draws
 ([positioning](positioning.md#is-sconcur-for-you)): with nothing to overlap inside a

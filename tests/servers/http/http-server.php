@@ -116,6 +116,20 @@ $server = HttpServer::fromArgs(
     argv: $_SERVER['argv'],
     serverRequestFactory: $psr17Factory,
     responseFactory: $psr17Factory,
+    // A handler failure otherwise surfaces as a bare 500 with no trace; the
+    // demo/test server logs it so load-test error rates are diagnosable.
+    onError: static function (Throwable $exception, ServerRequestInterface $request): ?ResponseInterface {
+        fwrite(STDERR, sprintf(
+            'handler error: %s %s: %s: %s%s',
+            $request->getMethod(),
+            $request->getUri()->getPath(),
+            $exception::class,
+            $exception->getMessage(),
+            PHP_EOL,
+        ));
+
+        return null;
+    },
 );
 
 // Where uploads land (ephemeral, shared across reuse-port workers via the temp dir;
@@ -221,7 +235,7 @@ function serverOnce(string $key, Closure $factory): mixed
     static $building = [];
 
     while (isset($building[$key])) {
-        Scheduler::switch();
+        Scheduler::get()->switch();
     }
 
     if (array_key_exists($key, $values)) {
