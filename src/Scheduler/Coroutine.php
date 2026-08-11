@@ -43,6 +43,9 @@ class Coroutine
      * @param string         $callbackKey key returned by WaitGroup::add for this coroutine (empty when spawned)
      * @param string         $flowKey     per-coroutine flow key; set for spawned coroutines so the Scheduler can
      *                                    stop the flow when they finish (group coroutines are cleaned by the group)
+     * @param bool           $pooled      the fiber came from the Scheduler's FiberPool: it never terminates —
+     *                                    its worker loop parks with FiberPool::IDLE when the job finishes, and
+     *                                    the Scheduler releases it back to the pool instead of dropping it
      */
     public function __construct(
         public readonly int $id,
@@ -50,6 +53,7 @@ class Coroutine
         public readonly ?WaitGroup $group,
         public readonly string $callbackKey,
         public readonly string $flowKey = '',
+        public readonly bool $pooled = false,
     ) {
     }
 }

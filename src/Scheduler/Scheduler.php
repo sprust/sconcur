@@ -56,6 +56,17 @@ class Scheduler
     protected static ?Scheduler $instance = null;
 
     /**
+     * Recycles the fibers of spawned coroutines: a request handler runs on a
+     * pooled fiber whose stack is mapped once, not created and unmapped per
+     * request. Stale-result safety does not depend on fiber identity: a pooled
+     * fiber's spl_object_id repeats across requests by construction, but
+     * resumeByResult() validates the awaited flow/task keys, and those are fed
+     * by never-reused monotonic counters ($spawnCounter here, the task counter
+     * in Extension::push).
+     */
+    protected FiberPool $fiberPool;
+
+    /**
      * All live coroutines across every WaitGroup, keyed by fiber id.
      *
      * @var array<int, Coroutine>
@@ -124,6 +135,11 @@ class Scheduler
      */
     protected int $spawnCounter = 0;
 
+    public function __construct()
+    {
+        $this->fiberPool = new FiberPool();
+    }
+
     public static function get(): Scheduler
     {
         if (static::$instance === null) {
@@ -182,7 +198,14 @@ class Scheduler
 
             if ($coroutine->fiber->isSuspended()) {
                 try {
-                    $coroutine->fiber->throw(new FlowStoppedException(message: 'Flow stopped'));
+                    $suspendValue = $coroutine->fiber->throw(new FlowStoppedException(message: 'Flow stopped'));
+
+                    // The pooled worker loop catches the unwind and parks idle
+                    // again; recycle the fiber so the scheduler stays fully
+                    // usable after a shutdown() call.
+                    if ($suspendValue === FiberPool::IDLE) {
+                        $this->fiberPool->release($coroutine->fiber);
+                    }
                 } catch (Throwable) {
                     // The unwinding handler may surface an exception (or fiber
                     // switching may be forbidden in a fatal-error shutdown); it
@@ -214,10 +237,15 @@ class Scheduler
      * The coroutine gets its own flow, so its async calls run concurrently with
      * everything else and the flow is stopped when it finishes; its return value
      * is not collected. The callback is expected to handle its own errors.
+     *
+     * The coroutine runs on a fiber from the FiberPool, not a fresh one: the
+     * per-request stack lifecycle (page faults on first touch, munmap TLB
+     * shootdown) dominated the spawn cost. Completion is signaled by the worker
+     * loop parking with FiberPool::IDLE instead of the fiber terminating.
      */
     public function spawn(Closure $callback): void
     {
-        $fiber   = new Fiber($callback);
+        $fiber   = $this->fiberPool->acquire();
         $fiberId = spl_object_id($fiber);
         $flowKey = 'sp_' . (++$this->spawnCounter);
 
@@ -231,7 +259,7 @@ class Scheduler
 
         // Inherit the context of whoever spawned us — the current fiber, or the
         // root when spawned outside any fiber (the server loop). Recorded before
-        // start() so the handler's first run already sees the inherited keys.
+        // the resume so the handler's first run already sees the inherited keys.
         State::registerCoroutineContext(
             fiberId: $fiberId,
             parentFiberId: State::currentContextFiberId(),
@@ -243,6 +271,7 @@ class Scheduler
             group: null,
             callbackKey: '',
             flowKey: $flowKey,
+            pooled: true,
         );
 
         $this->register($coroutine);
@@ -250,24 +279,29 @@ class Scheduler
         ++$this->spawnedCount;
 
         try {
-            // Run up to the first suspend (its first async call), like WaitGroup::add.
-            $suspendValue = $fiber->start();
+            // Hand the job to the pooled worker loop; it runs up to the job's
+            // first suspend (its first async call), like a fresh start() did.
+            $suspendValue = $fiber->resume($callback);
 
-            $this->dispatchPendingTask(
+            $suspendValue = $this->dispatchPendingTask(
                 fiber: $fiber,
                 fiberId: $fiberId,
                 suspendValue: $suspendValue,
             );
         } catch (Throwable) {
             // Groupless: nowhere to report. Clean up and keep the loop alive.
+            // The fiber's state is unknown here, so it is not returned to the
+            // pool; the pool creates a replacement on demand.
             $this->forget($coroutine);
 
             return;
         }
 
-        // Fully synchronous handler: nothing to wait for, clean up immediately.
-        if ($fiber->isTerminated()) {
-            $this->forget($coroutine);
+        // The worker loop parked idle: the handler finished without awaiting
+        // anything (fully synchronous, or only fire-and-forget pushes). Clean
+        // up and recycle the fiber immediately.
+        if ($suspendValue === FiberPool::IDLE) {
+            $this->finishPooled($coroutine);
         }
     }
 
@@ -713,8 +747,13 @@ class Scheduler
      * and suspend with another pending task, hence the loop. Whatever escapes
      * the coroutine propagates to the caller like any start()/resume() failure.
      * A suspend without a pending task (e.g. awaitGroup) is left untouched.
+     *
+     * Returns the final suspend value — the one the dispatch loop stopped on.
+     * The fire-and-forget path resumes the coroutine internally, so the value
+     * the caller originally saw may be stale by now; a pooled coroutine's
+     * completion (FiberPool::IDLE) is only visible in this returned value.
      */
-    public function dispatchPendingTask(Fiber $fiber, int $fiberId, mixed $suspendValue): void
+    public function dispatchPendingTask(Fiber $fiber, int $fiberId, mixed $suspendValue): mixed
     {
         // The dispatch may run on a coroutine's stack (a nested WaitGroup::add
         // starts members from inside the parent coroutine). Preempting the
@@ -732,11 +771,11 @@ class Scheduler
                 if ($suspendValue instanceof PendingSwitchDto) {
                     $this->switchedCoroutines[] = $fiberId;
 
-                    return;
+                    return $suspendValue;
                 }
 
                 if (!($suspendValue instanceof PendingPushDto) && !($suspendValue instanceof PendingNextDto)) {
-                    return;
+                    return $suspendValue;
                 }
 
                 try {
@@ -795,7 +834,7 @@ class Scheduler
                     $coroutine->flowUsed       = true;
                 }
 
-                return;
+                return $suspendValue;
             }
         } finally {
             if ($callingFiber !== null) {
@@ -948,7 +987,7 @@ class Scheduler
         try {
             $suspendValue = $coroutine->fiber->resume($resumeValue);
 
-            $this->dispatchPendingTask(
+            $suspendValue = $this->dispatchPendingTask(
                 fiber: $coroutine->fiber,
                 fiberId: $coroutine->id,
                 suspendValue: $suspendValue,
@@ -959,11 +998,34 @@ class Scheduler
             return;
         }
 
+        // A pooled fiber never terminates: its worker loop parking idle is the
+        // completion signal.
+        if ($coroutine->pooled) {
+            if ($suspendValue === FiberPool::IDLE) {
+                $this->finishPooled($coroutine);
+            }
+
+            return;
+        }
+
         if ($coroutine->fiber->isTerminated()) {
             $this->completeCoroutine($coroutine);
         }
         // Otherwise the coroutine suspended again on its next task — the next
         // tick will deliver that result.
+    }
+
+    /**
+     * Completion of a pooled (spawned) coroutine: the same cleanup as forget()
+     * — the flow, the registries and the coroutine context are all keyed by the
+     * fiber id and released there — plus the fiber goes back to the pool for
+     * the next request.
+     */
+    protected function finishPooled(Coroutine $coroutine): void
+    {
+        $this->forget($coroutine);
+
+        $this->fiberPool->release($coroutine->fiber);
     }
 
     protected function completeCoroutine(Coroutine $coroutine): void

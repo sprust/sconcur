@@ -110,6 +110,13 @@ feature's doc. Key PHP classes not covered there:
   `get()`, so `exit()` with unfinished work cancels deterministically. `serve()`
   is the shared server loop, `spawn()` a fire-and-forget coroutine.
 - `Scheduler/Coroutine` — a tracked fiber: id, fiber, owning group, callback key.
+- `Scheduler/FiberPool` — recycles the fibers of spawned coroutines: the worker
+  callback never returns, it parks on `Fiber::suspend(FiberPool::IDLE)` between
+  jobs, so the per-request stack lifecycle (page faults + munmap TLB shootdown)
+  is paid once per fiber. The `IDLE` sentinel replaces `isTerminated()` as the
+  completion signal on the spawn path; stale-result safety rests on the
+  awaited flow/task key validation in `Scheduler::resumeByResult` (the keys are
+  fed by never-reused monotonic counters), not on fiber identity.
 - `State` — the static registry mapping Fibers ↔ flows ↔ tasks, plus the
   per-coroutine context store (released in `unRegisterFiber`).
 - `Context/Context`, `Context/CoroutineContext` — the framework-neutral

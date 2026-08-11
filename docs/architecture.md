@@ -120,7 +120,10 @@ Key entities:
 - `Scheduler` (`src/Scheduler/`) — the process-wide singleton: the coroutine
   registry (`Coroutine`), one `waitAny` loop, resuming by `taskKey`, waking
   nested-group waiters (`awaitGroup`), dispatching deferred tasks to Go
-  (`dispatchPendingTask`).
+  (`dispatchPendingTask`). Spawned coroutines (`spawn` — one per server request)
+  run on recycled fibers from `FiberPool`: the fiber's callback is an infinite
+  worker loop that parks on `Fiber::suspend()` between jobs instead of
+  terminating, so the fiber stack is mapped once, not per request.
 - `State` (`src/State.php`) — the static registry of `Fiber ↔ flow ↔ task` links.
 - `FeatureExecutor` — the features' entry point: detects the async context via
   `State::getCurrentFlow()` and suspends the coroutine, handing the deferred task
