@@ -34,7 +34,7 @@ sequential feature calls overlap across requests with no `WaitGroup` — the
 sequential `/all-nowg` handle holds ≈2 570 rps against RoadRunner's ≈460 on the
 same operations
 ([load testing](load-testing.md#fan-out-vs-sequential-calls-all-vs-all-nowg)). Only
-on microsecond cache hits does the edge shrink to the server layer itself (~2.1× on
+on microsecond cache hits does the edge shrink to the server layer itself (~2.9× on
 the empty handle) — it never turns into a loss.
 
 ## Execution models
@@ -62,14 +62,14 @@ suspended fiber, not a worker.
 
 | Handle | Server | Requests/sec | p50 | CPU avg | MEM peak |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `/` (empty) | SConcur | ≈99 900 | 2.6 ms | ~1215% | ~220 MiB |
+| `/` (empty) | SConcur | ≈133 500 | 1.8 ms | ~1218% | ~221 MiB |
 | `/` (empty) | RoadRunner | ≈46 600 | 5.4 ms | ~1050% | ~228 MiB |
-| `/all` (3 features, 6 DB ops) | SConcur | ≈2 666 | 87 ms | ~750% | ~255 MiB |
+| `/all` (3 features, 6 DB ops) | SConcur | ≈2 667 | 87 ms | ~730% | ~260 MiB |
 | `/all` | RoadRunner (native drivers) | ≈448 | 573 ms | ~158% | ~232 MiB |
 
-On the empty handle the gap is ~2.1×: RoadRunner pays an IPC hop proxy → worker per
-request, SConcur pays the PHP↔Go boundary, which the fiber pool made the cheaper
-of the two. On `/all` the gap is
+On the empty handle the gap is ~2.9×: RoadRunner pays an IPC hop proxy → worker per
+request, SConcur pays the PHP↔Go boundary, which the 0.9.1 hot-path work made
+the cheaper of the two. On `/all` the gap is
 ~6× and structural: the sequential worker folds 3 disk commits into a chain and
 idles at ~158% CPU while all 12 workers sit in that chain; the fan-out overlaps the
 same commits within and across requests. That the gap comes from the execution
@@ -82,8 +82,8 @@ session: Swoole, on native drivers but with coroutine workers, lands at the same
 The number of requests in flight is throughput × latency (Little's law). The worker
 model needs a worker per in-flight request; SConcur needs a fiber. That is where
 the resource difference lives — not in CPU, which is comparable per request: on
-`/all` SConcur spends ~2.8 cores per 1 000 rps against RoadRunner's ~3.5, on the
-empty handle 0.12 against 0.23.
+`/all` SConcur spends ~2.7 cores per 1 000 rps against RoadRunner's ~3.5, on the
+empty handle 0.09 against 0.23.
 
 To hold the measured ≈2 670 rps of the `/all` workload:
 
