@@ -64,18 +64,18 @@ suspended fiber, not a worker.
 | --- | --- | ---: | ---: | ---: | ---: |
 | `/` (empty) | SConcur | ≈133 500 | 1.8 ms | ~1218% | ~221 MiB |
 | `/` (empty) | RoadRunner | ≈46 600 | 5.4 ms | ~1050% | ~228 MiB |
-| `/all` (3 features, 6 DB ops) | SConcur | ≈2 667 | 87 ms | ~730% | ~260 MiB |
+| `/all` (3 features, 6 DB ops) | SConcur | ≈3 010 | 76 ms | ~563% | ~279 MiB |
 | `/all` | RoadRunner (native drivers) | ≈448 | 573 ms | ~158% | ~232 MiB |
 
 On the empty handle the gap is ~2.9×: RoadRunner pays an IPC hop proxy → worker per
 request, SConcur pays the PHP↔Go boundary, which the 0.9.1 hot-path work made
 the cheaper of the two. On `/all` the gap is
-~6× and structural: the sequential worker folds 3 disk commits into a chain and
+~6.7× and structural: the sequential worker folds 3 disk commits into a chain and
 idles at ~158% CPU while all 12 workers sit in that chain; the fan-out overlaps the
 same commits within and across requests. That the gap comes from the execution
 model and not from the driver stack is shown by the third server in the same
-session: Swoole, on native drivers but with coroutine workers, lands at the same
-≈2 670 rps as SConcur.
+session: Swoole, on native drivers but with coroutine workers, lands in the same class
+(≈2 670 rps against SConcur's ≈3 010).
 
 ## Resources to hold the same load
 

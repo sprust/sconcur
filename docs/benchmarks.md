@@ -49,7 +49,7 @@ Client and server numbers taken on 2026-07-22, DB numbers on 2026-07-23, the
 three-stack comparisons on 2026-08-09, all on an idle machine. The SConcur rows
 of the server tables and of the three-stack comparison were re-measured on
 2026-08-12, after the 0.9.1 hot-path work (fiber pool, request-body chunk
-sizing); the RoadRunner and Swoole rows of the `/db` tables are kept from
+sizing, fiber-stack cgo dispatch); the RoadRunner and Swoole rows of the `/db` tables are kept from
 2026-08-09 — same machine, same setup, idle both times. The empty-handle
 worker ladder measured all three stacks in one session on 2026-08-12.
 
@@ -272,10 +272,10 @@ framework); `/all` fans out MongoDB (insert + findOne), MySQL and PostgreSQL
 | Handle | Requests/sec | Latency p50 / p90 / p99 | CPU `php` avg / peak | MEM peak |
 | --- | ---: | --- | --- | ---: |
 | `/` (empty) | ≈133 500 | 1.8 / 7.1 / 30.1 ms | ~1218% / ~1225% | ~221 MiB |
-| `/all` (all features) | ≈2 667 | 87 / 162 / 269 ms | ~730% / ~755% | ~260 MiB |
+| `/all` (all features) | ≈3 010 | 76 / 155 / 267 ms | ~563% / ~590% | ~279 MiB |
 
 The pool ceiling is 12 pinned cores (~1200%). The empty handle hits CPU; `/all` on
-disk backends hits not CPU (~740% of 1200) but fsync — 6 DB operations per request,
+disk backends hits not CPU (~565% of 1200) but fsync — 6 DB operations per request,
 3 of them writes.
 
 ### Comparison with RoadRunner and Swoole
@@ -316,7 +316,7 @@ a floor.
 | `/` (empty) | SConcur | ≈133 500 | 1.8 / 7.1 / 30.1 ms | ~1218% / ~1225% | ~221 MiB | +186% ✅ | −62% ❌ |
 | `/` (empty) | RoadRunner | ≈46 600 | 5.4 / 6.0 / 6.9 ms | ~1050% / ~1062% | ~228 MiB | — | — |
 | `/all-coro` | Swoole (coroutine fan-out) | ≈3 030 | 83 / 204 / 303 ms | ~263% / ~275% | ~137 MiB | — | — |
-| `/all` | SConcur (fan-out in a `WaitGroup`) | ≈2 667 | 87 / 162 / 269 ms | ~730% / ~755% | ~260 MiB | +495% ✅ | — |
+| `/all` | SConcur (fan-out in a `WaitGroup`) | ≈3 010 | 76 / 155 / 267 ms | ~563% / ~590% | ~279 MiB | +572% ✅ | — |
 | `/all` | Swoole (native drivers, sequential in-request) | ≈2 671 | 80 / 267 / 322 ms | ~237% / ~249% | ~126 MiB | — | — |
 | `/all-sconcur` | RoadRunner (SConcur fan-out in the worker) | ≈586 | 435 / 462 / 589 ms | ~592% / ~647% | ~360 MiB | +31% ✅ | — |
 | `/all` | RoadRunner (native drivers, sequential) | ≈448 | 573 / 611 / 711 ms | ~158% / ~167% | ~232 MiB | — | — |
@@ -330,13 +330,13 @@ worker.
   from a C event loop in the same process as the PHP closure, while SConcur is
   ~2.9× RoadRunner because crossing the PHP↔Go boundary is cheaper than
   RoadRunner's IPC hop proxy → worker per request.
-- On `/all` with disk backends both concurrent servers are ~6× RoadRunner and land
-  level with each other. The reason is fsync: 3 writes per request fold into a
+- On `/all` with disk backends both concurrent servers are ~6–7× RoadRunner and
+  land in the same class. The reason is fsync: 3 writes per request fold into a
   chain of disk commits in a sequential worker (p50 ≈ 0.57 s at ~158% CPU), while
   both concurrent models overlap those same fsyncs across dozens of parked
   requests — the ceiling stops being the server and becomes the disk.
-- CPU and memory go to Swoole (~237% against ~735%, ~126 MiB against ~249 MiB at
-  the same throughput; part of that saving lands on the backends, which burn
+- CPU and memory go to Swoole (~237% against ~565%, ~126 MiB against ~279 MiB at
+  comparable throughput; part of that saving lands on the backends, which burn
   ~1.5–2× more CPU under Swoole). SConcur pays for the boundary: MessagePack plus
   cgo on every operation.
 - The in-request fan-out goes to SConcur: Swoole's own (`/all-coro`) adds only +13%
@@ -456,8 +456,8 @@ heavier — the comparison is conservative.
 - The boundary is cheap on the fan-out itself: socket/ws throughput ~112–171k
   round-trips/s, the empty HTTP handle ~133.5k rps (~2.9× RoadRunner).
 - Against RoadRunner and Swoole on disk backends: on `/all` both concurrent models
-  are ~6× the sequential worker and level with each other. Swoole holds it on ~237%
-  CPU against ~730%, but its own in-request fan-out adds only +13% because
+  are ~6–7× the sequential worker and in the same class. Swoole holds it on ~237%
+  CPU against ~565%, but its own in-request fan-out adds only +13% because
   `ext-mongodb` is outside its runtime hooks. On cheap point queries the ranking
   reverses — ≈46k rps against ≈10k on the same core, which is the boundary tax.
 - Memory is practically flat across the modes — the fibers of a 100-wide fan-out do
