@@ -4,6 +4,7 @@ package main
 #cgo CFLAGS: -D_GNU_SOURCE
 
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct {
 	void *data;
@@ -148,6 +149,20 @@ func init() {
 	handler = handler2.NewHandler()
 }
 
+// goStringView returns a string backed directly by the C buffer — no copy. It
+// is valid only until the cgo call returns (PHP owns and may free the buffer
+// after that), so it must only be used for lookups that do not retain the key:
+// map reads/deletes, comparisons, or interning against a canonical set. Any
+// key that outlives the call (stored in a Message, a Task, a flow) keeps the
+// copying C.GoStringN path.
+func goStringView(p *C.char, n C.int) string {
+	if n == 0 {
+		return ""
+	}
+
+	return unsafe.String((*byte)(unsafe.Pointer(p)), int(n))
+}
+
 // Preemption timer (see .ai/plans/coroutine-switcher.md, phase 2): while armed, a
 // goroutine periodically requests a VM interrupt so the C-side handler can park
 // the currently running coroutine between opcodes.
@@ -270,7 +285,9 @@ func push(
 ) *C.char {
 	msg := &dto.Message{
 		FlowKey: C.GoStringN(fk, fkLen),
-		Method:  types.Method(C.GoStringN(mt, mtLen)),
+		// Interned through a view: the method set is fixed, so the message
+		// stores the canonical constant instead of a per-push copy.
+		Method:  types.InternMethod(types.Method(goStringView(mt, mtLen))),
 		TaskKey: C.GoStringN(tk, tkLen),
 		Payload: C.GoBytes(pl, plLen),
 		IsNext:  false,
@@ -310,7 +327,8 @@ func next(fk *C.char, tk *C.char, ownerId C.longlong) *C.char {
 //export wait
 func wait(fk *C.char, fkLen C.int) C.buffer_result_t {
 	beginBlockingWait()
-	res, err := handler.Wait(C.GoStringN(fk, fkLen))
+	// A view is enough: Wait only compares and looks the key up, never stores it.
+	res, err := handler.Wait(goStringView(fk, fkLen))
 	endBlockingWait()
 
 	if err != nil {
@@ -411,7 +429,9 @@ func tasksCount() int {
 
 //export stopFlow
 func stopFlow(fk *C.char) {
-	handler.StopFlow(C.GoString(fk))
+	// A view is enough: StopFlow deletes map entries by the key and never
+	// stores it (the recycled Flow struct keeps its own copy of the old key).
+	handler.StopFlow(goStringView(fk, C.int(C.strlen(fk))))
 }
 
 //export httpStopAccepting
