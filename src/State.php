@@ -7,6 +7,7 @@ namespace SConcur;
 use Fiber;
 use SConcur\Connection\Extension;
 use SConcur\Flow\CurrentFlow;
+use SConcur\Scheduler\Scheduler;
 
 class State
 {
@@ -274,7 +275,15 @@ class State
         }
 
         if ($stopExtensionFlow) {
-            Extension::get()->stopFlow($flowKey);
+            // From inside a fiber the crossing is deferred to the scheduler's
+            // main stack: a cgo call from a fiber stack costs a Go stack-bounds
+            // re-derivation through /proc/self/maps (see
+            // Scheduler::$pendingStopFlows).
+            if (Fiber::getCurrent() !== null) {
+                Scheduler::get()->deferStopFlow($flowKey);
+            } else {
+                Extension::get()->stopFlow($flowKey);
+            }
         }
     }
 
