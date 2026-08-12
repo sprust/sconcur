@@ -50,7 +50,7 @@ const (
 	// Fixed transport granularity (not configurable): the inline first-chunk size
 	// and the bytes read per streamed chunk. App-level sizing is RequestBody::read.
 	defaultRequestBodyChunkSize = 64 << 10 // 64 KiB
-	defaultShutdownTimeout      = 5 * time.Second
+	defaultShutdownTimeout      = 10 * time.Second
 	defaultReadHeaderTimeout    = 10 * time.Second
 	defaultReadTimeout          = 30 * time.Second
 	defaultWriteTimeout         = 30 * time.Second

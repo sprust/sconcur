@@ -1122,7 +1122,7 @@ function runLadderServer(string $mode, array $argv): void
             readTimeoutMs: 30_000,
             writeTimeoutMs: 30_000,
             idleTimeoutMs: 60_000,
-            shutdownTimeoutMs: 5_000,
+            shutdownTimeoutMs: 10_000,
             maxRequestBody: 10_485_760,
             maxConcurrency: 0,
             handlerTimeoutMs: 60_000,

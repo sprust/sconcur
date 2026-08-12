@@ -98,7 +98,7 @@ readonly class HttpServer
         private int $readTimeoutMs = 30_000,
         private int $writeTimeoutMs = 30_000,
         private int $idleTimeoutMs = 60_000,
-        private int $shutdownTimeoutMs = 5_000,
+        private int $shutdownTimeoutMs = 10_000,
         private int $maxRequestBody = 10_485_760,
         private int $maxConcurrency = 0,
         private int $handlerTimeoutMs = 60_000,

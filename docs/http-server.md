@@ -119,7 +119,7 @@ timeouts are in milliseconds; the PHP defaults mirror the Go ones.
 | `readTimeoutMs` | `30000` | Deadline for reading the whole request (`ReadTimeout`). |
 | `writeTimeoutMs` | `30000` | Deadline for writing the response (`WriteTimeout`). |
 | `idleTimeoutMs` | `60000` | Idle deadline for a keep-alive connection (`IdleTimeout`). |
-| `shutdownTimeoutMs` | `5000` | How long Go waits for active connections to drain at shutdown. |
+| `shutdownTimeoutMs` | `10000` | How long Go waits for active connections to drain at shutdown. |
 | `maxRequestBody` | `10485760` (10 MiB) | Request body limit; exceeding it → `413`. |
 | `maxConcurrency` | `0` (no limit) | Requests handled at once, see [limits](#concurrency-and-limits). |
 | `handlerTimeoutMs` | `60000` | Max total handling time including streaming, otherwise `504`/abort. `0` — off. |

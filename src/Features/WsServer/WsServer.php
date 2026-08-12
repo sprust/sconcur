@@ -82,7 +82,7 @@ readonly class WsServer
         private int $maxMessageBytes = 1_048_576,
         private int $maxConcurrency = 0,
         private int $maxConnections = 0,
-        private int $shutdownTimeoutMs = 5_000,
+        private int $shutdownTimeoutMs = 10_000,
         private bool $reusePort = false,
         private string $path = '/',
         private array $allowedOrigins = [],

@@ -27,7 +27,7 @@ const (
 	defaultHandshakeTimeout = 10 * time.Second
 	defaultWriteTimeout     = 30 * time.Second
 	defaultPingInterval     = 30 * time.Second
-	defaultShutdownTimeout  = 5 * time.Second
+	defaultShutdownTimeout  = 10 * time.Second
 	defaultMaxMessageBytes  = 1 << 20 // 1 MiB
 
 	// drainGrace bounds how long a connection may keep its handler alive after the

@@ -22,7 +22,7 @@ import (
 // The PHP side normally supplies these (its defaults mirror them).
 const (
 	defaultWriteTimeout    = 30 * time.Second
-	defaultShutdownTimeout = 5 * time.Second
+	defaultShutdownTimeout = 10 * time.Second
 	defaultMaxMessageBytes = 1 << 20 // 1 MiB
 	// drainGrace bounds how long a connection may keep its handler alive after the
 	// listener stops accepting; past it the connection is force-closed so a handler

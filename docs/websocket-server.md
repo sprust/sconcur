@@ -112,7 +112,7 @@ The `WsServer` constructor; the PHP defaults mirror Go.
 | `maxMessageBytes` | `1048576` (1 MiB) | size limit of a single inbound message; exceeding it closes the connection with code 1009 |
 | `maxConcurrency` | `0` (no limit) | max connections served at once; excess ones wait for a free slot |
 | `maxConnections` | `0` (no limit) | stop the server after N served connections (a leak guard) |
-| `shutdownTimeoutMs` | `5000` | drain timeout for in-flight connections on stop |
+| `shutdownTimeoutMs` | `10000` | drain timeout for in-flight connections on stop |
 | `reusePort` | `false` | `SO_REUSEPORT` — a pool of processes on one port (Linux) |
 | `path` | `/` | the path on which the upgrade is accepted (empty string — any path); another path → `404` |
 | `allowedOrigins` | `[]` | host patterns for the origin check (empty — the check is skipped) |
