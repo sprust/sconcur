@@ -67,15 +67,29 @@ readonly class FeatureExecutor
      * payload itself, e.g. RespondPayload::full) publishes none. Only for
      * operations whose outcome the caller cannot observe anyway: the final write
      * of a full HTTP response already fails silently today (the coroutine dies
-     * after it, and a groupless spawn drops the failure). Outside a fiber it
-     * falls back to the awaiting exec(), so the sync path keeps its semantics.
+     * after it, and a groupless spawn drops the failure). Outside a fiber the
+     * task is pushed detached directly — falling back to the awaiting exec()
+     * would wait forever for a result the payload told Go not to publish.
      */
     public static function execNoResult(PayloadInterface $payload): void
     {
         $currentFlow = State::getCurrentFlow();
 
         if (!$currentFlow->isAsync) {
-            static::exec($payload);
+            try {
+                // Detached push (empty flow key): no flow is created on the Go
+                // side and no result will ever come — same contract as the
+                // async path below, minus the fiber.
+                Extension::get()->push(
+                    flowKey: '',
+                    payload: $payload,
+                );
+            } catch (Throwable $exception) {
+                throw new TaskExecutionException(
+                    message: $exception->getMessage(),
+                    previous: $exception,
+                );
+            }
 
             return;
         }

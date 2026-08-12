@@ -291,10 +291,12 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	// allocation profile (~94% of allocated bytes on an empty GET) and with it
 	// the GC share of the hot path. +1 over the declared length so ReadFull
 	// still observes EOF and reports the body as complete in one read; -1
-	// (chunked/unknown length) keeps the full chunk size.
+	// (chunked/unknown length) keeps the full chunk size. The bound is checked
+	// before the +1: a hostile Content-Length of 2^63-1 must not overflow into
+	// a negative make() size.
 	firstChunkSize := defaultRequestBodyChunkSize
 
-	if contentLength := request.ContentLength; contentLength >= 0 && contentLength+1 < int64(firstChunkSize) {
+	if contentLength := request.ContentLength; contentLength >= 0 && contentLength < int64(firstChunkSize)-1 {
 		firstChunkSize = int(contentLength) + 1
 	}
 

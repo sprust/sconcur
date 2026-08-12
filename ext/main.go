@@ -246,6 +246,20 @@ func preemptionArm(quantumMs C.int) {
 					case <-stop:
 						return
 					case <-preemptionWake:
+						// A disarm may have raced the park: a dying ticker must
+						// not steal the wake meant for its re-armed successor,
+						// or the successor stays parked one poll interval too
+						// long. Put the token back and exit.
+						select {
+						case <-stop:
+							select {
+							case preemptionWake <- struct{}{}:
+							default:
+							}
+
+							return
+						default:
+						}
 					}
 				}
 

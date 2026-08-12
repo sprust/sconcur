@@ -117,6 +117,13 @@ func (f *Flow) OnDelivered(result *dto.Result) {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
+	// A self-pumping server stream publishes many results under its single
+	// serve task; only the first delivery may release the registration, or the
+	// counter would go negative by one per served request.
+	if _, ok := f.activeTasks[result.TaskKey]; !ok {
+		return
+	}
+
 	delete(f.activeTasks, result.TaskKey)
 	f.tasksCount.Add(-1)
 }

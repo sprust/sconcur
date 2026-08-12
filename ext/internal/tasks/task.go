@@ -39,6 +39,21 @@ func (t *Task) GetMessage() *dto.Message {
 }
 
 func (t *Task) AddResult(result *dto.Result) {
+	// A detached fire-and-forget task (no flow) runs synchronously on the PHP
+	// thread inside the push() cgo call — the very thread that drains the
+	// results channel. Blocking here with a full buffer would deadlock the
+	// whole worker, and nothing awaits these results anyway (owner id 0, PHP
+	// drops them on delivery), so they are published best-effort and dropped
+	// when the buffer is full.
+	if t.msg.FlowKey == "" {
+		select {
+		case t.results <- result:
+		default:
+		}
+
+		return
+	}
+
 	select {
 	case t.results <- result:
 	case <-t.flowCtx.Done():

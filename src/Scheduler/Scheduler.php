@@ -551,11 +551,6 @@ class Scheduler
      *                                                   parks the running handler coroutine, so a
      *                                                   CPU-bound handler cannot starve the others
      *                                                   (0 disables)
-     * @param bool                  $serverAutoStreams   the Go side pumps the next stream event on its
-     *                                                   own (all three servers do), so the loop must
-     *                                                   not re-arm with next() per event; false keeps
-     *                                                   the pull-paced protocol for a caller that
-     *                                                   still needs it
      */
     public function serve(
         string $serverFlowKey,
@@ -566,7 +561,6 @@ class Scheduler
         Closure $onDrainStart,
         Closure $onShutdownStep,
         int $preemptionQuantumMs = 0,
-        bool $serverAutoStreams = false,
     ): void {
         $draining = false;
 
@@ -693,18 +687,9 @@ class Scheduler
 
                     ++$dispatchedCount;
 
-                    // Re-arm for the next request before handling this one, so the
-                    // listener keeps accepting while the handler runs — unless this
-                    // request hit the maxRequests limit, in which case we do not pull
-                    // one more (we drain on the next tick instead of bouncing it 503).
-                    // An auto-streaming server (HTTP) pumps the next event itself,
-                    // so no crossing is spent here.
-                    if (!$serverAutoStreams && ($maxRequests === 0 || $dispatchedCount < $maxRequests)) {
-                        Extension::get()->next(
-                            flowKey: $serverFlowKey,
-                            taskKey: $serverTaskKey,
-                        );
-                    }
+                    // No per-event re-arm: the Go side pumps the next stream
+                    // event itself for every server (the pull-paced next()
+                    // protocol for serve streams no longer exists there).
 
                     $this->spawn(static function () use ($onRequest, $payload): void {
                         $onRequest($payload);

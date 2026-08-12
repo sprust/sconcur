@@ -462,6 +462,11 @@ Unavailable` rather than a dropped connection.
   Docker images enable it.
 - On an idle server shutdown fires within ~250 ms — the `serve()` loop polls
   `waitAnyTimeoutBatch` at that interval and notices the signal without traffic.
+- The final response write is fire-and-forget: a handler finishes once its
+  response is handed to the connection's write loop, and `shutdownTimeoutMs`
+  bounds how long the drain then waits for in-flight connections to finish
+  writing. A client slower than that timeout on the very last response of a
+  drain gets it truncated; raise `shutdownTimeoutMs` if such clients matter.
 
 ## Internals
 

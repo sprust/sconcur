@@ -198,7 +198,6 @@ readonly class WsServer
                     self::logServerEvent('sconcur ws server shutdown: ' . $step);
                 },
                 preemptionQuantumMs: $this->preemptionQuantumMs,
-                serverAutoStreams: true,
             );
         } finally {
             $restoreSignals();

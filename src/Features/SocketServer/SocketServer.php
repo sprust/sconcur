@@ -176,7 +176,6 @@ readonly class SocketServer
                     self::logServerEvent('sconcur socket server shutdown: ' . $step);
                 },
                 preemptionQuantumMs: $this->preemptionQuantumMs,
-                serverAutoStreams: true,
             );
         } finally {
             $restoreSignals();

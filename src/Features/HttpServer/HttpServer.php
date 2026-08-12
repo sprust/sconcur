@@ -227,7 +227,6 @@ readonly class HttpServer
                     self::logServerEvent('sconcur http server shutdown: ' . $step);
                 },
                 preemptionQuantumMs: $this->preemptionQuantumMs,
-                serverAutoStreams: true,
             );
         } finally {
             $restoreSignals();

@@ -1138,11 +1138,16 @@ function runLadderServer(string $mode, array $argv): void
         sprintf('sconcur http ladder (%s) listening on %s pid=%d%s', $mode, $address, getmypid(), PHP_EOL),
     );
 
-    $respond = static function (string $requestPayload) use ($extension, $flowKey): void {
+    // Respond pushes go detached (empty flow key), exactly like the production
+    // fire-and-forget respond: a push on the ladder flow would register a task
+    // whose no-result completion never unregisters it, growing the flow's task
+    // map by one entry per request and skewing the very numbers the ladder
+    // measures (GC scan time over millions of dead entries).
+    $respond = static function (string $requestPayload) use ($extension): void {
         $requestId = (string) (MessagePackTransport::unpack($requestPayload)['rid'] ?? '');
 
         $extension->push(
-            flowKey: $flowKey,
+            flowKey: '',
             payload: RespondPayload::full(
                 requestId: $requestId,
                 status: 200,
@@ -1201,7 +1206,7 @@ function runLadderServer(string $mode, array $argv): void
                     exit(1);
                 }
 
-                $extension->push(flowKey: $flowKey, payload: $pendingRespond);
+                $extension->push(flowKey: '', payload: $pendingRespond);
 
                 $fiber->resume();
             } elseif ($mode === 'l2') {
@@ -1228,7 +1233,7 @@ function runLadderServer(string $mode, array $argv): void
                     exit(1);
                 }
 
-                $extension->push(flowKey: $flowKey, payload: $pendingRespond);
+                $extension->push(flowKey: '', payload: $pendingRespond);
 
                 $fiber->resume();
             } else {

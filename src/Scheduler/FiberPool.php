@@ -27,8 +27,11 @@ class FiberPool
 {
     /**
      * Sentinel suspend value: the worker loop parked itself, i.e. the previous
-     * job finished. Compared by identity in the Scheduler, so it must not be a
-     * value a pending-task suspend could ever produce (those are DTOs).
+     * job finished. The Scheduler compares suspend values against it with ===
+     * (string value equality); legitimate suspends produce Pending* DTOs, and
+     * the NUL prefix keeps any accidental string from matching. Deliberately
+     * suspending a coroutine with this value is scheduler sabotage, same as
+     * suspending with a forged Pending DTO — not a supported path.
      */
     public const string IDLE = "\0sconcur.fiber-pool.idle";
 
