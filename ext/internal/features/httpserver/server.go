@@ -286,7 +286,19 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	// remainder on demand via a bodyState — the body is never buffered whole.
 	reader := http.MaxBytesReader(writer, request.Body, s.config.maxRequestBody)
 
-	firstChunk, bodyComplete, err := helpers.ReadChunk(reader, defaultRequestBodyChunkSize)
+	// Size the first-chunk buffer by the declared Content-Length when it is
+	// known and small: a full-size make([]byte, 64K) per request dominated the
+	// allocation profile (~94% of allocated bytes on an empty GET) and with it
+	// the GC share of the hot path. +1 over the declared length so ReadFull
+	// still observes EOF and reports the body as complete in one read; -1
+	// (chunked/unknown length) keeps the full chunk size.
+	firstChunkSize := defaultRequestBodyChunkSize
+
+	if contentLength := request.ContentLength; contentLength >= 0 && contentLength+1 < int64(firstChunkSize) {
+		firstChunkSize = int(contentLength) + 1
+	}
+
+	firstChunk, bodyComplete, err := helpers.ReadChunk(reader, firstChunkSize)
 
 	if err != nil {
 		var maxBytesError *http.MaxBytesError
