@@ -12,10 +12,10 @@ reference stacks measured side by side under an identical harness.
 | Your workload | Measured effect | Verdict |
 | --- | --- | :---: |
 | A high-concurrency I/O-bound HTTP/WS service | [~6× RoadRunner's rps](benchmarks.md#comparison-with-roadrunner-and-swoole) on the same hardware; the same load takes ~5× less memory than RoadRunner, ~15–30× less than php-fpm — [resources](#resources-to-hold-the-same-load) | ✅ |
-| A request/job fans out into several DB or network operations | SQL writes [~3–18×](benchmarks.md#mysql) faster, heavy reads [~2–7.5×](benchmarks.md#mongodb), network waits [~44×](benchmarks.md#clients-http--socket--websocket) | ✅ |
+| A request/job fans out into several DB or network operations | SQL writes [~3–15×](benchmarks.md#mysql) faster, heavy reads [~2–7×](benchmarks.md#mongodb), network waits [~44×](benchmarks.md#clients-http--socket--websocket) | ✅ |
 | MongoDB with concurrency | the only concurrent MongoDB path in PHP — [tables](benchmarks.md#mongodb) | ✅ |
 | Cheap point queries, one at a time (as a library) | slower than the native driver: the [boundary](benchmarks.md#conversion-overhead-the-phpgo-boundary) costs more than the query itself | ❌ |
-| Megabyte payloads per operation | ~1.5–2.3 ms per MB each way, and a wide fan of large results holds them all in RAM — [payload size](benchmarks.md#payload-size) | ❌ |
+| Megabyte payloads per operation | ~1.7–2.6 ms per MB each way, and a wide fan of large results holds them all in RAM — [payload size](benchmarks.md#payload-size) | ❌ |
 | CPU-bound handlers | no gain: PHP stays single-threaded, a busy handler blocks the process — [servers](benchmarks.md#servers-http--socket--websocket); the latency (not the throughput) is smoothed by [coroutine switching](coroutine-switching.md) | ❌ |
 
 Three rules behind the table:
@@ -114,7 +114,7 @@ zero.
   the roadmap. A native blocking call or a single monolithic internal call still
   freezes the process — preemption cannot interrupt those.
 - The boundary tax (~50 µs per call) makes cheap point reads slower than the native
-  driver at any dataset size; moving large payloads costs ~1.5–2.3 ms per MB each
+  driver at any dataset size; moving large payloads costs ~1.7–2.6 ms per MB each
   way, and a fan of large results holds them all in flight at once (RSS ≈ fan width
   × payload) — cap the fan width on big data
   ([payload size](benchmarks.md#payload-size)).
