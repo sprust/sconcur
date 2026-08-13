@@ -130,6 +130,7 @@ type serverState struct {
 	listener    net.Listener
 	httpServer  *http.Server
 	config      serverConfig
+	closeOnce   sync.Once
 	startTime   time.Time
 	connections chan *payloads.ConnectionEvent
 	// sem bounds concurrent in-flight connections when maxConcurrency > 0; nil means
@@ -430,27 +431,31 @@ func (s *serverState) forceCloseAfterGrace() {
 // already cancelled by the time the state is closed, which is what unblocks the
 // per-connection read/write loops.
 func (s *serverState) Close() {
-	serverStates.Delete(s.message.FlowKey)
+	// Idempotent: the flow-context AfterFunc and an explicit call (tests) may
+	// both fire, and pusher.Stop panics on a second stop.
+	s.closeOnce.Do(func() {
+		serverStates.Delete(s.message.FlowKey)
 
-	s.pusher.Stop()
+		s.pusher.Stop()
 
-	ctx, cancel := context.WithTimeout(context.Background(), s.config.shutdownTimeout)
-	defer cancel()
+		ctx, cancel := context.WithTimeout(context.Background(), s.config.shutdownTimeout)
+		defer cancel()
 
-	_ = s.httpServer.Shutdown(ctx)
+		_ = s.httpServer.Shutdown(ctx)
 
-	done := make(chan struct{})
+		done := make(chan struct{})
 
-	go func() {
-		s.waitGroup.Wait()
+		go func() {
+			s.waitGroup.Wait()
 
-		close(done)
-	}()
+			close(done)
+		}()
 
-	select {
-	case <-done:
-	case <-time.After(s.config.shutdownTimeout):
-	}
+		select {
+		case <-done:
+		case <-time.After(s.config.shutdownTimeout):
+		}
+	})
 }
 
 // formatAccessLine builds one access-log line for a finished connection:

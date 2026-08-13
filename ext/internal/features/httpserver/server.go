@@ -165,6 +165,7 @@ type serverState struct {
 	listener   net.Listener
 	httpServer *http.Server
 	requests   chan *payloads.RequestEvent
+	closeOnce  sync.Once
 	startTime  time.Time
 	config     serverConfig
 	// sem bounds concurrent in-flight requests when maxConcurrency > 0; nil means
@@ -496,14 +497,18 @@ func (s *serverState) stopAccepting() {
 // requests to drain. Run on a fresh context — the task context is already
 // cancelled by the time the state is closed.
 func (s *serverState) Close() {
-	serverStates.Delete(s.message.FlowKey)
+	// Idempotent: the flow-context AfterFunc and an explicit call (tests) may
+	// both fire, and pusher.Stop panics on a second stop.
+	s.closeOnce.Do(func() {
+		serverStates.Delete(s.message.FlowKey)
 
-	s.pusher.Stop()
+		s.pusher.Stop()
 
-	ctx, cancel := context.WithTimeout(context.Background(), s.config.shutdownTimeout)
-	defer cancel()
+		ctx, cancel := context.WithTimeout(context.Background(), s.config.shutdownTimeout)
+		defer cancel()
 
-	_ = s.httpServer.Shutdown(ctx)
+		_ = s.httpServer.Shutdown(ctx)
+	})
 }
 
 // applyWrite carries out one write command against the connection and reports

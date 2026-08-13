@@ -1,6 +1,7 @@
 package httpserver_feature
 
 import (
+	"context"
 	"errors"
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
@@ -90,6 +91,11 @@ func (f *HttpFeature) handleServe(task *tasks.Task) {
 	// Registered by flow key so a graceful shutdown can stop accepting early
 	// (close the listener) without cancelling in-flight requests. Cleaned in Close.
 	serverStates.Store(message.FlowKey, state)
+
+	// A hard stopFlow (no prior StopAccepting) must still tear the listener and
+	// the telemetry pusher down: Close rides the flow context, as the states
+	// registry's AfterFunc did before the stream became self-pumping.
+	context.AfterFunc(task.GetContext(), state.Close)
 
 	// The request stream is self-pumping: every accepted request is published as
 	// a stream result as soon as the previous one is consumed, so PHP never pays

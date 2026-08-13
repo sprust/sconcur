@@ -1,6 +1,7 @@
 package socketserver_feature
 
 import (
+	"context"
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
@@ -81,6 +82,11 @@ func (f *SocketFeature) handleServe(task *tasks.Task) {
 	// Registered by flow key so a graceful shutdown can stop accepting early without
 	// cancelling in-flight connections. Cleaned in Close.
 	serverStates.Store(message.FlowKey, state)
+
+	// A hard stopFlow (no prior StopAccepting) must still tear the listener and
+	// the telemetry pusher down: Close rides the flow context, as the states
+	// registry's AfterFunc did before the stream became self-pumping.
+	context.AfterFunc(task.GetContext(), state.Close)
 
 	// The accept stream is self-pumping (mirrors the HTTP server): every accepted
 	// connection is published as a stream result as soon as the previous one is
