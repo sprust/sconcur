@@ -48,7 +48,7 @@ flowchart TB
     respond["handleRespond (Go)"]
 
     client <-->|"соединение / ответ в сокет"| serve
-    serve -->|"RequestEvent → канал requests → Next() отдаёт батч"| sched
+    serve -->|"RequestEvent → канал requests → самокачающийся Next() → AddResult"| sched
     sched -->|"спавнит корутину"| handler
     handler -->|"RespondPayload (метод Respond)"| respond
     respond -->|"находит соединение по requestId"| serve
@@ -99,8 +99,12 @@ flowchart TB
 инъектированную PSR-17 фабрику; тело — `Dto/RequestBodyStream` поверх
 `Dto/RequestBody`), а сокет- и WS-серверы используют свои `readonly` DTO —
 `Dto/Connection` с `read()`/`write()`/`close()` для push-модели. В обоих случаях
-ответ кодируется в `RespondPayload`, и каждая команда подтверждается обратно — это
-и даёт backpressure записи.
+ответ кодируется в `RespondPayload`. Записи стримингового ответа (head/chunk/end)
+подтверждаются обратно — это и даёт backpressure записи; цельный ответ
+HTTP-сервера — fire-and-forget: `RespondPayload::full()` выставляет флаг «без
+результата» (`nr`) и уходит через `FeatureExecutor::execNoResult()`, так что
+корутина завершается, не дожидаясь записи (сокет- и WS-серверы подтверждают
+каждую команду).
 
 Разбор argv, обработчики сигналов и проверка на сироту уже вынесены в
 «лёгкий» `SConcur\Features\Server\ServerRuntimeSupportTrait`:
@@ -151,11 +155,15 @@ flowchart TB
 (`flowKey → *serverState`, чтобы `StopAccepting` нашёл листенер).
 
 `handleServe` парсит `ServePayload`, открывает TCP-листенер (`listen.go`, который
-при необходимости выставляет `SO_REUSEPORT`), строит `serverState` — это
-`contracts.StateContract`, который заодно поднимает стандартный `net/http.Server`,
-чьим `http.Handler` он и является, с `BaseContext`, привязанным к контексту
-задачи, — кладёт его в `serverStates` и регистрирует через `states.Get().Start(...)`,
-а тот вешает `Close()` на отмену контекста и возвращает первый батч.
+при необходимости выставляет `SO_REUSEPORT`), строит `serverState` — он поднимает
+стандартный `net/http.Server`, чьим `http.Handler` и является, с `BaseContext`,
+привязанным к контексту задачи, — кладёт его в `serverStates` и запускает
+самокачающуюся горутину: цикл `state.Next()` → `task.AddResult(...)` публикует
+каждый принятый запрос очередным результатом стрима до первого результата без
+продолжения (сервер остановлен). Accept-стрим обходит реестр `states` — реестр
+обслуживает только вторичные стримы (тело запроса, входящие потоки сообщений).
+Backpressure слоями: `AddResult` блокируется на общем буфере результатов, канал
+`requests` буферизует приёмы, дальше блокируется сам `ServeHTTP`.
 
 Внутри `serverState` (`server.go`) `ServeHTTP` захватывает семафор
 `maxConcurrency` до чтения тела (чтобы ждущий слот запрос не держал буфер тела),
@@ -163,20 +171,26 @@ flowchart TB
 `requests` и ждёт команды записи от PHP, применяя их к сокету; по `handlerTimeout`
 или обрыву он закрывает `abandoned`, чтобы запоздавший ответ не висел вечно, и сам
 же пишет строку access-лога на Go-стороне. `Next()` отдаёт следующий
-`RequestEvent` батчем с флагом «будет продолжение» (по `ctx.Done()` — финальный
-батч без флага, завершающий PHP-цикл), а `Close()` останавливает `http.Server`,
-убирает его из `serverStates` и освобождает ресурсы на свежем контексте.
+`RequestEvent` с флагом «будет продолжение» (по `ctx.Done()` — финальный
+результат без флага, завершающий PHP-цикл). Листенер закрывает `stopAccepting()`
+(дренаж зовёт его через экспорт `StopAccepting`), а отмена контекста флоу
+разблокирует все запросы в полёте через `BaseContext`; `Close()` — полный
+teardown: остановка `http.Server` плюс `pusher.Stop()` на свежем контексте.
 
 `handleRespond` декодирует `requestId` (отдельной мини-структурой, чтобы
 маршрутизация работала даже при битом остальном payload'е), находит
 `pendingRequest` и диспетчеризует команду записи, дожидаясь её применения —
 корутина обработчика продолжается только когда байты ушли в сокет либо пришли
-`abandoned`/отмена контекста.
+`abandoned`/отмена контекста. Payload с флагом «без результата» (`nr`, цельная
+запись) диспетчеризуется fire-and-forget: результат не публикуется, а передача не
+слушает контекст флоу — корутины может уже не быть.
 
 Если тело больше inline-первого чанка, Go кладёт остаток в отдельное стриминговое
 состояние (`bodyState`, регистрируется под ключом `<requestId>:body`) и отдаёт этот
 ключ в `RequestEvent.BodyKey`; PHP читает куски тем же общим механизмом `next()` с
-фиксированной гранулярностью 64 KiB.
+фиксированной гранулярностью 64 KiB. Буфер inline-первого чанка сайзится по
+объявленному `Content-Length`, когда тот меньше (горячая точка аллокаций на
+запрос); chunked и неизвестная длина используют полные 64 KiB.
 
 ## cgo-экспорт `StopAccepting`
 
@@ -269,8 +283,8 @@ Go:
 - [ ] Те же две константы в `types/method.go`.
 - [ ] Структуры payload'ов в `payloads.go` плюс `RequestEvent`; зеркальны PHP 1:1.
 - [ ] Фича: switch в `Handle` → `handleServe` (listen → `serverState` →
-      `states.Get().Start`) и `handleRespond` (рандеву по `requestId` плюс
-      backpressure записи).
+      самокачающаяся горутина `Next()`/`AddResult`) и `handleRespond` (рандеву по
+      `requestId` плюс backpressure записи; `nr` — fire-and-forget).
 - [ ] Карты `serverStates`/`pendingRequests`; `StopAccepting(flowKey)`;
       `SO_REUSEPORT` в `listen`.
 - [ ] `BaseContext` = контекст задачи; `handlerTimeout`; access-лог на Go-стороне.
