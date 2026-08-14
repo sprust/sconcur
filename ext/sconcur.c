@@ -393,7 +393,7 @@ PHP_FUNCTION(stopFlow)
         RETURN_THROWS();
     }
 
-    stopFlow(flow_key);
+    stopFlow(flow_key, (int)flow_key_len);
     RETURN_NULL();
 }
 

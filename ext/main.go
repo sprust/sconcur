@@ -4,7 +4,6 @@ package main
 #cgo CFLAGS: -D_GNU_SOURCE
 
 #include <stdlib.h>
-#include <string.h>
 
 typedef struct {
 	void *data;
@@ -442,10 +441,12 @@ func tasksCount() int {
 }
 
 //export stopFlow
-func stopFlow(fk *C.char) {
+func stopFlow(fk *C.char, fkLen C.int) {
 	// A view is enough: StopFlow deletes map entries by the key and never
 	// stores it (the recycled Flow struct keeps its own copy of the old key).
-	handler.StopFlow(goStringView(fk, C.int(C.strlen(fk))))
+	// The length comes from the C side, which already has it from
+	// zend_parse_parameters — no strlen scan per stop.
+	handler.StopFlow(goStringView(fk, fkLen))
 }
 
 //export httpStopAccepting

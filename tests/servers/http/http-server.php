@@ -72,7 +72,7 @@ use SConcur\WaitGroup;
  * normal server (see runLadderServer below).
  */
 
-// Attribution-ladder bench modes (.ai/plans/cpu-per-request-attribution.ru.md,
+// Attribution-ladder bench modes (.ai/plans/cpu-per-request-attribution.md,
 // phase 4): --ladder=l1 answers every request 200 "ok" inline from the loop (no
 // Fiber), --ladder=l2 answers the same from a fresh Fiber per request. Both talk
 // to the extension directly — no Scheduler, no PSR-7, no HttpServer::serve().
@@ -1075,7 +1075,7 @@ function statusRoute(Psr17Factory $factory, string $path): ResponseInterface
 }
 
 /**
- * Attribution-ladder serve loop (.ai/plans/cpu-per-request-attribution.ru.md,
+ * Attribution-ladder serve loop (.ai/plans/cpu-per-request-attribution.md,
  * phase 4). Speaks to the extension directly: push the listener flow, pull
  * results with waitAnyBatch(), re-arm with next() and answer every request with
  * a constant 200 "ok" — inline in l1; in l2 from a fresh Fiber per request that

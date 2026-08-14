@@ -8,6 +8,7 @@ import (
 	"sconcur/internal/errs"
 	"sconcur/internal/features/httpserver/payloads"
 	"sconcur/internal/helpers"
+	"sconcur/internal/logger"
 	"sconcur/internal/tasks"
 	"sconcur/internal/types"
 	"strconv"
@@ -132,7 +133,7 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 	}
 
 	if err := msgpack.Unmarshal(message.Payload, &idOnly); err != nil || idOnly.RequestId == "" {
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("parse respond requestId", err)))
+		failRespond(task, errFactory.ByErr("parse respond requestId", err))
 
 		return
 	}
@@ -141,7 +142,7 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 
 	if !ok {
 		// The connection is already gone (answered or disconnected): nothing to do.
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("unknown requestId "+idOnly.RequestId)))
+		failRespond(task, errFactory.ByText("unknown requestId "+idOnly.RequestId))
 
 		return
 	}
@@ -149,7 +150,7 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 	pending, ok := value.(*pendingRequest)
 
 	if !ok {
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("bad pending request")))
+		failRespond(task, errFactory.ByText("bad pending request"))
 
 		return
 	}
@@ -160,7 +161,7 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 		// Malformed payload: answer the client with a 500 instead of hanging.
 		_ = f.dispatch(task, pending, writeCommand{kind: writeFull, status: 500, body: "Internal Server Error"})
 
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("parse respond payload", err)))
+		failRespond(task, errFactory.ByErr("parse respond payload", err))
 
 		return
 	}
@@ -186,7 +187,7 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 	}
 
 	if err := f.dispatch(task, pending, command); err != nil {
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("write response", err)))
+		failRespond(task, errFactory.ByErr("write response", err))
 
 		return
 	}
@@ -194,14 +195,32 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 	task.AddResult(dto.NewSuccessResult(message, "", helpers.CalcExecutionMs(startTime)))
 }
 
+// failRespond publishes a respond failure as the task's error result and, for a
+// detached (fire-and-forget) task, also logs it. A detached task carries no flow,
+// so Handler.deliver finds none and drops the result before it ever crosses to
+// PHP: without the log line such a failure — a malformed payload, an unknown
+// request id — would be invisible on both sides.
+func failRespond(task *tasks.Task, text string) {
+	message := task.GetMessage()
+
+	if message.FlowKey == "" {
+		logger.Write("sconcur httpServer: detached respond failed: " + text + "\n")
+	}
+
+	task.AddResult(dto.NewErrorResult(message, text))
+}
+
 // dispatchFireAndForget hands a write command to the connection goroutine
 // without flow-context abort and without waiting for the write outcome. The
 // connection-side guards still bound the handover: pending.abandoned closes as
 // soon as ServeHTTP stops consuming (handler timeout, dead connection), so this
 // never hangs past the request's own lifetime.
+//
+// command.done stays nil — nobody waits for the outcome, so the channel is not
+// allocated at all (one allocation per request on the hot path). The connection
+// side reports through writeCommand.report, which skips a nil channel instead of
+// blocking on it forever.
 func (f *HttpFeature) dispatchFireAndForget(pending *pendingRequest, command writeCommand) {
-	command.done = make(chan error, 1)
-
 	select {
 	case pending.commands <- command:
 	case <-pending.abandoned:

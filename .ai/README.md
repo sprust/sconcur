@@ -110,15 +110,19 @@ feature's doc. Key PHP classes not covered there:
   `get()`, so `exit()` with unfinished work cancels deterministically. `serve()`
   is the shared server loop, `spawn()` a fire-and-forget coroutine.
 - `Scheduler/Coroutine` — a tracked fiber: id, fiber, owning group, callback key.
-- `Scheduler/FiberPool` — recycles the fibers of spawned coroutines: the worker
-  callback never returns, it parks on `Fiber::suspend(FiberPool::IDLE)` between
-  jobs, so the per-request stack lifecycle (page faults + munmap TLB shootdown)
-  is paid once per fiber. The `IDLE` sentinel replaces `isTerminated()` as the
-  completion signal on the spawn path; stale-result safety rests on the
-  awaited flow/task key validation in `Scheduler::resumeByResult` (the keys are
-  fed by never-reused monotonic counters), not on fiber identity.
-- `State` — the static registry mapping Fibers ↔ flows ↔ tasks, plus the
-  per-coroutine context store (released in `unRegisterFiber`).
+- `Scheduler/FiberPool`, `Scheduler/FiberPoolSignal` — recycles the fibers of
+  spawned coroutines: the worker callback never returns, it parks on
+  `Fiber::suspend(FiberPoolSignal::Idle)` between jobs, so the per-request stack
+  lifecycle (page faults + munmap TLB shootdown) is paid once per fiber. That
+  signal replaces `isTerminated()` as the completion signal on the spawn path and
+  is an enum case on purpose — an identity comparison handler code cannot forge.
+  Stale-result safety rests on the awaited flow/task key validation in
+  `Scheduler::resumeByResult` (the keys are fed by never-reused monotonic
+  counters), not on fiber identity; for the same reason
+  `Scheduler::$pendingDispatches` keys its queue by `Coroutine`, not by fiber.
+- `State` — the static registry mapping Fibers ↔ flows, plus the per-coroutine
+  context store (released in `unRegisterFiber`). Results route by the owner id
+  carried in the frame, so there is no task → fiber map.
 - `Context/Context`, `Context/CoroutineContext` — the framework-neutral
   `find`/`has`/`set`/`forget` contract; parent links are recorded in
   `Scheduler::spawn` / `WaitGroup::add`.
@@ -145,7 +149,9 @@ Go extension (`ext/`):
   `preemptionArm`, `preemptionDisarm`, `destroy`, `version`)
 - `internal/handler/` — singleton orchestrator routing messages to flows
 - `internal/flows/`, `internal/tasks/` — concurrent `Flow` instances holding tasks
-  and a result channel; individual task units with context cancellation
+  and a result channel; a task carries the flow's context directly (cancellation
+  is per flow, `stopFlow`), plus a detached flowless path for fire-and-forget
+  pushes (`Handler.Push`, allow-listed by `detachable`)
 - `internal/states/` — registry of streaming states (cursor batches,
   request-body chunks, client message streams) driven by `next()`; the server
   accept streams are self-pumping and bypass it

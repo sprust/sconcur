@@ -37,7 +37,7 @@ var handlerTimerPool = sync.Pool{
 
 // benchLadderL0 short-circuits every request with a constant 200 "ok" written
 // directly from the connection goroutine — PHP is never called. Rung L0 of the
-// attribution ladder (.ai/plans/cpu-per-request-attribution.ru.md): the floor
+// attribution ladder (.ai/plans/cpu-per-request-attribution.md): the floor
 // the Go server gives without PHP, with the access log kept for parity with the
 // other rungs. Bench-only; off unless the worker starts with
 // SCONCUR_HTTP_BENCH_L0=1.
@@ -141,6 +141,17 @@ type writeCommand struct {
 	headers map[string][]string
 	body    string
 	done    chan error
+}
+
+// report hands the write outcome back to the issuing coroutine. A
+// fire-and-forget command carries no done channel (nothing awaits it, so none is
+// allocated) and a send on a nil channel blocks forever — hence the guard.
+func (c writeCommand) report(err error) {
+	if c.done == nil {
+		return
+	}
+
+	c.done <- err
 }
 
 // pendingRequest is the rendezvous between the connection goroutine (ServeHTTP)
@@ -412,7 +423,7 @@ func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan 
 			select {
 			case command := <-commands:
 				finished, err := applyWrite(writer, flusher, command)
-				command.done <- err
+				command.report(err)
 
 				if command.kind != writeEnd {
 					started = true
@@ -450,7 +461,7 @@ func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan 
 			return status
 		case command := <-commands:
 			finished, err := applyWrite(writer, flusher, command)
-			command.done <- err
+			command.report(err)
 
 			if command.kind != writeEnd {
 				started = true

@@ -10,6 +10,7 @@ use SConcur\Dto\PendingNextDto;
 use SConcur\Dto\PendingPushDto;
 use SConcur\Dto\RunningTaskDto;
 use SConcur\Dto\TaskResultDto;
+use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Exceptions\OutsideFiberException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\TaskExecutionException;
@@ -113,6 +114,11 @@ readonly class FeatureExecutor
                 payload: $payload,
                 awaitResult: false,
             ));
+        } catch (FlowStoppedException $exception) {
+            // A deliberate unwind (WaitGroup::stop, Scheduler::shutdown) is not a
+            // task failure: let it propagate as-is so the coroutine's finally
+            // blocks run and the cancellation stays recognizable.
+            throw $exception;
         } catch (Throwable $exception) {
             throw new TaskExecutionException(
                 message: $exception->getMessage(),

@@ -8,6 +8,7 @@ import (
 	"sconcur/internal/features"
 	"sconcur/internal/flows"
 	"sconcur/internal/tasks"
+	"sconcur/internal/types"
 	"sync"
 	"time"
 )
@@ -111,6 +112,22 @@ func NewHandler() *Handler {
 	return h
 }
 
+// detachable reports whether a method may be pushed on the detached (flowless)
+// path. That path runs the handler synchronously on the PHP thread inside the
+// push() cgo call, so a handler that blocks stalls the entire worker — the list
+// is an explicit opt-in, not a documented convention: only the HTTP respond
+// handler is bounded by connection-side guards (pending.abandoned, the handler
+// timeout) and therefore safe there. A switch over the interned method costs a
+// pointer-and-length comparison, which is noise against the crossing itself.
+func detachable(method types.Method) bool {
+	switch method {
+	case types.MethodHttpRespond:
+		return true
+	default:
+		return false
+	}
+}
+
 func (h *Handler) Push(msg *dto.Message) error {
 	// Detached fire-and-forget task (empty flow key): the caller awaits no
 	// result and the task needs no cancellation scope of its own, so no flow is
@@ -127,6 +144,10 @@ func (h *Handler) Push(msg *dto.Message) error {
 	if msg.FlowKey == "" {
 		if msg.IsNext {
 			return errors.New("next requires a flow key")
+		}
+
+		if !detachable(msg.Method) {
+			return errors.New("method " + string(msg.Method) + " cannot be pushed detached")
 		}
 
 		featureHandler, err := features.DetectMessageHandler(msg.Method)

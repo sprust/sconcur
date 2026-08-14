@@ -18,23 +18,19 @@ use Throwable;
  *
  * A fiber terminates when its callback returns, and a terminated fiber cannot
  * be restarted — so the pooled worker callback never returns: it is an
- * infinite loop that parks on Fiber::suspend(IDLE), receives the next job as
- * the resume() value, runs it and parks again. The IDLE suspend value is how
- * the Scheduler distinguishes "the job finished" from "the job suspended on a
- * pending task".
+ * infinite loop that parks on Fiber::suspend(FiberPoolSignal::Idle), receives
+ * the next job as the resume() value, runs it and parks again. That signal is
+ * how the Scheduler distinguishes "the job finished" from "the job suspended on
+ * a pending task"; it is an enum case, so handler code cannot forge it (see
+ * FiberPoolSignal).
+ *
+ * Sizing: a parked fiber costs ~10 KiB of RSS but keeps its whole stack mapped
+ * (~2 MiB of address space each, at PHP's default fiber.stack_size). The cap is
+ * therefore about address space and mapping count, not memory: a full pool of
+ * 256 holds ~2.5 MiB resident against ~520 MiB of virtual mappings.
  */
 class FiberPool
 {
-    /**
-     * Sentinel suspend value: the worker loop parked itself, i.e. the previous
-     * job finished. The Scheduler compares suspend values against it with ===
-     * (string value equality); legitimate suspends produce Pending* DTOs, and
-     * the NUL prefix keeps any accidental string from matching. Deliberately
-     * suspending a coroutine with this value is scheduler sabotage, same as
-     * suspending with a forged Pending DTO — not a supported path.
-     */
-    public const string IDLE = "\0sconcur.fiber-pool.idle";
-
     protected const int DEFAULT_MAX_IDLE = 256;
 
     /**
@@ -98,7 +94,7 @@ class FiberPool
                 State::markSuspending($workerFiberId);
 
                 try {
-                    $job = Fiber::suspend(FiberPool::IDLE);
+                    $job = Fiber::suspend(FiberPoolSignal::Idle);
                 } finally {
                     State::clearSuspending();
                 }

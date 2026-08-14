@@ -21,8 +21,8 @@ Waiting and resumption belong to a single process-wide `Scheduler` (singleton,
 coroutines. All goroutines push their results into one shared buffered channel on
 the Go side; `Extension::waitAnyBatch()` blocks for the first ready result of any
 flow and drains every further already-ready result in the same cgo crossing (up
-to 64). The scheduler consumes the batch one result per step: by `taskKey` it
-finds the coroutine and resumes it.
+to 64). The scheduler consumes the batch one result per step: the result frame
+names the coroutine that awaits it, and the scheduler resumes that one.
 
 Because every resumption comes from the scheduler, coroutines do not nest on each
 other's call stack. So a nested `WaitGroup` inside a coroutine does not block the
@@ -83,14 +83,14 @@ flowchart TB
         FE[FeatureExecutor]
         EXT["Connection\Extension"]
         SCH["Scheduler (waitAny + resume loop)"]
-        ST["State (Fiber ↔ flow ↔ task registry)"]
+        ST["State (Fiber ↔ flow registry)"]
 
         WG -->|"coroutine body calls a feature"| F
         F -->|"exec / next"| FE
         FE -->|"Fiber::suspend(PendingPushDto / PendingNextDto)"| SCH
         SCH -->|"dispatchPendingTask: push the task"| EXT
         WG -.->|"delegates waiting"| SCH
-        SCH -.->|"finds the Fiber by taskKey, resumes"| ST
+        SCH -.->|"releases the Fiber's flow on completion"| ST
     end
 
     EXT <-->|"cgo + msgpack: push / waitAny / next ↔ result"| MAIN
@@ -118,13 +118,14 @@ Key entities:
   ready. `create(maxConcurrency: N)` caps the number of simultaneously live
   coroutines (0 = no limit, the default); extra `add()`s wait in a queue.
 - `Scheduler` (`src/Scheduler/`) — the process-wide singleton: the coroutine
-  registry (`Coroutine`), one `waitAny` loop, resuming by `taskKey`, waking
-  nested-group waiters (`awaitGroup`), dispatching deferred tasks to Go
+  registry (`Coroutine`), one `waitAny` loop, resuming by the result's owner id,
+  waking nested-group waiters (`awaitGroup`), dispatching deferred tasks to Go
   (`dispatchPendingTask`). Spawned coroutines (`spawn` — one per server request)
   run on recycled fibers from `FiberPool`: the fiber's callback is an infinite
   worker loop that parks on `Fiber::suspend()` between jobs instead of
   terminating, so the fiber stack is mapped once, not per request.
-- `State` (`src/State.php`) — the static registry of `Fiber ↔ flow ↔ task` links.
+- `State` (`src/State.php`) — the static registry of `Fiber ↔ flow` links (result
+  routing needs no task map: the owner travels in the frame).
 - `FeatureExecutor` — the features' entry point: detects the async context via
   `State::getCurrentFlow()` and suspends the coroutine, handing the deferred task
   to the resumer. On the async path it never goes into Go itself.
