@@ -45,6 +45,15 @@ data in `tmpfs`; for a benchmark session the named volumes are uncommented inste
 and the state is reset with `make bench-reset` — without it writes accumulate
 between runs and the numbers drift.
 
+Skipping that swap does more than drift the numbers. Each `tmpfs` mount is capped
+at 1 GiB and a sustained `/all` run fills it well inside an hour — mostly with
+`pg_wal` and the MySQL binary log, which no table truncation reclaims. Past the cap
+PostgreSQL answers `SQLSTATE 53100` and MySQL can no longer build its internal
+temporary tables, so the demo handler returns `500` for every request while the
+worker log stays empty: it reports a failed feature in the response body, not to
+stderr. The run still prints a plausible requests/sec. Always check
+`Non-2xx or 3xx responses` in the wrk output before trusting a long run.
+
 Client and server numbers taken on 2026-07-22, DB and payload numbers on
 2026-08-13, the three-stack comparisons on 2026-08-09, all on an idle machine. The SConcur rows
 of the server tables and of the three-stack comparison were re-measured on

@@ -83,6 +83,11 @@ make bench-all          # run all benchmarks
 Rebuild the extension with `make ext-build` before running tests that depend on
 `ext/build/sconcur.so`. Use `make ext-test` when changing Go extension behavior.
 
+A long load run (`bench-*-load-soak`, or any `/all` run past a few minutes) needs
+the disk-backed backends described in [benchmarks](../docs/benchmarks.md): on the
+default `tmpfs` mounts the backends hit their 1 GiB cap and the demo handler
+degrades into silent `500`s while the throughput number still looks plausible.
+
 ## Architecture
 
 Execution flow: `WaitGroup::add(closure)` → `Fiber::start()` → the fiber suspends
