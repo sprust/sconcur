@@ -61,7 +61,9 @@ readonly class HttpServer
      *                                                                                                  count is reached the server shuts down gracefully (closes the
      *                                                                                                  listener first, drains in-flight, exits cleanly) so a master /
      *                                                                                                  supervisor can respawn a fresh process. Reuses the graceful-
-     *                                                                                                  shutdown path, so no already-accepted request is bounced.
+     *                                                                                                  shutdown path: the limiting request is dispatched and drained
+     *                                                                                                  like any in-flight one, while a request accepted during the
+     *                                                                                                  drain is answered 503 (see docs/http-server.md).
      * @param bool                                                                $reusePort            set SO_REUSEPORT so several processes can bind this same
      *                                                                                                  address; the kernel load-balances connections across them
      *                                                                                                  (run one process per core). Linux only; each process must set it.

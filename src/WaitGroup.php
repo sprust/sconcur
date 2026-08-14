@@ -213,6 +213,22 @@ class WaitGroup
         }
     }
 
+    /**
+     * Unwinds every live member with FlowStoppedException and releases the
+     * group's flow. Called by iterate()'s finally, by the destructor, and
+     * directly to abandon whatever work is left.
+     *
+     * The Go-side cancellation is not synchronous when stop() runs inside a
+     * coroutine: a cgo call made from a fiber stack costs the Go runtime a
+     * system-stack bounds re-derivation, so State::deleteFlow queues the
+     * stopFlow and the scheduler performs it on its own stack before its next
+     * wait (Scheduler::deferStopFlow). The members are unwound here and now —
+     * only the abort of their in-flight Go tasks lands a scheduler hop later,
+     * and their results are dropped when they arrive. A coroutine that calls
+     * stop() and then runs CPU-bound code without ever suspending holds that
+     * hop off; automatic preemption — which the servers enable by default —
+     * closes the gap on its own.
+     */
     public function stop(): void
     {
         $members = $this->members;
