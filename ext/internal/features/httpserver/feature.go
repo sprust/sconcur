@@ -1,13 +1,14 @@
 package httpserver_feature
 
 import (
+	"context"
 	"errors"
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
 	"sconcur/internal/features/httpserver/payloads"
 	"sconcur/internal/helpers"
-	"sconcur/internal/states"
+	"sconcur/internal/logger"
 	"sconcur/internal/tasks"
 	"sconcur/internal/types"
 	"strconv"
@@ -92,17 +93,28 @@ func (f *HttpFeature) handleServe(task *tasks.Task) {
 	// (close the listener) without cancelling in-flight requests. Cleaned in Close.
 	serverStates.Store(message.FlowKey, state)
 
-	result, err := states.Get().Start(task.GetContext(), message.TaskKey, state)
+	// A hard stopFlow (no prior StopAccepting) must still tear the listener and
+	// the telemetry pusher down: Close rides the flow context, as the states
+	// registry's AfterFunc did before the stream became self-pumping.
+	context.AfterFunc(task.GetContext(), state.Close)
 
-	if err != nil {
-		state.Close()
+	// The request stream is self-pumping: every accepted request is published as
+	// a stream result as soon as the previous one is consumed, so PHP never pays
+	// a next() crossing (plus a task and a goroutine) per request. Backpressure
+	// is layered: AddResult blocks on the shared results buffer, the requests
+	// channel buffers accepts, and beyond that ServeHTTP itself blocks. The
+	// stream ends with the first no-next result (server stopped).
+	go func() {
+		for {
+			result := state.Next()
 
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("serve", err)))
+			task.AddResult(result)
 
-		return
-	}
-
-	task.AddResult(result)
+			if !result.HasNext {
+				return
+			}
+		}
+	}()
 }
 
 // handleRespond routes one write command (a one-shot response, or a head/chunk/
@@ -121,7 +133,7 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 	}
 
 	if err := msgpack.Unmarshal(message.Payload, &idOnly); err != nil || idOnly.RequestId == "" {
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("parse respond requestId", err)))
+		failRespond(task, errFactory.ByErr("parse respond requestId", err))
 
 		return
 	}
@@ -130,7 +142,7 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 
 	if !ok {
 		// The connection is already gone (answered or disconnected): nothing to do.
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("unknown requestId "+idOnly.RequestId)))
+		failRespond(task, errFactory.ByText("unknown requestId "+idOnly.RequestId))
 
 		return
 	}
@@ -138,7 +150,7 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 	pending, ok := value.(*pendingRequest)
 
 	if !ok {
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("bad pending request")))
+		failRespond(task, errFactory.ByText("bad pending request"))
 
 		return
 	}
@@ -149,7 +161,7 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 		// Malformed payload: answer the client with a 500 instead of hanging.
 		_ = f.dispatch(task, pending, writeCommand{kind: writeFull, status: 500, body: "Internal Server Error"})
 
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("parse respond payload", err)))
+		failRespond(task, errFactory.ByErr("parse respond payload", err))
 
 		return
 	}
@@ -161,13 +173,58 @@ func (f *HttpFeature) handleRespond(task *tasks.Task) {
 		body:    payload.Body,
 	}
 
+	// A fire-and-forget write (the final write of a full response): the PHP
+	// coroutine does not await this task — it finishes (and stops its flow)
+	// right after the push, possibly before this goroutine runs, so the
+	// handover must not select on the already-cancelled flow context, and no
+	// result is published — success or failure. A failed write was equally
+	// invisible before (the coroutine died after it and the groupless spawn
+	// dropped the error).
+	if payload.NoResult {
+		f.dispatchFireAndForget(pending, command)
+
+		return
+	}
+
 	if err := f.dispatch(task, pending, command); err != nil {
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("write response", err)))
+		failRespond(task, errFactory.ByErr("write response", err))
 
 		return
 	}
 
 	task.AddResult(dto.NewSuccessResult(message, "", helpers.CalcExecutionMs(startTime)))
+}
+
+// failRespond publishes a respond failure as the task's error result and, for a
+// detached (fire-and-forget) task, also logs it. A detached task carries no flow,
+// so Handler.deliver finds none and drops the result before it ever crosses to
+// PHP: without the log line such a failure — a malformed payload, an unknown
+// request id — would be invisible on both sides.
+func failRespond(task *tasks.Task, text string) {
+	message := task.GetMessage()
+
+	if message.FlowKey == "" {
+		logger.Write("sconcur httpServer: detached respond failed: " + text + "\n")
+	}
+
+	task.AddResult(dto.NewErrorResult(message, text))
+}
+
+// dispatchFireAndForget hands a write command to the connection goroutine
+// without flow-context abort and without waiting for the write outcome. The
+// connection-side guards still bound the handover: pending.abandoned closes as
+// soon as ServeHTTP stops consuming (handler timeout, dead connection), so this
+// never hangs past the request's own lifetime.
+//
+// command.done stays nil — nobody waits for the outcome, so the channel is not
+// allocated at all (one allocation per request on the hot path). The connection
+// side reports through writeCommand.report, which skips a nil channel instead of
+// blocking on it forever.
+func (f *HttpFeature) dispatchFireAndForget(pending *pendingRequest, command writeCommand) {
+	select {
+	case pending.commands <- command:
+	case <-pending.abandoned:
+	}
 }
 
 // dispatch hands one write command to the connection goroutine and waits for it

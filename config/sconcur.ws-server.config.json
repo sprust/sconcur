@@ -26,6 +26,6 @@
         "idleTimeoutMs": 0,
         "writeTimeoutMs": 30000,
         "pingIntervalMs": 30000,
-        "shutdownTimeoutMs": 5000
+        "shutdownTimeoutMs": 10000
     }
 }

@@ -12,10 +12,10 @@ reference stacks measured side by side under an identical harness.
 | Your workload | Measured effect | Verdict |
 | --- | --- | :---: |
 | A high-concurrency I/O-bound HTTP/WS service | [~6× RoadRunner's rps](benchmarks.md#comparison-with-roadrunner-and-swoole) on the same hardware; the same load takes ~5× less memory than RoadRunner, ~15–30× less than php-fpm — [resources](#resources-to-hold-the-same-load) | ✅ |
-| A request/job fans out into several DB or network operations | SQL writes [~3–18×](benchmarks.md#mysql) faster, heavy reads [~2–7.5×](benchmarks.md#mongodb), network waits [~44×](benchmarks.md#clients-http--socket--websocket) | ✅ |
+| A request/job fans out into several DB or network operations | SQL writes [~3–15×](benchmarks.md#mysql) faster, heavy reads [~2–7×](benchmarks.md#mongodb), network waits [~44×](benchmarks.md#clients-http--socket--websocket) | ✅ |
 | MongoDB with concurrency | the only concurrent MongoDB path in PHP — [tables](benchmarks.md#mongodb) | ✅ |
 | Cheap point queries, one at a time (as a library) | slower than the native driver: the [boundary](benchmarks.md#conversion-overhead-the-phpgo-boundary) costs more than the query itself | ❌ |
-| Megabyte payloads per operation | ~1.5–2.3 ms per MB each way, and a wide fan of large results holds them all in RAM — [payload size](benchmarks.md#payload-size) | ❌ |
+| Megabyte payloads per operation | ~1.7–2.6 ms per MB each way, and a wide fan of large results holds them all in RAM — [payload size](benchmarks.md#payload-size) | ❌ |
 | CPU-bound handlers | no gain: PHP stays single-threaded, a busy handler blocks the process — [servers](benchmarks.md#servers-http--socket--websocket); the latency (not the throughput) is smoothed by [coroutine switching](coroutine-switching.md) | ❌ |
 
 Three rules behind the table:
@@ -34,7 +34,7 @@ sequential feature calls overlap across requests with no `WaitGroup` — the
 sequential `/all-nowg` handle holds ≈2 570 rps against RoadRunner's ≈460 on the
 same operations
 ([load testing](load-testing.md#fan-out-vs-sequential-calls-all-vs-all-nowg)). Only
-on microsecond cache hits does the edge shrink to the server layer itself (~1.4× on
+on microsecond cache hits does the edge shrink to the server layer itself (~2.9× on
 the empty handle) — it never turns into a loss.
 
 ## Execution models
@@ -62,32 +62,33 @@ suspended fiber, not a worker.
 
 | Handle | Server | Requests/sec | p50 | CPU avg | MEM peak |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `/` (empty) | SConcur | ≈64 100 | 3.9 ms | ~1210% | ~217 MiB |
+| `/` (empty) | SConcur | ≈133 500 | 1.8 ms | ~1218% | ~221 MiB |
 | `/` (empty) | RoadRunner | ≈46 600 | 5.4 ms | ~1050% | ~228 MiB |
-| `/all` (3 features, 6 DB ops) | SConcur | ≈2 681 | 86 ms | ~735% | ~249 MiB |
+| `/all` (3 features, 6 DB ops) | SConcur | ≈3 010 | 76 ms | ~563% | ~279 MiB |
 | `/all` | RoadRunner (native drivers) | ≈448 | 573 ms | ~158% | ~232 MiB |
 
-On the empty handle the gap is ~1.4×: RoadRunner pays an IPC hop proxy → worker per
-request, SConcur pays the PHP↔Go boundary — comparable prices. On `/all` the gap is
-~6× and structural: the sequential worker folds 3 disk commits into a chain and
+On the empty handle the gap is ~2.9×: RoadRunner pays an IPC hop proxy → worker per
+request, SConcur pays the PHP↔Go boundary, which the 0.9.1 hot-path work made
+the cheaper of the two. On `/all` the gap is
+~6.7× and structural: the sequential worker folds 3 disk commits into a chain and
 idles at ~158% CPU while all 12 workers sit in that chain; the fan-out overlaps the
 same commits within and across requests. That the gap comes from the execution
 model and not from the driver stack is shown by the third server in the same
-session: Swoole, on native drivers but with coroutine workers, lands at the same
-≈2 670 rps as SConcur.
+session: Swoole, on native drivers but with coroutine workers, lands in the same class
+(≈2 670 rps against SConcur's ≈3 010).
 
 ## Resources to hold the same load
 
 The number of requests in flight is throughput × latency (Little's law). The worker
 model needs a worker per in-flight request; SConcur needs a fiber. That is where
 the resource difference lives — not in CPU, which is comparable per request: on
-`/all` SConcur spends ~2.8 cores per 1 000 rps against RoadRunner's ~3.5, on the
-empty handle 0.19 against 0.23.
+`/all` SConcur spends ~2.7 cores per 1 000 rps against RoadRunner's ~3.5, on the
+empty handle 0.09 against 0.23.
 
-To hold the measured ≈2 680 rps of the `/all` workload:
+To hold the measured ≈2 670 rps of the `/all` workload:
 
-- SConcur (measured): 12 per-core processes, ~620 MiB of worker RSS total
-  (~52 MiB each), flat regardless of concurrency.
+- SConcur (measured): 12 per-core processes, ~650 MiB of worker RSS total
+  (~54 MiB each), flat regardless of concurrency.
 - RoadRunner (linear extrapolation from 460 rps at 12 workers): ~70 workers. A bare
   PSR-7 worker is ~20 MiB → ~1.4 GiB, about 5× more memory. Also 70 workers × 3
   backends = 210 DB connections, so PostgreSQL's default `max_connections = 100`
@@ -95,7 +96,7 @@ To hold the measured ≈2 680 rps of the `/all` workload:
   per process).
 - php-fpm (model, no fpm reference in this repo): the same ~70 workers, but a
   worker with a booted framework is 60–120 MiB → 4–8 GiB, i.e. 15–30×, plus the
-  per-request bootstrap CPU (at 10 ms of bootstrap, 2 680 rps costs ~27 cores of
+  per-request bootstrap CPU (at 10 ms of bootstrap, 2 670 rps costs ~27 cores of
   pure framework boot). In practice fpm does not reach this throughput on this
   hardware at all.
 
@@ -113,7 +114,7 @@ zero.
   the roadmap. A native blocking call or a single monolithic internal call still
   freezes the process — preemption cannot interrupt those.
 - The boundary tax (~50 µs per call) makes cheap point reads slower than the native
-  driver at any dataset size; moving large payloads costs ~1.5–2.3 ms per MB each
+  driver at any dataset size; moving large payloads costs ~1.7–2.6 ms per MB each
   way, and a fan of large results holds them all in flight at once (RSS ≈ fan width
   × payload) — cap the fan width on big data
   ([payload size](benchmarks.md#payload-size)).

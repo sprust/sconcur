@@ -1,12 +1,12 @@
 package wsserver_feature
 
 import (
+	"context"
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
 	"sconcur/internal/errs"
 	"sconcur/internal/features/wsserver/payloads"
 	"sconcur/internal/helpers"
-	"sconcur/internal/states"
 	"sconcur/internal/tasks"
 	"sconcur/internal/types"
 	"sconcur/internal/ws"
@@ -55,8 +55,8 @@ func (f *WsFeature) Handle(task *tasks.Task) {
 	}
 }
 
-// handleServe opens the listener and registers the server as a streaming state: each
-// upgraded connection is delivered to PHP as the next batch.
+// handleServe opens the listener and starts the self-pumping accept stream: each
+// upgraded connection is delivered to PHP as the next stream result.
 func (f *WsFeature) handleServe(task *tasks.Task) {
 	message := task.GetMessage()
 	startTime := time.Now()
@@ -83,17 +83,26 @@ func (f *WsFeature) handleServe(task *tasks.Task) {
 	// cancelling in-flight connections. Cleaned in Close.
 	serverStates.Store(message.FlowKey, state)
 
-	result, err := states.Get().Start(task.GetContext(), message.TaskKey, state)
+	// A hard stopFlow (no prior StopAccepting) must still tear the listener and
+	// the telemetry pusher down: Close rides the flow context, as the states
+	// registry's AfterFunc did before the stream became self-pumping.
+	context.AfterFunc(task.GetContext(), state.Close)
 
-	if err != nil {
-		state.Close()
+	// The accept stream is self-pumping (mirrors the HTTP server): every accepted
+	// connection is published as a stream result as soon as the previous one is
+	// consumed, so PHP pays no next() crossing per connection. The stream ends
+	// with the first no-next result (server stopped).
+	go func() {
+		for {
+			result := state.Next()
 
-		task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("serve", err)))
+			task.AddResult(result)
 
-		return
-	}
-
-	task.AddResult(result)
+			if !result.HasNext {
+				return
+			}
+		}
+	}()
 }
 
 // handleRespond routes one action (write a message, or close) from a PHP connection

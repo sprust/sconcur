@@ -7,6 +7,8 @@ import (
 	"sconcur/internal/dto"
 	"sconcur/internal/features"
 	"sconcur/internal/flows"
+	"sconcur/internal/tasks"
+	"sconcur/internal/types"
 	"sync"
 	"time"
 )
@@ -15,6 +17,19 @@ import (
 // the deadline. It is not a failure: the caller polls again (e.g. the HTTP serve
 // loop checks for a shutdown signal between waits).
 var ErrWaitTimeout = errors.New("wait timeout")
+
+// waitTimerPool reuses the WaitAnyTimeout deadline timers: the PHP serve loop
+// issues one waitAnyTimeoutBatch per crossing, and a NewTimer per call was a
+// top allocation site (the attribution plan, phase 5). Reuse is safe since
+// Go 1.23 — Stop/Reset discard a pending send.
+var waitTimerPool = sync.Pool{
+	New: func() any {
+		timer := time.NewTimer(time.Hour)
+		timer.Stop()
+
+		return timer
+	},
+}
 
 // resultsBufferSize buffers the shared results channel so a finished task's
 // goroutine publishes its result and exits instead of parking in AddResult until
@@ -97,7 +112,55 @@ func NewHandler() *Handler {
 	return h
 }
 
+// detachable reports whether a method may be pushed on the detached (flowless)
+// path. That path runs the handler synchronously on the PHP thread inside the
+// push() cgo call, so a handler that blocks stalls the entire worker — the list
+// is an explicit opt-in, not a documented convention: only the HTTP respond
+// handler is bounded by connection-side guards (pending.abandoned, the handler
+// timeout) and therefore safe there. A switch over the interned method costs a
+// pointer-and-length comparison, which is noise against the crossing itself.
+func detachable(method types.Method) bool {
+	switch method {
+	case types.MethodHttpRespond:
+		return true
+	default:
+		return false
+	}
+}
+
 func (h *Handler) Push(msg *dto.Message) error {
+	// Detached fire-and-forget task (empty flow key): the caller awaits no
+	// result and the task needs no cancellation scope of its own, so no flow is
+	// created and no stopFlow crossing will ever follow. Used by the
+	// fire-and-forget respond of a full HTTP response.
+	//
+	// Runs synchronously on the calling (PHP) thread, not in a goroutine: the
+	// write-command handover rides an unbuffered channel, so by the time this
+	// push returns the connection goroutine has accepted the command and the
+	// write is guaranteed to happen — a graceful drain that stops the server
+	// flow right after the coroutine ends can no longer outrun the response.
+	// Detached handlers must therefore never block (the respond handover is
+	// bounded by the connection-side guards).
+	if msg.FlowKey == "" {
+		if msg.IsNext {
+			return errors.New("next requires a flow key")
+		}
+
+		if !detachable(msg.Method) {
+			return errors.New("method " + string(msg.Method) + " cannot be pushed detached")
+		}
+
+		featureHandler, err := features.DetectMessageHandler(msg.Method)
+
+		if err != nil {
+			return err
+		}
+
+		flows.RunTaskProtected(tasks.NewTask(h.ctx, h.results, msg), featureHandler.Handle)
+
+		return nil
+	}
+
 	flow := h.flows.InitFlow(h.ctx, msg.FlowKey, h.results)
 
 	return flow.HandleMessage(msg)
@@ -233,8 +296,13 @@ func (h *Handler) WaitAnyTimeout(ms int) (*dto.Result, error) {
 		return result, nil
 	}
 
-	timer := time.NewTimer(time.Duration(ms) * time.Millisecond)
-	defer timer.Stop()
+	timer := waitTimerPool.Get().(*time.Timer)
+	timer.Reset(time.Duration(ms) * time.Millisecond)
+
+	defer func() {
+		timer.Stop()
+		waitTimerPool.Put(timer)
+	}()
 
 	for {
 		select {

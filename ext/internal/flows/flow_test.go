@@ -37,7 +37,7 @@ func receive(t *testing.T, flow *Flow, results chan *dto.Result) *dto.Result {
 	}
 }
 
-func TestOnDeliveredCancelsTaskContextAfterDelivery(t *testing.T) {
+func TestOnDeliveredDropsTaskAndKeepsFlowContextAlive(t *testing.T) {
 	flow, results := newTestFlow("flow")
 
 	payload, err := msgpack.Marshal(map[string]int64{"us": 1000})
@@ -71,10 +71,12 @@ func TestOnDeliveredCancelsTaskContextAfterDelivery(t *testing.T) {
 		t.Fatalf("unexpected error result: %s", result.Payload)
 	}
 
+	// Tasks share the flow context: a delivered result must not cancel it —
+	// only a flow stop does.
 	select {
 	case <-task.GetContext().Done():
-	case <-time.After(time.Second):
-		t.Fatal("task context was not cancelled after result delivery")
+		t.Fatal("flow context must stay alive after a result delivery")
+	default:
 	}
 
 	if flow.Count() != 0 {
@@ -134,7 +136,7 @@ func TestOnDeliveredKeepsInitialTaskContextWhileHasNext(t *testing.T) {
 	}
 }
 
-func TestOnDeliveredCancelsNextTaskContextEvenWithNext(t *testing.T) {
+func TestFlowCancelCancelsTaskContexts(t *testing.T) {
 	flow, results := newTestFlow("flow")
 
 	msg := &dto.Message{
@@ -154,9 +156,11 @@ func TestOnDeliveredCancelsNextTaskContextEvenWithNext(t *testing.T) {
 
 	receive(t, flow, results)
 
+	flow.Cancel()
+
 	select {
 	case <-task.GetContext().Done():
 	case <-time.After(time.Second):
-		t.Fatal("next-task context does not own the cursor state and must be cancelled after delivery")
+		t.Fatal("a flow stop must cancel the shared task context")
 	}
 }

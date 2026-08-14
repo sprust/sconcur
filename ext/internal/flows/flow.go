@@ -85,14 +85,15 @@ func (f *Flow) HandleMessage(msg *dto.Message) error {
 	f.activeTasks[msg.TaskKey] = task
 	f.tasksCount.Add(1)
 
-	go runTaskProtected(task, handle)
+	go RunTaskProtected(task, handle)
 
 	return nil
 }
 
-// runTaskProtected converts a panic into a task error result:
+// RunTaskProtected converts a panic into a task error result:
 // an unrecovered panic in a c-shared library aborts the whole PHP process.
-func runTaskProtected(task *tasks.Task, handle func(task *tasks.Task)) {
+// Exported for the handler's detached (flowless) task path.
+func RunTaskProtected(task *tasks.Task, handle func(task *tasks.Task)) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			task.AddResult(
@@ -109,24 +110,22 @@ func runTaskProtected(task *tasks.Task, handle func(task *tasks.Task)) {
 
 // OnDelivered runs the post-delivery bookkeeping for a result that has just
 // been pulled from the shared channel by the handler: drop the task from the
-// active set, decrement the counter and release the task context.
-//
-// The initial task of a multi-batch find/aggregate is the exception: its
-// context owns the cursor state lifetime (states.Start hooks AfterFunc on it),
-// so it must live until the state is finished or the flow is stopped.
+// active set and decrement the counter. Tasks share the flow context (no
+// per-task cancel to release); a cursor state hooked on it by states.Start is
+// cleaned up when its stream ends (handleNext) or when the flow stops.
 func (f *Flow) OnDelivered(result *dto.Result) {
 	f.mutex.Lock()
+	defer f.mutex.Unlock()
 
-	task := f.activeTasks[result.TaskKey]
+	// A self-pumping server stream publishes many results under its single
+	// serve task; only the first delivery may release the registration, or the
+	// counter would go negative by one per served request.
+	if _, ok := f.activeTasks[result.TaskKey]; !ok {
+		return
+	}
 
 	delete(f.activeTasks, result.TaskKey)
 	f.tasksCount.Add(-1)
-
-	f.mutex.Unlock()
-
-	if task != nil && (task.GetMessage().IsNext || !result.HasNext) {
-		task.Cancel()
-	}
 }
 
 func (f *Flow) Count() int {

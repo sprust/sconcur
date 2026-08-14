@@ -10,6 +10,7 @@ use SConcur\Dto\PendingNextDto;
 use SConcur\Dto\PendingPushDto;
 use SConcur\Dto\RunningTaskDto;
 use SConcur\Dto\TaskResultDto;
+use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Exceptions\OutsideFiberException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\TaskExecutionException;
@@ -59,6 +60,73 @@ readonly class FeatureExecutor
             runningTask: $runningTask,
             isNext: false,
         );
+    }
+
+    /**
+     * Fire-and-forget variant of exec(): the task is pushed and the coroutine
+     * continues immediately — no result is awaited, and the Go side (told by the
+     * payload itself, e.g. RespondPayload::full) publishes none. Only for
+     * operations whose outcome the caller cannot observe anyway: the final write
+     * of a full HTTP response already fails silently today (the coroutine dies
+     * after it, and a groupless spawn drops the failure). Outside a fiber the
+     * task is pushed detached directly — falling back to the awaiting exec()
+     * would wait forever for a result the payload told Go not to publish.
+     */
+    public static function execNoResult(PayloadInterface $payload): void
+    {
+        $currentFlow = State::getCurrentFlow();
+
+        if (!$currentFlow->isAsync) {
+            try {
+                // Detached push (empty flow key): no flow is created on the Go
+                // side and no result will ever come — same contract as the
+                // async path below, minus the fiber.
+                Extension::get()->push(
+                    flowKey: '',
+                    payload: $payload,
+                );
+            } catch (Throwable $exception) {
+                throw new TaskExecutionException(
+                    message: $exception->getMessage(),
+                    previous: $exception,
+                );
+            }
+
+            return;
+        }
+
+        $currentFiber = Fiber::getCurrent();
+
+        if ($currentFiber === null) {
+            throw new OutsideFiberException(
+                message: 'Can\'t wait outside of fiber.',
+            );
+        }
+
+        State::markSuspending(spl_object_id($currentFiber));
+
+        try {
+            // The dispatcher performs the push off this fiber's stack and resumes
+            // the fiber right away (no result mapping is registered). A push
+            // failure is thrown back into this suspend, like in suspend().
+            Fiber::suspend(new PendingPushDto(
+                flowKey: $currentFlow->key,
+                payload: $payload,
+                awaitResult: false,
+            ));
+        } catch (FlowStoppedException $exception) {
+            // A deliberate unwind (WaitGroup::stop, Scheduler::shutdown) is not a
+            // task failure: let it propagate as-is so the coroutine's finally
+            // blocks run and the cancellation stays recognizable.
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw new TaskExecutionException(
+                message: $exception->getMessage(),
+                previous: $exception,
+            );
+        } finally {
+            State::clearSuspending();
+        }
     }
 
     public static function next(string $taskKey): TaskResultDto
@@ -169,8 +237,8 @@ readonly class FeatureExecutor
      * A push failure is thrown back into this suspend by the dispatcher and
      * surfaces as TaskExecutionException, exactly like any resume-time failure.
      * The task key is unknown here (the push happens on the resuming side); result
-     * routing is guaranteed by the State::addFiberTask mapping the dispatcher
-     * registers at push time.
+     * routing is guaranteed by the owner id the dispatcher sends with the push —
+     * the Go side carries it back in the result frame.
      */
     protected static function suspend(PendingPushDto|PendingNextDto $pendingTask): TaskResultDto
     {

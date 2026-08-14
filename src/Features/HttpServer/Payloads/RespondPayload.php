@@ -30,6 +30,10 @@ readonly class RespondPayload implements PayloadInterface
 
     /**
      * @param array<string, string|array<int, string>> $headers
+     * @param bool                                     $noResult tells the Go side to publish no task
+     *                                                           result for this write — the fire-and-forget
+     *                                                           final write of a full response (the
+     *                                                           coroutine does not await it)
      */
     private function __construct(
         private string $requestId,
@@ -37,6 +41,7 @@ readonly class RespondPayload implements PayloadInterface
         private int $status,
         private array $headers,
         private string $body,
+        private bool $noResult = false,
     ) {
     }
 
@@ -51,6 +56,7 @@ readonly class RespondPayload implements PayloadInterface
             status: $status,
             headers: $headers,
             body: $body,
+            noResult: true,
         );
     }
 
@@ -106,6 +112,10 @@ readonly class RespondPayload implements PayloadInterface
             'st'  => $this->status,
             'bd'  => $this->body,
         ];
+
+        if ($this->noResult) {
+            $data['nr'] = true;
+        }
 
         // Normalize each header to a list of strings so the Go side (map[string]
         // []string) decodes it uniformly, whether the handler gave a single string

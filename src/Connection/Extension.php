@@ -43,16 +43,17 @@ class Extension
      * rejected instead of silently misbehaving. Public so tooling (bin/sconcur-status)
      * can report the version the package expects.
      */
-    public const string REQUIRED_EXTENSION_VERSION = '0.9.0';
+    public const string REQUIRED_EXTENSION_VERSION = '0.9.1';
 
     /**
      * Result frame layout (Go -> PHP), see main.go buildResultFrame. The envelope is
      * a fixed binary header, not MessagePack; only the feature payload stays
      * MessagePack and is decoded once by the feature. Header: flags(1) +
-     * methodLen(1) + execMs(uint32) + flowKeyLen(uint16) + taskKeyLen(uint16), then
+     * methodLen(1) + execMs(uint32) + flowKeyLen(uint16) + taskKeyLen(uint16) +
+     * ownerFiberId(uint64 — the coroutine awaiting this result, 0 = none), then
      * method, flowKey, taskKey and the raw payload (the rest).
      */
-    private const int FRAME_HEADER_SIZE   = 10;
+    private const int FRAME_HEADER_SIZE   = 18;
     private const int FRAME_FLAG_ERROR    = 1 << 0;
     private const int FRAME_FLAG_HAS_NEXT = 1 << 1;
 
@@ -71,13 +72,13 @@ class Extension
         return static::$instance ??= new Extension();
     }
 
-    public function push(string $flowKey, PayloadInterface $payload): RunningTaskDto
+    public function push(string $flowKey, PayloadInterface $payload, int $ownerFiberId = 0): RunningTaskDto
     {
         ++static::$tasksCounter;
 
         $taskKey = $flowKey . ':' . static::$tasksCounter;
 
-        $response = push($flowKey, $payload->getMethod()->value, $taskKey, MessagePackTransport::pack($payload));
+        $response = push($flowKey, $payload->getMethod()->value, $taskKey, MessagePackTransport::pack($payload), $ownerFiberId);
 
         static::checkCallResponse(flowKey: $flowKey, response: $response);
 
@@ -86,9 +87,9 @@ class Extension
         );
     }
 
-    public function next(string $flowKey, string $taskKey): RunningTaskDto
+    public function next(string $flowKey, string $taskKey, int $ownerFiberId = 0): RunningTaskDto
     {
-        $response = next($flowKey, $taskKey);
+        $response = next($flowKey, $taskKey, $ownerFiberId);
 
         static::checkCallResponse(flowKey: $flowKey, response: $response);
 
@@ -297,7 +298,7 @@ class Extension
             // The envelope is a fixed binary header; the payload (the rest of the
             // frame) is the feature's MessagePack bytes, decoded later by the
             // feature itself.
-            $header = unpack('Cflags/CmethodLen/NexecutionMs/nflowKeyLen/ntaskKeyLen', $response, $offset);
+            $header = unpack('Cflags/CmethodLen/NexecutionMs/nflowKeyLen/ntaskKeyLen/JownerFiberId', $response, $offset);
 
             if ($header === false) {
                 throw new UnexpectedResponseFormatException(
@@ -337,6 +338,7 @@ class Extension
                 hasNext: ($header['flags'] & self::FRAME_FLAG_HAS_NEXT) !== 0,
                 executionMs: $header['executionMs'],
                 totalExecutionMs: (int) ((microtime(true) - $start) * 1000),
+                ownerFiberId: $header['ownerFiberId'],
             );
         } catch (UnexpectedResponseFormatException $exception) {
             throw $exception;

@@ -76,8 +76,8 @@ static void sconcur_interrupt_function(zend_execute_data *execute_data)
 /*
  * arginfo:
  *  - ping(string name)
- *  - push(string flowKey, string method, string taskKey, string payload)
- *  - next(string flowKey, string taskKey)
+ *  - push(string flowKey, string method, string taskKey, string payload, int ownerId)
+ *  - next(string flowKey, string taskKey, int ownerId)
  *  - wait(string flowKey)
  *  - waitAny()
  *  - waitAnyTimeout(int timeoutMs)
@@ -95,18 +95,20 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_ping, 0, 0, 1)
     ZEND_ARG_TYPE_INFO(0, name, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
-// push(string flowKey, string method, string taskKey, string payload)
-ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_push, 0, 0, 4)
+// push(string flowKey, string method, string taskKey, string payload, int ownerId)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_push, 0, 0, 5)
     ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, method, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, taskKey, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, payload, IS_STRING, 0)
+    ZEND_ARG_TYPE_INFO(0, ownerId, IS_LONG, 0)
 ZEND_END_ARG_INFO()
 
-// next(string flowKey, string taskKey)
-ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_next, 0, 0, 2)
+// next(string flowKey, string taskKey, int ownerId)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_next, 0, 0, 3)
     ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, taskKey, IS_STRING, 0)
+    ZEND_ARG_TYPE_INFO(0, ownerId, IS_LONG, 0)
 ZEND_END_ARG_INFO()
 
 // wait(string flowKey)
@@ -197,13 +199,14 @@ PHP_FUNCTION(ping)
     free(response);
 }
 
-// PHP: SConcur\Extension\push(string $flowKey, string $method, string $taskKey, string $payload): string
+// PHP: SConcur\Extension\push(string $flowKey, string $method, string $taskKey, string $payload, int $ownerId): string
 PHP_FUNCTION(push)
 {
     char *flow_key = NULL, *method = NULL, *task_key = NULL, *payload = NULL;
     size_t flow_key_len, method_len, task_key_len, payload_len;
+    zend_long owner_id = 0;
 
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "ssss", &flow_key, &flow_key_len, &method, &method_len, &task_key, &task_key_len, &payload, &payload_len) == FAILURE) {
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "ssssl", &flow_key, &flow_key_len, &method, &method_len, &task_key, &task_key_len, &payload, &payload_len, &owner_id) == FAILURE) {
         RETURN_THROWS();
     }
 
@@ -215,7 +218,8 @@ PHP_FUNCTION(push)
         task_key,
         (int)task_key_len,
         payload,
-        (int)payload_len
+        (int)payload_len,
+        (long long)owner_id
     );
 
     /* NULL means success (the hot path): return the interned empty string
@@ -228,17 +232,18 @@ PHP_FUNCTION(push)
     free(response);
 }
 
-// PHP: SConcur\Extension\next(string $flowKey, string $taskKey): string
+// PHP: SConcur\Extension\next(string $flowKey, string $taskKey, int $ownerId): string
 PHP_FUNCTION(next)
 {
     char *flow_key = NULL, *task_key = NULL;
     size_t flow_key_len, task_key_len;
+    zend_long owner_id = 0;
 
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "ss", &flow_key, &flow_key_len, &task_key, &task_key_len) == FAILURE) {
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "ssl", &flow_key, &flow_key_len, &task_key, &task_key_len, &owner_id) == FAILURE) {
         RETURN_THROWS();
     }
 
-    char *response = next(flow_key, task_key);
+    char *response = next(flow_key, task_key, (long long)owner_id);
 
     /* NULL means success, like push. */
     if (response == NULL) {
@@ -388,7 +393,7 @@ PHP_FUNCTION(stopFlow)
         RETURN_THROWS();
     }
 
-    stopFlow(flow_key);
+    stopFlow(flow_key, (int)flow_key_len);
     RETURN_NULL();
 }
 

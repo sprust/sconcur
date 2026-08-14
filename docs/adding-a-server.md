@@ -25,7 +25,8 @@ A server is a pair of methods, both served by one Go feature (via a `switch` on
 `Method`):
 
 - `<Server>Serve` — open the listener and stream accepted requests into PHP (a
-  streaming state: each request is the next batch that PHP pulls via `next()`);
+  self-pumping stream: a Go-side goroutine publishes each request as the next
+  stream result, no per-request `next()` crossing);
 - `<Server>Respond` — deliver one response record (whole, or head/chunk/end of a
   stream) from the PHP handler back to the waiting connection.
 
@@ -48,7 +49,7 @@ flowchart TB
     respond["handleRespond (Go)"]
 
     client <-->|"connection / response into socket"| serve
-    serve -->|"RequestEvent → requests channel → Next() yields batch"| sched
+    serve -->|"RequestEvent → requests channel → self-pumping Next() → AddResult"| sched
     sched -->|"spawns coroutine"| handler
     handler -->|"RespondPayload (Respond method)"| respond
     respond -->|"finds connection by requestId"| serve
@@ -100,8 +101,12 @@ outward (the request is assembled from `RequestEvent` in
 `HttpServer::decodeRequest()` via an injected PSR-17 factory; the body is
 `Dto/RequestBodyStream` over `Dto/RequestBody`), while the socket and WS servers use
 their own `readonly` DTOs — `Dto/Connection` with `read()`/`write()`/`close()` for
-the push model. In both cases the response is encoded into `RespondPayload`, and
-every command is acknowledged back, which is what gives write backpressure.
+the push model. In both cases the response is encoded into `RespondPayload`. The
+records of a streamed response (head/chunk/end) are acknowledged back, which is
+what gives write backpressure; the one-shot full response of the HTTP server is
+fire-and-forget — `RespondPayload::full()` sets the no-result flag (`nr`) and goes
+through `FeatureExecutor::execNoResult()`, so the coroutine finishes without
+waiting for the write (the socket and WS servers acknowledge every command).
 
 Argv parsing, signal handlers and the orphan check are already extracted into the
 stateless `SConcur\Features\Server\ServerRuntimeSupportTrait`:
@@ -136,9 +141,8 @@ batches are the incoming requests — and hands control to the shared
   `SO_REUSEPORT` siblings.
 
 `Scheduler::serve` itself multiplexes the incoming requests and the async work of
-their handlers in a single wait loop (`waitAnyTimeoutBatch`), re-arms the stream via
-`next()`, and on drain shuts the flow down cleanly (`stopFlow`). This mechanic is
-shared and does not need rewriting.
+their handlers in a single wait loop (`waitAnyTimeoutBatch`) and on drain shuts the
+flow down cleanly (`stopFlow`). This mechanic is shared and does not need rewriting.
 
 ## Go side
 
@@ -150,11 +154,15 @@ which arrives on a different flow, can find the connection) and `serverStates`
 (`flowKey → *serverState`, so `StopAccepting` can find the listener).
 
 `handleServe` parses `ServePayload`, opens the TCP listener (`listen.go`, which sets
-`SO_REUSEPORT` when asked), builds the `serverState` — a `contracts.StateContract`
-that also brings up a standard `net/http.Server` whose `http.Handler` it is, with
-`BaseContext` bound to the task context — stores it in `serverStates` and registers
-it via `states.Get().Start(...)`, which hangs `Close()` on context cancellation and
-returns the first batch.
+`SO_REUSEPORT` when asked), builds the `serverState` — it brings up a standard
+`net/http.Server` whose `http.Handler` it is, with `BaseContext` bound to the task
+context — stores it in `serverStates` and starts the self-pumping goroutine: a
+`state.Next()` → `task.AddResult(...)` loop publishes every accepted request as the
+next stream result until the first no-next result (server stopped). The accept
+stream bypasses the `states` registry — the registry serves only the secondary
+streams (the request body, the inbound message streams). Backpressure is layered:
+`AddResult` blocks on the shared results buffer, the `requests` channel buffers
+accepts, and beyond that `ServeHTTP` itself blocks.
 
 Inside `serverState` (`server.go`), `ServeHTTP` acquires the `maxConcurrency`
 semaphore before reading the body (so a request waiting for a slot does not hold a
@@ -162,21 +170,28 @@ body buffer), registers a `pendingRequest`, sends a `RequestEvent` into the buff
 `requests` channel and waits for write commands from PHP, applying them to the
 socket; on `handlerTimeout` or disconnect it closes `abandoned`, so a late response
 does not hang forever, and it writes the access-log line on the Go side. `Next()`
-yields the next `RequestEvent` as a batch with the "more coming" flag (on
-`ctx.Done()` a final batch without it, which ends the PHP loop), and `Close()` stops
-the `http.Server`, removes it from `serverStates` and frees resources on a fresh
-context.
+yields the next `RequestEvent` with the "more coming" flag (on `ctx.Done()` a final
+result without it, which ends the PHP loop). The listener is closed by
+`stopAccepting()` (the drain calls it via the `StopAccepting` export), and
+cancelling the flow context unblocks every in-flight handler through `BaseContext`;
+`Close()` is the full teardown — `http.Server` shutdown plus `pusher.Stop()` on a
+fresh context.
 
 `handleRespond` decodes `requestId` (with a separate mini-struct, so routing works
 even when the rest of the payload is corrupt), finds the `pendingRequest` and
 dispatches the write command, waiting for it to be applied — the handler coroutine
 continues only once the bytes have gone into the socket, or `abandoned`/context
-cancellation arrives.
+cancellation arrives. A payload with the no-result flag (`nr`, the full write) is
+dispatched fire-and-forget instead: no result is published, and the handover does
+not select on the flow context — the coroutine may already be gone.
 
 If the body is larger than the inline first chunk, Go puts the remainder into a
 separate streaming state (`bodyState`, registered under `<requestId>:body`) and
 yields that key in `RequestEvent.BodyKey`; PHP reads the pieces via the same shared
-`next()` mechanism, with a fixed 64 KiB transport granularity.
+`next()` mechanism, with a fixed 64 KiB transport granularity. The inline
+first-chunk buffer is sized by the declared `Content-Length` when that is smaller
+(a per-request allocation hot spot); chunked or unknown lengths use the full
+64 KiB.
 
 ## The cgo export `StopAccepting`
 
@@ -268,9 +283,9 @@ Go:
 
 - [ ] The same two constants in `types/method.go`.
 - [ ] Payload structs in `payloads.go` plus `RequestEvent`; mirror PHP 1:1.
-- [ ] The feature: `Handle` switch → `handleServe` (listen → `serverState` →
-      `states.Get().Start`) and `handleRespond` (rendezvous by `requestId` plus write
-      backpressure).
+- [ ] The feature: `Handle` switch → `handleServe` (listen → `serverState` → the
+      self-pumping `Next()`/`AddResult` goroutine) and `handleRespond` (rendezvous
+      by `requestId` plus write backpressure; `nr` — fire-and-forget).
 - [ ] `serverStates`/`pendingRequests` maps; `StopAccepting(flowKey)`;
       `SO_REUSEPORT` in `listen`.
 - [ ] `BaseContext` = the task context; `handlerTimeout`; the access log on the Go

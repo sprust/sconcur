@@ -61,12 +61,12 @@ feature tax of `/all` is laid.
 
 | Metric | `/` (empty) | `/all` (all features) |
 |---|---|---|
-| Throughput | ≈67 100 req/sec | 2 680 req/sec |
-| Latency | p50 3.7 · p90 6.3 · p99 8.8 ms | p50 87 · p90 165 · p99 267 ms |
-| Servers CPU (`php`) | avg ~1207 % | avg 744 % |
-| Worker RSS (sum of 12) | ~573 MiB (flat) | ~628 MiB |
+| Throughput | ≈133 500 req/sec | ≈3 010 req/sec |
+| Latency | p50 1.8 · p90 7.1 · p99 30.1 ms | p50 76 · p90 155 · p99 267 ms |
+| Servers CPU (`php`) | avg ~1218 % | avg ~563 % |
+| Worker RSS (sum of 12) | ~590 MiB (flat) | ~660 MiB |
 
-Three runs held ~67k req/sec with 0 errors. The ~25× gap is the price of the
+Three runs held ~133k req/sec with 0 errors. The ~44× gap is the price of the
 per-feature fan-out: `/all` does a 3-way concurrent fan-out across the PHP↔Go
 boundary plus the fsync of 3 disk writes per request, and throughput hits exactly
 that, not the cheap DB read. The empty route has none of it and is CPU-bound at
@@ -79,12 +79,12 @@ operations, 3 of them disk writes.
 
 | Metric | Value |
 |---|---|
-| Throughput | 2 680 req/sec (0 errors — all 3 features `ok`) |
-| Latency | p50 87 · p90 165 · p99 267 ms |
-| Worker RSS (sum of 12) | first 627.7 / peak 629.1 / last 629.1 MiB → drift +0.8 MiB |
-| Servers CPU (`php`) | avg 744 % / peak 765 % (≈ 7–8 of 12 cores) |
-| Backends CPU | MongoDB 112 %/138 peak · MySQL 71 %/76 · PostgreSQL 53 %/68 |
-| MEM (containers) | php 287 · mongo 338 · mysql 533 · pg 145 MiB |
+| Throughput | ≈3 010 req/sec (0 errors — all 3 features `ok`) |
+| Latency | p50 76 · p90 155 · p99 267 ms |
+| Worker RSS (sum of 12) | first 652.6 / peak 659.7 / last 659.7 MiB → drift +7.0 MiB |
+| Servers CPU (`php`) | avg 561 % / peak 582 % (≈ 5–6 of 12 cores) |
+| Backends CPU | MongoDB 189 %/222 peak · MySQL 120 %/124 · PostgreSQL 84 %/93 |
+| MEM (containers) | php 279 · mongo 178 · mysql 667 · pg 139 MiB |
 
 The RSS drift over 20 s is warm-up noise; the authoritative leak verdict comes from
 the soak below.

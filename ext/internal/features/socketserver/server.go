@@ -22,7 +22,7 @@ import (
 // The PHP side normally supplies these (its defaults mirror them).
 const (
 	defaultWriteTimeout    = 30 * time.Second
-	defaultShutdownTimeout = 5 * time.Second
+	defaultShutdownTimeout = 10 * time.Second
 	defaultMaxMessageBytes = 1 << 20 // 1 MiB
 	// drainGrace bounds how long a connection may keep its handler alive after the
 	// listener stops accepting; past it the connection is force-closed so a handler
@@ -94,6 +94,7 @@ type serverState struct {
 	message     *dto.Message
 	listener    net.Listener
 	config      serverConfig
+	closeOnce   sync.Once
 	startTime   time.Time
 	connections chan *payloads.ConnectionEvent
 	// sem bounds concurrent in-flight connections when maxConcurrency > 0; nil means
@@ -313,24 +314,28 @@ func (s *serverState) forceCloseAfterGrace() {
 // drain (bounded by shutdownTimeout). Run on a fresh context — the task context is
 // already cancelled by the time the state is closed.
 func (s *serverState) Close() {
-	serverStates.Delete(s.message.FlowKey)
+	// Idempotent: the flow-context AfterFunc and an explicit call (tests) may
+	// both fire, and pusher.Stop panics on a second stop.
+	s.closeOnce.Do(func() {
+		serverStates.Delete(s.message.FlowKey)
 
-	s.pusher.Stop()
+		s.pusher.Stop()
 
-	_ = s.listener.Close()
+		_ = s.listener.Close()
 
-	done := make(chan struct{})
+		done := make(chan struct{})
 
-	go func() {
-		s.waitGroup.Wait()
+		go func() {
+			s.waitGroup.Wait()
 
-		close(done)
-	}()
+			close(done)
+		}()
 
-	select {
-	case <-done:
-	case <-time.After(s.config.shutdownTimeout):
-	}
+		select {
+		case <-done:
+		case <-time.After(s.config.shutdownTimeout):
+		}
+	})
 }
 
 // formatAccessLine builds one access-log line for a finished connection:

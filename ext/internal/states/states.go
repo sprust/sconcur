@@ -87,8 +87,11 @@ func (s *States) Next(task *tasks.Task) {
 	// The cursor state keeps the original message, but each next() may arrive on
 	// a different flow (a sync cursor uses a fresh flow per batch). Route the
 	// result back to whoever issued THIS next, not the flow that opened the
-	// cursor — otherwise the per-flow demultiplexer never delivers it.
+	// cursor — otherwise the per-flow demultiplexer never delivers it. The owner
+	// id must follow the same rule: it routes the result to the coroutine that
+	// issued THIS next, not to whoever created the state.
 	result.FlowKey = message.FlowKey
+	result.OwnerId = message.OwnerId
 
 	task.AddResult(result)
 }

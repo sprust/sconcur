@@ -27,6 +27,7 @@ import (
 	"sconcur/internal/logger"
 	"sconcur/internal/types"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -41,10 +42,12 @@ import (
 //	[2:6]    execMs   uint32 (big-endian)
 //	[6:8]    flowKey  length uint16 (big-endian)
 //	[8:10]   taskKey  length uint16 (big-endian)
-//	[10:]    method bytes, then flowKey bytes, then taskKey bytes, then the raw
+//	[10:18]  ownerId  uint64 (big-endian; the PHP coroutine awaiting this
+//	         result, 0 = none — lets the PHP side route without a task map)
+//	[18:]    method bytes, then flowKey bytes, then taskKey bytes, then the raw
 //	         payload (the rest)
 const (
-	frameHeaderSize  = 10
+	frameHeaderSize  = 18
 	frameFlagError   = 1 << 0
 	frameFlagHasNext = 1 << 1
 )
@@ -71,6 +74,7 @@ func appendResultFrame(dst []byte, result *dto.Result) []byte {
 	dst = binary.BigEndian.AppendUint32(dst, uint32(result.ExecutionMs))
 	dst = binary.BigEndian.AppendUint16(dst, uint16(len(result.FlowKey)))
 	dst = binary.BigEndian.AppendUint16(dst, uint16(len(result.TaskKey)))
+	dst = binary.BigEndian.AppendUint64(dst, uint64(result.OwnerId))
 	dst = append(dst, result.Method...)
 	dst = append(dst, result.FlowKey...)
 	dst = append(dst, result.TaskKey...)
@@ -144,13 +148,54 @@ func init() {
 	handler = handler2.NewHandler()
 }
 
+// goStringView returns a string backed directly by the C buffer — no copy. It
+// is valid only until the cgo call returns (PHP owns and may free the buffer
+// after that), so it must only be used for lookups that do not retain the key:
+// map reads/deletes, comparisons, or interning against a canonical set. Any
+// key that outlives the call (stored in a Message, a Task, a flow) keeps the
+// copying C.GoStringN path.
+func goStringView(p *C.char, n C.int) string {
+	if n == 0 {
+		return ""
+	}
+
+	return unsafe.String((*byte)(unsafe.Pointer(p)), int(n))
+}
+
 // Preemption timer (see .ai/plans/coroutine-switcher.md, phase 2): while armed, a
 // goroutine periodically requests a VM interrupt so the C-side handler can park
 // the currently running coroutine between opcodes.
+//
+// The ticker pauses while the PHP thread is parked inside a blocking wait
+// export (phpParkedInWait): no PHP code is running, so an interrupt could not
+// be serviced anyway, and 1000/quantum timer wakeups per second per idle
+// worker are pure waste (measured ~2.3% CPU per process at the 5 ms default).
+// The wait exports flip the flag around the handler call; the exit side also
+// pokes preemptionWake so a paused ticker resumes immediately.
 var (
 	preemptionMutex sync.Mutex
 	preemptionStop  chan struct{}
+	phpParkedInWait atomic.Bool
+	preemptionWake  = make(chan struct{}, 1)
 )
+
+// beginBlockingWait marks the PHP thread as parked inside a blocking wait
+// export. PHP is NTS — a single thread — so a plain bool flag is enough.
+func beginBlockingWait() {
+	phpParkedInWait.Store(true)
+}
+
+// endBlockingWait clears the parked flag and wakes a paused preemption ticker.
+// The send is non-blocking: a buffered stale token is consumed harmlessly by
+// the ticker loop (it re-checks the flag before every interrupt request).
+func endBlockingWait() {
+	phpParkedInWait.Store(false)
+
+	select {
+	case preemptionWake <- struct{}{}:
+	default:
+	}
+}
 
 //export preemptionArm
 func preemptionArm(quantumMs C.int) {
@@ -175,7 +220,49 @@ func preemptionArm(quantumMs C.int) {
 			case <-stop:
 				return
 			case <-ticker.C:
-				C.sconcur_request_vm_interrupt()
+				if !phpParkedInWait.Load() {
+					C.sconcur_request_vm_interrupt()
+
+					continue
+				}
+
+				// PHP is parked inside a blocking wait export: pause the
+				// ticker entirely until the wait returns, so an idle worker
+				// costs no timer wakeups.
+				ticker.Stop()
+
+				// Drain a stale wake left by a wait round-trip that completed
+				// between two ticks, then re-check before parking: without the
+				// re-check a wake sent in that window would be lost and the
+				// ticker would stay paused while PHP runs.
+				select {
+				case <-preemptionWake:
+				default:
+				}
+
+				if phpParkedInWait.Load() {
+					select {
+					case <-stop:
+						return
+					case <-preemptionWake:
+						// A disarm may have raced the park: a dying ticker must
+						// not steal the wake meant for its re-armed successor,
+						// or the successor stays parked one poll interval too
+						// long. Put the token back and exit.
+						select {
+						case <-stop:
+							select {
+							case preemptionWake <- struct{}{}:
+							default:
+							}
+
+							return
+						default:
+						}
+					}
+				}
+
+				ticker.Reset(interval)
 			}
 		}
 	}()
@@ -207,13 +294,17 @@ func push(
 	tkLen C.int,
 	pl unsafe.Pointer,
 	plLen C.int,
+	ownerId C.longlong,
 ) *C.char {
 	msg := &dto.Message{
 		FlowKey: C.GoStringN(fk, fkLen),
-		Method:  types.Method(C.GoStringN(mt, mtLen)),
+		// Interned through a view: the method set is fixed, so the message
+		// stores the canonical constant instead of a per-push copy.
+		Method:  types.InternMethod(types.Method(goStringView(mt, mtLen))),
 		TaskKey: C.GoStringN(tk, tkLen),
 		Payload: C.GoBytes(pl, plLen),
 		IsNext:  false,
+		OwnerId: int64(ownerId),
 	}
 
 	err := handler.Push(msg)
@@ -228,11 +319,12 @@ func push(
 }
 
 //export next
-func next(fk *C.char, tk *C.char) *C.char {
+func next(fk *C.char, tk *C.char, ownerId C.longlong) *C.char {
 	msg := &dto.Message{
 		FlowKey: C.GoString(fk),
 		TaskKey: C.GoString(tk),
 		IsNext:  true,
+		OwnerId: int64(ownerId),
 	}
 
 	err := handler.Push(msg)
@@ -247,7 +339,10 @@ func next(fk *C.char, tk *C.char) *C.char {
 
 //export wait
 func wait(fk *C.char, fkLen C.int) C.buffer_result_t {
-	res, err := handler.Wait(C.GoStringN(fk, fkLen))
+	beginBlockingWait()
+	// A view is enough: Wait only compares and looks the key up, never stores it.
+	res, err := handler.Wait(goStringView(fk, fkLen))
+	endBlockingWait()
 
 	if err != nil {
 		return C.buffer_result_t{
@@ -262,7 +357,9 @@ func wait(fk *C.char, fkLen C.int) C.buffer_result_t {
 
 //export waitAny
 func waitAny() C.buffer_result_t {
+	beginBlockingWait()
 	res, err := handler.WaitAny()
+	endBlockingWait()
 
 	if err != nil {
 		return C.buffer_result_t{
@@ -277,7 +374,9 @@ func waitAny() C.buffer_result_t {
 
 //export waitAnyBatch
 func waitAnyBatch(max C.int) C.buffer_result_t {
+	beginBlockingWait()
 	results, err := handler.WaitAnyBatch(int(max))
+	endBlockingWait()
 
 	if err != nil {
 		return C.buffer_result_t{
@@ -292,7 +391,9 @@ func waitAnyBatch(max C.int) C.buffer_result_t {
 
 //export waitAnyTimeoutBatch
 func waitAnyTimeoutBatch(ms C.int, max C.int) C.buffer_result_t {
+	beginBlockingWait()
 	results, err := handler.WaitAnyTimeoutBatch(int(ms), int(max))
+	endBlockingWait()
 
 	if err != nil {
 		// A timeout is not an error: signal it with a distinct, non-"error:"
@@ -313,7 +414,9 @@ func waitAnyTimeoutBatch(ms C.int, max C.int) C.buffer_result_t {
 
 //export waitAnyTimeout
 func waitAnyTimeout(ms C.int) C.buffer_result_t {
+	beginBlockingWait()
 	res, err := handler.WaitAnyTimeout(int(ms))
+	endBlockingWait()
 
 	if err != nil {
 		// A timeout is not an error: signal it with a distinct, non-"error:"
@@ -338,8 +441,12 @@ func tasksCount() int {
 }
 
 //export stopFlow
-func stopFlow(fk *C.char) {
-	handler.StopFlow(C.GoString(fk))
+func stopFlow(fk *C.char, fkLen C.int) {
+	// A view is enough: StopFlow deletes map entries by the key and never
+	// stores it (the recycled Flow struct keeps its own copy of the old key).
+	// The length comes from the C side, which already has it from
+	// zend_parse_parameters — no strlen scan per stop.
+	handler.StopFlow(goStringView(fk, fkLen))
 }
 
 //export httpStopAccepting
@@ -369,7 +476,7 @@ func destroy() {
 
 //export version
 func version() *C.char {
-	return C.CString("0.9.0")
+	return C.CString("0.9.1")
 }
 
 func main() {}

@@ -15,9 +15,16 @@ use SConcur\Transport\PayloadInterface;
  */
 readonly class PendingPushDto
 {
+    /**
+     * @param bool $awaitResult false marks a fire-and-forget push: the dispatcher
+     *                          resumes the coroutine right after the push instead
+     *                          of registering it to wait for the task's result
+     *                          (see FeatureExecutor::execNoResult).
+     */
     public function __construct(
         public string $flowKey,
         public PayloadInterface $payload,
+        public bool $awaitResult = true,
     ) {
     }
 }

@@ -67,6 +67,10 @@ third-party libraries — cannot freeze the process:
 3. The extension's handler, called on the PHP thread, invokes the scheduler's
    preempt hook, which force-parks the running coroutine exactly like a `switch()`
    with the quantum elapsed. When serving ends the timer is disarmed.
+4. While the PHP thread is parked inside a blocking wait call (an idle server
+   waiting for the next request), the timer pauses: no PHP code is running, so
+   an interrupt could not be serviced anyway. It resumes as soon as the wait
+   returns, so an idle worker costs no timer wakeups.
 
 ```mermaid
 flowchart TB

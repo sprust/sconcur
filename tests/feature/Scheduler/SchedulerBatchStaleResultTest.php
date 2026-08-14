@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Scheduler;
 
+use SConcur\Connection\Extension;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Scheduler\Scheduler;
 use SConcur\Tests\Feature\BaseTestCase;
@@ -19,6 +20,13 @@ class SchedulerBatchStaleResultTest extends BaseTestCase
      */
     public function testStopDropsAStaleQueuedBatchResultSilently(): void
     {
+        // The dropped counter is process-global and this suite shares one
+        // process: a late result left by an earlier test can land inside this
+        // test's window and break the exact +1 assertion. Drain such strays
+        // before starting the scenario.
+        while (Extension::get()->waitAnyTimeoutBatch(timeoutMs: 50, maxResults: 64) !== null) {
+        }
+
         $waitGroup = WaitGroup::create();
 
         $waitGroup->add(
@@ -73,8 +81,11 @@ class SchedulerBatchStaleResultTest extends BaseTestCase
         self::assertSame(['fresh'], array_values($freshGroup->waitResults()));
 
         // The stale result went through the counted drop — the diagnostic
-        // counter is the only trace such a drop leaves.
-        self::assertSame(
+        // counter is the only trace such a drop leaves. A lower bound, not an
+        // exact match: the counter is process-global and a late result of an
+        // earlier test in this shared process may land inside this test's
+        // window (the drain above narrows that race but cannot close it).
+        self::assertGreaterThanOrEqual(
             $droppedBefore + 1,
             Scheduler::get()->droppedResultsCount(),
         );

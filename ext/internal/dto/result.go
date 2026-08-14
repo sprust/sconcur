@@ -10,6 +10,9 @@ type Result struct {
 	Payload     string       `json:"pl" msgpack:"pl"`
 	HasNext     bool         `json:"hn" msgpack:"hn"`
 	ExecutionMs int          `json:"ems" msgpack:"ems"`
+	// OwnerId mirrors Message.OwnerId: the PHP coroutine awaiting this result
+	// (0 = none), carried in the binary result frame.
+	OwnerId int64 `json:"-" msgpack:"-"`
 }
 
 func NewSuccessResult(message *Message, payload string, executionMs int) *Result {
@@ -20,6 +23,7 @@ func NewSuccessResult(message *Message, payload string, executionMs int) *Result
 		IsError:     false,
 		Payload:     payload,
 		ExecutionMs: executionMs,
+		OwnerId:     message.OwnerId,
 	}
 }
 
@@ -32,6 +36,7 @@ func NewSuccessResultWithNext(message *Message, payload string, executionMs int)
 		Payload:     payload,
 		HasNext:     true,
 		ExecutionMs: executionMs,
+		OwnerId:     message.OwnerId,
 	}
 }
 
@@ -42,5 +47,6 @@ func NewErrorResult(message *Message, payload string) *Result {
 		TaskKey: message.TaskKey,
 		IsError: true,
 		Payload: payload,
+		OwnerId: message.OwnerId,
 	}
 }

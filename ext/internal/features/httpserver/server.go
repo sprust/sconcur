@@ -7,17 +7,41 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sconcur/internal/dto"
 	"sconcur/internal/features/httpserver/payloads"
 	"sconcur/internal/helpers"
 	"sconcur/internal/logger"
 	"sconcur/internal/states"
 	"sconcur/internal/stats"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
+
+// handlerTimerPool reuses the per-request handlerTimeout timers: a NewTimer per
+// request was a top allocation site (the attribution plan, phase 5). Reuse is
+// safe since Go 1.23 — Stop/Reset discard a pending send, so a recycled timer
+// can never deliver a stale expiry.
+var handlerTimerPool = sync.Pool{
+	New: func() any {
+		timer := time.NewTimer(time.Hour)
+		timer.Stop()
+
+		return timer
+	},
+}
+
+// benchLadderL0 short-circuits every request with a constant 200 "ok" written
+// directly from the connection goroutine — PHP is never called. Rung L0 of the
+// attribution ladder (.ai/plans/cpu-per-request-attribution.md): the floor
+// the Go server gives without PHP, with the access log kept for parity with the
+// other rungs. Bench-only; off unless the worker starts with
+// SCONCUR_HTTP_BENCH_L0=1.
+var benchLadderL0 = os.Getenv("SCONCUR_HTTP_BENCH_L0") == "1"
 
 // Default server tuning, used as a fallback when the PHP side sends a zero value.
 // The PHP side normally supplies these (its defaults mirror them).
@@ -26,7 +50,7 @@ const (
 	// Fixed transport granularity (not configurable): the inline first-chunk size
 	// and the bytes read per streamed chunk. App-level sizing is RequestBody::read.
 	defaultRequestBodyChunkSize = 64 << 10 // 64 KiB
-	defaultShutdownTimeout      = 5 * time.Second
+	defaultShutdownTimeout      = 10 * time.Second
 	defaultReadHeaderTimeout    = 10 * time.Second
 	defaultReadTimeout          = 30 * time.Second
 	defaultWriteTimeout         = 30 * time.Second
@@ -119,6 +143,17 @@ type writeCommand struct {
 	done    chan error
 }
 
+// report hands the write outcome back to the issuing coroutine. A
+// fire-and-forget command carries no done channel (nothing awaits it, so none is
+// allocated) and a send on a nil channel blocks forever — hence the guard.
+func (c writeCommand) report(err error) {
+	if c.done == nil {
+		return
+	}
+
+	c.done <- err
+}
+
 // pendingRequest is the rendezvous between the connection goroutine (ServeHTTP)
 // and the PHP handler's write commands. abandoned is closed once ServeHTTP stops
 // consuming — on a handler timeout or any return — so a handler that responds
@@ -141,6 +176,7 @@ type serverState struct {
 	listener   net.Listener
 	httpServer *http.Server
 	requests   chan *payloads.RequestEvent
+	closeOnce  sync.Once
 	startTime  time.Time
 	config     serverConfig
 	// sem bounds concurrent in-flight requests when maxConcurrency > 0; nil means
@@ -226,6 +262,13 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		logger.Write(formatAccessLine(start, request.Method, request.URL.Path, status))
 	}()
 
+	if benchLadderL0 {
+		status = http.StatusOK
+		_, _ = io.WriteString(writer, "ok")
+
+		return
+	}
+
 	// Bound concurrency before touching the body, so requests waiting for a slot
 	// hold no body buffer: this caps memory (and goroutines) under load. A waiting
 	// request unblocks when a slot frees or the server stops.
@@ -255,7 +298,21 @@ func (s *serverState) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	// remainder on demand via a bodyState — the body is never buffered whole.
 	reader := http.MaxBytesReader(writer, request.Body, s.config.maxRequestBody)
 
-	firstChunk, bodyComplete, err := helpers.ReadChunk(reader, defaultRequestBodyChunkSize)
+	// Size the first-chunk buffer by the declared Content-Length when it is
+	// known and small: a full-size make([]byte, 64K) per request dominated the
+	// allocation profile (~94% of allocated bytes on an empty GET) and with it
+	// the GC share of the hot path. +1 over the declared length so ReadFull
+	// still observes EOF and reports the body as complete in one read; -1
+	// (chunked/unknown length) keeps the full chunk size. The bound is checked
+	// before the +1: a hostile Content-Length of 2^63-1 must not overflow into
+	// a negative make() size.
+	firstChunkSize := defaultRequestBodyChunkSize
+
+	if contentLength := request.ContentLength; contentLength >= 0 && contentLength < int64(firstChunkSize)-1 {
+		firstChunkSize = int(contentLength) + 1
+	}
+
+	firstChunk, bodyComplete, err := helpers.ReadChunk(reader, firstChunkSize)
 
 	if err != nil {
 		var maxBytesError *http.MaxBytesError
@@ -345,8 +402,13 @@ func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan 
 	var timeout <-chan time.Time
 
 	if s.config.handlerTimeout > 0 {
-		timer := time.NewTimer(s.config.handlerTimeout)
-		defer timer.Stop()
+		timer := handlerTimerPool.Get().(*time.Timer)
+		timer.Reset(s.config.handlerTimeout)
+
+		defer func() {
+			timer.Stop()
+			handlerTimerPool.Put(timer)
+		}()
 
 		timeout = timer.C
 	}
@@ -361,7 +423,7 @@ func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan 
 			select {
 			case command := <-commands:
 				finished, err := applyWrite(writer, flusher, command)
-				command.done <- err
+				command.report(err)
 
 				if command.kind != writeEnd {
 					started = true
@@ -399,7 +461,7 @@ func (s *serverState) consumeCommands(writer http.ResponseWriter, commands chan 
 			return status
 		case command := <-commands:
 			finished, err := applyWrite(writer, flusher, command)
-			command.done <- err
+			command.report(err)
 
 			if command.kind != writeEnd {
 				started = true
@@ -446,14 +508,18 @@ func (s *serverState) stopAccepting() {
 // requests to drain. Run on a fresh context — the task context is already
 // cancelled by the time the state is closed.
 func (s *serverState) Close() {
-	serverStates.Delete(s.message.FlowKey)
+	// Idempotent: the flow-context AfterFunc and an explicit call (tests) may
+	// both fire, and pusher.Stop panics on a second stop.
+	s.closeOnce.Do(func() {
+		serverStates.Delete(s.message.FlowKey)
 
-	s.pusher.Stop()
+		s.pusher.Stop()
 
-	ctx, cancel := context.WithTimeout(context.Background(), s.config.shutdownTimeout)
-	defer cancel()
+		ctx, cancel := context.WithTimeout(context.Background(), s.config.shutdownTimeout)
+		defer cancel()
 
-	_ = s.httpServer.Shutdown(ctx)
+		_ = s.httpServer.Shutdown(ctx)
+	})
 }
 
 // applyWrite carries out one write command against the connection and reports
@@ -540,14 +606,24 @@ func flush(flusher http.Flusher) {
 func formatAccessLine(start time.Time, method string, path string, status int) string {
 	elapsedMs := float64(time.Since(start).Microseconds()) / 1000.0
 
-	return fmt.Sprintf(
-		"%s %s %s %d %.2fms\n",
-		start.Format("2006-01-02T15:04:05.000000"),
-		sanitizeLogField(method),
-		sanitizeLogField(path),
-		status,
-		elapsedMs,
-	)
+	method = sanitizeLogField(method)
+	path = sanitizeLogField(path)
+
+	// Appended by hand instead of Sprintf: the access line is built on every
+	// request and was a top allocation site (the attribution plan, phase 5).
+	line := make([]byte, 0, len(method)+len(path)+48)
+	line = start.AppendFormat(line, "2006-01-02T15:04:05.000000")
+	line = append(line, ' ')
+	line = append(line, method...)
+	line = append(line, ' ')
+	line = append(line, path...)
+	line = append(line, ' ')
+	line = strconv.AppendInt(line, int64(status), 10)
+	line = append(line, ' ')
+	line = strconv.AppendFloat(line, elapsedMs, 'f', 2, 64)
+	line = append(line, "ms\n"...)
+
+	return string(line)
 }
 
 // sanitizeLogField escapes control bytes (C0 range and DEL) as \xNN so a value

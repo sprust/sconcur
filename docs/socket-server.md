@@ -9,7 +9,7 @@ reading inbound frames and pushing frames to the client at any time, rather than
 "one response per message".
 
 The design reference is the [HTTP server](http-server.md): the socket server reuses
-its machinery (streaming state, `Scheduler::serve`) and runs under the same
+its machinery (the self-pumping accept stream, `Scheduler::serve`) and runs under the same
 [worker master](worker-master.md).
 
 ## Framing
@@ -90,7 +90,7 @@ The `SocketServer` constructor; the PHP defaults mirror Go.
 | `maxMessageBytes` | `1048576` (1 MiB) | length limit of one inbound frame; exceeding it ends the connection's input |
 | `maxConcurrency` | `0` (unlimited) | max connections served at once; excess ones wait for a free slot |
 | `maxConnections` | `0` (unlimited) | stop the server after N served connections (a guard against leaks) |
-| `shutdownTimeoutMs` | `5000` | timeout for draining in-flight connections on shutdown |
+| `shutdownTimeoutMs` | `10000` | timeout for draining in-flight connections on shutdown |
 | `reusePort` | `false` | `SO_REUSEPORT` — a process pool on one port (Linux) |
 | `onError` | `null` | handler-error hook |
 | `masterPid` | `null` | orphan check under the master |

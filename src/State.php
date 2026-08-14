@@ -7,6 +7,7 @@ namespace SConcur;
 use Fiber;
 use SConcur\Connection\Extension;
 use SConcur\Flow\CurrentFlow;
+use SConcur\Scheduler\Scheduler;
 
 class State
 {
@@ -49,13 +50,6 @@ class State
      * @var array<string, array<int, true>>
      */
     protected static array $flowFibers = [];
-
-    /**
-     * array<$flowKey, array<$taskKey, $fiberId>>
-     *
-     * @var array<string, array<string, int>>
-     */
-    protected static array $fiberTasks = [];
 
     /**
      * Flows created for synchronous (non-fiber) iterable operations. Such a flow
@@ -240,24 +234,6 @@ class State
         );
     }
 
-    public static function addFiberTask(string $flowKey, string $taskKey, int $fiberId): void
-    {
-        static::$fiberTasks[$flowKey][$taskKey] = $fiberId;
-    }
-
-    public static function pullFiberByTask(string $flowKey, string $taskKey): ?int
-    {
-        if (!array_key_exists($flowKey, static::$fiberTasks)) {
-            return null;
-        }
-
-        $fiberId = static::$fiberTasks[$flowKey][$taskKey] ?? null;
-
-        unset(static::$fiberTasks[$flowKey][$taskKey]);
-
-        return $fiberId;
-    }
-
     public static function registerSyncTaskFlow(string $taskKey, string $flowKey): void
     {
         static::$syncTaskFlows[$taskKey] = $flowKey;
@@ -276,10 +252,14 @@ class State
         Extension::get()->stopFlow($flowKey);
     }
 
-    public static function deleteFlow(string $flowKey): void
+    /**
+     * @param bool $stopExtensionFlow false skips the Go-side stopFlow crossing —
+     *                                for a flow that was never created there (a
+     *                                spawned coroutine that only fired detached
+     *                                fire-and-forget pushes)
+     */
+    public static function deleteFlow(string $flowKey, bool $stopExtensionFlow = true): void
     {
-        unset(static::$fiberTasks[$flowKey]);
-
         if (isset(static::$flowFibers[$flowKey])) {
             foreach (static::$flowFibers[$flowKey] as $fiberId => $_) {
                 static::unRegisterFiber($fiberId);
@@ -294,7 +274,17 @@ class State
             }
         }
 
-        Extension::get()->stopFlow($flowKey);
+        if ($stopExtensionFlow) {
+            // From inside a fiber the crossing is deferred to the scheduler's
+            // main stack: a cgo call from a fiber stack costs a Go stack-bounds
+            // re-derivation through /proc/self/maps (see
+            // Scheduler::$pendingStopFlows).
+            if (Fiber::getCurrent() !== null) {
+                Scheduler::get()->deferStopFlow($flowKey);
+            } else {
+                Extension::get()->stopFlow($flowKey);
+            }
+        }
     }
 
     protected static function newFlowKey(): string

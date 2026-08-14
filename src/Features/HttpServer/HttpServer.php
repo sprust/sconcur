@@ -61,7 +61,9 @@ readonly class HttpServer
      *                                                                                                  count is reached the server shuts down gracefully (closes the
      *                                                                                                  listener first, drains in-flight, exits cleanly) so a master /
      *                                                                                                  supervisor can respawn a fresh process. Reuses the graceful-
-     *                                                                                                  shutdown path, so no already-accepted request is bounced.
+     *                                                                                                  shutdown path: the limiting request is dispatched and drained
+     *                                                                                                  like any in-flight one, while a request accepted during the
+     *                                                                                                  drain is answered 503 (see docs/http-server.md).
      * @param bool                                                                $reusePort            set SO_REUSEPORT so several processes can bind this same
      *                                                                                                  address; the kernel load-balances connections across them
      *                                                                                                  (run one process per core). Linux only; each process must set it.
@@ -98,7 +100,7 @@ readonly class HttpServer
         private int $readTimeoutMs = 30_000,
         private int $writeTimeoutMs = 30_000,
         private int $idleTimeoutMs = 60_000,
-        private int $shutdownTimeoutMs = 5_000,
+        private int $shutdownTimeoutMs = 10_000,
         private int $maxRequestBody = 10_485_760,
         private int $maxConcurrency = 0,
         private int $handlerTimeoutMs = 60_000,
@@ -270,8 +272,13 @@ readonly class HttpServer
         //
         // A known-size body is sent whole in one write; an unknown-size (null) body
         // is a streaming StreamInterface, drained chunk by chunk with backpressure.
+        //
+        // The full write is fire-and-forget (execNoResult): the coroutine ends
+        // right after it, a write failure was already invisible to the handler
+        // (the groupless spawn drops it), so awaiting the result only cost a
+        // park/wake round-trip per request.
         if ($body->getSize() !== null) {
-            FeatureExecutor::exec(
+            FeatureExecutor::execNoResult(
                 payload: RespondPayload::full(
                     requestId: $requestId,
                     status: $response->getStatusCode(),
@@ -390,7 +397,9 @@ readonly class HttpServer
 
         $protocolVersion = str_starts_with($proto, 'HTTP/') ? substr($proto, 5) : $proto;
 
-        if ($protocolVersion !== '') {
+        // PSR-7 withers clone the request; skip the clone when the factory's
+        // default already matches (HTTP/1.1 — the overwhelmingly common case).
+        if ($protocolVersion !== '' && $request->getProtocolVersion() !== $protocolVersion) {
             $request = $request->withProtocolVersion($protocolVersion);
         }
 

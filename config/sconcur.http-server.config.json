@@ -26,6 +26,6 @@
         "writeTimeoutMs": 30000,
         "idleTimeoutMs": 60000,
         "handlerTimeoutMs": 60000,
-        "shutdownTimeoutMs": 5000
+        "shutdownTimeoutMs": 10000
     }
 }
