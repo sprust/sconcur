@@ -12,6 +12,13 @@ class MongodbAsyncCreateIndexesTest extends BaseMongodbAsyncTestCase
     {
         parent::setUp();
 
+        // deleteMany() clears documents, not indexes: without this the collection
+        // keeps the indexes of the previous run and the assertions below pass on
+        // leftovers instead of on what this run created.
+        if (iterator_count($this->driverCollection->listIndexes()) > 0) {
+            $this->driverCollection->dropIndexes();
+        }
+
         $this->sconcurCollection->insertOne(['field_a' => 1, 'field_b' => 2]);
     }
 
@@ -49,8 +56,18 @@ class MongodbAsyncCreateIndexesTest extends BaseMongodbAsyncTestCase
 
     protected function on_2_middle(): void
     {
+        // Only what this flow created is guaranteed to be here: flow 1 runs
+        // concurrently and its createIndexes() may still be in flight.
+        // _id + compound_ab = 2
         $indexes = $this->sconcurCollection->listIndexes();
-        self::assertGreaterThanOrEqual(4, count($indexes));
+        self::assertGreaterThanOrEqual(2, count($indexes));
+
+        $names = array_map(
+            static fn(array $index): string => $index['name'] ?? '',
+            $indexes,
+        );
+
+        self::assertContains('compound_ab', $names);
     }
 
     protected function on_iterate(): void
@@ -69,6 +86,24 @@ class MongodbAsyncCreateIndexesTest extends BaseMongodbAsyncTestCase
 
     protected function assertResult(array $results): void
     {
-        // no action
+        // Both flows are done here, so the whole set is deterministic — the
+        // creation order is not, hence the sort.
+        $existIndexNames = [];
+
+        foreach ($this->driverCollection->listIndexes() as $index) {
+            $existIndexNames[] = $index->getName();
+        }
+
+        sort($existIndexNames);
+
+        self::assertSame(
+            [
+                '_id_',
+                'compound_ab',
+                'field_a_1',
+                'field_b_-1',
+            ],
+            $existIndexNames,
+        );
     }
 }
