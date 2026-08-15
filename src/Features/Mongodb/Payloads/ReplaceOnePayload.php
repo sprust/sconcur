@@ -44,7 +44,6 @@ readonly class ReplaceOnePayload extends BaseMongodbPayload
                 replacement: $this->replacement,
                 upsert: $this->upsert,
             ),
-            isObject: true,
         );
     }
 }

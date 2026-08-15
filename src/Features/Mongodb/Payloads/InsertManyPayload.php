@@ -38,7 +38,6 @@ readonly class InsertManyPayload extends BaseMongodbPayload
     {
         return new Parameters(
             payload: new InsertManyPayloadParameters($this->documents),
-            isObject: false,
         );
     }
 }

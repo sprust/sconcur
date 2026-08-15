@@ -38,7 +38,6 @@ readonly class RenameCollectionPayload extends BaseMongodbPayload
                 target: $this->target,
                 dropTarget: $this->dropTarget,
             ),
-            isObject: true,
         );
     }
 }

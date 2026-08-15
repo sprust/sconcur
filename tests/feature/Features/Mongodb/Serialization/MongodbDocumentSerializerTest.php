@@ -242,6 +242,84 @@ class MongodbDocumentSerializerTest extends BaseTestCase
         self::assertSame([1, 2, 3], $found['array']);
     }
 
+    /**
+     * ext-msgpack writes a repeated object instance as a reference to the container
+     * it wrote earlier, numbering every container it emits. A scope is a container
+     * inside a value object, so it shifts that numbering — and a decoder that
+     * miscounts does not fail, it hands the collection a neighbouring value.
+     */
+    public function testRoundTripsAScopeAndAReusedInstance(): void
+    {
+        $objectId = new ObjectId('6919e3d1a3673d3f4d9137a3');
+        $other    = new ObjectId('6919e3d1a3673d3f4d9137b4');
+
+        $this->sconcurCollection->insertOne([
+            '_id'        => 'scope-and-reference',
+            'javascript' => new Javascript('function () { return x; }', [
+                'x'      => 1,
+                'nested' => ['deep' => [1, 2]],
+                'id'     => $objectId,
+            ]),
+            'first'      => $objectId,
+            'second'     => $other,
+            'again'      => $objectId,
+        ]);
+
+        $found = $this->sconcurCollection->findOne(
+            filter: ['_id' => 'scope-and-reference'],
+        );
+
+        self::assertNotNull($found);
+
+        self::assertInstanceOf(Javascript::class, $found['javascript']);
+        self::assertSame('function () { return x; }', $found['javascript']->getCode());
+
+        $scope = (array) $found['javascript']->getScope();
+
+        self::assertSame(1, $scope['x']);
+        self::assertSame(['deep' => [1, 2]], $scope['nested']);
+        self::assertInstanceOf(ObjectId::class, $scope['id']);
+        self::assertSame((string) $objectId, (string) $scope['id']);
+
+        self::assertSame((string) $objectId, (string) $found['first']);
+        self::assertSame((string) $other, (string) $found['second']);
+        self::assertSame((string) $objectId, (string) $found['again']);
+    }
+
+    /**
+     * A plain object is how an object-shaped value usually reaches a document —
+     * json_decode without associative arrays, a cast — and ext-mongodb accepted it,
+     * so it must keep working: it stores as a sub-document and reads back as an
+     * array.
+     */
+    public function testStoresAPlainObjectAsADocument(): void
+    {
+        $this->sconcurCollection->insertOne([
+            '_id'     => 'plain-object',
+            'profile' => (object) [
+                'city' => 'Berlin',
+                'tags' => ['a', 'b'],
+            ],
+            'list'    => [(object) ['n' => 1]],
+        ]);
+
+        $found = $this->sconcurCollection->findOne(
+            filter: ['_id' => 'plain-object'],
+        );
+
+        self::assertNotNull($found);
+
+        self::assertSame(
+            [
+                'city' => 'Berlin',
+                'tags' => ['a', 'b'],
+            ],
+            $found['profile'],
+        );
+
+        self::assertSame([['n' => 1]], $found['list']);
+    }
+
     public function testAggregateGroup(): void
     {
         $iterator = $this->sconcurCollection->aggregate(

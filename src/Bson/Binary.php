@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Bson;
 
 use JsonSerializable;
+use SConcur\Bson\Exceptions\InvalidBsonValueException;
 use Stringable;
 
 /** BSON binary value, mirroring MongoDB\BSON\Binary: raw bytes plus a subtype. */
@@ -29,6 +30,14 @@ readonly class Binary implements Type, Stringable, JsonSerializable
 
     public function __construct(string $data, int $type = self::TYPE_GENERIC)
     {
+        // BSON stores the subtype in one byte, so a wider value is rejected here
+        // rather than truncated on the way to the collection.
+        if ($type < 0 || $type > 0xFF) {
+            throw new InvalidBsonValueException(
+                message: sprintf('Expected type to be an unsigned 8-bit integer, %d given', $type),
+            );
+        }
+
         $this->data    = $data;
         $this->subType = $type;
     }

@@ -191,7 +191,7 @@ The environment the project is built and tested against in CI:
 | MongoDB (server) | 8.0.5 |
 | ext-mongodb (PHP extension, tests and benchmarks only) | 1.21.5 |
 | mongodb/mongodb (composer package, tests and benchmarks only) | 1.21.3 |
-| ext-msgpack | 3.0.1 (pinned exactly — see [MongoDB](docs/mongodb.md#the-extension-version)) |
+| ext-msgpack | 3.0.1 |
 | MySQL (server) | 8.4 |
 | go-sql-driver/mysql | 1.8.1 |
 | PostgreSQL (server) | 16 |

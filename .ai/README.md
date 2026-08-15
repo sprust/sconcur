@@ -133,6 +133,11 @@ feature's doc. Key PHP classes not covered there:
   `Scheduler::spawn` / `WaitGroup::add`.
 - `Features/FeatureExecutor` — coordinates feature execution, detects the async
   context via `Fiber::getCurrent()`.
+- `Bson/` — the BSON value objects (`ObjectId`, `UTCDateTime`, `Binary`, …) the
+  MongoDB feature hands out, mirroring `MongoDB\BSON\*` so an application moves
+  over by changing `use` lines. The namespace is deliberately short: the class name
+  travels on the wire with every value. Details in
+  [docs/mongodb.md](../docs/mongodb.md#object-conversion).
 - `Features/Server/ServerRuntimeSupportTrait` — shared server runtime glue:
   argv→constructor-override parsing, signal handlers, the orphaned-worker check,
   telemetry env.

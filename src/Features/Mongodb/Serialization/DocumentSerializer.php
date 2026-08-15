@@ -21,13 +21,13 @@ use function msgpack_unpack;
 class DocumentSerializer
 {
     /**
-     * Encode a document for the wire. $isObject is kept for call-site clarity;
-     * MessagePack preserves the PHP shape (a list packs as a list, a map as a
-     * map) and the Go side turns either into a BSON document.
+     * Encode a document for the wire. MessagePack preserves the PHP shape — a list
+     * packs as a list, a map as a map — and the Go side turns either into a BSON
+     * document, so the caller does not have to say which one it is.
      *
      * @param array<int|string, mixed> $document
      */
-    public static function serialize(array $document, bool $isObject = true): string
+    public static function serialize(array $document): string
     {
         return msgpack_pack($document);
     }

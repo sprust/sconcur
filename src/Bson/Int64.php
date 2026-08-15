@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Bson;
 
 use JsonSerializable;
+use SConcur\Bson\Exceptions\InvalidBsonValueException;
 use Stringable;
 
 /**
@@ -23,7 +24,15 @@ readonly class Int64 implements Type, Stringable, JsonSerializable
 
     public function __construct(string|int $value)
     {
-        $this->value = (int) $value;
+        $number = is_int($value) ? $value : IntegerParser::parse($value);
+
+        if ($number === null) {
+            throw new InvalidBsonValueException(
+                message: sprintf('Error parsing "%s" as 64-bit integer for %s initialization', $value, self::class),
+            );
+        }
+
+        $this->value = $number;
     }
 
     public function toInt(): int

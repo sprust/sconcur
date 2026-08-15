@@ -38,7 +38,6 @@ readonly class RunCommandPayload extends BaseMongodbPayload
     {
         return new Parameters(
             payload: new RunCommandPayloadParameters($this->command),
-            isObject: true,
         );
     }
 }

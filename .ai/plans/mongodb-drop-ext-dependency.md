@@ -111,6 +111,11 @@ C, Go читает `nil`-ключ и мапит имя класса в тип BS
 | javascript | `SConcur\Bson\Javascript` |
 | minKey / maxKey | `SConcur\Bson\MinKey` / `MaxKey` |
 
+Плюс `stdClass`: собственного типа BSON у него нет, но объект-документ приходит в
+пользовательском коде постоянно (`json_decode` без `associative`), и `ext-mongodb`
+его принимал — поэтому Go разворачивает его в поддокумент. Любой другой класс —
+ошибка.
+
 ## 6. Этапы
 
 1. Инструмент замера: `tests/benchmarks/mongodb-serializer.php` — прямой
@@ -248,3 +253,28 @@ C, Go читает `nil`-ключ и мапит имя класса в тип BS
 Следствие для `Collection`: счётчики результатов (`modifiedCount` и прочие)
 приходят как `Int64`, как и у драйвера, поэтому читаются через `toCount()` —
 `(int)` от объекта молча дал бы `1`.
+
+### 9.7. Что нашло ревью перед релизом
+
+Два дефекта портили данные молча, оба — на входящем пути в Go:
+
+- **Счётчик ссылок не считал контейнеры внутри свойства объекта.** Свойство
+  читалось `DecodeInterfaceLoose` целиком, а PHP нумерует каждый вложенный
+  контейнер, поэтому после `Javascript` со scope повторный экземпляр `ObjectId`
+  разрешался в соседний объект — без ошибки. Свойства теперь читает `decodeValue`,
+  который обходит контейнеры сам и узнаёт вложенный конверт (значит, `ObjectId`
+  внутри scope больше не превращается в подкарту с пустым ключом).
+- **`stdClass` валил всю операцию** (`unsupported object class`), хотя на
+  `ext-mongodb` объект-документ работал.
+
+Заодно, тем же проходом: свойства читаются хелперами `property*`, которые падают
+на отсутствующем свойстве и на значении не того типа или не влезающем в поле BSON
+(раньше подставлялся ноль); `Timestamp`, `Int64`, `Binary` валидируют вход как
+драйвер; пять случайных байт `ObjectId` берутся раз на процесс, а не на каждый id,
+иначе счётчик не задаёт порядок внутри секунды.
+
+Закреплено: `TestResolvesReferencesAfterAContainerInsideAProperty`,
+`TestKeepsValueObjectsInsideAJavascriptScope`, `TestConvertsStdClassToADocument`,
+`TestRejectsMalformedObjects` на Go; `testRoundTripsAScopeAndAReusedInstance`,
+`testStoresAPlainObjectAsADocument` через живую монгу; проверки валидации и
+процессного значения `ObjectId` — в `BsonDriverParityTest`.

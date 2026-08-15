@@ -3,11 +3,32 @@ package serializer
 import (
 	"bytes"
 	"encoding/hex"
+	"strings"
 	"testing"
 
 	"github.com/vmihailenco/msgpack/v5"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
+
+// fixedString renders a MessagePack fixstr, so a pinned payload can be written as
+// its parts — a key, a class name, a value — instead of one long hex line.
+func fixedString(t *testing.T, value string) string {
+	t.Helper()
+
+	if len(value) > 31 {
+		t.Fatalf("%q is too long for a fixstr", value)
+	}
+
+	return hex.EncodeToString(append([]byte{byte(0xa0 | len(value))}, value...))
+}
+
+// objectIdEnvelope renders the object envelope ext-msgpack writes for one
+// SConcur\Bson\ObjectId instance.
+func objectIdEnvelope(t *testing.T, id string) string {
+	t.Helper()
+
+	return "82c0" + fixedString(t, classObjectId) + fixedString(t, "oid") + fixedString(t, id)
+}
 
 // buildDocument marshals a bson.D and fails the test on error.
 func buildDocument(t *testing.T, document bson.D) bson.Raw {
@@ -71,6 +92,10 @@ func TestRoundTripsEveryBSONType(t *testing.T) {
 		{Key: "minKey", Value: bson.MinKey{}},
 		{Key: "maxKey", Value: bson.MaxKey{}},
 		{Key: "javascript", Value: bson.JavaScript("function () { return 1; }")},
+		{Key: "codeWithScope", Value: bson.CodeWithScope{
+			Code:  "function () { return x; }",
+			Scope: bson.D{{Key: "x", Value: int32(1)}, {Key: "nested", Value: bson.D{{Key: "y", Value: "z"}}}},
+		}},
 		{Key: "document", Value: bson.D{{Key: "nested", Value: "value"}, {Key: "number", Value: int32(7)}}},
 		{Key: "array", Value: bson.A{int32(1), int32(2), int32(3)}},
 		{Key: "objectIds", Value: bson.A{objectId}},
@@ -109,15 +134,15 @@ func TestRoundTripsNestedSpecialValues(t *testing.T) {
 
 func TestRoundTripsEmptyAndEdgeDocuments(t *testing.T) {
 	cases := map[string]bson.D{
-		"empty":        {},
-		"empty nested": {{Key: "sub", Value: bson.D{}}},
-		"empty array":  {{Key: "list", Value: bson.A{}}},
-		"empty string": {{Key: "text", Value: ""}},
-		"negative int": {{Key: "value", Value: int32(-42)}},
-		"int32 bounds": {{Key: "min", Value: int32(-2147483648)}, {Key: "max", Value: int32(2147483647)}},
-		"int64 bounds": {{Key: "min", Value: int64(-9223372036854775808)}, {Key: "max", Value: int64(9223372036854775807)}},
-		"negative date": {{Key: "before epoch", Value: bson.DateTime(-1000)}},
-		"binary bytes": {{Key: "raw", Value: bson.Binary{Subtype: 0x00, Data: []byte{0x00, 0xff, 0x10}}}},
+		"empty":          {},
+		"empty nested":   {{Key: "sub", Value: bson.D{}}},
+		"empty array":    {{Key: "list", Value: bson.A{}}},
+		"empty string":   {{Key: "text", Value: ""}},
+		"negative int":   {{Key: "value", Value: int32(-42)}},
+		"int32 bounds":   {{Key: "min", Value: int32(-2147483648)}, {Key: "max", Value: int32(2147483647)}},
+		"int64 bounds":   {{Key: "min", Value: int64(-9223372036854775808)}, {Key: "max", Value: int64(9223372036854775807)}},
+		"negative date":  {{Key: "before epoch", Value: bson.DateTime(-1000)}},
+		"binary bytes":   {{Key: "raw", Value: bson.Binary{Subtype: 0x00, Data: []byte{0x00, 0xff, 0x10}}}},
 		"multibyte keys": {{Key: "clé-Ω-\U0001F600", Value: "naïve-Ω-\U0001F600"}},
 	}
 
@@ -349,5 +374,200 @@ func TestRejectsUnknownObjectReference(t *testing.T) {
 
 	if _, err := MsgpackToBSON(data); err == nil {
 		t.Error("expected an error for a dangling object reference, got none")
+	}
+}
+
+// A property is decoded whole, unlike the rest of the payload, so it has to move
+// the object counter for every container it contains — ext-msgpack numbered them
+// all when it packed. Miscounting does not fail: the reference lands on a
+// neighbouring object and the document quietly carries the wrong value.
+//
+// The payload below is byte for byte what PHP emits for
+// ["js" => new Javascript("c", ["a" => ["b" => 1]]), "x" => $a, "y" => $b, "z" => $a],
+// with $a and $b two ObjectId instances: the scope holds a container, so the
+// reference under "z" names index 5, one further than a decoder that skipped it
+// would count.
+func TestResolvesReferencesAfterAContainerInsideAProperty(t *testing.T) {
+	payload := "84" +
+		fixedString(t, "js") +
+		"83c0" + fixedString(t, classJavascript) +
+		fixedString(t, "code") + fixedString(t, "c") +
+		fixedString(t, "scope") + "81" + fixedString(t, "a") + "81" + fixedString(t, "b") + "01" +
+		fixedString(t, "x") + objectIdEnvelope(t, strings.Repeat("a", 24)) +
+		fixedString(t, "y") + objectIdEnvelope(t, strings.Repeat("b", 24)) +
+		fixedString(t, "z") + "82c0040005"
+
+	data, err := hex.DecodeString(payload)
+
+	if err != nil {
+		t.Fatalf("hex: %v", err)
+	}
+
+	raw, err := MsgpackToBSON(data)
+
+	if err != nil {
+		t.Fatalf("MsgpackToBSON: %v", err)
+	}
+
+	expected := map[string]string{
+		"x": "aaaaaaaaaaaaaaaaaaaaaaaa",
+		"y": "bbbbbbbbbbbbbbbbbbbbbbbb",
+		"z": "aaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+
+	for key, want := range expected {
+		objectId, ok := raw.Lookup(key).ObjectIDOK()
+
+		if !ok {
+			t.Fatalf("key %q is %v, want an ObjectId", key, raw.Lookup(key))
+		}
+
+		if objectId.Hex() != want {
+			t.Errorf("key %q resolved to %s, want %s", key, objectId.Hex(), want)
+		}
+	}
+}
+
+// A value object nested in a property is still a value object. Decoding it as a
+// plain map would strip the type and leave the nil key behind as an empty one.
+//
+// The payload is PHP's own output for
+// ["js" => new Javascript("c", ["id" => new ObjectId("aaaa...")])].
+func TestKeepsValueObjectsInsideAJavascriptScope(t *testing.T) {
+	payload := "81" +
+		fixedString(t, "js") +
+		"83c0" + fixedString(t, classJavascript) +
+		fixedString(t, "code") + fixedString(t, "c") +
+		fixedString(t, "scope") + "81" + fixedString(t, "id") + objectIdEnvelope(t, strings.Repeat("a", 24))
+
+	data, err := hex.DecodeString(payload)
+
+	if err != nil {
+		t.Fatalf("hex: %v", err)
+	}
+
+	raw, err := MsgpackToBSON(data)
+
+	if err != nil {
+		t.Fatalf("MsgpackToBSON: %v", err)
+	}
+
+	code, scope, ok := raw.Lookup("js").CodeWithScopeOK()
+
+	if !ok {
+		t.Fatalf("js is %v, want code with scope", raw.Lookup("js"))
+	}
+
+	if code != "c" {
+		t.Errorf("code is %q, want %q", code, "c")
+	}
+
+	objectId, ok := bson.Raw(scope).Lookup("id").ObjectIDOK()
+
+	if !ok {
+		t.Fatalf("scope id is %v, want an ObjectId", bson.Raw(scope).Lookup("id"))
+	}
+
+	if objectId.Hex() != "aaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Errorf("scope id is %s, want aaaaaaaaaaaaaaaaaaaaaaaa", objectId.Hex())
+	}
+}
+
+// A plain PHP object names no BSON type, it is just how an object-shaped value
+// reaches a document (json_decode without associative arrays). ext-mongodb wrote
+// it as a sub-document, so this path does too.
+//
+// The payload is PHP's output for ["a" => (object) ["b" => 1]].
+func TestConvertsStdClassToADocument(t *testing.T) {
+	payload := "81" +
+		fixedString(t, "a") +
+		"82c0" + fixedString(t, classStdClass) +
+		fixedString(t, "b") + "01"
+
+	data, err := hex.DecodeString(payload)
+
+	if err != nil {
+		t.Fatalf("hex: %v", err)
+	}
+
+	raw, err := MsgpackToBSON(data)
+
+	if err != nil {
+		t.Fatalf("MsgpackToBSON: %v", err)
+	}
+
+	document, ok := raw.Lookup("a").DocumentOK()
+
+	if !ok {
+		t.Fatalf("a is %v, want a sub-document", raw.Lookup("a"))
+	}
+
+	if value, ok := document.Lookup("b").Int32OK(); !ok || value != 1 {
+		t.Errorf("a.b is %v, want 1", document.Lookup("b"))
+	}
+}
+
+// A property that is missing, or holds something the class never puts there, is a
+// payload that is not what it claims to be. Filling in a zero would reach the
+// collection as a real date or a real subtype.
+func TestRejectsMalformedObjects(t *testing.T) {
+	cases := map[string]func(encoder *msgpack.Encoder) error{
+		"missing property": func(encoder *msgpack.Encoder) error {
+			return encodeObjectHeader(encoder, classObjectId, 0)
+		},
+		"property of the wrong type": func(encoder *msgpack.Encoder) error {
+			if err := encodeObjectHeader(encoder, classUTCDateTime, 1); err != nil {
+				return err
+			}
+
+			if err := encoder.EncodeString("epochMs"); err != nil {
+				return err
+			}
+
+			return encoder.EncodeString("yesterday")
+		},
+		"timestamp out of range": func(encoder *msgpack.Encoder) error {
+			if err := encodeObjectHeader(encoder, classTimestamp, 2); err != nil {
+				return err
+			}
+
+			if err := encoder.EncodeString("increment"); err != nil {
+				return err
+			}
+
+			if err := encoder.EncodeInt(1); err != nil {
+				return err
+			}
+
+			if err := encoder.EncodeString("epochSeconds"); err != nil {
+				return err
+			}
+
+			return encoder.EncodeInt(1 << 40)
+		},
+	}
+
+	for name, write := range cases {
+		t.Run(name, func(t *testing.T) {
+			var buffer bytes.Buffer
+
+			encoder := msgpack.NewEncoder(&buffer)
+
+			if err := encoder.EncodeMapLen(1); err != nil {
+				t.Fatalf("encoding document: %v", err)
+			}
+
+			if err := encoder.EncodeString("value"); err != nil {
+				t.Fatalf("encoding key: %v", err)
+			}
+
+			if err := write(encoder); err != nil {
+				t.Fatalf("encoding envelope: %v", err)
+			}
+
+			if _, err := MsgpackToBSON(buffer.Bytes()); err == nil {
+				t.Error("expected an error, got none")
+			}
+		})
 	}
 }

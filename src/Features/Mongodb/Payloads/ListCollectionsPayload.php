@@ -34,7 +34,6 @@ readonly class ListCollectionsPayload extends BaseMongodbPayload
     {
         return new Parameters(
             payload: new EmptyPayloadParameters(),
-            isObject: true,
         );
     }
 }

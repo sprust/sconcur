@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Mongodb\Connection;
 
-use SConcur\Bson\Int64;
 use Iterator;
+use SConcur\Bson\Int64;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\Mongodb\InvalidCountResultException;
 use SConcur\Features\FeatureExecutor;

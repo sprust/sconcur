@@ -70,8 +70,10 @@ func acquireDecoder(reader *bytes.Reader) *msgpack.Decoder {
 func BSONToMsgpack(raw bson.Raw) ([]byte, error) {
 	var buffer bytes.Buffer
 
-	// MessagePack is consistently smaller than the BSON it came from, so the
-	// source length is a safe upper bound and the buffer never regrows.
+	// The source length is the starting size, not an upper bound: MessagePack is
+	// smaller than BSON on an ordinary document, but every value object carries its
+	// class name, so a document made mostly of ids outgrows its BSON and the buffer
+	// regrows once.
 	buffer.Grow(len(raw))
 
 	encoder := acquireEncoder(&buffer)
@@ -321,7 +323,11 @@ func encodeBSONValue(encoder *msgpack.Encoder, value bson.RawValue) error {
 		return encodeObjectHeader(encoder, classMaxKey, 0)
 	case bson.TypeSymbol:
 		// Deprecated in BSON; the server returns it only for legacy data.
-		symbol, _ := value.SymbolOK()
+		symbol, ok := value.SymbolOK()
+
+		if !ok {
+			return fmt.Errorf("error reading a BSON symbol")
+		}
 
 		return encoder.EncodeString(symbol)
 	default:

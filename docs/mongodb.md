@@ -93,6 +93,11 @@ $document['tags'];      // ['a', 'b']
 | javascript | `SConcur\Bson\Javascript` |
 | minKey / maxKey | `SConcur\Bson\MinKey` / `MaxKey` |
 
+A plain object is accepted where a document is expected — `(object) [...]`, or what
+`json_decode()` returns without `associative: true` — and stores as a sub-document.
+It reads back as an array, like any other document. Any other object in a document
+is an error: the value has no BSON type to become.
+
 Each class carries the same methods as its `MongoDB\BSON\*` counterpart —
 `getData()`/`getType()` on `Binary`, `getPattern()`/`getFlags()` on `Regex`,
 `toDateTime()`/`toDateTimeImmutable()` on `UTCDateTime`, `__toString()` and
@@ -288,6 +293,11 @@ driver still wins) is in the [benchmarks](benchmarks.md#mongodb).
 
 - A `find`/`aggregate` cursor should be read to the end or interrupted (`break`) —
   it holds a resource on the server until closed.
+- Of the BSON types the specification deprecates, `symbol` is read as a string and
+  `undefined` as `null`; `dbPointer` is not supported and a document holding one
+  fails to decode. They only occur in data written by very old drivers.
+- Forcing `msgpack.php_only` is process-wide — see
+  [The extension flag](#the-extension-flag).
 - The library's general limits apply — see the [README](../README.md).
 
 ## Object conversion
@@ -334,6 +344,11 @@ same check verifies that `ext-msgpack` is loaded at all.
 Because the forcing happens once at init, code that flips the setting afterwards
 is on its own; nothing re-asserts it per operation.
 
+The setting is process-wide, so it also applies to `msgpack_pack()` calls of your
+own. If the application packs MessagePack for a consumer in another language, pack
+arrays rather than objects — with the flag on, an object goes out in the PHP
+envelope, which only PHP reads back.
+
 ### The extension version
 
 The envelope is an implementation detail of `ext-msgpack`, not a documented
@@ -358,6 +373,14 @@ every container written so far: maps, arrays, objects and references alike,
 numbered from 1. Reusing a single `ObjectId` variable across a document is
 ordinary code, so the Go decoder keeps the same counter and resolves references
 against it (`converter` in `msgpack_values.go`).
+
+Every container counts, including one that sits inside an object's own property —
+the scope of a `Javascript`, say. Skipping those would not fail: the reference
+would land on a neighbouring object and the document would carry the wrong value
+silently. That is why a property is read by `decodeValue`, which walks containers
+itself, rather than handed to the MessagePack decoder wholesale;
+`TestResolvesReferencesAfterAContainerInsideAProperty` pins it on bytes PHP really
+emits.
 
 ### Where the conversion lives
 
@@ -391,7 +414,9 @@ Four places, in this order:
    the others at the top of the file.
 3. **The Go decoder**, `appendObject` in `msgpack_values.go`: a `case` for the
    class name that reads the properties and appends the BSON element through
-   `bsoncore`.
+   `bsoncore`. Read them with the `property*` helpers — they fail on a property
+   that is missing or of the wrong type, and on one too wide for the BSON field,
+   instead of substituting a zero that would reach the collection as a real value.
 4. **The tests**. `TestRoundTripsEveryBSONType` in `msgpack_test.go` gains the
    value — it compares the document byte for byte after a full round trip, so a
    mismatch in either direction fails there. `BsonDriverParityTest` gains the pair,

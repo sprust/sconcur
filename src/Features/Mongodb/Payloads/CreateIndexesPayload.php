@@ -38,7 +38,6 @@ readonly class CreateIndexesPayload extends BaseMongodbPayload
     {
         return new Parameters(
             payload: new CreateIndexesPayloadParameters($this->indexes),
-            isObject: true,
         );
     }
 }

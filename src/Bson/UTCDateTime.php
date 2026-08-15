@@ -28,13 +28,10 @@ readonly class UTCDateTime implements Type, Stringable, JsonSerializable
         $this->epochMs = match (true) {
             $milliseconds === null                     => (int) (microtime(true) * 1000),
             $milliseconds instanceof DateTimeInterface => self::fromDateTime($milliseconds),
-            $milliseconds instanceof Int64             => (int) (string) $milliseconds,
+            $milliseconds instanceof Int64             => $milliseconds->toInt(),
             is_float($milliseconds)                    => (int) $milliseconds,
             is_int($milliseconds)                      => $milliseconds,
-            is_numeric($milliseconds)                  => (int) $milliseconds,
-            default                                    => throw new InvalidBsonValueException(
-                message: sprintf('Error parsing UTCDateTime value: %s', $milliseconds),
-            ),
+            default                                    => self::fromString($milliseconds),
         };
     }
 
@@ -64,6 +61,24 @@ readonly class UTCDateTime implements Type, Stringable, JsonSerializable
     public function jsonSerialize(): array
     {
         return ['$date' => ['$numberLong' => (string) $this->epochMs]];
+    }
+
+    /** A string is a whole number of milliseconds, as it is for the driver. */
+    protected static function fromString(string $milliseconds): int
+    {
+        $number = IntegerParser::parse($milliseconds);
+
+        if ($number === null) {
+            throw new InvalidBsonValueException(
+                message: sprintf(
+                    'Error parsing "%s" as 64-bit integer for %s initialization',
+                    $milliseconds,
+                    self::class,
+                ),
+            );
+        }
+
+        return $number;
     }
 
     protected static function fromDateTime(DateTimeInterface $dateTime): int

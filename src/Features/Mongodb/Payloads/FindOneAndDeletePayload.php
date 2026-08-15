@@ -42,7 +42,6 @@ readonly class FindOneAndDeletePayload extends BaseMongodbPayload
                 filter: $this->filter,
                 projection: $this->projection,
             ),
-            isObject: true,
         );
     }
 }

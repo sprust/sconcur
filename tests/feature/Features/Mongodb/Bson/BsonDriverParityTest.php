@@ -19,8 +19,8 @@ use MongoDB\BSON\UTCDateTime as DriverUTCDateTime;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use SConcur\Bson\Binary;
-use SConcur\Bson\Exceptions\InvalidBsonValueException;
 use SConcur\Bson\Decimal128;
+use SConcur\Bson\Exceptions\InvalidBsonValueException;
 use SConcur\Bson\Int64;
 use SConcur\Bson\Javascript;
 use SConcur\Bson\MaxKey;
@@ -30,6 +30,7 @@ use SConcur\Bson\Regex;
 use SConcur\Bson\Timestamp;
 use SConcur\Bson\UTCDateTime;
 use Stringable;
+use Throwable;
 
 /**
  * The SConcur BSON value objects must behave exactly like the ext-mongodb ones,
@@ -193,5 +194,98 @@ class BsonDriverParityTest extends TestCase
         $this->expectException(InvalidBsonValueException::class);
 
         new ObjectId('not-an-object-id');
+    }
+
+    /**
+     * The five random bytes are drawn once per process, as the driver draws them,
+     * so that the counter is what separates two ids taken inside the same second.
+     * Rerolling them per id would leave the order of a batch to chance, and sorting
+     * by _id is how insertion order is normally read back.
+     */
+    public function testGeneratedObjectIdsShareTheProcessValue(): void
+    {
+        $ids = [];
+
+        for ($index = 0; $index < 5; $index++) {
+            $ids[] = (string) new ObjectId();
+        }
+
+        $processValues = array_unique(
+            array_map(static fn(string $id): string => substr($id, 8, 10), $ids),
+        );
+
+        self::assertCount(1, $processValues, 'the process value must be the same for every id');
+        self::assertCount(5, array_unique($ids), 'the counter must make every id distinct');
+    }
+
+    /**
+     * @return array<string, array{0: callable(): object, 1: callable(): object}>
+     */
+    public static function rejectedValuesProvider(): array
+    {
+        return [
+            'Timestamp increment below zero' => [
+                static fn(): object => new DriverTimestamp(-1, 0),
+                static fn(): object => new Timestamp(-1, 0),
+            ],
+            'Timestamp seconds above 32 bits' => [
+                static fn(): object => new DriverTimestamp(0, 4_294_967_296),
+                static fn(): object => new Timestamp(0, 4_294_967_296),
+            ],
+            'Int64 that is not a number' => [
+                static fn(): object => new DriverInt64('abc'),
+                static fn(): object => new Int64('abc'),
+            ],
+            'Int64 above 64 bits' => [
+                static fn(): object => new DriverInt64('9223372036854775808'),
+                static fn(): object => new Int64('9223372036854775808'),
+            ],
+            'Int64 that is not a whole number' => [
+                static fn(): object => new DriverInt64('12.5'),
+                static fn(): object => new Int64('12.5'),
+            ],
+            'Binary subtype above one byte' => [
+                static fn(): object => new DriverBinary('x', 300),
+                static fn(): object => new Binary('x', 300),
+            ],
+        ];
+    }
+
+    /**
+     * The driver takes the halves of a Timestamp as strings too, and parses them
+     * the same way. Its stub types them as int, so this case cannot ride in the
+     * pair provider above.
+     */
+    public function testTimestampRejectsAStringThatIsNotANumber(): void
+    {
+        $this->expectException(InvalidBsonValueException::class);
+
+        new Timestamp('a', 0);
+    }
+
+    /**
+     * A cast in place of the driver's validation turns a bad value into a plausible
+     * one — PHP clamps an overflowing numeric string to PHP_INT_MAX and reads a
+     * non-numeric one as 0 — and the collection would take it.
+     *
+     * @param callable(): object $driver
+     * @param callable(): object $sconcur
+     */
+    #[DataProvider('rejectedValuesProvider')]
+    public function testRejectsTheSameValuesAsTheDriver(callable $driver, callable $sconcur): void
+    {
+        $driverRejected = false;
+
+        try {
+            $driver();
+        } catch (Throwable) {
+            $driverRejected = true;
+        }
+
+        self::assertTrue($driverRejected, 'the driver accepts this value, so the case pins the wrong behaviour');
+
+        $this->expectException(InvalidBsonValueException::class);
+
+        $sconcur();
     }
 }

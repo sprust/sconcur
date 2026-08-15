@@ -41,7 +41,6 @@ readonly class AggregatePayload extends BaseMongodbPayload
                 pipeline: $this->pipeline,
                 batchSize: $this->batchSize,
             ),
-            isObject: true,
         );
     }
 }

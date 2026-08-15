@@ -53,7 +53,6 @@ readonly class UpdateOnePayload extends BaseMongodbPayload
                 hint: $this->hint,
                 collation: $this->collation,
             ),
-            isObject: true,
         );
     }
 }

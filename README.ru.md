@@ -192,7 +192,7 @@ $collection->insertOne(['name' => 'example']);
 | MongoDB (сервер) | 8.0.5 |
 | ext-mongodb (PHP-расширение, только тесты и бенчмарки) | 1.21.5 |
 | mongodb/mongodb (composer-пакет, только тесты и бенчмарки) | 1.21.3 |
-| ext-msgpack | 3.0.1 (прибита точно — см. [MongoDB](docs/mongodb.ru.md#версия-расширения)) |
+| ext-msgpack | 3.0.1 |
 | MySQL (сервер) | 8.4 |
 | go-sql-driver/mysql | 1.8.1 |
 | PostgreSQL (сервер) | 16 |
