@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Mongodb\Results;
 
-use MongoDB\BSON\ObjectId;
+use SConcur\Bson\Int64;
+use SConcur\Bson\ObjectId;
 
 readonly class UpdateResult
 {
@@ -12,7 +13,7 @@ readonly class UpdateResult
         public int $matchedCount,
         public int $modifiedCount,
         public int $upsertedCount,
-        public ObjectId|string|int|float|null $upsertedId,
+        public ObjectId|Int64|string|int|float|null $upsertedId,
     ) {
     }
 }

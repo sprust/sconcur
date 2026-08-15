@@ -87,7 +87,7 @@ Operations and clients — wrapped in a coroutine (`$waitGroup->add()` +
 | `sleep()`, `usleep()` | `Sleeper::sleep()`, `Sleeper::usleep()` | pause for seconds or microseconds |
 | `PDO` / `mysqli` (MySQL) | `Features\Mysql\Connection` | queries, transactions, SELECT streaming; a connection pool in Go |
 | `PDO` (PostgreSQL) | `Features\Pgsql\Connection` | the same SQL feature on the pgx driver |
-| `mongodb/mongodb`, `ext-mongodb` | `Features\Mongodb\Connection\*` | CRUD, aggregation, cursors (BSON types stay native `ext-mongodb`) |
+| `mongodb/mongodb`, `ext-mongodb` | `Features\Mongodb\Connection\*` | CRUD, aggregation, cursors; BSON values are `SConcur\Bson\*` |
 | `curl`, `file_get_contents`, Guzzle | `Features\HttpClient\HttpClient` (PSR-18) | response streaming, download straight to a file on the Go side |
 | `fsockopen`, `stream_socket_client` | `Features\SocketClient\SocketClient` | TCP with length-prefix framing |
 | a WS client library | `Features\WsClient\WsClient` | text/binary messages |
@@ -189,8 +189,8 @@ The environment the project is built and tested against in CI:
 | PHP | 8.4.15 (NTS, cli) |
 | Go (extension build) | 1.26.1 |
 | MongoDB (server) | 8.0.5 |
-| ext-mongodb (PHP extension) | 1.21.5 |
-| mongodb/mongodb (composer package) | 1.21.3 |
+| ext-mongodb (PHP extension, tests and benchmarks only) | 1.21.5 |
+| mongodb/mongodb (composer package, tests and benchmarks only) | 1.21.3 |
 | ext-msgpack | 3.0.1 |
 | MySQL (server) | 8.4 |
 | go-sql-driver/mysql | 1.8.1 |

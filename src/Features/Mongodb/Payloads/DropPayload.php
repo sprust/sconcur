@@ -34,7 +34,6 @@ readonly class DropPayload extends BaseMongodbPayload
     {
         return new Parameters(
             payload: new EmptyPayloadParameters(),
-            isObject: true,
         );
     }
 }

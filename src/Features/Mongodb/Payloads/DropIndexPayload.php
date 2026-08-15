@@ -37,7 +37,6 @@ readonly class DropIndexPayload extends BaseMongodbPayload
     {
         return new Parameters(
             payload: new DropIndexPayloadParameters($this->index),
-            isObject: true,
         );
     }
 }

@@ -1,5 +1,5 @@
 # RoadRunner reference server for the honest comparison with the SConcur HTTP
-# server (docs/benchmarks.ru.md, "Сравнение с RoadRunner"). The worker serves
+# server (docs/benchmarks.md, "Comparison with RoadRunner and Swoole"). The worker serves
 # native-driver copies of the / and /all benchmark routes.
 #
 # Run from the repo root inside the php container (or via `make rr-serve`):

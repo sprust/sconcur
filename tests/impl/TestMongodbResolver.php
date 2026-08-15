@@ -5,8 +5,14 @@ declare(strict_types=1);
 namespace SConcur\Tests\Impl;
 
 use DateTime;
+use DateTimeInterface;
 use MongoDB\BSON\ObjectId;
 use MongoDB\BSON\UTCDateTime;
+use MongoDB\Client as DriverClient;
+use MongoDB\Collection as DriverCollection;
+use MongoDB\Database as DriverDatabase;
+use SConcur\Bson\ObjectId as SconcurObjectId;
+use SConcur\Bson\UTCDateTime as SconcurUTCDateTime;
 use SConcur\Features\Mongodb\Connection\Client;
 use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Features\Mongodb\Connection\Database;
@@ -20,13 +26,13 @@ class TestMongodbResolver
 
     protected static string $objectId = '6919e3d1a3673d3f4d9137a3';
 
-    public static function getDriverTestDatabase(): \MongoDB\Database
+    public static function getDriverTestDatabase(): DriverDatabase
     {
-        return new \MongoDB\Client(static::getUri())
+        return new DriverClient(static::getUri())
             ->selectDatabase(static::$testDatabaseName);
     }
 
-    public static function getDriverTestCollection(string $collectionName): \MongoDB\Collection
+    public static function getDriverTestCollection(string $collectionName): DriverCollection
     {
         return self::getDriverTestDatabase()
             ->selectCollection($collectionName);
@@ -48,9 +54,9 @@ class TestMongodbResolver
             ->selectCollection($collectionName);
     }
 
-    public static function getDriverBenchmarkCollection(): \MongoDB\Collection
+    public static function getDriverBenchmarkCollection(): DriverCollection
     {
-        return new \MongoDB\Client(static::getUri())
+        return new DriverClient(static::getUri())
             ->selectDatabase(static::$testDatabaseName)
             ->selectCollection(static::$benchmarkName);
     }
@@ -107,19 +113,25 @@ class TestMongodbResolver
         return new ObjectId($id ?: static::$objectId);
     }
 
-    public static function getSconcurObjectId(?string $id = null): ObjectId
+    public static function getSconcurObjectId(?string $id = null): SconcurObjectId
     {
-        return new ObjectId($id ?: static::$objectId);
+        return new SconcurObjectId($id ?: static::$objectId);
     }
 
-    public static function getDriverDateTime(?DateTime $dateTime = null): UTCDateTime
+    public static function getDriverDateTime(?DateTimeInterface $dateTime = null): UTCDateTime
     {
         return new UTCDateTime($dateTime);
     }
 
-    public static function getSconcurDateTime(?DateTime $dateTime = null): UTCDateTime
+    public static function getSconcurDateTime(?DateTimeInterface $dateTime = null): SconcurUTCDateTime
     {
-        return $dateTime === null ? new UTCDateTime() : new UTCDateTime($dateTime);
+        $dateTime ??= new DateTime();
+
+        // Whole milliseconds, computed without going through a float, so a
+        // sub-millisecond fraction cannot round the value up into the next one.
+        $epochMs = $dateTime->getTimestamp() * 1000 + intdiv((int) $dateTime->format('u'), 1000);
+
+        return new SconcurUTCDateTime($epochMs);
     }
 
     protected static function getUri(): string

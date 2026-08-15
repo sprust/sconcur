@@ -10,7 +10,6 @@ readonly class Parameters
 {
     public function __construct(
         public PayloadParametersInterface $payload,
-        public bool $isObject,
     ) {
     }
 }

@@ -133,6 +133,11 @@ feature's doc. Key PHP classes not covered there:
   `Scheduler::spawn` / `WaitGroup::add`.
 - `Features/FeatureExecutor` — coordinates feature execution, detects the async
   context via `Fiber::getCurrent()`.
+- `Bson/` — the BSON value objects (`ObjectId`, `UTCDateTime`, `Binary`, …) the
+  MongoDB feature hands out, mirroring `MongoDB\BSON\*` so an application moves
+  over by changing `use` lines. The namespace is deliberately short: the class name
+  travels on the wire with every value. Details in
+  [docs/mongodb.md](../docs/mongodb.md#object-conversion).
 - `Features/Server/ServerRuntimeSupportTrait` — shared server runtime glue:
   argv→constructor-override parsing, signal handlers, the orphaned-worker check,
   telemetry env.
@@ -217,6 +222,26 @@ lifecycle-sensitive tests extend `BaseTestCase`.
 - Do **not** use `final` on classes
 - Class properties (including promoted constructor properties) must be
   `protected`, never `private`; use `public` only for DTO fields read externally
+- **Never write a leading `\` on a class name** — import it with `use` and refer
+  to the short name. `use Stringable;` then `implements Stringable`, not
+  `implements \Stringable`; the same for `\DateTimeImmutable`, `\Throwable`,
+  `\RuntimeException` and every other global class. Imported function names
+  (`use function msgpack_pack;`) follow the same rule. This keeps the imports at
+  the top of a file an honest inventory of what it depends on.
+
+### Language
+
+**English everywhere except the Russian half of the docs.** Russian belongs in
+exactly two places: the `*.ru.md` pair files (`README.ru.md`, `docs/*.ru.md`),
+where it mirrors the English original, and `.ai/plans/`, which is written in
+Russian by a maintainer decision.
+
+Everything else is English, with no exceptions: code and its comments, PHPDoc,
+Go comments, exception and log messages, test names and failure messages, shell
+and benchmark scripts including everything they print, table headers and verdict
+strings in their output, and commit messages. A benchmark whose table headers or verdict strings come out
+in Russian is a bug, not a style preference — that output is read by contributors
+who do not speak Russian, and it ends up pasted into issues and docs.
 
 ### Naming
 

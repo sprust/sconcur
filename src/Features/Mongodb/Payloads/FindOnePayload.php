@@ -48,7 +48,6 @@ readonly class FindOnePayload extends BaseMongodbPayload
                 hint: $this->hint,
                 collation: $this->collation,
             ),
-            isObject: true,
         );
     }
 }

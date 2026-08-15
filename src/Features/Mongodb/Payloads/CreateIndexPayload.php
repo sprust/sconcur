@@ -41,7 +41,6 @@ readonly class CreateIndexPayload extends BaseMongodbPayload
                 keys: $this->keys,
                 name: $this->name,
             ),
-            isObject: true,
         );
     }
 }

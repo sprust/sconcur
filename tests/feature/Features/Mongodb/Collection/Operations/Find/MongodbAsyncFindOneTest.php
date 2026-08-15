@@ -6,8 +6,8 @@ namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Find;
 
 use DateMalformedStringException;
 use DateTime;
-use MongoDB\BSON\ObjectId;
-use MongoDB\BSON\UTCDateTime;
+use SConcur\Bson\ObjectId;
+use SConcur\Bson\UTCDateTime;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
 use SConcur\Tests\Impl\TestMongodbResolver;
 

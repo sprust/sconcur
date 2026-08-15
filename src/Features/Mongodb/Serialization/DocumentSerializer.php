@@ -4,71 +4,76 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Mongodb\Serialization;
 
-use MongoDB\BSON\Document;
-use MongoDB\BSON\PackedArray;
 use SConcur\Features\Mongodb\Exceptions\UnexpectedMongodbResponseFormatException;
+use function msgpack_pack;
+use function msgpack_unpack;
 
 /**
- * Documents are exchanged with the Go extension as raw BSON and decoded natively via
- * ext-mongodb (the same C path the native driver uses). Values use the driver's BSON
- * types (MongoDB\BSON\ObjectId, UTCDateTime, ...).
+ * Documents are exchanged with the Go extension as MessagePack, so nothing here
+ * depends on ext-mongodb.
+ *
+ * BSON types MessagePack has no equivalent for (an id, a date, a decimal, ...)
+ * ride in the object envelope ext-msgpack uses for PHP objects, and become
+ * SConcur\Bson\* instances. The extension materialises them in C while parsing,
+ * so decoding a document is one pass and PHP never walks the result — which is
+ * what made the earlier hand-rolled converter expensive.
  */
 class DocumentSerializer
 {
     /**
-     * ext-mongodb type map: documents/arrays become PHP arrays; scalars stay native
-     * MongoDB\BSON\* objects.
-     *
-     * @var array<string, string>
-     */
-    private const array TYPE_MAP = [
-        'root'     => 'array',
-        'document' => 'array',
-        'array'    => 'array',
-    ];
-
-    /**
-     * Encode a value to raw BSON bytes. An object-like value ($isObject) becomes a BSON
-     * document; a list becomes a BSON array.
+     * Encode a document for the wire. MessagePack preserves the PHP shape — a list
+     * packs as a list, a map as a map — and the Go side turns either into a BSON
+     * document, so the caller does not have to say which one it is.
      *
      * @param array<int|string, mixed> $document
      */
-    public static function serialize(array $document, bool $isObject = true): string
+    public static function serialize(array $document): string
     {
-        if ($isObject) {
-            return (string) Document::fromPHP($document);
-        }
-
-        return (string) PackedArray::fromPHP($document);
+        return msgpack_pack($document);
     }
 
     /**
-     * Decode a raw BSON document into a PHP array.
+     * Decode a document from the wire.
      *
      * @return array<int|string, mixed>
      */
     public static function unserialize(string $document): array
     {
-        return (array) Document::fromBSON($document)->toPHP(self::TYPE_MAP);
+        if ($document === '') {
+            return [];
+        }
+
+        $decoded = msgpack_unpack($document);
+
+        if (!is_array($decoded)) {
+            throw new UnexpectedMongodbResponseFormatException(
+                message: 'Decoded MongoDB document is not an array.',
+            );
+        }
+
+        return $decoded;
     }
 
     /**
-     * Decode a raw BSON batch wrapper {d: [...]} into a list of documents.
+     * Decode a cursor batch. The batch is a plain list — the BSON path needed a
+     * {"d": [...]} wrapper because PHP could only decode a document.
      *
      * @return array<int, mixed>
      */
     public static function unserializeBatch(string $payload): array
     {
-        $decoded = (array) Document::fromBSON($payload)->toPHP(self::TYPE_MAP);
+        if ($payload === '') {
+            return [];
+        }
 
-        $items = $decoded['d'] ?? [];
+        $decoded = msgpack_unpack($payload);
 
-        if (!is_array($items)) {
+        if (!is_array($decoded)) {
             throw new UnexpectedMongodbResponseFormatException(
-                message: 'BSON batch payload is not a list.',
+                message: 'Decoded MongoDB batch is not a list.',
             );
         }
 
-        return array_values($items);
+        return array_values($decoded);
     }
 }

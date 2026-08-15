@@ -87,7 +87,7 @@ echo "готово за {$seconds} c" . PHP_EOL;
 | `sleep()`, `usleep()` | `Sleeper::sleep()`, `Sleeper::usleep()` | пауза на секунды или микросекунды |
 | `PDO` / `mysqli` (MySQL) | `Features\Mysql\Connection` | запросы, транзакции, стриминг SELECT; пул соединений в Go |
 | `PDO` (PostgreSQL) | `Features\Pgsql\Connection` | та же SQL-фича на драйвере pgx |
-| `mongodb/mongodb`, `ext-mongodb` | `Features\Mongodb\Connection\*` | CRUD, агрегации, курсоры (BSON-типы остаются нативными `ext-mongodb`) |
+| `mongodb/mongodb`, `ext-mongodb` | `Features\Mongodb\Connection\*` | CRUD, агрегации, курсоры; BSON-значения — `SConcur\Bson\*` |
 | `curl`, `file_get_contents`, Guzzle | `Features\HttpClient\HttpClient` (PSR-18) | стриминг ответа, скачивание в файл на стороне Go |
 | `fsockopen`, `stream_socket_client` | `Features\SocketClient\SocketClient` | TCP с length-prefix кадрами |
 | WS-клиент (библиотека) | `Features\WsClient\WsClient` | обмен text/binary сообщениями |
@@ -190,8 +190,8 @@ $collection->insertOne(['name' => 'example']);
 | PHP | 8.4.15 (NTS, cli) |
 | Go (сборка расширения) | 1.26.1 |
 | MongoDB (сервер) | 8.0.5 |
-| ext-mongodb (PHP-расширение) | 1.21.5 |
-| mongodb/mongodb (composer-пакет) | 1.21.3 |
+| ext-mongodb (PHP-расширение, только тесты и бенчмарки) | 1.21.5 |
+| mongodb/mongodb (composer-пакет, только тесты и бенчмарки) | 1.21.3 |
 | ext-msgpack | 3.0.1 |
 | MySQL (сервер) | 8.4 |
 | go-sql-driver/mysql | 1.8.1 |

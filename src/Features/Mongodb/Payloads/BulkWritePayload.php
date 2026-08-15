@@ -38,7 +38,6 @@ readonly class BulkWritePayload extends BaseMongodbPayload
     {
         return new Parameters(
             payload: new BulkWritePayloadParameters($this->operations),
-            isObject: true,
         );
     }
 }

@@ -203,9 +203,9 @@ awk -v trend="$TREND" '
         denom = n * stt - st * st;
         if (n >= 2 && denom != 0) {
             slope = (n * sty - st * sy) / denom * 60;
-            verdict = (slope > 0.5) ? "рост — возможна утечка" \
-                    : (slope < -0.5) ? "снижается (GC/возврат памяти)" \
-                    : "стабильно";
+            verdict = (slope > 0.5) ? "growing — possible leak" \
+                    : (slope < -0.5) ? "falling (GC / memory returned)" \
+                    : "stable";
             printf "  slope: %+.2f MiB/min  ->  %s\n", slope, verdict;
         }
     }

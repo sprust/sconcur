@@ -10,7 +10,7 @@ require_once __DIR__ . '/_socket_bench.php';
 /**
  * Socket-client benchmark: N length-prefix-framed round-trips to an I/O-bound
  * endpoint ("msleep:<ms>") of the running `servers` socket pool. The async run fires
- * them «веером» through a WaitGroup — its total time stays ≈ one round-trip, while
+ * them fanned out through a WaitGroup — its total time stays ≈ one round-trip, while
  * native (raw PHP sockets) and sync (SocketClient outside a WaitGroup) run
  * sequentially and scale with N.
  *

@@ -6,16 +6,16 @@ namespace SConcur\Tests\Feature\Features\Mongodb\Serialization;
 
 use DateTime;
 use DateTimeZone;
-use MongoDB\BSON\Binary;
-use MongoDB\BSON\Decimal128;
-use MongoDB\BSON\Int64;
-use MongoDB\BSON\Javascript;
-use MongoDB\BSON\MaxKey;
-use MongoDB\BSON\MinKey;
-use MongoDB\BSON\ObjectId;
-use MongoDB\BSON\Regex;
-use MongoDB\BSON\Timestamp;
-use MongoDB\BSON\UTCDateTime;
+use SConcur\Bson\Binary;
+use SConcur\Bson\Decimal128;
+use SConcur\Bson\Int64;
+use SConcur\Bson\Javascript;
+use SConcur\Bson\MaxKey;
+use SConcur\Bson\MinKey;
+use SConcur\Bson\ObjectId;
+use SConcur\Bson\Regex;
+use SConcur\Bson\Timestamp;
+use SConcur\Bson\UTCDateTime;
 use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\Tests\Impl\TestMongodbResolver;
@@ -123,7 +123,7 @@ class MongodbDocumentSerializerTest extends BaseTestCase
 
     /**
      * Every BSON type must round-trip unchanged through the full path:
-     * PHP (ext-mongodb encode) → Go (raw BSON) → MongoDB → Go (raw BSON) → PHP decode.
+     * PHP (MessagePack) → Go (BSON) → MongoDB → Go (BSON) → PHP (MessagePack).
      */
     public function testRoundTripsAllBsonTypes(): void
     {
@@ -240,6 +240,89 @@ class MongodbDocumentSerializerTest extends BaseTestCase
         self::assertSame('2.5', (string) $found['decimal128']);
         self::assertSame(['nested' => 'value'], $found['document']);
         self::assertSame([1, 2, 3], $found['array']);
+    }
+
+    /**
+     * ext-msgpack writes a repeated object instance as a reference to the container
+     * it wrote earlier, numbering every container it emits. A scope is a container
+     * inside a value object, so it shifts that numbering — and a decoder that
+     * miscounts does not fail, it hands the collection a neighbouring value.
+     */
+    public function testRoundTripsAScopeAndAReusedInstance(): void
+    {
+        $objectId = new ObjectId('6919e3d1a3673d3f4d9137a3');
+        $other    = new ObjectId('6919e3d1a3673d3f4d9137b4');
+
+        $this->sconcurCollection->insertOne([
+            '_id'        => 'scope-and-reference',
+            'javascript' => new Javascript('function () { return x; }', [
+                'x'      => 1,
+                'nested' => ['deep' => [1, 2]],
+                'id'     => $objectId,
+            ]),
+            'first'      => $objectId,
+            'second'     => $other,
+            'again'      => $objectId,
+        ]);
+
+        $found = $this->sconcurCollection->findOne(
+            filter: ['_id' => 'scope-and-reference'],
+        );
+
+        self::assertNotNull($found);
+
+        self::assertInstanceOf(Javascript::class, $found['javascript']);
+        self::assertSame('function () { return x; }', $found['javascript']->getCode());
+
+        $scope = (array) $found['javascript']->getScope();
+
+        self::assertSame(1, $scope['x']);
+        self::assertSame(['deep' => [1, 2]], $scope['nested']);
+        self::assertInstanceOf(ObjectId::class, $scope['id']);
+        self::assertSame((string) $objectId, (string) $scope['id']);
+
+        self::assertSame((string) $objectId, (string) $found['first']);
+        self::assertSame((string) $other, (string) $found['second']);
+        self::assertSame((string) $objectId, (string) $found['again']);
+    }
+
+    /**
+     * A plain object is how an object-shaped value usually reaches a document —
+     * json_decode without associative arrays, a cast — and ext-mongodb accepted it,
+     * so it must keep working: it stores as a sub-document and reads back as an
+     * array.
+     */
+    public function testStoresAPlainObjectAsADocument(): void
+    {
+        $this->sconcurCollection->insertOne([
+            '_id'     => 'plain-object',
+            'profile' => (object) [
+                'city' => 'Berlin',
+                'tags' => ['a', 'b'],
+            ],
+            'list'    => [(object) ['n' => 1]],
+            'empty'   => (object) [],
+        ]);
+
+        $found = $this->sconcurCollection->findOne(
+            filter: ['_id' => 'plain-object'],
+        );
+
+        self::assertNotNull($found);
+
+        self::assertSame(
+            [
+                'city' => 'Berlin',
+                'tags' => ['a', 'b'],
+            ],
+            $found['profile'],
+        );
+
+        self::assertSame([['n' => 1]], $found['list']);
+
+        // An object with no properties is the shortest envelope there is — nothing
+        // but the nil key and the class name.
+        self::assertSame([], $found['empty']);
     }
 
     public function testAggregateGroup(): void

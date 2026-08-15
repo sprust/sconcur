@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection;
 
+use MongoDB\Collection as DriverCollection;
 use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\Tests\Impl\TestMongodbResolver;
@@ -13,7 +14,7 @@ use SConcur\Tests\Impl\TestMongodbResolver;
  */
 abstract class BaseMongodbRangeTestCase extends BaseTestCase
 {
-    protected \MongoDB\Collection $driverCollection;
+    protected DriverCollection $driverCollection;
     protected Collection $sconcurCollection;
 
     abstract protected function getType(): string;

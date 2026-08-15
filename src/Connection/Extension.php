@@ -10,6 +10,7 @@ use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\ExtensionCallException;
 use SConcur\Exceptions\ExtensionNotLoadedException;
 use SConcur\Exceptions\IncompatibleExtensionVersionException;
+use SConcur\Exceptions\MsgpackObjectSupportDisabledException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\MethodEnum;
@@ -43,7 +44,7 @@ class Extension
      * rejected instead of silently misbehaving. Public so tooling (bin/sconcur-status)
      * can report the version the package expects.
      */
-    public const string REQUIRED_EXTENSION_VERSION = '0.9.1';
+    public const string REQUIRED_EXTENSION_VERSION = '0.10.0';
 
     /**
      * Result frame layout (Go -> PHP), see main.go buildResultFrame. The envelope is
@@ -468,7 +469,39 @@ class Extension
             );
         }
 
+        self::checkMsgpackObjectSupport();
+
         static::$checked = true;
+    }
+
+    /**
+     * The boundary carries MessagePack, and some payloads carry PHP objects in it
+     * (the BSON value objects of the MongoDB feature). ext-msgpack only reads and
+     * writes those with msgpack.php_only enabled: with it off, packing loses the
+     * class and unpacking warns about an illegal key type and yields plain arrays.
+     *
+     * The setting is PHP_INI_ALL, so it is forced here rather than merely
+     * required — but a build that refuses the change must say so at startup
+     * instead of mangling documents later.
+     */
+    private static function checkMsgpackObjectSupport(): void
+    {
+        if (!extension_loaded('msgpack')) {
+            throw new MsgpackObjectSupportDisabledException(
+                message: 'The extension "msgpack" is not loaded.',
+            );
+        }
+
+        if (ini_get('msgpack.php_only') !== '1') {
+            ini_set('msgpack.php_only', '1');
+        }
+
+        if (ini_get('msgpack.php_only') !== '1') {
+            throw new MsgpackObjectSupportDisabledException(
+                message: 'msgpack.php_only could not be enabled: payloads carry PHP objects, '
+                    . 'and with it off every one of them silently decodes to a plain array.',
+            );
+        }
     }
 
     public function __destruct()

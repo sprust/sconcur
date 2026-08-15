@@ -4,18 +4,20 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection;
 
+use MongoDB\Collection as DriverCollection;
 use SConcur\Features\Mongodb\Connection\Collection;
-use MongoDB\BSON\ObjectId;
+use MongoDB\BSON\ObjectId as DriverObjectId;
+use SConcur\Bson\ObjectId;
 use SConcur\Tests\Feature\BaseAsyncTestCase;
 use SConcur\Tests\Impl\TestMongodbResolver;
 use Throwable;
 
 abstract class BaseMongodbAsyncTestCase extends BaseAsyncTestCase
 {
-    protected \MongoDB\Collection $driverCollection;
+    protected DriverCollection $driverCollection;
     protected Collection $sconcurCollection;
 
-    protected ObjectId $driverObjectId;
+    protected DriverObjectId $driverObjectId;
     protected ObjectId $sconcurObjectId;
 
     abstract protected function getCollectionName(): string;

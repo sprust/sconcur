@@ -35,7 +35,7 @@ func (c *Collection) InsertOne(
 	message *dto.Message,
 	payload *payloads.Payload,
 ) *dto.Result {
-	doc, err := serializer.UnmarshalDocument(payload.Data)
+	doc, err := serializer.PayloadDocument(payload.Data)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -127,7 +127,7 @@ func (c *Collection) InsertMany(
 	message *dto.Message,
 	payload *payloads.Payload,
 ) *dto.Result {
-	docs, err := serializer.UnmarshalDocuments(payload.Data)
+	docs, err := serializer.PayloadDocuments(payload.Data)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -146,7 +146,7 @@ func (c *Collection) CountDocuments(
 	message *dto.Message,
 	payload *payloads.Payload,
 ) *dto.Result {
-	filter, err := serializer.UnmarshalDocument(payload.Data)
+	filter, err := serializer.PayloadDocument(payload.Data)
 
 	if err != nil {
 		return dto.NewErrorResult(
@@ -861,7 +861,16 @@ func (c *Collection) CreateIndexes(
 	message *dto.Message,
 	payload *payloads.Payload,
 ) *dto.Result {
-	indexesValue, err := bson.Raw(payload.Data).LookupErr("ix")
+	indexesDocument, err := serializer.MsgpackToBSON(payload.Data)
+
+	if err != nil {
+		return dto.NewErrorResult(
+			message,
+			errFactory.ByErr("parse createIndexes params", err),
+		)
+	}
+
+	indexesValue, err := indexesDocument.LookupErr("ix")
 
 	if err != nil {
 		return dto.NewErrorResult(

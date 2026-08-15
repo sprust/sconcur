@@ -44,7 +44,6 @@ readonly class DistinctPayload extends BaseMongodbPayload
                 filter: $this->filter,
                 collation: $this->collation,
             ),
-            isObject: true,
         );
     }
 }

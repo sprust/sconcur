@@ -4,12 +4,13 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Mongodb\Results;
 
-use MongoDB\BSON\ObjectId;
+use SConcur\Bson\Int64;
+use SConcur\Bson\ObjectId;
 
 readonly class InsertOneResult
 {
     public function __construct(
-        public ObjectId|string|int|float|null $insertedId,
+        public ObjectId|Int64|string|int|float|null $insertedId,
     ) {
     }
 }

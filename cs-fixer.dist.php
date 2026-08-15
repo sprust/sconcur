@@ -38,13 +38,13 @@ return $config
         'blank_line_before_statement'  => [
             'statements' => ['return', 'if', 'for', 'foreach', 'while', 'do', 'switch', 'try'], // ij_php_blank_lines_before_return_statement = 1
         ],
-        'spaces_inside_parentheses'     => false, // вместо 'no_spaces_inside_parenthesis'
-        'type_declaration_spaces'       => true,    // вместо 'function_typehint_space'
-        'no_unneeded_braces'            => true,        // вместо 'no_unneeded_curly_braces'
-        'braces_position'               => true,           // часть замены для 'braces'
-        'single_space_around_construct' => true, // часть замены для 'braces'
-        'control_structure_braces'      => true,      // часть замены для 'braces'
-        'statement_indentation'         => true,      // часть замены для 'braces'
+        'spaces_inside_parentheses'     => false, // replaces 'no_spaces_inside_parenthesis'
+        'type_declaration_spaces'       => true,    // replaces 'function_typehint_space'
+        'no_unneeded_braces'            => true,        // replaces 'no_unneeded_curly_braces'
+        'braces_position'               => true,           // part of the replacement for 'braces'
+        'single_space_around_construct' => true, // part of the replacement for 'braces'
+        'control_structure_braces'      => true,      // part of the replacement for 'braces'
+        'statement_indentation'         => true,      // part of the replacement for 'braces'
         'cast_spaces'                   => ['space' => 'single'], // ij_php_space_after_type_cast = true
         'class_attributes_separation'   => [
             'elements' => [
@@ -198,7 +198,7 @@ return $config
         'ternary_operator_spaces'        => true,
         'trailing_comma_in_multiline'    => [
             'elements' => ['arrays', 'arguments', 'parameters'],
-        ], // обязательная trailing comma в вертикальных массивах, вызовах и сигнатурах
+        ], // trailing comma is required in vertical arrays, calls and signatures
         'trim_array_spaces'              => true,
         'unary_operator_spaces'          => true, // ij_php_spaces_around_unary_operator = false
         'modifier_keywords'              => [

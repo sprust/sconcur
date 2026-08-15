@@ -49,7 +49,6 @@ readonly class FindOneAndReplacePayload extends BaseMongodbPayload
                 upsert: $this->upsert,
                 returnDocument: $this->returnDocument,
             ),
-            isObject: true,
         );
     }
 }
