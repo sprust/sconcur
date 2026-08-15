@@ -4,14 +4,15 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Operations\Insert;
 
-use MongoDB\BSON\ObjectId;
-use MongoDB\BSON\UTCDateTime;
+use MongoDB\BSON\UTCDateTime as DriverUTCDateTime;
+use SConcur\Bson\ObjectId;
+use SConcur\Bson\UTCDateTime;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbAsyncTestCase;
 use SConcur\Tests\Impl\TestMongodbResolver;
 
 class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
 {
-    protected UTCDateTime $driverDateTime;
+    protected DriverUTCDateTime $driverDateTime;
 
     private string $fieldName;
     private UTCDateTime $fieldValue;

@@ -6,12 +6,16 @@ import (
 	"strings"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
+
+	"sconcur/internal/features/mongodb/serializer"
 )
 
-// UnmarshalParams decodes command parameters from the single BSON document carried in the
-// payload's `dt` field. Each struct field is matched by its msgpack tag to a key in the
-// document: []byte fields receive the raw bytes of the embedded document/array (usable as
-// bson.Raw), scalar fields receive the decoded value. Absent keys keep their zero value.
+// UnmarshalParams decodes command parameters from the `dt` field of the payload. PHP sends
+// it as MessagePack; this is the one place per message where it becomes BSON, so every
+// inner field (a filter, an update, a pipeline) is plain BSON from here on. Each struct
+// field is matched by its msgpack tag to a key in the document: []byte fields receive the
+// raw bytes of the embedded document/array (usable as bson.Raw), scalar fields receive the
+// decoded value. Absent keys keep their zero value.
 func UnmarshalParams(data []byte, out interface{}) error {
 	if len(data) == 0 {
 		return nil
@@ -23,7 +27,12 @@ func UnmarshalParams(data []byte, out interface{}) error {
 		return fmt.Errorf("out must be a pointer to a struct")
 	}
 
-	document := bson.Raw(data)
+	document, err := serializer.MsgpackToBSON(data)
+
+	if err != nil {
+		return fmt.Errorf("error reading params payload: %w", err)
+	}
+
 	structValue := pointer.Elem()
 	structType := structValue.Type()
 

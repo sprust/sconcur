@@ -1,119 +1,167 @@
 package serializer
 
 import (
+	"bytes"
 	"testing"
 
+	"github.com/vmihailenco/msgpack/v5"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
-func TestUnmarshalDocumentReturnsRawBSON(t *testing.T) {
-	docBytes, err := bson.Marshal(bson.D{{Key: "a", Value: int32(1)}, {Key: "b", Value: "x"}})
+// encodeMsgpackDocument builds the MessagePack bytes the PHP side would send for
+// the given key/value pairs, written with the low-level encoder so these tests do
+// not lean on the outgoing converter to check the incoming one.
+func encodeMsgpackDocument(t *testing.T, pairs ...interface{}) []byte {
+	t.Helper()
+
+	if len(pairs)%2 != 0 {
+		t.Fatalf("pairs must come in twos, got %d", len(pairs))
+	}
+
+	var buffer bytes.Buffer
+
+	encoder := msgpack.NewEncoder(&buffer)
+
+	if err := encoder.EncodeMapLen(len(pairs) / 2); err != nil {
+		t.Fatalf("encoding map: %v", err)
+	}
+
+	for index := 0; index < len(pairs); index += 2 {
+		if err := encoder.EncodeString(pairs[index].(string)); err != nil {
+			t.Fatalf("encoding key: %v", err)
+		}
+
+		if err := encoder.Encode(pairs[index+1]); err != nil {
+			t.Fatalf("encoding value: %v", err)
+		}
+	}
+
+	return buffer.Bytes()
+}
+
+func TestPayloadDocumentConvertsToRawBSON(t *testing.T) {
+	got, err := PayloadDocument(encodeMsgpackDocument(t, "a", int32(1), "b", "x"))
+
+	if err != nil {
+		t.Fatalf("PayloadDocument() error = %v", err)
+	}
+
+	raw, ok := got.(bson.Raw)
+
+	if !ok {
+		t.Fatalf("PayloadDocument() = %T, want bson.Raw", got)
+	}
+
+	if value, ok := raw.Lookup("a").Int32OK(); !ok || value != 1 {
+		t.Errorf("key a = %v, want 1", raw.Lookup("a"))
+	}
+
+	if value, ok := raw.Lookup("b").StringValueOK(); !ok || value != "x" {
+		t.Errorf("key b = %v, want x", raw.Lookup("b"))
+	}
+}
+
+func TestPayloadDocumentAcceptsEmptyPayload(t *testing.T) {
+	got, err := PayloadDocument(nil)
+
+	if err != nil {
+		t.Fatalf("PayloadDocument(nil) error = %v", err)
+	}
+
+	if raw, ok := got.(bson.Raw); !ok || len(raw) != 0 {
+		t.Errorf("PayloadDocument(nil) = %v, want an empty bson.Raw", got)
+	}
+}
+
+func TestMarshalDocumentEncodesRawAsMsgpack(t *testing.T) {
+	document, err := bson.Marshal(bson.D{{Key: "x", Value: int32(1)}})
+
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	got, err := UnmarshalDocument(docBytes)
-	if err != nil {
-		t.Fatalf("UnmarshalDocument() error = %v", err)
-	}
+	got, err := MarshalDocument(bson.Raw(document))
 
-	raw, ok := got.(bson.Raw)
-	if !ok {
-		t.Fatalf("UnmarshalDocument() = %T, want bson.Raw", got)
-	}
-
-	if string(raw) != string(docBytes) {
-		t.Fatalf("UnmarshalDocument() returned modified bytes")
-	}
-}
-
-func TestMarshalDocumentPassesRawThrough(t *testing.T) {
-	docBytes, _ := bson.Marshal(bson.D{{Key: "x", Value: int32(1)}})
-
-	got, err := MarshalDocument(bson.Raw(docBytes))
 	if err != nil {
 		t.Fatalf("MarshalDocument() error = %v", err)
 	}
 
-	if got != string(docBytes) {
-		t.Fatalf("MarshalDocument(bson.Raw) did not pass bytes through")
+	back, err := MsgpackToBSON([]byte(got))
+
+	if err != nil {
+		t.Fatalf("result is not MessagePack: %v", err)
+	}
+
+	if value, ok := back.Lookup("x").Int32OK(); !ok || value != 1 {
+		t.Errorf("key x = %v, want 1", back.Lookup("x"))
 	}
 }
 
-func TestMarshalDocumentMarshalsStruct(t *testing.T) {
+func TestMarshalDocumentEncodesDriverStructs(t *testing.T) {
 	got, err := MarshalDocument(bson.D{{Key: "n", Value: int64(5)}})
+
 	if err != nil {
 		t.Fatalf("MarshalDocument() error = %v", err)
 	}
 
-	var back bson.D
-	if err := bson.Unmarshal([]byte(got), &back); err != nil {
-		t.Fatalf("result is not valid BSON: %v", err)
+	back, err := MsgpackToBSON([]byte(got))
+
+	if err != nil {
+		t.Fatalf("result is not MessagePack: %v", err)
 	}
 
-	if len(back) != 1 || back[0].Key != "n" {
-		t.Fatalf("unexpected marshaled document: %v", back)
+	// 5 fits in an int32, and the converter narrows on the way back, so read the
+	// value rather than the width.
+	if value, ok := back.Lookup("n").AsInt64OK(); !ok || value != 5 {
+		t.Errorf("key n = %v, want 5", back.Lookup("n"))
 	}
 }
 
-func TestUnmarshalDocumentsSplitsArray(t *testing.T) {
-	_, arrBytes, err := bson.MarshalValue(bson.A{
-		bson.D{{Key: "a", Value: int32(1)}},
-		bson.D{{Key: "b", Value: int32(2)}},
-	})
+func TestPayloadDocumentsSplitsAList(t *testing.T) {
+	var buffer bytes.Buffer
+
+	encoder := msgpack.NewEncoder(&buffer)
+
+	if err := encoder.EncodeArrayLen(2); err != nil {
+		t.Fatalf("encoding list: %v", err)
+	}
+
+	buffer.Write(encodeMsgpackDocument(t, "a", int32(1)))
+	buffer.Write(encodeMsgpackDocument(t, "b", int32(2)))
+
+	documents, err := PayloadDocuments(buffer.Bytes())
+
 	if err != nil {
-		t.Fatalf("marshal array: %v", err)
+		t.Fatalf("PayloadDocuments() error = %v", err)
 	}
 
-	docs, err := UnmarshalDocuments(arrBytes)
-	if err != nil {
-		t.Fatalf("UnmarshalDocuments() error = %v", err)
+	if len(documents) != 2 {
+		t.Fatalf("PayloadDocuments() len = %d, want 2", len(documents))
 	}
 
-	if len(docs) != 2 {
-		t.Fatalf("UnmarshalDocuments() len = %d, want 2", len(docs))
-	}
-
-	for _, doc := range docs {
-		if _, ok := doc.(bson.Raw); !ok {
-			t.Fatalf("element type = %T, want bson.Raw", doc)
+	for index, document := range documents {
+		if _, ok := document.(bson.Raw); !ok {
+			t.Fatalf("element %d type = %T, want bson.Raw", index, document)
 		}
 	}
 }
 
-func TestMarshalDocumentBatchRawWrapsDocuments(t *testing.T) {
-	doc0, _ := bson.Marshal(bson.D{{Key: "a", Value: int32(1)}})
-	doc1, _ := bson.Marshal(bson.D{{Key: "b", Value: int32(2)}})
+func TestPayloadDocumentsRejectsNonDocumentElement(t *testing.T) {
+	var buffer bytes.Buffer
 
-	packed, err := MarshalDocumentBatchRaw([]bson.Raw{doc0, doc1})
-	if err != nil {
-		t.Fatalf("MarshalDocumentBatchRaw() error = %v", err)
+	encoder := msgpack.NewEncoder(&buffer)
+
+	if err := encoder.EncodeArrayLen(2); err != nil {
+		t.Fatalf("encoding list: %v", err)
 	}
 
-	var wrapper struct {
-		D bson.A `bson:"d"`
-	}
-	if err := bson.Unmarshal([]byte(packed), &wrapper); err != nil {
-		t.Fatalf("wrapper is not valid BSON: %v", err)
-	}
+	buffer.Write(encodeMsgpackDocument(t, "title", "valid document"))
 
-	if len(wrapper.D) != 2 {
-		t.Fatalf("wrapper has %d documents, want 2", len(wrapper.D))
-	}
-}
-
-func TestUnmarshalDocumentsRejectsNonDocumentElement(t *testing.T) {
-	arrayBytes, err := bson.Marshal(bson.D{
-		{Key: "0", Value: bson.D{{Key: "title", Value: "valid document"}}},
-		{Key: "1", Value: "scalar instead of document"},
-	})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
+	if err := encoder.EncodeString("scalar instead of document"); err != nil {
+		t.Fatalf("encoding scalar: %v", err)
 	}
 
-	_, err = UnmarshalDocuments(arrayBytes)
-
-	if err == nil {
-		t.Fatal("UnmarshalDocuments() must return an error for a non-document element, not panic")
+	if _, err := PayloadDocuments(buffer.Bytes()); err == nil {
+		t.Fatal("PayloadDocuments() must return an error for a non-document element, not panic")
 	}
 }

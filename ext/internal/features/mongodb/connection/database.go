@@ -66,7 +66,7 @@ func (d *Database) RunCommand(
 	message *dto.Message,
 	payload *payloads.Payload,
 ) *dto.Result {
-	command, err := serializer.UnmarshalDocument(payload.Data)
+	command, err := serializer.PayloadDocument(payload.Data)
 
 	if err != nil {
 		return dto.NewErrorResult(

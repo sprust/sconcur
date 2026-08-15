@@ -6,16 +6,16 @@ namespace SConcur\Tests\Feature\Features\Mongodb\Serialization;
 
 use DateTime;
 use DateTimeZone;
-use MongoDB\BSON\Binary;
-use MongoDB\BSON\Decimal128;
-use MongoDB\BSON\Int64;
-use MongoDB\BSON\Javascript;
-use MongoDB\BSON\MaxKey;
-use MongoDB\BSON\MinKey;
-use MongoDB\BSON\ObjectId;
-use MongoDB\BSON\Regex;
-use MongoDB\BSON\Timestamp;
-use MongoDB\BSON\UTCDateTime;
+use SConcur\Bson\Binary;
+use SConcur\Bson\Decimal128;
+use SConcur\Bson\Int64;
+use SConcur\Bson\Javascript;
+use SConcur\Bson\MaxKey;
+use SConcur\Bson\MinKey;
+use SConcur\Bson\ObjectId;
+use SConcur\Bson\Regex;
+use SConcur\Bson\Timestamp;
+use SConcur\Bson\UTCDateTime;
 use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\Tests\Impl\TestMongodbResolver;
@@ -123,7 +123,7 @@ class MongodbDocumentSerializerTest extends BaseTestCase
 
     /**
      * Every BSON type must round-trip unchanged through the full path:
-     * PHP (ext-mongodb encode) → Go (raw BSON) → MongoDB → Go (raw BSON) → PHP decode.
+     * PHP (MessagePack) → Go (BSON) → MongoDB → Go (BSON) → PHP (MessagePack).
      */
     public function testRoundTripsAllBsonTypes(): void
     {

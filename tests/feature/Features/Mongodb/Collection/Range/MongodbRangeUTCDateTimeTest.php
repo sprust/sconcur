@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Mongodb\Collection\Range;
 
 use DateMalformedStringException;
-use MongoDB\BSON\UTCDateTime;
+use SConcur\Bson\UTCDateTime;
 use SConcur\Tests\Feature\Features\Mongodb\Collection\BaseMongodbRangeTestCase;
 use SConcur\Tests\Impl\TestMongodbResolver;
 

@@ -8,19 +8,34 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
-// Documents are exchanged with the PHP side as raw BSON: the PHP side encodes via
-// ext-mongodb (MongoDB\BSON\Document/PackedArray) and decodes via the same C path the
-// native driver uses. Go therefore passes the cursor/driver bson.Raw straight through,
-// without an intermediate representation.
+// Documents are exchanged with the PHP side as MessagePack, so PHP needs no BSON
+// codec and SConcur does not depend on ext-mongodb. See msgpack.go for the format.
+//
+// The conversion happens exactly once per message, at the outer boundary: either
+// payloads.UnmarshalParams (which decodes the whole `dt` blob) or the Payload*
+// helpers below, for commands whose `dt` is the document itself. Everything
+// inside — a filter, an update, a pipeline stage — is then already BSON, and the
+// functions that read those inner fields keep working on BSON unchanged.
 
-// UnmarshalDocument treats the incoming bytes as a raw BSON document. The mongo driver
-// accepts bson.Raw directly as a filter/update/projection/document.
+// PayloadDocument converts an incoming MessagePack payload into raw BSON. Use it
+// where the command's `dt` is the document itself.
+func PayloadDocument(data []byte) (interface{}, error) {
+	return MsgpackToBSON(data)
+}
+
+// PayloadDocuments converts an incoming MessagePack payload that holds a list of
+// documents (insertMany).
+func PayloadDocuments(data []byte) ([]interface{}, error) {
+	return MsgpackToBSONDocuments(data)
+}
+
+// UnmarshalDocument treats already-converted bytes as a raw BSON document. The
+// mongo driver accepts bson.Raw directly as a filter/update/projection/document.
 func UnmarshalDocument(data []byte) (interface{}, error) {
 	return bson.Raw(data), nil
 }
 
-// UnmarshalDocuments splits a raw BSON array (PackedArray) into its document elements,
-// e.g. for InsertMany.
+// UnmarshalDocuments splits a raw BSON array into its document elements.
 func UnmarshalDocuments(data []byte) ([]interface{}, error) {
 	return bsonArrayDocuments(data)
 }
@@ -30,39 +45,43 @@ func UnmarshalPipeline(data []byte) (interface{}, error) {
 	return bsonArrayDocuments(data)
 }
 
-// MarshalDocument encodes a document to raw BSON bytes. A bson.Raw is passed through
-// as-is; anything else (driver result structs, bson.D, ...) is BSON-marshaled.
+// MarshalDocument encodes a document as MessagePack for PHP. A bson.Raw is
+// converted directly; anything else (driver result structs, bson.D, ...) is
+// BSON-marshaled first, since the driver's own encoder is the only thing that
+// knows those shapes.
 func MarshalDocument(doc interface{}) (string, error) {
-	if raw, ok := doc.(bson.Raw); ok {
-		return string(raw), nil
+	raw, ok := doc.(bson.Raw)
+
+	if !ok {
+		packed, err := bson.Marshal(doc)
+
+		if err != nil {
+			return "", fmt.Errorf("error BSON marshaling: %w", err)
+		}
+
+		raw = packed
 	}
 
-	packed, err := bson.Marshal(doc)
+	encoded, err := BSONToMsgpack(raw)
 
 	if err != nil {
-		return "", fmt.Errorf("error BSON marshaling: %w", err)
+		return "", err
 	}
 
-	return string(packed), nil
+	return string(encoded), nil
 }
 
-// MarshalDocumentBatchRaw packs a batch as a single raw BSON wrapper document
-// {"d": [doc0, doc1, ...]} built directly from the cursor's bson.Raw documents. The PHP
-// side decodes it natively via MongoDB\BSON\Document::fromBSON()->toPHP().
+// MarshalDocumentBatchRaw packs a cursor batch as a MessagePack list. The BSON path
+// needed a {"d": [...]} wrapper because PHP could only decode a document; a list
+// needs no wrapper.
 func MarshalDocumentBatchRaw(items []bson.Raw) (string, error) {
-	arr := make(bson.A, len(items))
-
-	for i, item := range items {
-		arr[i] = item
-	}
-
-	packed, err := bson.Marshal(bson.M{"d": arr})
+	encoded, err := BSONBatchToMsgpack(items)
 
 	if err != nil {
-		return "", fmt.Errorf("error BSON batch marshaling: %w", err)
+		return "", err
 	}
 
-	return string(packed), nil
+	return string(encoded), nil
 }
 
 // UnmarshalBulkWriteModels reads the bulkWrite payload as a single raw BSON document
@@ -74,7 +93,13 @@ func UnmarshalBulkWriteModels(data []byte) ([]mongo.WriteModel, error) {
 		return []mongo.WriteModel{}, nil
 	}
 
-	elements, err := bson.Raw(data).Elements()
+	raw, err := MsgpackToBSON(data)
+
+	if err != nil {
+		return nil, fmt.Errorf("error reading bulkWrite payload: %w", err)
+	}
+
+	elements, err := raw.Elements()
 
 	if err != nil {
 		return nil, fmt.Errorf("error reading bulkWrite BSON: %w", err)
@@ -218,8 +243,8 @@ func bulkWriteUpsert(model bson.Raw) (bool, bool) {
 	return model.Lookup("upsert").BooleanOK()
 }
 
-// bsonArrayDocuments reads a raw BSON array and returns its document elements as a slice
-// of bson.Raw values (usable directly by the mongo driver).
+// bsonArrayDocuments reads a raw BSON array and returns its document elements as a
+// slice of bson.Raw values (usable directly by the mongo driver).
 func bsonArrayDocuments(data []byte) ([]interface{}, error) {
 	if len(data) == 0 {
 		return []interface{}{}, nil

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Mongodb\Connection;
 
+use SConcur\Bson\Int64;
 use Iterator;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\Mongodb\InvalidCountResultException;
@@ -110,11 +111,11 @@ readonly class Collection
         $documentResult = DocumentSerializer::unserialize($taskResult->payload);
 
         return new BulkWriteResult(
-            insertedCount: (int) $documentResult['insertedcount'],
-            matchedCount: (int) $documentResult['matchedcount'],
-            modifiedCount: (int) $documentResult['modifiedcount'],
-            deletedCount: (int) $documentResult['deletedcount'],
-            upsertedCount: (int) $documentResult['upsertedcount'],
+            insertedCount: self::toCount($documentResult['insertedcount']),
+            matchedCount: self::toCount($documentResult['matchedcount']),
+            modifiedCount: self::toCount($documentResult['modifiedcount']),
+            deletedCount: self::toCount($documentResult['deletedcount']),
+            upsertedCount: self::toCount($documentResult['upsertedcount']),
             upsertedIds: (array) $documentResult['upsertedids'],
         );
     }
@@ -582,9 +583,9 @@ readonly class Collection
         $documentResult = DocumentSerializer::unserialize($taskResult->payload);
 
         return new UpdateResult(
-            matchedCount: (int) $documentResult['matchedcount'],
-            modifiedCount: (int) $documentResult['modifiedcount'],
-            upsertedCount: (int) $documentResult['upsertedcount'],
+            matchedCount: self::toCount($documentResult['matchedcount']),
+            modifiedCount: self::toCount($documentResult['modifiedcount']),
+            upsertedCount: self::toCount($documentResult['upsertedcount']),
             upsertedId: $documentResult['upsertedid'],
         );
     }
@@ -594,7 +595,23 @@ readonly class Collection
         $documentResult = DocumentSerializer::unserialize($taskResult->payload);
 
         return new DeleteResult(
-            deletedCount: (int) $documentResult['deletedcount'],
+            deletedCount: self::toCount($documentResult['deletedcount']),
         );
+    }
+
+    /**
+     * Reads a count out of a driver result document.
+     *
+     * The counts arrive as BSON int64, which decodes to an Int64 the same way the
+     * native driver hands one over — casting that object to int would silently
+     * yield 1.
+     */
+    private static function toCount(mixed $value): int
+    {
+        if ($value instanceof Int64) {
+            return $value->toInt();
+        }
+
+        return (int) $value;
     }
 }
