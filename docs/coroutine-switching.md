@@ -114,6 +114,45 @@ the extension's interrupt timer — the same wiring the servers use, with the sa
 guards. Re-enabling replaces the previous timer. Always disable in `finally`: the
 timer keeps firing until `disablePreemption()` or process shutdown.
 
+## The cost under load
+
+Preemption lets cheap requests overtake, and the heavy ones pay for it: a
+CPU-bound handler's own latency grows roughly by the number of such handlers in
+flight on that worker. On a single thread that is arithmetic, not a setting.
+
+Measured on 8 workers and 256 connections, with 90% of requests hitting an empty
+route and 10% a handler worth ~49 ms of CPU:
+
+| `preemptionQuantumMs` | p50 | p90 | p99 |
+| ---: | ---: | ---: | ---: |
+| 5 (default) | 29.8 ms | 2.02 s | 2.86 s |
+| 20 | 79.1 ms | 1.82 s | 2.91 s |
+| 50 | 147.5 ms | 1.56 s | 2.85 s |
+| 100 | 180.2 ms | 1.66 s | 4.33 s |
+| 0 (off) | 227.9 ms | 381.0 ms | 539.0 ms |
+
+Nothing but switching preemption off moves the tail: with any quantum the
+coroutines interleave and all of them stretch at once, without it they run to
+completion in turn. An intermediate quantum only costs p50 and buys no p99, so
+there is usually no reason to change the 5 ms default.
+
+The other knob is the HTTP server's `maxConcurrency`, which bounds not the
+quantum but the number of handlers in flight — the width of the sharing itself.
+
+| `maxConcurrency` | p50 | p90 | p99 |
+| ---: | ---: | ---: | ---: |
+| 0 (no limit) | 29.8 ms | 2.02 s | 2.86 s |
+| 16 | 152.7 ms | 1.02 s | 1.42 s |
+| 8 | 201.3 ms | 586.0 ms | 914.5 ms |
+| 4 | 244.3 ms | 441.9 ms | 659.5 ms |
+
+Both knobs move along one curve: a low p50 for the cheap requests and a short
+tail for the heavy ones are not available together. Pick the end that matches
+your workload — the defaults are tuned for the cheap requests.
+
+Two things move the curve itself rather than the point on it: more processes in
+the pool, and keeping heavy computation out of the handler.
+
 ## Safety guards
 
 The interrupt handler refuses to park a coroutine in states where an invisible

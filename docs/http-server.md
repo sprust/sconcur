@@ -22,6 +22,7 @@ extension; PHP stays a thin orchestration layer. Implementation:
 - [Logs](#logs)
 - [Concurrency and limits](#concurrency-and-limits)
 - [Scaling across cores (SO_REUSEPORT)](#scaling-across-cores-so_reuseport)
+  - [A proxy in front of the pool](#a-proxy-in-front-of-the-pool)
 - [OPcache and JIT](#opcache-and-jit)
 - [Stopping after N requests](#stopping-after-n-requests)
 - [Graceful shutdown](#graceful-shutdown)
@@ -342,6 +343,14 @@ requests that got a slot) and PHP coroutines at once. Excess connections wait fo
 a free slot — natural backpressure. `0` is a risk of OOM under a flood of large
 bodies; set a limit on public servers.
 
+It has a second use — the latency tail. CPU-heavy handlers share the single PHP
+thread, so each one's latency grows with how many are in flight, and
+`maxConcurrency` is what bounds that number. On a profile of 90% empty requests
+and 10% handlers worth ~49 ms of CPU, a limit of `4` takes p99 from 2.86 s down
+to 659 ms, at the cost of p50 rising from 30 ms to 244 ms. The trade and both
+knobs are covered in
+[coroutine switching](coroutine-switching.md#the-cost-under-load).
+
 `handlerTimeoutMs` bounds the total handling time, streamed response included.
 Nothing written by the deadline → `504`; a started stream → the response is
 aborted mid-way. The deadline lives on the Go side (a timer in `consumeCommands`),
@@ -405,6 +414,52 @@ Caveats:
 - `SO_REUSEPORT` lets another process with the same UID bind the port and
   intercept part of the connections; keep that in mind in a multi-tenant
   environment.
+
+### A proxy in front of the pool
+
+In practice the kernel spreads evenly: across 8 workers the request-count spread
+was 1.13× at 256 connections and 1.16× at 32, and the per-worker tails are
+indistinguishable. A balancer in front of the pool is not needed for evenness.
+
+It does improve the tail on homogeneous load, because it hands out requests
+rather than connections and keeps its own keep-alive pool to the workers. Empty
+route, 8 workers, 256 connections:
+
+| Setup | rps | p99 |
+| --- | ---: | ---: |
+| `SO_REUSEPORT` | 90 014 | 38.8 ms |
+| nginx round-robin | 90 518 | 70.5 ms |
+| nginx `least_conn` | 94 076 | 29.3 ms |
+| nginx `random two least_conn` | 93 614 | 18.0 ms |
+
+Total CPU per request did not grow (90.3 against 86.3 µs): the proxy's pool takes
+client-connection handling off the workers, and that saving covers its own cost.
+
+Two conditions. Do not take the default round-robin — it hands out blindly and
+loses to the kernel; what works is the load-aware choice. And the workers here
+run with `reusePort: false` on separate ports, listed in the upstream:
+
+```nginx
+upstream workers {
+    random two least_conn;
+    server 127.0.0.1:8081;
+    server 127.0.0.1:8082;
+    keepalive 64;
+}
+
+server {
+    listen 8080;
+
+    location / {
+        proxy_pass http://workers;
+        proxy_http_version 1.1;   # 1.0 by default — upstream keepalive would not work
+        proxy_set_header Connection "";
+    }
+}
+```
+
+On heterogeneous load, where the heavy requests hit the pool's CPU, the proxy
+does not help: the limit there is capacity, not request placement.
 
 ## OPcache and JIT
 
