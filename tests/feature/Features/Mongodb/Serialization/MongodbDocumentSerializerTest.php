@@ -301,6 +301,7 @@ class MongodbDocumentSerializerTest extends BaseTestCase
                 'tags' => ['a', 'b'],
             ],
             'list'    => [(object) ['n' => 1]],
+            'empty'   => (object) [],
         ]);
 
         $found = $this->sconcurCollection->findOne(
@@ -318,6 +319,10 @@ class MongodbDocumentSerializerTest extends BaseTestCase
         );
 
         self::assertSame([['n' => 1]], $found['list']);
+
+        // An object with no properties is the shortest envelope there is — nothing
+        // but the nil key and the class name.
+        self::assertSame([], $found['empty']);
     }
 
     public function testAggregateGroup(): void

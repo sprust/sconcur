@@ -93,6 +93,10 @@ $document['tags'];      // ['a', 'b']
 | javascript | `SConcur\Bson\Javascript` |
 | minKey / maxKey | `SConcur\Bson\MinKey` / `MaxKey` |
 
+An empty document reads back as an empty array — PHP has one type for `{}` and
+`[]`, so the two are told apart only by what is inside them. Writing that array
+back stores an empty array, exactly as the `ext-mongodb` path did.
+
 A plain object is accepted where a document is expected — `(object) [...]`, or what
 `json_decode()` returns without `associative: true` — and stores as a sub-document.
 It reads back as an array, like any other document. Any other object in a document

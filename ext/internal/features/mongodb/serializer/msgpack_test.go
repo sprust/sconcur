@@ -135,7 +135,6 @@ func TestRoundTripsNestedSpecialValues(t *testing.T) {
 func TestRoundTripsEmptyAndEdgeDocuments(t *testing.T) {
 	cases := map[string]bson.D{
 		"empty":          {},
-		"empty nested":   {{Key: "sub", Value: bson.D{}}},
 		"empty array":    {{Key: "list", Value: bson.A{}}},
 		"empty string":   {{Key: "text", Value: ""}},
 		"negative int":   {{Key: "value", Value: int32(-42)}},
@@ -155,6 +154,27 @@ func TestRoundTripsEmptyAndEdgeDocuments(t *testing.T) {
 				t.Errorf("changed across the round trip\n source: %s\n result: %s", source.String(), result.String())
 			}
 		})
+	}
+}
+
+// The one value that does not survive the round trip, on purpose: an empty
+// sub-document comes back as an empty array. PHP has one type for both, so the
+// choice is only which one an empty document lands on — and ext-msgpack decodes an
+// empty map into a stdClass, which is neither what the rest of the documents look
+// like nor what the ext-mongodb path produced.
+func TestAnEmptySubDocumentBecomesAnEmptyArray(t *testing.T) {
+	source := buildDocument(t, bson.D{{Key: "sub", Value: bson.D{}}})
+
+	result := roundTrip(t, source)
+
+	values, err := result.Lookup("sub").ArrayOK()
+
+	if err != true {
+		t.Fatalf("sub is %v, want an empty array", result.Lookup("sub"))
+	}
+
+	if elements, err := bson.Raw(values).Elements(); err != nil || len(elements) != 0 {
+		t.Errorf("sub holds %v, want nothing (%v)", values, err)
 	}
 }
 
@@ -505,6 +525,59 @@ func TestConvertsStdClassToADocument(t *testing.T) {
 	if value, ok := document.Lookup("b").Int32OK(); !ok || value != 1 {
 		t.Errorf("a.b is %v, want 1", document.Lookup("b"))
 	}
+}
+
+// An object with no properties is an envelope holding nothing but the nil key and
+// the class name, which is the shortest envelope there is — and the one shape a
+// length check could mistake for an ordinary empty map.
+//
+// The payloads are PHP's output for ["a" => (object) []] and for (object) [].
+func TestConvertsAnEmptyStdClass(t *testing.T) {
+	t.Run("as a value", func(t *testing.T) {
+		payload := "81" + fixedString(t, "a") + "81c0" + fixedString(t, classStdClass)
+
+		data, err := hex.DecodeString(payload)
+
+		if err != nil {
+			t.Fatalf("hex: %v", err)
+		}
+
+		raw, err := MsgpackToBSON(data)
+
+		if err != nil {
+			t.Fatalf("MsgpackToBSON: %v", err)
+		}
+
+		document, ok := raw.Lookup("a").DocumentOK()
+
+		if !ok {
+			t.Fatalf("a is %v, want a sub-document", raw.Lookup("a"))
+		}
+
+		if elements, err := bson.Raw(document).Elements(); err != nil || len(elements) != 0 {
+			t.Errorf("a holds %v, want an empty document (%v)", document, err)
+		}
+	})
+
+	t.Run("as the document", func(t *testing.T) {
+		payload := "81c0" + fixedString(t, classStdClass)
+
+		data, err := hex.DecodeString(payload)
+
+		if err != nil {
+			t.Fatalf("hex: %v", err)
+		}
+
+		raw, err := MsgpackToBSON(data)
+
+		if err != nil {
+			t.Fatalf("MsgpackToBSON: %v", err)
+		}
+
+		if elements, err := raw.Elements(); err != nil || len(elements) != 0 {
+			t.Errorf("the document is %v, want an empty one (%v)", raw, err)
+		}
+	})
 }
 
 // A property that is missing, or holds something the class never puts there, is a

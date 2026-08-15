@@ -123,6 +123,15 @@ func encodeBSONDocument(encoder *msgpack.Encoder, raw bson.Raw) error {
 		return fmt.Errorf("error reading BSON document: %w", err)
 	}
 
+	// An empty document goes out as an empty MessagePack array rather than an empty
+	// map: ext-msgpack decodes an empty map into a stdClass, while every other
+	// document decodes into an array, and a top-level one would then fail
+	// DocumentSerializer's array check outright. PHP cannot tell {} from [] anyway,
+	// and the ext-mongodb path this replaces mapped both to [] as well.
+	if len(elements) == 0 {
+		return encoder.EncodeArrayLen(0)
+	}
+
 	if err := encoder.EncodeMapLen(len(elements)); err != nil {
 		return err
 	}
