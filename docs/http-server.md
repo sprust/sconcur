@@ -571,8 +571,8 @@ The response is a sequence of write commands over `MethodHttpRespond`: `full` (a
 one-shot response), or `head` → `chunk`* → `end` for a stream. Streaming
 commands are acknowledged only after they are applied — that is the write
 backpressure. The one-shot `full` write is fire-and-forget: the coroutine ends
-right after handing it over (a failure of the final write was unobservable to
-the handler anyway), and the handover itself is bounded by the connection-side
+right after handing it over (a failure of the final write is not observable to
+the handler), and the handover itself is bounded by the connection-side
 guards (`abandoned`, handler timeout). On the streaming path, if the connection
 dropped or the timeout fired, the handler gets an `abandoned` error and unwinds
 cleanly instead of hanging.

@@ -66,7 +66,8 @@ worker ladder measured all three stacks in one session on 2026-08-12.
 
 Every call crosses the boundary and converts its data: arguments are packed into
 MessagePack (`Transport/MessagePackTransport`), the result is unpacked back; Mongo
-documents additionally go through BSON via `ext-mongodb`. This is a fixed CPU price
+documents ride in the same format, with the BSON values that MessagePack cannot
+express carried as objects. This is a fixed CPU price
 per operation, on top of the cgo call and goroutine dispatch. On cheap cached reads
 it shows up as the `native` → `sync` gap (both sequential, but `sync` goes through
 Go): `pgsql-selectOne` 3.6 → 9.0 ms over 100 calls, `mysql-selectOne` 7.7 →

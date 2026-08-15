@@ -7,13 +7,16 @@
 внутри `WaitGroup` операции идут параллельно, и общее время ограничено самой
 медленной. Вне `WaitGroup` тот же API работает синхронно.
 
-Документы обмениваются с Go-стороной сырым BSON и декодируются нативно
-расширением `ext-mongodb` — тем же кодом, что использует официальный драйвер.
-Поэтому значения приходят нативными типами `MongoDB\BSON\*` (`ObjectId`,
-`UTCDateTime`, `Decimal128`, …), а документы и массивы — обычными PHP-массивами.
+Документы обмениваются с Go-стороной в MessagePack — том самом формате, который
+PHP уже понимает через `ext-msgpack`. BSON-значения, которых в MessagePack нет,
+приходят объектами `SConcur\Bson\*` (`ObjectId`, `UTCDateTime`, `Decimal128`, …);
+документы и массивы — обычными PHP-массивами.
 
-> Требуется `ext-mongodb` — только для кодирования/декодирования BSON на стороне
-> PHP; сеть держит Go.
+> `SConcur\Bson\*` повторяет API `MongoDB\BSON\*` один в один — те же
+> конструкторы, геттеры, строковая и JSON-формы, — поэтому переход с нативного
+> драйвера сводится к правке `use`-строк. Из PHP-расширений фиче нужно только
+> `ext-msgpack`. Как это устроено и как добавить тип — в разделе
+> [Конвертация объектов](#конвертация-объектов) в конце документа.
 
 ## Быстрый старт
 
@@ -25,7 +28,7 @@ $collection = new Client('mongodb://localhost:27017')
     ->selectCollection('users');
 
 $result = $collection->insertOne(['name' => 'Ann', 'age' => 30]);
-echo $result->insertedId; // MongoDB\BSON\ObjectId
+echo $result->insertedId; // SConcur\Bson\ObjectId
 
 $user = $collection->findOne(['name' => 'Ann']);
 
@@ -56,12 +59,13 @@ $collection = $database->selectCollection('users');
 
 ## Документы и типы BSON
 
-Документ — это PHP-массив; вложенные документы и массивы тоже массивы. Скалярные
-BSON-значения используют типы официального драйвера:
+Документ — это PHP-массив; вложенные документы и массивы тоже массивы.
+BSON-значения, у которых нет эквивалента в MessagePack, — это объекты из
+`SConcur\Bson\`:
 
 ```php
-use MongoDB\BSON\ObjectId;
-use MongoDB\BSON\UTCDateTime;
+use SConcur\Bson\ObjectId;
+use SConcur\Bson\UTCDateTime;
 
 $collection->insertOne([
     '_id'       => new ObjectId(),
@@ -71,10 +75,31 @@ $collection->insertOne([
 ]);
 
 $document = $collection->findOne(['name' => 'Ann']);
-$document['_id'];       // MongoDB\BSON\ObjectId
-$document['createdAt']; // MongoDB\BSON\UTCDateTime
+$document['_id'];       // SConcur\Bson\ObjectId
+$document['createdAt']; // SConcur\Bson\UTCDateTime
 $document['tags'];      // ['a', 'b']
 ```
+
+| Тип BSON | PHP |
+|---|---|
+| double, string, bool, null, int32 | нативные скаляры |
+| document, array | `array` |
+| int64 | `SConcur\Bson\Int64` |
+| objectId | `SConcur\Bson\ObjectId` |
+| date | `SConcur\Bson\UTCDateTime` |
+| binary | `SConcur\Bson\Binary` |
+| regex | `SConcur\Bson\Regex` |
+| timestamp | `SConcur\Bson\Timestamp` |
+| decimal128 | `SConcur\Bson\Decimal128` |
+| javascript | `SConcur\Bson\Javascript` |
+| minKey / maxKey | `SConcur\Bson\MinKey` / `MaxKey` |
+
+У каждого класса те же методы, что у его аналога `MongoDB\BSON\*` —
+`getData()`/`getType()` у `Binary`, `getPattern()`/`getFlags()` у `Regex`,
+`toDateTime()`/`toDateTimeImmutable()` у `UTCDateTime`, `__toString()` и
+`jsonSerialize()` везде, где они есть у драйвера. `int64` завёрнут по той же
+причине, по которой его заворачивает драйвер: без обёртки тип не пережил бы
+чтение с последующей записью — значение, влезающее в int32, вернулось бы им.
 
 ## Операции коллекции
 
@@ -110,7 +135,7 @@ $collection->aggregate(                       // курсор (Iterator)
     batchSize: 50,
 );
 
-$collection->distinct('city', filter: ['age' => ['$gt' => 18]]);  // массив значений
+$collection->distinct('city', filter: ['age' => ['$gt' => 18]], collation: null);  // массив значений
 
 // подсчёт
 $collection->countDocuments(['age' => ['$gt' => 18]]);  // int (точно)
@@ -128,7 +153,7 @@ $collection->updateOne(
 
 $collection->updateMany(filter: ['active' => true], update: ['$inc' => ['score' => 1]]);
 $collection->replaceOne(filter: ['name' => 'Ann'], replacement: ['name' => 'Ann', 'age' => 31], upsert: false);
-$collection->deleteOne(['name' => 'Ann']);               // DeleteResult
+$collection->deleteOne(['name' => 'Ann'], hint: null, collation: null);               // DeleteResult
 $collection->deleteMany(['active' => false]);
 
 // find-and-modify (возвращает документ или null)
@@ -144,7 +169,7 @@ $collection->findOneAndUpdate(
 );
 
 $collection->findOneAndReplace(filter: ['name' => 'Ann'], replacement: ['name' => 'Ann', 'age' => 31], returnDocument: true);
-$collection->findOneAndDelete(filter: ['name' => 'Ann']);
+$collection->findOneAndDelete(filter: ['name' => 'Ann'], projection: null);
 
 // индексы
 $collection->createIndex(['name' => 1], name: null);     // имя индекса (string)
@@ -179,14 +204,16 @@ $collection->bulkWrite([
 (`['upsert' => bool]`); неизвестный тип операции бросает
 `InvalidMongodbBulkWriteOperationException`.
 
-`Database` даёт `listCollections()` (имена коллекций), `command(['ping' => 1])`
-(произвольная команда → документ результата) и `selectCollection()`.
+`Database` даёт `listCollections()` (список имён коллекций),
+`command(['ping' => 1])` (произвольная команда → документ результата) и
+`selectCollection()`. `Client` даёт `listDatabases()` (список имён баз) и
+`selectDatabase()`.
 
 ## Результаты
 
 | Метод | Результат | Поля |
 |--------|--------|--------|
-| `insertOne` | `InsertOneResult` | `insertedId` (`ObjectId\|string\|int\|float\|null`) |
+| `insertOne` | `InsertOneResult` | `insertedId` (`ObjectId\|Int64\|string\|int\|float\|null`) |
 | `insertMany` | `InsertManyResult` | `insertedIds`, `insertedCount` |
 | `updateOne`/`updateMany`/`replaceOne` | `UpdateResult` | `matchedCount`, `modifiedCount`, `upsertedCount`, `upsertedId` |
 | `deleteOne`/`deleteMany` | `DeleteResult` | `deletedCount` |
@@ -252,10 +279,125 @@ $waitGroup->waitAll();
   состоянием и отдаёт батчи по запросу `next`; закрывается при исчерпании, раннем
   выходе или остановке флоу. Закрытие идёт на свежем контексте, потому что
   контекст задачи к этому моменту уже отменён.
+- Документы конвертируются между BSON и MessagePack ровно один раз на сообщение,
+  на внешней границе (`payloads.UnmarshalParams` на входе, маршалинг результата на
+  выходе). Всё внутри — фильтры, апдейты, стадии пайплайна, разбор bulkWrite,
+  парсеры опций — читает обычный BSON, поэтому новой команде собственный код
+  конвертации не нужен. См. [Конвертация объектов](#конвертация-объектов).
 
 ## Ограничения
 
-- Требуется `ext-mongodb` (типы BSON и кодирование/декодирование).
 - Курсор `find`/`aggregate` нужно либо дочитать, либо прервать (`break`) — до
   закрытия он держит ресурс на сервере.
 - Действуют общие ограничения библиотеки — см. [README](../README.ru.md).
+
+## Конвертация объектов
+
+Этот раздел — справочник для расширения списка типов. Он описывает, как
+BSON-значение, невыразимое в MessagePack, становится PHP-объектом и обратно.
+
+### Конверт
+
+В MessagePack нет ни идентификатора, ни даты, ни decimal. Они едут в том
+кодировании, которое `ext-msgpack` и так применяет к PHP-объектам: обычная map,
+**первый ключ которой `nil`**, а значение — имя класса; дальше идут пары
+свойство/значение. C-распаковщик узнаёт эту форму прямо во время разбора и строит
+объект в этой точке, поэтому PHP-сторона не обходит результат: второй проход по
+каждому документу в userland стоил бы дороже самого декодирования.
+
+```
+83                                    fixmap(3) — документ
+  a3 '_id'                            имя поля
+  82                                    fixmap(2) — здесь начинается объект
+    c0                                    ключ nil — маркер
+    b5 'SConcur\Bson\ObjectId'            имя класса
+    a3 'oid'                              имя свойства
+    b8 '65f1c2a3b4d5e6f708192a3b'         значение свойства
+  a5 'title'  ...
+```
+
+Ключ `nil` однозначен: имена полей BSON всегда строки, а PHP-массив не может иметь
+ключ `null` — он приводится к `''`.
+
+### Флаг расширения
+
+Это кодирование существует только при включённом `msgpack.php_only`. При
+выключенном упаковка теряет имя класса, а распаковка ругается на недопустимый тип
+ключа и отдаёт обычный массив — тихо в том смысле, что документы продолжают
+ходить, просто без типов.
+
+Настройка имеет уровень `PHP_INI_ALL`, поэтому SConcur не просто требует её, а
+**выставляет принудительно при инициализации расширения**, в
+`Extension::checkExtension()`, который отрабатывает один раз при создании
+синглтона. Сборка, которая не даёт её изменить, падает там же с
+`MsgpackObjectSupportDisabledException`, а не портит документы позже. Та же
+проверка убеждается, что `ext-msgpack` вообще загружено.
+
+Поскольку выставление происходит один раз при инициализации, код, который поменяет
+настройку после этого, остаётся сам по себе — на каждой операции она не перепроверяется.
+
+### Версия расширения
+
+Конверт — деталь реализации `ext-msgpack`, а не документированный формат обмена.
+Ничто не обязывает расширение сохранять его между релизами, и смена не объявила бы
+о себе: документы продолжили бы ходить, просто обычными массивами без типов.
+
+Поэтому в `composer.json` прибита ровно та версия, на которой проект протестирован
+— `"ext-msgpack": "3.0.1"`, а не диапазон. Эту фиксацию стоит считать частью фичи,
+а не общей осторожностью в зависимостях: поднять её — значит перепрогнать тесты,
+которые держат формат, в первую очередь `TestObjectEnvelopeLayout` и
+`TestResolvesRepeatedObjectInstances` в `msgpack_test.go`; они проверяют байтовую
+раскладку и нумерацию ссылок против того, что PHP реально выдаёт. Если на новой
+версии они зелёные — фиксацию можно двигать; если красные, сначала правится
+кодировщик и декодер.
+
+### Повторные экземпляры
+
+`ext-msgpack` не пишет один и тот же объект дважды. Второе появление того же
+экземпляра становится ссылкой — `{nil: 4, 0: <индекс>}`, — где индекс считает все
+записанные до этого контейнеры: мапы, массивы, объекты и сами ссылки, нумерация с
+единицы. Переиспользование одной переменной `ObjectId` в документе — обычный код,
+поэтому декодер на Go ведёт такой же счётчик и разрешает по нему ссылки
+(`converter` в `msgpack_values.go`).
+
+### Где живёт конвертация
+
+| Направление | Точка входа |
+|---|---|
+| PHP → Go, `dt` — структура параметров | `payloads.UnmarshalParams` |
+| PHP → Go, `dt` — сам документ | `serializer.PayloadDocument` / `PayloadDocuments` |
+| Go → PHP, один документ | `serializer.MarshalDocument` |
+| Go → PHP, батч курсора | `serializer.MarshalDocumentBatchRaw` |
+
+Каждая конвертирует один раз, на внешнем краю сообщения. Всё внутри дальше — BSON,
+поэтому разбор bulkWrite, парсеры опций и код каждой команды читают его напрямую.
+
+### Как добавить тип BSON
+
+Четыре места, в таком порядке:
+
+1. **PHP-класс** в `src/Bson/`. Повторить аналог из `MongoDB\BSON\*`: тот же
+   конструктор, те же геттеры, те же `__toString()` и `jsonSerialize()`.
+   Реализовать маркер `SConcur\Bson\Type`. Два ограничения идут от формата
+   провода, а не от вкуса:
+   - свойства должны быть **`public`** — MessagePack манглит имя
+     protected-свойства так же, как `serialize()` (`"\0*\0oid"`), а Go-сторона
+     пишет обычные имена. Класс при этом объявляется `readonly`, чтобы объект
+     всё равно остался неизменяемым;
+   - конструктор **не вызывается**, когда расширение материализует объект при
+     распаковке, поэтому валидация в нём прикрывает только пользовательский код.
+2. **Кодировщик на Go**, `encodeBSONValue` в `msgpack.go`: `case` для нужного
+   `bson.Type`, который пишет `encodeObjectHeader(encoder, class, propertyCount)`
+   и следом пары имя/значение. Константу с именем класса добавить к остальным в
+   начале файла.
+3. **Декодер на Go**, `appendObject` в `msgpack_values.go`: `case` для имени
+   класса, который читает свойства и дописывает BSON-элемент через `bsoncore`.
+4. **Тесты**. В `TestRoundTripsEveryBSONType` (`msgpack_test.go`) добавить
+   значение — тест сравнивает документ побайтово после полного round trip, так что
+   расхождение в любую сторону падает там. В `BsonDriverParityTest` добавить пару:
+   он проверяет строковую форму, JSON-форму и весь набор геттеров против драйвера.
+
+Дальше пересобрать расширение (`make ext-build`) и прогнать `make check`.
+
+Тип, который не переживает round trip, обнаруживается сразу; класс, разъехавшийся
+с драйвером, ловится тестом паритета, а не приложением через полгода.
