@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\HttpServer;
 
+use CurlHandle;
+use CurlMultiHandle;
+
 class HttpServerPreemptionTest extends BaseHttpServerTestCase
 {
     public function testLightRequestCompletesWhileNonYieldingCpuRequestRuns(): void
@@ -40,7 +43,7 @@ class HttpServerPreemptionTest extends BaseHttpServerTestCase
     /**
      * Starts a GET without waiting for it and returns the in-flight state.
      *
-     * @return array{0: \CurlMultiHandle, 1: \CurlHandle}
+     * @return array{0: CurlMultiHandle, 1: CurlHandle}
      */
     protected function startBackgroundGet(string $path): array
     {
@@ -73,7 +76,7 @@ class HttpServerPreemptionTest extends BaseHttpServerTestCase
     /**
      * Waits out a request started by startBackgroundGet and returns [status, body].
      *
-     * @param array{0: \CurlMultiHandle, 1: \CurlHandle} $handle
+     * @param array{0: CurlMultiHandle, 1: CurlHandle} $handle
      *
      * @return array{int, string}
      */

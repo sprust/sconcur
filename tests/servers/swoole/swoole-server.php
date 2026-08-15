@@ -18,7 +18,7 @@ use Swoole\Http\Server;
 
 /**
  * Swoole reference server for the comparison with the SConcur HTTP server
- * (docs/benchmarks.ru.md, "Сравнение с RoadRunner и Swoole"). The second
+ * (docs/benchmarks.md, "Comparison with RoadRunner and Swoole"). The second
  * reference stack next to tests/servers/roadrunner: same benchmark routes, same
  * backends, but the coroutine application-server model (one process = many
  * concurrent requests, native drivers hooked into the coroutine scheduler).

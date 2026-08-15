@@ -179,7 +179,7 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_disarmPreemption, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
 /*
- * Реализации PHP-функций
+ * PHP function implementations
  */
 
 // PHP: SConcur\Extension\ping(string $name): string
@@ -192,7 +192,7 @@ PHP_FUNCTION(ping)
         RETURN_THROWS();
     }
 
-    // Go-функция ping (из //export ping)
+    // The Go ping function (from //export ping)
     char *response = ping(name);
 
     RETVAL_STRING(response);
@@ -510,7 +510,7 @@ PHP_FUNCTION(disarmPreemption)
 }
 
 /*
- * Регистрация функций с неймспейсом SConcur\Extension
+ * Registering the functions under the SConcur\Extension namespace
  */
 static const zend_function_entry sconcur_functions[] = {
     ZEND_NS_FE("SConcur\\Extension", ping, arginfo_sconcur_ping)
@@ -557,7 +557,7 @@ PHP_MSHUTDOWN_FUNCTION(sconcur)
 }
 
 /*
- * Описание модуля
+ * Module description
  */
 zend_module_entry sconcur_module_entry = {
     STANDARD_MODULE_HEADER,
@@ -573,6 +573,6 @@ zend_module_entry sconcur_module_entry = {
 };
 
 /*
- * Точка входа модуля
+ * Module entry point
  */
 ZEND_GET_MODULE(sconcur)

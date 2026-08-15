@@ -6,6 +6,7 @@ namespace SConcur\Tests\Feature\Connection;
 
 use ReflectionMethod;
 use SConcur\Connection\Extension;
+use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\Sleeper\Payloads\SleeperPayload;
@@ -288,7 +289,7 @@ class WaitAnyBatchTest extends BaseTestCase
     }
 
     /**
-     * @return list<\SConcur\Dto\TaskResultDto>
+     * @return list<TaskResultDto>
      */
     protected static function parseWaitBatchResponse(string $response, string $errorContext, float $start): array
     {

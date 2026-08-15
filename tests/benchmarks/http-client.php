@@ -10,7 +10,7 @@ require_once __DIR__ . '/_http_bench.php';
 
 /**
  * HTTP-client benchmark: N requests to an I/O-bound endpoint (/msleep) of the
- * running `servers` HTTP pool. The async run fires them «веером» through a
+ * running `servers` HTTP pool. The async run fires them fanned out through a
  * WaitGroup — its total time stays ≈ one request, while native/sync run
  * sequentially and scale with N.
  *

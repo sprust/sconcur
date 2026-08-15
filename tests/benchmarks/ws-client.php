@@ -9,7 +9,7 @@ require_once __DIR__ . '/_ws_bench.php';
 
 /**
  * WebSocket-client benchmark: N round-trips to an I/O-bound endpoint ("msleep:<ms>")
- * of the running `servers` ws pool. The async run fires them «веером» through a
+ * of the running `servers` ws pool. The async run fires them fanned out through a
  * WaitGroup — its total time stays ≈ one round-trip, while native (raw PHP WebSocket
  * framing) and sync (WsClient outside a WaitGroup) run sequentially and scale with N.
  *

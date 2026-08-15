@@ -289,9 +289,9 @@ awk -v trend="$TREND" '
         denom = n * stt - st * st;
         if (n >= 2 && denom != 0) {
             slope = (n * sty - st * sy) / denom * 60;  # MiB per minute
-            verdict = (slope > 0.5) ? "рост — возможна утечка" \
-                    : (slope < -0.5) ? "снижается (GC/возврат памяти)" \
-                    : "стабильно";
+            verdict = (slope > 0.5) ? "growing — possible leak" \
+                    : (slope < -0.5) ? "falling (GC / memory returned)" \
+                    : "stable";
             printf "  slope: %+.2f MiB/min  ->  %s\n", slope, verdict;
         }
     }
@@ -348,7 +348,7 @@ if [ "$WORKER_LOGS" = "1" ]; then
             printf "  requests per worker: min %d / mean %.0f / max %d\n", min, mean, max;
             printf "  spread: max/min = %.2fx, CV = %.1f%%  ->  %s\n",
                 (min > 0 ? max / min : 0), (mean > 0 ? 100 * sd / mean : 0),
-                ((min > 0 && max / min <= 1.10) ? "ровно, перекоса нет" : "перекос — сравнивать с проксёй");
+                ((min > 0 && max / min <= 1.10) ? "even, no imbalance" : "uneven — compare against a proxy");
         }
     ' "$COUNTS"
     rm -f "$COUNTS"

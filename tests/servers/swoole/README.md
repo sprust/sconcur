@@ -1,69 +1,72 @@
-# Swoole-эталон для сравнения
+# Swoole reference server
 
-Референсный сервер на [Swoole](https://swoole.com) 6.2.2 с копиями бенчмарк-ручек
-SConcur-сервера (`tests/servers/http/http-server.php`) на нативных драйверах.
-Второй эталон рядом с [RoadRunner](../roadrunner/README.md): те же бэкенды и та
-же полезная нагрузка, но другая модель — корутинный воркер (один процесс держит
-много одновременных запросов), а блокирующие драйверы становятся неблокирующими
-через runtime-хуки.
+A reference server on [Swoole](https://swoole.com) 6.2.2 carrying copies of the
+SConcur server's benchmark routes (`tests/servers/http/http-server.php`) on
+native drivers. It is the second reference next to
+[RoadRunner](../roadrunner/README.md): the same backends and the same work, but a
+different execution model — a coroutine worker holds many requests at once, and
+blocking drivers become non-blocking through the runtime hooks.
 
 - `GET /` — 200 `ok`;
-- `GET /db?n={q}` — `{q}` последовательных point-SELECT по MySQL через `PDO`
-  (по умолчанию 1) — лестница по числу воркеров;
-- `GET /db-rw` — `INSERT` строки + `COUNT(*)` + point-SELECT случайного id в
-  пределах этого количества, JSON `{count, record}`;
+- `GET /db?n={q}` — `{q}` sequential point SELECTs against MySQL through `PDO`
+  (1 by default) — the worker-count ladder;
+- `GET /db-rw` — an `INSERT`, a `COUNT(*)` and a point SELECT of a random id
+  within that count, JSON `{count, record}`;
 - `GET /all` — MongoDB `insertOne`+`findOne` (`mongodb/mongodb`), MySQL
-  `INSERT`+`SELECT 1` (`PDO`), PostgreSQL `INSERT`+`SELECT 1` (`PDO`)
-  последовательно внутри запроса; та же JSON-мапа статусов с изоляцией ошибок по
-  фичам;
-- `GET /all-coro` — те же три фичи, но веером в `Swoole\Coroutine\WaitGroup` —
-  собственный ответ Swoole на фан-аут SConcur.
+  `INSERT`+`SELECT 1` (`PDO`), PostgreSQL `INSERT`+`SELECT 1` (`PDO`),
+  sequentially within the request; the same JSON status map with per-feature
+  error isolation;
+- `GET /all-coro` — the same three features fanned out in a
+  `Swoole\Coroutine\WaitGroup` — Swoole's own answer to the SConcur fan-out.
 
-Бэкенды, `.env`, имена таблицы/коллекции (`load_all`, `bench_seed`, `bench_rw`) —
-те же, что у SConcur-ручек; отличается только стек драйверов и модель исполнения.
-Используется для замера из [docs/benchmarks.ru.md](../../../docs/benchmarks.ru.md)
-(раздел «Сравнение с RoadRunner и Swoole»).
+The backends, the `.env`, and the table/collection names (`load_all`,
+`bench_seed`, `bench_rw`) are the same as for the SConcur routes; only the driver
+stack and the execution model differ. This is what the comparison in
+[docs/benchmarks.md](../../../docs/benchmarks.md) ("Comparison with RoadRunner
+and Swoole") measures.
 
-## Что важно знать о модели
+## What matters about the model
 
-- Хуки (`hook_flags => SWOOLE_HOOK_ALL`) переводят `PDO` MySQL/PostgreSQL,
-  curl, стримы и `sleep` в корутинный режим: запрос, ждущий запроса к БД,
-  отдаёт воркер другим запросам.
-- `ext-mongodb` хуками не покрывается — libmongoc ходит в сеть из C мимо
-  PHP-стримов. Любой вызов MongoDB блокирует весь воркер на время операции. Это
-  свойство модели, а не обработчика, и оно видно в строках `/all`.
-- Соединение `PDO` нельзя делить между одновременными корутинами, поэтому оба
-  SQL-бэкенда идут через пул на воркер (`Swoole\Database\PDOPool`) — прямой
-  аналог `maxOpenConns` у фич SConcur. Размеры зеркалят SConcur: 9 для `/db*`,
-  5 для `/all`.
-- Ручки `/all-sconcur` (как у RoadRunner) здесь нет: SConcur построен на PHP
-  Fiber и собственном планировщике, а корутины Swoole управляют стеком сами —
-  два планировщика в одном процессе не совмещаются.
+- The hooks (`hook_flags => SWOOLE_HOOK_ALL`) put MySQL/PostgreSQL `PDO`, curl,
+  streams and `sleep` into coroutine mode: a request waiting on the database
+  hands the worker to other requests.
+- `ext-mongodb` is not covered by the hooks — libmongoc goes to the network from
+  C, past the PHP streams. Any MongoDB call blocks the whole worker for the
+  duration of the operation. That is a property of the model, not of the handler,
+  and it shows in the `/all` rows.
+- A `PDO` connection cannot be shared between concurrent coroutines, so both SQL
+  backends go through a per-worker pool (`Swoole\Database\PDOPool`) — the direct
+  counterpart of `maxOpenConns` in the SConcur features. The sizes mirror
+  SConcur: 9 for `/db*`, 5 for `/all`.
+- There is no `/all-sconcur` route here, unlike RoadRunner: SConcur is built on
+  PHP Fibers and its own scheduler, while Swoole's coroutines manage the stack
+  themselves — two schedulers do not coexist in one process.
 
-## Запуск
+## Running
 
-Расширение `swoole` собирается при сборке контейнера `php` (`make build`), но
-намеренно не включается глобально: тесты и остальные бенчи должны идти на
-стоковом PHP. Поэтому оно подгружается на запуск (`-d extension=swoole.so`).
+The `swoole` extension is built with the `php` container (`make build`) but
+deliberately not enabled globally: the tests and the other benchmarks must run on
+stock PHP. It is therefore loaded per run (`-d extension=swoole.so`).
 
 ```shell
-make swoole-serve                                      # 0.0.0.0:18082, 16 воркеров
+make swoole-serve                                      # 0.0.0.0:18082, 16 workers
 make swoole-serve SWOOLE_HTTP_PORT=18083 SWOOLE_NUM_WORKERS=8
 ```
 
-Проверка: `curl http://<ip-контейнера>:18082/all` (и `/all-coro`).
+Check with `curl http://<container-ip>:18082/all` (and `/all-coro`).
 
-Порт по умолчанию 18082: 18080 занимает пул SConcur в `http-load-stats.sh`,
-18081 — RoadRunner, так что все три стека можно держать поднятыми одновременно.
+The default port is 18082: 18080 is taken by the SConcur pool in
+`http-load-stats.sh` and 18081 by RoadRunner, so all three stacks can stay up at
+once.
 
-## Замеры
+## Measurements
 
 ```shell
-make bench-swoole-load-stats          # /all, лестница ресурсов, как у RR и SConcur
-make bench-swoole-coro-load-stats     # /all-coro — фан-аут внутри запроса
-make bench-swoole-load-stats-empty    # / — пустая ручка
-make bench-swoole-load-soak           # долгий прогон с трендом RSS
+make bench-swoole-load-stats          # /all, the resource ladder, as for RR and SConcur
+make bench-swoole-coro-load-stats     # /all-coro — the in-request fan-out
+make bench-swoole-load-stats-empty    # / — the empty route
+make bench-swoole-load-soak           # a long run with the RSS trend
 ```
 
-Тюнинг через env — `WORKERS`, `CONNECTIONS`, `DURATION`, `DB_POOL_SIZE`,
-`ALL_POOL_SIZE` (см. шапку `tests/benchmarks/swoole-load-stats.sh`).
+Tuning through env — `WORKERS`, `CONNECTIONS`, `DURATION`, `DB_POOL_SIZE`,
+`ALL_POOL_SIZE` (see the header of `tests/benchmarks/swoole-load-stats.sh`).

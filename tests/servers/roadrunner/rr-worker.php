@@ -20,7 +20,7 @@ use Spiral\RoadRunner\Worker;
 
 /**
  * RoadRunner reference worker for the honest comparison with the SConcur HTTP
- * server (docs/benchmarks.ru.md, "Сравнение с RoadRunner"). Serves exact copies
+ * server (docs/benchmarks.md, "Comparison with RoadRunner and Swoole"). Serves exact copies
  * of the benchmark routes of tests/servers/http/http-server.php:
  *   GET /    -> 200 "ok"
  *   GET /db?n={q} -> {q} sequential point SELECTs on MySQL via PDO (default 1) —
