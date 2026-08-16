@@ -10,13 +10,35 @@ A concurrency library for PHP on top of a custom Go extension. The PHP side
 sleep, and so on) concurrently in goroutines. PHP and Go exchange data over
 MessagePack.
 
-> 📊 Numbers right away: the
-> ["Is SConcur for you?" verdict table](docs/positioning.md#is-sconcur-for-you),
-> [feature benchmarks](docs/benchmarks.md) and
-> [behaviour under load](docs/load-testing.md).
+## Numbers against RoadRunner and Swoole
+
+The same demo application on the same machine: `wrk` 4 threads / 256 connections
+/ 20 s, database data on disk. The worker count per server is given in the row:
+the first two endpoints were measured at 12, while `/db` and `/db-rw` come from
+the worker-count ladder, at its 8-worker rung (where SConcur peaks and the load
+generator does not yet share cores with the servers):
+
+| Request | SConcur | RoadRunner | Swoole |
+| --- | ---: | ---: | ---: |
+| empty response (12 workers) | ≈133 500 rps, p50 1.8 ms | ≈46 600 rps, p50 5.4 ms | ≈353 000 rps, p50 0.4 ms |
+| 6 DB operations: MongoDB + MySQL + PostgreSQL (12 workers) | ≈3 010 rps, p50 76 ms | ≈448 rps, p50 573 ms | ≈3 030 rps, p50 83 ms |
+| point SELECT by id, `/db` (8 workers) | 38 617 rps, p50 6.2 ms | 23 665 rps, p50 10.6 ms | 123 359 rps, p50 1.9 ms |
+| INSERT + COUNT(*) + SELECT, `/db-rw` (8 workers) | 2 529 rps, p50 89.7 ms | 425 rps, p50 606 ms | 2 654 rps, p50 87 ms |
+
+Swoole is faster on the cheap paths, but its concurrency rests on hooks into the
+existing PHP drivers: whatever the hooks do not cover blocks the whole worker (as
+`ext-mongodb` does). In SConcur a feature is ordinary blocking Go code on top of a
+mature Go driver, which makes new features easier to add and to maintain.
+
+Where SConcur does not win — single cheap queries, megabyte payloads, CPU-bound
+handlers — is listed just as plainly in
+["Is SConcur for you?"](docs/positioning.md#is-sconcur-for-you), next to the
+[feature benchmarks](docs/benchmarks.md) and the
+[behaviour under load](docs/load-testing.md).
 
 ## Contents
 
+- [Numbers against RoadRunner and Swoole](#numbers-against-roadrunner-and-swoole)
 - [Idea](#idea)
 - [Example](#example)
 - [What it replaces](#what-it-replaces)
