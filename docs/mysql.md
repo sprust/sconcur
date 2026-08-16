@@ -99,11 +99,12 @@ until commit/rollback or a flow stop.
 
 Every operation runs on a connection from a `*sql.DB` pool that lives in the Go
 extension and is reused across tasks and coroutines. The pool is shared by all
-`Connection`s with the same DSN and pool sizes (the key is `driver+dsn+sizes`); an
-unused pool untouched for longer than 5 minutes is closed, and all pools are closed
-when the extension stops. If `maxIdleConns` is not set, the `maxOpenConns` value is
-used — otherwise Go keeps only 2 idle, the pool collapses after each fan-out, and
-the next fan pays for the handshakes again.
+`Connection`s with the same DSN and pool sizes (the key is `driver+dsn+sizes`);
+an unused pool untouched for longer than 5 minutes is closed, and all pools are
+closed when the extension stops. If `maxIdleConns` is not set, the
+`maxOpenConns` value is used — otherwise Go keeps only 2 idle, the pool
+collapses after each batch of concurrent queries, and the next batch pays for
+the handshakes again.
 
 In a `WaitGroup` each autocommit operation and each transaction takes a separate
 connection for its duration. Launch `N` coroutines with an unlimited pool and you
@@ -118,11 +119,11 @@ $connection = new \SConcur\Features\Mysql\Connection(
 );
 ```
 
-When the pool is saturated, autocommit queries are queued by `database/sql` until a
-connection frees up (backpressure) rather than failing. Transactions hold a
-connection for their whole life, so with `maxOpenConns` less than the number of
-coroutines the extra `begin()` calls block and the transactions proceed in waves —
-keep the pool no smaller than the expected number of concurrent transactions.
+When the pool is saturated, autocommit queries are queued by `database/sql`
+until a connection frees up rather than failing. Transactions hold a connection
+for their whole life, so with `maxOpenConns` less than the number of coroutines
+the extra `begin()` calls block and the transactions proceed in waves — keep the
+pool no smaller than the expected number of concurrent transactions.
 
 ## Internals
 

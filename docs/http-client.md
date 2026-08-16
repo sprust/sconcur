@@ -2,10 +2,11 @@ English | [Русский](http-client.ru.md)
 
 # HTTP client (PSR-18) with streaming
 
-An asynchronous PSR-18 HTTP client. All network I/O (DNS, connection, TLS, sending
-the request, reading the response) lives in the Go extension on top of
-`net/http.Client`: the request goes into a goroutine, the coroutine suspends, and
-dozens of requests fan out. Outside a `WaitGroup` the same API works synchronously.
+An asynchronous PSR-18 HTTP client. All network I/O (DNS, connection, TLS,
+sending the request, reading the response) lives in the Go extension on top of
+`net/http.Client`: the request goes into a goroutine, the coroutine suspends,
+and dozens of requests can be in progress at once. Outside a `WaitGroup` the
+same API works synchronously.
 
 The response body is a PSR-7 `StreamInterface` (`ResponseBodyStream`) that lazily
 pulls chunks from Go, like a Mongo cursor, so a response is never buffered whole.
@@ -60,7 +61,7 @@ outside a Fiber it works synchronously (`Extension::wait`). An unfinished respon
 (an early `break`, object destruction) is cleaned up by the streaming-state
 machinery: context cancellation → `Close()` → `resp.Body.Close`.
 
-## Fan-out concurrency
+## Running requests concurrently
 
 ```php
 use SConcur\WaitGroup;
@@ -113,8 +114,8 @@ one comes in pieces per round-trip.
 
 By default the request body is read whole and goes into the payload. For large
 bodies enable `streamRequestBody: true`: the body is sent in `chunkSize` pieces
-PHP → Go and written to an `io.Pipe` handed over as `req.Body`, with
-write-backpressure from Go and no buffering of the whole body.
+PHP → Go and written to an `io.Pipe` handed over as `req.Body`; Go dictates the
+pace of the writes, and the body is never buffered whole.
 
 ```php
 $client = new HttpClient($factory, new HttpClientOptions(streamRequestBody: true));
@@ -167,9 +168,9 @@ the process. Idle connections are released in `features.Shutdown()`.
 ## Downloading to a file
 
 `download()` writes the response body straight into a file on the Go side
-(`io.CopyBuffer` inside the extension) — the bytes never cross into PHP. Memory is
-constant for any size, there are no per-chunk round-trips, and inside a `WaitGroup`
-several downloads fan out.
+(`io.CopyBuffer` inside the extension) — the bytes never cross into PHP. Memory
+is constant for any size, there are no per-chunk round-trips, and inside a
+`WaitGroup` several downloads run at the same time.
 
 ```php
 use SConcur\Features\HttpClient\DownloadFileMode;
@@ -253,10 +254,10 @@ PSR-7 middleware), proxy and a custom CA bundle (later, via options), PSR-18 asy
 
 PHP feature tests are in `tests/feature/Features/HttpClient/` — edge cases,
 download to a file and the concurrency contract on `BaseAsyncTestCase`, with
-requests targeting the real SConcur HTTP server started via `TestHttpServer`. The
-Go tests run against an `httptest.Server` and cover the first-result metadata, body
-streaming, the `maxResponseBody` limit, error classification, request assembly and
-download. The benchmark (`make bench-http-client c=20`) sends N requests to
-`/msleep`, async fan-out against sequential native/sync.
+requests targeting the real SConcur HTTP server started via `TestHttpServer`.
+The Go tests run against an `httptest.Server` and cover the first-result
+metadata, body streaming, the `maxResponseBody` limit, error classification,
+request assembly and download. The benchmark (`make bench-http-client c=20`)
+sends N requests to `/msleep`, concurrent async against sequential native/sync.
 
 Run: `make test c="--filter=HttpClient"`, `make ext-test`.

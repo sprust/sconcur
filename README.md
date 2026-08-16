@@ -102,15 +102,17 @@ Long-lived servers:
 
 ## How it works
 
-`WaitGroup` wraps each closure in a `Fiber`. When an async feature is called, the
-coroutine suspends and the task goes to Go, into its own goroutine. A single
-process-wide `Scheduler` waits on the extension (`waitAnyBatch`): it blocks for
-the first ready result of any flow, drains the already-ready ones with it in the
-same crossing, and resumes the right coroutines by `taskKey`. Results arrive in
-task-completion order, not in `add()` order.
+`WaitGroup` wraps each closure in a `Fiber`. When an async feature is called,
+the coroutine suspends and the task goes to Go, into its own goroutine. Every
+`WaitGroup` owns one flow — the group of tasks that belong to it on the Go side.
+A single process-wide `Scheduler` waits on the extension (`waitAnyBatch`): it
+blocks until the first result of any flow is ready, picks up the results that
+are already ready together with it in one crossing of the boundary, and resumes
+the matching coroutines by `taskKey`. Results arrive in task-completion order,
+not in `add()` order.
 
 The number of concurrently live coroutines in a group is unlimited by default.
-For backpressure (memory, a DB connection pool) set a limit:
+To bound memory or a DB connection pool, set a limit:
 `WaitGroup::create(maxConcurrency: N)` — excess `add()` calls queue and start as
 slots free up.
 
@@ -123,9 +125,9 @@ The whole concurrency model reduces to one primitive: a channel. Every task runs
 in its own goroutine, and the results of all goroutines of all flows land in one
 shared buffered channel. PHP runs no event loop and polls nothing — the single
 process-wide `Scheduler` blocks reading a message from that channel
-(`waitAnyBatch`) and wakes on the first ready result, taking the already-ready
-tail with it in the same crossing. Which task finished first is decided by the
-channel; PHP only resumes the matching coroutine by `taskKey`.
+(`waitAnyBatch`) and wakes on the first ready result, taking the results that
+are already ready with it in the same crossing. Which task finished first is
+decided by the channel; PHP only resumes the matching coroutine by `taskKey`.
 
 Everything else follows from that:
 
@@ -138,14 +140,17 @@ Everything else follows from that:
 - The C glue is frozen: `push`, `wait`, `waitAny`/`waitAnyBatch`, `next`,
   `stopFlow` plus the `version`/`destroy` lifecycle. A new feature is data (a
   `MethodEnum` value, a MessagePack payload DTO, a Go handler), not a new C
-  symbol, so the export set never grows. A new long-lived server adds at most one
-  control function, like `httpStopAccepting` for the graceful drain.
-- One transport and one streaming model for everything: MessagePack DTOs plus the
-  streaming states behind `next()` — MongoDB cursors, HTTP bodies, socket frames,
-  WS messages all travel the same mechanism with backpressure.
-- One API for sync and async, no function coloring. The same call works inside a
-  `WaitGroup` (concurrent) and outside it (an ordinary blocking call);
-  concurrency is chosen by the caller, not by the feature author.
+  symbol, so the export set never grows. A new long-lived server adds at most
+  one control function, like `httpStopAccepting`, which stops accepting new
+  connections while the ones in progress are finished.
+- One transport and one streaming model for everything: MessagePack DTOs plus
+  the streaming states behind `next()` — MongoDB cursors, HTTP bodies, socket
+  frames, WS messages all travel the same mechanism, and the sender waits when
+  the reader falls behind.
+- One API for sync and async: no separate "async" and "sync" variants of the
+  same function. The same call works inside a `WaitGroup` (concurrent) and
+  outside it (an ordinary blocking call); concurrency is chosen by the caller,
+  not by the feature author.
 - A feature gets the runtime for free: nested coroutines, context cancellation,
   deadline propagation, graceful shutdown with unwinding.
 - Client and server features expose PSR interfaces (PSR-7/17, PSR-18) with
@@ -256,7 +261,7 @@ php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello'
   respawn a worker whose PHP thread has hung.
 - Split the core and the features into separate packages.
 - Stopping a single coroutine from anywhere, not just the whole flow.
-- Optimize the synchronous path — a call outside a coroutine goes to Go directly,
-  bypassing the scheduler and the Fiber machinery.
-- Explore a cross-process concurrency mode, so a fan-out can use several
-  processes (and cores) instead of the goroutines of one process.
+- Optimize the synchronous path — a call outside a coroutine goes to Go
+  directly, bypassing the scheduler and the Fiber machinery.
+- Explore a cross-process concurrency mode, so concurrent operations can use
+  several processes (and cores) instead of the goroutines of one process.

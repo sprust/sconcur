@@ -47,7 +47,7 @@ automatically.
 | Member | Description |
 | --- | --- |
 | `read(): ?string` | the next inbound frame; `null` — the client closed its side (EOF) or the connection ended. Cooperatively suspends the coroutine until a frame arrives |
-| `write(string $data): void` | push a frame to the client (with backpressure: waits until the bytes are flushed). Throws `SocketServerConnectionClosedException` if the connection is broken |
+| `write(string $data): void` | send a frame to the client; waits until the bytes are actually flushed, so a fast handler cannot outrun the client. Throws `SocketServerConnectionClosedException` if the connection is broken |
 | `close(): void` | close the connection (idempotent, best-effort) |
 | `isClosed(): bool` | whether the connection is closed |
 | `id`, `remoteAddr`, `localAddr` | identifier and addresses |
@@ -90,7 +90,7 @@ The `SocketServer` constructor; the PHP defaults mirror Go.
 | `maxMessageBytes` | `1048576` (1 MiB) | length limit of one inbound frame; exceeding it ends the connection's input |
 | `maxConcurrency` | `0` (unlimited) | max connections served at once; excess ones wait for a free slot |
 | `maxConnections` | `0` (unlimited) | stop the server after N served connections (a guard against leaks) |
-| `shutdownTimeoutMs` | `10000` | timeout for draining in-flight connections on shutdown |
+| `shutdownTimeoutMs` | `10000` | how long to wait for the active connections to finish on shutdown |
 | `reusePort` | `false` | `SO_REUSEPORT` — a process pool on one port (Linux) |
 | `onError` | `null` | handler-error hook |
 | `masterPid` | `null` | orphan check under the master |
@@ -138,14 +138,15 @@ $server = new SocketServer(
 ## Graceful shutdown and SO_REUSEPORT
 
 On a signal (SIGTERM/SIGINT), on reaching `maxConnections`, or on being orphaned
-(`masterPid`), the server closes the listener and half-closes in-flight connections
-for reading (`CloseRead`): a handler reading in a loop gets EOF (its current write
-still goes through) and returns. A push-only handler that never reads does not
-notice the EOF and is finished off by a forced close after the grace period
-(`drainGrace`, 2 s), after which the drain is bounded by `shutdownTimeoutMs`. In a
-`SO_REUSEPORT` pool the kernel immediately hands new connections to siblings, and
-the process exits on its own. `reusePort: true` — several processes on one port,
-one per core — is the basis for scaling under the worker master.
+(`masterPid`), the server closes the listener and half-closes the active
+connections for reading (`CloseRead`): a handler reading in a loop gets EOF (its
+current write still goes through) and returns. A push-only handler that never
+reads does not notice the EOF and is finished off by a forced close after the
+grace period (`drainGrace`, 2 s), after which the wait is bounded by
+`shutdownTimeoutMs`. In a `SO_REUSEPORT` pool the kernel immediately hands new
+connections to siblings, and the process exits on its own. `reusePort: true` —
+several processes on one port, one per core — is the basis for scaling under the
+worker master.
 
 Lifecycle lines go to `STDOUT`, alongside the per-connection access log that the Go
 side writes when each connection closes:

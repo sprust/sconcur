@@ -7,22 +7,26 @@ of one task. See also the [README](../README.md).
 
 ## How it works
 
-`WaitGroup` is the public API of a coroutine group built on PHP Fibers. Each task
-closure is wrapped in a `Fiber`; when an async feature is called inside a
+`WaitGroup` is the public API of a coroutine group built on PHP Fibers. Each
+task closure is wrapped in a `Fiber`; when an async feature is called inside a
 coroutine, the coroutine suspends and hands out a deferred task
 (`Fiber::suspend(PendingPushDto)`). The push to Go is done by whoever took over
 control — `WaitGroup::launch` or the scheduler — through
 `Scheduler::dispatchPendingTask()` from its own stack, and the task runs in a
-separate goroutine. cgo is never called from a coroutine's stack: a fan-out of N
-live fibers, each having crossed the PHP↔Go boundary, degraded quadratically.
+separate goroutine. cgo is never called from a coroutine's stack: when N live
+fibers had each crossed the PHP↔Go boundary, the cost grew quadratically with N.
+
+Every `WaitGroup` owns one flow — the group of its tasks on the Go side; flows
+are what the extension cancels, waits on and routes results by.
 
 Waiting and resumption belong to a single process-wide `Scheduler` (singleton,
 `Scheduler::get()`) — the only place that waits on the extension and resumes
-coroutines. All goroutines push their results into one shared buffered channel on
-the Go side; `Extension::waitAnyBatch()` blocks for the first ready result of any
-flow and drains every further already-ready result in the same cgo crossing (up
-to 64). The scheduler consumes the batch one result per step: the result frame
-names the coroutine that awaits it, and the scheduler resumes that one.
+coroutines. All goroutines push their results into one shared buffered channel
+on the Go side; `Extension::waitAnyBatch()` blocks until the first result of any
+flow is ready and reads every other already-ready result in the same cgo
+crossing (up to 64). The scheduler consumes the batch one result per step: the
+result frame names the coroutine that awaits it, and the scheduler resumes that
+one.
 
 Because every resumption comes from the scheduler, coroutines do not nest on each
 other's call stack. So a nested `WaitGroup` inside a coroutine does not block the
@@ -127,8 +131,9 @@ Key entities:
 - `State` (`src/State.php`) — the static registry of `Fiber ↔ flow` links (result
   routing needs no task map: the owner travels in the frame).
 - `FeatureExecutor` — the features' entry point: detects the async context via
-  `State::getCurrentFlow()` and suspends the coroutine, handing the deferred task
-  to the resumer. On the async path it never goes into Go itself.
+  `State::getCurrentFlow()` and suspends the coroutine, handing the deferred
+  task to the side that will send it to Go. On the async path it never goes into
+  Go itself.
 - `Connection\Extension` — a singleton over the extension's exported C functions
   (`push`, `waitAny`, `wait`, `next`, `stopFlow`, `destroy`, …).
 - Go: `Handler → Flows → Flow → Task`. Each task runs in its own goroutine;

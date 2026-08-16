@@ -66,12 +66,12 @@ deadline), a server has its own:
    outlive the server's stop.**
 2. A per-request limit, not only a per-server one. Each handler is bounded by
    `handlerTimeoutMs` on the Go side (a timer in a separate goroutine, firing
-   independently of PHP): before the first write the client gets a `504`, after the
-   stream has started the response is aborted.
-3. Graceful drain and orphaned workers. A server must be able to stop accepting new
-   connections without touching in-flight ones (for a seamless handover to
-   `SO_REUSEPORT` siblings) and to self-terminate if its master died
-   (`--masterPid`).
+   independently of PHP): before the first write the client gets a `504`, after
+   the stream has started the response is aborted.
+3. Graceful shutdown and orphaned workers. A server must be able to stop
+   accepting new connections without touching the ones already accepted (for a
+   seamless handover to `SO_REUSEPORT` siblings) and to self-terminate if its
+   master died (`--masterPid`).
 
 ## Payloads
 
@@ -99,14 +99,16 @@ cross-references). A server needs at least three:
 The shape of the request/response is up to you. The HTTP server exposes PSR-7
 outward (the request is assembled from `RequestEvent` in
 `HttpServer::decodeRequest()` via an injected PSR-17 factory; the body is
-`Dto/RequestBodyStream` over `Dto/RequestBody`), while the socket and WS servers use
-their own `readonly` DTOs — `Dto/Connection` with `read()`/`write()`/`close()` for
-the push model. In both cases the response is encoded into `RespondPayload`. The
-records of a streamed response (head/chunk/end) are acknowledged back, which is
-what gives write backpressure; the one-shot full response of the HTTP server is
-fire-and-forget — `RespondPayload::full()` sets the no-result flag (`nr`) and goes
-through `FeatureExecutor::execNoResult()`, so the coroutine finishes without
-waiting for the write (the socket and WS servers acknowledge every command).
+`Dto/RequestBodyStream` over `Dto/RequestBody`), while the socket and WS servers
+use their own `readonly` DTOs — `Dto/Connection` with
+`read()`/`write()`/`close()` for the push model. In both cases the response is
+encoded into `RespondPayload`. The records of a streamed response
+(head/chunk/end) are acknowledged back, which is what keeps a handler from
+outrunning the client; the one-shot full response of the HTTP server is
+fire-and-forget — `RespondPayload::full()` sets the no-result flag (`nr`) and
+goes through `FeatureExecutor::execNoResult()`, so the coroutine finishes
+without waiting for the write (the socket and WS servers acknowledge every
+command).
 
 Argv parsing, signal handlers and the orphan check are already extracted into the
 stateless `SConcur\Features\Server\ServerRuntimeSupportTrait`:
@@ -136,13 +138,14 @@ batches are the incoming requests — and hands control to the shared
 - `onRequest(string $payload)` — spawn-on-request: decode, call the handler, send
   the response (`HttpServer::handle()` in the reference);
 - `shouldStop(): bool` — a signal arrived or the worker is orphaned;
-- `onDrainStart()` — called once when the drain begins: stop accepting early via
-  `Extension::get()->httpStopAccepting($flowKey)`, so new connections go to
+- `onDrainStart()` — called once when the shutdown begins: stop accepting early
+  via `Extension::get()->httpStopAccepting($flowKey)`, so new connections go to
   `SO_REUSEPORT` siblings.
 
-`Scheduler::serve` itself multiplexes the incoming requests and the async work of
-their handlers in a single wait loop (`waitAnyTimeoutBatch`) and on drain shuts the
-flow down cleanly (`stopFlow`). This mechanic is shared and does not need rewriting.
+`Scheduler::serve` itself multiplexes the incoming requests and the async work
+of their handlers in a single wait loop (`waitAnyTimeoutBatch`) and on shutdown
+closes the flow down cleanly (`stopFlow`). This mechanic is shared and does not
+need rewriting.
 
 ## Go side
 
@@ -165,17 +168,17 @@ streams (the request body, the inbound message streams). Backpressure is layered
 accepts, and beyond that `ServeHTTP` itself blocks.
 
 Inside `serverState` (`server.go`), `ServeHTTP` acquires the `maxConcurrency`
-semaphore before reading the body (so a request waiting for a slot does not hold a
-body buffer), registers a `pendingRequest`, sends a `RequestEvent` into the buffered
-`requests` channel and waits for write commands from PHP, applying them to the
-socket; on `handlerTimeout` or disconnect it closes `abandoned`, so a late response
-does not hang forever, and it writes the access-log line on the Go side. `Next()`
-yields the next `RequestEvent` with the "more coming" flag (on `ctx.Done()` a final
-result without it, which ends the PHP loop). The listener is closed by
-`stopAccepting()` (the drain calls it via the `StopAccepting` export), and
-cancelling the flow context unblocks every in-flight handler through `BaseContext`;
-`Close()` is the full teardown — `http.Server` shutdown plus `pusher.Stop()` on a
-fresh context.
+semaphore before reading the body (so a request waiting for a slot does not hold
+a body buffer), registers a `pendingRequest`, sends a `RequestEvent` into the
+buffered `requests` channel and waits for write commands from PHP, applying them
+to the socket; on `handlerTimeout` or disconnect it closes `abandoned`, so a
+late response does not hang forever, and it writes the access-log line on the Go
+side. `Next()` yields the next `RequestEvent` with the "more coming" flag (on
+`ctx.Done()` a final result without it, which ends the PHP loop). The listener
+is closed by `stopAccepting()` (the shutdown path calls it via the
+`StopAccepting` export), and cancelling the flow context unblocks every running
+handler through `BaseContext`; `Close()` is the full teardown — `http.Server`
+shutdown plus `pusher.Stop()` on a fresh context.
 
 `handleRespond` decodes `requestId` (with a separate mini-struct, so routing works
 even when the rest of the payload is corrupt), finds the `pendingRequest` and
@@ -208,17 +211,18 @@ map, so another server's `httpStopAccepting` cannot be reused (cf.
 - `ext/sconcur.stub.php` — the function declaration;
 - `src/Connection/Extension.php` — `use function` plus a PHP wrapper.
 
-`StopAccepting(flowKey)` finds the `serverState` and calls its `stopAccepting()`,
-which closes only the listener (`http.Server.Shutdown` in a separate goroutine on a
-background context) without cancelling in-flight requests. In a `SO_REUSEPORT` pool
-the kernel immediately hands new connections to siblings while this process drains.
+`StopAccepting(flowKey)` finds the `serverState` and calls its
+`stopAccepting()`, which closes only the listener (`http.Server.Shutdown` in a
+separate goroutine on a background context) without cancelling the requests
+already accepted. In a `SO_REUSEPORT` pool the kernel immediately hands new
+connections to siblings while this process finishes its own.
 
 This is a protocol change, so the extension-version rule applies (bump at most once
 per branch, see [.ai/README.md](../.ai/README.md)).
 
 > A minimal server can do without `StopAccepting` and tear everything down via
-> `stopFlow`, but then it loses the seamless `SO_REUSEPORT` drain — a production
-> server under a master needs it.
+> `stopFlow`, but then it loses the seamless `SO_REUSEPORT` handover — a
+> production server under a master needs it.
 
 ## Integration with the worker master
 
@@ -284,8 +288,8 @@ Go:
 - [ ] The same two constants in `types/method.go`.
 - [ ] Payload structs in `payloads.go` plus `RequestEvent`; mirror PHP 1:1.
 - [ ] The feature: `Handle` switch → `handleServe` (listen → `serverState` → the
-      self-pumping `Next()`/`AddResult` goroutine) and `handleRespond` (rendezvous
-      by `requestId` plus write backpressure; `nr` — fire-and-forget).
+  self-pumping `Next()`/`AddResult` goroutine) and `handleRespond` (rendezvous
+  by `requestId`, waiting for the write to be applied; `nr` — fire-and-forget).
 - [ ] `serverStates`/`pendingRequests` maps; `StopAccepting(flowKey)`;
       `SO_REUSEPORT` in `listen`.
 - [ ] `BaseContext` = the task context; `handlerTimeout`; the access log on the Go

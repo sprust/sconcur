@@ -330,6 +330,16 @@ languages. They were deliberately reworked to not read as AI-generated. Rules:
   reference it and describe only their delta.
 - **Do not put source line numbers in docs** — they go stale. Reference file paths
   only.
+- **No unexplained jargon.** Say what happens in plain words instead of a term the
+  reader has to decode: "runs N operations at the same time" not "fan-out"
+  (Russian: «одновременно», never «веер»); "endpoint" not "handle" («эндпоинт», not
+  «ручка»); "waits until the bytes are flushed, so a fast writer cannot outrun the
+  client" not "backpressure"; "finishes the requests already accepted" not "drains
+  in-flight". Project terms that do have a definition (`flow`/«флоу», coroutine,
+  fiber, feature) are fine, but define them at first use in a doc.
+- **Every table cell must be self-contained.** A verdict or comparison cell states
+  what was measured and against what, so a reader who jumps straight to the table
+  is not left guessing (see `docs/positioning.md`).
 - **Diagrams in Mermaid** (GitHub renders them). To keep them rendering
   everywhere, including PhpStorm:
   - No `<br/>` anywhere — some renderers print it literally. Use single-line node

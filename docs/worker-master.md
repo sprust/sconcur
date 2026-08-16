@@ -112,12 +112,13 @@ stopped-or-stale; `stop` — `0` once stopped (or none was running), `1` on time
 timeout/error.
 
 `reload` is a soft restart of the workers. The command creates the trigger file
-`<runtimeDir>/<name>.reload`; the master rolls the workers one by one, sending each
-`SIGTERM` (which leaves the `SO_REUSEPORT` group early and drains in-flight),
-waiting up to `shutdownTimeoutMs` (otherwise `SIGKILL`) and spawning a replacement.
-While one worker drains, the rest hold traffic — so with N>1 the roll is
-downtime-free, and a fresh `php worker.php` picks up new code from disk. The master
-config itself is not re-read: `workerCount` and arguments do not change on the fly.
+`<runtimeDir>/<name>.reload`; the master rolls the workers one by one, sending
+each `SIGTERM` (which leaves the `SO_REUSEPORT` group early and finishes the
+requests it has already accepted), waiting up to `shutdownTimeoutMs` (otherwise
+`SIGKILL`) and spawning a replacement. While one worker finishes up, the rest
+hold traffic — so with N>1 the restart is downtime-free, and a fresh
+`php worker.php` picks up new code from disk. The master config itself is not
+re-read: `workerCount` and arguments do not change on the fly.
 
 ## Parameters
 
@@ -141,7 +142,7 @@ is rejected (protection against typos like `wokerCount`), `name` is restricted t
 | `rotateDays` | `3` | How many days to keep log files. |
 | `logTo` | `file` | `file` \| `stdout` \| `both` (for `docker logs` — `stdout`/`both`). |
 | `restartPolicy` | `always` | `always` \| `on-failure` \| `never`. |
-| `shutdownTimeoutMs` | `10000` | How long to wait for workers to drain before `SIGKILL`. |
+| `shutdownTimeoutMs` | `10000` | How long to wait for the workers to finish before `SIGKILL`. |
 | `restartBackoffMs` | `200` | Exponential backoff base in a crash loop. |
 | `maxRestartBackoffMs` | `30000` | Backoff ceiling. |
 | `panelPort` | `0` (off) | Port of the built-in [telemetry panel](admin-stats.md); needs `adminToken`. |
@@ -182,8 +183,9 @@ keep living and holding the port. To prevent that the master passes its pid via
 `--masterPid`, and on every tick of the serve loop the server compares
 `posix_getppid()` against it: after the master's death the kernel reparents the
 process, `getppid()` stops matching (immune to PID reuse), and the server starts
-its own graceful drain and exits, freeing the port. Outside the master there is no
-flag, so the check is disabled.
+its own graceful shutdown — finishing the requests it has already accepted — and
+exits, freeing the port. Outside the master there is no flag, so the check is
+disabled.
 
 ## Stuck worker
 
@@ -230,10 +232,10 @@ own errors always reach the journal even when the deployment `php.ini` sets
 `display_errors=Off`; a later `-d` wins, so `phpArgs` can override this
 deliberately.
 
-`logTo` sets the sink: `file` (default), `stdout` (collected by `docker
-logs`/journald) or `both` — under `docker logs` you need one of the latter two.
-This does not affect performance: records are buffered and flushed once per
-supervision tick (~100 ms), not per line.
+`logTo` sets the sink: `file` (default), `stdout` (collected by
+`docker logs`/journald) or `both` — under `docker logs` you need one of the
+latter two. This does not affect performance: records are buffered and flushed
+once per supervision tick (~100 ms), not per line.
 
 ## Single instance and state
 
@@ -270,21 +272,23 @@ guard).
 ## Graceful shutdown
 
 The stop triggers are `SIGTERM`/`SIGINT` or removal of the state file. In either
-case the master stops restarting workers, forwards `SIGTERM` to all live ones (each
-drains its own in-flight, see [the HTTP server](http-server.md#graceful-shutdown)),
-waits for them up to `shutdownTimeoutMs` finishing off survivors with `SIGKILL`,
-then cleans up the state file, releases the lock and exits with code `0`.
+case the master stops restarting workers, forwards `SIGTERM` to all live ones
+(each finishes the requests it has already accepted, see
+[the HTTP server](http-server.md#graceful-shutdown)), waits for them up to
+`shutdownTimeoutMs` finishing off survivors with `SIGKILL`, then cleans up the
+state file, releases the lock and exits with code `0`.
 
 ## Testing
 
-The tests do not depend on a docker service: `SConcur\Tests\Impl\Worker\TestWorkerMaster`
-runs `bin/sconcur-server` as a separate process on a loopback port, with the shared
-demo server as the worker. Coverage (`tests/feature/Worker/` +
-`tests/feature/Features/HttpServer/`): supervision (spawning N workers, restarting
-a killed one, self-exit on `maxRequests` → restart, the `on-failure` and `never`
-policies), stopping (graceful drain on `SIGTERM` and on removal of the state file),
-singleness and state (rejection of a second instance, `status`/`stop`, `status`
-after a crash), resilience (crash-loop backoff, config validation, orphan
+The tests do not depend on a docker service:
+`SConcur\Tests\Impl\Worker\TestWorkerMaster` runs `bin/sconcur-server` as a
+separate process on a loopback port, with the shared demo server as the worker.
+Coverage (`tests/feature/Worker/` + `tests/feature/Features/HttpServer/`):
+supervision (spawning N workers, restarting a killed one, self-exit on
+`maxRequests` → restart, the `on-failure` and `never` policies), stopping
+(graceful shutdown on `SIGTERM` and on removal of the state file), singleness
+and state (rejection of a second instance, `status`/`stop`, `status` after a
+crash), resilience (crash-loop backoff, config validation, orphan
 self-termination) and the logger (line format, context JSON, daily rotation).
 
 ---

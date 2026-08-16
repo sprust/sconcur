@@ -12,11 +12,12 @@ of the [socket server](socket-server.md). It runs under the same
 ## How it works
 
 A connection starts as an ordinary HTTP request with `Upgrade: websocket`. A
-request with a valid upgrade is accepted by [`coder/websocket`](https://github.com/coder/websocket)
-and becomes a bidirectional message stream; any other request gets `426 Upgrade
-Required`, and a request not on the configured `path` gets `404`. Framing is the
-library's WS protocol (opcode, client masking, ping/pong/close control frames,
-UTF-8 validation of text), not the length-prefix of the socket server, so the WS
+request with a valid upgrade is accepted by
+[`coder/websocket`](https://github.com/coder/websocket) and becomes a
+bidirectional message stream; any other request gets `426 Upgrade Required`, and
+a request not on the configured `path` gets `404`. Framing is the library's WS
+protocol (opcode, client masking, ping/pong/close control frames, UTF-8
+validation of text), not the length-prefix of the socket server, so the WS
 server has its own inbound message stream on top of `*websocket.Conn`.
 
 ```mermaid
@@ -60,7 +61,7 @@ automatically.
 | Member | Description |
 | --- | --- |
 | `read(): ?string` | the next inbound message; `null` — the client closed its side, the connection ended, or `maxMessageBytes` was exceeded. Cooperatively suspends the coroutine |
-| `write(string $data, bool $binary = false): void` | send a message (with backpressure: waits for the flush). Text by default. Throws `WsServerConnectionClosedException` if the connection is gone |
+| `write(string $data, bool $binary = false): void` | send a message; waits until it has actually been flushed, so a fast handler cannot outrun the client. Text by default. Throws `WsServerConnectionClosedException` if the connection is gone |
 | `lastMessageWasBinary(): bool` | whether the last `read()` returned a binary message |
 | `close(): void` | close the connection (idempotent, best-effort) |
 | `isClosed(): bool` | whether the connection is closed |
@@ -112,7 +113,7 @@ The `WsServer` constructor; the PHP defaults mirror Go.
 | `maxMessageBytes` | `1048576` (1 MiB) | size limit of a single inbound message; exceeding it closes the connection with code 1009 |
 | `maxConcurrency` | `0` (no limit) | max connections served at once; excess ones wait for a free slot |
 | `maxConnections` | `0` (no limit) | stop the server after N served connections (a leak guard) |
-| `shutdownTimeoutMs` | `10000` | drain timeout for in-flight connections on stop |
+| `shutdownTimeoutMs` | `10000` | how long to wait for the active connections to finish on stop |
 | `reusePort` | `false` | `SO_REUSEPORT` — a pool of processes on one port (Linux) |
 | `path` | `/` | the path on which the upgrade is accepted (empty string — any path); another path → `404` |
 | `allowedOrigins` | `[]` | host patterns for the origin check (empty — the check is skipped) |
@@ -152,11 +153,12 @@ final message before the close. In ordinary code `write` throws
 
 On a signal (SIGTERM/SIGINT), on reaching `maxConnections`, or on being orphaned
 (`masterPid`), the server stops accepting new connections and ends the input of
-in-flight ones: a handler reading in a loop gets `null` (its current write still
-goes through) and returns. A push-only handler that does not read is finished by a
-forced close once the grace elapses (`drainGrace`, 2 s), after which the drain is
-bounded by `shutdownTimeoutMs`. In an `SO_REUSEPORT` pool the kernel immediately
-hands new connections to siblings, and the process exits on its own.
+the active ones: a handler reading in a loop gets `null` (its current write
+still goes through) and returns. A push-only handler that does not read is
+finished by a forced close once the grace elapses (`drainGrace`, 2 s), after
+which the wait is bounded by `shutdownTimeoutMs`. In an `SO_REUSEPORT` pool the
+kernel immediately hands new connections to siblings, and the process exits on
+its own.
 
 Lifecycle lines go to `STDOUT` alongside the per-connection access log written by
 the Go side:
