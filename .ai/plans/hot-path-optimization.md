@@ -360,7 +360,7 @@ private function finishPooled(Coroutine $coroutine): void
 
 ```bash
 # до и после, ступень L2 лестницы
-SERVER_ARGS='--ladder=l2' tests/benchmarks/http-load-stats.sh
+SERVER_ARGS='--ladder=l2' tests/benchmarks/http/load-stats.sh
 
 # прямое подтверждение, что ушла именно mm-статья
 perf stat -e minor-faults,page-faults,dTLB-load-misses \

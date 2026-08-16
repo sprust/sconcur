@@ -4,10 +4,11 @@ English | [Русский](websocket-client.ru.md)
 
 An asynchronous WebSocket client — the dial-side mirror of the
 [WebSocket server](websocket-server.md), just as the
-[socket client](socket-client.md) is the pair of the socket server. All network I/O
-(dial, upgrade handshake, read, write) lives in the Go extension: `connect()` goes
-into a goroutine, the coroutine suspends, so dozens of connections are dialed
-fanned out. Outside a `WaitGroup` the same API works synchronously.
+[socket client](socket-client.md) is the pair of the socket server. All network
+I/O (dial, upgrade handshake, read, write) lives in the Go extension:
+`connect()` goes into a goroutine, the coroutine suspends, so dozens of
+connections can be dialled at the same time. Outside a `WaitGroup` the same API
+works synchronously.
 
 The model is a long-lived bidirectional connection: the application dials, gets a
 `Connection` and drives the conversation itself.
@@ -40,7 +41,7 @@ caveat as with `HttpClient`/`SocketClient`).
 | Member | Description |
 | --- | --- |
 | `read(): ?string` | the next inbound message; `null` — the peer closed its side, the connection ended, or `maxMessageBytes` was exceeded. Cooperatively suspends the coroutine |
-| `write(string $data, bool $binary = false): void` | send a message (with backpressure: waits for the flush). Text by default. Throws `WsClientConnectionClosedException` if the connection is gone |
+| `write(string $data, bool $binary = false): void` | send a message; waits until it has actually been flushed, so a fast writer cannot outrun the peer. Text by default. Throws `WsClientConnectionClosedException` if the connection is gone |
 | `lastMessageWasBinary(): bool` | whether the last `read()` was binary |
 | `close(): void` | close the connection (idempotent, best-effort) |
 | `isClosed(): bool` | whether the connection is closed |
@@ -50,7 +51,7 @@ Between reads and writes you can make asynchronous calls (Sleeper, Mongodb, SQL,
 HTTP client) — the coroutine suspends cooperatively, other connections keep
 working.
 
-## Fan-out concurrency
+## Running connections concurrently
 
 ```php
 use SConcur\WaitGroup;
@@ -125,9 +126,9 @@ Go (`ext/internal/features/wsclient/`): `connect.go` runs `websocket.Dial` with
 `connectTimeout` (cancellable by the flow context) and registers a streaming
 `connectionState` — the first `Next` is the metadata, then inbound messages from a
 read goroutine — plus the write loop, cleaned up on flow stop; `feature.go`
-dispatches the commands by `cid`. The backpressured write loop and the message-type
-codec live in the neutral `ext/internal/ws/`, shared with the WS server (like
-`ext/internal/socket` for the raw TCP pair).
+dispatches the commands by `cid`. The write loop that waits for each flush and the
+message-type codec live in the neutral `ext/internal/ws/`, shared with the WS
+server (like `ext/internal/socket` for the raw TCP pair).
 
 ## Not in v1
 
@@ -138,12 +139,12 @@ auto-reconnect (application side). The library's general limits — see the
 
 ## Testing
 
-PHP feature tests are in `tests/feature/Features/WsClient/` — edge and error cases
-plus the concurrency contract on `BaseAsyncTestCase`, against a real SConcur
-`WsServer` spawned via `TestWsServer`; the Go side is covered by
-`connect_test.go`. The benchmark (`make bench-ws-client c=20`) runs N round-trips
-to the demo server's `msleep` endpoint, async fan-out against sequential native
-(raw WS framing in PHP) and sync; server-side pool benches are
+PHP feature tests are in `tests/feature/Features/WsClient/` — edge and error
+cases plus the concurrency contract on `BaseAsyncTestCase`, against a real
+SConcur `WsServer` spawned via `TestWsServer`; the Go side is covered by
+`connect_test.go`. The benchmark (`make bench-ws-client c=20`) runs N
+round-trips to the demo server's `msleep` endpoint, concurrent async against
+sequential native (raw WS framing in PHP) and sync; server-side pool benches are
 `make bench-ws-server-io` / `bench-ws-server-cpu` / `bench-ws-throughput`.
 
 Run: `make test c="--filter=WsClient"`, `make ext-test`.

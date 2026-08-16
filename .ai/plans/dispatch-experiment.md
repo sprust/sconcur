@@ -157,7 +157,7 @@ CPU суммируется по контейнерам `php` и nginx. Рядо�
 
 ## 9. Что менять в коде
 
-- `tests/benchmarks/http-load-stats.sh` — режим раздельных портов
+- `tests/benchmarks/http/load-stats.sh` — режим раздельных портов
   (`DISTINCT_PORTS=1`: `--address` со сдвигом на индекс, `--reusePort=0`) и
   сохранение stdout воркеров в отдельные файлы вместо `/dev/null`.
 - Lua-скрипт профиля 90/10 рядом с остальными бенчами.
@@ -178,9 +178,9 @@ CPU суммируется по контейнерам `php` и nginx. Рядо�
 прогретом одиночном воркере). Все ответы `200`.
 
 Инструменты: `WORKER_LOGS=1`/`DISTINCT_PORTS=1`/`WRK_SCRIPT` в
-`tests/benchmarks/http-load-stats.sh`, профиль
-`tests/benchmarks/http-mixed-profile.lua`, прокси
-`tests/benchmarks/nginx-proxy.sh`.
+`tests/benchmarks/http/load-stats.sh`, профиль
+`tests/benchmarks/http/mixed-profile.lua`, прокси
+`tests/benchmarks/http/nginx-proxy.sh`.
 
 | Прогон | rps | CPU итого | мкс/запрос | p50 | p90 | p99 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |

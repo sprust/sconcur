@@ -278,10 +278,10 @@ driver still wins) is in the [benchmarks](benchmarks.md#mongodb).
 
 - All operations are run by `go.mongodb.org/mongo-driver/v2` in a goroutine: the
   blocking driver is used as-is, concurrency comes from the runtime.
-- Client pool (`ext/internal/features/mongodb/connection`) — a `*mongo.Client` per
-  key `uri + timeoutMs + serverSelectionTimeoutMs`, with refcounting and eviction
-  of idle clients (TTL 5 minutes, checked once a minute). In-flight operations do
-  not disconnect the client.
+- Client pool (`ext/internal/features/mongodb/connection`) — a `*mongo.Client`
+  per key `uri + timeoutMs + serverSelectionTimeoutMs`, with refcounting and
+  eviction of idle clients (TTL 5 minutes, checked once a minute). A client with
+  operations still running is not disconnected.
 - Cursors (`states/find_state`, `states/aggregation_state`) — Go holds the cursor
   as state and hands out batches on a `next` request; it is closed on exhaustion,
   early exit, or a flow stop. Closing runs on a fresh context, because the task

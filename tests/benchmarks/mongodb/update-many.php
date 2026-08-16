@@ -1,0 +1,75 @@
+<?php
+
+declare(strict_types=1);
+
+use SConcur\Tests\Impl\TestMongodbResolver;
+
+require_once __DIR__ . '/../lib/benchmarker.php';
+
+$benchmarker = new Benchmarker(
+    name: 'mongodb-update-many',
+);
+
+// The filter below matches every seeded document (they all carry the shared
+// IIID), so a single call rewrites the whole dataset — run this benchmark with
+// a small call count.
+TestMongodbResolver::seedBenchmarkCollection(documents: $benchmarker->getDatasetRows());
+
+$driverCollection  = TestMongodbResolver::getDriverBenchmarkCollection();
+$sconcurCollection = TestMongodbResolver::getSconcurBenchmarkCollection();
+
+$driverData = makeDocument(
+    objectId: TestMongodbResolver::getDriverObjectId(),
+    dateTime: TestMongodbResolver::getDriverDateTime(),
+);
+
+$sconcurDate = makeDocument(
+    objectId: TestMongodbResolver::getSconcurObjectId(),
+    dateTime: TestMongodbResolver::getSconcurDateTime(),
+);
+
+$benchmarker->run(
+    nativeCallback: static function () use ($driverCollection, $driverData) {
+        return $driverCollection
+            ->updateMany(
+                filter: $driverData['filter'],
+                update: $driverData['update'],
+                options: $driverData['options'],
+            )
+            ->getModifiedCount();
+    },
+    syncCallback: static function () use ($sconcurCollection, $sconcurDate) {
+        return $sconcurCollection->updateMany(
+            filter: $sconcurDate['filter'],
+            update: $sconcurDate['update'],
+            upsert: $sconcurDate['upsert'] ?? false,
+        )->modifiedCount;
+    },
+    asyncCallback: static function () use ($sconcurCollection, $sconcurDate) {
+        return $sconcurCollection->updateMany(
+            filter: $sconcurDate['filter'],
+            update: $sconcurDate['update'],
+            upsert: $sconcurDate['upsert'] ?? false,
+        )->modifiedCount;
+    },
+);
+
+/**
+ * @return array{filter: array, update: array, options: array}
+ */
+function makeDocument(mixed $objectId, mixed $dateTime): array
+{
+    return [
+        'filter' => [
+            'IIID' => $objectId,
+        ],
+        'update' => [
+            '$set' => [
+                'date' => $dateTime,
+            ],
+        ],
+        'options' => [
+            'upsert' => true,
+        ],
+    ];
+}

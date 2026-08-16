@@ -4,18 +4,18 @@ English | [Русский](coroutine-switching.ru.md)
 
 The PHP thread is one, and coroutines switch cooperatively — normally at feature
 calls, where a fiber suspends while Go does the I/O. CPU-bound code has no such
-points: a handler crunching data blocks every other in-flight coroutine of its
+points: a handler busy with computation blocks every other coroutine of its
 process until it finishes. Switching addresses that in two forms:
-`Scheduler::switch()` — an explicit switch point you put into your own hot loops —
-and automatic preemption, where the extension interrupts the VM on a timer and
+`Scheduler::switch()` — an explicit switch point you put into your own hot loops
+— and automatic preemption, where the extension interrupts the VM on a timer and
 performs the same switch for you (on by default in the servers).
 
 Switching is a latency tool, not a throughput tool. The total CPU work does not
 change and the PHP thread stays single: a heavy handler still takes its
-milliseconds. What changes is who waits for it — without switching, one CPU-bound
-request freezes all in-flight neighbours for its whole runtime; with switching
-their delay is bounded by the quantum. Throughput for CPU-bound load still comes
-from the per-core process pool, so the
+milliseconds. What changes is who waits for it — without switching, one
+CPU-bound request freezes every other request the process is serving for its
+whole runtime; with switching their delay is bounded by the quantum. Throughput
+for CPU-bound load still comes from the per-core process pool, so the
 [positioning verdict](positioning.md#is-sconcur-for-you) stands.
 
 ## `Scheduler::switch()` — the explicit switch point
@@ -46,10 +46,11 @@ share the thread evenly. `quantumMs <= 0` forces a yield on every call (explicit
 switch points, tests).
 
 Mechanics: the coroutine suspends with a `PendingSwitchDto` marker, and the
-scheduler appends it to a FIFO queue of parked coroutines. Ready results always
-take priority — a parked coroutine is resumed only when nothing is deliverable
-right now. Two CPU loops therefore round-robin each other, and I/O completions are
-never delayed by parked crunchers.
+scheduler appends it to a FIFO queue of parked coroutines — those waiting for
+the thread rather than for a result. Ready results always take priority — a
+parked coroutine is resumed only when nothing is deliverable right now. Two CPU
+loops therefore round-robin each other, and I/O completions are never delayed by
+parked crunchers.
 
 ## Automatic preemption
 
@@ -117,11 +118,12 @@ timer keeps firing until `disablePreemption()` or process shutdown.
 ## The cost under load
 
 Preemption lets cheap requests overtake, and the heavy ones pay for it: a
-CPU-bound handler's own latency grows roughly by the number of such handlers in
-flight on that worker. On a single thread that is arithmetic, not a setting.
+CPU-bound handler's own latency grows roughly by the number of such handlers the
+worker is serving at the same time. On a single thread that is arithmetic, not a
+setting.
 
 Measured on 8 workers and 256 connections, with 90% of requests hitting an empty
-route and 10% a handler worth ~49 ms of CPU:
+endpoint and 10% a handler worth ~49 ms of CPU:
 
 | `preemptionQuantumMs` | p50 | p90 | p99 |
 | ---: | ---: | ---: | ---: |
@@ -136,8 +138,9 @@ coroutines interleave and all of them stretch at once, without it they run to
 completion in turn. An intermediate quantum only costs p50 and buys no p99, so
 there is usually no reason to change the 5 ms default.
 
-The other knob is the HTTP server's `maxConcurrency`, which bounds not the
-quantum but the number of handlers in flight — the width of the sharing itself.
+The other setting is the HTTP server's `maxConcurrency`, which bounds not the
+quantum but the number of handlers served at once — that is, how many of them
+share the thread.
 
 | `maxConcurrency` | p50 | p90 | p99 |
 | ---: | ---: | ---: | ---: |
@@ -146,7 +149,7 @@ quantum but the number of handlers in flight — the width of the sharing itself
 | 8 | 201.3 ms | 586.0 ms | 914.5 ms |
 | 4 | 244.3 ms | 441.9 ms | 659.5 ms |
 
-Both knobs move along one curve: a low p50 for the cheap requests and a short
+Both settings move along one curve: a low p50 for the cheap requests and a short
 tail for the heavy ones are not available together. Pick the end that matches
 your workload — the defaults are tuned for the cheap requests.
 
@@ -158,9 +161,9 @@ the pool, and keeping heavy computation out of the handler.
 The interrupt handler refuses to park a coroutine in states where an invisible
 switch would corrupt engine or scheduler bookkeeping:
 
-- while an autoload is in flight (`EG(in_autoload)` non-empty) — parking there
-  would make every other coroutine requesting the same class fail with "class not
-  found";
+- while an autoload is in progress (`EG(in_autoload)` non-empty) — parking there
+  would make every other coroutine requesting the same class fail with "class
+  not found";
 - while an exception is being handled (`EG(exception)`) or the execution timeout
   fired;
 - inside a suspend transition — between announcing a suspend (registering a

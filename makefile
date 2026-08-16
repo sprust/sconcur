@@ -140,8 +140,11 @@ bench-reset:
 	docker volume rm -f sconcur-php_mongodb-data sconcur-php_mongodb-configdb sconcur-php_mysql-data sconcur-php_postgres-data
 	$(DOCKER_COMPOSE) up -d --wait mongodb mysql postgres
 
+# Benchmark scripts live in tests/benchmarks/, grouped by the technology they
+# measure: mongodb/, mysql/, pgsql/, http/, socket/, ws/, db/ (whole-session DB
+# runs), runtime/ (scheduler and PHP<->Go boundary) and lib/ (shared harness).
 bench-all:
-	make bench-sleep
+	make bench-sleeper
 	make bench-mongodb-insertOne
 	make bench-mongodb-bulkWrite
 	make bench-mongodb-aggregate
@@ -168,7 +171,7 @@ bench-all:
 	make bench-pgsql-delete
 	make bench-pgsql-transaction
 	make bench-http-client
-	make bench-http-client-google
+	make bench-http-client-external
 	make bench-http-client-download
 	make bench-http-server-io
 	make bench-http-server-cpu
@@ -182,158 +185,163 @@ bench-all:
 	make bench-ws-server-cpu
 
 bench-db-lifecycle:
-	$(PHP_EXT) tests/benchmarks/db-lifecycle.php ${c} ${runs} ${pool}
+	$(PHP_EXT) tests/benchmarks/db/lifecycle.php ${c} ${runs} ${pool}
 
 # Re-measures all DB benchmarks for docs/benchmarks.md: several runs per bench,
 # each against a cold seeded dataset, aggregated to median/min/max markdown
 # rows. Tunables via env, e.g.: make bench-db-runs RUNS=2 DATASET=1000
 bench-db-runs:
-	tests/benchmarks/db-bench-runs.sh
+	tests/benchmarks/db/runs.sh
 
 bench-http-client-download:
-	$(PHP_EXT) tests/benchmarks/http-client-download.php ${c}
+	$(PHP_EXT) tests/benchmarks/http/client-download.php ${c}
 
-bench-sleep:
-	$(PHP_EXT) tests/benchmarks/sleep.php ${c}
+bench-sleeper:
+	$(PHP_EXT) tests/benchmarks/runtime/sleeper.php ${c}
 
 bench-mongodb-insertOne:
-	$(PHP_EXT) tests/benchmarks/mongodb-insert-one.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb/insert-one.php ${c}
 
 bench-mongodb-bulkWrite:
-	$(PHP_EXT) tests/benchmarks/mongodb-bulk-write.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb/bulk-write.php ${c}
 
 bench-mongodb-aggregate:
-	$(PHP_EXT) tests/benchmarks/mongodb-aggregate.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb/aggregate.php ${c}
 
 bench-mongodb-insertMany:
-	$(PHP_EXT) tests/benchmarks/mongodb-insert-many.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb/insert-many.php ${c}
 
 bench-mongodb-count:
-	$(PHP_EXT) tests/benchmarks/mongodb-count.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb/count.php ${c}
 
 bench-mongodb-command:
-	$(PHP_EXT) tests/benchmarks/mongodb-command.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb/command.php ${c}
 
 bench-mongodb-updateOne:
-	$(PHP_EXT) tests/benchmarks/mongodb-update-one.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb/update-one.php ${c}
 
 bench-mongodb-findOne:
-	$(PHP_EXT) tests/benchmarks/mongodb-find-one.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb/find-one.php ${c}
 
 bench-mongodb-createIndex:
-	$(PHP_EXT) tests/benchmarks/mongodb-create-index.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb/create-index.php ${c}
 
 bench-mongodb-deleteOne:
-	$(PHP_EXT) tests/benchmarks/mongodb-delete-one.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb/delete-one.php ${c}
 
 bench-mongodb-updateMany:
-	$(PHP_EXT) tests/benchmarks/mongodb-update-many.php ${c}
+	$(PHP_EXT) tests/benchmarks/mongodb/update-many.php ${c}
+
+# Document-codec micro-benchmark: serialize/unserialize only, no database and no
+# extension. c = iterations (default 20000).
+bench-mongodb-serializer:
+	$(PHP_CLI) php tests/benchmarks/mongodb/serializer.php ${c}
 
 bench-mysql-insert:
-	$(PHP_EXT) tests/benchmarks/mysql-insert.php ${c}
+	$(PHP_EXT) tests/benchmarks/mysql/insert.php ${c}
 
 bench-mysql-selectOne:
-	$(PHP_EXT) tests/benchmarks/mysql-select-one.php ${c}
+	$(PHP_EXT) tests/benchmarks/mysql/select-one.php ${c}
 
 bench-mysql-selectMany:
-	$(PHP_EXT) tests/benchmarks/mysql-select-many.php ${c}
+	$(PHP_EXT) tests/benchmarks/mysql/select-many.php ${c}
 
 bench-mysql-count:
-	$(PHP_EXT) tests/benchmarks/mysql-count.php ${c}
+	$(PHP_EXT) tests/benchmarks/mysql/count.php ${c}
 
 bench-mysql-update:
-	$(PHP_EXT) tests/benchmarks/mysql-update.php ${c}
+	$(PHP_EXT) tests/benchmarks/mysql/update.php ${c}
 
 bench-mysql-delete:
-	$(PHP_EXT) tests/benchmarks/mysql-delete.php ${c}
+	$(PHP_EXT) tests/benchmarks/mysql/delete.php ${c}
 
 bench-mysql-transaction:
-	$(PHP_EXT) tests/benchmarks/mysql-transaction.php ${c}
+	$(PHP_EXT) tests/benchmarks/mysql/transaction.php ${c}
 
 bench-pgsql-insert:
-	$(PHP_EXT) tests/benchmarks/pgsql-insert.php ${c}
+	$(PHP_EXT) tests/benchmarks/pgsql/insert.php ${c}
 
 bench-pgsql-selectOne:
-	$(PHP_EXT) tests/benchmarks/pgsql-select-one.php ${c}
+	$(PHP_EXT) tests/benchmarks/pgsql/select-one.php ${c}
 
 bench-pgsql-selectMany:
-	$(PHP_EXT) tests/benchmarks/pgsql-select-many.php ${c}
+	$(PHP_EXT) tests/benchmarks/pgsql/select-many.php ${c}
 
 bench-pgsql-count:
-	$(PHP_EXT) tests/benchmarks/pgsql-count.php ${c}
+	$(PHP_EXT) tests/benchmarks/pgsql/count.php ${c}
 
 bench-pgsql-update:
-	$(PHP_EXT) tests/benchmarks/pgsql-update.php ${c}
+	$(PHP_EXT) tests/benchmarks/pgsql/update.php ${c}
 
 bench-pgsql-delete:
-	$(PHP_EXT) tests/benchmarks/pgsql-delete.php ${c}
+	$(PHP_EXT) tests/benchmarks/pgsql/delete.php ${c}
 
 bench-pgsql-transaction:
-	$(PHP_EXT) tests/benchmarks/pgsql-transaction.php ${c}
+	$(PHP_EXT) tests/benchmarks/pgsql/transaction.php ${c}
 
 # Payload-size benches: p = payload bytes per operation (default 1024), c = calls.
 # E.g.: make bench-mysql-payloadWrite p=1048576 c=50
 PHP_EXT_PAYLOAD = $(DOCKER_COMPOSE) exec -e SCONCUR_BENCH_PAYLOAD_BYTES=$(p) php php -d extension=./ext/build/sconcur.so
 
 bench-mongodb-payloadWrite:
-	$(PHP_EXT_PAYLOAD) tests/benchmarks/mongodb-payload-write.php ${c}
+	$(PHP_EXT_PAYLOAD) tests/benchmarks/mongodb/payload-write.php ${c}
 
 bench-mongodb-payloadRead:
-	$(PHP_EXT_PAYLOAD) tests/benchmarks/mongodb-payload-read.php ${c}
+	$(PHP_EXT_PAYLOAD) tests/benchmarks/mongodb/payload-read.php ${c}
 
 bench-mysql-payloadWrite:
-	$(PHP_EXT_PAYLOAD) tests/benchmarks/mysql-payload-write.php ${c}
+	$(PHP_EXT_PAYLOAD) tests/benchmarks/mysql/payload-write.php ${c}
 
 bench-mysql-payloadRead:
-	$(PHP_EXT_PAYLOAD) tests/benchmarks/mysql-payload-read.php ${c}
+	$(PHP_EXT_PAYLOAD) tests/benchmarks/mysql/payload-read.php ${c}
 
 bench-pgsql-payloadWrite:
-	$(PHP_EXT_PAYLOAD) tests/benchmarks/pgsql-payload-write.php ${c}
+	$(PHP_EXT_PAYLOAD) tests/benchmarks/pgsql/payload-write.php ${c}
 
 bench-pgsql-payloadRead:
-	$(PHP_EXT_PAYLOAD) tests/benchmarks/pgsql-payload-read.php ${c}
+	$(PHP_EXT_PAYLOAD) tests/benchmarks/pgsql/payload-read.php ${c}
 
 bench-http-client:
-	$(PHP_EXT) tests/benchmarks/http-client.php ${c}
+	$(PHP_EXT) tests/benchmarks/http/client.php ${c}
 
-bench-http-client-google:
-	$(PHP_EXT) tests/benchmarks/http-client-google.php ${c}
+bench-http-client-external:
+	$(PHP_EXT) tests/benchmarks/http/client-external.php ${c}
 
 bench-http-server-io:
-	$(PHP_CLI) php tests/benchmarks/http-server-io.php
+	$(PHP_CLI) php tests/benchmarks/http/server-io.php
 
 bench-http-server-cpu:
-	$(PHP_CLI) php tests/benchmarks/http-server-cpu.php
+	$(PHP_CLI) php tests/benchmarks/http/server-cpu.php
 
 bench-socket-client:
-	$(PHP_EXT) tests/benchmarks/socket-client.php ${c}
+	$(PHP_EXT) tests/benchmarks/socket/client.php ${c}
 
 bench-socket-throughput:
-	$(PHP_CLI) php tests/benchmarks/socket-throughput.php
+	$(PHP_CLI) php tests/benchmarks/socket/throughput.php
 
 bench-socket-server-io:
-	$(PHP_CLI) php tests/benchmarks/socket-server-io.php
+	$(PHP_CLI) php tests/benchmarks/socket/server-io.php
 
 bench-socket-server-cpu:
-	$(PHP_CLI) php tests/benchmarks/socket-server-cpu.php
+	$(PHP_CLI) php tests/benchmarks/socket/server-cpu.php
 
 bench-ws-client:
-	$(PHP_EXT) tests/benchmarks/ws-client.php ${c}
+	$(PHP_EXT) tests/benchmarks/ws/client.php ${c}
 
 bench-ws-throughput:
-	$(PHP_CLI) php tests/benchmarks/ws-throughput.php
+	$(PHP_CLI) php tests/benchmarks/ws/throughput.php
 
 bench-ws-server-io:
-	$(PHP_CLI) php tests/benchmarks/ws-server-io.php
+	$(PHP_CLI) php tests/benchmarks/ws/server-io.php
 
 bench-ws-server-cpu:
-	$(PHP_CLI) php tests/benchmarks/ws-server-cpu.php
+	$(PHP_CLI) php tests/benchmarks/ws/server-cpu.php
 
 # Runs on the HOST (needs wrk): one server per core with SO_REUSEPORT inside the
 # php container, wrk pinned to separate cores, hitting the container IP (no NAT).
 # Tunables via env, e.g.: make bench-http-throughput SERVERS=16 DURATION=20
 bench-http-throughput:
-	tests/benchmarks/http-throughput.sh
+	tests/benchmarks/http/throughput.sh
 
 # RoadRunner reference server (native drivers, tests/servers/roadrunner) for the
 # honest / and /all comparison. Foreground; stop with Ctrl+C. Tunables:
@@ -370,58 +378,58 @@ swoole-serve:
 # CPU/memory of the server and backend containers + per-worker RSS (leak check).
 # Tunables via env, e.g.: make bench-http-load-stats SERVERS=12 DURATION=30
 bench-http-load-stats:
-	tests/benchmarks/http-load-stats.sh
+	tests/benchmarks/http/load-stats.sh
 
 # Soak variant: a long, steady-load run (10 min by default) that prints the
 # worker-RSS trend over time and a least-squares leak slope. Override via env,
 # e.g.: make bench-http-load-soak DURATION=3600
 bench-http-load-soak:
-	MODE=soak tests/benchmarks/http-load-stats.sh
+	MODE=soak tests/benchmarks/http/load-stats.sh
 
 # Baseline variant: same harness against the bare "/" route (no I/O fan-out) —
 # measures the pure HTTP + framework ceiling, the floor under the /all numbers.
 bench-http-load-stats-empty:
-	ROUTE=/ tests/benchmarks/http-load-stats.sh
+	ROUTE=/ tests/benchmarks/http/load-stats.sh
 
 # RoadRunner counterparts of the three targets above: the same harness against
 # the native-driver reference stack (tests/servers/roadrunner), so the numbers
 # are directly comparable. Tunables via env, e.g.: make bench-rr-load-stats
 # WORKERS=12 DURATION=30
 bench-rr-load-stats:
-	tests/benchmarks/rr-load-stats.sh
+	tests/benchmarks/http/rr-load-stats.sh
 
 # SConcur fan-out INSIDE the RoadRunner worker: the same rr pool and harness,
 # but the route is /all-sconcur (the SConcur features fanned out in a WaitGroup)
 # and the workers load the sconcur extension. Comparable head-to-head with
 # bench-rr-load-stats at the same WORKERS count.
 bench-rr-sconcur-load-stats:
-	ROUTE=/all-sconcur RR_WORKER_CMD='php -d extension=/sconcur/ext/build/sconcur.so rr-worker.php' tests/benchmarks/rr-load-stats.sh
+	ROUTE=/all-sconcur RR_WORKER_CMD='php -d extension=/sconcur/ext/build/sconcur.so rr-worker.php' tests/benchmarks/http/rr-load-stats.sh
 
 bench-rr-load-soak:
-	MODE=soak tests/benchmarks/rr-load-stats.sh
+	MODE=soak tests/benchmarks/http/rr-load-stats.sh
 
 bench-rr-load-stats-empty:
-	ROUTE=/ tests/benchmarks/rr-load-stats.sh
+	ROUTE=/ tests/benchmarks/http/rr-load-stats.sh
 
 # Swoole counterparts of the same targets: the same harness against the coroutine
 # reference stack (tests/servers/swoole), so all three servers are directly
 # comparable at the same worker count. Tunables via env, e.g.:
 # make bench-swoole-load-stats WORKERS=12 DURATION=30
 bench-swoole-load-stats:
-	tests/benchmarks/swoole-load-stats.sh
+	tests/benchmarks/http/swoole-load-stats.sh
 
 # Swoole's own in-request fan-out: the same pool and harness, but the route is
 # /all-coro (the three features in a Swoole Coroutine\WaitGroup). Head-to-head
 # with bench-swoole-load-stats at the same WORKERS count, the mirror of the
 # /all vs /all-sconcur pair on RoadRunner.
 bench-swoole-coro-load-stats:
-	ROUTE=/all-coro tests/benchmarks/swoole-load-stats.sh
+	ROUTE=/all-coro tests/benchmarks/http/swoole-load-stats.sh
 
 bench-swoole-load-soak:
-	MODE=soak tests/benchmarks/swoole-load-stats.sh
+	MODE=soak tests/benchmarks/http/swoole-load-stats.sh
 
 bench-swoole-load-stats-empty:
-	ROUTE=/ tests/benchmarks/swoole-load-stats.sh
+	ROUTE=/ tests/benchmarks/http/swoole-load-stats.sh
 
 # WebSocket load test: spawn a ws-server pool (SO_REUSEPORT, one per core) and drive
 # it with the Go ws-load generator on the "all" message (fans out across EVERY async
@@ -429,15 +437,15 @@ bench-swoole-load-stats-empty:
 # the pool and the generator run in the php container (no host tooling needed).
 # Tunables via env, e.g.: make bench-ws-load-stats SERVERS=12 DURATION=30
 bench-ws-load-stats:
-	tests/benchmarks/ws-load-stats.sh
+	tests/benchmarks/ws/load-stats.sh
 
 # Soak variant: a long, steady-load run (10 min by default) that prints the
 # worker-RSS trend over time and a least-squares leak slope. Override via env,
 # e.g.: make bench-ws-load-soak DURATION=3600
 bench-ws-load-soak:
-	MODE=soak tests/benchmarks/ws-load-stats.sh
+	MODE=soak tests/benchmarks/ws/load-stats.sh
 
 # Baseline variant: same harness against the bare "ping" message (no I/O fan-out) —
 # measures the pure WebSocket + framework ceiling, the floor under the "all" numbers.
 bench-ws-load-stats-empty:
-	MSG=ping tests/benchmarks/ws-load-stats.sh
+	MSG=ping tests/benchmarks/ws/load-stats.sh

@@ -514,7 +514,7 @@ function dbPointSelectContext(): MysqlConnection
 // divided across the reuse-port pool, so the useful size depends on how many
 // server processes the run starts: the default 9 fits a 16-worker pool under
 // MySQL's default max_connections=151 (16 x 9 = 144), and the ladder runs pass
-// their own value (tests/benchmarks/http-load-stats.sh, DB_POOL_SIZE).
+// their own value (tests/benchmarks/http/load-stats.sh, DB_POOL_SIZE).
 function dbPoolSize(): int
 {
     return max(1, (int) (getenv('SCONCUR_DB_POOL_SIZE') ?: 9));

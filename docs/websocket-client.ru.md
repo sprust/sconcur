@@ -2,12 +2,12 @@
 
 # WebSocket-клиент
 
-Асинхронный WebSocket-клиент — зеркало [WebSocket-сервера](websocket-server.ru.md)
-со стороны dial, как [сокет-клиент](socket-client.ru.md) — пара к сокет-серверу.
-Весь сетевой I/O (dial, рукопожатие апгрейда, чтение, запись) живёт в
-Go-расширении: `connect()` уходит в горутину, корутина приостанавливается, поэтому
-десятки соединений поднимаются веером. Вне `WaitGroup` тот же API работает
-синхронно.
+Асинхронный WebSocket-клиент — зеркало
+[WebSocket-сервера](websocket-server.ru.md) со стороны dial, как
+[сокет-клиент](socket-client.ru.md) — пара к сокет-серверу. Весь сетевой I/O
+(dial, рукопожатие апгрейда, чтение, запись) живёт в Go-расширении: `connect()`
+уходит в горутину, корутина приостанавливается, поэтому десятки соединений можно
+поднимать одновременно. Вне `WaitGroup` тот же API работает синхронно.
 
 Модель — долгоживущее двунаправленное соединение: приложение дозванивается,
 получает `Connection` и само ведёт разговор.
@@ -40,7 +40,7 @@ $connection->close();
 | Член | Описание |
 | --- | --- |
 | `read(): ?string` | следующее входящее сообщение; `null` — пир закрыл свою сторону, соединение завершилось или превышен `maxMessageBytes`. Кооперативно приостанавливает корутину |
-| `write(string $data, bool $binary = false): void` | отправить сообщение (с backpressure: ждёт сброса). По умолчанию текст. Бросает `WsClientConnectionClosedException`, если соединения уже нет |
+| `write(string $data, bool $binary = false): void` | отправить сообщение; ждёт, пока оно реально не будет сброшено в сеть, поэтому быстрый писатель не обгоняет пира. По умолчанию текст. Бросает `WsClientConnectionClosedException`, если соединения уже нет |
 | `lastMessageWasBinary(): bool` | было ли последнее `read()` бинарным |
 | `close(): void` | закрыть соединение (идемпотентно, best-effort) |
 | `isClosed(): bool` | закрыто ли соединение |
@@ -50,7 +50,7 @@ $connection->close();
 HTTP-клиент) — корутина приостанавливается кооперативно, другие соединения
 продолжают работать.
 
-## Конкурентность веером
+## Параллельная работа с соединениями
 
 ```php
 use SConcur\WaitGroup;
@@ -121,13 +121,13 @@ PHP (`src/Features/WsClient/`): `WsClient::connect()` собирает `ConnectP
 `WsClientCommandEnum` и `Payloads/` — конверт `Connect`/`Send`/`Close`, зеркало
 Go-структур.
 
-Go (`ext/internal/features/wsclient/`): `connect.go` выполняет `websocket.Dial` с
-`connectTimeout` (отменяем контекстом флоу) и регистрирует стриминговый
-`connectionState` — первый `Next` даёт метаданные, дальше идут входящие сообщения
-из горутины чтения — плюс цикл записи, очищаемый при остановке флоу; `feature.go`
-диспетчеризует команды по `cid`. Цикл записи с backpressure и кодек типа сообщения
-живут в нейтральном `ext/internal/ws/`, общем с WS-сервером (как
-`ext/internal/socket` для пары сырых TCP).
+Go (`ext/internal/features/wsclient/`): `connect.go` выполняет `websocket.Dial`
+с `connectTimeout` (отменяем контекстом флоу) и регистрирует стриминговый
+`connectionState` — первый `Next` даёт метаданные, дальше идут входящие
+сообщения из горутины чтения — плюс цикл записи, очищаемый при остановке флоу;
+`feature.go` диспетчеризует команды по `cid`. Цикл записи, ждущий сброса каждого
+сообщения, и кодек типа сообщения живут в нейтральном `ext/internal/ws/`, общем
+с WS-сервером (как `ext/internal/socket` для пары сырых TCP).
 
 ## Чего нет в v1
 
@@ -139,11 +139,11 @@ TLS (`wss://`), `permessage-deflate` (библиотека умеет, пока 
 ## Тестирование
 
 PHP feature-тесты лежат в `tests/feature/Features/WsClient/` — edge- и
-error-случаи плюс контракт конкурентности на `BaseAsyncTestCase`, против реального
-`WsServer` SConcur, поднятого через `TestWsServer`; Go-сторону покрывает
-`connect_test.go`. Бенчмарк (`make bench-ws-client c=20`) гоняет N round-trip'ов к
-ручке `msleep` демо-сервера: async-веер против последовательных native (сырой
-WS-фрейминг на PHP) и sync; серверные бенчи пула — `make bench-ws-server-io` /
-`bench-ws-server-cpu` / `bench-ws-throughput`.
+error-случаи плюс контракт конкурентности на `BaseAsyncTestCase`, против
+реального `WsServer` SConcur, поднятого через `TestWsServer`; Go-сторону
+покрывает `connect_test.go`. Бенчмарк (`make bench-ws-client c=20`) гоняет N
+round-trip'ов к эндпоинту `msleep` демо-сервера: одновременный async против
+последовательных native (сырой WS-фрейминг на PHP) и sync; серверные бенчи пула
+— `make bench-ws-server-io` / `bench-ws-server-cpu` / `bench-ws-throughput`.
 
 Запуск: `make test c="--filter=WsClient"`, `make ext-test`.

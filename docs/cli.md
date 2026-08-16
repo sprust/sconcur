@@ -106,8 +106,9 @@ loaded extension (`null` if not loaded); `ready` — `true` only when the extens
 is loaded and its version exactly matches.
 
 The return code is `0` when `ready=true` and `1` otherwise, so a pipeline can
-branch without parsing the output. The release CI is built on this: it gates the
-build on `ready` and tags the release as `v<extension_version>`.
+branch without parsing the output. The release CI is built on this: it lets the
+build through only when `ready` is true, and tags the release as
+`v<extension_version>`.
 
 ## sconcur-server — worker master
 

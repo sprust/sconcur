@@ -513,7 +513,7 @@ PHP различает фазы по taskKey: результат `exec` → ме
 - [x] Ссылка из README `## Планы` и из `.ai/README.md`.
 
 **Бенчмарк:**
-- [x] `tests/benchmarks/http-client.php`, `tests/benchmarks/http-client-google.php`.
+- [x] `tests/benchmarks/http/client.php`, `tests/benchmarks/http/client-external.php`.
 
 **Не сделано (опционально):**
 - [ ] Прогон `php-http/client-integration-tests` для формальной PSR-18-совместимости.

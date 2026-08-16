@@ -152,9 +152,10 @@ socket and WebSocket have `connections`.
 | `master.memory.rssBytes` / `master.cpuPercent` | RSS and CPU of the master | `/proc/self/*` |
 
 All date-time fields are UTC (ISO-8601 with a `+00:00` offset). The duration
-buckets are exclusive: a request in flight for 7 s lands only in `inFlight5to15s`.
-In `totals`, `requests.avgMs` is weighted by workers' `completed`, while
-`cpuPercent` is the sum of per-process values and can exceed 100%.
+buckets are exclusive: a request that has been running for 7 s lands only in
+`inFlight5to15s`. In `totals`, `requests.avgMs` is weighted by workers'
+`completed`, while `cpuPercent` is the sum of per-process values and can exceed
+100%.
 
 `snapshotAgeMs` is computed by the master's own clock from the moment the frame
 was received, so it does not depend on clock skew; a live connection with no fresh

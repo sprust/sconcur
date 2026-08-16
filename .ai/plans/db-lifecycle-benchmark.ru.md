@@ -1,6 +1,6 @@
 # План: честный lifecycle-бенч по БД (native-сид → read → delete)
 
-> Реализовано: `tests/benchmarks/db-lifecycle.php`, цель `make bench-db-lifecycle`.
+> Реализовано: `tests/benchmarks/db/lifecycle.php`, цель `make bench-db-lifecycle`.
 > Ниже — актуальный дизайн. Историческая заметка: первая итерация мерила фазу
 > `insert` веером; её заменили на **предзаполнение native-драйвером вне замера**,
 > чтобы read/delete всех режимов работали с идентичным датасетом.
@@ -89,7 +89,7 @@ lifecycle и зеркалят SQL:
 ## Затрагиваемые файлы
 
 ### Новый оркестратор
-- `tests/benchmarks/db-lifecycle.php` — точка входа. Аргументы: `argv[1]` = `N`
+- `tests/benchmarks/db/lifecycle.php` — точка входа. Аргументы: `argv[1]` = `N`
   (default 10000), `argv[2]` = число прогонов (default 3), `argv[3]` = размер пула для
   sync/async (default, напр. 100). Прогоняет `feature × phase × mode`, печатает сводные
   таблицы (по фиче: строки — фазы, колонки — `native/sync/async`: wall ms, время на
@@ -121,7 +121,7 @@ lifecycle и зеркалят SQL:
 - Новая цель `bench-db-lifecycle` с параметрами `c` (=`N`), опц. `runs`, `pool`:
   ```
   bench-db-lifecycle:
-  	$(PHP_EXT) tests/benchmarks/db-lifecycle.php ${c} ${runs} ${pool}
+  	$(PHP_EXT) tests/benchmarks/db/lifecycle.php ${c} ${runs} ${pool}
   ```
 - В `bench-all` НЕ добавляю (бенч тяжёлый/длинный — 3 БД × 3 фазы × 3 режима × 3 прогона
   × 10000 операций). Оставляю отдельной целью.
@@ -203,7 +203,7 @@ foreach ($mode in [native, sync, async]) {
 
 ## Чеклист реализации
 
-- [ ] `tests/benchmarks/db-lifecycle.php` — оркестратор (measure-хелпер, изоляция по
+- [ ] `tests/benchmarks/db/lifecycle.php` — оркестратор (measure-хелпер, изоляция по
       режиму, уникальные имена, прогрев, сводка, медиана).
 - [ ] Хелперы create/drop уникальной таблицы в `TestMysqlResolver` / `TestPgsqlResolver`.
 - [ ] Проверить/добавить методы получения коллекции по имени в `TestMongodbResolver`.

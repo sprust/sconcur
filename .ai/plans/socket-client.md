@@ -334,7 +334,7 @@ Go:
 Документация:
 - [ ] `docs/socket-client.ru.md` (по образцу `docs/socket-server.ru.md` /
       `docs/http-client.ru.md`) + ссылки в `.ai/README.md` и `README.md`.
-- [ ] (опц.) бенчмарк `tests/benchmarks/socket-client.php`.
+- [ ] (опц.) бенчмарк `tests/benchmarks/socket/client.php`.
 
 Финальная проверка:
 `make ext-build && make ext-test && make php-stan && make cs-fixer-check && make test`.

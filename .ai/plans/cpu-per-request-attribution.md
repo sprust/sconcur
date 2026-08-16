@@ -57,7 +57,7 @@
 ```bash
 for T in 4 8 16; do
   WRK_THREADS=$T CONNECTIONS=256 DURATION=20 ROUTE=/ \
-    tests/benchmarks/http-load-stats.sh
+    tests/benchmarks/http/load-stats.sh
 done
 ```
 
@@ -71,7 +71,7 @@ Little's law на ваших числах: 256 соединений / 3.9 мс =
 
 ```bash
 for C in 64 128 256 512 1024; do
-  CONNECTIONS=$C DURATION=20 ROUTE=/ tests/benchmarks/http-load-stats.sh
+  CONNECTIONS=$C DURATION=20 ROUTE=/ tests/benchmarks/http/load-stats.sh
 done
 ```
 
@@ -108,7 +108,7 @@ docker stats --no-stream
 ```bash
 nproc  # зафиксировать N
 # на воркере, до старта рантайма
-GOMAXPROCS=1 tests/benchmarks/http-load-stats.sh
+GOMAXPROCS=1 tests/benchmarks/http/load-stats.sh
 GOMAXPROCS=2 ...
 GOMAXPROCS=4 ...
 ```
@@ -276,7 +276,7 @@ wrk, rps, p50/p90/p99, CPU avg/peak, RSS, и производную мкс CPU/�
 Условия: коммит `7adbcba`, `nproc` 16 (hybrid P/E), 12 воркеров с пином
 `taskset -c $i`, wrk 4 треда / 256 соединений / 20 с, ручка `/`, суммарный RSS
 воркеров ~571 MiB. Все числа — внутрисессионные. `GOMAXPROCS` пробрасывается в
-`tests/benchmarks/http-load-stats.sh` через окружение (добавлено в этой сессии).
+`tests/benchmarks/http/load-stats.sh` через окружение (добавлено в этой сессии).
 
 ### Фаза 0: замеры достоверны
 

@@ -120,7 +120,7 @@ timeouts are in milliseconds; the PHP defaults mirror the Go ones.
 | `readTimeoutMs` | `30000` | Deadline for reading the whole request (`ReadTimeout`). |
 | `writeTimeoutMs` | `30000` | Deadline for writing the response (`WriteTimeout`). |
 | `idleTimeoutMs` | `60000` | Idle deadline for a keep-alive connection (`IdleTimeout`). |
-| `shutdownTimeoutMs` | `10000` | How long Go waits for active connections to drain at shutdown. |
+| `shutdownTimeoutMs` | `10000` | How long Go waits for the active connections to finish at shutdown. |
 | `maxRequestBody` | `10485760` (10 MiB) | Request body limit; exceeding it → `413`. |
 | `maxConcurrency` | `0` (no limit) | Requests handled at once, see [limits](#concurrency-and-limits). |
 | `handlerTimeoutMs` | `60000` | Max total handling time including streaming, otherwise `504`/abort. `0` — off. |
@@ -130,7 +130,7 @@ timeouts are in milliseconds; the PHP defaults mirror the Go ones.
 | `masterPid` | `null` | Stop gracefully once this pid is no longer the parent (the [master](worker-master.md) died); set from `--masterPid` by `fromArgs()`. |
 | `telemetrySocket` | `''` (off) | Unix socket for stats snapshots, injected by the master ([stats](admin-stats.md)). |
 | `serverName` | `'sconcur-server'` | Worker name in the stats snapshots. |
-| `telemetryIntervalMs` | `0` | Snapshot cadence; `0` — the pusher's default (1000 ms). |
+| `telemetryIntervalMs` | `0` | Snapshot cadence; `0` — the default of the component that sends them (1000 ms). |
 | `preemptionQuantumMs` | `5` | Automatic-preemption quantum while serving; `0` — off. See [coroutine switching](coroutine-switching.md). |
 
 `0` means "off" for `maxConcurrency`/`handlerTimeoutMs`/`maxRequests`, and "take
@@ -236,8 +236,8 @@ return $factory->createResponse(200)
     ->withBody(new GeneratorStream($chunks));
 ```
 
-- Write backpressure: each chunk is acknowledged only after Go has written and
-  flushed it, so a fast producer cannot outrun a slow client.
+- The client sets the pace: each chunk is acknowledged only after Go has written
+  and flushed it, so a fast producer cannot outrun a slow client.
 - No `Content-Length` — a header without length, then chunked transfer encoding.
 - The status cannot change after the first chunk (headers are on the wire), so an
   exception while reading the body is not turned into a `500` — it is only
@@ -304,11 +304,11 @@ The time is the moment the request was accepted; the last field is the total
 handling time (for a stream — its whole duration). The line is formatted by the
 same Go goroutine that writes the response, so the log costs no PHP↔Go crossing
 per request (that crossing is the most expensive part of a tiny request — moving
-the log to Go nearly doubles per-core throughput on hello-world). Output is
-asynchronous: a background goroutine writes from a buffer with a ~100 ms timer
-flush, dropping lines with a counter on overflow. The method and path are escaped
-(control bytes, including `CR`/`LF` from a URL-encoded path, become `\xNN`), so a
-request cannot forge a second log line.
+the log to Go nearly doubles the throughput of one core on hello-world). Output
+is asynchronous: a background goroutine writes from a buffer with a ~100 ms
+timer flush; on overflow the extra lines are discarded and counted. The method
+and path are escaped (control bytes, including `CR`/`LF` from a URL-encoded
+path, become `\xNN`), so a request cannot forge a second log line.
 
 Lifecycle lines are written by the PHP side and flushed immediately — one at
 startup, one per shutdown step:
@@ -337,18 +337,18 @@ current one suspends on an SConcur feature (`Fiber::suspend()`).
 > delays neighbours by at most the quantum — but a single monolithic internal call
 > (a huge `preg_match`, `json_decode`) is still not interruptible.
 
-`maxConcurrency` limits requests handled at once. It is a semaphore in Go acquired
-before the body is read, so it bounds goroutines, memory (bodies are read only for
-requests that got a slot) and PHP coroutines at once. Excess connections wait for
-a free slot — natural backpressure. `0` is a risk of OOM under a flood of large
-bodies; set a limit on public servers.
+`maxConcurrency` limits requests handled at once. It is a semaphore in Go
+acquired before the body is read, so it bounds goroutines, memory (bodies are
+read only for requests that got a slot) and PHP coroutines at once. Excess
+connections wait for a free slot, so the load throttles itself. `0` is a risk of
+OOM under a flood of large bodies; set a limit on public servers.
 
 It has a second use — the latency tail. CPU-heavy handlers share the single PHP
-thread, so each one's latency grows with how many are in flight, and
+thread, so each one's latency grows with how many are being served at once, and
 `maxConcurrency` is what bounds that number. On a profile of 90% empty requests
 and 10% handlers worth ~49 ms of CPU, a limit of `4` takes p99 from 2.86 s down
 to 659 ms, at the cost of p50 rising from 30 ms to 244 ms. The trade and both
-knobs are covered in
+settings are covered in
 [coroutine switching](coroutine-switching.md#the-cost-under-load).
 
 `handlerTimeoutMs` bounds the total handling time, streamed response included.
@@ -423,7 +423,7 @@ indistinguishable. A balancer in front of the pool is not needed for evenness.
 
 It does improve the tail on homogeneous load, because it hands out requests
 rather than connections and keeps its own keep-alive pool to the workers. Empty
-route, 8 workers, 256 connections:
+endpoint, 8 workers, 256 connections:
 
 | Setup | rps | p99 |
 | --- | ---: | ---: |
@@ -473,8 +473,8 @@ opcache.jit=tracing
 opcache.jit_buffer_size=128M
 ```
 
-(the same three values work as `php -d` flags). Measured on the demo server:
-~8% less CPU per request on the empty route, 4–9% on the DB routes — the JIT
+(the same three values work as `php -d` flags). Measured on the demo server: ~8%
+less CPU per request on the empty endpoint, 4–9% on the DB endpoints — the JIT
 compiles exactly the per-request orchestration code (scheduler loop, PSR-7
 building) that dominates the PHP side. Applies equally to the socket and
 WebSocket servers and to any long-lived SConcur process.
@@ -496,21 +496,21 @@ $server = new HttpServer(
 ```
 
 The limit is per process (the total budget until restart is `maxRequests` × the
-number of workers). Dispatched requests are counted — the limit request itself is
-not aborted, and requests rejected during the drain do not count.
+number of workers). Dispatched requests are counted — the limit request itself
+is not aborted, and requests rejected while the server is stopping do not count.
 
 ## Graceful shutdown
 
 On `SIGTERM`/`SIGINT` (or a lost master, or the `maxRequests` limit) the server
 closes the listening socket immediately (`http.Server.Shutdown` on the Go side,
-without cancelling in-flight), waits for the running handlers, and exits. Each
-step is logged, see [Logs](#logs).
+without cancelling the connections already accepted), waits for the running
+handlers, and exits. Each step is logged, see [Logs](#logs).
 
-Closing the socket first matters for `SO_REUSEPORT`: the terminating worker leaves
-the reuseport group, so the kernel routes new connections to its neighbours and a
-rolling restart loses no requests. A request accepted but not yet answered in the
-narrow window between the signal and the socket close gets `503 Service
-Unavailable` rather than a dropped connection.
+Closing the socket first matters for `SO_REUSEPORT`: the terminating worker
+leaves the reuseport group, so the kernel routes new connections to its
+neighbours and a rolling restart loses no requests. A request accepted but not
+yet answered in the narrow window between the signal and the socket close gets
+`503 Service Unavailable` rather than a dropped connection.
 
 - Signal handlers are installed before the listener starts and restored on exit.
 - `ext-pcntl` is required; without it the process is killed hard. The project's
@@ -519,9 +519,9 @@ Unavailable` rather than a dropped connection.
   `waitAnyTimeoutBatch` at that interval and notices the signal without traffic.
 - The final response write is fire-and-forget: a handler finishes once its
   response is handed to the connection's write loop, and `shutdownTimeoutMs`
-  bounds how long the drain then waits for in-flight connections to finish
+  bounds how long the shutdown then waits for the active connections to finish
   writing. A client slower than that timeout on the very last response of a
-  drain gets it truncated; raise `shutdownTimeoutMs` if such clients matter.
+  shutdown gets it truncated; raise `shutdownTimeoutMs` if such clients matter.
 
 ## Internals
 
@@ -545,37 +545,40 @@ sequenceDiagram
     Note over PHP: coroutine finished right after the push, the flow is cleaned up
 ```
 
-PHP: `HttpServer::serve()` generates a `flowKey`, installs signal handlers, pushes
-the listener task and starts `Scheduler::serve()` — the server loop over
+PHP: `HttpServer::serve()` generates a `flowKey`, installs signal handlers,
+pushes the listener task and starts `Scheduler::serve()` — the server loop over
 `waitAnyTimeoutBatch()`, which dispatches request events (→ `spawn` a handler in
 its own per-request flow), task results (→ resume by `taskKey`) and the
-completion of the server flow, plus draining and `stopFlow`. A spawned coroutine
-lives outside any `WaitGroup` and must handle its own errors, which is what
-`HttpServer::handle` does by turning them into a `500`.
+completion of the server flow, plus finishing the requests already accepted and
+`stopFlow`. A spawned coroutine lives outside any `WaitGroup` and must handle
+its own errors, which is what `HttpServer::handle` does by turning them into a
+`500`.
 
 Go (`ext/internal/features/httpserver/`): `feature.go` serves both methods and
-holds the registries `pendingRequests` (`requestId → {command channel, abandoned
-signal}`) and `serverStates` (`flowKey → serverState`, for `StopAccepting`);
-`server.go` is `serverState`, an `http.Handler` over `net/http.Server` handling the
-concurrency semaphore, handler timeout, 503/504 and graceful `Shutdown`;
-`listen.go` is the TCP listener and `SO_REUSEPORT`.
+holds the registries `pendingRequests`
+(`requestId → {command channel, abandoned signal}`) and `serverStates`
+(`flowKey → serverState`, for `StopAccepting`); `server.go` is `serverState`, an
+`http.Handler` over `net/http.Server` handling the concurrency semaphore,
+handler timeout, 503/504 and graceful `Shutdown`; `listen.go` is the TCP
+listener and `SO_REUSEPORT`.
 
 The listener is a self-pumping stream: a Go-side goroutine publishes every
 accepted request as the next batch result (`HasNext=true`), so PHP pays no
-`next()` crossing per request. Backpressure is layered — the shared results
+`next()` crossing per request. The throttling is layered — the shared results
 buffer, the requests channel, and beyond that `ServeHTTP` itself blocks. Each
-request is handled in its own flow, so a handler's sub-tasks are isolated and
-stopping one request does not take down the server.
+request is handled in its own flow (the group of that request's tasks), so a
+handler's sub-tasks are isolated and stopping one request does not take down the
+server.
 
 The response is a sequence of write commands over `MethodHttpRespond`: `full` (a
 one-shot response), or `head` → `chunk`* → `end` for a stream. Streaming
-commands are acknowledged only after they are applied — that is the write
-backpressure. The one-shot `full` write is fire-and-forget: the coroutine ends
-right after handing it over (a failure of the final write is not observable to
-the handler), and the handover itself is bounded by the connection-side
-guards (`abandoned`, handler timeout). On the streaming path, if the connection
-dropped or the timeout fired, the handler gets an `abandoned` error and unwinds
-cleanly instead of hanging.
+commands are acknowledged only after they are applied — that is what keeps a
+handler from outrunning the client. The one-shot `full` write is
+fire-and-forget: the coroutine ends right after handing it over (a failure of
+the final write is not observable to the handler), and the handover itself is
+bounded by the connection-side guards (`abandoned`, handler timeout). On the
+streaming path, if the connection dropped or the timeout fired, the handler gets
+an `abandoned` error and unwinds cleanly instead of hanging.
 
 ## What's missing compared to typical servers
 
@@ -621,7 +624,7 @@ $server = TestHttpServer::start(['maxConcurrency' => 2, 'handlerTimeoutMs' => 20
 (`tests/servers/http/http-server.php`) has routes for every scenario. Coverage
 (`tests/feature/Features/HttpServer/`): routing and methods, query and headers,
 binary bodies, multi-value response headers, streaming, the concurrency limit,
-`413`, the handler timeout, a graceful drain, `maxRequests`.
+`413`, the handler timeout, a graceful shutdown, `maxRequests`.
 
 ---
 
