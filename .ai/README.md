@@ -435,6 +435,12 @@ identifying the agent:
 Co-Authored-By: <agent name> <email>
 ```
 
-For example, Claude Code uses
-`Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`; OpenAI
-Codex uses `Co-Authored-By: OpenAI Codex <noreply@openai.com>`.
+**The name must carry the model version the commit was actually written by** —
+read it from the running session (for Claude Code: the model reported in the
+environment, e.g. `Claude Opus 5 (1M context)`), never copy the version from an
+example or from an earlier commit. The trailer is how a later reader knows which
+model produced the change, so a stale version in it is misinformation.
+
+The format, with the version standing in for whatever is current:
+`Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` for Claude
+Code, `Co-Authored-By: OpenAI Codex <noreply@openai.com>` for OpenAI Codex.
