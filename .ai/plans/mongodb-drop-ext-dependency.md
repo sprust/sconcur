@@ -118,7 +118,7 @@ C, Go читает `nil`-ключ и мапит имя класса в тип BS
 
 ## 6. Этапы
 
-1. Инструмент замера: `tests/benchmarks/mongodb-serializer.php` — прямой
+1. Инструмент замера: `tests/benchmarks/mongodb/serializer.php` — прямой
    микробенч `DocumentSerializer`, API которого не меняется, поэтому один и тот
    же скрипт даёт сравнимые «до» и «после».
 2. PHP: классы `SConcur\Bson\*`.
@@ -166,7 +166,7 @@ C, Go читает `nil`-ключ и мапит имя класса в тип BS
 
 ### 9.1. PHP-сторона — то, ради чего всё делалось
 
-`tests/benchmarks/mongodb-serializer.php`, 20 000 итераций, медиана трёх
+`tests/benchmarks/mongodb/serializer.php`, 20 000 итераций, медиана трёх
 прогонов. Один и тот же скрипт до и после, API `DocumentSerializer` не менялся.
 
 | Документ | Операция | До (BSON) | После (msgpack) | Дельта |

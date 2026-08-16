@@ -15,8 +15,8 @@ Tools:
   rps. Connections are created lazily, once per worker;
 - `/all-nowg` — the same six operations one after another, with no `WaitGroup`,
   so the only concurrency left is between different requests. Run it via
-  `ROUTE=/all-nowg tests/benchmarks/http-load-stats.sh`;
-- `tests/benchmarks/http-load-stats.sh` (`make bench-http-load-stats`) — brings up
+  `ROUTE=/all-nowg tests/benchmarks/http/load-stats.sh`;
+- `tests/benchmarks/http/load-stats.sh` (`make bench-http-load-stats`) — brings up
   a pool of servers (`SO_REUSEPORT`, one process per core), runs `wrk`, and during
   the run samples `docker stats` (CPU%/MEM for the server and DB containers) plus
   the aggregate worker RSS from `/proc/<pid>/status` (leak detection);
@@ -35,7 +35,7 @@ servers run in the container, where the extension is built.
 make bench-http-load-stats
 # tuning via env:
 SERVERS=12 WRK_THREADS=4 CONNECTIONS=256 DURATION=20 SAMPLE_INTERVAL=2 \
-    tests/benchmarks/http-load-stats.sh
+    tests/benchmarks/http/load-stats.sh
 
 # baseline against the empty "/" endpoint:
 make bench-http-load-stats-empty
@@ -173,7 +173,7 @@ p50/p90/p99.
 
 The `all` command of the demo server (`tests/servers/ws/ws-server.php`) runs the
 same backend features concurrently for every message, with `Sleeper` added to
-the mix. `tests/benchmarks/ws-load-stats.sh` (`make bench-ws-load-stats`) brings
+the mix. `tests/benchmarks/ws/load-stats.sh` (`make bench-ws-load-stats`) brings
 up the pool and samples the same metrics as `http-load-stats.sh`. The difference
 from the HTTP variant: both the pool and the generator live in the `php`
 container, pinned to non-overlapping cores, and the generator hits the pool over
@@ -181,7 +181,7 @@ loopback.
 
 ```sh
 make bench-ws-load-stats
-SERVERS=12 CONNECTIONS=256 DURATION=20 SAMPLE_INTERVAL=2 tests/benchmarks/ws-load-stats.sh
+SERVERS=12 CONNECTIONS=256 DURATION=20 SAMPLE_INTERVAL=2 tests/benchmarks/ws/load-stats.sh
 
 make bench-ws-load-stats-empty  # baseline against "ping"
 make bench-ws-load-soak         # soak, 10 minutes by default

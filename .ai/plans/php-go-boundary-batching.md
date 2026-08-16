@@ -67,7 +67,7 @@ round-trip'а под конкуренцией). Иначе — закрыть и
 ### Результат пересборки профиля (2026-08-09)
 
 Инструменты: `ext/internal/handler/handler_waitany_bench_test.go` (Go, без cgo) и
-`tests/benchmarks/boundary-profile.php` (PHP + расширение). Оба добавлены этим
+`tests/benchmarks/runtime/boundary-profile.php` (PHP + расширение). Оба добавлены этим
 заходом; PHP-профиль печатает wall и CPU, читать надо CPU — таймер sleeper даёт
 wall, но CPU почти не жжёт.
 

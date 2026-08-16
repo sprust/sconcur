@@ -69,4 +69,4 @@ make bench-swoole-load-soak           # a long run with the RSS trend
 ```
 
 Tuning through env — `WORKERS`, `CONNECTIONS`, `DURATION`, `DB_POOL_SIZE`,
-`ALL_POOL_SIZE` (see the header of `tests/benchmarks/swoole-load-stats.sh`).
+`ALL_POOL_SIZE` (see the header of `tests/benchmarks/http/swoole-load-stats.sh`).

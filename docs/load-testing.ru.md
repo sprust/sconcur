@@ -15,8 +15,8 @@ CPU, и что показал эталонный прогон.
   бы rps. Соединения создаются лениво, по одному разу на воркер;
 - эндпоинт `/all-nowg` — те же шесть операций, но одна за другой и без
   `WaitGroup`, так что остаётся только конкурентность между разными запросами.
-  Запуск: `ROUTE=/all-nowg tests/benchmarks/http-load-stats.sh`;
-- скрипт `tests/benchmarks/http-load-stats.sh` (`make bench-http-load-stats`) —
+  Запуск: `ROUTE=/all-nowg tests/benchmarks/http/load-stats.sh`;
+- скрипт `tests/benchmarks/http/load-stats.sh` (`make bench-http-load-stats`) —
   поднимает пул серверов (`SO_REUSEPORT`, по процессу на ядро), гоняет `wrk` и во
   время прогона семплит `docker stats` (CPU%/MEM серверного и БД-контейнеров) плюс
   суммарный RSS воркеров из `/proc/<pid>/status` (детект утечек);
@@ -35,7 +35,7 @@ CPU, и что показал эталонный прогон.
 make bench-http-load-stats
 # тюнинг через env:
 SERVERS=12 WRK_THREADS=4 CONNECTIONS=256 DURATION=20 SAMPLE_INTERVAL=2 \
-    tests/benchmarks/http-load-stats.sh
+    tests/benchmarks/http/load-stats.sh
 
 # базовый прогон по пустому эндпоинту "/":
 make bench-http-load-stats-empty
@@ -171,14 +171,14 @@ I/O-bound сценарий закрывают отдельные бенчи `ben
 
 Команда `all` демо-сервера (`tests/servers/ws/ws-server.php`) выполняет те же
 backend-фичи одновременно на каждое сообщение, плюс `Sleeper`. Скрипт
-`tests/benchmarks/ws-load-stats.sh` (`make bench-ws-load-stats`) поднимает пул и
+`tests/benchmarks/ws/load-stats.sh` (`make bench-ws-load-stats`) поднимает пул и
 семплит те же метрики, что и `http-load-stats.sh`. Отличие от HTTP-варианта: и
 пул, и генератор живут в контейнере `php`, закреплены за непересекающимися
 ядрами, а генератор бьёт по пулу через loopback.
 
 ```sh
 make bench-ws-load-stats
-SERVERS=12 CONNECTIONS=256 DURATION=20 SAMPLE_INTERVAL=2 tests/benchmarks/ws-load-stats.sh
+SERVERS=12 CONNECTIONS=256 DURATION=20 SAMPLE_INTERVAL=2 tests/benchmarks/ws/load-stats.sh
 
 make bench-ws-load-stats-empty  # базовый прогон по "ping"
 make bench-ws-load-soak         # soak, 10 минут по умолчанию

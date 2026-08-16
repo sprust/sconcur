@@ -96,7 +96,10 @@ stream-обёртки, сырые сокеты), последовательно;
 Вызовов на режим: 100 по умолчанию, 50 для клиентских I/O-бенчей. Три
 MongoDB-бенчмарка ограничены природой операции: `createIndex` и `bulkWrite` — 20,
 `updateMany` — 10. Одиночные запуски: `make bench-<name> c=<count>`; вся
-БД-сессия — `make bench-db-runs`.
+БД-сессия — `make bench-db-runs`. Скрипты лежат в `tests/benchmarks/`, по каталогу
+на замеряемую технологию (`mongodb/`, `mysql/`, `pgsql/`, `http/`, `socket/`,
+`ws/`), поэтому `make bench-mysql-selectOne` запускает
+`tests/benchmarks/mysql/select-one.php`.
 
 `async к native` — знаковый процент `(native − async) / native`, ✅ когда `async`
 быстрее; в БД-таблицах у колонок median, min и max свой процент, что показывает
@@ -185,7 +188,7 @@ fsync, последовательные режимы суммируют его �
 На async-пути payload пересекает границу дважды — упакованные биндинги (или
 BSON-документ) на входе и буфер результата на выходе, — поэтому цена границы
 растёт вместе с payload, а выигрыш от одновременности — нет. Шесть отдельных
-бенчей (`tests/benchmarks/{mongodb,mysql,pgsql}-payload-{write,read}.php`)
+бенчей (`tests/benchmarks/{mongodb,mysql,pgsql}/payload-{write,read}.php`)
 гоняют несжимаемый base64-payload размером `SCONCUR_BENCH_PAYLOAD_BYTES` байт на
 вызов; чтение перечитывает одну горячую строку на режим, так что меряется путь
 передача + декодирование, а не диск. Одиночные запуски:

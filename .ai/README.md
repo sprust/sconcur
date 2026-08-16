@@ -199,7 +199,15 @@ Key enums (string-backed; the 2-3 letter values cross the PHP↔Go boundary):
 - `tests/feature/` — PHPUnit feature tests with `BaseTestCase` (extension
   lifecycle) and `BaseAsyncTestCase` (async event ordering framework)
 - `tests/impl/` — test helpers (MongoDB resolver, app bootstrap, server harnesses)
-- `tests/benchmarks/` — performance benchmarks comparing async vs native
+- `tests/benchmarks/` — performance benchmarks comparing async vs native, grouped
+  by the technology they measure: `mongodb/`, `mysql/`, `pgsql/`, `http/`,
+  `socket/`, `ws/` (each holds its per-operation benches plus, for the protocols,
+  the server benches and the load scripts), `db/` (a whole DB session: repeated
+  runs and their aggregation into the markdown rows of `docs/benchmarks.md`),
+  `runtime/` (scheduler and PHP↔Go boundary, no backend involved) and `lib/`
+  (the shared harness the benches include). A new bench goes into its
+  technology's directory, named after the operation (`mysql/select-one.php`), and
+  gets a `bench-<tech>-<operation>` make target.
 - `tests/mem-leak/` — memory leak stress tests
 
 Tests use PHPUnit 11. Add feature tests in `tests/feature/...` with `*Test.php`

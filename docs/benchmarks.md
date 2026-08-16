@@ -94,7 +94,10 @@ the peak RSS of the PHP process per mode.
 Calls per mode: 100 by default, 50 for client I/O benchmarks. Three MongoDB
 benchmarks are bounded by the operation's nature: `createIndex` and `bulkWrite` 20,
 `updateMany` 10. Single runs: `make bench-<name> c=<count>`; the whole DB session
-is `make bench-db-runs`.
+is `make bench-db-runs`. The scripts live in `tests/benchmarks/`, one directory
+per measured technology (`mongodb/`, `mysql/`, `pgsql/`, `http/`, `socket/`,
+`ws/`), so `make bench-mysql-selectOne` runs
+`tests/benchmarks/mysql/select-one.php`.
 
 `async vs native` is the signed percent `(native − async) / native`, ✅ when
 `async` is faster; in the DB tables each of the median, min and max columns
@@ -182,7 +185,7 @@ concurrent operations × payload.
 On the async path the payload crosses the boundary twice — packed bindings (or a
 BSON document) in, the result buffer out — so the boundary cost grows with the
 payload while the gain from concurrency does not. Six dedicated benches
-(`tests/benchmarks/{mongodb,mysql,pgsql}-payload-{write,read}.php`) move an
+(`tests/benchmarks/{mongodb,mysql,pgsql}/payload-{write,read}.php`) move an
 incompressible base64 payload of `SCONCUR_BENCH_PAYLOAD_BYTES` bytes per call;
 read re-reads one hot row per mode, so the measured path is transfer + decode,
 not disk. Single runs: `make bench-mysql-payloadWrite p=65536 c=100`. Median of
