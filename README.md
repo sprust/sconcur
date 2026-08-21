@@ -257,6 +257,8 @@ The environment the project is built and tested against in CI:
   without streaming.
 - [How to add a new server](docs/adding-a-server.md) — the Serve/Respond pattern
   and the serve loop.
+- [Objects over MessagePack](docs/msgpack-objects.md) — how a PHP object crosses
+  to Go and back, and how to add a type.
 - [Feature benchmarks](docs/benchmarks.md) — per-feature measurements
   (native/sync/async).
 - [Load testing](docs/load-testing.md) — server behaviour under load with all I/O

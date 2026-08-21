@@ -258,6 +258,8 @@ $collection->insertOne(['name' => 'example']);
   стримингом и без.
 - [Как добавить новый сервер](docs/adding-a-server.ru.md) — паттерн Serve/Respond
   и цикл обслуживания.
+- [Объекты через MessagePack](docs/msgpack-objects.ru.md) — как PHP-объект
+  пересекает границу в Go и обратно и как добавить тип.
 - [Бенчмарки фич](docs/benchmarks.ru.md) — замеры по каждой фиче
   (native/sync/async).
 - [Нагрузочное тестирование](docs/load-testing.ru.md) — поведение сервера под

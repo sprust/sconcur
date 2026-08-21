@@ -40,7 +40,8 @@ User-facing documentation (each doc also exists in Russian as `*.ru.md`):
 - Operations: [worker-master](../docs/worker-master.md),
   [admin-stats](../docs/admin-stats.md)
 - Guides: [adding-a-feature](../docs/adding-a-feature.md),
-  [adding-a-server](../docs/adding-a-server.md)
+  [adding-a-server](../docs/adding-a-server.md),
+  [msgpack-objects](../docs/msgpack-objects.md)
 - Measurements: [benchmarks](../docs/benchmarks.md),
   [load-testing](../docs/load-testing.md), [positioning](../docs/positioning.md)
 - [.ai/plans/](plans/) — detailed designs for roadmap items
@@ -136,8 +137,9 @@ feature's doc. Key PHP classes not covered there:
 - `Bson/` — the BSON value objects (`ObjectId`, `UTCDateTime`, `Binary`, …) the
   MongoDB feature hands out, mirroring `MongoDB\BSON\*` so an application moves
   over by changing `use` lines. The namespace is deliberately short: the class name
-  travels on the wire with every value. Details in
-  [docs/mongodb.md](../docs/mongodb.md#object-conversion).
+  travels on the wire with every value. The envelope they cross the boundary in,
+  and how to add a type, are in
+  [docs/msgpack-objects.md](../docs/msgpack-objects.md).
 - `Features/Server/ServerRuntimeSupportTrait` — shared server runtime glue:
   argv→constructor-override parsing, signal handlers, the orphaned-worker check,
   telemetry env.
