@@ -18,6 +18,8 @@ const (
 	MethodWsServe    Method = "wss"
 	MethodWsRespond  Method = "wsr"
 	MethodWsClient   Method = "wsc"
+
+	MethodAmqp Method = "amq"
 )
 
 // internedMethods maps every known method onto its canonical constant. A map
@@ -37,6 +39,7 @@ var internedMethods = map[Method]Method{
 	MethodWsServe:       MethodWsServe,
 	MethodWsRespond:     MethodWsRespond,
 	MethodWsClient:      MethodWsClient,
+	MethodAmqp:          MethodAmqp,
 }
 
 // InternMethod returns the canonical instance of a known method, so a caller

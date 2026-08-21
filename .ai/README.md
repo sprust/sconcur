@@ -36,7 +36,7 @@ User-facing documentation (each doc also exists in Russian as `*.ru.md`):
   [socket-server](../docs/socket-server.md),
   [socket-client](../docs/socket-client.md),
   [websocket-server](../docs/websocket-server.md),
-  [websocket-client](../docs/websocket-client.md)
+  [websocket-client](../docs/websocket-client.md), [amqp](../docs/amqp.md)
 - Operations: [worker-master](../docs/worker-master.md),
   [admin-stats](../docs/admin-stats.md)
 - Guides: [adding-a-feature](../docs/adding-a-feature.md),

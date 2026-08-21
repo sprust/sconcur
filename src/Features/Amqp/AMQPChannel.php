@@ -1,0 +1,575 @@
+<?php
+
+declare(strict_types=1);
+
+namespace SConcur\Features\Amqp;
+
+use SConcur\Features\Amqp\Payloads\ChannelClosePayload;
+use SConcur\Features\Amqp\Payloads\ChannelOpenPayload;
+use SConcur\Features\Amqp\Payloads\ChannelOpenPayloadParameters;
+use SConcur\Features\Amqp\Payloads\ChannelPayloadParameters;
+use SConcur\Features\Amqp\Payloads\ConfirmSelectPayload;
+use SConcur\Features\Amqp\Payloads\ConfirmSelectPayloadParameters;
+use SConcur\Features\Amqp\Payloads\ConfirmWaitPayload;
+use SConcur\Features\Amqp\Payloads\QosPayload;
+use SConcur\Features\Amqp\Payloads\QosPayloadParameters;
+use SConcur\Features\Amqp\Payloads\RecoverPayload;
+use SConcur\Features\Amqp\Payloads\RecoverPayloadParameters;
+use SConcur\Features\Amqp\Payloads\ReturnWaitPayload;
+use SConcur\Features\Amqp\Payloads\TransactionCommitPayload;
+use SConcur\Features\Amqp\Payloads\TransactionRollbackPayload;
+use SConcur\Features\Amqp\Payloads\TransactionSelectPayload;
+use SConcur\Features\Amqp\Support\AmqpResource;
+use SConcur\Features\Amqp\Support\CommandRunner;
+use SConcur\Features\Amqp\Support\PropertiesCodec;
+use SConcur\Transport\PayloadInterface;
+use Throwable;
+
+/**
+ * A channel of an AMQP connection — the calque of ext-amqp's AMQPChannel. The constructor
+ * opens it on the broker, as in the extension, and applies the prefetch settings; from
+ * there on it is the handle every exchange, queue and delivery acknowledgement of this
+ * channel travels through.
+ *
+ * A channel is not shared between coroutines: delivery tags belong to the channel that
+ * delivered them, so a consumer and the acknowledgements of its messages must live on the
+ * same one.
+ */
+class AMQPChannel extends AmqpResource
+{
+    /** The prefetch count ext-amqp gives a fresh channel. */
+    protected const int DEFAULT_PREFETCH_COUNT = 3;
+
+    protected const int MAX_PREFETCH_COUNT = 65535;
+
+    protected const int MAX_PREFETCH_SIZE_BYTES = 4294967295;
+
+    protected AMQPConnection $connection;
+
+    /** The channel number the broker assigned. */
+    protected int $channelNumber = 0;
+
+    protected int $prefetchCount = self::DEFAULT_PREFETCH_COUNT;
+
+    protected int $prefetchSize = 0;
+
+    protected int $globalPrefetchCount = 0;
+
+    protected int $globalPrefetchSize = 0;
+
+    protected bool $open = false;
+
+    /** @var callable|null */
+    protected $confirmCallback;
+
+    /** @var callable|null */
+    protected $nackCallback;
+
+    /** @var callable|null */
+    protected $returnCallback;
+
+    /**
+     * Opens a channel on an already connected AMQPConnection.
+     *
+     * @throws AMQPConnectionException if the connection is not open or the broker is gone
+     */
+    public function __construct(AMQPConnection $connection)
+    {
+        $this->connection = $connection;
+
+        if (!$connection->isConnected()) {
+            throw new AMQPConnectionException(
+                message: 'Could not create channel. Connection resource is not connected.',
+            );
+        }
+
+        $result = CommandRunner::run(
+            payload: new ChannelOpenPayload(
+                new ChannelOpenPayloadParameters(
+                    connectionId: $connection->internalId,
+                    prefetchSizeBytes: $this->prefetchSize,
+                    prefetchCount: $this->prefetchCount,
+                    globalPrefetchSizeBytes: $this->globalPrefetchSize,
+                    globalPrefetchCount: $this->globalPrefetchCount,
+                    timeoutMs: $this->timeoutMs(),
+                ),
+            ),
+            exceptionClass: AMQPConnectionException::class,
+        );
+
+        $this->internalId    = isset($result['chid']) ? (string) $result['chid'] : '';
+        $this->channelNumber = isset($result['no']) ? (int) $result['no'] : 0;
+        $this->open          = true;
+    }
+
+    /**
+     * Whether the channel is open. Like the extension, it reports what happened on this
+     * side and does not probe the broker.
+     */
+    public function isConnected(): bool
+    {
+        return $this->open && $this->connection->isConnected();
+    }
+
+    /**
+     * Closes the channel. Idempotent and best-effort: a channel the broker already
+     * dropped needs no closing.
+     */
+    public function close(): void
+    {
+        if (!$this->open) {
+            return;
+        }
+
+        $channelId = $this->internalId;
+
+        $this->open              = false;
+        $this->internalId        = '';
+        $this->internalConsumers = [];
+
+        try {
+            CommandRunner::run(
+                payload: new ChannelClosePayload(
+                    new ChannelPayloadParameters(
+                        channelId: $channelId,
+                        timeoutMs: $this->timeoutMs(),
+                    ),
+                ),
+                exceptionClass: AMQPChannelException::class,
+            );
+        } catch (Throwable) {
+            // The channel is already gone — nothing to close.
+        }
+    }
+
+    /** The channel number on the connection. */
+    public function getChannelId(): int
+    {
+        return $this->channelNumber;
+    }
+
+    /**
+     * How much the broker may push to this channel before it is acknowledged: a window in
+     * octets, a message count, or both. With $global the limits apply to the whole
+     * channel instead of to each consumer separately.
+     *
+     * @throws AMQPChannelException if the broker rejects the settings
+     */
+    public function qos(int $size, int $count, bool $global = false): void
+    {
+        if ($global) {
+            $this->globalPrefetchSize  = $size;
+            $this->globalPrefetchCount = $count;
+        } else {
+            $this->prefetchSize  = $size;
+            $this->prefetchCount = $count;
+        }
+
+        $this->applyQos();
+    }
+
+    /**
+     * @throws AMQPConnectionException if the count is outside the range the protocol allows
+     * @throws AMQPChannelException if the broker rejects the settings
+     */
+    public function setPrefetchCount(int $count): void
+    {
+        $this->assertPrefetchCount($count);
+
+        $this->prefetchCount = $count;
+        $this->prefetchSize  = 0;
+
+        $this->applyQos();
+    }
+
+    public function getPrefetchCount(): int
+    {
+        return $this->prefetchCount;
+    }
+
+    /**
+     * @throws AMQPConnectionException if the window is outside the range the protocol allows
+     * @throws AMQPChannelException if the broker rejects the settings
+     */
+    public function setPrefetchSize(int $size): void
+    {
+        $this->assertPrefetchSize($size);
+
+        $this->prefetchSize  = $size;
+        $this->prefetchCount = 0;
+
+        $this->applyQos();
+    }
+
+    public function getPrefetchSize(): int
+    {
+        return $this->prefetchSize;
+    }
+
+    /**
+     * @throws AMQPConnectionException if the count is outside the range the protocol allows
+     * @throws AMQPChannelException if the broker rejects the settings
+     */
+    public function setGlobalPrefetchCount(int $count): void
+    {
+        $this->assertPrefetchCount($count);
+
+        $this->globalPrefetchCount = $count;
+        $this->globalPrefetchSize  = 0;
+
+        $this->applyQos();
+    }
+
+    public function getGlobalPrefetchCount(): int
+    {
+        return $this->globalPrefetchCount;
+    }
+
+    /**
+     * @throws AMQPConnectionException if the window is outside the range the protocol allows
+     * @throws AMQPChannelException if the broker rejects the settings
+     */
+    public function setGlobalPrefetchSize(int $size): void
+    {
+        $this->assertPrefetchSize($size);
+
+        $this->globalPrefetchSize  = $size;
+        $this->globalPrefetchCount = 0;
+
+        $this->applyQos();
+    }
+
+    public function getGlobalPrefetchSize(): int
+    {
+        return $this->globalPrefetchSize;
+    }
+
+    /**
+     * Starts a transaction: everything published and acknowledged from here on takes
+     * effect only when commitTransaction() is called.
+     *
+     * @throws AMQPChannelException if the broker rejects the method
+     */
+    public function startTransaction(): void
+    {
+        $this->runChannelCommand(new TransactionSelectPayload($this->channelParameters()));
+    }
+
+    /**
+     * @throws AMQPChannelException if no transaction was started or the broker rejects it
+     */
+    public function commitTransaction(): void
+    {
+        $this->runChannelCommand(new TransactionCommitPayload($this->channelParameters()));
+    }
+
+    /**
+     * @throws AMQPChannelException if no transaction was started or the broker rejects it
+     */
+    public function rollbackTransaction(): void
+    {
+        $this->runChannelCommand(new TransactionRollbackPayload($this->channelParameters()));
+    }
+
+    public function getConnection(): AMQPConnection
+    {
+        return $this->connection;
+    }
+
+    /**
+     * Asks the broker to redeliver every message this channel has not acknowledged. With
+     * $requeue the messages may go to another consumer.
+     *
+     * @throws AMQPChannelException if the broker rejects the method
+     */
+    public function basicRecover(bool $requeue = true): void
+    {
+        CommandRunner::run(
+            payload: new RecoverPayload(
+                new RecoverPayloadParameters(
+                    channelId: $this->internalId,
+                    requeue: $requeue,
+                    timeoutMs: $this->timeoutMs(),
+                ),
+            ),
+            exceptionClass: AMQPChannelException::class,
+        );
+    }
+
+    /**
+     * Puts the channel into publisher-confirm mode: the broker reports every published
+     * message as confirmed or rejected, and waitForConfirm() collects those reports.
+     *
+     * @throws AMQPChannelException if the channel is transactional or the broker rejects it
+     */
+    public function confirmSelect(): void
+    {
+        CommandRunner::run(
+            payload: new ConfirmSelectPayload(
+                new ConfirmSelectPayloadParameters(
+                    channelId: $this->internalId,
+                    noWait: false,
+                    timeoutMs: $this->timeoutMs(),
+                ),
+            ),
+            exceptionClass: AMQPChannelException::class,
+        );
+    }
+
+    /**
+     * The callbacks waitForConfirm() runs for each confirmed or rejected message:
+     *
+     *     function ackCallback(int $deliveryTag, bool $multiple): bool;
+     *     function nackCallback(int $deliveryTag, bool $multiple, bool $requeue): bool;
+     *
+     * Returning false from either ends the wait loop. Unlike the extension, which calls
+     * them from its own reading loop, the calque calls them from waitForConfirm() — the
+     * only place where the coroutine waits for the broker.
+     */
+    public function setConfirmCallback(?callable $ackCallback, ?callable $nackCallback = null): void
+    {
+        $this->confirmCallback = $ackCallback;
+        $this->nackCallback    = $nackCallback;
+    }
+
+    /**
+     * Waits until every message published since the last call has been confirmed or
+     * rejected by the broker, running the confirm callbacks on the way. The messages the
+     * broker returned as unroutable are collected too, and handed to the return callback.
+     *
+     * @param float $timeout seconds to wait; 0 waits until the broker answers
+     *
+     * @throws AMQPQueueException if the wait times out
+     */
+    public function waitForConfirm(float $timeout = 0.0): void
+    {
+        $result = CommandRunner::run(
+            payload: new ConfirmWaitPayload(
+                new ChannelPayloadParameters(
+                    channelId: $this->internalId,
+                    timeoutMs: static::toMilliseconds($timeout),
+                ),
+            ),
+            exceptionClass: AMQPQueueException::class,
+        );
+
+        $this->runConfirmCallbacks(is_array($result['cf'] ?? null) ? $result['cf'] : []);
+        $this->runReturnCallbacks(is_array($result['rt'] ?? null) ? $result['rt'] : []);
+    }
+
+    /**
+     * The callback waitForBasicReturn() runs for each returned message:
+     *
+     *     function callback(int $replyCode, string $replyText, string $exchange,
+     *                       string $routingKey, AMQPBasicProperties $properties,
+     *                       string $body): bool;
+     *
+     * Returning false ends the wait loop.
+     */
+    public function setReturnCallback(?callable $returnCallback): void
+    {
+        $this->returnCallback = $returnCallback;
+    }
+
+    /**
+     * Waits for the messages the broker returned as unroutable and runs the return
+     * callback for each.
+     *
+     * @param float $timeout seconds to wait; 0 waits until the broker answers
+     *
+     * @throws AMQPQueueException if the wait times out
+     */
+    public function waitForBasicReturn(float $timeout = 0.0): void
+    {
+        $result = CommandRunner::run(
+            payload: new ReturnWaitPayload(
+                new ChannelPayloadParameters(
+                    channelId: $this->internalId,
+                    timeoutMs: static::toMilliseconds($timeout),
+                ),
+            ),
+            exceptionClass: AMQPQueueException::class,
+        );
+
+        $this->runReturnCallbacks(is_array($result['rt'] ?? null) ? $result['rt'] : []);
+    }
+
+    /**
+     * The queues consuming on this channel, by the consumer tag the broker assigned.
+     *
+     * @return array<string, AMQPQueue>
+     */
+    public function getConsumers(): array
+    {
+        return $this->internalConsumers;
+    }
+
+    /**
+     * The deadline of one broker method on this channel, in milliseconds — the
+     * connection's rpc_timeout.
+     */
+    protected function timeoutMs(): int
+    {
+        return static::toMilliseconds($this->connection->getRpcTimeout());
+    }
+
+    protected function channelParameters(): ChannelPayloadParameters
+    {
+        return new ChannelPayloadParameters(
+            channelId: $this->internalId,
+            timeoutMs: $this->timeoutMs(),
+        );
+    }
+
+    /**
+     * @throws AMQPChannelException if the broker rejects the method
+     */
+    protected function runChannelCommand(PayloadInterface $payload): void
+    {
+        CommandRunner::run(payload: $payload, exceptionClass: AMQPChannelException::class);
+    }
+
+    /**
+     * Sends the channel's prefetch settings, mirroring the extension: the per-consumer
+     * limits first, then the channel-wide ones if any is set — writing the per-consumer
+     * limits clears them on the broker.
+     *
+     * @throws AMQPChannelException if the broker rejects the settings
+     */
+    protected function applyQos(): void
+    {
+        if (!$this->open) {
+            return;
+        }
+
+        CommandRunner::run(
+            payload: new QosPayload(
+                new QosPayloadParameters(
+                    channelId: $this->internalId,
+                    prefetchSizeBytes: $this->prefetchSize,
+                    prefetchCount: $this->prefetchCount,
+                    global: false,
+                    timeoutMs: $this->timeoutMs(),
+                ),
+            ),
+            exceptionClass: AMQPChannelException::class,
+        );
+
+        if ($this->globalPrefetchSize === 0 && $this->globalPrefetchCount === 0) {
+            return;
+        }
+
+        CommandRunner::run(
+            payload: new QosPayload(
+                new QosPayloadParameters(
+                    channelId: $this->internalId,
+                    prefetchSizeBytes: $this->globalPrefetchSize,
+                    prefetchCount: $this->globalPrefetchCount,
+                    global: true,
+                    timeoutMs: $this->timeoutMs(),
+                ),
+            ),
+            exceptionClass: AMQPChannelException::class,
+        );
+    }
+
+    /**
+     * @param array<mixed> $confirmations
+     */
+    protected function runConfirmCallbacks(array $confirmations): void
+    {
+        foreach ($confirmations as $confirmation) {
+            if (!is_array($confirmation)) {
+                continue;
+            }
+
+            $deliveryTag = isset($confirmation['dt']) ? (int) $confirmation['dt'] : 0;
+            $multiple    = (bool) ($confirmation['mu'] ?? false);
+            $acked       = (bool) ($confirmation['ak'] ?? false);
+
+            $callback = $acked ? $this->confirmCallback : $this->nackCallback;
+
+            if ($callback === null) {
+                continue;
+            }
+
+            $keepWaiting = $acked
+                ? $callback($deliveryTag, $multiple)
+                : $callback($deliveryTag, $multiple, (bool) ($confirmation['rq'] ?? false));
+
+            if ($keepWaiting === false) {
+                return;
+            }
+        }
+    }
+
+    /**
+     * @param array<mixed> $returns
+     */
+    protected function runReturnCallbacks(array $returns): void
+    {
+        if ($this->returnCallback === null) {
+            return;
+        }
+
+        foreach ($returns as $returned) {
+            if (!is_array($returned)) {
+                continue;
+            }
+
+            /** @var array<mixed> $rawProperties */
+            $rawProperties = is_array($returned['ps'] ?? null) ? $returned['ps'] : [];
+
+            $keepWaiting = ($this->returnCallback)(
+                isset($returned['rc']) ? (int) $returned['rc'] : 0,
+                isset($returned['rx']) ? (string) $returned['rx'] : '',
+                isset($returned['en']) ? (string) $returned['en'] : '',
+                isset($returned['rk']) ? (string) $returned['rk'] : '',
+                PropertiesCodec::decode($rawProperties),
+                isset($returned['bd']) ? (string) $returned['bd'] : '',
+            );
+
+            if ($keepWaiting === false) {
+                return;
+            }
+        }
+    }
+
+    /**
+     * @throws AMQPConnectionException if the count is outside the range the protocol allows
+     */
+    protected function assertPrefetchCount(int $count): void
+    {
+        if ($count < 0 || $count > self::MAX_PREFETCH_COUNT) {
+            throw new AMQPConnectionException(
+                message: "Parameter 'prefetchCount' must be between 0 and " . self::MAX_PREFETCH_COUNT . '.',
+            );
+        }
+    }
+
+    /**
+     * @throws AMQPConnectionException if the window is outside the range the protocol allows
+     */
+    protected function assertPrefetchSize(int $sizeBytes): void
+    {
+        if ($sizeBytes < 0 || $sizeBytes > self::MAX_PREFETCH_SIZE_BYTES) {
+            throw new AMQPConnectionException(
+                message: "Parameter 'prefetchSize' must be between 0 and " . self::MAX_PREFETCH_SIZE_BYTES . '.',
+            );
+        }
+    }
+
+    /**
+     * A channel an application dropped without closing is closed best-effort here. PHP
+     * tells the Go side nothing about garbage collection, so the Go-side sweeper is what
+     * catches the channels this never reaches (see docs/amqp.md).
+     */
+    public function __destruct()
+    {
+        try {
+            $this->close();
+        } catch (Throwable) {
+            // Shutting down: there is nobody left to report a failed close to.
+        }
+    }
+}

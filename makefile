@@ -136,13 +136,13 @@ ext-test:
 # named data volumes and recreates the containers. Without it writes accumulate
 # across runs (the DB data lives on disk now, not tmpfs) and the numbers drift.
 bench-reset:
-	$(DOCKER_COMPOSE) rm -sf mongodb mysql postgres
-	docker volume rm -f sconcur-php_mongodb-data sconcur-php_mongodb-configdb sconcur-php_mysql-data sconcur-php_postgres-data
-	$(DOCKER_COMPOSE) up -d --wait mongodb mysql postgres
+	$(DOCKER_COMPOSE) rm -sf mongodb mysql postgres rabbitmq
+	docker volume rm -f sconcur-php_mongodb-data sconcur-php_mongodb-configdb sconcur-php_mysql-data sconcur-php_postgres-data sconcur-php_rabbitmq-data
+	$(DOCKER_COMPOSE) up -d --wait mongodb mysql postgres rabbitmq
 
 # Benchmark scripts live in tests/benchmarks/, grouped by the technology they
-# measure: mongodb/, mysql/, pgsql/, http/, socket/, ws/, db/ (whole-session DB
-# runs), runtime/ (scheduler and PHP<->Go boundary) and lib/ (shared harness).
+# measure: mongodb/, mysql/, pgsql/, http/, socket/, ws/, amqp/, db/ (whole-session
+# DB runs), runtime/ (scheduler and PHP<->Go boundary) and lib/ (shared harness).
 bench-all:
 	make bench-sleeper
 	make bench-mongodb-insertOne
@@ -183,6 +183,18 @@ bench-all:
 	make bench-ws-throughput
 	make bench-ws-server-io
 	make bench-ws-server-cpu
+	make bench-amqp-publish
+	make bench-amqp-get
+	make bench-amqp-consume
+
+bench-amqp-publish:
+	$(PHP_EXT) tests/benchmarks/amqp/publish.php ${c}
+
+bench-amqp-get:
+	$(PHP_EXT) tests/benchmarks/amqp/get.php ${c}
+
+bench-amqp-consume:
+	$(PHP_EXT) tests/benchmarks/amqp/consume.php ${c}
 
 bench-db-lifecycle:
 	$(PHP_EXT) tests/benchmarks/db/lifecycle.php ${c} ${runs} ${pool}

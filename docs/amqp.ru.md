@@ -1,0 +1,315 @@
+[English](amqp.md) | Русский
+
+# AMQP (RabbitMQ)
+
+Асинхронный клиент AMQP 0-9-1. Соединение, каналы, топология, публикация и
+потребление живут в Go-расширении, PHP остаётся тонким оркестратором. Внутри
+`WaitGroup` десятки публикаций и потребителей идут одновременно; вне Fiber тот же
+API работает синхронно — как у всех фич SConcur.
+
+Публичный API — калька PECL-расширения
+[`amqp`](https://github.com/php-amqp/php-amqp): те же классы, те же методы, те же
+флаги и константы. Переход приложения сводится к правке `use`-строк.
+
+Главный выигрыш — консьюмер. У `ext-amqp` `AMQPQueue::consume()` держит
+PHP-поток: воркер занят одной очередью и ничего больше делать не может. Здесь тот
+же вызов приостанавливает только свою корутину, поэтому один процесс тянет
+несколько очередей одновременно.
+
+## Быстрый старт
+
+Публикация:
+
+```php
+use SConcur\Features\Amqp\AMQPChannel;
+use SConcur\Features\Amqp\AMQPConnection;
+use SConcur\Features\Amqp\AMQPExchange;
+
+use const SConcur\Features\Amqp\AMQP_DELIVERY_MODE_PERSISTENT;
+use const SConcur\Features\Amqp\AMQP_DURABLE;
+use const SConcur\Features\Amqp\AMQP_EX_TYPE_TOPIC;
+use const SConcur\Features\Amqp\AMQP_NOPARAM;
+
+$connection = new AMQPConnection([
+    'host'     => 'sc-rabbitmq',
+    'port'     => 5672,
+    'login'    => 'sc_user',
+    'password' => '_sc_password_567',
+    'vhost'    => '/',
+]);
+
+$connection->connect();
+
+$channel  = new AMQPChannel($connection);
+$exchange = new AMQPExchange($channel);
+
+$exchange->setName('events');
+$exchange->setType(AMQP_EX_TYPE_TOPIC);
+$exchange->setFlags(AMQP_DURABLE);
+$exchange->declareExchange();
+
+$exchange->publish('{"id":1}', 'order.created', AMQP_NOPARAM, [
+    'content_type'  => 'application/json',
+    'delivery_mode' => AMQP_DELIVERY_MODE_PERSISTENT,
+]);
+```
+
+Потребление — три очереди одновременно в одном процессе:
+
+```php
+use SConcur\Features\Amqp\AMQPEnvelope;
+use SConcur\Features\Amqp\AMQPQueue;
+use SConcur\WaitGroup;
+
+$waitGroup = WaitGroup::create();
+
+foreach (['orders', 'invoices', 'emails'] as $queueName) {
+    $waitGroup->add(function () use ($connection, $queueName) {
+        $queue = new AMQPQueue(new AMQPChannel($connection));
+
+        $queue->setName($queueName);
+        $queue->setFlags(AMQP_DURABLE);
+        $queue->declareQueue();
+
+        $queue->consume(function (AMQPEnvelope $envelope, AMQPQueue $queue): bool {
+            handle($envelope->getBody());
+
+            $queue->ack($envelope->getDeliveryTag());
+
+            return true; // false прекращает цикл потребления
+        });
+    });
+}
+
+$waitGroup->wait();
+```
+
+Пока ни у одной очереди нет сообщений, PHP-поток свободен для другой работы.
+
+Разовое чтение:
+
+```php
+$envelope = $queue->get(); // ?AMQPEnvelope, null если очередь пуста
+
+if ($envelope !== null) {
+    $queue->ack($envelope->getDeliveryTag());
+}
+```
+
+## Переход с ext-amqp
+
+Имена классов не тронуты, они живут в `SConcur\Features\Amqp`, поэтому меняются
+только импорты:
+
+| Было | Стало |
+| --- | --- |
+| `use AMQPConnection;` | `use SConcur\Features\Amqp\AMQPConnection;` |
+| `use AMQPChannel;` | `use SConcur\Features\Amqp\AMQPChannel;` |
+| `use AMQPExchange;` | `use SConcur\Features\Amqp\AMQPExchange;` |
+| `use AMQPQueue;` | `use SConcur\Features\Amqp\AMQPQueue;` |
+| `use AMQPEnvelope;` | `use SConcur\Features\Amqp\AMQPEnvelope;` |
+| `catch (AMQPQueueException)` | `use SConcur\Features\Amqp\AMQPQueueException;` |
+| `AMQP_DURABLE` (глобальная константа) | `use const SConcur\Features\Amqp\AMQP_DURABLE;` |
+
+Константы объявлены в том же пространстве имён и импортируются через `use const`;
+файл с ними подключается через `autoload.files` в composer.
+
+Само расширение в рантайме не нужно. Оно стоит в `require-dev` точной версией
+ради тестов соответствия: набор публичных методов, все сигнатуры и значения всех
+констант сверяются с установленным расширением
+(`tests/feature/Features/Amqp/AmqpDriverParityTest.php`), а поверх этого две
+реализации обмениваются настоящими сообщениями через живой брокер
+(`AmqpBehaviourParityTest`). Поднятие зафиксированной версии перепрогоняет эти
+тесты, и их падение означает, что калька разошлась с оригиналом.
+
+## Что где живёт
+
+Не каждый вызов идёт на брокер:
+
+| Класс | Что держит | Что летит на брокер |
+| --- | --- | --- |
+| `AMQPConnection` | учётные данные, пути к TLS, таймауты, идентификатор соединения | `connect()`, `disconnect()`, `reconnect()`, `getUsedChannels()` |
+| `AMQPChannel` | идентификатор канала, prefetch, колбэки подтверждений и возвратов | конструктор (открывает канал), `qos()` и сеттеры prefetch, `startTransaction()`, `confirmSelect()`, `waitForConfirm()`, `waitForBasicReturn()`, `basicRecover()`, `close()` |
+| `AMQPExchange` | имя, тип, флаги, аргументы | `declareExchange()`, `delete()`, `bind()`, `unbind()`, `publish()` |
+| `AMQPQueue` | имя, флаги, аргументы, тег консьюмера | `declareQueue()`, `delete()`, `bind()`, `unbind()`, `purge()`, `get()`, `consume()`, `ack()`/`nack()`/`reject()`, `recover()`, `cancel()` |
+| `AMQPEnvelope` | тело и свойства доставленного сообщения | ничего, это объект-значение |
+
+Поэтому `setName()`, `setType()`, `setFlags()` и `setArgument()` не стоят ничего:
+границу пересекают ровно те вызовы, которые действительно являются методами AMQP.
+
+## Флаги
+
+Калька принимает флаги целочисленной битовой маской, как `ext-amqp`. Каждый флаг —
+булев параметр метода AMQP 0-9-1:
+
+| Флаг | Куда попадает |
+| --- | --- |
+| `AMQP_DURABLE` | `durable` при объявлении очереди или обменника |
+| `AMQP_PASSIVE` | форма declare-passive: проверить существование, не создавать |
+| `AMQP_EXCLUSIVE` | `exclusive` при объявлении очереди и у консьюмера |
+| `AMQP_AUTODELETE` | `autoDelete` при объявлении |
+| `AMQP_INTERNAL` | `internal` при объявлении обменника |
+| `AMQP_NOLOCAL` | `noLocal` у консьюмера |
+| `AMQP_AUTOACK` | брокер считает сообщение подтверждённым при доставке (`get()`, `consume()`) |
+| `AMQP_IFEMPTY` | `ifEmpty` при удалении очереди |
+| `AMQP_IFUNUSED` | `ifUnused` при удалении очереди или обменника |
+| `AMQP_MANDATORY` | сообщение обязано быть маршрутизируемым, иначе вернётся обратно (см. ниже) |
+| `AMQP_IMMEDIATE` | `immediate` при публикации (RabbitMQ его не реализует) |
+| `AMQP_MULTIPLE` | подтвердить или отклонить все доставки до этого тега включительно |
+| `AMQP_NOWAIT` | не ждать ответа брокера на declare, delete или bind |
+| `AMQP_REQUEUE` | вернуть отклонённое сообщение в очередь |
+| `AMQP_JUST_CONSUME` | читать уже открытого этой очередью консьюмера, а не открывать нового |
+
+Свежесозданная `AMQPQueue` — auto-delete, как и в расширении: `setFlags()` с
+маской без `AMQP_AUTODELETE` этот режим выключает.
+
+## Потребление
+
+`consume(callable $callback = null, ?int $flags = null, ?string $consumerTag = null)`
+вызывает колбэк на каждую доставку и возвращает управление, когда колбэк вернул
+`false`. Колбэк принимает `AMQPEnvelope` и, опционально, `AMQPQueue`, из которой
+пришло сообщение.
+
+Дочитывать консьюмера надо в той же корутине, где он открыт: при завершении
+корутины её флоу останавливается, и Go-сторона отменяет консьюмера. Та же
+оговорка, что у `HttpClient`, `SocketServer` и `WsClient`.
+
+Без колбэка `consume()` только регистрирует консьюмера; следующий вызов с
+`AMQP_JUST_CONSUME` продолжает его читать, не отправляя ещё один `basic.consume`.
+Если открытого консьюмера нет, `AMQP_JUST_CONSUME` бросает `AMQPQueueException`.
+
+`cancel()` отменяет консьюмера, канал при этом остаётся открытым. Доставки,
+которые консьюмер получил, но не подтвердил, возвращаются в очередь при закрытии
+канала, а не при отмене консьюмера — это правило AMQP, а не особенность
+реализации.
+
+`read_timeout` соединения ограничивает ожидание следующей доставки (0 — ждать без
+ограничения). По его истечении цикл потребления завершается
+`AMQPQueueException` («consumer timeout exceed»), как и в расширении.
+
+## Подтверждения публикации и возвраты
+
+```php
+$channel->confirmSelect();
+
+$channel->setConfirmCallback(
+    function (int $deliveryTag, bool $multiple): bool {
+        return true;   // false прекращает цикл ожидания
+    },
+    function (int $deliveryTag, bool $multiple, bool $requeue): bool {
+        return true;
+    },
+);
+
+$exchange->publish('{"id":1}', 'order.created');
+
+$channel->waitForConfirm(2.0);   // секунды; 0 — ждать ответа брокера сколько нужно
+```
+
+`waitForConfirm()` возвращает управление, когда все сообщения, опубликованные с
+прошлого вызова, подтверждены или отклонены, и бросает `AMQPQueueException` по
+таймауту. Заодно он собирает сообщения, которые брокер вернул как
+немаршрутизируемые, и передаёт их колбэку возвратов.
+
+Сообщение, опубликованное с `AMQP_MANDATORY`, которому некуда идти, приходит
+обратно:
+
+```php
+$channel->setReturnCallback(
+    function (
+        int $replyCode,
+        string $replyText,
+        string $exchange,
+        string $routingKey,
+        AMQPBasicProperties $properties,
+        string $body,
+    ): bool {
+        return false;
+    },
+);
+
+$exchange->publish('nowhere', 'unbound', AMQP_MANDATORY);
+
+$channel->waitForBasicReturn(2.0);
+```
+
+Транзакции — те же три вызова: `startTransaction()`, `commitTransaction()`,
+`rollbackTransaction()` на канале, не переведённом в режим подтверждений.
+
+## Соединения и каналы на стороне Go
+
+Соединение лежит в пуле по ключу из учётных данных и настроек: два объекта
+`AMQPConnection` с одинаковыми параметрами разделяют одно соединение с брокером,
+поэтому создавать его на запрос дёшево. Соединение, которое никто не держит,
+закрывается после пяти минут простоя; `disconnect()` (и деструктор потерянного
+объекта) снимает владение.
+
+Каналы лежат в реестре по непрозрачному идентификатору, поэтому подтверждение
+вполне может прийти из другой корутины — и, значит, из другого флоу, — чем
+консьюмер, получивший сообщение. Канал закрывается по `close()`, по деструктору
+потерянного `AMQPChannel`, при смерти соединения или подметанием: канал без
+консьюмеров, не выполнявший команд 30 минут, закрывается.
+
+Тег доставки принадлежит каналу, который её принёс: подтверждать сообщение надо
+на очереди, чей канал его получил. По той же причине канал не делят между
+корутинами — у каждой корутины свой.
+
+## Осознанные отклонения от кальки
+
+Список закрытый: всё, чего в нём нет, повторяется точно, и за этим следят тесты
+соответствия.
+
+| Метод или поведение | Что делает SConcur | Почему |
+| --- | --- | --- |
+| `pconnect()`, `pdisconnect()`, `preconnect()` | синонимы `connect()`, `disconnect()`, `reconnect()`; `isPersistent()` всегда `true` | постоянные соединения — понятие php-fpm. Воркер SConcur живёт долго, а соединение и так живёт в пуле на стороне Go |
+| `setConfirmCallback()`, `setReturnCallback()` | колбэки хранятся в PHP и вызываются из `waitForConfirm()` / `waitForBasicReturn()` | нативное расширение вызывает их из своего цикла чтения; здесь этот цикл — `waitFor*` |
+| `getMaxChannels()`, `getMaxFrameSize()`, `getHeartbeatInterval()` | у открытого соединения возвращают согласованные значения, до подключения — запрошенные | согласованные значения известны только после handshake |
+| `getUsedChannels()` | считается по реестру на стороне Go, то есть вызов идёт в расширение; без соединения — 0 и предупреждение | локального счётчика в PHP недостаточно: каналы закрывает ещё и подметание |
+| `getChannelId()` | номер канала внутри соединения, присвоенный этой фичей | драйвер не отдаёт настоящий номер AMQP-канала |
+| `AMQPEnvelope::getClusterId()` | всегда `null` | AMQP 0-9-1 исключает cluster-id из публикации, и драйвер не отдаёт его и у доставки |
+| `consume()` | подаёт в колбэк доставки только своего консьюмера | `ext-amqp` раздаёт все доставки соединения в тот цикл потребления, который сейчас работает, — форма, существующая лишь потому, что расширение способно крутить один цикл за раз. Здесь её заменяет одна корутина на консьюмера |
+| `$multiple` в колбэке подтверждений | всегда `false` | драйвер разворачивает подтверждения «до тега включительно» в отдельные |
+| `AMQPException` | наследует `RuntimeException` | правило проекта для ошибок времени выполнения. Все `catch` из кода на ext-amqp продолжают срабатывать: `RuntimeException` — это `Exception` |
+| `AMQPChannel::__destruct()`, `AMQPConnection::__destruct()` | закрытие и отключение best-effort | PHP не сообщает Go-стороне о сборке мусора; страховка — подметание |
+| ini-настройки (`amqp.host`, `amqp.auto_ack`, …) | не читаются | здесь нет PHP-расширения, которое можно было бы ими настроить. Значения по умолчанию совпадают с расширением, учётные данные приходят массивом в конструктор |
+
+## Ограничения
+
+Общие ограничения — только CLI, только Linux, только NTS, без `pcntl_fork` —
+описаны в [README](../README.ru.md).
+
+- TLS (`cacert`, `cert`, `key`, `verify`) и `AMQP_SASL_METHOD_EXTERNAL`
+  передаются в Go-дозвонщик, но тесты гоняются на брокере без TLS, поэтому
+  тестами не покрыты.
+- `AMQP_IMMEDIATE` принимается и отправляется; RabbitMQ не реализует его с
+  версии 3.0 и закрывает канал.
+- `AMQPQueue::consume()` ограничен `read_timeout` соединения, а не отдельным
+  таймаутом вызова.
+
+## Бенчмарки
+
+`tests/benchmarks/amqp/` — `publish.php`, `get.php` и `consume.php`, каждый в
+трёх режимах: нативный `ext-amqp`, SConcur вне корутины и SConcur в корутинах.
+Запуск: `make bench-amqp-publish`, `make bench-amqp-get`,
+`make bench-amqp-consume`.
+
+Что говорят цифры (1000 вызовов, брокер в той же Docker-сети; как их читать —
+см. [бенчмарки](benchmarks.ru.md)):
+
+| Операция | native | sync | async |
+| --- | --- | --- | --- |
+| 1000 публикаций | 3.7 мс | 33.9 мс | 28.5 мс |
+| 1000 вызовов `basic.get` | 28.9 мс | 109.9 мс | 26.6 мс |
+| 10 очередей × 500 заранее наполненных сообщений | 194 000 сообщ./с | 23 300 сообщ./с | 116 300 сообщ./с |
+
+Публикация — там, где нативное расширение выигрывает: `basic.publish` не ждёт
+ответа, поэтому стоит одну запись, тогда как любой вызов SConcur ещё и пересекает
+границу PHP ↔ Go. На `basic.get` одновременные вызовы уже сравнялись с
+расширением и впятеро быстрее синхронного пути.
+
+На заранее наполненной очереди расширение потребляет быстрее в пересчёте на
+сообщение — одновременности там нечего совмещать. Выигрыш в другом: воркер,
+ждущий сообщений на нескольких очередях, обслуживает их все сразу, а не
+привязан к одной. Это и измеряет
+`tests/feature/Features/Amqp/AmqpConsumeTest.php`: три консьюмера, ждущие
+задержки в 200 мс, укладываются в одну задержку, а не в три.

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sconcur/internal/contracts"
+	"sconcur/internal/features/amqp"
 	"sconcur/internal/features/httpclient"
 	"sconcur/internal/features/httpserver"
 	"sconcur/internal/features/mongodb/connection"
@@ -39,15 +40,19 @@ func DetectMessageHandler(method types.Method) (contracts.FeatureContract, error
 		return wsserver_feature.Get(), nil
 	case types.MethodWsClient:
 		return wsclient_feature.Get(), nil
+	case types.MethodAmqp:
+		return amqp_feature.Get(), nil
 	default:
 		return nil, errors.New("unknown method: " + fmt.Sprint(method))
 	}
 }
 
 // Shutdown releases resources held by features (MongoDB clients and their
-// connection pools, the HTTP-client idle connections, the SQL connection pools).
+// connection pools, the HTTP-client idle connections, the SQL connection pools,
+// the AMQP connections and channels).
 func Shutdown() {
 	connection.GetClients().DisconnectAll()
 	httpclient_feature.CloseIdleConnections()
 	sql_feature.CloseAllPools()
+	amqp_feature.Shutdown()
 }

@@ -249,6 +249,8 @@ The environment the project is built and tested against in CI:
   mirror.
 - [WebSocket client](docs/websocket-client.md) — the WS server's dial-side
   mirror.
+- [AMQP (RabbitMQ)](docs/amqp.md) — an ext-amqp calque; consumers that suspend a
+  coroutine instead of the worker.
 - [Worker master](docs/worker-master.md) — a supervisor for a pool of workers
   (`bin/sconcur-server`).
 - [Server statistics](docs/admin-stats.md) — `GET /api/stats`, live panel, SSE,

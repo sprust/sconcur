@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "f7cba006561e1b6d0ec2791fe024acff",
+    "content-hash": "ed562479e3985b903143b5a9f1715fb8",
     "packages": [
         {
             "name": "psr/http-client",
@@ -5554,6 +5554,7 @@
         "ext-msgpack": "3.0.1"
     },
     "platform-dev": {
+        "ext-amqp": "2.2.0",
         "ext-mongodb": "^1.21"
     },
     "plugin-api-version": "2.9.0"

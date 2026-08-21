@@ -29,6 +29,16 @@ readonly class Benchmarker
     }
 
     /**
+     * How many calls each mode makes. A benchmark that has to prepare something per call
+     * (the AMQP ones seed a queue with the messages their calls will read) needs to know
+     * it up front.
+     */
+    public function getTotal(): int
+    {
+        return $this->total;
+    }
+
+    /**
      * Size of the pre-seeded dataset (rows/documents) a DB benchmark works
      * against. Overridable via SCONCUR_BENCH_DATASET for smoke runs.
      */

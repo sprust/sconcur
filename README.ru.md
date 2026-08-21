@@ -250,6 +250,8 @@ $collection->insertOne(['name' => 'example']);
   стороны dial.
 - [WebSocket-клиент](docs/websocket-client.ru.md) — зеркало WS-сервера со стороны
   dial.
+- [AMQP (RabbitMQ)](docs/amqp.ru.md) — калька ext-amqp; консьюмеры
+  приостанавливают корутину, а не воркер.
 - [Мастер воркеров](docs/worker-master.ru.md) — супервизор пула воркеров
   (`bin/sconcur-server`).
 - [Статистика сервера](docs/admin-stats.ru.md) — `GET /api/stats`, живая панель,

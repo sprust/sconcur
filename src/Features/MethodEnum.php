@@ -18,4 +18,6 @@ enum MethodEnum: string
     case WsServe   = 'wss';
     case WsRespond = 'wsr';
     case WsClient  = 'wsc';
+
+    case Amqp = 'amq';
 }
