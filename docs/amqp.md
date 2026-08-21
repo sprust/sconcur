@@ -264,6 +264,60 @@ A delivery tag belongs to the channel that delivered the message: acknowledge it
 on the queue whose channel received it. That is also why a channel is not shared
 between coroutines — give each coroutine its own.
 
+## Scaling a consumer
+
+Several coroutines may consume one queue, in one process and across several, which
+is the usual way to scale a worker: every coroutine opens its own channel and its
+own consumer, and the broker hands the messages out between them.
+
+```php
+$waitGroup = WaitGroup::create();
+
+for ($worker = 0; $worker < 10; ++$worker) {
+    $waitGroup->add(function () use ($connection, $queueName) {
+        $channel = new AMQPChannel($connection);
+
+        // One unacknowledged message at a time, so the broker gives the next one to
+        // whichever coroutine is free instead of filling one buffer.
+        $channel->setPrefetchCount(1);
+
+        $queue = new AMQPQueue($channel);
+
+        $queue->setName($queueName);
+        $queue->setFlags(AMQP_DURABLE);
+        $queue->declareQueue();
+
+        $queue->consume(function (AMQPEnvelope $envelope, AMQPQueue $queue): bool {
+            handle($envelope->getBody());
+
+            $queue->ack($envelope->getDeliveryTag());
+
+            return true;
+        });
+    });
+}
+
+$waitGroup->waitAll();
+```
+
+Processes are the other axis: the [worker master](worker-master.md) supervises a
+pool of them running one script, and a consumer worker needs no listening socket
+to be supervised. Each process runs its own Go runtime and its own connection
+pool; nothing is shared between them.
+
+What bounds each axis:
+
+| Limit | Value | What to do about it |
+| --- | --- | --- |
+| channels per connection | 256, the ceiling `ext-amqp` sets (`PHP_AMQP_MAX_CHANNELS`); the 257th fails with `504 channel id space exhausted` | one channel per coroutine means ~255 consumers per connection; a `connection_name` gives an application a connection of its own, and with it another 256 |
+| one connection is one socket | every channel of a connection is multiplexed over it, and the driver serializes the frames it writes | spread the coroutines over several named connections before the socket, not the channel count, becomes the ceiling |
+| a process is one PHP thread | coroutines overlap the waiting, not the work: a handler that computes blocks the others while it runs | scale processes for CPU-bound handlers, coroutines for handlers that wait |
+
+Two rules the sections above state and this one depends on: a consumer is read in
+the coroutine that opened it, and a channel is not shared between coroutines —
+the commands of one channel are serialized, so ten coroutines on one channel are
+a queue of ten.
+
 ## Errors
 
 The exception classes are the extension's, and so is the reply code on them:
