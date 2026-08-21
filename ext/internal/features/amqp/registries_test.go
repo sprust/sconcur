@@ -107,14 +107,14 @@ func TestIdleChannelsAreSweptOnlyWithoutConsumers(t *testing.T) {
 
 	idle := &channelEntry{
 		id:         "amqp:ch:1",
-		consumers:  make(map[string]struct{}),
+		consumers:  make(map[string]string),
 		lastUsedAt: time.Now().Add(-2 * channelIdleTTL),
 	}
 
 	consuming := &channelEntry{
 		id: "amqp:ch:2",
-		consumers: map[string]struct{}{
-			"ctag-1": {},
+		consumers: map[string]string{
+			"ctag-1": "flow:1",
 		},
 		lastUsedAt: time.Now().Add(-2 * channelIdleTTL),
 	}
@@ -138,7 +138,7 @@ func TestFindingAChannelKeepsItFromTheSweeper(t *testing.T) {
 
 	entry := &channelEntry{
 		id:         "amqp:ch:1",
-		consumers:  make(map[string]struct{}),
+		consumers:  make(map[string]string),
 		lastUsedAt: time.Now().Add(-2 * channelIdleTTL),
 	}
 
@@ -290,7 +290,7 @@ func TestWaitingForReturnsLeavesTheConfirmsAlone(t *testing.T) {
 func newTestEntry() *channelEntry {
 	return &channelEntry{
 		id:        "amqp:ch:test",
-		consumers: make(map[string]struct{}),
+		consumers: make(map[string]string),
 		gone:      make(chan struct{}),
 	}
 }

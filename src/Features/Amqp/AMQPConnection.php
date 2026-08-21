@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Amqp;
 
+use SConcur\Connection\Extension;
 use SConcur\Features\Amqp\Payloads\ConnectionPayloadParameters;
 use SConcur\Features\Amqp\Payloads\ConnectPayload;
 use SConcur\Features\Amqp\Payloads\ConnectPayloadParameters;
@@ -694,13 +695,34 @@ class AMQPConnection extends AmqpResource
      * A connection an application dropped without disconnecting is released best-effort
      * here, so its handle does not keep a pooled connection alive on the Go side — the
      * extension frees its own connection resource the same way.
+     *
+     * Detached, for the same reason AMQPChannel's destructor is: there is nothing left to
+     * await, and the coroutine this ran in may already be gone.
      */
     public function __destruct()
     {
+        if ($this->internalId === '') {
+            return;
+        }
+
+        $connectionId = $this->internalId;
+
+        $this->internalOpen = false;
+        $this->internalId   = '';
+
         try {
-            $this->disconnect();
+            Extension::get()->push(
+                flowKey: '',
+                payload: new DisconnectPayload(
+                    new ConnectionPayloadParameters(
+                        connectionId: $connectionId,
+                        timeoutMs: $this->rpcTimeoutMs(),
+                    ),
+                ),
+            );
         } catch (Throwable) {
-            // Shutting down: there is nobody left to report a failed disconnect to.
+            // The extension is already gone (the process is shutting down), and with it
+            // every connection it held.
         }
     }
 }

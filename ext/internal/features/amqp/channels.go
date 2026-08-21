@@ -54,10 +54,11 @@ type channelEntry struct {
 	channel      *amqp091.Channel
 
 	mutex sync.Mutex
-	// consumers are the tags this channel has open. The value carries nothing: a consumer
-	// is cancelled through the driver channel like any other command, not by a context
-	// the driver watches on its own.
-	consumers map[string]struct{}
+	// consumers maps the tags this channel has open onto the key of the stream each is
+	// read through, so cancelling a consumer can drop that stream as well. A consumer is
+	// cancelled through the driver channel like any other command, not by a context the
+	// driver watches on its own.
+	consumers map[string]string
 	closed    bool
 
 	// lastUsedAt is what the idle sweeper looks at.
@@ -152,7 +153,7 @@ func (c *channels) open(handle *connectionHandle, params payloads.ChannelOpenPar
 		id:         nextChannelId(),
 		channel:    channel,
 		handle:     handle,
-		consumers:  make(map[string]struct{}),
+		consumers:  make(map[string]string),
 		lastUsedAt: time.Now(),
 		gone:       make(chan struct{}),
 	}
@@ -376,7 +377,7 @@ func (e *channelEntry) close() {
 
 	// The consumers are simply forgotten: closing the channel ends them on the broker,
 	// and a basic.cancel sent alongside the close would arrive out of order.
-	e.consumers = make(map[string]struct{})
+	e.consumers = make(map[string]string)
 
 	waiters := e.waiters
 	e.waiters = nil
@@ -435,27 +436,28 @@ func (e *channelEntry) do(ctx context.Context, call func(channel *amqp091.Channe
 	}
 }
 
-func (e *channelEntry) registerConsumer(consumerTag string) {
+func (e *channelEntry) registerConsumer(consumerTag string, taskKey string) {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
-	e.consumers[consumerTag] = struct{}{}
+	e.consumers[consumerTag] = taskKey
 	e.lastUsedAt = time.Now()
 }
 
-// forgetConsumer drops a consumer from the registry and reports whether it was still
-// there, so a tag is never cancelled twice.
-func (e *channelEntry) forgetConsumer(consumerTag string) bool {
+// forgetConsumer drops a consumer from the registry and reports the key of the stream it
+// was read through, so a cancelled consumer takes that stream with it. The empty string
+// means the consumer was gone already, and a tag is never cancelled twice.
+func (e *channelEntry) forgetConsumer(consumerTag string) (string, bool) {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
-	_, exists := e.consumers[consumerTag]
+	taskKey, exists := e.consumers[consumerTag]
 
 	delete(e.consumers, consumerTag)
 
 	e.lastUsedAt = time.Now()
 
-	return exists
+	return taskKey, exists
 }
 
 // cancelConsumer sends the basic.cancel for a consumer this feature still holds, on a
@@ -463,7 +465,7 @@ func (e *channelEntry) forgetConsumer(consumerTag string) bool {
 // through do(), so it is serialized against every other command on the channel — a cancel
 // racing a channel close is what makes a broker complain about an unexpected command.
 func (e *channelEntry) cancelConsumer(consumerTag string) {
-	if !e.forgetConsumer(consumerTag) {
+	if _, exists := e.forgetConsumer(consumerTag); !exists {
 		return
 	}
 

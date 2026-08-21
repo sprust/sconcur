@@ -10,6 +10,7 @@ import (
 	"sconcur/internal/errs"
 	"sconcur/internal/features/amqp/payloads"
 	"sconcur/internal/helpers"
+	"sconcur/internal/logger"
 	"sconcur/internal/tasks"
 	"sconcur/internal/types"
 	"strconv"
@@ -70,6 +71,16 @@ func (f *AmqpFeature) Handle(task *tasks.Task) {
 		return
 	}
 
+	// A detached push carries no flow and awaits no result: it is the last word of a PHP
+	// object that was destroyed with its coroutine. Only the two commands that release a
+	// resource are accepted, and they run off the PHP thread — the detached path executes
+	// the handler inline, and closing a channel waits on the broker.
+	if message.FlowKey == "" {
+		f.handleDetached(envelope)
+
+		return
+	}
+
 	switch envelope.Command {
 	case types.AmqpConnect:
 		f.handleConnect(task, envelope.Params)
@@ -123,6 +134,31 @@ func (f *AmqpFeature) Handle(task *tasks.Task) {
 		f.handleReturnWait(task, envelope.Params)
 	default:
 		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("unknown command")))
+	}
+}
+
+// handleDetached releases a resource whose owner is gone. Nothing is answered: the caller
+// is a destructor that cannot wait, and by the time this runs its coroutine may not exist.
+func (f *AmqpFeature) handleDetached(envelope payloads.Envelope) {
+	switch envelope.Command {
+	case types.AmqpChannelClose:
+		var params payloads.ChannelParams
+
+		if err := msgpack.Unmarshal(envelope.Params, &params); err != nil {
+			return
+		}
+
+		go getChannels().close(params.ChannelId)
+	case types.AmqpDisconnect:
+		var params payloads.ConnectionParams
+
+		if err := msgpack.Unmarshal(envelope.Params, &params); err != nil {
+			return
+		}
+
+		go getConnections().release(params.ConnectionId)
+	default:
+		logger.Write("amqp: command " + string(envelope.Command) + " cannot be pushed detached")
 	}
 }
 

@@ -2,6 +2,7 @@ package amqp_feature
 
 import (
 	"sconcur/internal/features/amqp/payloads"
+	"sconcur/internal/states"
 	"sconcur/internal/tasks"
 	"time"
 
@@ -166,7 +167,13 @@ func (f *AmqpFeature) handleCancel(task *tasks.Task, raw msgpack.RawMessage) {
 		return
 	}
 
-	entry.forgetConsumer(params.ConsumerTag)
+	// The stream the consumer was read through goes with it. Outside a coroutine PHP
+	// releases the flow that owned it; inside one the flow lives as long as the coroutine
+	// does, and a worker cancelling consumer after consumer would otherwise pile up a
+	// state, a delivery buffer and a goroutine for every one of them.
+	if taskKey, exists := entry.forgetConsumer(params.ConsumerTag); exists && taskKey != "" {
+		states.Get().DeleteState(taskKey)
+	}
 
 	respondDone(task, startTime)
 }

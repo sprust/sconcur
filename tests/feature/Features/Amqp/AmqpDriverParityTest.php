@@ -35,6 +35,9 @@ class AmqpDriverParityTest extends TestCase
         // closes itself; ext-amqp frees its channel resource the same way, in C.
         'AMQPChannel'    => ['__destruct'],
         'AMQPConnection' => ['__destruct'],
+        // A consumer costs the extension a tag; here it costs a flow and a delivery
+        // stream, which a dropped queue has to give back.
+        'AMQPQueue' => ['__destruct'],
     ];
 
     protected function setUp(): void

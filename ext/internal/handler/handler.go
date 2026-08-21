@@ -123,6 +123,12 @@ func detachable(method types.Method) bool {
 	switch method {
 	case types.MethodHttpRespond:
 		return true
+	case types.MethodAmqp:
+		// Only the two release commands travel this way — a channel or connection whose
+		// PHP object was destroyed while its coroutine was being unwound, where nothing
+		// can be awaited any more. The feature answers them off the PHP thread (see
+		// amqp_feature.Handle), so this stays within the no-blocking rule above.
+		return true
 	default:
 		return false
 	}

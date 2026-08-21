@@ -14,6 +14,7 @@ use SConcur\Features\Amqp\AMQPException;
 use SConcur\Features\Amqp\AMQPQueue;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Transport\PayloadInterface;
+use WeakReference;
 
 /**
  * The internal base of the four calque classes that own a resource living on the Go side.
@@ -45,12 +46,26 @@ abstract class AmqpResource
     protected bool $internalOpen = false;
 
     /**
-     * Consumers registered on this channel, by the consumer tag the broker assigned.
-     * Only AMQPChannel fills it.
+     * Consumers registered on this channel, by the consumer tag the broker assigned. Only
+     * AMQPChannel fills it.
      *
-     * @var array<string, AMQPQueue>
+     * The references are weak on purpose: a strong one would keep an AMQPQueue — and
+     * through it the channel it consumes on — alive for as long as the channel object
+     * lives, so a coroutine that ends without cancelling its consumer would leave the
+     * Go-side channel open with nothing left to close it.
+     *
+     * @var array<string, WeakReference<AMQPQueue>>
      */
     protected array $internalConsumers = [];
+
+    /**
+     * Releases the delivery stream this object holds, if it holds one. Only AMQPQueue
+     * does; it is declared here so an AMQPChannel can release the streams of its consumers
+     * when it closes.
+     */
+    protected function releaseConsumeStream(): void
+    {
+    }
 
     /**
      * ext-amqp keeps its timeouts in (fractional) seconds; the wire carries milliseconds,

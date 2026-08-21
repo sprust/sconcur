@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Amqp;
 
+use SConcur\Connection\Extension;
 use SConcur\Features\Amqp\Payloads\ChannelClosePayload;
 use SConcur\Features\Amqp\Payloads\ChannelOpenPayload;
 use SConcur\Features\Amqp\Payloads\ChannelOpenPayloadParameters;
@@ -119,6 +120,13 @@ class AMQPChannel extends AmqpResource
         }
 
         $channelId = $this->internalId;
+
+        // The consumers of this channel go with it, and so do the streams they were being
+        // read through: outside a coroutine each of those owns a flow that nothing else
+        // would release.
+        foreach ($this->getConsumers() as $queue) {
+            $queue->releaseConsumeStream();
+        }
 
         $this->internalOpen      = false;
         $this->internalId        = '';
@@ -416,13 +424,26 @@ class AMQPChannel extends AmqpResource
     }
 
     /**
-     * The queues consuming on this channel, by the consumer tag the broker assigned.
+     * The queues consuming on this channel, by the consumer tag the broker assigned. A
+     * queue the application has dropped is gone from here with it.
      *
      * @return array<string, AMQPQueue>
      */
     public function getConsumers(): array
     {
-        return $this->internalConsumers;
+        $consumers = [];
+
+        foreach ($this->internalConsumers as $tag => $reference) {
+            $queue = $reference->get();
+
+            if ($queue === null) {
+                continue;
+            }
+
+            $consumers[$tag] = $queue;
+        }
+
+        return $consumers;
     }
 
     /**
@@ -595,16 +616,39 @@ class AMQPChannel extends AmqpResource
     }
 
     /**
-     * A channel an application dropped without closing is closed best-effort here. PHP
-     * tells the Go side nothing about garbage collection, so the Go-side sweeper is what
-     * catches the channels this never reaches (see docs/amqp.md).
+     * A channel an application dropped without closing is closed best-effort here.
+     *
+     * The command goes out detached — pushed with no flow and no result to await. A
+     * destructor has nothing to wait on, and the case that matters most is the coroutine
+     * that was unwound (WaitGroup::stop, an early break): its flow is already gone, so an
+     * ordinary command would fail and the channel would stay open on the broker until the
+     * idle sweeper noticed, half an hour later.
      */
     public function __destruct()
     {
+        if (!$this->internalOpen) {
+            return;
+        }
+
+        $channelId = $this->internalId;
+
+        $this->internalOpen      = false;
+        $this->internalId        = '';
+        $this->internalConsumers = [];
+
         try {
-            $this->close();
+            Extension::get()->push(
+                flowKey: '',
+                payload: new ChannelClosePayload(
+                    new ChannelPayloadParameters(
+                        channelId: $channelId,
+                        timeoutMs: $this->timeoutMs(),
+                    ),
+                ),
+            );
         } catch (Throwable) {
-            // Shutting down: there is nobody left to report a failed close to.
+            // The extension is already gone (the process is shutting down), and with it
+            // every channel it held.
         }
     }
 }

@@ -33,6 +33,9 @@ use SConcur\Features\Amqp\Support\DeliveredEnvelope;
 use SConcur\Features\Amqp\Support\FlagsParser;
 use SConcur\Features\Amqp\Support\OrphanedEnvelopeException;
 use SConcur\Features\Amqp\Support\TableCodec;
+use SConcur\State;
+use Throwable;
+use WeakReference;
 
 /**
  * A queue — the calque of ext-amqp's AMQPQueue. The name, the flags and the arguments are
@@ -523,11 +526,12 @@ class AMQPQueue extends AmqpResource
         );
 
         if ($consumerTag === '' || $consumerTag === $this->consumerTag) {
-            $this->consumerTag    = null;
-            $this->consumeTaskKey = '';
+            $this->consumerTag = null;
+
+            $this->releaseConsumeStream();
         }
 
-        unset($this->channel->internalConsumers[$tag], $this->connection->internalConsumers[$tag]);
+        unset($this->channel->internalConsumers[$tag]);
     }
 
     public function getChannel(): AMQPChannel
@@ -581,8 +585,7 @@ class AMQPQueue extends AmqpResource
 
         $this->consumerTag = $tag;
 
-        $this->channel->internalConsumers[$tag]    = $this;
-        $this->connection->internalConsumers[$tag] = $this;
+        $this->channel->internalConsumers[$tag] = WeakReference::create($this);
     }
 
     /**
@@ -606,13 +609,13 @@ class AMQPQueue extends AmqpResource
                 // The stream is gone with the failure (a read timeout, a dead channel), so
                 // the key it was pulled by leads nowhere: forget it, or AMQP_JUST_CONSUME
                 // would try to read a consumer that no longer exists.
-                $this->consumeTaskKey = '';
+                $this->releaseConsumeStream();
 
                 throw $exception;
             }
 
             if (!$result->hasNext) {
-                $this->consumeTaskKey = '';
+                $this->releaseConsumeStream();
 
                 return;
             }
@@ -633,11 +636,14 @@ class AMQPQueue extends AmqpResource
 
     /**
      * The queue a delivery belongs to, found by its consumer tag among the consumers of
-     * this connection — the delivery may come from another channel, as in ext-amqp.
+     * this channel. With a stream per consumer that is this queue; the lookup is what makes
+     * the callback's second argument mean what it means in ext-amqp.
      */
     protected function resolveConsumer(string $consumerTag): ?AMQPQueue
     {
-        return $this->connection->internalConsumers[$consumerTag] ?? null;
+        $reference = $this->channel->internalConsumers[$consumerTag] ?? null;
+
+        return $reference?->get();
     }
 
     /**
@@ -660,5 +666,41 @@ class AMQPQueue extends AmqpResource
     protected function timeoutMs(): int
     {
         return static::toMilliseconds($this->connection->getRpcTimeout());
+    }
+
+    /**
+     * Gives the delivery stream back.
+     *
+     * A consume() that ends early — the callback returned false — leaves the stream open on
+     * purpose: AMQP_JUST_CONSUME reads it on. Outside a coroutine that stream owns a flow
+     * of its own, and nothing else will ever release it, so whoever is done with the
+     * consumer has to: cancelling it, reading it to its end, or dropping the queue object.
+     * Inside a coroutine this is a no-op — the coroutine's own flow owns the stream.
+     */
+    protected function releaseConsumeStream(): void
+    {
+        if ($this->consumeTaskKey === '') {
+            return;
+        }
+
+        $taskKey = $this->consumeTaskKey;
+
+        $this->consumeTaskKey = '';
+
+        State::releaseSyncTaskFlow($taskKey);
+    }
+
+    /**
+     * A queue an application dropped while its consumer was still open releases the stream
+     * here; the extension has no destructor because its consumer costs it nothing but a
+     * tag.
+     */
+    public function __destruct()
+    {
+        try {
+            $this->releaseConsumeStream();
+        } catch (Throwable) {
+            // Shutting down: there is nobody left to report this to.
+        }
     }
 }

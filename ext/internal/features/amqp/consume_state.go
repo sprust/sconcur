@@ -172,7 +172,7 @@ func (f *AmqpFeature) handleConsume(task *tasks.Task, raw msgpack.RawMessage) {
 		})
 	}
 
-	entry.registerConsumer(consumerTag)
+	entry.registerConsumer(consumerTag, message.TaskKey)
 
 	state := &consumeState{
 		ctx:         task.GetContext(),

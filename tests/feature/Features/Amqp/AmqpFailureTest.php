@@ -282,6 +282,76 @@ class AmqpFailureTest extends AmqpTestCase
         self::assertStringContainsString('cancelled by the broker', $consumerResult[0]);
     }
 
+    public function testAStoppedCoroutineDoesNotLeaveItsChannelOpen(): void
+    {
+        $connection = $this->connection();
+        $channel    = $this->channel();
+        $queue      = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+
+        $queueName = (string) $queue->getName();
+
+        // One channel is open: the one this test works on.
+        $baseline = $connection->getUsedChannels();
+
+        for ($round = 0; $round < 5; ++$round) {
+            $waitGroup = WaitGroup::create();
+
+            $waitGroup->add(static function () use ($connection, $queueName): string {
+                $channel = new AMQPChannel($connection);
+
+                $consuming = new AMQPQueue($channel);
+
+                $consuming->setName($queueName);
+                $consuming->setFlags(AMQP_DURABLE);
+                $consuming->declareQueue();
+
+                // Nothing is published: the coroutine is still waiting here when the group
+                // is stopped, so it never reaches a close of its own.
+                $consuming->consume(callback: static fn(AMQPEnvelope $envelope): bool => true);
+
+                return 'ended';
+            });
+
+            $waitGroup->add(static function () use ($waitGroup): string {
+                Sleeper::usleep(microseconds: 20_000);
+
+                $waitGroup->stop();
+
+                return 'stopped';
+            });
+
+            $waitGroup->waitAll();
+        }
+
+        // A channel per stopped coroutine would exhaust the connection's channel ids in a
+        // few thousand rounds, and nothing would ever close them.
+        self::assertSame(
+            $baseline,
+            $this->waitForUsedChannels($connection, $baseline),
+            'a stopped coroutine must not leave its channel open',
+        );
+    }
+
+    public function testAQueueTheApplicationDroppedLeavesTheConsumerRegistry(): void
+    {
+        $channel = $this->channel();
+        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+
+        $consuming = new AMQPQueue($channel);
+
+        $consuming->setName((string) $queue->getName());
+        $consuming->setFlags(AMQP_DURABLE);
+        $consuming->consume();
+
+        self::assertCount(1, $channel->getConsumers());
+
+        unset($consuming);
+
+        // The registry holds its consumers weakly: a queue the application dropped takes
+        // its stream — and the channel it was consuming on — with it.
+        self::assertSame([], $channel->getConsumers());
+    }
+
     public function testCredentialsAreValidatedTheWayTheExtensionValidatesThem(): void
     {
         $connection = new AMQPConnection();
@@ -316,5 +386,26 @@ class AmqpFailureTest extends AmqpTestCase
         self::assertSame('guest', $connection->getPassword());
         self::assertSame('/', $connection->getVhost());
         self::assertSame(AMQP_SASL_METHOD_PLAIN, $connection->getSaslMethod());
+    }
+
+    /**
+     * The channel count the broker settles on: a channel released by a destructor is
+     * closed without waiting for the broker, so the count catches up a moment later.
+     */
+    protected function waitForUsedChannels(AMQPConnection $connection, int $expected, float $timeoutSeconds = 2.0): int
+    {
+        $deadline = microtime(true) + $timeoutSeconds;
+
+        do {
+            $used = $connection->getUsedChannels();
+
+            if ($used === $expected) {
+                return $used;
+            }
+
+            usleep(20_000);
+        } while (microtime(true) < $deadline);
+
+        return $used;
     }
 }
