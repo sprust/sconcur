@@ -43,7 +43,7 @@ func (f *AmqpFeature) handleGet(task *tasks.Task, raw msgpack.RawMessage) {
 	})
 
 	if err != nil {
-		fail(task, "get", err)
+		fail(task, entry, "get", err)
 
 		return
 	}

@@ -153,12 +153,30 @@ abstract class AmqpTestCase extends BaseTestCase
     }
 
     /**
+     * Asserts that nothing arrives in the queue. Publishing carries no reply, so a single
+     * get() would pass before a message that is on its way has landed: the queue is pulled
+     * for a while, and the first message to show up fails the test.
+     */
+    protected function assertQueueStaysEmpty(AMQPQueue $queue, float $forSeconds = 0.3): void
+    {
+        $deadline = microtime(true) + $forSeconds;
+
+        do {
+            $envelope = $queue->get();
+
+            self::assertNull($envelope, 'the queue was expected to stay empty');
+
+            usleep(20_000);
+        } while (microtime(true) < $deadline);
+    }
+
+    /**
      * Deletes everything the test declared. Best-effort: a test may have deleted some of
      * it already, and a broker that dropped the connection has nothing left to clean.
      */
     protected function cleanUpTopology(): void
     {
-        if ($this->connection === null || $this->declaredQueues === [] && $this->declaredExchanges === []) {
+        if ($this->connection === null || ($this->declaredQueues === [] && $this->declaredExchanges === [])) {
             $this->declaredQueues    = [];
             $this->declaredExchanges = [];
 

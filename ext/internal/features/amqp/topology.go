@@ -56,7 +56,7 @@ func (f *AmqpFeature) handleExchangeDeclare(task *tasks.Task, raw msgpack.RawMes
 	})
 
 	if err != nil {
-		fail(task, "exchange declare", err)
+		fail(task, entry, "exchange declare", err)
 
 		return
 	}
@@ -88,7 +88,7 @@ func (f *AmqpFeature) handleExchangeDelete(task *tasks.Task, raw msgpack.RawMess
 	})
 
 	if err != nil {
-		fail(task, "exchange delete", err)
+		fail(task, entry, "exchange delete", err)
 
 		return
 	}
@@ -138,7 +138,7 @@ func (f *AmqpFeature) handleExchangeBinding(task *tasks.Task, raw msgpack.RawMes
 	})
 
 	if err != nil {
-		fail(task, "exchange binding", err)
+		fail(task, entry, "exchange binding", err)
 
 		return
 	}
@@ -199,7 +199,7 @@ func (f *AmqpFeature) handleQueueDeclare(task *tasks.Task, raw msgpack.RawMessag
 	})
 
 	if err != nil {
-		fail(task, "queue declare", err)
+		fail(task, entry, "queue declare", err)
 
 		return
 	}
@@ -241,7 +241,7 @@ func (f *AmqpFeature) handleQueueDelete(task *tasks.Task, raw msgpack.RawMessage
 	})
 
 	if err != nil {
-		fail(task, "queue delete", err)
+		fail(task, entry, "queue delete", err)
 
 		return
 	}
@@ -291,7 +291,7 @@ func (f *AmqpFeature) handleQueueBinding(task *tasks.Task, raw msgpack.RawMessag
 	})
 
 	if err != nil {
-		fail(task, "queue binding", err)
+		fail(task, entry, "queue binding", err)
 
 		return
 	}
@@ -329,7 +329,7 @@ func (f *AmqpFeature) handleQueuePurge(task *tasks.Task, raw msgpack.RawMessage)
 	})
 
 	if err != nil {
-		fail(task, "queue purge", err)
+		fail(task, entry, "queue purge", err)
 
 		return
 	}

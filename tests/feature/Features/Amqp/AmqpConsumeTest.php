@@ -22,17 +22,17 @@ class AmqpConsumeTest extends AmqpTestCase
     public function testTheCallbackReceivesTheDeliveriesUntilItReturnsFalse(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
         $queueName = (string) $queue->getName();
 
         foreach (['one', 'two', 'three'] as $body) {
-            $this->publishToQueue($channel, (string) $queue->getName(), $body);
+            $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: $body);
         }
 
         $received = [];
 
-        $queue->consume(function (AMQPEnvelope $envelope, AMQPQueue $queue) use (&$received): bool {
+        $queue->consume(callback: function (AMQPEnvelope $envelope, AMQPQueue $queue) use (&$received): bool {
             $received[] = $envelope->getBody();
 
             $queue->ack($envelope->getDeliveryTag());
@@ -57,19 +57,19 @@ class AmqpConsumeTest extends AmqpTestCase
         $another->setName($queueName);
         $another->setFlags(AMQP_DURABLE);
 
-        self::assertSame(1, $this->waitForMessageCount($another, 1));
+        self::assertSame(1, $this->waitForMessageCount(queue: $another, expected: 1));
     }
 
     public function testTheCallbackAlsoReceivesTheQueueItConsumes(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
-        $this->publishToQueue($channel, (string) $queue->getName(), 'one');
+        $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: 'one');
 
         $seen = null;
 
-        $queue->consume(function (AMQPEnvelope $envelope, AMQPQueue $consuming) use (&$seen): bool {
+        $queue->consume(callback: function (AMQPEnvelope $envelope, AMQPQueue $consuming) use (&$seen): bool {
             $seen = $consuming;
 
             $consuming->ack($envelope->getDeliveryTag());
@@ -85,11 +85,11 @@ class AmqpConsumeTest extends AmqpTestCase
     public function testJustConsumeReadsOnWithoutOpeningAnotherConsumer(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
-        $this->publishToQueue($channel, (string) $queue->getName(), 'first');
+        $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: 'first');
 
-        $queue->consume(function (AMQPEnvelope $envelope, AMQPQueue $queue): bool {
+        $queue->consume(callback: function (AMQPEnvelope $envelope, AMQPQueue $queue): bool {
             $queue->ack($envelope->getDeliveryTag());
 
             return false;
@@ -99,17 +99,17 @@ class AmqpConsumeTest extends AmqpTestCase
 
         self::assertNotNull($consumerTag);
 
-        $this->publishToQueue($channel, (string) $queue->getName(), 'second');
+        $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: 'second');
 
         $received = null;
 
-        $queue->consume(function (AMQPEnvelope $envelope, AMQPQueue $queue) use (&$received): bool {
+        $queue->consume(callback: function (AMQPEnvelope $envelope, AMQPQueue $queue) use (&$received): bool {
             $received = $envelope->getBody();
 
             $queue->ack($envelope->getDeliveryTag());
 
             return false;
-        }, AMQP_JUST_CONSUME);
+        }, flags: AMQP_JUST_CONSUME);
 
         self::assertSame('second', $received);
         // No second basic.consume was sent: the tag is the one from the first call.
@@ -121,11 +121,11 @@ class AmqpConsumeTest extends AmqpTestCase
     public function testJustConsumeNeedsAConsumerThatIsAlreadyOpen(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
         $this->expectException(AMQPQueueException::class);
 
-        $queue->consume(fn(): bool => false, AMQP_JUST_CONSUME);
+        $queue->consume(callback: fn(): bool => false, flags: AMQP_JUST_CONSUME);
     }
 
     public function testSeveralQueuesAreConsumedAtTheSameTime(): void
@@ -135,7 +135,7 @@ class AmqpConsumeTest extends AmqpTestCase
         $queues = [];
 
         for ($index = 0; $index < 3; ++$index) {
-            $queues[] = (string) $this->declareQueue($channel, AMQP_DURABLE)->getName();
+            $queues[] = (string) $this->declareQueue(channel: $channel, flags: AMQP_DURABLE)->getName();
         }
 
         $connection = $this->connection();
@@ -157,7 +157,7 @@ class AmqpConsumeTest extends AmqpTestCase
 
                 $body = '';
 
-                $queue->consume(function (AMQPEnvelope $envelope, AMQPQueue $queue) use (&$body): bool {
+                $queue->consume(callback: function (AMQPEnvelope $envelope, AMQPQueue $queue) use (&$body): bool {
                     $body = $envelope->getBody();
 
                     $queue->ack($envelope->getDeliveryTag());
@@ -168,7 +168,9 @@ class AmqpConsumeTest extends AmqpTestCase
                 $queue->cancel();
                 $channel->close();
 
-                return $body;
+                // The queue it consumed from travels with the body: a consumer that was
+                // fed another queue's message would be invisible otherwise.
+                return "$queueName=$body";
             });
         }
 
@@ -178,7 +180,7 @@ class AmqpConsumeTest extends AmqpTestCase
             $channel = new AMQPChannel($connection);
 
             foreach ($queues as $queueName) {
-                $this->publishToQueue($channel, $queueName, "for $queueName");
+                $this->publishToQueue(channel: $channel, queueName: $queueName, body: "for $queueName");
             }
 
             $channel->close();
@@ -198,12 +200,17 @@ class AmqpConsumeTest extends AmqpTestCase
 
         sort($results);
 
-        $expected = array_map(fn(string $queueName): string => "for $queueName", $queues);
+        $expected = array_map(
+            fn(string $queueName): string => "$queueName=for $queueName",
+            $queues,
+        );
 
         $expected[] = 'published';
 
         sort($expected);
 
+        // Sorted because the order the coroutines finish in is the scheduler's business;
+        // the pairing of queue and body is what this checks.
         self::assertSame($expected, $results);
 
         // Three consumers waiting 200 ms in turn would take 600 ms; concurrently they
@@ -215,7 +222,7 @@ class AmqpConsumeTest extends AmqpTestCase
     {
         $connection = $this->connection();
         $channel    = $this->channel();
-        $queue      = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue      = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
         $queueName = (string) $queue->getName();
 
@@ -232,7 +239,7 @@ class AmqpConsumeTest extends AmqpTestCase
 
             // Nothing is ever published here: the consumer waits until the group is
             // stopped, which cancels it on the Go side.
-            $queue->consume(fn(): bool => true);
+            $queue->consume(callback: fn(): bool => true);
 
             return 'ended';
         });

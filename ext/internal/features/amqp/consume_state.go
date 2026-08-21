@@ -89,12 +89,24 @@ func (s *consumeState) Next() *dto.Result {
 	}
 }
 
-// resultFromDelivery turns a receive into a Next() result: one delivery with more to
-// come, or the end of the stream once the driver closed the channel (the consumer was
-// cancelled, or the channel or connection went down).
+// resultFromDelivery turns a receive into a Next() result: one delivery with more to come,
+// or the end of the stream once the driver closed the deliveries channel.
+//
+// The driver closes it both when the flow is going away and when the consumer was taken
+// from us — the queue was deleted, the channel died, the broker cancelled the consumer.
+// The first is the normal end of a consume loop; the second is a failure, and ext-amqp
+// raises there, so the stream ends with an error rather than a quiet return.
 func (s *consumeState) resultFromDelivery(delivery amqp091.Delivery, ok bool) *dto.Result {
 	if !ok {
-		return dto.NewSuccessResult(s.message, "", helpers.CalcExecutionMs(s.startTime))
+		if s.ctx.Err() != nil {
+			return dto.NewSuccessResult(s.message, "", helpers.CalcExecutionMs(s.startTime))
+		}
+
+		return dto.NewErrorResult(s.message, errorPayload(
+			scopeCommand,
+			0,
+			"Consumer "+s.consumerTag+" was cancelled by the broker.",
+		))
 	}
 
 	serialized, err := msgpack.Marshal(deliveryToPayload(delivery, s.entry.id))
@@ -140,12 +152,15 @@ func (f *AmqpFeature) handleConsume(task *tasks.Task, raw msgpack.RawMessage) {
 
 	consumerContext, cancelConsumer := context.WithCancel(context.Background())
 
-	deliveries, err := entry.consume(task.GetContext(), consumerContext, consumerTag, params)
+	registerContext, cancelRegister := commandContext(task, params.TimeoutMs)
+	defer cancelRegister()
+
+	deliveries, err := entry.consume(registerContext, consumerContext, consumerTag, params)
 
 	if err != nil {
 		cancelConsumer()
 
-		fail(task, "consume", err)
+		fail(task, entry, "consume", err)
 
 		return
 	}
@@ -184,7 +199,7 @@ func (f *AmqpFeature) handleConsume(task *tasks.Task, raw msgpack.RawMessage) {
 	if err != nil {
 		cleanup()
 
-		fail(task, "consume", err)
+		fail(task, entry, "consume", err)
 
 		return
 	}

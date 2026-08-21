@@ -46,7 +46,9 @@ func (f *AmqpFeature) handlePublish(task *tasks.Task, raw msgpack.RawMessage) {
 	})
 
 	if err != nil {
-		fail(task, "publish", err)
+		entry.publishFailed()
+
+		fail(task, entry, "publish", err)
 
 		return
 	}

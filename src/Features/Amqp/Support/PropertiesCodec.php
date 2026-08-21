@@ -93,8 +93,10 @@ readonly class PropertiesCodec
      */
     public static function decode(array $properties): AMQPBasicProperties
     {
-        /** @var array<string, mixed> $headers */
-        $headers = is_array($properties['hd'] ?? null) ? $properties['hd'] : [];
+        /** @var array<string, mixed> $rawHeaders */
+        $rawHeaders = is_array($properties['hd'] ?? null) ? $properties['hd'] : [];
+
+        $headers = TableCodec::decode($rawHeaders);
 
         return new AMQPBasicProperties(
             contentType: self::readString($properties, 'ct'),

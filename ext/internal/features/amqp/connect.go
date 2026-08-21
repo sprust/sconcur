@@ -112,7 +112,7 @@ func (f *AmqpFeature) handleChannelOpen(task *tasks.Task, raw msgpack.RawMessage
 	entry, err := getChannels().openBounded(ctx, handle, params)
 
 	if err != nil {
-		fail(task, "channel open", err)
+		fail(task, nil, "channel open", err)
 
 		return
 	}
@@ -162,7 +162,7 @@ func (f *AmqpFeature) handleQos(task *tasks.Task, raw msgpack.RawMessage) {
 	})
 
 	if err != nil {
-		fail(task, "qos", err)
+		fail(task, entry, "qos", err)
 
 		return
 	}

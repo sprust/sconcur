@@ -57,9 +57,13 @@ type channelEntry struct {
 	pending       int
 	confirmations []payloads.Confirmation
 	returns       []payloads.ReturnedMessage
-	// notify wakes the wait loops on every confirm or return; buffered, so the
-	// collectors never block on a waiter that is not there.
-	notify chan struct{}
+	// waiters are the wait loops parked on this channel, woken on every confirm and
+	// every return. One channel per waiter: a shared one would let a confirm wake the
+	// loop waiting for a return, which would then park again and miss its own event.
+	waiters []chan struct{}
+	// gone is closed once the channel is, so a wait loop ends instead of parking
+	// forever on a channel the broker took away.
+	gone chan struct{}
 }
 
 var channelsOnce sync.Once
@@ -137,7 +141,7 @@ func (c *channels) open(handle *connectionHandle, params payloads.ChannelOpenPar
 		handle:     handle,
 		consumers:  make(map[string]context.CancelFunc),
 		lastUsedAt: time.Now(),
-		notify:     make(chan struct{}, 1),
+		gone:       make(chan struct{}),
 	}
 
 	if err := applyQos(channel, params); err != nil {
@@ -156,7 +160,11 @@ func (c *channels) open(handle *connectionHandle, params payloads.ChannelOpenPar
 		return nil, errors.New("connection handle is released")
 	}
 
-	entry.number = len(handle.channels) + 1
+	// Counted, not derived from the map size: closing a channel would otherwise hand the
+	// next one an id another live channel already has.
+	handle.channelCounter++
+
+	entry.number = handle.channelCounter
 
 	handle.channels[entry.id] = entry
 
@@ -171,7 +179,23 @@ func (c *channels) open(handle *connectionHandle, params payloads.ChannelOpenPar
 	// channel into publisher-confirm mode.
 	go entry.collectReturns(channel.NotifyReturn(make(chan amqp091.Return, returnQueueSize)))
 
+	// A protocol error (a passive declare of a queue that does not exist, a publish to a
+	// missing exchange) makes the broker close the channel. Without this watcher the dead
+	// channel would sit in the registries until the idle sweeper, answering commands with
+	// a confusing error and counting towards the connection's channel limit.
+	c.watch(entry, channel.NotifyClose(make(chan *amqp091.Error, 1)))
+
 	return entry, nil
+}
+
+// watch drops a channel from the registries as soon as the broker or the connection ends
+// it, and wakes whoever is waiting on it.
+func (c *channels) watch(entry *channelEntry, closed chan *amqp091.Error) {
+	go func() {
+		<-closed
+
+		c.close(entry.id)
+	}()
 }
 
 // find returns the channel behind an id, marking it as used so the idle sweeper leaves it
@@ -295,6 +319,13 @@ func (e *channelEntry) touch() {
 	e.lastUsedAt = time.Now()
 }
 
+func (e *channelEntry) isClosed() bool {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+
+	return e.closed
+}
+
 func (e *channelEntry) isIdleSince(moment time.Time) bool {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
@@ -323,7 +354,18 @@ func (e *channelEntry) close() {
 
 	e.consumers = make(map[string]context.CancelFunc)
 
+	waiters := e.waiters
+	e.waiters = nil
+
 	e.mutex.Unlock()
+
+	// Everything parked on this channel ends now: a wait loop with no deadline would
+	// otherwise sit here for the life of the process.
+	close(e.gone)
+
+	for _, waiter := range waiters {
+		close(waiter)
+	}
 
 	for _, cancel := range cancels {
 		cancel()
@@ -397,9 +439,13 @@ func (e *channelEntry) forgetConsumer(consumerTag string) {
 	}
 }
 
-// startConfirmMode puts the channel into publisher-confirm mode and starts collecting
-// what the broker reports. Calling it twice is a no-op.
-func (e *channelEntry) startConfirmMode(noWait bool) error {
+// startConfirmMode puts the channel into publisher-confirm mode and starts collecting what
+// the broker reports. Calling it twice is a no-op: NotifyPublish appends listeners, so a
+// second registration would count every confirmation twice.
+//
+// The claim on confirm mode is made under the entry's lock before the driver is called, so
+// two coroutines racing on the same channel cannot both register.
+func (e *channelEntry) startConfirmMode(ctx context.Context, noWait bool) error {
 	e.mutex.Lock()
 
 	if e.confirming {
@@ -408,27 +454,29 @@ func (e *channelEntry) startConfirmMode(noWait bool) error {
 		return nil
 	}
 
+	e.confirming = true
+
 	e.mutex.Unlock()
-
-	e.channelMutex.Lock()
-
-	err := e.channel.Confirm(noWait)
 
 	var confirms chan amqp091.Confirmation
 
-	if err == nil {
-		confirms = e.channel.NotifyPublish(make(chan amqp091.Confirmation, confirmQueueSize))
-	}
+	err := e.do(ctx, func(channel *amqp091.Channel) error {
+		if confirmError := channel.Confirm(noWait); confirmError != nil {
+			return confirmError
+		}
 
-	e.channelMutex.Unlock()
+		confirms = channel.NotifyPublish(make(chan amqp091.Confirmation, confirmQueueSize))
+
+		return nil
+	})
 
 	if err != nil {
+		e.mutex.Lock()
+		e.confirming = false
+		e.mutex.Unlock()
+
 		return err
 	}
-
-	e.mutex.Lock()
-	e.confirming = true
-	e.mutex.Unlock()
 
 	go e.collectConfirms(confirms)
 
@@ -448,6 +496,17 @@ func (e *channelEntry) publishing() {
 	}
 
 	e.pending++
+}
+
+// publishFailed takes back what publishing() counted: a publish the broker never received
+// gets no confirmation, and a wait loop counting on one would never end.
+func (e *channelEntry) publishFailed() {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+
+	if e.pending > 0 {
+		e.pending--
+	}
 }
 
 func (e *channelEntry) collectConfirms(confirms chan amqp091.Confirmation) {
@@ -502,36 +561,62 @@ func (e *channelEntry) collectReturns(returns chan amqp091.Return) {
 	}
 }
 
+// wake releases every wait loop parked on this channel; each re-checks its own condition
+// and parks again if it is not met.
 func (e *channelEntry) wake() {
-	select {
-	case e.notify <- struct{}{}:
-	default:
+	e.mutex.Lock()
+
+	waiters := e.waiters
+	e.waiters = nil
+
+	e.mutex.Unlock()
+
+	for _, waiter := range waiters {
+		close(waiter)
 	}
 }
 
-// waitForConfirms waits until every message published since the last wait has been
-// confirmed or rejected, and returns everything collected on the way, the returned
-// messages included.
-func (e *channelEntry) waitForConfirms(ctx context.Context, timeout time.Duration) (payloads.WaitResult, error) {
-	return e.wait(ctx, timeout, func() bool {
-		return !e.confirming || e.pending == 0
-	}, "timeout waiting for publisher confirms")
+// waiter parks the caller on this channel. The entry's lock must be held; the returned
+// channel is closed by the next wake() or when the channel goes away.
+func (e *channelEntry) waiterLocked() chan struct{} {
+	waiter := make(chan struct{})
+
+	e.waiters = append(e.waiters, waiter)
+
+	return waiter
 }
 
-// waitForReturns waits until the broker has returned at least one message.
+// waitForConfirms waits until every message published since the last wait has been
+// confirmed or rejected, and returns everything collected on the way, the returned messages
+// included (ext-amqp's waitForConfirm catches basic.return too).
+//
+// A channel that was never put into confirm mode has nothing to wait for and runs into the
+// deadline, which is what the extension does as well.
+func (e *channelEntry) waitForConfirms(ctx context.Context, timeout time.Duration) (payloads.WaitResult, error) {
+	return e.wait(ctx, timeout, func() bool {
+		return e.confirming && e.pending == 0
+	}, e.drainLocked)
+}
+
+// waitForReturns waits until the broker has returned at least one message. It leaves the
+// publisher confirms where they are: taking them here would strand the wait loop that is
+// counting on them.
 func (e *channelEntry) waitForReturns(ctx context.Context, timeout time.Duration) (payloads.WaitResult, error) {
 	return e.wait(ctx, timeout, func() bool {
 		return len(e.returns) > 0
-	}, "timeout waiting for returned messages")
+	}, e.drainReturnsLocked)
 }
 
 // wait blocks until the condition holds (checked under the entry's lock), the deadline
-// passes, or the flow stops, and hands back what the collectors gathered.
+// passes, the channel goes away, or the flow stops, and hands back what the drain took.
+//
+// The timeout message is the extension's: an application that reads it sees what it saw
+// before.
 func (e *channelEntry) wait(
 	ctx context.Context,
 	timeout time.Duration,
 	ready func() bool,
-	timeoutMessage string,
+	drain func() payloads.WaitResult,
 ) (payloads.WaitResult, error) {
 	var deadline <-chan time.Time
 
@@ -546,27 +631,33 @@ func (e *channelEntry) wait(
 		e.mutex.Lock()
 
 		if ready() {
-			result := e.drainLocked()
+			result := drain()
 
 			e.mutex.Unlock()
 
 			return result, nil
 		}
 
+		// Registered before the lock is released: an event that fires in between wakes
+		// this waiter instead of being missed.
+		waiter := e.waiterLocked()
+
 		e.mutex.Unlock()
 
 		select {
-		case <-e.notify:
+		case <-waiter:
 		case <-deadline:
-			return payloads.WaitResult{}, errors.New(timeoutMessage)
+			return payloads.WaitResult{}, errors.New("Wait timeout exceed")
+		case <-e.gone:
+			return payloads.WaitResult{}, amqp091.ErrClosed
 		case <-ctx.Done():
 			return payloads.WaitResult{}, ctx.Err()
 		}
 	}
 }
 
-// drainLocked hands over everything collected so far and starts a fresh batch. The
-// entry's lock must be held.
+// drainLocked hands over everything collected so far and starts a fresh batch. The entry's
+// lock must be held.
 func (e *channelEntry) drainLocked() payloads.WaitResult {
 	result := payloads.WaitResult{
 		Confirmations: e.confirmations,
@@ -576,6 +667,23 @@ func (e *channelEntry) drainLocked() payloads.WaitResult {
 	e.confirmations = nil
 	e.returns = nil
 
+	return normalizeWaitResult(result)
+}
+
+// drainReturnsLocked hands over the returned messages only. The entry's lock must be held.
+func (e *channelEntry) drainReturnsLocked() payloads.WaitResult {
+	result := payloads.WaitResult{
+		Returns: e.returns,
+	}
+
+	e.returns = nil
+
+	return normalizeWaitResult(result)
+}
+
+// normalizeWaitResult replaces the nil slices with empty ones, so PHP always decodes two
+// lists instead of two nulls.
+func normalizeWaitResult(result payloads.WaitResult) payloads.WaitResult {
 	if result.Confirmations == nil {
 		result.Confirmations = []payloads.Confirmation{}
 	}

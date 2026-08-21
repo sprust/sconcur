@@ -19,9 +19,9 @@ class AmqpConfirmTest extends AmqpTestCase
     {
         $channel  = $this->channel();
         $exchange = $this->declareExchange($channel);
-        $queue    = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue    = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
-        $queue->bind((string) $exchange->getName(), 'key');
+        $queue->bind(exchangeName: (string) $exchange->getName(), routingKey: 'key');
 
         $channel->confirmSelect();
 
@@ -41,7 +41,7 @@ class AmqpConfirmTest extends AmqpTestCase
         $exchange->publish(message: 'first', routingKey: 'key');
         $exchange->publish(message: 'second', routingKey: 'key');
 
-        $channel->waitForConfirm(2.0);
+        $channel->waitForConfirm(timeout: 2.0);
 
         self::assertSame([1, 2], $confirmed);
     }
@@ -52,7 +52,7 @@ class AmqpConfirmTest extends AmqpTestCase
 
         $channel->confirmSelect();
 
-        $channel->waitForConfirm(2.0);
+        $channel->waitForConfirm(timeout: 2.0);
 
         self::assertTrue($channel->isConnected());
     }
@@ -89,7 +89,7 @@ class AmqpConfirmTest extends AmqpTestCase
         // Nothing is bound to this exchange, so a mandatory message has nowhere to go.
         $exchange->publish(message: 'nowhere', routingKey: 'unbound', flags: AMQP_MANDATORY);
 
-        $channel->waitForBasicReturn(2.0);
+        $channel->waitForBasicReturn(timeout: 2.0);
 
         self::assertCount(1, $returned);
         self::assertSame(312, $returned[0]['replyCode']);
@@ -106,17 +106,17 @@ class AmqpConfirmTest extends AmqpTestCase
 
         $this->expectException(AMQPQueueException::class);
 
-        $channel->waitForBasicReturn(0.2);
+        $channel->waitForBasicReturn(timeout: 0.2);
     }
 
     public function testACommittedTransactionDeliversItsMessages(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
         $channel->startTransaction();
 
-        $this->publishToQueue($channel, (string) $queue->getName(), 'committed');
+        $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: 'committed');
 
         $channel->commitTransaction();
 
@@ -131,14 +131,14 @@ class AmqpConfirmTest extends AmqpTestCase
     public function testARolledBackTransactionDeliversNothing(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
         $channel->startTransaction();
 
-        $this->publishToQueue($channel, (string) $queue->getName(), 'rolled back');
+        $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: 'rolled back');
 
         $channel->rollbackTransaction();
 
-        self::assertNull($queue->get());
+        $this->assertQueueStaysEmpty($queue);
     }
 }

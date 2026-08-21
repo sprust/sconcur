@@ -50,9 +50,9 @@ class AmqpBehaviourParityTest extends AmqpTestCase
         ],
     ];
 
-    private ?NativeConnection $nativeConnection = null;
+    protected ?NativeConnection $nativeConnection = null;
 
-    private ?NativeChannel $nativeChannel = null;
+    protected ?NativeChannel $nativeChannel = null;
 
     protected function setUp(): void
     {
@@ -81,7 +81,7 @@ class AmqpBehaviourParityTest extends AmqpTestCase
     public function testTheCalqueReadsWhatTheExtensionPublished(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
         $queueName = (string) $queue->getName();
 
@@ -102,7 +102,7 @@ class AmqpBehaviourParityTest extends AmqpTestCase
     public function testTheExtensionReadsWhatTheCalquePublished(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
         $queueName = (string) $queue->getName();
 
@@ -125,7 +125,7 @@ class AmqpBehaviourParityTest extends AmqpTestCase
     public function testAQueueDeclaredByOneImplementationIsUsableByTheOther(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
         $queueName = (string) $queue->getName();
 
@@ -225,7 +225,7 @@ class AmqpBehaviourParityTest extends AmqpTestCase
         $deadline = microtime(true) + 2;
 
         do {
-            $envelope = $queue->get(AMQP_AUTOACK);
+            $envelope = $queue->get(flags: AMQP_AUTOACK);
 
             if ($envelope instanceof NativeEnvelope) {
                 return $envelope;

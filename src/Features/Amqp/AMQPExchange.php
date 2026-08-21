@@ -14,7 +14,6 @@ use SConcur\Features\Amqp\Payloads\ExchangeUnbindPayload;
 use SConcur\Features\Amqp\Payloads\PublishPayload;
 use SConcur\Features\Amqp\Payloads\PublishPayloadParameters;
 use SConcur\Features\Amqp\Support\AmqpResource;
-use SConcur\Features\Amqp\Support\CommandRunner;
 use SConcur\Features\Amqp\Support\FlagsParser;
 use SConcur\Features\Amqp\Support\PropertiesCodec;
 use SConcur\Features\Amqp\Support\TableCodec;
@@ -26,6 +25,9 @@ use SConcur\Features\Amqp\Support\TableCodec;
  */
 class AMQPExchange extends AmqpResource
 {
+    /** The longest exchange name the protocol accepts. */
+    protected const int MAX_NAME_LENGTH = 255;
+
     protected AMQPConnection $connection;
 
     protected AMQPChannel $channel;
@@ -60,13 +62,24 @@ class AMQPExchange extends AmqpResource
         $this->connection = $channel->getConnection();
     }
 
+    /** The configured name, or null while the exchange has none. */
     public function getName(): ?string
     {
-        return $this->name;
+        return $this->name === '' ? null : $this->name;
     }
 
+    /**
+     * @throws AMQPExchangeException if the name is longer than the protocol allows
+     */
     public function setName(?string $exchangeName): void
     {
+        if ($exchangeName !== null && strlen($exchangeName) > self::MAX_NAME_LENGTH) {
+            throw new AMQPExchangeException(
+                message: 'Invalid exchange name given, must be less than '
+                    . self::MAX_NAME_LENGTH . ' characters long.',
+            );
+        }
+
         $this->name = $exchangeName;
     }
 
@@ -106,9 +119,10 @@ class AMQPExchange extends AmqpResource
         $this->internal   = FlagsParser::has(flags: $flags, flag: AMQP_INTERNAL);
     }
 
+    /** The configured type, or null while the exchange has none. */
     public function getType(): ?string
     {
-        return $this->type;
+        return $this->type === '' ? null : $this->type;
     }
 
     public function setType(?string $exchangeType): void
@@ -167,11 +181,18 @@ class AMQPExchange extends AmqpResource
      * Declares the exchange on the broker. With AMQP_PASSIVE it only checks that the
      * exchange exists, and fails if it does not.
      *
-     * @throws AMQPExchangeException if the broker rejects the declaration
+     * @throws AMQPExchangeException if the exchange has no name, or the broker rejects the
+     *                               declaration
      */
     public function declareExchange(): void
     {
-        CommandRunner::run(
+        if ((string) $this->name === '') {
+            throw new AMQPExchangeException(
+                message: 'Could not declare exchange. Exchanges must have a name.',
+            );
+        }
+
+        $this->runCommand(
             payload: new ExchangeDeclarePayload(
                 new ExchangeDeclarePayloadParameters(
                     channelId: $this->channel->internalId,
@@ -187,6 +208,8 @@ class AMQPExchange extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPExchangeException::class,
+            channel: $this->channel,
+            operation: 'Could not declare exchange.',
         );
     }
 
@@ -208,7 +231,7 @@ class AMQPExchange extends AmqpResource
      */
     public function delete(?string $exchangeName = null, ?int $flags = null): void
     {
-        CommandRunner::run(
+        $this->runCommand(
             payload: new ExchangeDeletePayload(
                 new ExchangeDeletePayloadParameters(
                     channelId: $this->channel->internalId,
@@ -219,6 +242,8 @@ class AMQPExchange extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPExchangeException::class,
+            channel: $this->channel,
+            operation: 'Could not delete exchange.',
         );
     }
 
@@ -231,7 +256,7 @@ class AMQPExchange extends AmqpResource
      */
     public function bind(string $exchangeName, ?string $routingKey = null, array $arguments = []): void
     {
-        CommandRunner::run(
+        $this->runCommand(
             payload: new ExchangeBindPayload(
                 $this->bindParameters(
                     exchangeName: $exchangeName,
@@ -240,6 +265,8 @@ class AMQPExchange extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPExchangeException::class,
+            channel: $this->channel,
+            operation: 'Could not bind to exchange.',
         );
     }
 
@@ -252,7 +279,7 @@ class AMQPExchange extends AmqpResource
      */
     public function unbind(string $exchangeName, ?string $routingKey = null, array $arguments = []): void
     {
-        CommandRunner::run(
+        $this->runCommand(
             payload: new ExchangeUnbindPayload(
                 $this->bindParameters(
                     exchangeName: $exchangeName,
@@ -261,6 +288,8 @@ class AMQPExchange extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPExchangeException::class,
+            channel: $this->channel,
+            operation: 'Could not unbind from exchange.',
         );
     }
 
@@ -283,7 +312,7 @@ class AMQPExchange extends AmqpResource
         ?int $flags = null,
         array $headers = [],
     ): void {
-        CommandRunner::run(
+        $this->runCommand(
             payload: new PublishPayload(
                 new PublishPayloadParameters(
                     channelId: $this->channel->internalId,
@@ -297,6 +326,8 @@ class AMQPExchange extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPExchangeException::class,
+            channel: $this->channel,
+            operation: 'Could not publish to exchange.',
         );
     }
 

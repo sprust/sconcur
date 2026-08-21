@@ -42,16 +42,16 @@ $benchmarker->run(
     nativeCallback: $nativeQueue === null
         ? null
         : static function (int $callIndex) use ($nativeQueue): void {
-            $nativeQueue->get(AMQP_AUTOACK);
+            $nativeQueue->get(flags: AMQP_AUTOACK);
         },
     syncCallback: static function (int $callIndex) use ($syncQueue): void {
-        $syncQueue->get(AMQP_AUTOACK);
+        $syncQueue->get(flags: AMQP_AUTOACK);
     },
     asyncCallback: static function (int $callIndex) use ($bench, &$asyncQueues): void {
         $channelIndex = $callIndex % count($bench->asyncChannels);
 
         $asyncQueues[$channelIndex] ??= $bench->queue($bench->asyncChannels[$channelIndex], 'async');
 
-        $asyncQueues[$channelIndex]->get(AMQP_AUTOACK);
+        $asyncQueues[$channelIndex]->get(flags: AMQP_AUTOACK);
     },
 );

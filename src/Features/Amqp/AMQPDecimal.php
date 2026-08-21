@@ -51,11 +51,12 @@ final readonly class AMQPDecimal implements AMQPValue
     }
 
     /**
-     * The value as it travels to the broker — the extension hands the field table a
-     * float, and so does the calque.
+     * The value as it goes into a field table: the object itself, which the encoder turns
+     * into an AMQP decimal field. The extension does the same — a decimal keeps its kind
+     * on the wire instead of collapsing into a float.
      */
     public function toAmqpValue(): mixed
     {
-        return $this->significand / (10 ** $this->exponent);
+        return $this;
     }
 }

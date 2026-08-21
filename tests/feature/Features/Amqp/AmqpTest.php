@@ -9,6 +9,7 @@ use SConcur\Features\Amqp\AMQPConnection;
 use SConcur\Features\Amqp\AMQPEnvelope;
 use SConcur\Features\Amqp\AMQPExchange;
 use SConcur\Features\Amqp\AMQPQueue;
+use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Feature\BaseAsyncTestCase;
 use SConcur\Tests\Impl\TestAmqpResolver;
 use Throwable;
@@ -22,15 +23,22 @@ use const SConcur\Features\Amqp\AMQP_PASSIVE;
  */
 class AmqpTest extends BaseAsyncTestCase
 {
-    private ?AMQPConnection $connection = null;
+    /** How long each coroutine waits before publishing, so the two overlap measurably. */
+    private const int PUBLISH_DELAY_MS = 100;
 
-    private ?AMQPChannel $channel = null;
+    protected ?AMQPConnection $connection = null;
+
+    protected ?AMQPChannel $channel = null;
 
     /** @var array<int, string> */
-    private array $queueNames = [];
+    protected array $queueNames = [];
 
     /** @var array<int, string> */
-    private array $received = [];
+    protected array $received = [];
+
+    protected float $startTime = 0;
+
+    protected float $endTime = 0;
 
     protected function setUp(): void
     {
@@ -75,6 +83,8 @@ class AmqpTest extends BaseAsyncTestCase
 
     protected function on_1_start(): void
     {
+        $this->startTime = microtime(true);
+
         $this->publish(1, 'first');
     }
 
@@ -95,7 +105,7 @@ class AmqpTest extends BaseAsyncTestCase
 
     protected function on_iterate(): void
     {
-        //
+        $this->endTime = microtime(true);
     }
 
     protected function on_exception(): void
@@ -119,9 +129,17 @@ class AmqpTest extends BaseAsyncTestCase
 
     protected function assertResult(array $results): void
     {
-        // Both coroutines went through publish and consume; the parent already checked
-        // that their events interleaved, which is what running at the same time means
-        // here — neither waited for the other to finish.
+        // Measured from the first publish to the last yielded result. Each coroutine waits
+        // out the same delay before its message is published, so run one after another the
+        // two would take both delays; run at the same time, one.
+        $totalTimeMs = ($this->endTime - $this->startTime) * 1000;
+
+        self::assertLessThan(
+            2 * self::PUBLISH_DELAY_MS,
+            $totalTimeMs,
+            "the two coroutines took {$totalTimeMs}ms, which looks sequential",
+        );
+
         $received = $this->received;
 
         // Which coroutine finished first is up to the scheduler; only the pairing matters.
@@ -137,10 +155,13 @@ class AmqpTest extends BaseAsyncTestCase
     }
 
     /**
-     * Publishes one message straight to the coroutine's own queue, on its own channel.
+     * Publishes one message straight to the coroutine's own queue, on its own channel,
+     * after a delay the other coroutine is free to use.
      */
     private function publish(int $index, string $body): void
     {
+        Sleeper::usleep(microseconds: self::PUBLISH_DELAY_MS * 1000);
+
         $channel = new AMQPChannel($this->connection);
 
         $exchange = new AMQPExchange($channel);
@@ -167,7 +188,7 @@ class AmqpTest extends BaseAsyncTestCase
 
         $body = '';
 
-        $queue->consume(function (AMQPEnvelope $envelope, AMQPQueue $queue) use (&$body): bool {
+        $queue->consume(callback: function (AMQPEnvelope $envelope, AMQPQueue $queue) use (&$body): bool {
             $body = $envelope->getBody();
 
             $queue->ack($envelope->getDeliveryTag());

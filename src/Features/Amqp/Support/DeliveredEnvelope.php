@@ -30,11 +30,9 @@ class DeliveredEnvelope extends AMQPEnvelope
         $this->body         = isset($delivery['bd']) ? (string) $delivery['bd'] : '';
         $this->routingKey   = isset($delivery['rk']) ? (string) $delivery['rk'] : '';
         $this->exchangeName = isset($delivery['en']) ? (string) $delivery['en'] : '';
-        // A message pulled with basic.get belongs to no consumer, and ext-amqp reports
-        // that as null rather than as an empty tag.
-        $consumerTag = isset($delivery['tg']) ? (string) $delivery['tg'] : '';
-
-        $this->consumerTag  = $consumerTag === '' ? null : $consumerTag;
+        // A message pulled with basic.get belongs to no consumer; the extension reports
+        // that as an empty tag, and null only on an envelope nothing delivered.
+        $this->consumerTag  = isset($delivery['tg']) ? (string) $delivery['tg'] : '';
         $this->deliveryTag  = isset($delivery['dt']) ? (int) $delivery['dt'] : null;
         $this->isRedelivery = (bool) ($delivery['rd'] ?? false);
 
@@ -47,10 +45,13 @@ class DeliveredEnvelope extends AMQPEnvelope
         $this->replyTo         = $properties->getReplyTo();
         $this->expiration      = $properties->getExpiration();
         $this->messageId       = $properties->getMessageId();
-        $this->timestamp       = $properties->getTimestamp();
-        $this->type            = $properties->getType();
-        $this->userId          = $properties->getUserId();
-        $this->appId           = $properties->getAppId();
-        $this->clusterId       = $properties->getClusterId();
+        // A delivered message always reports a timestamp, 0 when it carries none — the
+        // extension keeps that for backwards compatibility, and code doing date() on it
+        // would break on a null.
+        $this->timestamp = $properties->getTimestamp() ?? 0;
+        $this->type      = $properties->getType();
+        $this->userId    = $properties->getUserId();
+        $this->appId     = $properties->getAppId();
+        $this->clusterId = $properties->getClusterId();
     }
 }

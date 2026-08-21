@@ -42,7 +42,7 @@ func (f *AmqpFeature) handleTransaction(task *tasks.Task, raw msgpack.RawMessage
 	})
 
 	if err != nil {
-		fail(task, "transaction", err)
+		fail(task, entry, "transaction", err)
 
 		return
 	}

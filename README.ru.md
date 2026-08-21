@@ -113,6 +113,7 @@ echo "готово за {$seconds} c" . PHP_EOL;
 | `curl`, `file_get_contents`, Guzzle | `Features\HttpClient\HttpClient` (PSR-18) | стриминг ответа, скачивание в файл на стороне Go |
 | `fsockopen`, `stream_socket_client` | `Features\SocketClient\SocketClient` | TCP с length-prefix кадрами |
 | WS-клиент (библиотека) | `Features\WsClient\WsClient` | обмен text/binary сообщениями |
+| `ext-amqp` (RabbitMQ) | `Features\Amqp\*` | те же классы и флаги; консьюмер приостанавливает свою корутину, а не воркер |
 
 Долгоживущие серверы:
 
@@ -224,6 +225,9 @@ $collection->insertOne(['name' => 'example']);
 | PostgreSQL (сервер) | 16 |
 | jackc/pgx/v5 | 5.7.2 |
 | go.mongodb.org/mongo-driver/v2 | 2.6.0 |
+| RabbitMQ (сервер) | 4.1 |
+| ext-amqp (PHP-расширение, только тесты и бенчмарки) | 2.2.0 |
+| rabbitmq/amqp091-go | 1.14.0 |
 
 ## Документация
 

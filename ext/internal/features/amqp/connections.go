@@ -74,9 +74,12 @@ type connectionHandle struct {
 	id     string
 	pooled *pooledConnection
 
-	mutex    sync.Mutex
-	channels map[string]*channelEntry
-	closed   bool
+	mutex sync.Mutex
+	// channelCounter numbers the channels of this handle; it only ever grows, so a
+	// closed channel never hands its number to the next one.
+	channelCounter int
+	channels       map[string]*channelEntry
+	closed         bool
 }
 
 var connectionsOnce sync.Once
@@ -399,6 +402,16 @@ func dialConfig(params payloads.ConnectParams) (amqp091.Config, error) {
 		Heartbeat:  time.Duration(max(params.HeartbeatSeconds, 0)) * time.Second,
 		Dial:       amqp091.DefaultDial(connectTimeout),
 		Properties: amqp091.NewConnectionProperties(),
+		// The credentials are handed over as they are. The driver would otherwise
+		// derive them by parsing the URI, which mangles every login or password
+		// holding a character the URI syntax reserves: "%" starts an escape, "/",
+		// "?" and "#" end the userinfo, and ":" splits it.
+		SASL: []amqp091.Authentication{
+			&amqp091.PlainAuth{
+				Username: params.Login,
+				Password: params.Password,
+			},
+		},
 	}
 
 	if params.ConnectionName != "" {
@@ -406,7 +419,7 @@ func dialConfig(params payloads.ConnectParams) (amqp091.Config, error) {
 	}
 
 	if params.SaslMethod == saslMethodExternal {
-		config.SASL = []amqp091.Authentication{&externalAuth{}}
+		config.SASL = []amqp091.Authentication{&amqp091.ExternalAuth{}}
 	}
 
 	if !usesTls(params) {
@@ -422,18 +435,6 @@ func dialConfig(params payloads.ConnectParams) (amqp091.Config, error) {
 	config.TLSClientConfig = tlsConfig
 
 	return config, nil
-}
-
-// externalAuth is the SASL EXTERNAL mechanism: the broker authenticates the client by its
-// TLS certificate, so the response carries no credentials.
-type externalAuth struct{}
-
-func (a *externalAuth) Mechanism() string {
-	return "EXTERNAL"
-}
-
-func (a *externalAuth) Response() string {
-	return ""
 }
 
 func usesTls(params payloads.ConnectParams) bool {
@@ -477,8 +478,9 @@ func tlsConfigFromParams(params payloads.ConnectParams) (*tls.Config, error) {
 	return config, nil
 }
 
-// connectionUri builds the amqp:// (or amqps://) URI of a connection. The vhost travels
-// in the dial config instead of the path, so it needs no escaping here.
+// connectionUri builds the amqp:// (or amqps://) URI of a connection: the address and
+// nothing else. The credentials travel in the dial config (dialConfig) and the vhost in
+// its Vhost field, so nothing here has to survive URI escaping.
 func connectionUri(key connectionKey) string {
 	scheme := "amqp://"
 
@@ -486,9 +488,7 @@ func connectionUri(key connectionKey) string {
 		scheme = "amqps://"
 	}
 
-	address := net.JoinHostPort(key.host, strconv.Itoa(key.port))
-
-	return scheme + key.login + ":" + key.password + "@" + address + "/"
+	return scheme + net.JoinHostPort(key.host, strconv.Itoa(key.port)) + "/"
 }
 
 func connectionKeyFromParams(params payloads.ConnectParams) connectionKey {

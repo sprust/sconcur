@@ -283,6 +283,9 @@ type ConsumeParams struct {
 	Arguments   Table          `json:"ar" msgpack:"ar"`
 	// ReadTimeoutMs bounds the wait for the next delivery; 0 waits indefinitely.
 	ReadTimeoutMs int `json:"rt" msgpack:"rt"`
+	// TimeoutMs bounds the basic.consume that opens the consumer — the consumer itself
+	// then lives on, bounded by ReadTimeoutMs.
+	TimeoutMs int `json:"to" msgpack:"to"`
 }
 
 // ConsumerMeta is the first result of a Consume: the tag the broker assigned, which PHP

@@ -42,6 +42,10 @@ func TestAMapDecodesIntoTheTable(t *testing.T) {
 	if len(table) != 1 {
 		t.Fatalf("table = %#v, want one value", table)
 	}
+
+	if table["x-max-length"] != int8(10) {
+		t.Fatalf("x-max-length = %#v (%T), want the value that was sent", table["x-max-length"], table["x-max-length"])
+	}
 }
 
 func TestNilDecodesAsNoTable(t *testing.T) {

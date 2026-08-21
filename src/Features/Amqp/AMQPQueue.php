@@ -47,6 +47,9 @@ use SConcur\Features\Amqp\Support\TableCodec;
  */
 class AMQPQueue extends AmqpResource
 {
+    /** The longest queue name the protocol accepts. */
+    protected const int MAX_NAME_LENGTH = 255;
+
     protected AMQPConnection $connection;
 
     protected AMQPChannel $channel;
@@ -91,8 +94,20 @@ class AMQPQueue extends AmqpResource
         return $this->name;
     }
 
+    /**
+     * @throws AMQPQueueException if the name is empty or longer than the protocol allows
+     */
     public function setName(string $name): void
     {
+        $length = strlen($name);
+
+        if ($length < 1 || $length > self::MAX_NAME_LENGTH) {
+            throw new AMQPQueueException(
+                message: 'Invalid queue name given, must be between 1 and '
+                    . self::MAX_NAME_LENGTH . ' characters long.',
+            );
+        }
+
         $this->name = $name;
     }
 
@@ -189,7 +204,7 @@ class AMQPQueue extends AmqpResource
      */
     public function declareQueue(): int
     {
-        $result = CommandRunner::run(
+        $result = $this->runCommand(
             payload: new QueueDeclarePayload(
                 new QueueDeclarePayloadParameters(
                     channelId: $this->channel->internalId,
@@ -204,6 +219,8 @@ class AMQPQueue extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPQueueException::class,
+            channel: $this->channel,
+            operation: 'Could not declare queue.',
         );
 
         if (isset($result['na'])) {
@@ -232,7 +249,7 @@ class AMQPQueue extends AmqpResource
      */
     public function bind(string $exchangeName, ?string $routingKey = null, array $arguments = []): void
     {
-        CommandRunner::run(
+        $this->runCommand(
             payload: new QueueBindPayload(
                 $this->bindParameters(
                     exchangeName: $exchangeName,
@@ -241,6 +258,8 @@ class AMQPQueue extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPQueueException::class,
+            channel: $this->channel,
+            operation: 'Could not bind queue.',
         );
     }
 
@@ -253,7 +272,7 @@ class AMQPQueue extends AmqpResource
      */
     public function unbind(string $exchangeName, ?string $routingKey = null, array $arguments = []): void
     {
-        CommandRunner::run(
+        $this->runCommand(
             payload: new QueueUnbindPayload(
                 $this->bindParameters(
                     exchangeName: $exchangeName,
@@ -262,6 +281,8 @@ class AMQPQueue extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPQueueException::class,
+            channel: $this->channel,
+            operation: 'Could not unbind queue.',
         );
     }
 
@@ -274,7 +295,7 @@ class AMQPQueue extends AmqpResource
      */
     public function delete(?int $flags = null): int
     {
-        $result = CommandRunner::run(
+        $result = $this->runCommand(
             payload: new QueueDeletePayload(
                 new QueueDeletePayloadParameters(
                     channelId: $this->channel->internalId,
@@ -286,6 +307,8 @@ class AMQPQueue extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPQueueException::class,
+            channel: $this->channel,
+            operation: 'Could not delete queue.',
         );
 
         return isset($result['mc']) ? (int) $result['mc'] : 0;
@@ -298,7 +321,7 @@ class AMQPQueue extends AmqpResource
      */
     public function purge(): int
     {
-        $result = CommandRunner::run(
+        $result = $this->runCommand(
             payload: new QueuePurgePayload(
                 new QueuePurgePayloadParameters(
                     channelId: $this->channel->internalId,
@@ -308,6 +331,8 @@ class AMQPQueue extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPQueueException::class,
+            channel: $this->channel,
+            operation: 'Could not purge queue.',
         );
 
         return isset($result['mc']) ? (int) $result['mc'] : 0;
@@ -321,7 +346,7 @@ class AMQPQueue extends AmqpResource
      */
     public function get(?int $flags = null): ?AMQPEnvelope
     {
-        $result = CommandRunner::run(
+        $result = $this->runCommand(
             payload: new GetPayload(
                 new GetPayloadParameters(
                     channelId: $this->channel->internalId,
@@ -331,6 +356,8 @@ class AMQPQueue extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPQueueException::class,
+            channel: $this->channel,
+            operation: 'Could not get messages from queue.',
         );
 
         if ($result === []) {
@@ -384,7 +411,7 @@ class AMQPQueue extends AmqpResource
      */
     public function ack(int $deliveryTag, ?int $flags = null): void
     {
-        CommandRunner::run(
+        $this->runCommand(
             payload: new AckPayload(
                 new AckPayloadParameters(
                     channelId: $this->channel->internalId,
@@ -394,6 +421,8 @@ class AMQPQueue extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPQueueException::class,
+            channel: $this->channel,
+            operation: 'Could not ack message.',
         );
     }
 
@@ -405,7 +434,7 @@ class AMQPQueue extends AmqpResource
      */
     public function nack(int $deliveryTag, ?int $flags = null): void
     {
-        CommandRunner::run(
+        $this->runCommand(
             payload: new NackPayload(
                 new NackPayloadParameters(
                     channelId: $this->channel->internalId,
@@ -416,6 +445,8 @@ class AMQPQueue extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPQueueException::class,
+            channel: $this->channel,
+            operation: 'Could not nack message.',
         );
     }
 
@@ -426,7 +457,7 @@ class AMQPQueue extends AmqpResource
      */
     public function reject(int $deliveryTag, ?int $flags = null): void
     {
-        CommandRunner::run(
+        $this->runCommand(
             payload: new RejectPayload(
                 new RejectPayloadParameters(
                     channelId: $this->channel->internalId,
@@ -436,6 +467,8 @@ class AMQPQueue extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPQueueException::class,
+            channel: $this->channel,
+            operation: 'Could not reject message.',
         );
     }
 
@@ -447,7 +480,7 @@ class AMQPQueue extends AmqpResource
      */
     public function recover(bool $requeue = true): void
     {
-        CommandRunner::run(
+        $this->runCommand(
             payload: new RecoverPayload(
                 new RecoverPayloadParameters(
                     channelId: $this->channel->internalId,
@@ -456,6 +489,8 @@ class AMQPQueue extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPQueueException::class,
+            channel: $this->channel,
+            operation: 'Could not redeliver unacknowledged messages.',
         );
     }
 
@@ -473,7 +508,7 @@ class AMQPQueue extends AmqpResource
             return;
         }
 
-        CommandRunner::run(
+        $this->runCommand(
             payload: new CancelPayload(
                 new CancelPayloadParameters(
                     channelId: $this->channel->internalId,
@@ -483,6 +518,8 @@ class AMQPQueue extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPQueueException::class,
+            channel: $this->channel,
+            operation: 'Could not cancel queue.',
         );
 
         if ($consumerTag === '' || $consumerTag === $this->consumerTag) {
@@ -516,7 +553,7 @@ class AMQPQueue extends AmqpResource
      */
     protected function openConsumer(?int $flags, ?string $consumerTag): void
     {
-        $result = CommandRunner::execute(
+        $result = $this->runStreamCommand(
             payload: new ConsumePayload(
                 new ConsumePayloadParameters(
                     channelId: $this->channel->internalId,
@@ -528,9 +565,12 @@ class AMQPQueue extends AmqpResource
                     noWait: false,
                     arguments: TableCodec::encode($this->arguments),
                     readTimeoutMs: static::toMilliseconds($this->connection->getReadTimeout()),
+                    timeoutMs: $this->timeoutMs(),
                 ),
             ),
             exceptionClass: AMQPQueueException::class,
+            channel: $this->channel,
+            operation: 'Could not start the consumer.',
         );
 
         $this->consumeTaskKey = $result->key;

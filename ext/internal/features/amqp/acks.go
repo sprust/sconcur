@@ -33,7 +33,7 @@ func (f *AmqpFeature) handleAck(task *tasks.Task, raw msgpack.RawMessage) {
 	})
 
 	if err != nil {
-		fail(task, "ack", err)
+		fail(task, entry, "ack", err)
 
 		return
 	}
@@ -65,7 +65,7 @@ func (f *AmqpFeature) handleNack(task *tasks.Task, raw msgpack.RawMessage) {
 	})
 
 	if err != nil {
-		fail(task, "nack", err)
+		fail(task, entry, "nack", err)
 
 		return
 	}
@@ -97,7 +97,7 @@ func (f *AmqpFeature) handleReject(task *tasks.Task, raw msgpack.RawMessage) {
 	})
 
 	if err != nil {
-		fail(task, "reject", err)
+		fail(task, entry, "reject", err)
 
 		return
 	}
@@ -129,7 +129,7 @@ func (f *AmqpFeature) handleRecover(task *tasks.Task, raw msgpack.RawMessage) {
 	})
 
 	if err != nil {
-		fail(task, "recover", err)
+		fail(task, entry, "recover", err)
 
 		return
 	}
@@ -161,7 +161,7 @@ func (f *AmqpFeature) handleCancel(task *tasks.Task, raw msgpack.RawMessage) {
 	})
 
 	if err != nil {
-		fail(task, "cancel", err)
+		fail(task, entry, "cancel", err)
 
 		return
 	}

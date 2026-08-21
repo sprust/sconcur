@@ -76,24 +76,12 @@ func TestMapToTableIsNilWhenThereIsNothingToSend(t *testing.T) {
 	}
 }
 
-func TestTableToMapGivesPhpTheScalarsExtAmqpGives(t *testing.T) {
-	moment := time.Unix(1_700_000_000, 0)
-
+func TestTableToMapGivesPhpValuesMessagePackCanCarry(t *testing.T) {
 	values := tableToMap(amqp091.Table{
-		"timestamp": moment,
-		"decimal":   amqp091.Decimal{Scale: 2, Value: 314},
-		"bytes":     []byte("raw"),
-		"nested":    amqp091.Table{"inner": "value"},
-		"list":      []any{amqp091.Decimal{Scale: 1, Value: 15}},
+		"bytes":  []byte("raw"),
+		"nested": amqp091.Table{"inner": "value"},
+		"list":   []any{amqp091.Decimal{Scale: 1, Value: 15}},
 	})
-
-	if values["timestamp"] != moment.Unix() {
-		t.Fatalf("timestamp = %#v, want %d", values["timestamp"], moment.Unix())
-	}
-
-	if values["decimal"] != 3.14 {
-		t.Fatalf("decimal = %#v, want 3.14", values["decimal"])
-	}
 
 	if values["bytes"] != "raw" {
 		t.Fatalf("bytes = %#v, want raw", values["bytes"])
@@ -107,8 +95,67 @@ func TestTableToMapGivesPhpTheScalarsExtAmqpGives(t *testing.T) {
 
 	list, ok := values["list"].([]any)
 
-	if !ok || len(list) != 1 || list[0] != 1.5 {
-		t.Fatalf("list = %#v, want [1.5]", values["list"])
+	if !ok || len(list) != 1 {
+		t.Fatalf("list = %#v, want one value", values["list"])
+	}
+
+	// A decimal inside a list keeps its kind too.
+	decimal, ok := list[0].(map[string]any)
+
+	if !ok || decimal["__amqp"] != "D" {
+		t.Fatalf("list[0] = %#v, want the tagged decimal shape", list[0])
+	}
+}
+
+func TestATaggedDecimalAndTimestampBecomeRealFieldValues(t *testing.T) {
+	table := mapToTable(map[string]any{
+		"decimal":   map[string]any{"__amqp": "D", "e": 2, "s": 314},
+		"timestamp": map[string]any{"__amqp": "T", "v": int64(1_700_000_000)},
+		"plain":     map[string]any{"nested": 1},
+	})
+
+	decimal, ok := table["decimal"].(amqp091.Decimal)
+
+	if !ok {
+		t.Fatalf("decimal = %T, want amqp091.Decimal", table["decimal"])
+	}
+
+	if decimal.Scale != 2 || decimal.Value != 314 {
+		t.Fatalf("decimal = %#v, want scale 2 value 314", decimal)
+	}
+
+	timestamp, ok := table["timestamp"].(time.Time)
+
+	if !ok {
+		t.Fatalf("timestamp = %T, want time.Time", table["timestamp"])
+	}
+
+	if timestamp.Unix() != 1_700_000_000 {
+		t.Fatalf("timestamp = %d, want 1700000000", timestamp.Unix())
+	}
+
+	// A map that is not tagged stays a nested table.
+	if _, ok := table["plain"].(amqp091.Table); !ok {
+		t.Fatalf("plain = %T, want amqp091.Table", table["plain"])
+	}
+}
+
+func TestADecimalAndTimestampGoBackToPhpTagged(t *testing.T) {
+	values := tableToMap(amqp091.Table{
+		"decimal":   amqp091.Decimal{Scale: 2, Value: 314},
+		"timestamp": time.Unix(1_700_000_000, 0),
+	})
+
+	decimal, ok := values["decimal"].(map[string]any)
+
+	if !ok || decimal["__amqp"] != "D" || decimal["e"] != int64(2) || decimal["s"] != int64(314) {
+		t.Fatalf("decimal = %#v, want the tagged decimal shape", values["decimal"])
+	}
+
+	timestamp, ok := values["timestamp"].(map[string]any)
+
+	if !ok || timestamp["__amqp"] != "T" || timestamp["v"] != int64(1_700_000_000) {
+		t.Fatalf("timestamp = %#v, want the tagged timestamp shape", values["timestamp"])
 	}
 }
 

@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Amqp;
 
+use SConcur\Features\Amqp\AMQPChannel;
 use SConcur\Features\Amqp\AMQPDecimal;
+use SConcur\Features\Amqp\AMQPQueue;
 use SConcur\Features\Amqp\AMQPTimestamp;
 use const SConcur\Features\Amqp\AMQP_AUTOACK;
 use const SConcur\Features\Amqp\AMQP_DELIVERY_MODE_PERSISTENT;
@@ -22,9 +24,9 @@ class AmqpMessageTest extends AmqpTestCase
     {
         $channel  = $this->channel();
         $exchange = $this->declareExchange($channel);
-        $queue    = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue    = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
-        $queue->bind((string) $exchange->getName(), 'key');
+        $queue->bind(exchangeName: (string) $exchange->getName(), routingKey: 'key');
 
         $exchange->publish(
             message: '{"id":1}',
@@ -68,7 +70,9 @@ class AmqpMessageTest extends AmqpTestCase
         self::assertSame($_ENV['RABBITMQ_USER'], $envelope->getUserId());
         self::assertSame('tests', $envelope->getAppId());
         self::assertFalse($envelope->isRedelivery());
-        self::assertNull($envelope->getConsumerTag());
+        // A message pulled with basic.get belongs to no consumer, and the extension
+        // reports that as an empty tag.
+        self::assertSame('', $envelope->getConsumerTag());
 
         self::assertTrue($envelope->hasHeader('x-attempt'));
         self::assertSame(3, $envelope->getHeader('x-attempt'));
@@ -83,9 +87,9 @@ class AmqpMessageTest extends AmqpTestCase
     public function testAMessageWithNoContentTypeIsPublishedAsTextPlain(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
-        $this->publishToQueue($channel, (string) $queue->getName(), 'plain');
+        $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: 'plain');
 
         $envelope = $this->waitForMessage($queue);
 
@@ -97,21 +101,21 @@ class AmqpMessageTest extends AmqpTestCase
         $queue->ack($envelope->getDeliveryTag());
     }
 
-    public function testHeaderValueObjectsTravelAsScalars(): void
+    public function testHeaderValueObjectsKeepTheirAmqpFieldKind(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
         $exchange = $this->declareExchange($channel);
 
-        $queue->bind((string) $exchange->getName(), 'key');
+        $queue->bind(exchangeName: (string) $exchange->getName(), routingKey: 'key');
 
         $exchange->publish(
             message: 'values',
             routingKey: 'key',
             headers: [
                 'headers' => [
-                    'x-decimal'   => new AMQPDecimal(2, 314),
+                    'x-decimal'   => new AMQPDecimal(exponent: 2, significand: 314),
                     'x-timestamp' => new AMQPTimestamp(1_700_000_000.0),
                 ],
             ],
@@ -120,8 +124,84 @@ class AmqpMessageTest extends AmqpTestCase
         $envelope = $this->waitForMessage($queue);
 
         self::assertNotNull($envelope);
-        self::assertSame(3.14, $envelope->getHeader('x-decimal'));
-        self::assertSame(1_700_000_000, $envelope->getHeader('x-timestamp'));
+
+        // A decimal and a timestamp have field kinds of their own in AMQP 0-9-1, so they
+        // come back as the objects they were sent as — not as a float and an integer.
+        $decimal = $envelope->getHeader('x-decimal');
+
+        self::assertInstanceOf(AMQPDecimal::class, $decimal);
+        self::assertSame(2, $decimal->getExponent());
+        self::assertSame(314, $decimal->getSignificand());
+
+        $timestamp = $envelope->getHeader('x-timestamp');
+
+        self::assertInstanceOf(AMQPTimestamp::class, $timestamp);
+        self::assertSame(1_700_000_000.0, $timestamp->getTimestamp());
+
+        $queue->ack($envelope->getDeliveryTag());
+    }
+
+    public function testADeliveryWithNoTimestampReportsZero(): void
+    {
+        $channel = $this->channel();
+        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+
+        $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: 'no timestamp');
+
+        $envelope = $this->waitForMessage($queue);
+
+        self::assertNotNull($envelope);
+        // The extension keeps 0 here for backwards compatibility, so date() on it works.
+        self::assertSame(0, $envelope->getTimestamp());
+
+        $queue->ack($envelope->getDeliveryTag());
+    }
+
+    public function testANonStringHeaderKeyIsDroppedWithAWarning(): void
+    {
+        $channel  = $this->channel();
+        $exchange = $this->declareExchange($channel);
+        $queue    = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+
+        $queue->bind(exchangeName: (string) $exchange->getName(), routingKey: 'key');
+
+        $warnings = [];
+
+        set_error_handler(
+            static function (int $level, string $message) use (&$warnings): bool {
+                $warnings[] = $message;
+
+                return true;
+            },
+            E_USER_WARNING,
+        );
+
+        try {
+            $exchange->publish(
+                message: 'kept',
+                routingKey: 'key',
+                headers: [
+                    'headers' => [
+                        '5'      => 'five',
+                        'x-name' => 'kept',
+                    ],
+                ],
+            );
+        } finally {
+            restore_error_handler();
+        }
+
+        self::assertCount(1, $warnings);
+        self::assertStringContainsString("Ignoring non-string header field '5'", $warnings[0]);
+
+        // The message itself went out with the headers that could travel: a key the
+        // protocol cannot carry costs that header, not the publish.
+        $envelope = $this->waitForMessage($queue);
+
+        self::assertNotNull($envelope);
+        self::assertSame('kept', $envelope->getBody());
+        self::assertSame('kept', $envelope->getHeader('x-name'));
+        self::assertFalse($envelope->hasHeader('5'));
 
         $queue->ack($envelope->getDeliveryTag());
     }
@@ -129,9 +209,9 @@ class AmqpMessageTest extends AmqpTestCase
     public function testAnAcknowledgedMessageIsGoneAndAnUnacknowledgedOneComesBack(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
-        $this->publishToQueue($channel, (string) $queue->getName(), 'first');
+        $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: 'first');
 
         $envelope = $this->waitForMessage($queue);
 
@@ -139,15 +219,15 @@ class AmqpMessageTest extends AmqpTestCase
 
         $queue->ack($envelope->getDeliveryTag());
 
-        self::assertNull($queue->get());
+        $this->assertQueueStaysEmpty($queue);
 
-        $this->publishToQueue($channel, (string) $queue->getName(), 'second');
+        $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: 'second');
 
         $envelope = $this->waitForMessage($queue);
 
         self::assertNotNull($envelope);
 
-        $queue->nack($envelope->getDeliveryTag(), AMQP_REQUEUE);
+        $queue->nack(deliveryTag: $envelope->getDeliveryTag(), flags: AMQP_REQUEUE);
 
         $requeued = $this->waitForMessage($queue);
 
@@ -161,9 +241,9 @@ class AmqpMessageTest extends AmqpTestCase
     public function testARefusedMessageWithoutRequeueIsDropped(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
-        $this->publishToQueue($channel, (string) $queue->getName(), 'rejected');
+        $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: 'rejected');
 
         $envelope = $this->waitForMessage($queue);
 
@@ -171,21 +251,21 @@ class AmqpMessageTest extends AmqpTestCase
 
         $queue->reject($envelope->getDeliveryTag());
 
-        self::assertNull($queue->get());
+        $this->assertQueueStaysEmpty($queue);
     }
 
     public function testAutoAckLeavesNothingToAcknowledge(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
-        $this->publishToQueue($channel, (string) $queue->getName(), 'auto');
+        $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: 'auto');
 
         $envelope = null;
         $deadline = microtime(true) + 2;
 
         do {
-            $envelope = $queue->get(AMQP_AUTOACK);
+            $envelope = $queue->get(flags: AMQP_AUTOACK);
 
             if ($envelope !== null) {
                 break;
@@ -197,18 +277,19 @@ class AmqpMessageTest extends AmqpTestCase
         self::assertNotNull($envelope);
         self::assertSame('auto', $envelope->getBody());
 
-        // Nothing is left outstanding: the message was acknowledged as it was delivered,
-        // so re-declaring the queue reports it empty.
-        self::assertSame(0, $queue->declareQueue());
+        // Counted after the channel is gone: a message that was delivered but not
+        // acknowledged goes back into the queue when the channel closes, so a count taken
+        // here is what proves the broker really considers it acknowledged.
+        self::assertSame(0, $this->countAfterTheChannelIsGone($channel, (string) $queue->getName()));
     }
 
     public function testAcknowledgingSeveralMessagesAtOnce(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
         foreach (['one', 'two', 'three'] as $body) {
-            $this->publishToQueue($channel, (string) $queue->getName(), $body);
+            $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: $body);
         }
 
         $lastDeliveryTag = 0;
@@ -221,9 +302,11 @@ class AmqpMessageTest extends AmqpTestCase
             $lastDeliveryTag = (int) $envelope->getDeliveryTag();
         }
 
-        $queue->ack($lastDeliveryTag, AMQP_MULTIPLE);
+        $queue->ack(deliveryTag: $lastDeliveryTag, flags: AMQP_MULTIPLE);
 
-        self::assertSame(0, $queue->declareQueue());
+        // Same reasoning as above: only a count taken after the channel is closed tells an
+        // acknowledged message from one that is merely held.
+        self::assertSame(0, $this->countAfterTheChannelIsGone($channel, (string) $queue->getName()));
     }
 
     public function testTheChannelReportsItsPrefetchSettings(): void
@@ -251,9 +334,9 @@ class AmqpMessageTest extends AmqpTestCase
     public function testRecoverAsksForTheUnacknowledgedMessagesAgain(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue($channel, AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
 
-        $this->publishToQueue($channel, (string) $queue->getName(), 'recovered');
+        $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: 'recovered');
 
         $envelope = $this->waitForMessage($queue);
 
@@ -268,5 +351,25 @@ class AmqpMessageTest extends AmqpTestCase
         self::assertTrue($again->isRedelivery());
 
         $queue->ack($again->getDeliveryTag());
+    }
+
+    /**
+     * Closes the channel and counts what is left in the queue on a fresh one — everything
+     * the closed channel held unacknowledged comes back first.
+     */
+    private function countAfterTheChannelIsGone(AMQPChannel $channel, string $queueName): int
+    {
+        $channel->close();
+
+        $queue = new AMQPQueue($this->channel());
+
+        $queue->setName($queueName);
+        $queue->setFlags(AMQP_DURABLE);
+
+        // Requeueing is not instant, so a count of 0 is only trusted after the broker has
+        // had a moment to put anything held back.
+        usleep(200_000);
+
+        return $queue->declareQueue();
     }
 }

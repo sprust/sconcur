@@ -3,6 +3,7 @@ package amqp_feature
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sconcur/internal/contracts"
 	"sconcur/internal/dto"
@@ -11,6 +12,7 @@ import (
 	"sconcur/internal/helpers"
 	"sconcur/internal/tasks"
 	"sconcur/internal/types"
+	"strconv"
 	"sync"
 	"time"
 
@@ -25,10 +27,24 @@ var instance *AmqpFeature
 
 var errFactory = errs.NewErrorsFactory("amqp")
 
-// networkErrorMarker is prefixed onto a failure that means the broker is unreachable
-// rather than unhappy, so the PHP side raises AMQPConnectionException instead of the
-// protocol-level exception the caller asked for (mirrors the socket and ws clients).
-const networkErrorMarker = "net"
+// The scope markers a failure is prefixed with, so the PHP side knows which exception to
+// raise and what the failure did to the resource. The payload of a failed task is
+// "<scope>:<code>: <text>", where the code is the AMQP reply code (0 when the broker named
+// none) — ext-amqp puts that code into the exception, and application code branches on it.
+const (
+	// scopeNetwork: the broker is unreachable or the connection died. PHP raises
+	// AMQPConnectionException, whichever exception the caller asked for.
+	scopeNetwork = "net"
+	// scopeChannel: the broker closed the channel over this failure. PHP raises the
+	// caller's exception and marks its AMQPChannel closed, as the extension does.
+	scopeChannel = "chn"
+	// scopeCommand: the command failed with the channel left usable.
+	scopeCommand = "err"
+
+	// connectionErrorCode is the lowest AMQP reply code that closes the connection
+	// rather than the channel (the 5xx class of AMQP 0-9-1).
+	connectionErrorCode = 500
+)
 
 // AmqpFeature runs the AMQP 0-9-1 methods of the PHP calque: it owns the pooled
 // connections, the channel registry and the delivery streams the consumers feed.
@@ -154,7 +170,10 @@ func channelOf(task *tasks.Task, channelId string) (*channelEntry, bool) {
 	entry, err := getChannels().find(channelId)
 
 	if err != nil {
-		task.AddResult(dto.NewErrorResult(task.GetMessage(), errFactory.ByText("unknown channel "+channelId)))
+		task.AddResult(dto.NewErrorResult(
+			task.GetMessage(),
+			errorPayload(scopeChannel, 0, "No channel available."),
+		))
 
 		return nil, false
 	}
@@ -182,29 +201,64 @@ func respondDone(task *tasks.Task, startTime time.Time) {
 	task.AddResult(dto.NewSuccessResult(task.GetMessage(), "", helpers.CalcExecutionMs(startTime)))
 }
 
-// fail answers the task with an error, marked as network-class when the broker turned out
-// to be unreachable.
-func fail(task *tasks.Task, what string, err error) {
-	message := task.GetMessage()
+// fail answers the task with an error carrying its scope and the AMQP reply code. The
+// channel the command ran on (nil when there is none) decides how a "not open" failure is
+// classified: the same driver error means a dead channel in one case and a dead connection
+// in the other.
+func fail(task *tasks.Task, entry *channelEntry, what string, err error) {
+	scope, code, text := classify(entry, what, err)
 
-	if isNetworkError(err) {
-		task.AddResult(dto.NewErrorResult(message, networkErrorPayload(what+": "+err.Error())))
-
-		return
-	}
-
-	task.AddResult(dto.NewErrorResult(message, errFactory.ByErr(what, err)))
+	task.AddResult(dto.NewErrorResult(task.GetMessage(), errorPayload(scope, code, text)))
 }
 
-// isNetworkError tells a dead connection from a broker that refused a method: the first
-// is what AMQPConnectionException is for.
+// classify turns a driver error into the scope, the reply code and the message PHP will
+// raise. The message wording follows ext-amqp, so an application that reads it (or matches
+// on it) sees what it saw before.
+//
+// A channel that is simply gone is a channel-scope failure whatever code the driver put on
+// it: the connection behind it is usually alive, and telling an application to redial over
+// a queue that does not exist would tear down everything else running on that connection.
+func classify(entry *channelEntry, what string, err error) (string, int, string) {
+	// Checked before the broker errors below: the driver reports its own "not open" with
+	// an *amqp091.Error carrying a 5xx code, which would otherwise read as a connection
+	// the broker tore down.
+	if errors.Is(err, amqp091.ErrClosed) {
+		if entry == nil || entry.isClosed() {
+			return scopeChannel, 0, "No channel available."
+		}
+
+		return scopeNetwork, 0, errFactory.ByErr(what, err)
+	}
+
+	var brokerError *amqp091.Error
+
+	if errors.As(err, &brokerError) {
+		if brokerError.Code >= connectionErrorCode {
+			return scopeNetwork, brokerError.Code, fmt.Sprintf(
+				"Server connection error: %d, message: %s",
+				brokerError.Code,
+				brokerError.Reason,
+			)
+		}
+
+		return scopeChannel, brokerError.Code, fmt.Sprintf(
+			"Server channel error: %d, message: %s",
+			brokerError.Code,
+			brokerError.Reason,
+		)
+	}
+
+	if isNetworkError(err) {
+		return scopeNetwork, 0, errFactory.ByErr(what, err)
+	}
+
+	return scopeCommand, 0, errFactory.ByErr(what, err)
+}
+
+// isNetworkError tells a dead connection from a broker that refused a method.
 func isNetworkError(err error) bool {
 	if err == nil {
 		return false
-	}
-
-	if errors.Is(err, amqp091.ErrClosed) {
-		return true
 	}
 
 	var networkError net.Error
@@ -218,6 +272,12 @@ func isNetworkError(err error) bool {
 	return errors.As(err, &operationError)
 }
 
+func errorPayload(scope string, code int, text string) string {
+	return scope + ":" + strconv.Itoa(code) + ": " + text
+}
+
+// networkErrorPayload marks a failure that happened before any channel existed — a dial
+// that could not reach the broker.
 func networkErrorPayload(text string) string {
-	return networkErrorMarker + ": " + text
+	return errorPayload(scopeNetwork, 0, text)
 }

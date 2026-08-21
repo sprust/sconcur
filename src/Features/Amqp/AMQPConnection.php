@@ -10,7 +10,6 @@ use SConcur\Features\Amqp\Payloads\ConnectPayloadParameters;
 use SConcur\Features\Amqp\Payloads\DisconnectPayload;
 use SConcur\Features\Amqp\Payloads\UsedChannelsPayload;
 use SConcur\Features\Amqp\Support\AmqpResource;
-use SConcur\Features\Amqp\Support\CommandRunner;
 use Throwable;
 
 /**
@@ -73,8 +72,6 @@ class AMQPConnection extends AmqpResource
 
     protected ?string $connectionName = null;
 
-    protected bool $connected = false;
-
     /** The values the broker agreed on in the handshake; null until connected. */
     protected ?int $negotiatedChannelMax = null;
 
@@ -95,7 +92,9 @@ class AMQPConnection extends AmqpResource
      */
     public function __construct(array $credentials = [])
     {
-        if (isset($credentials['host'])) {
+        // An empty string means "not given" here, exactly as in the extension: a blank
+        // environment variable leaves the default in place instead of connecting nowhere.
+        if (static::given($credentials, 'host')) {
             $this->setHost((string) $credentials['host']);
         }
 
@@ -103,15 +102,15 @@ class AMQPConnection extends AmqpResource
             $this->setPort((int) $credentials['port']);
         }
 
-        if (isset($credentials['vhost'])) {
+        if (static::given($credentials, 'vhost')) {
             $this->setVhost((string) $credentials['vhost']);
         }
 
-        if (isset($credentials['login'])) {
+        if (static::given($credentials, 'login')) {
             $this->setLogin((string) $credentials['login']);
         }
 
-        if (isset($credentials['password'])) {
+        if (static::given($credentials, 'password')) {
             $this->setPassword((string) $credentials['password']);
         }
 
@@ -167,7 +166,7 @@ class AMQPConnection extends AmqpResource
             $this->setSaslMethod((int) $credentials['sasl_method']);
         }
 
-        if (isset($credentials['connection_name'])) {
+        if (static::given($credentials, 'connection_name')) {
             $this->setConnectionName((string) $credentials['connection_name']);
         }
     }
@@ -178,7 +177,7 @@ class AMQPConnection extends AmqpResource
      */
     public function isConnected(): bool
     {
-        return $this->connected;
+        return $this->internalOpen;
     }
 
     /**
@@ -199,11 +198,11 @@ class AMQPConnection extends AmqpResource
      */
     public function connect(): void
     {
-        if ($this->connected) {
+        if ($this->internalOpen) {
             $this->disconnect();
         }
 
-        $result = CommandRunner::run(
+        $result = $this->runCommand(
             payload: new ConnectPayload(
                 new ConnectPayloadParameters(
                     host: $this->host,
@@ -233,7 +232,7 @@ class AMQPConnection extends AmqpResource
         $this->negotiatedChannelMax = isset($result['mc']) ? (int) $result['mc'] : null;
         $this->negotiatedFrameMax   = isset($result['mf']) ? (int) $result['mf'] : null;
         $this->negotiatedHeartbeat  = isset($result['hb']) ? (int) $result['hb'] : null;
-        $this->connected            = true;
+        $this->internalOpen         = true;
     }
 
     /**
@@ -242,19 +241,19 @@ class AMQPConnection extends AmqpResource
      */
     public function disconnect(): void
     {
-        if (!$this->connected) {
+        if (!$this->internalOpen) {
             return;
         }
 
         $connectionId = $this->internalId;
 
-        $this->connected            = false;
+        $this->internalOpen         = false;
         $this->internalId           = '';
         $this->negotiatedChannelMax = null;
         $this->negotiatedFrameMax   = null;
         $this->negotiatedHeartbeat  = null;
 
-        CommandRunner::run(
+        $this->runCommand(
             payload: new DisconnectPayload(
                 new ConnectionPayloadParameters(
                     connectionId: $connectionId,
@@ -489,13 +488,13 @@ class AMQPConnection extends AmqpResource
      */
     public function getUsedChannels(): int
     {
-        if (!$this->connected) {
+        if (!$this->internalOpen) {
             trigger_error('AMQPConnection::getUsedChannels(): Connection is not connected.', E_USER_WARNING);
 
             return 0;
         }
 
-        $result = CommandRunner::run(
+        $result = $this->runCommand(
             payload: new UsedChannelsPayload(
                 new ConnectionPayloadParameters(
                     connectionId: $this->internalId,
@@ -575,8 +574,18 @@ class AMQPConnection extends AmqpResource
         $this->verify = $verify;
     }
 
+    /**
+     * @throws AMQPConnectionException if the method is neither PLAIN nor EXTERNAL
+     */
     public function setSaslMethod(int $saslMethod): void
     {
+        if ($saslMethod !== AMQP_SASL_METHOD_PLAIN && $saslMethod !== AMQP_SASL_METHOD_EXTERNAL) {
+            throw new AMQPConnectionException(
+                message: 'Invalid SASL method given. Method must be AMQP_SASL_METHOD_PLAIN'
+                    . ' or AMQP_SASL_METHOD_EXTERNAL.',
+            );
+        }
+
         $this->saslMethod = $saslMethod;
     }
 
@@ -593,6 +602,16 @@ class AMQPConnection extends AmqpResource
     public function getConnectionName(): ?string
     {
         return $this->connectionName;
+    }
+
+    /**
+     * Whether a credential was actually given: present and not an empty string.
+     *
+     * @param array<string, mixed> $credentials
+     */
+    protected static function given(array $credentials, string $key): bool
+    {
+        return isset($credentials[$key]) && (string) $credentials[$key] !== '';
     }
 
     /**

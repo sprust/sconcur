@@ -172,7 +172,9 @@ Go extension (`ext/`):
   overflow), so the loop never blocks on log I/O
 - `internal/features/*` — sleeper, mongodb, sql (one handler dispatching
   Query/Exec/Begin/Commit/Rollback; the driver is selected per `Method`),
-  httpserver, httpclient, socketserver, socketclient, wsserver, wsclient
+  httpserver, httpclient, socketserver, socketclient, wsserver, wsclient, amqp
+  (pooled connections, a channel registry and streamed consumers over
+  `amqp091-go`)
 - `internal/stats/` — neutral worker-side telemetry shared by the servers: process
   metrics plus `Pusher`, which samples a `Snapshot` and pushes it best-effort as a
   length-prefixed JSON frame over the collector's unix socket
@@ -186,13 +188,16 @@ Key enums (string-backed; the 2-3 letter values cross the PHP↔Go boundary):
 - `MethodEnum`: Sleep (`sl`), Mongodb (`mng`), HttpServe (`hs`), HttpRespond
   (`hr`), HttpClient (`hc`), Mysql (`my`), Pgsql (`pg`), SocketServe (`ss`),
   SocketRespond (`sr`), SocketClient (`sc`), WsServe (`wss`), WsRespond (`wsr`),
-  WsClient (`wsc`)
+  WsClient (`wsc`), Amqp (`amq`)
 - Sub-operations selected via the payload envelope's `cm`:
   `SocketClientCommand`/`WsClientCommand` (Connect `con`, Send `snd`, Close
   `cls`), `SqlCommandEnum` (Query `qry`, Exec `exe`, Begin `beg`, Commit `cmt`,
   Rollback `rlb`), `HttpClientCommand` (Request `req`, UploadChunk `upc`,
-  UploadEnd `upe`), MongoDB's `CommandEnum` (InsertOne `ino`, BulkWrite `bw`,
-  Aggregate `agg`, … — see `src/Features/Mongodb/CommandEnum.php`)
+  UploadEnd `upe`), `AmqpCommandEnum` (Connect `con`, ChannelOpen `cho`,
+  QueueDeclare `qud`, Publish `pub`, Consume `csm`, … — see
+  `src/Features/Amqp/AmqpCommandEnum.php`), MongoDB's `CommandEnum` (InsertOne
+  `ino`, BulkWrite `bw`, Aggregate `agg`, … — see
+  `src/Features/Mongodb/CommandEnum.php`)
 - `DownloadFileMode` (HttpClient download sink, the `sm` field): Replace (`rpl`),
   Create (`crt`), Append (`app`)
 
@@ -203,7 +208,7 @@ Key enums (string-backed; the 2-3 letter values cross the PHP↔Go boundary):
 - `tests/impl/` — test helpers (MongoDB resolver, app bootstrap, server harnesses)
 - `tests/benchmarks/` — performance benchmarks comparing async vs native, grouped
   by the technology they measure: `mongodb/`, `mysql/`, `pgsql/`, `http/`,
-  `socket/`, `ws/` (each holds its per-operation benches plus, for the protocols,
+  `socket/`, `ws/`, `amqp/` (each holds its per-operation benches plus, for the protocols,
   the server benches and the load scripts), `db/` (a whole DB session: repeated
   runs and their aggregation into the markdown rows of `docs/benchmarks.md`),
   `runtime/` (scheduler and PHP↔Go boundary, no backend involved) and `lib/`

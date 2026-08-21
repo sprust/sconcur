@@ -82,7 +82,7 @@ foreach (['orders', 'invoices', 'emails'] as $queueName) {
     });
 }
 
-$waitGroup->wait();
+$waitGroup->waitAll();
 ```
 
 While no queue has a message, the PHP thread is free for other work.
@@ -157,7 +157,7 @@ boolean parameter of an AMQP 0-9-1 method:
 | `AMQP_MANDATORY` | the message must be routable, otherwise it comes back (see below) |
 | `AMQP_IMMEDIATE` | `immediate` of a publish (RabbitMQ does not implement it) |
 | `AMQP_MULTIPLE` | acknowledge or refuse every delivery up to and including the tag |
-| `AMQP_NOWAIT` | do not wait for the broker's reply to a declare, delete or bind |
+| `AMQP_NOWAIT` | do not wait for the broker's reply to a deletion — the only calls that take it |
 | `AMQP_REQUEUE` | put the refused message back into the queue |
 | `AMQP_JUST_CONSUME` | read the consumer this queue already opened instead of opening another |
 
@@ -166,14 +166,14 @@ that has no `AMQP_AUTODELETE` turns that off.
 
 ## Consuming
 
-`consume(callable $callback = null, ?int $flags = null, ?string $consumerTag = null)`
+`consume(?callable $callback = null, ?int $flags = null, ?string $consumerTag = null): void`
 calls the callback for every delivery and returns when the callback returns
 `false`. The callback receives the `AMQPEnvelope` and, optionally, the
 `AMQPQueue` it came from.
 
 The consumer must be read in the coroutine that opened it: when the coroutine
 ends its flow is stopped, and the Go side cancels the consumer. This is the same
-caveat as for `HttpClient`, `SocketServer` and `WsClient`.
+caveat as for `HttpClient`, `SocketClient` and `WsClient`.
 
 Without a callback, `consume()` only registers the consumer; a later call with
 `AMQP_JUST_CONSUME` reads it on without sending another `basic.consume`. With no
@@ -241,7 +241,11 @@ confirm mode.
 
 A connection is pooled by its credentials and tuning: two `AMQPConnection`
 objects built with the same parameters share one connection to the broker, so
-building one per request is cheap. A pooled connection with no owners left is
+building one per request is cheap. They share it in the broker's eyes as well —
+an exclusive queue declared through one is usable through the other, where
+`ext-amqp` would give the second object a connection of its own and the broker
+would refuse it. `connection_name` is part of the pool key, so naming a
+connection is how an application asks for one that is not shared. A pooled connection with no owners left is
 closed after five minutes of idling, and `disconnect()` (or the destructor of a
 dropped object) gives up ownership.
 
@@ -255,6 +259,35 @@ A delivery tag belongs to the channel that delivered the message: acknowledge it
 on the queue whose channel received it. That is also why a channel is not shared
 between coroutines — give each coroutine its own.
 
+## Errors
+
+The exception classes are the extension's, and so is the reply code on them:
+
+```php
+try {
+    $queue->declareQueue();
+} catch (AMQPQueueException $exception) {
+    if ($exception->getCode() === 404) {
+        // declare it and try again
+    }
+}
+```
+
+A reply code the broker names travels with the exception, and which exception is
+raised follows the extension:
+
+| What happened | Exception | Code |
+| --- | --- | --- |
+| the broker refused the method (404, 406, …) | the one of the class whose method was called | the reply code |
+| the broker answered with a connection-level code (5xx), or the connection died | `AMQPConnectionException` | the reply code, 0 for a network failure |
+| the channel is gone — the broker closed it over an earlier failure | `AMQPChannelException` | 0 |
+
+A failure the broker punishes with a closed channel (a passive declare of a queue
+that does not exist, a publish to a missing exchange) leaves the `AMQPChannel`
+closed: `isConnected()` reports it, every later call on it raises
+`AMQPChannelException`, and the Go side has already released it. Open a new
+channel to carry on — the connection is untouched.
+
 ## Where the calque differs
 
 The list is closed: everything not in it repeats the extension exactly, and the
@@ -263,15 +296,20 @@ parity tests are what keep it that way.
 | Method or behaviour | What SConcur does | Why |
 | --- | --- | --- |
 | `pconnect()`, `pdisconnect()`, `preconnect()` | synonyms of `connect()`, `disconnect()`, `reconnect()`; `isPersistent()` is always true | persistent connections are a php-fpm notion. An SConcur worker is long-lived, and the connection lives in the Go-side pool anyway |
+| two `AMQPConnection` objects with the same credentials | share one connection to the broker, and everything scoped to a connection with it (exclusive queues, connection-wide qos) | the pool is what makes building a connection per request cheap; `connection_name` opts out of the sharing |
+| `disconnect()` | closes every channel opened through this connection object | the handle is what the Go side hands the channels out on; releasing it releases them |
 | `setConfirmCallback()`, `setReturnCallback()` | the callbacks are kept in PHP and run from `waitForConfirm()` / `waitForBasicReturn()` | the extension calls them from its own reading loop; here that loop is `waitFor*` |
+| the confirm callback's `$multiple`, the nack callback's `$requeue` | always false | the driver resolves the broker's "up to and including" confirms into individual ones, and does not carry the requeue flag of a nack |
 | `getMaxChannels()`, `getMaxFrameSize()`, `getHeartbeatInterval()` | report what the handshake settled on once connected, the requested values before that | the negotiated values are only known after the handshake |
 | `getUsedChannels()` | counted in the Go-side registry, so the call goes to the extension; 0 and a warning when not connected | a PHP-side counter would miss the channels the sweeper closes |
 | `getChannelId()` | the number of the channel within its connection, assigned by this feature | the driver does not expose the AMQP channel number |
 | `AMQPEnvelope::getClusterId()` | always null | AMQP 0-9-1 excludes cluster-id from publishing, and the driver does not surface it on a delivery either |
 | `consume()` | feeds the callback with the deliveries of its own consumer | `ext-amqp` dispatches every delivery of the connection into whichever consume loop is running — a shape that only exists because the extension can run one loop at a time. Here one coroutine per consumer replaces it |
-| the confirm callback's `$multiple` | always false | the driver resolves the broker's "up to and including" confirms into individual ones |
+| `read_timeout` on a consumer | ends the consumer as well as the loop | the stream and the consumer behind it are one resource here; the extension leaves the consumer registered |
 | `AMQPException` | extends `RuntimeException` | the project's rule for runtime failures. Every `catch` from ext-amqp code still matches, since `RuntimeException` is an `Exception` |
 | `AMQPChannel::__destruct()`, `AMQPConnection::__destruct()` | best-effort close and disconnect | PHP tells the Go side nothing about garbage collection; the sweepers are the backstop |
+| the constants | live in the feature's namespace, imported with `use const` | the global names belong to the extension itself and would collide with it wherever both are installed |
+| `AMQPDecimal`, `AMQPTimestamp` | `final readonly`, which the project's own rules forbid | the parity test compares those modifiers with the extension: a subclass of either works there and must work here |
 | ini settings (`amqp.host`, `amqp.auto_ack`, …) | not read | there is no PHP extension here to configure. The defaults are the extension's own, and credentials come from the constructor array |
 
 ## Limits
@@ -294,22 +332,31 @@ three modes: native `ext-amqp`, SConcur outside a coroutine, SConcur in
 coroutines. Run them with `make bench-amqp-publish`, `make bench-amqp-get`,
 `make bench-amqp-consume`.
 
-What the numbers say (1000 calls, one broker in the same Docker network; see
-[benchmarks](benchmarks.md) for how to read them):
+What the numbers say — one run each on the project's Docker environment, one broker
+in the same network, 1000 calls per mode (see [benchmarks](benchmarks.md) for how
+to read numbers like these). The concurrent mode spreads its calls over 50
+channels, because a channel is serialized on the broker; the native and the
+synchronous modes use one, as an application would:
 
 | Operation | native | sync | async |
 | --- | --- | --- | --- |
-| 1000 publishes | 3.7 ms | 33.9 ms | 28.5 ms |
-| 1000 `basic.get` calls | 28.9 ms | 109.9 ms | 26.6 ms |
-| 10 queues × 500 pre-filled messages, consumed | 194 000 msg/s | 23 300 msg/s | 116 300 msg/s |
+| 1000 publishes | 3.6 ms | 27.6 ms | 18.7 ms |
+| 1000 `basic.get` calls | 31 ms | 67 ms | 46 ms |
+| 10 queues × 500 pre-filled messages, consumed | 157 000 msg/s | 22 200 msg/s | 104 500 msg/s |
+
+Repeated runs move these by tens of percent — the `basic.get` row swung between 26
+and 42 ms for the native mode alone — so read them as orders of magnitude rather
+than as measurements to compare across a few percent.
 
 Publishing is where the native extension wins: `basic.publish` expects no reply,
 so it costs one write, while every SConcur call also crosses the PHP ↔ Go
-boundary. On `basic.get` the async fan already matches the extension, and it is
-five times the synchronous path.
+boundary. On `basic.get`, which does wait for the broker, running the calls at the
+same time lands around the extension and takes roughly half of what the
+synchronous path takes.
 
 On a queue that is already full, the extension consumes faster per message — the
-concurrency has nothing to overlap there. The gain is elsewhere: a worker that
+concurrency has nothing to overlap there, and the consume row moves the most
+between runs of the three. The gain is elsewhere: a worker that
 waits for messages on several queues serves all of them at once instead of being
 pinned to one, which is what
 `tests/feature/Features/Amqp/AmqpConsumeTest.php` measures — three consumers

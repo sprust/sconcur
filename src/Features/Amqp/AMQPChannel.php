@@ -20,7 +20,6 @@ use SConcur\Features\Amqp\Payloads\TransactionCommitPayload;
 use SConcur\Features\Amqp\Payloads\TransactionRollbackPayload;
 use SConcur\Features\Amqp\Payloads\TransactionSelectPayload;
 use SConcur\Features\Amqp\Support\AmqpResource;
-use SConcur\Features\Amqp\Support\CommandRunner;
 use SConcur\Features\Amqp\Support\PropertiesCodec;
 use SConcur\Transport\PayloadInterface;
 use Throwable;
@@ -57,8 +56,6 @@ class AMQPChannel extends AmqpResource
 
     protected int $globalPrefetchSize = 0;
 
-    protected bool $open = false;
-
     /** @var callable|null */
     protected $confirmCallback;
 
@@ -83,7 +80,7 @@ class AMQPChannel extends AmqpResource
             );
         }
 
-        $result = CommandRunner::run(
+        $result = $this->runCommand(
             payload: new ChannelOpenPayload(
                 new ChannelOpenPayloadParameters(
                     connectionId: $connection->internalId,
@@ -99,7 +96,7 @@ class AMQPChannel extends AmqpResource
 
         $this->internalId    = isset($result['chid']) ? (string) $result['chid'] : '';
         $this->channelNumber = isset($result['no']) ? (int) $result['no'] : 0;
-        $this->open          = true;
+        $this->internalOpen  = true;
     }
 
     /**
@@ -108,7 +105,7 @@ class AMQPChannel extends AmqpResource
      */
     public function isConnected(): bool
     {
-        return $this->open && $this->connection->isConnected();
+        return $this->internalOpen && $this->connection->isConnected();
     }
 
     /**
@@ -117,18 +114,21 @@ class AMQPChannel extends AmqpResource
      */
     public function close(): void
     {
-        if (!$this->open) {
+        if (!$this->internalOpen) {
             return;
         }
 
         $channelId = $this->internalId;
 
-        $this->open              = false;
+        $this->internalOpen      = false;
         $this->internalId        = '';
         $this->internalConsumers = [];
 
+        // The command runs unguarded: this object has just marked itself closed, and the
+        // guard exists to stop calls that would reach a channel the broker took away —
+        // which is the opposite of releasing one this object still owns.
         try {
-            CommandRunner::run(
+            $this->runCommand(
                 payload: new ChannelClosePayload(
                     new ChannelPayloadParameters(
                         channelId: $channelId,
@@ -252,7 +252,10 @@ class AMQPChannel extends AmqpResource
      */
     public function startTransaction(): void
     {
-        $this->runChannelCommand(new TransactionSelectPayload($this->channelParameters()));
+        $this->runChannelCommand(
+            payload: new TransactionSelectPayload($this->channelParameters()),
+            operation: 'Could not start the transaction.',
+        );
     }
 
     /**
@@ -260,7 +263,10 @@ class AMQPChannel extends AmqpResource
      */
     public function commitTransaction(): void
     {
-        $this->runChannelCommand(new TransactionCommitPayload($this->channelParameters()));
+        $this->runChannelCommand(
+            payload: new TransactionCommitPayload($this->channelParameters()),
+            operation: 'Could not commit the transaction.',
+        );
     }
 
     /**
@@ -268,7 +274,10 @@ class AMQPChannel extends AmqpResource
      */
     public function rollbackTransaction(): void
     {
-        $this->runChannelCommand(new TransactionRollbackPayload($this->channelParameters()));
+        $this->runChannelCommand(
+            payload: new TransactionRollbackPayload($this->channelParameters()),
+            operation: 'Could not rollback the transaction.',
+        );
     }
 
     public function getConnection(): AMQPConnection
@@ -280,11 +289,15 @@ class AMQPChannel extends AmqpResource
      * Asks the broker to redeliver every message this channel has not acknowledged. With
      * $requeue the messages may go to another consumer.
      *
-     * @throws AMQPChannelException if the broker rejects the method
+     * RabbitMQ only implements $requeue = true and answers false with a connection-level
+     * error, so this is one of the methods that can take the whole connection down.
+     *
+     * @throws AMQPConnectionException if the broker refuses it at connection level
+     * @throws AMQPChannelException if the channel is closed or the broker rejects the method
      */
     public function basicRecover(bool $requeue = true): void
     {
-        CommandRunner::run(
+        $this->runCommand(
             payload: new RecoverPayload(
                 new RecoverPayloadParameters(
                     channelId: $this->internalId,
@@ -293,6 +306,8 @@ class AMQPChannel extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPChannelException::class,
+            channel: $this,
+            operation: 'Could not redeliver unacknowledged messages.',
         );
     }
 
@@ -304,7 +319,7 @@ class AMQPChannel extends AmqpResource
      */
     public function confirmSelect(): void
     {
-        CommandRunner::run(
+        $this->runCommand(
             payload: new ConfirmSelectPayload(
                 new ConfirmSelectPayloadParameters(
                     channelId: $this->internalId,
@@ -313,6 +328,8 @@ class AMQPChannel extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPChannelException::class,
+            channel: $this,
+            operation: 'Could not enter confirm mode.',
         );
     }
 
@@ -343,7 +360,7 @@ class AMQPChannel extends AmqpResource
      */
     public function waitForConfirm(float $timeout = 0.0): void
     {
-        $result = CommandRunner::run(
+        $result = $this->runCommand(
             payload: new ConfirmWaitPayload(
                 new ChannelPayloadParameters(
                     channelId: $this->internalId,
@@ -351,6 +368,8 @@ class AMQPChannel extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPQueueException::class,
+            channel: $this,
+            operation: 'Could not wait for the publisher confirms.',
         );
 
         $this->runConfirmCallbacks(is_array($result['cf'] ?? null) ? $result['cf'] : []);
@@ -381,7 +400,7 @@ class AMQPChannel extends AmqpResource
      */
     public function waitForBasicReturn(float $timeout = 0.0): void
     {
-        $result = CommandRunner::run(
+        $result = $this->runCommand(
             payload: new ReturnWaitPayload(
                 new ChannelPayloadParameters(
                     channelId: $this->internalId,
@@ -389,6 +408,8 @@ class AMQPChannel extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPQueueException::class,
+            channel: $this,
+            operation: 'Could not wait for the returned messages.',
         );
 
         $this->runReturnCallbacks(is_array($result['rt'] ?? null) ? $result['rt'] : []);
@@ -422,11 +443,16 @@ class AMQPChannel extends AmqpResource
     }
 
     /**
-     * @throws AMQPChannelException if the broker rejects the method
+     * @throws AMQPChannelException if the channel is closed or the broker rejects the method
      */
-    protected function runChannelCommand(PayloadInterface $payload): void
+    protected function runChannelCommand(PayloadInterface $payload, string $operation): void
     {
-        CommandRunner::run(payload: $payload, exceptionClass: AMQPChannelException::class);
+        $this->runCommand(
+            payload: $payload,
+            exceptionClass: AMQPChannelException::class,
+            channel: $this,
+            operation: $operation,
+        );
     }
 
     /**
@@ -434,15 +460,20 @@ class AMQPChannel extends AmqpResource
      * limits first, then the channel-wide ones if any is set — writing the per-consumer
      * limits clears them on the broker.
      *
+     * @throws AMQPConnectionException if the channel is closed
      * @throws AMQPChannelException if the broker rejects the settings
      */
     protected function applyQos(): void
     {
-        if (!$this->open) {
-            return;
+        if (!$this->internalOpen) {
+            // The wording is the extension's: closing a channel releases the connection
+            // resource its prefetch settings would have travelled on.
+            throw new AMQPConnectionException(
+                message: 'Could not set prefetch count. Stale reference to the connection object.',
+            );
         }
 
-        CommandRunner::run(
+        $this->runCommand(
             payload: new QosPayload(
                 new QosPayloadParameters(
                     channelId: $this->internalId,
@@ -453,13 +484,15 @@ class AMQPChannel extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPChannelException::class,
+            channel: $this,
+            operation: 'Could not set qos parameters.',
         );
 
         if ($this->globalPrefetchSize === 0 && $this->globalPrefetchCount === 0) {
             return;
         }
 
-        CommandRunner::run(
+        $this->runCommand(
             payload: new QosPayload(
                 new QosPayloadParameters(
                     channelId: $this->internalId,
@@ -470,6 +503,8 @@ class AMQPChannel extends AmqpResource
                 ),
             ),
             exceptionClass: AMQPChannelException::class,
+            channel: $this,
+            operation: 'Could not set qos parameters.',
         );
     }
 

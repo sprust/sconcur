@@ -18,17 +18,22 @@ final readonly class AMQPTimestamp implements AMQPValue, Stringable
 
     public const float MAX = 18446744073709551616.0;
 
+    protected float $timestamp;
+
     /**
      * @throws AMQPValueException if the timestamp is out of the AMQP 0-9-1 range
      */
-    public function __construct(
-        protected float $timestamp,
-    ) {
+    public function __construct(float $timestamp)
+    {
         if ($timestamp < self::MIN || $timestamp > self::MAX) {
             throw new AMQPValueException(
                 message: 'The timestamp parameter must be within range ' . self::MIN . ' and ' . self::MAX . '.',
             );
         }
+
+        // AMQP counts whole seconds, and so does the extension: a value from
+        // microtime(true) is truncated here rather than rounded up a second later.
+        $this->timestamp = floor($timestamp);
     }
 
     public function getTimestamp(): float
@@ -37,11 +42,13 @@ final readonly class AMQPTimestamp implements AMQPValue, Stringable
     }
 
     /**
-     * The value as it travels to the broker — whole seconds, as the extension sends.
+     * The value as it goes into a field table: the object itself, which the encoder turns
+     * into an AMQP timestamp field. The extension does the same — a timestamp keeps its
+     * kind on the wire instead of collapsing into an integer.
      */
     public function toAmqpValue(): mixed
     {
-        return (int) $this->timestamp;
+        return $this;
     }
 
     public function __toString(): string

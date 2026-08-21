@@ -25,8 +25,11 @@ func (f *AmqpFeature) handleConfirmSelect(task *tasks.Task, raw msgpack.RawMessa
 		return
 	}
 
-	if err := entry.startConfirmMode(params.NoWait); err != nil {
-		fail(task, "confirm select", err)
+	ctx, cancel := commandContext(task, params.TimeoutMs)
+	defer cancel()
+
+	if err := entry.startConfirmMode(ctx, params.NoWait); err != nil {
+		fail(task, entry, "confirm select", err)
 
 		return
 	}
@@ -60,7 +63,7 @@ func (f *AmqpFeature) handleConfirmWait(task *tasks.Task, raw msgpack.RawMessage
 	)
 
 	if err != nil {
-		fail(task, "confirm wait", err)
+		fail(task, entry, "confirm wait", err)
 
 		return
 	}
@@ -90,7 +93,7 @@ func (f *AmqpFeature) handleReturnWait(task *tasks.Task, raw msgpack.RawMessage)
 	)
 
 	if err != nil {
-		fail(task, "return wait", err)
+		fail(task, entry, "return wait", err)
 
 		return
 	}

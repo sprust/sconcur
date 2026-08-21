@@ -113,6 +113,7 @@ Operations and clients — wrapped in a coroutine (`$waitGroup->add()` +
 | `curl`, `file_get_contents`, Guzzle | `Features\HttpClient\HttpClient` (PSR-18) | response streaming, download straight to a file on the Go side |
 | `fsockopen`, `stream_socket_client` | `Features\SocketClient\SocketClient` | TCP with length-prefix framing |
 | a WS client library | `Features\WsClient\WsClient` | text/binary messages |
+| `ext-amqp` (RabbitMQ) | `Features\Amqp\*` | the same classes and flags; a consumer suspends its coroutine, not the worker |
 
 Long-lived servers:
 
@@ -224,6 +225,9 @@ The environment the project is built and tested against in CI:
 | PostgreSQL (server) | 16 |
 | jackc/pgx/v5 | 5.7.2 |
 | go.mongodb.org/mongo-driver/v2 | 2.6.0 |
+| RabbitMQ (server) | 4.1 |
+| ext-amqp (PHP extension, tests and benchmarks only) | 2.2.0 |
+| rabbitmq/amqp091-go | 1.14.0 |
 
 ## Documentation
 
