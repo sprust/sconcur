@@ -13,8 +13,10 @@ import (
 //
 // PHP: SConcur\Features\Amqp\Support\TableCodec.
 const (
-	// taggedKind names the kind of a tagged value.
-	taggedKind = "__amqp"
+	// taggedKind names the kind of a tagged value. It starts with a NUL byte, which no
+	// AMQP field name may contain, so an application's own header can never be mistaken
+	// for one.
+	taggedKind = "\x00amqp"
 	// taggedDecimal is an AMQP decimal: significand scaled down by 10^exponent.
 	taggedDecimal = "D"
 	// taggedTimestamp is an AMQP timestamp, in seconds since the Unix epoch.

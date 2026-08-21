@@ -47,6 +47,22 @@ class AmqpBehaviourParityTest extends AmqpTestCase
             'x-flag'    => true,
             'x-name'    => 'parity',
             'x-ratio'   => 1.5,
+            // A field array: the keys are integers all the way, so it must reach the
+            // broker as a list and come back as one.
+            'x-list'    => ['a', 'b', 'c'],
+            // A nested table with one integer key: deeper than the top level, a key that
+            // is not a string is kept as its string form rather than dropped.
+            'x-mixed'   => [
+                0   => 'zero',
+                'k' => 'value',
+            ],
+            // Shaped like the map a decimal travels in: an application's own header must
+            // not be mistaken for one.
+            'x-tagged'  => [
+                '__amqp' => 'D',
+                'e'      => 3,
+                's'      => 99,
+            ],
         ],
     ];
 
@@ -140,6 +156,28 @@ class AmqpBehaviourParityTest extends AmqpTestCase
     }
 
     /**
+     * Sorts a field table by key, at every level: a table has no order, and the two
+     * implementations are free to hand it over in a different one. A field array keeps its
+     * order, which is what makes it an array.
+     *
+     * @param array<array-key, mixed> $table
+     */
+    protected static function sortRecursively(array &$table): void
+    {
+        foreach ($table as &$value) {
+            if (is_array($value) && !array_is_list($value)) {
+                static::sortRecursively($value);
+            }
+        }
+
+        unset($value);
+
+        if (!array_is_list($table)) {
+            ksort($table);
+        }
+    }
+
+    /**
      * The fields both sides must report, in one map so a mismatch is shown as a diff
      * rather than as the first failing assertion.
      *
@@ -149,7 +187,7 @@ class AmqpBehaviourParityTest extends AmqpTestCase
     {
         $headers = self::PUBLISH_ATTRIBUTES['headers'];
 
-        ksort($headers);
+        static::sortRecursively($headers);
 
         return [
             'body'            => '{"id":1}',
@@ -181,7 +219,7 @@ class AmqpBehaviourParityTest extends AmqpTestCase
     {
         $headers = $envelope->getHeaders();
 
-        ksort($headers);
+        static::sortRecursively($headers);
 
         return [
             'body'            => $envelope->getBody(),

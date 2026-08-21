@@ -8,6 +8,7 @@ use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\TaskExecutionException;
 use SConcur\Features\Amqp\AMQPChannel;
+use SConcur\Features\Amqp\AMQPConnection;
 use SConcur\Features\Amqp\AMQPChannelException;
 use SConcur\Features\Amqp\AMQPException;
 use SConcur\Features\Amqp\AMQPQueue;
@@ -94,6 +95,49 @@ abstract class AmqpResource
     }
 
     /**
+     * Records what a failure did to the resources it touched: a channel the broker closed
+     * cannot be used again, and a connection that died takes its channels with it. The
+     * extension keeps the same bookkeeping, which is what makes `if
+     * (!$connection->isConnected()) { $connection->reconnect(); }` work.
+     */
+    protected function markFailure(CommandFailure $failure, ?AMQPChannel $channel): void
+    {
+        if ($failure->scope === FailureScopeEnum::Command) {
+            return;
+        }
+
+        if ($channel !== null) {
+            $channel->internalOpen      = false;
+            $channel->internalConsumers = [];
+        }
+
+        if ($failure->scope !== FailureScopeEnum::Connection) {
+            return;
+        }
+
+        // The connection handle itself is kept: disconnect() still has to hand it back,
+        // or the pooled connection behind it would never be released.
+        $connection = $this->connectionOf($channel);
+
+        if ($connection !== null) {
+            $connection->internalOpen = false;
+        }
+    }
+
+    /**
+     * The connection a failed command was running on: the channel's, or this object when
+     * it is the connection itself.
+     */
+    protected function connectionOf(?AMQPChannel $channel): ?AMQPConnection
+    {
+        if ($this instanceof AMQPConnection) {
+            return $this;
+        }
+
+        return $channel?->getConnection();
+    }
+
+    /**
      * runCommand for a streaming command: the raw task result is kept, because its key is
      * the handle every later next() is pulled by.
      *
@@ -116,12 +160,30 @@ abstract class AmqpResource
         } catch (TaskErrorException | TaskExecutionException $exception) {
             $failure = CommandRunner::failure($exception);
 
-            // A dead channel and a dead connection both leave this channel unusable; only
-            // a plain command failure leaves it open.
-            if ($channel !== null && $failure->scope !== FailureScopeEnum::Command) {
-                $channel->internalOpen      = false;
-                $channel->internalConsumers = [];
-            }
+            $this->markFailure(failure: $failure, channel: $channel);
+
+            throw CommandRunner::exception(
+                failure: $failure,
+                exceptionClass: $exceptionClass,
+                exception: $exception,
+            );
+        }
+    }
+
+    /**
+     * Pulls the next batch of a streaming command, keeping the same bookkeeping: a stream
+     * that fails because its channel is gone must leave that channel marked closed.
+     *
+     * @param class-string<AMQPException> $exceptionClass
+     */
+    protected function nextStream(string $taskKey, string $exceptionClass, ?AMQPChannel $channel = null): TaskResultDto
+    {
+        try {
+            return FeatureExecutor::next(taskKey: $taskKey);
+        } catch (TaskErrorException | TaskExecutionException $exception) {
+            $failure = CommandRunner::failure($exception);
+
+            $this->markFailure(failure: $failure, channel: $channel);
 
             throw CommandRunner::exception(
                 failure: $failure,

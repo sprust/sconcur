@@ -82,8 +82,8 @@ func (s *consumeState) Next() *dto.Result {
 		return s.resultFromDelivery(delivery, ok)
 	case <-deadline:
 		// ext-amqp ends the consume loop with this exact failure when read_timeout
-		// passes with no delivery.
-		return dto.NewErrorResult(s.message, errFactory.ByText("consumer timeout exceed"))
+		// passes with no delivery, wording included.
+		return dto.NewErrorResult(s.message, errorPayload(scopeCommand, 0, "Consumer timeout exceed"))
 	case <-s.ctx.Done():
 		return dto.NewSuccessResult(s.message, "", helpers.CalcExecutionMs(s.startTime))
 	}
@@ -150,16 +150,12 @@ func (f *AmqpFeature) handleConsume(task *tasks.Task, raw msgpack.RawMessage) {
 		consumerTag = nextConsumerTag()
 	}
 
-	consumerContext, cancelConsumer := context.WithCancel(context.Background())
-
 	registerContext, cancelRegister := commandContext(task, params.TimeoutMs)
 	defer cancelRegister()
 
-	deliveries, err := entry.consume(registerContext, consumerContext, consumerTag, params)
+	deliveries, err := entry.consume(registerContext, consumerTag, params)
 
 	if err != nil {
-		cancelConsumer()
-
 		fail(task, entry, "consume", err)
 
 		return
@@ -169,16 +165,14 @@ func (f *AmqpFeature) handleConsume(task *tasks.Task, raw msgpack.RawMessage) {
 
 	cleanup := func() {
 		cleanupOnce.Do(func() {
-			// Cancelling the consumer context makes the driver send the basic.cancel;
-			// forgetConsumer drops it from the channel's registry so the idle sweeper
-			// sees the channel as idle again.
-			cancelConsumer()
-
-			entry.forgetConsumer(consumerTag)
+			// The basic.cancel goes through the channel's own lock, and only if this
+			// consumer is still registered — PHP may have cancelled it already. That also
+			// drops it from the registry, so the idle sweeper sees the channel as idle.
+			entry.cancelConsumer(consumerTag)
 		})
 	}
 
-	entry.registerConsumer(consumerTag, cancelConsumer)
+	entry.registerConsumer(consumerTag)
 
 	state := &consumeState{
 		ctx:         task.GetContext(),
@@ -208,10 +202,11 @@ func (f *AmqpFeature) handleConsume(task *tasks.Task, raw msgpack.RawMessage) {
 }
 
 // consume registers the consumer on the driver channel, bounded by the command context
-// like every other method — the consumer itself then lives on the consumer context.
+// like every other method. The consumer itself is not tied to a context: it is ended by
+// cancelConsumer or by the channel closing, both of which are serialized against the other
+// commands of this channel.
 func (e *channelEntry) consume(
 	ctx context.Context,
-	consumerContext context.Context,
 	consumerTag string,
 	params payloads.ConsumeParams,
 ) (<-chan amqp091.Delivery, error) {
@@ -223,7 +218,7 @@ func (e *channelEntry) consume(
 		var consumeError error
 
 		deliveries, consumeError = channel.ConsumeWithContext(
-			consumerContext,
+			context.Background(),
 			params.QueueName,
 			consumerTag,
 			params.AutoAck,

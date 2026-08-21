@@ -222,8 +222,17 @@ func classify(entry *channelEntry, what string, err error) (string, int, string)
 	// Checked before the broker errors below: the driver reports its own "not open" with
 	// an *amqp091.Error carrying a 5xx code, which would otherwise read as a connection
 	// the broker tore down.
+	// The wait loops report what the extension reports; wrapping it would change a message
+	// applications match on.
+	if errors.Is(err, errWaitTimeout) {
+		return scopeCommand, 0, errWaitTimeout.Error()
+	}
+
 	if errors.Is(err, amqp091.ErrClosed) {
-		if entry == nil || entry.isClosed() {
+		// With a channel of our own that is known closed, this is that channel; with no
+		// channel in play (opening one) or one that still looks alive, the connection
+		// behind it is what went away.
+		if entry != nil && entry.isClosed() {
 			return scopeChannel, 0, "No channel available."
 		}
 

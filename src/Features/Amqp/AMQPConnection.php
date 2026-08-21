@@ -241,7 +241,10 @@ class AMQPConnection extends AmqpResource
      */
     public function disconnect(): void
     {
-        if (!$this->internalOpen) {
+        // Keyed on the handle, not on the connected flag: a connection that died still
+        // holds one, and the pooled connection behind it is only released when it is
+        // handed back.
+        if ($this->internalId === '') {
             return;
         }
 

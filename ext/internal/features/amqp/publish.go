@@ -1,6 +1,8 @@
 package amqp_feature
 
 import (
+	"context"
+	"errors"
 	"sconcur/internal/features/amqp/payloads"
 	"sconcur/internal/tasks"
 	"time"
@@ -46,7 +48,11 @@ func (f *AmqpFeature) handlePublish(task *tasks.Task, raw msgpack.RawMessage) {
 	})
 
 	if err != nil {
-		entry.publishFailed()
+		// A publish that only ran out of time may still be on its way, and its
+		// confirmation with it; only one the driver refused outright is taken back.
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			entry.publishFailed()
+		}
 
 		fail(task, entry, "publish", err)
 

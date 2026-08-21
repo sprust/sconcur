@@ -76,7 +76,7 @@ class AMQPChannel extends AmqpResource
 
         if (!$connection->isConnected()) {
             throw new AMQPConnectionException(
-                message: 'Could not create channel. Connection resource is not connected.',
+                message: 'Could not create channel. No connection available.',
             );
         }
 

@@ -597,9 +597,10 @@ class AMQPQueue extends AmqpResource
     {
         while (true) {
             try {
-                $result = CommandRunner::next(
+                $result = $this->nextStream(
                     taskKey: $this->consumeTaskKey,
                     exceptionClass: AMQPQueueException::class,
+                    channel: $this->channel,
                 );
             } catch (AMQPException $exception) {
                 // The stream is gone with the failure (a read timeout, a dead channel), so

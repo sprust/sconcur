@@ -82,7 +82,15 @@ class AmqpFailureTest extends AmqpTestCase
 
     public function testAConnectionLevelFailureIsReportedAsOne(): void
     {
-        $channel = $this->channel();
+        // Its own connection, named so the pool gives it one: this test kills the
+        // connection, and the pooled one is shared by every other AMQP test.
+        $connection = new AMQPConnection(
+            TestAmqpResolver::getCredentials() + ['connection_name' => 'connection-failure-probe'],
+        );
+
+        $connection->connect();
+
+        $channel = new AMQPChannel($connection);
 
         try {
             // RabbitMQ answers requeue=false with 540 NOT_IMPLEMENTED, which is a
@@ -95,9 +103,21 @@ class AmqpFailureTest extends AmqpTestCase
             self::assertStringContainsString('NOT_IMPLEMENTED', $exception->getMessage());
         }
 
-        // A connection-level failure takes the connection with it; the teardown has
-        // nothing left to disconnect.
-        $this->connection = null;
+        // The extension reports the connection as gone, and so does the calque.
+        self::assertFalse($connection->isConnected());
+        self::assertFalse($channel->isConnected());
+
+        // Opening a channel on it is refused the way the extension refuses it.
+        try {
+            new AMQPChannel($connection);
+
+            self::fail('a channel cannot be opened on a connection that died');
+        } catch (AMQPConnectionException $exception) {
+            self::assertStringContainsString('No connection available.', $exception->getMessage());
+        }
+
+        // The handle is still handed back, so the pooled connection behind it is released.
+        $connection->disconnect();
     }
 
     public function testChannelNumbersAreNotHandedOutTwice(): void

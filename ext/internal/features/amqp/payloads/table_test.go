@@ -43,7 +43,9 @@ func TestAMapDecodesIntoTheTable(t *testing.T) {
 		t.Fatalf("table = %#v, want one value", table)
 	}
 
-	if table["x-max-length"] != int8(10) {
+	// Decoded loosely: every integer arrives as an int64, whichever width MessagePack
+	// packed it in.
+	if table["x-max-length"] != int64(10) {
 		t.Fatalf("x-max-length = %#v (%T), want the value that was sent", table["x-max-length"], table["x-max-length"])
 	}
 }

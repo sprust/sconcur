@@ -30,6 +30,13 @@ const (
 
 var errChannelNotFound = errors.New("unknown channel")
 
+// consumerCancelTimeout bounds the basic.cancel sent while a consumer is torn down.
+const consumerCancelTimeout = 5 * time.Second
+
+// errWaitTimeout is what a wait loop reports when its deadline passes. The wording is the
+// extension's, and it reaches PHP unwrapped (see classify).
+var errWaitTimeout = errors.New("Wait timeout exceed")
+
 // channelCounter backs the channel handle ids.
 var channelCounter atomic.Int64
 
@@ -46,15 +53,21 @@ type channelEntry struct {
 	channelMutex sync.Mutex
 	channel      *amqp091.Channel
 
-	mutex     sync.Mutex
-	consumers map[string]context.CancelFunc
+	mutex sync.Mutex
+	// consumers are the tags this channel has open. The value carries nothing: a consumer
+	// is cancelled through the driver channel like any other command, not by a context
+	// the driver watches on its own.
+	consumers map[string]struct{}
 	closed    bool
 
 	// lastUsedAt is what the idle sweeper looks at.
 	lastUsedAt time.Time
 
-	confirming    bool
-	pending       int
+	confirming bool
+	// confirmClaimed is set the moment a coroutine starts putting the channel into
+	// confirm mode, so a second one does not register another listener.
+	confirmClaimed bool
+	pending        int
 	confirmations []payloads.Confirmation
 	returns       []payloads.ReturnedMessage
 	// waiters are the wait loops parked on this channel, woken on every confirm and
@@ -139,7 +152,7 @@ func (c *channels) open(handle *connectionHandle, params payloads.ChannelOpenPar
 		id:         nextChannelId(),
 		channel:    channel,
 		handle:     handle,
-		consumers:  make(map[string]context.CancelFunc),
+		consumers:  make(map[string]struct{}),
 		lastUsedAt: time.Now(),
 		gone:       make(chan struct{}),
 	}
@@ -168,11 +181,13 @@ func (c *channels) open(handle *connectionHandle, params payloads.ChannelOpenPar
 
 	handle.channels[entry.id] = entry
 
-	handle.mutex.Unlock()
-
+	// Registered before the handle's lock is released: a dropHandle in between would
+	// otherwise close this entry and then find it inserted right after.
 	c.mutex.Lock()
 	c.entries[entry.id] = entry
 	c.mutex.Unlock()
+
+	handle.mutex.Unlock()
 
 	// Returned messages are collected from the moment the channel opens: an application
 	// may publish with AMQP_MANDATORY and wait for the returns without ever putting the
@@ -258,9 +273,22 @@ func (c *channels) dropHandle(handle *connectionHandle) {
 
 	c.mutex.Unlock()
 
+	// Closed at the same time rather than one after another: each close waits up to
+	// channelCloseTimeout, and a connection holding a dozen channels would otherwise make
+	// a disconnect take a dozen timeouts.
+	var closing sync.WaitGroup
+
 	for _, entry := range entries {
-		entry.close()
+		closing.Add(1)
+
+		go func(entry *channelEntry) {
+			defer closing.Done()
+
+			entry.close()
+		}(entry)
 	}
+
+	closing.Wait()
 }
 
 // forget removes a channel from the handle that owns it.
@@ -346,13 +374,9 @@ func (e *channelEntry) close() {
 
 	e.closed = true
 
-	cancels := make([]context.CancelFunc, 0, len(e.consumers))
-
-	for _, cancel := range e.consumers {
-		cancels = append(cancels, cancel)
-	}
-
-	e.consumers = make(map[string]context.CancelFunc)
+	// The consumers are simply forgotten: closing the channel ends them on the broker,
+	// and a basic.cancel sent alongside the close would arrive out of order.
+	e.consumers = make(map[string]struct{})
 
 	waiters := e.waiters
 	e.waiters = nil
@@ -365,10 +389,6 @@ func (e *channelEntry) close() {
 
 	for _, waiter := range waiters {
 		close(waiter)
-	}
-
-	for _, cancel := range cancels {
-		cancel()
 	}
 
 	done := make(chan struct{})
@@ -415,28 +435,48 @@ func (e *channelEntry) do(ctx context.Context, call func(channel *amqp091.Channe
 	}
 }
 
-func (e *channelEntry) registerConsumer(consumerTag string, cancel context.CancelFunc) {
+func (e *channelEntry) registerConsumer(consumerTag string) {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
-	e.consumers[consumerTag] = cancel
+	e.consumers[consumerTag] = struct{}{}
 	e.lastUsedAt = time.Now()
 }
 
-func (e *channelEntry) forgetConsumer(consumerTag string) {
+// forgetConsumer drops a consumer from the registry and reports whether it was still
+// there, so a tag is never cancelled twice.
+func (e *channelEntry) forgetConsumer(consumerTag string) bool {
 	e.mutex.Lock()
+	defer e.mutex.Unlock()
 
-	cancel, exists := e.consumers[consumerTag]
+	_, exists := e.consumers[consumerTag]
 
 	delete(e.consumers, consumerTag)
 
 	e.lastUsedAt = time.Now()
 
-	e.mutex.Unlock()
+	return exists
+}
 
-	if exists {
-		cancel()
+// cancelConsumer sends the basic.cancel for a consumer this feature still holds, on a
+// fresh context: by the time a stream is torn down its task context is long gone. It runs
+// through do(), so it is serialized against every other command on the channel — a cancel
+// racing a channel close is what makes a broker complain about an unexpected command.
+func (e *channelEntry) cancelConsumer(consumerTag string) {
+	if !e.forgetConsumer(consumerTag) {
+		return
 	}
+
+	if e.isClosed() {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), consumerCancelTimeout)
+	defer cancel()
+
+	_ = e.do(ctx, func(channel *amqp091.Channel) error {
+		return channel.Cancel(consumerTag, false)
+	})
 }
 
 // startConfirmMode puts the channel into publisher-confirm mode and starts collecting what
@@ -448,13 +488,13 @@ func (e *channelEntry) forgetConsumer(consumerTag string) {
 func (e *channelEntry) startConfirmMode(ctx context.Context, noWait bool) error {
 	e.mutex.Lock()
 
-	if e.confirming {
+	if e.confirming || e.confirmClaimed {
 		e.mutex.Unlock()
 
 		return nil
 	}
 
-	e.confirming = true
+	e.confirmClaimed = true
 
 	e.mutex.Unlock()
 
@@ -467,12 +507,19 @@ func (e *channelEntry) startConfirmMode(ctx context.Context, noWait bool) error 
 
 		confirms = channel.NotifyPublish(make(chan amqp091.Confirmation, confirmQueueSize))
 
+		// Set while this goroutine still holds the channel: a publish waiting for the
+		// same lock is counted, and one that already went through was published before
+		// confirm mode and gets no confirmation.
+		e.mutex.Lock()
+		e.confirming = true
+		e.mutex.Unlock()
+
 		return nil
 	})
 
 	if err != nil {
 		e.mutex.Lock()
-		e.confirming = false
+		e.confirmClaimed = false
 		e.mutex.Unlock()
 
 		return err
@@ -610,8 +657,8 @@ func (e *channelEntry) waitForReturns(ctx context.Context, timeout time.Duration
 // wait blocks until the condition holds (checked under the entry's lock), the deadline
 // passes, the channel goes away, or the flow stops, and hands back what the drain took.
 //
-// The timeout message is the extension's: an application that reads it sees what it saw
-// before.
+// The timeout is reported as the extension words it, unwrapped by classify, so an
+// application that reads the message sees what it saw before.
 func (e *channelEntry) wait(
 	ctx context.Context,
 	timeout time.Duration,
@@ -647,7 +694,7 @@ func (e *channelEntry) wait(
 		select {
 		case <-waiter:
 		case <-deadline:
-			return payloads.WaitResult{}, errors.New("Wait timeout exceed")
+			return payloads.WaitResult{}, errWaitTimeout
 		case <-e.gone:
 			return payloads.WaitResult{}, amqp091.ErrClosed
 		case <-ctx.Done():

@@ -6,6 +6,7 @@ namespace SConcur\Tests\Feature\Features\Amqp;
 
 use SConcur\Features\Amqp\AMQPChannel;
 use SConcur\Features\Amqp\AMQPDecimal;
+use SConcur\Features\Amqp\AMQPException;
 use SConcur\Features\Amqp\AMQPQueue;
 use SConcur\Features\Amqp\AMQPTimestamp;
 use const SConcur\Features\Amqp\AMQP_AUTOACK;
@@ -139,6 +140,66 @@ class AmqpMessageTest extends AmqpTestCase
         self::assertSame(1_700_000_000.0, $timestamp->getTimestamp());
 
         $queue->ack($envelope->getDeliveryTag());
+    }
+
+    public function testANestedListKeepsItsValues(): void
+    {
+        $channel  = $this->channel();
+        $exchange = $this->declareExchange($channel);
+        $queue    = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+
+        $queue->bind(exchangeName: (string) $exchange->getName(), routingKey: 'key');
+
+        $exchange->publish(
+            message: 'nested',
+            routingKey: 'key',
+            headers: [
+                'headers' => [
+                    'x-tags'  => ['first', 'second'],
+                    'x-mixed' => [
+                        0   => 'zero',
+                        'k' => 'value',
+                    ],
+                ],
+            ],
+        );
+
+        $envelope = $this->waitForMessage($queue);
+
+        self::assertNotNull($envelope);
+        // A header carrying a list is an AMQP field array, not a table with dropped keys.
+        self::assertSame(['first', 'second'], $envelope->getHeader('x-tags'));
+        $mixed = $envelope->getHeader('x-mixed');
+
+        // A field table has no order, and the two sides are free to hand it over in a
+        // different one; the keys and values are what must survive.
+        ksort($mixed);
+
+        self::assertSame(
+            [
+                0   => 'zero',
+                'k' => 'value',
+            ],
+            $mixed,
+        );
+
+        $queue->ack($envelope->getDeliveryTag());
+    }
+
+    public function testAValueThatNestsTooDeepIsRefused(): void
+    {
+        $exchange = $this->declareExchange($this->channel());
+
+        $deep = 'value';
+
+        for ($level = 0; $level < 200; ++$level) {
+            $deep = ['nested' => $deep];
+        }
+
+        $this->expectException(AMQPException::class);
+        $this->expectExceptionMessage('Maximum serialization depth of 128 reached while serializing value');
+
+        $exchange->publish(message: 'too deep', routingKey: 'key', headers: ['headers' => $deep]);
     }
 
     public function testADeliveryWithNoTimestampReportsZero(): void

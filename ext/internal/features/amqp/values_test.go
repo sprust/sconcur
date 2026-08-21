@@ -102,15 +102,15 @@ func TestTableToMapGivesPhpValuesMessagePackCanCarry(t *testing.T) {
 	// A decimal inside a list keeps its kind too.
 	decimal, ok := list[0].(map[string]any)
 
-	if !ok || decimal["__amqp"] != "D" {
+	if !ok || decimal["\x00amqp"] != "D" {
 		t.Fatalf("list[0] = %#v, want the tagged decimal shape", list[0])
 	}
 }
 
 func TestATaggedDecimalAndTimestampBecomeRealFieldValues(t *testing.T) {
 	table := mapToTable(map[string]any{
-		"decimal":   map[string]any{"__amqp": "D", "e": 2, "s": 314},
-		"timestamp": map[string]any{"__amqp": "T", "v": int64(1_700_000_000)},
+		"decimal":   map[string]any{"\x00amqp": "D", "e": 2, "s": 314},
+		"timestamp": map[string]any{"\x00amqp": "T", "v": int64(1_700_000_000)},
 		"plain":     map[string]any{"nested": 1},
 	})
 
@@ -148,13 +148,13 @@ func TestADecimalAndTimestampGoBackToPhpTagged(t *testing.T) {
 
 	decimal, ok := values["decimal"].(map[string]any)
 
-	if !ok || decimal["__amqp"] != "D" || decimal["e"] != int64(2) || decimal["s"] != int64(314) {
+	if !ok || decimal["\x00amqp"] != "D" || decimal["e"] != int64(2) || decimal["s"] != int64(314) {
 		t.Fatalf("decimal = %#v, want the tagged decimal shape", values["decimal"])
 	}
 
 	timestamp, ok := values["timestamp"].(map[string]any)
 
-	if !ok || timestamp["__amqp"] != "T" || timestamp["v"] != int64(1_700_000_000) {
+	if !ok || timestamp["\x00amqp"] != "T" || timestamp["v"] != int64(1_700_000_000) {
 		t.Fatalf("timestamp = %#v, want the tagged timestamp shape", values["timestamp"])
 	}
 }

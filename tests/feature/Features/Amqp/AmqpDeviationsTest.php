@@ -136,7 +136,7 @@ class AmqpDeviationsTest extends AmqpTestCase
 
             self::fail('an idle consumer must give up after read_timeout');
         } catch (AMQPQueueException $exception) {
-            self::assertStringContainsString('consumer timeout exceed', $exception->getMessage());
+            self::assertStringContainsString('Consumer timeout exceed', $exception->getMessage());
         }
 
         $queue->delete();

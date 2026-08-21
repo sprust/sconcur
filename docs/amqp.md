@@ -208,7 +208,12 @@ $channel->waitForConfirm(2.0);   // seconds; 0 waits until the broker answers
 ```
 
 `waitForConfirm()` returns once every message published since the last call has
-been confirmed or rejected, and raises `AMQPQueueException` on timeout. It also
+been confirmed or rejected, and raises `AMQPQueueException` ("Wait timeout
+exceed") on timeout. The default timeout of 0 means "wait until the broker
+answers", as it does in the extension: the wait then ends only on an answer, on
+the channel going away, or on the coroutine's flow being stopped. A channel that
+was never put into confirm mode has nothing to wait for and runs into the
+timeout — pass one. It also
 collects the messages the broker returned as unroutable and hands them to the
 return callback.
 
@@ -287,6 +292,15 @@ that does not exist, a publish to a missing exchange) leaves the `AMQPChannel`
 closed: `isConnected()` reports it, every later call on it raises
 `AMQPChannelException`, and the Go side has already released it. Open a new
 channel to carry on — the connection is untouched.
+
+A connection-level failure marks the `AMQPConnection` disconnected as well, so
+the usual recovery reads the same as it did on the extension:
+
+```php
+if (!$connection->isConnected()) {
+    $connection->reconnect();
+}
+```
 
 ## Where the calque differs
 
