@@ -237,6 +237,8 @@ The environment the project is built and tested against in CI:
   layers, the task lifecycle.
 - [Coroutine switching](docs/coroutine-switching.md) — `Scheduler::switch()` and
   the servers' automatic preemption for CPU-bound code.
+- [Coroutine timeout](docs/coroutine-timeout.md) — `Limiter::on()` and
+  `add(timeoutMs: …)`: work that is unwound when it runs too long.
 - [Coroutine context](docs/coroutine-context.md) — per-coroutine key-value store.
 - [MongoDB](docs/mongodb.md) — collection operations, cursors, BSON types.
 - [MySQL](docs/mysql.md) — the universal SQL feature: bindings, streaming,

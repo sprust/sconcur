@@ -48,7 +48,7 @@ class WaitGroup
      * Keyed by callback key, in add() order; each entry keeps the callback and the
      * context parent to inherit at launch time.
      *
-     * @var array<string, array{callback: Closure, parentContextFiberId: int}>
+     * @var array<string, array{callback: Closure, parentContextFiberId: int, timeoutMs: ?int}>
      */
     protected array $pending = [];
 
@@ -82,7 +82,7 @@ class WaitGroup
     /**
      * @param Closure(): mixed $callback
      */
-    public function add(Closure $callback): string
+    public function add(Closure $callback, ?int $timeoutMs = null): string
     {
         $callbackKey = 'cb_' . (++static::$callbackKeyCounter);
 
@@ -96,13 +96,17 @@ class WaitGroup
                 callbackKey: $callbackKey,
                 callback: $callback,
                 parentContextFiberId: $parentContextFiberId,
+                timeoutMs: $timeoutMs,
             );
         } else {
             // At capacity: queue it. Nothing is created or sent to Go until a slot
-            // frees and the scheduler calls fillSlots().
+            // frees and the scheduler calls fillSlots(). The timeout travels with it
+            // rather than being turned into a deadline here — a callback that waited
+            // out a slot would otherwise be born already expired.
             $this->pending[$callbackKey] = [
                 'callback'             => $callback,
                 'parentContextFiberId' => $parentContextFiberId,
+                'timeoutMs'            => $timeoutMs,
             ];
         }
 
@@ -133,6 +137,7 @@ class WaitGroup
                     callbackKey: $callbackKey,
                     callback: $queued['callback'],
                     parentContextFiberId: $queued['parentContextFiberId'],
+                    timeoutMs: $queued['timeoutMs'],
                 );
             } catch (CallbackExecutionException $exception) {
                 // A deferred callback threw before its first suspend: its failure
@@ -312,8 +317,12 @@ class WaitGroup
      *
      * @param Closure(): mixed $callback
      */
-    protected function launch(string $callbackKey, Closure $callback, int $parentContextFiberId): void
-    {
+    protected function launch(
+        string $callbackKey,
+        Closure $callback,
+        int $parentContextFiberId,
+        ?int $timeoutMs = null,
+    ): void {
         $fiber   = new Fiber($callback);
         $fiberId = spl_object_id($fiber);
 
@@ -334,14 +343,21 @@ class WaitGroup
 
         $this->members[$fiberId] = $callbackKey;
 
-        Scheduler::get()->register(
-            new Coroutine(
-                id: $fiberId,
-                fiber: $fiber,
-                group: $this,
-                callbackKey: $callbackKey,
-            ),
+        $coroutine = new Coroutine(
+            id: $fiberId,
+            fiber: $fiber,
+            group: $this,
+            callbackKey: $callbackKey,
         );
+
+        Scheduler::get()->register($coroutine);
+
+        // Counted from here and not from add(): this is the moment the callback
+        // starts running, and a callback that waited for a free slot gets its whole
+        // allowance rather than what was left of it.
+        if ($timeoutMs !== null) {
+            Scheduler::get()->setDeadline(coroutine: $coroutine, timeoutMs: $timeoutMs);
+        }
 
         try {
             // First run up to the first suspend. May happen nested inside another

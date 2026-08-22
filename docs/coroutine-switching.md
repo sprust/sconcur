@@ -115,6 +115,10 @@ the extension's interrupt timer — the same wiring the servers use, with the sa
 guards. Re-enabling replaces the previous timer. Always disable in `finally`: the
 timer keeps firing until `disablePreemption()` or process shutdown.
 
+Preemption is also what lets a [coroutine timeout](coroutine-timeout.md) reach code
+that never suspends: the deadline is delivered from the same hook, so without the
+timer armed a CPU-bound coroutine is only unwound at its next wait.
+
 ## The cost under load
 
 Preemption lets cheap requests overtake, and the heavy ones pay for it: a

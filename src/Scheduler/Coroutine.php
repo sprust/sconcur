@@ -44,6 +44,16 @@ class Coroutine
     public bool $flowUsed = false;
 
     /**
+     * When this coroutine runs out of time, as a monotonic hrtime(true) reading; 0
+     * means it was given no deadline, which is the usual case.
+     *
+     * Set by WaitGroup::launch from its timeoutMs, and read by the Scheduler, which
+     * keeps its own index of the coroutines that have one — a deadline is rare
+     * enough that scanning every coroutine for it would cost more than it saves.
+     */
+    public int $deadlineNs = 0;
+
+    /**
      * @param int            $id          spl_object_id of the fiber
      * @param Fiber          $fiber       the running callback
      * @param WaitGroup|null $group       the group that owns this coroutine, or null when spawned standalone

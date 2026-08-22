@@ -237,6 +237,8 @@ $collection->insertOne(['name' => 'example']);
   жизненный цикл задачи.
 - [Переключение корутин](docs/coroutine-switching.ru.md) — `Scheduler::switch()`
   и автоматическая преемпция серверов для CPU-bound кода.
+- [Таймаут корутины](docs/coroutine-timeout.ru.md) — `Limiter::on()` и
+  `add(timeoutMs: …)`: работа, которую разматывают, когда она затянулась.
 - [Контекст корутины](docs/coroutine-context.ru.md) — key-value хранилище на
   корутину.
 - [MongoDB](docs/mongodb.ru.md) — операции коллекции, курсоры, типы BSON.

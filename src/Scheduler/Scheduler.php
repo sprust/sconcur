@@ -12,8 +12,10 @@ use SConcur\Dto\PendingPushDto;
 use SConcur\Dto\PendingSwitchDto;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\CallbackExecutionException;
+use SConcur\Exceptions\CoroutineTimeoutException;
 use SConcur\Exceptions\FiberStateException;
 use SConcur\Exceptions\FlowStoppedException;
+use SConcur\Exceptions\InvalidCoroutineTimeoutException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Flow\CurrentFlow;
 use SConcur\State;
@@ -101,6 +103,17 @@ class Scheduler
      * @var array<int, int>
      */
     protected array $switchedCoroutines = [];
+
+    /**
+     * Deadlines of the coroutines that were given one: fiber id => hrtime(true) value.
+     *
+     * Kept beside the coroutines rather than scanned out of them. A deadline is the
+     * exception and not the rule, so the sweep and the wait bound below both start with
+     * an emptiness test that costs nothing on every server that never asks for one.
+     *
+     * @var array<int, int>
+     */
+    protected array $deadlines = [];
 
     /**
      * Per-coroutine hrtime(true) timestamps starting the current switch quantum:
@@ -262,6 +275,7 @@ class Scheduler
 
         $this->groupWaiters       = [];
         $this->switchedCoroutines = [];
+        $this->deadlines          = [];
         $this->lastSwitchNs       = [];
         $this->readyResults       = [];
 
@@ -278,6 +292,108 @@ class Scheduler
     public function register(Coroutine $coroutine): void
     {
         $this->coroutines[$coroutine->id] = $coroutine;
+    }
+
+    /**
+     * Puts a deadline on the coroutine that is running right now, and answers the one it
+     * had before so the caller can put it back.
+     *
+     * The shorter of the two wins: a scope that asks for longer than it is already allowed
+     * does not get it, because the outer allowance is a promise someone else is holding.
+     *
+     * Answers null when there is no coroutine to bound — outside a fiber, or on a fiber the
+     * scheduler does not track. Limiter::on() reads that as "run it unbounded", which is
+     * the only thing it can mean: there is nothing here to unwind.
+     *
+     * @return int|null the previous deadline (0 for none), or null when nothing was bounded
+     *
+     * @throws InvalidCoroutineTimeoutException if the timeout is not positive
+     */
+    public function enterDeadlineScope(int $timeoutMs): ?int
+    {
+        static::assertTimeout($timeoutMs);
+
+        $currentFiber = Fiber::getCurrent();
+
+        if ($currentFiber === null) {
+            return null;
+        }
+
+        $fiberId = spl_object_id($currentFiber);
+
+        $coroutine = $this->coroutines[$fiberId] ?? null;
+
+        if ($coroutine === null) {
+            return null;
+        }
+
+        $previousNs = $coroutine->deadlineNs;
+
+        $deadlineNs = hrtime(true) + $timeoutMs * 1_000_000;
+
+        if ($previousNs !== 0 && $previousNs < $deadlineNs) {
+            $deadlineNs = $previousNs;
+        }
+
+        $coroutine->deadlineNs     = $deadlineNs;
+        $this->deadlines[$fiberId] = $deadlineNs;
+
+        return $previousNs;
+    }
+
+    /**
+     * Puts back the deadline a scope replaced. A previous value of 0 means the coroutine had
+     * none, and has none again.
+     */
+    public function leaveDeadlineScope(?int $previousNs): void
+    {
+        if ($previousNs === null) {
+            return;
+        }
+
+        $currentFiber = Fiber::getCurrent();
+
+        if ($currentFiber === null) {
+            return;
+        }
+
+        $fiberId = spl_object_id($currentFiber);
+
+        $coroutine = $this->coroutines[$fiberId] ?? null;
+
+        if ($coroutine === null) {
+            return;
+        }
+
+        $coroutine->deadlineNs = $previousNs;
+
+        if ($previousNs === 0) {
+            unset($this->deadlines[$fiberId]);
+
+            return;
+        }
+
+        $this->deadlines[$fiberId] = $previousNs;
+    }
+
+    /**
+     * Gives a coroutine a deadline, counted from now. Past it the scheduler unwinds the
+     * coroutine with CoroutineTimeoutException wherever it is — see enforceDeadlines().
+     *
+     * Called by WaitGroup::launch for `add(timeoutMs: …)`. A timeout of zero or less is
+     * refused rather than treated as "already expired": it is a configuration mistake,
+     * and a coroutine that never gets to run its first line is nobody's intention.
+     *
+     * @throws InvalidCoroutineTimeoutException if the timeout is not positive
+     */
+    public function setDeadline(Coroutine $coroutine, int $timeoutMs): void
+    {
+        static::assertTimeout($timeoutMs);
+
+        $deadlineNs = hrtime(true) + $timeoutMs * 1_000_000;
+
+        $coroutine->deadlineNs           = $deadlineNs;
+        $this->deadlines[$coroutine->id] = $deadlineNs;
     }
 
     /**
@@ -362,7 +478,7 @@ class Scheduler
     {
         $coroutine = $this->coroutines[$fiberId] ?? null;
 
-        unset($this->coroutines[$fiberId], $this->lastSwitchNs[$fiberId]);
+        unset($this->coroutines[$fiberId], $this->lastSwitchNs[$fiberId], $this->deadlines[$fiberId]);
 
         $this->purgeSwitchedCoroutine($fiberId);
 
@@ -541,6 +657,21 @@ class Scheduler
             return;
         }
 
+        // This hook runs on the coroutine's own stack, which makes it the one place a
+        // coroutine busy with PHP can be unwound: a fiber cannot be thrown into while it
+        // is running, so enforceDeadlines() leaves this case to here. Without preemption
+        // armed there is no such point at all, and a deadline on CPU-bound code is only
+        // honoured at its next suspend.
+        $deadlineNs = $this->deadlines[$fiberId] ?? 0;
+
+        if ($deadlineNs !== 0 && $deadlineNs <= hrtime(true)) {
+            unset($this->deadlines[$fiberId]);
+
+            $this->coroutines[$fiberId]->deadlineNs = 0;
+
+            throw new CoroutineTimeoutException(message: 'Coroutine timed out');
+        }
+
         $this->switch(quantumMs: 0);
     }
 
@@ -657,8 +788,14 @@ class Scheduler
                 // a pause with nothing deliverable resumes the queue head. Results
                 // arrive in batches (one crossing) and are consumed one per
                 // iteration, so the per-event logic below is unchanged.
+                if ($this->enforceDeadlines()) {
+                    continue;
+                }
+
                 $result = $this->takeReadyResult(
-                    timeoutMs: $this->switchedCoroutines === [] ? self::SERVE_POLL_INTERVAL_MS : 0,
+                    timeoutMs: $this->boundedByDeadline(
+                        $this->switchedCoroutines === [] ? self::SERVE_POLL_INTERVAL_MS : 0,
+                    ),
                 );
 
                 if ($result === null) {
@@ -888,6 +1025,18 @@ class Scheduler
     }
 
     /**
+     * @throws InvalidCoroutineTimeoutException if the timeout is not positive
+     */
+    protected static function assertTimeout(int $timeoutMs): void
+    {
+        if ($timeoutMs <= 0) {
+            throw new InvalidCoroutineTimeoutException(
+                message: "A coroutine timeout must be positive, got $timeoutMs ms.",
+            );
+        }
+    }
+
+    /**
      * One-line snapshot of why a graceful drain is not finishing: the tracked
      * coroutines with their fiber state, the group waiters, the switch queue and
      * the task keys coroutines are parked on. Both lists are capped — this goes
@@ -956,8 +1105,16 @@ class Scheduler
      */
     protected function tick(): void
     {
+        if ($this->enforceDeadlines()) {
+            // Something settled. Back to the caller so it can see it, rather than into a
+            // wait for work that may no longer be needed.
+            return;
+        }
+
         $result = $this->takeReadyResult(
-            timeoutMs: $this->switchedCoroutines === [] ? null : 0,
+            timeoutMs: $this->boundedByDeadline(
+                $this->switchedCoroutines === [] ? null : 0,
+            ),
         );
 
         if ($result !== null) {
@@ -1014,6 +1171,115 @@ class Scheduler
      * Unwound coroutines are purged from the queue eagerly (detach/forget); the
      * skip below is a defensive net for an id that slipped through anyway.
      */
+    /**
+     * Unwinds every coroutine whose deadline has passed, wherever it is parked.
+     *
+     * Called from the two loops that drive the scheduler, before they decide what to do
+     * next. A coroutine that is *running* is not touched here — it cannot be, a fiber can
+     * only be thrown into while suspended — that one is caught by the preemption hook,
+     * which executes on its own stack (see preempt()).
+     *
+     * The expired ones are collected before any of them is unwound: unwinding runs the
+     * coroutine's own code, which may finish it, launch its group's next queued callback
+     * and change this very list underneath the loop.
+     *
+     * Answers whether anything was unwound, because that changes what the caller should do
+     * next: a coroutine that just settled may be the result its group was waiting for, and
+     * blocking for the next one before the caller re-checks would sit on an answer it
+     * already has.
+     */
+    protected function enforceDeadlines(): bool
+    {
+        if ($this->deadlines === []) {
+            return false;
+        }
+
+        $now = hrtime(true);
+
+        $expired = [];
+
+        foreach ($this->deadlines as $fiberId => $deadlineNs) {
+            if ($deadlineNs <= $now) {
+                $expired[] = $fiberId;
+            }
+        }
+
+        $unwound = false;
+
+        foreach ($expired as $fiberId) {
+            $coroutine = $this->coroutines[$fiberId] ?? null;
+
+            unset($this->deadlines[$fiberId]);
+
+            if ($coroutine === null || !$coroutine->fiber->isSuspended()) {
+                continue;
+            }
+
+            $this->expire($coroutine);
+
+            $unwound = true;
+        }
+
+        return $unwound;
+    }
+
+    /**
+     * Unwinds one coroutine that ran out of time, and routes whatever comes of it to its
+     * group exactly as a normal resume would.
+     *
+     * That last part is the whole point of going through resumeCoroutine() rather than
+     * calling fiber->throw() directly: a callback that catches the timeout and returns a
+     * value has settled, and its group must receive that value. Only a callback that lets
+     * the exception escape fails.
+     */
+    protected function expire(Coroutine $coroutine): void
+    {
+        $coroutine->deadlineNs = 0;
+
+        // Whatever it was waiting for is no longer its business. Clearing the keys is what
+        // makes the result that arrives later a stale one, which resumeByResult drops
+        // instead of resuming a coroutine that has already moved on.
+        $coroutine->awaitedFlowKey = '';
+        $coroutine->awaitedTaskKey = '';
+
+        // A coroutine parked by switch() is queued for a resume that must not also happen.
+        $this->purgeSwitchedCoroutine($coroutine->id);
+
+        $this->resumeCoroutine(
+            coroutine: $coroutine,
+            resumeValue: null,
+            throwable: new CoroutineTimeoutException(message: 'Coroutine timed out'),
+        );
+    }
+
+    /**
+     * How long the scheduler may block waiting for results, given the deadlines it has to
+     * honour: the caller's own bound, or the time left on the nearest deadline, whichever
+     * comes first.
+     *
+     * Without this a scheduler with nothing to do blocks in the extension's wait until a
+     * result arrives — and a coroutine waiting on a socket nobody answers is exactly the
+     * case a deadline is for, so the wait has to end on its own.
+     */
+    protected function boundedByDeadline(?int $timeoutMs): ?int
+    {
+        if ($this->deadlines === []) {
+            return $timeoutMs;
+        }
+
+        $nearestNs = min($this->deadlines);
+
+        $leftMs = (int) ceil(($nearestNs - hrtime(true)) / 1_000_000);
+
+        // Already past it, or so close that rounding says zero: come straight back and let
+        // enforceDeadlines() do its work.
+        if ($leftMs <= 0) {
+            return 0;
+        }
+
+        return $timeoutMs === null ? $leftMs : min($timeoutMs, $leftMs);
+    }
+
     protected function resumeNextSwitched(): void
     {
         while ($this->switchedCoroutines !== []) {
@@ -1069,10 +1335,12 @@ class Scheduler
      * a coroutine's failure belongs to its group (and its waiter), not to
      * whichever group's run() happens to be on the stack.
      */
-    protected function resumeCoroutine(Coroutine $coroutine, mixed $resumeValue): void
+    protected function resumeCoroutine(Coroutine $coroutine, mixed $resumeValue, ?Throwable $throwable = null): void
     {
         try {
-            $suspendValue = $coroutine->fiber->resume($resumeValue);
+            $suspendValue = $throwable === null
+                ? $coroutine->fiber->resume($resumeValue)
+                : $coroutine->fiber->throw($throwable);
 
             $suspendValue = $this->dispatchPendingTask(
                 fiber: $coroutine->fiber,
@@ -1191,11 +1459,19 @@ class Scheduler
             return;
         }
 
+        // A deliberate unwind is passed on as it is. Wrapping it would hide what happened
+        // behind a name that says the callback failed, and the project keeps a stop
+        // recognizable everywhere else it can surface (FeatureExecutor::suspend does the
+        // same). It reaches here only when a callback let it escape — a group being
+        // stopped unwinds its members itself and swallows what comes out — so in practice
+        // this is a coroutine that ran out of its deadline and did not catch it.
         $coroutine->group->markFailure(
-            new CallbackExecutionException(
-                message: $exception->getMessage(),
-                previous: $exception,
-            ),
+            $exception instanceof FlowStoppedException
+                ? $exception
+                : new CallbackExecutionException(
+                    message: $exception->getMessage(),
+                    previous: $exception,
+                ),
         );
 
         // Wake whoever awaits this group so the failure surfaces at its iterate()
@@ -1205,7 +1481,11 @@ class Scheduler
 
     protected function forget(Coroutine $coroutine): void
     {
-        unset($this->coroutines[$coroutine->id], $this->lastSwitchNs[$coroutine->id]);
+        unset(
+            $this->coroutines[$coroutine->id],
+            $this->lastSwitchNs[$coroutine->id],
+            $this->deadlines[$coroutine->id],
+        );
 
         $this->purgeSwitchedCoroutine($coroutine->id);
 
