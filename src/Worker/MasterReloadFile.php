@@ -6,9 +6,13 @@ namespace SConcur\Worker;
 
 /**
  * The reload trigger file (e.g. sconcur-server.reload). Its presence asks a running
- * master to roll its workers one by one; the master deletes it once the rolling
- * restart completes. File-based like the stop signal (state-file removal), so no
- * signal — and therefore no PID-reuse risk — is involved.
+ * master to re-read its config and roll its workers onto it, one at a time; the master
+ * deletes it once the rolling restart completes. File-based like the stop signal
+ * (state-file removal), so no signal — and therefore no PID-reuse risk — is involved.
+ *
+ * The file carries the config path the requesting CLI was given, because the master is
+ * handed its groups as objects and has no path of its own to go back to. An empty or
+ * unreadable value just means "roll the workers on the config already loaded".
  */
 class MasterReloadFile
 {
@@ -23,12 +27,29 @@ class MasterReloadFile
     }
 
     /**
-     * Requests a reload by creating the trigger file. Returns false when it could not
-     * be written.
+     * Requests a reload by creating the trigger file, naming the config to re-read.
+     * Returns false when it could not be written.
      */
-    public function request(): bool
+    public function request(string $configPath = ''): bool
     {
-        return file_put_contents($this->path, "reload\n") !== false;
+        return file_put_contents($this->path, $configPath . "\n") !== false;
+    }
+
+    /**
+     * The config path the request named, or an empty string when it named none (an
+     * older trigger file, or one written by hand).
+     */
+    public function configPath(): string
+    {
+        $contents = @file_get_contents($this->path);
+
+        if ($contents === false) {
+            return '';
+        }
+
+        $configPath = trim($contents);
+
+        return is_file($configPath) ? $configPath : '';
     }
 
     public function requested(): bool

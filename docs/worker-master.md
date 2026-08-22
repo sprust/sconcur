@@ -58,17 +58,49 @@ $server->serve(static fn (ServerRequestInterface $request): ResponseInterface =>
 
 ```json
 {
-  "workerScript": "/app/worker.php",
-  "workerCount": 8,
   "phpArgs": ["-d", "extension=/app/ext/build/sconcur.so"],
   "runtimeDir": "/run/sconcur",
   "logDir": "/var/log/sconcur",
   "rotateDays": 3,
-  "server": {
-    "address": "0.0.0.0:8080",
-    "reusePort": true,
-    "maxRequests": 10000
-  }
+  "groups": [
+    {
+      "name": "http",
+      "workerScript": "/app/worker.php",
+      "workerCount": 8,
+      "server": {
+        "address": "0.0.0.0:8080",
+        "reusePort": true,
+        "maxRequests": 10000
+      }
+    }
+  ]
+}
+```
+
+A master supervises one or more **groups**, and they need not be alike. One
+supervisor, one lock, one journal and one panel can hold an HTTP pool and a
+couple of queue-consumer pools at once:
+
+```json
+{
+  "phpArgs": ["-d", "extension=/app/ext/build/sconcur.so"],
+  "runtimeDir": "/run/sconcur",
+  "groups": [
+    {
+      "name": "http",
+      "workerScript": "/app/worker.php",
+      "workerCount": 8,
+      "server": { "address": "0.0.0.0:8080", "reusePort": true }
+    },
+    {
+      "name": "orders",
+      "workerScript": "/app/consumer.php",
+      "workerCount": 2,
+      "server": {
+        "queues": [{ "name": "orders", "coroutineCount": 8 }]
+      }
+    }
+  ]
 }
 ```
 
@@ -83,15 +115,11 @@ left to restart.
 The programmatic API behind the CLI is `SConcur\Worker\WorkerMaster`:
 
 ```php
-new WorkerMaster(
-    workerScript: __DIR__ . '/worker.php',
-    runtimeDir:   '/run/sconcur',
-    logDir:       '/var/log/sconcur',
-    workerCount:  0, // 0 = number of cores
-    phpArgs:      ['-d', 'extension=' . __DIR__ . '/ext/build/sconcur.so'],
-    workerArgs:   ['0.0.0.0:8080'],
-)->run();
+MasterConfig::fromFile('/app/master.json')->toWorkerMaster()->run();
 ```
+
+`WorkerMaster` itself takes its groups as `WorkerGroupConfig` objects, which is
+what `MasterConfig` builds from the file.
 
 ## Commands
 
@@ -101,7 +129,7 @@ find the lock, state and trigger files.
 
 ```sh
 vendor/bin/sconcur-server start   --configPath=/app/master.json  # bring up the pool (foreground)
-vendor/bin/sconcur-server status  --configPath=/app/master.json  # running: pid=12345 workers=8
+vendor/bin/sconcur-server status  --configPath=/app/master.json  # running: pid=12345 workers=8 groups=2
 vendor/bin/sconcur-server stop    --configPath=/app/master.json  # remove the state file and wait for exit
 vendor/bin/sconcur-server reload  --configPath=/app/master.json  # roll the workers one by one
 ```
@@ -111,52 +139,88 @@ stopped-or-stale; `stop` — `0` once stopped (or none was running), `1` on time
 `reload` — `0` on completion, `3` if the master is not running, `1` on
 timeout/error.
 
-`reload` is a soft restart of the workers. The command creates the trigger file
-`<runtimeDir>/<name>.reload`; the master rolls the workers one by one, sending
-each `SIGTERM` (which leaves the `SO_REUSEPORT` group early and finishes the
-requests it has already accepted), waiting up to `shutdownTimeoutMs` (otherwise
-`SIGKILL`) and spawning a replacement. While one worker finishes up, the rest
-hold traffic — so with N>1 the restart is downtime-free, and a fresh
-`php worker.php` picks up new code from disk. The master config itself is not
-re-read: `workerCount` and arguments do not change on the fly.
+`status` prints the totals and then one line per group.
+
+`reload` re-reads the config and rolls the workers onto it. The command creates
+the trigger file `<runtimeDir>/<name>.reload` naming the config; the master reads
+it, then rolls each group's workers one by one, sending each `SIGTERM` (which
+leaves the `SO_REUSEPORT` group early and finishes the requests it has already
+accepted), waiting up to `shutdownTimeoutMs` (otherwise `SIGKILL`) and spawning a
+replacement. While one worker finishes up, the rest hold traffic — so with N>1
+the restart is downtime-free, and a fresh `php worker.php` picks up new code from
+disk.
+
+What a reload may change: the set of groups (one added is spawned, one removed is
+drained and not replaced), and each group's `workerCount`, `workerScript`,
+`workerArgs`, `server`, `env`, `phpBinary`, `phpArgs`, `restartPolicy`, timeouts
+and backoffs. Scaling a pool is therefore an edit plus a `reload`, not a restart.
+
+What it may not: `runtimeDir` and `name` identify the running instance, and
+`panelPort`, `adminToken` and `logDir` are bound at startup. Changing them is
+logged as ignored and needs a full restart.
+
+**A config that does not parse is refused and the master keeps running on the one
+it has.** A typo must never take a working pool down; the refusal and its reason
+go to the journal.
 
 ## Parameters
 
-The JSON config keys match the `MasterConfig` constructor parameters exactly. The
-config is validated strictly (an error → exit code `2`): an unknown top-level key
-is rejected (protection against typos like `wokerCount`), `name` is restricted to
-`[A-Za-z0-9._-]` (it is a path component and a rotation glob), and `rotateDays`,
-`shutdownTimeoutMs`, `restartBackoffMs`, `maxRestartBackoffMs` must be `>= 0`.
+The config is validated strictly (an error → exit code `2`): an unknown key is
+rejected at either level (protection against typos like `wokerCount`), `name` is
+restricted to `[A-Za-z0-9._-]` at both levels (it is a path component, a rotation
+glob and a `--group` value), and every timeout, count and day retention must be
+`>= 0`.
+
+### The master
 
 | Key | Default | Purpose |
 |---|---|---|
-| `workerScript` | — (required) | The consumer's worker script. |
-| `workerCount` | `0` (= number of cores) | How many workers to bring up. |
-| `phpBinary` | current `PHP_BINARY` | Interpreter for the workers. |
-| `phpArgs` | `[]` | Interpreter flags, e.g. `["-d", "extension=…"]`. |
-| `workerArgs` | `[]` | Extra raw worker `argv` flags, appended after `server`. |
-| `env` | `{}` | Extra worker env, merged over the inherited one. |
+| `groups` | — (required) | The pools to supervise; at least one. |
 | `runtimeDir` | temp dir | Directory of the lock and state files (local FS). |
 | `logDir` | `runtimeDir` | Log directory. |
 | `name` | `sconcur-server` | Prefix for the log and state file names. |
 | `rotateDays` | `3` | How many days to keep log files. |
 | `logTo` | `file` | `file` \| `stdout` \| `both` (for `docker logs` — `stdout`/`both`). |
-| `restartPolicy` | `always` | `always` \| `on-failure` \| `never`. |
-| `shutdownTimeoutMs` | `10000` | How long to wait for the workers to finish before `SIGKILL`. |
-| `restartBackoffMs` | `200` | Exponential backoff base in a crash loop. |
-| `maxRestartBackoffMs` | `30000` | Backoff ceiling. |
 | `panelPort` | `0` (off) | Port of the built-in [telemetry panel](admin-stats.md); needs `adminToken`. |
 | `adminToken` | empty (off) | Panel Bearer token; needs `panelPort`. |
-| `server` | `{}` | Server parameters → expanded into the worker's `argv`. |
 
-The `server` block is pure forwarding: each key becomes a `--key=value` flag
-(booleans → `1`/`0`), there are no positional arguments, and a non-scalar value is
-a config error. The master does not inspect or hardcode the key names, so the same
-supervisor fits any worker that parses `--key=value` argv — which keys a worker
-understands is defined by the server itself ([HTTP](http-server.md),
-[socket](socket-server.md), [WebSocket](websocket-server.md)). On top of them the
+The next keys are the defaults every group inherits unless it names its own:
+`phpBinary`, `phpArgs`, `env`, `restartPolicy`, `shutdownTimeoutMs`,
+`restartBackoffMs`, `maxRestartBackoffMs`.
+
+### A group
+
+| Key | Default | Purpose |
+|---|---|---|
+| `name` | — (required) | Identifies the pool in the journal, in `status` and in `--group`. Unique. |
+| `workerScript` | — (required) | The script each of its workers runs. |
+| `workerCount` | `0` (= number of cores) | How many workers to bring up. |
+| `server` | `{}` | Worker parameters → expanded into the worker's `argv`. |
+| `workerArgs` | `[]` | Extra raw worker `argv` flags, appended after `server`. |
+| `phpBinary` | the master's | Interpreter for this group's workers. |
+| `phpArgs` | the master's | Interpreter flags, e.g. `["-d", "extension=…"]`. |
+| `env` | the master's | Extra worker env, merged over the master's and the inherited one. |
+| `restartPolicy` | the master's | `always` \| `on-failure` \| `never`. |
+| `shutdownTimeoutMs` | the master's | How long to wait for a worker to finish before `SIGKILL`. |
+| `restartBackoffMs` | the master's | Exponential backoff base in a crash loop. |
+| `maxRestartBackoffMs` | the master's | Backoff ceiling. |
+
+The `server` block is pure forwarding: each key becomes a `--key=value` flag. A
+scalar travels as it is (booleans → `1`/`0`); a list or an object travels as JSON
+in that same value, which is how a worker takes a structured setting — the queue
+list of a [consumer](amqp.md#a-supervised-consumer), say. There is no shell on the
+way (the command is passed as an array), so quotes and spaces inside a value are
+just characters.
+
+The master does not inspect or hardcode the key names, so the same supervisor fits
+any worker that parses `--key=value` argv — which keys a worker understands is
+defined by the worker itself ([HTTP](http-server.md), [socket](socket-server.md),
+[WebSocket](websocket-server.md), [AMQP consumer](amqp.md)). On top of them the
 master appends `--masterPid=<pid>`; how the worker uses it is up to the worker
 script (typically the orphan check below).
+
+Slot indices are local to a group, so the journal names both — `worker: 4711
+orders #2` is slot 2 of the `orders` pool.
 
 ## Restart policy and `maxRequests`
 
@@ -244,8 +308,9 @@ non-blocking lock on `runtimeDir/<name>.lock`, and a second master with the same
 `runtimeDir`+`name` gets `MasterAlreadyRunningException`. The kernel releases the
 lock on the process's death (even on `SIGKILL`), so there is no stale-lock problem.
 
-The state file `runtimeDir/<name>-state.json` holds pid, start time, worker count,
-worker-script path and status; it is written atomically, removed on a clean exit
+The state file `runtimeDir/<name>-state.json` holds pid, start time, the total
+worker count, a per-group breakdown (`groups`: name, worker count, script) and
+status; it is rewritten on a reload, written atomically, removed on a clean exit
 and left behind after a crash. It is also a control channel: the master checks it
 every tick, and its removal (logged at `WARN`) is the stop signal — exactly how
 `stop` works. So if a `/tmp` cleaner wipes the file, the master stops cleanly with

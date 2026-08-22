@@ -371,6 +371,102 @@ the coroutine that opened it, and a channel is not shared between coroutines —
 the commands of one channel are serialized, so ten coroutines on one channel are
 a queue of ten.
 
+## A supervised consumer
+
+`Features\Amqp\Consumer\QueueConsumer` is the worker shape of the section above:
+several queues pulled at once by one process, each queue weighted by how many
+coroutines pull it, and a stop that drains rather than cuts. It is what a
+[worker master](worker-master.md) group runs.
+
+```php
+// consumer.php
+use SConcur\Features\Amqp\AMQPEnvelope;
+use SConcur\Features\Amqp\AMQPQueue;
+use SConcur\Features\Amqp\Consumer\QueueConsumer;
+
+require __DIR__ . '/vendor/autoload.php';
+
+// Everything about the queues comes from argv, which is how a master configures
+// its workers. The credentials do not: a password in argv is visible in `ps`.
+$queueConsumer = QueueConsumer::fromArgs($_SERVER['argv']);
+
+$connection = new AMQPConnection([...]);
+$connection->connect();
+
+$queueConsumer->consume(
+    connection: $connection,
+    handler: static function (AMQPEnvelope $envelope, AMQPQueue $queue): void {
+        handle($envelope->getBody());
+
+        $queue->ack($envelope->getDeliveryTag());
+    },
+);
+```
+
+The group that runs it:
+
+```json
+{
+  "name": "orders",
+  "workerScript": "/app/consumer.php",
+  "workerCount": 2,
+  "server": {
+    "queues": [
+      { "name": "orders", "coroutineCount": 8 },
+      { "name": "invoices", "coroutineCount": 2, "prefetchCount": 5 }
+    ],
+    "prefetchCount": 1,
+    "maxMessages": 10000
+  }
+}
+```
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `queues` | — (required) | The queues and their weights. A list of objects: `name`, `coroutineCount` (default 1), optional `prefetchCount`. |
+| `prefetchCount` | `1` | Unacknowledged messages one coroutine may hold, unless its queue names its own. |
+| `maxMessages` | `0` (no limit) | Drain and exit after this many messages. |
+| `maxRuntimeSeconds` | `0` (no limit) | Drain and exit after this long. |
+| `maxMemoryBytes` | `0` (no limit) | Drain and exit once the PHP heap passes this. |
+| `drainTimeoutMs` | `5000` | How long a stop waits for the handlers that are mid-message. |
+| `masterPid` | none | Injected by the master; the worker drains as soon as it is orphaned. |
+
+`queues` is a list of objects rather than a delimited string because AMQP allows
+almost any UTF-8 in a queue name, colons included — names like `tenant:1:orders`
+are ordinary, and any separator inside a name would make the parse ambiguous. The
+master JSON-encodes it into the flag; there is no shell on the way.
+
+The list is validated before the first `basic.consume`: a missing or duplicated
+name, a weight below one, and the channel budget — a coroutine is a channel, and
+one connection carries 255 of them, so a worker asking for more is told at startup
+instead of meeting `504 channel id space exhausted` under load.
+
+What it does not do: declare anything. Topology belongs to whoever owns it, and a
+consumer that redeclared a queue with the wrong flags would take the channel down
+with a `406` instead of consuming.
+
+### Stopping
+
+`SIGTERM` (or one of the limits above) drains in two steps, because the two halves
+of a pool are in different states.
+
+A coroutine that is running a handler finishes that message and acknowledges it,
+then ends. A coroutine that is waiting for a delivery has no callback to return
+from, so once nothing is mid-message any more the group is stopped and those
+waits end with it. Cancelling them instead would not do: a `basic.cancel` from
+another coroutine closes the delivery stream, and the consumer parked on it
+surfaces that as a failure rather than a clean end.
+
+Keep `drainTimeoutMs` below the master's `shutdownTimeoutMs`, or `SIGKILL` lands
+in the middle of the drain.
+
+A handler that throws is reported through the optional `onError` callback and ends
+the coroutine it ran in — closing that channel hands the message back to the
+broker exactly once, where answering for a handler that may already have
+acknowledged it risks a double settle. The other coroutines keep going, so one
+poisoned message costs a share of the capacity, not the worker.
+
+
 ## Errors
 
 The exception classes are the extension's, and so is the reply code on them:

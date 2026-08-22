@@ -77,7 +77,7 @@ class MasterCli
             'start'  => $this->start($config),
             'status' => $this->status($config),
             'stop'   => $this->stop($config),
-            'reload' => $this->reload($config),
+            'reload' => $this->reload($config, $configPath),
         };
     }
 
@@ -110,10 +110,20 @@ class MasterCli
         }
 
         $this->writeOut(sprintf(
-            'running: pid=%d workers=%d',
+            'running: pid=%d workers=%d groups=%d',
             $state->pid,
             $state->workerCount,
+            count($state->groups),
         ));
+
+        foreach ($state->groups as $group) {
+            $this->writeOut(sprintf(
+                '  %s: workers=%d script=%s',
+                $group->name,
+                $group->workerCount,
+                $group->workerScript,
+            ));
+        }
 
         return self::EXIT_OK;
     }
@@ -158,7 +168,7 @@ class MasterCli
      * trigger file, then waits until the master consumes it (deletes it once the roll
      * completes). No signal — and so no PID-reuse risk — is involved.
      */
-    protected function reload(MasterConfig $config): int
+    protected function reload(MasterConfig $config, string $configPath): int
     {
         $lockPath = $this->lockPath($config);
 
@@ -170,7 +180,7 @@ class MasterCli
 
         $reloadFile = $this->reloadFile($config);
 
-        if (!$reloadFile->request()) {
+        if (!$reloadFile->request($configPath)) {
             return $this->fail('cannot write reload trigger: ' . $reloadFile->path(), self::EXIT_ERROR);
         }
 
@@ -201,9 +211,9 @@ class MasterCli
      */
     protected function reloadTimeoutMs(MasterConfig $config): int
     {
-        $workers = $config->workerCount() > 0 ? $config->workerCount() : Cpu::count();
-
-        return $workers * ($config->shutdownTimeoutMs() + 2_000) + 5_000;
+        // Every worker of every group may take its own drain timeout, and they roll one
+        // at a time, so the wait is the sum rather than the longest.
+        return $config->totalWorkerCount() * ($config->maxShutdownTimeoutMs() + 2_000) + 5_000;
     }
 
     protected function reloadFile(MasterConfig $config): MasterReloadFile

@@ -58,17 +58,49 @@ $server->serve(static fn (ServerRequestInterface $request): ResponseInterface =>
 
 ```json
 {
-  "workerScript": "/app/worker.php",
-  "workerCount": 8,
   "phpArgs": ["-d", "extension=/app/ext/build/sconcur.so"],
   "runtimeDir": "/run/sconcur",
   "logDir": "/var/log/sconcur",
   "rotateDays": 3,
-  "server": {
-    "address": "0.0.0.0:8080",
-    "reusePort": true,
-    "maxRequests": 10000
-  }
+  "groups": [
+    {
+      "name": "http",
+      "workerScript": "/app/worker.php",
+      "workerCount": 8,
+      "server": {
+        "address": "0.0.0.0:8080",
+        "reusePort": true,
+        "maxRequests": 10000
+      }
+    }
+  ]
+}
+```
+
+Мастер стережёт одну или несколько **групп**, и они не обязаны быть
+однотипными. Один супервизор, один lock, один журнал и одна панель держат
+HTTP-пул и пару пулов консьюмеров очередей разом:
+
+```json
+{
+  "phpArgs": ["-d", "extension=/app/ext/build/sconcur.so"],
+  "runtimeDir": "/run/sconcur",
+  "groups": [
+    {
+      "name": "http",
+      "workerScript": "/app/worker.php",
+      "workerCount": 8,
+      "server": { "address": "0.0.0.0:8080", "reusePort": true }
+    },
+    {
+      "name": "orders",
+      "workerScript": "/app/consumer.php",
+      "workerCount": 2,
+      "server": {
+        "queues": [{ "name": "orders", "coroutineCount": 8 }]
+      }
+    }
+  ]
 }
 ```
 
@@ -82,15 +114,11 @@ state-файла или пока все воркеры не завершатся
 Программный API за CLI — `SConcur\Worker\WorkerMaster`:
 
 ```php
-new WorkerMaster(
-    workerScript: __DIR__ . '/worker.php',
-    runtimeDir:   '/run/sconcur',
-    logDir:       '/var/log/sconcur',
-    workerCount:  0, // 0 = число ядер
-    phpArgs:      ['-d', 'extension=' . __DIR__ . '/ext/build/sconcur.so'],
-    workerArgs:   ['0.0.0.0:8080'],
-)->run();
+MasterConfig::fromFile('/app/master.json')->toWorkerMaster()->run();
 ```
+
+Сам `WorkerMaster` принимает группы объектами `WorkerGroupConfig` — их и собирает
+`MasterConfig` из файла.
 
 ## Команды
 
@@ -100,7 +128,7 @@ new WorkerMaster(
 
 ```sh
 vendor/bin/sconcur-server start   --configPath=/app/master.json  # поднять пул (foreground)
-vendor/bin/sconcur-server status  --configPath=/app/master.json  # running: pid=12345 workers=8
+vendor/bin/sconcur-server status  --configPath=/app/master.json  # running: pid=12345 workers=8 groups=2
 vendor/bin/sconcur-server stop    --configPath=/app/master.json  # удалить state-файл и дождаться выхода
 vendor/bin/sconcur-server reload  --configPath=/app/master.json  # перезапустить воркеры по одному
 ```
@@ -110,52 +138,88 @@ vendor/bin/sconcur-server reload  --configPath=/app/master.json  # переза�
 не работал), `1` по таймауту; `reload` — `0` по завершении, `3` если мастер не
 запущен, `1` по таймауту или ошибке.
 
-`reload` — мягкий перезапуск воркеров. Команда создаёт триггер-файл
-`<runtimeDir>/<name>.reload`; мастер перезапускает воркеры по одному, посылая
-каждому `SIGTERM` (тот заранее выходит из группы `SO_REUSEPORT` и доводит до
-конца начатые запросы), ждёт до `shutdownTimeoutMs` (иначе `SIGKILL`) и
-поднимает замену. Пока один воркер дорабатывает начатое, остальные держат трафик
-— поэтому при N>1 перезапуск проходит без даунтайма, а свежий `php worker.php`
-подхватывает новый код с диска. Сам конфиг мастера при этом не перечитывается:
-`workerCount` и аргументы на лету не меняются.
+`status` печатает итог, а следом по строке на группу.
+
+`reload` перечитывает конфиг и переводит воркеры на него. Команда создаёт
+триггер-файл `<runtimeDir>/<name>.reload` с именем конфига; мастер читает его, а
+затем перезапускает воркеры каждой группы по одному, посылая каждому `SIGTERM`
+(тот заранее выходит из группы `SO_REUSEPORT` и доводит до конца начатые
+запросы), ждёт до `shutdownTimeoutMs` (иначе `SIGKILL`) и поднимает замену. Пока
+один воркер дорабатывает начатое, остальные держат трафик — поэтому при N>1
+перезапуск проходит без даунтайма, а свежий `php worker.php` подхватывает новый
+код с диска.
+
+Что перезагрузка меняет: состав групп (добавленная поднимается, удалённая
+дренажится и не заменяется), а у каждой группы — `workerCount`, `workerScript`,
+`workerArgs`, `server`, `env`, `phpBinary`, `phpArgs`, `restartPolicy`, таймауты
+и backoff. Отмасштабировать пул — значит поправить конфиг и сделать `reload`, а
+не перезапускать мастера.
+
+Чего не меняет: `runtimeDir` и `name` идентифицируют работающий экземпляр, а
+`panelPort`, `adminToken` и `logDir` привязаны на старте. Их изменение
+записывается в журнал как проигнорированное и требует полного рестарта.
+
+**Конфиг, который не разбирается, отвергается, и мастер продолжает работать на
+прежнем.** Опечатка не должна гасить работающий пул; отказ и его причина уходят
+в журнал.
 
 ## Параметры
 
-Ключи JSON-конфига точно совпадают с параметрами конструктора `MasterConfig`.
-Конфиг валидируется строго (ошибка → код выхода `2`): неизвестный ключ верхнего
-уровня отвергается (защита от опечаток вроде `wokerCount`), `name` ограничен
-набором `[A-Za-z0-9._-]` (это компонент пути и glob ротации), а `rotateDays`,
-`shutdownTimeoutMs`, `restartBackoffMs`, `maxRestartBackoffMs` должны быть `>= 0`.
+Конфиг валидируется строго (ошибка → код выхода `2`): неизвестный ключ отвергается
+на обоих уровнях (защита от опечаток вроде `wokerCount`), `name` на обоих уровнях
+ограничен набором `[A-Za-z0-9._-]` (это компонент пути, glob ротации и значение
+`--group`), а все таймауты, счётчики и срок хранения должны быть `>= 0`.
+
+### Мастер
 
 | Ключ | Дефолт | Назначение |
 |---|---|---|
-| `workerScript` | — (обязателен) | Воркер-скрипт потребителя. |
-| `workerCount` | `0` (= число ядер) | Сколько воркеров поднять. |
-| `phpBinary` | текущий `PHP_BINARY` | Интерпретатор для воркеров. |
-| `phpArgs` | `[]` | Флаги интерпретатора, например `["-d", "extension=…"]`. |
-| `workerArgs` | `[]` | Дополнительные сырые флаги `argv` воркера, после `server`. |
-| `env` | `{}` | Доп. env воркера, поверх унаследованного. |
+| `groups` | — (обязателен) | Пулы, которые стеречь; хотя бы один. |
 | `runtimeDir` | временный каталог | Каталог lock- и state-файлов (локальная ФС). |
 | `logDir` | `runtimeDir` | Каталог логов. |
 | `name` | `sconcur-server` | Префикс имён лога и state-файла. |
 | `rotateDays` | `3` | Сколько дней хранить файлы лога. |
 | `logTo` | `file` | `file` \| `stdout` \| `both` (для `docker logs` — `stdout`/`both`). |
-| `restartPolicy` | `always` | `always` \| `on-failure` \| `never`. |
-| `shutdownTimeoutMs` | `10000` | Сколько ждать завершения воркеров до `SIGKILL`. |
-| `restartBackoffMs` | `200` | База экспоненциального backoff в crash-loop. |
-| `maxRestartBackoffMs` | `30000` | Потолок backoff. |
 | `panelPort` | `0` (выкл.) | Порт встроенной [панели телеметрии](admin-stats.ru.md); нужен вместе с `adminToken`. |
 | `adminToken` | пусто (выкл.) | Bearer-токен панели; нужен вместе с `panelPort`. |
-| `server` | `{}` | Параметры сервера → разворачиваются в `argv` воркера. |
+
+Следующие ключи — дефолты, которые наследует каждая группа, если не задала своё:
+`phpBinary`, `phpArgs`, `env`, `restartPolicy`, `shutdownTimeoutMs`,
+`restartBackoffMs`, `maxRestartBackoffMs`.
+
+### Группа
+
+| Ключ | Дефолт | Назначение |
+|---|---|---|
+| `name` | — (обязателен) | Имя пула в журнале, в `status` и в `--group`. Уникально. |
+| `workerScript` | — (обязателен) | Скрипт, который запускает каждый её воркер. |
+| `workerCount` | `0` (= число ядер) | Сколько воркеров поднять. |
+| `server` | `{}` | Параметры воркера → разворачиваются в его `argv`. |
+| `workerArgs` | `[]` | Дополнительные сырые флаги `argv` воркера, после `server`. |
+| `phpBinary` | мастерский | Интерпретатор для воркеров этой группы. |
+| `phpArgs` | мастерские | Флаги интерпретатора, например `["-d", "extension=…"]`. |
+| `env` | мастерский | Доп. env воркера, поверх мастерского и унаследованного. |
+| `restartPolicy` | мастерская | `always` \| `on-failure` \| `never`. |
+| `shutdownTimeoutMs` | мастерский | Сколько ждать завершения воркера до `SIGKILL`. |
+| `restartBackoffMs` | мастерский | База экспоненциального backoff в crash-loop. |
+| `maxRestartBackoffMs` | мастерский | Потолок backoff. |
 
 Блок `server` — чистая переадресация: каждый ключ становится флагом
-`--key=value` (булевы → `1`/`0`), позиционных аргументов нет, а нескалярное
-значение — ошибка конфига. Мастер не разбирает и не хардкодит имена ключей,
-поэтому тот же супервизор подходит любому воркеру, который парсит `--key=value`, а
-набор ключей задаёт сам сервер ([HTTP](http-server.ru.md),
-[сокет](socket-server.ru.md), [WebSocket](websocket-server.ru.md)). Поверх них
+`--key=value`. Скаляр едет как есть (булевы → `1`/`0`), а список или объект едет
+в том же значении как JSON — так воркер получает структурную настройку, например
+список очередей [консьюмера](amqp.ru.md#консьюмер-под-мастером). Шелла на пути
+нет (команда передаётся массивом), поэтому кавычки и пробелы внутри значения —
+просто символы.
+
+Мастер не разбирает и не хардкодит имена ключей, поэтому тот же супервизор
+подходит любому воркеру, который парсит `--key=value`, а набор ключей задаёт сам
+воркер ([HTTP](http-server.ru.md), [сокет](socket-server.ru.md),
+[WebSocket](websocket-server.ru.md), [консьюмер AMQP](amqp.ru.md)). Поверх них
 мастер добавляет `--masterPid=<pid>`; как его использовать, решает воркер-скрипт
 (обычно — проверка на сироту ниже).
+
+Индексы слотов локальны для группы, поэтому журнал называет и то и другое:
+`worker: 4711 orders #2` — это слот 2 пула `orders`.
 
 ## Политика перезапуска и `maxRequests`
 
@@ -241,8 +305,9 @@ Go вернёт клиентам `504`, но сам воркер останет�
 `runtimeDir`+`name` получает `MasterAlreadyRunningException`. Ядро освобождает лок
 при смерти процесса (даже по `SIGKILL`), поэтому проблемы протухшего лока нет.
 
-State-файл `runtimeDir/<name>-state.json` хранит pid, время старта, число
-воркеров, путь к воркер-скрипту и статус; пишется атомарно, удаляется при штатном
+State-файл `runtimeDir/<name>-state.json` хранит pid, время старта, суммарное
+число воркеров, разбивку по группам (`groups`: имя, число воркеров, скрипт) и
+статус; пишется атомарно, удаляется при штатном
 выходе и остаётся после краша. Он же — канал управления: мастер проверяет его на
 каждом тике, и удаление файла (логируется на уровне `WARN`) является сигналом
 остановки — именно так работает `stop`. Поэтому если чистильщик `/tmp` сотрёт

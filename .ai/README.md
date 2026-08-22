@@ -140,15 +140,27 @@ feature's doc. Key PHP classes not covered there:
   travels on the wire with every value. The envelope they cross the boundary in,
   and how to add a type, are in
   [docs/msgpack-objects.md](../docs/msgpack-objects.md).
-- `Features/Server/ServerRuntimeSupportTrait` — shared server runtime glue:
+- `Features/Server/ServerRuntimeSupportTrait` — shared runtime glue for the
+  long-lived workers (the servers and `Amqp/Consumer/QueueConsumer`):
   argv→constructor-override parsing, signal handlers, the orphaned-worker check,
   telemetry env.
+- `Features/Amqp/Consumer/` — the supervised consumer runtime: `QueueConsumer`
+  (a coroutine per unit of a queue's weight, each with its own channel), plus
+  `QueueSpec`/`QueueSpecParser` for the JSON queue list that arrives in argv and
+  `ConsumerState` for what the coroutines share. Its two-phase drain is why a
+  stop finishes the message in hand instead of dropping it — see
+  [docs/amqp.md](../docs/amqp.md).
 - `Features/Socket/Dto/AbstractConnection` — shared base for the socket and
   WebSocket `Connection` DTOs (server accept-side and client dial-side); keeps the
   features decoupled, since all depend on the neutral base rather than each other.
 - `Worker/` — the worker master (a process supervisor that does NOT load the
   extension): `WorkerMaster`, `MasterConfig`, `MasterCli`, `WorkerProcess`, `Cpu`,
-  `MasterLock`, `MasterState`/`MasterStateFile`, `MasterLogger`, `RestartPolicy`.
+  `MasterLock`, `MasterState`/`MasterGroupState`/`MasterStateFile`, `MasterLogger`,
+  `RestartPolicy`. One master supervises several **groups** — `WorkerGroupConfig`
+  (a pool's settings, with `MasterDefaults` for what it inherits) and `WorkerGroup`
+  (its live slots, backoff and rolling reload). The groups are generic: everything
+  a worker needs rides in the group's `server` block, forwarded to its argv
+  untouched, so the master stays worker-agnostic.
 - `Telemetry/` — the master-side stats collector and live panel (pure PHP):
   `TelemetryRuntime`, `Collector`, `Store`, `PanelServer`, `FrameCodec`,
   `Aggregator`, `Dto/*`, `Render/*`.
@@ -215,6 +227,8 @@ Key enums (string-backed; the 2-3 letter values cross the PHP↔Go boundary):
   (the shared harness the benches include). A new bench goes into its
   technology's directory, named after the operation (`mysql/select-one.php`), and
   gets a `bench-<tech>-<operation>` make target.
+- `tests/consumers/` — demo/test worker scripts that are not servers (the AMQP
+  consumer), the counterpart of `tests/servers/`
 - `tests/mem-leak/` — memory leak stress tests. The AMQP soak has a target of its
   own, `make mem-leak-amqp scenario=<name> seconds=<n>`, which sets the profiler
   address its Go-side columns are read from

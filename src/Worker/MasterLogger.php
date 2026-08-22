@@ -50,13 +50,21 @@ class MasterLogger
     }
 
     /**
-     * Logs a worker-scoped event (lifecycle or captured output line).
+     * Logs a worker-scoped event (lifecycle or captured output line). The group is part
+     * of the scope because a slot index only identifies a worker together with the pool
+     * it belongs to — every group numbers its slots from zero.
      *
      * @param array<string, mixed> $context rendered as the trailing context array
      */
-    public function worker(string $level, int $workerPid, int $workerIndex, string $message, array $context = []): void
-    {
-        $this->writeLine($level, $workerPid, $workerIndex, $message, $context);
+    public function worker(
+        string $level,
+        int $workerPid,
+        int $workerIndex,
+        string $message,
+        string $group = '',
+        array $context = [],
+    ): void {
+        $this->writeLine($level, $workerPid, $workerIndex, $message, $context, $group);
     }
 
     /**
@@ -88,13 +96,24 @@ class MasterLogger
     /**
      * @param array<string, mixed> $context
      */
-    protected function writeLine(string $level, ?int $workerPid, ?int $workerIndex, string $message, array $context): void
-    {
+    protected function writeLine(
+        string $level,
+        ?int $workerPid,
+        ?int $workerIndex,
+        string $message,
+        array $context,
+        string $group = '',
+    ): void {
         $this->rotateIfNeeded();
 
         $scope = $workerPid === null
             ? sprintf('master: %d', $this->masterPid)
-            : sprintf('worker: %d #%d', $workerPid, (int) $workerIndex);
+            : sprintf(
+                'worker: %d %s#%d',
+                $workerPid,
+                $group === '' ? '' : $group . ' ',
+                (int) $workerIndex,
+            );
 
         $line = sprintf(
             "[%s] %s [%s]: %s %s\n",

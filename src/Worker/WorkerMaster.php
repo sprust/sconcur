@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace SConcur\Worker;
 
 use Closure;
+use SConcur\Exceptions\Worker\InvalidConfigException;
 use SConcur\Exceptions\Worker\InvalidWorkerCountException;
 use SConcur\Exceptions\Worker\MasterAlreadyRunningException;
 use SConcur\Exceptions\Worker\MissingPcntlException;
 use SConcur\Exceptions\Worker\RuntimePathException;
-use SConcur\Exceptions\Worker\WorkerSpawnException;
 use SConcur\Telemetry\TelemetryRuntime;
 
 /**
@@ -36,11 +36,9 @@ class WorkerMaster
      * `--key=value` argv entry; how — or whether — a worker uses it is up to the
      * worker script (the bundled HttpServer wires it into its orphan check).
      */
-    protected const string MASTER_PID_ARG = '--masterPid';
+    public const string MASTER_PID_ARG = '--masterPid';
 
     protected const int TICK_MICROSECONDS = 100_000; // 100 ms supervision tick
-
-    protected const float HEALTHY_UPTIME_SECONDS = 1.0; // shorter run counts as a fast fail
 
     protected const float SIGKILL_GRACE_SECONDS = 2.0; // give up waiting this long after SIGKILL
 
@@ -58,30 +56,10 @@ class WorkerMaster
 
     protected string $cwd = '.';
 
-    protected int $workers = 0;
-
-    /** @var array<int, WorkerProcess|null> live worker per slot (null while awaiting respawn) */
-    protected array $slots = [];
-
-    /** @var array<int, float> slot index => unix time at which to respawn it */
-    protected array $respawnAt = [];
-
-    /** @var array<int, int> slot index => consecutive fast-fail count (drives backoff) */
-    protected array $fastFails = [];
+    /** @var array<string, WorkerGroup> live pools by group name */
+    protected array $pools = [];
 
     protected bool $stopping = false;
-
-    protected bool $reloading = false;
-
-    /** @var list<int> slot indices still to roll in the current rolling reload */
-    protected array $reloadQueue = [];
-
-    /** slot currently draining for reload (SIGTERM sent, awaiting exit), or -1 if none */
-    protected int $reloadingIndex = -1;
-
-    protected float $reloadDeadline = 0.0;
-
-    protected bool $reloadKillSent = false;
 
     protected bool $termSent = false;
 
@@ -94,42 +72,24 @@ class WorkerMaster
     protected ?TelemetryRuntime $telemetry = null;
 
     /**
-     * @param string                $workerScript        consumer's worker script (constructs and runs a server)
-     * @param string                $runtimeDir          holds the lock and state file (local fs)
-     * @param null|string           $logDir              log directory (defaults to runtimeDir)
-     * @param string                $name                prefix for the log and state file names
-     * @param int                   $rotateDays          keep this many days of daily log files
-     * @param int                   $workerCount         number of workers (0 = number of CPU cores)
-     * @param string                $phpBinary           interpreter used to run the worker script
-     * @param list<string>          $phpArgs             extra interpreter flags (e.g. -d extension=...)
-     * @param list<string>          $workerArgs          argv passed to the worker script
-     * @param array<string, string> $env                 extra env merged over the inherited environment
-     * @param RestartPolicy         $restartPolicy       when to respawn an exited worker
-     * @param int                   $shutdownTimeoutMs   how long to wait for workers to drain before SIGKILL
-     * @param int                   $restartBackoffMs    base of the exponential crash-loop backoff
-     * @param int                   $maxRestartBackoffMs cap of the crash-loop backoff
-     * @param LogTarget             $logTo               where the master writes its journal (file/stdout/both)
-     * @param int                   $panelPort           port for the embedded telemetry panel (0 = telemetry off). With a
-     *                                                   token set, the master collects worker snapshots over a unix socket
-     *                                                   and serves GET /api/stats and the live panel on this port.
-     * @param string                $adminToken          Bearer token gating the telemetry panel; required (with panelPort)
-     *                                                   to enable telemetry. Empty = off.
+     * @param string                  $runtimeDir holds the lock and state file (local fs)
+     * @param null|string             $logDir     log directory (defaults to runtimeDir)
+     * @param string                  $name       prefix for the log and state file names
+     * @param int                     $rotateDays keep this many days of daily log files
+     * @param list<WorkerGroupConfig> $groups     the pools to supervise
+     * @param LogTarget               $logTo      where the master writes its journal (file/stdout/both)
+     * @param int                     $panelPort  port for the embedded telemetry panel (0 = telemetry off). With a
+     *                                            token set, the master collects worker snapshots over a unix socket
+     *                                            and serves GET /api/stats and the live panel on this port.
+     * @param string                  $adminToken Bearer token gating the telemetry panel; required (with panelPort)
+     *                                            to enable telemetry. Empty = off.
      */
     public function __construct(
-        protected readonly string $workerScript,
         protected readonly string $runtimeDir,
         protected readonly ?string $logDir = null,
         protected readonly string $name = 'sconcur-server',
         protected readonly int $rotateDays = 3,
-        protected readonly int $workerCount = 0,
-        protected readonly string $phpBinary = PHP_BINARY,
-        protected readonly array $phpArgs = [],
-        protected readonly array $workerArgs = [],
-        protected readonly array $env = [],
-        protected readonly RestartPolicy $restartPolicy = RestartPolicy::Always,
-        protected readonly int $shutdownTimeoutMs = 10_000,
-        protected readonly int $restartBackoffMs = 200,
-        protected readonly int $maxRestartBackoffMs = 30_000,
+        protected array $groups = [],
         protected readonly LogTarget $logTo = LogTarget::File,
         protected readonly int $panelPort = 0,
         protected readonly string $adminToken = '',
@@ -153,7 +113,6 @@ class WorkerMaster
         $this->masterPid = (int) getmypid();
         $this->startedAt = microtime(true);
         $this->cwd       = getcwd() ?: '.';
-        $this->workers   = $this->resolveWorkerCount();
 
         $logDir = $this->logDir ?? $this->runtimeDir;
 
@@ -187,12 +146,14 @@ class WorkerMaster
         try {
             $restoreSignals = $this->installSignalHandlers();
 
+            $this->buildPools();
+
             $this->logger->master(
                 level: MasterLogger::INFO,
                 message: sprintf(
-                    'start workers=%d script=%s runtimeDir=%s',
-                    $this->workers,
-                    $this->workerScript,
+                    'start groups=%d workers=%d runtimeDir=%s',
+                    count($this->pools),
+                    $this->totalWorkerCount(),
                     $this->runtimeDir,
                 ),
             );
@@ -207,7 +168,10 @@ class WorkerMaster
             // exists when they first try to push.
             $this->startTelemetry();
 
-            $this->spawnAll();
+            foreach ($this->pools as $pool) {
+                $pool->spawnAll();
+            }
+
             $this->supervise();
         } finally {
             $this->telemetry?->stop();
@@ -235,23 +199,49 @@ class WorkerMaster
         }
     }
 
-    protected function resolveWorkerCount(): int
+    /**
+     * Builds one live pool per configured group. Ordered as the config lists them, so
+     * the journal and `status` read the way the file does.
+     */
+    protected function buildPools(): void
     {
-        if ($this->workerCount < 0) {
-            throw new InvalidWorkerCountException(
-                message: 'workerCount must be >= 0 (0 = number of CPU cores).',
+        $this->pools = [];
+
+        foreach ($this->groups as $group) {
+            $this->pools[$group->name] = new WorkerGroup(
+                config: $group,
+                logger: $this->logger,
+                masterPid: $this->masterPid,
+                cwd: $this->cwd,
             );
         }
+    }
 
-        return $this->workerCount > 0 ? $this->workerCount : Cpu::count();
+    protected function totalWorkerCount(): int
+    {
+        $total = 0;
+
+        foreach ($this->pools as $pool) {
+            $total += $pool->workerCount();
+        }
+
+        return $total;
     }
 
     protected function ensureDirectories(): void
     {
-        if (!is_file($this->workerScript)) {
-            throw new RuntimePathException(
-                message: 'Worker script not found: ' . $this->workerScript,
+        if ($this->groups === []) {
+            throw new InvalidWorkerCountException(
+                message: 'WorkerMaster needs at least one group to supervise.',
             );
+        }
+
+        foreach ($this->groups as $group) {
+            if (!is_file($group->workerScript)) {
+                throw new RuntimePathException(
+                    message: sprintf('Worker script not found for group "%s": %s', $group->name, $group->workerScript),
+                );
+            }
         }
 
         $directories = array_unique([$this->runtimeDir, $this->logDir ?? $this->runtimeDir]);
@@ -316,12 +306,22 @@ class WorkerMaster
 
     protected function writeState(): void
     {
+        $groups = [];
+
+        foreach ($this->pools as $pool) {
+            $groups[] = new MasterGroupState(
+                name: $pool->name(),
+                workerCount: $pool->workerCount(),
+                workerScript: $pool->config()->workerScript,
+            );
+        }
+
         $written = $this->stateFile->write(
             new MasterState(
                 pid: $this->masterPid,
                 startedAt: $this->startedAt,
-                workerCount: $this->workers,
-                workerScript: $this->workerScript,
+                workerCount: $this->totalWorkerCount(),
+                groups: $groups,
             ),
         );
 
@@ -355,94 +355,15 @@ class WorkerMaster
         }
     }
 
-    protected function spawnAll(): void
-    {
-        for ($index = 0; $index < $this->workers; $index++) {
-            $this->slots[$index] = null;
-            $this->spawn($index);
-        }
-    }
-
-    protected function spawn(int $index): void
-    {
-        try {
-            $process = new WorkerProcess(
-                command: $this->buildCommand(),
-                cwd: $this->cwd,
-                env: $this->buildEnv(),
-            );
-        } catch (WorkerSpawnException $exception) {
-            $backoffMs = $this->nextBackoffMs($index, uptimeSeconds: 0.0);
-
-            $this->slots[$index]     = null;
-            $this->respawnAt[$index] = microtime(true) + $backoffMs / 1000;
-
-            $this->logger->master(
-                level: MasterLogger::ERROR,
-                message: sprintf('worker %d spawn failed: %s; retry in %dms', $index, $exception->getMessage(), $backoffMs),
-            );
-
-            return;
-        }
-
-        $this->slots[$index] = $process;
-
-        unset($this->respawnAt[$index]);
-
-        $this->logger->worker(MasterLogger::INFO, $process->pid(), $index, 'spawned');
-    }
-
-    /**
-     * Builds the worker command. The master appends its pid as the `--masterPid` argv
-     * flag — the same channel as the expanded `server` flags and the consumer's
-     * workerArgs, no environment involved — for the worker to use as it sees fit.
-     *
-     * `display_errors=stderr` is forced ahead of the consumer's phpArgs so a dying
-     * worker always explains itself: with the production-ini `display_errors=Off` a
-     * fatal (parse error, missing extension, OOM) would leave nothing in the journal
-     * but "exited code=255", and with the CLI default (`On` = stdout) the error text
-     * would be logged as INFO instead of ERROR. A later `-d` wins, so phpArgs can
-     * still override this deliberately.
-     *
-     * @return list<string>
-     */
-    protected function buildCommand(): array
-    {
-        return [
-            $this->phpBinary,
-            '-d',
-            'display_errors=stderr',
-            ...$this->phpArgs,
-            $this->workerScript,
-            ...$this->workerArgs,
-            static::MASTER_PID_ARG . '=' . $this->masterPid,
-        ];
-    }
-
-    /**
-     * The worker environment: the inherited environment with the consumer's extra
-     * env merged over it. No master metadata is injected here — that goes via argv
-     * (see buildCommand).
-     *
-     * @return array<string, string>
-     */
-    protected function buildEnv(): array
-    {
-        $env = getenv();
-
-        foreach ($this->env as $key => $value) {
-            $env[$key] = $value;
-        }
-
-        return $env;
-    }
-
     protected function supervise(): void
     {
         while (true) {
             $now = microtime(true);
 
-            $this->reapAndLog();
+            foreach ($this->pools as $pool) {
+                $pool->reapAndLog($this->stopping);
+            }
+
             $this->checkStateFileStopSignal();
 
             if ($this->stopping) {
@@ -465,14 +386,24 @@ class WorkerMaster
                 }
             } else {
                 $this->checkReloadSignal();
-                $this->driveReload($now);
-                $this->respawnDue($now);
+
+                $reloading = false;
+
+                foreach ($this->pools as $pool) {
+                    $reloading = $pool->driveReload($now) || $reloading;
+
+                    $pool->respawnDue($now);
+                }
+
+                $this->retireDrainedPools();
+
+                $this->finishReload($reloading);
 
                 // RestartPolicy::Never (or a clean exit under OnFailure): once every
                 // worker has finished and nothing is pending, there is nothing left
                 // to supervise. A reload in progress keeps the master alive even when a
                 // slot is momentarily empty between the drain and its replacement.
-                if (!$this->reloading && $this->allSlotsEmpty() && $this->respawnAt === []) {
+                if (!$reloading && $this->allSlotsEmpty() && !$this->hasPendingRespawns()) {
                     $this->logger->master(MasterLogger::INFO, 'all workers finished; exiting');
 
                     break;
@@ -492,6 +423,128 @@ class WorkerMaster
                 usleep(self::TICK_MICROSECONDS);
             }
         }
+    }
+
+    /**
+     * Picks up a reload request and applies the config file afresh: a group may be
+     * added, removed, resized or re-armed with new arguments, and every surviving group
+     * rolls its workers onto the new settings one at a time.
+     *
+     * A config that does not parse is refused and the master keeps running on the one
+     * it has. A typo must never take a working pool down.
+     */
+    protected function checkReloadSignal(): void
+    {
+        if (!$this->reloadFile->requested() || $this->anyPoolReloading()) {
+            return;
+        }
+
+        $this->logger->master(MasterLogger::INFO, 'reload requested');
+
+        $configPath = $this->reloadFile->configPath();
+
+        if ($configPath !== '') {
+            try {
+                $this->groups = MasterConfig::fromFile($configPath)->toWorkerMaster()->groups;
+            } catch (InvalidConfigException $exception) {
+                $this->logger->master(
+                    level: MasterLogger::ERROR,
+                    message: 'reload refused, keeping the running config: ' . $exception->getMessage(),
+                );
+
+                $this->reloadFile->clear();
+
+                return;
+            }
+        }
+
+        $this->applyGroups();
+
+        $this->writeState();
+    }
+
+    /**
+     * Reconciles the live pools with the configured groups: new ones are spawned, gone
+     * ones are drained, and the rest roll onto their (possibly unchanged) settings.
+     */
+    protected function applyGroups(): void
+    {
+        $configured = [];
+
+        foreach ($this->groups as $group) {
+            $configured[$group->name] = $group;
+
+            $pool = $this->pools[$group->name] ?? null;
+
+            if ($pool === null) {
+                $this->logger->master(
+                    level: MasterLogger::INFO,
+                    message: sprintf('group %s: added by the reload', $group->name),
+                );
+
+                $pool = new WorkerGroup(
+                    config: $group,
+                    logger: $this->logger,
+                    masterPid: $this->masterPid,
+                    cwd: $this->cwd,
+                );
+
+                $this->pools[$group->name] = $pool;
+
+                $pool->spawnAll();
+
+                continue;
+            }
+
+            $pool->reconfigure($group);
+        }
+
+        foreach ($this->pools as $name => $pool) {
+            if (!isset($configured[$name])) {
+                $pool->retire();
+            }
+        }
+    }
+
+    /** Drops the pools that finished draining after being removed from the config. */
+    protected function retireDrainedPools(): void
+    {
+        foreach ($this->pools as $name => $pool) {
+            if ($pool->isRetiring() && $pool->allSlotsEmpty()) {
+                unset($this->pools[$name]);
+
+                $this->logger->master(
+                    level: MasterLogger::INFO,
+                    message: sprintf('group %s: drained and removed', $name),
+                );
+            }
+        }
+    }
+
+    /**
+     * Clears the trigger file once every pool has finished rolling, which is what the
+     * waiting CLI is polling for.
+     */
+    protected function finishReload(bool $reloading): void
+    {
+        if ($reloading || !$this->reloadFile->requested()) {
+            return;
+        }
+
+        $this->reloadFile->clear();
+
+        $this->logger->master(MasterLogger::INFO, 'reload complete');
+    }
+
+    protected function anyPoolReloading(): bool
+    {
+        foreach ($this->pools as $pool) {
+            if ($pool->isReloading()) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -527,231 +580,15 @@ class WorkerMaster
     }
 
     /**
-     * Drains each live worker's output into the log and handles any that have exited.
-     */
-    protected function reapAndLog(): void
-    {
-        foreach ($this->slots as $index => $process) {
-            if ($process === null) {
-                continue;
-            }
-
-            $this->logWorkerLines($index, $process, $process->drainOutput());
-
-            if (!$process->isRunning()) {
-                $this->handleExit($index, $process);
-            }
-        }
-    }
-
-    protected function handleExit(int $index, WorkerProcess $process): void
-    {
-        $this->logWorkerLines($index, $process, $process->drainFinalOutput());
-
-        $pid           = $process->pid();
-        $uptimeSeconds = $process->uptimeSeconds();
-        $exitedCleanly = $process->exitedCleanly();
-
-        $reason = $process->termSignal() !== null
-            ? sprintf('signal=%d', $process->termSignal())
-            : sprintf('code=%d', (int) $process->exitCode());
-
-        $process->close();
-
-        $this->slots[$index] = null;
-
-        if ($this->stopping) {
-            $this->logger->worker(
-                level: MasterLogger::INFO,
-                workerPid: $pid,
-                workerIndex: $index,
-                message: sprintf('exited %s uptime=%.1fs (master stopping)', $reason, $uptimeSeconds),
-            );
-
-            return;
-        }
-
-        // The worker we are rolling for a reload exited on purpose: do not treat it as
-        // a crash (no policy check, no backoff). driveReload() spawns its replacement.
-        if ($this->reloading && $index === $this->reloadingIndex) {
-            $this->logger->worker(
-                level: MasterLogger::INFO,
-                workerPid: $pid,
-                workerIndex: $index,
-                message: sprintf('exited %s uptime=%.1fs (reloading)', $reason, $uptimeSeconds),
-            );
-
-            return;
-        }
-
-        if (!$this->restartPolicy->shouldRestart($exitedCleanly)) {
-            $this->logger->worker(
-                level: MasterLogger::INFO,
-                workerPid: $pid,
-                workerIndex: $index,
-                message: sprintf('exited %s uptime=%.1fs; not restarting (policy=%s)', $reason, $uptimeSeconds, $this->restartPolicy->value),
-            );
-
-            return;
-        }
-
-        $backoffMs = $this->nextBackoffMs($index, $uptimeSeconds);
-
-        $this->respawnAt[$index] = microtime(true) + $backoffMs / 1000;
-
-        $this->logger->worker(
-            level: $exitedCleanly ? MasterLogger::INFO : MasterLogger::ERROR,
-            workerPid: $pid,
-            workerIndex: $index,
-            message: sprintf('exited %s uptime=%.1fs; restarting in %dms', $reason, $uptimeSeconds, $backoffMs),
-        );
-    }
-
-    /**
-     * Computes the next respawn backoff for a slot: 0 when the worker ran long enough
-     * to be considered healthy, otherwise an exponential delay that grows with each
-     * consecutive fast fail (capped), preventing a crash-loop spin.
-     */
-    protected function nextBackoffMs(int $index, float $uptimeSeconds): int
-    {
-        if ($uptimeSeconds >= self::HEALTHY_UPTIME_SECONDS) {
-            $this->fastFails[$index] = 0;
-
-            return 0;
-        }
-
-        $fails = ($this->fastFails[$index] ?? 0) + 1;
-
-        $this->fastFails[$index] = $fails;
-
-        $backoffMs = $this->restartBackoffMs * (2 ** ($fails - 1));
-
-        return (int) min($backoffMs, $this->maxRestartBackoffMs);
-    }
-
-    protected function respawnDue(float $now): void
-    {
-        foreach ($this->respawnAt as $index => $dueAt) {
-            if ($dueAt <= $now && ($this->slots[$index] ?? null) === null) {
-                unset($this->respawnAt[$index]);
-
-                $this->spawn($index);
-            }
-        }
-    }
-
-    /**
-     * The reload trigger file (written by the `reload` CLI command) asks for a rolling
-     * restart of every worker. Picking up the request snapshots the current slots into
-     * a queue that driveShutdown-style logic then rolls one at a time.
-     */
-    protected function checkReloadSignal(): void
-    {
-        if ($this->reloading || !$this->reloadFile->requested()) {
-            return;
-        }
-
-        $this->reloading      = true;
-        $this->reloadQueue    = array_keys($this->slots);
-        $this->reloadingIndex = -1;
-        $this->reloadKillSent = false;
-
-        $this->logger->master(
-            level: MasterLogger::INFO,
-            message: sprintf('reload requested; rolling %d worker(s)', count($this->reloadQueue)),
-        );
-    }
-
-    /**
-     * Drives the rolling reload: roll one slot at a time so the pool keeps serving
-     * (SO_REUSEPORT siblings cover each draining worker). For the current slot: send
-     * SIGTERM, wait up to shutdownTimeoutMs for it to drain (SIGKILL past that), then
-     * spawn a fresh replacement and advance to the next slot. Clearing the trigger
-     * file signals completion to the waiting CLI.
-     */
-    protected function driveReload(float $now): void
-    {
-        if (!$this->reloading) {
-            return;
-        }
-
-        // A slot is mid-roll: wait for the worker to drain and exit (reapAndLog reaps
-        // it into a null slot), escalating to SIGKILL once its drain deadline passes.
-        if ($this->reloadingIndex !== -1) {
-            $process = $this->slots[$this->reloadingIndex] ?? null;
-
-            if ($process !== null) {
-                if (!$this->reloadKillSent && $now > $this->reloadDeadline) {
-                    $this->logger->worker(
-                        level: MasterLogger::WARN,
-                        workerPid: $process->pid(),
-                        workerIndex: $this->reloadingIndex,
-                        message: 'reload drain timeout; sending SIGKILL',
-                    );
-
-                    $process->signal(SIGKILL);
-
-                    $this->reloadKillSent = true;
-                }
-
-                return;
-            }
-
-            $index = $this->reloadingIndex;
-
-            $this->reloadingIndex = -1;
-            $this->reloadKillSent = false;
-
-            unset($this->respawnAt[$index]);
-
-            $this->spawn($index);
-
-            return;
-        }
-
-        // No slot in flight: finish the reload, or start the next slot in the queue.
-        if ($this->reloadQueue === []) {
-            $this->reloading = false;
-
-            $this->reloadFile->clear();
-
-            $this->logger->master(MasterLogger::INFO, 'reload complete');
-
-            return;
-        }
-
-        $index = array_shift($this->reloadQueue);
-
-        $process = $this->slots[$index] ?? null;
-
-        // An already-empty slot (awaiting a crash respawn): just bring up a fresh one.
-        if ($process === null) {
-            unset($this->respawnAt[$index]);
-
-            $this->spawn($index);
-
-            return;
-        }
-
-        $this->reloadingIndex = $index;
-        $this->reloadKillSent = false;
-        $this->reloadDeadline = $now + $this->shutdownTimeoutMs / 1000;
-
-        $this->logger->worker(MasterLogger::INFO, $process->pid(), $index, 'reloading; sending SIGTERM');
-
-        $process->signal(SIGTERM);
-    }
-
-    /**
      * Drives the graceful stop: forward SIGTERM once and arm the deadline, then
-     * SIGKILL any stragglers once the deadline passes.
+     * SIGKILL any stragglers once the deadline passes. The deadline is the longest a
+     * single group allows, so no group is cut short by a stricter neighbour.
      */
     protected function driveShutdown(float $now): void
     {
         if (!$this->termSent) {
             $this->termSent     = true;
-            $this->stopDeadline = $now + $this->shutdownTimeoutMs / 1000;
-            $this->respawnAt    = [];
+            $this->stopDeadline = $now + $this->maxShutdownTimeoutMs() / 1000;
 
             $this->logger->master(MasterLogger::INFO, 'shutdown requested; forwarding SIGTERM to workers');
 
@@ -777,43 +614,54 @@ class WorkerMaster
         }
     }
 
-    protected function signalAll(int $signal): void
+    protected function maxShutdownTimeoutMs(): int
     {
-        foreach ($this->slots as $process) {
-            $process?->signal($signal);
+        $timeoutMs = 0;
+
+        foreach ($this->pools as $pool) {
+            $timeoutMs = max($timeoutMs, $pool->shutdownTimeoutMs());
         }
+
+        return $timeoutMs;
     }
 
-    /**
-     * @param list<WorkerOutputLine> $lines
-     */
-    protected function logWorkerLines(int $index, WorkerProcess $process, array $lines): void
+    protected function signalAll(int $signal): void
     {
-        foreach ($lines as $line) {
-            $this->logger->worker(
-                level: $line->isError ? MasterLogger::ERROR : MasterLogger::INFO,
-                workerPid: $process->pid(),
-                workerIndex: $index,
-                message: $line->line,
-            );
+        foreach ($this->pools as $pool) {
+            $pool->signalAll($signal);
         }
     }
 
     protected function aliveSlotCount(): int
     {
-        $count = 0;
+        $alive = 0;
 
-        foreach ($this->slots as $process) {
-            if ($process !== null) {
-                $count++;
-            }
+        foreach ($this->pools as $pool) {
+            $alive += $pool->aliveSlotCount();
         }
 
-        return $count;
+        return $alive;
     }
 
     protected function allSlotsEmpty(): bool
     {
-        return $this->aliveSlotCount() === 0;
+        foreach ($this->pools as $pool) {
+            if (!$pool->allSlotsEmpty()) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    protected function hasPendingRespawns(): bool
+    {
+        foreach ($this->pools as $pool) {
+            if ($pool->hasPendingRespawns()) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
