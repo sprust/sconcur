@@ -266,6 +266,57 @@ A delivery tag belongs to the channel that delivered the message: acknowledge it
 on the queue whose channel received it. That is also why a channel is not shared
 between coroutines — give each coroutine its own.
 
+## TLS and SASL EXTERNAL
+
+TLS is chosen by the certificate paths rather than by a flag: name `cacert`, `cert`
+or `key` and the connection dials `amqps://`, name none of them and it dials
+`amqp://`. There is no way to ask for TLS without naming at least one file, which
+is the rule `ext-amqp` follows too.
+
+| Credential | Meaning |
+| --- | --- |
+| `cacert` | the authority the broker's certificate is checked against; with none named, the system store is used |
+| `cert`, `key` | the client certificate and its private key. The two go together — naming one without the other fails the dial |
+| `verify` | `true` by default; `false` skips the check of the broker's certificate altogether |
+
+The files are read by the extension inside the worker's own process, so the paths
+are the ones that process sees.
+
+The broker's certificate is checked against the `host` credential, so it has to be
+valid for exactly that name, and as a SAN entry — Go does not accept a bare common
+name. A dial that cannot read a file, cannot parse the CA or fails the handshake
+raises `AMQPConnectionException`.
+
+`AMQP_SASL_METHOD_EXTERNAL` replaces the login and password with the client
+certificate: the broker takes the identity out of it, and `login` / `password` are
+not sent at all. It needs three things on the broker — the
+`rabbitmq_auth_mechanism_ssl` plugin, `EXTERNAL` among its `auth_mechanisms`, and a
+user named the way the broker reads the name out of the certificate.
+
+```php
+use const SConcur\Features\Amqp\AMQP_SASL_METHOD_EXTERNAL;
+
+$connection = new AMQPConnection([
+    'host'        => 'broker.internal',
+    'port'        => 5671,
+    'vhost'       => '/',
+    'cacert'      => '/etc/ssl/rabbit/ca.pem',
+    'cert'        => '/etc/ssl/rabbit/client.pem',
+    'key'         => '/etc/ssl/rabbit/client.key',
+    'verify'      => true,
+    'sasl_method' => AMQP_SASL_METHOD_EXTERNAL,
+]);
+```
+
+The three paths, `verify` and `sasl_method` all belong to the pool key, so two
+connections differing in any of them do not share a socket to the broker.
+
+**None of this is covered by tests.** The broker in `docker-compose.yml` listens
+without TLS, so the section describes what the code does, not behaviour a test run
+confirms. Covering it needs a TLS listener on that broker and a generated
+certificate chain; until then, verify it against your own broker before an
+application leans on it.
+
 ## Scaling a consumer
 
 Several coroutines may consume one queue, in one process and across several, which
@@ -388,9 +439,9 @@ parity tests are what keep it that way.
 The general limits — CLI only, Linux only, NTS only, no `pcntl_fork` — are in the
 [README](../README.md).
 
-- TLS (`cacert`, `cert`, `key`, `verify`) and `AMQP_SASL_METHOD_EXTERNAL` are
-  passed to the Go dialer, but the test suite runs against a plain broker, so
-  they are not covered by tests.
+- TLS and `AMQP_SASL_METHOD_EXTERNAL` are implemented but not covered by tests,
+  because the compose broker listens without TLS — see
+  [TLS and SASL EXTERNAL](#tls-and-sasl-external).
 - `AMQP_IMMEDIATE` is accepted and sent; RabbitMQ has not implemented it since
   3.0 and closes the channel.
 - `AMQPQueue::consume()` is bounded by the connection's `read_timeout`, not by a
