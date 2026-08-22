@@ -432,6 +432,10 @@ Two things to know about the header, both observed on the broker in
   indexing the array by position happens to work and stops working the moment the
   topology grows another hop.
 
+It counts *deliberate* refusals only. A message returned because the worker died
+was refused by nobody, and this counter does not move — see
+[when the worker itself dies](#when-the-worker-itself-dies).
+
 ### A delay per message
 
 `expiration` is the message's own TTL, in milliseconds as a decimal string, so one
@@ -473,6 +477,78 @@ coroutines of the worker keep going. It is the right tool for tens of
 milliseconds and the wrong one for minutes: the delivery stays unacknowledged for
 the whole wait, holding its prefetch slot and counting against the broker as in
 flight.
+
+### When the worker itself dies
+
+Everything above answers for a handler that failed. A handler that takes the whole
+process with it — a job that runs the heap into `memory_limit`, or one the kernel's
+OOM killer picks — is answered by the broker instead, and the answer is better than
+it sounds: an unacknowledged message belongs to the broker until it is
+acknowledged, so a connection that dies hands every message on it straight back to
+its queue.
+
+Measured, with a worker holding a prefetch of three and dying on the first message:
+
+```
+Fatal error: Allowed memory size of 67108864 bytes exhausted
+---
+after the crash: ready=3 consumers=0
+first back: body=boom redelivered=true
+```
+
+Two things worth reading twice. Nothing was lost. And **all three** came back, not
+just the one being handled: the broker had handed out three, none were
+acknowledged, so all three are owed again. A worker holding a prefetch of fifty
+returns fifty. That is the other reason a pool of coroutines wants
+`prefetchCount: 1` — the price of a crash is one message per coroutine.
+
+Whether PHP dies on its own limit or is killed outright makes no difference here.
+The first prints a fatal error, the second runs no PHP at all; the safety net in
+both cases is the socket closing, not anything this library does.
+
+What the crash does cost:
+
+- **The side effects already happened.** AMQP gives at-least-once and nothing more.
+  A job that charged a card and then died charged it, and will charge it again when
+  the message comes back. Handlers that touch the outside world have to be
+  idempotent; no runtime can decide that for you.
+- **`x-death` does not count this.** The attempt counter above grows on a
+  *deliberate* refusal — a `nack`, a `reject`, an expired TTL. A message returned
+  because the connection died was never refused by anybody, so the counter stays
+  where it was and a dead-letter policy built on it never fires. A message that
+  reliably kills its worker will kill the next one, and the one after that.
+
+The broker's own answer to that last one is a quorum queue with a delivery limit,
+which counts every redelivery — including the ones nobody asked for:
+
+```php
+$queue->declare(durable: true, arguments: [
+    'x-queue-type'     => 'quorum',
+    'x-delivery-limit' => 3,
+]);
+```
+
+```
+round 1: redelivered=false x-delivery-count=NULL
+round 2: redelivered=true  x-delivery-count=1
+round 3: redelivered=true  x-delivery-count=2
+round 4: redelivered=true  x-delivery-count=3
+round 5: the queue is empty — the broker took the message away itself
+```
+
+`x-delivery-count` is kept by the broker and grows on every delivery after the
+first, whatever ended the one before. Past `x-delivery-limit` the message is
+dropped, or dead-lettered where the queue names an exchange for it. This is the
+only mechanism here that catches a message which kills the process, and it needs no
+support from this library — those are ordinary queue arguments.
+
+`QueueConsumer`'s `maxMemoryBytes` is worth having but answers a different
+question. It is checked by the supervisor coroutine every `pollIntervalMs` against
+`memory_get_usage()`, so it catches a worker that grew over a thousand messages and
+sends it into a clean drain. It does not catch a single job that allocates a
+gigabyte without pausing: nothing else runs while that loop runs, so the supervisor
+never gets to look. Set it well under `memory_limit` and treat it as a guard
+against creep, not against a spike.
 
 ### What the supervised consumer does
 
@@ -659,7 +735,7 @@ The group that runs it:
 | `requeueOnFailure` | `false` | What happens to a message whose handler threw: dead-lettered or dropped by default, put back when true. A policy with attempts and a backoff belongs to the handler — see [retries and delays](#retries-and-delays). |
 | `maxMessages` | `0` (no limit) | Drain and exit after this many messages. |
 | `maxRuntimeSeconds` | `0` (no limit) | Drain and exit after this long. |
-| `maxMemoryBytes` | `0` (no limit) | Drain and exit once the PHP heap passes this. |
+| `maxMemoryBytes` | `0` (no limit) | Drain and exit once the PHP heap passes this. A guard against creep, not against a spike — see [when the worker itself dies](#when-the-worker-itself-dies). |
 | `drainTimeoutMs` | `5000` | How long a stop waits for the handlers that are mid-message. |
 | `pollIntervalMs` | `200` | How often the supervisor coroutine wakes to look at the stop flags and the limits. |
 | `masterPid` | none | Injected by the master; the worker drains as soon as it is orphaned. |
