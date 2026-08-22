@@ -6,11 +6,12 @@ namespace SConcur\Features\Amqp\Consumer;
 
 use Closure;
 use SConcur\Exceptions\Amqp\AmqpException;
-use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Features\Amqp\Connection;
 use SConcur\Features\Amqp\Delivery;
 use SConcur\Features\Server\ServerRuntimeSupportTrait;
 use SConcur\Features\Sleeper\Sleeper;
+use SConcur\Limiter;
+use SConcur\Scheduler\Scheduler;
 use SConcur\WaitGroup;
 use Throwable;
 
@@ -51,6 +52,12 @@ class QueueConsumer
      *                                  unless its queue names its own. 1 hands the next
      *                                  message to a free coroutine instead of filling
      *                                  the buffer of a busy one
+     * @param int    $handlerTimeoutMs  how long one message may spend in the handler;
+     *                                  0 = no limit. A handler that runs past it is
+     *                                  unwound where it stands and its message is refused
+     *                                  according to $requeueOnFailure, like any other
+     *                                  failed one — the coroutine survives and takes the
+     *                                  next message
      * @param bool   $requeueOnFailure  what to do with a message whose handler threw and
      *                                  did not settle it. false sends it to the queue's
      *                                  dead-letter exchange, or drops it where there is
@@ -69,6 +76,7 @@ class QueueConsumer
     public function __construct(
         protected string $queues = '',
         protected int $prefetchCount = 1,
+        protected int $handlerTimeoutMs = 0,
         protected bool $requeueOnFailure = false,
         protected int $maxMessages = 0,
         protected int $maxRuntimeSeconds = 0,
@@ -227,13 +235,13 @@ class QueueConsumer
             $state->consumerFinished();
 
             if (!$ended) {
-                // Unwound. An awaited close would suspend a fiber the scheduler has
-                // already detached, so the release goes out detached — and it goes out
-                // here rather than whenever the garbage collector reaches the cycle the
-                // unwind left behind. Until the channel closes, the delivery this handler
-                // was working on stays owed to the broker instead of going back to the
-                // queue for the next worker.
-                $channel->closeDetached();
+                // Unwound. The channel goes back here rather than whenever the garbage
+                // collector reaches the cycle the unwind left behind: until it closes, the
+                // delivery this handler was working on stays owed to the broker instead of
+                // going back to the queue for the next worker. close() picks an awaited or
+                // a detached release on its own, by asking whether this coroutine can
+                // still wait for anything.
+                $channel->close();
             }
         }
 
@@ -260,17 +268,24 @@ class QueueConsumer
         $unwound = false;
 
         try {
-            $handler($delivery);
-        } catch (FlowStoppedException $exception) {
-            // The drain deadline passed while this handler was still working, and the
-            // group was stopped under it. That is not a handler failure: the application
-            // never got to decide, so the message must go back to the broker rather than
-            // be refused on its behalf. Leaving it unsettled is what returns it — the
-            // channel closing behind this coroutine hands it back exactly once.
-            $unwound = true;
-
-            throw $exception;
+            $this->runHandler(handler: $handler, delivery: $delivery);
         } catch (Throwable $exception) {
+            // Told apart by asking the runtime, not by looking at the exception. A
+            // coroutine the scheduler has let go of is one the drain gave up on and
+            // stopped: the application never got to decide, so this is not its handler
+            // failing, and the message must go back to the broker rather than be refused
+            // on its behalf. Leaving it unsettled is what returns it — the channel closing
+            // behind this coroutine hands it back exactly once.
+            //
+            // Everything else is the handler's own failure, a job that ran out of its own
+            // deadline included: there the runtime is still there to answer, and refusing
+            // the message is the right answer.
+            $unwound = !Scheduler::get()->canAwait();
+
+            if ($unwound) {
+                throw $exception;
+            }
+
             $failed = true;
 
             $this->reportFailure(exception: $exception, delivery: $delivery, onError: $onError);
@@ -295,6 +310,32 @@ class QueueConsumer
         }
 
         return true;
+    }
+
+    /**
+     * Runs the handler, under a deadline when the worker was given one.
+     *
+     * The deadline is the coroutine's, so it reaches the handler wherever it waits — and,
+     * with preemption armed, into code that never waits at all. What it cannot reach is a
+     * call already inside the extension: a query or a publish that hangs is bounded by that
+     * feature's own timeout, not by this one (docs/coroutine-timeout.md).
+     *
+     * @param Closure(Delivery): void $handler
+     */
+    protected function runHandler(Closure $handler, Delivery $delivery): void
+    {
+        if ($this->handlerTimeoutMs <= 0) {
+            $handler($delivery);
+
+            return;
+        }
+
+        Limiter::on(
+            ms: $this->handlerTimeoutMs,
+            callback: static function () use ($handler, $delivery): void {
+                $handler($delivery);
+            },
+        );
     }
 
     /**

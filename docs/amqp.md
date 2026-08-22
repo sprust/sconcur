@@ -478,6 +478,74 @@ milliseconds and the wrong one for minutes: the delivery stays unacknowledged fo
 the whole wait, holding its prefetch slot and counting against the broker as in
 flight.
 
+### Bounding one job
+
+A handler that hangs holds its coroutine for ever, and with a prefetch of one that
+coroutine will never take another message. `handlerTimeoutMs` puts a deadline on it:
+
+```json
+{
+  "queues": [{ "name": "orders", "coroutineCount": 8 }],
+  "prefetchCount": 1,
+  "handlerTimeoutMs": 30000
+}
+```
+
+A job that runs past it is unwound where it stands — the handler's `finally` blocks
+run — and the delivery is refused exactly like one whose handler threw, so
+`requeueOnFailure` decides where it goes and `onError` is told, with a
+`CoroutineTimeoutException`. The coroutine survives and takes the next message; one
+slow job costs one message and not a consumer.
+
+**Where the message goes is worth being sure about**, because the default is the
+harshest of the three and it is easy to reach by accident:
+
+| The queue and the setting | What happens to the message |
+| --- | --- |
+| the default, no dead-letter exchange | **dropped** — refused without requeue, and nothing catches it |
+| the default, with a dead-letter exchange | sent there, to be looked at later |
+| `requeueOnFailure: true` | put back into the queue |
+
+So `handlerTimeoutMs` on a queue with no dead-letter exchange is a decision to throw
+the job away when it runs long. That is often right — it has already spent its
+budget — but it is a decision, and a queue carrying anything worth keeping wants a
+dead-letter exchange before it gets a deadline.
+
+`requeueOnFailure: true` and a deadline together are almost always a trap: a job that
+did not fit in thirty seconds will not fit in thirty seconds again, so it goes round
+for ever, and each round is slower than an ordinary failure because it burns the
+whole allowance first. If it has to go back, bound the rounds — a quorum queue with
+`x-delivery-limit` counts them, where `x-death` does not: a requeue is not a
+dead-letter hop, so the counter above never moves.
+
+One thing this is not: a worker being stopped while a handler is still working. There
+the application never decided anything, so the message is not settled at all and
+comes back on its own — see [when the worker itself dies](#when-the-worker-itself-dies)
+for the difference between "the runtime answered for the job" and "nobody answered".
+
+Two limits come with it, both from the mechanism underneath — see
+[coroutine timeout](coroutine-timeout.md). A handler busy with pure computation is
+only cut if preemption is armed, and a handler already inside a broker call is not
+cut at all until that call returns: that one is bounded by the connection's own
+`rpcTimeout` and `writeTimeout`, which is a different setting and worth having as
+well.
+
+The same deadline is available inside a handler for a part of the work, without
+configuring the pool at all:
+
+```php
+use SConcur\Limiter;
+
+$queueConsumer->consume(
+    connection: $connection,
+    handler: static function (Delivery $delivery): void {
+        $enriched = Limiter::on(ms: 500, callback: fn() => enrich($delivery->body));
+
+        store($enriched);
+    },
+);
+```
+
 ### When the worker itself dies
 
 Everything above answers for a handler that failed. A handler that takes the whole
@@ -732,6 +800,7 @@ The group that runs it:
 | --- | --- | --- |
 | `queues` | — (required) | The queues and their weights. A list of objects: `name`, `coroutineCount` (default 1), optional `prefetchCount`. |
 | `prefetchCount` | `1` | Unacknowledged messages one coroutine may hold, unless its queue names its own. |
+| `handlerTimeoutMs` | `0` (no limit) | How long one message may spend in the handler. A job that runs past it is cut and refused like any other failure; the coroutine takes the next message — see [bounding one job](#bounding-one-job). |
 | `requeueOnFailure` | `false` | What happens to a message whose handler threw: dead-lettered or dropped by default, put back when true. A policy with attempts and a backoff belongs to the handler — see [retries and delays](#retries-and-delays). |
 | `maxMessages` | `0` (no limit) | Drain and exit after this many messages. |
 | `maxRuntimeSeconds` | `0` (no limit) | Drain and exit after this long. |

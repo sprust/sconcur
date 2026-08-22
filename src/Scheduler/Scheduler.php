@@ -485,6 +485,33 @@ class Scheduler
         return $coroutine;
     }
 
+    /**
+     * Whether the caller may still await something.
+     *
+     * The answer is no in exactly one situation: the code is running inside a coroutine
+     * the scheduler has let go of. That happens while a group is being stopped — the
+     * members are detached and then unwound, so their finally blocks run on a fiber
+     * nothing will resume — and an awaited call there would suspend for ever.
+     *
+     * It is what teardown code needs to know, and it is a question about the runtime
+     * rather than about whichever exception happens to be in flight. A coroutine unwound
+     * by its own deadline is still tracked and can still await: the scheduler is waiting
+     * for its result.
+     *
+     * Outside a coroutine the answer is yes — the synchronous path blocks on the
+     * extension and needs nothing from the scheduler.
+     */
+    public function canAwait(): bool
+    {
+        $currentFiber = Fiber::getCurrent();
+
+        if ($currentFiber === null) {
+            return true;
+        }
+
+        return isset($this->coroutines[spl_object_id($currentFiber)]);
+    }
+
     public function clearGroupWaiter(string $groupKey): void
     {
         unset($this->groupWaiters[$groupKey]);

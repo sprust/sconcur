@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Amqp;
 
 use RuntimeException;
+use SConcur\Exceptions\CoroutineTimeoutException;
 use SConcur\Features\Amqp\Consumer\QueueConsumer;
 use SConcur\Features\Amqp\Delivery;
 use SConcur\Features\Sleeper\Sleeper;
@@ -385,6 +386,81 @@ class QueueConsumerTest extends AmqpTestCase
         gc_collect_cycles();
 
         self::assertSame(1, $this->waitForMessageCount(queue: $queue, expected: 1, timeoutSeconds: 5.0));
+    }
+
+    /**
+     * A job that runs too long costs its own message and nothing else: the handler is
+     * unwound where it stands, the delivery is refused like any other failure, and the same
+     * coroutine takes the next message.
+     */
+    public function testAHandlerThatOutrunsItsDeadlineIsCutAndTheConsumerCarriesOn(): void
+    {
+        $channel = $this->channel();
+
+        $queue = $this->declareQueue(channel: $channel, durable: true);
+
+        $this->publishToQueue($channel, $queue->name(), 'slow');
+        $this->publishToQueue($channel, $queue->name(), 'quick');
+
+        $handled  = [];
+        $failures = [];
+
+        $queueConsumer = new QueueConsumer(
+            queues: $this->queuesJson([$queue->name() => 1]),
+            handlerTimeoutMs: 200,
+            maxMessages: 2,
+            pollIntervalMs: 50,
+        );
+
+        $count = $queueConsumer->consume(
+            connection: $this->connection(),
+            handler: static function (Delivery $delivery) use (&$handled): void {
+                if ($delivery->body === 'slow') {
+                    Sleeper::usleep(microseconds: 3_000_000);
+                }
+
+                $handled[] = $delivery->body;
+            },
+            onError: static function (Throwable $exception, Delivery $delivery) use (&$failures): void {
+                $failures[$delivery->body] = $exception::class;
+            },
+        );
+
+        self::assertSame(2, $count, 'the coroutine survived the deadline and took the next message');
+        self::assertSame(['quick'], $handled);
+        self::assertSame(['slow' => CoroutineTimeoutException::class], $failures);
+
+        // Refused without requeue, like any other failed message.
+        self::assertNull($this->waitForMessage($queue, timeoutSeconds: 0.3));
+    }
+
+    /** With no deadline configured a slow handler is left alone. */
+    public function testWithoutADeadlineASlowHandlerRunsToTheEnd(): void
+    {
+        $channel = $this->channel();
+
+        $queue = $this->declareQueue(channel: $channel, durable: true);
+
+        $this->publishToQueue($channel, $queue->name(), 'slow');
+
+        $handled = [];
+
+        $queueConsumer = new QueueConsumer(
+            queues: $this->queuesJson([$queue->name() => 1]),
+            maxMessages: 1,
+            pollIntervalMs: 50,
+        );
+
+        $queueConsumer->consume(
+            connection: $this->connection(),
+            handler: static function (Delivery $delivery) use (&$handled): void {
+                Sleeper::usleep(microseconds: 400_000);
+
+                $handled[] = $delivery->body;
+            },
+        );
+
+        self::assertSame(['slow'], $handled);
     }
 
     /**

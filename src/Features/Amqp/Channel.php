@@ -6,6 +6,7 @@ namespace SConcur\Features\Amqp;
 
 use Generator;
 use SConcur\Connection\Extension;
+use SConcur\Exceptions\Amqp\AmqpException;
 use SConcur\Exceptions\Amqp\ChannelException;
 use SConcur\Exceptions\Amqp\ConnectionException;
 use SConcur\Exceptions\Amqp\ExchangeException;
@@ -13,7 +14,6 @@ use SConcur\Exceptions\Amqp\PublishConfirmTimeoutException;
 use SConcur\Exceptions\Amqp\PublishNackedException;
 use SConcur\Exceptions\Amqp\QueueException;
 use SConcur\Exceptions\Amqp\UnroutableMessageException;
-use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Features\Amqp\Payloads\AckPayload;
 use SConcur\Features\Amqp\Payloads\AckPayloadParameters;
 use SConcur\Features\Amqp\Payloads\CancelPayload;
@@ -41,6 +41,7 @@ use SConcur\Features\Amqp\Support\AmqpResource;
 use SConcur\Features\Amqp\Support\CommandRunner;
 use SConcur\Features\Amqp\Support\PropertiesCodec;
 use SConcur\Features\Amqp\Support\TableCodec;
+use SConcur\Scheduler\Scheduler;
 use SConcur\State;
 use Throwable;
 use WeakReference;
@@ -159,6 +160,15 @@ class Channel extends AmqpResource
             return;
         }
 
+        // Nothing here can wait for the broker: this coroutine has been let go of, and an
+        // awaited close would suspend a fiber nothing will resume. Hand the channel back
+        // and be done.
+        if (!Scheduler::get()->canAwait()) {
+            $this->closeDetached();
+
+            return;
+        }
+
         $channelId = $this->internalId;
 
         $this->internalOpen = false;
@@ -182,11 +192,7 @@ class Channel extends AmqpResource
                 ),
                 exceptionClass: ChannelException::class,
             );
-        } catch (FlowStoppedException $exception) {
-            // A deliberate unwind is not a failed close: re-thrown as-is so the
-            // cancellation stays recognizable, as the project's rule requires.
-            throw $exception;
-        } catch (Throwable) {
+        } catch (AmqpException) {
             // The channel is already gone — nothing to close.
         }
     }
@@ -531,8 +537,7 @@ class Channel extends AmqpResource
 
         $tag = isset($meta['tg']) ? (string) $meta['tg'] : '';
 
-        $ended   = false;
-        $unwound = false;
+        $ended = false;
 
         try {
             while (true) {
@@ -546,18 +551,11 @@ class Channel extends AmqpResource
 
                 yield $this->deliveryFrom(delivery: CommandRunner::decode($next), autoAck: $autoAck);
             }
-        } catch (FlowStoppedException $exception) {
-            // Caught only to be re-thrown: the flag is what the teardown below needs. A
-            // stopped coroutine has no flow left to answer on, and an awaited cancel there
-            // would suspend a fiber the scheduler has already detached.
-            $unwound = true;
-
-            throw $exception;
         } finally {
             State::releaseSyncTaskFlow($taskKey);
 
             if (!$ended) {
-                $this->cancelConsumer(consumerTag: $tag, detached: $unwound);
+                $this->cancelConsumer(consumerTag: $tag);
             }
         }
     }
@@ -569,9 +567,10 @@ class Channel extends AmqpResource
      * and waiting for the garbage collector instead is not good enough, because the channel
      * stays open until it runs — and every delivery that channel took but never
      * acknowledged stays owed to the broker with it, for up to the broker's consumer
-     * timeout. Whoever unwinds a coroutine that holds a channel calls this.
+     * timeout. close() falls back to this when the coroutine can no longer wait, and the
+     * destructor uses it because it has nothing to wait on either.
      */
-    public function closeDetached(): void
+    protected function closeDetached(): void
     {
         // Keyed on the handle and not on the open flag, the way Connection::close() is: a
         // command that failed marks the channel closed on this side without releasing
@@ -651,11 +650,17 @@ class Channel extends AmqpResource
      * detached. The broker still gets the method, and it is the last thing this channel
      * does before the object releases it.
      */
-    protected function cancelConsumer(string $consumerTag, bool $detached): void
+    protected function cancelConsumer(string $consumerTag): void
     {
         if ($consumerTag === '' || !$this->internalOpen) {
             return;
         }
+
+        // Waiting for the broker to confirm the cancel is what keeps the next consume on
+        // this channel honest: a cancel still in flight leaves the old consumer
+        // registered, the broker may hand the message to the stream nobody reads any more,
+        // and the new consumer waits for a delivery that was already given away.
+        $detached = !Scheduler::get()->canAwait();
 
         $payload = new CancelPayload(
             new CancelPayloadParameters(
@@ -679,11 +684,9 @@ class Channel extends AmqpResource
                 channel: $this,
                 operation: 'Could not cancel the consumer.',
             );
-        } catch (FlowStoppedException $exception) {
-            throw $exception;
-        } catch (Throwable) {
-            // The channel, the consumer or the extension is already gone — there is
-            // nothing left to cancel, and a teardown is no place to fail.
+        } catch (AmqpException) {
+            // The channel or the consumer is already gone — there is nothing left to
+            // cancel, and a teardown is no place to fail.
         }
     }
 
