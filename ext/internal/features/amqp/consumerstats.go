@@ -242,7 +242,11 @@ func (c *consumerStats) WorkloadSnapshot() stats.Workload {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if c.delivered == 0 && len(c.inFlight) == 0 && len(c.live) == 0 {
+	// Nothing at all has happened: no section, so a snapshot never claims a workload it
+	// does not have. Anything at all — including an acknowledgement of a tag this worker
+	// never handed out, which is what a basic.get followed by an ack looks like — is
+	// worth reporting.
+	if c.delivered == 0 && c.acked == 0 && c.refused == 0 && len(c.inFlight) == 0 && len(c.live) == 0 {
 		return stats.Workload{}
 	}
 

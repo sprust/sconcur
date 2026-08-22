@@ -176,8 +176,9 @@ ends its flow is stopped, and the Go side cancels the consumer. This is the same
 caveat as for `HttpClient`, `SocketClient` and `WsClient`.
 
 Without a callback, `consume()` only registers the consumer; a later call with
-`AMQP_JUST_CONSUME` reads it on without sending another `basic.consume`. With no
-consumer open, `AMQP_JUST_CONSUME` raises `AMQPQueueException`.
+`AMQP_JUST_CONSUME` reads it on without sending another `basic.consume`. It has to
+be the same `AMQPQueue` object that opened it — with none of its own open,
+`AMQP_JUST_CONSUME` raises `AMQPQueueException`.
 
 `cancel()` ends the consumer and leaves the channel open. Deliveries the consumer
 received but never acknowledged go back into the queue when the channel is
@@ -528,6 +529,7 @@ parity tests are what keep it that way.
 | `getChannelId()` | the number of the channel within its connection, assigned by this feature | the driver does not expose the AMQP channel number |
 | `AMQPEnvelope::getClusterId()` | always null | AMQP 0-9-1 excludes cluster-id from publishing, and the driver does not surface it on a delivery either |
 | `consume()` | feeds the callback with the deliveries of its own consumer | `ext-amqp` dispatches every delivery of the connection into whichever consume loop is running — a shape that only exists because the extension can run one loop at a time. Here one coroutine per consumer replaces it |
+| `AMQP_JUST_CONSUME` | reads the consumer *this* `AMQPQueue` opened | the extension resolves it through the channel's consumer registry, so any queue object on that channel picks it up. Here a consumer is a delivery stream owned by the coroutine that opened it, and handing that stream to another object is how two coroutines end up reading one — the same reason `consume()` feeds its own consumer only |
 | `read_timeout` on a consumer | ends the consumer as well as the loop | the stream and the consumer behind it are one resource here; the extension leaves the consumer registered |
 | `AMQPException` | extends `RuntimeException` | the project's rule for runtime failures. Every `catch` from ext-amqp code still matches, since `RuntimeException` is an `Exception` |
 | `AMQPChannel::__destruct()`, `AMQPConnection::__destruct()` | close and disconnect, without waiting for the broker to answer | PHP tells the Go side nothing about garbage collection, and a coroutine that was stopped has no flow left to answer on — so the release is sent and not awaited. It is what keeps a stopped coroutine from leaving its channel open |
