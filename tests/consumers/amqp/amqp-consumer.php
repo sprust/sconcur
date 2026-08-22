@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 require dirname(__DIR__, 3) . '/vendor/autoload.php';
 
+use SConcur\Features\Amqp\AMQPChannel;
 use SConcur\Features\Amqp\AMQPEnvelope;
 use SConcur\Features\Amqp\AMQPQueue;
 use SConcur\Features\Amqp\Consumer\QueueConsumer;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Impl\TestAmqpResolver;
 use SConcur\Tests\Impl\TestApplication;
+
+use const SConcur\Features\Amqp\AMQP_DURABLE;
 
 /**
  * Demo / test AMQP consumer worker: the shape a supervised consumer takes.
@@ -36,6 +39,22 @@ TestApplication::init();
 $queueConsumer = QueueConsumer::fromArgs($_SERVER['argv'] ?? []);
 
 $connection = TestAmqpResolver::getConnection();
+
+// The worker declares its own topology before consuming. QueueConsumer never does —
+// a runtime that redeclared a queue with the wrong flags would take the channel down
+// with a 406 — but this script owns these queues, and without the declaration a pool
+// started before its first publisher would crash-loop on a 404.
+$topologyChannel = new AMQPChannel($connection);
+
+foreach ($queueConsumer->queueSpecs() as $spec) {
+    $queue = new AMQPQueue($topologyChannel);
+
+    $queue->setName($spec->name);
+    $queue->setFlags(AMQP_DURABLE);
+    $queue->declareQueue();
+}
+
+$topologyChannel->close();
 
 $handled = $queueConsumer->consume(
     connection: $connection,

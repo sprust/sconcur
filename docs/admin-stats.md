@@ -150,6 +150,7 @@ running unlike pools shows each of them beside the others.
 | `requests.inFlight` | in progress right now | in-flight registry |
 | `requests.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | of those, by age [1s,5s) / [5s,15s) / ≥15s | in-flight age |
 | `connections.active` / `totalAccepted` | connections open now / accepted over all time | counter |
+| `consumers.coroutines` | consumers open — one per coroutine, so the capacity in use | consumer registry |
 | `consumers.delivered` | deliveries handed to PHP (queue consumer) | counter |
 | `consumers.acked` / `refused` | deliveries acknowledged / nacked or rejected | the `ack`, `nack` and `reject` commands themselves |
 | `consumers.avgMs` | average time a delivery spends in a handler | delivery → its acknowledgement |

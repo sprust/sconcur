@@ -43,6 +43,11 @@ type Requests struct {
 // acknowledgement or the refusal comes back, so the buckets read the same way; they
 // are exclusive, a delivery in flight for 7s counts only in InFlight5to15s.
 type Consumers struct {
+	// Coroutines is how many consumers the worker has open — one per coroutine, since
+	// a coroutine opens exactly one. Read beside InFlight it is the capacity the
+	// in-flight count is spent out of, and a drop below what the worker was configured
+	// with is a coroutine that died.
+	Coroutines      int     `json:"coroutines"`
 	Delivered       int64   `json:"delivered"`
 	Acked           int64   `json:"acked"`
 	Refused         int64   `json:"refused"`

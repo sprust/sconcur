@@ -443,7 +443,13 @@ instead of meeting `504 channel id space exhausted` under load.
 
 What it does not do: declare anything. Topology belongs to whoever owns it, and a
 consumer that redeclared a queue with the wrong flags would take the channel down
-with a `406` instead of consuming.
+with a `406` instead of consuming — so the worker script declares what it owns
+before handing over, and `queueSpecs()` tells it what that is. A pool started
+before anything published into its queue would otherwise crash-loop on a `404`.
+
+The pool reports itself to the [panel](admin-stats.md) like any server: how many
+coroutines it has consuming, what they delivered, acknowledged and refused, and
+how long a delivery spends in a handler.
 
 ### Stopping
 

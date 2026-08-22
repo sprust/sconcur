@@ -72,8 +72,8 @@ ws-server-status:
 ws-server-reload:
 	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG) --group=ws
 
-# The RabbitMQ consumers are their own master (supervisor leaves it down by default;
-# `make rabbitmq-start` brings it up).
+# The RabbitMQ consumers are their own master, started with the container. This brings
+# it back after `make rabbitmq-stop`.
 rabbitmq-start:
 	$(DOCKER_COMPOSE) exec servers supervisorctl -c /sconcur/docker/servers/config/supervisord.conf start rabbitmq
 

@@ -42,6 +42,9 @@ class QueueConsumer
     /** How often the drain re-checks whether the handlers are done. */
     protected const int DRAIN_POLL_INTERVAL_MS = 20;
 
+    /** @var list<QueueSpec>|null parsed once, by queueSpecs() */
+    protected ?array $specs = null;
+
     /**
      * @param string $queues            the queue list as JSON, see QueueSpecParser
      * @param int    $prefetchCount     unacknowledged messages one coroutine may hold,
@@ -68,6 +71,18 @@ class QueueConsumer
         protected int $pollIntervalMs = self::DEFAULT_POLL_INTERVAL_MS,
         protected ?int $masterPid = null,
     ) {
+    }
+
+    /**
+     * The queues this consumer will pull, parsed and validated. A worker script owns
+     * its topology — the runtime declares nothing — so this is what it declares before
+     * handing over: asking here beats parsing the same argv flag a second time.
+     *
+     * @return list<QueueSpec>
+     */
+    public function queueSpecs(): array
+    {
+        return $this->specs ??= QueueSpecParser::parse($this->queues);
     }
 
     /**
@@ -100,7 +115,7 @@ class QueueConsumer
      */
     public function consume(AMQPConnection $connection, Closure $handler, ?Closure $onError = null): int
     {
-        $specs = QueueSpecParser::parse($this->queues);
+        $specs = $this->queueSpecs();
 
         $state = new ConsumerState();
 

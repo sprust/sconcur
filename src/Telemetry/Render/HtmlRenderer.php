@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace SConcur\Telemetry\Render;
 
 use SConcur\Telemetry\Dto\Aggregate;
-use SConcur\Telemetry\Dto\Totals;
+use SConcur\Telemetry\Dto\Connections;
+use SConcur\Telemetry\Dto\Consumers;
+use SConcur\Telemetry\Dto\Requests;
 use SConcur\Telemetry\Dto\WorkerEntry;
 
 /**
@@ -35,7 +37,6 @@ class HtmlRenderer
         $requests    = $totals->requests;
         $connections = $totals->connections;
         $consumers   = $totals->consumers;
-        $hasRequests = $requests !== null;
         $name        = $this->escape($aggregate->name);
 
         $refreshMeta = $refreshUrl !== null
@@ -100,30 +101,19 @@ class HtmlRenderer
 </tr>
 </table>';
 
-        if ($requests !== null) {
-            $workloadWorkersHead = '<th>completed</th><th>avg ms</th><th>in-flight</th>';
-        } elseif ($connections !== null) {
-            $workloadWorkersHead = '<th>active</th><th>accepted</th>';
-        } elseif ($consumers !== null) {
-            $workloadWorkersHead = '<th>delivered</th><th>acked</th><th>refused</th><th>in-flight</th>';
-        } else {
-            $workloadWorkersHead = '';
-        }
-
         $groupsTable = $this->groupsTable($aggregate);
 
         $rows = '';
 
         foreach ($aggregate->workers as $worker) {
-            $rows .= $this->workerRow($worker, $hasRequests, $consumers !== null);
+            $rows .= $this->workerRow($worker);
         }
 
         $workersTable = '
 <table>
 <caption>Workers</caption>
 <tr>
-<th>pid</th><th>started (UTC)</th><th>uptime s</th><th>snap age ms</th><th>CPU %</th><th>RSS, MiB</th><th>goroutines</th>
-' . $workloadWorkersHead . '
+<th>group</th><th>pid</th><th>started (UTC)</th><th>uptime s</th><th>snap age ms</th><th>CPU %</th><th>RSS, MiB</th><th>goroutines</th><th>workload</th>
 </tr>' . $rows . '
 </table>
 </body>
@@ -179,7 +169,11 @@ class HtmlRenderer
 <td>' . $this->mib($group->totals->memory->rssBytes) . '</td>
 <td>' . $this->f1($group->totals->cpuPercent) . '</td>
 <td>' . $group->totals->goroutines . '</td>
-<td>' . $this->workloadCell($group->totals) . '</td>
+<td>' . $this->workloadCell(
+                $group->totals->requests,
+                $group->totals->connections,
+                $group->totals->consumers,
+            ) . '</td>
 </tr>';
         }
 
@@ -193,53 +187,45 @@ class HtmlRenderer
     }
 
     /**
-     * A pool's workload in one cell, because the columns differ by kind and a table of
-     * unlike pools cannot share them.
+     * A workload in one cell, because the columns differ by kind: one master runs
+     * unlike pools, and a shared column set would show one of them and leave the rest
+     * with dashes.
      */
-    protected function workloadCell(Totals $totals): string
-    {
-        if ($totals->requests !== null) {
-            return 'requests ' . $totals->requests->completed
-                . ', avg ' . $this->f1($totals->requests->avgMs) . ' ms'
-                . ', in-flight ' . $totals->requests->inFlight;
+    protected function workloadCell(
+        ?Requests $requests,
+        ?Connections $connections,
+        ?Consumers $consumers,
+    ): string {
+        if ($requests !== null) {
+            return 'requests ' . $requests->completed
+                . ', avg ' . $this->f1($requests->avgMs) . ' ms'
+                . ', in-flight ' . $requests->inFlight;
         }
 
-        if ($totals->connections !== null) {
-            return 'connections ' . $totals->connections->active
-                . ', accepted ' . $totals->connections->totalAccepted;
+        if ($connections !== null) {
+            return 'connections ' . $connections->active
+                . ', accepted ' . $connections->totalAccepted;
         }
 
-        if ($totals->consumers !== null) {
-            return 'delivered ' . $totals->consumers->delivered
-                . ', acked ' . $totals->consumers->acked
-                . ', refused ' . $totals->consumers->refused
-                . ', in-flight ' . $totals->consumers->inFlight;
+        if ($consumers !== null) {
+            return 'coroutines ' . $consumers->coroutines
+                . ', delivered ' . $consumers->delivered
+                . ', acked ' . $consumers->acked
+                . ', refused ' . $consumers->refused
+                . ', in-flight ' . $consumers->inFlight;
         }
 
         return '—';
     }
 
-    protected function workerRow(WorkerEntry $worker, bool $hasRequests, bool $hasConsumers = false): string
+    protected function workerRow(WorkerEntry $worker): string
     {
         $class   = $worker->hung ? ' class="hung"' : '';
         $pidMark = $worker->hung ? ' ⚠' : '';
 
-        if ($hasRequests) {
-            $workload = $worker->requests !== null
-                ? '<td>' . $worker->requests->completed . '</td><td>' . $this->f1($worker->requests->avgMs) . '</td><td>' . $worker->requests->inFlight . '</td>'
-                : '<td>—</td><td>—</td><td>—</td>';
-        } elseif ($hasConsumers) {
-            $workload = $worker->consumers !== null
-                ? '<td>' . $worker->consumers->delivered . '</td><td>' . $worker->consumers->acked . '</td><td>' . $worker->consumers->refused . '</td><td>' . $worker->consumers->inFlight . '</td>'
-                : '<td>—</td><td>—</td><td>—</td><td>—</td>';
-        } else {
-            $workload = $worker->connections !== null
-                ? '<td>' . $worker->connections->active . '</td><td>' . $worker->connections->totalAccepted . '</td>'
-                : '<td>—</td><td>—</td>';
-        }
-
         return '
 <tr' . $class . '>
+<td>' . $this->escape($worker->group) . '</td>
 <td>' . $worker->pid . $pidMark . '</td>
 <td>' . $this->utc($worker->startedAtMs) . '</td>
 <td>' . $this->f1($worker->uptimeSeconds) . '</td>
@@ -247,7 +233,7 @@ class HtmlRenderer
 <td>' . $this->f1($worker->cpuPercent) . '</td>
 <td>' . $this->mib($worker->memory->rssBytes) . '</td>
 <td>' . $worker->goroutines . '</td>
-' . $workload . '
+<td>' . $this->workloadCell($worker->requests, $worker->connections, $worker->consumers) . '</td>
 </tr>';
     }
 

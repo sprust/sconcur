@@ -8,12 +8,14 @@ namespace SConcur\Telemetry\Dto;
  * Queue-consumer workload section of a snapshot, the delivery counterpart of
  * Requests: a delivery is in flight from the moment the extension hands it to PHP
  * until the acknowledgement or the refusal comes back, so the buckets read the same
- * way and are exclusive. Field names mirror the Go schema
- * (ext/internal/stats/snapshot.go).
+ * way and are exclusive. `coroutines` is how many consumers the worker has open — one
+ * per coroutine — which is the capacity `inFlight` is spent out of. Field names mirror
+ * the Go schema (ext/internal/stats/snapshot.go).
  */
 readonly class Consumers
 {
     public function __construct(
+        public int $coroutines,
         public int $delivered,
         public int $acked,
         public int $refused,
@@ -31,6 +33,7 @@ readonly class Consumers
     public static function fromArray(array $data): self
     {
         return new self(
+            coroutines: (int) ($data['coroutines'] ?? 0),
             delivered: (int) ($data['delivered'] ?? 0),
             acked: (int) ($data['acked'] ?? 0),
             refused: (int) ($data['refused'] ?? 0),
@@ -48,6 +51,7 @@ readonly class Consumers
     public function toArray(): array
     {
         return [
+            'coroutines'      => $this->coroutines,
             'delivered'       => $this->delivered,
             'acked'           => $this->acked,
             'refused'         => $this->refused,

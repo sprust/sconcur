@@ -46,10 +46,22 @@ type consumerStats struct {
 	settledTotalMs float64
 
 	inFlight map[deliveryKey]time.Time
+
+	// live is the set of consumers this worker has open, one per coroutine. A set
+	// rather than a counter because a consumer can be closed by either its own
+	// cleanup or the death of its channel, and both must be able to run.
+	live map[consumerKey]struct{}
+}
+
+// consumerKey identifies one open consumer. A tag is only unique within its channel.
+type consumerKey struct {
+	channelId   string
+	consumerTag string
 }
 
 var consumerStatsInstance = &consumerStats{
 	inFlight: make(map[deliveryKey]time.Time),
+	live:     make(map[consumerKey]struct{}),
 }
 
 var pusherOnce sync.Once
@@ -88,6 +100,22 @@ func stopConsumerTelemetry() {
 
 		consumerPusher = nil
 	}
+}
+
+// consumerOpened records a coroutine that started consuming.
+func (c *consumerStats) consumerOpened(channelId string, consumerTag string) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	c.live[consumerKey{channelId: channelId, consumerTag: consumerTag}] = struct{}{}
+}
+
+// consumerClosed records one that stopped, whichever of the two paths got there first.
+func (c *consumerStats) consumerClosed(channelId string, consumerTag string) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	delete(c.live, consumerKey{channelId: channelId, consumerTag: consumerTag})
 }
 
 // deliveryDispatched records a delivery on its way to PHP. An auto-acknowledged one is
@@ -163,6 +191,12 @@ func (c *consumerStats) channelGone(channelId string) {
 			delete(c.inFlight, key)
 		}
 	}
+
+	for key := range c.live {
+		if key.channelId == channelId {
+			delete(c.live, key)
+		}
+	}
 }
 
 func (c *consumerStats) recordSettledLocked(took time.Duration) {
@@ -176,15 +210,16 @@ func (c *consumerStats) WorkloadSnapshot() stats.Workload {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if c.delivered == 0 && len(c.inFlight) == 0 {
+	if c.delivered == 0 && len(c.inFlight) == 0 && len(c.live) == 0 {
 		return stats.Workload{}
 	}
 
 	consumers := &stats.Consumers{
-		Delivered: c.delivered,
-		Acked:     c.acked,
-		Refused:   c.refused,
-		InFlight:  len(c.inFlight),
+		Coroutines: len(c.live),
+		Delivered:  c.delivered,
+		Acked:      c.acked,
+		Refused:    c.refused,
+		InFlight:   len(c.inFlight),
 	}
 
 	if c.settledCount > 0 {

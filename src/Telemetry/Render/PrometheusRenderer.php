@@ -61,6 +61,7 @@ class PrometheusRenderer
         if ($totals->consumers !== null) {
             $consumers = $totals->consumers;
 
+            $output .= $this->family('sconcur_pool_consumer_coroutines', 'Consumers open across the pool, one per coroutine.', 'gauge', $poolLabels, (string) $consumers->coroutines);
             $output .= $this->family('sconcur_pool_deliveries_total', 'Deliveries handed to the workers across the pool.', 'counter', $poolLabels, (string) $consumers->delivered);
             $output .= $this->family('sconcur_pool_deliveries_acked_total', 'Deliveries acknowledged across the pool.', 'counter', $poolLabels, (string) $consumers->acked);
             $output .= $this->family('sconcur_pool_deliveries_refused_total', 'Deliveries nacked or rejected across the pool.', 'counter', $poolLabels, (string) $consumers->refused);

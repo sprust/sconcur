@@ -147,6 +147,7 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 | `requests.inFlight` | в обработке прямо сейчас | реестр in-flight |
 | `requests.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | из них по возрасту [1c,5c) / [5c,15c) / ≥15c | возраст in-flight |
 | `connections.active` / `totalAccepted` | открыто сейчас / принято за всё время | счётчик |
+| `consumers.coroutines` | открытых консьюмеров — по одному на корутину, то есть текущая ёмкость | реестр консьюмеров |
 | `consumers.delivered` | доставок отдано в PHP (консьюмер очереди) | счётчик |
 | `consumers.acked` / `refused` | доставок подтверждено / отклонено (nack или reject) | сами команды `ack`, `nack` и `reject` |
 | `consumers.avgMs` | среднее время доставки в обработчике | от доставки до её подтверждения |

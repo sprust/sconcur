@@ -18,11 +18,26 @@ use SConcur\Features\Mongodb\Connection\Client as MongoClient;
 use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Features\Mysql\Connection as MysqlConnection;
 use SConcur\Features\Pgsql\Connection as PgsqlConnection;
+use SConcur\Features\Amqp\AMQPChannel;
+use SConcur\Features\Amqp\AMQPConnection;
+use SConcur\Features\Amqp\AMQPExchange;
+use SConcur\Features\Amqp\AMQPQueue;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Scheduler\Scheduler;
 use SConcur\Transport\MessagePackTransport;
 use SConcur\Tests\Impl\HttpServer\GeneratorStream;
 use SConcur\WaitGroup;
+
+use const SConcur\Features\Amqp\AMQP_DURABLE;
+
+// The name of the queue this server publishes into and the demo consumer pool reads
+// (config/sconcur.rabbitmq.config.json). Declared by the publisher, because a consumer
+// declares nothing — topology belongs to whoever owns it.
+const RABBITMQ_DEMO_QUEUE = 'sconcur_demo_queue';
+
+// The most jobs one request may queue. A path segment is user input, and a typo with an
+// extra zero should be refused rather than spend a minute publishing.
+const RABBITMQ_MAX_JOBS = 100000;
 
 /**
  * Demo / test HTTP server. The handler is PSR-7: it receives a ServerRequestInterface
@@ -209,6 +224,7 @@ $server->serve(static function (ServerRequestInterface $request) use ($psr17Fact
         str_starts_with($path, '/big/')       => bigRoute($psr17Factory, $path),
         str_starts_with($path, '/redirect/')  => redirectRoute($psr17Factory, $path),
         $path === '/throw'       => throw new RuntimeException('boom in handler'),
+        str_starts_with($path, '/rabbitmq/') => rabbitmqRoute($psr17Factory, $path),
         str_starts_with($path, '/msleep/') => msleepRoute($psr17Factory, $path),
         str_starts_with($path, '/native-msleep/') => nativeMsleepRoute($psr17Factory, $path),
         str_starts_with($path, '/cpu-switch/') => cpuSwitchRoute($psr17Factory, $path),
@@ -426,6 +442,78 @@ function msleepRoute(Psr17Factory $factory, string $path): ResponseInterface
     Sleeper::usleep(microseconds: $milliseconds * 1000);
 
     return text($factory, 'slept');
+}
+
+// GET /rabbitmq/{count}/sleep/{ms} — queues {count} jobs whose handler sleeps {ms}, to
+// give the consumer pool something to chew on. The body the consumer understands is
+// "sleep:<ms>" (tests/consumers/amqp/amqp-consumer.php).
+//
+// Publishing is sequential on one channel on purpose: basic.publish expects no reply, so
+// there is nothing to overlap, and a channel serializes its commands anyway.
+function rabbitmqRoute(Psr17Factory $factory, string $path): ResponseInterface
+{
+    // /rabbitmq/{count}/sleep/{ms}
+    $segments = explode('/', trim($path, '/'));
+
+    if (count($segments) !== 4 || $segments[2] !== 'sleep') {
+        return text($factory, 'usage: /rabbitmq/{count}/sleep/{ms}', 404);
+    }
+
+    $count        = (int) $segments[1];
+    $milliseconds = (int) $segments[3];
+
+    if ($count < 1 || $count > RABBITMQ_MAX_JOBS) {
+        return text($factory, 'count must be between 1 and ' . RABBITMQ_MAX_JOBS, 400);
+    }
+
+    if ($milliseconds < 0) {
+        return text($factory, 'ms must not be negative', 400);
+    }
+
+    $exchange = rabbitmqPublisher();
+
+    for ($index = 0; $index < $count; ++$index) {
+        $exchange->publish(message: 'sleep:' . $milliseconds, routingKey: RABBITMQ_DEMO_QUEUE);
+    }
+
+    return text($factory, sprintf('queued %d job(s) sleeping %dms', $count, $milliseconds));
+}
+
+// The publisher of this worker: one pooled connection, one channel, the queue declared
+// once. Built through serverOnce because requests run as concurrent coroutines — see the
+// note there on why a plain static is not enough.
+function rabbitmqPublisher(): AMQPExchange
+{
+    /** @var AMQPExchange */
+    return serverOnce('rabbitmq-publisher', static function (): AMQPExchange {
+        Dotenv::createImmutable(dirname(__DIR__, 3))->safeLoad();
+
+        $connection = new AMQPConnection([
+            'host'     => $_ENV['RABBITMQ_HOST'],
+            'port'     => (int) $_ENV['RABBITMQ_PORT'],
+            'login'    => $_ENV['RABBITMQ_USER'],
+            'password' => $_ENV['RABBITMQ_PASSWORD'],
+            'vhost'    => $_ENV['RABBITMQ_VHOST'],
+        ]);
+
+        $connection->connect();
+
+        $channel = new AMQPChannel($connection);
+
+        $queue = new AMQPQueue($channel);
+
+        $queue->setName(RABBITMQ_DEMO_QUEUE);
+        $queue->setFlags(AMQP_DURABLE);
+        $queue->declareQueue();
+
+        // The default exchange routes by the queue name, so no exchange of our own is
+        // needed to reach one queue.
+        $exchange = new AMQPExchange($channel);
+
+        $exchange->setName('');
+
+        return $exchange;
+    });
 }
 
 // Native, BLOCKING sleep — unlike the async usleep above it does NOT yield to the

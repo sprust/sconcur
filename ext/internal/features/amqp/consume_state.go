@@ -171,6 +171,8 @@ func (f *AmqpFeature) handleConsume(task *tasks.Task, raw msgpack.RawMessage) {
 
 	cleanup := func() {
 		cleanupOnce.Do(func() {
+			consumerStatsInstance.consumerClosed(entry.id, consumerTag)
+
 			// The basic.cancel goes through the channel's own lock, and only if this
 			// consumer is still registered — PHP may have cancelled it already. That also
 			// drops it from the registry, so the idle sweeper sees the channel as idle.
@@ -179,6 +181,8 @@ func (f *AmqpFeature) handleConsume(task *tasks.Task, raw msgpack.RawMessage) {
 	}
 
 	entry.registerConsumer(consumerTag, message.TaskKey)
+
+	consumerStatsInstance.consumerOpened(entry.id, consumerTag)
 
 	startConsumerTelemetry()
 

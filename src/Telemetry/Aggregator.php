@@ -77,6 +77,20 @@ class Aggregator
 
         $groups = [];
 
+        $groupOrder = [];
+
+        foreach (array_keys($byGroup) as $position => $groupName) {
+            $groupOrder[$groupName] = $position;
+        }
+
+        // Workers come out ordered by group, in the order the groups themselves are
+        // reported, so the two tables of the panel read down the same way. usort is
+        // stable, so within a group the workers keep the order they arrived in.
+        usort(
+            $workers,
+            static fn(WorkerEntry $left, WorkerEntry $right): int => ($groupOrder[$left->group] ?? 0) <=> ($groupOrder[$right->group] ?? 0),
+        );
+
         foreach ($byGroup as $groupName => $groupSnapshots) {
             $groups[] = new GroupAggregate(
                 name: $groupName,
@@ -158,6 +172,7 @@ class Aggregator
         $totalAccepted  = 0;
 
         $hasConsumers            = false;
+        $coroutines              = 0;
         $delivered               = 0;
         $acked                   = 0;
         $refused                 = 0;
@@ -194,6 +209,7 @@ class Aggregator
 
             if ($snapshot->consumers !== null) {
                 $hasConsumers = true;
+                $coroutines += $snapshot->consumers->coroutines;
                 $delivered += $snapshot->consumers->delivered;
                 $acked += $snapshot->consumers->acked;
                 $refused += $snapshot->consumers->refused;
@@ -231,6 +247,7 @@ class Aggregator
             $settled = $acked + $refused;
 
             $totalsConsumers = new Consumers(
+                coroutines: $coroutines,
                 delivered: $delivered,
                 acked: $acked,
                 refused: $refused,
