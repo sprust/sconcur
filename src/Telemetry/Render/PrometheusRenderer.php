@@ -58,6 +58,19 @@ class PrometheusRenderer
             $output .= $this->family('sconcur_pool_requests_in_flight_over15s', 'In-flight requests aged >= 15s.', 'gauge', $poolLabels, (string) $requests->inFlightOver15s);
         }
 
+        if ($totals->consumers !== null) {
+            $consumers = $totals->consumers;
+
+            $output .= $this->family('sconcur_pool_deliveries_total', 'Deliveries handed to the workers across the pool.', 'counter', $poolLabels, (string) $consumers->delivered);
+            $output .= $this->family('sconcur_pool_deliveries_acked_total', 'Deliveries acknowledged across the pool.', 'counter', $poolLabels, (string) $consumers->acked);
+            $output .= $this->family('sconcur_pool_deliveries_refused_total', 'Deliveries nacked or rejected across the pool.', 'counter', $poolLabels, (string) $consumers->refused);
+            $output .= $this->family('sconcur_pool_deliveries_avg_ms', 'Average time a delivery spends in a handler (weighted by settled).', 'gauge', $poolLabels, $this->float($consumers->avgMs));
+            $output .= $this->family('sconcur_pool_deliveries_in_flight', 'Deliveries in flight across the pool.', 'gauge', $poolLabels, (string) $consumers->inFlight);
+            $output .= $this->family('sconcur_pool_deliveries_in_flight_1to5s', 'In-flight deliveries aged [1s, 5s).', 'gauge', $poolLabels, (string) $consumers->inFlight1to5s);
+            $output .= $this->family('sconcur_pool_deliveries_in_flight_5to15s', 'In-flight deliveries aged [5s, 15s).', 'gauge', $poolLabels, (string) $consumers->inFlight5to15s);
+            $output .= $this->family('sconcur_pool_deliveries_in_flight_over15s', 'In-flight deliveries aged >= 15s.', 'gauge', $poolLabels, (string) $consumers->inFlightOver15s);
+        }
+
         if ($totals->connections !== null) {
             $connections = $totals->connections;
 

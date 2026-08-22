@@ -132,8 +132,10 @@ worker via the server constructor (`telemetrySocket`, `serverName`,
 
 Worker numbers come from the Go side (`/proc`, `runtime`, its own counters); the
 `master` section is sampled by the PHP master from its own `/proc`. Process metrics
-are shared by all servers, the workload section is per-server: HTTP has `requests`,
-socket and WebSocket have `connections`.
+are shared by every kind of worker; the workload section says which kind reported:
+HTTP has `requests`, socket and WebSocket have `connections`, a queue consumer has
+`consumers`. A section nobody reported is absent rather than zeroed, so a master
+running unlike pools shows each of them beside the others.
 
 | Field | What it is | Source |
 |---|---|---|
@@ -148,14 +150,24 @@ socket and WebSocket have `connections`.
 | `requests.inFlight` | in progress right now | in-flight registry |
 | `requests.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | of those, by age [1s,5s) / [5s,15s) / ≥15s | in-flight age |
 | `connections.active` / `totalAccepted` | connections open now / accepted over all time | counter |
+| `consumers.delivered` | deliveries handed to PHP (queue consumer) | counter |
+| `consumers.acked` / `refused` | deliveries acknowledged / nacked or rejected | the `ack`, `nack` and `reject` commands themselves |
+| `consumers.avgMs` | average time a delivery spends in a handler | delivery → its acknowledgement |
+| `consumers.inFlight` | delivered and not settled yet | in-flight registry |
+| `consumers.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | of those, by age [1s,5s) / [5s,15s) / ≥15s | in-flight age |
 | `master.pid` / `startedAt` / `uptimeSeconds` | the master process itself | master |
 | `master.memory.rssBytes` / `master.cpuPercent` | RSS and CPU of the master | `/proc/self/*` |
 
 All date-time fields are UTC (ISO-8601 with a `+00:00` offset). The duration
 buckets are exclusive: a request that has been running for 7 s lands only in
 `inFlight5to15s`. In `totals`, `requests.avgMs` is weighted by workers'
-`completed`, while `cpuPercent` is the sum of per-process values and can exceed
-100%.
+`completed` and `consumers.avgMs` by what they settled, while `cpuPercent` is the
+sum of per-process values and can exceed 100%.
+
+The consumer numbers cost nothing extra on the wire: a delivery is counted where it
+leaves for PHP, and settled by the `basic.ack` or `basic.nack` that PHP was going to
+send anyway. They are the worker process's own — a worker that finishes and is
+replaced starts its counters afresh, exactly as a server's `completed` does.
 
 `snapshotAgeMs` is computed by the master's own clock from the moment the frame
 was received, so it does not depend on clock skew; a live connection with no fresh

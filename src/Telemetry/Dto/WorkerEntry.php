@@ -21,6 +21,7 @@ readonly class WorkerEntry
         public int $goroutines,
         public ?Requests $requests,
         public ?Connections $connections,
+        public ?Consumers $consumers = null,
     ) {
     }
 
@@ -42,6 +43,10 @@ readonly class WorkerEntry
 
         if ($this->requests !== null) {
             $data['requests'] = $this->requests->toArray();
+        }
+
+        if ($this->consumers !== null) {
+            $data['consumers'] = $this->consumers->toArray();
         }
 
         if ($this->connections !== null) {

@@ -38,6 +38,21 @@ type Requests struct {
 	InFlightOver15s int     `json:"inFlightOver15s"`
 }
 
+// Consumers is the queue-consumer workload section, the delivery counterpart of
+// Requests. A delivery is in flight from the moment it is handed to PHP until the
+// acknowledgement or the refusal comes back, so the buckets read the same way; they
+// are exclusive, a delivery in flight for 7s counts only in InFlight5to15s.
+type Consumers struct {
+	Delivered       int64   `json:"delivered"`
+	Acked           int64   `json:"acked"`
+	Refused         int64   `json:"refused"`
+	AvgMs           float64 `json:"avgMs"`
+	InFlight        int     `json:"inFlight"`
+	InFlight1to5s   int     `json:"inFlight1to5s"`
+	InFlight5to15s  int     `json:"inFlight5to15s"`
+	InFlightOver15s int     `json:"inFlightOver15s"`
+}
+
 // Connections is the socket-server workload section: Active is the current open
 // connection count, TotalAccepted is the lifetime number accepted.
 type Connections struct {
@@ -50,10 +65,11 @@ type Connections struct {
 type Workload struct {
 	Requests    *Requests    `json:"requests,omitempty"`
 	Connections *Connections `json:"connections,omitempty"`
+	Consumers   *Consumers   `json:"consumers,omitempty"`
 }
 
 // WorkloadProvider yields the current feature-specific counters at snapshot time.
-// HTTP returns Requests, socket returns Connections.
+// HTTP returns Requests, socket returns Connections, a queue consumer Consumers.
 type WorkloadProvider interface {
 	WorkloadSnapshot() Workload
 }
@@ -75,4 +91,5 @@ type Snapshot struct {
 	Goroutines    int          `json:"goroutines"`
 	Requests      *Requests    `json:"requests,omitempty"`
 	Connections   *Connections `json:"connections,omitempty"`
+	Consumers     *Consumers   `json:"consumers,omitempty"`
 }

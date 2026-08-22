@@ -6,6 +6,7 @@ namespace SConcur\Telemetry;
 
 use SConcur\Telemetry\Dto\Aggregate;
 use SConcur\Telemetry\Dto\Connections;
+use SConcur\Telemetry\Dto\Consumers;
 use SConcur\Telemetry\Dto\MasterInfo;
 use SConcur\Telemetry\Dto\Memory;
 use SConcur\Telemetry\Dto\Requests;
@@ -59,6 +60,16 @@ class Aggregator
         $active         = 0;
         $totalAccepted  = 0;
 
+        $hasConsumers            = false;
+        $delivered               = 0;
+        $acked                   = 0;
+        $refused                 = 0;
+        $consumersWeightedAvgMs  = 0.0;
+        $consumersInFlight       = 0;
+        $consumersInFlight1to5s  = 0;
+        $consumersInFlight5to15s = 0;
+        $consumersInFlightOver15 = 0;
+
         foreach ($storedSnapshots as $storedSnapshot) {
             $snapshot      = $storedSnapshot->snapshot;
             $snapshotAgeMs = $nowMs - $storedSnapshot->receivedAtMs;
@@ -90,6 +101,21 @@ class Aggregator
                 $totalAccepted += $snapshot->connections->totalAccepted;
             }
 
+            if ($snapshot->consumers !== null) {
+                $hasConsumers = true;
+                $delivered += $snapshot->consumers->delivered;
+                $acked += $snapshot->consumers->acked;
+                $refused += $snapshot->consumers->refused;
+                // Weighted by what the worker actually settled, the same way the
+                // request average is weighted by what it completed.
+                $consumersWeightedAvgMs += $snapshot->consumers->avgMs
+                    * ($snapshot->consumers->acked + $snapshot->consumers->refused);
+                $consumersInFlight += $snapshot->consumers->inFlight;
+                $consumersInFlight1to5s += $snapshot->consumers->inFlight1to5s;
+                $consumersInFlight5to15s += $snapshot->consumers->inFlight5to15s;
+                $consumersInFlightOver15 += $snapshot->consumers->inFlightOver15s;
+            }
+
             $workers[] = new WorkerEntry(
                 pid: $snapshot->pid,
                 hung: $hung,
@@ -101,6 +127,7 @@ class Aggregator
                 goroutines: $snapshot->goroutines,
                 requests: $snapshot->requests,
                 connections: $snapshot->connections,
+                consumers: $snapshot->consumers,
             );
         }
 
@@ -121,6 +148,23 @@ class Aggregator
             ? new Connections(active: $active, totalAccepted: $totalAccepted)
             : null;
 
+        $totalsConsumers = null;
+
+        if ($hasConsumers) {
+            $settled = $acked + $refused;
+
+            $totalsConsumers = new Consumers(
+                delivered: $delivered,
+                acked: $acked,
+                refused: $refused,
+                avgMs: $settled > 0 ? $consumersWeightedAvgMs / $settled : 0.0,
+                inFlight: $consumersInFlight,
+                inFlight1to5s: $consumersInFlight1to5s,
+                inFlight5to15s: $consumersInFlight5to15s,
+                inFlightOver15s: $consumersInFlightOver15,
+            );
+        }
+
         $totals = new Totals(
             memory: new Memory(
                 rssBytes: $rssBytes,
@@ -131,6 +175,7 @@ class Aggregator
             goroutines: $goroutines,
             requests: $totalsRequests,
             connections: $totalsConnections,
+            consumers: $totalsConsumers,
         );
 
         return new Aggregate(

@@ -39,6 +39,8 @@ func (f *AmqpFeature) handleAck(task *tasks.Task, raw msgpack.RawMessage) {
 		return
 	}
 
+	consumerStatsInstance.deliverySettled(params.ChannelId, params.DeliveryTag, params.Multiple, true)
+
 	respondDone(task, startTime)
 }
 
@@ -71,6 +73,8 @@ func (f *AmqpFeature) handleNack(task *tasks.Task, raw msgpack.RawMessage) {
 		return
 	}
 
+	consumerStatsInstance.deliverySettled(params.ChannelId, params.DeliveryTag, params.Multiple, false)
+
 	respondDone(task, startTime)
 }
 
@@ -102,6 +106,8 @@ func (f *AmqpFeature) handleReject(task *tasks.Task, raw msgpack.RawMessage) {
 
 		return
 	}
+
+	consumerStatsInstance.deliverySettled(params.ChannelId, params.DeliveryTag, false, false)
 
 	respondDone(task, startTime)
 }

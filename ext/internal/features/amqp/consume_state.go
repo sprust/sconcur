@@ -36,6 +36,7 @@ type consumeState struct {
 	readTimeout time.Duration
 	startTime   time.Time
 	metaSent    bool
+	autoAck     bool
 	deliveries  <-chan amqp091.Delivery
 	cleanup     func()
 }
@@ -115,6 +116,11 @@ func (s *consumeState) resultFromDelivery(delivery amqp091.Delivery, ok bool) *d
 		return dto.NewErrorResult(s.message, errFactory.ByErr("marshal delivery", err))
 	}
 
+	// Counted here, where the delivery leaves for PHP: the acknowledgement that
+	// settles it arrives as an ordinary command, so the pair needs nothing extra on
+	// the wire (see consumerstats.go).
+	consumerStatsInstance.deliveryDispatched(s.entry.id, delivery.DeliveryTag, s.autoAck)
+
 	return dto.NewSuccessResultWithNext(s.message, string(serialized), helpers.CalcExecutionMs(s.startTime))
 }
 
@@ -174,8 +180,11 @@ func (f *AmqpFeature) handleConsume(task *tasks.Task, raw msgpack.RawMessage) {
 
 	entry.registerConsumer(consumerTag, message.TaskKey)
 
+	startConsumerTelemetry()
+
 	state := &consumeState{
 		ctx:         task.GetContext(),
+		autoAck:     params.AutoAck,
 		message:     message,
 		entry:       entry,
 		consumerTag: consumerTag,

@@ -166,6 +166,8 @@ func (f *AmqpFeature) handleDetached(envelope payloads.Envelope) {
 // opened one is left alone: building the registry here would start its sweeper for
 // nothing.
 func Shutdown() {
+	stopConsumerTelemetry()
+
 	if !connectionsCreated.Load() {
 		return
 	}

@@ -384,6 +384,10 @@ func (e *channelEntry) close() {
 
 	e.mutex.Unlock()
 
+	// Whatever PHP was still holding on this channel is gone with it: the broker has
+	// taken those deliveries back, so they must not stay counted as in flight.
+	consumerStatsInstance.channelGone(e.id)
+
 	// Everything parked on this channel ends now: a wait loop with no deadline would
 	// otherwise sit here for the life of the process.
 	close(e.gone)

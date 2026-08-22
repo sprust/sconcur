@@ -157,6 +157,7 @@ func (pusher *Pusher) buildSnapshot(now time.Time) Snapshot {
 		CpuPercent:    pusher.cpu.sample(now),
 		Goroutines:    runtime.NumGoroutine(),
 		Requests:      workload.Requests,
+		Consumers:     workload.Consumers,
 		Connections:   workload.Connections,
 	}
 }

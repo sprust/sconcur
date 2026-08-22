@@ -10,7 +10,8 @@ use SConcur\Telemetry\Dto\WorkerEntry;
 /**
  * Renders the aggregate as a compact, dependency-free admin page — a header line, a
  * totals row and a per-worker table. Ports the Go renderer
- * (ext/internal/stats/html.go). The workload columns (requests vs connections) are
+ * (ext/internal/stats/html.go). The workload columns (requests, connections or
+ * consumers — whichever the pool reports) are
  * chosen once from the pool totals so every row has the same shape; a worker missing
  * that section shows dashes. Hung workers are highlighted. All interpolated values
  * are escaped.
@@ -32,6 +33,7 @@ class HtmlRenderer
         $totals      = $aggregate->totals;
         $requests    = $totals->requests;
         $connections = $totals->connections;
+        $consumers   = $totals->consumers;
         $hasRequests = $requests !== null;
         $name        = $this->escape($aggregate->name);
 
@@ -72,6 +74,9 @@ class HtmlRenderer
         } elseif ($connections !== null) {
             $workloadTotalsHead = '<th>active</th><th>accepted</th>';
             $workloadTotalsRow  = '<td>' . $connections->active . '</td><td>' . $connections->totalAccepted . '</td>';
+        } elseif ($consumers !== null) {
+            $workloadTotalsHead = '<th>delivered</th><th>acked</th><th>refused</th><th>avg ms</th><th>in-flight</th><th>1–5s</th><th>5–15s</th><th>&gt;15s</th>';
+            $workloadTotalsRow  = '<td>' . $consumers->delivered . '</td><td>' . $consumers->acked . '</td><td>' . $consumers->refused . '</td><td>' . $this->f1($consumers->avgMs) . '</td><td>' . $consumers->inFlight . '</td><td>' . $consumers->inFlight1to5s . '</td><td>' . $consumers->inFlight5to15s . '</td><td>' . $consumers->inFlightOver15s . '</td>';
         } else {
             $workloadTotalsHead = '';
             $workloadTotalsRow  = '';
@@ -98,6 +103,8 @@ class HtmlRenderer
             $workloadWorkersHead = '<th>completed</th><th>avg ms</th><th>in-flight</th>';
         } elseif ($connections !== null) {
             $workloadWorkersHead = '<th>active</th><th>accepted</th>';
+        } elseif ($consumers !== null) {
+            $workloadWorkersHead = '<th>delivered</th><th>acked</th><th>refused</th><th>in-flight</th>';
         } else {
             $workloadWorkersHead = '';
         }
@@ -105,7 +112,7 @@ class HtmlRenderer
         $rows = '';
 
         foreach ($aggregate->workers as $worker) {
-            $rows .= $this->workerRow($worker, $hasRequests);
+            $rows .= $this->workerRow($worker, $hasRequests, $consumers !== null);
         }
 
         $workersTable = '
@@ -146,7 +153,7 @@ class HtmlRenderer
 </table>';
     }
 
-    protected function workerRow(WorkerEntry $worker, bool $hasRequests): string
+    protected function workerRow(WorkerEntry $worker, bool $hasRequests, bool $hasConsumers = false): string
     {
         $class   = $worker->hung ? ' class="hung"' : '';
         $pidMark = $worker->hung ? ' ⚠' : '';
@@ -155,6 +162,10 @@ class HtmlRenderer
             $workload = $worker->requests !== null
                 ? '<td>' . $worker->requests->completed . '</td><td>' . $this->f1($worker->requests->avgMs) . '</td><td>' . $worker->requests->inFlight . '</td>'
                 : '<td>—</td><td>—</td><td>—</td>';
+        } elseif ($hasConsumers) {
+            $workload = $worker->consumers !== null
+                ? '<td>' . $worker->consumers->delivered . '</td><td>' . $worker->consumers->acked . '</td><td>' . $worker->consumers->refused . '</td><td>' . $worker->consumers->inFlight . '</td>'
+                : '<td>—</td><td>—</td><td>—</td><td>—</td>';
         } else {
             $workload = $worker->connections !== null
                 ? '<td>' . $worker->connections->active . '</td><td>' . $worker->connections->totalAccepted . '</td>'
