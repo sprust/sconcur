@@ -407,8 +407,13 @@ class Scheduler
      * per-request stack lifecycle (page faults on first touch, munmap TLB
      * shootdown) dominated the spawn cost. Completion is signaled by the worker
      * loop parking with FiberPoolSignal::Idle instead of the fiber terminating.
+     *
+     * $timeoutMs bounds the coroutine, as WaitGroup::add(timeoutMs:) bounds a group
+     * member: past it the coroutine is unwound where it stands. It is how a server gives
+     * its handlers a deadline — see docs/coroutine-timeout.md for what the deadline can
+     * and cannot reach.
      */
-    public function spawn(Closure $callback): void
+    public function spawn(Closure $callback, int $timeoutMs = 0): void
     {
         $fiber   = $this->fiberPool->acquire();
         $fiberId = spl_object_id($fiber);
@@ -440,6 +445,10 @@ class Scheduler
         );
 
         $this->register($coroutine);
+
+        if ($timeoutMs > 0) {
+            $this->setDeadline(coroutine: $coroutine, timeoutMs: $timeoutMs);
+        }
 
         ++$this->spawnedCount;
 
@@ -758,6 +767,11 @@ class Scheduler
      *                                                   parks the running handler coroutine, so a
      *                                                   CPU-bound handler cannot starve the others
      *                                                   (0 disables)
+     * @param int                   $handlerTimeoutMs    how long one handler coroutine may run before
+     *                                                   it is unwound where it stands (0 disables).
+     *                                                   Preemption is what lets it reach a handler
+     *                                                   that never waits, so the two options work
+     *                                                   together
      */
     public function serve(
         string $serverFlowKey,
@@ -768,6 +782,7 @@ class Scheduler
         Closure $onDrainStart,
         Closure $onShutdownStep,
         int $preemptionQuantumMs = 0,
+        int $handlerTimeoutMs = 0,
     ): void {
         $draining = false;
 
@@ -872,9 +887,12 @@ class Scheduler
                     // event itself for every server (the pull-paced next()
                     // protocol for serve streams no longer exists there).
 
-                    $this->spawn(static function () use ($onRequest, $payload): void {
-                        $onRequest($payload);
-                    });
+                    $this->spawn(
+                        callback: static function () use ($onRequest, $payload): void {
+                            $onRequest($payload);
+                        },
+                        timeoutMs: $handlerTimeoutMs,
+                    );
 
                     continue;
                 }

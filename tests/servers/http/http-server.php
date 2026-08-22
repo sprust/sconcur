@@ -56,6 +56,10 @@ const RABBITMQ_MAX_JOBS = 100000;
  *   GET  /big/{n}           -> 200, body = {n} bytes of a deterministic pattern
  *   *    /redirect/{n}      -> 302 to /redirect/{n-1} until n=0, then 200 "done"
  *   GET  /msleep/{ms}       -> sleeps {ms} (async), then 200 "slept" (concurrency demo)
+ *   GET  /timeout-probe/{name}/{ms} -> sleeps {ms}, then marks {name} completed; its finally
+ *                              always marks it finished, so a test can tell an unwound
+ *                              handler from one that ran to its end
+ *   GET  /timeout-probe-result/{name} -> "completed", "unwound" or "nothing"
  *   GET  /native-msleep/{ms} -> blocks the thread {ms} natively (handler-timeout test)
  *   GET  /cpu/{n}           -> runs a CPU-bound sha256 loop of {n} rounds (bench)
  *   GET  /cpu-switch/{n}    -> the same loop, but yielding via Scheduler::switch() (fairness demo)
@@ -222,6 +226,8 @@ $server->serve(static function (ServerRequestInterface $request) use ($psr17Fact
         str_starts_with($path, '/redirect/')  => redirectRoute($psr17Factory, $path),
         $path === '/throw'       => throw new RuntimeException('boom in handler'),
         str_starts_with($path, '/rabbitmq/') => rabbitmqRoute($psr17Factory, $path),
+        str_starts_with($path, '/timeout-probe-result/') => timeoutProbeResultRoute($psr17Factory, $path),
+        str_starts_with($path, '/timeout-probe/') => timeoutProbeRoute($psr17Factory, $path),
         str_starts_with($path, '/msleep/') => msleepRoute($psr17Factory, $path),
         str_starts_with($path, '/native-msleep/') => nativeMsleepRoute($psr17Factory, $path),
         str_starts_with($path, '/cpu-switch/') => cpuSwitchRoute($psr17Factory, $path),
@@ -430,6 +436,57 @@ function imageMimeType(string $path): string
         'svg'         => 'image/svg+xml',
         default       => 'application/octet-stream',
     };
+}
+
+/**
+ * GET /timeout-probe/{name}/{ms} — sleeps {ms}, then writes a marker file named {name}.
+ *
+ * The marker is what tells a test whether the handler ran to its end or was unwound by
+ * handlerTimeoutMs: a 504 only says the client was answered, and the handler used to go on
+ * working behind it. A file rather than a counter because the workers are separate
+ * processes and the probe has to be readable from any of them.
+ */
+function timeoutProbeRoute(Psr17Factory $factory, string $path): ResponseInterface
+{
+    // /timeout-probe/{name}/{ms}
+    $segments = explode('/', trim($path, '/'));
+
+    if (count($segments) !== 3) {
+        return text($factory, 'usage: /timeout-probe/{name}/{ms}', 404);
+    }
+
+    $marker = timeoutProbeMarker($segments[1]);
+
+    @unlink($marker);
+
+    try {
+        Sleeper::usleep(microseconds: ((int) $segments[2]) * 1000);
+
+        // Reached only when the handler was not unwound.
+        file_put_contents($marker, 'completed');
+    } finally {
+        // Runs either way, which is what proves the unwind is an unwind and not a kill.
+        file_put_contents($marker . '.finally', 'ran');
+    }
+
+    return text($factory, 'probe done');
+}
+
+/** GET /timeout-probe-result/{name} — "completed", "unwound" or "nothing". */
+function timeoutProbeResultRoute(Psr17Factory $factory, string $path): ResponseInterface
+{
+    $marker = timeoutProbeMarker(substr($path, strlen('/timeout-probe-result/')));
+
+    if (file_exists($marker)) {
+        return text($factory, 'completed');
+    }
+
+    return text($factory, file_exists($marker . '.finally') ? 'unwound' : 'nothing');
+}
+
+function timeoutProbeMarker(string $name): string
+{
+    return sys_get_temp_dir() . '/sconcur-timeout-probe-' . preg_replace('/[^a-z0-9_-]/i', '', $name);
 }
 
 function msleepRoute(Psr17Factory $factory, string $path): ResponseInterface

@@ -112,6 +112,7 @@ The `WsServer` constructor; the PHP defaults mirror Go.
 | `pingIntervalMs` | `30000` | server keepalive ping cadence (`0` — off) |
 | `maxMessageBytes` | `1048576` (1 MiB) | size limit of a single inbound message; exceeding it closes the connection with code 1009 |
 | `maxConcurrency` | `0` (no limit) | max connections served at once; excess ones wait for a free slot |
+| `handlerTimeoutMs` | `0` (no limit) | how long one connection handler may run before it is unwound where it stands — see [coroutine timeout](coroutine-timeout.md) |
 | `maxConnections` | `0` (no limit) | stop the server after N served connections (a leak guard) |
 | `shutdownTimeoutMs` | `10000` | how long to wait for the active connections to finish on stop |
 | `reusePort` | `false` | `SO_REUSEPORT` — a pool of processes on one port (Linux) |

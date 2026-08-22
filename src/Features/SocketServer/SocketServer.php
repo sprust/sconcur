@@ -6,6 +6,7 @@ namespace SConcur\Features\SocketServer;
 
 use Closure;
 use SConcur\Connection\Extension;
+use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Features\Server\ServerRuntimeSupportTrait;
 use SConcur\Features\SocketServer\Dto\Connection;
 use SConcur\Features\SocketServer\Payloads\ServePayload;
@@ -32,6 +33,12 @@ readonly class SocketServer
      * @param int                                       $maxConcurrency      max connections handled at once (0 = unlimited). Bounds
      *                                                                       goroutines and connection coroutines; excess connections wait
      *                                                                       for a free slot.
+     * @param int                                       $handlerTimeoutMs    max time one connection handler may run before it is unwound
+     *                                                                       where it stands (0 = unlimited). A handler cut this way ends
+     *                                                                       quietly: its finally blocks run, onError is not told, and the
+     *                                                                       connection is closed by the Go side with the coroutine. With
+     *                                                                       preemption armed (the default) it reaches a handler busy with
+     *                                                                       computation too — see docs/coroutine-timeout.md.
      * @param int                                       $maxConnections      stop the server after it has handled this many connections
      *                                                                       (0 = unlimited). Meant against handler memory leaks: once reached
      *                                                                       the server shuts down gracefully so a master can respawn a fresh
@@ -67,6 +74,7 @@ readonly class SocketServer
         private int $writeTimeoutMs = 30_000,
         private int $maxMessageBytes = 1_048_576,
         private int $maxConcurrency = 0,
+        private int $handlerTimeoutMs = 0,
         private int $maxConnections = 0,
         private int $shutdownTimeoutMs = 10_000,
         private bool $reusePort = false,
@@ -176,6 +184,7 @@ readonly class SocketServer
                     self::logServerEvent('sconcur socket server shutdown: ' . $step);
                 },
                 preemptionQuantumMs: $this->preemptionQuantumMs,
+                handlerTimeoutMs: $this->handlerTimeoutMs,
             );
         } finally {
             $restoreSignals();
@@ -204,6 +213,11 @@ readonly class SocketServer
 
         try {
             $handler($connection);
+        } catch (FlowStoppedException) {
+            // Unwound on purpose — the handler ran past handlerTimeoutMs, or the server is
+            // shutting down. Not the handler failing, so onError is not told and the
+            // coroutine simply ends; its finally blocks have already run.
+            return;
         } catch (Throwable $exception) {
             self::notifyOnError(
                 onError: $onError,

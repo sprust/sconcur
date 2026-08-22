@@ -11,6 +11,7 @@ use Psr\Http\Message\ServerRequestFactoryInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\HttpServer\InvalidHandlerResponseException;
+use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Exceptions\HttpServer\RequestBodyTooLargeException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\HttpServer\Dto\RequestBody;
@@ -54,8 +55,9 @@ readonly class HttpServer
      *                                                                                                  response, before it is cut off and the slot freed (default 60s;
      *                                                                                                  0 disables). If nothing was written yet the client gets a 504;
      *                                                                                                  mid-stream the response is aborted (status is already on the wire).
-     *                                                                                                  Note: a CPU-bound handler still blocks the single-threaded loop;
-     *                                                                                                  this guards handlers waiting on async work.
+     *                                                                                                  The PHP handler is unwound at the same deadline rather than left
+     *                                                                                                  to finish work nobody will read — with preemption armed (the
+     *                                                                                                  default) that reaches a CPU-bound handler too.
      * @param int                                                                 $maxRequests          stop the server after it has handled this many requests
      *                                                                                                  (0 = unlimited). Meant against handler memory leaks: once the
      *                                                                                                  count is reached the server shuts down gracefully (closes the
@@ -229,6 +231,7 @@ readonly class HttpServer
                     self::logServerEvent('sconcur http server shutdown: ' . $step);
                 },
                 preemptionQuantumMs: $this->preemptionQuantumMs,
+                handlerTimeoutMs: $this->handlerTimeoutMs,
             );
         } finally {
             $restoreSignals();
@@ -474,6 +477,12 @@ readonly class HttpServer
             }
 
             return $response;
+        } catch (FlowStoppedException $exception) {
+            // The handler was unwound on purpose — it ran past handlerTimeoutMs, or the
+            // server is shutting down. Turning that into a 500 would answer a request the
+            // Go side has already answered with a 504, and would finish work whose whole
+            // point was to stop: the unwind is passed on, as the project's rule requires.
+            throw $exception;
         } catch (RequestBodyTooLargeException $exception) {
             // The body exceeded maxRequestBody mid-read and the response has not
             // started: answer 413 rather than a generic 500.

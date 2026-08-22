@@ -351,16 +351,25 @@ to 659 ms, at the cost of p50 rising from 30 ms to 244 ms. The trade and both
 settings are covered in
 [coroutine switching](coroutine-switching.md#the-cost-under-load).
 
-`handlerTimeoutMs` bounds the total handling time, streamed response included.
-Nothing written by the deadline → `504`; a started stream → the response is
-aborted mid-way. The deadline lives on the Go side (a timer in `consumeCommands`),
-so it fires independently of PHP: the client gets its `504` even if the handler
-hangs in a native call. That saves the client (a correct status plus a freed
-connection and slot), not the server — nothing can preempt a native call, so the
-handler keeps holding the single PHP thread. A userland CPU loop is softer:
-preemption parks it every quantum and neighbours keep being served, just slower.
-Runaway handlers are contained at process level — a worker pool
-(`SO_REUSEPORT`) plus `maxRequests` recycling.
+`handlerTimeoutMs` bounds the total handling time, streamed response included, and
+it bounds two things at once.
+
+The client is answered by the Go side: a timer in `consumeCommands` sends `504` when
+nothing has been written by the deadline, or aborts a stream that already started. It
+fires independently of PHP, so the client is answered even when the handler is stuck
+in a native call.
+
+The PHP handler is unwound at the same deadline — the request coroutine is given it,
+and past it a [coroutine timeout](coroutine-timeout.md) is thrown into the handler
+where it stands. Its `finally` blocks run, its transaction rolls back, its
+connections go back to their pools, and it stops producing a response nobody will
+read. With preemption armed — the default — that reaches a handler busy with pure
+computation as well.
+
+What neither of them reaches is a handler already inside a native call: no PHP runs
+there, so nothing can be delivered until it returns. Those are bounded by the
+feature's own timeouts (a query timeout, an HTTP client deadline) and, at process
+level, by a worker pool (`SO_REUSEPORT`) plus `maxRequests` recycling.
 
 ## Scaling across cores (SO_REUSEPORT)
 

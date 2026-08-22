@@ -50,6 +50,46 @@ class HttpServerHandlerTimeoutTest extends BaseHttpServerTestCase
     }
 
     /**
+     * The 504 says the client was answered. It used to say nothing about the handler, which
+     * went on working behind it — holding its connections and its locks — until it finished
+     * a response nobody would read. The deadline now unwinds it too.
+     *
+     * The probe endpoint marks itself completed at the end of the handler and marks itself
+     * finished from a finally block, so the two cases are distinguishable: "unwound" is the
+     * finally without the completion.
+     */
+    public function testTheHandlerItselfIsUnwoundAndNotLeftRunning(): void
+    {
+        $name = 'cut-' . bin2hex(random_bytes(4));
+
+        [$status] = $this->request(method: 'GET', path: "/timeout-probe/$name/3000");
+
+        self::assertSame(504, $status);
+
+        // Well past the handler's own sleep: if it had been left running, it would have
+        // reached its end by now and said so.
+        usleep(3_500_000);
+
+        [, $result] = $this->request(method: 'GET', path: "/timeout-probe-result/$name");
+
+        self::assertSame('unwound', $result, 'the handler was left running behind its 504');
+    }
+
+    /** A handler that fits in the deadline reaches its end as before. */
+    public function testAHandlerWithinTheDeadlineCompletes(): void
+    {
+        $name = 'ok-' . bin2hex(random_bytes(4));
+
+        [$status] = $this->request(method: 'GET', path: "/timeout-probe/$name/50");
+
+        self::assertSame(200, $status);
+
+        [, $result] = $this->request(method: 'GET', path: "/timeout-probe-result/$name");
+
+        self::assertSame('completed', $result);
+    }
+
+    /**
      * @return array<string, int>
      */
     protected static function serverOptions(): array

@@ -89,6 +89,7 @@ The `SocketServer` constructor; the PHP defaults mirror Go.
 | `writeTimeoutMs` | `30000` | max time to write one frame to the client |
 | `maxMessageBytes` | `1048576` (1 MiB) | length limit of one inbound frame; exceeding it ends the connection's input |
 | `maxConcurrency` | `0` (unlimited) | max connections served at once; excess ones wait for a free slot |
+| `handlerTimeoutMs` | `0` (unlimited) | how long one connection handler may run before it is unwound where it stands — see [coroutine timeout](coroutine-timeout.md) |
 | `maxConnections` | `0` (unlimited) | stop the server after N served connections (a guard against leaks) |
 | `shutdownTimeoutMs` | `10000` | how long to wait for the active connections to finish on shutdown |
 | `reusePort` | `false` | `SO_REUSEPORT` — a process pool on one port (Linux) |
