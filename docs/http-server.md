@@ -371,6 +371,12 @@ there, so nothing can be delivered until it returns. Those are bounded by the
 feature's own timeouts (a query timeout, an HTTP client deadline) and, at process
 level, by a worker pool (`SO_REUSEPORT`) plus `maxRequests` recycling.
 
+**Keep `handlerTimeoutMs` below `writeTimeoutMs`.** The `504` is a write like any
+other, so it needs the connection's write deadline to still be open when it goes out.
+Set the handler deadline above it and the timeout still fires — the handler is
+unwound and the response is generated — but it cannot be written, and the client sees
+the connection drop with no status at all.
+
 ## Scaling across cores (SO_REUSEPORT)
 
 One process effectively uses one core for the PHP logic, so all cores are loaded

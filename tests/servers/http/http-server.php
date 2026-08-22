@@ -59,6 +59,8 @@ const RABBITMQ_MAX_JOBS = 100000;
  *   GET  /timeout-probe/{name}/{ms} -> sleeps {ms}, then marks {name} completed; its finally
  *                              always marks it finished, so a test can tell an unwound
  *                              handler from one that ran to its end
+ *   GET  /timeout-probe-cpu/{name} -> the same, but a CPU loop that never yields — only
+ *                              preemption can take control away from it
  *   GET  /timeout-probe-result/{name} -> "completed", "unwound" or "nothing"
  *   GET  /native-msleep/{ms} -> blocks the thread {ms} natively (handler-timeout test)
  *   GET  /cpu/{n}           -> runs a CPU-bound sha256 loop of {n} rounds (bench)
@@ -227,6 +229,7 @@ $server->serve(static function (ServerRequestInterface $request) use ($psr17Fact
         $path === '/throw'       => throw new RuntimeException('boom in handler'),
         str_starts_with($path, '/rabbitmq/') => rabbitmqRoute($psr17Factory, $path),
         str_starts_with($path, '/timeout-probe-result/') => timeoutProbeResultRoute($psr17Factory, $path),
+        str_starts_with($path, '/timeout-probe-cpu/') => timeoutProbeCpuRoute($psr17Factory, $path),
         str_starts_with($path, '/timeout-probe/') => timeoutProbeRoute($psr17Factory, $path),
         str_starts_with($path, '/msleep/') => msleepRoute($psr17Factory, $path),
         str_starts_with($path, '/native-msleep/') => nativeMsleepRoute($psr17Factory, $path),
@@ -466,6 +469,37 @@ function timeoutProbeRoute(Psr17Factory $factory, string $path): ResponseInterfa
         file_put_contents($marker, 'completed');
     } finally {
         // Runs either way, which is what proves the unwind is an unwind and not a kill.
+        file_put_contents($marker . '.finally', 'ran');
+    }
+
+    return text($factory, 'probe done');
+}
+
+/**
+ * GET /timeout-probe-cpu/{name} — the same probe, but the handler never waits for anything.
+ *
+ * A pure sha256 loop with no switch() and no I/O: nothing but automatic preemption can take
+ * control away from it, which makes it the case that tells a working handler deadline from
+ * one that only fires on handlers parked in an async call. Bounded at 30s so a regression
+ * fails a test instead of hanging the run.
+ */
+function timeoutProbeCpuRoute(Psr17Factory $factory, string $path): ResponseInterface
+{
+    $marker = timeoutProbeMarker(substr($path, strlen('/timeout-probe-cpu/')));
+
+    @unlink($marker);
+
+    try {
+        $startedAt = microtime(true);
+
+        $hash = '';
+
+        while ((microtime(true) - $startedAt) < 30) {
+            $hash = hash('sha256', $hash);
+        }
+
+        file_put_contents($marker, 'completed');
+    } finally {
         file_put_contents($marker . '.finally', 'ran');
     }
 

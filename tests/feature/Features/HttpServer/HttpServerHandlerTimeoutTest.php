@@ -90,6 +90,42 @@ class HttpServerHandlerTimeoutTest extends BaseHttpServerTestCase
     }
 
     /**
+     * The case that separates a working handler deadline from one that only reaches
+     * handlers parked in an async call: a handler that never yields at all.
+     *
+     * Nothing but automatic preemption can take control away from a loop like this, and
+     * the deadline is delivered from the preemption hook. The client must still get its
+     * status — the write deadline is far away, so there is nothing stopping the 504 —
+     * and the coroutine must be gone, not left spinning behind the answer.
+     */
+    public function testAHandlerInANeverYieldingLoopIsCutAndAnswered(): void
+    {
+        $name = 'cpu-' . bin2hex(random_bytes(4));
+
+        $startedAt = microtime(true);
+
+        [$status] = $this->request(method: 'GET', path: "/timeout-probe-cpu/$name");
+
+        $elapsed = microtime(true) - $startedAt;
+
+        self::assertSame(504, $status, 'the client must get a status, not a dropped connection');
+        self::assertLessThan(5.0, $elapsed, sprintf('the 504 took %.3fs', $elapsed));
+
+        // The loop would run for 30s if nothing stopped it.
+        usleep(2_000_000);
+
+        [, $result] = $this->request(method: 'GET', path: "/timeout-probe-result/$name");
+
+        self::assertSame('unwound', $result, 'the loop was left spinning behind its 504');
+
+        // And the worker that ran it is still serving.
+        [$status, $body] = $this->request(method: 'GET', path: '/');
+
+        self::assertSame(200, $status);
+        self::assertSame('ok', $body);
+    }
+
+    /**
      * @return array<string, int>
      */
     protected static function serverOptions(): array
