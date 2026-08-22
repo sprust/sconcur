@@ -196,6 +196,22 @@ bench-amqp-get:
 bench-amqp-consume:
 	$(PHP_EXT) tests/benchmarks/amqp/consume.php ${c}
 
+# Memory-leak soak for the AMQP feature: runs one scenario in a loop and prints, every
+# five seconds, what the two runtimes hold — the PHP heap and its dangling tasks, the Go
+# goroutine count and heap. Every cycle releases whatever it opened, so a column that only
+# grows is a leak. Scenarios: publish, churn, consume, fanout, errors, confirms,
+# consume-async, stop. Defaults to publish for two minutes.
+#
+# e.g.: make mem-leak-amqp scenario=churn seconds=600
+#
+# The goroutine and Go-heap columns come from the extension's own profiler, which
+# SCONCUR_PPROF_ADDR switches on (ext/pprof.go); without it the run works and reports
+# those two as zero, which hides exactly the half a soak is for.
+mem-leak-amqp:
+	$(DOCKER_COMPOSE) exec -e SCONCUR_PPROF_ADDR=127.0.0.1:6060 php \
+		php -d extension=./ext/build/sconcur.so \
+		tests/mem-leak/amqp-soak.php $(or $(scenario),publish) $(or $(seconds),120)
+
 bench-db-lifecycle:
 	$(PHP_EXT) tests/benchmarks/db/lifecycle.php ${c} ${runs} ${pool}
 

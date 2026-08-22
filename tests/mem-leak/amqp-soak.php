@@ -2,15 +2,20 @@
 
 declare(strict_types=1);
 
-// Soak test for the AMQP feature: runs one scenario in a loop and prints, every cycle,
-// what the three sides are holding — the PHP heap and its dangling tasks, the Go runtime's
-// goroutines and heap, and (sampled separately, see amqp-soak.sh) what the broker sees.
+// Soak test for the AMQP feature: runs one scenario in a loop and prints, every five
+// seconds, what the two runtimes are holding — the PHP heap and its dangling tasks, the Go
+// runtime's goroutines and heap.
 //
 // Everything a cycle creates is released inside that cycle, so any value that only grows
 // is a leak.
 //
-// Usage: php -d extension=./ext/build/sconcur.so tests/mem-leak/amqp-soak.php <scenario> <seconds>
-// The Go-side numbers need the profiler: SCONCUR_PPROF_ADDR=127.0.0.1:6060.
+// Run it through `make mem-leak-amqp scenario=<name> seconds=<n>`, which sets the profiler
+// address the Go-side columns are read from. By hand:
+//
+//   SCONCUR_PPROF_ADDR=127.0.0.1:6060 php -d extension=./ext/build/sconcur.so \
+//       tests/mem-leak/amqp-soak.php <scenario> <seconds>
+//
+// Without SCONCUR_PPROF_ADDR the run still works and reports the two Go columns as zero.
 
 use SConcur\Connection\Extension;
 use SConcur\Features\Amqp\AMQPChannel;

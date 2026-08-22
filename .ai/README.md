@@ -215,7 +215,9 @@ Key enums (string-backed; the 2-3 letter values cross the PHP↔Go boundary):
   (the shared harness the benches include). A new bench goes into its
   technology's directory, named after the operation (`mysql/select-one.php`), and
   gets a `bench-<tech>-<operation>` make target.
-- `tests/mem-leak/` — memory leak stress tests
+- `tests/mem-leak/` — memory leak stress tests. The AMQP soak has a target of its
+  own, `make mem-leak-amqp scenario=<name> seconds=<n>`, which sets the profiler
+  address its Go-side columns are read from
 
 Tests use PHPUnit 11. Add feature tests in `tests/feature/...` with `*Test.php`
 suffixes; async flow tests commonly extend `BaseAsyncTestCase`,
