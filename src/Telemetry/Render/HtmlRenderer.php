@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Telemetry\Render;
 
 use SConcur\Telemetry\Dto\Aggregate;
+use SConcur\Telemetry\Dto\Totals;
 use SConcur\Telemetry\Dto\WorkerEntry;
 
 /**
@@ -109,6 +110,8 @@ class HtmlRenderer
             $workloadWorkersHead = '';
         }
 
+        $groupsTable = $this->groupsTable($aggregate);
+
         $rows = '';
 
         foreach ($aggregate->workers as $worker) {
@@ -126,7 +129,7 @@ class HtmlRenderer
 </body>
 </html>';
 
-        return $head . $totalsTable . $workersTable;
+        return $head . $totalsTable . $groupsTable . $workersTable;
     }
 
     protected function masterTable(Aggregate $aggregate): string
@@ -151,6 +154,69 @@ class HtmlRenderer
 <td>' . $this->mib($master->rssBytes) . '</td>
 </tr>
 </table>';
+    }
+
+    /**
+     * One row per pool. A master runs several, and their workload numbers are not
+     * comparable, so this is the table an operator actually reads; the totals above it
+     * are only meaningful for memory and CPU. Omitted when there is a single pool —
+     * it would just repeat the totals.
+     */
+    protected function groupsTable(Aggregate $aggregate): string
+    {
+        if (count($aggregate->groups) < 2) {
+            return '';
+        }
+
+        $rows = '';
+
+        foreach ($aggregate->groups as $group) {
+            $rows .= '
+<tr>
+<td>' . $this->escape($group->name) . '</td>
+<td>' . $group->workersTotal . '</td>
+<td>' . $group->workersHung . '</td>
+<td>' . $this->mib($group->totals->memory->rssBytes) . '</td>
+<td>' . $this->f1($group->totals->cpuPercent) . '</td>
+<td>' . $group->totals->goroutines . '</td>
+<td>' . $this->workloadCell($group->totals) . '</td>
+</tr>';
+        }
+
+        return '
+<table>
+<caption>Groups</caption>
+<tr>
+<th>group</th><th>workers</th><th>hung</th><th>RSS, MiB</th><th>CPU %</th><th>goroutines</th><th>workload</th>
+</tr>' . $rows . '
+</table>';
+    }
+
+    /**
+     * A pool's workload in one cell, because the columns differ by kind and a table of
+     * unlike pools cannot share them.
+     */
+    protected function workloadCell(Totals $totals): string
+    {
+        if ($totals->requests !== null) {
+            return 'requests ' . $totals->requests->completed
+                . ', avg ' . $this->f1($totals->requests->avgMs) . ' ms'
+                . ', in-flight ' . $totals->requests->inFlight;
+        }
+
+        if ($totals->connections !== null) {
+            return 'connections ' . $totals->connections->active
+                . ', accepted ' . $totals->connections->totalAccepted;
+        }
+
+        if ($totals->consumers !== null) {
+            return 'delivered ' . $totals->consumers->delivered
+                . ', acked ' . $totals->consumers->acked
+                . ', refused ' . $totals->consumers->refused
+                . ', in-flight ' . $totals->consumers->inFlight;
+        }
+
+        return '—';
     }
 
     protected function workerRow(WorkerEntry $worker, bool $hasRequests, bool $hasConsumers = false): string

@@ -65,7 +65,7 @@ into the workers — nothing to configure on the worker side.
   "workerScript": "/app/worker.php",
   "workerCount": 8,
   "runtimeDir": "/run/sconcur",
-  "name": "sconcur-http-server",
+  "name": "sconcur-servers",
   "panelPort": 8081,
   "adminToken": "23c30b40...9894c3ec",
   "server": {
@@ -183,7 +183,7 @@ The same data in three representations, chosen by `Accept`. The HTTP pool's JSON
 ```json
 {
   "generatedAt": "2026-06-24T12:00:00+00:00",
-  "name": "sconcur-http-server",
+  "name": "sconcur-servers",
   "workersTotal": 8,
   "workersHung": 0,
   "master": {
@@ -199,9 +199,23 @@ The same data in three representations, chosen by `Accept`. The HTTP pool's JSON
     "goroutines": 192,
     "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
   },
+  "groups": [
+    {
+      "name": "http",
+      "workersTotal": 3,
+      "workersHung": 0,
+      "totals": {
+        "memory": { "rssBytes": 125829120, "goRuntimeBytes": 37748736, "nonExtensionBytes": 88080384 },
+        "cpuPercent": 10.6,
+        "goroutines": 72,
+        "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
+      }
+    }
+  ],
   "workers": [
     {
       "pid": 12346,
+      "group": "http",
       "hung": false,
       "snapshotAgeMs": 600,
       "startedAt": "2026-06-24T11:54:47+00:00",
@@ -230,12 +244,18 @@ Prometheus carries no strings:
 ```text
 # HELP sconcur_pool_requests_completed_total Requests completed across the pool.
 # TYPE sconcur_pool_requests_completed_total counter
-sconcur_pool_requests_completed_total{name="sconcur-http-server"} 843210
-sconcur_master_start_time_seconds{name="sconcur-http-server"} 1750762800
-sconcur_master_memory_rss_bytes{name="sconcur-http-server"} 16777216
-sconcur_worker_start_time_seconds{name="sconcur-http-server",pid="12346"} 1750766087
-sconcur_worker_requests_completed_total{name="sconcur-http-server",pid="12346"} 105432
+sconcur_pool_requests_completed_total{name="sconcur-servers"} 843210
+sconcur_master_start_time_seconds{name="sconcur-servers"} 1750762800
+sconcur_master_memory_rss_bytes{name="sconcur-servers"} 16777216
+sconcur_worker_start_time_seconds{name="sconcur-servers",pid="12346"} 1750766087
+sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346"} 105432
 ```
+
+`groups` sums each pool of the master on its own, while `totals` sums all of its
+workers. Adding up the workload of unlike pools means nothing, so the workload
+numbers are read off `groups`; in `totals` it is memory, CPU and goroutines that
+carry meaning. A worker says which pool it belongs to in `group`, taken from the
+`<group>:<slot>` label it stamps its snapshots with.
 
 ## Push-protocol contract
 

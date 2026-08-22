@@ -173,7 +173,7 @@ the Go side:
 ## Running under the worker master
 
 The server is a server-agnostic worker for `bin/sconcur-server`; an example config
-is `config/sconcur.ws-server.config.json`.
+is the `ws` group of `config/sconcur.servers.config.json`.
 
 ```php
 $server = WsServer::fromArgs($_SERVER['argv']);

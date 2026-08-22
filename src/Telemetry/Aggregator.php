@@ -7,6 +7,7 @@ namespace SConcur\Telemetry;
 use SConcur\Telemetry\Dto\Aggregate;
 use SConcur\Telemetry\Dto\Connections;
 use SConcur\Telemetry\Dto\Consumers;
+use SConcur\Telemetry\Dto\GroupAggregate;
 use SConcur\Telemetry\Dto\MasterInfo;
 use SConcur\Telemetry\Dto\Memory;
 use SConcur\Telemetry\Dto\Requests;
@@ -42,6 +43,102 @@ class Aggregator
         $workers     = [];
         $workersHung = 0;
 
+        /** @var array<string, list<StoredSnapshot>> $byGroup */
+        $byGroup = [];
+
+        foreach ($storedSnapshots as $storedSnapshot) {
+            $snapshot      = $storedSnapshot->snapshot;
+            $snapshotAgeMs = $nowMs - $storedSnapshot->receivedAtMs;
+            $hung          = $snapshotAgeMs > $this->hungThresholdMs;
+
+            if ($hung) {
+                $workersHung++;
+            }
+
+            $group = static::groupOf($snapshot->name);
+
+            $byGroup[$group][] = $storedSnapshot;
+
+            $workers[] = new WorkerEntry(
+                pid: $snapshot->pid,
+                group: $group,
+                hung: $hung,
+                snapshotAgeMs: $snapshotAgeMs,
+                startedAtMs: $snapshot->startedAtMs,
+                uptimeSeconds: $snapshot->uptimeSeconds,
+                memory: $snapshot->memory,
+                cpuPercent: $snapshot->cpuPercent,
+                goroutines: $snapshot->goroutines,
+                requests: $snapshot->requests,
+                connections: $snapshot->connections,
+                consumers: $snapshot->consumers,
+            );
+        }
+
+        $groups = [];
+
+        foreach ($byGroup as $groupName => $groupSnapshots) {
+            $groups[] = new GroupAggregate(
+                name: $groupName,
+                workersTotal: count($groupSnapshots),
+                workersHung: $this->countHung($groupSnapshots, $nowMs),
+                totals: $this->sum($groupSnapshots),
+            );
+        }
+
+        return new Aggregate(
+            generatedAt: $generatedAt,
+            name: $name,
+            workersTotal: count($workers),
+            workersHung: $workersHung,
+            totals: $this->sum($storedSnapshots),
+            workers: $workers,
+            master: $master,
+            groups: $groups,
+        );
+    }
+
+    /**
+     * The pool a worker belongs to, read off the label it stamps its snapshots with:
+     * "<group>:<slot>". A label with no slot is taken whole — a worker started by hand,
+     * outside a master, still lands somewhere sensible.
+     */
+    protected static function groupOf(string $name): string
+    {
+        $separator = strrpos($name, ':');
+
+        if ($separator === false || $separator === 0) {
+            return $name;
+        }
+
+        return substr($name, 0, $separator);
+    }
+
+    /**
+     * @param list<StoredSnapshot> $storedSnapshots
+     */
+    protected function countHung(array $storedSnapshots, int $nowMs): int
+    {
+        $hung = 0;
+
+        foreach ($storedSnapshots as $storedSnapshot) {
+            if (($nowMs - $storedSnapshot->receivedAtMs) > $this->hungThresholdMs) {
+                $hung++;
+            }
+        }
+
+        return $hung;
+    }
+
+    /**
+     * Sums a set of snapshots. Process metrics add up for any mix of workers; a
+     * workload section is filled only when somebody in the set reported it, and its
+     * average is weighted by what that somebody actually finished.
+     *
+     * @param list<StoredSnapshot> $storedSnapshots
+     */
+    protected function sum(array $storedSnapshots): Totals
+    {
         $rssBytes          = 0;
         $goRuntimeBytes    = 0;
         $nonExtensionBytes = 0;
@@ -71,13 +168,7 @@ class Aggregator
         $consumersInFlightOver15 = 0;
 
         foreach ($storedSnapshots as $storedSnapshot) {
-            $snapshot      = $storedSnapshot->snapshot;
-            $snapshotAgeMs = $nowMs - $storedSnapshot->receivedAtMs;
-            $hung          = $snapshotAgeMs > $this->hungThresholdMs;
-
-            if ($hung) {
-                $workersHung++;
-            }
+            $snapshot = $storedSnapshot->snapshot;
 
             $rssBytes += $snapshot->memory->rssBytes;
             $goRuntimeBytes += $snapshot->memory->goRuntimeBytes;
@@ -115,20 +206,6 @@ class Aggregator
                 $consumersInFlight5to15s += $snapshot->consumers->inFlight5to15s;
                 $consumersInFlightOver15 += $snapshot->consumers->inFlightOver15s;
             }
-
-            $workers[] = new WorkerEntry(
-                pid: $snapshot->pid,
-                hung: $hung,
-                snapshotAgeMs: $snapshotAgeMs,
-                startedAtMs: $snapshot->startedAtMs,
-                uptimeSeconds: $snapshot->uptimeSeconds,
-                memory: $snapshot->memory,
-                cpuPercent: $snapshot->cpuPercent,
-                goroutines: $snapshot->goroutines,
-                requests: $snapshot->requests,
-                connections: $snapshot->connections,
-                consumers: $snapshot->consumers,
-            );
         }
 
         $totalsRequests = null;
@@ -165,7 +242,7 @@ class Aggregator
             );
         }
 
-        $totals = new Totals(
+        return new Totals(
             memory: new Memory(
                 rssBytes: $rssBytes,
                 goRuntimeBytes: $goRuntimeBytes,
@@ -176,16 +253,6 @@ class Aggregator
             requests: $totalsRequests,
             connections: $totalsConnections,
             consumers: $totalsConsumers,
-        );
-
-        return new Aggregate(
-            generatedAt: $generatedAt,
-            name: $name,
-            workersTotal: count($workers),
-            workersHung: $workersHung,
-            totals: $totals,
-            workers: $workers,
-            master: $master,
         );
     }
 }

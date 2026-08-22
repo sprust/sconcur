@@ -315,8 +315,8 @@ readonly class MasterConfig
     }
 
     /**
-     * The groups with the pool scope added to their environment. It travels via env
-     * rather than argv so the worker-agnostic master does not feed a non-matching
+     * The groups with the telemetry scope added to their environment. It travels via
+     * env rather than argv so the worker-agnostic master does not feed a non-matching
      * worker an unknown --flag: the bundled servers and QueueConsumer read it, anything
      * else ignores it. A group's own env wins on a collision.
      *
@@ -324,7 +324,10 @@ readonly class MasterConfig
      */
     protected function withRuntimeEnvironment(): array
     {
-        $shared = ['SCONCUR_SERVER_NAME' => $this->name];
+        // The pool label is not set here: it is per worker, not per master, and the
+        // group builds it as "<group>:<slot>" (WorkerGroup::buildEnv) so the collector
+        // can tell the pools of one master apart.
+        $shared = [];
 
         // Only point workers at the collector socket when telemetry is actually on
         // (panel port + token) — otherwise they would dial a socket nobody listens on

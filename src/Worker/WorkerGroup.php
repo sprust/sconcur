@@ -335,7 +335,7 @@ class WorkerGroup
             $process = new WorkerProcess(
                 command: $this->buildCommand(),
                 cwd: $this->cwd,
-                env: $this->buildEnv(),
+                env: $this->buildEnv($index),
             );
         } catch (WorkerSpawnException $exception) {
             $backoffMs = $this->nextBackoffMs($index, uptimeSeconds: 0.0);
@@ -483,15 +483,22 @@ class WorkerGroup
     }
 
     /**
-     * The worker environment: the inherited environment with the group's extra env
-     * merged over it. No master metadata is injected here — that goes via argv (see
-     * buildCommand).
+     * The worker environment: the inherited environment, the pool label, then the
+     * group's own env over both. No master metadata is injected here — that goes via
+     * argv (see buildCommand).
+     *
+     * The label is "<group>:<slot>", which is what the worker puts on the snapshots it
+     * pushes. It carries the slot so two workers of one pool are told apart, and the
+     * group so the collector can add up a pool rather than a whole master — with
+     * several pools under one supervisor, a master-wide sum would add unlike things.
      *
      * @return array<string, string>
      */
-    protected function buildEnv(): array
+    protected function buildEnv(int $index): array
     {
         $env = getenv();
+
+        $env['SCONCUR_SERVER_NAME'] = $this->config->name . ':' . $index;
 
         foreach ($this->config->env as $key => $value) {
             $env[$key] = $value;

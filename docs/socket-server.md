@@ -165,7 +165,7 @@ in the shared log.
 ## Running under the worker master
 
 The server is a server-agnostic worker for `bin/sconcur-server`; an example config
-is `config/sconcur.socket-server.config.json`. The master expands the `server`
+is the `socket` group of `config/sconcur.servers.config.json`. The master expands the `server`
 block of that config into `--key=value` argv (which `fromArgs` parses) and passes
 its own pid as `--masterPid` for the orphan check — details in the
 [worker master](worker-master.md).

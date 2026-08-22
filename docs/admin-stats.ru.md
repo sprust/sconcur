@@ -65,7 +65,7 @@ flowchart TB
   "workerScript": "/app/worker.php",
   "workerCount": 8,
   "runtimeDir": "/run/sconcur",
-  "name": "sconcur-http-server",
+  "name": "sconcur-servers",
   "panelPort": 8081,
   "adminToken": "23c30b40...9894c3ec",
   "server": {
@@ -179,7 +179,7 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 ```json
 {
   "generatedAt": "2026-06-24T12:00:00+00:00",
-  "name": "sconcur-http-server",
+  "name": "sconcur-servers",
   "workersTotal": 8,
   "workersHung": 0,
   "master": {
@@ -195,9 +195,23 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
     "goroutines": 192,
     "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
   },
+  "groups": [
+    {
+      "name": "http",
+      "workersTotal": 3,
+      "workersHung": 0,
+      "totals": {
+        "memory": { "rssBytes": 125829120, "goRuntimeBytes": 37748736, "nonExtensionBytes": 88080384 },
+        "cpuPercent": 10.6,
+        "goroutines": 72,
+        "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
+      }
+    }
+  ],
   "workers": [
     {
       "pid": 12346,
+      "group": "http",
       "hung": false,
       "snapshotAgeMs": 600,
       "startedAt": "2026-06-24T11:54:47+00:00",
@@ -225,12 +239,18 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 ```text
 # HELP sconcur_pool_requests_completed_total Requests completed across the pool.
 # TYPE sconcur_pool_requests_completed_total counter
-sconcur_pool_requests_completed_total{name="sconcur-http-server"} 843210
-sconcur_master_start_time_seconds{name="sconcur-http-server"} 1750762800
-sconcur_master_memory_rss_bytes{name="sconcur-http-server"} 16777216
-sconcur_worker_start_time_seconds{name="sconcur-http-server",pid="12346"} 1750766087
-sconcur_worker_requests_completed_total{name="sconcur-http-server",pid="12346"} 105432
+sconcur_pool_requests_completed_total{name="sconcur-servers"} 843210
+sconcur_master_start_time_seconds{name="sconcur-servers"} 1750762800
+sconcur_master_memory_rss_bytes{name="sconcur-servers"} 16777216
+sconcur_worker_start_time_seconds{name="sconcur-servers",pid="12346"} 1750766087
+sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346"} 105432
 ```
+
+`groups` — итог по каждому пулу мастера отдельно, а `totals` суммирует всех его
+воркеров. Складывать нагрузку разнородных пулов смысла нет, поэтому цифры нагрузки
+читают по `groups`; в `totals` осмысленны память, CPU и горутины. Воркер сообщает,
+чей он, полем `group` — оно берётся из метки `<группа>:<слот>`, которой он помечает
+свои снапшоты.
 
 ## Контракт push-протокола
 

@@ -4,11 +4,11 @@
         "-d",
         "extension=/sconcur/ext/build/sconcur.so"
     ],
-    "panelPort": 9101,
+    "panelPort": 9301,
     "adminToken": "23c30b4089383dd332585af6f02ff65de38179d52546b770942bd63e9894c3ec",
     "runtimeDir": "/sconcur/tests/storage/servers",
     "logDir": "/sconcur/tests/storage/logs",
-    "name": "sconcur-socket-server",
+    "name": "sconcur-rabbitmq",
     "rotateDays": 3,
     "logTo": "both",
     "restartPolicy": "always",
@@ -17,19 +17,17 @@
     "maxRestartBackoffMs": 30000,
     "groups": [
         {
-            "name": "socket",
-            "workerScript": "/sconcur/tests/servers/socket/socket-server.php",
-            "workerCount": 3,
-            "workerArgs": [],
+            "name": "demo",
+            "workerScript": "/sconcur/tests/consumers/amqp/amqp-consumer.php",
+            "workerCount": 1,
             "server": {
-                "address": "0.0.0.0:9100",
-                "reusePort": true,
-                "maxConnections": 0,
-                "maxConcurrency": 0,
-                "maxMessageBytes": 1048576,
-                "readTimeoutMs": 0,
-                "writeTimeoutMs": 30000,
-                "shutdownTimeoutMs": 10000
+                "queues": [
+                    {
+                        "name": "sconcur_demo_queue",
+                        "coroutineCount": 4
+                    }
+                ],
+                "prefetchCount": 1
             }
         }
     ]

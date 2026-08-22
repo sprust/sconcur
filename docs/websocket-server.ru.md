@@ -170,7 +170,7 @@ push-соединение, в которое клиент ничего не шл
 ## Запуск под мастером воркеров
 
 Сервер — «server-agnostic» воркер для `bin/sconcur-server`; пример конфига —
-`config/sconcur.ws-server.config.json`.
+группа `ws` в `config/sconcur.servers.config.json`.
 
 ```php
 $server = WsServer::fromArgs($_SERVER['argv']);
