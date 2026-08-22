@@ -8,9 +8,13 @@ use SConcur\Transport\PayloadParametersInterface;
 
 /**
  * Parameters of a Connect command: the broker credentials, the TLS material and every
- * tuning value ext-amqp keeps on AMQPConnection. Carries the mandatory execution
- * bounds of a long-lived resource — the connect deadline plus the read, write and RPC
- * deadlines every later command on this connection is bounded by.
+ * tuning value ext-amqp keeps on AMQPConnection. The execution bound it carries is
+ * connectTimeoutMs, which bounds the dial.
+ *
+ * The connection's other three deadlines — read, write and RPC — are not here: each of
+ * them bounds a command rather than the connection, so AMQPConnection puts them on the
+ * commands themselves (RPC on every one-shot method, write on a publish, read on the wait
+ * for a consumer's next delivery).
  *
  * Go: payloads.ConnectParams (ext/internal/features/amqp/payloads/payloads.go).
  */
@@ -23,9 +27,6 @@ readonly class ConnectPayloadParameters implements PayloadParametersInterface
         protected string $login,
         protected string $password,
         protected int $connectTimeoutMs,
-        protected int $readTimeoutMs,
-        protected int $writeTimeoutMs,
-        protected int $rpcTimeoutMs,
         protected int $channelMax,
         protected int $frameMaxBytes,
         protected int $heartbeatSeconds,
@@ -50,9 +51,6 @@ readonly class ConnectPayloadParameters implements PayloadParametersInterface
             'lg' => $this->login,
             'pw' => $this->password,
             'ct' => $this->connectTimeoutMs,
-            'rt' => $this->readTimeoutMs,
-            'wt' => $this->writeTimeoutMs,
-            'rc' => $this->rpcTimeoutMs,
             'cx' => $this->channelMax,
             'fx' => $this->frameMaxBytes,
             'hb' => $this->heartbeatSeconds,

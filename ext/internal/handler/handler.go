@@ -124,10 +124,14 @@ func detachable(method types.Method) bool {
 	case types.MethodHttpRespond:
 		return true
 	case types.MethodAmqp:
-		// Only the two release commands travel this way — a channel or connection whose
-		// PHP object was destroyed while its coroutine was being unwound, where nothing
-		// can be awaited any more. The feature answers them off the PHP thread (see
-		// amqp_feature.Handle), so this stays within the no-blocking rule above.
+		// Detached pushes exist here for the two release commands — a channel or a
+		// connection whose PHP object was destroyed while its coroutine was being
+		// unwound, where nothing can be awaited any more. Which command a message
+		// carries is not visible at this level (it rides inside the payload envelope),
+		// so the allow-list of the two lives one layer down, in
+		// amqp_feature.handleDetached, which logs and drops anything else. What this
+		// switch answers for is the no-blocking rule above, and the feature keeps it:
+		// both releases wait on the broker, so both are handed to a goroutine.
 		return true
 	default:
 		return false

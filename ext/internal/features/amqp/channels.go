@@ -69,8 +69,8 @@ type channelEntry struct {
 	// confirm mode, so a second one does not register another listener.
 	confirmClaimed bool
 	pending        int
-	confirmations []payloads.Confirmation
-	returns       []payloads.ReturnedMessage
+	confirmations  []payloads.Confirmation
+	returns        []payloads.ReturnedMessage
 	// waiters are the wait loops parked on this channel, woken on every confirm and
 	// every return. One channel per waiter: a shared one would let a confirm wake the
 	// loop waiting for a return, which would then park again and miss its own event.
@@ -500,14 +500,12 @@ func (e *channelEntry) startConfirmMode(ctx context.Context, noWait bool) error 
 
 	e.mutex.Unlock()
 
-	var confirms chan amqp091.Confirmation
-
 	err := e.do(ctx, func(channel *amqp091.Channel) error {
 		if confirmError := channel.Confirm(noWait); confirmError != nil {
 			return confirmError
 		}
 
-		confirms = channel.NotifyPublish(make(chan amqp091.Confirmation, confirmQueueSize))
+		confirms := channel.NotifyPublish(make(chan amqp091.Confirmation, confirmQueueSize))
 
 		// Set while this goroutine still holds the channel: a publish waiting for the
 		// same lock is counted, and one that already went through was published before
@@ -516,18 +514,32 @@ func (e *channelEntry) startConfirmMode(ctx context.Context, noWait bool) error 
 		e.confirming = true
 		e.mutex.Unlock()
 
+		// The collector starts here, beside the flag it belongs to, and not after do()
+		// returns: do() stops waiting when the command deadline passes or the flow stops,
+		// while this goroutine runs on. A channel left in confirm mode with nobody
+		// draining the listener would strand every later waitForConfirm() on it (pending
+		// would never fall back to zero) and, once the buffer filled, hold up the whole
+		// connection's reader for the driver's notify timeout on every confirmation.
+		go e.collectConfirms(confirms)
+
 		return nil
 	})
 
 	if err != nil {
+		// Given back only if confirm mode never engaged. The deadline may well have
+		// passed while the broker was already answering, and that channel is in confirm
+		// mode for good — handing the claim back there would let the next caller register
+		// a second listener and count every confirmation twice.
 		e.mutex.Lock()
-		e.confirmClaimed = false
+
+		if !e.confirming {
+			e.confirmClaimed = false
+		}
+
 		e.mutex.Unlock()
 
 		return err
 	}
-
-	go e.collectConfirms(confirms)
 
 	return nil
 }
@@ -635,6 +647,28 @@ func (e *channelEntry) waiterLocked() chan struct{} {
 	return waiter
 }
 
+// dropWaiter unregisters a waiter whose wait ended on its own — a deadline, or a stopped
+// flow — rather than on an event. Nothing but wake() clears the list otherwise, and a
+// wake may never come: a channel polled with waitForBasicReturn() that is handed no
+// returned message would collect one dead waiter per call for the rest of its life.
+//
+// A no-op when the waiter is already gone, which is the common race: a wake() that fired
+// while this caller was choosing its select case took the whole list with it.
+func (e *channelEntry) dropWaiter(waiter chan struct{}) {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+
+	for index, registered := range e.waiters {
+		if registered != waiter {
+			continue
+		}
+
+		e.waiters = append(e.waiters[:index], e.waiters[index+1:]...)
+
+		return
+	}
+}
+
 // waitForConfirms waits until every message published since the last wait has been
 // confirmed or rejected, and returns everything collected on the way, the returned messages
 // included (ext-amqp's waitForConfirm catches basic.return too).
@@ -696,10 +730,15 @@ func (e *channelEntry) wait(
 		select {
 		case <-waiter:
 		case <-deadline:
+			e.dropWaiter(waiter)
+
 			return payloads.WaitResult{}, errWaitTimeout
 		case <-e.gone:
+			// No dropWaiter here: closing the channel already took the whole list.
 			return payloads.WaitResult{}, amqp091.ErrClosed
 		case <-ctx.Done():
+			e.dropWaiter(waiter)
+
 			return payloads.WaitResult{}, ctx.Err()
 		}
 	}

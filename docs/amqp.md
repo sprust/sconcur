@@ -250,7 +250,9 @@ building one per request is cheap. They share it in the broker's eyes as well â€
 an exclusive queue declared through one is usable through the other, where
 `ext-amqp` would give the second object a connection of its own and the broker
 would refuse it. `connection_name` is part of the pool key, so naming a
-connection is how an application asks for one that is not shared. A pooled connection with no owners left is
+connection is how an application asks for one that is not shared. `connect_timeout` is
+the one connection parameter left out of the key: it bounds the dial and nothing the
+broker ever sees. A pooled connection with no owners left is
 closed after five minutes of idling, and `disconnect()` (or the destructor of a
 dropped object) gives up ownership.
 

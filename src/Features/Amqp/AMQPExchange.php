@@ -344,8 +344,11 @@ class AMQPExchange extends AmqpResource
     /**
      * @param array<string, mixed> $arguments
      */
-    protected function bindParameters(string $exchangeName, ?string $routingKey, array $arguments): ExchangeBindPayloadParameters
-    {
+    protected function bindParameters(
+        string $exchangeName,
+        ?string $routingKey,
+        array $arguments,
+    ): ExchangeBindPayloadParameters {
         return new ExchangeBindPayloadParameters(
             channelId: $this->channel->internalId,
             destination: (string) $this->name,

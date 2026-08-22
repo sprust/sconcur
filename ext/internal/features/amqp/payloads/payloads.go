@@ -20,8 +20,13 @@ type Envelope struct {
 }
 
 // ConnectParams is the `p` content of a Connect command: the credentials, the TLS
-// material and the tuning of one connection. Timeouts are in milliseconds; 0 leaves the
-// default of this package in place (and, for ReadTimeoutMs, means "wait indefinitely").
+// material and the tuning of one connection. ConnectTimeoutMs is in milliseconds and
+// bounds the dial; 0 leaves the default of this package in place.
+//
+// The other three deadlines an AMQPConnection carries — read, write and rpc — do not
+// travel here: they bound a command, not the connection, and PHP puts each of them on the
+// command it belongs to (rpc on every one-shot method, write on a publish, read on the
+// wait for a consumer's next delivery).
 // PHP: SConcur\Features\Amqp\Payloads\ConnectPayloadParameters.
 type ConnectParams struct {
 	Host             string `json:"ho" msgpack:"ho"`
@@ -30,9 +35,6 @@ type ConnectParams struct {
 	Login            string `json:"lg" msgpack:"lg"`
 	Password         string `json:"pw" msgpack:"pw"`
 	ConnectTimeoutMs int    `json:"ct" msgpack:"ct"`
-	ReadTimeoutMs    int    `json:"rt" msgpack:"rt"`
-	WriteTimeoutMs   int    `json:"wt" msgpack:"wt"`
-	RpcTimeoutMs     int    `json:"rc" msgpack:"rc"`
 	ChannelMax       int    `json:"cx" msgpack:"cx"`
 	FrameMaxBytes    int    `json:"fx" msgpack:"fx"`
 	HeartbeatSeconds int    `json:"hb" msgpack:"hb"`
@@ -111,16 +113,16 @@ type QosParams struct {
 // the declare-passive form.
 // PHP: SConcur\Features\Amqp\Payloads\ExchangeDeclarePayloadParameters.
 type ExchangeDeclareParams struct {
-	ChannelId  string         `json:"chid" msgpack:"chid"`
-	Name       string         `json:"na" msgpack:"na"`
-	Type       string         `json:"ty" msgpack:"ty"`
-	Passive    bool           `json:"pa" msgpack:"pa"`
-	Durable    bool           `json:"du" msgpack:"du"`
-	AutoDelete bool           `json:"ad" msgpack:"ad"`
-	Internal   bool           `json:"in" msgpack:"in"`
-	NoWait     bool           `json:"nw" msgpack:"nw"`
-	Arguments  Table          `json:"ar" msgpack:"ar"`
-	TimeoutMs  int            `json:"to" msgpack:"to"`
+	ChannelId  string `json:"chid" msgpack:"chid"`
+	Name       string `json:"na" msgpack:"na"`
+	Type       string `json:"ty" msgpack:"ty"`
+	Passive    bool   `json:"pa" msgpack:"pa"`
+	Durable    bool   `json:"du" msgpack:"du"`
+	AutoDelete bool   `json:"ad" msgpack:"ad"`
+	Internal   bool   `json:"in" msgpack:"in"`
+	NoWait     bool   `json:"nw" msgpack:"nw"`
+	Arguments  Table  `json:"ar" msgpack:"ar"`
+	TimeoutMs  int    `json:"to" msgpack:"to"`
 }
 
 // ExchangeDeleteParams is the `p` content of an ExchangeDelete command.
@@ -137,28 +139,28 @@ type ExchangeDeleteParams struct {
 // messages flow from the source exchange to the destination one.
 // PHP: SConcur\Features\Amqp\Payloads\ExchangeBindPayloadParameters.
 type ExchangeBindParams struct {
-	ChannelId   string         `json:"chid" msgpack:"chid"`
-	Destination string         `json:"ds" msgpack:"ds"`
-	Source      string         `json:"sr" msgpack:"sr"`
-	RoutingKey  string         `json:"rk" msgpack:"rk"`
-	NoWait      bool           `json:"nw" msgpack:"nw"`
-	Arguments   Table          `json:"ar" msgpack:"ar"`
-	TimeoutMs   int            `json:"to" msgpack:"to"`
+	ChannelId   string `json:"chid" msgpack:"chid"`
+	Destination string `json:"ds" msgpack:"ds"`
+	Source      string `json:"sr" msgpack:"sr"`
+	RoutingKey  string `json:"rk" msgpack:"rk"`
+	NoWait      bool   `json:"nw" msgpack:"nw"`
+	Arguments   Table  `json:"ar" msgpack:"ar"`
+	TimeoutMs   int    `json:"to" msgpack:"to"`
 }
 
 // QueueDeclareParams is the `p` content of a QueueDeclare command; an empty Name asks the
 // broker to generate one, and Passive selects the declare-passive form.
 // PHP: SConcur\Features\Amqp\Payloads\QueueDeclarePayloadParameters.
 type QueueDeclareParams struct {
-	ChannelId  string         `json:"chid" msgpack:"chid"`
-	Name       string         `json:"na" msgpack:"na"`
-	Passive    bool           `json:"pa" msgpack:"pa"`
-	Durable    bool           `json:"du" msgpack:"du"`
-	Exclusive  bool           `json:"ex" msgpack:"ex"`
-	AutoDelete bool           `json:"ad" msgpack:"ad"`
-	NoWait     bool           `json:"nw" msgpack:"nw"`
-	Arguments  Table          `json:"ar" msgpack:"ar"`
-	TimeoutMs  int            `json:"to" msgpack:"to"`
+	ChannelId  string `json:"chid" msgpack:"chid"`
+	Name       string `json:"na" msgpack:"na"`
+	Passive    bool   `json:"pa" msgpack:"pa"`
+	Durable    bool   `json:"du" msgpack:"du"`
+	Exclusive  bool   `json:"ex" msgpack:"ex"`
+	AutoDelete bool   `json:"ad" msgpack:"ad"`
+	NoWait     bool   `json:"nw" msgpack:"nw"`
+	Arguments  Table  `json:"ar" msgpack:"ar"`
+	TimeoutMs  int    `json:"to" msgpack:"to"`
 }
 
 // QueueDeclareResult answers a QueueDeclare: the name (the generated one when the request
@@ -191,13 +193,13 @@ type MessageCountResult struct {
 // QueueBindParams is the `p` content of a QueueBind or QueueUnbind command.
 // PHP: SConcur\Features\Amqp\Payloads\QueueBindPayloadParameters.
 type QueueBindParams struct {
-	ChannelId    string         `json:"chid" msgpack:"chid"`
-	QueueName    string         `json:"na" msgpack:"na"`
-	ExchangeName string         `json:"en" msgpack:"en"`
-	RoutingKey   string         `json:"rk" msgpack:"rk"`
-	NoWait       bool           `json:"nw" msgpack:"nw"`
-	Arguments    Table          `json:"ar" msgpack:"ar"`
-	TimeoutMs    int            `json:"to" msgpack:"to"`
+	ChannelId    string `json:"chid" msgpack:"chid"`
+	QueueName    string `json:"na" msgpack:"na"`
+	ExchangeName string `json:"en" msgpack:"en"`
+	RoutingKey   string `json:"rk" msgpack:"rk"`
+	NoWait       bool   `json:"nw" msgpack:"nw"`
+	Arguments    Table  `json:"ar" msgpack:"ar"`
+	TimeoutMs    int    `json:"to" msgpack:"to"`
 }
 
 // QueuePurgeParams is the `p` content of a QueuePurge command.
@@ -217,19 +219,19 @@ type QueuePurgeParams struct {
 // (docs/amqp.md lists it among the deviations).
 // PHP: SConcur\Features\Amqp\Support\PropertiesCodec.
 type Properties struct {
-	ContentType     string         `json:"ct,omitempty" msgpack:"ct,omitempty"`
-	ContentEncoding string         `json:"ce,omitempty" msgpack:"ce,omitempty"`
-	Headers         Table          `json:"hd,omitempty" msgpack:"hd,omitempty"`
-	DeliveryMode    int            `json:"dm,omitempty" msgpack:"dm,omitempty"`
-	Priority        int            `json:"pr,omitempty" msgpack:"pr,omitempty"`
-	CorrelationId   string         `json:"ci,omitempty" msgpack:"ci,omitempty"`
-	ReplyTo         string         `json:"rp,omitempty" msgpack:"rp,omitempty"`
-	Expiration      string         `json:"ep,omitempty" msgpack:"ep,omitempty"`
-	MessageId       string         `json:"mi,omitempty" msgpack:"mi,omitempty"`
-	Timestamp       int64          `json:"ts,omitempty" msgpack:"ts,omitempty"`
-	Type            string         `json:"ty,omitempty" msgpack:"ty,omitempty"`
-	UserId          string         `json:"ui,omitempty" msgpack:"ui,omitempty"`
-	AppId           string         `json:"ai,omitempty" msgpack:"ai,omitempty"`
+	ContentType     string `json:"ct,omitempty" msgpack:"ct,omitempty"`
+	ContentEncoding string `json:"ce,omitempty" msgpack:"ce,omitempty"`
+	Headers         Table  `json:"hd,omitempty" msgpack:"hd,omitempty"`
+	DeliveryMode    int    `json:"dm,omitempty" msgpack:"dm,omitempty"`
+	Priority        int    `json:"pr,omitempty" msgpack:"pr,omitempty"`
+	CorrelationId   string `json:"ci,omitempty" msgpack:"ci,omitempty"`
+	ReplyTo         string `json:"rp,omitempty" msgpack:"rp,omitempty"`
+	Expiration      string `json:"ep,omitempty" msgpack:"ep,omitempty"`
+	MessageId       string `json:"mi,omitempty" msgpack:"mi,omitempty"`
+	Timestamp       int64  `json:"ts,omitempty" msgpack:"ts,omitempty"`
+	Type            string `json:"ty,omitempty" msgpack:"ty,omitempty"`
+	UserId          string `json:"ui,omitempty" msgpack:"ui,omitempty"`
+	AppId           string `json:"ai,omitempty" msgpack:"ai,omitempty"`
 }
 
 // PublishParams is the `p` content of a Publish command.
@@ -273,14 +275,14 @@ type Delivery struct {
 // opened", which PHP answers from the stream key it kept.
 // PHP: SConcur\Features\Amqp\Payloads\ConsumePayloadParameters.
 type ConsumeParams struct {
-	ChannelId   string         `json:"chid" msgpack:"chid"`
-	QueueName   string         `json:"na" msgpack:"na"`
-	ConsumerTag string         `json:"tg" msgpack:"tg"`
-	AutoAck     bool           `json:"aa" msgpack:"aa"`
-	Exclusive   bool           `json:"ex" msgpack:"ex"`
-	NoLocal     bool           `json:"nl" msgpack:"nl"`
-	NoWait      bool           `json:"nw" msgpack:"nw"`
-	Arguments   Table          `json:"ar" msgpack:"ar"`
+	ChannelId   string `json:"chid" msgpack:"chid"`
+	QueueName   string `json:"na" msgpack:"na"`
+	ConsumerTag string `json:"tg" msgpack:"tg"`
+	AutoAck     bool   `json:"aa" msgpack:"aa"`
+	Exclusive   bool   `json:"ex" msgpack:"ex"`
+	NoLocal     bool   `json:"nl" msgpack:"nl"`
+	NoWait      bool   `json:"nw" msgpack:"nw"`
+	Arguments   Table  `json:"ar" msgpack:"ar"`
 	// ReadTimeoutMs bounds the wait for the next delivery; 0 waits indefinitely.
 	ReadTimeoutMs int `json:"rt" msgpack:"rt"`
 	// TimeoutMs bounds the basic.consume that opens the consumer — the consumer itself

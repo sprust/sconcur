@@ -294,3 +294,98 @@ func newTestEntry() *channelEntry {
 		gone:      make(chan struct{}),
 	}
 }
+
+func TestTheConnectTimeoutDoesNotSplitThePool(t *testing.T) {
+	base := payloads.ConnectParams{
+		Host:     "broker",
+		Port:     5672,
+		Vhost:    "/",
+		Login:    "user",
+		Password: "secret",
+	}
+
+	slowDial := base
+	slowDial.ConnectTimeoutMs = 30_000
+
+	// It bounds the dial and nothing the broker ever sees, so two AMQPConnection objects
+	// differing only there must share one connection — which is what the same credentials
+	// promise.
+	if connectionKeyFromParams(slowDial) != connectionKeyFromParams(base) {
+		t.Fatal("the connect timeout must not be part of the pool key")
+	}
+}
+
+func TestATimedOutWaitLeavesNoWaiterBehind(t *testing.T) {
+	entry := newTestEntry()
+
+	for range 3 {
+		if _, err := entry.waitForReturns(context.Background(), 10*time.Millisecond); err == nil {
+			t.Fatal("a wait with nothing to collect must end on its deadline")
+		}
+	}
+
+	// Nothing but a wake() clears the list, and a channel handed no returned message
+	// never wakes: without dropWaiter every poll would leave a dead waiter behind for the
+	// life of the channel.
+	entry.mutex.Lock()
+
+	left := len(entry.waiters)
+
+	entry.mutex.Unlock()
+
+	if left != 0 {
+		t.Fatalf("waiters left = %d, want 0", left)
+	}
+}
+
+func TestAWaitEndedByAnEventKeepsTheListClean(t *testing.T) {
+	entry := newTestEntry()
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+
+		entry.mutex.Lock()
+		entry.returns = append(entry.returns, payloads.ReturnedMessage{ReplyCode: 312})
+		entry.mutex.Unlock()
+
+		entry.wake()
+	}()
+
+	result, err := entry.waitForReturns(context.Background(), time.Second)
+
+	if err != nil {
+		t.Fatalf("err = %v, want the returned message", err)
+	}
+
+	if len(result.Returns) != 1 {
+		t.Fatalf("returns = %d, want 1", len(result.Returns))
+	}
+
+	entry.mutex.Lock()
+
+	left := len(entry.waiters)
+
+	entry.mutex.Unlock()
+
+	if left != 0 {
+		t.Fatalf("waiters left = %d, want 0", left)
+	}
+}
+
+func TestConfirmModeIsNotClaimedTwiceOnceItEngaged(t *testing.T) {
+	entry := newTestEntry()
+
+	// The state startConfirmMode leaves behind when the command deadline passes while the
+	// broker is already answering: the driver call went through, so the channel is in
+	// confirm mode for good and its collector is running.
+	entry.mutex.Lock()
+	entry.confirming = true
+	entry.confirmClaimed = false
+	entry.mutex.Unlock()
+
+	// A second confirmSelect() must find nothing to do. Registering another listener there
+	// would count every confirmation twice.
+	if err := entry.startConfirmMode(context.Background(), false); err != nil {
+		t.Fatalf("err = %v, want a no-op on a channel already in confirm mode", err)
+	}
+}

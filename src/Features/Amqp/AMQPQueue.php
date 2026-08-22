@@ -649,8 +649,11 @@ class AMQPQueue extends AmqpResource
     /**
      * @param array<string, mixed> $arguments
      */
-    protected function bindParameters(string $exchangeName, ?string $routingKey, array $arguments): QueueBindPayloadParameters
-    {
+    protected function bindParameters(
+        string $exchangeName,
+        ?string $routingKey,
+        array $arguments,
+    ): QueueBindPayloadParameters {
         return new QueueBindPayloadParameters(
             channelId: $this->channel->internalId,
             queueName: (string) $this->name,

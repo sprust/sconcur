@@ -38,6 +38,12 @@ const (
 
 // connectionKey identifies a pooled connection. A comparable struct is the key itself, so
 // acquiring one builds no string.
+//
+// It holds what the broker sees of a connection: the address, the credentials, the TLS
+// material and everything the handshake settles on. The connect timeout is deliberately
+// not part of it — it bounds the dial and nothing beyond it, so two AMQPConnection objects
+// that differ only there share one connection, which is what the feature promises for the
+// same credentials (docs/amqp.md).
 type connectionKey struct {
 	host             string
 	port             int
@@ -53,7 +59,6 @@ type connectionKey struct {
 	channelMax       int
 	frameMaxBytes    int
 	heartbeatSeconds int
-	connectTimeoutMs int
 }
 
 // pooledConnection is one live connection to the broker plus the owner count that keeps
@@ -507,7 +512,6 @@ func connectionKeyFromParams(params payloads.ConnectParams) connectionKey {
 		channelMax:       params.ChannelMax,
 		frameMaxBytes:    params.FrameMaxBytes,
 		heartbeatSeconds: params.HeartbeatSeconds,
-		connectTimeoutMs: params.ConnectTimeoutMs,
 	}
 }
 
