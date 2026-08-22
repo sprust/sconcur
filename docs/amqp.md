@@ -534,6 +534,9 @@ parity tests are what keep it that way.
 | `waitForBasicReturn()` after `waitForConfirm()` | finds nothing and runs into its timeout | `waitForConfirm()` collects the returned messages too, as it does in the extension. Both implementations refuse the sequence; the extension answers it at once with "unexpected method received", where this one waits out the deadline |
 | the constants | live in the feature's namespace, imported with `use const` | the global names belong to the extension itself and would collide with it wherever both are installed |
 | `AMQPDecimal`, `AMQPTimestamp` | `final readonly`, which the project's own rules forbid | the parity test compares those modifiers with the extension: a subclass of either works there and must work here |
+| an `AMQPTimestamp` above `PHP_INT_MAX` | refused when published | AMQP counts unsigned 64-bit seconds and `AMQPTimestamp::MAX` allows the whole range, but neither a PHP int nor the Go time the field is built from can hold its upper half. The extension wraps it into a date before 1970; this says so instead |
+| a channel of a connection that was reconnected | reports `isConnected() === false` | releasing the handle closes its channels on the Go side, so the objects standing for them stop claiming to be open — the `if (!$channel->isConnected())` guard has to fire |
+| publisher confirms and returned messages a wait loop never collects | the oldest are dropped past a few hundred | a returned message carries its whole body, and an application that publishes with `AMQP_MANDATORY` and never calls `waitForBasicReturn()` would otherwise fill the heap. The extension keeps none at all when no callback is registered |
 | ini settings (`amqp.host`, `amqp.auto_ack`, …) | not read | there is no PHP extension here to configure. The defaults are the extension's own, and credentials come from the constructor array |
 
 ## Limits

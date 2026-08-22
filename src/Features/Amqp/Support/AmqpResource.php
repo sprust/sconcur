@@ -46,6 +46,20 @@ abstract class AmqpResource
     protected bool $internalOpen = false;
 
     /**
+     * The channels opened on this connection, by their Go-side id. Only AMQPConnection
+     * fills it, and only so disconnect() can tell them they are gone: releasing the
+     * handle closes them on the Go side, and a channel object that still reported itself
+     * open would send the caller into a command that cannot succeed — the ext-amqp guard
+     * `if (!$channel->isConnected()) { …reopen… }` would never fire.
+     *
+     * Weak, for the same reason the consumer registry is: a strong reference would keep
+     * every channel an application dropped alive for as long as the connection lives.
+     *
+     * @var array<string, WeakReference<AMQPChannel>>
+     */
+    protected array $internalChannels = [];
+
+    /**
      * Consumers registered on this channel, by the consumer tag the broker assigned. Only
      * AMQPChannel fills it.
      *
@@ -57,6 +71,23 @@ abstract class AmqpResource
      * @var array<string, WeakReference<AMQPQueue>>
      */
     protected array $internalConsumers = [];
+
+    /**
+     * Marks every channel of this connection closed. Called when the handle behind them
+     * is released, which is what actually closed them on the Go side.
+     */
+    protected function forgetChannels(): void
+    {
+        foreach ($this->internalChannels as $reference) {
+            $channel = $reference->get();
+
+            if ($channel !== null) {
+                $channel->internalOpen = false;
+            }
+        }
+
+        $this->internalChannels = [];
+    }
 
     /**
      * Releases the delivery stream this object holds, if it holds one. Only AMQPQueue
@@ -122,7 +153,17 @@ abstract class AmqpResource
         }
 
         if ($channel !== null) {
-            $channel->internalOpen      = false;
+            $channel->internalOpen = false;
+
+            // The streams go with the consumers, exactly as AMQPChannel::close() does
+            // it. Dropping the registry alone would leave every other AMQPQueue of this
+            // channel holding a live stream key: outside a coroutine that flow lives for
+            // the process, and AMQP_JUST_CONSUME would later pull a key that leads
+            // nowhere.
+            foreach ($channel->getConsumers() as $queue) {
+                $queue->releaseConsumeStream();
+            }
+
             $channel->internalConsumers = [];
         }
 

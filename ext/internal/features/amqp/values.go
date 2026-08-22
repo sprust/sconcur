@@ -173,9 +173,13 @@ func fromTableValue(value any) any {
 		}
 	case amqp091.Decimal:
 		return map[string]any{
-			taggedKind:        taggedDecimal,
-			taggedExponent:    int64(typed.Scale),
-			taggedSignificand: int64(typed.Value),
+			taggedKind:     taggedDecimal,
+			taggedExponent: int64(typed.Scale),
+			// Through uint32, not straight from the int32 the driver holds: an AMQP
+			// decimal's significand is unsigned, so anything at or above 2^31 has its
+			// high bit set and a plain int64() would sign-extend it into a negative
+			// number PHP then refuses to build an AMQPDecimal from.
+			taggedSignificand: int64(uint32(typed.Value)),
 		}
 	case []byte:
 		return string(typed)

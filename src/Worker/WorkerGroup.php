@@ -197,6 +197,16 @@ class WorkerGroup
 
         $this->workers = $config->workerCount > 0 ? $config->workerCount : Cpu::count();
 
+        // A roll already under way was queued against the previous settings, and the
+        // slots it has replaced are running them. Requeue every slot so none is left
+        // behind on a config the operator has already replaced; startReload() alone
+        // returns without doing anything while a roll is in flight.
+        if ($this->reloading) {
+            $this->reloadQueue = array_keys($this->slots);
+
+            return;
+        }
+
         $this->startReload();
     }
 

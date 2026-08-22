@@ -389,6 +389,25 @@ class AmqpFailureTest extends AmqpTestCase
     }
 
     /**
+     * After a reconnect the old channels are gone on the broker, and they must say so:
+     * the ext-amqp idiom that reopens a channel only when isConnected() is false would
+     * otherwise never fire and every later command would fail on a dead channel.
+     */
+    public function testChannelsOfAReconnectedConnectionReportThemselvesClosed(): void
+    {
+        $connection = $this->connection();
+
+        $channel = new AMQPChannel($connection);
+
+        self::assertTrue($channel->isConnected());
+
+        $connection->reconnect();
+
+        self::assertFalse($channel->isConnected(), 'a channel of the old handle is not open');
+        self::assertTrue($connection->isConnected());
+    }
+
+    /**
      * The channel count the broker settles on: a channel released by a destructor is
      * closed without waiting for the broker, so the count catches up a moment later.
      */

@@ -18,6 +18,10 @@ const (
 	telemetryNameEnv    = "SCONCUR_SERVER_NAME"
 	telemetrySocketEnv  = "SCONCUR_TELEMETRY_SOCKET"
 	telemetryIntervalMs = "SCONCUR_TELEMETRY_INTERVAL_MS"
+
+	// defaultPoolName labels the snapshots of a worker nobody named — the same default
+	// the servers carry in their constructor.
+	defaultPoolName = "sconcur-server"
 )
 
 // deliveryKey identifies one unsettled delivery. The tag is only unique within its
@@ -64,7 +68,7 @@ var consumerStatsInstance = &consumerStats{
 	live:     make(map[consumerKey]struct{}),
 }
 
-var pusherOnce sync.Once
+var pusherMutex sync.Mutex
 var consumerPusher *stats.Pusher
 
 // startConsumerTelemetry brings up the worker's pusher the first time a consumer
@@ -72,29 +76,48 @@ var consumerPusher *stats.Pusher
 // address and the pool name come from the environment the master gives every worker,
 // so nothing about this crosses the PHP boundary.
 func startConsumerTelemetry() {
-	pusherOnce.Do(func() {
-		socketPath := os.Getenv(telemetrySocketEnv)
+	pusherMutex.Lock()
+	defer pusherMutex.Unlock()
 
-		if socketPath == "" {
-			return
-		}
+	if consumerPusher != nil {
+		return
+	}
 
-		intervalMs, _ := strconv.Atoi(os.Getenv(telemetryIntervalMs))
+	socketPath := os.Getenv(telemetrySocketEnv)
 
-		consumerPusher = stats.NewPusher(
-			os.Getenv(telemetryNameEnv),
-			socketPath,
-			intervalMs,
-			time.Now(),
-			consumerStatsInstance,
-		)
+	if socketPath == "" {
+		return
+	}
 
-		consumerPusher.Start()
-	})
+	intervalMs, _ := strconv.Atoi(os.Getenv(telemetryIntervalMs))
+
+	name := os.Getenv(telemetryNameEnv)
+
+	// A snapshot with no name is dropped by the collector without a word, so a worker
+	// started outside a master — which sets the label — would push every interval and
+	// never appear. The servers default theirs the same way.
+	if name == "" {
+		name = defaultPoolName
+	}
+
+	consumerPusher = stats.NewPusher(
+		name,
+		socketPath,
+		intervalMs,
+		time.Now(),
+		consumerStatsInstance,
+	)
+
+	consumerPusher.Start()
 }
 
 // stopConsumerTelemetry ends the push loop; called from the feature's Shutdown.
+// A pusher stopped here can be started again: destroy() leaves the handler usable, and a
+// consumer opened after it must report like any other.
 func stopConsumerTelemetry() {
+	pusherMutex.Lock()
+	defer pusherMutex.Unlock()
+
 	if consumerPusher != nil {
 		consumerPusher.Stop()
 
@@ -128,8 +151,9 @@ func (c *consumerStats) deliveryDispatched(channelId string, deliveryTag uint64,
 	c.delivered++
 
 	if autoAck {
+		// No acknowledgement will come back, so there is no handler time to measure:
+		// counted as settled, left out of the average it would otherwise pull to zero.
 		c.acked++
-		c.settledCount++
 
 		return
 	}
@@ -144,39 +168,47 @@ func (c *consumerStats) deliverySettled(channelId string, deliveryTag uint64, mu
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if acked {
-		c.acked++
-	} else {
-		c.refused++
-	}
-
 	now := time.Now()
 
+	settled := 0
+
 	// "Up to and including this tag" settles every earlier delivery of that channel
-	// too, which is the whole point of AMQP_MULTIPLE.
+	// too, which is the whole point of AMQP_MULTIPLE. The counters follow deliveries,
+	// not commands: one multiple-ack of a hundred messages is a hundred settled, and
+	// counting it as one would have the panel report 99% of them unacknowledged.
 	if multiple {
 		for key, startedAt := range c.inFlight {
 			if key.channelId == channelId && key.deliveryTag <= deliveryTag {
 				c.recordSettledLocked(now.Sub(startedAt))
 
 				delete(c.inFlight, key)
+
+				settled++
 			}
 		}
+	} else {
+		key := deliveryKey{channelId: channelId, deliveryTag: deliveryTag}
 
-		return
+		if startedAt, exists := c.inFlight[key]; exists {
+			c.recordSettledLocked(now.Sub(startedAt))
+
+			delete(c.inFlight, key)
+
+			settled = 1
+		}
 	}
 
-	key := deliveryKey{channelId: channelId, deliveryTag: deliveryTag}
-
-	startedAt, exists := c.inFlight[key]
-
-	if !exists {
-		return
+	// A tag this worker never handed out — a message pulled with basic.get, or one
+	// settled twice — still settled something as far as the broker is concerned.
+	if settled == 0 {
+		settled = 1
 	}
 
-	c.recordSettledLocked(now.Sub(startedAt))
-
-	delete(c.inFlight, key)
+	if acked {
+		c.acked += int64(settled)
+	} else {
+		c.refused += int64(settled)
+	}
 }
 
 // channelGone drops whatever a dead channel was still holding. A handler that threw
@@ -219,6 +251,7 @@ func (c *consumerStats) WorkloadSnapshot() stats.Workload {
 		Delivered:  c.delivered,
 		Acked:      c.acked,
 		Refused:    c.refused,
+		Timed:      c.settledCount,
 		InFlight:   len(c.inFlight),
 	}
 

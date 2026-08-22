@@ -47,10 +47,14 @@ type Consumers struct {
 	// a coroutine opens exactly one. Read beside InFlight it is the capacity the
 	// in-flight count is spent out of, and a drop below what the worker was configured
 	// with is a coroutine that died.
-	Coroutines      int     `json:"coroutines"`
-	Delivered       int64   `json:"delivered"`
-	Acked           int64   `json:"acked"`
-	Refused         int64   `json:"refused"`
+	Coroutines int   `json:"coroutines"`
+	Delivered  int64 `json:"delivered"`
+	Acked      int64 `json:"acked"`
+	Refused    int64 `json:"refused"`
+	// Timed is how many deliveries AvgMs was measured over. Not every settled delivery
+	// has a handler time — an auto-acknowledged one is never acknowledged back — so
+	// this, and not Acked+Refused, is what a pool-wide average must be weighted by.
+	Timed           int64   `json:"timed"`
 	AvgMs           float64 `json:"avgMs"`
 	InFlight        int     `json:"inFlight"`
 	InFlight1to5s   int     `json:"inFlight1to5s"`

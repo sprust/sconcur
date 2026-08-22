@@ -7,6 +7,7 @@ namespace SConcur\Features\Amqp\Support;
 use SConcur\Features\Amqp\AMQPDecimal;
 use SConcur\Features\Amqp\AMQPException;
 use SConcur\Features\Amqp\AMQPTimestamp;
+use SConcur\Features\Amqp\AMQPValueException;
 use SConcur\Features\Amqp\AMQPValue;
 
 /**
@@ -150,6 +151,17 @@ readonly class TableCodec
         }
 
         if ($value instanceof AMQPTimestamp) {
+            // AMQP counts unsigned 64-bit seconds, which is what AMQPTimestamp::MAX
+            // allows, but neither a PHP int nor the Go time the field is built from can
+            // hold the upper half of that range. A cast would wrap it into a negative
+            // number and the message would carry a timestamp from before 1970, so the
+            // limit is stated instead of silently crossed (docs/amqp.md lists it).
+            if ($value->getTimestamp() > PHP_INT_MAX) {
+                throw new AMQPValueException(
+                    message: 'Timestamp exceeds ' . PHP_INT_MAX . ' and cannot be sent.',
+                );
+            }
+
             return [
                 self::KIND => self::KIND_TIMESTAMP,
                 'v'        => (int) $value->getTimestamp(),
@@ -196,15 +208,32 @@ readonly class TableCodec
 
         $kind = $value[self::KIND] ?? null;
 
+        // A value the object refuses is handed over as the plain number it was on the
+        // wire. Whoever published it is not necessarily this library, and a header no
+        // AMQPDecimal can hold must not make the whole delivery unreadable: the
+        // exception would escape the envelope's constructor, kill the consumer, and
+        // leave the message to be redelivered forever.
         if ($kind === self::KIND_DECIMAL) {
-            return new AMQPDecimal(
-                exponent: (int) ($value['e'] ?? 0),
-                significand: (int) ($value['s'] ?? 0),
-            );
+            $significand = (int) ($value['s'] ?? 0);
+
+            try {
+                return new AMQPDecimal(
+                    exponent: (int) ($value['e'] ?? 0),
+                    significand: $significand,
+                );
+            } catch (AMQPValueException) {
+                return $significand;
+            }
         }
 
         if ($kind === self::KIND_TIMESTAMP) {
-            return new AMQPTimestamp((float) ($value['v'] ?? 0));
+            $seconds = (float) ($value['v'] ?? 0);
+
+            try {
+                return new AMQPTimestamp($seconds);
+            } catch (AMQPValueException) {
+                return (int) $seconds;
+            }
         }
 
         return static::decode($value);

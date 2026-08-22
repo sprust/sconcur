@@ -257,6 +257,13 @@ readonly class FeatureExecutor
 
         try {
             $result = Fiber::suspend($pendingTask);
+        } catch (FlowStoppedException $exception) {
+            // A deliberate unwind (WaitGroup::stop, Scheduler::shutdown) is not a task
+            // failure: let it propagate as-is so the coroutine's finally blocks run and
+            // the cancellation stays recognizable. Wrapping it turned every stopped
+            // coroutine's await into a domain error — a consumer told to stop reported
+            // a broker failure, and a feature could not tell the two apart.
+            throw $exception;
         } catch (Throwable $exception) {
             throw new TaskExecutionException(
                 message: $exception->getMessage(),

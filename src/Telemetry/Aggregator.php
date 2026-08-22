@@ -93,7 +93,9 @@ class Aggregator
 
         foreach ($byGroup as $groupName => $groupSnapshots) {
             $groups[] = new GroupAggregate(
-                name: $groupName,
+                // Cast because a numeric group name — "42" passes the config's own
+                // charset check — comes back from the array key as an int.
+                name: (string) $groupName,
                 workersTotal: count($groupSnapshots),
                 workersHung: $this->countHung($groupSnapshots, $nowMs),
                 totals: $this->sum($groupSnapshots),
@@ -173,6 +175,7 @@ class Aggregator
 
         $hasConsumers            = false;
         $coroutines              = 0;
+        $timed                   = 0;
         $delivered               = 0;
         $acked                   = 0;
         $refused                 = 0;
@@ -213,10 +216,12 @@ class Aggregator
                 $delivered += $snapshot->consumers->delivered;
                 $acked += $snapshot->consumers->acked;
                 $refused += $snapshot->consumers->refused;
-                // Weighted by what the worker actually settled, the same way the
-                // request average is weighted by what it completed.
-                $consumersWeightedAvgMs += $snapshot->consumers->avgMs
-                    * ($snapshot->consumers->acked + $snapshot->consumers->refused);
+                $timed += $snapshot->consumers->timed;
+                // Weighted by the deliveries the worker actually timed, which is the
+                // denominator it divided by. Acked + refused counts settlements it never
+                // measured — an auto-acknowledged delivery among them — and weighting by
+                // that skews the pool average by an order of magnitude.
+                $consumersWeightedAvgMs += $snapshot->consumers->avgMs * $snapshot->consumers->timed;
                 $consumersInFlight += $snapshot->consumers->inFlight;
                 $consumersInFlight1to5s += $snapshot->consumers->inFlight1to5s;
                 $consumersInFlight5to15s += $snapshot->consumers->inFlight5to15s;
@@ -244,14 +249,13 @@ class Aggregator
         $totalsConsumers = null;
 
         if ($hasConsumers) {
-            $settled = $acked + $refused;
-
             $totalsConsumers = new Consumers(
                 coroutines: $coroutines,
                 delivered: $delivered,
                 acked: $acked,
                 refused: $refused,
-                avgMs: $settled > 0 ? $consumersWeightedAvgMs / $settled : 0.0,
+                timed: $timed,
+                avgMs: $timed > 0 ? $consumersWeightedAvgMs / $timed : 0.0,
                 inFlight: $consumersInFlight,
                 inFlight1to5s: $consumersInFlight1to5s,
                 inFlight5to15s: $consumersInFlight5to15s,

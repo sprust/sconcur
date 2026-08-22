@@ -12,12 +12,16 @@ use SConcur\Features\Amqp\AMQPConnectionException;
 use SConcur\Features\Amqp\AMQPException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Transport\MessagePackTransport;
-use SConcur\Transport\PayloadInterface;
 
 /**
  * The boundary between the feature's internals and the calque's public API: it runs one
  * command through FeatureExecutor and turns whatever went wrong into the AMQP*Exception
  * the caller expects, with the reply code the broker named.
+ *
+ * Only the failure translation lives here. Running a command belongs to AmqpResource,
+ * which pairs it with the bookkeeping a failure implies — a channel the broker closed has
+ * to be marked closed — and a second entry point that skipped that bookkeeping was a trap
+ * waiting for its first caller.
  *
  * The Go side prefixes a failure with its scope and that code ("chn:404: Server channel
  * error: 404, message: …"). A failure the broker answered with a 5xx, or one that means the
@@ -29,57 +33,6 @@ readonly class CommandRunner
 {
     /** The shape of a scoped failure payload: "<scope>:<code>: <message>". */
     protected const string FAILURE_PATTERN = '/^(net|chn|err):(\d+): (.*)$/s';
-
-    /**
-     * Runs one command and returns its decoded result (an empty array for the commands
-     * that answer with nothing).
-     *
-     * @param class-string<AMQPException> $exceptionClass the exception class for a
-     *                                                    protocol-level failure
-     *
-     * @return array<mixed>
-     */
-    public static function run(PayloadInterface $payload, string $exceptionClass): array
-    {
-        return static::decode(static::execute(payload: $payload, exceptionClass: $exceptionClass));
-    }
-
-    /**
-     * Runs one command and returns the raw task result — for the streaming commands, whose
-     * result key is the handle every later next() is pulled by.
-     *
-     * @param class-string<AMQPException> $exceptionClass
-     */
-    public static function execute(PayloadInterface $payload, string $exceptionClass): TaskResultDto
-    {
-        try {
-            return FeatureExecutor::exec(payload: $payload);
-        } catch (TaskErrorException | TaskExecutionException $exception) {
-            throw static::exception(
-                failure: static::failure($exception),
-                exceptionClass: $exceptionClass,
-                exception: $exception,
-            );
-        }
-    }
-
-    /**
-     * Pulls the next batch of a streaming command (one delivery of a consumer).
-     *
-     * @param class-string<AMQPException> $exceptionClass
-     */
-    public static function next(string $taskKey, string $exceptionClass): TaskResultDto
-    {
-        try {
-            return FeatureExecutor::next(taskKey: $taskKey);
-        } catch (TaskErrorException | TaskExecutionException $exception) {
-            throw static::exception(
-                failure: static::failure($exception),
-                exceptionClass: $exceptionClass,
-                exception: $exception,
-            );
-        }
-    }
 
     /**
      * @return array<mixed>

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Telemetry\Render;
 
 use SConcur\Telemetry\Dto\Aggregate;
+use SConcur\Telemetry\Dto\GroupAggregate;
 use SConcur\Telemetry\Dto\Connections;
 use SConcur\Telemetry\Dto\Requests;
 use SConcur\Telemetry\Dto\WorkerEntry;
@@ -65,7 +66,8 @@ class PrometheusRenderer
             $output .= $this->family('sconcur_pool_deliveries_total', 'Deliveries handed to the workers across the pool.', 'counter', $poolLabels, (string) $consumers->delivered);
             $output .= $this->family('sconcur_pool_deliveries_acked_total', 'Deliveries acknowledged across the pool.', 'counter', $poolLabels, (string) $consumers->acked);
             $output .= $this->family('sconcur_pool_deliveries_refused_total', 'Deliveries nacked or rejected across the pool.', 'counter', $poolLabels, (string) $consumers->refused);
-            $output .= $this->family('sconcur_pool_deliveries_avg_ms', 'Average time a delivery spends in a handler (weighted by settled).', 'gauge', $poolLabels, $this->float($consumers->avgMs));
+            $output .= $this->family('sconcur_pool_deliveries_timed_total', 'Deliveries whose time in a handler was measured.', 'counter', $poolLabels, (string) $consumers->timed);
+            $output .= $this->family('sconcur_pool_deliveries_avg_ms', 'Average time a delivery spends in a handler (weighted by the deliveries timed).', 'gauge', $poolLabels, $this->float($consumers->avgMs));
             $output .= $this->family('sconcur_pool_deliveries_in_flight', 'Deliveries in flight across the pool.', 'gauge', $poolLabels, (string) $consumers->inFlight);
             $output .= $this->family('sconcur_pool_deliveries_in_flight_1to5s', 'In-flight deliveries aged [1s, 5s).', 'gauge', $poolLabels, (string) $consumers->inFlight1to5s);
             $output .= $this->family('sconcur_pool_deliveries_in_flight_5to15s', 'In-flight deliveries aged [5s, 15s).', 'gauge', $poolLabels, (string) $consumers->inFlight5to15s);
@@ -105,9 +107,11 @@ class PrometheusRenderer
             $output .= $this->header($metricName, $help, 'gauge');
 
             foreach ($aggregate->workers as $worker) {
-                $output .= $metricName . $this->workerLabels($name, $worker->pid) . ' ' . $value($worker) . "\n";
+                $output .= $metricName . $this->workerLabels($name, $worker->pid, $worker->group) . ' ' . $value($worker) . "\n";
             }
         }
+
+        $output .= $this->groupMetrics($aggregate, $name);
 
         if ($aggregate->totals->requests !== null) {
             $output .= $this->workerRequests($aggregate, $name);
@@ -115,6 +119,41 @@ class PrometheusRenderer
 
         if ($aggregate->totals->connections !== null) {
             $output .= $this->workerConnections($aggregate, $name);
+        }
+
+        return $output;
+    }
+
+    /**
+     * The same process metrics per pool. A master runs unlike pools, and a single
+     * sconcur_pool_* series sums what cannot be summed — these carry a group label so a
+     * dashboard can split them.
+     */
+    protected function groupMetrics(Aggregate $aggregate, string $name): string
+    {
+        if ($aggregate->groups === []) {
+            return '';
+        }
+
+        /** @var array<int, array{0: string, 1: string, 2: callable(GroupAggregate): string}> $metrics */
+        $metrics = [
+            ['sconcur_group_workers', 'Live workers in the group.', fn(GroupAggregate $group): string => (string) $group->workersTotal],
+            ['sconcur_group_workers_hung', 'Workers of the group flagged hung.', fn(GroupAggregate $group): string => (string) $group->workersHung],
+            ['sconcur_group_cpu_percent', 'CPU usage summed over the group.', fn(GroupAggregate $group): string => $this->float($group->totals->cpuPercent)],
+            ['sconcur_group_memory_rss_bytes', 'Resident set size summed over the group.', fn(GroupAggregate $group): string => (string) $group->totals->memory->rssBytes],
+            ['sconcur_group_goroutines', 'Goroutines summed over the group.', fn(GroupAggregate $group): string => (string) $group->totals->goroutines],
+        ];
+
+        $output = '';
+
+        foreach ($metrics as [$metricName, $help, $value]) {
+            $output .= $this->header($metricName, $help, 'gauge');
+
+            foreach ($aggregate->groups as $group) {
+                $labels = '{name="' . $name . '",group="' . $this->escapeLabel($group->name) . '"}';
+
+                $output .= $metricName . $labels . ' ' . $value($group) . "\n";
+            }
         }
 
         return $output;
@@ -181,9 +220,11 @@ class PrometheusRenderer
         return '# HELP ' . $name . ' ' . $help . "\n" . '# TYPE ' . $name . ' ' . $type . "\n";
     }
 
-    protected function workerLabels(string $name, int $pid): string
+    protected function workerLabels(string $name, int $pid, string $group = ''): string
     {
-        return '{name="' . $name . '",pid="' . $pid . '"}';
+        $groupLabel = $group === '' ? '' : ',group="' . $this->escapeLabel($group) . '"';
+
+        return '{name="' . $name . '",pid="' . $pid . '"' . $groupLabel . '}';
     }
 
     protected function escapeLabel(string $value): string

@@ -254,6 +254,11 @@ class AMQPConnection extends AmqpResource
         $this->negotiatedFrameMax   = null;
         $this->negotiatedHeartbeat  = null;
 
+        // Releasing the handle closes the channels on the Go side, so the objects that
+        // stand for them must stop claiming to be open — otherwise a reconnect() leaves
+        // an application holding channels that pass isConnected() and fail every command.
+        $this->forgetChannels();
+
         $this->runCommand(
             payload: new DisconnectPayload(
                 new ConnectionPayloadParameters(
@@ -706,6 +711,8 @@ class AMQPConnection extends AmqpResource
 
         $this->internalOpen = false;
         $this->internalId   = '';
+
+        $this->forgetChannels();
 
         try {
             Extension::get()->push(

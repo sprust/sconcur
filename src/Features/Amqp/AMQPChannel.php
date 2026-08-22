@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Features\Amqp;
 
 use SConcur\Connection\Extension;
+use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Features\Amqp\Payloads\ChannelClosePayload;
 use SConcur\Features\Amqp\Payloads\ChannelOpenPayload;
 use SConcur\Features\Amqp\Payloads\ChannelOpenPayloadParameters;
@@ -24,6 +25,7 @@ use SConcur\Features\Amqp\Support\AmqpResource;
 use SConcur\Features\Amqp\Support\PropertiesCodec;
 use SConcur\Transport\PayloadInterface;
 use Throwable;
+use WeakReference;
 
 /**
  * A channel of an AMQP connection — the calque of ext-amqp's AMQPChannel. The constructor
@@ -98,6 +100,11 @@ class AMQPChannel extends AmqpResource
         $this->internalId    = isset($result['chid']) ? (string) $result['chid'] : '';
         $this->channelNumber = isset($result['no']) ? (int) $result['no'] : 0;
         $this->internalOpen  = true;
+
+        // The connection keeps a weak reference so disconnect() can mark this closed:
+        // it is the release of the handle that actually closes the channel on the Go
+        // side, and only the connection knows when that happens.
+        $connection->internalChannels[$this->internalId] = WeakReference::create($this);
     }
 
     /**
@@ -145,6 +152,10 @@ class AMQPChannel extends AmqpResource
                 ),
                 exceptionClass: AMQPChannelException::class,
             );
+        } catch (FlowStoppedException $exception) {
+            // A deliberate unwind is not a failed close: re-thrown as-is so the
+            // cancellation stays recognizable, as the project's rule requires.
+            throw $exception;
         } catch (Throwable) {
             // The channel is already gone — nothing to close.
         }

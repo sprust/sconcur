@@ -490,12 +490,17 @@ class WorkerMaster
      */
     protected function applyOneGroup(array $groups, string $name): bool
     {
-        foreach ($groups as $index => $group) {
+        foreach ($groups as $group) {
             if ($group->name !== $name) {
                 continue;
             }
 
-            $this->groups[$index] = $group;
+            // Replaced by name, not by position: the index is the one this group has in
+            // the file just read, and the running list is ordered however it was when
+            // the master started. Reordering the file and reloading one group would
+            // otherwise overwrite a different group and drop it from the list, and the
+            // next full reload would retire a pool that is still serving.
+            $this->groups = $this->withGroupReplaced(groups: $this->groups, group: $group);
 
             $pool = $this->pools[$name] ?? null;
 
@@ -562,6 +567,37 @@ class WorkerMaster
                 $pool->retire();
             }
         }
+    }
+
+    /**
+     * The running group list with one entry replaced by name, or the new group appended
+     * when the master is not running it yet.
+     *
+     * @param list<WorkerGroupConfig> $groups
+     *
+     * @return list<WorkerGroupConfig>
+     */
+    protected function withGroupReplaced(array $groups, WorkerGroupConfig $group): array
+    {
+        $replaced = [];
+        $found    = false;
+
+        foreach ($groups as $running) {
+            if ($running->name === $group->name) {
+                $replaced[] = $group;
+                $found      = true;
+
+                continue;
+            }
+
+            $replaced[] = $running;
+        }
+
+        if (!$found) {
+            $replaced[] = $group;
+        }
+
+        return $replaced;
     }
 
     /** Drops the pools that finished draining after being removed from the config. */

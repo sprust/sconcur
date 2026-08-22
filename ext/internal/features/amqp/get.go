@@ -1,9 +1,11 @@
 package amqp_feature
 
 import (
+	"context"
 	"sconcur/internal/dto"
 	"sconcur/internal/features/amqp/payloads"
 	"sconcur/internal/helpers"
+	"sconcur/internal/logger"
 	"sconcur/internal/tasks"
 	"time"
 
@@ -34,13 +36,37 @@ func (f *AmqpFeature) handleGet(task *tasks.Task, raw msgpack.RawMessage) {
 	var delivery amqp091.Delivery
 	var delivered bool
 
-	err := entry.do(ctx, func(channel *amqp091.Channel) error {
-		var getError error
+	err := entry.doAbandoning(
+		ctx,
+		func(channel *amqp091.Channel) error {
+			var getError error
 
-		delivery, delivered, getError = channel.Get(params.QueueName, params.AutoAck)
+			delivery, delivered, getError = channel.Get(params.QueueName, params.AutoAck)
 
-		return getError
-	})
+			return getError
+		},
+		// The message arrived after PHP stopped waiting. Unacknowledged, it goes back to
+		// the queue; acknowledged on delivery, it is already gone and all that is left is
+		// to say so — dropping it in silence would read as an empty queue.
+		func(getError error) {
+			if getError != nil || !delivered {
+				return
+			}
+
+			if params.AutoAck {
+				logger.Write(
+					"amqp: a get on " + params.QueueName + " timed out after the broker handed" +
+						" the message over; it was auto-acknowledged and is lost",
+				)
+
+				return
+			}
+
+			_ = entry.do(context.Background(), func(channel *amqp091.Channel) error {
+				return channel.Nack(delivery.DeliveryTag, false, true)
+			})
+		},
+	)
 
 	if err != nil {
 		fail(task, entry, "get", err)

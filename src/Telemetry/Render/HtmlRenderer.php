@@ -13,8 +13,9 @@ use SConcur\Telemetry\Dto\WorkerEntry;
 /**
  * Renders the aggregate as a compact, dependency-free admin page — a header line, a
  * totals row and a per-worker table. Ports the Go renderer
- * (ext/internal/stats/html.go). The workload columns (requests, connections or
- * consumers — whichever the pool reports) are
+ * The workload columns are whichever sections the pools reported — requests,
+ * connections, consumers, or several of them side by side under one master — and they
+ * are
  * chosen once from the pool totals so every row has the same shape; a worker missing
  * that section shows dashes. Hung workers are highlighted. All interpolated values
  * are escaped.
@@ -70,18 +71,24 @@ class HtmlRenderer
 <div class="meta">' . $this->escape($aggregate->generatedAt) . ' · workers ' . $aggregate->workersTotal . $hungMeta . '</div>'
             . $this->masterTable($aggregate);
 
+        // Every section that is present, not the first of them: one master runs unlike
+        // pools, and showing only requests would hide a consumer pool's numbers entirely.
+        $workloadTotalsHead = '';
+        $workloadTotalsRow  = '';
+
         if ($requests !== null) {
-            $workloadTotalsHead = '<th>completed</th><th>avg ms</th><th>in-flight</th><th>1–5s</th><th>5–15s</th><th>&gt;15s</th>';
-            $workloadTotalsRow  = '<td>' . $requests->completed . '</td><td>' . $this->f1($requests->avgMs) . '</td><td>' . $requests->inFlight . '</td><td>' . $requests->inFlight1to5s . '</td><td>' . $requests->inFlight5to15s . '</td><td>' . $requests->inFlightOver15s . '</td>';
-        } elseif ($connections !== null) {
-            $workloadTotalsHead = '<th>active</th><th>accepted</th>';
-            $workloadTotalsRow  = '<td>' . $connections->active . '</td><td>' . $connections->totalAccepted . '</td>';
-        } elseif ($consumers !== null) {
-            $workloadTotalsHead = '<th>delivered</th><th>acked</th><th>refused</th><th>avg ms</th><th>in-flight</th><th>1–5s</th><th>5–15s</th><th>&gt;15s</th>';
-            $workloadTotalsRow  = '<td>' . $consumers->delivered . '</td><td>' . $consumers->acked . '</td><td>' . $consumers->refused . '</td><td>' . $this->f1($consumers->avgMs) . '</td><td>' . $consumers->inFlight . '</td><td>' . $consumers->inFlight1to5s . '</td><td>' . $consumers->inFlight5to15s . '</td><td>' . $consumers->inFlightOver15s . '</td>';
-        } else {
-            $workloadTotalsHead = '';
-            $workloadTotalsRow  = '';
+            $workloadTotalsHead .= '<th>completed</th><th>avg ms</th><th>in-flight</th><th>1–5s</th><th>5–15s</th><th>&gt;15s</th>';
+            $workloadTotalsRow .= '<td>' . $requests->completed . '</td><td>' . $this->f1($requests->avgMs) . '</td><td>' . $requests->inFlight . '</td><td>' . $requests->inFlight1to5s . '</td><td>' . $requests->inFlight5to15s . '</td><td>' . $requests->inFlightOver15s . '</td>';
+        }
+
+        if ($connections !== null) {
+            $workloadTotalsHead .= '<th>active</th><th>accepted</th>';
+            $workloadTotalsRow .= '<td>' . $connections->active . '</td><td>' . $connections->totalAccepted . '</td>';
+        }
+
+        if ($consumers !== null) {
+            $workloadTotalsHead .= '<th>coroutines</th><th>delivered</th><th>acked</th><th>refused</th><th>avg ms</th><th>in-flight</th>';
+            $workloadTotalsRow .= '<td>' . $consumers->coroutines . '</td><td>' . $consumers->delivered . '</td><td>' . $consumers->acked . '</td><td>' . $consumers->refused . '</td><td>' . $this->f1($consumers->avgMs) . '</td><td>' . $consumers->inFlight . '</td>';
         }
 
         $totalsTable = '
@@ -212,6 +219,7 @@ class HtmlRenderer
                 . ', delivered ' . $consumers->delivered
                 . ', acked ' . $consumers->acked
                 . ', refused ' . $consumers->refused
+                . ', avg ' . $this->f1($consumers->avgMs) . ' ms'
                 . ', in-flight ' . $consumers->inFlight;
         }
 

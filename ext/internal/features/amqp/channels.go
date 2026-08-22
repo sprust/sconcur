@@ -26,6 +26,15 @@ const (
 	confirmQueueSize = 1024
 	// returnQueueSize buffers the messages the broker returned as unroutable.
 	returnQueueSize = 128
+
+	// What a channel keeps for a wait loop that has not come. An application may
+	// publish in confirm mode, or with AMQP_MANDATORY, and never call the matching
+	// waitFor* — a returned message carries its whole body, so an unbounded backlog is
+	// the channel quietly eating the heap. The oldest go first: a wait loop that does
+	// arrive wants what happened recently, and ext-amqp keeps nothing at all when no
+	// callback is registered.
+	maxPendingConfirmations = confirmQueueSize
+	maxPendingReturns       = returnQueueSize
 )
 
 var errChannelNotFound = errors.New("unknown channel")
@@ -423,6 +432,19 @@ func (e *channelEntry) close() {
 // deadline passes or the flow stops. The call itself is left to finish — the next command
 // on this channel simply waits its turn.
 func (e *channelEntry) do(ctx context.Context, call func(channel *amqp091.Channel) error) error {
+	return e.doAbandoning(ctx, call, nil)
+}
+
+// doAbandoning is do() for the calls whose result must not simply be dropped when the
+// caller stops waiting. The call is left to finish either way, but what it produced is
+// handed to abandon() on its own goroutine — a consumer the broker registered after the
+// deadline has to be cancelled, and a message it handed over has to go back, or both are
+// lost with nobody the wiser.
+func (e *channelEntry) doAbandoning(
+	ctx context.Context,
+	call func(channel *amqp091.Channel) error,
+	abandon func(err error),
+) error {
 	done := make(chan error, 1)
 
 	go func() {
@@ -436,6 +458,10 @@ func (e *channelEntry) do(ctx context.Context, call func(channel *amqp091.Channe
 	case err := <-done:
 		return err
 	case <-ctx.Done():
+		if abandon != nil {
+			go abandon(<-done)
+		}
+
 		return ctx.Err()
 	}
 }
@@ -473,6 +499,13 @@ func (e *channelEntry) cancelConsumer(consumerTag string) {
 		return
 	}
 
+	e.sendCancel(consumerTag)
+}
+
+// sendCancel is the basic.cancel itself, without the registry check — for a consumer the
+// broker accepted but this side never registered, which is what a registration that
+// outran its deadline leaves behind.
+func (e *channelEntry) sendCancel(consumerTag string) {
 	if e.isClosed() {
 		return
 	}
@@ -578,10 +611,10 @@ func (e *channelEntry) collectConfirms(confirms chan amqp091.Confirmation) {
 	for confirmation := range confirms {
 		e.mutex.Lock()
 
-		e.confirmations = append(e.confirmations, payloads.Confirmation{
+		e.confirmations = appendBounded(e.confirmations, payloads.Confirmation{
 			DeliveryTag: confirmation.DeliveryTag,
 			Acked:       confirmation.Ack,
-		})
+		}, maxPendingConfirmations)
 
 		if e.pending > 0 {
 			e.pending--
@@ -597,7 +630,7 @@ func (e *channelEntry) collectReturns(returns chan amqp091.Return) {
 	for returned := range returns {
 		e.mutex.Lock()
 
-		e.returns = append(e.returns, payloads.ReturnedMessage{
+		e.returns = appendBounded(e.returns, payloads.ReturnedMessage{
 			ReplyCode:    int(returned.ReplyCode),
 			ReplyText:    returned.ReplyText,
 			ExchangeName: returned.Exchange,
@@ -618,12 +651,23 @@ func (e *channelEntry) collectReturns(returns chan amqp091.Return) {
 				UserId:          returned.UserId,
 				AppId:           returned.AppId,
 			},
-		})
+		}, maxPendingReturns)
 
 		e.mutex.Unlock()
 
 		e.wake()
 	}
+}
+
+// appendBounded appends and keeps the tail at most limit long, dropping from the front.
+func appendBounded[T any](values []T, value T, limit int) []T {
+	values = append(values, value)
+
+	if len(values) <= limit {
+		return values
+	}
+
+	return values[len(values)-limit:]
 }
 
 // wake releases every wait loop parked on this channel; each re-checks its own condition

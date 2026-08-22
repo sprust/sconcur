@@ -557,6 +557,15 @@ class AMQPQueue extends AmqpResource
      */
     protected function openConsumer(?int $flags, ?string $consumerTag): void
     {
+        // A queue consumes through one consumer at a time. Opening a second without
+        // ending the first would strand it: its stream key is overwritten and becomes
+        // unreachable, while the broker keeps feeding it — the prefetched messages then
+        // go to a consumer nothing reads, and the new one waits for deliveries that were
+        // handed to its predecessor.
+        if ($this->consumerTag !== null) {
+            $this->cancel();
+        }
+
         $result = $this->runStreamCommand(
             payload: new ConsumePayload(
                 new ConsumePayloadParameters(

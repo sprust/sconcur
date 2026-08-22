@@ -100,12 +100,19 @@ abstract class AmqpTestCase extends BaseTestCase
      * Publishes one message straight to a queue through the default exchange, which routes
      * by the queue name.
      */
-    protected function publishToQueue(AMQPChannel $channel, string $queueName, string $body): void
-    {
+    /**
+     * @param array<string, mixed> $attributes publish attributes, e.g. headers
+     */
+    protected function publishToQueue(
+        AMQPChannel $channel,
+        string $queueName,
+        string $body,
+        array $attributes = [],
+    ): void {
         $exchange = new AMQPExchange($channel);
 
         $exchange->setName('');
-        $exchange->publish(message: $body, routingKey: $queueName);
+        $exchange->publish(message: $body, routingKey: $queueName, headers: $attributes);
     }
 
     /**

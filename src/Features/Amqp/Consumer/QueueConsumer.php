@@ -7,6 +7,7 @@ namespace SConcur\Features\Amqp\Consumer;
 use Closure;
 use SConcur\Features\Amqp\AMQPChannel;
 use SConcur\Features\Amqp\AMQPConnection;
+use SConcur\Features\Amqp\AMQPException;
 use SConcur\Features\Amqp\AMQPEnvelope;
 use SConcur\Features\Amqp\AMQPQueue;
 use SConcur\Features\Server\ServerRuntimeSupportTrait;
@@ -196,11 +197,29 @@ class QueueConsumer
                     state: $state,
                 ),
             );
+        } catch (AMQPException $exception) {
+            // One consumer ending is not the worker ending. The broker cancelled it, its
+            // queue was deleted, its channel died — whatever it was, the other coroutines
+            // keep their queues, and the run ends on its own once the last consumer is
+            // gone. Letting this escape would fail the whole group, and the stop that
+            // follows would cut every other handler mid-message.
+            static::logServerEvent(sprintf(
+                'consumer: %s ended: %s: %s',
+                $spec->name,
+                $exception::class,
+                $exception->getMessage(),
+            ));
         } finally {
             $state->consumerFinished();
-
-            $channel->close();
         }
+
+        // Reached only when this coroutine was not unwound. A deliberate stop
+        // (WaitGroup::stop, Scheduler::shutdown) throws FlowStoppedException straight
+        // past here, and that is on purpose: the scheduler has already detached the
+        // fiber, so an awaited close would suspend it with nothing left to resume it.
+        // The channel object releases itself on the way out instead — its destructor
+        // pushes the release without awaiting anything.
+        $channel->close();
     }
 
     /**

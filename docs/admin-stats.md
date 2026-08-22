@@ -122,11 +122,13 @@ running without a master):
 | `SCONCUR_TELEMETRY_INTERVAL_MS` | snapshot sample/push cadence | `1000` |
 
 Under the master the socket is `<runtimeDir>/<name>.telemetry.sock`, injected only
-when telemetry is enabled. The same values can be set programmatically: on the
-worker via the server constructor (`telemetrySocket`, `serverName`,
+when telemetry is enabled. The same values can be set programmatically: on a
+server via its constructor (`telemetrySocket`, `serverName`,
 `telemetryIntervalMs`), on the master via the `WorkerMaster` constructor
-(`panelPort`, `adminToken`). Several pools on one machine need different
-`panelPort`, `name` and `runtimeDir`.
+(`panelPort`, `adminToken`). A queue consumer has no such parameters — the
+extension reads the socket and the pool name from the environment, and labels its
+snapshots `<group>:<slot>` from what the master set. Several pools on one machine
+need different `panelPort`, `name` and `runtimeDir`.
 
 ## Metrics
 
@@ -152,7 +154,8 @@ running unlike pools shows each of them beside the others.
 | `connections.active` / `totalAccepted` | connections open now / accepted over all time | counter |
 | `consumers.coroutines` | consumers open — one per coroutine, so the capacity in use | consumer registry |
 | `consumers.delivered` | deliveries handed to PHP (queue consumer) | counter |
-| `consumers.acked` / `refused` | deliveries acknowledged / nacked or rejected | the `ack`, `nack` and `reject` commands themselves |
+| `consumers.acked` / `refused` | deliveries acknowledged / nacked or rejected — deliveries, not commands, so one multiple-ack of a hundred counts a hundred | the `ack`, `nack` and `reject` commands themselves |
+| `consumers.timed` | of those, how many had a handler time to measure (an auto-acknowledged delivery has none) | in-flight registry |
 | `consumers.avgMs` | average time a delivery spends in a handler | delivery → its acknowledgement |
 | `consumers.inFlight` | delivered and not settled yet | in-flight registry |
 | `consumers.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | of those, by age [1s,5s) / [5s,15s) / ≥15s | in-flight age |
@@ -162,7 +165,7 @@ running unlike pools shows each of them beside the others.
 All date-time fields are UTC (ISO-8601 with a `+00:00` offset). The duration
 buckets are exclusive: a request that has been running for 7 s lands only in
 `inFlight5to15s`. In `totals`, `requests.avgMs` is weighted by workers'
-`completed` and `consumers.avgMs` by what they settled, while `cpuPercent` is the
+`completed` and `consumers.avgMs` by `consumers.timed`, while `cpuPercent` is the
 sum of per-process values and can exceed 100%.
 
 The consumer numbers cost nothing extra on the wire: a delivery is counted where it

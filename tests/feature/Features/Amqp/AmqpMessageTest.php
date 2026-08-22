@@ -9,6 +9,7 @@ use SConcur\Features\Amqp\AMQPDecimal;
 use SConcur\Features\Amqp\AMQPException;
 use SConcur\Features\Amqp\AMQPQueue;
 use SConcur\Features\Amqp\AMQPTimestamp;
+use SConcur\Features\Amqp\AMQPValueException;
 use const SConcur\Features\Amqp\AMQP_AUTOACK;
 use const SConcur\Features\Amqp\AMQP_DELIVERY_MODE_PERSISTENT;
 use const SConcur\Features\Amqp\AMQP_DURABLE;
@@ -412,6 +413,57 @@ class AmqpMessageTest extends AmqpTestCase
         self::assertTrue($again->isRedelivery());
 
         $queue->ack($again->getDeliveryTag());
+    }
+
+    /**
+     * A decimal significand at or above 2^31 has its high bit set. Read back through a
+     * signed conversion it would come out negative, AMQPDecimal would refuse it, and
+     * the exception would escape the envelope's constructor — killing the consumer and
+     * leaving the message to be redelivered forever.
+     */
+    public function testADecimalHeaderAboveTheSignedRangeSurvivesTheRoundTrip(): void
+    {
+        $channel = $this->channel();
+
+        $queue = $this->declareQueue($channel);
+
+        $this->publishToQueue(
+            channel: $channel,
+            queueName: (string) $queue->getName(),
+            body: 'decimal',
+            attributes: ['headers' => ['big' => new AMQPDecimal(exponent: 2, significand: 3_000_000_000)]],
+        );
+
+        $envelope = $this->waitForMessage($queue);
+
+        self::assertNotNull($envelope);
+
+        $header = $envelope->getHeader('big');
+
+        self::assertInstanceOf(AMQPDecimal::class, $header);
+        self::assertSame(3_000_000_000, $header->getSignificand());
+        self::assertSame(2, $header->getExponent());
+    }
+
+    /**
+     * The whole unsigned 64-bit range AMQPTimestamp accepts does not fit a PHP int, and
+     * a cast would wrap it into a date before 1970. The limit is stated instead.
+     */
+    public function testATimestampBeyondWhatCanBeSentIsRefused(): void
+    {
+        $channel = $this->channel();
+
+        $queue = $this->declareQueue($channel);
+
+        $this->expectException(AMQPValueException::class);
+        $this->expectExceptionMessage('cannot be sent');
+
+        $this->publishToQueue(
+            channel: $channel,
+            queueName: (string) $queue->getName(),
+            body: 'timestamp',
+            attributes: ['headers' => ['when' => new AMQPTimestamp(1.0e19)]],
+        );
     }
 
     /**

@@ -298,6 +298,98 @@ class QueueConsumerTest extends AmqpTestCase
     }
 
     /**
+     * A consumer whose queue is taken away must not take the worker with it: the other
+     * queues keep being pulled, and their handlers are not cut mid-message.
+     */
+    public function testOneFailingConsumerDoesNotEndTheOthers(): void
+    {
+        $channel = $this->channel();
+
+        $doomed  = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $healthy = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+
+        $this->publishToQueue($channel, (string) $healthy->getName(), 'slow');
+
+        $handled = [];
+
+        $queueConsumer = new QueueConsumer(
+            queues: $this->queuesJson([
+                (string) $doomed->getName()  => 1,
+                (string) $healthy->getName() => 1,
+            ]),
+            maxMessages: 1,
+            pollIntervalMs: 50,
+        );
+
+        // Deleting the queue ends its consumer with a broker-side failure while the
+        // other coroutine is inside a handler.
+        $deleted = false;
+
+        $count = $queueConsumer->consume(
+            connection: $this->connection(),
+            handler: function (AMQPEnvelope $envelope, AMQPQueue $queue) use (&$handled, &$deleted, $doomed): void {
+                if (!$deleted) {
+                    $deleted = true;
+
+                    $doomed->delete();
+                }
+
+                Sleeper::usleep(microseconds: 300_000);
+
+                $queue->ack($envelope->getDeliveryTag());
+
+                $handled[] = $envelope->getBody();
+            },
+        );
+
+        self::assertSame(1, $count);
+        self::assertSame(['slow'], $handled, 'the surviving handler must run to completion');
+    }
+
+    /**
+     * Every channel the worker opened is closed when the run ends, including the ones
+     * whose coroutines were still waiting and had to be unwound by the drain.
+     */
+    public function testTheChannelsAreClosedWhenTheRunEnds(): void
+    {
+        $channel = $this->channel();
+
+        $busy = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $idle = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+
+        $this->publishToQueue($channel, (string) $busy->getName(), 'one');
+
+        $before = $this->connection()->getUsedChannels();
+
+        $queueConsumer = new QueueConsumer(
+            queues: $this->queuesJson([
+                (string) $busy->getName() => 1,
+                (string) $idle->getName() => 3,
+            ]),
+            maxMessages: 1,
+            drainTimeoutMs: 1000,
+            pollIntervalMs: 50,
+        );
+
+        $queueConsumer->consume(
+            connection: $this->connection(),
+            handler: static function (AMQPEnvelope $envelope, AMQPQueue $queue): void {
+                $queue->ack($envelope->getDeliveryTag());
+            },
+        );
+
+        // The three idle coroutines are ended by the drain, which detaches them; their
+        // channels are released by the channel objects going out of scope.
+        $deadline = microtime(true) + 3.0;
+
+        while (microtime(true) < $deadline && $this->connection()->getUsedChannels() > $before) {
+            usleep(100_000);
+        }
+
+        self::assertSame($before, $this->connection()->getUsedChannels());
+    }
+
+    /**
      * @param array<string, int> $weights queue name => coroutine count
      */
     protected function queuesJson(array $weights): string

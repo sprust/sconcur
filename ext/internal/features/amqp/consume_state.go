@@ -227,22 +227,34 @@ func (e *channelEntry) consume(
 
 	var deliveries <-chan amqp091.Delivery
 
-	err := e.do(ctx, func(channel *amqp091.Channel) error {
-		var consumeError error
+	err := e.doAbandoning(
+		ctx,
+		func(channel *amqp091.Channel) error {
+			var consumeError error
 
-		deliveries, consumeError = channel.ConsumeWithContext(
-			context.Background(),
-			params.QueueName,
-			consumerTag,
-			params.AutoAck,
-			params.Exclusive,
-			params.NoLocal,
-			params.NoWait,
-			arguments,
-		)
+			deliveries, consumeError = channel.ConsumeWithContext(
+				context.Background(),
+				params.QueueName,
+				consumerTag,
+				params.AutoAck,
+				params.Exclusive,
+				params.NoLocal,
+				params.NoWait,
+				arguments,
+			)
 
-		return consumeError
-	})
+			return consumeError
+		},
+		// The registration outran its deadline: PHP was told it failed and will never
+		// read this consumer, but the broker has one and will keep feeding it. Nothing
+		// else can cancel it — entry.consumers never learned the tag — so it is
+		// cancelled here, or the queue quietly stops making progress at its prefetch.
+		func(consumeError error) {
+			if consumeError == nil {
+				e.sendCancel(consumerTag)
+			}
+		},
+	)
 
 	if err != nil {
 		return nil, err
