@@ -183,12 +183,17 @@ class TestWorkerMaster
      * completion and returns [exitCode, combined-output].
      *
      * @param array<string, string> $env
+     * @param list<string>          $argv extra flags after --configPath (e.g. --group=NAME)
      *
      * @return array{int, string}
      */
-    public static function runCommand(string $subcommand, string $configPath, array $env = []): array
-    {
-        $argv = [$subcommand, '--configPath=' . $configPath];
+    public static function runCommand(
+        string $subcommand,
+        string $configPath,
+        array $env = [],
+        array $argv = [],
+    ): array {
+        $argv = [$subcommand, '--configPath=' . $configPath, ...$argv];
 
         $outputFile = (string) tempnam(sys_get_temp_dir(), 'sc-master-cmd-');
 

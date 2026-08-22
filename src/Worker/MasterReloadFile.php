@@ -11,8 +11,10 @@ namespace SConcur\Worker;
  * (state-file removal), so no signal — and therefore no PID-reuse risk — is involved.
  *
  * The file carries the config path the requesting CLI was given, because the master is
- * handed its groups as objects and has no path of its own to go back to. An empty or
- * unreadable value just means "roll the workers on the config already loaded".
+ * handed its groups as objects and has no path of its own to go back to, and the group
+ * to roll when the request named one. It is JSON, but a file holding a bare path (or
+ * nothing) is read too: written by hand, it means "roll everything on the config
+ * already loaded".
  */
 class MasterReloadFile
 {
@@ -27,29 +29,38 @@ class MasterReloadFile
     }
 
     /**
-     * Requests a reload by creating the trigger file, naming the config to re-read.
-     * Returns false when it could not be written.
+     * Requests a reload by creating the trigger file, naming the config to re-read and,
+     * optionally, the single group to roll. Returns false when it could not be written.
      */
-    public function request(string $configPath = ''): bool
+    public function request(string $configPath = '', string $group = ''): bool
     {
-        return file_put_contents($this->path, $configPath . "\n") !== false;
+        $request = (string) json_encode([
+            'configPath' => $configPath,
+            'group'      => $group,
+        ]);
+
+        return file_put_contents($this->path, $request . "\n") !== false;
     }
 
     /**
-     * The config path the request named, or an empty string when it named none (an
-     * older trigger file, or one written by hand).
+     * The config path the request named, or an empty string when it named none (a
+     * trigger file written by hand).
      */
     public function configPath(): string
     {
-        $contents = @file_get_contents($this->path);
+        $request = $this->read();
 
-        if ($contents === false) {
-            return '';
-        }
-
-        $configPath = trim($contents);
+        $configPath = (string) ($request['configPath'] ?? '');
 
         return is_file($configPath) ? $configPath : '';
+    }
+
+    /**
+     * The single group the request asked to roll, or an empty string for all of them.
+     */
+    public function group(): string
+    {
+        return (string) ($this->read()['group'] ?? '');
     }
 
     public function requested(): bool
@@ -62,5 +73,29 @@ class MasterReloadFile
         if (is_file($this->path)) {
             @unlink($this->path);
         }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function read(): array
+    {
+        $contents = @file_get_contents($this->path);
+
+        if ($contents === false) {
+            return [];
+        }
+
+        $contents = trim($contents);
+
+        $decoded = json_decode($contents, true);
+
+        if (is_array($decoded)) {
+            /** @var array<string, mixed> $decoded */
+            return $decoded;
+        }
+
+        // A file written by hand: a bare config path, or a word like "reload".
+        return ['configPath' => $contents];
     }
 }

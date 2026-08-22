@@ -33,6 +33,8 @@ class MasterCli
 
     protected const string CONFIG_PATH_FLAG = '--configPath=';
 
+    protected const string GROUP_FLAG = '--group=';
+
     protected const int STOP_TIMEOUT_MS = 15_000;
 
     /** @var resource */
@@ -65,7 +67,10 @@ class MasterCli
             return $this->usage();
         }
 
-        $configPath = $this->configPath(array_slice($argv, 2));
+        $arguments = array_slice($argv, 2);
+
+        $configPath = $this->flag($arguments, self::CONFIG_PATH_FLAG);
+        $group      = $this->flag($arguments, self::GROUP_FLAG);
 
         $config = $this->loadConfig($configPath);
 
@@ -73,11 +78,18 @@ class MasterCli
             return $config;
         }
 
+        if ($group !== '' && !$this->hasGroup($config, $group)) {
+            return $this->fail(
+                sprintf('unknown group "%s" in %s', $group, $configPath),
+                self::EXIT_USAGE,
+            );
+        }
+
         return match ($command) {
             'start'  => $this->start($config),
-            'status' => $this->status($config),
+            'status' => $this->status($config, $group),
             'stop'   => $this->stop($config),
-            'reload' => $this->reload($config, $configPath),
+            'reload' => $this->reload($config, $configPath, $group),
         };
     }
 
@@ -90,7 +102,7 @@ class MasterCli
         }
     }
 
-    protected function status(MasterConfig $config): int
+    protected function status(MasterConfig $config, string $group = ''): int
     {
         // Liveness is decided by whether a master holds the lock, not by a pid in the
         // state file — the lock is released by the kernel only when the real master
@@ -116,12 +128,16 @@ class MasterCli
             count($state->groups),
         ));
 
-        foreach ($state->groups as $group) {
+        foreach ($state->groups as $reported) {
+            if ($group !== '' && $reported->name !== $group) {
+                continue;
+            }
+
             $this->writeOut(sprintf(
                 '  %s: workers=%d script=%s',
-                $group->name,
-                $group->workerCount,
-                $group->workerScript,
+                $reported->name,
+                $reported->workerCount,
+                $reported->workerScript,
             ));
         }
 
@@ -168,7 +184,7 @@ class MasterCli
      * trigger file, then waits until the master consumes it (deletes it once the roll
      * completes). No signal — and so no PID-reuse risk — is involved.
      */
-    protected function reload(MasterConfig $config, string $configPath): int
+    protected function reload(MasterConfig $config, string $configPath, string $group = ''): int
     {
         $lockPath = $this->lockPath($config);
 
@@ -180,11 +196,11 @@ class MasterCli
 
         $reloadFile = $this->reloadFile($config);
 
-        if (!$reloadFile->request($configPath)) {
+        if (!$reloadFile->request($configPath, $group)) {
             return $this->fail('cannot write reload trigger: ' . $reloadFile->path(), self::EXIT_ERROR);
         }
 
-        $deadline = microtime(true) + $this->reloadTimeoutMs($config) / 1000;
+        $deadline = microtime(true) + $this->reloadTimeoutMs($config, $group) / 1000;
 
         // The master deletes the trigger once the rolling restart finishes; poll for it.
         while (microtime(true) < $deadline) {
@@ -209,10 +225,18 @@ class MasterCli
      * for up to the master's shutdownTimeoutMs before it is killed, and they roll one
      * at a time.
      */
-    protected function reloadTimeoutMs(MasterConfig $config): int
+    protected function reloadTimeoutMs(MasterConfig $config, string $group = ''): int
     {
-        // Every worker of every group may take its own drain timeout, and they roll one
-        // at a time, so the wait is the sum rather than the longest.
+        // Workers roll one at a time, so the wait is the sum of their drains rather than
+        // the longest of them. A scoped reload waits for its group alone.
+        foreach ($config->groups() as $configured) {
+            if ($group !== '' && $configured->name === $group) {
+                $workers = $configured->workerCount > 0 ? $configured->workerCount : Cpu::count();
+
+                return $workers * ($configured->shutdownTimeoutMs + 2_000) + 5_000;
+            }
+        }
+
         return $config->totalWorkerCount() * ($config->maxShutdownTimeoutMs() + 2_000) + 5_000;
     }
 
@@ -290,36 +314,51 @@ class MasterCli
      *
      * @param list<string> $args
      */
-    protected function configPath(array $args): string
+    protected function flag(array $args, string $flag): string
     {
-        $configPath = '';
+        $value = '';
 
         foreach ($args as $argument) {
-            if (str_starts_with($argument, self::CONFIG_PATH_FLAG)) {
-                $configPath = substr($argument, strlen(self::CONFIG_PATH_FLAG));
+            if (str_starts_with($argument, $flag)) {
+                $value = substr($argument, strlen($flag));
             }
         }
 
-        return $configPath;
+        return $value;
+    }
+
+    protected function hasGroup(MasterConfig $config, string $name): bool
+    {
+        foreach ($config->groups() as $group) {
+            if ($group->name === $name) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected function usage(): int
     {
         $this->writeErr(<<<USAGE
-            Usage: sconcur-server <start|status|stop|reload> --configPath=FILE
+            Usage: sconcur-server <start|status|stop|reload> --configPath=FILE [--group=NAME]
 
               --configPath=FILE   JSON master config (required for every command)
+              --group=NAME        narrow status or reload to one group
 
-            The JSON holds the WorkerMaster parameters (workerScript, workerCount,
-            phpArgs, runtimeDir, logDir, name, rotateDays, restartPolicy,
-            shutdownTimeoutMs, restartBackoffMs, maxRestartBackoffMs, env) plus a
-            nested "server" object whose every key becomes a "--key=value" worker argv
-            flag (booleans render as 1/0). Unspecified values use their defaults.
+            The JSON holds the master-wide settings (runtimeDir, logDir, name,
+            rotateDays, logTo, panelPort, adminToken) plus the defaults its groups
+            inherit (phpBinary, phpArgs, env, restartPolicy, shutdownTimeoutMs,
+            restartBackoffMs, maxRestartBackoffMs), and a "groups" list of pools. A
+            group names its workerScript and workerCount, and its nested "server"
+            object becomes the workers' "--key=value" argv flags (booleans render as
+            1/0, a list or an object as JSON). Unspecified values use their defaults.
 
             start   run the supervisor (foreground)
             status  report whether a master is running (exit 0 running, 3 stopped/stale)
             stop    remove the state file (the stop signal) and wait for the master to exit
-            reload  roll the workers one by one (zero-downtime restart) and wait for it
+            reload  re-read the config and roll the workers onto it one by one
+                    (zero-downtime restart), then wait for it to finish
             USAGE);
 
         return self::EXIT_USAGE;

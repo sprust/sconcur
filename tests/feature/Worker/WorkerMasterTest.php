@@ -627,6 +627,65 @@ class WorkerMasterTest extends TestCase
     }
 
     /**
+     * A scoped reload touches its group and leaves the others where they are.
+     */
+    public function testReloadCanBeNarrowedToOneGroup(): void
+    {
+        $groups = [
+            [
+                'name'         => 'alpha',
+                'workerScript' => self::demoWorkerScript(),
+                'workerCount'  => 1,
+                'server'       => ['address' => '127.0.0.1:0', 'reusePort' => true],
+            ],
+            [
+                'name'         => 'beta',
+                'workerScript' => self::demoWorkerScript(),
+                'workerCount'  => 1,
+                'server'       => ['address' => '127.0.0.1:0', 'reusePort' => true],
+            ],
+        ];
+
+        $master = TestWorkerMaster::start(options: ['groups' => $groups], waitReachable: false);
+
+        try {
+            self::assertTrue(
+                $this->waitFor(static fn(): bool => str_contains($master->logText(), 'beta #0'), 5.0),
+                'both groups must be up first',
+            );
+
+            $master->rewriteConfig([
+                'runtimeDir' => $master->runtimeDir(),
+                'logDir'     => $master->runtimeDir(),
+                'name'       => $master->name(),
+                'phpArgs'    => ['-d', 'extension=' . self::extensionPath()],
+                'groups'     => $groups,
+            ]);
+
+            [$scopedCode, $scopedOutput] = TestWorkerMaster::runCommand(
+                'reload',
+                $master->configPath(),
+                argv: ['--group=alpha'],
+            );
+
+            self::assertSame(0, $scopedCode, $scopedOutput);
+
+            self::assertTrue(
+                $this->waitFor(
+                    static fn(): bool => str_contains($master->logText(), 'reload requested for group alpha'),
+                    10.0,
+                ),
+                'the master must report the scoped request',
+            );
+
+            self::assertStringContainsString('group alpha: rolling', $master->logText());
+            self::assertStringNotContainsString('group beta: rolling', $master->logText());
+        } finally {
+            $master->stop();
+        }
+    }
+
+    /**
      * A config that does not parse must never take a working pool down: the reload is
      * refused and the master keeps running on what it had.
      */

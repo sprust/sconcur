@@ -127,11 +127,17 @@ MasterConfig::fromFile('/app/master.json')->toWorkerMaster()->run();
 `status`/`stop`/`reload` находят lock-, state- и триггер-файлы.
 
 ```sh
-vendor/bin/sconcur-server start   --configPath=/app/master.json  # поднять пул (foreground)
+vendor/bin/sconcur-server start   --configPath=/app/master.json  # поднять пулы (foreground)
 vendor/bin/sconcur-server status  --configPath=/app/master.json  # running: pid=12345 workers=8 groups=2
 vendor/bin/sconcur-server stop    --configPath=/app/master.json  # удалить state-файл и дождаться выхода
-vendor/bin/sconcur-server reload  --configPath=/app/master.json  # перезапустить воркеры по одному
+vendor/bin/sconcur-server reload  --configPath=/app/master.json  # перечитать конфиг и прокатить воркеры
+vendor/bin/sconcur-server reload  --configPath=/app/master.json --group=orders  # прокатить один пул
 ```
+
+`--group=NAME` сужает `status` до одного пула, а `reload` — до проката одного,
+оставляя соседей на месте. Имя, которого в конфиге нет, — ошибка использования
+(код `2`). `stop` берёт мастера целиком: lock и state-файл одни, останавливать
+половину нечем.
 
 Коды возврата: у `start` — собственный код мастера; `status` — `0` (работает) /
 `3` (остановлен или протухший state); `stop` — `0` после остановки (или если никто

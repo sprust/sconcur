@@ -143,6 +143,16 @@ class MasterCliTest extends TestCase
         self::assertStringContainsString('shutdownTimeoutMs', $err);
     }
 
+    public function testAnUnknownGroupIsRefused(): void
+    {
+        $configPath = $this->writeConfig(['workerScript' => '/tmp/x.php']);
+
+        [$code, , $err] = $this->runCli(['reload', '--configPath=' . $configPath, '--group=nope']);
+
+        self::assertSame(MasterCli::EXIT_USAGE, $code);
+        self::assertStringContainsString('unknown group "nope"', $err);
+    }
+
     public function testStatusReportsStoppedWhenNoState(): void
     {
         $directory  = $this->makeDir();

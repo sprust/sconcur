@@ -439,13 +439,20 @@ class WorkerMaster
             return;
         }
 
-        $this->logger->master(MasterLogger::INFO, 'reload requested');
+        $group = $this->reloadFile->group();
+
+        $this->logger->master(
+            level: MasterLogger::INFO,
+            message: $group === '' ? 'reload requested' : sprintf('reload requested for group %s', $group),
+        );
 
         $configPath = $this->reloadFile->configPath();
 
+        $groups = $this->groups;
+
         if ($configPath !== '') {
             try {
-                $this->groups = MasterConfig::fromFile($configPath)->toWorkerMaster()->groups;
+                $groups = MasterConfig::fromFile($configPath)->toWorkerMaster()->groups;
             } catch (InvalidConfigException $exception) {
                 $this->logger->master(
                     level: MasterLogger::ERROR,
@@ -458,9 +465,60 @@ class WorkerMaster
             }
         }
 
-        $this->applyGroups();
+        if ($group !== '' && !$this->applyOneGroup($groups, $group)) {
+            $this->reloadFile->clear();
+
+            return;
+        }
+
+        if ($group === '') {
+            $this->groups = $groups;
+
+            $this->applyGroups();
+        }
 
         $this->writeState();
+    }
+
+    /**
+     * Applies the reload to a single named group and leaves the others alone — the
+     * scoped form of a reload, so one pool can be rolled without touching its
+     * neighbours. Answers false when the config no longer describes that group, which
+     * is a request that cannot be honoured rather than an instruction to retire it.
+     *
+     * @param list<WorkerGroupConfig> $groups
+     */
+    protected function applyOneGroup(array $groups, string $name): bool
+    {
+        foreach ($groups as $index => $group) {
+            if ($group->name !== $name) {
+                continue;
+            }
+
+            $this->groups[$index] = $group;
+
+            $pool = $this->pools[$name] ?? null;
+
+            if ($pool === null) {
+                $this->logger->master(
+                    level: MasterLogger::ERROR,
+                    message: sprintf('reload --group=%s: the master is not running that group', $name),
+                );
+
+                return false;
+            }
+
+            $pool->reconfigure($group);
+
+            return true;
+        }
+
+        $this->logger->master(
+            level: MasterLogger::ERROR,
+            message: sprintf('reload --group=%s: the config describes no such group', $name),
+        );
+
+        return false;
     }
 
     /**

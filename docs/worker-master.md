@@ -128,11 +128,17 @@ commands guarantees consistent `runtimeDir`/`name`, so `status`/`stop`/`reload`
 find the lock, state and trigger files.
 
 ```sh
-vendor/bin/sconcur-server start   --configPath=/app/master.json  # bring up the pool (foreground)
+vendor/bin/sconcur-server start   --configPath=/app/master.json  # bring up the pools (foreground)
 vendor/bin/sconcur-server status  --configPath=/app/master.json  # running: pid=12345 workers=8 groups=2
 vendor/bin/sconcur-server stop    --configPath=/app/master.json  # remove the state file and wait for exit
-vendor/bin/sconcur-server reload  --configPath=/app/master.json  # roll the workers one by one
+vendor/bin/sconcur-server reload  --configPath=/app/master.json  # re-read the config and roll the workers
+vendor/bin/sconcur-server reload  --configPath=/app/master.json --group=orders  # roll one pool
 ```
+
+`--group=NAME` narrows `status` to one pool and `reload` to rolling one, leaving
+its neighbours where they are. A name the config does not define is a usage error
+(exit `2`). `stop` takes the whole master — there is one lock and one state file,
+and stopping half of it is not a thing.
 
 Exit codes: `start` — the master's own; `status` — `0` running / `3`
 stopped-or-stale; `stop` — `0` once stopped (or none was running), `1` on timeout;
