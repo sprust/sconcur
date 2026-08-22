@@ -31,7 +31,7 @@ const (
 	connectionSweepInterval = time.Minute
 	connectionCloseTimeout  = 5 * time.Second
 
-	// saslMethodExternal mirrors AMQP_SASL_METHOD_EXTERNAL: authenticate with the TLS
+	// saslMethodExternal mirrors SaslMethodEnum::External: authenticate with the TLS
 	// client certificate instead of a login and a password.
 	saslMethodExternal = 1
 )
@@ -41,10 +41,11 @@ const (
 //
 // It holds what the broker sees of a connection: the address, the credentials, the TLS
 // material and everything the handshake settles on. The connect timeout is deliberately
-// not part of it — it bounds the dial and nothing beyond it, so two AMQPConnection objects
+// not part of it — it bounds the dial and nothing beyond it, so two Connection objects
 // that differ only there share one connection, which is what the feature promises for the
 // same credentials (docs/amqp.md).
 type connectionKey struct {
+	secure           bool
 	host             string
 	port             int
 	vhost            string
@@ -73,7 +74,7 @@ type pooledConnection struct {
 	lastUsedAt   time.Time
 }
 
-// connectionHandle is what one PHP AMQPConnection holds: a share of a pooled connection
+// connectionHandle is what one PHP Connection holds: a share of a pooled connection
 // and the channels opened through it.
 type connectionHandle struct {
 	id     string
@@ -442,8 +443,15 @@ func dialConfig(params payloads.ConnectParams) (amqp091.Config, error) {
 	return config, nil
 }
 
+// usesTls answers whether to dial amqps. Secure is what the caller asked for and is
+// decisive on its own: a connection with no certificate paths — the system trust store,
+// or verification turned off against a development broker — is still a TLS connection,
+// and inferring otherwise would put the login and password on the wire in the clear.
+//
+// The paths are still honoured for their own sake, so material named without the flag
+// cannot be silently ignored either.
 func usesTls(params payloads.ConnectParams) bool {
-	return params.CaCertPath != "" || params.CertPath != "" || params.KeyPath != ""
+	return params.Secure || params.CaCertPath != "" || params.CertPath != "" || params.KeyPath != ""
 }
 
 func tlsConfigFromParams(params payloads.ConnectParams) (*tls.Config, error) {
@@ -486,10 +494,13 @@ func tlsConfigFromParams(params payloads.ConnectParams) (*tls.Config, error) {
 // connectionUri builds the amqp:// (or amqps://) URI of a connection: the address and
 // nothing else. The credentials travel in the dial config (dialConfig) and the vhost in
 // its Vhost field, so nothing here has to survive URI escaping.
+// connectionUri builds what the driver dials. The scheme has to agree with the TLS config
+// dialConfig built, and both follow the same rule — see usesTls: what the caller asked for
+// decides, and the certificate paths only add to it.
 func connectionUri(key connectionKey) string {
 	scheme := "amqp://"
 
-	if key.caCertPath != "" || key.certPath != "" || key.keyPath != "" {
+	if key.secure || key.caCertPath != "" || key.certPath != "" || key.keyPath != "" {
 		scheme = "amqps://"
 	}
 
@@ -498,6 +509,7 @@ func connectionUri(key connectionKey) string {
 
 func connectionKeyFromParams(params payloads.ConnectParams) connectionKey {
 	return connectionKey{
+		secure:           params.Secure,
 		host:             params.Host,
 		port:             params.Port,
 		vhost:            params.Vhost,

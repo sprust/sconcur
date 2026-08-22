@@ -6,6 +6,7 @@ namespace SConcur\Features\Amqp\Consumer;
 
 use Closure;
 use SConcur\Exceptions\Amqp\AmqpException;
+use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Features\Amqp\Connection;
 use SConcur\Features\Amqp\Delivery;
 use SConcur\Features\Server\ServerRuntimeSupportTrait;
@@ -186,6 +187,11 @@ class QueueConsumer
 
         $state->consumerStarted();
 
+        // Whether this coroutine reached the end of its own consuming, one way or another.
+        // False means it was unwound — the drain gave up on it and stopped the group while
+        // it was still working.
+        $ended = false;
+
         try {
             foreach ($channel->consume(queueName: $spec->name) as $delivery) {
                 $keepGoing = $this->handleDelivery(
@@ -201,6 +207,8 @@ class QueueConsumer
                     break;
                 }
             }
+
+            $ended = true;
         } catch (AmqpException $exception) {
             // One consumer ending is not the worker ending. The broker cancelled it, its
             // queue was deleted, its channel died — whatever it was, the other coroutines
@@ -213,16 +221,22 @@ class QueueConsumer
                 $exception::class,
                 $exception->getMessage(),
             ));
+
+            $ended = true;
         } finally {
             $state->consumerFinished();
+
+            if (!$ended) {
+                // Unwound. An awaited close would suspend a fiber the scheduler has
+                // already detached, so the release goes out detached — and it goes out
+                // here rather than whenever the garbage collector reaches the cycle the
+                // unwind left behind. Until the channel closes, the delivery this handler
+                // was working on stays owed to the broker instead of going back to the
+                // queue for the next worker.
+                $channel->closeDetached();
+            }
         }
 
-        // Reached only when this coroutine was not unwound. A deliberate stop
-        // (WaitGroup::stop, Scheduler::shutdown) throws FlowStoppedException straight
-        // past here, and that is on purpose: the scheduler has already detached the
-        // fiber, so an awaited close would suspend it with nothing left to resume it.
-        // The channel object releases itself on the way out instead — its destructor
-        // pushes the release without awaiting anything.
         $channel->close();
     }
 
@@ -242,10 +256,20 @@ class QueueConsumer
     ): bool {
         $state->messageStarted();
 
-        $failed = false;
+        $failed  = false;
+        $unwound = false;
 
         try {
             $handler($delivery);
+        } catch (FlowStoppedException $exception) {
+            // The drain deadline passed while this handler was still working, and the
+            // group was stopped under it. That is not a handler failure: the application
+            // never got to decide, so the message must go back to the broker rather than
+            // be refused on its behalf. Leaving it unsettled is what returns it — the
+            // channel closing behind this coroutine hands it back exactly once.
+            $unwound = true;
+
+            throw $exception;
         } catch (Throwable $exception) {
             $failed = true;
 
@@ -253,7 +277,9 @@ class QueueConsumer
         } finally {
             $state->messageFinished($failed);
 
-            $this->settle(delivery: $delivery, failed: $failed);
+            if (!$unwound) {
+                $this->settle(delivery: $delivery, failed: $failed);
+            }
         }
 
         if ($state->isDraining()) {

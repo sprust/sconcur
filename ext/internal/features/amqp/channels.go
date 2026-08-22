@@ -16,7 +16,7 @@ const (
 	// channelIdleTTL: a channel with no consumers that has run no command for this long
 	// is closed. It is the safety net for the channels an application dropped without
 	// closing in a way PHP could not report (a fatal error, a killed worker) — the usual
-	// path is AMQPChannel::close() or its destructor.
+	// path is Channel::close() or its destructor.
 	channelIdleTTL       = 30 * time.Minute
 	channelSweepInterval = time.Minute
 	channelCloseTimeout  = 5 * time.Second
@@ -28,7 +28,7 @@ const (
 	returnQueueSize = 128
 
 	// What a channel keeps for a wait loop that has not come. An application may
-	// publish in confirm mode, or with AMQP_MANDATORY, and never call the matching
+	// publish in confirm mode, or as mandatory, and never call the matching
 	// waitFor* — a returned message carries its whole body, so an unbounded backlog is
 	// the channel quietly eating the heap. The oldest go first: a wait loop that does
 	// arrive wants what happened recently, and ext-amqp keeps nothing at all when no

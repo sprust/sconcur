@@ -11,11 +11,11 @@ use SConcur\Features\Amqp\MessageProperties;
  * Translates between the message objects the API takes and gives back and the properties
  * map that crosses to Go.
  *
- * A property nobody set does not travel: AMQP distinguishes an absent content type from an
- * empty one, and a message published here carries exactly the properties it was built
- * with. The calque published `text/plain` for a message that named no content type,
- * because that is what the extension does; inventing a content type for an application
- * that did not ask for one is not worth keeping.
+ * A property nobody set does not travel, and an empty string counts as nobody setting it —
+ * so a message carries exactly the properties it was built with and nothing else. The
+ * calque published `text/plain` for a message that named no content type, because that is
+ * what the extension does; inventing a content type for an application that did not ask
+ * for one is not worth keeping.
  */
 readonly class PropertiesCodec
 {

@@ -27,7 +27,6 @@ use SConcur\Transport\MessagePackTransport;
 use SConcur\Tests\Impl\HttpServer\GeneratorStream;
 use SConcur\WaitGroup;
 
-
 // The name of the queue this server publishes into and the demo consumer pool reads
 // (config/sconcur.rabbitmq.config.json). Declared by the publisher, because a consumer
 // declares nothing — topology belongs to whoever owns it.

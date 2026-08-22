@@ -83,7 +83,7 @@ func (f *AmqpFeature) handleGet(task *tasks.Task, raw msgpack.RawMessage) {
 	respond(task, deliveryToPayload(delivery, entry.id), startTime)
 }
 
-// deliveryToPayload turns a driver delivery into the map PHP builds an AMQPEnvelope from.
+// deliveryToPayload turns a driver delivery into the map PHP builds a Delivery from.
 // The channel id travels with it because a delivery tag is only valid on the channel that
 // delivered the message.
 func deliveryToPayload(delivery amqp091.Delivery, channelId string) payloads.Delivery {

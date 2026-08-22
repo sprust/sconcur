@@ -7,9 +7,8 @@ namespace SConcur\Features\Amqp\Payloads;
 use SConcur\Transport\PayloadParametersInterface;
 
 /**
- * Parameters of an exchange.declare command. The declaration's options arrive here already
- * split into the protocol's boolean fields by Support\FlagsParser; passive selects the
- * declare-passive form.
+ * Parameters of an exchange.declare command: one boolean per protocol field, as
+ * Exchange::declare() takes them. passive selects the declare-passive form.
  *
  * Go: payloads.ExchangeDeclareParams (ext/internal/features/amqp/payloads/payloads.go).
  */

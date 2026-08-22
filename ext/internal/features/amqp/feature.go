@@ -35,10 +35,10 @@ var errFactory = errs.NewErrorsFactory("amqp")
 // none) — ext-amqp puts that code into the exception, and application code branches on it.
 const (
 	// scopeNetwork: the broker is unreachable or the connection died. PHP raises
-	// AMQPConnectionException, whichever exception the caller asked for.
+	// ConnectionException, whichever exception the caller asked for.
 	scopeNetwork = "net"
 	// scopeChannel: the broker closed the channel over this failure. PHP raises the
-	// caller's exception and marks its AMQPChannel closed, as the extension does.
+	// caller's exception and marks its Channel closed.
 	scopeChannel = "chn"
 	// scopeCommand: the command failed with the channel left usable.
 	scopeCommand = "err"

@@ -22,12 +22,14 @@ use WeakReference;
  */
 class Delivery
 {
-    protected bool $settled = false;
-
     /**
      * @param WeakReference<Channel> $channel the channel the message arrived on. Weak, so a
      *                                        delivery an application kept does not hold its
      *                                        channel — and through it the connection — open
+     * @param bool                   $settled whether the broker already considers this
+     *                                        delivery answered. True for an auto-acknowledged
+     *                                        one: it was settled as it left, and settling it
+     *                                        again is what closes the channel
      */
     public function __construct(
         public readonly string $body,
@@ -38,6 +40,7 @@ class Delivery
         public readonly bool $redelivered,
         public readonly MessageProperties $properties,
         protected WeakReference $channel,
+        protected bool $settled = false,
     ) {
     }
 
@@ -114,7 +117,8 @@ class Delivery
         if ($this->settled) {
             throw new ChannelException(
                 message: "Delivery $this->deliveryTag has already been settled; settling it twice"
-                    . ' would make the broker close the channel.',
+                    . ' would make the broker close the channel. An auto-acknowledged delivery'
+                    . ' arrives settled: the broker answered for it as it left.',
             );
         }
 

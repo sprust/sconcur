@@ -16,7 +16,13 @@ use SConcur\Exceptions\Amqp\ConnectionException;
  */
 readonly class ConnectionOptions
 {
-    /** Channels a connection may hold open; the ceiling AMQP 0-9-1 puts on the number. */
+    /**
+     * Channels one connection may hold open. AMQP 0-9-1 carries channel-max as a 16-bit
+     * short, so the protocol's own ceiling is 65535; this is the lower one ext-amqp
+     * settled on, kept because a consumer pool sized against it is portable between the
+     * two and because 256 channels on one socket is already past the point where another
+     * connection is the better answer.
+     */
     public const int MAX_CHANNELS = 256;
 
     /** The frame size asked for when none is named. */
@@ -35,8 +41,8 @@ readonly class ConnectionOptions
     /**
      * @param float $connectTimeout seconds to wait for the broker to answer the dial;
      *                              0 leaves the Go side to apply its own default
-     * @param float $readTimeout    seconds a consumer waits for a delivery before its
-     *                              stream ends; 0 waits forever
+     * @param float $readTimeout    seconds a consumer waits for a delivery before the wait
+     *                              fails; 0 waits forever
      * @param float $writeTimeout   seconds a publish may take
      * @param float $rpcTimeout     seconds any other single broker method may take
      * @param int   $heartbeat      seconds between heartbeats; 0 lets the broker choose
@@ -141,7 +147,7 @@ readonly class ConnectionOptions
             login: isset($parts['user']) ? rawurldecode((string) $parts['user']) : $defaults->login,
             password: isset($parts['pass']) ? rawurldecode((string) $parts['pass']) : $defaults->password,
             vhost: static::vhostOf($parts['path'] ?? null),
-            connectTimeout: static::secondsFromMilliseconds($query, 'connection_timeout'),
+            connectTimeout: static::secondsFromMilliseconds(query: $query, key: 'connection_timeout'),
             heartbeat: isset($query['heartbeat']) ? (int) $query['heartbeat'] : $defaults->heartbeat,
             channelMax: isset($query['channel_max']) ? (int) $query['channel_max'] : $defaults->channelMax,
             frameMax: isset($query['frame_max']) ? (int) $query['frame_max'] : $defaults->frameMax,
@@ -194,7 +200,10 @@ readonly class ConnectionOptions
 
         $verifyGiven = isset($query['verify']);
 
-        if (!$secure && $caCert === null && $cert === null && $key === null && !$verifyGiven) {
+        // `verify` alone does not turn a plaintext URI into a TLS one: it says how to
+        // check a certificate, not that there is one. Naming a file does, and so does
+        // the `amqps` scheme.
+        if (!$secure && $caCert === null && $cert === null && $key === null) {
             return null;
         }
 

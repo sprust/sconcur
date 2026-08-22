@@ -92,8 +92,11 @@ class Channel extends AmqpResource
      *
      * @throws ConnectionException if the connection is not open or the broker refuses
      */
-    public function __construct(Connection $connection, int $prefetchCount = self::DEFAULT_PREFETCH_COUNT, int $prefetchSize = 0)
-    {
+    public function __construct(
+        Connection $connection,
+        int $prefetchCount = self::DEFAULT_PREFETCH_COUNT,
+        int $prefetchSize = 0,
+    ) {
         $this->connection = $connection;
 
         if (!$connection->isOpen()) {
@@ -160,6 +163,11 @@ class Channel extends AmqpResource
 
         $this->internalOpen = false;
         $this->internalId   = '';
+
+        // Dropped from the connection's registry with the id it was filed under: the entry
+        // is a weak reference, but the key is a string, and a worker that opens a channel
+        // per request would otherwise grow that array for the life of the connection.
+        unset($this->connection->internalChannels[$channelId]);
 
         // The command runs unguarded: this object has just marked itself closed, and the
         // guard exists to stop calls that would reach a channel the broker took away —
@@ -464,7 +472,7 @@ class Channel extends AmqpResource
             return null;
         }
 
-        return $this->deliveryFrom($result);
+        return $this->deliveryFrom(delivery: $result, autoAck: $autoAck);
     }
 
     /**
@@ -476,9 +484,12 @@ class Channel extends AmqpResource
      * back; the calque needed a registry on the channel for that, because a callback has no
      * scope to end.
      *
-     * The stream ends on its own when the broker cancels the consumer or the channel dies.
-     * A connection's read timeout is not an end but a failure: the broker still holds the
-     * consumer, so a wait that outran the deadline raises rather than finishing the loop.
+     * The loop ends quietly only when this coroutine's flow is stopped. Everything else
+     * that takes the consumer away raises: the broker cancelling it (the queue was
+     * deleted, a node failed over), the channel dying, and the connection's read timeout
+     * passing with nothing delivered — the broker still holds the consumer there, so a
+     * worker that read the silence as "the queue is closed" would stop reading a queue
+     * that is merely idle.
      *
      * @param array<string, mixed> $arguments consumer arguments, such as `x-priority`
      *
@@ -533,7 +544,7 @@ class Channel extends AmqpResource
                     return;
                 }
 
-                yield $this->deliveryFrom(CommandRunner::decode($next));
+                yield $this->deliveryFrom(delivery: CommandRunner::decode($next), autoAck: $autoAck);
             }
         } catch (FlowStoppedException $exception) {
             // Caught only to be re-thrown: the flag is what the teardown below needs. A
@@ -552,6 +563,48 @@ class Channel extends AmqpResource
     }
 
     /**
+     * Gives the channel back without waiting for the broker to answer.
+     *
+     * For a coroutine that was unwound. Its flow is gone, so an ordinary close would fail;
+     * and waiting for the garbage collector instead is not good enough, because the channel
+     * stays open until it runs — and every delivery that channel took but never
+     * acknowledged stays owed to the broker with it, for up to the broker's consumer
+     * timeout. Whoever unwinds a coroutine that holds a channel calls this.
+     */
+    public function closeDetached(): void
+    {
+        // Keyed on the handle and not on the open flag, the way Connection::close() is: a
+        // command that failed marks the channel closed on this side without releasing
+        // anything on the other, and a channel released by nobody stays open on the broker
+        // holding whatever it never acknowledged.
+        if ($this->internalId === '') {
+            return;
+        }
+
+        $channelId = $this->internalId;
+
+        $this->internalOpen = false;
+        $this->internalId   = '';
+
+        unset($this->connection->internalChannels[$channelId]);
+
+        try {
+            Extension::get()->push(
+                flowKey: '',
+                payload: new ChannelClosePayload(
+                    new ChannelPayloadParameters(
+                        channelId: $channelId,
+                        timeoutMs: $this->timeoutMs(),
+                    ),
+                ),
+            );
+        } catch (Throwable) {
+            // The extension is already gone (the process is shutting down), and with it
+            // every channel it held.
+        }
+    }
+
+    /**
      * The deadline of one broker method on this channel, in milliseconds — the connection's
      * rpc timeout.
      */
@@ -562,8 +615,10 @@ class Channel extends AmqpResource
 
     /**
      * @param array<mixed> $delivery
+     * @param bool         $autoAck  whether the consumer or the get asked the broker to
+     *                               treat the message as answered on delivery
      */
-    protected function deliveryFrom(array $delivery): Delivery
+    protected function deliveryFrom(array $delivery, bool $autoAck): Delivery
     {
         /** @var array<mixed> $rawProperties */
         $rawProperties = is_array($delivery['ps'] ?? null) ? $delivery['ps'] : [];
@@ -579,6 +634,7 @@ class Channel extends AmqpResource
             redelivered: (bool) ($delivery['rd'] ?? false),
             properties: PropertiesCodec::decode($rawProperties),
             channel: $this->selfReference ??= WeakReference::create($this),
+            settled: $autoAck,
         );
     }
 
@@ -652,8 +708,8 @@ class Channel extends AmqpResource
             throw new UnroutableMessageException(
                 message: trim("The broker returned the message as unroutable: $replyCode $replyText"),
                 returnedMessage: PropertiesCodec::messageFrom(
-                    isset($returned['bd']) ? (string) $returned['bd'] : '',
-                    $rawProperties,
+                    body: isset($returned['bd']) ? (string) $returned['bd'] : '',
+                    properties: $rawProperties,
                 ),
                 exchange: isset($returned['en']) ? (string) $returned['en'] : '',
                 routingKey: isset($returned['rk']) ? (string) $returned['rk'] : '',
@@ -701,37 +757,11 @@ class Channel extends AmqpResource
     }
 
     /**
-     * A channel an application dropped without closing is closed best-effort here.
-     *
-     * The command goes out detached — pushed with no flow and no result to await. A
-     * destructor has nothing to wait on, and the case that matters most is the coroutine
-     * that was unwound: its flow is already gone, so an ordinary command would fail and the
-     * channel would stay open on the broker until the idle sweeper noticed.
+     * A channel an application dropped without closing is closed best-effort here, the same
+     * detached way — a destructor has nothing to wait on either.
      */
     public function __destruct()
     {
-        if (!$this->internalOpen) {
-            return;
-        }
-
-        $channelId = $this->internalId;
-
-        $this->internalOpen = false;
-        $this->internalId   = '';
-
-        try {
-            Extension::get()->push(
-                flowKey: '',
-                payload: new ChannelClosePayload(
-                    new ChannelPayloadParameters(
-                        channelId: $channelId,
-                        timeoutMs: $this->timeoutMs(),
-                    ),
-                ),
-            );
-        } catch (Throwable) {
-            // The extension is already gone (the process is shutting down), and with it
-            // every channel it held.
-        }
+        $this->closeDetached();
     }
 }

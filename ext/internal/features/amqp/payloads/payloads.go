@@ -23,7 +23,7 @@ type Envelope struct {
 // material and the tuning of one connection. ConnectTimeoutMs is in milliseconds and
 // bounds the dial; 0 leaves the default of this package in place.
 //
-// The other three deadlines an AMQPConnection carries — read, write and rpc — do not
+// The other three deadlines a connection carries — read, write and rpc — do not
 // travel here: they bound a command, not the connection, and PHP puts each of them on the
 // command it belongs to (rpc on every one-shot method, write on a publish, read on the
 // wait for a consumer's next delivery).
@@ -38,6 +38,7 @@ type ConnectParams struct {
 	ChannelMax       int    `json:"cx" msgpack:"cx"`
 	FrameMaxBytes    int    `json:"fx" msgpack:"fx"`
 	HeartbeatSeconds int    `json:"hb" msgpack:"hb"`
+	Secure           bool   `json:"sc" msgpack:"sc"`
 	CaCertPath       string `json:"ca" msgpack:"ca"`
 	CertPath         string `json:"ce" msgpack:"ce"`
 	KeyPath          string `json:"ke" msgpack:"ke"`
@@ -48,7 +49,7 @@ type ConnectParams struct {
 
 // ConnectResult is what a Connect answers with: the handle the later commands address,
 // plus the values the handshake settled on.
-// PHP: decoded in SConcur\Features\Amqp\AMQPConnection::connect.
+// PHP: decoded in SConcur\Features\Amqp\Connection::connect.
 type ConnectResult struct {
 	ConnectionId string `json:"cid" msgpack:"cid"`
 	MaxChannels  int    `json:"mc" msgpack:"mc"`
@@ -65,7 +66,7 @@ type ConnectionParams struct {
 }
 
 // UsedChannelsResult answers a UsedChannels command.
-// PHP: decoded in SConcur\Features\Amqp\AMQPConnection::getUsedChannels.
+// PHP: decoded in SConcur\Features\Amqp\Connection::usedChannels.
 type UsedChannelsResult struct {
 	UsedChannels int `json:"uc" msgpack:"uc"`
 }
@@ -84,8 +85,8 @@ type ChannelOpenParams struct {
 }
 
 // ChannelOpenResult answers a ChannelOpen: the handle plus the AMQP channel number, which
-// PHP hands back through AMQPChannel::getChannelId().
-// PHP: decoded in SConcur\Features\Amqp\AMQPChannel::__construct.
+// PHP hands back through Channel::id().
+// PHP: decoded in SConcur\Features\Amqp\Channel::__construct.
 type ChannelOpenResult struct {
 	ChannelId     string `json:"chid" msgpack:"chid"`
 	ChannelNumber int    `json:"no" msgpack:"no"`
@@ -165,7 +166,7 @@ type QueueDeclareParams struct {
 
 // QueueDeclareResult answers a QueueDeclare: the name (the generated one when the request
 // carried none) and how many messages and consumers the queue has.
-// PHP: decoded in SConcur\Features\Amqp\AMQPQueue::declareQueue.
+// PHP: decoded in SConcur\Features\Amqp\Queue::declare.
 type QueueDeclareResult struct {
 	Name          string `json:"na" msgpack:"na"`
 	MessageCount  int    `json:"mc" msgpack:"mc"`
@@ -185,7 +186,7 @@ type QueueDeleteParams struct {
 
 // MessageCountResult answers the commands that report how many messages they moved
 // (QueueDelete, QueuePurge).
-// PHP: decoded in SConcur\Features\Amqp\AMQPQueue::delete and ::purge.
+// PHP: decoded in SConcur\Features\Amqp\Queue::delete and ::purge.
 type MessageCountResult struct {
 	MessageCount int `json:"mc" msgpack:"mc"`
 }
@@ -215,7 +216,7 @@ type QueuePurgeParams struct {
 // with PublishParams, delivered with Delivery. Empty fields are left unset on the wire.
 //
 // cluster-id is absent: AMQP 0-9-1 excludes it from publishing, and the driver does not
-// surface it on a delivery either, so AMQPEnvelope::getClusterId() always answers null
+// surface it on a delivery either, so MessageProperties::$clusterId is always null
 // (docs/amqp.md lists it among the deviations).
 // PHP: SConcur\Features\Amqp\Support\PropertiesCodec.
 type Properties struct {
@@ -258,7 +259,7 @@ type GetParams struct {
 
 // Delivery is one message handed to PHP, by a Get or through a consumer's stream. It
 // carries the channel it was delivered on, because a delivery tag is only valid there.
-// PHP: SConcur\Features\Amqp\Support\DeliveredEnvelope.
+// PHP: built into a Delivery by SConcur\Features\Amqp\Channel::deliveryFrom.
 type Delivery struct {
 	ChannelId    string     `json:"chid" msgpack:"chid"`
 	ConsumerTag  string     `json:"tg" msgpack:"tg"`
@@ -271,8 +272,6 @@ type Delivery struct {
 }
 
 // ConsumeParams is the `p` content of a Consume command — the streaming one.
-// AMQP_JUST_CONSUME never reaches Go: it means "read the consumer this queue already
-// opened", which PHP answers from the stream key it kept.
 // PHP: SConcur\Features\Amqp\Payloads\ConsumePayloadParameters.
 type ConsumeParams struct {
 	ChannelId   string `json:"chid" msgpack:"chid"`
@@ -292,7 +291,7 @@ type ConsumeParams struct {
 
 // ConsumerMeta is the first result of a Consume: the tag the broker assigned, which PHP
 // keys the consumer registry by.
-// PHP: decoded in SConcur\Features\Amqp\AMQPQueue::openConsumer.
+// PHP: decoded in SConcur\Features\Amqp\Channel::consume.
 type ConsumerMeta struct {
 	ConsumerTag string `json:"tg" msgpack:"tg"`
 }
@@ -345,7 +344,7 @@ type ConfirmSelectParams struct {
 // Confirmation is one publisher confirm: the tag of the message and whether the broker
 // took it. Multiple is always false and Requeue is unused — the driver resolves the
 // broker's "up to and including" confirms into individual ones.
-// PHP: read in SConcur\Features\Amqp\AMQPChannel::runConfirmCallbacks.
+// PHP: read in SConcur\Features\Amqp\Channel::failOnNacks.
 type Confirmation struct {
 	DeliveryTag uint64 `json:"dt" msgpack:"dt"`
 	Multiple    bool   `json:"mu" msgpack:"mu"`
@@ -354,7 +353,7 @@ type Confirmation struct {
 }
 
 // ReturnedMessage is one message the broker could not route and sent back.
-// PHP: read in SConcur\Features\Amqp\AMQPChannel::runReturnCallbacks.
+// PHP: read in SConcur\Features\Amqp\Channel::failOnReturns.
 type ReturnedMessage struct {
 	ReplyCode    int        `json:"rc" msgpack:"rc"`
 	ReplyText    string     `json:"rx" msgpack:"rx"`
@@ -364,10 +363,11 @@ type ReturnedMessage struct {
 	Properties   Properties `json:"ps" msgpack:"ps"`
 }
 
-// WaitResult answers ConfirmWait and ReturnWait: everything that arrived before the
-// deadline.
-// PHP: decoded in SConcur\Features\Amqp\AMQPChannel::waitForConfirm and
-// ::waitForBasicReturn.
+// WaitResult answers ConfirmWait: every confirmation and every returned message that
+// arrived before the deadline. The two travel together on purpose — a mandatory message
+// the broker could not route is returned and acknowledged, so reading the confirmations
+// without the returns would report a success for a message that reached no queue.
+// PHP: decoded in SConcur\Features\Amqp\Channel::waitForConfirms.
 type WaitResult struct {
 	Confirmations []Confirmation    `json:"cf" msgpack:"cf"`
 	Returns       []ReturnedMessage `json:"rt" msgpack:"rt"`

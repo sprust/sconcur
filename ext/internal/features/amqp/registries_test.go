@@ -266,6 +266,24 @@ func TestAWaitEndsOnItsDeadline(t *testing.T) {
 // A mandatory message that routed nowhere is returned AND acknowledged, so a publisher
 // waiting for its confirm has to be handed both in one drain — reading the confirmations
 // alone would report a success for a message that reached no queue.
+// A wait that runs out of time is a command failure with no reply code, which is what
+// makes PHP raise it as PublishConfirmTimeoutException rather than as a dead channel.
+func TestAWaitTimeoutIsScopedAsACommandFailure(t *testing.T) {
+	scope, code, message := classify(nil, "confirm wait", errWaitTimeout)
+
+	if scope != scopeCommand {
+		t.Fatalf("scope = %q, want %q", scope, scopeCommand)
+	}
+
+	if code != 0 {
+		t.Fatalf("code = %d, want 0 — a deadline is not the broker refusing anything", code)
+	}
+
+	if message != errWaitTimeout.Error() {
+		t.Fatalf("message = %q, want %q", message, errWaitTimeout.Error())
+	}
+}
+
 func TestAConfirmWaitHandsOverTheReturnsWithTheConfirmations(t *testing.T) {
 	entry := newTestEntry()
 
@@ -312,7 +330,7 @@ func TestTheConnectTimeoutDoesNotSplitThePool(t *testing.T) {
 	slowDial := base
 	slowDial.ConnectTimeoutMs = 30_000
 
-	// It bounds the dial and nothing the broker ever sees, so two AMQPConnection objects
+	// It bounds the dial and nothing the broker ever sees, so two Connection objects
 	// differing only there must share one connection — which is what the same credentials
 	// promise.
 	if connectionKeyFromParams(slowDial) != connectionKeyFromParams(base) {

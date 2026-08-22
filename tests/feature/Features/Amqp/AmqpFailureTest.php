@@ -7,8 +7,11 @@ namespace SConcur\Tests\Feature\Features\Amqp;
 use SConcur\Exceptions\Amqp\ChannelException;
 use SConcur\Exceptions\Amqp\ConnectionException;
 use SConcur\Exceptions\Amqp\QueueException;
+use ReflectionProperty;
 use SConcur\Features\Amqp\Connection;
 use SConcur\Features\Amqp\ConnectionOptions;
+use SConcur\Features\Amqp\Support\AmqpResource;
+use SConcur\Features\Amqp\TlsOptions;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Impl\TestAmqpResolver;
 use SConcur\WaitGroup;
@@ -279,6 +282,118 @@ class AmqpFailureTest extends AmqpTestCase
 
         self::assertFalse($channel->isOpen(), 'a channel of the old handle is not open');
         self::assertTrue($connection->isOpen());
+    }
+
+    /**
+     * TLS is what the caller asked for, not what the certificate paths imply. A dial that
+     * fell back to plaintext because no file was named would put the login and the password
+     * on the wire in the clear — and say nothing about it.
+     *
+     * The compose broker has no TLS listener, so the proof is that the handshake is refused
+     * where a plaintext connection would have succeeded.
+     */
+    public function testAnAmqpsUriDoesNotFallBackToPlaintext(): void
+    {
+        $connection = new Connection(sprintf(
+            'amqps://%s:%s@%s:%d/%s',
+            rawurlencode((string) $_ENV['RABBITMQ_USER']),
+            rawurlencode((string) $_ENV['RABBITMQ_PASSWORD']),
+            $_ENV['RABBITMQ_HOST'],
+            (int) $_ENV['RABBITMQ_PORT'],
+            rawurlencode((string) $_ENV['RABBITMQ_VHOST']),
+        ));
+
+        try {
+            $connection->connect();
+
+            self::fail('an amqps:// URI must not connect to a plaintext listener');
+        } catch (ConnectionException $exception) {
+            self::assertStringContainsString('tls', strtolower($exception->getMessage()));
+        }
+    }
+
+    /**
+     * The same rule through the options object: TLS with the system trust store names no
+     * file at all, and `verify: false` against a development broker names none either.
+     */
+    public function testTlsOptionsWithoutAnyFileStillDialTls(): void
+    {
+        $connection = new Connection(new ConnectionOptions(
+            host: (string) $_ENV['RABBITMQ_HOST'],
+            port: (int) $_ENV['RABBITMQ_PORT'],
+            login: (string) $_ENV['RABBITMQ_USER'],
+            password: (string) $_ENV['RABBITMQ_PASSWORD'],
+            vhost: (string) $_ENV['RABBITMQ_VHOST'],
+            tls: new TlsOptions(verify: false),
+        ));
+
+        $this->expectException(ConnectionException::class);
+
+        $connection->connect();
+    }
+
+    /**
+     * Opening is lazy and connect() suspends, so coroutines that all find the connection
+     * closed must not each dial one. Every handle but the last would be unreachable, and
+     * the pooled connection behind it held for the life of the process.
+     */
+    public function testConcurrentLazyOpensShareOneHandle(): void
+    {
+        $probe = new Connection(TestAmqpResolver::getOptions());
+
+        $probe->connect();
+
+        $handle = new ReflectionProperty(AmqpResource::class, 'internalId');
+
+        // The handles are numbered in the Go registry, so the next one tells how many
+        // connects happened in between.
+        $before = (int) filter_var($handle->getValue($probe), FILTER_SANITIZE_NUMBER_INT);
+
+        $probe->close();
+
+        $connection = new Connection(TestAmqpResolver::getOptions());
+
+        $waitGroup = WaitGroup::create();
+
+        for ($index = 0; $index < 4; ++$index) {
+            $waitGroup->add(static function () use ($connection): void {
+                $connection->channel()->close();
+            });
+        }
+
+        $waitGroup->waitAll();
+
+        $after = (int) filter_var($handle->getValue($connection), FILTER_SANITIZE_NUMBER_INT);
+
+        self::assertSame(
+            $before + 1,
+            $after,
+            'four coroutines opening one connection lazily must produce one handle, not four',
+        );
+
+        self::assertSame(0, $connection->usedChannels());
+
+        $connection->close();
+    }
+
+    /**
+     * The connection files its channels weakly so it can mark them closed, but the keys are
+     * strings: a channel that never left the registry is a slow leak on a connection that
+     * opens one per request.
+     */
+    public function testAClosedChannelLeavesTheConnectionRegistry(): void
+    {
+        $connection = $this->connection();
+
+        $registry = new ReflectionProperty(AmqpResource::class, 'internalChannels');
+
+        $before = count($registry->getValue($connection));
+
+        for ($index = 0; $index < 20; ++$index) {
+            $connection->channel()->close();
+        }
+
+        self::assertSame($before, count($registry->getValue($connection)));
     }
 
     /**

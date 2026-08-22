@@ -12,6 +12,7 @@ use SConcur\Features\Amqp\Payloads\ConnectPayloadParameters;
 use SConcur\Features\Amqp\Payloads\DisconnectPayload;
 use SConcur\Features\Amqp\Payloads\UsedChannelsPayload;
 use SConcur\Features\Amqp\Support\AmqpResource;
+use SConcur\Features\Sleeper\Sleeper;
 use Throwable;
 
 /**
@@ -29,7 +30,18 @@ use Throwable;
  */
 class Connection extends AmqpResource
 {
+    /** How long a coroutine waiting for someone else's connect sleeps between looks. */
+    protected const int OPENING_POLL_INTERVAL_US = 1_000;
     public readonly ConnectionOptions $options;
+
+    /**
+     * Whether a coroutine is inside connect() right now. Opening is lazy, and connect()
+     * suspends, so without this every coroutine that found the connection closed would
+     * start a connect of its own: each one overwrites the handle, and the ones before it
+     * are never released — the pooled connection behind them stays held for the life of
+     * the process and usedChannels() counts only the last.
+     */
+    protected bool $opening = false;
 
     /** The values the broker agreed on in the handshake; null until connected. */
     protected ?int $negotiatedChannelMax = null;
@@ -84,6 +96,10 @@ class Connection extends AmqpResource
                     channelMax: $this->options->channelMax,
                     frameMaxBytes: $this->options->frameMax,
                     heartbeatSeconds: $this->options->heartbeat,
+                    // Asked for, not inferred from the certificate paths: TLS with the
+                    // system trust store names none of them, and a connection that fell
+                    // back to plaintext would put the login and password on the wire.
+                    secure: $tls !== null,
                     caCertPath: $tls?->caCert,
                     certPath: $tls?->cert,
                     keyPath: $tls?->key,
@@ -225,6 +241,18 @@ class Connection extends AmqpResource
      */
     protected function ensureOpen(): void
     {
+        // Another coroutine got here first: park until its connect is done and then read
+        // the state it left, instead of dialling a second connection beside it.
+        //
+        // The park is a sleep rather than Scheduler::switch(), which only yields for the
+        // coroutines the scheduler itself registered — inside a WaitGroup it answers false
+        // and yields nothing, so the guard would let every waiter through. This costs a
+        // round trip per poll and only in the contended case: with nobody else opening,
+        // the loop body never runs.
+        while ($this->opening) {
+            Sleeper::usleep(microseconds: self::OPENING_POLL_INTERVAL_US);
+        }
+
         if ($this->internalOpen) {
             return;
         }
@@ -235,7 +263,13 @@ class Connection extends AmqpResource
             );
         }
 
-        $this->connect();
+        $this->opening = true;
+
+        try {
+            $this->connect();
+        } finally {
+            $this->opening = false;
+        }
     }
 
     /**

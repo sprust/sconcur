@@ -292,7 +292,9 @@ php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello'
 - Auto-recovery of stuck workers — a master watchdog by heartbeat: `SIGKILL` and
   respawn a worker whose PHP thread has hung.
 - Split the core and the features into separate packages.
-- Stopping a single coroutine from anywhere, not just the whole flow.
+- Stopping a single coroutine from anywhere, not just the whole flow, and a
+  deadline on one — so a job that runs too long ends without taking its
+  neighbours with it.
 - Optimize the synchronous path — a call outside a coroutine goes to Go
   directly, bypassing the scheduler and the Fiber machinery.
 - Explore a cross-process concurrency mode, so concurrent operations can use

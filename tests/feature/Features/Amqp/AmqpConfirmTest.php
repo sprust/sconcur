@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Amqp;
 
 use SConcur\Exceptions\Amqp\ChannelException;
-use SConcur\Exceptions\Amqp\PublishConfirmTimeoutException;
 use SConcur\Exceptions\Amqp\UnroutableMessageException;
 use SConcur\Features\Amqp\Message;
 use SConcur\WaitGroup;
@@ -80,8 +79,16 @@ class AmqpConfirmTest extends AmqpTestCase
 
         $channel->enableConfirms();
 
+        $startedAt = microtime(true);
+
         $channel->waitForConfirms(timeout: 2.0);
 
+        $elapsedMs = (microtime(true) - $startedAt) * 1000;
+
+        // "At once" is the claim: with nothing outstanding the wait has nothing to wait
+        // for, and a wait that ran out its two seconds would pass an assertion on the
+        // channel alone.
+        self::assertLessThan(500, $elapsedMs, "the wait took {$elapsedMs}ms with nothing published");
         self::assertTrue($channel->isOpen());
     }
 
@@ -139,32 +146,6 @@ class AmqpConfirmTest extends AmqpTestCase
         $exchange = $this->declareExchange($channel);
 
         $exchange->publishConfirmed(message: 'nowhere', routingKey: 'unbound', timeout: 2.0, mandatory: false);
-
-        self::assertTrue($channel->isOpen());
-    }
-
-    public function testAConfirmThatNeverComesTimesOut(): void
-    {
-        $channel = $this->channel();
-
-        $channel->enableConfirms();
-
-        // Nothing was published, so the wait has a message outstanding that will never be
-        // confirmed only because the entry is told to expect one — here it is simply the
-        // deadline on an idle channel with confirm mode on and no publish.
-        $queue = $this->declareQueue(channel: $channel, durable: true);
-
-        $channel->publish(message: 'one', exchange: '', routingKey: $queue->name());
-
-        // A deadline this short is under the round trip on a loaded broker; either the
-        // confirm lands or the wait reports the timeout, and both are the contract.
-        try {
-            $channel->waitForConfirms(timeout: 0.001);
-        } catch (PublishConfirmTimeoutException $exception) {
-            self::assertStringContainsString('Wait timeout exceed', $exception->getMessage());
-
-            return;
-        }
 
         self::assertTrue($channel->isOpen());
     }

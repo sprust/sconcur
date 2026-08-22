@@ -250,9 +250,20 @@ class AmqpConsumeTest extends AmqpTestCase
 
         $waitGroup->waitAll();
 
-        // The consumer is gone with the flow, so the queue is free to be deleted (an open
-        // consumer would keep it in use) and tearDown's task check finds nothing dangling.
-        self::assertSame(0, $queue->declarePassive()->messageCount);
+        // The consumer is gone with the flow. Asserted on the broker's own count rather
+        // than on the queue being empty — nothing was ever published, so an empty queue
+        // would prove nothing.
+        $deadline = microtime(true) + 3.0;
+
+        $consumers = $queue->declarePassive()->consumerCount;
+
+        while ($consumers > 0 && microtime(true) < $deadline) {
+            usleep(50_000);
+
+            $consumers = $queue->declarePassive()->consumerCount;
+        }
+
+        self::assertSame(0, $consumers, 'the stop must take the consumer with it');
     }
 
     /**

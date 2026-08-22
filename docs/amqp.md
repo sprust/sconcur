@@ -88,8 +88,9 @@ Not every call goes to the broker:
 | --- | --- | --- |
 | `ConnectionOptions` | host, credentials, timeouts, TLS material — settled once, `readonly` | nothing, it is a value object |
 | `Connection` | the connection handle | `connect()`, `close()`, `channel()`, `usedChannels()` |
-| `Channel` | the channel handle | the constructor (opens the channel), `prefetch()`, `publish()`, `enableConfirms()`, `waitForConfirms()`, `ack()`/`nack()`/`reject()`, `get()`, `consume()`, `close()` |
-| `Queue`, `Exchange` | a name and the channel to run on — a handle, built for free | `declare()`, `declarePassive()`, `bind()`, `unbind()`, `delete()`, `purge()`, `publish()`, `get()`, `consume()` |
+| `Channel` | the channel handle | the constructor (opens the channel), `prefetch()`, `publish()`, `publishConfirmed()`, `enableConfirms()`, `waitForConfirms()`, `ack()`/`nack()`/`reject()`, `get()`, `consume()`, `close()` |
+| `Queue` | a name and the channel to run on — a handle, built for free | `declare()`, `declarePassive()`, `bind()`, `unbind()`, `delete()`, `purge()`, `publish()`, `publishConfirmed()`, `get()`, `consume()` |
+| `Exchange` | the same, for an exchange | `declare()`, `declarePassive()`, `bind()`, `unbind()`, `delete()`, `publish()`, `publishConfirmed()` |
 | `Message` | the body and properties of a message being published | nothing, it is a value object |
 | `Delivery` | a delivered message, and the means to settle it | `ack()`, `nack()`, `reject()` |
 
@@ -130,7 +131,7 @@ encoding the specification asks for rather than the intuitive one:
 | URI | vhost |
 | --- | --- |
 | `amqp://broker` | `/`, the default |
-| `amqp://broker/` | `` — the empty vhost, a legal one and not the same thing |
+| `amqp://broker/` | the empty vhost — a legal one, and not the same thing |
 | `amqp://broker/app` | `app` |
 | `amqp://broker/%2f` | `/` |
 
@@ -174,8 +175,8 @@ $channel->exchange('events')->declare(type: ExchangeTypeEnum::Topic, durable: tr
 $queue->bind(exchange: 'events', routingKey: 'order.*');
 $queue->unbind(exchange: 'events', routingKey: 'order.*');
 
-$queue->purge();                                   // messages removed
-$queue->delete(ifUnused: false, ifEmpty: false);   // messages that went with it
+$queue->purge();                                   // how many messages were removed
+$queue->delete(ifUnused: false, ifEmpty: false);   // how many went with the queue
 
 $channel->exchange('events')->delete(ifUnused: false);
 ```
@@ -253,7 +254,9 @@ otherwise:
 | `PublishConfirmTimeoutException` | no answer within the deadline. The message may still be on its way |
 
 Confirm mode is turned on by the first `publishConfirmed()`; `enableConfirms()`
-does it explicitly. AMQP has no way to turn it back off.
+does it explicitly. AMQP has no way to turn it back off, and `waitForConfirms()` on
+a channel that never entered it raises `ChannelException` rather than waiting out
+its deadline for something that cannot arrive.
 
 Publishing a batch needs no API of its own — concurrency is the batch:
 
@@ -292,8 +295,10 @@ foreach ($channel->queue('orders')->consume() as $delivery) {
 ```
 
 The prefetch belongs to the channel, not to the consumer: it is what bounds how
-many unacknowledged deliveries the broker pushes at it. `$channel->prefetch()`
-changes it later.
+many unacknowledged deliveries the broker pushes at it. A channel opened with no
+argument gets 3 (`Channel::DEFAULT_PREFETCH_COUNT`); `$channel->prefetch()` changes
+it later. One is the right answer for a pool of coroutines — it hands the next
+message to whichever one is free instead of filling the buffer of a busy one.
 
 The generator owns the consumer. Leaving the loop — a `break`, a `return`, an
 exception, or the coroutine being unwound by `WaitGroup::stop()` — cancels it and
@@ -315,12 +320,14 @@ The consumer must be read in the coroutine that opened it: when the coroutine
 ends its flow is stopped, and the Go side cancels the consumer. This is the same
 caveat as for `HttpClient`, `SocketClient` and `WsClient`.
 
-The stream ends on its own when the broker cancels the consumer or the channel
-dies. The connection's `readTimeout` is *not* an end but a failure: the broker is
-still holding the consumer, so a wait that outran the deadline raises
-`QueueException` ("Consumer timeout exceed") rather than finishing the loop
-quietly — a worker that treated the silence as "the queue is closed" would stop
-reading a queue that is merely idle.
+The loop ends quietly only when this coroutine's flow is stopped. Everything else
+that takes the consumer away raises: the broker cancelling it (its queue was
+deleted, a node failed over), the channel dying, and the connection's `readTimeout`
+passing with nothing delivered. The last one is worth stating plainly, because it
+looks like an ending and is not: the broker still holds the consumer, so a wait
+that outran the deadline raises `QueueException` ("Consumer timeout exceed") — a
+worker that read the silence as "the queue is closed" would stop reading a queue
+that is merely idle.
 
 Deliveries a consumer received but never acknowledged go back into the queue when
 the channel is closed, not when the consumer is cancelled — that is AMQP, not a
@@ -351,6 +358,130 @@ gone raises `ChannelException`.
 `Message::fromDelivery($delivery)` builds the message back out of a delivery,
 which is what a retry onto another exchange or a hand-rolled dead-letter hop
 needs.
+
+## Retries and delays
+
+There is nothing to configure here, because AMQP has no retry primitive: a broker
+either holds a message or hands it back at once. Everything below is built out of
+what the broker does have — dead-lettering and TTL — and all of it works with the
+API as it stands.
+
+### A delay queue
+
+The standard shape. The main queue dead-letters into a queue nobody consumes; that
+queue expires its messages back into the main one:
+
+```php
+$main = $channel->queue('orders');
+$wait = $channel->queue('orders.wait');
+
+$main->declare(durable: true, arguments: [
+    'x-dead-letter-exchange'    => '',
+    'x-dead-letter-routing-key' => 'orders.wait',
+]);
+
+$wait->declare(durable: true, arguments: [
+    'x-message-ttl'             => 500,      // the delay
+    'x-dead-letter-exchange'    => '',
+    'x-dead-letter-routing-key' => 'orders',
+]);
+```
+
+A handler that refuses the message without requeueing it starts the round trip:
+
+```php
+$delivery->nack(requeue: false);   // -> orders.wait -> 500 ms -> orders
+```
+
+Measured on the compose broker, a 500 ms TTL brings the message back after ~510 ms.
+
+### The attempt count comes from the broker
+
+Every dead-letter hop is recorded in the `x-death` header, so nothing needs to
+count attempts by hand:
+
+```php
+$attempt = 0;
+
+foreach ($delivery->header('x-death') ?? [] as $death) {
+    if ($death['queue'] === 'orders' && $death['reason'] === 'rejected') {
+        $attempt = $death['count'];
+    }
+}
+
+if ($attempt >= 5) {
+    $channel->queue('orders.failed')->publish(Message::fromDelivery($delivery));
+
+    $delivery->ack();   // settled: it is somebody else's problem now
+
+    return;
+}
+
+$delivery->nack(requeue: false);
+```
+
+Two things to know about the header, both observed on the broker in
+`docker-compose.yml` rather than assumed:
+
+- a message that has never been dead-lettered carries no `x-death` at all, which
+  is why the loop starts from zero rather than reading an entry that is not there;
+- it is a field array of field tables, one per queue the message was dead-lettered
+  from, most recent first — so after the second delivery it reads
+  `orders.wait/expired=1`, `orders/rejected=1`, and the counts climb together with
+  every round. Looking the entry up by `queue` and `reason` says what is meant;
+  indexing the array by position happens to work and stops working the moment the
+  topology grows another hop.
+
+### A delay per message
+
+`expiration` is the message's own TTL, in milliseconds as a decimal string, so one
+wait queue can serve delays that differ per message:
+
+```php
+$wait->publish(new Message($body, expiration: '300'));
+```
+
+One caveat, and it is the broker's rather than this feature's: a queue expires its
+messages from the head. A message with a 1-second TTL sitting behind one with a
+10-second TTL leaves after ten seconds, not one. A growing backoff is therefore
+usually built as several wait queues with fixed TTLs — `orders.wait.1s`,
+`orders.wait.10s`, `orders.wait.60s` — with the handler choosing which one to
+dead-letter into by the attempt count, rather than as one queue with per-message
+expirations.
+
+### Republishing with your own counter
+
+When the routing has to change, or the counter has to mean something of your own,
+republish instead of dead-lettering. `Message::fromDelivery()` rebuilds the message
+so only what you change differs:
+
+```php
+$attempt = ($delivery->header('x-attempt') ?? 0) + 1;
+
+$channel->queue('orders.wait.10s')->publish(new Message(
+    body:    $delivery->body,
+    headers: ['x-attempt' => $attempt] + $delivery->properties->headers,
+));
+
+$delivery->ack();
+```
+
+### A short delay in the handler
+
+`Sleeper::usleep()` suspends the coroutine and not the process, so the other
+coroutines of the worker keep going. It is the right tool for tens of
+milliseconds and the wrong one for minutes: the delivery stays unacknowledged for
+the whole wait, holding its prefetch slot and counting against the broker as in
+flight.
+
+### What the supervised consumer does
+
+`QueueConsumer` settles what the handler left open — returning acknowledges,
+throwing refuses — and `requeueOnFailure` decides between putting the message back
+and letting it dead-letter. That is the whole of its policy: it counts no attempts
+and applies no backoff. A retry policy is the handler's, built out of the pieces
+above; the topology it needs belongs to the worker script, because the runtime
+declares nothing.
 
 ## Connections and channels on the Go side
 
@@ -460,7 +591,7 @@ What bounds each axis:
 
 | Limit | Value | What to do about it |
 | --- | --- | --- |
-| channels per connection | 256 (`ConnectionOptions::MAX_CHANNELS`); the 257th fails with `504 channel id space exhausted` | one channel per coroutine means ~255 consumers per connection; a `connectionName` gives an application a connection of its own, and with it another 256 |
+| channels per connection | 256 (`ConnectionOptions::MAX_CHANNELS`); the 257th fails with `504 channel id space exhausted` | one channel per coroutine, and the topology needs one of its own, so a connection carries 255 consumers; a `connectionName` gives an application a connection of its own, and with it another 256 |
 | one connection is one socket | every channel of a connection is multiplexed over it, and the driver serializes the frames it writes | spread the coroutines over several named connections before the socket, not the channel count, becomes the ceiling |
 | a process is one PHP thread | coroutines overlap the waiting, not the work: a handler that computes blocks the others while it runs | scale processes for CPU-bound handlers, coroutines for handlers that wait |
 
@@ -525,11 +656,12 @@ The group that runs it:
 | --- | --- | --- |
 | `queues` | — (required) | The queues and their weights. A list of objects: `name`, `coroutineCount` (default 1), optional `prefetchCount`. |
 | `prefetchCount` | `1` | Unacknowledged messages one coroutine may hold, unless its queue names its own. |
-| `requeueOnFailure` | `false` | What happens to a message whose handler threw: dead-lettered or dropped by default, put back when true. |
+| `requeueOnFailure` | `false` | What happens to a message whose handler threw: dead-lettered or dropped by default, put back when true. A policy with attempts and a backoff belongs to the handler — see [retries and delays](#retries-and-delays). |
 | `maxMessages` | `0` (no limit) | Drain and exit after this many messages. |
 | `maxRuntimeSeconds` | `0` (no limit) | Drain and exit after this long. |
 | `maxMemoryBytes` | `0` (no limit) | Drain and exit once the PHP heap passes this. |
 | `drainTimeoutMs` | `5000` | How long a stop waits for the handlers that are mid-message. |
+| `pollIntervalMs` | `200` | How often the supervisor coroutine wakes to look at the stop flags and the limits. |
 | `masterPid` | none | Injected by the master; the worker drains as soon as it is orphaned. |
 
 `queues` is a list of objects rather than a delimited string because AMQP allows
@@ -665,8 +797,12 @@ The general limits — CLI only, Linux only, NTS only, no `pcntl_fork` — are i
   broker's own documentation recommends against them.
 - A consume is bounded by the connection's `readTimeout`, not by a per-call one.
 - Publisher confirms and returned messages that no wait collects are dropped past
-  a few hundred: a returned message carries its whole body, and a publisher that
-  never waits would otherwise fill the heap.
+  1024 and 128 respectively: a returned message carries its whole body, and a
+  publisher that never waits would otherwise fill the heap.
+- The `x-delayed-message` exchange type of the community delayed-message plugin
+  cannot be declared: `ExchangeTypeEnum` is closed to the four types AMQP 0-9-1
+  itself defines. The delay patterns that need no plugin are in
+  [retries and delays](#retries-and-delays).
 - A `Timestamp` above `PHP_INT_MAX` is refused when published. AMQP counts
   unsigned 64-bit seconds, but neither a PHP int nor the Go time the field is
   built from holds the upper half of that range.

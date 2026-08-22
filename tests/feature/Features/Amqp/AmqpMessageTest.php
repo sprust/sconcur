@@ -404,6 +404,46 @@ class AmqpMessageTest extends AmqpTestCase
         self::assertSame(0, $this->countAfterTheChannelIsGone($channel, $queue->name()));
     }
 
+    /**
+     * An auto-acknowledged delivery was settled by the broker as it left, so acknowledging
+     * it again is the double settle the guard exists to prevent — and the one that would
+     * actually reach the wire, because nothing on this side had recorded the first.
+     */
+    public function testAnAutoAcknowledgedDeliveryArrivesSettled(): void
+    {
+        $channel = $this->channel();
+        $queue   = $this->declareQueue(channel: $channel, durable: true);
+
+        $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: 'auto');
+
+        $delivery = null;
+        $deadline = microtime(true) + 2;
+
+        do {
+            $delivery = $queue->get(autoAck: true);
+
+            if ($delivery !== null) {
+                break;
+            }
+
+            usleep(20_000);
+        } while (microtime(true) < $deadline);
+
+        self::assertNotNull($delivery);
+        self::assertTrue($delivery->isSettled(), 'the broker already answered for it');
+
+        try {
+            $delivery->ack();
+
+            self::fail('an auto-acknowledged delivery must not be acknowledged again');
+        } catch (ChannelException $exception) {
+            self::assertStringContainsString('already been settled', $exception->getMessage());
+        }
+
+        // Refused locally, so the channel the other consumers share is untouched.
+        self::assertTrue($channel->isOpen());
+    }
+
     public function testAcknowledgingSeveralMessagesAtOnce(): void
     {
         $channel = $this->channel();

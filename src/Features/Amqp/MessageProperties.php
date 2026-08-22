@@ -8,8 +8,10 @@ namespace SConcur\Features\Amqp;
  * The AMQP basic properties a delivered message carries. Everything a publisher may set
  * on a Message arrives here, plus `clusterId`, which only a broker sets.
  *
- * A property nobody set is null rather than an empty string: AMQP distinguishes "no
- * content type" from "a content type that is the empty string", and so does this.
+ * A property nobody set is null. An empty string counts as nobody setting it — it is not
+ * published, and one that arrives from another client is read back as null: a property
+ * whose whole value is absent and one whose value is nothing are the same thing to every
+ * application that has ever branched on it.
  */
 readonly class MessageProperties
 {

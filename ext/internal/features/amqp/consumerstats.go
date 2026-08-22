@@ -173,7 +173,7 @@ func (c *consumerStats) deliverySettled(channelId string, deliveryTag uint64, mu
 	settled := 0
 
 	// "Up to and including this tag" settles every earlier delivery of that channel
-	// too, which is the whole point of AMQP_MULTIPLE. The counters follow deliveries,
+	// too, which is the whole point of a multiple ack. The counters follow deliveries,
 	// not commands: one multiple-ack of a hundred messages is a hundred settled, and
 	// counting it as one would have the panel report 99% of them unacknowledged.
 	if multiple {

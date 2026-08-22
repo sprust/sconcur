@@ -337,6 +337,57 @@ class QueueConsumerTest extends AmqpTestCase
     }
 
     /**
+     * A handler still working when the drain deadline passes is cut by the group being
+     * stopped. That is not a handler failure — the application never got to decide — so the
+     * message must go back to the broker rather than be refused on its behalf. Leaving it
+     * unsettled is what returns it: the channel closing behind the coroutine hands it back.
+     */
+    public function testAMessageCutByTheDrainDeadlineGoesBackToTheBroker(): void
+    {
+        $channel = $this->channel();
+
+        $queue = $this->declareQueue(channel: $channel, durable: true);
+
+        $this->publishToQueue($channel, $queue->name(), 'slow');
+
+        $failures = [];
+
+        $queueConsumer = new QueueConsumer(
+            queues: $this->queuesJson([$queue->name() => 1]),
+            // The run is over while the handler is still inside its sleep, and the drain
+            // gives up on it long before it would have finished.
+            maxRuntimeSeconds: 1,
+            drainTimeoutMs: 100,
+            pollIntervalMs: 20,
+        );
+
+        $queueConsumer->consume(
+            connection: $this->connection(),
+            handler: static function (Delivery $delivery): void {
+                Sleeper::usleep(microseconds: 3_000_000);
+            },
+            onError: static function (Throwable $exception, Delivery $delivery) use (&$failures): void {
+                $failures[] = $exception::class;
+            },
+        );
+
+        // A stop is not a failure, so the application is not told its handler failed.
+        self::assertSame([], $failures, 'a deliberate stop must not be reported as a handler failure');
+
+        // And the message was not refused on the handler's behalf: it comes back.
+        //
+        // The collection is what makes the assertion prompt rather than eventual. An
+        // unwound coroutine leaves its channel in a reference cycle, and the message stays
+        // owed to the broker until that channel is released, and releasing it
+        // deterministically is a question for the runtime rather than for this feature —
+        // it is what a coroutine's lifetime would settle. What this test pins down is that
+        // the message survives at all; when exactly it comes back is that work's business.
+        gc_collect_cycles();
+
+        self::assertSame(1, $this->waitForMessageCount(queue: $queue, expected: 1, timeoutSeconds: 5.0));
+    }
+
+    /**
      * A consumer whose queue is taken away must not take the worker with it: the other
      * queues keep being pulled, and their handlers are not cut mid-message.
      */
