@@ -4,17 +4,10 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Amqp;
 
-use SConcur\Features\Amqp\AMQPExchange;
-use SConcur\Features\Amqp\AMQPQueue;
-use SConcur\Features\Amqp\AMQPExchangeException;
-use SConcur\Features\Amqp\AMQPQueueException;
+use SConcur\Exceptions\Amqp\ExchangeException;
+use SConcur\Exceptions\Amqp\QueueException;
+use SConcur\Features\Amqp\ExchangeTypeEnum;
 use SConcur\Tests\Impl\TestAmqpResolver;
-use const SConcur\Features\Amqp\AMQP_AUTODELETE;
-use const SConcur\Features\Amqp\AMQP_DURABLE;
-use const SConcur\Features\Amqp\AMQP_EX_TYPE_FANOUT;
-use const SConcur\Features\Amqp\AMQP_EX_TYPE_TOPIC;
-use const SConcur\Features\Amqp\AMQP_NOPARAM;
-use const SConcur\Features\Amqp\AMQP_PASSIVE;
 
 /**
  * The topology half of the feature: declaring, binding, purging and deleting queues and
@@ -25,12 +18,12 @@ class AmqpTopologyTest extends AmqpTestCase
     public function testDeclaringAQueueReportsHowManyMessagesItHolds(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, durable: true);
 
-        self::assertSame(0, $queue->declareQueue());
+        self::assertSame(0, $queue->declare(durable: true)->messageCount);
 
-        $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: 'one');
-        $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: 'two');
+        $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: 'one');
+        $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: 'two');
 
         // The broker counts messages at declare time, and the two publishes above are
         // asynchronous — re-declaring until it catches up keeps the test honest without
@@ -38,110 +31,84 @@ class AmqpTopologyTest extends AmqpTestCase
         self::assertSame(2, $this->waitForMessageCount(queue: $queue, expected: 2));
     }
 
-    public function testAQueueWithNoNameGetsOneFromTheBroker(): void
+    /**
+     * The broker answers queue.declare with the consumer count as well. ext-amqp returns
+     * only the message count, so the calque threw this half away.
+     */
+    public function testDeclaringAQueueReportsHowManyConsumersItHas(): void
     {
         $channel = $this->channel();
+        $queue   = $this->declareQueue(channel: $channel, durable: true);
 
-        // Naming no queue is how a server-named one is asked for; an empty name is refused
-        // outright, exactly as in ext-amqp.
-        $queue = new AMQPQueue($channel);
+        $before = $queue->declare(durable: true);
 
-        $queue->setFlags(AMQP_AUTODELETE);
-        $queue->declareQueue();
+        self::assertSame(0, $before->consumerCount);
 
-        $this->declaredQueues[] = (string) $queue->getName();
+        // Advancing the generator is what registers the consumer, and it waits for the
+        // first delivery — so there has to be one waiting, or the test would hang here
+        // for as long as the connection's read timeout allows.
+        $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: 'one');
 
-        self::assertNotNull($queue->getName());
-        self::assertStringStartsWith('amq.gen-', (string) $queue->getName());
-    }
+        $consuming = $this->connection()->channel()->queue($queue->name())->consume();
 
-    public function testAnEmptyOrOversizeQueueNameIsRefused(): void
-    {
-        $queue = new AMQPQueue($this->channel());
+        $delivery = $consuming->current();
 
-        try {
-            $queue->setName('');
+        // The broker's own count follows the consumer a moment later.
+        $deadline = microtime(true) + 2.0;
 
-            self::fail('an empty queue name must be refused');
-        } catch (AMQPQueueException $exception) {
-            self::assertStringContainsString('between 1 and 255', $exception->getMessage());
+        $after = $queue->declare(durable: true);
+
+        while ($after->consumerCount === 0 && microtime(true) < $deadline) {
+            usleep(20_000);
+
+            $after = $queue->declare(durable: true);
         }
 
-        $this->expectException(AMQPQueueException::class);
+        self::assertSame(1, $after->consumerCount);
 
-        $queue->setName(str_repeat('q', 256));
+        $delivery->ack();
     }
 
-    public function testAnOversizeExchangeNameIsRefused(): void
+    public function testAQueueWithNoNameGetsOneFromTheBroker(): void
     {
-        $exchange = new AMQPExchange($this->channel());
+        $queue = $this->channel()->queue('');
 
-        $this->expectException(AMQPExchangeException::class);
+        $info = $queue->declare(autoDelete: true);
 
-        $exchange->setName(str_repeat('x', 256));
-    }
+        $this->declaredQueues[] = $queue->name();
 
-    public function testANamelessExchangeCannotBeDeclared(): void
-    {
-        $exchange = new AMQPExchange($this->channel());
-
-        $exchange->setType(AMQP_EX_TYPE_FANOUT);
-
-        $this->expectException(AMQPExchangeException::class);
-
-        // The default exchange exists already and may not be redeclared; the extension
-        // refuses this locally instead of letting the broker kill the channel.
-        $exchange->declareExchange();
-    }
-
-    public function testAnUnsetNameAndTypeReadBackAsNull(): void
-    {
-        $exchange = new AMQPExchange($this->channel());
-
-        self::assertNull($exchange->getName());
-        self::assertNull($exchange->getType());
-
-        $exchange->setName('');
-        $exchange->setType('');
-
-        self::assertNull($exchange->getName());
-        self::assertNull($exchange->getType());
+        self::assertStringStartsWith('amq.gen-', $info->name);
+        // The generated name becomes the handle's own, so the next call reaches the queue
+        // the broker made rather than asking for another one.
+        self::assertSame($info->name, $queue->name());
     }
 
     public function testAPassiveDeclarationFailsOnAQueueThatDoesNotExist(): void
     {
-        $channel = $this->channel();
+        $queue = $this->channel()->queue(TestAmqpResolver::uniqueName('missing'));
 
-        $queue = new AMQPQueue($channel);
+        $this->expectException(QueueException::class);
 
-        $queue->setName(TestAmqpResolver::uniqueName('missing'));
-        $queue->setFlags(AMQP_PASSIVE);
-
-        $this->expectException(AMQPQueueException::class);
-
-        $queue->declareQueue();
+        $queue->declarePassive();
     }
 
     public function testAPassiveDeclarationPassesOnAQueueThatExists(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, durable: true);
 
-        $passive = new AMQPQueue($channel);
-
-        $passive->setName((string) $queue->getName());
-        $passive->setFlags(AMQP_PASSIVE);
-
-        self::assertSame(0, $passive->declareQueue());
+        // A passive declaration reads the queue without touching its settings, so it needs
+        // none of the ones it was created with.
+        self::assertSame(0, $channel->queue($queue->name())->declarePassive()->messageCount);
     }
 
     public function testPurgingAQueueReportsHowManyMessagesItRemoved(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, durable: true);
 
-        $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: 'one');
-        $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: 'two');
+        $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: 'one');
+        $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: 'two');
 
         $this->waitForMessageCount(queue: $queue, expected: 2);
 
@@ -152,9 +119,9 @@ class AmqpTopologyTest extends AmqpTestCase
     public function testDeletingAQueueReportsHowManyMessagesWentWithIt(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $queue   = $this->declareQueue(channel: $channel, durable: true);
 
-        $this->publishToQueue(channel: $channel, queueName: (string) $queue->getName(), body: 'one');
+        $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: 'one');
 
         $this->waitForMessageCount(queue: $queue, expected: 1);
 
@@ -166,31 +133,31 @@ class AmqpTopologyTest extends AmqpTestCase
     public function testABoundQueueReceivesWhatItsExchangeRoutes(): void
     {
         $channel  = $this->channel();
-        $exchange = $this->declareExchange(channel: $channel, type: AMQP_EX_TYPE_TOPIC);
-        $queue    = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $exchange = $this->declareExchange(channel: $channel, type: ExchangeTypeEnum::Topic);
+        $queue    = $this->declareQueue(channel: $channel, durable: true);
 
-        $queue->bind(exchangeName: (string) $exchange->getName(), routingKey: 'order.*');
+        $queue->bind(exchange: $exchange->name(), routingKey: 'order.*');
 
         $exchange->publish(message: 'routed', routingKey: 'order.created');
 
-        $envelope = $this->waitForMessage($queue);
+        $delivery = $this->waitForMessage($queue);
 
-        self::assertNotNull($envelope);
-        self::assertSame('routed', $envelope->getBody());
-        self::assertSame('order.created', $envelope->getRoutingKey());
-        self::assertSame($exchange->getName(), $envelope->getExchangeName());
+        self::assertNotNull($delivery);
+        self::assertSame('routed', $delivery->body);
+        self::assertSame('order.created', $delivery->routingKey);
+        self::assertSame($exchange->name(), $delivery->exchange);
 
-        $queue->ack($envelope->getDeliveryTag());
+        $delivery->ack();
     }
 
     public function testUnbindingStopsTheRouting(): void
     {
         $channel  = $this->channel();
-        $exchange = $this->declareExchange(channel: $channel, type: AMQP_EX_TYPE_FANOUT);
-        $queue    = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $exchange = $this->declareExchange(channel: $channel, type: ExchangeTypeEnum::Fanout);
+        $queue    = $this->declareQueue(channel: $channel, durable: true);
 
-        $queue->bind(exchangeName: (string) $exchange->getName());
-        $queue->unbind(exchangeName: (string) $exchange->getName());
+        $queue->bind(exchange: $exchange->name());
+        $queue->unbind(exchange: $exchange->name());
 
         $exchange->publish(message: 'dropped');
 
@@ -200,83 +167,71 @@ class AmqpTopologyTest extends AmqpTestCase
     public function testAnExchangeBoundToAnotherPassesMessagesOn(): void
     {
         $channel     = $this->channel();
-        $source      = $this->declareExchange(channel: $channel, type: AMQP_EX_TYPE_FANOUT);
-        $destination = $this->declareExchange(channel: $channel, type: AMQP_EX_TYPE_FANOUT);
-        $queue       = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $source      = $this->declareExchange(channel: $channel, type: ExchangeTypeEnum::Fanout);
+        $destination = $this->declareExchange(channel: $channel, type: ExchangeTypeEnum::Fanout);
+        $queue       = $this->declareQueue(channel: $channel, durable: true);
 
-        $destination->bind(exchangeName: (string) $source->getName());
-        $queue->bind(exchangeName: (string) $destination->getName());
+        $destination->bind(source: $source->name());
+        $queue->bind(exchange: $destination->name());
 
         $source->publish(message: 'chained');
 
-        $envelope = $this->waitForMessage($queue);
+        $delivery = $this->waitForMessage($queue);
 
-        self::assertNotNull($envelope);
-        self::assertSame('chained', $envelope->getBody());
+        self::assertNotNull($delivery);
+        self::assertSame('chained', $delivery->body);
 
-        $queue->ack($envelope->getDeliveryTag());
-    }
-
-    public function testTheFlagsSurviveARoundTripThroughTheBitMask(): void
-    {
-        $channel = $this->channel();
-
-        $queue = new AMQPQueue($channel);
-
-        $queue->setFlags(AMQP_DURABLE | AMQP_AUTODELETE);
-
-        self::assertSame(AMQP_DURABLE | AMQP_AUTODELETE, $queue->getFlags());
-
-        $exchange = new AMQPExchange($channel);
-
-        $exchange->setFlags(AMQP_DURABLE);
-
-        self::assertSame(AMQP_DURABLE, $exchange->getFlags());
-
-        // A fresh queue is auto-delete in ext-amqp, and a mask without the flag turns it
-        // off — the calque must behave the same way.
-        $fresh = new AMQPQueue($channel);
-
-        self::assertSame(AMQP_AUTODELETE, $fresh->getFlags());
-
-        $fresh->setFlags(AMQP_NOPARAM);
-
-        self::assertSame(AMQP_NOPARAM, $fresh->getFlags());
+        $delivery->ack();
     }
 
     public function testQueueArgumentsReachTheBroker(): void
     {
         $channel = $this->channel();
 
-        $queue = new AMQPQueue($channel);
+        $arguments = [
+            'x-max-length'  => 10,
+            'x-message-ttl' => 60000,
+        ];
 
-        $queue->setName(TestAmqpResolver::uniqueName('args'));
-        $queue->setFlags(AMQP_DURABLE);
-        $queue->setArgument('x-max-length', 10);
-        $queue->setArgument('x-message-ttl', 60000);
+        $queue = $this->declareQueue(channel: $channel, durable: true, arguments: $arguments);
 
-        $queue->declareQueue();
-
-        $this->declaredQueues[] = (string) $queue->getName();
-
-        self::assertTrue($queue->hasArgument('x-max-length'));
-        self::assertSame(10, $queue->getArgument('x-max-length'));
-
-        // A second declaration with the same arguments passes; the broker would reject a
-        // mismatch, so this is what proves the arguments actually travelled.
-        self::assertSame(0, $queue->declareQueue());
-
-        $queue->removeArgument('x-message-ttl');
-
-        self::assertFalse($queue->hasArgument('x-message-ttl'));
+        // A second declaration with the same arguments passes; the broker answers a
+        // mismatch by closing the channel, so this is what proves they travelled.
+        self::assertSame(0, $queue->declare(durable: true, arguments: $arguments)->messageCount);
     }
 
-    public function testAnUnknownArgumentIsReported(): void
+    public function testRedeclaringAQueueWithOtherArgumentsIsRefused(): void
     {
-        $queue = new AMQPQueue($this->channel());
+        $channel = $this->channel();
+        $queue   = $this->declareQueue(channel: $channel, durable: true, arguments: ['x-max-length' => 10]);
 
-        $this->expectException(AMQPQueueException::class);
+        $this->expectException(QueueException::class);
 
-        $queue->getArgument('x-nothing');
+        $queue->declare(durable: true, arguments: ['x-max-length' => 20]);
+    }
+
+    public function testAPassiveExchangeDeclarationFailsOnOneThatDoesNotExist(): void
+    {
+        $exchange = $this->channel()->exchange(TestAmqpResolver::uniqueName('missing'));
+
+        $this->expectException(ExchangeException::class);
+
+        $exchange->declarePassive();
+    }
+
+    public function testDeletingAnExchangeStopsTheRouting(): void
+    {
+        $channel  = $this->channel();
+        $exchange = $this->declareExchange(channel: $channel, type: ExchangeTypeEnum::Fanout);
+        $queue    = $this->declareQueue(channel: $channel, durable: true);
+
+        $queue->bind(exchange: $exchange->name());
+
+        $exchange->delete();
+
+        $this->declaredExchanges = [];
+
+        // The queue outlives the exchange; only the routing to it is gone.
+        self::assertSame(0, $queue->declare(durable: true)->messageCount);
     }
 }

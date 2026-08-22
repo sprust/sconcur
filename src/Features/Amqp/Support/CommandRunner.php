@@ -7,16 +7,16 @@ namespace SConcur\Features\Amqp\Support;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\TaskExecutionException;
-use SConcur\Features\Amqp\AMQPChannelException;
-use SConcur\Features\Amqp\AMQPConnectionException;
-use SConcur\Features\Amqp\AMQPException;
+use SConcur\Exceptions\Amqp\AmqpException;
+use SConcur\Exceptions\Amqp\ChannelException;
+use SConcur\Exceptions\Amqp\ConnectionException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Transport\MessagePackTransport;
 
 /**
- * The boundary between the feature's internals and the calque's public API: it runs one
- * command through FeatureExecutor and turns whatever went wrong into the AMQP*Exception
- * the caller expects, with the reply code the broker named.
+ * The boundary between the feature's internals and its public API: it runs one command
+ * through FeatureExecutor and turns whatever went wrong into the exception the caller
+ * expects, with the reply code the broker named.
  *
  * Only the failure translation lives here. Running a command belongs to AmqpResource,
  * which pairs it with the bookkeeping a failure implies — a channel the broker closed has
@@ -25,9 +25,9 @@ use SConcur\Transport\MessagePackTransport;
  *
  * The Go side prefixes a failure with its scope and that code ("chn:404: Server channel
  * error: 404, message: …"). A failure the broker answered with a 5xx, or one that means the
- * connection is gone, always becomes AMQPConnectionException — whichever class the caller
- * asked for — because that is the distinction ext-amqp makes between a dead connection and
- * a method the broker refused.
+ * connection is gone, always becomes ConnectionException — whichever class the caller
+ * asked for — because a dead connection and a method the broker refused are different
+ * failures and only one of them is worth retrying on the same objects.
  */
 readonly class CommandRunner
 {
@@ -70,15 +70,15 @@ readonly class CommandRunner
     }
 
     /**
-     * @param class-string<AMQPException> $exceptionClass
+     * @param class-string<AmqpException> $exceptionClass
      */
     public static function exception(
         CommandFailure $failure,
         string $exceptionClass,
         TaskExecutionException|TaskErrorException $exception,
-    ): AMQPException {
+    ): AmqpException {
         if ($failure->scope === FailureScopeEnum::Connection) {
-            return new AMQPConnectionException(
+            return new ConnectionException(
                 message: $failure->message,
                 code: $failure->code,
                 previous: $exception,
@@ -90,7 +90,7 @@ readonly class CommandRunner
         // call on a stale channel. A reply code means the broker refused this particular
         // method, and that is the caller's exception, carrying the code.
         if ($failure->scope === FailureScopeEnum::Channel && $failure->code === 0) {
-            return new AMQPChannelException(
+            return new ChannelException(
                 message: $failure->message,
                 previous: $exception,
             );

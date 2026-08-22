@@ -40,10 +40,7 @@
     "autoload": {
         "psr-4": {
             "SConcur\\": "src/"
-        },
-        "files": [
-            "src/Features/Amqp/constants.php"
-        ]
+        }
     },
     "autoload-dev": {
         "psr-4": {

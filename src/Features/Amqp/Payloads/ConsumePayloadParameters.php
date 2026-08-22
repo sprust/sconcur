@@ -10,8 +10,6 @@ use SConcur\Transport\PayloadParametersInterface;
  * Parameters of a basic.consume command — the streaming one. readTimeoutMs bounds the
  * wait for the next delivery (0 = wait indefinitely), the execution bound of a
  * long-lived consumer, while timeoutMs bounds the basic.consume that opens it.
- * AMQP_JUST_CONSUME never reaches Go: it means "read the consumer
- * this queue already opened", which AMQPQueue answers from the stream key it kept.
  *
  * Go: payloads.ConsumeParams (ext/internal/features/amqp/payloads/payloads.go).
  */

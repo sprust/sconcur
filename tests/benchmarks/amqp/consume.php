@@ -14,16 +14,9 @@ use AMQPConnection as NativeConnection;
 use AMQPEnvelope as NativeEnvelope;
 use AMQPExchange as NativeExchange;
 use AMQPQueue as NativeQueue;
-use SConcur\Features\Amqp\AMQPChannel;
-use SConcur\Features\Amqp\AMQPEnvelope;
-use SConcur\Features\Amqp\AMQPExchange;
-use SConcur\Features\Amqp\AMQPQueue;
 use SConcur\Tests\Impl\TestAmqpResolver;
 use SConcur\Tests\Impl\TestApplication;
 use SConcur\WaitGroup;
-
-use const SConcur\Features\Amqp\AMQP_AUTOACK;
-use const SConcur\Features\Amqp\AMQP_DURABLE;
 
 error_reporting(E_ALL);
 ini_set('memory_limit', '1024M');
@@ -36,11 +29,7 @@ $consumers          = (int) ($_SERVER['argv'][1] ?? 10);
 $messagesPerConsume = (int) ($_SERVER['argv'][2] ?? 200);
 
 $connection = TestAmqpResolver::getConnection();
-$channel    = new AMQPChannel($connection);
-
-$seeder = new AMQPExchange($channel);
-
-$seeder->setName('');
+$channel    = $connection->channel();
 
 /**
  * Declares the queues of one mode and fills each with the messages its consumer will
@@ -48,21 +37,19 @@ $seeder->setName('');
  *
  * @return list<string>
  */
-$prepare = static function (string $mode) use ($channel, $seeder, $consumers, $messagesPerConsume): array {
+$prepare = static function (string $mode) use ($channel, $consumers, $messagesPerConsume): array {
     $names = [];
 
     for ($index = 0; $index < $consumers; ++$index) {
         $name = "sconcur_bench_consume_{$mode}_$index";
 
-        $queue = new AMQPQueue($channel);
+        $queue = $channel->queue($name);
 
-        $queue->setName($name);
-        $queue->setFlags(AMQP_DURABLE);
-        $queue->declareQueue();
+        $queue->declare(durable: true);
         $queue->purge();
 
         for ($message = 0; $message < $messagesPerConsume; ++$message) {
-            $seeder->publish(message: 'benchmark', routingKey: $name);
+            $queue->publish('benchmark');
         }
 
         $names[] = $name;
@@ -75,25 +62,19 @@ $prepare = static function (string $mode) use ($channel, $seeder, $consumers, $m
  * Drains one queue through one SConcur consumer and reports how many messages it took.
  */
 $drain = static function (string $queueName, int $messages) use ($connection): int {
-    $channel = new AMQPChannel($connection);
-
-    $queue = new AMQPQueue($channel);
-
-    $queue->setName($queueName);
-    $queue->setFlags(AMQP_DURABLE);
+    $channel = $connection->channel();
 
     $taken = 0;
 
-    $queue->consume(
-        static function (AMQPEnvelope $envelope, AMQPQueue $queue) use (&$taken, $messages): bool {
-            ++$taken;
+    foreach ($channel->queue($queueName)->consume(autoAck: true) as $delivery) {
+        ++$taken;
 
-            return $taken < $messages;
-        },
-        AMQP_AUTOACK,
-    );
+        if ($taken >= $messages) {
+            // Leaving the loop cancels the consumer and releases the stream.
+            break;
+        }
+    }
 
-    $queue->cancel();
     $channel->close();
 
     return $taken;
@@ -179,7 +160,7 @@ foreach ($waitGroup->iterate() as $result) {
 $results['sconcur async'] = [microtime(true) - $startTime, $taken];
 
 $channel->close();
-$connection->disconnect();
+$connection->close();
 
 printf(
     "Consume: %d queues x %d messages (%d total)\n",

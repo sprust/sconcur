@@ -334,14 +334,6 @@ type RejectParams struct {
 	TimeoutMs   int    `json:"to" msgpack:"to"`
 }
 
-// RecoverParams is the `p` content of a Recover command.
-// PHP: SConcur\Features\Amqp\Payloads\RecoverPayloadParameters.
-type RecoverParams struct {
-	ChannelId string `json:"chid" msgpack:"chid"`
-	Requeue   bool   `json:"rq" msgpack:"rq"`
-	TimeoutMs int    `json:"to" msgpack:"to"`
-}
-
 // ConfirmSelectParams is the `p` content of a ConfirmSelect command.
 // PHP: SConcur\Features\Amqp\Payloads\ConfirmSelectPayloadParameters.
 type ConfirmSelectParams struct {

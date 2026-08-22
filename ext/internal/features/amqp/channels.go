@@ -87,6 +87,10 @@ type channelEntry struct {
 	// gone is closed once the channel is, so a wait loop ends instead of parking
 	// forever on a channel the broker took away.
 	gone chan struct{}
+	// confirmsReady hands the publisher-confirm listener to the collector goroutine that
+	// is already reading the returns. One goroutine reads both, because the two are
+	// ordered on the wire and must stay ordered here: see collect.
+	confirmsReady chan chan amqp091.Confirmation
 }
 
 var channelsOnce sync.Once
@@ -165,6 +169,9 @@ func (c *channels) open(handle *connectionHandle, params payloads.ChannelOpenPar
 		consumers:  make(map[string]string),
 		lastUsedAt: time.Now(),
 		gone:       make(chan struct{}),
+		// Buffered, so the coroutine that turns confirm mode on hands the listener over
+		// without waiting for the collector to come round to it.
+		confirmsReady: make(chan chan amqp091.Confirmation, 1),
 	}
 
 	if err := applyQos(channel, params); err != nil {
@@ -199,10 +206,10 @@ func (c *channels) open(handle *connectionHandle, params payloads.ChannelOpenPar
 
 	handle.mutex.Unlock()
 
-	// Returned messages are collected from the moment the channel opens: an application
-	// may publish with AMQP_MANDATORY and wait for the returns without ever putting the
-	// channel into publisher-confirm mode.
-	go entry.collectReturns(channel.NotifyReturn(make(chan amqp091.Return, returnQueueSize)))
+	// Returned messages are collected from the moment the channel opens: a mandatory
+	// publish may be made on a channel that never enters publisher-confirm mode, and the
+	// driver's listener has to be drained either way.
+	go entry.collect(channel.NotifyReturn(make(chan amqp091.Return, returnQueueSize)))
 
 	// A protocol error (a passive declare of a queue that does not exist, a publish to a
 	// missing exchange) makes the broker close the channel. Without this watcher the dead
@@ -551,13 +558,13 @@ func (e *channelEntry) startConfirmMode(ctx context.Context, noWait bool) error 
 		e.confirming = true
 		e.mutex.Unlock()
 
-		// The collector starts here, beside the flag it belongs to, and not after do()
-		// returns: do() stops waiting when the command deadline passes or the flow stops,
-		// while this goroutine runs on. A channel left in confirm mode with nobody
-		// draining the listener would strand every later waitForConfirm() on it (pending
-		// would never fall back to zero) and, once the buffer filled, hold up the whole
-		// connection's reader for the driver's notify timeout on every confirmation.
-		go e.collectConfirms(confirms)
+		// Handed over here, beside the flag it belongs to, and not after do() returns:
+		// do() stops waiting when the command deadline passes or the flow stops, while
+		// the collector runs on. A channel left in confirm mode with nobody draining the
+		// listener would strand every later confirm wait on it (pending would never fall
+		// back to zero) and, once the buffer filled, hold up the whole connection's
+		// reader for the driver's notify timeout on every confirmation.
+		e.confirmsReady <- confirms
 
 		return nil
 	})
@@ -607,56 +614,110 @@ func (e *channelEntry) publishFailed() {
 	}
 }
 
-func (e *channelEntry) collectConfirms(confirms chan amqp091.Confirmation) {
-	for confirmation := range confirms {
-		e.mutex.Lock()
+// collect drains the driver's return and confirmation listeners in one goroutine.
+//
+// One goroutine and not two, because the order matters. The broker sends basic.return
+// before the basic.ack of the same message, and the driver enqueues them in that order —
+// but two collectors racing for the entry's lock would record them in either. A publisher
+// waiting for its confirm would then be told the message was stored a moment before the
+// return saying it reached no queue was recorded, and would never see it.
+//
+// So a confirmation is only recorded once every return already queued has been: those were
+// enqueued before it, and therefore belong to messages the broker settled no later.
+//
+// The confirmation listener arrives over confirmsReady when a coroutine puts the channel
+// into confirm mode. Until then it is nil, and a receive on a nil channel blocks forever —
+// which is exactly the right behaviour for a listener that does not exist yet.
+func (e *channelEntry) collect(returns chan amqp091.Return) {
+	var confirms chan amqp091.Confirmation
 
-		e.confirmations = appendBounded(e.confirmations, payloads.Confirmation{
-			DeliveryTag: confirmation.DeliveryTag,
-			Acked:       confirmation.Ack,
-		}, maxPendingConfirmations)
+	for returns != nil || confirms != nil {
+		select {
+		case returned, ok := <-returns:
+			if !ok {
+				returns = nil
 
-		if e.pending > 0 {
-			e.pending--
+				continue
+			}
+
+			e.recordReturn(returned)
+		case confirms = <-e.confirmsReady:
+		case confirmation, ok := <-confirms:
+			if !ok {
+				confirms = nil
+
+				continue
+			}
+
+			e.drainReturns(returns)
+
+			e.recordConfirmation(confirmation)
 		}
-
-		e.mutex.Unlock()
-
-		e.wake()
 	}
 }
 
-func (e *channelEntry) collectReturns(returns chan amqp091.Return) {
-	for returned := range returns {
-		e.mutex.Lock()
+// drainReturns records the returns already queued, without waiting for more.
+func (e *channelEntry) drainReturns(returns chan amqp091.Return) {
+	for {
+		select {
+		case returned, ok := <-returns:
+			if !ok {
+				return
+			}
 
-		e.returns = appendBounded(e.returns, payloads.ReturnedMessage{
-			ReplyCode:    int(returned.ReplyCode),
-			ReplyText:    returned.ReplyText,
-			ExchangeName: returned.Exchange,
-			RoutingKey:   returned.RoutingKey,
-			Body:         string(returned.Body),
-			Properties: payloads.Properties{
-				ContentType:     returned.ContentType,
-				ContentEncoding: returned.ContentEncoding,
-				Headers:         tableToMap(returned.Headers),
-				DeliveryMode:    int(returned.DeliveryMode),
-				Priority:        int(returned.Priority),
-				CorrelationId:   returned.CorrelationId,
-				ReplyTo:         returned.ReplyTo,
-				Expiration:      returned.Expiration,
-				MessageId:       returned.MessageId,
-				Timestamp:       timestampToUnix(returned.Timestamp),
-				Type:            returned.Type,
-				UserId:          returned.UserId,
-				AppId:           returned.AppId,
-			},
-		}, maxPendingReturns)
-
-		e.mutex.Unlock()
-
-		e.wake()
+			e.recordReturn(returned)
+		default:
+			return
+		}
 	}
+}
+
+func (e *channelEntry) recordConfirmation(confirmation amqp091.Confirmation) {
+	e.mutex.Lock()
+
+	e.confirmations = appendBounded(e.confirmations, payloads.Confirmation{
+		DeliveryTag: confirmation.DeliveryTag,
+		Acked:       confirmation.Ack,
+	}, maxPendingConfirmations)
+
+	if e.pending > 0 {
+		e.pending--
+	}
+
+	e.mutex.Unlock()
+
+	e.wake()
+}
+
+func (e *channelEntry) recordReturn(returned amqp091.Return) {
+	e.mutex.Lock()
+
+	e.returns = appendBounded(e.returns, payloads.ReturnedMessage{
+		ReplyCode:    int(returned.ReplyCode),
+		ReplyText:    returned.ReplyText,
+		ExchangeName: returned.Exchange,
+		RoutingKey:   returned.RoutingKey,
+		Body:         string(returned.Body),
+		Properties: payloads.Properties{
+			ContentType:     returned.ContentType,
+			ContentEncoding: returned.ContentEncoding,
+			Headers:         tableToMap(returned.Headers),
+			DeliveryMode:    int(returned.DeliveryMode),
+			Priority:        int(returned.Priority),
+			CorrelationId:   returned.CorrelationId,
+			ReplyTo:         returned.ReplyTo,
+			Expiration:      returned.Expiration,
+			MessageId:       returned.MessageId,
+			Timestamp:       timestampToUnix(returned.Timestamp),
+			Type:            returned.Type,
+			UserId:          returned.UserId,
+			AppId:           returned.AppId,
+		},
+	}, maxPendingReturns)
+
+	e.mutex.Unlock()
+
+	e.wake()
 }
 
 // appendBounded appends and keeps the tail at most limit long, dropping from the front.
@@ -729,15 +790,6 @@ func (e *channelEntry) waitForConfirms(ctx context.Context, timeout time.Duratio
 	}, e.drainLocked)
 }
 
-// waitForReturns waits until the broker has returned at least one message. It leaves the
-// publisher confirms where they are: taking them here would strand the wait loop that is
-// counting on them.
-func (e *channelEntry) waitForReturns(ctx context.Context, timeout time.Duration) (payloads.WaitResult, error) {
-	return e.wait(ctx, timeout, func() bool {
-		return len(e.returns) > 0
-	}, e.drainReturnsLocked)
-}
-
 // wait blocks until the condition holds (checked under the entry's lock), the deadline
 // passes, the channel goes away, or the flow stops, and hands back what the drain took.
 //
@@ -801,17 +853,6 @@ func (e *channelEntry) drainLocked() payloads.WaitResult {
 	}
 
 	e.confirmations = nil
-	e.returns = nil
-
-	return normalizeWaitResult(result)
-}
-
-// drainReturnsLocked hands over the returned messages only. The entry's lock must be held.
-func (e *channelEntry) drainReturnsLocked() payloads.WaitResult {
-	result := payloads.WaitResult{
-		Returns: e.returns,
-	}
-
 	e.returns = nil
 
 	return normalizeWaitResult(result)

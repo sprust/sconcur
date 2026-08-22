@@ -11,6 +11,7 @@ import (
 	"sconcur/internal/features/amqp/payloads"
 	"sconcur/internal/helpers"
 	"sconcur/internal/logger"
+	"sconcur/internal/states"
 	"sconcur/internal/tasks"
 	"sconcur/internal/types"
 	"strconv"
@@ -122,16 +123,10 @@ func (f *AmqpFeature) Handle(task *tasks.Task) {
 		f.handleNack(task, envelope.Params)
 	case types.AmqpReject:
 		f.handleReject(task, envelope.Params)
-	case types.AmqpRecover:
-		f.handleRecover(task, envelope.Params)
-	case types.AmqpTransactionSelect, types.AmqpTransactionCommit, types.AmqpTransactionRollback:
-		f.handleTransaction(task, envelope.Params, envelope.Command)
 	case types.AmqpConfirmSelect:
 		f.handleConfirmSelect(task, envelope.Params)
 	case types.AmqpConfirmWait:
 		f.handleConfirmWait(task, envelope.Params)
-	case types.AmqpReturnWait:
-		f.handleReturnWait(task, envelope.Params)
 	default:
 		task.AddResult(dto.NewErrorResult(message, errFactory.ByText("unknown command")))
 	}
@@ -157,8 +152,41 @@ func (f *AmqpFeature) handleDetached(envelope payloads.Envelope) {
 		}
 
 		go getConnections().release(params.ConnectionId)
+	case types.AmqpCancel:
+		// A consume loop that was unwound cancels its consumer on the way out. The
+		// coroutine's flow is already gone, so there is nothing to answer on — the
+		// method goes to the broker and the stream is dropped, with nobody waiting.
+		var params payloads.CancelParams
+
+		if err := msgpack.Unmarshal(envelope.Params, &params); err != nil {
+			return
+		}
+
+		go cancelDetached(params)
 	default:
 		logger.Write("amqp: command " + string(envelope.Command) + " cannot be pushed detached")
+	}
+}
+
+// cancelDetached sends a basic.cancel nobody is waiting for and drops the delivery stream
+// behind the consumer. Its deadline is its own: the task that would have bounded it does
+// not exist.
+func cancelDetached(params payloads.CancelParams) {
+	entry, err := getChannels().find(params.ChannelId)
+
+	if err != nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), consumerCancelTimeout)
+	defer cancel()
+
+	_ = entry.do(ctx, func(channel *amqp091.Channel) error {
+		return channel.Cancel(params.ConsumerTag, params.NoWait)
+	})
+
+	if taskKey, exists := entry.forgetConsumer(params.ConsumerTag); exists && taskKey != "" {
+		states.Get().DeleteState(taskKey)
 	}
 }
 

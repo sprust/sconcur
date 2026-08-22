@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Amqp;
 
 use SConcur\Tests\Impl\Worker\TestWorkerMaster;
-use const SConcur\Features\Amqp\AMQP_DURABLE;
 
 /**
  * A supervised consumer reports to the same panel the servers do. The counters come
@@ -19,14 +18,14 @@ class AmqpConsumerTelemetryTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $queue = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $queue = $this->declareQueue(channel: $channel, durable: true);
 
         for ($index = 0; $index < 3; ++$index) {
-            $this->publishToQueue($channel, (string) $queue->getName(), "ack:message-$index");
+            $this->publishToQueue($channel, $queue->name(), "message-$index");
         }
 
         // One message is refused, so the refused counter is not just zero on both sides.
-        $this->publishToQueue($channel, (string) $queue->getName(), 'reject');
+        $this->publishToQueue($channel, $queue->name(), 'reject');
 
         $panelPort  = $this->freePort();
         $adminToken = bin2hex(random_bytes(16));
@@ -44,7 +43,7 @@ class AmqpConsumerTelemetryTest extends AmqpTestCase
                         // worker that finished and was replaced would report the empty
                         // queue its replacement sees, not the messages it handled.
                         'server'       => [
-                            'queues' => [['name' => (string) $queue->getName()]],
+                            'queues' => [['name' => $queue->name()]],
                         ],
                     ],
                 ],

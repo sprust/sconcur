@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Amqp;
 
 use SConcur\Tests\Impl\Worker\TestWorkerMaster;
-use const SConcur\Features\Amqp\AMQP_DURABLE;
 
 /**
  * The whole thing end to end: a WorkerMaster group whose workers are QueueConsumers,
@@ -18,12 +17,12 @@ class AmqpConsumerPoolTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $orders = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
-        $emails = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $orders = $this->declareQueue(channel: $channel, durable: true);
+        $emails = $this->declareQueue(channel: $channel, durable: true);
 
         for ($index = 0; $index < 3; ++$index) {
-            $this->publishToQueue($channel, (string) $orders->getName(), "ack:order-$index");
-            $this->publishToQueue($channel, (string) $emails->getName(), "ack:email-$index");
+            $this->publishToQueue($channel, $orders->name(), "order-$index");
+            $this->publishToQueue($channel, $emails->name(), "email-$index");
         }
 
         $master = TestWorkerMaster::start(
@@ -35,8 +34,8 @@ class AmqpConsumerPoolTest extends AmqpTestCase
                         'workerCount'  => 1,
                         'server'       => [
                             'queues' => [
-                                ['name' => (string) $orders->getName(), 'coroutineCount' => 2],
-                                ['name' => (string) $emails->getName(), 'coroutineCount' => 1],
+                                ['name' => $orders->name(), 'coroutineCount' => 2],
+                                ['name' => $emails->name(), 'coroutineCount' => 1],
                             ],
                             'prefetchCount' => 1,
                             'maxMessages'   => 6,
@@ -55,12 +54,12 @@ class AmqpConsumerPoolTest extends AmqpTestCase
 
             self::assertSame(
                 [
-                    'handled ack:email-0',
-                    'handled ack:email-1',
-                    'handled ack:email-2',
-                    'handled ack:order-0',
-                    'handled ack:order-1',
-                    'handled ack:order-2',
+                    'handled email-0',
+                    'handled email-1',
+                    'handled email-2',
+                    'handled order-0',
+                    'handled order-1',
+                    'handled order-2',
                 ],
                 $handled,
             );
@@ -85,9 +84,9 @@ class AmqpConsumerPoolTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $queue = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $queue = $this->declareQueue(channel: $channel, durable: true);
 
-        $this->publishToQueue($channel, (string) $queue->getName(), 'ack:one');
+        $this->publishToQueue($channel, $queue->name(), 'one');
 
         $master = TestWorkerMaster::start(
             options: [
@@ -97,7 +96,7 @@ class AmqpConsumerPoolTest extends AmqpTestCase
                         'workerScript' => self::consumerScript(),
                         'workerCount'  => 1,
                         'server'       => [
-                            'queues'      => [['name' => (string) $queue->getName()]],
+                            'queues'      => [['name' => $queue->name()]],
                             'maxMessages' => 1,
                         ],
                     ],

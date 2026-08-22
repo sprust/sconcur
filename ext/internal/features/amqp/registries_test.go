@@ -263,25 +263,30 @@ func TestAWaitEndsOnItsDeadline(t *testing.T) {
 	}
 }
 
-func TestWaitingForReturnsLeavesTheConfirmsAlone(t *testing.T) {
+// A mandatory message that routed nowhere is returned AND acknowledged, so a publisher
+// waiting for its confirm has to be handed both in one drain — reading the confirmations
+// alone would report a success for a message that reached no queue.
+func TestAConfirmWaitHandsOverTheReturnsWithTheConfirmations(t *testing.T) {
 	entry := newTestEntry()
 
+	entry.confirming = true
 	entry.confirmations = []payloads.Confirmation{{DeliveryTag: 1, Acked: true}}
 	entry.returns = []payloads.ReturnedMessage{{ReplyCode: 312}}
 
-	result, err := entry.waitForReturns(context.Background(), time.Second)
+	result, err := entry.waitForConfirms(context.Background(), time.Second)
 
 	if err != nil {
-		t.Fatalf("waitForReturns error: %v", err)
+		t.Fatalf("waitForConfirms error: %v", err)
 	}
 
-	if len(result.Returns) != 1 || len(result.Confirmations) != 0 {
-		t.Fatalf("result = %#v, want the returns only", result)
+	if len(result.Returns) != 1 || len(result.Confirmations) != 1 {
+		t.Fatalf("result = %#v, want both the return and the confirmation", result)
 	}
 
-	// Taking them here would strand the wait loop that is counting on them.
-	if len(entry.confirmations) != 1 {
-		t.Fatalf("confirmations left = %d, want 1", len(entry.confirmations))
+	// The batch is over: a second wait must not report the same message again.
+	if len(entry.returns) != 0 || len(entry.confirmations) != 0 {
+		t.Fatalf("entry kept %d returns and %d confirmations, want none",
+			len(entry.returns), len(entry.confirmations))
 	}
 }
 
@@ -318,8 +323,10 @@ func TestTheConnectTimeoutDoesNotSplitThePool(t *testing.T) {
 func TestATimedOutWaitLeavesNoWaiterBehind(t *testing.T) {
 	entry := newTestEntry()
 
+	// Not in confirm mode, so the wait's condition never holds and every poll runs out
+	// its deadline.
 	for range 3 {
-		if _, err := entry.waitForReturns(context.Background(), 10*time.Millisecond); err == nil {
+		if _, err := entry.waitForConfirms(context.Background(), 10*time.Millisecond); err == nil {
 			t.Fatal("a wait with nothing to collect must end on its deadline")
 		}
 	}
@@ -341,24 +348,28 @@ func TestATimedOutWaitLeavesNoWaiterBehind(t *testing.T) {
 func TestAWaitEndedByAnEventKeepsTheListClean(t *testing.T) {
 	entry := newTestEntry()
 
+	entry.confirming = true
+	entry.pending = 1
+
 	go func() {
 		time.Sleep(10 * time.Millisecond)
 
 		entry.mutex.Lock()
-		entry.returns = append(entry.returns, payloads.ReturnedMessage{ReplyCode: 312})
+		entry.pending = 0
+		entry.confirmations = append(entry.confirmations, payloads.Confirmation{DeliveryTag: 1, Acked: true})
 		entry.mutex.Unlock()
 
 		entry.wake()
 	}()
 
-	result, err := entry.waitForReturns(context.Background(), time.Second)
+	result, err := entry.waitForConfirms(context.Background(), time.Second)
 
 	if err != nil {
-		t.Fatalf("err = %v, want the returned message", err)
+		t.Fatalf("err = %v, want the confirmation", err)
 	}
 
-	if len(result.Returns) != 1 {
-		t.Fatalf("returns = %d, want 1", len(result.Returns))
+	if len(result.Confirmations) != 1 {
+		t.Fatalf("confirmations = %d, want 1", len(result.Confirmations))
 	}
 
 	entry.mutex.Lock()

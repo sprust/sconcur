@@ -18,20 +18,13 @@ declare(strict_types=1);
 // Without SCONCUR_PPROF_ADDR the run still works and reports the two Go columns as zero.
 
 use SConcur\Connection\Extension;
-use SConcur\Features\Amqp\AMQPChannel;
-use SConcur\Features\Amqp\AMQPConnection;
-use SConcur\Features\Amqp\AMQPEnvelope;
-use SConcur\Features\Amqp\AMQPExchange;
-use SConcur\Features\Amqp\AMQPQueue;
+use SConcur\Exceptions\Amqp\UnroutableMessageException;
+use SConcur\Features\Amqp\Connection;
+use SConcur\Features\Amqp\ExchangeTypeEnum;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Impl\TestAmqpResolver;
 use SConcur\Tests\Impl\TestApplication;
 use SConcur\WaitGroup;
-
-use const SConcur\Features\Amqp\AMQP_AUTOACK;
-use const SConcur\Features\Amqp\AMQP_DURABLE;
-use const SConcur\Features\Amqp\AMQP_MANDATORY;
-use const SConcur\Features\Amqp\AMQP_PASSIVE;
 
 require_once __DIR__ . '/../../vendor/autoload.php';
 
@@ -66,32 +59,27 @@ $readRuntime = static function () use ($profilerAddress): array {
     ];
 };
 
-$credentials = TestAmqpResolver::getCredentials();
+$options = TestAmqpResolver::getOptions();
 
 $queueName    = 'sconcur_soak_' . $scenario;
 $exchangeName = 'sconcur_soak_exchange_' . $scenario;
 
 // The long-lived topology every scenario works on. A scenario that needs its own
 // connection builds one per cycle instead.
-$connection = new AMQPConnection($credentials);
+$connection = new Connection($options);
 $connection->connect();
 
-$channel = new AMQPChannel($connection);
+$channel = $connection->channel();
 
-$exchange = new AMQPExchange($channel);
+$exchange = $channel->exchange($exchangeName);
 
-$exchange->setName($exchangeName);
-$exchange->setType('direct');
-$exchange->setFlags(AMQP_DURABLE);
-$exchange->declareExchange();
+$exchange->declare(type: ExchangeTypeEnum::Direct, durable: true);
 
-$queue = new AMQPQueue($channel);
+$queue = $channel->queue($queueName);
 
-$queue->setName($queueName);
-$queue->setFlags(AMQP_DURABLE);
-$queue->declareQueue();
+$queue->declare(durable: true);
 $queue->purge();
-$queue->bind(exchangeName: $exchangeName, routingKey: 'soak');
+$queue->bind(exchange: $exchangeName, routingKey: 'soak');
 
 /**
  * One cycle of each scenario. Whatever it opens, it closes.
@@ -101,53 +89,38 @@ $scenarios = [
     'publish' => static function () use ($exchange, $queue): void {
         $exchange->publish(message: 'soak', routingKey: 'soak');
 
-        $envelope = $queue->get(flags: AMQP_AUTOACK);
-
-        if ($envelope === null) {
+        if ($queue->get(autoAck: true) === null) {
             usleep(1000);
         }
     },
 
     // A connection and a channel per cycle: the pool, the handle registry and the channel
     // registry all have to give the resources back.
-    'churn' => static function () use ($credentials, $queueName): void {
-        $connection = new AMQPConnection($credentials);
+    'churn' => static function () use ($options, $queueName): void {
+        $connection = new Connection($options);
 
         $connection->connect();
 
-        $channel = new AMQPChannel($connection);
+        $channel = $connection->channel();
 
-        $queue = new AMQPQueue($channel);
-
-        $queue->setName($queueName);
-        $queue->setFlags(AMQP_DURABLE);
-        $queue->declareQueue();
+        $channel->queue($queueName)->declare(durable: true);
 
         $channel->close();
-        $connection->disconnect();
+        $connection->close();
     },
 
     // A consumer per cycle, opened, fed one message and cancelled.
     'consume' => static function () use ($connection, $exchange, $queueName): void {
         $exchange->publish(message: 'soak', routingKey: 'soak');
 
-        $channel = new AMQPChannel($connection);
+        $channel = $connection->channel();
 
-        $queue = new AMQPQueue($channel);
+        foreach ($channel->queue($queueName)->consume() as $delivery) {
+            $delivery->ack();
 
-        $queue->setName($queueName);
-        $queue->setFlags(AMQP_DURABLE);
-        $queue->declareQueue();
+            break;
+        }
 
-        $queue->consume(
-            callback: static function (AMQPEnvelope $envelope, AMQPQueue $queue): bool {
-                $queue->ack($envelope->getDeliveryTag());
-
-                return false;
-            },
-        );
-
-        $queue->cancel();
         $channel->close();
     },
 
@@ -157,23 +130,15 @@ $scenarios = [
 
         for ($index = 0; $index < 10; ++$index) {
             $waitGroup->add(static function () use ($connection, $exchangeName, $queueName): int {
-                $channel = new AMQPChannel($connection);
+                $channel = $connection->channel();
 
-                $exchange = new AMQPExchange($channel);
+                $channel->exchange($exchangeName)->publish(message: 'soak', routingKey: 'soak');
 
-                $exchange->setName($exchangeName);
-                $exchange->publish(message: 'soak', routingKey: 'soak');
-
-                $queue = new AMQPQueue($channel);
-
-                $queue->setName($queueName);
-                $queue->setFlags(AMQP_DURABLE);
-
-                $envelope = $queue->get(flags: AMQP_AUTOACK);
+                $delivery = $channel->queue($queueName)->get(autoAck: true);
 
                 $channel->close();
 
-                return $envelope === null ? 0 : 1;
+                return $delivery === null ? 0 : 1;
             });
         }
 
@@ -183,15 +148,10 @@ $scenarios = [
     // The failure path: every cycle kills a channel with a 404 and throws it away. This is
     // where a dead channel would pile up if the registries did not release it.
     'errors' => static function () use ($connection): void {
-        $channel = new AMQPChannel($connection);
-
-        $queue = new AMQPQueue($channel);
-
-        $queue->setName('sconcur_soak_missing_' . bin2hex(random_bytes(4)));
-        $queue->setFlags(AMQP_PASSIVE);
+        $channel = $connection->channel();
 
         try {
-            $queue->declareQueue();
+            $channel->queue('sconcur_soak_missing_' . bin2hex(random_bytes(4)))->declarePassive();
         } catch (Throwable) {
             // The point of the cycle: the broker closes the channel over this.
         }
@@ -201,29 +161,19 @@ $scenarios = [
 
     // Publisher confirms and a returned message, the two wait loops.
     'confirms' => static function () use ($connection, $exchangeName): void {
-        $channel = new AMQPChannel($connection);
+        $channel = $connection->channel();
 
-        $channel->confirmSelect();
+        $exchange = $channel->exchange($exchangeName);
 
-        $channel->setConfirmCallback(
-            static fn(int $deliveryTag, bool $multiple): bool => true,
-            null,
-        );
+        $exchange->publishConfirmed(message: 'soak', routingKey: 'soak', timeout: 2.0);
 
-        $channel->setReturnCallback(
-            static fn(int $code, string $text, string $exchange, string $key, $properties, string $body): bool => false,
-        );
-
-        $exchange = new AMQPExchange($channel);
-
-        $exchange->setName($exchangeName);
-        $exchange->publish(message: 'soak', routingKey: 'soak');
-        $exchange->publish(message: 'returned', routingKey: 'nowhere', flags: AMQP_MANDATORY);
-
-        // The returns first: waitForConfirm() collects them too, and a wait for something
-        // already collected has nothing left to find.
-        $channel->waitForBasicReturn(timeout: 2.0);
-        $channel->waitForConfirm(timeout: 2.0);
+        try {
+            // Routes nowhere, so the broker sends it back and the publish fails with it —
+            // the return and the confirm are drained by the same wait.
+            $exchange->publishConfirmed(message: 'returned', routingKey: 'nowhere', timeout: 2.0);
+        } catch (UnroutableMessageException) {
+            // The point of the cycle.
+        }
 
         $channel->close();
     },
@@ -235,30 +185,22 @@ $scenarios = [
         $waitGroup = WaitGroup::create();
 
         $waitGroup->add(static function () use ($connection, $exchange, $queueName): int {
-            $channel = new AMQPChannel($connection);
+            $channel = $connection->channel();
 
-            $queue = new AMQPQueue($channel);
-
-            $queue->setName($queueName);
-            $queue->setFlags(AMQP_DURABLE);
-            $queue->declareQueue();
+            $queue = $channel->queue($queueName);
 
             $taken = 0;
 
             for ($round = 0; $round < 10; ++$round) {
                 $exchange->publish(message: 'soak', routingKey: 'soak');
 
-                $queue->consume(
-                    callback: static function (AMQPEnvelope $envelope, AMQPQueue $queue) use (&$taken): bool {
-                        ++$taken;
+                foreach ($queue->consume() as $delivery) {
+                    ++$taken;
 
-                        $queue->ack($envelope->getDeliveryTag());
+                    $delivery->ack();
 
-                        return false;
-                    },
-                );
-
-                $queue->cancel();
+                    break;
+                }
             }
 
             $channel->close();
@@ -275,15 +217,11 @@ $scenarios = [
         $waitGroup = WaitGroup::create();
 
         $waitGroup->add(static function () use ($connection, $queueName): string {
-            $channel = new AMQPChannel($connection);
+            $channel = $connection->channel();
 
-            $queue = new AMQPQueue($channel);
-
-            $queue->setName($queueName);
-            $queue->setFlags(AMQP_DURABLE);
-            $queue->declareQueue();
-
-            $queue->consume(callback: static fn(AMQPEnvelope $envelope): bool => true);
+            foreach ($channel->queue($queueName)->consume() as $delivery) {
+                $delivery->ack();
+            }
 
             return 'ended';
         });
@@ -360,7 +298,7 @@ $queue->delete();
 $exchange->delete();
 
 $channel->close();
-$connection->disconnect();
+$connection->close();
 
 printf(
     "done: %d cycles in %.1fs (%.0f/s), %d failures\n",

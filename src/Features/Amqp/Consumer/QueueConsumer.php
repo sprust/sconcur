@@ -5,11 +5,9 @@ declare(strict_types=1);
 namespace SConcur\Features\Amqp\Consumer;
 
 use Closure;
-use SConcur\Features\Amqp\AMQPChannel;
-use SConcur\Features\Amqp\AMQPConnection;
-use SConcur\Features\Amqp\AMQPException;
-use SConcur\Features\Amqp\AMQPEnvelope;
-use SConcur\Features\Amqp\AMQPQueue;
+use SConcur\Exceptions\Amqp\AmqpException;
+use SConcur\Features\Amqp\Connection;
+use SConcur\Features\Amqp\Delivery;
 use SConcur\Features\Server\ServerRuntimeSupportTrait;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\WaitGroup;
@@ -19,7 +17,7 @@ use Throwable;
  * A long-lived worker that pulls several queues at once: one coroutine per unit of a
  * queue's weight, each with its own channel and its own consumer on it, all in one
  * process. While no queue has a message the PHP thread is free, which is the whole
- * reason this exists instead of a loop around AMQPQueue::get().
+ * reason this exists instead of a loop around Queue::get().
  *
  * It is built to be supervised. Constructor parameters are scalars so fromArgs() can
  * fill them from the argv a WorkerMaster hands its workers; the run ends on SIGTERM,
@@ -52,6 +50,11 @@ class QueueConsumer
      *                                  unless its queue names its own. 1 hands the next
      *                                  message to a free coroutine instead of filling
      *                                  the buffer of a busy one
+     * @param bool   $requeueOnFailure  what to do with a message whose handler threw and
+     *                                  did not settle it. false sends it to the queue's
+     *                                  dead-letter exchange, or drops it where there is
+     *                                  none; true puts it back, which loops forever on a
+     *                                  message that always fails
      * @param int    $maxMessages       stop after this many messages; 0 = no limit
      * @param int    $maxRuntimeSeconds stop after this long; 0 = no limit
      * @param int    $maxMemoryBytes    stop once the PHP heap passes this; 0 = no limit
@@ -65,6 +68,7 @@ class QueueConsumer
     public function __construct(
         protected string $queues = '',
         protected int $prefetchCount = 1,
+        protected bool $requeueOnFailure = false,
         protected int $maxMessages = 0,
         protected int $maxRuntimeSeconds = 0,
         protected int $maxMemoryBytes = 0,
@@ -100,21 +104,22 @@ class QueueConsumer
     /**
      * Consumes until a stop is asked for, and returns how many messages were handled.
      *
-     * The handler is called with the delivery and the queue it came from, and owns the
-     * acknowledgement — the same contract AMQPQueue::consume() has, so a handler moves
-     * between the two unchanged.
+     * The runtime settles the message, not the handler: a handler that returns
+     * acknowledges it, one that throws refuses it according to $requeueOnFailure. A
+     * handler that settled the delivery itself — a selective reject, an ack before some
+     * slow follow-up work — is left alone, because a Delivery refuses to be settled twice.
      *
-     * A handler that throws is reported through $onError and ends the coroutine it ran
-     * in: closing that channel hands the message back to the broker exactly once,
-     * whereas answering for a handler that may already have acknowledged it risks a
-     * double settle. The run goes on with the remaining coroutines, and ends once the
-     * last one is gone.
+     * This is what the calque could not do. There the acknowledgement belonged to the
+     * handler, so a handler that threw might or might not have settled its message, and
+     * the only safe answer was to end the coroutine and let the closing channel hand the
+     * message back. Now the runtime knows, so a failed handler costs one message rather
+     * than one consumer.
      *
-     * @param Closure(AMQPEnvelope, AMQPQueue): void  $handler
-     * @param ?Closure(Throwable, AMQPEnvelope): void $onError called when a handler throws;
-     *                                                         without one the failure is logged
+     * @param Closure(Delivery): void             $handler
+     * @param ?Closure(Throwable, Delivery): void $onError called when a handler throws;
+     *                                                     without one the failure is logged
      */
-    public function consume(AMQPConnection $connection, Closure $handler, ?Closure $onError = null): int
+    public function consume(Connection $connection, Closure $handler, ?Closure $onError = null): int
     {
         $specs = $this->queueSpecs();
 
@@ -167,37 +172,36 @@ class QueueConsumer
      * A channel is never shared between coroutines — the commands of one are
      * serialized, so sharing would turn N consumers into a queue of N.
      *
-     * @param Closure(AMQPEnvelope, AMQPQueue): void  $handler
-     * @param ?Closure(Throwable, AMQPEnvelope): void $onError
+     * @param Closure(Delivery): void             $handler
+     * @param ?Closure(Throwable, Delivery): void $onError
      */
     protected function consumeQueue(
-        AMQPConnection $connection,
+        Connection $connection,
         QueueSpec $spec,
         Closure $handler,
         ?Closure $onError,
         ConsumerState $state,
     ): void {
-        $channel = new AMQPChannel($connection);
-
-        $channel->setPrefetchCount($spec->prefetchCount ?? $this->prefetchCount);
-
-        $queue = new AMQPQueue($channel);
-
-        $queue->setName($spec->name);
+        $channel = $connection->channel(prefetchCount: $spec->prefetchCount ?? $this->prefetchCount);
 
         $state->consumerStarted();
 
         try {
-            $queue->consume(
-                callback: fn(AMQPEnvelope $envelope, AMQPQueue $deliveredOn): bool => $this->handleDelivery(
-                    envelope: $envelope,
-                    queue: $deliveredOn,
+            foreach ($channel->consume(queueName: $spec->name) as $delivery) {
+                $keepGoing = $this->handleDelivery(
+                    delivery: $delivery,
                     handler: $handler,
                     onError: $onError,
                     state: $state,
-                ),
-            );
-        } catch (AMQPException $exception) {
+                );
+
+                if (!$keepGoing) {
+                    // Leaving the loop drops the generator, and its own teardown cancels
+                    // the consumer and gives the delivery stream back.
+                    break;
+                }
+            }
+        } catch (AmqpException $exception) {
             // One consumer ending is not the worker ending. The broker cancelled it, its
             // queue was deleted, its channel died — whatever it was, the other coroutines
             // keep their queues, and the run ends on its own once the last consumer is
@@ -223,16 +227,15 @@ class QueueConsumer
     }
 
     /**
-     * Runs the handler for one delivery and answers whether this consumer keeps going.
-     * The handler never learns about the drain: deciding when to stop belongs here, so
-     * the same handler works supervised and standalone.
+     * Runs the handler for one delivery, settles it, and answers whether this consumer
+     * keeps going. The handler never learns about the drain: deciding when to stop
+     * belongs here, so the same handler works supervised and standalone.
      *
-     * @param Closure(AMQPEnvelope, AMQPQueue): void  $handler
-     * @param ?Closure(Throwable, AMQPEnvelope): void $onError
+     * @param Closure(Delivery): void             $handler
+     * @param ?Closure(Throwable, Delivery): void $onError
      */
     protected function handleDelivery(
-        AMQPEnvelope $envelope,
-        AMQPQueue $queue,
+        Delivery $delivery,
         Closure $handler,
         ?Closure $onError,
         ConsumerState $state,
@@ -242,25 +245,15 @@ class QueueConsumer
         $failed = false;
 
         try {
-            $handler($envelope, $queue);
+            $handler($delivery);
         } catch (Throwable $exception) {
             $failed = true;
 
-            $this->reportFailure(exception: $exception, envelope: $envelope, onError: $onError);
+            $this->reportFailure(exception: $exception, delivery: $delivery, onError: $onError);
         } finally {
             $state->messageFinished($failed);
-        }
 
-        if ($failed) {
-            // This consumer stops here. The handler owns the acknowledgement, and one
-            // that threw may or may not have settled the message — nacking on its
-            // behalf could be a double settle, which the broker answers by killing the
-            // channel. Ending the consumer closes its channel instead, which returns
-            // the message to the queue exactly once. Carrying on would be worse than
-            // losing the capacity: with a prefetch of one an unsettled message means
-            // the broker never sends this consumer another, and it would sit there
-            // alive and idle forever.
-            return false;
+            $this->settle(delivery: $delivery, failed: $failed);
         }
 
         if ($state->isDraining()) {
@@ -279,22 +272,55 @@ class QueueConsumer
     }
 
     /**
-     * @param ?Closure(Throwable, AMQPEnvelope): void $onError
+     * @param ?Closure(Throwable, Delivery): void $onError
      */
-    protected function reportFailure(Throwable $exception, AMQPEnvelope $envelope, ?Closure $onError): void
+    protected function reportFailure(Throwable $exception, Delivery $delivery, ?Closure $onError): void
     {
         if ($onError !== null) {
-            $onError($exception, $envelope);
+            $onError($exception, $delivery);
 
             return;
         }
 
         static::logServerEvent(sprintf(
             'consumer: handler failed on %s: %s: %s',
-            $envelope->getRoutingKey(),
+            $delivery->routingKey,
             $exception::class,
             $exception->getMessage(),
         ));
+    }
+
+    /**
+     * Answers the broker for a delivery the handler left open. A handler that settled it
+     * itself is left alone — Delivery::isSettled() is what makes that decidable, and it is
+     * the whole reason the runtime can take the acknowledgement over.
+     *
+     * A settle that fails is logged rather than thrown: the message is the broker's
+     * problem again either way, and letting it escape would end a consumer over a channel
+     * that is already gone.
+     */
+    protected function settle(Delivery $delivery, bool $failed): void
+    {
+        if ($delivery->isSettled()) {
+            return;
+        }
+
+        try {
+            if ($failed) {
+                $delivery->nack(requeue: $this->requeueOnFailure);
+
+                return;
+            }
+
+            $delivery->ack();
+        } catch (AmqpException $exception) {
+            static::logServerEvent(sprintf(
+                'consumer: could not settle delivery %d: %s: %s',
+                $delivery->deliveryTag,
+                $exception::class,
+                $exception->getMessage(),
+            ));
+        }
     }
 
     /**

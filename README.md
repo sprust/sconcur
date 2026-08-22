@@ -113,7 +113,7 @@ Operations and clients — wrapped in a coroutine (`$waitGroup->add()` +
 | `curl`, `file_get_contents`, Guzzle | `Features\HttpClient\HttpClient` (PSR-18) | response streaming, download straight to a file on the Go side |
 | `fsockopen`, `stream_socket_client` | `Features\SocketClient\SocketClient` | TCP with length-prefix framing |
 | a WS client library | `Features\WsClient\WsClient` | text/binary messages |
-| `ext-amqp` (RabbitMQ) | `Features\Amqp\*` | the same classes and flags; a consumer suspends its coroutine, not the worker |
+| `ext-amqp`, `php-amqplib` (RabbitMQ) | `Features\Amqp\*` | a consumer suspends its coroutine, not the worker; settling belongs to the delivery |
 
 Long-lived servers:
 
@@ -253,8 +253,8 @@ The environment the project is built and tested against in CI:
   mirror.
 - [WebSocket client](docs/websocket-client.md) — the WS server's dial-side
   mirror.
-- [AMQP (RabbitMQ)](docs/amqp.md) — an ext-amqp calque; consumers that suspend a
-  coroutine instead of the worker.
+- [AMQP (RabbitMQ)](docs/amqp.md) — publishing, topology and consumers that
+  suspend a coroutine instead of the worker.
 - [Worker master](docs/worker-master.md) — a supervisor for a pool of workers
   (`bin/sconcur-server`).
 - [Server statistics](docs/admin-stats.md) — `GET /api/stats`, live panel, SSE,

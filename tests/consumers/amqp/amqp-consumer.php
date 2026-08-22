@@ -4,15 +4,11 @@ declare(strict_types=1);
 
 require dirname(__DIR__, 3) . '/vendor/autoload.php';
 
-use SConcur\Features\Amqp\AMQPChannel;
-use SConcur\Features\Amqp\AMQPEnvelope;
-use SConcur\Features\Amqp\AMQPQueue;
 use SConcur\Features\Amqp\Consumer\QueueConsumer;
+use SConcur\Features\Amqp\Delivery;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Impl\TestAmqpResolver;
 use SConcur\Tests\Impl\TestApplication;
-
-use const SConcur\Features\Amqp\AMQP_DURABLE;
 
 /**
  * Demo / test AMQP consumer worker: the shape a supervised consumer takes.
@@ -29,10 +25,9 @@ use const SConcur\Features\Amqp\AMQP_DURABLE;
  * would be visible in `ps` to every user of the machine.
  *
  * What each message does is decided by its body, so a test can drive the worker:
- *   "ack:<text>"      -> acknowledge, and print what was handled
  *   "sleep:<ms>"      -> async sleep, then acknowledge (concurrency demo)
  *   "reject"          -> reject without requeue
- *   anything else     -> acknowledge
+ *   anything else     -> acknowledge, and print what was handled
  */
 TestApplication::init();
 
@@ -44,22 +39,18 @@ $connection = TestAmqpResolver::getConnection();
 // a runtime that redeclared a queue with the wrong flags would take the channel down
 // with a 406 — but this script owns these queues, and without the declaration a pool
 // started before its first publisher would crash-loop on a 404.
-$topologyChannel = new AMQPChannel($connection);
+$topologyChannel = $connection->channel();
 
 foreach ($queueConsumer->queueSpecs() as $spec) {
-    $queue = new AMQPQueue($topologyChannel);
-
-    $queue->setName($spec->name);
-    $queue->setFlags(AMQP_DURABLE);
-    $queue->declareQueue();
+    $topologyChannel->queue($spec->name)->declare(durable: true);
 }
 
 $topologyChannel->close();
 
 $handled = $queueConsumer->consume(
     connection: $connection,
-    handler: static function (AMQPEnvelope $envelope, AMQPQueue $queue): void {
-        $body = $envelope->getBody();
+    handler: static function (Delivery $delivery): void {
+        $body = $delivery->body;
 
         if (str_starts_with($body, 'sleep:')) {
             Sleeper::usleep(
@@ -68,13 +59,12 @@ $handled = $queueConsumer->consume(
         }
 
         if ($body === 'reject') {
-            $queue->reject($envelope->getDeliveryTag());
+            $delivery->reject();
 
             return;
         }
 
-        $queue->ack($envelope->getDeliveryTag());
-
+        // Returning acknowledges it: the runtime settles what the handler left open.
         fwrite(STDOUT, 'handled ' . $body . PHP_EOL);
         fflush(STDOUT);
     },
@@ -82,4 +72,4 @@ $handled = $queueConsumer->consume(
 
 fwrite(STDOUT, "consumer finished handled=$handled" . PHP_EOL);
 
-$connection->disconnect();
+$connection->close();

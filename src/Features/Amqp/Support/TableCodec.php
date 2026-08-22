@@ -4,28 +4,26 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Amqp\Support;
 
-use SConcur\Features\Amqp\AMQPDecimal;
-use SConcur\Features\Amqp\AMQPException;
-use SConcur\Features\Amqp\AMQPTimestamp;
-use SConcur\Features\Amqp\AMQPValueException;
-use SConcur\Features\Amqp\AMQPValue;
+use SConcur\Exceptions\Amqp\InvalidAmqpValueException;
+use SConcur\Features\Amqp\AmqpValue;
+use SConcur\Features\Amqp\Decimal;
+use SConcur\Features\Amqp\Timestamp;
 
 /**
  * Carries an AMQP field table (queue and exchange arguments, message headers) across the
  * boundary in both directions.
  *
- * Two rules are the extension's, and both matter to what actually reaches the broker:
+ * Two rules matter to what actually reaches the broker:
  *
  * - a key that is not a string is dropped with a warning at the top level, and turned into
  *   a string deeper down, so a header carrying a list keeps its values;
  * - a nested array with no string keys at all is an AMQP field array, not a table.
  *
  * Most values are scalars MessagePack already knows. The two that are not — a decimal and
- * a timestamp — have field kinds of their own in AMQP 0-9-1, and the extension writes them
- * as such, so they travel in a tagged map the Go side turns into the real field value and
- * turns back on the way home. Flattening them into a float and an integer would change the
- * type of a header for every other client reading the same queue, and would hand the
- * application a scalar where ext-amqp hands it an object.
+ * a timestamp — have field kinds of their own in AMQP 0-9-1, so they travel in a tagged map
+ * the Go side turns into the real field value and turns back on the way home. Flattening
+ * them into a float and an integer would change the type of a header for every other client
+ * reading the same queue.
  *
  * Go: the tagged* constants (ext/internal/features/amqp/values.go).
  */
@@ -74,7 +72,7 @@ readonly class TableCodec
 
     /**
      * Rebuilds the values of a field table that came back from the broker: the tagged maps
-     * become AMQPDecimal and AMQPTimestamp again, everything else is already what it was.
+     * become Decimal and Timestamp again, everything else is already what it was.
      *
      * @param array<array-key, mixed> $table
      *
@@ -131,46 +129,46 @@ readonly class TableCodec
     }
 
     /**
-     * @throws AMQPException if the value nests deeper than the protocol allows
+     * @throws InvalidAmqpValueException if the value nests deeper than the protocol allows
      */
     protected static function encodeValue(mixed $value, int $depth): mixed
     {
         if ($depth > self::MAX_DEPTH) {
-            throw new AMQPException(
+            throw new InvalidAmqpValueException(
                 message: 'Maximum serialization depth of ' . self::MAX_DEPTH
                     . ' reached while serializing value',
             );
         }
 
-        if ($value instanceof AMQPDecimal) {
+        if ($value instanceof Decimal) {
             return [
                 self::KIND => self::KIND_DECIMAL,
-                'e'        => $value->getExponent(),
-                's'        => $value->getSignificand(),
+                'e'        => $value->exponent,
+                's'        => $value->significand,
             ];
         }
 
-        if ($value instanceof AMQPTimestamp) {
-            // AMQP counts unsigned 64-bit seconds, which is what AMQPTimestamp::MAX
+        if ($value instanceof Timestamp) {
+            // AMQP counts unsigned 64-bit seconds, which is what Timestamp::MAX
             // allows, but neither a PHP int nor the Go time the field is built from can
             // hold the upper half of that range. A cast would wrap it into a negative
             // number and the message would carry a timestamp from before 1970, so the
             // limit is stated instead of silently crossed (docs/amqp.md lists it).
-            if ($value->getTimestamp() > PHP_INT_MAX) {
-                throw new AMQPValueException(
+            if ($value->seconds > PHP_INT_MAX) {
+                throw new InvalidAmqpValueException(
                     message: 'Timestamp exceeds ' . PHP_INT_MAX . ' and cannot be sent.',
                 );
             }
 
             return [
                 self::KIND => self::KIND_TIMESTAMP,
-                'v'        => (int) $value->getTimestamp(),
+                'v'        => (int) $value->seconds,
             ];
         }
 
-        // An application's own AMQPValue names what it stands for through toAmqpValue(),
+        // An application's own AmqpValue names what it stands for through toAmqpValue(),
         // which may in turn hand over one of the two above.
-        if ($value instanceof AMQPValue) {
+        if ($value instanceof AmqpValue) {
             return static::encodeValue(value: $value->toAmqpValue(), depth: $depth + 1);
         }
 
@@ -184,8 +182,8 @@ readonly class TableCodec
     }
 
     /**
-     * Whether an array is an AMQP field array rather than a table. The extension's rule:
-     * no string key anywhere in it, whatever the integer keys are.
+     * Whether an array is an AMQP field array rather than a table: no string key anywhere
+     * in it, whatever the integer keys are.
      *
      * @param array<array-key, mixed> $values
      */
@@ -210,18 +208,18 @@ readonly class TableCodec
 
         // A value the object refuses is handed over as the plain number it was on the
         // wire. Whoever published it is not necessarily this library, and a header no
-        // AMQPDecimal can hold must not make the whole delivery unreadable: the
-        // exception would escape the envelope's constructor, kill the consumer, and
-        // leave the message to be redelivered forever.
+        // Decimal can hold must not make the whole delivery unreadable: the
+        // exception would escape while the delivery is being built, kill the consumer,
+        // and leave the message to be redelivered forever.
         if ($kind === self::KIND_DECIMAL) {
             $significand = (int) ($value['s'] ?? 0);
 
             try {
-                return new AMQPDecimal(
+                return new Decimal(
                     exponent: (int) ($value['e'] ?? 0),
                     significand: $significand,
                 );
-            } catch (AMQPValueException) {
+            } catch (InvalidAmqpValueException) {
                 return $significand;
             }
         }
@@ -230,8 +228,8 @@ readonly class TableCodec
             $seconds = (float) ($value['v'] ?? 0);
 
             try {
-                return new AMQPTimestamp($seconds);
-            } catch (AMQPValueException) {
+                return new Timestamp($seconds);
+            } catch (InvalidAmqpValueException) {
                 return (int) $seconds;
             }
         }

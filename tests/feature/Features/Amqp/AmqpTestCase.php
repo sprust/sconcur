@@ -4,16 +4,16 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Amqp;
 
-use SConcur\Features\Amqp\AMQPChannel;
-use SConcur\Features\Amqp\AMQPConnection;
-use SConcur\Features\Amqp\AMQPEnvelope;
-use SConcur\Features\Amqp\AMQPExchange;
-use SConcur\Features\Amqp\AMQPQueue;
+use SConcur\Features\Amqp\Channel;
+use SConcur\Features\Amqp\Connection;
+use SConcur\Features\Amqp\Delivery;
+use SConcur\Features\Amqp\Exchange;
+use SConcur\Features\Amqp\ExchangeTypeEnum;
+use SConcur\Features\Amqp\Message;
+use SConcur\Features\Amqp\Queue;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\Tests\Impl\TestAmqpResolver;
 use Throwable;
-use const SConcur\Features\Amqp\AMQP_EX_TYPE_DIRECT;
-use const SConcur\Features\Amqp\AMQP_NOPARAM;
 
 /**
  * Shared setup for the AMQP feature tests: one connection to the test broker, plus the
@@ -22,9 +22,16 @@ use const SConcur\Features\Amqp\AMQP_NOPARAM;
  */
 abstract class AmqpTestCase extends BaseTestCase
 {
-    protected ?AMQPConnection $connection = null;
+    /**
+     * How long a consumer in a test waits for a delivery before its stream ends. The
+     * feature's own default is "forever", which is right for a supervised worker and wrong
+     * here: a consumer nothing feeds would hang the run instead of failing it.
+     */
+    protected const float READ_TIMEOUT_SECONDS = 10.0;
 
-    /** @var list<AMQPChannel> */
+    protected ?Connection $connection = null;
+
+    /** @var list<Channel> */
     protected array $openChannels = [];
 
     /** @var list<string> */
@@ -43,20 +50,22 @@ abstract class AmqpTestCase extends BaseTestCase
 
         $this->openChannels = [];
 
-        $this->connection?->disconnect();
+        $this->connection?->close();
         $this->connection = null;
 
         parent::tearDown();
     }
 
-    protected function connection(): AMQPConnection
+    protected function connection(): Connection
     {
-        return $this->connection ??= TestAmqpResolver::getConnection();
+        return $this->connection ??= TestAmqpResolver::getConnection(
+            readTimeout: static::READ_TIMEOUT_SECONDS,
+        );
     }
 
-    protected function channel(): AMQPChannel
+    protected function channel(int $prefetchCount = Channel::DEFAULT_PREFETCH_COUNT): Channel
     {
-        $channel = new AMQPChannel($this->connection());
+        $channel = $this->connection()->channel(prefetchCount: $prefetchCount);
 
         $this->openChannels[] = $channel;
 
@@ -65,33 +74,41 @@ abstract class AmqpTestCase extends BaseTestCase
 
     /**
      * A queue declared under a name no other test uses, remembered for cleanup.
+     *
+     * @param array<string, mixed> $arguments
      */
-    protected function declareQueue(AMQPChannel $channel, ?int $flags = null, ?string $name = null): AMQPQueue
-    {
-        $queue = new AMQPQueue($channel);
+    protected function declareQueue(
+        Channel $channel,
+        bool $durable = false,
+        bool $exclusive = false,
+        bool $autoDelete = false,
+        array $arguments = [],
+        ?string $name = null,
+    ): Queue {
+        $queue = $channel->queue($name ?? TestAmqpResolver::uniqueName('queue'));
 
-        $queue->setName($name ?? TestAmqpResolver::uniqueName('queue'));
-        $queue->setFlags($flags);
-        $queue->declareQueue();
+        $queue->declare(
+            durable: $durable,
+            exclusive: $exclusive,
+            autoDelete: $autoDelete,
+            arguments: $arguments,
+        );
 
-        $this->declaredQueues[] = (string) $queue->getName();
+        $this->declaredQueues[] = $queue->name();
 
         return $queue;
     }
 
     /**
-     * A direct exchange declared under a name no other test uses, remembered for cleanup.
+     * An exchange declared under a name no other test uses, remembered for cleanup.
      */
-    protected function declareExchange(AMQPChannel $channel, string $type = AMQP_EX_TYPE_DIRECT): AMQPExchange
+    protected function declareExchange(Channel $channel, ExchangeTypeEnum $type = ExchangeTypeEnum::Direct): Exchange
     {
-        $exchange = new AMQPExchange($channel);
+        $exchange = $channel->exchange(TestAmqpResolver::uniqueName('exchange'));
 
-        $exchange->setName(TestAmqpResolver::uniqueName('exchange'));
-        $exchange->setType($type);
-        $exchange->setFlags(AMQP_NOPARAM);
-        $exchange->declareExchange();
+        $exchange->declare(type: $type);
 
-        $this->declaredExchanges[] = (string) $exchange->getName();
+        $this->declaredExchanges[] = $exchange->name();
 
         return $exchange;
     }
@@ -100,34 +117,24 @@ abstract class AmqpTestCase extends BaseTestCase
      * Publishes one message straight to a queue through the default exchange, which routes
      * by the queue name.
      */
-    /**
-     * @param array<string, mixed> $attributes publish attributes, e.g. headers
-     */
-    protected function publishToQueue(
-        AMQPChannel $channel,
-        string $queueName,
-        string $body,
-        array $attributes = [],
-    ): void {
-        $exchange = new AMQPExchange($channel);
-
-        $exchange->setName('');
-        $exchange->publish(message: $body, routingKey: $queueName, headers: $attributes);
+    protected function publishToQueue(Channel $channel, string $queueName, Message|string $message): void
+    {
+        $channel->publish(message: $message, exchange: '', routingKey: $queueName);
     }
 
     /**
      * Pulls the queue until a message shows up. basic.publish carries no reply, so a get()
      * issued right after a publish can legitimately come back empty once.
      */
-    protected function waitForMessage(AMQPQueue $queue, float $timeoutSeconds = 2.0): ?AMQPEnvelope
+    protected function waitForMessage(Queue $queue, float $timeoutSeconds = 2.0): ?Delivery
     {
         $deadline = microtime(true) + $timeoutSeconds;
 
         do {
-            $envelope = $queue->get();
+            $delivery = $queue->get();
 
-            if ($envelope !== null) {
-                return $envelope;
+            if ($delivery !== null) {
+                return $delivery;
             }
 
             usleep(20_000);
@@ -137,17 +144,20 @@ abstract class AmqpTestCase extends BaseTestCase
     }
 
     /**
-     * Re-declares the queue until the broker reports the message count the test expects.
-     * Publishing carries no reply, and a message left unacknowledged goes back into the
-     * queue a moment after the consumer is cancelled, so a count read right away can
-     * legitimately be one step behind.
+     * Asks the broker for the queue's message count until it reports the one the test
+     * expects. Publishing carries no reply, and a message left unacknowledged goes back
+     * into the queue a moment after the consumer is cancelled, so a count read right away
+     * can legitimately be one step behind.
+     *
+     * Passively, so the poll never has to know how the queue was declared — a plain
+     * declare() would have to repeat every setting or be refused with a 406.
      */
-    protected function waitForMessageCount(AMQPQueue $queue, int $expected, float $timeoutSeconds = 2.0): int
+    protected function waitForMessageCount(Queue $queue, int $expected, float $timeoutSeconds = 2.0): int
     {
         $deadline = microtime(true) + $timeoutSeconds;
 
         do {
-            $count = $queue->declareQueue();
+            $count = $queue->declarePassive()->messageCount;
 
             if ($count >= $expected) {
                 return $count;
@@ -164,14 +174,12 @@ abstract class AmqpTestCase extends BaseTestCase
      * get() would pass before a message that is on its way has landed: the queue is pulled
      * for a while, and the first message to show up fails the test.
      */
-    protected function assertQueueStaysEmpty(AMQPQueue $queue, float $forSeconds = 0.3): void
+    protected function assertQueueStaysEmpty(Queue $queue, float $forSeconds = 0.3): void
     {
         $deadline = microtime(true) + $forSeconds;
 
         do {
-            $envelope = $queue->get();
-
-            self::assertNull($envelope, 'the queue was expected to stay empty');
+            self::assertNull($queue->get(), 'the queue was expected to stay empty');
 
             usleep(20_000);
         } while (microtime(true) < $deadline);
@@ -191,30 +199,22 @@ abstract class AmqpTestCase extends BaseTestCase
         }
 
         try {
-            $channel = new AMQPChannel($this->connection);
+            $channel = $this->connection->channel();
 
             foreach ($this->declaredQueues as $queueName) {
-                $queue = new AMQPQueue($channel);
-
-                $queue->setName($queueName);
-
                 try {
-                    $queue->delete();
+                    $channel->queue($queueName)->delete();
                 } catch (Throwable) {
                     // Already gone, or the channel died with it: nothing left to delete.
-                    $channel = new AMQPChannel($this->connection);
+                    $channel = $this->connection->channel();
                 }
             }
 
             foreach ($this->declaredExchanges as $exchangeName) {
-                $exchange = new AMQPExchange($channel);
-
-                $exchange->setName($exchangeName);
-
                 try {
-                    $exchange->delete();
+                    $channel->exchange($exchangeName)->delete();
                 } catch (Throwable) {
-                    $channel = new AMQPChannel($this->connection);
+                    $channel = $this->connection->channel();
                 }
             }
 

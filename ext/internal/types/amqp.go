@@ -50,20 +50,10 @@ const (
 	AmqpNack AmqpCommand = "nck"
 	// AmqpReject refuses exactly one delivery.
 	AmqpReject AmqpCommand = "rej"
-	// AmqpRecover asks for the unacknowledged deliveries to be sent again.
-	AmqpRecover AmqpCommand = "rcv"
-	// AmqpTransactionSelect puts the channel into transactional mode.
-	AmqpTransactionSelect AmqpCommand = "txs"
-	// AmqpTransactionCommit commits the transaction.
-	AmqpTransactionCommit AmqpCommand = "txc"
-	// AmqpTransactionRollback rolls the transaction back.
-	AmqpTransactionRollback AmqpCommand = "txr"
 	// AmqpConfirmSelect puts the channel into publisher-confirm mode.
 	AmqpConfirmSelect AmqpCommand = "cfs"
 	// AmqpConfirmWait waits for the outstanding publisher confirms.
 	AmqpConfirmWait AmqpCommand = "cfw"
-	// AmqpReturnWait waits for the messages the broker returned as unroutable.
-	AmqpReturnWait AmqpCommand = "rtw"
 	// AmqpUsedChannels counts the channels a connection handle holds open.
 	AmqpUsedChannels AmqpCommand = "usc"
 )

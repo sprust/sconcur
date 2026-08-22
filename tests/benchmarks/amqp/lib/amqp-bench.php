@@ -5,13 +5,10 @@ declare(strict_types=1);
 use AMQPChannel as NativeChannel;
 use AMQPConnection as NativeConnection;
 use AMQPExchange as NativeExchange;
-use SConcur\Features\Amqp\AMQPChannel;
-use SConcur\Features\Amqp\AMQPConnection;
-use SConcur\Features\Amqp\AMQPExchange;
-use SConcur\Features\Amqp\AMQPQueue;
+use SConcur\Features\Amqp\Channel;
+use SConcur\Features\Amqp\Connection;
+use SConcur\Features\Amqp\Queue;
 use SConcur\Tests\Impl\TestAmqpResolver;
-
-use const SConcur\Features\Amqp\AMQP_DURABLE;
 
 require_once __DIR__ . '/../../lib/benchmarker.php';
 
@@ -27,17 +24,12 @@ readonly class AmqpBench
     /** How many channels the async mode spreads its coroutines over. */
     private const int ASYNC_CHANNELS = 50;
 
-    public AMQPConnection $connection;
+    public Connection $connection;
 
-    public AMQPChannel $channel;
+    public Channel $channel;
 
-    public AMQPExchange $exchange;
-
-    /** @var list<AMQPChannel> */
+    /** @var list<Channel> */
     public array $asyncChannels;
-
-    /** @var list<AMQPExchange> */
-    public array $asyncExchanges;
 
     /** @var array<string, string> */
     public array $queueNames;
@@ -51,22 +43,16 @@ readonly class AmqpBench
     public function __construct(string $name, int $asyncChannels = self::ASYNC_CHANNELS)
     {
         $this->connection = TestAmqpResolver::getConnection();
-        $this->channel    = new AMQPChannel($this->connection);
-
-        $this->exchange = new AMQPExchange($this->channel);
-
-        $this->exchange->setName('');
+        $this->channel    = $this->connection->channel();
 
         $queueNames = [];
 
         foreach (['native', 'sync', 'async'] as $mode) {
             $queueName = "sconcur_bench_{$name}_$mode";
 
-            $queue = new AMQPQueue($this->channel);
+            $queue = $this->channel->queue($queueName);
 
-            $queue->setName($queueName);
-            $queue->setFlags(AMQP_DURABLE);
-            $queue->declareQueue();
+            $queue->declare(durable: true);
             $queue->purge();
 
             $queueNames[$mode] = $queueName;
@@ -74,22 +60,13 @@ readonly class AmqpBench
 
         $this->queueNames = $queueNames;
 
-        $channels  = [];
-        $exchanges = [];
+        $channels = [];
 
         for ($index = 0; $index < $asyncChannels; ++$index) {
-            $channel = new AMQPChannel($this->connection);
-
-            $exchange = new AMQPExchange($channel);
-
-            $exchange->setName('');
-
-            $channels[]  = $channel;
-            $exchanges[] = $exchange;
+            $channels[] = $this->connection->channel();
         }
 
-        $this->asyncChannels  = $channels;
-        $this->asyncExchanges = $exchanges;
+        $this->asyncChannels = $channels;
 
         if (!extension_loaded('amqp')) {
             $this->nativeConnection = null;
@@ -119,15 +96,9 @@ readonly class AmqpBench
     }
 
     /**
-     * The exchange a coroutine publishes through: one of the pooled channels, picked by
-     * the call index.
+     * The channel a coroutine works on: one of the pooled ones, picked by the call index.
      */
-    public function asyncExchange(int $callIndex): AMQPExchange
-    {
-        return $this->asyncExchanges[$callIndex % count($this->asyncExchanges)];
-    }
-
-    public function asyncChannel(int $callIndex): AMQPChannel
+    public function asyncChannel(int $callIndex): Channel
     {
         return $this->asyncChannels[$callIndex % count($this->asyncChannels)];
     }
@@ -137,23 +108,18 @@ readonly class AmqpBench
      */
     public function seed(string $mode, int $messages, string $body = 'benchmark'): void
     {
-        $queueName = $this->queueName($mode);
+        $queue = $this->channel->queue($this->queueName($mode));
 
         for ($index = 0; $index < $messages; ++$index) {
-            $this->exchange->publish(message: $body, routingKey: $queueName);
+            $queue->publish($body);
         }
     }
 
     /**
-     * A SConcur queue object bound to a mode's queue, on the given channel.
+     * A queue handle for a mode's queue, on the given channel.
      */
-    public function queue(AMQPChannel $channel, string $mode): AMQPQueue
+    public function queue(Channel $channel, string $mode): Queue
     {
-        $queue = new AMQPQueue($channel);
-
-        $queue->setName($this->queueName($mode));
-        $queue->setFlags(AMQP_DURABLE);
-
-        return $queue;
+        return $channel->queue($this->queueName($mode));
     }
 }

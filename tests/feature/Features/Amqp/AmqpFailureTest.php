@@ -4,23 +4,15 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Amqp;
 
-use SConcur\Features\Amqp\AMQPChannel;
-use SConcur\Features\Amqp\AMQPChannelException;
-use SConcur\Features\Amqp\AMQPConnection;
-use SConcur\Features\Amqp\AMQPConnectionException;
-use SConcur\Features\Amqp\AMQPEnvelope;
-use SConcur\Features\Amqp\AMQPExchange;
-use SConcur\Features\Amqp\AMQPQueue;
-use SConcur\Features\Amqp\AMQPQueueException;
+use SConcur\Exceptions\Amqp\ChannelException;
+use SConcur\Exceptions\Amqp\ConnectionException;
+use SConcur\Exceptions\Amqp\QueueException;
+use SConcur\Features\Amqp\Connection;
+use SConcur\Features\Amqp\ConnectionOptions;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Impl\TestAmqpResolver;
 use SConcur\WaitGroup;
 use Throwable;
-use const SConcur\Features\Amqp\AMQP_DURABLE;
-use const SConcur\Features\Amqp\AMQP_MANDATORY;
-use const SConcur\Features\Amqp\AMQP_PASSIVE;
-use const SConcur\Features\Amqp\AMQP_SASL_METHOD_EXTERNAL;
-use const SConcur\Features\Amqp\AMQP_SASL_METHOD_PLAIN;
 
 /**
  * What happens when things go wrong: the reply code an application branches on, the state
@@ -31,18 +23,13 @@ class AmqpFailureTest extends AmqpTestCase
 {
     public function testAFailureCarriesTheReplyCodeTheBrokerNamed(): void
     {
-        $channel = $this->channel();
-
-        $queue = new AMQPQueue($channel);
-
-        $queue->setName(TestAmqpResolver::uniqueName('missing'));
-        $queue->setFlags(AMQP_PASSIVE);
+        $queue = $this->channel()->queue(TestAmqpResolver::uniqueName('missing'));
 
         try {
-            $queue->declareQueue();
+            $queue->declarePassive();
 
             self::fail('a passive declare of a missing queue must fail');
-        } catch (AMQPQueueException $exception) {
+        } catch (QueueException $exception) {
             // The idiom this keeps working: catch, look at the code, declare and retry.
             self::assertSame(404, $exception->getCode());
             self::assertStringContainsString('NOT_FOUND', $exception->getMessage());
@@ -52,88 +39,88 @@ class AmqpFailureTest extends AmqpTestCase
     public function testAChannelTheBrokerClosedIsReportedClosed(): void
     {
         $connection = $this->connection();
-        $channel    = new AMQPChannel($connection);
-
-        $queue = new AMQPQueue($channel);
-
-        $queue->setName(TestAmqpResolver::uniqueName('missing'));
-        $queue->setFlags(AMQP_PASSIVE);
+        $channel    = $connection->channel();
 
         try {
-            $queue->declareQueue();
-        } catch (AMQPQueueException) {
+            $channel->queue(TestAmqpResolver::uniqueName('missing'))->declarePassive();
+        } catch (QueueException) {
             // The 404 above is what closes the channel.
         }
 
-        self::assertFalse($channel->isConnected(), 'a channel the broker closed must report itself closed');
+        self::assertFalse($channel->isOpen(), 'a channel the broker closed must report itself closed');
 
-        // Every later call is refused locally, with the message the extension uses.
+        // Every later call is refused locally rather than sent.
         try {
-            new AMQPQueue($channel);
+            $channel->queue('anything')->declare();
 
-            self::fail('a queue cannot be built on a closed channel');
-        } catch (AMQPChannelException $exception) {
+            self::fail('a command cannot run on a closed channel');
+        } catch (ChannelException $exception) {
             self::assertStringContainsString('No channel available.', $exception->getMessage());
         }
 
         // And the channel is gone on the Go side too, instead of waiting for the sweeper.
-        self::assertSame(0, $connection->getUsedChannels());
+        self::assertSame(0, $connection->usedChannels());
     }
 
     public function testAConnectionLevelFailureIsReportedAsOne(): void
     {
         // Its own connection, named so the pool gives it one: this test kills the
         // connection, and the pooled one is shared by every other AMQP test.
-        $connection = new AMQPConnection(
-            TestAmqpResolver::getCredentials() + ['connection_name' => 'connection-failure-probe'],
-        );
+        $connection = new Connection(new ConnectionOptions(
+            host: (string) $_ENV['RABBITMQ_HOST'],
+            port: (int) $_ENV['RABBITMQ_PORT'],
+            login: (string) $_ENV['RABBITMQ_USER'],
+            password: (string) $_ENV['RABBITMQ_PASSWORD'],
+            vhost: (string) $_ENV['RABBITMQ_VHOST'],
+            connectionName: 'connection-failure-probe',
+        ));
 
         $connection->connect();
 
-        $channel = new AMQPChannel($connection);
+        $channel = $connection->channel();
 
         try {
-            // RabbitMQ answers requeue=false with 540 NOT_IMPLEMENTED, which is a
-            // connection-level reply code.
-            $channel->basicRecover(requeue: false);
+            // RabbitMQ has never implemented basic.qos's prefetch_size, and answers one
+            // with 540 NOT_IMPLEMENTED — a connection-level reply code.
+            $channel->prefetch(count: 1, size: 1024);
 
-            self::fail('RabbitMQ does not implement recover without requeue');
-        } catch (AMQPConnectionException $exception) {
+            self::fail('RabbitMQ does not implement a prefetch size');
+        } catch (ConnectionException $exception) {
             self::assertSame(540, $exception->getCode());
             self::assertStringContainsString('NOT_IMPLEMENTED', $exception->getMessage());
         }
 
-        // The extension reports the connection as gone, and so does the calque.
-        self::assertFalse($connection->isConnected());
-        self::assertFalse($channel->isConnected());
+        // A connection-level failure takes the connection, not just the channel that ran
+        // into it.
+        self::assertFalse($connection->isOpen());
+        self::assertFalse($channel->isOpen());
 
-        // Opening a channel on it is refused the way the extension refuses it.
         try {
-            new AMQPChannel($connection);
+            $connection->channel();
 
             self::fail('a channel cannot be opened on a connection that died');
-        } catch (AMQPConnectionException $exception) {
+        } catch (ConnectionException $exception) {
             self::assertStringContainsString('No connection available.', $exception->getMessage());
         }
 
         // The handle is still handed back, so the pooled connection behind it is released.
-        $connection->disconnect();
+        $connection->close();
     }
 
     public function testChannelNumbersAreNotHandedOutTwice(): void
     {
         $connection = $this->connection();
 
-        $first  = new AMQPChannel($connection);
-        $second = new AMQPChannel($connection);
+        $first  = $connection->channel();
+        $second = $connection->channel();
 
         $first->close();
 
-        $third = new AMQPChannel($connection);
+        $third = $connection->channel();
 
         self::assertNotSame(
-            $second->getChannelId(),
-            $third->getChannelId(),
+            $second->id(),
+            $third->id(),
             'a closed channel must not hand its number to the next one',
         );
 
@@ -145,103 +132,51 @@ class AmqpFailureTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $exchange = new AMQPExchange($channel);
-
-        $exchange->setName(TestAmqpResolver::uniqueName('missing'));
-
-        $channel->confirmSelect();
+        $channel->enableConfirms();
 
         try {
             // Publishing to an exchange that does not exist kills the channel, so this
             // message is never confirmed.
-            $exchange->publish(message: 'nowhere', routingKey: 'key');
+            $channel->publish(message: 'nowhere', exchange: TestAmqpResolver::uniqueName('missing'));
         } catch (Throwable) {
             // The failure itself is not what this test is about.
         }
 
         // Waiting must end instead of counting forever on a confirmation that cannot come.
-        $this->expectException(AMQPChannelException::class);
+        $this->expectException(ChannelException::class);
 
-        $channel->waitForConfirm();
+        $channel->waitForConfirms();
     }
 
-    public function testWaitingForConfirmsWithoutConfirmModeRunsIntoItsTimeout(): void
+    public function testSettingThePrefetchOnAClosedChannelIsRefused(): void
     {
-        $channel = $this->channel();
-
-        try {
-            $channel->waitForConfirm(timeout: 0.2);
-
-            self::fail('a channel that is not in confirm mode has nothing to confirm');
-        } catch (AMQPQueueException $exception) {
-            self::assertStringContainsString('Wait timeout exceed', $exception->getMessage());
-        }
-    }
-
-    public function testWaitingForReturnsKeepsThePublisherConfirms(): void
-    {
-        $channel  = $this->channel();
-        $exchange = $this->declareExchange($channel);
-
-        $channel->confirmSelect();
-
-        $confirmed = [];
-
-        $channel->setConfirmCallback(
-            function (int $deliveryTag, bool $multiple) use (&$confirmed): bool {
-                $confirmed[] = $deliveryTag;
-
-                return true;
-            },
-            null,
-        );
-
-        // Nothing is bound, so the message is confirmed and returned at the same time.
-        $exchange->publish(message: 'nowhere', routingKey: 'unbound', flags: AMQP_MANDATORY);
-
-        $channel->waitForBasicReturn(timeout: 2.0);
-
-        self::assertSame([], $confirmed, 'the return wait must not run the confirm callbacks');
-
-        // The confirmation is still there for the wait that is counting on it.
-        $channel->waitForConfirm(timeout: 2.0);
-
-        self::assertSame([1], $confirmed);
-    }
-
-    public function testAPrefetchSetterOnAClosedChannelIsRefused(): void
-    {
-        $channel = new AMQPChannel($this->connection());
+        $channel = $this->connection()->channel();
 
         $channel->close();
 
-        $this->expectException(AMQPConnectionException::class);
+        $this->expectException(ChannelException::class);
 
-        $channel->setPrefetchCount(5);
+        $channel->prefetch(count: 5);
     }
 
     public function testAConsumerTheBrokerCancelsEndsTheLoopWithAFailure(): void
     {
         $connection = $this->connection();
         $channel    = $this->channel();
-        $queue      = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $queue      = $this->declareQueue(channel: $channel, durable: true);
 
-        $queueName = (string) $queue->getName();
+        $queueName = $queue->name();
 
         $waitGroup = WaitGroup::create();
 
         $waitGroup->add(function () use ($connection, $queueName): string {
-            $channel = new AMQPChannel($connection);
-
-            $consuming = new AMQPQueue($channel);
-
-            $consuming->setName($queueName);
-            $consuming->setFlags(AMQP_DURABLE);
-            $consuming->declareQueue();
+            $consuming = $connection->channel()->queue($queueName);
 
             try {
-                $consuming->consume(callback: fn(AMQPEnvelope $envelope): bool => true);
-            } catch (AMQPQueueException $exception) {
+                foreach ($consuming->consume() as $delivery) {
+                    $delivery->ack();
+                }
+            } catch (QueueException $exception) {
                 return 'failed: ' . $exception->getMessage();
             }
 
@@ -251,12 +186,9 @@ class AmqpFailureTest extends AmqpTestCase
         $waitGroup->add(function () use ($connection, $queueName): string {
             Sleeper::usleep(microseconds: 150_000);
 
-            $channel = new AMQPChannel($connection);
+            $channel = $connection->channel();
 
-            $deleting = new AMQPQueue($channel);
-
-            $deleting->setName($queueName);
-            $deleting->delete();
+            $channel->queue($queueName)->delete();
 
             $channel->close();
 
@@ -286,28 +218,25 @@ class AmqpFailureTest extends AmqpTestCase
     {
         $connection = $this->connection();
         $channel    = $this->channel();
-        $queue      = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $queue      = $this->declareQueue(channel: $channel, durable: true);
 
-        $queueName = (string) $queue->getName();
+        $queueName = $queue->name();
 
         // One channel is open: the one this test works on.
-        $baseline = $connection->getUsedChannels();
+        $baseline = $connection->usedChannels();
 
         for ($round = 0; $round < 5; ++$round) {
             $waitGroup = WaitGroup::create();
 
             $waitGroup->add(static function () use ($connection, $queueName): string {
-                $channel = new AMQPChannel($connection);
+                $channel = $connection->channel();
 
-                $consuming = new AMQPQueue($channel);
-
-                $consuming->setName($queueName);
-                $consuming->setFlags(AMQP_DURABLE);
-                $consuming->declareQueue();
-
-                // Nothing is published: the coroutine is still waiting here when the group
-                // is stopped, so it never reaches a close of its own.
-                $consuming->consume(callback: static fn(AMQPEnvelope $envelope): bool => true);
+                // Nothing is published: the coroutine is still waiting inside the
+                // generator when the group is stopped, so it never reaches a close of its
+                // own.
+                foreach ($channel->queue($queueName)->consume() as $delivery) {
+                    $delivery->ack();
+                }
 
                 return 'ended';
             });
@@ -332,91 +261,36 @@ class AmqpFailureTest extends AmqpTestCase
         );
     }
 
-    public function testAQueueTheApplicationDroppedLeavesTheConsumerRegistry(): void
-    {
-        $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
-
-        $consuming = new AMQPQueue($channel);
-
-        $consuming->setName((string) $queue->getName());
-        $consuming->setFlags(AMQP_DURABLE);
-        $consuming->consume();
-
-        self::assertCount(1, $channel->getConsumers());
-
-        unset($consuming);
-
-        // The registry holds its consumers weakly: a queue the application dropped takes
-        // its stream — and the channel it was consuming on — with it.
-        self::assertSame([], $channel->getConsumers());
-    }
-
-    public function testCredentialsAreValidatedTheWayTheExtensionValidatesThem(): void
-    {
-        $connection = new AMQPConnection();
-
-        $connection->setSaslMethod(AMQP_SASL_METHOD_EXTERNAL);
-
-        self::assertSame(AMQP_SASL_METHOD_EXTERNAL, $connection->getSaslMethod());
-
-        try {
-            $connection->setSaslMethod(7);
-
-            self::fail('only PLAIN and EXTERNAL exist');
-        } catch (AMQPConnectionException $exception) {
-            self::assertStringContainsString('Invalid SASL method', $exception->getMessage());
-        }
-
-        self::assertSame(AMQP_SASL_METHOD_EXTERNAL, $connection->getSaslMethod());
-    }
-
-    public function testABlankCredentialLeavesTheDefaultInPlace(): void
-    {
-        $connection = new AMQPConnection([
-            'host'     => '',
-            'login'    => '',
-            'password' => '',
-            'vhost'    => '',
-        ]);
-
-        // A blank environment variable must not connect nowhere as nobody.
-        self::assertSame('localhost', $connection->getHost());
-        self::assertSame('guest', $connection->getLogin());
-        self::assertSame('guest', $connection->getPassword());
-        self::assertSame('/', $connection->getVhost());
-        self::assertSame(AMQP_SASL_METHOD_PLAIN, $connection->getSaslMethod());
-    }
-
     /**
-     * After a reconnect the old channels are gone on the broker, and they must say so:
-     * the ext-amqp idiom that reopens a channel only when isConnected() is false would
-     * otherwise never fire and every later command would fail on a dead channel.
+     * After reconnecting the old channels are gone on the broker, and they must say so: a
+     * guard that reopens a channel only when isOpen() is false would otherwise never fire
+     * and every later command would fail on a dead channel.
      */
     public function testChannelsOfAReconnectedConnectionReportThemselvesClosed(): void
     {
         $connection = $this->connection();
 
-        $channel = new AMQPChannel($connection);
+        $channel = $connection->channel();
 
-        self::assertTrue($channel->isConnected());
+        self::assertTrue($channel->isOpen());
 
-        $connection->reconnect();
+        $connection->close();
+        $connection->connect();
 
-        self::assertFalse($channel->isConnected(), 'a channel of the old handle is not open');
-        self::assertTrue($connection->isConnected());
+        self::assertFalse($channel->isOpen(), 'a channel of the old handle is not open');
+        self::assertTrue($connection->isOpen());
     }
 
     /**
      * The channel count the broker settles on: a channel released by a destructor is
      * closed without waiting for the broker, so the count catches up a moment later.
      */
-    protected function waitForUsedChannels(AMQPConnection $connection, int $expected, float $timeoutSeconds = 2.0): int
+    protected function waitForUsedChannels(Connection $connection, int $expected, float $timeoutSeconds = 2.0): int
     {
         $deadline = microtime(true) + $timeoutSeconds;
 
         do {
-            $used = $connection->getUsedChannels();
+            $used = $connection->usedChannels();
 
             if ($used === $expected) {
                 return $used;

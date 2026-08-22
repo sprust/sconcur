@@ -18,17 +18,15 @@ use SConcur\Features\Mongodb\Connection\Client as MongoClient;
 use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Features\Mysql\Connection as MysqlConnection;
 use SConcur\Features\Pgsql\Connection as PgsqlConnection;
-use SConcur\Features\Amqp\AMQPChannel;
-use SConcur\Features\Amqp\AMQPConnection;
-use SConcur\Features\Amqp\AMQPExchange;
-use SConcur\Features\Amqp\AMQPQueue;
+use SConcur\Features\Amqp\Connection as AmqpConnection;
+use SConcur\Features\Amqp\ConnectionOptions as AmqpConnectionOptions;
+use SConcur\Features\Amqp\Queue as AmqpQueue;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Scheduler\Scheduler;
 use SConcur\Transport\MessagePackTransport;
 use SConcur\Tests\Impl\HttpServer\GeneratorStream;
 use SConcur\WaitGroup;
 
-use const SConcur\Features\Amqp\AMQP_DURABLE;
 
 // The name of the queue this server publishes into and the demo consumer pool reads
 // (config/sconcur.rabbitmq.config.json). Declared by the publisher, because a consumer
@@ -470,10 +468,10 @@ function rabbitmqRoute(Psr17Factory $factory, string $path): ResponseInterface
         return text($factory, 'ms must not be negative', 400);
     }
 
-    $exchange = rabbitmqPublisher();
+    $queue = rabbitmqPublisher();
 
     for ($index = 0; $index < $count; ++$index) {
-        $exchange->publish(message: 'sleep:' . $milliseconds, routingKey: RABBITMQ_DEMO_QUEUE);
+        $queue->publish('sleep:' . $milliseconds);
     }
 
     return text($factory, sprintf('queued %d job(s) sleeping %dms', $count, $milliseconds));
@@ -482,37 +480,27 @@ function rabbitmqRoute(Psr17Factory $factory, string $path): ResponseInterface
 // The publisher of this worker: one pooled connection, one channel, the queue declared
 // once. Built through serverOnce because requests run as concurrent coroutines — see the
 // note there on why a plain static is not enough.
-function rabbitmqPublisher(): AMQPExchange
+function rabbitmqPublisher(): AmqpQueue
 {
-    /** @var AMQPExchange */
-    return serverOnce('rabbitmq-publisher', static function (): AMQPExchange {
+    /** @var AmqpQueue */
+    return serverOnce('rabbitmq-publisher', static function (): AmqpQueue {
         Dotenv::createImmutable(dirname(__DIR__, 3))->safeLoad();
 
-        $connection = new AMQPConnection([
-            'host'     => $_ENV['RABBITMQ_HOST'],
-            'port'     => (int) $_ENV['RABBITMQ_PORT'],
-            'login'    => $_ENV['RABBITMQ_USER'],
-            'password' => $_ENV['RABBITMQ_PASSWORD'],
-            'vhost'    => $_ENV['RABBITMQ_VHOST'],
-        ]);
+        $connection = new AmqpConnection(new AmqpConnectionOptions(
+            host: (string) $_ENV['RABBITMQ_HOST'],
+            port: (int) $_ENV['RABBITMQ_PORT'],
+            login: (string) $_ENV['RABBITMQ_USER'],
+            password: (string) $_ENV['RABBITMQ_PASSWORD'],
+            vhost: (string) $_ENV['RABBITMQ_VHOST'],
+        ));
 
-        $connection->connect();
+        $queue = $connection->channel()->queue(RABBITMQ_DEMO_QUEUE);
 
-        $channel = new AMQPChannel($connection);
+        $queue->declare(durable: true);
 
-        $queue = new AMQPQueue($channel);
-
-        $queue->setName(RABBITMQ_DEMO_QUEUE);
-        $queue->setFlags(AMQP_DURABLE);
-        $queue->declareQueue();
-
-        // The default exchange routes by the queue name, so no exchange of our own is
-        // needed to reach one queue.
-        $exchange = new AMQPExchange($channel);
-
-        $exchange->setName('');
-
-        return $exchange;
+        // Publishing straight into the queue: the default exchange routes by queue name,
+        // and Queue::publish() is what spares the caller from knowing that.
+        return $queue;
     });
 }
 

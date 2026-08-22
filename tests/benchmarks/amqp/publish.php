@@ -10,6 +10,12 @@ $benchmarker = new Benchmarker(
 
 $bench = new AmqpBench(name: 'publish');
 
+/** The queue handles are built on first use: a handle costs nothing and talks to nobody. */
+$syncQueue = null;
+
+/** @var array<int, SConcur\Features\Amqp\Queue> $asyncQueues */
+$asyncQueues = [];
+
 // One publish per call: the message goes through the default exchange straight into the
 // mode's own queue. Nothing is consumed here, so the queues are purged on the next run.
 $benchmarker->run(
@@ -18,13 +24,16 @@ $benchmarker->run(
         : static function (int $callIndex) use ($bench): void {
             $bench->nativeExchange->publish('benchmark', $bench->queueName('native'));
         },
-    syncCallback: static function (int $callIndex) use ($bench): void {
-        $bench->exchange->publish(message: 'benchmark', routingKey: $bench->queueName('sync'));
+    syncCallback: static function (int $callIndex) use ($bench, &$syncQueue): void {
+        $syncQueue ??= $bench->queue($bench->channel, 'sync');
+
+        $syncQueue->publish('benchmark');
     },
-    asyncCallback: static function (int $callIndex) use ($bench): void {
-        $bench->asyncExchange($callIndex)->publish(
-            message: 'benchmark',
-            routingKey: $bench->queueName('async'),
-        );
+    asyncCallback: static function (int $callIndex) use ($bench, &$asyncQueues): void {
+        $channelIndex = $callIndex % count($bench->asyncChannels);
+
+        $asyncQueues[$channelIndex] ??= $bench->queue($bench->asyncChannels[$channelIndex], 'async');
+
+        $asyncQueues[$channelIndex]->publish('benchmark');
     },
 );

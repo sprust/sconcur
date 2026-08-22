@@ -4,106 +4,87 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Amqp\Support;
 
-use SConcur\Features\Amqp\AMQPBasicProperties;
-use const SConcur\Features\Amqp\AMQP_DELIVERY_MODE_TRANSIENT;
+use SConcur\Features\Amqp\Message;
+use SConcur\Features\Amqp\MessageProperties;
 
 /**
- * Translates between the publish attributes an application passes to
- * AMQPExchange::publish() (the snake_case array ext-amqp accepts) and the properties map
- * that crosses to Go, and back from that map into AMQPBasicProperties.
+ * Translates between the message objects the API takes and gives back and the properties
+ * map that crosses to Go.
  *
- * The rules are the extension's, kept deliberately: a message with no content_type is
- * published as text/plain, and an empty string in any of the string properties means "do
- * not set the property at all" rather than "set it to an empty value".
+ * A property nobody set does not travel: AMQP distinguishes an absent content type from an
+ * empty one, and a message published here carries exactly the properties it was built
+ * with. The calque published `text/plain` for a message that named no content type,
+ * because that is what the extension does; inventing a content type for an application
+ * that did not ask for one is not worth keeping.
  */
 readonly class PropertiesCodec
 {
-    /** The content type ext-amqp publishes with when the caller names none. */
-    protected const string DEFAULT_CONTENT_TYPE = 'text/plain';
-
-    /** Publish attribute name => the key it travels under. */
+    /** Message property => the key it travels under. */
     protected const array STRING_PROPERTIES = [
-        'content_type'     => 'ct',
-        'content_encoding' => 'ce',
-        'correlation_id'   => 'ci',
-        'reply_to'         => 'rp',
-        'expiration'       => 'ep',
-        'message_id'       => 'mi',
-        'type'             => 'ty',
-        'user_id'          => 'ui',
-        'app_id'           => 'ai',
-    ];
-
-    /** Publish attribute name => the key it travels under. */
-    protected const array INTEGER_PROPERTIES = [
-        'delivery_mode' => 'dm',
-        'priority'      => 'pr',
-        'timestamp'     => 'ts',
+        'contentType'     => 'ct',
+        'contentEncoding' => 'ce',
+        'correlationId'   => 'ci',
+        'replyTo'         => 'rp',
+        'expiration'      => 'ep',
+        'messageId'       => 'mi',
+        'type'            => 'ty',
+        'userId'          => 'ui',
+        'appId'           => 'ai',
     ];
 
     /**
-     * Builds the wire properties of a published message from the attributes array.
-     *
-     * @param array<string, mixed> $attributes
+     * Builds the wire properties of a published message.
      *
      * @return array<string, mixed>
      */
-    public static function encode(array $attributes): array
+    public static function encode(Message $message): array
     {
-        $properties = [
-            'ct' => self::DEFAULT_CONTENT_TYPE,
-        ];
+        $properties = [];
 
-        foreach (self::STRING_PROPERTIES as $attribute => $key) {
-            if (!isset($attributes[$attribute])) {
+        foreach (self::STRING_PROPERTIES as $property => $key) {
+            $value = $message->{$property};
+
+            if ($value === null || $value === '') {
                 continue;
             }
 
-            $value = (string) $attributes[$attribute];
-
-            if ($value === '') {
-                continue;
-            }
-
-            $properties[$key] = $value;
+            $properties[$key] = (string) $value;
         }
 
-        foreach (self::INTEGER_PROPERTIES as $attribute => $key) {
-            if (!isset($attributes[$attribute])) {
-                continue;
-            }
-
-            $properties[$key] = (int) $attributes[$attribute];
+        if ($message->persistent) {
+            $properties['dm'] = MessageProperties::DELIVERY_MODE_PERSISTENT;
         }
 
-        if (isset($attributes['headers']) && is_array($attributes['headers'])) {
-            /** @var array<string, mixed> $headers */
-            $headers = $attributes['headers'];
+        if ($message->priority !== null) {
+            $properties['pr'] = $message->priority;
+        }
 
-            $properties['hd'] = TableCodec::encode($headers);
+        if ($message->timestamp !== null) {
+            $properties['ts'] = $message->timestamp;
+        }
+
+        if ($message->headers !== []) {
+            $properties['hd'] = TableCodec::encode($message->headers);
         }
 
         return $properties;
     }
 
     /**
-     * Rebuilds the basic properties of a delivered message from the wire map.
+     * Rebuilds the properties of a delivered message from the wire map.
      *
      * @param array<mixed> $properties
      */
-    public static function decode(array $properties): AMQPBasicProperties
+    public static function decode(array $properties): MessageProperties
     {
         /** @var array<string, mixed> $rawHeaders */
         $rawHeaders = is_array($properties['hd'] ?? null) ? $properties['hd'] : [];
 
-        $headers = TableCodec::decode($rawHeaders);
-
-        return new AMQPBasicProperties(
+        return new MessageProperties(
             contentType: self::readString($properties, 'ct'),
             contentEncoding: self::readString($properties, 'ce'),
-            headers: $headers,
-            deliveryMode: self::readInt($properties, 'dm') ?? AMQP_DELIVERY_MODE_TRANSIENT,
-            priority: self::readInt($properties, 'pr') ?? 0,
+            deliveryMode: self::readInt($properties, 'dm') ?? MessageProperties::DELIVERY_MODE_TRANSIENT,
+            priority: self::readInt($properties, 'pr'),
             correlationId: self::readString($properties, 'ci'),
             replyTo: self::readString($properties, 'rp'),
             expiration: self::readString($properties, 'ep'),
@@ -113,6 +94,35 @@ readonly class PropertiesCodec
             userId: self::readString($properties, 'ui'),
             appId: self::readString($properties, 'ai'),
             clusterId: self::readString($properties, 'cl'),
+            headers: TableCodec::decode($rawHeaders),
+        );
+    }
+
+    /**
+     * Rebuilds a publishable message out of a body and the wire properties — what a
+     * returned message is made of.
+     *
+     * @param array<mixed> $properties
+     */
+    public static function messageFrom(string $body, array $properties): Message
+    {
+        $decoded = self::decode($properties);
+
+        return new Message(
+            body: $body,
+            contentType: $decoded->contentType,
+            contentEncoding: $decoded->contentEncoding,
+            persistent: $decoded->isPersistent(),
+            priority: $decoded->priority,
+            correlationId: $decoded->correlationId,
+            replyTo: $decoded->replyTo,
+            expiration: $decoded->expiration,
+            messageId: $decoded->messageId,
+            timestamp: $decoded->timestamp,
+            type: $decoded->type,
+            userId: $decoded->userId,
+            appId: $decoded->appId,
+            headers: $decoded->headers,
         );
     }
 

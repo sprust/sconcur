@@ -70,33 +70,3 @@ func (f *AmqpFeature) handleConfirmWait(task *tasks.Task, raw msgpack.RawMessage
 
 	respond(task, result, startTime)
 }
-
-// handleReturnWait waits for the messages the broker returned as unroutable.
-func (f *AmqpFeature) handleReturnWait(task *tasks.Task, raw msgpack.RawMessage) {
-	startTime := time.Now()
-
-	var params payloads.ChannelParams
-
-	if !decodeParams(task, raw, &params, "return wait params") {
-		return
-	}
-
-	entry, ok := channelOf(task, params.ChannelId)
-
-	if !ok {
-		return
-	}
-
-	result, err := entry.waitForReturns(
-		task.GetContext(),
-		time.Duration(max(params.TimeoutMs, 0))*time.Millisecond,
-	)
-
-	if err != nil {
-		fail(task, entry, "return wait", err)
-
-		return
-	}
-
-	respond(task, result, startTime)
-}

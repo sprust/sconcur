@@ -113,7 +113,7 @@ echo "готово за {$seconds} c" . PHP_EOL;
 | `curl`, `file_get_contents`, Guzzle | `Features\HttpClient\HttpClient` (PSR-18) | стриминг ответа, скачивание в файл на стороне Go |
 | `fsockopen`, `stream_socket_client` | `Features\SocketClient\SocketClient` | TCP с length-prefix кадрами |
 | WS-клиент (библиотека) | `Features\WsClient\WsClient` | обмен text/binary сообщениями |
-| `ext-amqp` (RabbitMQ) | `Features\Amqp\*` | те же классы и флаги; консьюмер приостанавливает свою корутину, а не воркер |
+| `ext-amqp`, `php-amqplib` (RabbitMQ) | `Features\Amqp\*` | консьюмер приостанавливает свою корутину, а не воркер; подтверждение принадлежит доставке |
 
 Долгоживущие серверы:
 
@@ -254,8 +254,8 @@ $collection->insertOne(['name' => 'example']);
   стороны dial.
 - [WebSocket-клиент](docs/websocket-client.ru.md) — зеркало WS-сервера со стороны
   dial.
-- [AMQP (RabbitMQ)](docs/amqp.ru.md) — калька ext-amqp; консьюмеры
-  приостанавливают корутину, а не воркер.
+- [AMQP (RabbitMQ)](docs/amqp.ru.md) — публикация, топология и консьюмеры,
+  которые приостанавливают корутину, а не воркер.
 - [Мастер воркеров](docs/worker-master.ru.md) — супервизор пула воркеров
   (`bin/sconcur-server`).
 - [Статистика сервера](docs/admin-stats.ru.md) — `GET /api/stats`, живая панель,

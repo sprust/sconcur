@@ -7,7 +7,7 @@ namespace SConcur\Features\Amqp;
 /**
  * Sub-operations of the amqp feature, carried in the payload envelope (the `cm` field)
  * under the single MethodEnum::Amqp — mirrors WsClientCommandEnum, one case per AMQP
- * 0-9-1 method the calque exposes.
+ * 0-9-1 method the feature exposes.
  *
  * Go: types.AmqpCommand (ext/internal/types/amqp.go).
  */
@@ -76,26 +76,11 @@ enum AmqpCommandEnum: string
     /** basic.reject. */
     case Reject = 'rej';
 
-    /** basic.recover. */
-    case Recover = 'rcv';
-
-    /** tx.select. */
-    case TransactionSelect = 'txs';
-
-    /** tx.commit. */
-    case TransactionCommit = 'txc';
-
-    /** tx.rollback. */
-    case TransactionRollback = 'txr';
-
     /** confirm.select — put the channel into publisher-confirm mode. */
     case ConfirmSelect = 'cfs';
 
     /** Wait for the outstanding publisher confirms of a channel. */
     case ConfirmWait = 'cfw';
-
-    /** Wait for the basic.return messages of a channel. */
-    case ReturnWait = 'rtw';
 
     /** How many channels the connection handle has open. */
     case UsedChannels = 'usc';

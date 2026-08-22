@@ -7,7 +7,7 @@ namespace SConcur\Tests\Feature\Features\Amqp;
 use PHPUnit\Framework\TestCase;
 use SConcur\Exceptions\Amqp\InvalidQueueSpecException;
 use SConcur\Features\Amqp\Consumer\QueueSpecParser;
-use const SConcur\Features\Amqp\PHP_AMQP_MAX_CHANNELS;
+use SConcur\Features\Amqp\ConnectionOptions;
 
 /**
  * The queue list a consumer worker is launched with. It arrives as one argv flag, so a
@@ -123,15 +123,15 @@ class QueueSpecParserTest extends TestCase
         $this->expectException(InvalidQueueSpecException::class);
         $this->expectExceptionMessage('one connection carries');
 
-        QueueSpecParser::parse('[{"name":"orders","coroutineCount":' . PHP_AMQP_MAX_CHANNELS . '}]');
+        QueueSpecParser::parse('[{"name":"orders","coroutineCount":' . ConnectionOptions::MAX_CHANNELS . '}]');
     }
 
     public function testTheChannelBudgetIsSpentToTheLastChannel(): void
     {
         $specs = QueueSpecParser::parse(
-            '[{"name":"orders","coroutineCount":' . (PHP_AMQP_MAX_CHANNELS - 1) . '}]',
+            '[{"name":"orders","coroutineCount":' . (ConnectionOptions::MAX_CHANNELS - 1) . '}]',
         );
 
-        self::assertSame(PHP_AMQP_MAX_CHANNELS - 1, QueueSpecParser::channelCount($specs));
+        self::assertSame(ConnectionOptions::MAX_CHANNELS - 1, QueueSpecParser::channelCount($specs));
     }
 }

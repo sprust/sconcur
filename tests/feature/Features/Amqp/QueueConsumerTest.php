@@ -4,13 +4,11 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Amqp;
 
-use SConcur\Features\Amqp\AMQPEnvelope;
-use SConcur\Features\Amqp\AMQPQueue;
-use SConcur\Features\Amqp\Consumer\QueueConsumer;
-use SConcur\Features\Sleeper\Sleeper;
 use RuntimeException;
+use SConcur\Features\Amqp\Consumer\QueueConsumer;
+use SConcur\Features\Amqp\Delivery;
+use SConcur\Features\Sleeper\Sleeper;
 use Throwable;
-use const SConcur\Features\Amqp\AMQP_DURABLE;
 
 /**
  * The consumer worker runtime: several queues pulled at once by one process, weighted
@@ -22,30 +20,28 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $orders   = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
-        $invoices = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $orders   = $this->declareQueue(channel: $channel, durable: true);
+        $invoices = $this->declareQueue(channel: $channel, durable: true);
 
         for ($index = 0; $index < 4; ++$index) {
-            $this->publishToQueue($channel, (string) $orders->getName(), "order-$index");
-            $this->publishToQueue($channel, (string) $invoices->getName(), "invoice-$index");
+            $this->publishToQueue($channel, $orders->name(), "order-$index");
+            $this->publishToQueue($channel, $invoices->name(), "invoice-$index");
         }
 
         $handled = [];
 
         $queueConsumer = new QueueConsumer(
             queues: $this->queuesJson([
-                (string) $orders->getName()   => 2,
-                (string) $invoices->getName() => 2,
+                $orders->name()   => 2,
+                $invoices->name() => 2,
             ]),
             maxMessages: 8,
         );
 
         $count = $queueConsumer->consume(
             connection: $this->connection(),
-            handler: static function (AMQPEnvelope $envelope, AMQPQueue $queue) use (&$handled): void {
-                $handled[] = $envelope->getBody();
-
-                $queue->ack($envelope->getDeliveryTag());
+            handler: static function (Delivery $delivery) use (&$handled): void {
+                $handled[] = $delivery->body;
             },
         );
 
@@ -71,11 +67,11 @@ class QueueConsumerTest extends AmqpTestCase
         $names = [];
 
         for ($index = 0; $index < 3; ++$index) {
-            $queue = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+            $queue = $this->declareQueue(channel: $channel, durable: true);
 
-            $names[] = (string) $queue->getName();
+            $names[] = $queue->name();
 
-            $this->publishToQueue($channel, (string) $queue->getName(), "body-$index");
+            $this->publishToQueue($channel, $queue->name(), "body-$index");
         }
 
         $queueConsumer = new QueueConsumer(
@@ -87,10 +83,8 @@ class QueueConsumerTest extends AmqpTestCase
 
         $count = $queueConsumer->consume(
             connection: $this->connection(),
-            handler: static function (AMQPEnvelope $envelope, AMQPQueue $queue): void {
+            handler: static function (Delivery $delivery): void {
                 Sleeper::usleep(microseconds: 200_000);
-
-                $queue->ack($envelope->getDeliveryTag());
             },
         );
 
@@ -104,23 +98,23 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $hot  = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
-        $cold = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $hot  = $this->declareQueue(channel: $channel, durable: true);
+        $cold = $this->declareQueue(channel: $channel, durable: true);
 
         // Four slow messages on each queue. With four coroutines on the hot one and a
         // single coroutine on the cold one, the hot queue drains in one sleep while the
         // cold one takes four.
         for ($index = 0; $index < 4; ++$index) {
-            $this->publishToQueue($channel, (string) $hot->getName(), "hot-$index");
-            $this->publishToQueue($channel, (string) $cold->getName(), "cold-$index");
+            $this->publishToQueue($channel, $hot->name(), "hot-$index");
+            $this->publishToQueue($channel, $cold->name(), "cold-$index");
         }
 
         $finishedAt = [];
 
         $queueConsumer = new QueueConsumer(
             queues: $this->queuesJson([
-                (string) $hot->getName()  => 4,
-                (string) $cold->getName() => 1,
+                $hot->name()  => 4,
+                $cold->name() => 1,
             ]),
             maxMessages: 8,
         );
@@ -129,12 +123,10 @@ class QueueConsumerTest extends AmqpTestCase
 
         $queueConsumer->consume(
             connection: $this->connection(),
-            handler: static function (AMQPEnvelope $envelope, AMQPQueue $queue) use (&$finishedAt, $startedAt): void {
+            handler: static function (Delivery $delivery) use (&$finishedAt, $startedAt): void {
                 Sleeper::usleep(microseconds: 100_000);
 
-                $queue->ack($envelope->getDeliveryTag());
-
-                $finishedAt[$envelope->getBody()] = microtime(true) - $startedAt;
+                $finishedAt[$delivery->body] = microtime(true) - $startedAt;
             },
         );
 
@@ -145,79 +137,129 @@ class QueueConsumerTest extends AmqpTestCase
     }
 
     /**
-     * A handler that throws ends its own coroutine and nothing else: the message goes
-     * back to the broker unacknowledged, and the run finishes instead of sitting on a
-     * consumer the broker will never send another message to.
+     * A handler that throws costs one message, not one consumer.
+     *
+     * The runtime owns the acknowledgement now, so it knows the handler left the delivery
+     * open and can refuse it. The calque could not: the handler owned the acknowledgement,
+     * a handler that threw might already have settled the message, and the only safe answer
+     * was to end the coroutine and let the closing channel hand the message back.
      */
-    public function testAFailingHandlerEndsItsCoroutineAndReleasesTheMessage(): void
+    public function testAFailingHandlerRefusesItsMessageAndKeepsGoing(): void
     {
         $channel = $this->channel();
 
-        $queue = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $queue = $this->declareQueue(channel: $channel, durable: true);
 
-        $this->publishToQueue($channel, (string) $queue->getName(), 'boom');
+        $this->publishToQueue($channel, $queue->name(), 'boom');
+        $this->publishToQueue($channel, $queue->name(), 'fine');
 
+        $handled  = [];
         $failures = [];
 
         $queueConsumer = new QueueConsumer(
-            queues: $this->queuesJson([(string) $queue->getName() => 1]),
+            queues: $this->queuesJson([$queue->name() => 1]),
+            maxMessages: 2,
             pollIntervalMs: 50,
         );
 
         $count = $queueConsumer->consume(
             connection: $this->connection(),
-            handler: static function (AMQPEnvelope $envelope, AMQPQueue $queue): void {
-                throw new RuntimeException('handler blew up on ' . $envelope->getBody());
+            handler: static function (Delivery $delivery) use (&$handled): void {
+                if ($delivery->body === 'boom') {
+                    throw new RuntimeException('handler blew up on ' . $delivery->body);
+                }
+
+                $handled[] = $delivery->body;
             },
-            onError: static function (Throwable $exception, AMQPEnvelope $envelope) use (&$failures): void {
-                $failures[$envelope->getBody()] = $exception->getMessage();
+            onError: static function (Throwable $exception, Delivery $delivery) use (&$failures): void {
+                $failures[$delivery->body] = $exception->getMessage();
             },
         );
 
-        self::assertSame(1, $count, 'the message was handled, badly');
+        self::assertSame(2, $count, 'the same coroutine handled both messages');
+        self::assertSame(['fine'], $handled);
         self::assertSame(['boom' => 'handler blew up on boom'], $failures);
 
-        // Never acknowledged, so closing the channel handed it straight back.
-        self::assertNotNull($this->waitForMessage($queue, timeoutSeconds: 2.0));
+        // Refused without requeue by default, so the poisoned message is gone rather than
+        // going round for ever.
+        self::assertNull($this->waitForMessage($queue, timeoutSeconds: 0.3));
     }
 
     /**
-     * One poisoned coroutine costs its own capacity, not the worker's: the other
-     * coroutine on the same queue keeps going.
+     * With requeueOnFailure the message goes back instead — right for a failure that may
+     * pass, and a loop for one that never will, which is why it is not the default.
      */
-    public function testTheOtherCoroutinesSurviveAFailingHandler(): void
+    public function testAFailingHandlerCanPutTheMessageBack(): void
     {
         $channel = $this->channel();
 
-        $queue = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $queue = $this->declareQueue(channel: $channel, durable: true);
 
-        $this->publishToQueue($channel, (string) $queue->getName(), 'boom');
-        $this->publishToQueue($channel, (string) $queue->getName(), 'fine');
-
-        $handled = [];
+        $this->publishToQueue($channel, $queue->name(), 'boom');
 
         $queueConsumer = new QueueConsumer(
-            queues: $this->queuesJson([(string) $queue->getName() => 2]),
+            queues: $this->queuesJson([$queue->name() => 1]),
+            requeueOnFailure: true,
             maxMessages: 1,
             pollIntervalMs: 50,
         );
 
         $queueConsumer->consume(
             connection: $this->connection(),
-            handler: static function (AMQPEnvelope $envelope, AMQPQueue $queue) use (&$handled): void {
-                if ($envelope->getBody() === 'boom') {
-                    throw new RuntimeException('handler blew up');
-                }
-
-                $handled[] = $envelope->getBody();
-
-                $queue->ack($envelope->getDeliveryTag());
+            handler: static function (Delivery $delivery): void {
+                throw new RuntimeException('handler blew up');
             },
             onError: static function (): void {
             },
         );
 
-        self::assertSame(['fine'], $handled);
+        $returned = $this->waitForMessage($queue, timeoutSeconds: 2.0);
+
+        self::assertNotNull($returned);
+        self::assertSame('boom', $returned->body);
+        self::assertTrue($returned->redelivered);
+
+        $returned->ack();
+    }
+
+    /**
+     * A handler that settled the delivery itself is left alone: the runtime only answers
+     * for one that did not, which is what lets a handler reject selectively.
+     */
+    public function testAHandlerThatSettlesTheDeliveryItselfIsNotOverruled(): void
+    {
+        $channel = $this->channel();
+
+        $queue = $this->declareQueue(channel: $channel, durable: true);
+
+        $this->publishToQueue($channel, $queue->name(), 'mine');
+
+        $queueConsumer = new QueueConsumer(
+            queues: $this->queuesJson([$queue->name() => 1]),
+            maxMessages: 1,
+            pollIntervalMs: 50,
+        );
+
+        $settled = false;
+
+        $queueConsumer->consume(
+            connection: $this->connection(),
+            handler: static function (Delivery $delivery) use (&$settled): void {
+                $delivery->nack(requeue: true);
+
+                $settled = $delivery->isSettled();
+            },
+        );
+
+        self::assertTrue($settled);
+
+        // Requeued by the handler's own choice, not acknowledged by the runtime.
+        $returned = $this->waitForMessage($queue, timeoutSeconds: 2.0);
+
+        self::assertNotNull($returned);
+        self::assertSame('mine', $returned->body);
+
+        $returned->ack();
     }
 
     /**
@@ -229,15 +271,15 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $busy = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
-        $idle = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $busy = $this->declareQueue(channel: $channel, durable: true);
+        $idle = $this->declareQueue(channel: $channel, durable: true);
 
-        $this->publishToQueue($channel, (string) $busy->getName(), 'only-one');
+        $this->publishToQueue($channel, $busy->name(), 'only-one');
 
         $queueConsumer = new QueueConsumer(
             queues: $this->queuesJson([
-                (string) $busy->getName() => 1,
-                (string) $idle->getName() => 3,
+                $busy->name() => 1,
+                $idle->name() => 3,
             ]),
             maxMessages: 1,
             drainTimeoutMs: 1000,
@@ -248,8 +290,7 @@ class QueueConsumerTest extends AmqpTestCase
 
         $count = $queueConsumer->consume(
             connection: $this->connection(),
-            handler: static function (AMQPEnvelope $envelope, AMQPQueue $queue): void {
-                $queue->ack($envelope->getDeliveryTag());
+            handler: static function (Delivery $delivery): void {
             },
         );
 
@@ -267,14 +308,14 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $queue = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $queue = $this->declareQueue(channel: $channel, durable: true);
 
-        $this->publishToQueue($channel, (string) $queue->getName(), 'slow');
+        $this->publishToQueue($channel, $queue->name(), 'slow');
 
         $acknowledged = false;
 
         $queueConsumer = new QueueConsumer(
-            queues: $this->queuesJson([(string) $queue->getName() => 1]),
+            queues: $this->queuesJson([$queue->name() => 1]),
             maxMessages: 1,
             drainTimeoutMs: 2000,
             pollIntervalMs: 50,
@@ -282,10 +323,8 @@ class QueueConsumerTest extends AmqpTestCase
 
         $queueConsumer->consume(
             connection: $this->connection(),
-            handler: static function (AMQPEnvelope $envelope, AMQPQueue $queue) use (&$acknowledged): void {
+            handler: static function (Delivery $delivery) use (&$acknowledged): void {
                 Sleeper::usleep(microseconds: 300_000);
-
-                $queue->ack($envelope->getDeliveryTag());
 
                 $acknowledged = true;
             },
@@ -305,17 +344,17 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $doomed  = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
-        $healthy = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $doomed  = $this->declareQueue(channel: $channel, durable: true);
+        $healthy = $this->declareQueue(channel: $channel, durable: true);
 
-        $this->publishToQueue($channel, (string) $healthy->getName(), 'slow');
+        $this->publishToQueue($channel, $healthy->name(), 'slow');
 
         $handled = [];
 
         $queueConsumer = new QueueConsumer(
             queues: $this->queuesJson([
-                (string) $doomed->getName()  => 1,
-                (string) $healthy->getName() => 1,
+                $doomed->name()  => 1,
+                $healthy->name() => 1,
             ]),
             maxMessages: 1,
             pollIntervalMs: 50,
@@ -327,7 +366,7 @@ class QueueConsumerTest extends AmqpTestCase
 
         $count = $queueConsumer->consume(
             connection: $this->connection(),
-            handler: function (AMQPEnvelope $envelope, AMQPQueue $queue) use (&$handled, &$deleted, $doomed): void {
+            handler: function (Delivery $delivery) use (&$handled, &$deleted, $doomed): void {
                 if (!$deleted) {
                     $deleted = true;
 
@@ -336,9 +375,7 @@ class QueueConsumerTest extends AmqpTestCase
 
                 Sleeper::usleep(microseconds: 300_000);
 
-                $queue->ack($envelope->getDeliveryTag());
-
-                $handled[] = $envelope->getBody();
+                $handled[] = $delivery->body;
             },
         );
 
@@ -354,17 +391,17 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $busy = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
-        $idle = $this->declareQueue(channel: $channel, flags: AMQP_DURABLE);
+        $busy = $this->declareQueue(channel: $channel, durable: true);
+        $idle = $this->declareQueue(channel: $channel, durable: true);
 
-        $this->publishToQueue($channel, (string) $busy->getName(), 'one');
+        $this->publishToQueue($channel, $busy->name(), 'one');
 
-        $before = $this->connection()->getUsedChannels();
+        $before = $this->connection()->usedChannels();
 
         $queueConsumer = new QueueConsumer(
             queues: $this->queuesJson([
-                (string) $busy->getName() => 1,
-                (string) $idle->getName() => 3,
+                $busy->name() => 1,
+                $idle->name() => 3,
             ]),
             maxMessages: 1,
             drainTimeoutMs: 1000,
@@ -373,8 +410,7 @@ class QueueConsumerTest extends AmqpTestCase
 
         $queueConsumer->consume(
             connection: $this->connection(),
-            handler: static function (AMQPEnvelope $envelope, AMQPQueue $queue): void {
-                $queue->ack($envelope->getDeliveryTag());
+            handler: static function (Delivery $delivery): void {
             },
         );
 
@@ -382,11 +418,11 @@ class QueueConsumerTest extends AmqpTestCase
         // channels are released by the channel objects going out of scope.
         $deadline = microtime(true) + 3.0;
 
-        while (microtime(true) < $deadline && $this->connection()->getUsedChannels() > $before) {
+        while (microtime(true) < $deadline && $this->connection()->usedChannels() > $before) {
             usleep(100_000);
         }
 
-        self::assertSame($before, $this->connection()->getUsedChannels());
+        self::assertSame($before, $this->connection()->usedChannels());
     }
 
     /**

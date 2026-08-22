@@ -275,10 +275,10 @@ between 29 and 66 ms. Read them as orders of magnitude.
 
 **What the tables do not measure is the reason the feature exists.** They pit one
 call against one call on a queue that already has its messages. The gain is a
-worker that waits on several queues at once: `ext-amqp`'s `AMQPQueue::consume()`
-holds the PHP thread, so a process is pinned to one queue, while here the same
-call suspends only its coroutine — three consumers waiting on a 200 ms delay
-finish in one delay, not three
+worker that waits on several queues at once: consuming holds the PHP thread in
+both `ext-amqp` and `php-amqplib`, so a process is pinned to one queue, while
+here the same loop suspends only its coroutine — three consumers waiting on a
+200 ms delay finish in one delay, not three
 (`tests/feature/Features/Amqp/AmqpConsumeTest.php`). That is throughput a
 single-queue benchmark cannot show.
 

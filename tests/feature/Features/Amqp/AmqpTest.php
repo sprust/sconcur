@@ -4,17 +4,12 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Amqp;
 
-use SConcur\Features\Amqp\AMQPChannel;
-use SConcur\Features\Amqp\AMQPConnection;
-use SConcur\Features\Amqp\AMQPEnvelope;
-use SConcur\Features\Amqp\AMQPExchange;
-use SConcur\Features\Amqp\AMQPQueue;
+use SConcur\Features\Amqp\Channel;
+use SConcur\Features\Amqp\Connection;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Feature\BaseAsyncTestCase;
 use SConcur\Tests\Impl\TestAmqpResolver;
 use Throwable;
-use const SConcur\Features\Amqp\AMQP_DURABLE;
-use const SConcur\Features\Amqp\AMQP_PASSIVE;
 
 /**
  * The feature's async test: two coroutines each publish to their own queue and read the
@@ -26,9 +21,9 @@ class AmqpTest extends BaseAsyncTestCase
     /** How long each coroutine waits before publishing, so the two overlap measurably. */
     private const int PUBLISH_DELAY_MS = 100;
 
-    protected ?AMQPConnection $connection = null;
+    protected ?Connection $connection = null;
 
-    protected ?AMQPChannel $channel = null;
+    protected ?Channel $channel = null;
 
     /** @var array<int, string> */
     protected array $queueNames = [];
@@ -45,16 +40,14 @@ class AmqpTest extends BaseAsyncTestCase
         parent::setUp();
 
         $this->connection = TestAmqpResolver::getConnection();
-        $this->channel    = new AMQPChannel($this->connection);
+        $this->channel    = $this->connection->channel();
 
         foreach ([1, 2] as $index) {
-            $queue = new AMQPQueue($this->channel);
+            $queue = $this->channel->queue(TestAmqpResolver::uniqueName("async_$index"));
 
-            $queue->setName(TestAmqpResolver::uniqueName("async_$index"));
-            $queue->setFlags(AMQP_DURABLE);
-            $queue->declareQueue();
+            $queue->declare(durable: true);
 
-            $this->queueNames[$index] = (string) $queue->getName();
+            $this->queueNames[$index] = $queue->name();
         }
     }
 
@@ -62,14 +55,11 @@ class AmqpTest extends BaseAsyncTestCase
     {
         try {
             foreach ($this->queueNames as $queueName) {
-                $queue = new AMQPQueue($this->channel);
-
-                $queue->setName($queueName);
-                $queue->delete();
+                $this->channel?->queue($queueName)->delete();
             }
 
             $this->channel?->close();
-            $this->connection?->disconnect();
+            $this->connection?->close();
         } catch (Throwable) {
             // The broker is gone, and with it everything this test declared.
         }
@@ -110,13 +100,10 @@ class AmqpTest extends BaseAsyncTestCase
 
     protected function on_exception(): void
     {
-        $queue = new AMQPQueue(new AMQPChannel($this->connection));
-
         // Nothing declared this queue, and a passive declaration refuses to create it.
-        $queue->setName(TestAmqpResolver::uniqueName('missing'));
-        $queue->setFlags(AMQP_PASSIVE);
-
-        $queue->declareQueue();
+        $this->connection?->channel()
+            ->queue(TestAmqpResolver::uniqueName('missing'))
+            ->declarePassive();
     }
 
     protected function assertException(Throwable $exception): void
@@ -162,14 +149,11 @@ class AmqpTest extends BaseAsyncTestCase
     {
         Sleeper::usleep(microseconds: self::PUBLISH_DELAY_MS * 1000);
 
-        $channel = new AMQPChannel($this->connection);
+        $channel = $this->connection?->channel();
 
-        $exchange = new AMQPExchange($channel);
+        $channel?->queue($this->queueNames[$index])->publish($body);
 
-        $exchange->setName('');
-        $exchange->publish(message: $body, routingKey: $this->queueNames[$index]);
-
-        $channel->close();
+        $channel?->close();
     }
 
     /**
@@ -178,25 +162,26 @@ class AmqpTest extends BaseAsyncTestCase
      */
     private function consumeOne(int $index): string
     {
-        $channel = new AMQPChannel($this->connection);
+        $channel = $this->connection?->channel();
 
-        $queue = new AMQPQueue($channel);
+        self::assertNotNull($channel);
 
-        $queue->setName($this->queueNames[$index]);
-        $queue->setFlags(AMQP_DURABLE);
-        $queue->declareQueue();
+        $queue = $channel->queue($this->queueNames[$index]);
+
+        $queue->declare(durable: true);
 
         $body = '';
 
-        $queue->consume(callback: function (AMQPEnvelope $envelope, AMQPQueue $queue) use (&$body): bool {
-            $body = $envelope->getBody();
+        // One message and out: leaving the loop cancels the consumer and releases the
+        // stream, which is what the calque needed an explicit cancel() for.
+        foreach ($queue->consume() as $delivery) {
+            $body = $delivery->body;
 
-            $queue->ack($envelope->getDeliveryTag());
+            $delivery->ack();
 
-            return false;
-        });
+            break;
+        }
 
-        $queue->cancel();
         $channel->close();
 
         return $body;

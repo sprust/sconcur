@@ -6,7 +6,7 @@ namespace SConcur\Features\Amqp\Consumer;
 
 use JsonException;
 use SConcur\Exceptions\Amqp\InvalidQueueSpecException;
-use const SConcur\Features\Amqp\PHP_AMQP_MAX_CHANNELS;
+use SConcur\Features\Amqp\ConnectionOptions;
 
 /**
  * Reads the queue list a consumer worker was launched with. It travels as one argv
@@ -27,10 +27,10 @@ readonly class QueueSpecParser
 {
     /**
      * How many channels one connection is left to open. The protocol ceiling is
-     * PHP_AMQP_MAX_CHANNELS and channel numbering starts at one, so the last usable
+     * ConnectionOptions::MAX_CHANNELS and channel numbering starts at one, so the last usable
      * number is one below it.
      */
-    protected const int MAX_CHANNELS_PER_CONNECTION = PHP_AMQP_MAX_CHANNELS - 1;
+    protected const int MAX_CHANNELS_PER_CONNECTION = ConnectionOptions::MAX_CHANNELS - 1;
 
     /**
      * @return list<QueueSpec>
@@ -172,7 +172,7 @@ readonly class QueueSpecParser
 
     /**
      * A coroutine is a channel, and a connection runs out of channel numbers at
-     * PHP_AMQP_MAX_CHANNELS. Diagnosed here rather than as the broker's "504 channel
+     * ConnectionOptions::MAX_CHANNELS. Diagnosed here rather than as the broker's "504 channel
      * id space exhausted" on whichever coroutine happened to start last.
      *
      * @param list<QueueSpec> $specs

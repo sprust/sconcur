@@ -3,10 +3,7 @@
 declare(strict_types=1);
 
 use AMQPQueue as NativeQueue;
-use SConcur\Features\Amqp\AMQPQueue;
-
-use const SConcur\Features\Amqp\AMQP_AUTOACK;
-use const SConcur\Features\Amqp\AMQP_DURABLE;
+use SConcur\Features\Amqp\Queue;
 
 require_once __DIR__ . '/lib/amqp-bench.php';
 
@@ -26,7 +23,7 @@ foreach (['native', 'sync', 'async'] as $mode) {
 
 $syncQueue = $bench->queue($bench->channel, 'sync');
 
-/** @var array<int, AMQPQueue> $asyncQueues */
+/** @var array<int, Queue> $asyncQueues */
 $asyncQueues = [];
 
 $nativeQueue = null;
@@ -45,13 +42,13 @@ $benchmarker->run(
             $nativeQueue->get(flags: AMQP_AUTOACK);
         },
     syncCallback: static function (int $callIndex) use ($syncQueue): void {
-        $syncQueue->get(flags: AMQP_AUTOACK);
+        $syncQueue->get(autoAck: true);
     },
     asyncCallback: static function (int $callIndex) use ($bench, &$asyncQueues): void {
         $channelIndex = $callIndex % count($bench->asyncChannels);
 
         $asyncQueues[$channelIndex] ??= $bench->queue($bench->asyncChannels[$channelIndex], 'async');
 
-        $asyncQueues[$channelIndex]->get(flags: AMQP_AUTOACK);
+        $asyncQueues[$channelIndex]->get(autoAck: true);
     },
 );

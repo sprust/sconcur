@@ -112,38 +112,6 @@ func (f *AmqpFeature) handleReject(task *tasks.Task, raw msgpack.RawMessage) {
 	respondDone(task, startTime)
 }
 
-// handleRecover asks the broker to deliver the unacknowledged messages again.
-func (f *AmqpFeature) handleRecover(task *tasks.Task, raw msgpack.RawMessage) {
-	startTime := time.Now()
-
-	var params payloads.RecoverParams
-
-	if !decodeParams(task, raw, &params, "recover params") {
-		return
-	}
-
-	entry, ok := channelOf(task, params.ChannelId)
-
-	if !ok {
-		return
-	}
-
-	ctx, cancel := commandContext(task, params.TimeoutMs)
-	defer cancel()
-
-	err := entry.do(ctx, func(channel *amqp091.Channel) error {
-		return channel.Recover(params.Requeue)
-	})
-
-	if err != nil {
-		fail(task, entry, "recover", err)
-
-		return
-	}
-
-	respondDone(task, startTime)
-}
-
 // handleCancel cancels a consumer. The channel stays open: it outlives its consumers.
 func (f *AmqpFeature) handleCancel(task *tasks.Task, raw msgpack.RawMessage) {
 	startTime := time.Now()

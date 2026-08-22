@@ -8,11 +8,11 @@ use SConcur\Transport\PayloadParametersInterface;
 
 /**
  * Parameters of a Connect command: the broker credentials, the TLS material and every
- * tuning value ext-amqp keeps on AMQPConnection. The execution bound it carries is
+ * tuning value a connection carries. The execution bound it carries is
  * connectTimeoutMs, which bounds the dial.
  *
  * The connection's other three deadlines — read, write and RPC — are not here: each of
- * them bounds a command rather than the connection, so AMQPConnection puts them on the
+ * them bounds a command rather than the connection, so ConnectionOptions puts them on the
  * commands themselves (RPC on every one-shot method, write on a publish, read on the wait
  * for a consumer's next delivery).
  *

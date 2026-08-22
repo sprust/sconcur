@@ -6,10 +6,10 @@ namespace SConcur\Features\Amqp;
 
 /**
  * A field-table value that knows how to present itself as an AMQP value. Implemented by
- * AMQPDecimal and AMQPTimestamp; an application may implement it for its own types, as
- * with ext-amqp.
+ * Decimal and Timestamp; an application may implement it for its own types, and the
+ * encoder will ask what they stand for instead of refusing them.
  */
-interface AMQPValue
+interface AmqpValue
 {
     public function toAmqpValue(): mixed;
 }
