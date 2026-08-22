@@ -556,32 +556,18 @@ three modes: native `ext-amqp`, SConcur outside a coroutine, SConcur in
 coroutines. Run them with `make bench-amqp-publish`, `make bench-amqp-get`,
 `make bench-amqp-consume`.
 
-What the numbers say — one run each on the project's Docker environment, one broker
-in the same network, 1000 calls per mode (see [benchmarks](benchmarks.md) for how
-to read numbers like these). The concurrent mode spreads its calls over 50
-channels, because a channel is serialized on the broker; the native and the
-synchronous modes use one, as an application would:
+The numbers are in [benchmarks](benchmarks.md#amqp-rabbitmq), where they sit
+beside the other features and are read the same way. The short of it: publishing
+is where the native extension wins and nothing can be done about it —
+`basic.publish` expects no reply, so it costs one write while every SConcur call
+also crosses the PHP ↔ Go boundary, and there is nothing to overlap. `basic.get`
+does wait for the broker, and running the calls at the same time recovers most of
+that.
 
-| Operation | native | sync | async |
-| --- | --- | --- | --- |
-| 1000 publishes | 3.6 ms | 27.6 ms | 18.7 ms |
-| 1000 `basic.get` calls | 31 ms | 67 ms | 46 ms |
-| 10 queues × 500 pre-filled messages, consumed | 157 000 msg/s | 22 200 msg/s | 104 500 msg/s |
-
-Repeated runs move these by tens of percent — the `basic.get` row swung between 26
-and 42 ms for the native mode alone — so read them as orders of magnitude rather
-than as measurements to compare across a few percent.
-
-Publishing is where the native extension wins: `basic.publish` expects no reply,
-so it costs one write, while every SConcur call also crosses the PHP ↔ Go
-boundary. On `basic.get`, which does wait for the broker, running the calls at the
-same time lands around the extension and takes roughly half of what the
-synchronous path takes.
-
-On a queue that is already full, the extension consumes faster per message — the
-concurrency has nothing to overlap there, and the consume row moves the most
-between runs of the three. The gain is elsewhere: a worker that
-waits for messages on several queues serves all of them at once instead of being
-pinned to one, which is what
-`tests/feature/Features/Amqp/AmqpConsumeTest.php` measures — three consumers
-waiting on a 200 ms delay finish in one delay, not three.
+What none of those tables measure is the reason this feature exists. They pit one
+call against one call on a queue that already has its messages, where concurrency
+has nothing to hide behind. The gain is a worker that waits on several queues at
+once: `AMQPQueue::consume()` in `ext-amqp` holds the PHP thread, so a process is
+pinned to one queue, while here the same call suspends only its coroutine — three
+consumers waiting on a 200 ms delay finish in one delay, not three, which is what
+`tests/feature/Features/Amqp/AmqpConsumeTest.php` measures.
