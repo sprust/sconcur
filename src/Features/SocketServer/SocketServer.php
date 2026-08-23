@@ -94,7 +94,7 @@ readonly class SocketServer
      * check.
      *
      * @param array<int, string>                        $argv
-     * @param Closure(Throwable, Connection): void|null $onError
+     * @param null|Closure(Throwable, Connection): void $onError
      */
     public static function fromArgs(array $argv, ?Closure $onError = null): SocketServer
     {
