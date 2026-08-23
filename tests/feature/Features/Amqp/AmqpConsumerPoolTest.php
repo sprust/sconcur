@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Amqp;
 
+use SConcur\Features\Amqp\RetryTopology;
 use SConcur\Tests\Impl\Worker\TestWorkerMaster;
 
 /**
@@ -111,6 +112,61 @@ class AmqpConsumerPoolTest extends AmqpTestCase
 
             self::assertStringContainsString('orders-pool #0', $master->logText());
             self::assertStringContainsString('start groups=1 workers=1', $master->logText());
+        } finally {
+            $master->stop();
+        }
+    }
+
+    /**
+     * The delayed-retry shape the demo worker implements: a job that fails comes back after
+     * a wait that grows with the attempt, and the wait happens on the broker — the worker
+     * acknowledges the failed delivery and is free while the job is away.
+     */
+    public function testAFailedJobComesBackAfterAGrowingDelay(): void
+    {
+        $channel = $this->channel();
+
+        $queue = $this->declareQueue(channel: $channel, durable: true);
+
+        // The worker declares these; the test only remembers them for cleanup.
+        foreach ([200, 500] as $delayMs) {
+            $this->declaredQueues[] = RetryTopology::waitQueueName(
+                queue: $queue->name(),
+                delayMs: $delayMs,
+            );
+        }
+
+        $this->publishToQueue($channel, $queue->name(), 'retry:2');
+
+        $master = TestWorkerMaster::start(
+            options: [
+                'groups' => [
+                    [
+                        'name'         => 'retrying',
+                        'workerScript' => self::consumerScript(),
+                        'workerCount'  => 1,
+                        'server'       => [
+                            'queues'      => [['name' => $queue->name()]],
+                            'maxMessages' => 3,
+                        ],
+                    ],
+                ],
+                'restartPolicy' => 'never',
+            ],
+            waitReachable: false,
+        );
+
+        try {
+            self::assertTrue(
+                $this->waitForLine($master, 'handled retry:2 on attempt 3'),
+                'the job must succeed on its third delivery: ' . $master->logText(),
+            );
+
+            $log = $master->logText();
+
+            // Two failures, and the second waits longer than the first.
+            self::assertStringContainsString('failed retry:2 on attempt 1, back in 200ms', $log);
+            self::assertStringContainsString('failed retry:2 on attempt 2, back in 500ms', $log);
         } finally {
             $master->stop();
         }

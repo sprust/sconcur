@@ -99,6 +99,19 @@ class Delivery
     }
 
     /**
+     * The channel this delivery arrived on, which is the one a handler republishing the
+     * message has to use: it belongs to the coroutine the handler is running in, and a
+     * channel taken from anywhere else would be shared across coroutines.
+     *
+     * Null once that channel is gone — the reference is weak, so a delivery an application
+     * kept does not hold the channel, and through it the connection, open.
+     */
+    public function channel(): ?Channel
+    {
+        return $this->channel->get();
+    }
+
+    /**
      * @param callable(Channel): void $settle
      */
     protected function settleWith(callable $settle): void

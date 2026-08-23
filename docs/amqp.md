@@ -814,6 +814,11 @@ and applies no backoff. A retry policy is the handler's, built out of the pieces
 above; the topology it needs belongs to the worker script, because the runtime
 declares nothing.
 
+`tests/consumers/amqp/amqp-consumer.php` is such a worker written out: it declares
+its wait queues alongside its own topology at start-up, and its `retry:<n>` handler
+republishes a failed job with a delay that grows by attempt, on the delivery's own
+channel.
+
 ## Connections and channels on the Go side
 
 A connection is pooled by its options: two `Connection` objects built with the
