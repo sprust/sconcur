@@ -95,25 +95,25 @@ readonly class HttpServer
      * Defaults mirror the Go server defaults.
      */
     public function __construct(
-        private ServerRequestFactoryInterface $serverRequestFactory,
-        private ResponseFactoryInterface $responseFactory,
-        private string $address = '0.0.0.0:7832',
-        private int $readHeaderTimeoutMs = 10_000,
-        private int $readTimeoutMs = 30_000,
-        private int $writeTimeoutMs = 30_000,
-        private int $idleTimeoutMs = 60_000,
-        private int $shutdownTimeoutMs = 10_000,
-        private int $maxRequestBody = 10_485_760,
-        private int $maxConcurrency = 0,
-        private int $handlerTimeoutMs = 60_000,
-        private int $maxRequests = 0,
-        private bool $reusePort = false,
-        private ?Closure $onError = null,
-        private ?int $masterPid = null,
-        private string $telemetrySocket = '',
-        private string $serverName = 'sconcur-server',
-        private int $telemetryIntervalMs = 0,
-        private int $preemptionQuantumMs = 5,
+        protected ServerRequestFactoryInterface $serverRequestFactory,
+        protected ResponseFactoryInterface $responseFactory,
+        protected string $address = '0.0.0.0:7832',
+        protected int $readHeaderTimeoutMs = 10_000,
+        protected int $readTimeoutMs = 30_000,
+        protected int $writeTimeoutMs = 30_000,
+        protected int $idleTimeoutMs = 60_000,
+        protected int $shutdownTimeoutMs = 10_000,
+        protected int $maxRequestBody = 10_485_760,
+        protected int $maxConcurrency = 0,
+        protected int $handlerTimeoutMs = 60_000,
+        protected int $maxRequests = 0,
+        protected bool $reusePort = false,
+        protected ?Closure $onError = null,
+        protected ?int $masterPid = null,
+        protected string $telemetrySocket = '',
+        protected string $serverName = 'sconcur-server',
+        protected int $telemetryIntervalMs = 0,
+        protected int $preemptionQuantumMs = 5,
     ) {
     }
 
@@ -329,6 +329,13 @@ readonly class HttpServer
                     payload: RespondPayload::chunk($requestId, $chunk),
                 );
             }
+        } catch (FlowStoppedException $exception) {
+            // The handler was unwound on purpose — it ran past handlerTimeoutMs, or the
+            // server is shutting down. onError is for failures, and a stop is not one:
+            // resolveResponse passes it on for the same reason, and telling the hook here
+            // would report a bug where the runtime did exactly what it was asked to. The
+            // stream is still ended in the finally below.
+            throw $exception;
         } catch (Throwable $exception) {
             self::notifyOnError($onError, $exception, $request);
         } finally {

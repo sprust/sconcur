@@ -10,6 +10,7 @@ use Generator;
 use RuntimeException;
 use SConcur\Exceptions\CallbackExecutionException;
 use SConcur\Exceptions\FlowStoppedException;
+use SConcur\Exceptions\InvalidCoroutineTimeoutException;
 use SConcur\Flow\CurrentFlow;
 use SConcur\Scheduler\Coroutine;
 use SConcur\Scheduler\Scheduler;
@@ -48,7 +49,7 @@ class WaitGroup
      * Keyed by callback key, in add() order; each entry keeps the callback and the
      * context parent to inherit at launch time.
      *
-     * @var array<string, array{callback: Closure, parentContextFiberId: int, timeoutMs: ?int}>
+     * @var array<string, array{callback: Closure, parentContextFiberId: int, timeoutMs: int}>
      */
     protected array $pending = [];
 
@@ -80,10 +81,22 @@ class WaitGroup
     }
 
     /**
+     * Adds a callback to the group and answers the key its result will be yielded under.
+     *
      * @param Closure(): mixed $callback
+     * @param int              $timeoutMs how long the callback may run before it is unwound
+     *                                    where it stands (CoroutineTimeoutException); 0, the
+     *                                    default, means no deadline. Counted from the moment
+     *                                    the callback starts, not from here — see launch()
+     *
+     * @throws InvalidCoroutineTimeoutException if the timeout is negative
      */
-    public function add(Closure $callback, ?int $timeoutMs = null): string
+    public function add(Closure $callback, int $timeoutMs = 0): string
     {
+        // Screened before anything is built: a refusal after the member is registered would
+        // leave the group with a phantom one — live, never started, and waited for for ever.
+        Scheduler::assertTimeout($timeoutMs);
+
         $callbackKey = 'cb_' . (++static::$callbackKeyCounter);
 
         // Capture the context to inherit now (the coroutine adding this, or the
@@ -139,9 +152,10 @@ class WaitGroup
                     parentContextFiberId: $queued['parentContextFiberId'],
                     timeoutMs: $queued['timeoutMs'],
                 );
-            } catch (CallbackExecutionException $exception) {
+            } catch (CallbackExecutionException | FlowStoppedException $exception) {
                 // A deferred callback threw before its first suspend: its failure
                 // belongs to the group (surfaced at iterate()), not to the scheduler.
+                // A deliberate unwind arrives unwrapped, as it does from anywhere else.
                 $this->markFailure($exception);
 
                 return;
@@ -321,7 +335,7 @@ class WaitGroup
         string $callbackKey,
         Closure $callback,
         int $parentContextFiberId,
-        ?int $timeoutMs = null,
+        int $timeoutMs = 0,
     ): void {
         $fiber   = new Fiber($callback);
         $fiberId = spl_object_id($fiber);
@@ -355,8 +369,11 @@ class WaitGroup
         // Counted from here and not from add(): this is the moment the callback
         // starts running, and a callback that waited for a free slot gets its whole
         // allowance rather than what was left of it.
-        if ($timeoutMs !== null) {
-            Scheduler::get()->setDeadline(coroutine: $coroutine, timeoutMs: $timeoutMs);
+        if ($timeoutMs > 0) {
+            Scheduler::get()->setDeadline(
+                coroutine: $coroutine,
+                timeoutMs: $timeoutMs,
+            );
         }
 
         try {
@@ -372,6 +389,14 @@ class WaitGroup
                 fiberId: $fiberId,
                 suspendValue: $suspendValue,
             );
+        } catch (FlowStoppedException $exception) {
+            // A deliberate unwind — the callback ran past its deadline before it ever
+            // suspended, or the group was stopped under it. It travels as it is, the way
+            // it does from every other place it can surface (Scheduler::failCoroutine,
+            // FeatureExecutor::suspend), so a catch written for one covers the other.
+            $this->discard($fiberId);
+
+            throw $exception;
         } catch (Throwable $exception) {
             $this->discard($fiberId);
 

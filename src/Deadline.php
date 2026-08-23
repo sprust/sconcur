@@ -14,7 +14,7 @@ use SConcur\Scheduler\Scheduler;
  *
  * ```php
  * try {
- *     return Limiter::on(ms: 1000, callback: fn() => handle($job));
+ *     return Deadline::run(timeoutMs: 1000, callback: fn() => handle($job));
  * } catch (CoroutineTimeoutException) {
  *     return null;
  * }
@@ -33,31 +33,27 @@ use SConcur\Scheduler\Scheduler;
  * Outside a coroutine there is nothing to unwind, so the callback simply runs — the same
  * rule the rest of the library follows for code that is not in a concurrent context.
  */
-class Limiter
+class Deadline
 {
     /**
      * @template TReturn
      *
-     * @param int                $ms       how long the callback may take
-     * @param Closure(): TReturn $callback the work to bound
+     * @param int                $timeoutMs how long the callback may take; 0 means no deadline,
+     *                                      so it runs under whatever bound it is already under
+     * @param Closure(): TReturn $callback  the work to bound
      *
      * @return TReturn
      *
-     * @throws InvalidCoroutineTimeoutException if the timeout is not positive
+     * @throws InvalidCoroutineTimeoutException if the timeout is negative
      * @throws CoroutineTimeoutException if the callback outlives the deadline — thrown into
      *                                   the coroutine wherever it stands, so the callback's
      *                                   own finally blocks run on the way out
      */
-    public static function on(int $ms, Closure $callback): mixed
+    public static function run(int $timeoutMs, Closure $callback): mixed
     {
-        $scheduler = Scheduler::get();
-
-        $previousNs = $scheduler->enterDeadlineScope($ms);
-
-        try {
-            return $callback();
-        } finally {
-            $scheduler->leaveDeadlineScope($previousNs);
-        }
+        return Scheduler::get()->withDeadline(
+            timeoutMs: $timeoutMs,
+            callback: $callback,
+        );
     }
 }

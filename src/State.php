@@ -95,6 +95,15 @@ class State
         static::$flowFibers[$flow->key][$fiberId] = true;
     }
 
+    /**
+     * Whether this fiber is one the library made a coroutine out of. An application's own
+     * Fiber has no flow here, so a feature called on it takes the synchronous path.
+     */
+    public static function isAsyncFiber(int $fiberId): bool
+    {
+        return isset(static::$fiberFlows[$fiberId]);
+    }
+
     public static function unRegisterFiber(int $fiberId): void
     {
         $flow = static::$fiberFlows[$fiberId] ?? null;

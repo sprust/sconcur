@@ -5,8 +5,9 @@ declare(strict_types=1);
 namespace SConcur\Exceptions;
 
 /**
- * A coroutine ran past the deadline its `WaitGroup::add(timeoutMs: …)` gave it, and the
- * scheduler unwound it where it stood.
+ * A coroutine ran past the deadline it was given — by `Deadline::run()`, by
+ * `WaitGroup::add(timeoutMs: …)`, or by a server's `handlerTimeoutMs` — and the scheduler
+ * unwound it where it stood.
  *
  * It extends FlowStoppedException because it is one: a deliberate unwind, not a failure of
  * the work. Everything that already re-throws a stop as-is — the feature executor, the AMQP

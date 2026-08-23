@@ -8,8 +8,8 @@ use ReflectionProperty;
 use SConcur\Exceptions\CoroutineTimeoutException;
 use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Exceptions\InvalidCoroutineTimeoutException;
+use SConcur\Deadline;
 use SConcur\Features\Sleeper\Sleeper;
-use SConcur\Limiter;
 use SConcur\Scheduler\Scheduler;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\WaitGroup;
@@ -275,7 +275,7 @@ class SchedulerCoroutineTimeoutTest extends BaseTestCase
      * The scoped form: the deadline is put on the running coroutine, so it works wherever
      * one runs, and it bounds a part of the work instead of the whole callback.
      */
-    public function testLimiterBoundsOnlyWhatItWraps(): void
+    public function testADeadlineScopeBoundsOnlyWhatItWraps(): void
     {
         $waitGroup = WaitGroup::create();
 
@@ -285,7 +285,7 @@ class SchedulerCoroutineTimeoutTest extends BaseTestCase
             Sleeper::usleep(microseconds: 300_000);
 
             try {
-                return Limiter::on(ms: 150, callback: static function (): string {
+                return Deadline::run(timeoutMs: 150, callback: static function (): string {
                     Sleeper::usleep(microseconds: 3_000_000);
 
                     return 'inner finished';
@@ -306,7 +306,7 @@ class SchedulerCoroutineTimeoutTest extends BaseTestCase
         $waitGroup = WaitGroup::create();
 
         $waitGroup->add(static function (): string {
-            Limiter::on(ms: 2_000, callback: static function (): void {
+            Deadline::run(timeoutMs: 2_000, callback: static function (): void {
                 Sleeper::usleep(microseconds: 20_000);
             });
 
@@ -332,9 +332,9 @@ class SchedulerCoroutineTimeoutTest extends BaseTestCase
 
         $waitGroup->add(static function (): string {
             try {
-                return Limiter::on(ms: 200, callback: static function (): string {
+                return Deadline::run(timeoutMs: 200, callback: static function (): string {
                     // Asks for ten times the allowance it is running inside.
-                    return Limiter::on(ms: 2_000, callback: static function (): string {
+                    return Deadline::run(timeoutMs: 2_000, callback: static function (): string {
                         Sleeper::usleep(microseconds: 3_000_000);
 
                         return 'inner finished';
@@ -359,7 +359,7 @@ class SchedulerCoroutineTimeoutTest extends BaseTestCase
     /** Outside a coroutine there is nothing to unwind, so the work simply runs. */
     public function testOutsideACoroutineTheCallbackRunsUnbounded(): void
     {
-        $result = Limiter::on(ms: 50, callback: static function (): string {
+        $result = Deadline::run(timeoutMs: 50, callback: static function (): string {
             usleep(120_000);
 
             return 'ran to the end';
@@ -414,7 +414,7 @@ class SchedulerCoroutineTimeoutTest extends BaseTestCase
 
         $waitGroup->add(static function (): string {
             try {
-                return Limiter::on(ms: 100, callback: static function (): string {
+                return Deadline::run(timeoutMs: 100, callback: static function (): string {
                     Sleeper::usleep(microseconds: 3_000_000);
 
                     return 'never';
@@ -425,7 +425,7 @@ class SchedulerCoroutineTimeoutTest extends BaseTestCase
         });
 
         $waitGroup->add(static function (): string {
-            Limiter::on(ms: 5_000, callback: static function (): void {
+            Deadline::run(timeoutMs: 5_000, callback: static function (): void {
                 Sleeper::usleep(microseconds: 10_000);
             });
 
@@ -449,7 +449,7 @@ class SchedulerCoroutineTimeoutTest extends BaseTestCase
         );
 
         $stopped->add(static function (): string {
-            return Limiter::on(ms: 4_000, callback: static function (): string {
+            return Deadline::run(timeoutMs: 4_000, callback: static function (): string {
                 Sleeper::usleep(microseconds: 5_000_000);
 
                 return 'never';
@@ -471,19 +471,184 @@ class SchedulerCoroutineTimeoutTest extends BaseTestCase
         $this->assertNoTasksCount();
     }
 
-    public function testANonPositiveScopeIsRefused(): void
+    public function testANegativeScopeIsRefused(): void
     {
         $this->expectException(InvalidCoroutineTimeoutException::class);
 
-        Limiter::on(ms: -1, callback: static fn(): string => 'never');
+        Deadline::run(timeoutMs: -1, callback: static fn(): string => 'never');
     }
 
-    public function testANonPositiveTimeoutIsRefused(): void
+    public function testANegativeTimeoutIsRefused(): void
     {
         $waitGroup = WaitGroup::create();
 
         $this->expectException(InvalidCoroutineTimeoutException::class);
 
-        $waitGroup->add(static fn(): string => 'never', timeoutMs: 0);
+        $waitGroup->add(static fn(): string => 'never', timeoutMs: -1);
+    }
+
+    /**
+     * A refused timeout must not leave the group holding a member that was never started:
+     * such a member keeps isLive() true, so waitAll() would wait for a coroutine that does
+     * not exist.
+     */
+    public function testARefusedTimeoutLeavesNoPhantomMember(): void
+    {
+        $waitGroup = WaitGroup::create();
+
+        try {
+            $waitGroup->add(static fn(): string => 'never', timeoutMs: -1);
+
+            self::fail('the negative timeout was accepted');
+        } catch (InvalidCoroutineTimeoutException) {
+            // expected
+        }
+
+        self::assertFalse($waitGroup->isLive());
+        self::assertSame(0, $waitGroup->waitAll());
+
+        $this->assertNoTasksCount();
+    }
+
+    /**
+     * Zero is how the whole library says "no deadline", so a callback given one runs to its
+     * end instead of being refused or unwound.
+     */
+    public function testAZeroTimeoutMeansNoDeadline(): void
+    {
+        $waitGroup = WaitGroup::create();
+
+        $waitGroup->add(
+            static function (): string {
+                Sleeper::usleep(microseconds: 200_000);
+
+                return 'finished';
+            },
+            timeoutMs: 0,
+        );
+
+        self::assertSame(['finished'], array_values($waitGroup->waitResults()));
+
+        $this->assertNoTasksCount();
+    }
+
+    /**
+     * A scope of zero bounds nothing of its own, and must not lift the bound it runs under
+     * either — the outer allowance is still someone's promise.
+     */
+    public function testAZeroScopeKeepsTheDeadlineItRunsUnder(): void
+    {
+        $waitGroup = WaitGroup::create();
+
+        $waitGroup->add(
+            static function (): string {
+                try {
+                    return Deadline::run(
+                        timeoutMs: 0,
+                        callback: static function (): string {
+                            Sleeper::usleep(microseconds: 3_000_000);
+
+                            return 'slept it out';
+                        },
+                    );
+                } catch (CoroutineTimeoutException) {
+                    return 'timed out';
+                }
+            },
+            timeoutMs: 200,
+        );
+
+        self::assertSame(['timed out'], array_values($waitGroup->waitResults()));
+
+        $this->assertNoTasksCount();
+    }
+
+    /**
+     * An inner scope asking for more time than the outer one holds gets the outer instant,
+     * so when it fires both are up. Putting the outer one back on the way out would deliver
+     * a second CoroutineTimeoutException into the cleanup the first one started — the
+     * callback below would never reach its return.
+     */
+    public function testAnInnerScopeSharingTheOuterInstantTimesOutOnce(): void
+    {
+        $waitGroup = WaitGroup::create();
+
+        $waitGroup->add(
+            static function (): string {
+                try {
+                    Deadline::run(
+                        timeoutMs: 5_000,
+                        callback: static function (): void {
+                            Sleeper::usleep(microseconds: 3_000_000);
+                        },
+                    );
+
+                    return 'slept it out';
+                } catch (CoroutineTimeoutException) {
+                    // Cleanup that awaits: it must not be cut by the same deadline again.
+                    Sleeper::usleep(microseconds: 300_000);
+
+                    return 'cleaned up';
+                }
+            },
+            timeoutMs: 200,
+        );
+
+        self::assertSame(['cleaned up'], array_values($waitGroup->waitResults()));
+
+        $this->assertNoTasksCount();
+    }
+
+    /**
+     * A nested add() hands its first push to the scheduler's queue instead of crossing into
+     * Go from a fiber stack. When the deadline fires before that queue is drained, the
+     * queued push must be dropped: sending it would overwrite the keys of whatever the
+     * coroutine asked for inside its catch, and the old task's result would wake it in
+     * place of the answer it is actually waiting for.
+     */
+    public function testAQueuedPushIsDroppedWhenTheDeadlineFiresFirst(): void
+    {
+        $outer = WaitGroup::create();
+
+        $outer->add(static function (): string {
+            $inner = WaitGroup::create();
+
+            $inner->add(
+                static function (): string {
+                    try {
+                        // Pushed from the adder's fiber stack, so it waits in the
+                        // scheduler's dispatch queue rather than crossing into Go here.
+                        Sleeper::usleep(microseconds: 3_000_000);
+
+                        return 'slept it out';
+                    } catch (CoroutineTimeoutException) {
+                        $startedAt = microtime(true);
+
+                        Sleeper::usleep(microseconds: 300_000);
+
+                        $waitedMs = (int) round((microtime(true) - $startedAt) * 1000);
+
+                        return $waitedMs < 1_500
+                            ? 'waited its own wait'
+                            : "woke on the abandoned task after {$waitedMs}ms";
+                    }
+                },
+                timeoutMs: 50,
+            );
+
+            // Hold the thread past that deadline without suspending: the scheduler's first
+            // look then finds it expired while the queued push is still unsent, which is
+            // the order the two have to meet in for the stale push to matter.
+            $busyUntil = microtime(true) + 0.15;
+
+            while (microtime(true) < $busyUntil) {
+            }
+
+            return (string) array_values($inner->waitResults())[0];
+        });
+
+        self::assertSame(['waited its own wait'], array_values($outer->waitResults()));
+
+        $this->assertNoTasksCount();
     }
 }

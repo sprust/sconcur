@@ -43,9 +43,10 @@ readonly class WsServer
      * @param int                                       $handlerTimeoutMs    max time one connection handler may run before it is unwound
      *                                                                       where it stands (0 = unlimited). A handler cut this way ends
      *                                                                       quietly: its finally blocks run, onError is not told, and the
-     *                                                                       connection is closed by the Go side with the coroutine. With
-     *                                                                       preemption armed (the default) it reaches a handler busy with
-     *                                                                       computation too — see docs/coroutine-timeout.md.
+     *                                                                       connection is closed on the way out by the handler wrapper's
+     *                                                                       own finally. With preemption armed (the default) it reaches a
+     *                                                                       handler busy with computation too — see
+     *                                                                       docs/coroutine-timeout.md.
      * @param int                                       $maxConnections      stop the server after it has handled this many connections
      *                                                                       (0 = unlimited). Meant against handler memory leaks: once reached
      *                                                                       the server shuts down gracefully so a master can respawn a fresh
@@ -81,26 +82,26 @@ readonly class WsServer
      * Defaults mirror the Go server defaults.
      */
     public function __construct(
-        private string $address = '0.0.0.0:9200',
-        private int $handshakeTimeoutMs = 10_000,
-        private int $idleTimeoutMs = 0,
-        private int $writeTimeoutMs = 30_000,
-        private int $pingIntervalMs = 30_000,
-        private int $maxMessageBytes = 1_048_576,
-        private int $maxConcurrency = 0,
-        private int $handlerTimeoutMs = 0,
-        private int $maxConnections = 0,
-        private int $shutdownTimeoutMs = 10_000,
-        private bool $reusePort = false,
-        private string $path = '/',
-        private array $allowedOrigins = [],
-        private array $subprotocols = [],
-        private ?Closure $onError = null,
-        private ?int $masterPid = null,
-        private string $telemetrySocket = '',
-        private string $serverName = 'sconcur-server',
-        private int $telemetryIntervalMs = 0,
-        private int $preemptionQuantumMs = 5,
+        protected string $address = '0.0.0.0:9200',
+        protected int $handshakeTimeoutMs = 10_000,
+        protected int $idleTimeoutMs = 0,
+        protected int $writeTimeoutMs = 30_000,
+        protected int $pingIntervalMs = 30_000,
+        protected int $maxMessageBytes = 1_048_576,
+        protected int $maxConcurrency = 0,
+        protected int $handlerTimeoutMs = 0,
+        protected int $maxConnections = 0,
+        protected int $shutdownTimeoutMs = 10_000,
+        protected bool $reusePort = false,
+        protected string $path = '/',
+        protected array $allowedOrigins = [],
+        protected array $subprotocols = [],
+        protected ?Closure $onError = null,
+        protected ?int $masterPid = null,
+        protected string $telemetrySocket = '',
+        protected string $serverName = 'sconcur-server',
+        protected int $telemetryIntervalMs = 0,
+        protected int $preemptionQuantumMs = 5,
     ) {
     }
 

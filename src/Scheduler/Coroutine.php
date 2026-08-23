@@ -17,12 +17,12 @@ use SConcur\WaitGroup;
  * group: it is fire-and-forget, its return value is not collected, so $group is
  * null.
  *
- * The three mutable fields below are public and written by the Scheduler
- * directly, against the repository rule that properties are protected. It is a
- * deliberate exception: they are the scheduler's own per-suspend bookkeeping,
- * written on every awaited push, and accessors would put a method call on that
- * path for no encapsulation the Scheduler does not already have — this class is
- * its private record, not a public API. The constructor state stays readonly.
+ * The mutable fields below are public and written by the Scheduler directly,
+ * against the repository rule that properties are protected. It is a deliberate
+ * exception: they are the scheduler's own per-suspend bookkeeping, written on every
+ * awaited push, and accessors would put a method call on that path for no
+ * encapsulation the Scheduler does not already have — this class is its private
+ * record, not a public API. The constructor state stays readonly.
  */
 class Coroutine
 {
@@ -42,16 +42,6 @@ class Coroutine
      * its flow on the Go side, so the Scheduler skips the stopFlow crossing.
      */
     public bool $flowUsed = false;
-
-    /**
-     * When this coroutine runs out of time, as a monotonic hrtime(true) reading; 0
-     * means it was given no deadline, which is the usual case.
-     *
-     * Set by WaitGroup::launch from its timeoutMs, and read by the Scheduler, which
-     * keeps its own index of the coroutines that have one — a deadline is rare
-     * enough that scanning every coroutine for it would cost more than it saves.
-     */
-    public int $deadlineNs = 0;
 
     /**
      * @param int            $id          spl_object_id of the fiber
