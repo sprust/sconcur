@@ -223,6 +223,11 @@ class Connection extends AmqpResource
         return static::toMilliseconds($this->options->readTimeoutSeconds);
     }
 
+    protected function ownConnection(): Connection
+    {
+        return $this;
+    }
+
     /**
      * Opens the connection on first use — which is what keeps the constructor free of
      * network work.

@@ -51,6 +51,13 @@ abstract class AmqpResource
     protected array $internalChannels = [];
 
     /**
+     * The connection a failure on this resource speaks for: a Connection answers with
+     * itself, a Channel with the one it was opened on. Never null — both are known from
+     * the moment the object exists, which is what makes this usable from a constructor.
+     */
+    abstract protected function ownConnection(): Connection;
+
+    /**
      * Marks every channel of this connection closed and forgets the handle each held.
      *
      * Releasing the connection handle is what closed them on the Go side, so there is
@@ -209,11 +216,12 @@ abstract class AmqpResource
         if ($scope === FailureScopeEnum::Connection) {
             // The handle is kept: close() still has to hand it back, or the pooled
             // connection behind it would never be released.
-            $connection = $this instanceof Connection ? $this : $channel?->connection();
-
-            if ($connection !== null) {
-                $connection->internalOpen = false;
-            }
+            //
+            // Asked of the resource rather than read off $channel: a channel that fails
+            // while it is being opened has not been passed to runCommand yet — there is no
+            // channel to name until the constructor returns — and reading the connection
+            // off that argument left the one that died reporting itself open for good.
+            $this->ownConnection()->internalOpen = false;
 
             return new ConnectionException(
                 message: $text,

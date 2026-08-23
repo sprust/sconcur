@@ -390,7 +390,11 @@ class Channel extends AmqpResource
             return null;
         }
 
-        return DeliveryCodec::delivery(delivery: $result, channel: $this->weakSelf(), autoAck: $autoAck);
+        return DeliveryCodec::delivery(
+            delivery: $result,
+            channel: $this->weakSelf(),
+            autoAck: $autoAck,
+        );
     }
 
     /**
@@ -469,6 +473,11 @@ class Channel extends AmqpResource
 
             $this->cancelConsumer(consumerTag: $registeredTag);
         }
+    }
+
+    protected function ownConnection(): Connection
+    {
+        return $this->connection;
     }
 
     /**

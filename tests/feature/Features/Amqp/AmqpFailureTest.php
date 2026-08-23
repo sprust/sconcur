@@ -86,7 +86,10 @@ class AmqpFailureTest extends AmqpTestCase
         try {
             // RabbitMQ has never implemented basic.qos's prefetch_size, and answers one
             // with 540 NOT_IMPLEMENTED — a connection-level reply code.
-            $channel->prefetch(count: 1, sizeBytes: 1024);
+            $channel->prefetch(
+                count: 1,
+                sizeBytes: 1024,
+            );
 
             self::fail('RabbitMQ does not implement a prefetch size');
         } catch (ConnectionException $exception) {
@@ -108,6 +111,47 @@ class AmqpFailureTest extends AmqpTestCase
         }
 
         // The handle is still handed back, so the pooled connection behind it is released.
+        $connection->close();
+    }
+
+    /**
+     * The same connection-level failure, raised while the channel is being opened — the one
+     * moment there is no channel object for the resolver to read the connection off. It used
+     * to leave the connection reporting itself open, and the reopen guard every consumer is
+     * built on (`if (!$connection->isOpen())`) then never fired again.
+     */
+    public function testAConnectionLostWhileAChannelWasOpeningIsReportedClosed(): void
+    {
+        $connection = new Connection(new ConnectionOptions(
+            host: (string) $_ENV['RABBITMQ_HOST'],
+            port: (int) $_ENV['RABBITMQ_PORT'],
+            login: (string) $_ENV['RABBITMQ_USER'],
+            password: (string) $_ENV['RABBITMQ_PASSWORD'],
+            vhost: (string) $_ENV['RABBITMQ_VHOST'],
+            connectionName: 'channel-open-failure-probe',
+        ));
+
+        $connection->connect();
+
+        try {
+            // The prefetch is applied while the channel is opening, and RabbitMQ answers a
+            // prefetch size with 540 NOT_IMPLEMENTED — a connection-level reply code, from
+            // inside the constructor.
+            $connection->channel(
+                prefetchCount: 1,
+                prefetchSizeBytes: 1024,
+            );
+
+            self::fail('RabbitMQ does not implement a prefetch size');
+        } catch (ConnectionException $exception) {
+            self::assertSame(540, $exception->getCode());
+        }
+
+        self::assertFalse(
+            $connection->isOpen(),
+            'a connection that died under a channel being opened must report itself closed',
+        );
+
         $connection->close();
     }
 
@@ -141,7 +185,10 @@ class AmqpFailureTest extends AmqpTestCase
         try {
             // Publishing to an exchange that does not exist kills the channel, so this
             // message is never confirmed.
-            $channel->publish(message: 'nowhere', exchange: TestAmqpResolver::uniqueName('missing'));
+            $channel->publish(
+                message: 'nowhere',
+                exchange: TestAmqpResolver::uniqueName('missing'),
+            );
         } catch (Throwable) {
             // The failure itself is not what this test is about.
         }
@@ -170,7 +217,10 @@ class AmqpFailureTest extends AmqpTestCase
         $missing = TestAmqpResolver::uniqueName('missing');
 
         try {
-            $channel->publish(message: 'nowhere', exchange: $missing);
+            $channel->publish(
+                message: 'nowhere',
+                exchange: $missing,
+            );
         } catch (Throwable) {
             // basic.publish expects no reply, so this may or may not fail on its own.
         }
@@ -203,7 +253,10 @@ class AmqpFailureTest extends AmqpTestCase
     {
         $connection = $this->connection();
         $channel    = $this->channel();
-        $queue      = $this->declareQueue(channel: $channel, durable: true);
+        $queue      = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $queueName = $queue->name();
 
@@ -258,7 +311,10 @@ class AmqpFailureTest extends AmqpTestCase
     {
         $connection = $this->connection();
         $channel    = $this->channel();
-        $queue      = $this->declareQueue(channel: $channel, durable: true);
+        $queue      = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $queueName = $queue->name();
 
