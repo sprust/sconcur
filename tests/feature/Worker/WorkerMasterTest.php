@@ -643,7 +643,10 @@ class WorkerMasterTest extends TestCase
             ],
         ];
 
-        $master = TestWorkerMaster::start(options: ['groups' => $groups], waitReachable: false);
+        $master = TestWorkerMaster::start(
+            options: ['groups' => $groups],
+            waitReachable: false,
+        );
 
         try {
             self::assertTrue(
@@ -714,6 +717,17 @@ class WorkerMasterTest extends TestCase
             self::assertStringContainsString('keeping the running config', $master->logText());
             self::assertTrue($master->isRunning());
             self::assertGreaterThan(0, $master->workerPid());
+
+            // A refusal is the end of that request. The master used to note the request as
+            // served before deciding it could not honour it, and then announced it complete
+            // on a later tick — a journal saying a reload landed when nothing had rolled.
+            usleep(500_000);
+
+            self::assertStringNotContainsString(
+                'reload complete',
+                $master->logText(),
+                'a refused reload must not be reported complete',
+            );
         } finally {
             $master->stop();
         }

@@ -37,6 +37,11 @@ class MasterReloadFile
         $request = (string) json_encode([
             'configPath' => $configPath,
             'group'      => $group,
+            // What tells this request from an identical one. The signature is taken from
+            // the file's contents and its mtime, and mtime counts whole seconds: asking
+            // twice for the same group inside one second produced the same signature, and
+            // the clear that ended the first request then deleted the second unread.
+            'nonce'      => bin2hex(random_bytes(8)),
         ]);
 
         return file_put_contents($this->path, $request . "\n") !== false;
@@ -70,7 +75,9 @@ class MasterReloadFile
             group: (string) ($decoded['group'] ?? ''),
             // The signature is what tells one request from the next, so a second one
             // written while the first was still rolling is served rather than swallowed
-            // by the clear that ends the first.
+            // by the clear that ends the first. Requests written by request() carry a
+            // nonce and differ on their own; the mtime is what separates two hand-written
+            // files holding the same words.
             signature: hash('xxh128', $contents . '|' . (string) @filemtime($this->path)),
         );
     }

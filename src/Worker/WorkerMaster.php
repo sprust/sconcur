@@ -462,8 +462,6 @@ class WorkerMaster
             return;
         }
 
-        $this->servedReloadSignature = $request->signature;
-
         $this->logger->master(
             level: MasterLogger::INFO,
             message: $request->group === ''
@@ -479,17 +477,22 @@ class WorkerMaster
             return;
         }
 
-        if ($request->group !== '' && !$this->applyOneGroup($groups, $request->group)) {
-            $this->reloadFile->clear($request->signature);
+        if ($request->group !== '') {
+            if (!$this->applyOneGroup(groups: $groups, name: $request->group)) {
+                $this->reloadFile->clear($request->signature);
 
-            return;
-        }
-
-        if ($request->group === '') {
+                return;
+            }
+        } else {
             $this->groups = $groups;
 
             $this->applyGroups();
         }
+
+        // Written down only once the reload was applied. A refused one clears its own
+        // request above and leaves nothing behind — recording it here would have
+        // finishReload log "reload complete" on the tick after "reload refused".
+        $this->servedReloadSignature = $request->signature;
 
         $this->refreshState();
     }
@@ -588,7 +591,24 @@ class WorkerMaster
             // the master started. Reordering the file and reloading one group would
             // otherwise overwrite a different group and drop it from the list, and the
             // next full reload would retire a pool that is still serving.
-            $this->groups = $this->withGroupReplaced(groups: $this->groups, group: $group);
+            $this->groups = $this->withGroupReplaced(
+                groups: $this->groups,
+                group: $group,
+            );
+
+            // The same put-back applyGroups() makes, and for the same reason: a retiring
+            // pool spawns nothing, so reconfiguring it would leave every slot empty and
+            // retireDrainedPools() would drop it a tick later. Naming the group is if
+            // anything the clearer way to ask for it back, and without this the pool
+            // could only be revived by a full reload.
+            if ($pool->isRetiring()) {
+                $this->logger->master(
+                    level: MasterLogger::INFO,
+                    message: sprintf('group %s: back in the config while draining; kept', $group->name),
+                );
+
+                $pool->unretire();
+            }
 
             $pool->reconfigure($group);
 

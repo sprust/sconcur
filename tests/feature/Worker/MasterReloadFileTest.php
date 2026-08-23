@@ -44,6 +44,39 @@ class MasterReloadFileTest extends TestCase
         self::assertFileDoesNotExist($this->path);
     }
 
+    /**
+     * Two identical requests written inside one second are still two requests. The
+     * signature is what the master clears by, and it used to be taken from the contents
+     * and the file's mtime — which counts whole seconds. Asking twice for the same group
+     * that fast produced one signature for both, and the clear that ended the first roll
+     * deleted the second request unread.
+     */
+    public function testTwoIdenticalRequestsInTheSameSecondAreToldApart(): void
+    {
+        $reloadFile = new MasterReloadFile($this->path);
+
+        self::assertTrue($reloadFile->request(configPath: '/etc/sconcur.json', group: 'api'));
+
+        $first = $reloadFile->pending();
+
+        self::assertTrue($reloadFile->request(configPath: '/etc/sconcur.json', group: 'api'));
+
+        $second = $reloadFile->pending();
+
+        self::assertNotNull($first);
+        self::assertNotNull($second);
+        self::assertNotSame($first->signature, $second->signature);
+
+        // The request itself is unchanged — only what identifies it differs.
+        self::assertSame('/etc/sconcur.json', $second->configPath);
+        self::assertSame('api', $second->group);
+
+        // And the clear that ends the first roll leaves the second request alone.
+        $reloadFile->clear($first->signature);
+
+        self::assertTrue($reloadFile->requested(), 'the second request must survive the first clear');
+    }
+
     public function testClearIsIdempotentWhenAbsent(): void
     {
         $reloadFile = new MasterReloadFile($this->path);
