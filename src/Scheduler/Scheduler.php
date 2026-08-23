@@ -779,6 +779,11 @@ class Scheduler
         int $preemptionQuantumMs = 0,
         int $handlerTimeoutMs = 0,
     ): void {
+        // Screened here rather than at the first request: the servers take it from argv,
+        // where a negative one is only a typo, and the Go side clamps it to zero. Left to
+        // spawn() it would bind the listener, serve nothing, and raise on every request.
+        static::assertTimeout($handlerTimeoutMs);
+
         $draining = false;
 
         $lastDrainDiagnosticAt = 0.0;
@@ -1123,9 +1128,20 @@ class Scheduler
      * one — asking for ten seconds inside a scope holding one gives both the same instant —
      * and re-arming it would deliver a second CoroutineTimeoutException into the very
      * cleanup the first one started. A deadline fires once.
+     *
+     * A scope also closes on the way out of a coroutine the scheduler has already let go
+     * of, and then there is nothing to put the deadline back on: WaitGroup::stop() detaches
+     * a member before it throws into it, so this runs during an unwind that nobody is
+     * waiting on any more. Writing the entry back there would outlive the fiber, and the
+     * index is keyed by fiber id — an id PHP hands to the next fiber it allocates, which
+     * would be unwound at an instant it never asked for.
      */
     protected function leaveDeadlineScope(int $fiberId, int $previousNs): void
     {
+        if (!isset($this->coroutines[$fiberId])) {
+            return;
+        }
+
         if ($previousNs === 0 || $previousNs <= hrtime(true)) {
             $this->dropDeadline($fiberId);
 
@@ -1343,16 +1359,16 @@ class Scheduler
      */
     protected function enforceDeadlines(): bool
     {
-        $now = hrtime(true);
+        $nowNs = hrtime(true);
 
-        if ($this->nearestDeadlineNs === 0 || $this->nearestDeadlineNs > $now) {
+        if ($this->nearestDeadlineNs === 0 || $this->nearestDeadlineNs > $nowNs) {
             return false;
         }
 
         $expired = [];
 
         foreach ($this->deadlines as $fiberId => $deadlineNs) {
-            if ($deadlineNs > $now) {
+            if ($deadlineNs > $nowNs) {
                 continue;
             }
 
@@ -1368,10 +1384,21 @@ class Scheduler
         $unwound = false;
 
         foreach ($expired as $coroutine) {
-            if (
-                ($this->coroutines[$coroutine->id] ?? null) !== $coroutine
-                || !$coroutine->fiber->isSuspended()
-            ) {
+            if (($this->coroutines[$coroutine->id] ?? null) !== $coroutine) {
+                continue;
+            }
+
+            // A coroutine that is not parked cannot be thrown into. Its entry goes back
+            // into the index rather than being dropped with the pass — losing it would
+            // leave the coroutine running unbounded from here on, with nothing left to
+            // fire. The next sweep finds it parked and unwinds it then; preempt() gets to
+            // it sooner if the coroutine is busy with PHP.
+            if (!$coroutine->fiber->isSuspended()) {
+                $this->rememberDeadline(
+                    fiberId: $coroutine->id,
+                    deadlineNs: $nowNs,
+                );
+
                 continue;
             }
 

@@ -9,6 +9,7 @@ use Fiber;
 use Generator;
 use RuntimeException;
 use SConcur\Exceptions\CallbackExecutionException;
+use SConcur\Exceptions\CoroutineTimeoutException;
 use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Flow\CurrentFlow;
 use SConcur\Scheduler\Coroutine;
@@ -102,12 +103,25 @@ class WaitGroup
         $parentContextFiberId = State::currentContextFiberId();
 
         if ($this->hasFreeSlot()) {
-            $this->launch(
-                callbackKey: $callbackKey,
-                callback: $callback,
-                parentContextFiberId: $parentContextFiberId,
-                timeoutMs: $timeoutMs,
-            );
+            try {
+                $this->launch(
+                    callbackKey: $callbackKey,
+                    callback: $callback,
+                    parentContextFiberId: $parentContextFiberId,
+                    timeoutMs: $timeoutMs,
+                );
+            } catch (CoroutineTimeoutException $exception) {
+                // The member ran out of its own allowance before it ever suspended, which
+                // preemption makes reachable. That is the member failing, and the failure
+                // belongs to the group — fillSlots() has always routed it there, and which
+                // path a member took to its slot cannot change what its timeout means.
+                //
+                // Letting it out here would surface in the adder's stack as if the adder's
+                // own deadline had passed: its catch for that fires, and a server handler
+                // that lets one through answers nothing at all, because a stop is exactly
+                // what it reads as "unwound on purpose".
+                $this->markFailure($exception);
+            }
         } else {
             // At capacity: queue it. Nothing is created or sent to Go until a slot
             // frees and the scheduler calls fillSlots(). The timeout travels with it
@@ -321,10 +335,14 @@ class WaitGroup
     }
 
     /**
-     * Creates the fiber, registers it in State/Scheduler and runs it up to its
-     * first suspend. Shared by the immediate add() path and the deferred fillSlots()
-     * path. Throws CallbackExecutionException if the callback throws before
-     * suspending — add() lets it propagate; fillSlots() turns it into a failure.
+     * Creates the fiber, registers it in State/Scheduler and runs it up to its first
+     * suspend. Shared by the immediate add() path and the deferred fillSlots() path.
+     *
+     * A callback that throws before suspending leaves here as a CallbackExecutionException,
+     * which add() lets propagate and fillSlots() turns into a group failure. A deliberate
+     * unwind travels unwrapped instead — the way it does from everywhere else it can
+     * surface — and both callers route a member's own timeout to the group, so the same
+     * event does not mean two different things depending on whether a slot was free.
      *
      * @param Closure(): mixed $callback
      */
