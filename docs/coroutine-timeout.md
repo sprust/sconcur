@@ -153,9 +153,9 @@ and never waits runs to its end, and the timeout is delivered afterwards.
 
 **Inside a cgo call** no PHP runs at all, so nothing can be delivered. A query, a
 request or a publish that hangs is bounded by that feature's own timeout on the Go
-side — `rpcTimeout` and `readTimeout` on an AMQP connection, the HTTP client's own
-deadlines — and not by this one. A coroutine deadline bounds the PHP coroutine,
-which is not the same as bounding everything it can wait for.
+side — `rpcTimeoutSeconds` and `readTimeoutSeconds` on an AMQP connection, the
+HTTP client's own deadlines — and not by this one. A coroutine deadline bounds the
+PHP coroutine, which is not the same as bounding everything it can wait for.
 
 Outside a coroutine there is nothing to unwind, so `Deadline::run()` runs the
 callback unbounded — the same rule the rest of the library follows for code that is

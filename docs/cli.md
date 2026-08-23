@@ -74,8 +74,8 @@ RUN set -eux; \
     echo "extension=sconcur.so" > /usr/local/etc/php/conf.d/docker-php-ext-sconcur.ini
 ```
 
-In `composer.lock` the version may carry a `v` prefix (`v0.9.0`), so the leading
-`v` is stripped and added back in the URL — otherwise it becomes `vv0.9.0`. `jq`
+In `composer.lock` the version may carry a `v` prefix (`v0.11.0`), so the leading
+`v` is stripped and added back in the URL — otherwise it becomes `vv0.11.0`. `jq`
 and `curl` are required in this build layer.
 
 ## sconcur-status — check the installation
@@ -88,12 +88,12 @@ report; with `--json` — a single machine-readable line.
 vendor/bin/sconcur-status
 #   sconcur status
 #     extension installed:  yes
-#     package version:      0.9.0
-#     extension version:    0.9.0
+#     package version:      0.11.0
+#     extension version:    0.11.0
 #     ready:                yes
 
 vendor/bin/sconcur-status --json
-#   {"extension_installed":true,"package_version":"0.9.0","extension_version":"0.9.0","ready":true}
+#   {"extension_installed":true,"package_version":"0.11.0","extension_version":"0.11.0","ready":true}
 ```
 
 The extension must be enabled for the same process, otherwise the script cannot see
@@ -115,8 +115,8 @@ build through only when `ready` is true, and tags the release as
 Starts and supervises a pool of worker processes (scaling across cores via
 `SO_REUSEPORT`, restarting crashed ones, graceful shutdown). Commands
 `start` / `status` / `stop` / `reload`, all taking a `--configPath` flag pointing to the
-master's JSON config; `status` and `reload` also take `--group=NAME` to narrow them to
-one pool:
+master's JSON config; `--group=NAME` narrows `status` and `reload` to one pool
+(`start` and `stop` accept it and check the name, but serve the whole config):
 
 ```sh
 vendor/bin/sconcur-server start --configPath=/app/master.json

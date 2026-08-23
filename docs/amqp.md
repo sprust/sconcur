@@ -742,7 +742,7 @@ What bounds each axis:
 
 | Limit | Value | What to do about it |
 | --- | --- | --- |
-| channels per connection | 256 (`ConnectionOptions::MAX_CHANNELS`); the 257th fails with `504 channel id space exhausted` | one channel per coroutine, and the topology needs one of its own, so a connection carries 255 consumers; a `connectionName` gives an application a connection of its own, and with it another 256 |
+| channels per connection | 256 (`ConnectionOptions::MAX_CHANNELS`); the 257th fails with `504 channel id space exhausted` | one channel per coroutine, and channel numbering starts at one, so a connection carries 255 consumers; a `connectionName` gives an application a connection of its own, and with it another 256 |
 | one connection is one socket | every channel of a connection is multiplexed over it, and the driver serializes the frames it writes | spread the coroutines over several named connections before the socket, not the channel count, becomes the ceiling |
 | a process is one PHP thread | coroutines overlap the waiting, not the work: a handler that computes blocks the others while it runs | scale processes for CPU-bound handlers, coroutines for handlers that wait |
 
@@ -904,8 +904,8 @@ for instead of the encoder refusing it.
 ## Errors
 
 Every broker failure is a `SConcur\Exceptions\Amqp\AmqpException`, and the reply
-code the broker named is the exception's own code. The one exception to that is the
-last row of the table — a configuration bug, not a broker one:
+code the broker named is the exception's own code. The exceptions to that are the
+last three rows of the table — configuration bugs, not broker ones:
 
 ```php
 use SConcur\Exceptions\Amqp\QueueException;

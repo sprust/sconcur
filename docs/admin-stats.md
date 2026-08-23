@@ -263,7 +263,7 @@ sconcur_worker_start_time_seconds{name="sconcur-servers",pid="12346",group="http
 sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346",group="http"} 105432
 ```
 
-Three scopes, told apart by their prefix and their labels:
+Four scopes, told apart by their prefix and their labels:
 
 | Family | Scope | Labels |
 | --- | --- | --- |

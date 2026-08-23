@@ -8,7 +8,7 @@ points: a handler busy with computation blocks every other coroutine of its
 process until it finishes. Switching addresses that in two forms:
 `Scheduler::switch()` — an explicit switch point you put into your own hot loops
 — and automatic preemption, where the extension interrupts the VM on a timer and
-performs the same switch for you (on by default in the servers).
+performs the same switch for you (on by default in the long-lived workers).
 
 Switching is a latency tool, not a throughput tool. The total CPU work does not
 change and the PHP thread stays single: a heavy handler still takes its

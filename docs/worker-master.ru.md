@@ -122,7 +122,9 @@ MasterConfig::fromFile('/app/master.json')->toWorkerMaster()->run();
 
 ## Команды
 
-Каждая команда принимает `--configPath`; `status` и `reload` — ещё и `--group`. Один и тот же конфиг
+Каждая команда принимает `--configPath`; `--group` сужает `status` и `reload` до
+одного пула. `start` и `stop` его тоже принимают и отвергают имя, которого нет в
+конфиге, но работают со всем конфигом. Один и тот же конфиг
 во всех командах гарантирует согласованные `runtimeDir`/`name`, поэтому
 `status`/`stop`/`reload` находят lock-, state- и триггер-файлы.
 

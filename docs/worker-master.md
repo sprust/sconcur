@@ -123,7 +123,9 @@ what `MasterConfig` builds from the file.
 
 ## Commands
 
-Every command takes `--configPath`; `status` and `reload` also take `--group`. The
+Every command takes `--configPath`; `--group` narrows `status` and `reload` to one
+pool. `start` and `stop` accept it too and refuse a name the config does not
+describe, but they serve the whole config either way. The
 same config across all commands guarantees consistent `runtimeDir`/`name`, so
 `status`/`stop`/`reload` find the lock, state and trigger files.
 

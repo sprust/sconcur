@@ -150,9 +150,11 @@ feature's doc. Key PHP classes not covered there:
 - `Features/Server/ServerRuntimeSupportTrait` — shared runtime glue for the
   long-lived workers (the servers and `Amqp/Consumer/QueueConsumer`):
   argv→constructor-override parsing, signal handlers, arming automatic preemption,
-  the orphaned-worker check, telemetry env. It is also where a feature asks the
-  runtime rather than the Scheduler, together with `FeatureExecutor::canAwait()` —
-  nothing under `Features/` names the scheduler itself.
+  the orphaned-worker check, telemetry env. Together with
+  `FeatureExecutor::canAwait()` it is where a feature asks the runtime a question
+  rather than reaching into the scheduler for the answer. The servers and the
+  executor still name `Scheduler` — they spawn and serve, which is what it is for;
+  what does not belong there is a feature reading its internals.
 - `Features/Amqp/Consumer/` — the supervised consumer runtime: `QueueConsumer`
   (a coroutine per unit of a queue's weight, each with its own channel), plus
   `QueueSpec`/`QueueSpecParser` for the JSON queue list that arrives in argv and
