@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Amqp;
 
 use SConcur\Exceptions\Amqp\ChannelException;
-use SConcur\Exceptions\Amqp\ConnectionException;
+use SConcur\Exceptions\Amqp\InvalidPrefetchException;
 use SConcur\Exceptions\Amqp\InvalidAmqpValueException;
 use SConcur\Features\Amqp\Channel;
 use SConcur\Features\Amqp\Decimal;
@@ -472,7 +472,7 @@ class AmqpMessageTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $this->expectException(ConnectionException::class);
+        $this->expectException(InvalidPrefetchException::class);
         $this->expectExceptionMessage("Parameter 'prefetchCount' must be between 0 and 65535.");
 
         $channel->prefetch(count: 70_000);
@@ -516,6 +516,24 @@ class AmqpMessageTest extends AmqpTestCase
         $this->expectExceptionMessage('cannot be sent');
 
         $queue->publish(new Message(body: 'timestamp', headers: ['when' => new Timestamp(1.0e19)]));
+    }
+
+    /**
+     * The exact edge of that limit: 2^63 is the first second a PHP int cannot hold, and it
+     * is also what (float) PHP_INT_MAX rounds up to — so a `> PHP_INT_MAX` test let it
+     * through and the cast wrapped it to PHP_INT_MIN, putting a date in 1754 on the wire.
+     */
+    public function testATimestampExactlyAtTheIntegerEdgeIsRefused(): void
+    {
+        $queue = $this->declareQueue($this->channel());
+
+        $this->expectException(InvalidAmqpValueException::class);
+        $this->expectExceptionMessage('cannot be sent');
+
+        $queue->publish(new Message(
+            body: 'timestamp',
+            headers: ['when' => new Timestamp(9223372036854775808.0)],
+        ));
     }
 
     /**

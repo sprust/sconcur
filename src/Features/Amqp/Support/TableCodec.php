@@ -10,20 +10,18 @@ use SConcur\Features\Amqp\Decimal;
 use SConcur\Features\Amqp\Timestamp;
 
 /**
- * Carries an AMQP field table (queue and exchange arguments, message headers) across the
+ * Carries an AMQP field table — queue and exchange arguments, message headers — across the
  * boundary in both directions.
  *
- * Two rules matter to what actually reaches the broker:
+ * Two rules decide what reaches the broker:
  *
- * - a key that is not a string is dropped with a warning at the top level, and turned into
- *   a string deeper down, so a header carrying a list keeps its values;
- * - a nested array with no string keys at all is an AMQP field array, not a table.
+ * - a key that is not a string is dropped with a warning at the top level and stringified
+ *   deeper down, so a header carrying a list keeps its values;
+ * - a nested array with no string key anywhere is an AMQP field array, not a table.
  *
- * Most values are scalars MessagePack already knows. The two that are not — a decimal and
- * a timestamp — have field kinds of their own in AMQP 0-9-1, so they travel in a tagged map
- * the Go side turns into the real field value and turns back on the way home. Flattening
- * them into a float and an integer would change the type of a header for every other client
- * reading the same queue.
+ * A decimal and a timestamp are the two values MessagePack has no type for. They travel in
+ * a tagged map the Go side turns into the real field value and back, because flattening
+ * them would change the type of a header for every other client reading the same queue.
  *
  * Go: the tagged* constants (ext/internal/features/amqp/values.go).
  */
@@ -45,6 +43,15 @@ readonly class TableCodec
     protected const int MAX_DEPTH = 128;
 
     /**
+     * The first second a PHP int cannot hold: 2^63.
+     *
+     * Compared against rather than PHP_INT_MAX, because a float comparison promotes
+     * PHP_INT_MAX to 2^63 anyway — so exactly 2^63 passed a `> PHP_INT_MAX` test and then
+     * wrapped to PHP_INT_MIN on the cast, putting a timestamp from before 1970 on the wire.
+     */
+    protected const float MAX_SENDABLE_SECONDS = 9223372036854775808.0;
+
+    /**
      * Prepares a field table for the wire. A key that is not a string is dropped with a
      * warning, as the extension drops it: a table whose keys came from user data must not
      * cost the whole message.
@@ -64,7 +71,10 @@ readonly class TableCodec
                 continue;
             }
 
-            $encoded[$name] = static::encodeValue(value: $value, depth: 1);
+            $encoded[$name] = static::encodeValue(
+                value: $value,
+                depth: 1,
+            );
         }
 
         return $encoded;
@@ -103,7 +113,10 @@ readonly class TableCodec
         $encoded = [];
 
         foreach ($table as $name => $value) {
-            $encoded[$name] = static::encodeValue(value: $value, depth: $depth + 1);
+            $encoded[$name] = static::encodeValue(
+                value: $value,
+                depth: $depth + 1,
+            );
         }
 
         return $encoded;
@@ -122,7 +135,10 @@ readonly class TableCodec
         $encoded = [];
 
         foreach ($values as $value) {
-            $encoded[] = static::encodeValue(value: $value, depth: $depth + 1);
+            $encoded[] = static::encodeValue(
+                value: $value,
+                depth: $depth + 1,
+            );
         }
 
         return $encoded;
@@ -149,12 +165,12 @@ readonly class TableCodec
         }
 
         if ($value instanceof Timestamp) {
-            // AMQP counts unsigned 64-bit seconds, which is what Timestamp::MAX
+            // AMQP counts unsigned 64-bit seconds, which is what Timestamp::MAX_SECONDS
             // allows, but neither a PHP int nor the Go time the field is built from can
             // hold the upper half of that range. A cast would wrap it into a negative
             // number and the message would carry a timestamp from before 1970, so the
             // limit is stated instead of silently crossed (docs/amqp.md lists it).
-            if ($value->seconds > PHP_INT_MAX) {
+            if ($value->seconds >= self::MAX_SENDABLE_SECONDS) {
                 throw new InvalidAmqpValueException(
                     message: 'Timestamp exceeds ' . PHP_INT_MAX . ' and cannot be sent.',
                 );
@@ -177,8 +193,14 @@ readonly class TableCodec
         }
 
         return static::isFieldArray($value)
-            ? static::encodeArray(values: $value, depth: $depth)
-            : static::encodeTable(table: $value, depth: $depth);
+            ? static::encodeArray(
+                values: $value,
+                depth: $depth,
+            )
+            : static::encodeTable(
+                table: $value,
+                depth: $depth,
+            );
     }
 
     /**

@@ -59,7 +59,7 @@ abstract class AmqpTestCase extends BaseTestCase
     protected function connection(): Connection
     {
         return $this->connection ??= TestAmqpResolver::getConnection(
-            readTimeout: static::READ_TIMEOUT_SECONDS,
+            readTimeoutSeconds: static::READ_TIMEOUT_SECONDS,
         );
     }
 

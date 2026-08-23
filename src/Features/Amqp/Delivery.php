@@ -10,15 +10,12 @@ use WeakReference;
 /**
  * A message the broker delivered, and the means to settle it.
  *
- * Settling lives here rather than on the queue. In AMQP an acknowledgement belongs to the
- * channel the message arrived on and names it by delivery tag, so
- * `$queue->ack($envelope->getDeliveryTag())` made the caller carry a number from one object
- * to another and gave them the chance to carry the wrong one. A delivery knows its own tag
- * and its own channel.
+ * Settling lives here rather than on the queue: an acknowledgement belongs to the channel
+ * the message arrived on and names it by delivery tag, so a queue-side ack made the caller
+ * carry a number between two objects and gave them the chance to carry the wrong one.
  *
- * Settling twice is refused here rather than sent: the broker answers a second
- * acknowledgement of the same tag by killing the channel, which takes every other consumer
- * on it down as collateral.
+ * A second settle is refused here rather than sent — the broker answers one by killing the
+ * channel, taking every other consumer on it down as collateral.
  */
 class Delivery
 {
@@ -78,9 +75,9 @@ class Delivery
     }
 
     /**
-     * Refuses the delivery. Requeued by default, which is what a handler that failed for a
-     * reason that may pass wants; `requeue: false` sends the message to the queue's
-     * dead-letter exchange, or drops it where there is none.
+     * Refuses the delivery. Requeued by default, which is what a failure that may pass
+     * wants; `requeue: false` dead-letters the message, or drops it where the queue names no
+     * exchange.
      *
      * @throws ChannelException if the channel is gone or the delivery was already settled
      */
@@ -94,8 +91,8 @@ class Delivery
     }
 
     /**
-     * Refuses exactly this delivery. `reject` is `nack` without the batch form, and it
-     * defaults the other way: a rejected message is not put back unless asked for.
+     * Refuses exactly this delivery. `reject` is `nack` without the batch form, defaulting
+     * the other way: a rejected message is not put back unless asked for.
      *
      * @throws ChannelException if the channel is gone or the delivery was already settled
      */

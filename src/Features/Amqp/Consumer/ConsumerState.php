@@ -4,32 +4,30 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Amqp\Consumer;
 
+use Throwable;
+
 /**
- * What the coroutines of one QueueConsumer share: whether the worker is draining, how
- * many consumers are still live, how many are mid-message, and what has been handled.
+ * What the coroutines of one QueueConsumer share.
  *
- * Plain mutable state with no locking, which is the whole environment here: coroutines
- * are cooperative and single-threaded, so a counter only changes at a suspension point
- * of the coroutine that changes it.
+ * No locking: coroutines are cooperative and single-threaded, so a counter only changes at
+ * a suspension point of the coroutine that changes it.
  */
 class ConsumerState
 {
     protected bool $draining = false;
 
-    protected int $startedConsumers = 0;
-
-    protected int $liveConsumers = 0;
+    protected int $finishedConsumers = 0;
 
     protected int $busyConsumers = 0;
 
     protected int $handledCount = 0;
 
-    protected int $failedCount = 0;
+    protected ?Throwable $consumerFailure = null;
 
     /**
-     * Stops the consumers: each returns as soon as the message it is on is finished.
-     * A consumer waiting for a delivery does not see this — ending those is the
-     * second phase of the drain, see QueueConsumer::superviseDrain().
+     * Each consumer returns as soon as its current message is finished. One waiting for a
+     * delivery never sees this — those end in the drain's second phase, see
+     * QueueConsumer::superviseDrain().
      */
     public function startDraining(): void
     {
@@ -41,31 +39,30 @@ class ConsumerState
         return $this->draining;
     }
 
-    public function consumerStarted(): void
+    /**
+     * The first failure is kept: a pool whose consumers all died must not exit as if it had
+     * finished its shift.
+     */
+    public function consumerFinished(?Throwable $failure = null): void
     {
-        ++$this->startedConsumers;
+        ++$this->finishedConsumers;
 
-        ++$this->liveConsumers;
-    }
-
-    public function consumerFinished(): void
-    {
-        --$this->liveConsumers;
-    }
-
-    public function liveConsumers(): int
-    {
-        return $this->liveConsumers;
+        $this->consumerFailure ??= $failure;
     }
 
     /**
-     * How many consumers have ever started. Told apart from the live count so "none
-     * left" is not confused with "none up yet": the supervisor wakes for the first time
-     * while the consumers are still opening their channels.
+     * Counted up rather than down from a live count, so the supervisor's first wakeup —
+     * which can beat the consumers to their first line — reads 0 and not "none left".
      */
-    public function startedConsumers(): int
+    public function finishedConsumers(): int
     {
-        return $this->startedConsumers;
+        return $this->finishedConsumers;
+    }
+
+    /** The first failure that ended a consumer, if any did. */
+    public function consumerFailure(): ?Throwable
+    {
+        return $this->consumerFailure;
     }
 
     public function messageStarted(): void
@@ -74,21 +71,30 @@ class ConsumerState
     }
 
     /**
-     * One message left the handler, whether it returned or threw. A failure is
-     * counted, not swallowed: the worker's own report says how the run went.
+     * The handler returned or threw, and the runtime has settled the message. Counted only
+     * here, so one the drain cut short is not reported as handled.
      */
-    public function messageFinished(bool $failed): void
+    public function messageFinished(): void
     {
         --$this->busyConsumers;
 
         ++$this->handledCount;
-
-        if ($failed) {
-            ++$this->failedCount;
-        }
     }
 
-    /** How many coroutines are inside a handler right now. */
+    /**
+     * The coroutine holding the message was unwound, so it goes back to the broker
+     * unsettled: the slot is freed without counting as handled.
+     */
+    public function messageAbandoned(): void
+    {
+        --$this->busyConsumers;
+    }
+
+    /**
+     * Coroutines inside a handler or settling its message. The drain waits for this to
+     * reach zero, which is why settling counts: one counted out with its acknowledgement
+     * still in flight could be cut between the two.
+     */
     public function busyConsumers(): int
     {
         return $this->busyConsumers;
@@ -97,10 +103,5 @@ class ConsumerState
     public function handledCount(): int
     {
         return $this->handledCount;
-    }
-
-    public function failedCount(): int
-    {
-        return $this->failedCount;
     }
 }

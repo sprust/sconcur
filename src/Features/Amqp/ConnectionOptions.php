@@ -4,29 +4,27 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Amqp;
 
-use SConcur\Exceptions\Amqp\ConnectionException;
+use SConcur\Exceptions\Amqp\InvalidConnectionOptionException;
 
 /**
- * Everything a Connection needs to reach a broker, settled once and never changed after.
+ * Everything a Connection needs to reach a broker, settled once and never changed after: a
+ * connection cannot have its host changed underneath the channels already open on it.
  *
- * The calque carried these as thirty mutable setters and getters, because the extension
- * builds its connection from a property bag. Here they are constructor arguments of a
- * readonly object, as with HttpClientOptions: a connection cannot have its host changed
- * underneath the channels already open on it.
+ * The timeouts are seconds because that is the unit an AMQP URI and every broker's own
+ * documentation state them in; the wire carries milliseconds, and the conversion happens
+ * on the way out (Connection::rpcTimeoutMs and its neighbours).
  */
 readonly class ConnectionOptions
 {
     /**
-     * Channels one connection may hold open. AMQP 0-9-1 carries channel-max as a 16-bit
-     * short, so the protocol's own ceiling is 65535; this is the lower one ext-amqp
-     * settled on, kept because a consumer pool sized against it is portable between the
-     * two and because 256 channels on one socket is already past the point where another
-     * connection is the better answer.
+     * Channels one connection may hold open. The protocol's own ceiling is 65535 (channel-max
+     * is a 16-bit short); this is the lower one ext-amqp settled on, kept because 256
+     * channels on one socket is already past the point where a second connection is better.
      */
     public const int MAX_CHANNELS = 256;
 
     /** The frame size asked for when none is named. */
-    public const int DEFAULT_FRAME_MAX = 131072;
+    public const int DEFAULT_FRAME_MAX_BYTES = 131072;
 
     /** The longest login or password the protocol accepts. */
     protected const int MAX_CREDENTIAL_LENGTH = 1024;
@@ -39,15 +37,16 @@ readonly class ConnectionOptions
     protected const int MAX_PORT = 65535;
 
     /**
-     * @param float $connectTimeout seconds to wait for the broker to answer the dial;
-     *                              0 leaves the Go side to apply its own default
-     * @param float $readTimeout    seconds a consumer waits for a delivery before the wait
-     *                              fails; 0 waits forever
-     * @param float $writeTimeout   seconds a publish may take
-     * @param float $rpcTimeout     seconds any other single broker method may take
-     * @param int   $heartbeat      seconds between heartbeats; 0 lets the broker choose
+     * @param float $connectTimeoutSeconds how long to wait for the broker to answer the dial;
+     *                                     0 leaves the Go side to apply its own default
+     * @param float $readTimeoutSeconds    how long a consumer waits for a delivery before the
+     *                                     wait fails; 0 waits forever
+     * @param float $writeTimeoutSeconds   how long a publish may take
+     * @param float $rpcTimeoutSeconds     how long any other single broker method may take
+     * @param int   $heartbeatSeconds      the heartbeat interval; 0 lets the broker choose
+     * @param int   $frameMaxBytes         the largest frame the connection will send or accept
      *
-     * @throws ConnectionException if a value is outside the range the protocol allows
+     * @throws InvalidConnectionOptionException if a value is outside the range the protocol allows
      */
     public function __construct(
         public string $host = 'localhost',
@@ -55,49 +54,77 @@ readonly class ConnectionOptions
         public string $login = 'guest',
         public string $password = 'guest',
         public string $vhost = '/',
-        public float $connectTimeout = 0.0,
-        public float $readTimeout = 0.0,
-        public float $writeTimeout = 0.0,
-        public float $rpcTimeout = 0.0,
-        public int $heartbeat = 0,
+        public float $connectTimeoutSeconds = 0.0,
+        public float $readTimeoutSeconds = 0.0,
+        public float $writeTimeoutSeconds = 0.0,
+        public float $rpcTimeoutSeconds = 0.0,
+        public int $heartbeatSeconds = 0,
         public int $channelMax = self::MAX_CHANNELS,
-        public int $frameMax = self::DEFAULT_FRAME_MAX,
+        public int $frameMaxBytes = self::DEFAULT_FRAME_MAX_BYTES,
         public ?TlsOptions $tls = null,
         public SaslMethodEnum $saslMethod = SaslMethodEnum::Plain,
         public ?string $connectionName = null,
     ) {
-        static::assertLength(name: 'host', value: $host, limit: self::MAX_IDENTIFIER_LENGTH);
-        static::assertLength(name: 'vhost', value: $vhost, limit: self::MAX_IDENTIFIER_LENGTH);
-        static::assertLength(name: 'login', value: $login, limit: self::MAX_CREDENTIAL_LENGTH);
-        static::assertLength(name: 'password', value: $password, limit: self::MAX_CREDENTIAL_LENGTH);
+        static::assertLength(
+            name: 'host',
+            value: $host,
+            limit: self::MAX_IDENTIFIER_LENGTH,
+        );
+        static::assertLength(
+            name: 'vhost',
+            value: $vhost,
+            limit: self::MAX_IDENTIFIER_LENGTH,
+        );
+        static::assertLength(
+            name: 'login',
+            value: $login,
+            limit: self::MAX_CREDENTIAL_LENGTH,
+        );
+        static::assertLength(
+            name: 'password',
+            value: $password,
+            limit: self::MAX_CREDENTIAL_LENGTH,
+        );
 
         if ($port < self::MIN_PORT || $port > self::MAX_PORT) {
-            throw new ConnectionException(
+            throw new InvalidConnectionOptionException(
                 message: "Parameter 'port' must be between " . self::MIN_PORT . ' and ' . self::MAX_PORT . '.',
             );
         }
 
-        static::assertNotNegative(name: 'connectTimeout', value: $connectTimeout);
-        static::assertNotNegative(name: 'readTimeout', value: $readTimeout);
-        static::assertNotNegative(name: 'writeTimeout', value: $writeTimeout);
-        static::assertNotNegative(name: 'rpcTimeout', value: $rpcTimeout);
+        static::assertNotNegative(
+            name: 'connectTimeoutSeconds',
+            value: $connectTimeoutSeconds,
+        );
+        static::assertNotNegative(
+            name: 'readTimeoutSeconds',
+            value: $readTimeoutSeconds,
+        );
+        static::assertNotNegative(
+            name: 'writeTimeoutSeconds',
+            value: $writeTimeoutSeconds,
+        );
+        static::assertNotNegative(
+            name: 'rpcTimeoutSeconds',
+            value: $rpcTimeoutSeconds,
+        );
 
-        if ($heartbeat < 0) {
-            throw new ConnectionException(message: "Parameter 'heartbeat' must not be negative.");
+        if ($heartbeatSeconds < 0) {
+            throw new InvalidConnectionOptionException(message: "Parameter 'heartbeatSeconds' must not be negative.");
         }
 
         if ($channelMax < 1 || $channelMax > self::MAX_CHANNELS) {
-            throw new ConnectionException(
+            throw new InvalidConnectionOptionException(
                 message: "Parameter 'channelMax' must be between 1 and " . self::MAX_CHANNELS . '.',
             );
         }
 
-        if ($frameMax < 1) {
-            throw new ConnectionException(message: "Parameter 'frameMax' must be positive.");
+        if ($frameMaxBytes < 1) {
+            throw new InvalidConnectionOptionException(message: "Parameter 'frameMaxBytes' must be positive.");
         }
 
         if ($saslMethod === SaslMethodEnum::External && $tls?->cert === null) {
-            throw new ConnectionException(
+            throw new InvalidConnectionOptionException(
                 message: 'SASL EXTERNAL authenticates with a client certificate, so TLS options naming'
                     . ' a cert and a key are required.',
             );
@@ -115,20 +142,20 @@ readonly class ConnectionOptions
      * and a vhost containing a slash is written `%2f`. Everything else is a query
      * parameter, named as the broker's own URI documentation names it.
      *
-     * @throws ConnectionException if the URI cannot be read or names an unknown scheme
+     * @throws InvalidConnectionOptionException if the URI cannot be read or names an unknown scheme
      */
     public static function fromDsn(string $dsn): self
     {
         $parts = parse_url($dsn);
 
         if ($parts === false || !isset($parts['scheme'])) {
-            throw new ConnectionException(message: "Could not parse the AMQP URI '$dsn'.");
+            throw new InvalidConnectionOptionException(message: "Could not parse the AMQP URI '$dsn'.");
         }
 
         $scheme = strtolower((string) $parts['scheme']);
 
         if ($scheme !== 'amqp' && $scheme !== 'amqps') {
-            throw new ConnectionException(
+            throw new InvalidConnectionOptionException(
                 message: "Unknown AMQP URI scheme '$scheme'; expected 'amqp' or 'amqps'.",
             );
         }
@@ -137,7 +164,10 @@ readonly class ConnectionOptions
 
         $secure = $scheme === 'amqps';
 
-        $tls = static::tlsFrom(query: $query, secure: $secure);
+        $tls = static::tlsFrom(
+            query: $query,
+            secure: $secure,
+        );
 
         $defaults = new self();
 
@@ -147,10 +177,15 @@ readonly class ConnectionOptions
             login: isset($parts['user']) ? rawurldecode((string) $parts['user']) : $defaults->login,
             password: isset($parts['pass']) ? rawurldecode((string) $parts['pass']) : $defaults->password,
             vhost: static::vhostOf($parts['path'] ?? null),
-            connectTimeout: static::secondsFromMilliseconds(query: $query, key: 'connection_timeout'),
-            heartbeat: isset($query['heartbeat']) ? (int) $query['heartbeat'] : $defaults->heartbeat,
+            connectTimeoutSeconds: static::secondsFromMilliseconds(
+                query: $query,
+                key: 'connection_timeout',
+            ),
+            heartbeatSeconds: isset($query['heartbeat'])
+                ? (int) $query['heartbeat']
+                : $defaults->heartbeatSeconds,
             channelMax: isset($query['channel_max']) ? (int) $query['channel_max'] : $defaults->channelMax,
-            frameMax: isset($query['frame_max']) ? (int) $query['frame_max'] : $defaults->frameMax,
+            frameMaxBytes: isset($query['frame_max']) ? (int) $query['frame_max'] : $defaults->frameMaxBytes,
             tls: $tls,
             saslMethod: static::saslMethodOf($query),
             connectionName: isset($query['connection_name'])
@@ -211,13 +246,22 @@ readonly class ConnectionOptions
             caCert: $caCert,
             cert: $cert,
             key: $key,
-            // The broker's own URI parameter spells the two states `verify_peer` and
-            // `verify_none`; a plain boolean is accepted too, since that is what most
-            // configuration files carry.
-            verify: $verifyGiven
-                ? ((string) $query['verify'] !== 'verify_none' && (bool) $query['verify'])
-                : true,
+            verify: $verifyGiven ? static::verifyOf((string) $query['verify']) : true,
         );
+    }
+
+    /**
+     * Whether the URI asked for the broker's certificate to be checked.
+     *
+     * The broker's own URI parameter spells the two states `verify_peer` and `verify_none`.
+     * A boolean is accepted too, since that is what most configuration files carry — and it
+     * is read the way a configuration file means it: `false`, `off` and `no` turn the check
+     * off, where a plain cast would read every one of them as true and quietly verify.
+     */
+    protected static function verifyOf(string $value): bool
+    {
+        return filter_var($value, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE)
+            ?? ($value !== 'verify_none');
     }
 
     /**
@@ -243,22 +287,22 @@ readonly class ConnectionOptions
     }
 
     /**
-     * @throws ConnectionException if the value is longer than the protocol allows
+     * @throws InvalidConnectionOptionException if the value is longer than the protocol allows
      */
     protected static function assertLength(string $name, string $value, int $limit): void
     {
         if (strlen($value) > $limit) {
-            throw new ConnectionException(message: "Parameter '$name' must be at most $limit bytes long.");
+            throw new InvalidConnectionOptionException(message: "Parameter '$name' must be at most $limit bytes long.");
         }
     }
 
     /**
-     * @throws ConnectionException if the value is negative
+     * @throws InvalidConnectionOptionException if the value is negative
      */
     protected static function assertNotNegative(string $name, float $value): void
     {
         if ($value < 0) {
-            throw new ConnectionException(message: "Parameter '$name' must not be negative.");
+            throw new InvalidConnectionOptionException(message: "Parameter '$name' must not be negative.");
         }
     }
 }

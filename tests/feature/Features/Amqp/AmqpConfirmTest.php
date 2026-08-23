@@ -27,8 +27,8 @@ class AmqpConfirmTest extends AmqpTestCase
 
         $queue->bind(exchange: $exchange->name(), routingKey: 'key');
 
-        $exchange->publishConfirmed(message: 'first', routingKey: 'key', timeout: 2.0);
-        $exchange->publishConfirmed(message: 'second', routingKey: 'key', timeout: 2.0);
+        $exchange->publishConfirmed(message: 'first', routingKey: 'key', timeoutSeconds: 2.0);
+        $exchange->publishConfirmed(message: 'second', routingKey: 'key', timeoutSeconds: 2.0);
 
         // The confirm is the broker's promise that it has the message, so the queue holds
         // both by the time the second publish returns — no polling needed.
@@ -58,7 +58,7 @@ class AmqpConfirmTest extends AmqpTestCase
                 // a shared one would turn the fan-out back into a queue.
                 $channel = $connection->channel();
 
-                $channel->queue($queueName)->publishConfirmed(message: "message-$index", timeout: 5.0);
+                $channel->queue($queueName)->publishConfirmed(message: "message-$index", timeoutSeconds: 5.0);
 
                 $channel->close();
 
@@ -81,7 +81,7 @@ class AmqpConfirmTest extends AmqpTestCase
 
         $startedAt = microtime(true);
 
-        $channel->waitForConfirms(timeout: 2.0);
+        $channel->waitForConfirms(timeoutSeconds: 2.0);
 
         $elapsedMs = (microtime(true) - $startedAt) * 1000;
 
@@ -99,7 +99,7 @@ class AmqpConfirmTest extends AmqpTestCase
         $this->expectException(ChannelException::class);
         $this->expectExceptionMessage('not in confirm mode');
 
-        $channel->waitForConfirms(timeout: 0.2);
+        $channel->waitForConfirms(timeoutSeconds: 0.2);
     }
 
     /**
@@ -117,7 +117,7 @@ class AmqpConfirmTest extends AmqpTestCase
             $exchange->publishConfirmed(
                 message: new Message(body: 'nowhere', contentType: 'text/plain', headers: ['x-try' => 1]),
                 routingKey: 'unbound',
-                timeout: 2.0,
+                timeoutSeconds: 2.0,
             );
 
             self::fail('an unroutable message must fail the publish');
@@ -145,7 +145,7 @@ class AmqpConfirmTest extends AmqpTestCase
         $channel  = $this->channel();
         $exchange = $this->declareExchange($channel);
 
-        $exchange->publishConfirmed(message: 'nowhere', routingKey: 'unbound', timeout: 2.0, mandatory: false);
+        $exchange->publishConfirmed(message: 'nowhere', routingKey: 'unbound', timeoutSeconds: 2.0, mandatory: false);
 
         self::assertTrue($channel->isOpen());
     }

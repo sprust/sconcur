@@ -18,12 +18,12 @@ use SConcur\Features\Amqp\ConnectionOptions;
 class TestAmqpResolver
 {
     /**
-     * @param float $readTimeout seconds a consumer waits for a delivery before its stream
+     * @param float $readTimeoutSeconds seconds a consumer waits for a delivery before its stream
      *                           ends. 0 waits forever, which is what a supervised worker
      *                           wants; a test passes a deadline so a consumer that is
      *                           never fed fails the run instead of hanging it
      */
-    public static function getOptions(float $readTimeout = 0.0): ConnectionOptions
+    public static function getOptions(float $readTimeoutSeconds = 0.0): ConnectionOptions
     {
         return new ConnectionOptions(
             host: (string) $_ENV['RABBITMQ_HOST'],
@@ -31,7 +31,7 @@ class TestAmqpResolver
             login: (string) $_ENV['RABBITMQ_USER'],
             password: (string) $_ENV['RABBITMQ_PASSWORD'],
             vhost: (string) $_ENV['RABBITMQ_VHOST'],
-            readTimeout: $readTimeout,
+            readTimeoutSeconds: $readTimeoutSeconds,
         );
     }
 
@@ -52,9 +52,9 @@ class TestAmqpResolver
     }
 
     /** An open SConcur connection to the test broker. */
-    public static function getConnection(float $readTimeout = 0.0): Connection
+    public static function getConnection(float $readTimeoutSeconds = 0.0): Connection
     {
-        $connection = new Connection(static::getOptions(readTimeout: $readTimeout));
+        $connection = new Connection(static::getOptions(readTimeoutSeconds: $readTimeoutSeconds));
 
         $connection->connect();
 

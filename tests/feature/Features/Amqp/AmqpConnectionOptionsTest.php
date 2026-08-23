@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Amqp;
 
 use PHPUnit\Framework\Attributes\DataProvider;
-use SConcur\Exceptions\Amqp\ConnectionException;
+use SConcur\Exceptions\Amqp\InvalidConnectionOptionException;
 use SConcur\Features\Amqp\ConnectionOptions;
 use SConcur\Features\Amqp\SaslMethodEnum;
 use SConcur\Features\Amqp\TlsOptions;
@@ -84,10 +84,10 @@ class AmqpConnectionOptionsTest extends BaseTestCase
                 . '&keyfile=/certs/client.key&auth_mechanism=external&connection_name=api',
         );
 
-        self::assertSame(30, $options->heartbeat);
-        self::assertSame(2.5, $options->connectTimeout);
+        self::assertSame(30, $options->heartbeatSeconds);
+        self::assertSame(2.5, $options->connectTimeoutSeconds);
         self::assertSame(64, $options->channelMax);
-        self::assertSame(65536, $options->frameMax);
+        self::assertSame(65536, $options->frameMaxBytes);
         self::assertSame('api', $options->connectionName);
         self::assertSame(SaslMethodEnum::External, $options->saslMethod);
 
@@ -102,11 +102,33 @@ class AmqpConnectionOptionsTest extends BaseTestCase
         self::assertFalse(ConnectionOptions::fromDsn('amqps://broker/?verify=verify_none')->tls?->verify);
         self::assertFalse(ConnectionOptions::fromDsn('amqps://broker/?verify=0')->tls?->verify);
         self::assertTrue(ConnectionOptions::fromDsn('amqps://broker/?verify=verify_peer')->tls?->verify);
+        self::assertTrue(ConnectionOptions::fromDsn('amqps://broker/?verify=1')->tls?->verify);
+    }
+
+    /**
+     * The boolean spellings a configuration file carries. A plain cast read every one of
+     * the false ones as true, so a URI that asked for no verification quietly verified.
+     */
+    public function testVerificationCanBeTurnedOffTheWayAConfigurationFileSpellsIt(): void
+    {
+        foreach (['false', 'off', 'no'] as $spelling) {
+            self::assertFalse(
+                ConnectionOptions::fromDsn("amqps://broker/?verify=$spelling")->tls?->verify,
+                "verify=$spelling was read as verification on",
+            );
+        }
+
+        foreach (['true', 'on', 'yes'] as $spelling) {
+            self::assertTrue(
+                ConnectionOptions::fromDsn("amqps://broker/?verify=$spelling")->tls?->verify,
+                "verify=$spelling was read as verification off",
+            );
+        }
     }
 
     public function testAUriWithAnUnknownSchemeIsRefused(): void
     {
-        $this->expectException(ConnectionException::class);
+        $this->expectException(InvalidConnectionOptionException::class);
         $this->expectExceptionMessage("Unknown AMQP URI scheme 'http'");
 
         ConnectionOptions::fromDsn('http://broker/');
@@ -114,7 +136,7 @@ class AmqpConnectionOptionsTest extends BaseTestCase
 
     public function testAUriThatCannotBeReadIsRefused(): void
     {
-        $this->expectException(ConnectionException::class);
+        $this->expectException(InvalidConnectionOptionException::class);
         $this->expectExceptionMessage('Could not parse the AMQP URI');
 
         ConnectionOptions::fromDsn('not a uri at all');
@@ -122,7 +144,7 @@ class AmqpConnectionOptionsTest extends BaseTestCase
 
     public function testAPortOutsideTheRangeIsRefused(): void
     {
-        $this->expectException(ConnectionException::class);
+        $this->expectException(InvalidConnectionOptionException::class);
         $this->expectExceptionMessage("Parameter 'port' must be between 1 and 65535.");
 
         new ConnectionOptions(port: 70_000);
@@ -130,15 +152,15 @@ class AmqpConnectionOptionsTest extends BaseTestCase
 
     public function testANegativeTimeoutIsRefused(): void
     {
-        $this->expectException(ConnectionException::class);
-        $this->expectExceptionMessage("Parameter 'rpcTimeout' must not be negative.");
+        $this->expectException(InvalidConnectionOptionException::class);
+        $this->expectExceptionMessage("Parameter 'rpcTimeoutSeconds' must not be negative.");
 
-        new ConnectionOptions(rpcTimeout: -1.0);
+        new ConnectionOptions(rpcTimeoutSeconds: -1.0);
     }
 
     public function testAChannelLimitPastWhatTheProtocolAllowsIsRefused(): void
     {
-        $this->expectException(ConnectionException::class);
+        $this->expectException(InvalidConnectionOptionException::class);
         $this->expectExceptionMessage("Parameter 'channelMax' must be between 1 and 256.");
 
         new ConnectionOptions(channelMax: ConnectionOptions::MAX_CHANNELS + 1);
@@ -151,7 +173,7 @@ class AmqpConnectionOptionsTest extends BaseTestCase
      */
     public function testSaslExternalWithoutAClientCertificateIsRefused(): void
     {
-        $this->expectException(ConnectionException::class);
+        $this->expectException(InvalidConnectionOptionException::class);
         $this->expectExceptionMessage('SASL EXTERNAL authenticates with a client certificate');
 
         new ConnectionOptions(

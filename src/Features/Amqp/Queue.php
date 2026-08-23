@@ -10,27 +10,15 @@ use SConcur\Exceptions\Amqp\PublishConfirmTimeoutException;
 use SConcur\Exceptions\Amqp\PublishNackedException;
 use SConcur\Exceptions\Amqp\QueueException;
 use SConcur\Exceptions\Amqp\UnroutableMessageException;
-use SConcur\Features\Amqp\Payloads\QueueBindPayload;
-use SConcur\Features\Amqp\Payloads\QueueBindPayloadParameters;
-use SConcur\Features\Amqp\Payloads\QueueDeclarePayload;
-use SConcur\Features\Amqp\Payloads\QueueDeclarePayloadParameters;
-use SConcur\Features\Amqp\Payloads\QueueDeletePayload;
-use SConcur\Features\Amqp\Payloads\QueueDeletePayloadParameters;
-use SConcur\Features\Amqp\Payloads\QueuePurgePayload;
-use SConcur\Features\Amqp\Payloads\QueuePurgePayloadParameters;
-use SConcur\Features\Amqp\Payloads\QueueUnbindPayload;
-use SConcur\Features\Amqp\Support\AmqpResource;
 use SConcur\Features\Amqp\Support\TableCodec;
 
 /**
- * A named queue on a channel. The object is a handle: building it talks to nobody, and the
- * broker only hears about the queue when one of these methods is called.
+ * A named queue on a channel — a handle: building it talks to nobody, and the broker only
+ * hears about the queue when one of these methods is called.
  *
- * The calque made a queue carry the settings of its declaration in mutable fields, so a
- * declaration was a run of setters ending in `declareQueue()`. Here a declaration is one
- * call with its arguments, and the handle keeps only the name.
+ * It owns nothing on the Go side, so its methods run through Channel::run().
  */
-class Queue extends AmqpResource
+class Queue
 {
     protected Channel $channel;
 
@@ -42,10 +30,7 @@ class Queue extends AmqpResource
         $this->name    = $name;
     }
 
-    /**
-     * The queue's name. Empty until a declaration of an unnamed queue comes back with the
-     * one the broker generated.
-     */
+    /** Empty until a declaration of an unnamed queue comes back with the broker's own. */
     public function name(): string
     {
         return $this->name;
@@ -58,12 +43,10 @@ class Queue extends AmqpResource
     }
 
     /**
-     * Declares the queue, creating it when it is not there. Declaring an existing queue
-     * with settings that differ from the ones it was created with is an error the broker
-     * answers by closing the channel, so a queue is declared by whoever owns it.
+     * Declares the queue, creating it when it is not there. Redeclaring an existing one with
+     * different settings closes the channel, so a queue is declared by whoever owns it.
      *
-     * An empty name asks the broker to generate one, which arrives in the answer and
-     * becomes this handle's name.
+     * An empty name asks the broker to generate one, which becomes this handle's name.
      *
      * @param bool                 $durable    survive a broker restart
      * @param bool                 $exclusive  only this connection may use it, and it goes
@@ -90,10 +73,9 @@ class Queue extends AmqpResource
     }
 
     /**
-     * Asks whether the queue exists and how much is in it, without creating or changing
-     * anything. A queue that is not there is a 404 the broker answers by closing the
-     * channel — that is what passive means in AMQP, and it is why this is a separate call
-     * rather than a flag on declare().
+     * Asks whether the queue exists and how much is in it, creating nothing. One that is not
+     * there is a 404 the broker answers by closing the channel — which is why this is a call
+     * of its own rather than a flag on declare().
      *
      * @throws QueueException if the queue does not exist
      */
@@ -103,8 +85,7 @@ class Queue extends AmqpResource
     }
 
     /**
-     * Binds the queue to an exchange, so the messages that exchange routes by this key
-     * reach it.
+     * Binds the queue to an exchange, so what that exchange routes by this key reaches it.
      *
      * @param array<string, mixed> $arguments matching arguments, for a headers exchange
      *
@@ -112,12 +93,14 @@ class Queue extends AmqpResource
      */
     public function bind(string $exchange, string $routingKey = '', array $arguments = []): void
     {
-        $this->runCommand(
-            payload: new QueueBindPayload(
-                $this->bindParameters(exchange: $exchange, routingKey: $routingKey, arguments: $arguments),
+        $this->channel->run(
+            command: AmqpCommandEnum::QueueBind,
+            data: $this->bindData(
+                exchange: $exchange,
+                routingKey: $routingKey,
+                arguments: $arguments,
             ),
             exceptionClass: QueueException::class,
-            channel: $this->channel,
             operation: 'Could not bind the queue.',
         );
     }
@@ -131,12 +114,14 @@ class Queue extends AmqpResource
      */
     public function unbind(string $exchange, string $routingKey = '', array $arguments = []): void
     {
-        $this->runCommand(
-            payload: new QueueUnbindPayload(
-                $this->bindParameters(exchange: $exchange, routingKey: $routingKey, arguments: $arguments),
+        $this->channel->run(
+            command: AmqpCommandEnum::QueueUnbind,
+            data: $this->bindData(
+                exchange: $exchange,
+                routingKey: $routingKey,
+                arguments: $arguments,
             ),
             exceptionClass: QueueException::class,
-            channel: $this->channel,
             operation: 'Could not unbind the queue.',
         );
     }
@@ -148,17 +133,13 @@ class Queue extends AmqpResource
      */
     public function purge(): int
     {
-        $result = $this->runCommand(
-            payload: new QueuePurgePayload(
-                new QueuePurgePayloadParameters(
-                    channelId: $this->channel->internalId,
-                    name: $this->name,
-                    noWait: false,
-                    timeoutMs: $this->timeoutMs(),
-                ),
-            ),
+        $result = $this->channel->run(
+            command: AmqpCommandEnum::QueuePurge,
+            data: [
+                'na' => $this->name,
+                'nw' => false,
+            ],
             exceptionClass: QueueException::class,
-            channel: $this->channel,
             operation: 'Could not purge the queue.',
         );
 
@@ -176,19 +157,15 @@ class Queue extends AmqpResource
      */
     public function delete(bool $ifUnused = false, bool $ifEmpty = false): int
     {
-        $result = $this->runCommand(
-            payload: new QueueDeletePayload(
-                new QueueDeletePayloadParameters(
-                    channelId: $this->channel->internalId,
-                    name: $this->name,
-                    ifUnused: $ifUnused,
-                    ifEmpty: $ifEmpty,
-                    noWait: false,
-                    timeoutMs: $this->timeoutMs(),
-                ),
-            ),
+        $result = $this->channel->run(
+            command: AmqpCommandEnum::QueueDelete,
+            data: [
+                'na' => $this->name,
+                'iu' => $ifUnused,
+                'ie' => $ifEmpty,
+                'nw' => false,
+            ],
             exceptionClass: QueueException::class,
-            channel: $this->channel,
             operation: 'Could not delete the queue.',
         );
 
@@ -202,7 +179,10 @@ class Queue extends AmqpResource
      */
     public function get(bool $autoAck = false): ?Delivery
     {
-        return $this->channel->get(queueName: $this->name, autoAck: $autoAck);
+        return $this->channel->get(
+            queueName: $this->name,
+            autoAck: $autoAck,
+        );
     }
 
     /**
@@ -233,17 +213,19 @@ class Queue extends AmqpResource
     }
 
     /**
-     * Publishes straight into this queue.
-     *
-     * The default exchange routes by queue name, which is how every AMQP client reaches one
-     * queue without an exchange of its own — and which neither ext-amqp nor php-amqplib
-     * spares the caller from knowing. Here it is the obvious call.
+     * Publishes straight into this queue, through the default exchange that routes by queue
+     * name.
      *
      * @throws ExchangeException if the message could not be handed to the broker
      */
     public function publish(Message|string $message, bool $mandatory = false): void
     {
-        $this->channel->publish(message: $message, exchange: '', routingKey: $this->name, mandatory: $mandatory);
+        $this->channel->publish(
+            message: $message,
+            exchange: '',
+            routingKey: $this->name,
+            mandatory: $mandatory,
+        );
     }
 
     /**
@@ -254,13 +236,16 @@ class Queue extends AmqpResource
      * @throws UnroutableMessageException if the queue does not exist
      * @throws PublishConfirmTimeoutException if the broker did not answer in time
      */
-    public function publishConfirmed(Message|string $message, float $timeout = 0.0, bool $mandatory = true): void
-    {
+    public function publishConfirmed(
+        Message|string $message,
+        float $timeoutSeconds = 0.0,
+        bool $mandatory = true,
+    ): void {
         $this->channel->publishConfirmed(
             message: $message,
             exchange: '',
             routingKey: $this->name,
-            timeout: $timeout,
+            timeoutSeconds: $timeoutSeconds,
             mandatory: $mandatory,
         );
     }
@@ -277,22 +262,18 @@ class Queue extends AmqpResource
         bool $autoDelete = false,
         array $arguments = [],
     ): QueueInfo {
-        $result = $this->runCommand(
-            payload: new QueueDeclarePayload(
-                new QueueDeclarePayloadParameters(
-                    channelId: $this->channel->internalId,
-                    name: $this->name,
-                    passive: $passive,
-                    durable: $durable,
-                    exclusive: $exclusive,
-                    autoDelete: $autoDelete,
-                    noWait: false,
-                    arguments: TableCodec::encode($arguments),
-                    timeoutMs: $this->timeoutMs(),
-                ),
-            ),
+        $result = $this->channel->run(
+            command: AmqpCommandEnum::QueueDeclare,
+            data: [
+                'na' => $this->name,
+                'pa' => $passive,
+                'du' => $durable,
+                'ex' => $exclusive,
+                'ad' => $autoDelete,
+                'nw' => false,
+                'ar' => TableCodec::encode($arguments),
+            ],
             exceptionClass: QueueException::class,
-            channel: $this->channel,
             operation: 'Could not declare the queue.',
         );
 
@@ -309,26 +290,17 @@ class Queue extends AmqpResource
 
     /**
      * @param array<string, mixed> $arguments
+     *
+     * @return array<string, mixed>
      */
-    protected function bindParameters(
-        string $exchange,
-        string $routingKey,
-        array $arguments,
-    ): QueueBindPayloadParameters {
-        return new QueueBindPayloadParameters(
-            channelId: $this->channel->internalId,
-            queueName: $this->name,
-            exchangeName: $exchange,
-            routingKey: $routingKey,
-            noWait: false,
-            arguments: TableCodec::encode($arguments),
-            timeoutMs: $this->timeoutMs(),
-        );
-    }
-
-    /** The deadline of one broker method, in milliseconds — the connection's rpc timeout. */
-    protected function timeoutMs(): int
+    protected function bindData(string $exchange, string $routingKey, array $arguments): array
     {
-        return static::toMilliseconds($this->channel->connection()->options->rpcTimeout);
+        return [
+            'na' => $this->name,
+            'en' => $exchange,
+            'rk' => $routingKey,
+            'nw' => false,
+            'ar' => TableCodec::encode($arguments),
+        ];
     }
 }

@@ -8,23 +8,16 @@ use SConcur\Exceptions\Amqp\ExchangeException;
 use SConcur\Exceptions\Amqp\PublishConfirmTimeoutException;
 use SConcur\Exceptions\Amqp\PublishNackedException;
 use SConcur\Exceptions\Amqp\UnroutableMessageException;
-use SConcur\Features\Amqp\Payloads\ExchangeBindPayload;
-use SConcur\Features\Amqp\Payloads\ExchangeBindPayloadParameters;
-use SConcur\Features\Amqp\Payloads\ExchangeDeclarePayload;
-use SConcur\Features\Amqp\Payloads\ExchangeDeclarePayloadParameters;
-use SConcur\Features\Amqp\Payloads\ExchangeDeletePayload;
-use SConcur\Features\Amqp\Payloads\ExchangeDeletePayloadParameters;
-use SConcur\Features\Amqp\Payloads\ExchangeUnbindPayload;
-use SConcur\Features\Amqp\Support\AmqpResource;
 use SConcur\Features\Amqp\Support\TableCodec;
 
 /**
- * A named exchange on a channel — a handle, like Queue: building it talks to nobody.
+ * A named exchange on a channel — a handle, like Queue, running its methods through
+ * Channel::run().
  *
- * The empty name is the default exchange. It exists on every broker, cannot be declared or
+ * The empty name is the default exchange: it exists on every broker, cannot be declared or
  * deleted, and routes each message to the queue named by its routing key.
  */
-class Exchange extends AmqpResource
+class Exchange
 {
     protected Channel $channel;
 
@@ -48,8 +41,8 @@ class Exchange extends AmqpResource
     }
 
     /**
-     * Declares the exchange, creating it when it is not there. As with a queue, a
-     * declaration that clashes with the exchange already there closes the channel.
+     * Declares the exchange, creating it when it is not there. As with a queue, a clashing
+     * declaration closes the channel.
      *
      * @param bool                 $durable    survive a broker restart
      * @param bool                 $autoDelete delete once the last binding goes
@@ -76,19 +69,22 @@ class Exchange extends AmqpResource
     }
 
     /**
-     * Asks whether the exchange exists, without creating or changing anything. One that is
-     * not there is a 404 the broker answers by closing the channel.
+     * Asks whether the exchange exists, creating nothing. One that is not there is a 404 the
+     * broker answers by closing the channel.
      *
      * @throws ExchangeException if the exchange does not exist
      */
     public function declarePassive(): void
     {
-        $this->runDeclare(type: ExchangeTypeEnum::Direct, passive: true);
+        $this->runDeclare(
+            type: ExchangeTypeEnum::Direct,
+            passive: true,
+        );
     }
 
     /**
-     * Binds this exchange to another, so what the other one routes by this key arrives
-     * here and is routed on.
+     * Binds this exchange to another, so what that one routes by this key arrives here and
+     * is routed on.
      *
      * @param string               $source    the exchange the messages come from
      * @param array<string, mixed> $arguments matching arguments, for a headers exchange
@@ -97,12 +93,14 @@ class Exchange extends AmqpResource
      */
     public function bind(string $source, string $routingKey = '', array $arguments = []): void
     {
-        $this->runCommand(
-            payload: new ExchangeBindPayload(
-                $this->bindParameters(source: $source, routingKey: $routingKey, arguments: $arguments),
+        $this->channel->run(
+            command: AmqpCommandEnum::ExchangeBind,
+            data: $this->bindData(
+                source: $source,
+                routingKey: $routingKey,
+                arguments: $arguments,
             ),
             exceptionClass: ExchangeException::class,
-            channel: $this->channel,
             operation: 'Could not bind the exchange.',
         );
     }
@@ -116,12 +114,14 @@ class Exchange extends AmqpResource
      */
     public function unbind(string $source, string $routingKey = '', array $arguments = []): void
     {
-        $this->runCommand(
-            payload: new ExchangeUnbindPayload(
-                $this->bindParameters(source: $source, routingKey: $routingKey, arguments: $arguments),
+        $this->channel->run(
+            command: AmqpCommandEnum::ExchangeUnbind,
+            data: $this->bindData(
+                source: $source,
+                routingKey: $routingKey,
+                arguments: $arguments,
             ),
             exceptionClass: ExchangeException::class,
-            channel: $this->channel,
             operation: 'Could not unbind the exchange.',
         );
     }
@@ -135,18 +135,14 @@ class Exchange extends AmqpResource
      */
     public function delete(bool $ifUnused = false): void
     {
-        $this->runCommand(
-            payload: new ExchangeDeletePayload(
-                new ExchangeDeletePayloadParameters(
-                    channelId: $this->channel->internalId,
-                    name: $this->name,
-                    ifUnused: $ifUnused,
-                    noWait: false,
-                    timeoutMs: $this->timeoutMs(),
-                ),
-            ),
+        $this->channel->run(
+            command: AmqpCommandEnum::ExchangeDelete,
+            data: [
+                'na' => $this->name,
+                'iu' => $ifUnused,
+                'nw' => false,
+            ],
             exceptionClass: ExchangeException::class,
-            channel: $this->channel,
             operation: 'Could not delete the exchange.',
         );
     }
@@ -177,14 +173,14 @@ class Exchange extends AmqpResource
     public function publishConfirmed(
         Message|string $message,
         string $routingKey = '',
-        float $timeout = 0.0,
+        float $timeoutSeconds = 0.0,
         bool $mandatory = true,
     ): void {
         $this->channel->publishConfirmed(
             message: $message,
             exchange: $this->name,
             routingKey: $routingKey,
-            timeout: $timeout,
+            timeoutSeconds: $timeoutSeconds,
             mandatory: $mandatory,
         );
     }
@@ -202,49 +198,36 @@ class Exchange extends AmqpResource
         bool $internal = false,
         array $arguments = [],
     ): void {
-        $this->runCommand(
-            payload: new ExchangeDeclarePayload(
-                new ExchangeDeclarePayloadParameters(
-                    channelId: $this->channel->internalId,
-                    name: $this->name,
-                    type: $type->value,
-                    passive: $passive,
-                    durable: $durable,
-                    autoDelete: $autoDelete,
-                    internal: $internal,
-                    noWait: false,
-                    arguments: TableCodec::encode($arguments),
-                    timeoutMs: $this->timeoutMs(),
-                ),
-            ),
+        $this->channel->run(
+            command: AmqpCommandEnum::ExchangeDeclare,
+            data: [
+                'na' => $this->name,
+                'ty' => $type->value,
+                'pa' => $passive,
+                'du' => $durable,
+                'ad' => $autoDelete,
+                'in' => $internal,
+                'nw' => false,
+                'ar' => TableCodec::encode($arguments),
+            ],
             exceptionClass: ExchangeException::class,
-            channel: $this->channel,
             operation: 'Could not declare the exchange.',
         );
     }
 
     /**
      * @param array<string, mixed> $arguments
+     *
+     * @return array<string, mixed>
      */
-    protected function bindParameters(
-        string $source,
-        string $routingKey,
-        array $arguments,
-    ): ExchangeBindPayloadParameters {
-        return new ExchangeBindPayloadParameters(
-            channelId: $this->channel->internalId,
-            destination: $this->name,
-            source: $source,
-            routingKey: $routingKey,
-            noWait: false,
-            arguments: TableCodec::encode($arguments),
-            timeoutMs: $this->timeoutMs(),
-        );
-    }
-
-    /** The deadline of one broker method, in milliseconds — the connection's rpc timeout. */
-    protected function timeoutMs(): int
+    protected function bindData(string $source, string $routingKey, array $arguments): array
     {
-        return static::toMilliseconds($this->channel->connection()->options->rpcTimeout);
+        return [
+            'ds' => $this->name,
+            'sr' => $source,
+            'rk' => $routingKey,
+            'nw' => false,
+            'ar' => TableCodec::encode($arguments),
+        ];
     }
 }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Amqp;
 
 use RuntimeException;
+use SConcur\Exceptions\Amqp\QueueException;
 use SConcur\Exceptions\CoroutineTimeoutException;
 use SConcur\Features\Amqp\Consumer\QueueConsumer;
 use SConcur\Features\Amqp\Delivery;
@@ -362,7 +363,7 @@ class QueueConsumerTest extends AmqpTestCase
             pollIntervalMs: 20,
         );
 
-        $queueConsumer->consume(
+        $count = $queueConsumer->consume(
             connection: $this->connection(),
             handler: static function (Delivery $delivery): void {
                 Sleeper::usleep(microseconds: 3_000_000);
@@ -374,6 +375,11 @@ class QueueConsumerTest extends AmqpTestCase
 
         // A stop is not a failure, so the application is not told its handler failed.
         self::assertSame([], $failures, 'a deliberate stop must not be reported as a handler failure');
+
+        // Nor is it a message handled: nobody answered for it, and the broker hands it out
+        // again. A worker that counted it would report more work done than it did, and a
+        // maxMessages budget would be spent on messages nothing was done with.
+        self::assertSame(0, $count, 'a message the drain cut short must not count as handled');
 
         // And the message was not refused on the handler's behalf: it comes back.
         //
@@ -514,6 +520,72 @@ class QueueConsumerTest extends AmqpTestCase
      * Every channel the worker opened is closed when the run ends, including the ones
      * whose coroutines were still waiting and had to be unwound by the drain.
      */
+    /**
+     * The drain watches how many coroutines are mid-message, and settling is part of one:
+     * a consumer counted out of that set before its acknowledgement is on the wire can be
+     * cut between the two, and the message its handler finished goes back to the queue.
+     *
+     * The window is small, so the test widens it by hand — the drain gives up the instant
+     * the last handler returns, and every message must still be gone from the queue.
+     */
+    public function testAMessageIsAcknowledgedBeforeItsConsumerIsCountedIdle(): void
+    {
+        $channel = $this->channel();
+
+        $queue = $this->declareQueue(channel: $channel, durable: true);
+
+        foreach (range(1, 8) as $index) {
+            $this->publishToQueue($channel, $queue->name(), "message-$index");
+        }
+
+        $queueConsumer = new QueueConsumer(
+            queues: $this->queuesJson([$queue->name() => 4]),
+            maxMessages: 8,
+            // As short as it goes: the stop lands as soon as nothing is mid-message, so an
+            // acknowledgement still in flight at that moment would be cut.
+            drainTimeoutMs: 1,
+            pollIntervalMs: 20,
+        );
+
+        $count = $queueConsumer->consume(
+            connection: $this->connection(),
+            handler: static function (Delivery $delivery): void {
+            },
+        );
+
+        self::assertSame(8, $count);
+        self::assertSame(0, $this->waitForMessageCount(queue: $queue, expected: 0, timeoutSeconds: 5.0));
+    }
+
+    /**
+     * Every consumer dying is not a finished shift. Reporting it as one exits 0, and a pool
+     * on `restartPolicy: on-failure` would stay empty for good after a broker outage.
+     */
+    public function testAPoolWhoseConsumersAllDiedReportsAFailure(): void
+    {
+        $channel = $this->channel();
+
+        $queue = $this->declareQueue(channel: $channel, durable: true);
+
+        $queueConsumer = new QueueConsumer(
+            queues: $this->queuesJson([$queue->name() => 2]),
+            maxRuntimeSeconds: 30,
+            pollIntervalMs: 20,
+        );
+
+        // Taking the queue away cancels its consumers: the broker ends both delivery
+        // streams, and neither coroutine has anything left to pull.
+        $queue->delete();
+
+        $this->expectException(QueueException::class);
+
+        $queueConsumer->consume(
+            connection: $this->connection(),
+            handler: static function (Delivery $delivery): void {
+            },
+        );
+    }
+
     public function testTheChannelsAreClosedWhenTheRunEnds(): void
     {
         $channel = $this->channel();

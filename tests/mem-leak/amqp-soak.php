@@ -165,12 +165,12 @@ $scenarios = [
 
         $exchange = $channel->exchange($exchangeName);
 
-        $exchange->publishConfirmed(message: 'soak', routingKey: 'soak', timeout: 2.0);
+        $exchange->publishConfirmed(message: 'soak', routingKey: 'soak', timeoutSeconds: 2.0);
 
         try {
             // Routes nowhere, so the broker sends it back and the publish fails with it —
             // the return and the confirm are drained by the same wait.
-            $exchange->publishConfirmed(message: 'returned', routingKey: 'nowhere', timeout: 2.0);
+            $exchange->publishConfirmed(message: 'returned', routingKey: 'nowhere', timeoutSeconds: 2.0);
         } catch (UnroutableMessageException) {
             // The point of the cycle.
         }

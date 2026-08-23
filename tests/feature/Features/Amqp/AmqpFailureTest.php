@@ -4,10 +4,11 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Amqp;
 
+use ReflectionProperty;
+use SConcur\Exceptions\Amqp\AmqpException;
 use SConcur\Exceptions\Amqp\ChannelException;
 use SConcur\Exceptions\Amqp\ConnectionException;
 use SConcur\Exceptions\Amqp\QueueException;
-use ReflectionProperty;
 use SConcur\Features\Amqp\Connection;
 use SConcur\Features\Amqp\ConnectionOptions;
 use SConcur\Features\Amqp\Support\AmqpResource;
@@ -85,7 +86,7 @@ class AmqpFailureTest extends AmqpTestCase
         try {
             // RabbitMQ has never implemented basic.qos's prefetch_size, and answers one
             // with 540 NOT_IMPLEMENTED — a connection-level reply code.
-            $channel->prefetch(count: 1, size: 1024);
+            $channel->prefetch(count: 1, sizeBytes: 1024);
 
             self::fail('RabbitMQ does not implement a prefetch size');
         } catch (ConnectionException $exception) {
@@ -149,6 +150,42 @@ class AmqpFailureTest extends AmqpTestCase
         $this->expectException(ChannelException::class);
 
         $channel->waitForConfirms();
+    }
+
+    /**
+     * basic.publish carries no reply, so a publish to an exchange that is not there is
+     * answered by the broker closing the channel — and the 404 that did it was invisible:
+     * whatever ran next on that channel could only report that the channel was gone.
+     *
+     * The reason is recorded when the close arrives, so the next command names it. It stays
+     * a ChannelException, because the channel being gone is what happened to this call, and
+     * the code is the one that actually closed it.
+     */
+    public function testAChannelReportsWhatClosedIt(): void
+    {
+        $channel = $this->channel();
+
+        $channel->enableConfirms();
+
+        $missing = TestAmqpResolver::uniqueName('missing');
+
+        try {
+            $channel->publish(message: 'nowhere', exchange: $missing);
+        } catch (Throwable) {
+            // basic.publish expects no reply, so this may or may not fail on its own.
+        }
+
+        try {
+            // The wait is what reaches the Go side: a command refused by the local guard
+            // knows only that the channel is closed, while this one asks and is told why.
+            $channel->waitForConfirms(timeoutSeconds: 2.0);
+
+            self::fail('a wait on a channel the broker closed must be refused');
+        } catch (AmqpException $exception) {
+            self::assertInstanceOf(ChannelException::class, $exception);
+            self::assertSame(404, $exception->getCode());
+            self::assertStringContainsString($missing, $exception->getMessage());
+        }
     }
 
     public function testSettingThePrefetchOnAClosedChannelIsRefused(): void
@@ -282,6 +319,36 @@ class AmqpFailureTest extends AmqpTestCase
 
         self::assertFalse($channel->isOpen(), 'a channel of the old handle is not open');
         self::assertTrue($connection->isOpen());
+    }
+
+    /**
+     * The same, without the close() in between.
+     *
+     * A connection that died is closed on this side and still holds its handle, so
+     * reconnecting is documented as close() then connect(). A caller that skips the close
+     * must not be quietly worse off: overwriting the handle would strand the pooled
+     * connection behind it — owned by nobody, for the life of the process — and leave the
+     * channels of the dead connection reporting themselves open, which is exactly the
+     * failure the close() path is tested against above.
+     */
+    public function testConnectAloneReleasesTheHandleItReplaces(): void
+    {
+        $connection = $this->connection();
+
+        $channel = $connection->channel();
+
+        $before = $connection->usedChannels();
+
+        self::assertTrue($channel->isOpen());
+
+        $connection->connect();
+
+        self::assertFalse($channel->isOpen(), 'a channel of the replaced handle is not open');
+        self::assertTrue($connection->isOpen());
+
+        // The channels of the old handle went with it rather than staying open on a
+        // connection nothing holds any more.
+        self::assertSame($before - 1, $connection->usedChannels());
     }
 
     /**

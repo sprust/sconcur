@@ -9,26 +9,23 @@ use SConcur\Exceptions\Amqp\InvalidQueueSpecException;
 use SConcur\Features\Amqp\ConnectionOptions;
 
 /**
- * Reads the queue list a consumer worker was launched with. It travels as one argv
- * flag holding JSON, because a worker is configured through argv and the master
- * JSON-encodes whatever is not a scalar:
+ * Reads the queue list a consumer worker was launched with — one argv flag holding JSON,
+ * because a worker is configured through argv and the master JSON-encodes non-scalars:
  *
  *     --queues=[{"name":"orders","coroutineCount":8},{"name":"emails"}]
  *
- * A list of objects rather than a delimited string on purpose: AMQP allows almost any
- * UTF-8 in a queue name, colons included, and names like "tenant:1:orders" are
- * ordinary — any separator inside a name would make the parse ambiguous. Objects also
- * take a new field without inventing a new separator for it.
+ * A list of objects rather than a delimited string, because AMQP allows almost any UTF-8 in
+ * a queue name — colons included, and "tenant:1:orders" is ordinary — so any separator
+ * inside a name would make the parse ambiguous.
  *
- * Everything is validated here, before the first basic.consume: a typo in a config
- * must fail at startup with a sentence, not as a broker error minutes into a run.
+ * Everything is validated before the first basic.consume: a typo in a config must fail at
+ * startup with a sentence, not as a broker error minutes into a run.
  */
 readonly class QueueSpecParser
 {
     /**
-     * How many channels one connection is left to open. The protocol ceiling is
-     * ConnectionOptions::MAX_CHANNELS and channel numbering starts at one, so the last usable
-     * number is one below it.
+     * How many channels one connection is left to open: channel numbering starts at one, so
+     * the last usable number is one below ConnectionOptions::MAX_CHANNELS.
      */
     protected const int MAX_CHANNELS_PER_CONNECTION = ConnectionOptions::MAX_CHANNELS - 1;
 
@@ -52,7 +49,10 @@ readonly class QueueSpecParser
                 );
             }
 
-            $spec = static::specFromEntry(entry: $entry, index: $index);
+            $spec = static::specFromEntry(
+                entry: $entry,
+                index: $index,
+            );
 
             if (isset($seen[$spec->name])) {
                 throw new InvalidQueueSpecException(

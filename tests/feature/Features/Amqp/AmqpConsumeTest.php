@@ -276,7 +276,7 @@ class AmqpConsumeTest extends AmqpTestCase
         $channel = $this->channel();
         $queue   = $this->declareQueue(channel: $channel, durable: true);
 
-        $idle = new Connection(TestAmqpResolver::getOptions(readTimeout: 0.3));
+        $idle = new Connection(TestAmqpResolver::getOptions(readTimeoutSeconds: 0.3));
 
         $this->expectException(QueueException::class);
         $this->expectExceptionMessage('Consumer timeout exceed');
