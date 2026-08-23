@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Amqp;
 
 use RuntimeException;
-use SConcur\Exceptions\Amqp\QueueException;
+use SConcur\Exceptions\Amqp\AmqpException;
 use SConcur\Exceptions\CoroutineTimeoutException;
 use SConcur\Features\Amqp\Consumer\QueueConsumer;
 use SConcur\Features\Amqp\Delivery;
@@ -558,14 +558,18 @@ class QueueConsumerTest extends AmqpTestCase
     }
 
     /**
-     * Every consumer dying is not a finished shift. Reporting it as one exits 0, and a pool
-     * on `restartPolicy: on-failure` would stay empty for good after a broker outage.
+     * The connection going away is what ends a consumer for good — the queue it was pulling
+     * can be reopened, a connection shared by every coroutine cannot. Reporting that as a
+     * finished shift would exit 0, and a pool on `restartPolicy: on-failure` would stay
+     * empty for good after a broker outage.
      */
-    public function testAPoolWhoseConsumersAllDiedReportsAFailure(): void
+    public function testAPoolThatLostItsConnectionReportsAFailure(): void
     {
         $channel = $this->channel();
 
         $queue = $this->declareQueue(channel: $channel, durable: true);
+
+        $connection = $this->connection();
 
         $queueConsumer = new QueueConsumer(
             queues: $this->queuesJson([$queue->name() => 2]),
@@ -573,15 +577,16 @@ class QueueConsumerTest extends AmqpTestCase
             pollIntervalMs: 20,
         );
 
-        // Taking the queue away cancels its consumers: the broker ends both delivery
-        // streams, and neither coroutine has anything left to pull.
-        $queue->delete();
+        $this->publishToQueue($channel, $queue->name(), 'first');
 
-        $this->expectException(QueueException::class);
+        $this->expectException(AmqpException::class);
 
         $queueConsumer->consume(
-            connection: $this->connection(),
-            handler: static function (Delivery $delivery): void {
+            connection: $connection,
+            handler: static function (Delivery $delivery) use ($connection): void {
+                // Handing the connection back takes every channel of this worker with it,
+                // which is the failure no consumer can reopen its way out of.
+                $connection->close();
             },
         );
     }
