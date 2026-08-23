@@ -754,7 +754,10 @@ class Scheduler
      *                                                   step (drain begin, fully drained, stopped) for
      *                                                   the caller to log
      * @param int                   $preemptionQuantumMs arm automatic preemption with this quantum
-     *                                                   while serving: the extension's timer requests
+     *                                                   while serving (a worker without a serve loop
+     *                                                   does the same through
+     *                                                   ServerRuntimeSupportTrait::withPreemption):
+     *                                                   the extension's timer requests
      *                                                   a VM interrupt every quantum and preempt()
      *                                                   parks the running handler coroutine, so a
      *                                                   CPU-bound handler cannot starve the others

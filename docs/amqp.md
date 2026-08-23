@@ -332,6 +332,10 @@ a worker that read the silence as "the queue is closed" would stop reading a que
 still has work coming. Leaving the loop cancels the consumer on the way out, as any other
 exit from it does; what is left behind is the queue, not a consumer nobody reads.
 
+That is the generator's contract. A worker that would rather keep pulling than handle
+those failures itself uses the [supervised consumer](#a-consumer-the-broker-takes-away),
+which reopens the queue instead of ending.
+
 Deliveries a consumer received but never acknowledged go back into the queue when
 the channel is closed, not when the consumer is cancelled — that is AMQP, not a
 property of this implementation.
@@ -922,7 +926,13 @@ try {
 | the channel is gone — the broker closed it over an earlier failure | `ChannelException` | the reply code that closed it, 0 when the broker named none |
 | a publish was nacked, returned, or never confirmed | `PublishNackedException`, `UnroutableMessageException`, `PublishConfirmTimeoutException` | the reply code of a return, 0 otherwise |
 | a value cannot travel in a field table | `InvalidAmqpValueException` | 0 |
-| the queue list of a consumer worker is not one | `InvalidQueueSpecException` (a `LogicException`: a config bug, not a broker one) | 0 |
+| the queue list of a consumer worker is not one | `InvalidQueueSpecException` | 0 |
+| an option is outside the range the protocol allows, or a URI cannot be read | `InvalidConnectionOptionException` | 0 |
+| a prefetch limit is outside that range | `InvalidPrefetchException` | 0 |
+
+The last three are `LogicException`s rather than `AmqpException`s: nothing was sent, the
+broker was never asked, and there is no reply code to carry — they are bugs in how the
+connection or the worker was described.
 
 A failure the broker punishes with a closed channel (a passive declare of a queue
 that does not exist, a publish to a missing exchange) leaves the `Channel` closed:

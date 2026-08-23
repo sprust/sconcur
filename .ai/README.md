@@ -149,14 +149,17 @@ feature's doc. Key PHP classes not covered there:
   [docs/msgpack-objects.md](../docs/msgpack-objects.md).
 - `Features/Server/ServerRuntimeSupportTrait` — shared runtime glue for the
   long-lived workers (the servers and `Amqp/Consumer/QueueConsumer`):
-  argv→constructor-override parsing, signal handlers, the orphaned-worker check,
-  telemetry env.
+  argv→constructor-override parsing, signal handlers, arming automatic preemption,
+  the orphaned-worker check, telemetry env. It is also where a feature asks the
+  runtime rather than the Scheduler, together with `FeatureExecutor::canAwait()` —
+  nothing under `Features/` names the scheduler itself.
 - `Features/Amqp/Consumer/` — the supervised consumer runtime: `QueueConsumer`
   (a coroutine per unit of a queue's weight, each with its own channel), plus
   `QueueSpec`/`QueueSpecParser` for the JSON queue list that arrives in argv and
   `ConsumerState` for what the coroutines share. Its two-phase drain is why a
-  stop finishes the message in hand instead of dropping it — see
-  [docs/amqp.md](../docs/amqp.md).
+  stop finishes the message in hand instead of dropping it; a consumer the broker
+  takes away reopens its queue a second later, and only the connection going away
+  ends one for good — see [docs/amqp.md](../docs/amqp.md).
 - `Features/Socket/Dto/AbstractConnection` — shared base for the socket and
   WebSocket `Connection` DTOs (server accept-side and client dial-side); keeps the
   features decoupled, since all depend on the neutral base rather than each other.
