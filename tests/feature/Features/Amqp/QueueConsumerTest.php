@@ -22,8 +22,14 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $orders   = $this->declareQueue(channel: $channel, durable: true);
-        $invoices = $this->declareQueue(channel: $channel, durable: true);
+        $orders = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
+        $invoices = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         for ($index = 0; $index < 4; ++$index) {
             $this->publishToQueue($channel, $orders->name(), "order-$index");
@@ -69,7 +75,10 @@ class QueueConsumerTest extends AmqpTestCase
         $names = [];
 
         for ($index = 0; $index < 3; ++$index) {
-            $queue = $this->declareQueue(channel: $channel, durable: true);
+            $queue = $this->declareQueue(
+                channel: $channel,
+                durable: true,
+            );
 
             $names[] = $queue->name();
 
@@ -100,8 +109,14 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $hot  = $this->declareQueue(channel: $channel, durable: true);
-        $cold = $this->declareQueue(channel: $channel, durable: true);
+        $hot = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
+        $cold = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         // Four slow messages on each queue. With four coroutines on the hot one and a
         // single coroutine on the cold one, the hot queue drains in one sleep while the
@@ -150,7 +165,10 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $queue = $this->declareQueue(channel: $channel, durable: true);
+        $queue = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $this->publishToQueue($channel, $queue->name(), 'boom');
         $this->publishToQueue($channel, $queue->name(), 'fine');
@@ -195,7 +213,10 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $queue = $this->declareQueue(channel: $channel, durable: true);
+        $queue = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $this->publishToQueue($channel, $queue->name(), 'boom');
 
@@ -232,7 +253,10 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $queue = $this->declareQueue(channel: $channel, durable: true);
+        $queue = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $this->publishToQueue($channel, $queue->name(), 'mine');
 
@@ -273,8 +297,14 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $busy = $this->declareQueue(channel: $channel, durable: true);
-        $idle = $this->declareQueue(channel: $channel, durable: true);
+        $busy = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
+        $idle = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $this->publishToQueue($channel, $busy->name(), 'only-one');
 
@@ -310,7 +340,10 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $queue = $this->declareQueue(channel: $channel, durable: true);
+        $queue = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $this->publishToQueue($channel, $queue->name(), 'slow');
 
@@ -348,7 +381,10 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $queue = $this->declareQueue(channel: $channel, durable: true);
+        $queue = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $this->publishToQueue($channel, $queue->name(), 'slow');
 
@@ -403,7 +439,10 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $queue = $this->declareQueue(channel: $channel, durable: true);
+        $queue = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $this->publishToQueue($channel, $queue->name(), 'slow');
         $this->publishToQueue($channel, $queue->name(), 'quick');
@@ -445,7 +484,10 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $queue = $this->declareQueue(channel: $channel, durable: true);
+        $queue = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $this->publishToQueue($channel, $queue->name(), 'slow');
 
@@ -477,8 +519,14 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $doomed  = $this->declareQueue(channel: $channel, durable: true);
-        $healthy = $this->declareQueue(channel: $channel, durable: true);
+        $doomed = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
+        $healthy = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $this->publishToQueue($channel, $healthy->name(), 'slow');
 
@@ -517,10 +565,6 @@ class QueueConsumerTest extends AmqpTestCase
     }
 
     /**
-     * Every channel the worker opened is closed when the run ends, including the ones
-     * whose coroutines were still waiting and had to be unwound by the drain.
-     */
-    /**
      * The drain watches how many coroutines are mid-message, and settling is part of one:
      * a consumer counted out of that set before its acknowledgement is on the wire can be
      * cut between the two, and the message its handler finished goes back to the queue.
@@ -532,7 +576,10 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $queue = $this->declareQueue(channel: $channel, durable: true);
+        $queue = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         foreach (range(1, 8) as $index) {
             $this->publishToQueue($channel, $queue->name(), "message-$index");
@@ -567,7 +614,10 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $queue = $this->declareQueue(channel: $channel, durable: true);
+        $queue = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $connection = $this->connection();
 
@@ -600,7 +650,10 @@ class QueueConsumerTest extends AmqpTestCase
     {
         $channel = $this->channel();
 
-        $queue = $this->declareQueue(channel: $channel, durable: true);
+        $queue = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $name = $queue->name();
 
@@ -613,7 +666,11 @@ class QueueConsumerTest extends AmqpTestCase
             pollIntervalMs: 50,
         );
 
-        $this->publishToQueue($channel, $name, 'first');
+        $this->publishToQueue(
+            channel: $channel,
+            queueName: $name,
+            message: 'first',
+        );
 
         $count = $queueConsumer->consume(
             connection: $this->connection(),
@@ -639,12 +696,22 @@ class QueueConsumerTest extends AmqpTestCase
         self::assertSame(['first', 'second'], $handled);
     }
 
+    /**
+     * Every channel the worker opened is closed when the run ends, including the ones
+     * whose coroutines were still waiting and had to be unwound by the drain.
+     */
     public function testTheChannelsAreClosedWhenTheRunEnds(): void
     {
         $channel = $this->channel();
 
-        $busy = $this->declareQueue(channel: $channel, durable: true);
-        $idle = $this->declareQueue(channel: $channel, durable: true);
+        $busy = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
+        $idle = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $this->publishToQueue($channel, $busy->name(), 'one');
 

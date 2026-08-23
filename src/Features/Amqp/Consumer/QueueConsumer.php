@@ -369,12 +369,18 @@ class QueueConsumer
                 // that reported itself free with its acknowledgement still in flight could
                 // be stopped between the two, and a finished message would go back to the
                 // queue for another worker to do again.
-                $this->settle(
-                    delivery: $delivery,
-                    failed: $failed,
-                );
-
-                $state->messageFinished();
+                //
+                // Left in a finally because settle() re-throws a stop that arrives mid-ack.
+                // A message still counted busy holds the drain open for the whole of its
+                // timeout, waiting on a consumer that is already gone.
+                try {
+                    $this->settle(
+                        delivery: $delivery,
+                        failed: $failed,
+                    );
+                } finally {
+                    $state->messageFinished();
+                }
             }
         }
 
