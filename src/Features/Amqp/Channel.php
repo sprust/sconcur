@@ -11,14 +11,18 @@ use SConcur\Exceptions\Amqp\ChannelException;
 use SConcur\Exceptions\Amqp\ConnectionException;
 use SConcur\Exceptions\Amqp\ExchangeException;
 use SConcur\Exceptions\Amqp\InvalidPrefetchException;
+use SConcur\Exceptions\Amqp\InvalidRetryException;
 use SConcur\Exceptions\Amqp\PublishConfirmTimeoutException;
+use SConcur\Exceptions\Amqp\PublishNackedException;
 use SConcur\Exceptions\Amqp\QueueException;
+use SConcur\Exceptions\Amqp\UnroutableMessageException;
 use SConcur\Features\Amqp\Payloads\AmqpPayload;
 use SConcur\Features\Amqp\Support\AmqpResource;
 use SConcur\Features\Amqp\Support\DeliveryCodec;
 use SConcur\Features\Amqp\Support\PropertiesCodec;
 use SConcur\Features\Amqp\Support\TableCodec;
 use SConcur\Features\FeatureExecutor;
+use SConcur\Features\Sleeper\Sleeper;
 use SConcur\State;
 use Throwable;
 use WeakReference;
@@ -271,7 +275,18 @@ class Channel extends AmqpResource
      *
      * A batch is a WaitGroup around this call rather than an API of its own.
      *
-     * @param float $timeoutSeconds 0 waits until the broker answers
+     * `retries` covers the three failures the broker answers with — a nack, a message that
+     * routed nowhere, and a confirm that never came. It does not cover a dead channel or a
+     * dead connection: the handle is gone by then and no number of attempts brings it back.
+     * A retried confirm timeout can duplicate the message, which is the at-least-once AMQP
+     * offers either way.
+     *
+     * @param float       $timeoutSeconds     0 waits until the broker answers
+     * @param int         $retries            how many further attempts a refused publish
+     *                                        may have
+     * @param list<float> $retryDelaysSeconds the wait after each failure, by attempt number;
+     *                                        an attempt past the end takes the last entry,
+     *                                        and an empty schedule waits not at all
      */
     public function publishConfirmed(
         Message|string $message,
@@ -279,17 +294,51 @@ class Channel extends AmqpResource
         string $routingKey = '',
         float $timeoutSeconds = 0.0,
         bool $mandatory = true,
+        int $retries = 0,
+        array $retryDelaysSeconds = [],
     ): void {
+        if ($retries < 0) {
+            throw new InvalidRetryException(
+                message: "A publish cannot be retried a negative number of times, got $retries.",
+            );
+        }
+
+        $schedule = new RetrySchedule($retryDelaysSeconds);
+
         $this->enableConfirms();
 
-        $this->publish(
-            message: $message,
-            exchange: $exchange,
-            routingKey: $routingKey,
-            mandatory: $mandatory,
-        );
+        $attempt = 0;
 
-        $this->waitForConfirms($timeoutSeconds);
+        while (true) {
+            try {
+                $this->publish(
+                    message: $message,
+                    exchange: $exchange,
+                    routingKey: $routingKey,
+                    mandatory: $mandatory,
+                );
+
+                $this->waitForConfirms($timeoutSeconds);
+
+                return;
+            } catch (PublishNackedException | UnroutableMessageException | PublishConfirmTimeoutException $failure) {
+                // Only the three the broker answered with. A channel or a connection that
+                // died raises past this on purpose: the handle is gone, every further
+                // attempt fails the same way, and retrying would spend the whole schedule
+                // to arrive at the exception the first attempt already had.
+                if ($attempt >= $retries) {
+                    throw $failure;
+                }
+
+                ++$attempt;
+            }
+
+            $delaySeconds = $schedule->delaySecondsFor($attempt);
+
+            if ($delaySeconds > 0) {
+                Sleeper::usleep(microseconds: (int) round($delaySeconds * 1_000_000));
+            }
+        }
     }
 
     /**

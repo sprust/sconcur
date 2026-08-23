@@ -155,6 +155,10 @@ feature's doc. Key PHP classes not covered there:
   rather than reaching into the scheduler for the answer. The servers and the
   executor still name `Scheduler` — they spawn and serve, which is what it is for;
   what does not belong there is a feature reading its internals.
+- `Features/Amqp/RetryTopology` — the wait queues behind `publish(delayMs:)`, and
+  the only thing in the library that declares topology; it does so only when a
+  worker script calls it. `RetrySchedule` beside it answers how long a refused
+  publish waits before the next attempt.
 - `Features/Amqp/Consumer/` — the supervised consumer runtime: `QueueConsumer`
   (a coroutine per unit of a queue's weight, each with its own channel), plus
   `QueueSpec`/`QueueSpecParser` for the JSON queue list that arrives in argv and

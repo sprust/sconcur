@@ -93,6 +93,7 @@ Not every call goes to the broker:
 | `Exchange` | the same, for an exchange | `declare()`, `declarePassive()`, `bind()`, `unbind()`, `delete()`, `publish()`, `publishConfirmed()` |
 | `Message` | the body and properties of a message being published | nothing, it is a value object |
 | `Delivery` | a delivered message, and the means to settle it | `ack()`, `nack()`, `reject()` |
+| `RetryTopology` | the wait queues a delayed publish goes through | `declare()` — the one call here that creates topology |
 
 `$channel->queue('orders')` and `$channel->exchange('events')` cost nothing and
 talk to nobody: the boundary is crossed exactly as often as a real AMQP method is
@@ -255,6 +256,47 @@ otherwise:
 | `UnroutableMessageException` | the message reached no queue; `getReturnedMessage()` hands it back, properties and all |
 | `PublishConfirmTimeoutException` | no answer within the deadline. The message may still be on its way |
 
+A publish the broker refused can be tried again without the caller writing the loop:
+
+```php
+$queue->publishConfirmed(
+    message: $message,
+    timeoutSeconds: 5.0,
+    retries: 3,
+    retryDelaysSeconds: [1, 3, 4],
+);
+```
+
+`retryDelaysSeconds` is read by attempt number — one second after the first failure,
+three after the second, four after the third — and it does not bound how many
+attempts there are: that is what `retries` is for. An attempt past the end of the
+list takes the last entry, so `[1, 3, 4]` backs off to four seconds and stays there
+however many retries follow. The default is an empty schedule, which tries again at
+once.
+
+Only the three failures in the table above are retried, because they are the three
+the broker answered with. A channel or a connection that died raises past the loop
+on purpose: the handle is gone by then, every further attempt fails the same way,
+and retrying would spend the whole schedule to arrive at the exception the first
+attempt already had. Reopening is the application's decision, not something a
+publish makes behind it.
+
+A retried confirm timeout can duplicate the message — the first attempt may have
+been stored and only the answer lost. That is the at-least-once AMQP offers anyway,
+and the same reason a handler has to be idempotent.
+
+The wait between attempts is the worker's, not the broker's: `retryDelaysSeconds`
+suspends the coroutine, and a worker that restarts during it takes the message with
+it. There is nothing on the broker to come back to — the message was never accepted,
+which is the whole reason it is being retried. A graceful drain cuts the wait the
+same way. So keep this schedule short, and where the work has to outlive the worker,
+put it on the broker instead: a message already in a [wait queue](#a-delayed-publish)
+is the broker's, and its publisher can go away entirely.
+
+There is nothing to retry on a plain `publish()`, which is why it takes no such
+argument: `basic.publish` expects no reply, so a publish that returns has said
+nothing, and one that raises did so because the channel is gone.
+
 Confirm mode is turned on by the first `publishConfirmed()`; `enableConfirms()`
 does it explicitly. AMQP has no way to turn it back off, and `waitForConfirms()` on
 a channel that never entered it raises `ChannelException` rather than waiting out
@@ -340,49 +382,6 @@ Deliveries a consumer received but never acknowledged go back into the queue whe
 the channel is closed, not when the consumer is cancelled — that is AMQP, not a
 property of this implementation.
 
-## Settling a delivery
-
-```php
-$delivery->ack();                    // the broker may forget the message
-$delivery->ack(multiple: true);      // and everything before it on this channel
-$delivery->nack(requeue: true);      // refuse, put the message back in the queue
-$delivery->nack(requeue: false);     // refuse, do not put it back
-$delivery->reject();                 // as nack(requeue: false), one message only
-```
-
-Settling belongs to the delivery, not to the queue. An acknowledgement names its
-message by delivery tag on the channel it arrived on, so
-`$queue->ack($envelope->getDeliveryTag())` made the caller carry a number from one
-object to another and gave them the chance to carry the wrong one.
-
-Settling twice is refused locally, before it reaches the wire: the broker answers
-a second acknowledgement of the same tag by closing the channel, which takes every
-other consumer on it down as collateral. `isSettled()` says whether it has been.
-
-A delivery holds its channel weakly, so one an application kept does not hold the
-channel — and through it the connection — open. Settling it after the channel is
-gone raises `ChannelException`.
-
-`Message::fromDelivery($delivery)` builds the message back out of a delivery,
-which is what a retry onto another exchange or a hand-rolled dead-letter hop
-needs.
-
-## Retries and delays
-
-There is nothing to configure here, because AMQP has no retry primitive: a broker
-either holds a message or hands it back at once. Everything below is built out of
-what the broker does have — dead-lettering and TTL — and all of it works with the
-API as it stands.
-
-### A delay queue
-
-The standard shape. The main queue dead-letters into a queue nobody consumes; that
-queue expires its messages back into the main one:
-
-```php
-$main = $channel->queue('orders');
-$wait = $channel->queue('orders.wait');
-
 ### How a delivery reaches the handler
 
 Nothing in Go ever calls into PHP. The extension is a library PHP calls, and every
@@ -436,6 +435,122 @@ them is running while it waits, and every answer comes back through the same wai
 point. It is also why the consumer has to be read in the coroutine that opened it —
 the stream belongs to that coroutine's flow, and stopping the flow cancels it.
 
+## Settling a delivery
+
+```php
+$delivery->ack();                    // the broker may forget the message
+$delivery->ack(multiple: true);      // and everything before it on this channel
+$delivery->nack(requeue: true);      // refuse, put the message back in the queue
+$delivery->nack(requeue: false);     // refuse, do not put it back
+$delivery->reject();                 // as nack(requeue: false), one message only
+```
+
+`nack` and `reject` are the same AMQP refusal and differ in two things: the default
+and the batch form. `nack` puts the message back unless told otherwise, and
+`multiple: true` refuses everything before it on the channel in one go; `reject`
+refuses exactly one message and does not put it back unless asked. A refusal that
+does not requeue goes wherever the queue sends it — the dead-letter exchange it
+names, or nowhere at all if it names none.
+
+Settling belongs to the delivery, not to the queue. An acknowledgement names its
+message by delivery tag on the channel it arrived on, so
+`$queue->ack($envelope->getDeliveryTag())` made the caller carry a number from one
+object to another and gave them the chance to carry the wrong one.
+
+Settling twice is refused locally, before it reaches the wire: the broker answers
+a second acknowledgement of the same tag by closing the channel, which takes every
+other consumer on it down as collateral. `isSettled()` says whether it has been.
+
+A delivery holds its channel weakly, so one an application kept does not hold the
+channel — and through it the connection — open. Settling it after the channel is
+gone raises `ChannelException`.
+
+`Message::fromDelivery($delivery)` builds the message back out of a delivery,
+which is what a retry onto another exchange or a hand-rolled dead-letter hop
+needs.
+
+A delivery that is never settled at all — the process died before it got that far —
+is answered by the broker rather than by this library, and it comes back to its
+queue along with everything else the connection was holding. What that costs is in
+[when the worker itself dies](#when-the-worker-itself-dies).
+
+## Retries and delays
+
+AMQP has no retry primitive and no delayed publish: a broker either holds a message
+or hands it back at once. What it does have is dead-lettering and TTL, and
+everything below is built out of those. `publish(delayMs: …)` packages the standard
+shape; the recipes after it are for when the standard shape is not the one you want.
+
+### A delayed publish
+
+`Queue::publish(delayMs: …)` sends a message that becomes available only after the
+delay. The waiting is done by a queue nobody consumes, so the delays a queue serves
+are declared once at start-up, next to the application's own topology:
+
+```php
+use SConcur\Features\Amqp\RetryTopology;
+
+$channel->queue('orders')->declare(durable: true);
+
+RetryTopology::declare(
+    channel:  $channel,
+    queue:    'orders',
+    delaysMs: [1_000, 5_000, 30_000],
+);
+```
+
+That declares `orders.wait.1000`, `orders.wait.5000` and `orders.wait.30000`, each
+holding its messages for its own delay and dead-lettering them into `orders`
+afterwards. Publishing into one of them is what a delay is:
+
+```php
+$channel->queue('orders')->publish($message, delayMs: 5_000);
+```
+
+One queue per delay rather than one queue and a per-message expiration, because a
+classic queue expires only from its head: a thirty-second message at the front
+holds a one-second message behind it for the full thirty. The cost is that the
+delay has to be one of the declared ones — `delayMs: 900` against the topology above
+addresses a queue that is not there.
+
+Which matters, because a plain `publish()` says nothing about where the message
+went. Use `publishConfirmed(delayMs: …)` while the topology is being settled: it is
+mandatory by default, so a delay nothing serves raises `UnroutableMessageException`
+instead of dropping the message.
+
+This is where a job waits, and it waits on the broker. Measured with a ten-second
+delay and a worker killed three seconds into it:
+
+```
+worker died at 3002 ms
+job came back at 10025 ms
+```
+
+Seven seconds left, not ten and not never: the broker counts from the moment the
+message entered the wait queue, and nothing a client does restarts that. A restart,
+a deploy or an OOM kill changes nothing for a message already in a wait queue — and
+with a durable queue and a `persistent` message, neither does a broker restart.
+
+Nothing waits alongside it, either. The message sits in a queue nobody consumes, so
+the worker is not holding it at all: the prefetch slot is free and the coroutines
+take the next message as usual. That is the difference from `retryDelaysSeconds`,
+where the coroutine waits with its delivery still unacknowledged — the other
+coroutines keep running, but that one takes no new message until its handler
+returns, and a graceful drain waits on it for up to `drainTimeoutMs`.
+
+`RetryTopology` is the one thing in this library that declares anything, and it
+declares only when it is called. The queue itself is left alone: it is the
+application's, with arguments this has no business guessing.
+
+### A delay queue
+
+The standard shape. The main queue dead-letters into a queue nobody consumes; that
+queue expires its messages back into the main one:
+
+```php
+$main = $channel->queue('orders');
+$wait = $channel->queue('orders.wait');
+
 $main->declare(durable: true, arguments: [
     'x-dead-letter-exchange'    => '',
     'x-dead-letter-routing-key' => 'orders.wait',
@@ -445,13 +560,6 @@ $wait->declare(durable: true, arguments: [
     'x-message-ttl'             => 500,      // the delay
     'x-dead-letter-exchange'    => '',
     'x-dead-letter-routing-key' => 'orders',
-`nack` and `reject` are the same AMQP refusal and differ in two things: the default
-and the batch form. `nack` puts the message back unless told otherwise, and
-`multiple: true` refuses everything before it on the channel in one go; `reject`
-refuses exactly one message and does not put it back unless asked. A refusal that
-does not requeue goes wherever the queue sends it — the dead-letter exchange it
-names, or nowhere at all if it names none.
-
 ]);
 ```
 
@@ -469,11 +577,6 @@ Every dead-letter hop is recorded in the `x-death` header, so nothing needs to
 count attempts by hand:
 
 ```php
-A delivery that is never settled at all — the process died before it got that far —
-is answered by the broker rather than by this library, and it comes back to its
-queue along with everything else the connection was holding. What that costs is in
-[when the worker itself dies](#when-the-worker-itself-dies).
-
 $attempt = 0;
 
 foreach ($delivery->header('x-death') ?? [] as $death) {
@@ -542,6 +645,12 @@ $channel->queue('orders.wait.10s')->publish(new Message(
 
 $delivery->ack();
 ```
+
+Note the seam. The republish and the `ack` are two operations, and a worker that
+dies between them leaves the message in both places: the copy it published, and the
+original the broker takes back. Dead-lettering has no seam — `nack(requeue: false)`
+is one operation, performed by the broker. Republish when the routing or the counter
+has to be yours, dead-letter when it does not.
 
 ### A short delay in the handler
 
@@ -628,6 +737,11 @@ it sounds: an unacknowledged message belongs to the broker until it is
 acknowledged, so a connection that dies hands every message on it straight back to
 its queue.
 
+There is exactly one way to lose it, and it has to be asked for:
+`consume(autoAck: true)` has the broker answer for a message as it leaves, so
+nothing is outstanding and nothing comes back. Everything below is about the
+default.
+
 Measured, with a worker holding a prefetch of three and dying on the first message:
 
 ```
@@ -646,12 +760,6 @@ returns fifty. That is the other reason a pool of coroutines wants
 Whether PHP dies on its own limit or is killed outright makes no difference here.
 The first prints a fatal error, the second runs no PHP at all; the safety net in
 both cases is the socket closing, not anything this library does.
-Note the seam. The republish and the `ack` are two operations, and a worker that
-dies between them leaves the message in both places: the copy it published, and the
-original the broker takes back. Dead-lettering has no seam — `nack(requeue: false)`
-is one operation, performed by the broker. Republish when the routing or the counter
-has to be yours, dead-letter when it does not.
-
 
 What the crash does cost:
 
@@ -737,11 +845,6 @@ use SConcur\Features\Amqp\SaslMethodEnum;
 use SConcur\Features\Amqp\TlsOptions;
 
 $connection = new Connection(new ConnectionOptions(
-There is exactly one way to lose it, and it has to be asked for:
-`consume(autoAck: true)` has the broker answer for a message as it leaves, so
-nothing is outstanding and nothing comes back. Everything below is about the
-default.
-
     host:       'broker.internal',
     port:       5671,
     saslMethod: SaslMethodEnum::External,
@@ -982,7 +1085,7 @@ for instead of the encoder refusing it.
 
 Every broker failure is a `SConcur\Exceptions\Amqp\AmqpException`, and the reply
 code the broker named is the exception's own code. The exceptions to that are the
-last three rows of the table — configuration bugs, not broker ones:
+last five rows of the table — configuration bugs, not broker ones:
 
 ```php
 use SConcur\Exceptions\Amqp\QueueException;
@@ -1006,8 +1109,10 @@ try {
 | the queue list of a consumer worker is not one | `InvalidQueueSpecException` | 0 |
 | an option is outside the range the protocol allows, or a URI cannot be read | `InvalidConnectionOptionException` | 0 |
 | a prefetch limit is outside that range | `InvalidPrefetchException` | 0 |
+| a delay is not a positive number of milliseconds, or a list of them repeats one | `InvalidDelayException` | 0 |
+| a publish is told to retry a negative number of times, or to wait a negative one | `InvalidRetryException` | 0 |
 
-The last three are `LogicException`s rather than `AmqpException`s: nothing was sent, the
+The last five are `LogicException`s rather than `AmqpException`s: nothing was sent, the
 broker was never asked, and there is no reply code to carry — they are bugs in how the
 connection or the worker was described.
 

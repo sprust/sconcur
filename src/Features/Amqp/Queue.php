@@ -196,12 +196,17 @@ class Queue
      * Publishes straight into this queue, through the default exchange that routes by queue
      * name.
      */
-    public function publish(Message|string $message, bool $mandatory = false): void
+    /**
+     * @param int $delayMs how long the broker holds the message before it becomes available
+     *                     here; 0 publishes straight into the queue. A delay needs the wait
+     *                     queue for it to exist — see RetryTopology::declare()
+     */
+    public function publish(Message|string $message, bool $mandatory = false, int $delayMs = 0): void
     {
         $this->channel->publish(
             message: $message,
             exchange: '',
-            routingKey: $this->name,
+            routingKey: $this->routingKeyFor($delayMs),
             mandatory: $mandatory,
         );
     }
@@ -210,17 +215,45 @@ class Queue
      * Publishes into this queue and waits for the broker to take responsibility for the
      * message. See Channel::publishConfirmed().
      */
+    /**
+     * @param int         $delayMs            how long the broker holds the message before it
+     *                                        becomes available here; 0 publishes straight in
+     * @param int         $retries            how many further attempts a publish the broker
+     *                                        refused may have
+     * @param list<float> $retryDelaysSeconds the wait after each failure, by attempt number
+     */
     public function publishConfirmed(
         Message|string $message,
         float $timeoutSeconds = 0.0,
         bool $mandatory = true,
+        int $delayMs = 0,
+        int $retries = 0,
+        array $retryDelaysSeconds = [],
     ): void {
         $this->channel->publishConfirmed(
             message: $message,
             exchange: '',
-            routingKey: $this->name,
+            routingKey: $this->routingKeyFor($delayMs),
             timeoutSeconds: $timeoutSeconds,
             mandatory: $mandatory,
+            retries: $retries,
+            retryDelaysSeconds: $retryDelaysSeconds,
+        );
+    }
+
+    /**
+     * Where a publish is addressed: the queue itself, or the wait queue that holds the
+     * message for a while and dead-letters it back here.
+     */
+    protected function routingKeyFor(int $delayMs): string
+    {
+        if ($delayMs === 0) {
+            return $this->name;
+        }
+
+        return RetryTopology::waitQueueName(
+            queue: $this->name,
+            delayMs: $delayMs,
         );
     }
 
