@@ -1,6 +1,6 @@
-// Package payloads holds the Go counterparts of the PHP amqp payload objects
-// (SConcur\Features\Amqp\Payloads\*) and the results the feature sends back. Struct tags
-// are the short keys exchanged via MessagePack.
+// Package payloads holds the parameters of every amqp command and the results the feature
+// sends back. On the PHP side each command builds its own short-key map in the
+// AmqpCommandEnum case that names it; the struct tags here are those same keys.
 //
 // Every message is a command envelope (cm/p) under MethodAmqp — mirrors WsClient: cm
 // selects the AMQP method, p carries that method's parameters.
@@ -13,7 +13,7 @@ import (
 )
 
 // Envelope is the command envelope decoded from the msgpack message.
-// PHP: SConcur\Features\Amqp\Payloads\Base\BaseAmqpPayload.
+// PHP: SConcur\Features\Amqp\Payloads\AmqpPayload.
 type Envelope struct {
 	Command types.AmqpCommand  `json:"cm" msgpack:"cm"`
 	Params  msgpack.RawMessage `json:"p" msgpack:"p"`

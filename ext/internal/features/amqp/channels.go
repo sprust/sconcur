@@ -217,8 +217,9 @@ func (c *channels) dropHandle(handle *connectionHandle) {
 
 func (c *channels) startSweeper() {
 	go func() {
+		// Never stopped: the sweeper runs for the life of the process, so a deferred
+		// stop would only read as if there were a way out of this loop.
 		ticker := time.NewTicker(channelSweepInterval)
-		defer ticker.Stop()
 
 		for range ticker.C {
 			c.sweep()

@@ -214,14 +214,17 @@ func (e *channelEntry) collect(returns chan amqp091.Return, closed chan *amqp091
 		case reason, ok := <-closed:
 			closed = nil
 
-			if !ok {
-				continue
+			// Recorded before the entry is dropped, so a waitForConfirms leaving through
+			// <-e.gone finds it there: close() closes gone, and it does that after this.
+			//
+			// A listener registered on a channel the driver had already shut down comes
+			// back closed with nothing on it. There is no reason to record then, but the
+			// entry still has to go: leaving it here would keep a dead channel in the
+			// registry, answering commands and counting towards the connection's channel
+			// limit, until the idle sweeper got to it half an hour later.
+			if ok {
+				e.recordCloseReason(reason)
 			}
-
-			// Recorded before the entry is dropped, so classify() finds it there:
-			// close() is what sets the closed flag, and a command that sees that flag
-			// therefore sees the reason too.
-			e.recordCloseReason(reason)
 
 			// A protocol error (a passive declare of a queue that does not exist, a
 			// publish to a missing exchange) makes the broker close the channel. Without

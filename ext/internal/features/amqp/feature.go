@@ -187,8 +187,9 @@ func cancelDetached(params payloads.CancelParams) {
 
 	// Claimed before the method goes out, the way cancelConsumer() claims it: the registry
 	// entry is what says the tag has not been cancelled yet, and sending first leaves a
-	// window in which the consumer's own teardown — the AfterFunc behind an abandoned
-	// registration — sends a second basic.cancel for a tag the broker no longer has.
+	// window in which the consumer's own teardown — doAbandoning's abandon goroutine, which
+	// sends its own cancel for a registration that outran its deadline — puts a second
+	// basic.cancel on the wire for a tag the broker no longer has.
 	taskKey, exists := entry.forgetConsumer(params.ConsumerTag)
 
 	if !exists {
@@ -298,13 +299,23 @@ func fail(task *tasks.Task, entry *channelEntry, what string, err error) {
 // it: the connection behind it is usually alive, and telling an application to redial over
 // a queue that does not exist would tear down everything else running on that connection.
 func classify(entry *channelEntry, what string, err error) (string, int, string) {
-	// Checked before the broker errors below: the driver reports its own "not open" with
-	// an *amqp091.Error carrying a 5xx code, which would otherwise read as a connection
-	// the broker tore down.
 	if errors.Is(err, errWaitTimeout) {
 		return scopeCommand, 0, errWaitTimeout.Error()
 	}
 
+	// A command that outran its own deadline is a command failure, not a dead connection.
+	// It has to be answered here because context.DeadlineExceeded satisfies net.Error —
+	// it reports Timeout() and Temporary() — so isNetworkError below would take it for a
+	// broken socket and have PHP tear down the connection and every channel on it over one
+	// slow declare on a broker that is perfectly alive. context.Canceled carries no such
+	// methods and falls through to scopeCommand on its own.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return scopeCommand, 0, errCommandTimeout.Error()
+	}
+
+	// Checked before the broker errors below: the driver reports its own "not open" with
+	// an *amqp091.Error carrying a 5xx code, which would otherwise read as a connection
+	// the broker tore down.
 	if errors.Is(err, amqp091.ErrClosed) {
 		// Which of the two died is decided by asking the connection, not by asking whether
 		// this side has noticed the channel go. The driver marks a channel closed inside
@@ -370,6 +381,11 @@ func channelGoneFailure(entry *channelEntry) (string, int, string) {
 //
 // net.Error is the interface *net.OpError implements, so matching the interface alone
 // covers both.
+// errCommandTimeout is what a command that outran the deadline PHP gave it reports. It
+// reaches PHP as a command-scope failure, so the connection and the channel it ran on stay
+// usable — the next command simply queues behind the one still finishing.
+var errCommandTimeout = errors.New("command timeout exceeded")
+
 func isNetworkError(err error) bool {
 	if err == nil {
 		return false

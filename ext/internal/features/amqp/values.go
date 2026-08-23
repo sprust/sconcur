@@ -32,10 +32,12 @@ const (
 //
 // What the values can be is settled by the decoder that produced them
 // (payloads.decodeTableValue, which is DecodeInterfaceLoose plus its own handling of
-// nested maps and lists): nil, bool, string, []byte, int64, uint64, float64, and nested
-// map[string]any or []any. So only those are handled here, and an unsigned integer is
-// narrowed to the signed one AMQP can write — the driver refuses a uint64 as an
-// unsupported field type.
+// nested maps and lists): nil, bool, string, int64, uint64, float64, and nested
+// map[string]any or []any — binary msgpack included, which that decoder hands back as a
+// string like any other text. So only those are handled here, and an unsigned integer is
+// narrowed to the signed one AMQP can write: the driver refuses a uint64 as an unsupported
+// field type. Raw bytes are converted rather than passed through for the same reason PHP
+// sent them as text — an AMQP binary field is not what the other side reads back.
 func mapToTable(values map[string]any) amqp091.Table {
 	if len(values) == 0 {
 		return nil

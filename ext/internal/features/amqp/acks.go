@@ -131,6 +131,20 @@ func (f *AmqpFeature) handleCancel(task *tasks.Task, raw msgpack.RawMessage) {
 	ctx, cancel := commandContext(task, params.TimeoutMs, defaultRpcTimeout)
 	defer cancel()
 
+	// The stream the consumer was read through goes with it. Outside a coroutine PHP
+	// releases the flow that owned it; inside one the flow lives as long as the coroutine
+	// does, and a worker cancelling consumer after consumer would otherwise pile up a
+	// state, a delivery buffer and a goroutine for every one of them.
+	//
+	// Claimed before the basic.cancel rather than after it, the way cancelConsumer and
+	// cancelDetached do it. PHP swallows a failed cancel, so a tag left behind by an error
+	// return would keep its stream and its state for good — and keep the channel looking
+	// busy, which is the one thing the idle sweeper goes by. The broker ignores a cancel
+	// for a tag it does not know, so the reverse mistake costs nothing.
+	if taskKey, exists := entry.forgetConsumer(params.ConsumerTag); exists && taskKey != "" {
+		states.Get().DeleteState(taskKey)
+	}
+
 	err := entry.do(ctx, func(channel *amqp091.Channel) error {
 		return channel.Cancel(params.ConsumerTag, params.NoWait)
 	})
@@ -139,14 +153,6 @@ func (f *AmqpFeature) handleCancel(task *tasks.Task, raw msgpack.RawMessage) {
 		fail(task, entry, "cancel", err)
 
 		return
-	}
-
-	// The stream the consumer was read through goes with it. Outside a coroutine PHP
-	// releases the flow that owned it; inside one the flow lives as long as the coroutine
-	// does, and a worker cancelling consumer after consumer would otherwise pile up a
-	// state, a delivery buffer and a goroutine for every one of them.
-	if taskKey, exists := entry.forgetConsumer(params.ConsumerTag); exists && taskKey != "" {
-		states.Get().DeleteState(taskKey)
 	}
 
 	respondDone(task, startTime)

@@ -274,6 +274,76 @@ func TestAWaitTimeoutIsScopedAsACommandFailure(t *testing.T) {
 	}
 }
 
+// A command that outran the deadline PHP gave it is a command failure. context.Cancelled
+// carries no Timeout()/Temporary() pair, but context.DeadlineExceeded does, which makes it
+// a net.Error — and reading it as one has PHP mark the connection and every channel on it
+// unusable over a single slow declare on a broker that never went anywhere.
+func TestACommandDeadlineIsScopedAsACommandFailure(t *testing.T) {
+	scope, code, message := classify(newTestEntry(), "queue declare", context.DeadlineExceeded)
+
+	if scope != scopeCommand {
+		t.Fatalf("scope = %q, want %q — the connection is alive", scope, scopeCommand)
+	}
+
+	if code != 0 {
+		t.Fatalf("code = %d, want 0 — the broker refused nothing", code)
+	}
+
+	if message != errCommandTimeout.Error() {
+		t.Fatalf("message = %q, want %q", message, errCommandTimeout.Error())
+	}
+}
+
+// The flow stopping is not a timeout and must not read as one.
+func TestAStoppedFlowIsScopedAsACommandFailure(t *testing.T) {
+	scope, _, _ := classify(newTestEntry(), "queue declare", context.Canceled)
+
+	if scope != scopeCommand {
+		t.Fatalf("scope = %q, want %q", scope, scopeCommand)
+	}
+}
+
+// The driver hands back an already-closed listener when the channel it is registered on is
+// gone by then. There is no close reason to record, but the entry still has to leave the
+// registry — left there it answers commands, counts towards the connection's channel limit
+// and waits half an hour for the idle sweeper.
+func TestAChannelGoneBeforeItsListenerWasRegisteredStillLeavesTheRegistry(t *testing.T) {
+	registry := getChannels()
+
+	// Marked closed up front so the drop does not go on to the driver: this entry has no
+	// channel behind it, and the registry drop is the whole of what is under test.
+	entry := newChannelEntry("amqp:ch:closed-before-listening", nil, nil)
+	entry.closed = true
+
+	registry.mutex.Lock()
+	registry.entries[entry.id] = entry
+	registry.mutex.Unlock()
+
+	closed := make(chan *amqp091.Error, 1)
+
+	close(closed)
+
+	go entry.collect(nil, closed)
+
+	for attempt := 0; attempt < 200; attempt++ {
+		registry.mutex.RLock()
+		_, stillThere := registry.entries[entry.id]
+		registry.mutex.RUnlock()
+
+		if !stillThere {
+			return
+		}
+
+		time.Sleep(time.Millisecond)
+	}
+
+	registry.mutex.Lock()
+	delete(registry.entries, entry.id)
+	registry.mutex.Unlock()
+
+	t.Fatal("the entry stayed in the registry after its channel was reported closed")
+}
+
 func TestAConfirmWaitHandsOverTheReturnsWithTheConfirmations(t *testing.T) {
 	entry := newTestEntry()
 

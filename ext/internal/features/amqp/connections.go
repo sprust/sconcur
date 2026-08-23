@@ -291,8 +291,9 @@ func (c *connections) release(connectionId string) {
 
 func (c *connections) startSweeper() {
 	go func() {
+		// Never stopped, as in channels.startSweeper(): this goroutine lives as long as
+		// the process does.
 		ticker := time.NewTicker(connectionSweepInterval)
-		defer ticker.Stop()
 
 		for range ticker.C {
 			c.sweep()
