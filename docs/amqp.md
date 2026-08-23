@@ -345,8 +345,9 @@ property of this implementation.
 ```php
 $delivery->ack();                    // the broker may forget the message
 $delivery->ack(multiple: true);      // and everything before it on this channel
-$delivery->nack(requeue: true);      // refuse; put it back
-$delivery->reject();                 // refuse exactly this one, do not put it back
+$delivery->nack(requeue: true);      // refuse, put the message back in the queue
+$delivery->nack(requeue: false);     // refuse, do not put it back
+$delivery->reject();                 // as nack(requeue: false), one message only
 ```
 
 Settling belongs to the delivery, not to the queue. An acknowledgement names its
@@ -382,6 +383,59 @@ queue expires its messages back into the main one:
 $main = $channel->queue('orders');
 $wait = $channel->queue('orders.wait');
 
+### How a delivery reaches the handler
+
+Nothing in Go ever calls into PHP. The extension is a library PHP calls, and every
+crossing starts on the PHP side — so a consumer is not Go pushing work at a worker
+that listens for it. It is PHP leaving a standing question in Go, and being resumed
+once Go can answer it.
+
+`consume()` sends one `Consume` command and gets back a task key, the handle for
+this stream. That command opens the consumer on the broker and registers the stream
+under that key, holding on to the delivery channel the driver fills from the socket.
+Every turn of the `foreach` is a `next()` on that key — "the next delivery for this
+stream" — and the coroutine parks until it is answered.
+
+The waiting happens in Go, on the goroutine that runs the `next`, not by PHP
+polling the broker for a message. The
+PHP side sits in a single `waitAny()` that serves every parked coroutine at once:
+whichever answer becomes ready first is routed back to the coroutine that asked for
+it, and that coroutine is resumed with its `Delivery`.
+
+```mermaid
+sequenceDiagram
+    participant H as Handler (PHP coroutine)
+    participant S as Scheduler (PHP)
+    participant G as Consumer goroutine (Go)
+    participant B as Broker
+
+    H->>S: consume() — push(Consume)
+    S->>G: push, returns at once
+    G->>B: basic.consume
+    B-->>G: consumer tag
+    G-->>S: result — the tag
+    S->>H: resume, the foreach begins
+
+    H->>S: next(taskKey), the coroutine parks
+    S->>G: next, returns at once
+    S->>S: waitAny() — one wait for every parked coroutine
+    Note over G,B: the goroutine waits on the driver's delivery channel
+    B-->>G: delivery
+    G-->>S: result
+    S->>H: resume with the Delivery
+    Note over H: the handler runs, then ack()
+    H->>S: next(taskKey), and again
+```
+
+Publishing, declaring and acknowledging cross the same way and differ only in that
+they answer once instead of streaming: one command out, one result back, the
+coroutine parked in between. A consumer is the same exchange left open.
+
+This is what makes a hundred consumer coroutines affordable in one process: none of
+them is running while it waits, and every answer comes back through the same wait
+point. It is also why the consumer has to be read in the coroutine that opened it —
+the stream belongs to that coroutine's flow, and stopping the flow cancels it.
+
 $main->declare(durable: true, arguments: [
     'x-dead-letter-exchange'    => '',
     'x-dead-letter-routing-key' => 'orders.wait',
@@ -391,6 +445,13 @@ $wait->declare(durable: true, arguments: [
     'x-message-ttl'             => 500,      // the delay
     'x-dead-letter-exchange'    => '',
     'x-dead-letter-routing-key' => 'orders',
+`nack` and `reject` are the same AMQP refusal and differ in two things: the default
+and the batch form. `nack` puts the message back unless told otherwise, and
+`multiple: true` refuses everything before it on the channel in one go; `reject`
+refuses exactly one message and does not put it back unless asked. A refusal that
+does not requeue goes wherever the queue sends it — the dead-letter exchange it
+names, or nowhere at all if it names none.
+
 ]);
 ```
 
@@ -408,6 +469,11 @@ Every dead-letter hop is recorded in the `x-death` header, so nothing needs to
 count attempts by hand:
 
 ```php
+A delivery that is never settled at all — the process died before it got that far —
+is answered by the broker rather than by this library, and it comes back to its
+queue along with everything else the connection was holding. What that costs is in
+[when the worker itself dies](#when-the-worker-itself-dies).
+
 $attempt = 0;
 
 foreach ($delivery->header('x-death') ?? [] as $death) {
@@ -580,6 +646,12 @@ returns fifty. That is the other reason a pool of coroutines wants
 Whether PHP dies on its own limit or is killed outright makes no difference here.
 The first prints a fatal error, the second runs no PHP at all; the safety net in
 both cases is the socket closing, not anything this library does.
+Note the seam. The republish and the `ack` are two operations, and a worker that
+dies between them leaves the message in both places: the copy it published, and the
+original the broker takes back. Dead-lettering has no seam — `nack(requeue: false)`
+is one operation, performed by the broker. Republish when the routing or the counter
+has to be yours, dead-letter when it does not.
+
 
 What the crash does cost:
 
@@ -665,6 +737,11 @@ use SConcur\Features\Amqp\SaslMethodEnum;
 use SConcur\Features\Amqp\TlsOptions;
 
 $connection = new Connection(new ConnectionOptions(
+There is exactly one way to lose it, and it has to be asked for:
+`consume(autoAck: true)` has the broker answer for a message as it leaves, so
+nothing is outstanding and nothing comes back. Everything below is about the
+default.
+
     host:       'broker.internal',
     port:       5671,
     saslMethod: SaslMethodEnum::External,
