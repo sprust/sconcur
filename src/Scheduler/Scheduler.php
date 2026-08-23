@@ -328,9 +328,6 @@ class Scheduler
      * @param Closure(): TReturn $callback
      *
      * @return TReturn
-     *
-     * @throws InvalidCoroutineTimeoutException if the timeout is negative
-     * @throws CoroutineTimeoutException if the callback outlives the deadline
      */
     public function withDeadline(int $timeoutMs, Closure $callback): mixed
     {
@@ -1070,8 +1067,6 @@ class Scheduler
      * Screens a timeout the caller asked for. 0 is the whole library's way of saying "no
      * deadline", so only a negative one is a mistake — and it is screened before anything
      * is built, so a refusal never leaves a half-registered coroutine behind.
-     *
-     * @throws InvalidCoroutineTimeoutException if the timeout is negative
      */
     public static function assertTimeout(int $timeoutMs): void
     {

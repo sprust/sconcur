@@ -46,8 +46,6 @@ class RequestBody
      * Returns up to $maxBytes bytes of the body (or the next whole source chunk
      * when $maxBytes is null), or null once the body is fully read. The inline
      * first chunk is served first, then the streamed remainder.
-     *
-     * @throws RequestBodyTooLargeException if the body exceeds the server limit
      */
     public function read(?int $maxBytes = null): ?string
     {
@@ -79,8 +77,6 @@ class RequestBody
     /**
      * Reads and returns the whole body as a string (bounded by the server's
      * maxRequestBody). Memoized.
-     *
-     * @throws RequestBodyTooLargeException if the body exceeds the server limit
      */
     public function contents(): string
     {

@@ -56,8 +56,6 @@ readonly class DeliveryCodec
      * other order would report success for a message that reached no queue.
      *
      * @param array<mixed> $returns
-     *
-     * @throws UnroutableMessageException
      */
     public static function failOnReturns(array $returns): void
     {
@@ -89,8 +87,6 @@ readonly class DeliveryCodec
      * Raises on the first message the broker refused to store.
      *
      * @param array<mixed> $confirmations
-     *
-     * @throws PublishNackedException
      */
     public static function failOnNacks(array $confirmations): void
     {

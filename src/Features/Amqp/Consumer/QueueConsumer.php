@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace SConcur\Features\Amqp\Consumer;
 
 use Closure;
-use SConcur\Exceptions\Amqp\AmqpException;
-use SConcur\Exceptions\Amqp\InvalidQueueSpecException;
 use SConcur\Exceptions\CoroutineTimeoutException;
 use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Features\Amqp\Connection;
@@ -100,8 +98,6 @@ class QueueConsumer
      * script declares before handing over, since the runtime declares nothing.
      *
      * @return list<QueueSpec>
-     *
-     * @throws InvalidQueueSpecException if the queue list is not one
      */
     public function queueSpecs(): array
     {
@@ -130,9 +126,6 @@ class QueueConsumer
      * @param Closure(Delivery): void                 $handler
      * @param null|Closure(Throwable, Delivery): void $onError called when a handler throws;
      *                                                         without one it is logged
-     *
-     * @throws Throwable if the connection died and took every consumer with it — whatever
-     *                   ended the first one
      */
     public function consume(Connection $connection, Closure $handler, null|Closure $onError = null): int
     {
@@ -215,8 +208,6 @@ class QueueConsumer
      *
      * @param Closure(Delivery): void                 $handler
      * @param null|Closure(Throwable, Delivery): void $onError
-     *
-     * @throws FlowStoppedException if the drain unwinds this coroutine
      */
     protected function consumeQueue(
         Connection $connection,
@@ -299,9 +290,6 @@ class QueueConsumer
      *
      * @param Closure(Delivery): void                 $handler
      * @param null|Closure(Throwable, Delivery): void $onError
-     *
-     * @throws AmqpException if the broker refuses the consumer or takes it away
-     * @throws FlowStoppedException if the drain unwinds this coroutine
      */
     protected function runConsumer(
         Connection $connection,
@@ -342,8 +330,6 @@ class QueueConsumer
      *
      * @param Closure(Delivery): void                 $handler
      * @param null|Closure(Throwable, Delivery): void $onError
-     *
-     * @throws FlowStoppedException if the drain unwinds this coroutine mid-message
      */
     protected function handleDelivery(
         Delivery $delivery,
@@ -434,8 +420,6 @@ class QueueConsumer
      * inside the extension (docs/coroutine-timeout.md).
      *
      * @param Closure(Delivery): void $handler
-     *
-     * @throws CoroutineTimeoutException if the handler outlives $handlerTimeoutMs
      */
     protected function runHandler(Closure $handler, Delivery $delivery): void
     {
@@ -479,8 +463,6 @@ class QueueConsumer
      * A failed settle is logged rather than thrown: the message is the broker's problem
      * again either way, and letting it escape would end a consumer over a dead channel. The
      * next pull on that channel raises anyway, and that is where the consumer reopens.
-     *
-     * @throws FlowStoppedException if the drain unwinds this coroutine mid-settle
      */
     protected function settle(Delivery $delivery, bool $failed): void
     {

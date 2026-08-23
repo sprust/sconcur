@@ -29,9 +29,6 @@ readonly class Decimal
 
     public const int SIGNIFICAND_MAX = 4294967295;
 
-    /**
-     * @throws InvalidAmqpValueException if either part is out of the AMQP 0-9-1 range
-     */
     public function __construct(
         public int $exponent,
         public int $significand,

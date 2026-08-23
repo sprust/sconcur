@@ -63,8 +63,6 @@ class Delivery
      *
      * @param bool $multiple acknowledge every delivery of this channel up to and including
      *                       this tag — the cheap way to settle a batch
-     *
-     * @throws ChannelException if the channel is gone or the delivery was already settled
      */
     public function ack(bool $multiple = false): void
     {
@@ -78,8 +76,6 @@ class Delivery
      * Refuses the delivery. Requeued by default, which is what a failure that may pass
      * wants; `requeue: false` dead-letters the message, or drops it where the queue names no
      * exchange.
-     *
-     * @throws ChannelException if the channel is gone or the delivery was already settled
      */
     public function nack(bool $requeue = true, bool $multiple = false): void
     {
@@ -93,8 +89,6 @@ class Delivery
     /**
      * Refuses exactly this delivery. `reject` is `nack` without the batch form, defaulting
      * the other way: a rejected message is not put back unless asked for.
-     *
-     * @throws ChannelException if the channel is gone or the delivery was already settled
      */
     public function reject(bool $requeue = false): void
     {
@@ -106,8 +100,6 @@ class Delivery
 
     /**
      * @param callable(Channel): void $settle
-     *
-     * @throws ChannelException if the channel is gone or the delivery was already settled
      */
     protected function settleWith(callable $settle): void
     {

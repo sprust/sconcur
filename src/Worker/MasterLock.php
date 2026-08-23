@@ -24,10 +24,6 @@ class MasterLock
     ) {
     }
 
-    /**
-     * @throws MasterAlreadyRunningException another master already holds the lock
-     * @throws RuntimePathException          the lock file cannot be opened
-     */
     public function acquire(): void
     {
         // "e" → O_CLOEXEC: spawned workers must NOT inherit this fd, otherwise an

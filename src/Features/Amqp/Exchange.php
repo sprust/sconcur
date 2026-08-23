@@ -5,9 +5,6 @@ declare(strict_types=1);
 namespace SConcur\Features\Amqp;
 
 use SConcur\Exceptions\Amqp\ExchangeException;
-use SConcur\Exceptions\Amqp\PublishConfirmTimeoutException;
-use SConcur\Exceptions\Amqp\PublishNackedException;
-use SConcur\Exceptions\Amqp\UnroutableMessageException;
 use SConcur\Features\Amqp\Support\TableCodec;
 
 /**
@@ -48,8 +45,6 @@ class Exchange
      * @param bool                 $autoDelete delete once the last binding goes
      * @param bool                 $internal   only other exchanges may publish to it
      * @param array<string, mixed> $arguments  the broker's own extensions
-     *
-     * @throws ExchangeException if the broker rejects the declaration
      */
     public function declare(
         ExchangeTypeEnum $type = ExchangeTypeEnum::Direct,
@@ -71,8 +66,6 @@ class Exchange
     /**
      * Asks whether the exchange exists, creating nothing. One that is not there is a 404 the
      * broker answers by closing the channel.
-     *
-     * @throws ExchangeException if the exchange does not exist
      */
     public function declarePassive(): void
     {
@@ -88,8 +81,6 @@ class Exchange
      *
      * @param string               $source    the exchange the messages come from
      * @param array<string, mixed> $arguments matching arguments, for a headers exchange
-     *
-     * @throws ExchangeException if the broker rejects the binding
      */
     public function bind(string $source, string $routingKey = '', array $arguments = []): void
     {
@@ -109,8 +100,6 @@ class Exchange
      * Removes a binding made by bind().
      *
      * @param array<string, mixed> $arguments
-     *
-     * @throws ExchangeException if the broker rejects the unbinding
      */
     public function unbind(string $source, string $routingKey = '', array $arguments = []): void
     {
@@ -130,8 +119,6 @@ class Exchange
      * Deletes the exchange. The queues bound to it stay; only the routing goes.
      *
      * @param bool $ifUnused refuse to delete an exchange that still has bindings
-     *
-     * @throws ExchangeException if the broker rejects the deletion
      */
     public function delete(bool $ifUnused = false): void
     {
@@ -149,8 +136,6 @@ class Exchange
 
     /**
      * Publishes a message through this exchange. See Channel::publish().
-     *
-     * @throws ExchangeException if the message could not be handed to the broker
      */
     public function publish(Message|string $message, string $routingKey = '', bool $mandatory = false): void
     {
@@ -165,10 +150,6 @@ class Exchange
     /**
      * Publishes through this exchange and waits for the broker to take responsibility for
      * the message. See Channel::publishConfirmed().
-     *
-     * @throws PublishNackedException if the broker refused to store the message
-     * @throws UnroutableMessageException if it reached no queue
-     * @throws PublishConfirmTimeoutException if the broker did not answer in time
      */
     public function publishConfirmed(
         Message|string $message,
@@ -187,8 +168,6 @@ class Exchange
 
     /**
      * @param array<string, mixed> $arguments
-     *
-     * @throws ExchangeException if the broker rejects the declaration
      */
     protected function runDeclare(
         ExchangeTypeEnum $type,

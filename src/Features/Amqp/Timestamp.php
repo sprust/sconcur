@@ -25,9 +25,6 @@ readonly class Timestamp implements Stringable
 
     public float $seconds;
 
-    /**
-     * @throws InvalidAmqpValueException if the timestamp is out of the AMQP 0-9-1 range
-     */
     public function __construct(float $seconds)
     {
         if ($seconds < self::MIN_SECONDS || $seconds > self::MAX_SECONDS) {

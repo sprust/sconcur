@@ -31,9 +31,6 @@ readonly class QueueSpecParser
 
     /**
      * @return list<QueueSpec>
-     *
-     * @throws InvalidQueueSpecException the JSON is malformed, an entry is not usable,
-     *                                   or the total exceeds one connection's channels
      */
     public static function parse(string $json): array
     {
@@ -95,8 +92,6 @@ readonly class QueueSpecParser
 
     /**
      * @return array<mixed>
-     *
-     * @throws InvalidQueueSpecException
      */
     protected static function decode(string $json): array
     {
@@ -126,8 +121,6 @@ readonly class QueueSpecParser
 
     /**
      * @param array<mixed> $entry
-     *
-     * @throws InvalidQueueSpecException
      */
     protected static function specFromEntry(array $entry, int $index): QueueSpec
     {
@@ -176,8 +169,6 @@ readonly class QueueSpecParser
      * id space exhausted" on whichever coroutine happened to start last.
      *
      * @param list<QueueSpec> $specs
-     *
-     * @throws InvalidQueueSpecException
      */
     protected static function assertChannelBudget(array $specs): void
     {

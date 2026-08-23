@@ -144,9 +144,6 @@ readonly class TableCodec
         return $encoded;
     }
 
-    /**
-     * @throws InvalidAmqpValueException if the value nests deeper than the protocol allows
-     */
     protected static function encodeValue(mixed $value, int $depth): mixed
     {
         if ($depth > self::MAX_DEPTH) {

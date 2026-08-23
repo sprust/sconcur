@@ -7,7 +7,6 @@ namespace SConcur\Worker;
 use Closure;
 use SConcur\Exceptions\Worker\InvalidConfigException;
 use SConcur\Exceptions\Worker\InvalidWorkerCountException;
-use SConcur\Exceptions\Worker\MasterAlreadyRunningException;
 use SConcur\Exceptions\Worker\MissingPcntlException;
 use SConcur\Exceptions\Worker\RuntimePathException;
 use SConcur\Telemetry\TelemetryRuntime;
@@ -106,11 +105,6 @@ class WorkerMaster
     /**
      * Runs the supervisor until a shutdown signal drains all workers. Returns the
      * process exit code (0 on clean shutdown).
-     *
-     * @throws MissingPcntlException        ext-pcntl/ext-posix missing
-     * @throws InvalidWorkerCountException  the master was given no group to supervise
-     * @throws RuntimePathException         a required path is missing/not writable
-     * @throws MasterAlreadyRunningException another master holds the lock
      */
     public function run(): int
     {
@@ -262,8 +256,6 @@ class WorkerMaster
      * crash loop. A typo must never take a working pool down.
      *
      * @param list<WorkerGroupConfig> $groups
-     *
-     * @throws RuntimePathException a group's worker script does not exist
      */
     protected static function assertWorkerScripts(array $groups): void
     {

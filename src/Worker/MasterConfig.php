@@ -71,10 +71,6 @@ readonly class MasterConfig
     ) {
     }
 
-    /**
-     * @throws InvalidConfigException the file is missing/unreadable, not a JSON object,
-     *                                or carries an invalid value
-     */
     public static function fromFile(string $path): self
     {
         if (!is_file($path)) {
@@ -104,8 +100,6 @@ readonly class MasterConfig
 
     /**
      * @param array<string, mixed> $data
-     *
-     * @throws InvalidConfigException a required value is missing or invalid
      */
     public static function fromArray(array $data): self
     {
@@ -225,8 +219,6 @@ readonly class MasterConfig
      * retention — a negative value is always an operator mistake).
      *
      * @param array<string, mixed> $data
-     *
-     * @throws InvalidConfigException the value is present but negative
      */
     public static function nonNegativeInt(array $data, string $key, int $default, string $groupName = ''): int
     {
@@ -290,8 +282,6 @@ readonly class MasterConfig
      * dropped silently — the pass-through is total.
      *
      * @return array<string, mixed>
-     *
-     * @throws InvalidConfigException when present but not an object
      */
     public static function serverParams(mixed $value, string $groupName): array
     {
@@ -318,8 +308,6 @@ readonly class MasterConfig
      * @param array<string, mixed> $data
      *
      * @return list<WorkerGroupConfig>
-     *
-     * @throws InvalidConfigException
      */
     protected static function parseGroups(array $data, MasterDefaults $defaults): array
     {
@@ -364,8 +352,6 @@ readonly class MasterConfig
      * new home rather than calling them unknown.
      *
      * @param array<string, mixed> $data
-     *
-     * @throws InvalidConfigException an unknown top-level key is present
      */
     protected static function assertKnownKeys(array $data): void
     {

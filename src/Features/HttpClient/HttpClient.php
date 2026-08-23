@@ -49,9 +49,6 @@ readonly class HttpClient implements ClientInterface
     ) {
     }
 
-    /**
-     * @throws ClientExceptionInterface
-     */
     public function sendRequest(RequestInterface $request): ResponseInterface
     {
         try {

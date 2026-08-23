@@ -61,8 +61,6 @@ readonly class WorkerGroupConfig
      * say itself.
      *
      * @param array<string, mixed> $data
-     *
-     * @throws InvalidConfigException a required value is missing or invalid
      */
     public static function fromArray(array $data, MasterDefaults $defaults, int $index): self
     {

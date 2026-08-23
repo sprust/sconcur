@@ -327,9 +327,12 @@ who do not speak Russian, and it ends up pasted into issues and docs.
 
 ## Exceptions
 
-Callable signatures stay clean of `@throws` noise, so the public API does not
-advertise concrete throwables — any caught `Throwable` is wrapped before
-re-throwing.
+**No `@throws` anywhere.** Every exception here descends from `RuntimeException` or
+`LogicException`, both unchecked by PHP convention, so a tag adds nothing a reader can
+act on — and a partial list is worse than none: PHPStan reads `@throws` as exhaustive
+and kills the `catch` blocks for whatever the list left out. The public API does not
+advertise concrete throwables; any caught `Throwable` is wrapped before re-throwing, and
+what a call can fail with belongs in prose, in the docblock or in `docs/`.
 
 - **Never `throw` a built-in exception directly** (`RuntimeException`,
   `LogicException`, `DomainException`, …). Always throw a custom exception from

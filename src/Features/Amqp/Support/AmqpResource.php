@@ -101,8 +101,6 @@ abstract class AmqpResource
      *                                                    message of a closed-channel failure
      *
      * @return array<mixed>
-     *
-     * @throws AmqpException
      */
     protected function runCommand(
         AmqpCommandEnum $command,
@@ -128,8 +126,6 @@ abstract class AmqpResource
      *
      * @param array<string, mixed>        $data
      * @param class-string<AmqpException> $exceptionClass
-     *
-     * @throws AmqpException
      */
     protected function runStreamCommand(
         AmqpCommandEnum $command,
@@ -161,8 +157,6 @@ abstract class AmqpResource
      * because its channel is gone leaves that channel marked closed.
      *
      * @param class-string<AmqpException> $exceptionClass
-     *
-     * @throws AmqpException
      */
     protected function nextStream(string $taskKey, string $exceptionClass, ?Channel $channel = null): TaskResultDto
     {

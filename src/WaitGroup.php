@@ -10,7 +10,6 @@ use Generator;
 use RuntimeException;
 use SConcur\Exceptions\CallbackExecutionException;
 use SConcur\Exceptions\FlowStoppedException;
-use SConcur\Exceptions\InvalidCoroutineTimeoutException;
 use SConcur\Flow\CurrentFlow;
 use SConcur\Scheduler\Coroutine;
 use SConcur\Scheduler\Scheduler;
@@ -88,8 +87,6 @@ class WaitGroup
      *                                    where it stands (CoroutineTimeoutException); 0, the
      *                                    default, means no deadline. Counted from the moment
      *                                    the callback starts, not from here — see launch()
-     *
-     * @throws InvalidCoroutineTimeoutException if the timeout is negative
      */
     public function add(Closure $callback, int $timeoutMs = 0): string
     {

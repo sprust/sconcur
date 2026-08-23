@@ -5,11 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Features\Amqp;
 
 use Generator;
-use SConcur\Exceptions\Amqp\ExchangeException;
-use SConcur\Exceptions\Amqp\PublishConfirmTimeoutException;
-use SConcur\Exceptions\Amqp\PublishNackedException;
 use SConcur\Exceptions\Amqp\QueueException;
-use SConcur\Exceptions\Amqp\UnroutableMessageException;
 use SConcur\Features\Amqp\Support\TableCodec;
 
 /**
@@ -54,8 +50,6 @@ class Queue
      * @param bool                 $autoDelete delete once the last consumer leaves
      * @param array<string, mixed> $arguments  the broker's own extensions, such as
      *                                         `x-max-priority` or `x-dead-letter-exchange`
-     *
-     * @throws QueueException if the broker rejects the declaration
      */
     public function declare(
         bool $durable = false,
@@ -76,8 +70,6 @@ class Queue
      * Asks whether the queue exists and how much is in it, creating nothing. One that is not
      * there is a 404 the broker answers by closing the channel — which is why this is a call
      * of its own rather than a flag on declare().
-     *
-     * @throws QueueException if the queue does not exist
      */
     public function declarePassive(): QueueInfo
     {
@@ -88,8 +80,6 @@ class Queue
      * Binds the queue to an exchange, so what that exchange routes by this key reaches it.
      *
      * @param array<string, mixed> $arguments matching arguments, for a headers exchange
-     *
-     * @throws QueueException if the broker rejects the binding
      */
     public function bind(string $exchange, string $routingKey = '', array $arguments = []): void
     {
@@ -109,8 +99,6 @@ class Queue
      * Removes a binding made by bind().
      *
      * @param array<string, mixed> $arguments
-     *
-     * @throws QueueException if the broker rejects the unbinding
      */
     public function unbind(string $exchange, string $routingKey = '', array $arguments = []): void
     {
@@ -128,8 +116,6 @@ class Queue
 
     /**
      * Removes every message from the queue and answers how many that was.
-     *
-     * @throws QueueException if the broker rejects the purge
      */
     public function purge(): int
     {
@@ -152,8 +138,6 @@ class Queue
      *
      * @param bool $ifUnused refuse to delete a queue that still has consumers
      * @param bool $ifEmpty  refuse to delete a queue that still has messages
-     *
-     * @throws QueueException if the broker rejects the deletion
      */
     public function delete(bool $ifUnused = false, bool $ifEmpty = false): int
     {
@@ -174,8 +158,6 @@ class Queue
 
     /**
      * One message, or null when the queue is empty. See Channel::get().
-     *
-     * @throws QueueException if the broker rejects the request
      */
     public function get(bool $autoAck = false): ?Delivery
     {
@@ -192,8 +174,6 @@ class Queue
      * @param array<string, mixed> $arguments
      *
      * @return Generator<int, Delivery>
-     *
-     * @throws QueueException if the broker rejects the consumer or the stream fails
      */
     public function consume(
         bool $autoAck = false,
@@ -215,8 +195,6 @@ class Queue
     /**
      * Publishes straight into this queue, through the default exchange that routes by queue
      * name.
-     *
-     * @throws ExchangeException if the message could not be handed to the broker
      */
     public function publish(Message|string $message, bool $mandatory = false): void
     {
@@ -231,10 +209,6 @@ class Queue
     /**
      * Publishes into this queue and waits for the broker to take responsibility for the
      * message. See Channel::publishConfirmed().
-     *
-     * @throws PublishNackedException if the broker refused to store the message
-     * @throws UnroutableMessageException if the queue does not exist
-     * @throws PublishConfirmTimeoutException if the broker did not answer in time
      */
     public function publishConfirmed(
         Message|string $message,
@@ -252,8 +226,6 @@ class Queue
 
     /**
      * @param array<string, mixed> $arguments
-     *
-     * @throws QueueException if the broker rejects the declaration
      */
     protected function runDeclare(
         bool $passive,

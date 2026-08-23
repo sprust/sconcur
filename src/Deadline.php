@@ -6,7 +6,6 @@ namespace SConcur;
 
 use Closure;
 use SConcur\Exceptions\CoroutineTimeoutException;
-use SConcur\Exceptions\InvalidCoroutineTimeoutException;
 use SConcur\Scheduler\Scheduler;
 
 /**
@@ -43,11 +42,6 @@ class Deadline
      * @param Closure(): TReturn $callback  the work to bound
      *
      * @return TReturn
-     *
-     * @throws InvalidCoroutineTimeoutException if the timeout is negative
-     * @throws CoroutineTimeoutException if the callback outlives the deadline — thrown into
-     *                                   the coroutine wherever it stands, so the callback's
-     *                                   own finally blocks run on the way out
      */
     public static function run(int $timeoutMs, Closure $callback): mixed
     {

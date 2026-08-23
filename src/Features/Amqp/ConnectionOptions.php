@@ -45,8 +45,6 @@ readonly class ConnectionOptions
      * @param float $rpcTimeoutSeconds     how long any other single broker method may take
      * @param int   $heartbeatSeconds      the heartbeat interval; 0 lets the broker choose
      * @param int   $frameMaxBytes         the largest frame the connection will send or accept
-     *
-     * @throws InvalidConnectionOptionException if a value is outside the range the protocol allows
      */
     public function __construct(
         public string $host = 'localhost',
@@ -141,8 +139,6 @@ readonly class ConnectionOptions
      * intuition: no path at all means the default `/`, a bare `/` means the empty vhost,
      * and a vhost containing a slash is written `%2f`. Everything else is a query
      * parameter, named as the broker's own URI documentation names it.
-     *
-     * @throws InvalidConnectionOptionException if the URI cannot be read or names an unknown scheme
      */
     public static function fromDsn(string $dsn): self
     {
@@ -286,9 +282,6 @@ readonly class ConnectionOptions
         return ((float) $query[$key]) / 1000;
     }
 
-    /**
-     * @throws InvalidConnectionOptionException if the value is longer than the protocol allows
-     */
     protected static function assertLength(string $name, string $value, int $limit): void
     {
         if (strlen($value) > $limit) {
@@ -296,9 +289,6 @@ readonly class ConnectionOptions
         }
     }
 
-    /**
-     * @throws InvalidConnectionOptionException if the value is negative
-     */
     protected static function assertNotNegative(string $name, float $value): void
     {
         if ($value < 0) {

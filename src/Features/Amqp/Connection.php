@@ -6,7 +6,6 @@ namespace SConcur\Features\Amqp;
 
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\Amqp\ConnectionException;
-use SConcur\Exceptions\Amqp\InvalidConnectionOptionException;
 use SConcur\Features\Amqp\Payloads\AmqpPayload;
 use SConcur\Features\Amqp\Support\AmqpResource;
 use SConcur\Features\Sleeper\Sleeper;
@@ -44,8 +43,6 @@ class Connection extends AmqpResource
     /**
      * @param ConnectionOptions|string $options the options, or an AMQP URI —
      *                                          `amqp://login:password@host:5672/vhost`
-     *
-     * @throws InvalidConnectionOptionException if the URI cannot be read or an option is out of range
      */
     public function __construct(ConnectionOptions|string $options = new ConnectionOptions())
     {
@@ -64,8 +61,6 @@ class Connection extends AmqpResource
     /**
      * Opens the connection: the Go side dials the broker, or hands out a connection
      * already open for the same options. A connection already open here is closed first.
-     *
-     * @throws ConnectionException if the broker is unreachable or refuses the login
      */
     public function connect(): void
     {
@@ -114,8 +109,6 @@ class Connection extends AmqpResource
     /**
      * Releases the handle; the connection stays pooled until nothing holds it and its idle
      * time runs out. Idempotent.
-     *
-     * @throws ConnectionException if the broker could not be told
      */
     public function close(): void
     {
@@ -154,8 +147,6 @@ class Connection extends AmqpResource
      * @param int $prefetchCount     how many unacknowledged deliveries the broker may push
      *                               to a consumer on this channel at a time
      * @param int $prefetchSizeBytes the same limit in octets; 0 means no size limit
-     *
-     * @throws ConnectionException if the broker is unreachable or refuses another channel
      */
     public function channel(int $prefetchCount = Channel::DEFAULT_PREFETCH_COUNT, int $prefetchSizeBytes = 0): Channel
     {
@@ -171,8 +162,6 @@ class Connection extends AmqpResource
     /**
      * How many channels are open, counted in the Go-side registry — where the sweeper may
      * also have closed ones an application dropped without closing.
-     *
-     * @throws ConnectionException if the connection is not open
      */
     public function usedChannels(): int
     {
@@ -242,9 +231,6 @@ class Connection extends AmqpResource
      * apart. Reconnecting silently would hand back a connection whose channels and
      * consumers are gone while their objects still point at them, and would turn a broker
      * that is down into a retry loop nobody asked for.
-     *
-     * @throws ConnectionException if the connection died, the broker is unreachable, or it
-     *                             refuses the login
      */
     protected function ensureOpen(): void
     {

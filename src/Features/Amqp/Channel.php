@@ -12,9 +12,7 @@ use SConcur\Exceptions\Amqp\ConnectionException;
 use SConcur\Exceptions\Amqp\ExchangeException;
 use SConcur\Exceptions\Amqp\InvalidPrefetchException;
 use SConcur\Exceptions\Amqp\PublishConfirmTimeoutException;
-use SConcur\Exceptions\Amqp\PublishNackedException;
 use SConcur\Exceptions\Amqp\QueueException;
-use SConcur\Exceptions\Amqp\UnroutableMessageException;
 use SConcur\Features\Amqp\Payloads\AmqpPayload;
 use SConcur\Features\Amqp\Support\AmqpResource;
 use SConcur\Features\Amqp\Support\DeliveryCodec;
@@ -32,9 +30,9 @@ use WeakReference;
  * Never share one between coroutines — the commands of a channel are serialized, so two
  * coroutines on one channel is two coroutines in a queue.
  *
- * Any command here can fail at connection level instead of channel level; the broker
- * decides by the reply code, so a ConnectionException may come out of a call whose @throws
- * names only the channel-level one.
+ * Any command here can fail at connection level instead of channel level — the broker
+ * decides by the reply code — so a ConnectionException may come out of a call that reads
+ * like a channel-level one.
  */
 class Channel extends AmqpResource
 {
@@ -54,9 +52,6 @@ class Channel extends AmqpResource
 
     /**
      * Prefer `Connection::channel()`, which opens the connection first when it is not open.
-     *
-     * @throws ConnectionException if the connection is not open or the broker refuses
-     * @throws InvalidPrefetchException if a prefetch limit is outside the protocol's range
      */
     public function __construct(
         Connection $connection,
@@ -123,8 +118,6 @@ class Channel extends AmqpResource
      * @param class-string<AmqpException> $exceptionClass
      *
      * @return array<mixed>
-     *
-     * @throws AmqpException
      */
     public function run(
         AmqpCommandEnum $command,
@@ -180,11 +173,6 @@ class Channel extends AmqpResource
     /**
      * How much the broker may push before it is acknowledged. With `global` the limits
      * apply to the whole channel instead of to each consumer on it separately.
-     *
-     * @throws InvalidPrefetchException if a limit is outside the protocol's range
-     * @throws ChannelException if the broker rejects the settings
-     * @throws ConnectionException RabbitMQ refuses a prefetch size at connection level — it
-     *                             has never implemented one
      */
     public function prefetch(int $count, int $sizeBytes = 0, bool $global = false): void
     {
@@ -231,8 +219,6 @@ class Channel extends AmqpResource
      *
      * @param bool $mandatory ask the broker to send an unroutable message back instead of
      *                        dropping it. Only `publishConfirmed()` waits to see the return
-     *
-     * @throws ExchangeException if the message could not be handed to the broker
      */
     public function publish(
         Message|string $message,
@@ -262,8 +248,6 @@ class Channel extends AmqpResource
     /**
      * From here on the broker reports every published message as stored or refused.
      * `publishConfirmed()` turns it on by itself.
-     *
-     * @throws ChannelException if the broker rejects it
      */
     public function enableConfirms(): void
     {
@@ -288,10 +272,6 @@ class Channel extends AmqpResource
      * A batch is a WaitGroup around this call rather than an API of its own.
      *
      * @param float $timeoutSeconds 0 waits until the broker answers
-     *
-     * @throws PublishNackedException if the broker refused to store the message
-     * @throws UnroutableMessageException if it reached no queue
-     * @throws PublishConfirmTimeoutException if the broker did not answer in time
      */
     public function publishConfirmed(
         Message|string $message,
@@ -317,10 +297,6 @@ class Channel extends AmqpResource
      * broker did not take.
      *
      * @param float $timeoutSeconds 0 waits until the broker answers
-     *
-     * @throws PublishNackedException if the broker refused to store a message
-     * @throws UnroutableMessageException if a message reached no queue
-     * @throws PublishConfirmTimeoutException if the broker did not answer in time
      */
     public function waitForConfirms(float $timeoutSeconds = 0.0): void
     {
@@ -347,8 +323,6 @@ class Channel extends AmqpResource
 
     /**
      * Prefer `Delivery::ack()`, which knows its own tag and refuses to settle twice.
-     *
-     * @throws QueueException if the broker rejects the acknowledgement
      */
     public function ack(int $deliveryTag, bool $multiple = false): void
     {
@@ -365,8 +339,6 @@ class Channel extends AmqpResource
 
     /**
      * Prefer `Delivery::nack()`.
-     *
-     * @throws QueueException if the broker rejects the method
      */
     public function nack(int $deliveryTag, bool $requeue = true, bool $multiple = false): void
     {
@@ -384,8 +356,6 @@ class Channel extends AmqpResource
 
     /**
      * Refuses exactly one delivery, never a run of them. Prefer `Delivery::reject()`.
-     *
-     * @throws QueueException if the broker rejects the method
      */
     public function reject(int $deliveryTag, bool $requeue = false): void
     {
@@ -403,8 +373,6 @@ class Channel extends AmqpResource
     /**
      * One message, or null when the queue is empty. basic.get never waits; a worker reading
      * a queue continuously wants `consume()`.
-     *
-     * @throws QueueException if the broker rejects the request
      */
     public function get(string $queueName, bool $autoAck = false): ?Delivery
     {
@@ -439,8 +407,6 @@ class Channel extends AmqpResource
      * @param array<string, mixed> $arguments consumer arguments, such as `x-priority`
      *
      * @return Generator<int, Delivery>
-     *
-     * @throws QueueException if the broker rejects the consumer or the stream fails
      */
     public function consume(
         string $queueName,
@@ -613,9 +579,6 @@ class Channel extends AmqpResource
         }
     }
 
-    /**
-     * @throws InvalidPrefetchException if a limit is outside the range the protocol allows
-     */
     protected static function assertPrefetch(int $count, int $sizeBytes): void
     {
         if ($count < 0 || $count > self::MAX_PREFETCH_COUNT) {
