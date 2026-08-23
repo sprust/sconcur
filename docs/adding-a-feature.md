@@ -66,6 +66,13 @@ document (insert, count, runCommand, …) or empty (drop, list…), it has no Go
 — `dt` is read as raw BSON in the handler, and that case is marked with a comment,
 so every PHP `*Payload` corresponds to either a Go struct or an explicit note.
 
+A feature with many commands whose parameters are flat maps of short keys can skip the
+class-per-command entirely: `Amqp` has one `AmqpPayload(AmqpCommandEnum $command, array
+$data)`, the callers write the keys where the values are, and each enum case names the Go
+struct its `dt` is decoded into. Two dozen near-identical classes buy nothing a named
+argument at the call site does not already give. Prefer that shape when the parameters
+carry no logic, and the Mongodb one when they do.
+
 The PHP payload is `readonly`, its fields are typed, and the names are not
 abbreviated.
 

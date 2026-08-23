@@ -62,16 +62,21 @@ flowchart TB
 
 ```json
 {
-  "workerScript": "/app/worker.php",
-  "workerCount": 8,
   "runtimeDir": "/run/sconcur",
   "name": "sconcur-servers",
   "panelPort": 8081,
   "adminToken": "23c30b40...9894c3ec",
-  "server": {
-    "address": "0.0.0.0:8080",
-    "reusePort": true
-  }
+  "groups": [
+    {
+      "name": "http",
+      "workerScript": "/app/worker.php",
+      "workerCount": 8,
+      "server": {
+        "address": "0.0.0.0:8080",
+        "reusePort": true
+      }
+    }
+  ]
 }
 ```
 
@@ -244,17 +249,34 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 # HELP sconcur_pool_requests_completed_total Requests completed across the pool.
 # TYPE sconcur_pool_requests_completed_total counter
 sconcur_pool_requests_completed_total{name="sconcur-servers"} 843210
+sconcur_pool_deliveries_total{name="sconcur-servers"} 51204
 sconcur_master_start_time_seconds{name="sconcur-servers"} 1750762800
 sconcur_master_memory_rss_bytes{name="sconcur-servers"} 16777216
-sconcur_worker_start_time_seconds{name="sconcur-servers",pid="12346"} 1750766087
-sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346"} 105432
+sconcur_group_workers{name="sconcur-servers",group="http"} 3
+sconcur_group_memory_rss_bytes{name="sconcur-servers",group="http"} 125829120
+sconcur_worker_start_time_seconds{name="sconcur-servers",pid="12346",group="http"} 1750766087
+sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346",group="http"} 105432
 ```
 
-`groups` — итог по каждому пулу мастера отдельно, а `totals` суммирует всех его
-воркеров. Складывать нагрузку разнородных пулов смысла нет, поэтому цифры нагрузки
-читают по `groups`; в `totals` осмысленны память, CPU и горутины. Воркер сообщает,
-чей он, полем `group` — оно берётся из метки `<группа>:<слот>`, которой он помечает
-свои снапшоты.
+Четыре области, различаемые префиксом и метками:
+
+| Семейство | Область | Метки |
+| --- | --- | --- |
+| `sconcur_pool_*` | все воркеры мастера вместе — `requests`, `connections` и `deliveries` (нагрузка очередей) | `name` |
+| `sconcur_group_*` | один пул: число воркеров, зависших, CPU, RSS и горутины | `name`, `group` |
+| `sconcur_master_*` | сам процесс мастера | `name` |
+| `sconcur_worker_*` | один воркер | `name`, `pid`, `group` |
+
+Нагрузка пула есть только в `sconcur_pool_*`: `sconcur_group_*` несёт метрики
+процессов, потому что складывать запросы и доставки по группам потребовало бы своего
+семейства на каждый вид пула. Чтобы прочитать нагрузку одного пула отдельно, суммируйте
+серии `sconcur_worker_*` по `group`.
+
+JSON-представление делит так же: `groups` — итог по каждому пулу мастера отдельно, а
+`totals` суммирует всех его воркеров. Складывать нагрузку разнородных пулов смысла нет,
+поэтому цифры нагрузки читают по `groups`; в `totals` осмысленны память, CPU и горутины.
+Воркер сообщает, чей он, полем `group` — оно берётся из метки `<группа>:<слот>`, которой
+он помечает свои снапшоты.
 
 ## Контракт push-протокола
 

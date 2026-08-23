@@ -7,11 +7,11 @@ stands, by throwing `CoroutineTimeoutException` into it, and the code decides wh
 that means.
 
 ```php
+use SConcur\Deadline;
 use SConcur\Exceptions\CoroutineTimeoutException;
-use SConcur\Limiter;
 
 try {
-    return Limiter::on(ms: 1000, callback: fn() => handle($job));
+    return Deadline::run(timeoutMs: 1000, callback: fn() => handle($job));
 } catch (CoroutineTimeoutException) {
     return null;   // did not make it
 }
@@ -38,9 +38,10 @@ $waitGroup->add(
 );
 ```
 
-The two are the same mechanism. `Limiter::on()` bounds a piece of work and
-composes; `add(timeoutMs: …)` bounds a callback from its first line, which is what
-you want when the caller — not the callback — decides how long it may take.
+The two are the same mechanism. `Deadline::run()` bounds a piece of work and composes;
+`add(timeoutMs: …)` bounds a callback from its first line, which is what you want when
+the caller — not the callback — decides how long it may take. Both take `0` to mean no
+deadline, and refuse a negative one.
 
 ## Catching it is what keeps it local
 
@@ -50,7 +51,7 @@ its siblings never learn about it:
 ```php
 $waitGroup->add(function () {
     try {
-        return Limiter::on(ms: 300, callback: fn() => slow());
+        return Deadline::run(timeoutMs: 300, callback: fn() => slow());
     } catch (CoroutineTimeoutException) {
         return 'gave up';
     }
@@ -86,15 +87,20 @@ there. Handlers catch their own.
 Scopes nest, and the shorter allowance wins:
 
 ```php
-Limiter::on(ms: 1000, callback: function () {
+Deadline::run(timeoutMs: 1000, callback: function () {
     // Asks for ten seconds inside a scope that has one; gets what is left of the one.
-    return Limiter::on(ms: 10_000, callback: fn() => work());
+    return Deadline::run(timeoutMs: 10_000, callback: fn() => work());
 });
 ```
 
 An inner scope cannot buy more time than the outer one is holding — the outer
 allowance is a promise someone else made. On the way out the previous deadline is
 put back, so a scope that finished in time leaves the coroutine unbounded again.
+
+A deadline fires once. When the inner scope asked for more than the outer one had, the
+two share an instant, and the outer one is not put back on the way out — otherwise a
+second `CoroutineTimeoutException` would land in the very cleanup the first one
+started.
 
 ## The exception
 
@@ -105,19 +111,25 @@ project's signal for a deliberate unwind. Three consequences:
   feature executor, the AMQP channel, the consumer runtime;
 - `catch (FlowStoppedException)` catches a timeout too, so cleanup written for one
   covers the other;
-- it reaches its group unwrapped. Every other uncaught exception arrives as a
-  `CallbackExecutionException` with the original inside; a deliberate unwind stays
-  recognizable instead.
+- it reaches its group unwrapped, wherever it escaped from — a coroutine that was
+  already waiting, and one cut during its very first run before it ever waited. Every
+  other uncaught exception arrives as a `CallbackExecutionException` with the original
+  inside; a deliberate unwind stays recognizable instead.
 
 ## When the clock starts
 
-With `Limiter::on()`, when the scope is entered. With `add(timeoutMs: …)`, when the
+With `Deadline::run()`, when the scope is entered. With `add(timeoutMs: …)`, when the
 callback starts running — not at `add()`.
 
 The difference shows with a concurrency limit. A group created with
 `WaitGroup::create(maxConcurrency: 4)` queues the fifth callback until a slot frees;
 counting from `add()` would hand it an allowance already spent waiting for its
 turn, and a busy group would time out callbacks that never ran a line.
+
+One more thing counts against the allowance of a coroutine started from inside another
+one: its first call is handed to the scheduler rather than sent from the fiber's own
+stack, so it goes out on the scheduler's next turn. Whatever the parent does before it
+suspends is time the child has already been given.
 
 ## Where the deadline can reach
 
@@ -133,9 +145,9 @@ The scheduler enforces it at the points where it already takes control:
 
 The last two rows are the honest limits.
 
-**Without preemption** the deadline is cooperative. Servers arm preemption while
-serving (the `preemptionQuantumMs` option), so handler code is interruptible there;
-a CLI script or library code has to ask — `Scheduler::get()->enablePreemption()`,
+**Without preemption** the deadline is cooperative. The servers and the AMQP queue
+consumer arm preemption while they run (the `preemptionQuantumMs` option), so handler
+code is interruptible there; a CLI script or library code has to ask — `Scheduler::get()->enablePreemption()`,
 see [coroutine switching](coroutine-switching.md). Without it a loop that computes
 and never waits runs to its end, and the timeout is delivered afterwards.
 
@@ -145,7 +157,7 @@ side — `rpcTimeout` and `readTimeout` on an AMQP connection, the HTTP client's
 deadlines — and not by this one. A coroutine deadline bounds the PHP coroutine,
 which is not the same as bounding everything it can wait for.
 
-Outside a coroutine there is nothing to unwind, so `Limiter::on()` runs the
+Outside a coroutine there is nothing to unwind, so `Deadline::run()` runs the
 callback unbounded — the same rule the rest of the library follows for code that is
 not in a concurrent context.
 
@@ -160,13 +172,18 @@ what it holds itself; where it does not, the difference is invisible.
 
 ## Cost
 
-A coroutine with no deadline costs nothing: the scheduler keeps the deadlines in a
-list of their own, and every check begins by finding it empty.
+A coroutine with no deadline costs nothing: the scheduler keeps the deadlines in an
+index of their own, and every check begins by finding it empty.
 
 One with a deadline costs a comparison at each of the scheduler's decision points,
-and it shortens the scheduler's blocking wait to the nearest deadline — which is
-what makes a timeout fire on an idle process, where no other result would have
-woken the loop.
+whatever the number of coroutines holding one — the scheduler caches the earliest
+deadline and only walks the index once something has actually run out. That matters
+because a server with `handlerTimeoutMs` set gives one to every request it is serving,
+and the check runs on every delivered result.
+
+It also shortens the scheduler's blocking wait to the nearest deadline, which is what
+makes a timeout fire on an idle process, where no other result would have woken the
+loop.
 
 ## Stopping the whole group
 

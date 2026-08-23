@@ -74,6 +74,8 @@ const RABBITMQ_MAX_JOBS = 100000;
  *                              cross-request concurrency alone (each call still yields)
  *   GET  /all-native        -> the same operations on NATIVE drivers, sequentially (exactly the
  *                              RoadRunner reference worker's /all) — isolates the server layer
+ *   GET  /rabbitmq/{count}/sleep/{ms} -> publishes {count} jobs whose handler sleeps {ms},
+ *                              so the RabbitMQ consumer pool has work to show on the panel
  *   GET  /throw             -> handler throws -> framework answers 500
  *   GET  /status/{code}     -> responds with the given status code
  *   (anything else)         -> 404 "not found"

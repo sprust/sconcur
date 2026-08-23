@@ -123,9 +123,9 @@ what `MasterConfig` builds from the file.
 
 ## Commands
 
-Every command takes a single flag — `--configPath`. The same config across all
-commands guarantees consistent `runtimeDir`/`name`, so `status`/`stop`/`reload`
-find the lock, state and trigger files.
+Every command takes `--configPath`; `status` and `reload` also take `--group`. The
+same config across all commands guarantees consistent `runtimeDir`/`name`, so
+`status`/`stop`/`reload` find the lock, state and trigger files.
 
 ```sh
 vendor/bin/sconcur-server start   --configPath=/app/master.json  # bring up the pools (foreground)
@@ -162,12 +162,15 @@ drained and not replaced), and each group's `workerCount`, `workerScript`,
 and backoffs. Scaling a pool is therefore an edit plus a `reload`, not a restart.
 
 What it may not: `runtimeDir` and `name` identify the running instance, and
-`panelPort`, `adminToken` and `logDir` are bound at startup. Changing them is
-logged as ignored and needs a full restart.
+`panelPort`, `adminToken` and `logDir` are bound at startup. A reload reads the new
+values and ignores them without a word — a full restart is what applies them.
 
-**A config that does not parse is refused and the master keeps running on the one
-it has.** A typo must never take a working pool down; the refusal and its reason
-go to the journal.
+**A config that does not parse, or that names a `workerScript` that is not there, is
+refused and the master keeps running on the one it has.** A typo must never take a
+working pool down; the refusal and its reason go to the journal. The same goes for a
+trigger naming a config file the master cannot find — which is why the CLI resolves the
+path to an absolute one before writing it, the master reading it from its own working
+directory rather than the operator's.
 
 ## Parameters
 
@@ -287,11 +290,12 @@ The master writes to a single daily file in `logDir`
 (`sconcur-server-2026-06-18.log`); at the day boundary a new file is opened and
 files older than `rotateDays` are deleted. The line format is
 `[Y-m-d H:i:s.uuuuuu] LEVEL [<scope>]: <message> [<context>]`, where `<scope>` is
-`master: <pid>` or `worker: <pid> #<index>`:
+`master: <pid>` or `worker: <pid> <group> #<index>` — the group is part of it because a
+slot index only names a worker together with its pool:
 
 ```
-[2026-06-18 12:00:00.180210] INFO [worker: 12346 #0]: spawned []
-[2026-06-18 12:01:00.012044] ERROR [worker: 12346 #0]: exited code=1 uptime=0.3s; restarting in 200ms []
+[2026-06-18 12:00:00.180210] INFO [worker: 12346 http #0]: spawned []
+[2026-06-18 12:01:00.012044] ERROR [worker: 12346 http #0]: exited code=1 uptime=0.3s; restarting in 200ms []
 ```
 
 The master intercepts the workers' `stdout`/`stderr` and rewrites them into the

@@ -36,6 +36,9 @@ finishes, while the outer coroutines keep running.
 The synchronous path — a feature called outside a Fiber — waits for its flow
 through `Extension::wait(flowKey)`; there is no concurrency there.
 
+A coroutine can also be given a deadline, past which the scheduler unwinds it where it
+stands — see [coroutine timeout](coroutine-timeout.md).
+
 ## Diagram: PHP Fiber ↔ Go goroutine
 
 ```mermaid

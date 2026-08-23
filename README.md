@@ -237,7 +237,7 @@ The environment the project is built and tested against in CI:
   layers, the task lifecycle.
 - [Coroutine switching](docs/coroutine-switching.md) — `Scheduler::switch()` and
   the servers' automatic preemption for CPU-bound code.
-- [Coroutine timeout](docs/coroutine-timeout.md) — `Limiter::on()` and
+- [Coroutine timeout](docs/coroutine-timeout.md) — `Deadline::run()` and
   `add(timeoutMs: …)`: work that is unwound when it runs too long.
 - [Coroutine context](docs/coroutine-context.md) — per-coroutine key-value store.
 - [MongoDB](docs/mongodb.md) — collection operations, cursors, BSON types.
@@ -294,9 +294,9 @@ php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello'
 - Auto-recovery of stuck workers — a master watchdog by heartbeat: `SIGKILL` and
   respawn a worker whose PHP thread has hung.
 - Split the core and the features into separate packages.
-- Stopping a single coroutine from anywhere, not just the whole flow, and a
-  deadline on one — so a job that runs too long ends without taking its
-  neighbours with it.
+- Stopping a single coroutine from anywhere, not just the whole flow. The other
+  half of this — a deadline on one — is done, see
+  [coroutine timeout](docs/coroutine-timeout.md).
 - Optimize the synchronous path — a call outside a coroutine goes to Go
   directly, bypassing the scheduler and the Fiber machinery.
 - Explore a cross-process concurrency mode, so concurrent operations can use

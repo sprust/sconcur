@@ -109,19 +109,19 @@ use SConcur\Features\Amqp\ConnectionOptions;
 $connection = new Connection('amqp://login:password@broker:5672/app');
 
 $connection = new Connection(new ConnectionOptions(
-    host:           'broker',
-    port:           5672,
-    login:          'login',
-    password:       'password',
-    vhost:          'app',
-    connectTimeout: 3.0,
-    readTimeout:    0.0,
-    writeTimeout:   0.0,
-    rpcTimeout:     0.0,
-    heartbeat:      60,
-    channelMax:     256,
-    frameMax:       131072,
-    connectionName: 'api',
+    host:                  'broker',
+    port:                  5672,
+    login:                 'login',
+    password:              'password',
+    vhost:                 'app',
+    connectTimeoutSeconds: 3.0,
+    readTimeoutSeconds:    0.0,
+    writeTimeoutSeconds:   0.0,
+    rpcTimeoutSeconds:     0.0,
+    heartbeatSeconds:      60,
+    channelMax:            256,
+    frameMaxBytes:         131072,
+    connectionName:        'api',
 ));
 ```
 
@@ -145,10 +145,12 @@ connection. `connect()` is there for a worker that would rather fail at start-up
 than under load. A connection that *died* is not reopened by itself — the next
 call says so, and reconnecting is `close()` then `connect()`.
 
-The timeouts bound different things: `connectTimeout` the dial, `writeTimeout` a
-publish, `readTimeout` a consumer's wait for the next delivery, and `rpcTimeout`
-every other single method. `0` leaves the Go side to apply its own default, and
-for `readTimeout` it means "wait indefinitely".
+The timeouts bound different things: `connectTimeoutSeconds` the dial,
+`writeTimeoutSeconds` a publish, `readTimeoutSeconds` a consumer's wait for the next
+delivery, and `rpcTimeoutSeconds` every other single method. They are seconds because
+that is the unit an AMQP URI and the broker's own documentation state them in; the wire
+carries milliseconds. `0` leaves the Go side to apply its own default, and for
+`readTimeoutSeconds` it means "wait indefinitely".
 
 ## Topology
 
@@ -240,7 +242,7 @@ $channel->publishConfirmed(
     new Message('{"id":1}', persistent: true),
     exchange:   'events',
     routingKey: 'order.created',
-    timeout:    5.0,
+    timeoutSeconds: 5.0,
 );
 ```
 
@@ -267,7 +269,7 @@ foreach ($messages as $message) {
     $waitGroup->add(function () use ($connection, $message): void {
         $channel = $connection->channel();
 
-        $channel->queue('orders')->publishConfirmed($message, timeout: 5.0);
+        $channel->queue('orders')->publishConfirmed($message, timeoutSeconds: 5.0);
 
         $channel->close();
     });
@@ -276,7 +278,7 @@ foreach ($messages as $message) {
 $waitGroup->waitAll();
 ```
 
-`waitForConfirms(timeout)` is the other shape: publish a run of messages on one
+`waitForConfirms(timeoutSeconds)` is the other shape: publish a run of messages on one
 channel, then drain their confirms in one wait. It fails on the first message the
 broker did not take.
 
@@ -322,12 +324,13 @@ caveat as for `HttpClient`, `SocketClient` and `WsClient`.
 
 The loop ends quietly only when this coroutine's flow is stopped. Everything else
 that takes the consumer away raises: the broker cancelling it (its queue was
-deleted, a node failed over), the channel dying, and the connection's `readTimeout`
+deleted, a node failed over), the channel dying, and the connection's `readTimeoutSeconds`
 passing with nothing delivered. The last one is worth stating plainly, because it
-looks like an ending and is not: the broker still holds the consumer, so a wait
-that outran the deadline raises `QueueException` ("Consumer timeout exceed") — a
-worker that read the silence as "the queue is closed" would stop reading a queue
-that is merely idle.
+looks like an ending and is not: the queue is merely idle, so a wait that outran the
+deadline raises `QueueException` ("Consumer timeout exceed") rather than ending the loop —
+a worker that read the silence as "the queue is closed" would stop reading a queue that
+still has work coming. Leaving the loop cancels the consumer on the way out, as any other
+exit from it does; what is left behind is the queue, not a consumer nobody reads.
 
 Deliveries a consumer received but never acknowledged go back into the queue when
 the channel is closed, not when the consumer is cancelled — that is AMQP, not a
@@ -523,23 +526,23 @@ the application never decided anything, so the message is not settled at all and
 comes back on its own — see [when the worker itself dies](#when-the-worker-itself-dies)
 for the difference between "the runtime answered for the job" and "nobody answered".
 
-Two limits come with it, both from the mechanism underneath — see
-[coroutine timeout](coroutine-timeout.md). A handler busy with pure computation is
-only cut if preemption is armed, and a handler already inside a broker call is not
-cut at all until that call returns: that one is bounded by the connection's own
-`rpcTimeout` and `writeTimeout`, which is a different setting and worth having as
-well.
+One limit comes with it, from the mechanism underneath — see
+[coroutine timeout](coroutine-timeout.md). A handler already inside a broker call is not
+cut until that call returns: that one is bounded by the connection's own
+`rpcTimeoutSeconds` and `writeTimeoutSeconds`, which is a different setting and worth
+having as well. A handler busy with pure computation *is* cut, because the pool arms
+preemption while it consumes (`preemptionQuantumMs`, on by default).
 
 The same deadline is available inside a handler for a part of the work, without
 configuring the pool at all:
 
 ```php
-use SConcur\Limiter;
+use SConcur\Deadline;
 
 $queueConsumer->consume(
     connection: $connection,
     handler: static function (Delivery $delivery): void {
-        $enriched = Limiter::on(ms: 500, callback: fn() => enrich($delivery->body));
+        $enriched = Deadline::run(timeoutMs: 500, callback: fn() => enrich($delivery->body));
 
         store($enriched);
     },
@@ -634,7 +637,7 @@ same ones share a single socket to the broker, so building one per request is
 cheap. They share it in the broker's eyes as well — an exclusive queue declared
 through one is usable through the other. `connectionName` is part of the pool key,
 so naming a connection is how an application asks for one that is not shared.
-`connectTimeout` is the one option left out of the key: it bounds the dial and
+`connectTimeoutSeconds` is the one option left out of the key: it bounds the dial and
 nothing the broker ever sees. A pooled connection with no owners left is closed
 after five minutes of idling, and `close()` — or the destructor of a dropped
 object — gives up ownership.
@@ -802,11 +805,12 @@ The group that runs it:
 | `prefetchCount` | `1` | Unacknowledged messages one coroutine may hold, unless its queue names its own. |
 | `handlerTimeoutMs` | `0` (no limit) | How long one message may spend in the handler. A job that runs past it is cut and refused like any other failure; the coroutine takes the next message — see [bounding one job](#bounding-one-job). |
 | `requeueOnFailure` | `false` | What happens to a message whose handler threw: dead-lettered or dropped by default, put back when true. A policy with attempts and a backoff belongs to the handler — see [retries and delays](#retries-and-delays). |
-| `maxMessages` | `0` (no limit) | Drain and exit after this many messages. |
+| `maxMessages` | `0` (no limit) | Drain and exit after this many messages. A budget, not a hard count: the coroutines already inside a handler finish their message too, so a pool of N may end up to N-1 over. |
 | `maxRuntimeSeconds` | `0` (no limit) | Drain and exit after this long. |
 | `maxMemoryBytes` | `0` (no limit) | Drain and exit once the PHP heap passes this. A guard against creep, not against a spike — see [when the worker itself dies](#when-the-worker-itself-dies). |
 | `drainTimeoutMs` | `5000` | How long a stop waits for the handlers that are mid-message. |
 | `pollIntervalMs` | `200` | How often the supervisor coroutine wakes to look at the stop flags and the limits. |
+| `preemptionQuantumMs` | `5` (`0` off) | Automatic-preemption quantum while consuming. It is what lets `handlerTimeoutMs` and a stop reach a handler busy with computation — see [coroutine switching](coroutine-switching.md). |
 | `masterPid` | none | Injected by the master; the worker drains as soon as it is orphaned. |
 
 `queues` is a list of objects rather than a delimited string because AMQP allows
@@ -847,6 +851,27 @@ A handler that throws is reported through the optional `onError` callback and
 costs one message, not one consumer: the runtime refuses the delivery and the same
 coroutine takes the next one.
 
+## Values a field table can carry
+
+Queue and exchange arguments and message headers are AMQP field tables. Scalars, lists
+and nested tables travel as themselves; the two AMQP kinds PHP has no type for get one:
+
+```php
+use SConcur\Features\Amqp\Decimal;
+use SConcur\Features\Amqp\Timestamp;
+
+$queue->publish(new Message($body, headers: [
+    'price' => new Decimal(exponent: 2, significand: 1999),   // 19.99, and ->toFloat() says so
+    'when'  => new Timestamp(microtime(true)),                // whole seconds, (string) for the digits
+]));
+```
+
+They keep their kind on the wire, so another client reading the same queue sees a decimal
+and a timestamp rather than a float and an integer — and they come back as the same
+objects. A class of your own joins them by implementing
+`SConcur\Features\Amqp\AmqpValue`, whose `toAmqpValue()` is asked what the value stands
+for instead of the encoder refusing it.
+
 ## Errors
 
 Every broker failure is a `SConcur\Exceptions\Amqp\AmqpException`, and the reply
@@ -868,8 +893,8 @@ try {
 | What happened | Exception | Code |
 | --- | --- | --- |
 | the broker refused the method (404, 406, …) | `QueueException`, `ExchangeException`, `ChannelException` — the one of the call | the reply code |
-| the broker answered with a connection-level code (5xx), or the connection died | `ConnectionException` | the reply code, 0 for a network failure |
-| the channel is gone — the broker closed it over an earlier failure | `ChannelException` | 0 |
+| the broker answered with a connection-level code (5xx), or the connection died | `ConnectionException` | the reply code; a connection that dropped mid-frame reports the driver's own `501`, and only a failure nobody put a code on reports 0 |
+| the channel is gone — the broker closed it over an earlier failure | `ChannelException` | the reply code that closed it, 0 when the broker named none |
 | a publish was nacked, returned, or never confirmed | `PublishNackedException`, `UnroutableMessageException`, `PublishConfirmTimeoutException` | the reply code of a return, 0 otherwise |
 | a value cannot travel in a field table | `InvalidAmqpValueException` | 0 |
 | the queue list of a consumer worker is not one | `InvalidQueueSpecException` (a `LogicException`: a config bug, not a broker one) | 0 |
@@ -879,6 +904,14 @@ that does not exist, a publish to a missing exchange) leaves the `Channel` close
 `isOpen()` reports it, every later call on it raises `ChannelException`, and the Go
 side has already released it. Open a new channel to carry on — the connection is
 untouched.
+
+That exception names what closed the channel when the broker said so, which is the only
+way to see the cause of a failure that carries no reply of its own: `basic.publish`
+expects none, so a publish to an exchange that is not there is answered by the channel
+going away, and the reply code lands on whatever ran next.
+
+A connection that died ends the same calls differently: a command on one of its channels
+raises `ConnectionException`, and so does a consumer whose stream it took with it.
 
 A connection-level failure marks the `Connection` closed as well, and it is not
 reopened by itself:
@@ -940,7 +973,7 @@ The general limits — CLI only, Linux only, NTS only, no `pcntl_fork` — are i
   it since 3.0 and closes the channel on one that sets it.
 - AMQP transactions are not implemented. Publisher confirms replaced them, and the
   broker's own documentation recommends against them.
-- A consume is bounded by the connection's `readTimeout`, not by a per-call one.
+- A consume is bounded by the connection's `readTimeoutSeconds`, not by a per-call one.
 - Publisher confirms and returned messages that no wait collects are dropped past
   1024 and 128 respectively: a returned message carries its whole body, and a
   publisher that never waits would otherwise fill the heap.
@@ -948,9 +981,13 @@ The general limits — CLI only, Linux only, NTS only, no `pcntl_fork` — are i
   cannot be declared: `ExchangeTypeEnum` is closed to the four types AMQP 0-9-1
   itself defines. The delay patterns that need no plugin are in
   [retries and delays](#retries-and-delays).
-- A `Timestamp` above `PHP_INT_MAX` is refused when published. AMQP counts
-  unsigned 64-bit seconds, but neither a PHP int nor the Go time the field is
-  built from holds the upper half of that range.
+- A `Timestamp` at or above 2^63 is refused when published. AMQP counts unsigned
+  64-bit seconds, but neither a PHP int nor the Go time the field is built from holds
+  the upper half of that range.
+- A `Decimal` significand above 2^31-1 travels through SConcur bit for bit and reads
+  back the same, but the field carries it as 32 bits and RabbitMQ's own clients read
+  those as signed — so another client sees it as negative. A negative decimal cannot be
+  expressed at all, which is why `Decimal::SIGNIFICAND_MIN` is zero.
 
 ## Benchmarks
 

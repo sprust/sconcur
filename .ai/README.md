@@ -28,8 +28,10 @@ User-facing documentation (each doc also exists in Russian as `*.ru.md`):
 - [docs/cli.md](../docs/cli.md) — `sconcur-load`, `sconcur-status`,
   `sconcur-server`
 - [docs/coroutine-context.md](../docs/coroutine-context.md),
-  [docs/coroutine-switching.md](../docs/coroutine-switching.md) — per-coroutine
-  context; `Scheduler::switch()` and automatic preemption
+  [docs/coroutine-switching.md](../docs/coroutine-switching.md),
+  [docs/coroutine-timeout.md](../docs/coroutine-timeout.md) — per-coroutine context;
+  `Scheduler::switch()` and automatic preemption; `Deadline::run()` and the deadline a
+  coroutine is unwound at
 - Features: [mongodb](../docs/mongodb.md), [mysql](../docs/mysql.md),
   [pgsql](../docs/pgsql.md), [http-server](../docs/http-server.md),
   [http-client](../docs/http-client.md),
@@ -115,6 +117,11 @@ feature's doc. Key PHP classes not covered there:
   coroutines (`FlowStoppedException`) from the shutdown handler registered in
   `get()`, so `exit()` with unfinished work cancels deterministically. `serve()`
   is the shared server loop, `spawn()` a fire-and-forget coroutine.
+  `withDeadline()` is the one primitive behind every coroutine deadline: `Deadline::run`
+  is its public face, and `add(timeoutMs:)`/`spawn(timeoutMs:)` set the same deadline at
+  launch. `0` means "no deadline" everywhere one is taken.
+- `Deadline` — the public entry to a scoped deadline, see
+  [docs/coroutine-timeout.md](../docs/coroutine-timeout.md).
 - `Scheduler/Coroutine` — a tracked fiber: id, fiber, owning group, callback key.
 - `Scheduler/FiberPool`, `Scheduler/FiberPoolSignal` — recycles the fibers of
   spawned coroutines: the worker callback never returns, it parks on

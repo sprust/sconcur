@@ -116,8 +116,9 @@ vendor/bin/sconcur-status --json
 
 Запускает и стережёт пул процессов-воркеров (масштаб на ядра через
 `SO_REUSEPORT`, перезапуск упавших, graceful shutdown). Команды
-`start` / `status` / `stop` / `reload`, все с единственным флагом `--configPath`,
-указывающим на JSON-конфиг мастера:
+`start` / `status` / `stop` / `reload`, все принимают флаг `--configPath`,
+указывающий на JSON-конфиг мастера; `status` и `reload` принимают ещё `--group=NAME`,
+чтобы сузить команду до одного пула:
 
 ```sh
 vendor/bin/sconcur-server start --configPath=/app/master.json

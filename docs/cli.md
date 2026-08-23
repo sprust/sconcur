@@ -114,8 +114,9 @@ build through only when `ready` is true, and tags the release as
 
 Starts and supervises a pool of worker processes (scaling across cores via
 `SO_REUSEPORT`, restarting crashed ones, graceful shutdown). Commands
-`start` / `status` / `stop` / `reload`, all with a single `--configPath` flag
-pointing to the master's JSON config:
+`start` / `status` / `stop` / `reload`, all taking a `--configPath` flag pointing to the
+master's JSON config; `status` and `reload` also take `--group=NAME` to narrow them to
+one pool:
 
 ```sh
 vendor/bin/sconcur-server start --configPath=/app/master.json

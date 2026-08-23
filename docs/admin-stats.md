@@ -62,16 +62,21 @@ into the workers — nothing to configure on the worker side.
 
 ```json
 {
-  "workerScript": "/app/worker.php",
-  "workerCount": 8,
   "runtimeDir": "/run/sconcur",
   "name": "sconcur-servers",
   "panelPort": 8081,
   "adminToken": "23c30b40...9894c3ec",
-  "server": {
-    "address": "0.0.0.0:8080",
-    "reusePort": true
-  }
+  "groups": [
+    {
+      "name": "http",
+      "workerScript": "/app/worker.php",
+      "workerCount": 8,
+      "server": {
+        "address": "0.0.0.0:8080",
+        "reusePort": true
+      }
+    }
+  ]
 }
 ```
 
@@ -249,17 +254,34 @@ Prometheus carries no strings:
 # HELP sconcur_pool_requests_completed_total Requests completed across the pool.
 # TYPE sconcur_pool_requests_completed_total counter
 sconcur_pool_requests_completed_total{name="sconcur-servers"} 843210
+sconcur_pool_deliveries_total{name="sconcur-servers"} 51204
 sconcur_master_start_time_seconds{name="sconcur-servers"} 1750762800
 sconcur_master_memory_rss_bytes{name="sconcur-servers"} 16777216
-sconcur_worker_start_time_seconds{name="sconcur-servers",pid="12346"} 1750766087
-sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346"} 105432
+sconcur_group_workers{name="sconcur-servers",group="http"} 3
+sconcur_group_memory_rss_bytes{name="sconcur-servers",group="http"} 125829120
+sconcur_worker_start_time_seconds{name="sconcur-servers",pid="12346",group="http"} 1750766087
+sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346",group="http"} 105432
 ```
 
-`groups` sums each pool of the master on its own, while `totals` sums all of its
-workers. Adding up the workload of unlike pools means nothing, so the workload
-numbers are read off `groups`; in `totals` it is memory, CPU and goroutines that
-carry meaning. A worker says which pool it belongs to in `group`, taken from the
-`<group>:<slot>` label it stamps its snapshots with.
+Three scopes, told apart by their prefix and their labels:
+
+| Family | Scope | Labels |
+| --- | --- | --- |
+| `sconcur_pool_*` | every worker of the master together — `requests`, `connections` and `deliveries` (the queue workload) | `name` |
+| `sconcur_group_*` | one pool: its worker count, hung count, CPU, RSS and goroutines | `name`, `group` |
+| `sconcur_master_*` | the master process itself | `name` |
+| `sconcur_worker_*` | one worker | `name`, `pid`, `group` |
+
+The workload of a pool is only under `sconcur_pool_*`: `sconcur_group_*` carries the
+process metrics, because adding up requests and deliveries per group would need a
+family per kind of pool. To read one pool's workload on its own, sum the
+`sconcur_worker_*` series by `group`.
+
+The JSON view splits it the same way: `groups` sums each pool of the master on its own,
+while `totals` sums all of its workers. Adding up the workload of unlike pools means
+nothing, so the workload numbers are read off `groups`; in `totals` it is memory, CPU
+and goroutines that carry meaning. A worker says which pool it belongs to in `group`,
+taken from the `<group>:<slot>` label it stamps its snapshots with.
 
 ## Push-protocol contract
 
