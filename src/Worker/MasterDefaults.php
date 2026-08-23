@@ -5,9 +5,12 @@ declare(strict_types=1);
 namespace SConcur\Worker;
 
 /**
- * What the top level of the config hands down to every group that does not say
- * otherwise. Kept apart from MasterConfig so a group can be read on its own — the
- * reload path re-reads groups against the defaults of the master already running.
+ * What the top level of the config hands down to every group that does not say otherwise.
+ *
+ * A type of its own rather than the raw config array: the top level is read and checked
+ * once, in MasterConfig, and a group then falls back to values that are already known
+ * good — so a bad `restartPolicy` is reported where it was written instead of on whichever
+ * group happened to omit its own.
  */
 readonly class MasterDefaults
 {

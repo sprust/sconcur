@@ -11,14 +11,13 @@ use SConcur\Telemetry\Dto\Requests;
 use SConcur\Telemetry\Dto\WorkerEntry;
 
 /**
- * Renders the aggregate as a compact, dependency-free admin page — a header line, a
- * totals row and a per-worker table. Ports the Go renderer
- * The workload columns are whichever sections the pools reported — requests,
- * connections, consumers, or several of them side by side under one master — and they
- * are
- * chosen once from the pool totals so every row has the same shape; a worker missing
- * that section shows dashes. Hung workers are highlighted. All interpolated values
- * are escaped.
+ * Renders the aggregate as a compact, dependency-free admin page — a header line, a totals
+ * row and a per-worker table.
+ *
+ * The workload columns are whichever sections the pools reported — requests, connections,
+ * consumers, or several of them side by side under one master. They are chosen once from
+ * the pool totals so every row has the same shape, and a worker missing that section shows
+ * dashes. Hung workers are highlighted, and every interpolated value is escaped.
  */
 class HtmlRenderer
 {
@@ -241,7 +240,11 @@ class HtmlRenderer
 <td>' . $this->f1($worker->cpuPercent) . '</td>
 <td>' . $this->mib($worker->memory->rssBytes) . '</td>
 <td>' . $worker->goroutines . '</td>
-<td>' . $this->workloadCell($worker->requests, $worker->connections, $worker->consumers) . '</td>
+<td>' . $this->workloadCell(
+            requests: $worker->requests,
+            connections: $worker->connections,
+            consumers: $worker->consumers,
+        ) . '</td>
 </tr>';
     }
 

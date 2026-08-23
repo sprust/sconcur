@@ -5,11 +5,12 @@ declare(strict_types=1);
 namespace SConcur\Telemetry\Dto;
 
 /**
- * Pool-wide sum. cpuPercent is the sum of per-process percentages (so it may exceed
- * 100%); requests->avgMs is weighted by each worker's completed count, and
- * consumers->avgMs by its settled count. Only the workload sections present in the
- * pool's snapshots are filled — a master running unlike pools reports each of them
- * beside the others, and a section nobody reported stays null.
+ * Pool-wide sum. cpuPercent is the sum of per-process percentages (so it may exceed 100%);
+ * requests->avgMs is weighted by each worker's completed count, and consumers->avgMs by its
+ * timed count — the deliveries it actually measured, which is the denominator it divided
+ * by. Only the workload sections present in the pool's snapshots are filled: a master
+ * running unlike pools reports each of them beside the others, and a section nobody
+ * reported stays null.
  */
 readonly class Totals
 {

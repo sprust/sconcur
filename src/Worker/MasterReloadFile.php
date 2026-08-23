@@ -43,24 +43,36 @@ class MasterReloadFile
     }
 
     /**
-     * The config path the request named, or an empty string when it named none (a
-     * trigger file written by hand).
+     * The pending request, or null when there is none. Read in one go: the master asks
+     * what it names and which group it asks for on the same tick, and two reads could
+     * answer from two different files.
      */
-    public function configPath(): string
+    public function pending(): ?MasterReloadRequest
     {
-        $request = $this->read();
+        $contents = @file_get_contents($this->path);
 
-        $configPath = (string) ($request['configPath'] ?? '');
+        if ($contents === false) {
+            return null;
+        }
 
-        return is_file($configPath) ? $configPath : '';
-    }
+        $contents = trim($contents);
 
-    /**
-     * The single group the request asked to roll, or an empty string for all of them.
-     */
-    public function group(): string
-    {
-        return (string) ($this->read()['group'] ?? '');
+        $decoded = json_decode($contents, true);
+
+        if (!is_array($decoded)) {
+            // A file written by hand: a bare config path, or a word like "reload".
+            $decoded = ['configPath' => $contents];
+        }
+
+        /** @var array<string, mixed> $decoded */
+        return new MasterReloadRequest(
+            configPath: (string) ($decoded['configPath'] ?? ''),
+            group: (string) ($decoded['group'] ?? ''),
+            // The signature is what tells one request from the next, so a second one
+            // written while the first was still rolling is served rather than swallowed
+            // by the clear that ends the first.
+            signature: hash('xxh128', $contents . '|' . (string) @filemtime($this->path)),
+        );
     }
 
     public function requested(): bool
@@ -68,34 +80,27 @@ class MasterReloadFile
         return is_file($this->path);
     }
 
-    public function clear(): void
-    {
-        if (is_file($this->path)) {
-            @unlink($this->path);
-        }
-    }
-
     /**
-     * @return array<string, mixed>
+     * Removes the trigger, but only when it still holds the request that was served.
+     *
+     * A reload takes several ticks to roll, and an operator may ask for another one
+     * meanwhile. Clearing unconditionally would delete that second request unread, and
+     * the change it asked for would never reach the workers.
      */
-    protected function read(): array
+    public function clear(string $servedSignature = ''): void
     {
-        $contents = @file_get_contents($this->path);
-
-        if ($contents === false) {
-            return [];
+        if (!is_file($this->path)) {
+            return;
         }
 
-        $contents = trim($contents);
+        if ($servedSignature !== '') {
+            $pending = $this->pending();
 
-        $decoded = json_decode($contents, true);
-
-        if (is_array($decoded)) {
-            /** @var array<string, mixed> $decoded */
-            return $decoded;
+            if ($pending !== null && $pending->signature !== $servedSignature) {
+                return;
+            }
         }
 
-        // A file written by hand: a bare config path, or a word like "reload".
-        return ['configPath' => $contents];
+        @unlink($this->path);
     }
 }

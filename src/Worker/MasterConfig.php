@@ -213,7 +213,7 @@ readonly class MasterConfig
             logDir: $this->logDir,
             name: $this->name,
             rotateDays: $this->rotateDays,
-            groups: $this->withRuntimeEnvironment(),
+            groups: $this->groups,
             logTo: $this->logTo,
             panelPort: $this->panelPort,
             adminToken: $this->adminToken,
@@ -312,55 +312,6 @@ readonly class MasterConfig
         }
 
         return $params;
-    }
-
-    /**
-     * The groups with the telemetry scope added to their environment. It travels via
-     * env rather than argv so the worker-agnostic master does not feed a non-matching
-     * worker an unknown --flag: the bundled servers and QueueConsumer read it, anything
-     * else ignores it. A group's own env wins on a collision.
-     *
-     * @return list<WorkerGroupConfig>
-     */
-    protected function withRuntimeEnvironment(): array
-    {
-        // The pool label is not set here: it is per worker, not per master, and the
-        // group builds it as "<group>:<slot>" (WorkerGroup::buildEnv) so the collector
-        // can tell the pools of one master apart.
-        $shared = [];
-
-        // Only point workers at the collector socket when telemetry is actually on
-        // (panel port + token) — otherwise they would dial a socket nobody listens on
-        // every interval. The master listens on this exact path (see WorkerMaster).
-        if ($this->telemetryEnabled()) {
-            $shared['SCONCUR_TELEMETRY_SOCKET'] = $this->runtimeDir . '/' . $this->name . '.telemetry.sock';
-        }
-
-        $groups = [];
-
-        foreach ($this->groups as $group) {
-            $groups[] = new WorkerGroupConfig(
-                name: $group->name,
-                workerScript: $group->workerScript,
-                workerCount: $group->workerCount,
-                phpBinary: $group->phpBinary,
-                phpArgs: $group->phpArgs,
-                workerArgs: $group->workerArgs,
-                env: $group->env + $shared,
-                restartPolicy: $group->restartPolicy,
-                shutdownTimeoutMs: $group->shutdownTimeoutMs,
-                restartBackoffMs: $group->restartBackoffMs,
-                maxRestartBackoffMs: $group->maxRestartBackoffMs,
-                server: $group->server,
-            );
-        }
-
-        return $groups;
-    }
-
-    protected function telemetryEnabled(): bool
-    {
-        return $this->panelPort > 0 && $this->adminToken !== '';
     }
 
     /**

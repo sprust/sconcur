@@ -45,11 +45,19 @@ class WorkerGroup
     /** Set while the group is being retired: its workers are drained and not replaced. */
     protected bool $retiring = false;
 
+    /**
+     * @param string $telemetrySocket the collector socket the master listens on, empty
+     *                                when telemetry is off. It reaches the workers through
+     *                                their environment rather than their argv, so the
+     *                                worker-agnostic master never feeds a non-matching
+     *                                worker an unknown --flag
+     */
     public function __construct(
         protected WorkerGroupConfig $config,
         protected MasterLogger $logger,
         protected int $masterPid,
         protected string $cwd,
+        protected string $telemetrySocket = '',
     ) {
         $this->workers = $config->workerCount > 0 ? $config->workerCount : Cpu::count();
     }
@@ -146,7 +154,11 @@ class WorkerGroup
                 continue;
             }
 
-            $this->logWorkerLines($index, $process, $process->drainOutput());
+            $this->logWorkerLines(
+                index: $index,
+                process: $process,
+                lines: $process->drainOutput(),
+            );
 
             if (!$process->isRunning()) {
                 $this->handleExit(index: $index, process: $process, stopping: $stopping);
@@ -187,9 +199,11 @@ class WorkerGroup
     }
 
     /**
-     * Replaces the group's settings and rolls its workers onto them. Slot count changes
-     * take effect at once: new slots come up immediately, and the ones that no longer
-     * fit are drained by the roll and not replaced.
+     * Replaces the group's settings and rolls its workers onto them, one slot at a time,
+     * so the group keeps serving throughout. A slot count that grew is filled as the roll
+     * reaches it, and the slots that no longer fit are drained by the roll and not
+     * replaced — so a resize is complete when the roll is, not the moment the config is
+     * read.
      */
     public function reconfigure(WorkerGroupConfig $config): void
     {
@@ -208,6 +222,15 @@ class WorkerGroup
         }
 
         $this->startReload();
+    }
+
+    /**
+     * Takes the group back out of retirement, for one that reappeared in the config while
+     * it was still draining. Its slots are refilled by the reconfigure that follows.
+     */
+    public function unretire(): void
+    {
+        $this->retiring = false;
     }
 
     /** Drains the group for good: its workers are asked to stop and never replaced. */
@@ -314,7 +337,12 @@ class WorkerGroup
         $this->reloadKillSent = false;
         $this->reloadDeadline = $now + $this->config->shutdownTimeoutMs / 1000;
 
-        $this->logWorker(MasterLogger::INFO, $process->pid(), $index, 'reloading; sending SIGTERM');
+        $this->logWorker(
+            level: MasterLogger::INFO,
+            pid: $process->pid(),
+            index: $index,
+            message: 'reloading; sending SIGTERM',
+        );
 
         $process->signal(SIGTERM);
 
@@ -348,7 +376,7 @@ class WorkerGroup
                 env: $this->buildEnv($index),
             );
         } catch (WorkerSpawnException $exception) {
-            $backoffMs = $this->nextBackoffMs($index, uptimeSeconds: 0.0);
+            $backoffMs = $this->nextBackoffMs(index: $index, uptimeSeconds: 0.0);
 
             $this->slots[$index]     = null;
             $this->respawnAt[$index] = microtime(true) + $backoffMs / 1000;
@@ -371,12 +399,21 @@ class WorkerGroup
 
         unset($this->respawnAt[$index]);
 
-        $this->logWorker(MasterLogger::INFO, $process->pid(), $index, 'spawned');
+        $this->logWorker(
+            level: MasterLogger::INFO,
+            pid: $process->pid(),
+            index: $index,
+            message: 'spawned',
+        );
     }
 
     protected function handleExit(int $index, WorkerProcess $process, bool $stopping): void
     {
-        $this->logWorkerLines($index, $process, $process->drainFinalOutput());
+        $this->logWorkerLines(
+            index: $index,
+            process: $process,
+            lines: $process->drainFinalOutput(),
+        );
 
         $pid           = $process->pid();
         $uptimeSeconds = $process->uptimeSeconds();
@@ -430,7 +467,7 @@ class WorkerGroup
             return;
         }
 
-        $backoffMs = $this->nextBackoffMs($index, $uptimeSeconds);
+        $backoffMs = $this->nextBackoffMs(index: $index, uptimeSeconds: $uptimeSeconds);
 
         $this->respawnAt[$index] = microtime(true) + $backoffMs / 1000;
 
@@ -508,8 +545,15 @@ class WorkerGroup
     {
         $env = getenv();
 
+        // Labelled per worker and not per master, so the collector can tell the pools of
+        // one master apart and aggregate each on its own.
         $env['SCONCUR_SERVER_NAME'] = $this->config->name . ':' . $index;
 
+        if ($this->telemetrySocket !== '') {
+            $env['SCONCUR_TELEMETRY_SOCKET'] = $this->telemetrySocket;
+        }
+
+        // The group's own env wins on a collision: it is the more specific setting.
         foreach ($this->config->env as $key => $value) {
             $env[$key] = $value;
         }

@@ -61,6 +61,13 @@ class WorkerMaster
 
     protected bool $stopping = false;
 
+    /**
+     * The signature of the reload request currently being rolled, empty when none is.
+     * It is what keeps the clear at the end of a roll from deleting a second request an
+     * operator wrote while the first was still going.
+     */
+    protected string $servedReloadSignature = '';
+
     protected bool $termSent = false;
 
     protected bool $killSent = false;
@@ -101,7 +108,7 @@ class WorkerMaster
      * process exit code (0 on clean shutdown).
      *
      * @throws MissingPcntlException        ext-pcntl/ext-posix missing
-     * @throws InvalidWorkerCountException  workerCount is negative
+     * @throws InvalidWorkerCountException  the master was given no group to supervise
      * @throws RuntimePathException         a required path is missing/not writable
      * @throws MasterAlreadyRunningException another master holds the lock
      */
@@ -213,6 +220,7 @@ class WorkerMaster
                 logger: $this->logger,
                 masterPid: $this->masterPid,
                 cwd: $this->cwd,
+                telemetrySocket: $this->telemetrySocket(),
             );
         }
     }
@@ -236,18 +244,35 @@ class WorkerMaster
             );
         }
 
-        foreach ($this->groups as $group) {
-            if (!is_file($group->workerScript)) {
-                throw new RuntimePathException(
-                    message: sprintf('Worker script not found for group "%s": %s', $group->name, $group->workerScript),
-                );
-            }
-        }
+        static::assertWorkerScripts($this->groups);
 
         $directories = array_unique([$this->runtimeDir, $this->logDir ?? $this->runtimeDir]);
 
         foreach ($directories as $directory) {
             $this->ensureWritableDir($directory);
+        }
+    }
+
+    /**
+     * Refuses a set of groups naming a script that is not there.
+     *
+     * Run on every reload as well as at startup: a config that parses but points at a
+     * path that does not exist would otherwise roll every worker of the group — SIGTERM
+     * to a healthy process, then `php /wrong/path` exiting 1 — and leave the pool in a
+     * crash loop. A typo must never take a working pool down.
+     *
+     * @param list<WorkerGroupConfig> $groups
+     *
+     * @throws RuntimePathException a group's worker script does not exist
+     */
+    protected static function assertWorkerScripts(array $groups): void
+    {
+        foreach ($groups as $group) {
+            if (!is_file($group->workerScript)) {
+                throw new RuntimePathException(
+                    message: sprintf('Worker script not found for group "%s": %s', $group->name, $group->workerScript),
+                );
+            }
         }
     }
 
@@ -435,46 +460,103 @@ class WorkerMaster
      */
     protected function checkReloadSignal(): void
     {
-        if (!$this->reloadFile->requested() || $this->anyPoolReloading()) {
+        if ($this->anyPoolReloading()) {
             return;
         }
 
-        $group = $this->reloadFile->group();
+        $request = $this->reloadFile->pending();
+
+        if ($request === null) {
+            return;
+        }
+
+        $this->servedReloadSignature = $request->signature;
 
         $this->logger->master(
             level: MasterLogger::INFO,
-            message: $group === '' ? 'reload requested' : sprintf('reload requested for group %s', $group),
+            message: $request->group === ''
+                ? 'reload requested'
+                : sprintf('reload requested for group %s', $request->group),
         );
 
-        $configPath = $this->reloadFile->configPath();
+        $groups = $this->reloadedGroups($request);
 
-        $groups = $this->groups;
-
-        if ($configPath !== '') {
-            try {
-                $groups = MasterConfig::fromFile($configPath)->toWorkerMaster()->groups;
-            } catch (InvalidConfigException $exception) {
-                $this->logger->master(
-                    level: MasterLogger::ERROR,
-                    message: 'reload refused, keeping the running config: ' . $exception->getMessage(),
-                );
-
-                $this->reloadFile->clear();
-
-                return;
-            }
-        }
-
-        if ($group !== '' && !$this->applyOneGroup($groups, $group)) {
-            $this->reloadFile->clear();
+        if ($groups === null) {
+            $this->reloadFile->clear($request->signature);
 
             return;
         }
 
-        if ($group === '') {
+        if ($request->group !== '' && !$this->applyOneGroup($groups, $request->group)) {
+            $this->reloadFile->clear($request->signature);
+
+            return;
+        }
+
+        if ($request->group === '') {
             $this->groups = $groups;
 
             $this->applyGroups();
+        }
+
+        $this->refreshState();
+    }
+
+    /**
+     * The groups a reload asks the master to run, or null when the request cannot be
+     * honoured — in which case the master keeps the config it has and says why.
+     *
+     * @return list<WorkerGroupConfig>|null
+     */
+    protected function reloadedGroups(MasterReloadRequest $request): ?array
+    {
+        if ($request->configPath === '') {
+            // A trigger written by hand: roll the workers onto the config already loaded.
+            return $this->groups;
+        }
+
+        if (!is_file($request->configPath)) {
+            // The CLI resolves the path before writing it, so this is a trigger written
+            // by something else — or a config that has since been moved. Saying so beats
+            // rolling the workers onto the old config while reporting a reload.
+            $this->logger->master(
+                level: MasterLogger::ERROR,
+                message: sprintf('reload refused: no config file at %s', $request->configPath),
+            );
+
+            return null;
+        }
+
+        try {
+            $groups = MasterConfig::fromFile($request->configPath)->groups();
+
+            static::assertWorkerScripts($groups);
+
+            return $groups;
+        } catch (InvalidConfigException | RuntimePathException $exception) {
+            $this->logger->master(
+                level: MasterLogger::ERROR,
+                message: 'reload refused, keeping the running config: ' . $exception->getMessage(),
+            );
+
+            return null;
+        }
+    }
+
+    /**
+     * Rewrites the state file after a reload — unless it has been removed meanwhile,
+     * which is how a stop is asked for. Writing it again there would swallow that stop:
+     * the master checks for the file once a tick, and a fresh one looks like no stop was
+     * ever requested.
+     */
+    protected function refreshState(): void
+    {
+        if (!is_file($this->stateFile->path())) {
+            $this->logger->master(MasterLogger::WARN, 'state file removed; shutting down gracefully');
+
+            $this->stopping = true;
+
+            return;
         }
 
         $this->writeState();
@@ -495,15 +577,11 @@ class WorkerMaster
                 continue;
             }
 
-            // Replaced by name, not by position: the index is the one this group has in
-            // the file just read, and the running list is ordered however it was when
-            // the master started. Reordering the file and reloading one group would
-            // otherwise overwrite a different group and drop it from the list, and the
-            // next full reload would retire a pool that is still serving.
-            $this->groups = $this->withGroupReplaced(groups: $this->groups, group: $group);
-
             $pool = $this->pools[$name] ?? null;
 
+            // Checked before anything is written down: a group the master is not running
+            // is a request it cannot honour, and recording its settings anyway would let
+            // the next plain reload bring up a pool nobody asked for.
             if ($pool === null) {
                 $this->logger->master(
                     level: MasterLogger::ERROR,
@@ -512,6 +590,13 @@ class WorkerMaster
 
                 return false;
             }
+
+            // Replaced by name, not by position: the index is the one this group has in
+            // the file just read, and the running list is ordered however it was when
+            // the master started. Reordering the file and reloading one group would
+            // otherwise overwrite a different group and drop it from the list, and the
+            // next full reload would retire a pool that is still serving.
+            $this->groups = $this->withGroupReplaced(groups: $this->groups, group: $group);
 
             $pool->reconfigure($group);
 
@@ -550,6 +635,7 @@ class WorkerMaster
                     logger: $this->logger,
                     masterPid: $this->masterPid,
                     cwd: $this->cwd,
+                    telemetrySocket: $this->telemetrySocket(),
                 );
 
                 $this->pools[$group->name] = $pool;
@@ -557,6 +643,19 @@ class WorkerMaster
                 $pool->spawnAll();
 
                 continue;
+            }
+
+            // A pool put back into the config while it was still draining out of it is
+            // the same pool again, not a gap. Without this its slots stay empty — a
+            // retiring pool spawns nothing — and retireDrainedPools() would drop it a
+            // tick later, so the group would only come back on the reload after next.
+            if ($pool->isRetiring()) {
+                $this->logger->master(
+                    level: MasterLogger::INFO,
+                    message: sprintf('group %s: back in the config while draining; kept', $group->name),
+                );
+
+                $pool->unretire();
             }
 
             $pool->reconfigure($group);
@@ -621,11 +720,18 @@ class WorkerMaster
      */
     protected function finishReload(bool $reloading): void
     {
-        if ($reloading || !$this->reloadFile->requested()) {
+        if ($reloading || $this->servedReloadSignature === '') {
             return;
         }
 
-        $this->reloadFile->clear();
+        $signature = $this->servedReloadSignature;
+
+        $this->servedReloadSignature = '';
+
+        // Only the request that was actually rolled is cleared. An operator who asked for
+        // a second reload while the first was still going would otherwise have it deleted
+        // unread, and the change would never reach the workers.
+        $this->reloadFile->clear($signature);
 
         $this->logger->master(MasterLogger::INFO, 'reload complete');
     }
@@ -642,6 +748,25 @@ class WorkerMaster
     }
 
     /**
+     * The collector socket, or an empty string when telemetry is off (no panel port, no
+     * token) — workers pointed at a socket nobody listens on would dial it every interval.
+     *
+     * Derived here rather than baked into the group configs, so a group brought up by a
+     * reload gets the socket of the master that is actually running instead of one built
+     * from the freshly read file. Those differ the moment a config names another
+     * runtimeDir or name, and the collector would then be listening on a path the new
+     * workers never push to.
+     */
+    protected function telemetrySocket(): string
+    {
+        if ($this->panelPort <= 0 || $this->adminToken === '') {
+            return '';
+        }
+
+        return $this->runtimeDir . '/' . $this->name . '.telemetry.sock';
+    }
+
+    /**
      * Brings up the embedded telemetry plane (collector unix socket + HTTP/SSE panel)
      * when a panel port and an admin token are configured. A bind failure disables
      * telemetry (logged) but never stops the master.
@@ -655,7 +780,7 @@ class WorkerMaster
         $logger = $this->logger;
 
         $this->telemetry = new TelemetryRuntime(
-            socketPath: $this->runtimeDir . '/' . $this->name . '.telemetry.sock',
+            socketPath: $this->telemetrySocket(),
             panelPort: $this->panelPort,
             adminToken: $this->adminToken,
             name: $this->name,

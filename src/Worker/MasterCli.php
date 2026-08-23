@@ -69,8 +69,8 @@ class MasterCli
 
         $arguments = array_slice($argv, 2);
 
-        $configPath = $this->flag($arguments, self::CONFIG_PATH_FLAG);
-        $group      = $this->flag($arguments, self::GROUP_FLAG);
+        $configPath = $this->flag(args: $arguments, flag: self::CONFIG_PATH_FLAG);
+        $group      = $this->flag(args: $arguments, flag: self::GROUP_FLAG);
 
         $config = $this->loadConfig($configPath);
 
@@ -87,7 +87,7 @@ class MasterCli
 
         return match ($command) {
             'start'  => $this->start($config),
-            'status' => $this->status($config, $group),
+            'status' => $this->status(config: $config, group: $group),
             'stop'   => $this->stop($config),
             'reload' => $this->reload($config, $configPath, $group),
         };
@@ -176,7 +176,7 @@ class MasterCli
             usleep(100_000);
         }
 
-        return $this->fail('stop timeout; master still running', self::EXIT_ERROR);
+        return $this->fail(message: 'stop timeout; master still running', code: self::EXIT_ERROR);
     }
 
     /**
@@ -194,9 +194,19 @@ class MasterCli
             return self::EXIT_NOT_RUNNING;
         }
 
+        // Absolute, because the master reads it from its own working directory and not
+        // from the operator's. A relative path written as it was typed resolves to
+        // nothing there, and the master would roll the workers onto the config it already
+        // had while reporting a successful reload — the edit silently not applied.
+        $resolvedPath = realpath($configPath);
+
+        if ($resolvedPath === false) {
+            return $this->fail(message: 'cannot resolve the config path: ' . $configPath, code: self::EXIT_ERROR);
+        }
+
         $reloadFile = $this->reloadFile($config);
 
-        if (!$reloadFile->request($configPath, $group)) {
+        if (!$reloadFile->request(configPath: $resolvedPath, group: $group)) {
             return $this->fail('cannot write reload trigger: ' . $reloadFile->path(), self::EXIT_ERROR);
         }
 
@@ -205,7 +215,7 @@ class MasterCli
         // The master deletes the trigger once the rolling restart finishes; poll for it.
         while (microtime(true) < $deadline) {
             if (!$this->masterRunning($lockPath)) {
-                return $this->fail('master exited during reload', self::EXIT_ERROR);
+                return $this->fail(message: 'master exited during reload', code: self::EXIT_ERROR);
             }
 
             if (!$reloadFile->requested()) {
@@ -217,7 +227,7 @@ class MasterCli
             usleep(100_000);
         }
 
-        return $this->fail('reload timeout; master still rolling workers', self::EXIT_ERROR);
+        return $this->fail(message: 'reload timeout; master still rolling workers', code: self::EXIT_ERROR);
     }
 
     /**
@@ -254,13 +264,13 @@ class MasterCli
     protected function loadConfig(string $configPath): MasterConfig|int
     {
         if ($configPath === '') {
-            return $this->fail('--configPath=<file> is required', self::EXIT_USAGE);
+            return $this->fail(message: '--configPath=<file> is required', code: self::EXIT_USAGE);
         }
 
         try {
             return MasterConfig::fromFile($configPath);
         } catch (InvalidConfigException $exception) {
-            return $this->fail($exception->getMessage(), self::EXIT_USAGE);
+            return $this->fail(message: $exception->getMessage(), code: self::EXIT_USAGE);
         }
     }
 

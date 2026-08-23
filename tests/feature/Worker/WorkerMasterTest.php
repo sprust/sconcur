@@ -534,9 +534,6 @@ class WorkerMasterTest extends TestCase
     }
 
     /**
-     * Polls $condition until it returns true or the timeout elapses.
-     */
-    /**
      * Two pools under one master: one supervisor, one lock, one journal. Each group
      * numbers its own slots, so the journal names the group beside the index.
      */
@@ -722,6 +719,75 @@ class WorkerMasterTest extends TestCase
         }
     }
 
+    /**
+     * A config that parses but points at a script that is not there is a typo, and it must
+     * not take a working pool down: without this check every slot rolls — SIGTERM to a
+     * healthy worker, then `php /wrong/path` exiting 1 — and the pool falls into a crash
+     * loop behind a backoff.
+     */
+    public function testAReloadNamingAMissingWorkerScriptIsRefused(): void
+    {
+        $master = TestWorkerMaster::start(['workerCount' => 1]);
+
+        try {
+            $servingPid = $master->workerPid();
+
+            $brokenPath = TestWorkerMaster::writeConfig([
+                'workerScript' => '/no/such/worker.php',
+                'runtimeDir'   => $master->runtimeDir(),
+            ]);
+
+            file_put_contents(
+                $master->runtimeDir() . '/' . $master->name() . '.reload',
+                $brokenPath . "\n",
+            );
+
+            self::assertTrue(
+                $this->waitFor(
+                    static fn(): bool => str_contains($master->logText(), 'reload refused'),
+                    10.0,
+                ),
+                'the master must report the refusal',
+            );
+
+            self::assertStringContainsString('Worker script not found', $master->logText());
+            self::assertTrue($master->isRunning());
+            self::assertSame($servingPid, $master->workerPid(), 'the serving worker must be left alone');
+        } finally {
+            $master->stop();
+        }
+    }
+
+    /**
+     * The master reads the trigger from its own working directory, not the operator's, so
+     * a relative path written as it was typed resolves to nothing there. The CLI resolves
+     * it before writing; a trigger that still names a path the master cannot find is
+     * refused rather than silently rolling the workers onto the config already loaded.
+     */
+    public function testAReloadNamingAConfigThatIsNotThereIsRefused(): void
+    {
+        $master = TestWorkerMaster::start(['workerCount' => 1]);
+
+        try {
+            file_put_contents(
+                $master->runtimeDir() . '/' . $master->name() . '.reload',
+                "config/does-not-exist.json\n",
+            );
+
+            self::assertTrue(
+                $this->waitFor(
+                    static fn(): bool => str_contains($master->logText(), 'no config file at'),
+                    10.0,
+                ),
+                'the master must say the config it was pointed at is not there',
+            );
+
+            self::assertTrue($master->isRunning());
+        } finally {
+            $master->stop();
+        }
+    }
+
     private static function demoWorkerScript(): string
     {
         return dirname(__DIR__, 3) . '/tests/servers/http/http-server.php';
@@ -732,6 +798,9 @@ class WorkerMasterTest extends TestCase
         return dirname(__DIR__, 3) . '/ext/build/sconcur.so';
     }
 
+    /**
+     * Polls $condition until it returns true or the timeout elapses.
+     */
     private function waitFor(Closure $condition, float $timeoutSeconds): bool
     {
         $deadline = microtime(true) + $timeoutSeconds;

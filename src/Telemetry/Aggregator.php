@@ -40,22 +40,22 @@ class Aggregator
         string $generatedAt,
         ?MasterInfo $master = null,
     ): Aggregate {
-        $workers     = [];
-        $workersHung = 0;
+        $workers = [];
 
         /** @var array<string, list<StoredSnapshot>> $byGroup */
         $byGroup = [];
+
+        /** @var array<string, int> $hungByGroup */
+        $hungByGroup = [];
 
         foreach ($storedSnapshots as $storedSnapshot) {
             $snapshot      = $storedSnapshot->snapshot;
             $snapshotAgeMs = $nowMs - $storedSnapshot->receivedAtMs;
             $hung          = $snapshotAgeMs > $this->hungThresholdMs;
 
-            if ($hung) {
-                $workersHung++;
-            }
-
             $group = static::groupOf($snapshot->name);
+
+            $hungByGroup[$group] = ($hungByGroup[$group] ?? 0) + ($hung ? 1 : 0);
 
             $byGroup[$group][] = $storedSnapshot;
 
@@ -97,7 +97,7 @@ class Aggregator
                 // charset check — comes back from the array key as an int.
                 name: (string) $groupName,
                 workersTotal: count($groupSnapshots),
-                workersHung: $this->countHung($groupSnapshots, $nowMs),
+                workersHung: $hungByGroup[(string) $groupName] ?? 0,
                 totals: $this->sum($groupSnapshots),
             );
         }
@@ -106,7 +106,7 @@ class Aggregator
             generatedAt: $generatedAt,
             name: $name,
             workersTotal: count($workers),
-            workersHung: $workersHung,
+            workersHung: array_sum($hungByGroup),
             totals: $this->sum($storedSnapshots),
             workers: $workers,
             master: $master,
@@ -131,25 +131,9 @@ class Aggregator
     }
 
     /**
-     * @param list<StoredSnapshot> $storedSnapshots
-     */
-    protected function countHung(array $storedSnapshots, int $nowMs): int
-    {
-        $hung = 0;
-
-        foreach ($storedSnapshots as $storedSnapshot) {
-            if (($nowMs - $storedSnapshot->receivedAtMs) > $this->hungThresholdMs) {
-                $hung++;
-            }
-        }
-
-        return $hung;
-    }
-
-    /**
-     * Sums a set of snapshots. Process metrics add up for any mix of workers; a
-     * workload section is filled only when somebody in the set reported it, and its
-     * average is weighted by what that somebody actually finished.
+     * Sums a set of snapshots. Process metrics add up for any mix of workers; a workload
+     * section is filled only when somebody in the set reported it, so a master running
+     * unlike pools shows each kind beside the others instead of one zeroed row.
      *
      * @param list<StoredSnapshot> $storedSnapshots
      */
@@ -161,30 +145,6 @@ class Aggregator
         $cpuPercent        = 0.0;
         $goroutines        = 0;
 
-        $hasRequests     = false;
-        $completed       = 0;
-        $weightedAvgMs   = 0.0;
-        $inFlight        = 0;
-        $inFlight1to5s   = 0;
-        $inFlight5to15s  = 0;
-        $inFlightOver15s = 0;
-
-        $hasConnections = false;
-        $active         = 0;
-        $totalAccepted  = 0;
-
-        $hasConsumers            = false;
-        $coroutines              = 0;
-        $timed                   = 0;
-        $delivered               = 0;
-        $acked                   = 0;
-        $refused                 = 0;
-        $consumersWeightedAvgMs  = 0.0;
-        $consumersInFlight       = 0;
-        $consumersInFlight1to5s  = 0;
-        $consumersInFlight5to15s = 0;
-        $consumersInFlightOver15 = 0;
-
         foreach ($storedSnapshots as $storedSnapshot) {
             $snapshot = $storedSnapshot->snapshot;
 
@@ -193,74 +153,6 @@ class Aggregator
             $nonExtensionBytes += $snapshot->memory->nonExtensionBytes;
             $cpuPercent += $snapshot->cpuPercent;
             $goroutines += $snapshot->goroutines;
-
-            if ($snapshot->requests !== null) {
-                $hasRequests = true;
-                $completed += $snapshot->requests->completed;
-                $weightedAvgMs += $snapshot->requests->avgMs * $snapshot->requests->completed;
-                $inFlight += $snapshot->requests->inFlight;
-                $inFlight1to5s += $snapshot->requests->inFlight1to5s;
-                $inFlight5to15s += $snapshot->requests->inFlight5to15s;
-                $inFlightOver15s += $snapshot->requests->inFlightOver15s;
-            }
-
-            if ($snapshot->connections !== null) {
-                $hasConnections = true;
-                $active += $snapshot->connections->active;
-                $totalAccepted += $snapshot->connections->totalAccepted;
-            }
-
-            if ($snapshot->consumers !== null) {
-                $hasConsumers = true;
-                $coroutines += $snapshot->consumers->coroutines;
-                $delivered += $snapshot->consumers->delivered;
-                $acked += $snapshot->consumers->acked;
-                $refused += $snapshot->consumers->refused;
-                $timed += $snapshot->consumers->timed;
-                // Weighted by the deliveries the worker actually timed, which is the
-                // denominator it divided by. Acked + refused counts settlements it never
-                // measured — an auto-acknowledged delivery among them — and weighting by
-                // that skews the pool average by an order of magnitude.
-                $consumersWeightedAvgMs += $snapshot->consumers->avgMs * $snapshot->consumers->timed;
-                $consumersInFlight += $snapshot->consumers->inFlight;
-                $consumersInFlight1to5s += $snapshot->consumers->inFlight1to5s;
-                $consumersInFlight5to15s += $snapshot->consumers->inFlight5to15s;
-                $consumersInFlightOver15 += $snapshot->consumers->inFlightOver15s;
-            }
-        }
-
-        $totalsRequests = null;
-
-        if ($hasRequests) {
-            $totalsRequests = new Requests(
-                completed: $completed,
-                avgMs: $completed > 0 ? $weightedAvgMs / $completed : 0.0,
-                inFlight: $inFlight,
-                inFlight1to5s: $inFlight1to5s,
-                inFlight5to15s: $inFlight5to15s,
-                inFlightOver15s: $inFlightOver15s,
-            );
-        }
-
-        $totalsConnections = $hasConnections
-            ? new Connections(active: $active, totalAccepted: $totalAccepted)
-            : null;
-
-        $totalsConsumers = null;
-
-        if ($hasConsumers) {
-            $totalsConsumers = new Consumers(
-                coroutines: $coroutines,
-                delivered: $delivered,
-                acked: $acked,
-                refused: $refused,
-                timed: $timed,
-                avgMs: $timed > 0 ? $consumersWeightedAvgMs / $timed : 0.0,
-                inFlight: $consumersInFlight,
-                inFlight1to5s: $consumersInFlight1to5s,
-                inFlight5to15s: $consumersInFlight5to15s,
-                inFlightOver15s: $consumersInFlightOver15,
-            );
         }
 
         return new Totals(
@@ -271,9 +163,151 @@ class Aggregator
             ),
             cpuPercent: $cpuPercent,
             goroutines: $goroutines,
-            requests: $totalsRequests,
-            connections: $totalsConnections,
-            consumers: $totalsConsumers,
+            requests: static::sumRequests($storedSnapshots),
+            connections: static::sumConnections($storedSnapshots),
+            consumers: static::sumConsumers($storedSnapshots),
+        );
+    }
+
+    /**
+     * The HTTP workload of a set of snapshots, or null when none of them serves requests.
+     * The average is weighted by what each worker actually completed, which is the
+     * denominator it divided by.
+     *
+     * @param list<StoredSnapshot> $storedSnapshots
+     */
+    protected static function sumRequests(array $storedSnapshots): ?Requests
+    {
+        $reported = false;
+
+        $completed       = 0;
+        $weightedAvgMs   = 0.0;
+        $inFlight        = 0;
+        $inFlight1to5s   = 0;
+        $inFlight5to15s  = 0;
+        $inFlightOver15s = 0;
+
+        foreach ($storedSnapshots as $storedSnapshot) {
+            $requests = $storedSnapshot->snapshot->requests;
+
+            if ($requests === null) {
+                continue;
+            }
+
+            $reported = true;
+
+            $completed += $requests->completed;
+            $weightedAvgMs += $requests->avgMs * $requests->completed;
+            $inFlight += $requests->inFlight;
+            $inFlight1to5s += $requests->inFlight1to5s;
+            $inFlight5to15s += $requests->inFlight5to15s;
+            $inFlightOver15s += $requests->inFlightOver15s;
+        }
+
+        if (!$reported) {
+            return null;
+        }
+
+        return new Requests(
+            completed: $completed,
+            avgMs: $completed > 0 ? $weightedAvgMs / $completed : 0.0,
+            inFlight: $inFlight,
+            inFlight1to5s: $inFlight1to5s,
+            inFlight5to15s: $inFlight5to15s,
+            inFlightOver15s: $inFlightOver15s,
+        );
+    }
+
+    /**
+     * The connection workload of a set of snapshots, or null when none of them accepts
+     * connections.
+     *
+     * @param list<StoredSnapshot> $storedSnapshots
+     */
+    protected static function sumConnections(array $storedSnapshots): ?Connections
+    {
+        $reported = false;
+
+        $active        = 0;
+        $totalAccepted = 0;
+
+        foreach ($storedSnapshots as $storedSnapshot) {
+            $connections = $storedSnapshot->snapshot->connections;
+
+            if ($connections === null) {
+                continue;
+            }
+
+            $reported = true;
+
+            $active += $connections->active;
+            $totalAccepted += $connections->totalAccepted;
+        }
+
+        return $reported ? new Connections(active: $active, totalAccepted: $totalAccepted) : null;
+    }
+
+    /**
+     * The queue workload of a set of snapshots, or null when none of them consumes.
+     *
+     * The average is weighted by the deliveries each worker actually timed, which is the
+     * denominator it divided by. Acked plus refused counts settlements it never measured —
+     * an auto-acknowledged delivery among them — and weighting by that skews the pool
+     * average by an order of magnitude.
+     *
+     * @param list<StoredSnapshot> $storedSnapshots
+     */
+    protected static function sumConsumers(array $storedSnapshots): ?Consumers
+    {
+        $reported = false;
+
+        $coroutines      = 0;
+        $delivered       = 0;
+        $acked           = 0;
+        $refused         = 0;
+        $timed           = 0;
+        $weightedAvgMs   = 0.0;
+        $inFlight        = 0;
+        $inFlight1to5s   = 0;
+        $inFlight5to15s  = 0;
+        $inFlightOver15s = 0;
+
+        foreach ($storedSnapshots as $storedSnapshot) {
+            $consumers = $storedSnapshot->snapshot->consumers;
+
+            if ($consumers === null) {
+                continue;
+            }
+
+            $reported = true;
+
+            $coroutines += $consumers->coroutines;
+            $delivered += $consumers->delivered;
+            $acked += $consumers->acked;
+            $refused += $consumers->refused;
+            $timed += $consumers->timed;
+            $weightedAvgMs += $consumers->avgMs * $consumers->timed;
+            $inFlight += $consumers->inFlight;
+            $inFlight1to5s += $consumers->inFlight1to5s;
+            $inFlight5to15s += $consumers->inFlight5to15s;
+            $inFlightOver15s += $consumers->inFlightOver15s;
+        }
+
+        if (!$reported) {
+            return null;
+        }
+
+        return new Consumers(
+            coroutines: $coroutines,
+            delivered: $delivered,
+            acked: $acked,
+            refused: $refused,
+            timed: $timed,
+            avgMs: $timed > 0 ? $weightedAvgMs / $timed : 0.0,
+            inFlight: $inFlight,
+            inFlight1to5s: $inFlight1to5s,
+            inFlight5to15s: $inFlight5to15s,
+            inFlightOver15s: $inFlightOver15s,
         );
     }
 }
