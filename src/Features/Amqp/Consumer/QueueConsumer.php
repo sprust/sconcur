@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace SConcur\Features\Amqp\Consumer;
 
 use Closure;
-use SConcur\Exceptions\Amqp\AmqpException;
 use SConcur\Exceptions\CoroutineTimeoutException;
 use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Features\Amqp\Connection;
@@ -42,39 +41,50 @@ class QueueConsumer
     /** The same default the servers use. */
     protected const int DEFAULT_PREEMPTION_QUANTUM_MS = 5;
 
+    /** How long a consumer waits before trying its queue again. */
+    protected const int RECONNECT_INTERVAL_MS = 1_000;
+
+    /** How many times in a row a consumer reopens before giving its queue up. */
+    protected const int DEFAULT_MAX_RECONNECT_ATTEMPTS = 10;
+
     /** @var list<QueueSpec>|null parsed once, by queueSpecs() */
     protected ?array $specs = null;
 
     /**
      * Every limit takes 0 to mean "no limit"; the full table is in docs/amqp.md.
      *
-     * @param string $queues              the queue list as JSON, see QueueSpecParser
-     * @param int    $prefetchCount       unacknowledged messages one coroutine may hold,
-     *                                    unless its queue names its own. 1 hands the next
-     *                                    message to a free coroutine instead of filling the
-     *                                    buffer of a busy one
-     * @param int    $handlerTimeoutMs    how long one message may spend in the handler. Past
-     *                                    it the handler is unwound and its message refused
-     *                                    like any other failure; the coroutine survives and
-     *                                    takes the next message
-     * @param bool   $requeueOnFailure    where a message whose handler threw goes: false
-     *                                    dead-letters it, or drops it where the queue names
-     *                                    no exchange; true puts it back, which loops forever
-     *                                    on a message that always fails
-     * @param int    $maxMessages         drain and stop after this many. A budget, not a hard
-     *                                    count: the coroutines already inside a handler
-     *                                    finish theirs, so a pool of N may end up to N-1 over
-     * @param int    $maxRuntimeSeconds   drain and stop after this long
-     * @param int    $maxMemoryBytes      drain and stop once the PHP heap passes this
-     * @param int    $drainTimeoutMs      how long a stop waits for in-flight handlers. Keep
-     *                                    it below the master's shutdownTimeoutMs, or SIGKILL
-     *                                    lands in the middle of the drain
-     * @param int    $pollIntervalMs      how often the supervisor coroutine wakes up
-     * @param int    $preemptionQuantumMs what lets $handlerTimeoutMs and a stop reach a
-     *                                    handler busy with computation — and keeps such a
-     *                                    handler from holding off the supervisor
-     * @param ?int   $masterPid           when set, the worker drains as soon as it is
-     *                                    orphaned; the master injects it as --masterPid
+     * @param string $queues               the queue list as JSON, see QueueSpecParser
+     * @param int    $prefetchCount        unacknowledged messages one coroutine may hold,
+     *                                     unless its queue names its own. 1 hands the next
+     *                                     message to a free coroutine instead of filling the
+     *                                     buffer of a busy one
+     * @param int    $handlerTimeoutMs     how long one message may spend in the handler. Past
+     *                                     it the handler is unwound and its message refused
+     *                                     like any other failure; the coroutine survives and
+     *                                     takes the next message
+     * @param bool   $requeueOnFailure     where a message whose handler threw goes: false
+     *                                     dead-letters it, or drops it where the queue names
+     *                                     no exchange; true puts it back, which loops forever
+     *                                     on a message that always fails
+     * @param int    $maxMessages          drain and stop after this many. A budget, not a hard
+     *                                     count: the coroutines already inside a handler
+     *                                     finish theirs, so a pool of N may end up to N-1 over
+     * @param int    $maxRuntimeSeconds    drain and stop after this long
+     * @param int    $maxMemoryBytes       drain and stop once the PHP heap passes this
+     * @param int    $drainTimeoutMs       how long a stop waits for in-flight handlers. Keep
+     *                                     it below the master's shutdownTimeoutMs, or SIGKILL
+     *                                     lands in the middle of the drain
+     * @param int    $pollIntervalMs       how often the supervisor coroutine wakes up
+     * @param int    $preemptionQuantumMs  what lets $handlerTimeoutMs and a stop reach a
+     *                                     handler busy with computation — and keeps such a
+     *                                     handler from holding off the supervisor
+     * @param int    $maxReconnectAttempts
+     *                                     how many times in a row a consumer taken away by
+     *                                     the broker reopens its queue, a second apart,
+     *                                     before giving it up. 0 ends it on the first
+     *                                     failure, as it did before there was a retry
+     * @param ?int   $masterPid            when set, the worker drains as soon as it is
+     *                                     orphaned; the master injects it as --masterPid
      */
     public function __construct(
         protected string $queues = '',
@@ -87,6 +97,7 @@ class QueueConsumer
         protected int $drainTimeoutMs = self::DEFAULT_DRAIN_TIMEOUT_MS,
         protected int $pollIntervalMs = self::DEFAULT_POLL_INTERVAL_MS,
         protected int $preemptionQuantumMs = self::DEFAULT_PREEMPTION_QUANTUM_MS,
+        protected int $maxReconnectAttempts = self::DEFAULT_MAX_RECONNECT_ATTEMPTS,
         protected ?int $masterPid = null,
     ) {
     }
@@ -125,7 +136,7 @@ class QueueConsumer
      * @param ?Closure(Throwable, Delivery): void $onError called when a handler throws;
      *                                                     without one the failure is logged
      *
-     * @throws AmqpException if every consumer died on its own
+     * @throws Throwable if every consumer gave its queue up — whatever ended the first one
      */
     public function consume(Connection $connection, Closure $handler, ?Closure $onError = null): int
     {
@@ -190,8 +201,24 @@ class QueueConsumer
     }
 
     /**
-     * One coroutine on one queue, with a channel of its own: the commands of a channel are
-     * serialized, so sharing one would turn N consumers into a queue of N.
+     * One coroutine on one queue, kept consuming across the failures that end a consumer
+     * without ending the worker.
+     *
+     * A consumer is taken away by more than the queue being deleted: a channel dies over an
+     * unrelated 404, a cluster node fails over, the read timeout passes. Ending the
+     * coroutine there left that queue unread for the life of the worker while its
+     * neighbours carried on — the pool quietly lost capacity and said so once. It reopens
+     * instead, on a channel of its own, and gives up only when the failure keeps repeating.
+     *
+     * Giving up matters as much as retrying. A queue that was deleted answers 404 for ever,
+     * and a consumer that retried for ever would keep the worker alive as a pool with dead
+     * queues in it — and would never let consume() report that every consumer is gone, which
+     * is what makes a supervisor bring up a replacement.
+     *
+     * What it does not reopen is the connection: that one is shared by every coroutine here,
+     * and closing it from one of them takes the channels of all the others with it. A dead
+     * connection therefore fails every consumer in turn, the worker exits, and the master
+     * starts a fresh process with a fresh connection.
      *
      * @param Closure(Delivery): void             $handler
      * @param ?Closure(Throwable, Delivery): void $onError
@@ -203,9 +230,100 @@ class QueueConsumer
         ?Closure $onError,
         ConsumerState $state,
     ): void {
-        $channel = $connection->channel(prefetchCount: $spec->prefetchCount ?? $this->prefetchCount);
+        $failure  = null;
+        $attempts = 0;
 
-        $failure = null;
+        while (true) {
+            $startedAt = microtime(true);
+
+            try {
+                $this->runConsumer(
+                    connection: $connection,
+                    spec: $spec,
+                    handler: $handler,
+                    onError: $onError,
+                    state: $state,
+                );
+
+                // The loop ended because it was asked to: drained, or done with its budget.
+                $failure = null;
+
+                break;
+            } catch (FlowStoppedException $exception) {
+                // The drain is taking this coroutine down. Not a failure, and not something
+                // to retry — it must reach the scheduler.
+                throw $exception;
+            } catch (Throwable $exception) {
+                $failure = $exception;
+            }
+
+            // A consumer that stayed up longer than the pause between attempts was working,
+            // whatever ended it, so it gets a fresh budget — the same rule the worker master
+            // applies to a process that lived long enough to be called healthy.
+            if ((microtime(true) - $startedAt) > (self::RECONNECT_INTERVAL_MS / 1000)) {
+                $attempts = 0;
+            }
+
+            if ($state->isDraining()) {
+                static::logServerEvent(sprintf(
+                    'consumer: %s ended while draining: %s: %s',
+                    $spec->name,
+                    $failure::class,
+                    $failure->getMessage(),
+                ));
+
+                break;
+            }
+
+            if ($attempts >= $this->maxReconnectAttempts) {
+                static::logServerEvent(sprintf(
+                    'consumer: %s gave up after %d reopen(s): %s: %s',
+                    $spec->name,
+                    $attempts,
+                    $failure::class,
+                    $failure->getMessage(),
+                ));
+
+                break;
+            }
+
+            ++$attempts;
+
+            static::logServerEvent(sprintf(
+                'consumer: %s lost (%s: %s); reopening in %dms, attempt %d of %d',
+                $spec->name,
+                $failure::class,
+                $failure->getMessage(),
+                self::RECONNECT_INTERVAL_MS,
+                $attempts,
+                $this->maxReconnectAttempts,
+            ));
+
+            Sleeper::usleep(microseconds: self::RECONNECT_INTERVAL_MS * 1000);
+        }
+
+        $state->consumerFinished($failure);
+    }
+
+    /**
+     * One run of one consumer: its own channel, its own prefetch, until the stream ends or
+     * the runtime asks it to stop.
+     *
+     * A channel is never shared between coroutines — the commands of one are serialized, so
+     * sharing would turn N consumers into a queue of N — and a reopened consumer gets a
+     * fresh one, since whatever ended the last one usually took the channel with it.
+     *
+     * @param Closure(Delivery): void             $handler
+     * @param ?Closure(Throwable, Delivery): void $onError
+     */
+    protected function runConsumer(
+        Connection $connection,
+        QueueSpec $spec,
+        Closure $handler,
+        ?Closure $onError,
+        ConsumerState $state,
+    ): void {
+        $channel = $connection->channel(prefetchCount: $spec->prefetchCount ?? $this->prefetchCount);
 
         try {
             foreach ($channel->consume(queueName: $spec->name) as $delivery) {
@@ -221,22 +339,7 @@ class QueueConsumer
                     break;
                 }
             }
-        } catch (AmqpException $exception) {
-            // One consumer ending is not the worker ending: the others keep their queues,
-            // and the run ends on its own once the last one is gone. Letting this escape
-            // would fail the group, and the stop that follows would cut every other
-            // handler mid-message.
-            static::logServerEvent(sprintf(
-                'consumer: %s ended: %s: %s',
-                $spec->name,
-                $exception::class,
-                $exception->getMessage(),
-            ));
-
-            $failure = $exception;
         } finally {
-            $state->consumerFinished($failure);
-
             // Every path, the unwound one included: there the channel would otherwise go
             // back only once the garbage collector reached the cycle the unwind left, and
             // until it closes the delivery in hand stays owed to the broker. close() picks
@@ -383,7 +486,8 @@ class QueueConsumer
      * alone, which is what lets the runtime take the acknowledgement over at all.
      *
      * A failed settle is logged rather than thrown: the message is the broker's problem
-     * again either way, and letting it escape would end a consumer over a dead channel.
+     * again either way, and letting it escape would end a consumer over a dead channel. The
+     * next pull on that channel raises anyway, and that is where the consumer reopens.
      */
     protected function settle(Delivery $delivery, bool $failed): void
     {
@@ -399,7 +503,10 @@ class QueueConsumer
             }
 
             $delivery->ack();
-        } catch (AmqpException $exception) {
+        } catch (FlowStoppedException $exception) {
+            // The drain is taking this coroutine down mid-settle; it must not be swallowed.
+            throw $exception;
+        } catch (Throwable $exception) {
             static::logServerEvent(sprintf(
                 'consumer: could not settle delivery %d: %s: %s',
                 $delivery->deliveryTag,

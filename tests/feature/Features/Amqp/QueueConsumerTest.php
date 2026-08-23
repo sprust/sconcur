@@ -586,6 +586,54 @@ class QueueConsumerTest extends AmqpTestCase
         );
     }
 
+    /**
+     * A consumer taken away by the broker used to end its coroutine, leaving that queue
+     * unread for the life of the worker while its neighbours carried on — the pool quietly
+     * lost capacity and said so once. It reopens instead.
+     */
+    public function testAConsumerTakenAwayByTheBrokerReopensItsQueue(): void
+    {
+        $channel = $this->channel();
+
+        $queue = $this->declareQueue(channel: $channel, durable: true);
+
+        $name = $queue->name();
+
+        $handled = [];
+
+        $queueConsumer = new QueueConsumer(
+            queues: $this->queuesJson([$name => 1]),
+            maxMessages: 2,
+            maxRuntimeSeconds: 30,
+            pollIntervalMs: 50,
+        );
+
+        $this->publishToQueue($channel, $name, 'first');
+
+        $count = $queueConsumer->consume(
+            connection: $this->connection(),
+            handler: function (Delivery $delivery) use (&$handled, $channel, $name): void {
+                $handled[] = $delivery->body;
+
+                if ($handled !== ['first']) {
+                    return;
+                }
+
+                // Deleting the queue is how the broker takes a consumer away. Declaring it
+                // again and publishing gives the reopened consumer something to find.
+                $channel->queue($name)->delete();
+
+                $recreated = $channel->queue($name);
+
+                $recreated->declare(durable: true);
+                $recreated->publish('second');
+            },
+        );
+
+        self::assertSame(2, $count, 'the consumer must come back and take the next message');
+        self::assertSame(['first', 'second'], $handled);
+    }
+
     public function testTheChannelsAreClosedWhenTheRunEnds(): void
     {
         $channel = $this->channel();

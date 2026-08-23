@@ -810,6 +810,7 @@ The group that runs it:
 | `maxMemoryBytes` | `0` (no limit) | Drain and exit once the PHP heap passes this. A guard against creep, not against a spike — see [when the worker itself dies](#when-the-worker-itself-dies). |
 | `drainTimeoutMs` | `5000` | How long a stop waits for the handlers that are mid-message. |
 | `pollIntervalMs` | `200` | How often the supervisor coroutine wakes to look at the stop flags and the limits. |
+| `maxReconnectAttempts` | `10` | How many times in a row a consumer the broker took away reopens its queue, a second apart, before giving it up. `0` ends it on the first failure. |
 | `preemptionQuantumMs` | `5` (`0` off) | Automatic-preemption quantum while consuming. It is what lets `handlerTimeoutMs` and a stop reach a handler busy with computation — see [coroutine switching](coroutine-switching.md). |
 | `masterPid` | none | Injected by the master; the worker drains as soon as it is orphaned. |
 
@@ -850,6 +851,31 @@ in the middle of the drain.
 A handler that throws is reported through the optional `onError` callback and
 costs one message, not one consumer: the runtime refuses the delivery and the same
 coroutine takes the next one.
+
+### A consumer the broker takes away
+
+More than a deleted queue ends a consumer: a channel dies over an unrelated `404`, a
+cluster node fails over, the connection's `readTimeoutSeconds` passes. The coroutine
+reopens its queue on a fresh channel a second later, and says so:
+
+```
+consumer: orders lost (…: Consumer sconcur-ctag-7 was cancelled by the broker.); reopening in 1000ms, attempt 1 of 10
+```
+
+Past `maxReconnectAttempts` in a row it gives the queue up. A queue that was deleted
+answers `404` for ever, and a consumer retrying for ever would keep the worker alive as a
+pool with dead queues in it. A consumer that stayed up longer than the pause between
+attempts gets a fresh budget, so a failure hours later is not counted against the last one.
+
+Two things it does not do. It does not reopen the **connection**: that one is shared by
+every coroutine of the worker, and closing it from one of them would take the channels of
+all the others with it — so a dead connection fails every consumer in turn, the worker
+exits non-zero, and the [master](worker-master.md) starts a fresh process. And it does not
+resettle the message that was in flight: it was never acknowledged, so the broker hands it
+out again on its own.
+
+Once every consumer has given up, `consume()` raises whatever ended the first one, so the
+worker exits rather than sitting there with nothing to pull.
 
 ## Values a field table can carry
 
