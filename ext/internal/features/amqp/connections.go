@@ -2,16 +2,12 @@ package amqp_feature
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
-	"errors"
-	"net"
-	"os"
-	"sconcur/internal/features/amqp/payloads"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"sconcur/internal/features/amqp/payloads"
 
 	amqp091 "github.com/rabbitmq/amqp091-go"
 )
@@ -84,7 +80,6 @@ type connectionHandle struct {
 	// channelCounter numbers the channels of this handle; it only ever grows, so a
 	// closed channel never hands its number to the next one.
 	channelCounter int
-	channels       map[string]*channelEntry
 	closed         bool
 }
 
@@ -140,9 +135,8 @@ func (c *connections) open(ctx context.Context, params payloads.ConnectParams) (
 	}
 
 	handle := &connectionHandle{
-		id:       nextHandleId(),
-		pooled:   pooled,
-		channels: make(map[string]*channelEntry),
+		id:     nextHandleId(),
+		pooled: pooled,
 	}
 
 	c.handlesMutex.Lock()
@@ -357,156 +351,6 @@ func (c *connections) closeAll() {
 	}
 }
 
-// dial opens one connection, bounded by the connect timeout and abandoned if the flow
-// stops meanwhile — the amqp091 dial takes no context, so it runs on its own goroutine
-// and a connection that arrives late is closed rather than leaked.
-func dial(ctx context.Context, params payloads.ConnectParams, key connectionKey) (*amqp091.Connection, error) {
-	config, err := dialConfig(params)
-
-	if err != nil {
-		return nil, err
-	}
-
-	type dialed struct {
-		connection *amqp091.Connection
-		err        error
-	}
-
-	results := make(chan dialed, 1)
-
-	uri := connectionUri(key)
-
-	go func() {
-		connection, err := amqp091.DialConfig(uri, config)
-
-		results <- dialed{connection: connection, err: err}
-	}()
-
-	select {
-	case result := <-results:
-		return result.connection, result.err
-	case <-ctx.Done():
-		go func() {
-			result := <-results
-
-			if result.connection != nil {
-				_ = result.connection.Close()
-			}
-		}()
-
-		return nil, ctx.Err()
-	}
-}
-
-func dialConfig(params payloads.ConnectParams) (amqp091.Config, error) {
-	connectTimeout := msOrDefault(params.ConnectTimeoutMs, defaultConnectTimeout)
-
-	config := amqp091.Config{
-		Vhost:      params.Vhost,
-		ChannelMax: uint16(max(params.ChannelMax, 0)),
-		FrameSize:  params.FrameMaxBytes,
-		Heartbeat:  time.Duration(max(params.HeartbeatSeconds, 0)) * time.Second,
-		Dial:       amqp091.DefaultDial(connectTimeout),
-		Properties: amqp091.NewConnectionProperties(),
-		// The credentials are handed over as they are. The driver would otherwise
-		// derive them by parsing the URI, which mangles every login or password
-		// holding a character the URI syntax reserves: "%" starts an escape, "/",
-		// "?" and "#" end the userinfo, and ":" splits it.
-		SASL: []amqp091.Authentication{
-			&amqp091.PlainAuth{
-				Username: params.Login,
-				Password: params.Password,
-			},
-		},
-	}
-
-	if params.ConnectionName != "" {
-		config.Properties.SetClientConnectionName(params.ConnectionName)
-	}
-
-	if params.SaslMethod == saslMethodExternal {
-		config.SASL = []amqp091.Authentication{&amqp091.ExternalAuth{}}
-	}
-
-	if !usesTls(params) {
-		return config, nil
-	}
-
-	tlsConfig, err := tlsConfigFromParams(params)
-
-	if err != nil {
-		return config, err
-	}
-
-	config.TLSClientConfig = tlsConfig
-
-	return config, nil
-}
-
-// usesTls answers whether to dial amqps. Secure is what the caller asked for and is
-// decisive on its own: a connection with no certificate paths — the system trust store,
-// or verification turned off against a development broker — is still a TLS connection,
-// and inferring otherwise would put the login and password on the wire in the clear.
-//
-// The paths are still honoured for their own sake, so material named without the flag
-// cannot be silently ignored either.
-func usesTls(params payloads.ConnectParams) bool {
-	return params.Secure || params.CaCertPath != "" || params.CertPath != "" || params.KeyPath != ""
-}
-
-func tlsConfigFromParams(params payloads.ConnectParams) (*tls.Config, error) {
-	config := &tls.Config{
-		ServerName:         params.Host,
-		InsecureSkipVerify: !params.Verify,
-	}
-
-	if params.CaCertPath != "" {
-		authority, err := os.ReadFile(params.CaCertPath)
-
-		if err != nil {
-			return nil, err
-		}
-
-		pool := x509.NewCertPool()
-
-		if !pool.AppendCertsFromPEM(authority) {
-			return nil, errors.New("could not read the CA certificate " + params.CaCertPath)
-		}
-
-		config.RootCAs = pool
-	}
-
-	if params.CertPath == "" && params.KeyPath == "" {
-		return config, nil
-	}
-
-	certificate, err := tls.LoadX509KeyPair(params.CertPath, params.KeyPath)
-
-	if err != nil {
-		return nil, err
-	}
-
-	config.Certificates = []tls.Certificate{certificate}
-
-	return config, nil
-}
-
-// connectionUri builds the amqp:// (or amqps://) URI of a connection: the address and
-// nothing else. The credentials travel in the dial config (dialConfig) and the vhost in
-// its Vhost field, so nothing here has to survive URI escaping.
-// connectionUri builds what the driver dials. The scheme has to agree with the TLS config
-// dialConfig built, and both follow the same rule — see usesTls: what the caller asked for
-// decides, and the certificate paths only add to it.
-func connectionUri(key connectionKey) string {
-	scheme := "amqp://"
-
-	if key.secure || key.caCertPath != "" || key.certPath != "" || key.keyPath != "" {
-		scheme = "amqps://"
-	}
-
-	return scheme + net.JoinHostPort(key.host, strconv.Itoa(key.port)) + "/"
-}
-
 func connectionKeyFromParams(params payloads.ConnectParams) connectionKey {
 	return connectionKey{
 		secure:           params.Secure,
@@ -534,21 +378,9 @@ func nextHandleId() string {
 // closeConnection closes a connection under a fresh deadline: whatever triggered the
 // close may already be cancelled.
 func closeConnection(connection *amqp091.Connection) {
-	done := make(chan struct{})
-
-	go func() {
+	bounded(connectionCloseTimeout, func() {
 		_ = connection.Close()
-
-		close(done)
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), connectionCloseTimeout)
-	defer cancel()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
+	})
 }
 
 func msOrDefault(milliseconds int, fallback time.Duration) time.Duration {

@@ -26,7 +26,7 @@ func (f *AmqpFeature) handleExchangeDeclare(task *tasks.Task, raw msgpack.RawMes
 		return
 	}
 
-	ctx, cancel := commandContext(task, params.TimeoutMs)
+	ctx, cancel := commandContext(task, params.TimeoutMs, defaultRpcTimeout)
 	defer cancel()
 
 	arguments := mapToTable(params.Arguments)
@@ -80,7 +80,7 @@ func (f *AmqpFeature) handleExchangeDelete(task *tasks.Task, raw msgpack.RawMess
 		return
 	}
 
-	ctx, cancel := commandContext(task, params.TimeoutMs)
+	ctx, cancel := commandContext(task, params.TimeoutMs, defaultRpcTimeout)
 	defer cancel()
 
 	err := entry.do(ctx, func(channel *amqp091.Channel) error {
@@ -112,7 +112,7 @@ func (f *AmqpFeature) handleExchangeBinding(task *tasks.Task, raw msgpack.RawMes
 		return
 	}
 
-	ctx, cancel := commandContext(task, params.TimeoutMs)
+	ctx, cancel := commandContext(task, params.TimeoutMs, defaultRpcTimeout)
 	defer cancel()
 
 	arguments := mapToTable(params.Arguments)
@@ -163,7 +163,7 @@ func (f *AmqpFeature) handleQueueDeclare(task *tasks.Task, raw msgpack.RawMessag
 		return
 	}
 
-	ctx, cancel := commandContext(task, params.TimeoutMs)
+	ctx, cancel := commandContext(task, params.TimeoutMs, defaultRpcTimeout)
 	defer cancel()
 
 	arguments := mapToTable(params.Arguments)
@@ -227,7 +227,7 @@ func (f *AmqpFeature) handleQueueDelete(task *tasks.Task, raw msgpack.RawMessage
 		return
 	}
 
-	ctx, cancel := commandContext(task, params.TimeoutMs)
+	ctx, cancel := commandContext(task, params.TimeoutMs, defaultRpcTimeout)
 	defer cancel()
 
 	var deleted int
@@ -265,7 +265,7 @@ func (f *AmqpFeature) handleQueueBinding(task *tasks.Task, raw msgpack.RawMessag
 		return
 	}
 
-	ctx, cancel := commandContext(task, params.TimeoutMs)
+	ctx, cancel := commandContext(task, params.TimeoutMs, defaultRpcTimeout)
 	defer cancel()
 
 	arguments := mapToTable(params.Arguments)
@@ -315,7 +315,7 @@ func (f *AmqpFeature) handleQueuePurge(task *tasks.Task, raw msgpack.RawMessage)
 		return
 	}
 
-	ctx, cancel := commandContext(task, params.TimeoutMs)
+	ctx, cancel := commandContext(task, params.TimeoutMs, defaultRpcTimeout)
 	defer cancel()
 
 	var purged int

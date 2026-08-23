@@ -27,7 +27,7 @@ type Envelope struct {
 // travel here: they bound a command, not the connection, and PHP puts each of them on the
 // command it belongs to (rpc on every one-shot method, write on a publish, read on the
 // wait for a consumer's next delivery).
-// PHP: SConcur\Features\Amqp\Payloads\ConnectPayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type ConnectParams struct {
 	Host             string `json:"ho" msgpack:"ho"`
 	Port             int    `json:"po" msgpack:"po"`
@@ -59,7 +59,7 @@ type ConnectResult struct {
 
 // ConnectionParams is the `p` content of the commands addressing a connection handle as a
 // whole.
-// PHP: SConcur\Features\Amqp\Payloads\ConnectionPayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type ConnectionParams struct {
 	ConnectionId string `json:"cid" msgpack:"cid"`
 	TimeoutMs    int    `json:"to" msgpack:"to"`
@@ -74,7 +74,7 @@ type UsedChannelsResult struct {
 // ChannelOpenParams is the `p` content of a ChannelOpen command: the connection to open
 // the channel on, plus the prefetch settings applied right after opening (ext-amqp sends
 // them as a separate basic.qos; carrying them here keeps channel creation one crossing).
-// PHP: SConcur\Features\Amqp\Payloads\ChannelOpenPayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type ChannelOpenParams struct {
 	ConnectionId            string `json:"cid" msgpack:"cid"`
 	PrefetchSizeBytes       int    `json:"sz" msgpack:"sz"`
@@ -84,8 +84,10 @@ type ChannelOpenParams struct {
 	TimeoutMs               int    `json:"to" msgpack:"to"`
 }
 
-// ChannelOpenResult answers a ChannelOpen: the handle plus the AMQP channel number, which
-// PHP hands back through Channel::id().
+// ChannelOpenResult answers a ChannelOpen: the handle plus the number this feature gave the
+// channel on its connection, which PHP hands back through Channel::id(). It is a counter
+// per connection handle, not the channel number AMQP puts on the wire — the driver owns
+// that one and does not report it.
 // PHP: decoded in SConcur\Features\Amqp\Channel::__construct.
 type ChannelOpenResult struct {
 	ChannelId     string `json:"chid" msgpack:"chid"`
@@ -93,15 +95,15 @@ type ChannelOpenResult struct {
 }
 
 // ChannelParams is the `p` content of the commands that need nothing but the channel:
-// closing it, the transaction methods and the two wait loops.
-// PHP: SConcur\Features\Amqp\Payloads\ChannelPayloadParameters.
+// closing it, and waiting for its publisher confirms.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type ChannelParams struct {
 	ChannelId string `json:"chid" msgpack:"chid"`
 	TimeoutMs int    `json:"to" msgpack:"to"`
 }
 
 // QosParams is the `p` content of a Qos command.
-// PHP: SConcur\Features\Amqp\Payloads\QosPayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type QosParams struct {
 	ChannelId         string `json:"chid" msgpack:"chid"`
 	PrefetchSizeBytes int    `json:"sz" msgpack:"sz"`
@@ -112,7 +114,7 @@ type QosParams struct {
 
 // ExchangeDeclareParams is the `p` content of an ExchangeDeclare command; Passive selects
 // the declare-passive form.
-// PHP: SConcur\Features\Amqp\Payloads\ExchangeDeclarePayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type ExchangeDeclareParams struct {
 	ChannelId  string `json:"chid" msgpack:"chid"`
 	Name       string `json:"na" msgpack:"na"`
@@ -127,7 +129,7 @@ type ExchangeDeclareParams struct {
 }
 
 // ExchangeDeleteParams is the `p` content of an ExchangeDelete command.
-// PHP: SConcur\Features\Amqp\Payloads\ExchangeDeletePayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type ExchangeDeleteParams struct {
 	ChannelId string `json:"chid" msgpack:"chid"`
 	Name      string `json:"na" msgpack:"na"`
@@ -138,7 +140,7 @@ type ExchangeDeleteParams struct {
 
 // ExchangeBindParams is the `p` content of an ExchangeBind or ExchangeUnbind command:
 // messages flow from the source exchange to the destination one.
-// PHP: SConcur\Features\Amqp\Payloads\ExchangeBindPayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type ExchangeBindParams struct {
 	ChannelId   string `json:"chid" msgpack:"chid"`
 	Destination string `json:"ds" msgpack:"ds"`
@@ -151,7 +153,7 @@ type ExchangeBindParams struct {
 
 // QueueDeclareParams is the `p` content of a QueueDeclare command; an empty Name asks the
 // broker to generate one, and Passive selects the declare-passive form.
-// PHP: SConcur\Features\Amqp\Payloads\QueueDeclarePayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type QueueDeclareParams struct {
 	ChannelId  string `json:"chid" msgpack:"chid"`
 	Name       string `json:"na" msgpack:"na"`
@@ -174,7 +176,7 @@ type QueueDeclareResult struct {
 }
 
 // QueueDeleteParams is the `p` content of a QueueDelete command.
-// PHP: SConcur\Features\Amqp\Payloads\QueueDeletePayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type QueueDeleteParams struct {
 	ChannelId string `json:"chid" msgpack:"chid"`
 	Name      string `json:"na" msgpack:"na"`
@@ -192,7 +194,7 @@ type MessageCountResult struct {
 }
 
 // QueueBindParams is the `p` content of a QueueBind or QueueUnbind command.
-// PHP: SConcur\Features\Amqp\Payloads\QueueBindPayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type QueueBindParams struct {
 	ChannelId    string `json:"chid" msgpack:"chid"`
 	QueueName    string `json:"na" msgpack:"na"`
@@ -204,7 +206,7 @@ type QueueBindParams struct {
 }
 
 // QueuePurgeParams is the `p` content of a QueuePurge command.
-// PHP: SConcur\Features\Amqp\Payloads\QueuePurgePayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type QueuePurgeParams struct {
 	ChannelId string `json:"chid" msgpack:"chid"`
 	Name      string `json:"na" msgpack:"na"`
@@ -236,7 +238,7 @@ type Properties struct {
 }
 
 // PublishParams is the `p` content of a Publish command.
-// PHP: SConcur\Features\Amqp\Payloads\PublishPayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type PublishParams struct {
 	ChannelId    string     `json:"chid" msgpack:"chid"`
 	ExchangeName string     `json:"en" msgpack:"en"`
@@ -249,7 +251,7 @@ type PublishParams struct {
 }
 
 // GetParams is the `p` content of a Get command.
-// PHP: SConcur\Features\Amqp\Payloads\GetPayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type GetParams struct {
 	ChannelId string `json:"chid" msgpack:"chid"`
 	QueueName string `json:"na" msgpack:"na"`
@@ -259,7 +261,7 @@ type GetParams struct {
 
 // Delivery is one message handed to PHP, by a Get or through a consumer's stream. It
 // carries the channel it was delivered on, because a delivery tag is only valid there.
-// PHP: built into a Delivery by SConcur\Features\Amqp\Channel::deliveryFrom.
+// PHP: built into a Delivery by SConcur\Features\Amqp\Support\DeliveryCodec::delivery.
 type Delivery struct {
 	ChannelId    string     `json:"chid" msgpack:"chid"`
 	ConsumerTag  string     `json:"tg" msgpack:"tg"`
@@ -272,7 +274,7 @@ type Delivery struct {
 }
 
 // ConsumeParams is the `p` content of a Consume command — the streaming one.
-// PHP: SConcur\Features\Amqp\Payloads\ConsumePayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type ConsumeParams struct {
 	ChannelId   string `json:"chid" msgpack:"chid"`
 	QueueName   string `json:"na" msgpack:"na"`
@@ -297,7 +299,7 @@ type ConsumerMeta struct {
 }
 
 // CancelParams is the `p` content of a Cancel command.
-// PHP: SConcur\Features\Amqp\Payloads\CancelPayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type CancelParams struct {
 	ChannelId   string `json:"chid" msgpack:"chid"`
 	ConsumerTag string `json:"tg" msgpack:"tg"`
@@ -306,7 +308,7 @@ type CancelParams struct {
 }
 
 // AckParams is the `p` content of an Ack command.
-// PHP: SConcur\Features\Amqp\Payloads\AckPayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type AckParams struct {
 	ChannelId   string `json:"chid" msgpack:"chid"`
 	DeliveryTag uint64 `json:"dt" msgpack:"dt"`
@@ -315,7 +317,7 @@ type AckParams struct {
 }
 
 // NackParams is the `p` content of a Nack command.
-// PHP: SConcur\Features\Amqp\Payloads\NackPayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type NackParams struct {
 	ChannelId   string `json:"chid" msgpack:"chid"`
 	DeliveryTag uint64 `json:"dt" msgpack:"dt"`
@@ -325,7 +327,7 @@ type NackParams struct {
 }
 
 // RejectParams is the `p` content of a Reject command.
-// PHP: SConcur\Features\Amqp\Payloads\RejectPayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type RejectParams struct {
 	ChannelId   string `json:"chid" msgpack:"chid"`
 	DeliveryTag uint64 `json:"dt" msgpack:"dt"`
@@ -334,7 +336,7 @@ type RejectParams struct {
 }
 
 // ConfirmSelectParams is the `p` content of a ConfirmSelect command.
-// PHP: SConcur\Features\Amqp\Payloads\ConfirmSelectPayloadParameters.
+// PHP: built by the AmqpCommandEnum case that names this struct.
 type ConfirmSelectParams struct {
 	ChannelId string `json:"chid" msgpack:"chid"`
 	NoWait    bool   `json:"nw" msgpack:"nw"`
@@ -342,18 +344,16 @@ type ConfirmSelectParams struct {
 }
 
 // Confirmation is one publisher confirm: the tag of the message and whether the broker
-// took it. Multiple is always false and Requeue is unused — the driver resolves the
-// broker's "up to and including" confirms into individual ones.
-// PHP: read in SConcur\Features\Amqp\Channel::failOnNacks.
+// took it. There is no "multiple" flag — the driver resolves the broker's "up to and
+// including" confirms into individual ones before this side ever sees them.
+// PHP: read in SConcur\Features\Amqp\Support\DeliveryCodec::failOnNacks.
 type Confirmation struct {
 	DeliveryTag uint64 `json:"dt" msgpack:"dt"`
-	Multiple    bool   `json:"mu" msgpack:"mu"`
 	Acked       bool   `json:"ak" msgpack:"ak"`
-	Requeue     bool   `json:"rq" msgpack:"rq"`
 }
 
 // ReturnedMessage is one message the broker could not route and sent back.
-// PHP: read in SConcur\Features\Amqp\Channel::failOnReturns.
+// PHP: read in SConcur\Features\Amqp\Support\DeliveryCodec::failOnReturns.
 type ReturnedMessage struct {
 	ReplyCode    int        `json:"rc" msgpack:"rc"`
 	ReplyText    string     `json:"rx" msgpack:"rx"`

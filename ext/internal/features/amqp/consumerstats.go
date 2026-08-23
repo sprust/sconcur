@@ -63,6 +63,9 @@ type consumerKey struct {
 	consumerTag string
 }
 
+// consumerStatsInstance is built eagerly, unlike the registries around it: it is two empty
+// maps and no goroutine, and every channel close reports into it whether or not this
+// process ever consumed. A lazy one would need a lock on that path to buy nothing.
 var consumerStatsInstance = &consumerStats{
 	inFlight: make(map[deliveryKey]time.Time),
 	live:     make(map[consumerKey]struct{}),

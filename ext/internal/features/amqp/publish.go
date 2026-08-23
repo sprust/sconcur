@@ -1,11 +1,10 @@
 package amqp_feature
 
 import (
-	"context"
-	"errors"
+	"time"
+
 	"sconcur/internal/features/amqp/payloads"
 	"sconcur/internal/tasks"
-	"time"
 
 	amqp091 "github.com/rabbitmq/amqp091-go"
 	"github.com/vmihailenco/msgpack/v5"
@@ -29,15 +28,20 @@ func (f *AmqpFeature) handlePublish(task *tasks.Task, raw msgpack.RawMessage) {
 		return
 	}
 
-	ctx, cancel := commandContextWithDefault(task, params.TimeoutMs, defaultWriteTimeout)
+	ctx, cancel := commandContext(task, params.TimeoutMs, defaultWriteTimeout)
 	defer cancel()
 
 	publishing := publishingFromProperties(params.Properties, params.Body)
 
-	entry.publishing()
-
 	err := entry.do(ctx, func(channel *amqp091.Channel) error {
-		return channel.PublishWithContext(
+		// Counted here, inside the closure that publishes, and not before do(): a publish
+		// whose deadline passed while it was still queued behind another command on this
+		// channel never reaches the driver at all, and one counted up front would leave a
+		// message pending for good — the next wait for confirms would then sit out its
+		// whole deadline waiting for a confirmation with nothing to confirm.
+		entry.publishing()
+
+		publishError := channel.PublishWithContext(
 			ctx,
 			params.ExchangeName,
 			params.RoutingKey,
@@ -45,15 +49,18 @@ func (f *AmqpFeature) handlePublish(task *tasks.Task, raw msgpack.RawMessage) {
 			params.Immediate,
 			publishing,
 		)
-	})
 
-	if err != nil {
-		// A publish that only ran out of time may still be on its way, and its
-		// confirmation with it; only one the driver refused outright is taken back.
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		if publishError != nil {
+			// Nothing went out — PublishWithContext checks the context before it writes,
+			// and a write that failed carries no confirmation either — so the count goes
+			// straight back rather than waiting for an answer that cannot come.
 			entry.publishFailed()
 		}
 
+		return publishError
+	})
+
+	if err != nil {
 		fail(task, entry, "publish", err)
 
 		return

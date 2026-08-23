@@ -26,7 +26,7 @@ func (f *AmqpFeature) handleAck(task *tasks.Task, raw msgpack.RawMessage) {
 		return
 	}
 
-	ctx, cancel := commandContext(task, params.TimeoutMs)
+	ctx, cancel := commandContext(task, params.TimeoutMs, defaultRpcTimeout)
 	defer cancel()
 
 	err := entry.do(ctx, func(channel *amqp091.Channel) error {
@@ -60,7 +60,7 @@ func (f *AmqpFeature) handleNack(task *tasks.Task, raw msgpack.RawMessage) {
 		return
 	}
 
-	ctx, cancel := commandContext(task, params.TimeoutMs)
+	ctx, cancel := commandContext(task, params.TimeoutMs, defaultRpcTimeout)
 	defer cancel()
 
 	err := entry.do(ctx, func(channel *amqp091.Channel) error {
@@ -94,7 +94,7 @@ func (f *AmqpFeature) handleReject(task *tasks.Task, raw msgpack.RawMessage) {
 		return
 	}
 
-	ctx, cancel := commandContext(task, params.TimeoutMs)
+	ctx, cancel := commandContext(task, params.TimeoutMs, defaultRpcTimeout)
 	defer cancel()
 
 	err := entry.do(ctx, func(channel *amqp091.Channel) error {
@@ -128,7 +128,7 @@ func (f *AmqpFeature) handleCancel(task *tasks.Task, raw msgpack.RawMessage) {
 		return
 	}
 
-	ctx, cancel := commandContext(task, params.TimeoutMs)
+	ctx, cancel := commandContext(task, params.TimeoutMs, defaultRpcTimeout)
 	defer cancel()
 
 	err := entry.do(ctx, func(channel *amqp091.Channel) error {

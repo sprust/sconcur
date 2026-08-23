@@ -105,19 +105,12 @@ func TestAFreshlyUsedConnectionIsNotSwept(t *testing.T) {
 func TestIdleChannelsAreSweptOnlyWithoutConsumers(t *testing.T) {
 	registry := newTestChannels()
 
-	idle := &channelEntry{
-		id:         "amqp:ch:1",
-		consumers:  make(map[string]string),
-		lastUsedAt: time.Now().Add(-2 * channelIdleTTL),
-	}
+	idle := newChannelEntry("amqp:ch:1", nil, nil)
+	idle.lastUsedAt = time.Now().Add(-2 * channelIdleTTL)
 
-	consuming := &channelEntry{
-		id: "amqp:ch:2",
-		consumers: map[string]string{
-			"ctag-1": "flow:1",
-		},
-		lastUsedAt: time.Now().Add(-2 * channelIdleTTL),
-	}
+	consuming := newChannelEntry("amqp:ch:2", nil, nil)
+	consuming.consumers["ctag-1"] = "flow:1"
+	consuming.lastUsedAt = time.Now().Add(-2 * channelIdleTTL)
 
 	registry.entries[idle.id] = idle
 	registry.entries[consuming.id] = consuming
@@ -136,11 +129,8 @@ func TestIdleChannelsAreSweptOnlyWithoutConsumers(t *testing.T) {
 func TestFindingAChannelKeepsItFromTheSweeper(t *testing.T) {
 	registry := newTestChannels()
 
-	entry := &channelEntry{
-		id:         "amqp:ch:1",
-		consumers:  make(map[string]string),
-		lastUsedAt: time.Now().Add(-2 * channelIdleTTL),
-	}
+	entry := newChannelEntry("amqp:ch:1", nil, nil)
+	entry.lastUsedAt = time.Now().Add(-2 * channelIdleTTL)
 
 	registry.entries[entry.id] = entry
 
@@ -258,7 +248,7 @@ func TestAWaitEndsOnItsDeadline(t *testing.T) {
 	// that with its timeout, not with a quiet success.
 	_, err := entry.waitForConfirms(context.Background(), 20*time.Millisecond)
 
-	if err == nil || err.Error() != "Wait timeout exceed" {
+	if err == nil || err.Error() != errWaitTimeout.Error() {
 		t.Fatalf("err = %v, want the timeout the extension reports", err)
 	}
 }
@@ -311,11 +301,7 @@ func TestAConfirmWaitHandsOverTheReturnsWithTheConfirmations(t *testing.T) {
 // newTestEntry builds a channel entry with no driver channel behind it: enough for the
 // bookkeeping the wait loops and the confirm accounting do.
 func newTestEntry() *channelEntry {
-	return &channelEntry{
-		id:        "amqp:ch:test",
-		consumers: make(map[string]string),
-		gone:      make(chan struct{}),
-	}
+	return newChannelEntry("amqp:ch:test", nil, nil)
 }
 
 func TestTheConnectTimeoutDoesNotSplitThePool(t *testing.T) {
@@ -338,32 +324,7 @@ func TestTheConnectTimeoutDoesNotSplitThePool(t *testing.T) {
 	}
 }
 
-func TestATimedOutWaitLeavesNoWaiterBehind(t *testing.T) {
-	entry := newTestEntry()
-
-	// Not in confirm mode, so the wait's condition never holds and every poll runs out
-	// its deadline.
-	for range 3 {
-		if _, err := entry.waitForConfirms(context.Background(), 10*time.Millisecond); err == nil {
-			t.Fatal("a wait with nothing to collect must end on its deadline")
-		}
-	}
-
-	// Nothing but a wake() clears the list, and a channel handed no returned message
-	// never wakes: without dropWaiter every poll would leave a dead waiter behind for the
-	// life of the channel.
-	entry.mutex.Lock()
-
-	left := len(entry.waiters)
-
-	entry.mutex.Unlock()
-
-	if left != 0 {
-		t.Fatalf("waiters left = %d, want 0", left)
-	}
-}
-
-func TestAWaitEndedByAnEventKeepsTheListClean(t *testing.T) {
+func TestAWaitIsWokenByAnEvent(t *testing.T) {
 	entry := newTestEntry()
 
 	entry.confirming = true
@@ -389,31 +350,21 @@ func TestAWaitEndedByAnEventKeepsTheListClean(t *testing.T) {
 	if len(result.Confirmations) != 1 {
 		t.Fatalf("confirmations = %d, want 1", len(result.Confirmations))
 	}
-
-	entry.mutex.Lock()
-
-	left := len(entry.waiters)
-
-	entry.mutex.Unlock()
-
-	if left != 0 {
-		t.Fatalf("waiters left = %d, want 0", left)
-	}
 }
 
-func TestConfirmModeIsNotClaimedTwiceOnceItEngaged(t *testing.T) {
+func TestConfirmModeIsNotEnteredTwice(t *testing.T) {
 	entry := newTestEntry()
 
-	// The state startConfirmMode leaves behind when the command deadline passes while the
-	// broker is already answering: the driver call went through, so the channel is in
+	// The state a confirm select leaves behind when its command deadline passed while the
+	// broker was already answering: the driver call went through, so the channel is in
 	// confirm mode for good and its collector is running.
 	entry.mutex.Lock()
 	entry.confirming = true
-	entry.confirmClaimed = false
 	entry.mutex.Unlock()
 
-	// A second confirmSelect() must find nothing to do. Registering another listener there
-	// would count every confirmation twice.
+	// A second confirmSelect() must find nothing to do — and must find it without touching
+	// the driver channel, which this entry does not have. Registering another listener
+	// would count every confirmation twice and fan each one into a buffer nobody reads.
 	if err := entry.startConfirmMode(context.Background(), false); err != nil {
 		t.Fatalf("err = %v, want a no-op on a channel already in confirm mode", err)
 	}

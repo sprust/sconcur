@@ -75,13 +75,7 @@ func (f *AmqpFeature) handleUsedChannels(task *tasks.Task, raw msgpack.RawMessag
 		return
 	}
 
-	handle.mutex.Lock()
-
-	used := len(handle.channels)
-
-	handle.mutex.Unlock()
-
-	respond(task, payloads.UsedChannelsResult{UsedChannels: used}, startTime)
+	respond(task, payloads.UsedChannelsResult{UsedChannels: getChannels().usedChannels(handle)}, startTime)
 }
 
 // handleChannelOpen opens a channel on the handle's connection and applies its prefetch
@@ -98,15 +92,20 @@ func (f *AmqpFeature) handleChannelOpen(task *tasks.Task, raw msgpack.RawMessage
 	handle := getConnections().find(params.ConnectionId)
 
 	if handle == nil {
+		// Scoped, and scoped as the connection being gone — which is what it is: the
+		// handle was released, or the connection behind it died and took its handle with
+		// it. An unscoped error would reach PHP as a plain command failure, leaving the
+		// Connection object reporting itself open and every later call failing the same
+		// way instead of saying to reconnect.
 		task.AddResult(dto.NewErrorResult(
 			task.GetMessage(),
-			errFactory.ByText("unknown connection "+params.ConnectionId),
+			networkErrorPayload("No connection available."),
 		))
 
 		return
 	}
 
-	ctx, cancel := commandContext(task, params.TimeoutMs)
+	ctx, cancel := commandContext(task, params.TimeoutMs, defaultRpcTimeout)
 	defer cancel()
 
 	entry, err := getChannels().openBounded(ctx, handle, params)
@@ -154,7 +153,7 @@ func (f *AmqpFeature) handleQos(task *tasks.Task, raw msgpack.RawMessage) {
 		return
 	}
 
-	ctx, cancel := commandContext(task, params.TimeoutMs)
+	ctx, cancel := commandContext(task, params.TimeoutMs, defaultRpcTimeout)
 	defer cancel()
 
 	err := entry.do(ctx, func(channel *amqp091.Channel) error {

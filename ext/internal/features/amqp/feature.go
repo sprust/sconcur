@@ -40,6 +40,13 @@ const (
 	// scopeChannel: the broker closed the channel over this failure. PHP raises the
 	// caller's exception and marks its Channel closed.
 	scopeChannel = "chn"
+	// scopeChannelGone: the channel was already gone when this command reached it, and the
+	// broker said why. It is not scopeChannel, because that one means "the broker refused
+	// this method" and PHP raises the exception of the call — a confirm wait that finds the
+	// channel closed by an earlier publish's 404 is not a confirm timeout. Here the failure
+	// belongs to the channel, so PHP always raises ChannelException, carrying the reply code
+	// that actually closed it.
+	scopeChannelGone = "chg"
 	// scopeCommand: the command failed with the channel left usable.
 	scopeCommand = "err"
 
@@ -48,7 +55,7 @@ const (
 	connectionErrorCode = 500
 )
 
-// AmqpFeature runs the AMQP 0-9-1 methods of the PHP calque: it owns the pooled
+// AmqpFeature runs the AMQP 0-9-1 methods the PHP feature exposes: it owns the pooled
 // connections, the channel registry and the delivery streams the consumers feed.
 // Singleton.
 type AmqpFeature struct{}
@@ -178,16 +185,26 @@ func cancelDetached(params payloads.CancelParams) {
 		return
 	}
 
+	// Claimed before the method goes out, the way cancelConsumer() claims it: the registry
+	// entry is what says the tag has not been cancelled yet, and sending first leaves a
+	// window in which the consumer's own teardown — the AfterFunc behind an abandoned
+	// registration — sends a second basic.cancel for a tag the broker no longer has.
+	taskKey, exists := entry.forgetConsumer(params.ConsumerTag)
+
+	if !exists {
+		return
+	}
+
+	if taskKey != "" {
+		states.Get().DeleteState(taskKey)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), consumerCancelTimeout)
 	defer cancel()
 
 	_ = entry.do(ctx, func(channel *amqp091.Channel) error {
 		return channel.Cancel(params.ConsumerTag, params.NoWait)
 	})
-
-	if taskKey, exists := entry.forgetConsumer(params.ConsumerTag); exists && taskKey != "" {
-		states.Get().DeleteState(taskKey)
-	}
 }
 
 // Shutdown closes every channel and connection the feature holds. A process that never
@@ -216,13 +233,10 @@ func decodeParams[T any](task *tasks.Task, raw msgpack.RawMessage, params *T, wh
 
 // commandContext bounds one broker method with the deadline PHP sent, on top of the flow
 // context — so a stopped flow aborts a command in flight, and no command runs unbounded.
-func commandContext(task *tasks.Task, timeoutMs int) (context.Context, context.CancelFunc) {
-	return commandContextWithDefault(task, timeoutMs, defaultRpcTimeout)
-}
-
-// commandContextWithDefault is commandContext for the commands carrying a deadline of
-// their own kind — publishing is bounded by write_timeout, not by rpc_timeout.
-func commandContextWithDefault(
+//
+// The fallback is the deadline to use when PHP sent none, and it is not the same for every
+// command: publishing is bounded by write_timeout, everything else by rpc_timeout.
+func commandContext(
 	task *tasks.Task,
 	timeoutMs int,
 	fallback time.Duration,
@@ -278,8 +292,7 @@ func fail(task *tasks.Task, entry *channelEntry, what string, err error) {
 }
 
 // classify turns a driver error into the scope, the reply code and the message PHP will
-// raise. The message wording follows ext-amqp, so an application that reads it (or matches
-// on it) sees what it saw before.
+// raise.
 //
 // A channel that is simply gone is a channel-scope failure whatever code the driver put on
 // it: the connection behind it is usually alive, and telling an application to redial over
@@ -288,18 +301,19 @@ func classify(entry *channelEntry, what string, err error) (string, int, string)
 	// Checked before the broker errors below: the driver reports its own "not open" with
 	// an *amqp091.Error carrying a 5xx code, which would otherwise read as a connection
 	// the broker tore down.
-	// The wait loops report what the extension reports; wrapping it would change a message
-	// applications match on.
 	if errors.Is(err, errWaitTimeout) {
 		return scopeCommand, 0, errWaitTimeout.Error()
 	}
 
 	if errors.Is(err, amqp091.ErrClosed) {
-		// With a channel of our own that is known closed, this is that channel; with no
-		// channel in play (opening one) or one that still looks alive, the connection
-		// behind it is what went away.
-		if entry != nil && entry.isClosed() {
-			return scopeChannel, 0, "No channel available."
+		// Which of the two died is decided by asking the connection, not by asking whether
+		// this side has noticed the channel go. The driver marks a channel closed inside
+		// the connection's reader well before the collector here sees the NotifyClose, and
+		// in that window a channel-level 404 — a publish to an exchange that is not there,
+		// say — would be reported as a dead connection, marking every other channel of that
+		// connection unusable over one bad routing key.
+		if entry != nil && !entry.connectionClosed() {
+			return channelGoneFailure(entry)
 		}
 
 		return scopeNetwork, 0, errFactory.ByErr(what, err)
@@ -330,7 +344,32 @@ func classify(entry *channelEntry, what string, err error) (string, int, string)
 	return scopeCommand, 0, errFactory.ByErr(what, err)
 }
 
+// channelGoneFailure describes a channel that is no longer usable, naming what closed it
+// when the broker said so.
+//
+// The reason is recorded before the channel is dropped from the registry, so a command that
+// finds the channel closed finds the reason with it. What it buys is the cause: a 404 or a
+// 406 the broker answered a publish or a declare with is otherwise invisible, because
+// basic.publish carries no reply and the next command on that channel could only say the
+// channel was gone.
+func channelGoneFailure(entry *channelEntry) (string, int, string) {
+	reason := entry.takeCloseReason()
+
+	if reason == nil {
+		return scopeChannel, 0, "No channel available."
+	}
+
+	return scopeChannelGone, reason.Code, fmt.Sprintf(
+		"Server channel error: %d, message: %s",
+		reason.Code,
+		reason.Reason,
+	)
+}
+
 // isNetworkError tells a dead connection from a broker that refused a method.
+//
+// net.Error is the interface *net.OpError implements, so matching the interface alone
+// covers both.
 func isNetworkError(err error) bool {
 	if err == nil {
 		return false
@@ -338,13 +377,7 @@ func isNetworkError(err error) bool {
 
 	var networkError net.Error
 
-	if errors.As(err, &networkError) {
-		return true
-	}
-
-	var operationError *net.OpError
-
-	return errors.As(err, &operationError)
+	return errors.As(err, &networkError)
 }
 
 func errorPayload(scope string, code int, text string) string {

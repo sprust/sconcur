@@ -7,25 +7,24 @@ import (
 	amqp091 "github.com/rabbitmq/amqp091-go"
 )
 
+// The values are the ones payloads.decodeTableValue can actually produce — nil, bool,
+// string, []byte, int64, uint64, float64 — and nothing else: a narrower or signed-unsigned
+// variant never comes off the wire, so handling one would be code no message can reach.
 func TestMapToTableNormalizesTheNumbersMessagePackDecodesInto(t *testing.T) {
 	table := mapToTable(map[string]any{
-		"int":     7,
-		"int8":    int8(7),
+		"int64":   int64(7),
 		"uint64":  uint64(7),
-		"float32": float32(1.5),
 		"float64": 1.5,
 		"string":  "text",
 		"bool":    true,
 		"bytes":   []byte("raw"),
 	})
 
-	// The driver writes int64/float64/string/bool; an unsigned or narrow integer would be
-	// rejected as an unsupported field type.
+	// The driver writes int64/float64/string/bool; an unsigned integer would be rejected
+	// as an unsupported field type.
 	expected := amqp091.Table{
-		"int":     int64(7),
-		"int8":    int64(7),
+		"int64":   int64(7),
 		"uint64":  int64(7),
-		"float32": 1.5,
 		"float64": 1.5,
 		"string":  "text",
 		"bool":    true,
@@ -41,8 +40,8 @@ func TestMapToTableNormalizesTheNumbersMessagePackDecodesInto(t *testing.T) {
 
 func TestMapToTableConvertsNestedValues(t *testing.T) {
 	table := mapToTable(map[string]any{
-		"nested": map[string]any{"count": 3},
-		"list":   []any{1, "two"},
+		"nested": map[string]any{"count": int64(3)},
+		"list":   []any{int64(1), "two"},
 	})
 
 	nested, ok := table["nested"].(amqp091.Table)
@@ -109,9 +108,9 @@ func TestTableToMapGivesPhpValuesMessagePackCanCarry(t *testing.T) {
 
 func TestATaggedDecimalAndTimestampBecomeRealFieldValues(t *testing.T) {
 	table := mapToTable(map[string]any{
-		"decimal":   map[string]any{"\x00amqp": "D", "e": 2, "s": 314},
+		"decimal":   map[string]any{"\x00amqp": "D", "e": int64(2), "s": int64(314)},
 		"timestamp": map[string]any{"\x00amqp": "T", "v": int64(1_700_000_000)},
-		"plain":     map[string]any{"nested": 1},
+		"plain":     map[string]any{"nested": int64(1)},
 	})
 
 	decimal, ok := table["decimal"].(amqp091.Decimal)

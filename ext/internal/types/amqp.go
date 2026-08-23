@@ -2,7 +2,7 @@ package types
 
 // AmqpCommand selects a sub-operation of the amqp feature, carried in the payload
 // envelope's cm field under the single MethodAmqp — mirrors WsClientCommand, with one
-// case per AMQP 0-9-1 method the PHP calque exposes.
+// case per AMQP 0-9-1 method the PHP feature exposes.
 // PHP: SConcur\Features\Amqp\AmqpCommandEnum.
 type AmqpCommand string
 

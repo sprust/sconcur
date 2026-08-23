@@ -95,8 +95,8 @@ func configFromPayload(payload payloads.ServePayload) serverConfig {
 		shutdownTimeout:   msOrDefault(payload.ShutdownTimeoutMs, defaultShutdownTimeout),
 		maxRequestBody:    int64OrDefault(payload.MaxRequestBody, defaultMaxRequestBody),
 		// 0 stays 0 (disabled/unlimited); a negative value is treated the same.
-		handlerTimeout: time.Duration(max(payload.HandlerTimeoutMs, 0)) * time.Millisecond,
-		maxConcurrency: max(payload.MaxConcurrency, 0),
+		handlerTimeout:      time.Duration(max(payload.HandlerTimeoutMs, 0)) * time.Millisecond,
+		maxConcurrency:      max(payload.MaxConcurrency, 0),
 		telemetrySocket:     payload.TelemetrySocket,
 		serverName:          payload.ServerName,
 		telemetryIntervalMs: payload.TelemetryIntervalMs,

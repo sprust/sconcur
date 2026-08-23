@@ -103,6 +103,16 @@ func (s *consumeState) resultFromDelivery(delivery amqp091.Delivery, ok bool) *d
 			return dto.NewSuccessResult(s.message, "", helpers.CalcExecutionMs(s.startTime))
 		}
 
+		// A connection that died ends every consumer on it the same way the broker
+		// cancelling one does, and a worker told only that its consumer was cancelled
+		// would open another on a connection that is not there. Scoped as the connection
+		// failing, so PHP reports it as one.
+		if s.entry.connectionClosed() {
+			return dto.NewErrorResult(s.message, networkErrorPayload(
+				"Consumer "+s.consumerTag+" ended: no connection available.",
+			))
+		}
+
 		return dto.NewErrorResult(s.message, errorPayload(
 			scopeCommand,
 			0,
@@ -156,7 +166,7 @@ func (f *AmqpFeature) handleConsume(task *tasks.Task, raw msgpack.RawMessage) {
 		consumerTag = nextConsumerTag()
 	}
 
-	registerContext, cancelRegister := commandContext(task, params.TimeoutMs)
+	registerContext, cancelRegister := commandContext(task, params.TimeoutMs, defaultRpcTimeout)
 	defer cancelRegister()
 
 	deliveries, err := entry.consume(registerContext, consumerTag, params)
@@ -251,7 +261,7 @@ func (e *channelEntry) consume(
 		// cancelled here, or the queue quietly stops making progress at its prefetch.
 		func(consumeError error) {
 			if consumeError == nil {
-				e.sendCancel(consumerTag)
+				e.sendCancel(consumerTag, false)
 			}
 		},
 	)

@@ -30,7 +30,7 @@ func (f *AmqpFeature) handleGet(task *tasks.Task, raw msgpack.RawMessage) {
 		return
 	}
 
-	ctx, cancel := commandContext(task, params.TimeoutMs)
+	ctx, cancel := commandContext(task, params.TimeoutMs, defaultRpcTimeout)
 	defer cancel()
 
 	var delivery amqp091.Delivery
