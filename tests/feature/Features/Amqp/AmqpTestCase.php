@@ -119,7 +119,11 @@ abstract class AmqpTestCase extends BaseTestCase
      */
     protected function publishToQueue(Channel $channel, string $queueName, Message|string $message): void
     {
-        $channel->publish(message: $message, exchange: '', routingKey: $queueName);
+        $channel->publish(
+            message: $message,
+            exchange: '',
+            routingKey: $queueName,
+        );
     }
 
     /**

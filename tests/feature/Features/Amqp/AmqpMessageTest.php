@@ -23,9 +23,15 @@ class AmqpMessageTest extends AmqpTestCase
     {
         $channel  = $this->channel();
         $exchange = $this->declareExchange($channel);
-        $queue    = $this->declareQueue(channel: $channel, durable: true);
+        $queue    = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
-        $queue->bind(exchange: $exchange->name(), routingKey: 'key');
+        $queue->bind(
+            exchange: $exchange->name(),
+            routingKey: 'key',
+        );
 
         $exchange->publish(
             message: new Message(
@@ -94,9 +100,16 @@ class AmqpMessageTest extends AmqpTestCase
     public function testAMessageWithNoContentTypeCarriesNone(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, durable: true);
+        $queue   = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
-        $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: 'plain');
+        $this->publishToQueue(
+            channel: $channel,
+            queueName: $queue->name(),
+            message: 'plain',
+        );
 
         $delivery = $this->waitForMessage($queue);
 
@@ -114,8 +127,14 @@ class AmqpMessageTest extends AmqpTestCase
     public function testADeliveryCanBePublishedAgainAsItArrived(): void
     {
         $channel = $this->channel();
-        $source  = $this->declareQueue(channel: $channel, durable: true);
-        $target  = $this->declareQueue(channel: $channel, durable: true);
+        $source  = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
+        $target = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $source->publish(new Message(
             body: 'retry me',
@@ -148,7 +167,10 @@ class AmqpMessageTest extends AmqpTestCase
     public function testHeaderValueObjectsKeepTheirAmqpFieldKind(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, durable: true);
+        $queue   = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $queue->publish(new Message(
             body: 'values',
@@ -181,7 +203,10 @@ class AmqpMessageTest extends AmqpTestCase
     public function testANestedListKeepsItsValues(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, durable: true);
+        $queue   = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $queue->publish(new Message(
             body: 'nested',
@@ -236,9 +261,16 @@ class AmqpMessageTest extends AmqpTestCase
     public function testADeliveryWithNoTimestampReportsNone(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, durable: true);
+        $queue   = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
-        $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: 'no timestamp');
+        $this->publishToQueue(
+            channel: $channel,
+            queueName: $queue->name(),
+            message: 'no timestamp',
+        );
 
         $delivery = $this->waitForMessage($queue);
 
@@ -253,7 +285,10 @@ class AmqpMessageTest extends AmqpTestCase
     public function testANonStringHeaderKeyIsDroppedWithAWarning(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, durable: true);
+        $queue   = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $warnings = [];
 
@@ -296,9 +331,16 @@ class AmqpMessageTest extends AmqpTestCase
     public function testAnAcknowledgedMessageIsGoneAndAnUnacknowledgedOneComesBack(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, durable: true);
+        $queue   = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
-        $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: 'first');
+        $this->publishToQueue(
+            channel: $channel,
+            queueName: $queue->name(),
+            message: 'first',
+        );
 
         $delivery = $this->waitForMessage($queue);
 
@@ -308,7 +350,11 @@ class AmqpMessageTest extends AmqpTestCase
 
         $this->assertQueueStaysEmpty($queue);
 
-        $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: 'second');
+        $this->publishToQueue(
+            channel: $channel,
+            queueName: $queue->name(),
+            message: 'second',
+        );
 
         $delivery = $this->waitForMessage($queue);
 
@@ -328,9 +374,16 @@ class AmqpMessageTest extends AmqpTestCase
     public function testARefusedMessageWithoutRequeueIsDropped(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, durable: true);
+        $queue   = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
-        $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: 'rejected');
+        $this->publishToQueue(
+            channel: $channel,
+            queueName: $queue->name(),
+            message: 'rejected',
+        );
 
         $delivery = $this->waitForMessage($queue);
 
@@ -349,9 +402,16 @@ class AmqpMessageTest extends AmqpTestCase
     public function testSettlingADeliveryTwiceIsRefusedBeforeItReachesTheBroker(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, durable: true);
+        $queue   = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
-        $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: 'once');
+        $this->publishToQueue(
+            channel: $channel,
+            queueName: $queue->name(),
+            message: 'once',
+        );
 
         $delivery = $this->waitForMessage($queue);
 
@@ -378,9 +438,16 @@ class AmqpMessageTest extends AmqpTestCase
     public function testAutoAckLeavesNothingToAcknowledge(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, durable: true);
+        $queue   = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
-        $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: 'auto');
+        $this->publishToQueue(
+            channel: $channel,
+            queueName: $queue->name(),
+            message: 'auto',
+        );
 
         $delivery = null;
         $deadline = microtime(true) + 2;
@@ -412,9 +479,16 @@ class AmqpMessageTest extends AmqpTestCase
     public function testAnAutoAcknowledgedDeliveryArrivesSettled(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, durable: true);
+        $queue   = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
-        $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: 'auto');
+        $this->publishToQueue(
+            channel: $channel,
+            queueName: $queue->name(),
+            message: 'auto',
+        );
 
         $delivery = null;
         $deadline = microtime(true) + 2;
@@ -447,10 +521,17 @@ class AmqpMessageTest extends AmqpTestCase
     public function testAcknowledgingSeveralMessagesAtOnce(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, durable: true);
+        $queue   = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         foreach (['one', 'two', 'three'] as $body) {
-            $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: $body);
+            $this->publishToQueue(
+                channel: $channel,
+                queueName: $queue->name(),
+                message: $body,
+            );
         }
 
         $last = null;

@@ -19,12 +19,19 @@ class AmqpConsumeTest extends AmqpTestCase
     public function testTheLoopReceivesTheDeliveriesUntilItBreaks(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, durable: true);
+        $queue   = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $queueName = $queue->name();
 
         foreach (['one', 'two', 'three'] as $body) {
-            $this->publishToQueue(channel: $channel, queueName: $queueName, message: $body);
+            $this->publishToQueue(
+                channel: $channel,
+                queueName: $queueName,
+                message: $body,
+            );
         }
 
         $received = [];
@@ -59,9 +66,16 @@ class AmqpConsumeTest extends AmqpTestCase
     public function testLeavingTheLoopCancelsTheConsumer(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, durable: true);
+        $queue   = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
-        $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: 'one');
+        $this->publishToQueue(
+            channel: $channel,
+            queueName: $queue->name(),
+            message: 'one',
+        );
 
         foreach ($queue->consume() as $delivery) {
             $delivery->ack();
@@ -94,12 +108,19 @@ class AmqpConsumeTest extends AmqpTestCase
     public function testASecondConsumeOnTheSameChannelGetsItsMessage(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, durable: true);
+        $queue   = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $received = [];
 
         for ($round = 0; $round < 5; ++$round) {
-            $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: "round-$round");
+            $this->publishToQueue(
+                channel: $channel,
+                queueName: $queue->name(),
+                message: "round-$round",
+            );
 
             foreach ($queue->consume() as $delivery) {
                 $received[] = $delivery->body;
@@ -116,9 +137,16 @@ class AmqpConsumeTest extends AmqpTestCase
     public function testADeliveryKnowsWhichConsumerBroughtIt(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, durable: true);
+        $queue   = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
-        $this->publishToQueue(channel: $channel, queueName: $queue->name(), message: 'one');
+        $this->publishToQueue(
+            channel: $channel,
+            queueName: $queue->name(),
+            message: 'one',
+        );
 
         foreach ($queue->consume(consumerTag: 'tag-of-mine') as $delivery) {
             self::assertSame('tag-of-mine', $delivery->consumerTag);
@@ -136,7 +164,10 @@ class AmqpConsumeTest extends AmqpTestCase
         $queues = [];
 
         for ($index = 0; $index < 3; ++$index) {
-            $queues[] = $this->declareQueue(channel: $channel, durable: true)->name();
+            $queues[] = $this->declareQueue(
+                channel: $channel,
+                durable: true,
+            )->name();
         }
 
         $connection = $this->connection();
@@ -174,7 +205,11 @@ class AmqpConsumeTest extends AmqpTestCase
             $channel = $connection->channel();
 
             foreach ($queues as $queueName) {
-                $this->publishToQueue(channel: $channel, queueName: $queueName, message: "for $queueName");
+                $this->publishToQueue(
+                    channel: $channel,
+                    queueName: $queueName,
+                    message: "for $queueName",
+                );
             }
 
             $channel->close();
@@ -222,7 +257,10 @@ class AmqpConsumeTest extends AmqpTestCase
     {
         $connection = $this->connection();
         $channel    = $this->channel();
-        $queue      = $this->declareQueue(channel: $channel, durable: true);
+        $queue      = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $queueName = $queue->name();
 
@@ -274,7 +312,10 @@ class AmqpConsumeTest extends AmqpTestCase
     public function testTheReadTimeoutFailsTheConsumer(): void
     {
         $channel = $this->channel();
-        $queue   = $this->declareQueue(channel: $channel, durable: true);
+        $queue   = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $idle = new Connection(TestAmqpResolver::getOptions(readTimeoutSeconds: 0.3));
 

@@ -244,7 +244,14 @@ class Aggregator
             $totalAccepted += $connections->totalAccepted;
         }
 
-        return $reported ? new Connections(active: $active, totalAccepted: $totalAccepted) : null;
+        if (!$reported) {
+            return null;
+        }
+
+        return new Connections(
+            active: $active,
+            totalAccepted: $totalAccepted,
+        );
     }
 
     /**

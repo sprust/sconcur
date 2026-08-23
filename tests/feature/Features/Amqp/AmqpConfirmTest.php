@@ -23,12 +23,26 @@ class AmqpConfirmTest extends AmqpTestCase
     {
         $channel  = $this->channel();
         $exchange = $this->declareExchange($channel);
-        $queue    = $this->declareQueue(channel: $channel, durable: true);
+        $queue    = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
-        $queue->bind(exchange: $exchange->name(), routingKey: 'key');
+        $queue->bind(
+            exchange: $exchange->name(),
+            routingKey: 'key',
+        );
 
-        $exchange->publishConfirmed(message: 'first', routingKey: 'key', timeoutSeconds: 2.0);
-        $exchange->publishConfirmed(message: 'second', routingKey: 'key', timeoutSeconds: 2.0);
+        $exchange->publishConfirmed(
+            message: 'first',
+            routingKey: 'key',
+            timeoutSeconds: 2.0,
+        );
+        $exchange->publishConfirmed(
+            message: 'second',
+            routingKey: 'key',
+            timeoutSeconds: 2.0,
+        );
 
         // The confirm is the broker's promise that it has the message, so the queue holds
         // both by the time the second publish returns — no polling needed.
@@ -46,7 +60,10 @@ class AmqpConfirmTest extends AmqpTestCase
     {
         $connection = $this->connection();
         $channel    = $this->channel();
-        $queue      = $this->declareQueue(channel: $channel, durable: true);
+        $queue      = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
 
         $queueName = $queue->name();
 
@@ -145,7 +162,12 @@ class AmqpConfirmTest extends AmqpTestCase
         $channel  = $this->channel();
         $exchange = $this->declareExchange($channel);
 
-        $exchange->publishConfirmed(message: 'nowhere', routingKey: 'unbound', timeoutSeconds: 2.0, mandatory: false);
+        $exchange->publishConfirmed(
+            message: 'nowhere',
+            routingKey: 'unbound',
+            timeoutSeconds: 2.0,
+            mandatory: false,
+        );
 
         self::assertTrue($channel->isOpen());
     }

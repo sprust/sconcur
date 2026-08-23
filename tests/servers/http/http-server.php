@@ -119,7 +119,10 @@ if (!in_array($ladderMode, ['', 'l1', 'l2', 'l2f', 'l2h'], true)) {
 }
 
 if ($ladderMode !== '') {
-    runLadderServer(mode: $ladderMode, argv: $_SERVER['argv']);
+    runLadderServer(
+        mode: $ladderMode,
+        argv: $_SERVER['argv'],
+    );
 
     exit(0);
 }
@@ -1374,7 +1377,10 @@ function runLadderServer(string $mode, array $argv): void
                     exit(1);
                 }
 
-                $extension->push(flowKey: '', payload: $pendingRespond);
+                $extension->push(
+                    flowKey: '',
+                    payload: $pendingRespond,
+                );
 
                 $fiber->resume();
             } elseif ($mode === 'l2') {
@@ -1401,7 +1407,10 @@ function runLadderServer(string $mode, array $argv): void
                     exit(1);
                 }
 
-                $extension->push(flowKey: '', payload: $pendingRespond);
+                $extension->push(
+                    flowKey: '',
+                    payload: $pendingRespond,
+                );
 
                 $fiber->resume();
             } else {

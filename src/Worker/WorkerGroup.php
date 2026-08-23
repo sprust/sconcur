@@ -161,7 +161,11 @@ class WorkerGroup
             );
 
             if (!$process->isRunning()) {
-                $this->handleExit(index: $index, process: $process, stopping: $stopping);
+                $this->handleExit(
+                    index: $index,
+                    process: $process,
+                    stopping: $stopping,
+                );
             }
         }
     }
@@ -376,7 +380,10 @@ class WorkerGroup
                 env: $this->buildEnv($index),
             );
         } catch (WorkerSpawnException $exception) {
-            $backoffMs = $this->nextBackoffMs(index: $index, uptimeSeconds: 0.0);
+            $backoffMs = $this->nextBackoffMs(
+                index: $index,
+                uptimeSeconds: 0.0,
+            );
 
             $this->slots[$index]     = null;
             $this->respawnAt[$index] = microtime(true) + $backoffMs / 1000;
@@ -467,7 +474,10 @@ class WorkerGroup
             return;
         }
 
-        $backoffMs = $this->nextBackoffMs(index: $index, uptimeSeconds: $uptimeSeconds);
+        $backoffMs = $this->nextBackoffMs(
+            index: $index,
+            uptimeSeconds: $uptimeSeconds,
+        );
 
         $this->respawnAt[$index] = microtime(true) + $backoffMs / 1000;
 

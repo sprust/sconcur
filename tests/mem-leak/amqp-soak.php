@@ -73,13 +73,19 @@ $channel = $connection->channel();
 
 $exchange = $channel->exchange($exchangeName);
 
-$exchange->declare(type: ExchangeTypeEnum::Direct, durable: true);
+$exchange->declare(
+    type: ExchangeTypeEnum::Direct,
+    durable: true,
+);
 
 $queue = $channel->queue($queueName);
 
 $queue->declare(durable: true);
 $queue->purge();
-$queue->bind(exchange: $exchangeName, routingKey: 'soak');
+$queue->bind(
+    exchange: $exchangeName,
+    routingKey: 'soak',
+);
 
 /**
  * One cycle of each scenario. Whatever it opens, it closes.
@@ -87,7 +93,10 @@ $queue->bind(exchange: $exchangeName, routingKey: 'soak');
 $scenarios = [
     // Publishing and reading back on a channel that lives for the whole run.
     'publish' => static function () use ($exchange, $queue): void {
-        $exchange->publish(message: 'soak', routingKey: 'soak');
+        $exchange->publish(
+            message: 'soak',
+            routingKey: 'soak',
+        );
 
         if ($queue->get(autoAck: true) === null) {
             usleep(1000);
@@ -111,7 +120,10 @@ $scenarios = [
 
     // A consumer per cycle, opened, fed one message and cancelled.
     'consume' => static function () use ($connection, $exchange, $queueName): void {
-        $exchange->publish(message: 'soak', routingKey: 'soak');
+        $exchange->publish(
+            message: 'soak',
+            routingKey: 'soak',
+        );
 
         $channel = $connection->channel();
 
@@ -165,12 +177,20 @@ $scenarios = [
 
         $exchange = $channel->exchange($exchangeName);
 
-        $exchange->publishConfirmed(message: 'soak', routingKey: 'soak', timeoutSeconds: 2.0);
+        $exchange->publishConfirmed(
+            message: 'soak',
+            routingKey: 'soak',
+            timeoutSeconds: 2.0,
+        );
 
         try {
             // Routes nowhere, so the broker sends it back and the publish fails with it —
             // the return and the confirm are drained by the same wait.
-            $exchange->publishConfirmed(message: 'returned', routingKey: 'nowhere', timeoutSeconds: 2.0);
+            $exchange->publishConfirmed(
+            message: 'returned',
+            routingKey: 'nowhere',
+            timeoutSeconds: 2.0,
+        );
         } catch (UnroutableMessageException) {
             // The point of the cycle.
         }
@@ -192,7 +212,10 @@ $scenarios = [
             $taken = 0;
 
             for ($round = 0; $round < 10; ++$round) {
-                $exchange->publish(message: 'soak', routingKey: 'soak');
+                $exchange->publish(
+                    message: 'soak',
+                    routingKey: 'soak',
+                );
 
                 foreach ($queue->consume() as $delivery) {
                     ++$taken;

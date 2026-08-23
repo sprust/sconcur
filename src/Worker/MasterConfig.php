@@ -330,7 +330,11 @@ readonly class MasterConfig
             }
 
             /** @var array<string, mixed> $entry */
-            $group = WorkerGroupConfig::fromArray(data: $entry, defaults: $defaults, index: $index);
+            $group = WorkerGroupConfig::fromArray(
+                data: $entry,
+                defaults: $defaults,
+                index: $index,
+            );
 
             if (isset($names[$group->name])) {
                 throw new InvalidConfigException(

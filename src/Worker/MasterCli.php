@@ -69,8 +69,15 @@ class MasterCli
 
         $arguments = array_slice($argv, 2);
 
-        $configPath = $this->flag(args: $arguments, flag: self::CONFIG_PATH_FLAG);
-        $group      = $this->flag(args: $arguments, flag: self::GROUP_FLAG);
+        $configPath = $this->flag(
+            args: $arguments,
+            flag: self::CONFIG_PATH_FLAG,
+        );
+
+        $group = $this->flag(
+            args: $arguments,
+            flag: self::GROUP_FLAG,
+        );
 
         $config = $this->loadConfig($configPath);
 
@@ -78,18 +85,32 @@ class MasterCli
             return $config;
         }
 
-        if ($group !== '' && !$this->hasGroup($config, $group)) {
-            return $this->fail(
-                sprintf('unknown group "%s" in %s', $group, $configPath),
-                self::EXIT_USAGE,
+        if ($group !== '') {
+            $known = $this->hasGroup(
+                config: $config,
+                name: $group,
             );
+
+            if (!$known) {
+                return $this->fail(
+                    message: sprintf('unknown group "%s" in %s', $group, $configPath),
+                    code: self::EXIT_USAGE,
+                );
+            }
         }
 
         return match ($command) {
             'start'  => $this->start($config),
-            'status' => $this->status(config: $config, group: $group),
+            'status' => $this->status(
+                config: $config,
+                group: $group,
+            ),
             'stop'   => $this->stop($config),
-            'reload' => $this->reload($config, $configPath, $group),
+            'reload' => $this->reload(
+                config: $config,
+                configPath: $configPath,
+                group: $group,
+            ),
         };
     }
 
@@ -98,7 +119,10 @@ class MasterCli
         try {
             return $config->toWorkerMaster()->run();
         } catch (Throwable $exception) {
-            return $this->fail($exception->getMessage(), self::EXIT_ERROR);
+            return $this->fail(
+                message: $exception->getMessage(),
+                code: self::EXIT_ERROR,
+            );
         }
     }
 
@@ -176,7 +200,10 @@ class MasterCli
             usleep(100_000);
         }
 
-        return $this->fail(message: 'stop timeout; master still running', code: self::EXIT_ERROR);
+        return $this->fail(
+            message: 'stop timeout; master still running',
+            code: self::EXIT_ERROR,
+        );
     }
 
     /**
@@ -201,7 +228,10 @@ class MasterCli
         $resolvedPath = realpath($configPath);
 
         if ($resolvedPath === false) {
-            return $this->fail(message: 'cannot resolve the config path: ' . $configPath, code: self::EXIT_ERROR);
+            return $this->fail(
+                message: 'cannot resolve the config path: ' . $configPath,
+                code: self::EXIT_ERROR,
+            );
         }
 
         $reloadFile = $this->reloadFile($config);
@@ -210,12 +240,20 @@ class MasterCli
             return $this->fail('cannot write reload trigger: ' . $reloadFile->path(), self::EXIT_ERROR);
         }
 
-        $deadline = microtime(true) + $this->reloadTimeoutMs($config, $group) / 1000;
+        $timeoutMs = $this->reloadTimeoutMs(
+            config: $config,
+            group: $group,
+        );
+
+        $deadline = microtime(true) + $timeoutMs / 1000;
 
         // The master deletes the trigger once the rolling restart finishes; poll for it.
         while (microtime(true) < $deadline) {
             if (!$this->masterRunning($lockPath)) {
-                return $this->fail(message: 'master exited during reload', code: self::EXIT_ERROR);
+                return $this->fail(
+                    message: 'master exited during reload',
+                    code: self::EXIT_ERROR,
+                );
             }
 
             if (!$reloadFile->requested()) {
@@ -227,7 +265,10 @@ class MasterCli
             usleep(100_000);
         }
 
-        return $this->fail(message: 'reload timeout; master still rolling workers', code: self::EXIT_ERROR);
+        return $this->fail(
+            message: 'reload timeout; master still rolling workers',
+            code: self::EXIT_ERROR,
+        );
     }
 
     /**
@@ -264,13 +305,19 @@ class MasterCli
     protected function loadConfig(string $configPath): MasterConfig|int
     {
         if ($configPath === '') {
-            return $this->fail(message: '--configPath=<file> is required', code: self::EXIT_USAGE);
+            return $this->fail(
+                message: '--configPath=<file> is required',
+                code: self::EXIT_USAGE,
+            );
         }
 
         try {
             return MasterConfig::fromFile($configPath);
         } catch (InvalidConfigException $exception) {
-            return $this->fail(message: $exception->getMessage(), code: self::EXIT_USAGE);
+            return $this->fail(
+                message: $exception->getMessage(),
+                code: self::EXIT_USAGE,
+            );
         }
     }
 

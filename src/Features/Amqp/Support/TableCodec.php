@@ -182,7 +182,10 @@ readonly class TableCodec
         // An application's own AmqpValue names what it stands for through toAmqpValue(),
         // which may in turn hand over one of the two above.
         if ($value instanceof AmqpValue) {
-            return static::encodeValue(value: $value->toAmqpValue(), depth: $depth + 1);
+            return static::encodeValue(
+                value: $value->toAmqpValue(),
+                depth: $depth + 1,
+            );
         }
 
         if (!is_array($value)) {
