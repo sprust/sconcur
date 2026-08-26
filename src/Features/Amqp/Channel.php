@@ -10,7 +10,6 @@ use SConcur\Exceptions\Amqp\AmqpException;
 use SConcur\Exceptions\Amqp\ChannelException;
 use SConcur\Exceptions\Amqp\ConnectionException;
 use SConcur\Exceptions\Amqp\ExchangeException;
-use SConcur\Exceptions\Amqp\InvalidPrefetchException;
 use SConcur\Exceptions\Amqp\InvalidRetryException;
 use SConcur\Exceptions\Amqp\PublishConfirmTimeoutException;
 use SConcur\Exceptions\Amqp\PublishNackedException;
@@ -43,10 +42,6 @@ class Channel extends AmqpResource
     /** How many deliveries the broker may have in flight per consumer unless told otherwise. */
     public const int DEFAULT_PREFETCH_COUNT = 3;
 
-    protected const int MAX_PREFETCH_COUNT = 65535;
-
-    protected const int MAX_PREFETCH_SIZE_BYTES = 4294967295;
-
     protected Connection $connection;
 
     protected int $channelNumber = 0;
@@ -55,44 +50,24 @@ class Channel extends AmqpResource
     protected bool $confirming = false;
 
     /**
-     * Prefer `Connection::channel()`, which opens the connection first when it is not open.
+     * A handle over a channel that is already open on the Go side. Nothing is opened here:
+     * `Connection::channel()` opens one and hands the id over, and a supervised consumer
+     * adopts the channels its delivery stream opened, so a handler can settle and republish
+     * on the channel its message arrived on.
+     *
+     * @param string $channelId     the Go-side handle
+     * @param int    $channelNumber the channel's number on its connection
      */
-    public function __construct(
-        Connection $connection,
-        int $prefetchCount = self::DEFAULT_PREFETCH_COUNT,
-        int $prefetchSizeBytes = 0,
-    ) {
-        $this->connection = $connection;
-
-        if (!$connection->isOpen()) {
-            throw new ConnectionException(message: 'Could not open a channel. No connection available.');
-        }
-
-        static::assertPrefetch(
-            count: $prefetchCount,
-            sizeBytes: $prefetchSizeBytes,
-        );
-
-        $result = $this->runCommand(
-            command: AmqpCommandEnum::ChannelOpen,
-            data: [
-                'cid' => $connection->internalId,
-                'sz'  => $prefetchSizeBytes,
-                'ct'  => $prefetchCount,
-                'gsz' => 0,
-                'gct' => 0,
-                'to'  => $connection->rpcTimeoutMs(),
-            ],
-            exceptionClass: ConnectionException::class,
-        );
-
-        $this->internalId    = isset($result['chid']) ? (string) $result['chid'] : '';
-        $this->channelNumber = isset($result['no']) ? (int) $result['no'] : 0;
-        $this->internalOpen  = true;
+    public function __construct(Connection $connection, string $channelId, int $channelNumber = 0)
+    {
+        $this->connection    = $connection;
+        $this->internalId    = $channelId;
+        $this->channelNumber = $channelNumber;
+        $this->internalOpen  = $channelId !== '';
 
         // Releasing the connection handle is what closes this channel on the Go side, so
         // the connection needs a way back to mark it closed here.
-        $connection->internalChannels[$this->internalId] = WeakReference::create($this);
+        $connection->internalChannels[$channelId] = WeakReference::create($this);
     }
 
     public function connection(): Connection
@@ -634,22 +609,6 @@ class Channel extends AmqpResource
             );
         } catch (AmqpException) {
             // Already gone: nothing left to cancel, and a teardown is no place to fail.
-        }
-    }
-
-    protected static function assertPrefetch(int $count, int $sizeBytes): void
-    {
-        if ($count < 0 || $count > self::MAX_PREFETCH_COUNT) {
-            throw new InvalidPrefetchException(
-                message: "Parameter 'prefetchCount' must be between 0 and " . self::MAX_PREFETCH_COUNT . '.',
-            );
-        }
-
-        if ($sizeBytes < 0 || $sizeBytes > self::MAX_PREFETCH_SIZE_BYTES) {
-            throw new InvalidPrefetchException(
-                message: "Parameter 'prefetchSizeBytes' must be between 0 and "
-                    . self::MAX_PREFETCH_SIZE_BYTES . '.',
-            );
         }
     }
 

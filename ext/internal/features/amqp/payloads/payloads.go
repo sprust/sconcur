@@ -291,6 +291,38 @@ type ConsumeParams struct {
 	TimeoutMs int `json:"to" msgpack:"to"`
 }
 
+// ConsumeServeQueue is one queue a supervised consumer pulls: how many consumers it gets
+// (each on a channel of its own, which is what gives a hot queue more capacity than a quiet
+// one) and the prefetch each of them carries.
+// PHP: built from SConcur\Features\Amqp\Consumer\QueueSpec.
+type ConsumeServeQueue struct {
+	Name string `json:"na" msgpack:"na"`
+	// Consumers is the queue's weight; below 1 it is read as 1.
+	Consumers int `json:"cn" msgpack:"cn"`
+	// PrefetchCount is this queue's own prefetch; 0 takes the worker-wide one.
+	PrefetchCount int `json:"ct" msgpack:"ct"`
+}
+
+// ConsumeServeParams is the `p` content of a ConsumeServe command: every queue one
+// supervised worker pulls, opened on channels this feature owns.
+//
+// There is no read timeout here, unlike ConsumeParams: a supervised worker has no idle
+// deadline to enforce — a queue that stays quiet is not a failure — and the stream ends
+// when the flow does.
+// PHP: built by the AmqpCommandEnum case that names this struct.
+type ConsumeServeParams struct {
+	ConnectionId string              `json:"cid" msgpack:"cid"`
+	Queues       []ConsumeServeQueue `json:"qs" msgpack:"qs"`
+	// PrefetchCount is what a queue naming none of its own gets.
+	PrefetchCount int  `json:"ct" msgpack:"ct"`
+	AutoAck       bool `json:"aa" msgpack:"aa"`
+	// ReopenDelayMs is how long a consumer the broker took away waits before it is opened
+	// again; 0 leaves the default of the feature in place.
+	ReopenDelayMs int `json:"rd" msgpack:"rd"`
+	// TimeoutMs bounds opening one channel and its consumer.
+	TimeoutMs int `json:"to" msgpack:"to"`
+}
+
 // ConsumerMeta is the first result of a Consume: the tag the broker assigned, which PHP
 // keys the consumer registry by.
 // PHP: decoded in SConcur\Features\Amqp\Channel::consume.

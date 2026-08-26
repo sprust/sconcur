@@ -88,7 +88,7 @@ Not every call goes to the broker:
 | --- | --- | --- |
 | `ConnectionOptions` | host, credentials, timeouts, TLS material — settled once, `readonly` | nothing, it is a value object |
 | `Connection` | the connection handle | `connect()`, `close()`, `channel()`, `usedChannels()` |
-| `Channel` | the channel handle | the constructor (opens the channel), `prefetch()`, `publish()`, `publishConfirmed()`, `enableConfirms()`, `waitForConfirms()`, `ack()`/`nack()`/`reject()`, `get()`, `consume()`, `close()` |
+| `Channel` | the channel handle; `Connection::channel()` opens the channel and hands it over | `prefetch()`, `publish()`, `publishConfirmed()`, `enableConfirms()`, `waitForConfirms()`, `ack()`/`nack()`/`reject()`, `get()`, `consume()`, `close()` |
 | `Queue` | a name and the channel to run on — a handle, built for free | `declare()`, `declarePassive()`, `bind()`, `unbind()`, `delete()`, `purge()`, `publish()`, `publishConfirmed()`, `get()`, `consume()` |
 | `Exchange` | the same, for an exchange | `declare()`, `declarePassive()`, `bind()`, `unbind()`, `delete()`, `publish()`, `publishConfirmed()` |
 | `Message` | the body and properties of a message being published | nothing, it is a value object |
@@ -536,7 +536,7 @@ the worker is not holding it at all: the prefetch slot is free and the coroutine
 take the next message as usual. That is the difference from `retryDelaysSeconds`,
 where the coroutine waits with its delivery still unacknowledged — the other
 coroutines keep running, but that one takes no new message until its handler
-returns, and a graceful drain waits on it for up to `drainTimeoutMs`.
+returns, and a stop waits for that handler to finish.
 
 `RetryTopology` is the one thing in this library that declares anything, and it
 declares only when it is called. The queue itself is left alone: it is the
@@ -676,7 +676,7 @@ coroutine will never take another message. `handlerTimeoutMs` puts a deadline on
 A job that runs past it is unwound where it stands — the handler's `finally` blocks
 run — and the delivery is refused exactly like one whose handler threw, so
 `requeueOnFailure` decides where it goes and `onError` is told, with a
-`CoroutineTimeoutException`. The coroutine survives and takes the next message; one
+`CoroutineTimeoutException`. The worker carries on and takes the next message; one
 slow job costs one message and not a consumer.
 
 **Where the message goes is worth being sure about**, because the default is the
@@ -798,12 +798,12 @@ only mechanism here that catches a message which kills the process, and it needs
 support from this library — those are ordinary queue arguments.
 
 `QueueConsumer`'s `maxMemoryBytes` is worth having but answers a different
-question. It is checked by the supervisor coroutine every `pollIntervalMs` against
+question. It is checked on every turn of the serve loop against
 `memory_get_usage()`, so it catches a worker that grew over a thousand messages and
 sends it into a clean drain. It does not catch a single job that allocates a
-gigabyte without pausing: nothing else runs while that loop runs, so the supervisor
-never gets to look. Set it well under `memory_limit` and treat it as a guard
-against creep, not against a spike.
+gigabyte without pausing: nothing else runs while that loop runs, so the loop never
+gets to look. Set it well under `memory_limit` and treat it as a guard against
+creep, not against a spike.
 
 ### What the supervised consumer does
 
@@ -940,8 +940,20 @@ a queue of ten.
 
 `Features\Amqp\Consumer\QueueConsumer` is the worker shape of the section above:
 several queues pulled at once by one process, each queue weighted by how many
-coroutines pull it, and a stop that drains rather than cuts. It is what a
+consumers pull it, and a stop that drains rather than cuts. It is what a
 [worker master](worker-master.md) group runs.
+
+It is a server in everything but the socket. The Go side opens the consumers and
+publishes every delivery of all of them as one stream; the same loop that runs the
+HTTP, socket and WebSocket servers reads that stream and hands each message to a
+coroutine of its own. Nothing is polled and nothing is pulled per message — the
+next delivery is published as soon as the previous one is taken, so a worker pays
+no boundary crossing per message beyond the delivery itself.
+
+The channels behind those consumers belong to the Go side, which is what makes the
+stop simple: cancelling the consumers leaves the channels open, so the
+acknowledgements of the handlers still running land, and the flow ending closes
+them.
 
 ```php
 // consumer.php
@@ -991,16 +1003,19 @@ The group that runs it:
 | Flag | Default | Purpose |
 | --- | --- | --- |
 | `queues` | — (required) | The queues and their weights. A list of objects: `name`, `coroutineCount` (default 1), optional `prefetchCount`. |
-| `prefetchCount` | `1` | Unacknowledged messages one coroutine may hold, unless its queue names its own. |
-| `handlerTimeoutMs` | `0` (no limit) | How long one message may spend in the handler. A job that runs past it is cut and refused like any other failure; the coroutine takes the next message — see [bounding one job](#bounding-one-job). |
+| `prefetchCount` | `1` | Unacknowledged messages one consumer may hold, unless its queue names its own. It is also what bounds how many handlers run at once: a message stays unacknowledged for as long as its handler runs. |
+| `handlerTimeoutMs` | `0` (no limit) | How long one message may spend in the handler. A job that runs past it is cut and refused like any other failure; the worker takes the next message — see [bounding one job](#bounding-one-job). |
 | `requeueOnFailure` | `false` | What happens to a message whose handler threw: dead-lettered or dropped by default, put back when true. A policy with attempts and a backoff belongs to the handler — see [retries and delays](#retries-and-delays). |
-| `maxMessages` | `0` (no limit) | Drain and exit after this many messages. A budget, not a hard count: the coroutines already inside a handler finish their message too, so a pool of N may end up to N-1 over. |
+| `maxMessages` | `0` (no limit) | Drain and exit after this many messages. |
 | `maxRuntimeSeconds` | `0` (no limit) | Drain and exit after this long. |
 | `maxMemoryBytes` | `0` (no limit) | Drain and exit once the PHP heap passes this. A guard against creep, not against a spike — see [when the worker itself dies](#when-the-worker-itself-dies). |
-| `drainTimeoutMs` | `5000` | How long a stop waits for the handlers that are mid-message. |
-| `pollIntervalMs` | `200` | How often the supervisor coroutine wakes to look at the stop flags and the limits. |
-| `preemptionQuantumMs` | `5` (`0` off) | Automatic-preemption quantum while consuming. It is what lets `handlerTimeoutMs` and a stop reach a handler busy with computation — see [coroutine switching](coroutine-switching.md). |
+| `preemptionQuantumMs` | `5` (`0` off) | Automatic-preemption quantum while consuming. It is what lets `handlerTimeoutMs` reach a handler busy with computation, and keeps such a handler from holding off the loop — see [coroutine switching](coroutine-switching.md). |
 | `masterPid` | none | Injected by the master; the worker drains as soon as it is orphaned. |
+
+`coroutineCount` is a queue's weight: how many consumers it gets, each on a channel
+of its own. The name is what the flag has always been called and the master's
+configs carry it; what it counts is consumers, and a handler still runs in a
+coroutine of its own per message.
 
 `queues` is a list of objects rather than a delimited string because AMQP allows
 almost any UTF-8 in a queue name, colons included — names like `tenant:1:orders`
@@ -1008,8 +1023,8 @@ are ordinary, and any separator inside a name would make the parse ambiguous. Th
 master JSON-encodes it into the flag; there is no shell on the way.
 
 The list is validated before the first `basic.consume`: a missing or duplicated
-name, a weight below one, and the channel budget — a coroutine is a channel, and
-one connection carries 255 of them, so a worker asking for more is told at startup
+name, a weight below one, and the channel budget — a consumer is a channel, and one
+connection carries 255 of them, so a worker asking for more is told at startup
 instead of meeting `504 channel id space exhausted` under load.
 
 What it does not do: declare anything. Topology belongs to whoever owns it, and a
@@ -1019,47 +1034,57 @@ before handing over, and `queueSpecs()` tells it what that is. A pool started
 before anything published into its queue would otherwise crash-loop on a `404`.
 
 The pool reports itself to the [panel](admin-stats.md) like any server: how many
-coroutines it has consuming, what they delivered, acknowledged and refused, and
-how long a delivery spends in a handler.
+consumers it has open, what they delivered, acknowledged and refused, and how long
+a delivery spends in a handler.
+
+**A prefetch above one lets two handlers share a channel.** One consumer is one
+channel, and with a prefetch of N the broker may have N of its messages out at
+once, each in a handler of its own. Settling is per delivery and safe either way,
+but publisher confirms are per *channel*: two handlers publishing with
+`publishConfirmed()` on `$delivery->channel()` at the same time can read each
+other's confirmations. With the default prefetch of one there is only ever one
+handler per channel; above it, a handler that publishes with confirms should take a
+channel of its own from the connection.
 
 ### Stopping
 
-`SIGTERM` (or one of the limits above) drains in two steps, because the two halves
-of a pool are in different states.
+`SIGTERM` (or one of the limits above) cancels every consumer and then waits for
+the handlers already running. Nothing is cut: a message in a handler is finished
+and settled, and the loop returns once the last one has. The channels stay open
+until then, so an acknowledgement in flight is not lost — closing them with the
+cancel would hand a finished message back for another worker to do again.
 
-A coroutine that is running a handler finishes that message and settles it, then
-ends. A coroutine that is waiting for a delivery has nothing to finish, so once
-nothing is mid-message any more the group is stopped and those waits end with it —
-inside the consume generator, whose teardown cancels the consumer without waiting
-for the broker to answer, because the scheduler has already detached the fiber.
+There is no drain deadline of its own. A handler that never ends is what the
+master's `shutdownTimeoutMs` is for — past it the worker is killed, and the
+messages it was holding go back to the broker unacknowledged, exactly as with the
+servers.
 
-Keep `drainTimeoutMs` below the master's `shutdownTimeoutMs`, or `SIGKILL` lands
-in the middle of the drain.
-
-A handler that throws is reported through the optional `onError` callback and
-costs one message, not one consumer: the runtime refuses the delivery and the same
-coroutine takes the next one.
+A handler that throws is reported through the optional `onError` callback and costs
+one message, not the worker: the runtime refuses the delivery and the next message
+is handled as usual.
 
 ### A consumer the broker takes away
 
-More than a deleted queue ends a consumer: a channel dies over an unrelated `404`, a
-cluster node fails over, the connection's `readTimeoutSeconds` passes. The coroutine
-reopens its queue on a fresh channel a second later, for as long as reopening can work,
-and says so each time:
+More than a deleted queue ends a consumer: a channel dies over an unrelated `404`, or a
+cluster node fails over. The consumer is opened again on a fresh channel a second later,
+for as long as reopening can work, and says so each time:
 
 ```
-consumer: orders lost (…: Consumer sconcur-ctag-7 was cancelled by the broker.); reopening in 1000ms, attempt 1
+amqp: consumer orders (sconcur-ctag-7) was taken away; reopening
 ```
 
 There is no attempt limit. A queue that was deleted and never recreated is retried for as
-long as the worker runs, one line a second per coroutine on it — which is deliberate: a
+long as the worker runs, one line a second per consumer on it — which is deliberate: a
 queue that comes back is picked up without anyone intervening, and a queue that does not
 is visible in the journal rather than silently unread.
 
+The one failure that is not retried is the **first** open. A queue that is not there when
+the worker starts, or credentials that cannot consume it, end the run at once: that is a
+configuration error, and a worker would otherwise retry it silently for ever.
+
 What ends a consumer for good is the **connection** going away. That one is shared by
-every coroutine of the worker, and closing it from one of them would take the channels of
-all the others with it, so it is not reopened: every consumer ends in turn, `consume()`
-raises whatever ended the first, the worker exits non-zero, and the
+every consumer of the worker, so it is not reopened: the stream ends with the failure,
+`consume()` raises it, the worker exits non-zero, and the
 [master](worker-master.md) starts a fresh process with a fresh connection.
 
 The message that was in flight is not resettled — it was never acknowledged, so the broker

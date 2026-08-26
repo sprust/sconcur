@@ -42,6 +42,10 @@ const (
 	// AmqpConsume opens a delivery stream: the first result carries the consumer tag,
 	// every following one a delivery.
 	AmqpConsume AmqpCommand = "csm"
+	// AmqpConsumeServe opens the consumers of a supervised worker and streams every
+	// delivery of all of them under one task — the self-pumping counterpart of AmqpConsume,
+	// driven by Scheduler::serve() the way the servers are.
+	AmqpConsumeServe AmqpCommand = "csv"
 	// AmqpCancel cancels a consumer.
 	AmqpCancel AmqpCommand = "cnl"
 	// AmqpAck acknowledges a delivery.

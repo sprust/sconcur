@@ -8,7 +8,6 @@ use SConcur\Connection\Extension;
 use SConcur\Exceptions\Amqp\ConnectionException;
 use SConcur\Features\Amqp\Payloads\AmqpPayload;
 use SConcur\Features\Amqp\Support\AmqpResource;
-use SConcur\Features\Sleeper\Sleeper;
 use Throwable;
 
 /**
@@ -22,16 +21,7 @@ use Throwable;
  */
 class Connection extends AmqpResource
 {
-    protected const int OPENING_POLL_INTERVAL_MICROSECONDS = 1_000;
-
     public readonly ConnectionOptions $options;
-
-    /**
-     * connect() suspends, so without this guard every coroutine that found the connection
-     * closed would dial one of its own: each overwrites the handle, and the ones before it
-     * are never released.
-     */
-    protected bool $opening = false;
 
     /** What the broker agreed on in the handshake; null until connected. */
     protected ?int $negotiatedChannelMax = null;
@@ -99,7 +89,19 @@ class Connection extends AmqpResource
             exceptionClass: ConnectionException::class,
         );
 
-        $this->internalId                 = isset($result['cid']) ? (string) $result['cid'] : '';
+        $connectionId = isset($result['cid']) ? (string) $result['cid'] : '';
+
+        // Dialling suspends, so another coroutine may have opened this connection while
+        // this call was in flight. Both answers name the same socket — the Go side pools by
+        // options — so the one that arrived second gives its handle straight back instead
+        // of overwriting a handle nothing would ever release.
+        if ($this->internalId !== '' && $this->internalId !== $connectionId) {
+            $this->disconnect($connectionId);
+
+            return;
+        }
+
+        $this->internalId                 = $connectionId;
         $this->negotiatedChannelMax       = isset($result['mc']) ? (int) $result['mc'] : null;
         $this->negotiatedFrameMaxBytes    = isset($result['mf']) ? (int) $result['mf'] : null;
         $this->negotiatedHeartbeatSeconds = isset($result['hb']) ? (int) $result['hb'] : null;
@@ -130,14 +132,7 @@ class Connection extends AmqpResource
         // leave an application holding ones that still pass isOpen().
         $this->forgetChannels();
 
-        $this->runCommand(
-            command: AmqpCommandEnum::Disconnect,
-            data: [
-                'cid' => $connectionId,
-                'to'  => $this->rpcTimeoutMs(),
-            ],
-            exceptionClass: ConnectionException::class,
-        );
+        $this->disconnect($connectionId);
     }
 
     /**
@@ -152,10 +147,28 @@ class Connection extends AmqpResource
     {
         $this->ensureOpen();
 
+        static::assertPrefetch(
+            count: $prefetchCount,
+            sizeBytes: $prefetchSizeBytes,
+        );
+
+        $result = $this->runCommand(
+            command: AmqpCommandEnum::ChannelOpen,
+            data: [
+                'cid' => $this->internalId,
+                'sz'  => $prefetchSizeBytes,
+                'ct'  => $prefetchCount,
+                'gsz' => 0,
+                'gct' => 0,
+                'to'  => $this->rpcTimeoutMs(),
+            ],
+            exceptionClass: ConnectionException::class,
+        );
+
         return new Channel(
             connection: $this,
-            prefetchCount: $prefetchCount,
-            prefetchSizeBytes: $prefetchSizeBytes,
+            channelId: isset($result['chid']) ? (string) $result['chid'] : '',
+            channelNumber: isset($result['no']) ? (int) $result['no'] : 0,
         );
     }
 
@@ -179,6 +192,18 @@ class Connection extends AmqpResource
         );
 
         return isset($result['uc']) ? (int) $result['uc'] : 0;
+    }
+
+    /**
+     * The handle the Go side answers to for this connection.
+     *
+     * @internal what a supervised consumer opens its delivery stream on — that stream is
+     *           pushed with a flow key of its own, so it cannot go through the executor the
+     *           ordinary commands use.
+     */
+    public function connectionId(): string
+    {
+        return $this->internalId;
     }
 
     /** What the broker agreed on while connected, the requested value otherwise. */
@@ -228,9 +253,26 @@ class Connection extends AmqpResource
         return $this;
     }
 
+    /** Hands one handle back to the Go side. */
+    protected function disconnect(string $connectionId): void
+    {
+        $this->runCommand(
+            command: AmqpCommandEnum::Disconnect,
+            data: [
+                'cid' => $connectionId,
+                'to'  => $this->rpcTimeoutMs(),
+            ],
+            exceptionClass: ConnectionException::class,
+        );
+    }
+
     /**
      * Opens the connection on first use — which is what keeps the constructor free of
      * network work.
+     *
+     * Several coroutines finding it closed at once all dial, and that is fine: connect()
+     * keeps the first handle to arrive and gives the others back, so nothing has to be
+     * locked here.
      *
      * A connection that died is not reopened here; the handle it still holds tells the two
      * apart. Reconnecting silently would hand back a connection whose channels and
@@ -239,14 +281,6 @@ class Connection extends AmqpResource
      */
     protected function ensureOpen(): void
     {
-        // Someone else is dialling: park until they are done and read the state they left.
-        // A sleep rather than a cooperative yield, because a yield inside a WaitGroup gives
-        // way to nobody and would let every waiter straight through. It costs a round trip
-        // per poll, and only when contended.
-        while ($this->opening) {
-            Sleeper::usleep(microseconds: self::OPENING_POLL_INTERVAL_MICROSECONDS);
-        }
-
         if ($this->internalOpen) {
             return;
         }
@@ -257,13 +291,7 @@ class Connection extends AmqpResource
             );
         }
 
-        $this->opening = true;
-
-        try {
-            $this->connect();
-        } finally {
-            $this->opening = false;
-        }
+        $this->connect();
     }
 
     /**

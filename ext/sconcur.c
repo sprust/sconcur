@@ -86,6 +86,7 @@ static void sconcur_interrupt_function(zend_execute_data *execute_data)
  *  - httpStopAccepting(string flowKey)
  *  - socketStopAccepting(string flowKey)
  *  - wsStopAccepting(string flowKey)
+ *  - amqpStopConsuming(string flowKey)
  *  - destroy()
  *  - version()
  */
@@ -157,6 +158,11 @@ ZEND_END_ARG_INFO()
 
 // wsStopAccepting(string flowKey)
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_wsStopAccepting, 0, 0, 1)
+    ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
+ZEND_END_ARG_INFO()
+
+// amqpStopConsuming(string flowKey)
+ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_amqpStopConsuming, 0, 0, 1)
     ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
@@ -439,6 +445,20 @@ PHP_FUNCTION(wsStopAccepting)
     RETURN_NULL();
 }
 
+// PHP: SConcur\Extension\amqpStopConsuming(string $flowKey): void
+PHP_FUNCTION(amqpStopConsuming)
+{
+    char *flow_key = NULL;
+    size_t flow_key_len;
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &flow_key, &flow_key_len) == FAILURE) {
+        RETURN_THROWS();
+    }
+
+    amqpStopConsuming(flow_key);
+    RETURN_NULL();
+}
+
 // PHP: SConcur\Extension\destroy(): void
 PHP_FUNCTION(destroy)
 {
@@ -526,6 +546,7 @@ static const zend_function_entry sconcur_functions[] = {
     ZEND_NS_FE("SConcur\\Extension", httpStopAccepting, arginfo_sconcur_httpStopAccepting)
     ZEND_NS_FE("SConcur\\Extension", socketStopAccepting, arginfo_sconcur_socketStopAccepting)
     ZEND_NS_FE("SConcur\\Extension", wsStopAccepting, arginfo_sconcur_wsStopAccepting)
+    ZEND_NS_FE("SConcur\\Extension", amqpStopConsuming, arginfo_sconcur_amqpStopConsuming)
     ZEND_NS_FE("SConcur\\Extension", destroy, arginfo_sconcur_destroy)
     ZEND_NS_FE("SConcur\\Extension", version, arginfo_sconcur_version)
     ZEND_NS_FE("SConcur\\Extension", armPreemption, arginfo_sconcur_armPreemption)

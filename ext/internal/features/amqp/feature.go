@@ -122,6 +122,8 @@ func (f *AmqpFeature) Handle(task *tasks.Task) {
 		f.handleGet(task, envelope.Params)
 	case types.AmqpConsume:
 		f.handleConsume(task, envelope.Params)
+	case types.AmqpConsumeServe:
+		f.handleConsumeServe(task, envelope.Params)
 	case types.AmqpCancel:
 		f.handleCancel(task, envelope.Params)
 	case types.AmqpAck:
@@ -171,7 +173,7 @@ func (f *AmqpFeature) handleDetached(envelope payloads.Envelope) {
 
 		go cancelDetached(params)
 	default:
-		logger.Write("amqp: command " + string(envelope.Command) + " cannot be pushed detached")
+		logger.Write("amqp: command " + string(envelope.Command) + " cannot be pushed detached\n")
 	}
 }
 

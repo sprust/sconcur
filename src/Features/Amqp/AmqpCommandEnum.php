@@ -68,6 +68,17 @@ enum AmqpCommandEnum: string
     /** basic.consume — the streaming command: every next() yields one delivery. Go: payloads.ConsumeParams. */
     case Consume = 'csm';
 
+    /**
+     * The consumers of one supervised worker, streamed under a single task: every result is
+     * a delivery, from any of its queues. Go: payloads.ConsumeServeParams.
+     *
+     * The self-pumping counterpart of Consume — the Go side publishes the next delivery by
+     * itself, so a worker pays no next() crossing per message — and the channels behind the
+     * consumers belong to the Go side, so a stop cancels them without PHP releasing
+     * anything. Driven by Scheduler::serve(), like the three servers.
+     */
+    case ConsumeServe = 'csv';
+
     /** basic.cancel. Go: payloads.CancelParams. */
     case Cancel = 'cnl';
 

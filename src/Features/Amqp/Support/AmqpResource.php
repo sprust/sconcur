@@ -7,7 +7,7 @@ namespace SConcur\Features\Amqp\Support;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\Amqp\AmqpException;
 use SConcur\Exceptions\Amqp\ChannelException;
-use SConcur\Exceptions\Amqp\ConnectionException;
+use SConcur\Exceptions\Amqp\InvalidPrefetchException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\TaskExecutionException;
 use SConcur\Features\Amqp\AmqpCommandEnum;
@@ -31,8 +31,9 @@ use WeakReference;
  */
 abstract class AmqpResource
 {
-    /** A scoped failure payload from the Go side: "<scope>:<code>: <message>". */
-    protected const string FAILURE_PATTERN = '/^(net|chn|chg|err):(\d+): (.*)$/s';
+    protected const int MAX_PREFETCH_COUNT = 65535;
+
+    protected const int MAX_PREFETCH_SIZE_BYTES = 4294967295;
 
     /** The id on the Go side; empty while nothing is open. */
     protected string $internalId = '';
@@ -76,6 +77,23 @@ abstract class AmqpResource
         }
 
         $this->internalChannels = [];
+    }
+
+    /** Screens the prefetch values a channel is opened with, and the ones basic.qos changes. */
+    protected static function assertPrefetch(int $count, int $sizeBytes): void
+    {
+        if ($count < 0 || $count > self::MAX_PREFETCH_COUNT) {
+            throw new InvalidPrefetchException(
+                message: "Parameter 'prefetchCount' must be between 0 and " . self::MAX_PREFETCH_COUNT . '.',
+            );
+        }
+
+        if ($sizeBytes < 0 || $sizeBytes > self::MAX_PREFETCH_SIZE_BYTES) {
+            throw new InvalidPrefetchException(
+                message: "Parameter 'prefetchSizeBytes' must be between 0 and "
+                    . self::MAX_PREFETCH_SIZE_BYTES . '.',
+            );
+        }
     }
 
     /** Seconds, as the API takes them, into the milliseconds the wire carries. */
@@ -182,11 +200,8 @@ abstract class AmqpResource
      * Turns a failed command into the exception the caller expects, and records what the
      * failure did to the resources it touched on the way.
      *
-     * A dead connection and a method the broker refused are different failures, and only
-     * one is worth retrying on the same objects — so a connection-level scope always
-     * becomes a ConnectionException whichever class the caller asked for, and a channel
-     * that was already gone always a ChannelException. The latter carries whatever reply
-     * code closed it, which is how the 404 an earlier publish ran into becomes visible.
+     * The exception itself is AmqpFailure's business; what is left here is the bookkeeping,
+     * which is the only reason a Connection and a Channel share a base at all.
      *
      * @param class-string<AmqpException> $exceptionClass
      */
@@ -195,52 +210,33 @@ abstract class AmqpResource
         string $exceptionClass,
         ?Channel $channel,
     ): AmqpException {
-        $message = $exception->getMessage();
+        $failure = AmqpFailure::from($exception);
 
-        if (preg_match(self::FAILURE_PATTERN, $message, $matches) !== 1) {
+        if ($failure === null) {
             // Raised before the feature could scope it, so it touched nothing.
             return new $exceptionClass(
-                message: $message,
+                message: $exception->getMessage(),
                 previous: $exception,
             );
         }
 
-        $scope = FailureScopeEnum::from($matches[1]);
-        $code  = (int) $matches[2];
-        $text  = $matches[3];
-
-        if ($scope !== FailureScopeEnum::Command && $channel !== null) {
+        if ($failure->scope !== FailureScopeEnum::Command && $channel !== null) {
             $channel->internalOpen = false;
         }
 
-        if ($scope === FailureScopeEnum::Connection) {
+        if ($failure->scope === FailureScopeEnum::Connection) {
             // The handle is kept: close() still has to hand it back, or the pooled
             // connection behind it would never be released.
             //
             // Asked of the resource rather than read off $channel: a channel that fails
-            // while it is being opened has not been passed to runCommand yet — there is no
-            // channel to name until the constructor returns — and reading the connection
-            // off that argument left the one that died reporting itself open for good.
+            // while it is being opened has not been passed to runCommand yet, and reading
+            // the connection off that argument left the one that died reporting itself open
+            // for good.
             $this->ownConnection()->internalOpen = false;
-
-            return new ConnectionException(
-                message: $text,
-                code: $code,
-                previous: $exception,
-            );
         }
 
-        if ($scope === FailureScopeEnum::ChannelGone || ($scope === FailureScopeEnum::Channel && $code === 0)) {
-            return new ChannelException(
-                message: $text,
-                code: $code,
-                previous: $exception,
-            );
-        }
-
-        return new $exceptionClass(
-            message: $text,
-            code: $code,
+        return $failure->exception(
+            exceptionClass: $exceptionClass,
             previous: $exception,
         );
     }

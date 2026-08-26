@@ -20,6 +20,7 @@ import (
 	"errors"
 	"math"
 	"sconcur/internal/dto"
+	amqp_feature "sconcur/internal/features/amqp"
 	httpserver_feature "sconcur/internal/features/httpserver"
 	socketserver_feature "sconcur/internal/features/socketserver"
 	wsserver_feature "sconcur/internal/features/wsserver"
@@ -462,6 +463,11 @@ func socketStopAccepting(fk *C.char) {
 //export wsStopAccepting
 func wsStopAccepting(fk *C.char) {
 	wsserver_feature.StopAccepting(C.GoString(fk))
+}
+
+//export amqpStopConsuming
+func amqpStopConsuming(fk *C.char) {
+	amqp_feature.StopConsuming(C.GoString(fk))
 }
 
 //export destroy

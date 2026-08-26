@@ -83,6 +83,15 @@ type connectionHandle struct {
 	closed         bool
 }
 
+// isReleased answers whether PHP has handed this handle back. The channels opened through
+// it are closed with it, so a consumer on one of them cannot be reopened.
+func (h *connectionHandle) isReleased() bool {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+
+	return h.closed
+}
+
 var connectionsOnce sync.Once
 var connectionsInstance *connections
 

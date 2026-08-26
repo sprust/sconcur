@@ -56,7 +56,7 @@ func (f *AmqpFeature) handleGet(task *tasks.Task, raw msgpack.RawMessage) {
 			if params.AutoAck {
 				logger.Write(
 					"amqp: a get on " + params.QueueName + " timed out after the broker handed" +
-						" the message over; it was auto-acknowledged and is lost",
+						" the message over; it was auto-acknowledged and is lost\n",
 				)
 
 				return

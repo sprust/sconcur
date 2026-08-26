@@ -105,7 +105,7 @@ class QueueConsumerTest extends AmqpTestCase
         self::assertLessThan(0.5, $elapsedSeconds, 'three 200ms handlers must overlap, not queue up');
     }
 
-    public function testTheWeightDecidesHowManyCoroutinesPullAQueue(): void
+    public function testTheWeightDecidesHowManyConsumersPullAQueue(): void
     {
         $channel = $this->channel();
 
@@ -118,8 +118,8 @@ class QueueConsumerTest extends AmqpTestCase
             durable: true,
         );
 
-        // Four slow messages on each queue. With four coroutines on the hot one and a
-        // single coroutine on the cold one, the hot queue drains in one sleep while the
+        // Four slow messages on each queue. With four consumers on the hot one and a
+        // single consumer on the cold one, the hot queue drains in one sleep while the
         // cold one takes four.
         for ($index = 0; $index < 4; ++$index) {
             $this->publishToQueue($channel, $hot->name(), "hot-$index");
@@ -179,7 +179,6 @@ class QueueConsumerTest extends AmqpTestCase
         $queueConsumer = new QueueConsumer(
             queues: $this->queuesJson([$queue->name() => 1]),
             maxMessages: 2,
-            pollIntervalMs: 50,
         );
 
         $count = $queueConsumer->consume(
@@ -196,7 +195,7 @@ class QueueConsumerTest extends AmqpTestCase
             },
         );
 
-        self::assertSame(2, $count, 'the same coroutine handled both messages');
+        self::assertSame(2, $count, 'the failed message cost one message, not the worker');
         self::assertSame(['fine'], $handled);
         self::assertSame(['boom' => 'handler blew up on boom'], $failures);
 
@@ -224,7 +223,6 @@ class QueueConsumerTest extends AmqpTestCase
             queues: $this->queuesJson([$queue->name() => 1]),
             requeueOnFailure: true,
             maxMessages: 1,
-            pollIntervalMs: 50,
         );
 
         $queueConsumer->consume(
@@ -263,7 +261,6 @@ class QueueConsumerTest extends AmqpTestCase
         $queueConsumer = new QueueConsumer(
             queues: $this->queuesJson([$queue->name() => 1]),
             maxMessages: 1,
-            pollIntervalMs: 50,
         );
 
         $settled = false;
@@ -289,9 +286,9 @@ class QueueConsumerTest extends AmqpTestCase
     }
 
     /**
-     * The drain: reaching maxMessages stops the consumers that are working, and the
-     * supervisor then ends the ones still waiting for a delivery. A queue left with
-     * messages in it must not hold the run open.
+     * Reaching maxMessages ends the run even though other queues are still being pulled: a
+     * consumer waiting for a delivery has nothing in hand, so cancelling it is all a stop
+     * has to do. A queue left with messages in it must not hold the run open.
      */
     public function testTheRunEndsWhileOtherQueuesStayIdle(): void
     {
@@ -314,8 +311,6 @@ class QueueConsumerTest extends AmqpTestCase
                 $idle->name() => 3,
             ]),
             maxMessages: 1,
-            drainTimeoutMs: 1000,
-            pollIntervalMs: 50,
         );
 
         $startedAt = microtime(true);
@@ -352,8 +347,6 @@ class QueueConsumerTest extends AmqpTestCase
         $queueConsumer = new QueueConsumer(
             queues: $this->queuesJson([$queue->name() => 1]),
             maxMessages: 1,
-            drainTimeoutMs: 2000,
-            pollIntervalMs: 50,
         );
 
         $queueConsumer->consume(
@@ -372,12 +365,14 @@ class QueueConsumerTest extends AmqpTestCase
     }
 
     /**
-     * A handler still working when the drain deadline passes is cut by the group being
-     * stopped. That is not a handler failure — the application never got to decide — so the
-     * message must go back to the broker rather than be refused on its behalf. Leaving it
-     * unsettled is what returns it: the channel closing behind the coroutine hands it back.
+     * A life limit reached while a handler is mid-message does not cut it. The stop cancels
+     * the consumers first and the loop leaves only once the last handler has returned, so a
+     * job that outlives the limit still finishes and still answers for its message.
+     *
+     * That is what removed the two-phase drain the runtime used to need: nothing is unwound,
+     * so nothing has to tell a deliberate unwind from a handler that failed.
      */
-    public function testAMessageCutByTheDrainDeadlineGoesBackToTheBroker(): void
+    public function testAMessageInFlightOutlivesTheLifeLimit(): void
     {
         $channel = $this->channel();
 
@@ -389,45 +384,31 @@ class QueueConsumerTest extends AmqpTestCase
         $this->publishToQueue($channel, $queue->name(), 'slow');
 
         $failures = [];
+        $finished = false;
 
         $queueConsumer = new QueueConsumer(
             queues: $this->queuesJson([$queue->name() => 1]),
-            // The run is over while the handler is still inside its sleep, and the drain
-            // gives up on it long before it would have finished.
             maxRuntimeSeconds: 1,
-            drainTimeoutMs: 100,
-            pollIntervalMs: 20,
         );
 
         $count = $queueConsumer->consume(
             connection: $this->connection(),
-            handler: static function (Delivery $delivery): void {
-                Sleeper::usleep(microseconds: 3_000_000);
+            handler: static function (Delivery $delivery) use (&$finished): void {
+                Sleeper::usleep(microseconds: 2_000_000);
+
+                $finished = true;
             },
             onError: static function (Throwable $exception, Delivery $delivery) use (&$failures): void {
                 $failures[] = $exception::class;
             },
         );
 
-        // A stop is not a failure, so the application is not told its handler failed.
-        self::assertSame([], $failures, 'a deliberate stop must not be reported as a handler failure');
+        self::assertTrue($finished, 'the handler must run to completion past the life limit');
+        self::assertSame([], $failures, 'a stop must not be reported as a handler failure');
+        self::assertSame(1, $count, 'the message was finished, so it counts as handled');
 
-        // Nor is it a message handled: nobody answered for it, and the broker hands it out
-        // again. A worker that counted it would report more work done than it did, and a
-        // maxMessages budget would be spent on messages nothing was done with.
-        self::assertSame(0, $count, 'a message the drain cut short must not count as handled');
-
-        // And the message was not refused on the handler's behalf: it comes back.
-        //
-        // The collection is what makes the assertion prompt rather than eventual. An
-        // unwound coroutine leaves its channel in a reference cycle, and the message stays
-        // owed to the broker until that channel is released, and releasing it
-        // deterministically is a question for the runtime rather than for this feature —
-        // it is what a coroutine's lifetime would settle. What this test pins down is that
-        // the message survives at all; when exactly it comes back is that work's business.
-        gc_collect_cycles();
-
-        self::assertSame(1, $this->waitForMessageCount(queue: $queue, expected: 1, timeoutSeconds: 5.0));
+        // Acknowledged means gone.
+        self::assertNull($this->waitForMessage($queue, timeoutSeconds: 0.3));
     }
 
     /**
@@ -454,7 +435,6 @@ class QueueConsumerTest extends AmqpTestCase
             queues: $this->queuesJson([$queue->name() => 1]),
             handlerTimeoutMs: 200,
             maxMessages: 2,
-            pollIntervalMs: 50,
         );
 
         $count = $queueConsumer->consume(
@@ -471,7 +451,7 @@ class QueueConsumerTest extends AmqpTestCase
             },
         );
 
-        self::assertSame(2, $count, 'the coroutine survived the deadline and took the next message');
+        self::assertSame(2, $count, 'the worker survived the deadline and took the next message');
         self::assertSame(['quick'], $handled);
         self::assertSame(['slow' => CoroutineTimeoutException::class], $failures);
 
@@ -496,7 +476,6 @@ class QueueConsumerTest extends AmqpTestCase
         $queueConsumer = new QueueConsumer(
             queues: $this->queuesJson([$queue->name() => 1]),
             maxMessages: 1,
-            pollIntervalMs: 50,
         );
 
         $queueConsumer->consume(
@@ -538,7 +517,6 @@ class QueueConsumerTest extends AmqpTestCase
                 $healthy->name() => 1,
             ]),
             maxMessages: 1,
-            pollIntervalMs: 50,
         );
 
         // Deleting the queue ends its consumer with a broker-side failure while the
@@ -565,14 +543,11 @@ class QueueConsumerTest extends AmqpTestCase
     }
 
     /**
-     * The drain watches how many coroutines are mid-message, and settling is part of one:
-     * a consumer counted out of that set before its acknowledgement is on the wire can be
-     * cut between the two, and the message its handler finished goes back to the queue.
-     *
-     * The window is small, so the test widens it by hand — the drain gives up the instant
-     * the last handler returns, and every message must still be gone from the queue.
+     * A stop cancels the consumers and leaves their channels open, so the acknowledgements
+     * of the handlers that are still running land. Closing them with the cancel would hand
+     * finished messages back for another worker to do again.
      */
-    public function testAMessageIsAcknowledgedBeforeItsConsumerIsCountedIdle(): void
+    public function testTheAcknowledgementsInFlightSurviveTheStop(): void
     {
         $channel = $this->channel();
 
@@ -588,10 +563,6 @@ class QueueConsumerTest extends AmqpTestCase
         $queueConsumer = new QueueConsumer(
             queues: $this->queuesJson([$queue->name() => 4]),
             maxMessages: 8,
-            // As short as it goes: the stop lands as soon as nothing is mid-message, so an
-            // acknowledgement still in flight at that moment would be cut.
-            drainTimeoutMs: 1,
-            pollIntervalMs: 20,
         );
 
         $count = $queueConsumer->consume(
@@ -624,7 +595,6 @@ class QueueConsumerTest extends AmqpTestCase
         $queueConsumer = new QueueConsumer(
             queues: $this->queuesJson([$queue->name() => 2]),
             maxRuntimeSeconds: 30,
-            pollIntervalMs: 20,
         );
 
         $this->publishToQueue($channel, $queue->name(), 'first');
@@ -663,7 +633,6 @@ class QueueConsumerTest extends AmqpTestCase
             queues: $this->queuesJson([$name => 1]),
             maxMessages: 2,
             maxRuntimeSeconds: 30,
-            pollIntervalMs: 50,
         );
 
         $this->publishToQueue(
@@ -697,8 +666,8 @@ class QueueConsumerTest extends AmqpTestCase
     }
 
     /**
-     * Every channel the worker opened is closed when the run ends, including the ones
-     * whose coroutines were still waiting and had to be unwound by the drain.
+     * Every channel the run opened is closed when it ends, including the ones whose
+     * consumers never received anything.
      */
     public function testTheChannelsAreClosedWhenTheRunEnds(): void
     {
@@ -723,8 +692,6 @@ class QueueConsumerTest extends AmqpTestCase
                 $idle->name() => 3,
             ]),
             maxMessages: 1,
-            drainTimeoutMs: 1000,
-            pollIntervalMs: 50,
         );
 
         $queueConsumer->consume(
@@ -733,8 +700,8 @@ class QueueConsumerTest extends AmqpTestCase
             },
         );
 
-        // The three idle coroutines are ended by the drain, which detaches them; their
-        // channels are released by the channel objects going out of scope.
+        // The channels belong to the delivery stream, and the flow ending is what closes
+        // them — including the ones whose consumers never had a message.
         $deadline = microtime(true) + 3.0;
 
         while (microtime(true) < $deadline && $this->connection()->usedChannels() > $before) {
@@ -745,7 +712,7 @@ class QueueConsumerTest extends AmqpTestCase
     }
 
     /**
-     * @param array<string, int> $weights queue name => coroutine count
+     * @param array<string, int> $weights queue name => consumer count
      */
     protected function queuesJson(array $weights): string
     {

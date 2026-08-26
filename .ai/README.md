@@ -159,13 +159,16 @@ feature's doc. Key PHP classes not covered there:
   the only thing in the library that declares topology; it does so only when a
   worker script calls it. `RetrySchedule` beside it answers how long a refused
   publish waits before the next attempt.
-- `Features/Amqp/Consumer/` — the supervised consumer runtime: `QueueConsumer`
-  (a coroutine per unit of a queue's weight, each with its own channel), plus
-  `QueueSpec`/`QueueSpecParser` for the JSON queue list that arrives in argv and
-  `ConsumerState` for what the coroutines share. Its two-phase drain is why a
-  stop finishes the message in hand instead of dropping it; a consumer the broker
-  takes away reopens its queue a second later, and only the connection going away
-  ends one for good — see [docs/amqp.md](../docs/amqp.md).
+- `Features/Amqp/Consumer/` — the supervised consumer runtime: `QueueConsumer`,
+  plus `QueueSpec`/`QueueSpecParser` for the JSON queue list that arrives in argv.
+  It is a server without a socket: the Go side opens the consumers (one channel per
+  unit of a queue's weight) and publishes every delivery of all of them as one
+  self-pumping stream, and `Scheduler::serve()` drives it exactly as it drives the
+  three servers — one coroutine per message, one graceful drain, no loop of its own.
+  A stop cancels the consumers and leaves their channels open so the
+  acknowledgements in flight land; a consumer the broker takes away is reopened on
+  the Go side a second later, and only the connection going away ends one for good
+  — see [docs/amqp.md](../docs/amqp.md).
 - `Features/Socket/Dto/AbstractConnection` — shared base for the socket and
   WebSocket `Connection` DTOs (server accept-side and client dial-side); keeps the
   features decoupled, since all depend on the neutral base rather than each other.
@@ -186,7 +189,7 @@ Go extension (`ext/`):
 - `main.go` — cgo exports (`ping`, `push`, `wait`, `next`, `waitAny`,
   `waitAnyTimeout`, `waitAnyBatch`, `waitAnyTimeoutBatch`, `tasksCount`,
   `stopFlow`, `httpStopAccepting`, `socketStopAccepting`, `wsStopAccepting`,
-  `preemptionArm`, `preemptionDisarm`, `destroy`, `version`)
+  `preemptionArm`, `preemptionDisarm`, `amqpStopConsuming`, `destroy`, `version`)
 - `internal/handler/` — singleton orchestrator routing messages to flows
 - `internal/flows/`, `internal/tasks/` — concurrent `Flow` instances holding tasks
   and a result channel; a task carries the flow's context directly (cancellation
@@ -201,8 +204,9 @@ Go extension (`ext/`):
 - `internal/features/*` — sleeper, mongodb, sql (one handler dispatching
   Query/Exec/Begin/Commit/Rollback; the driver is selected per `Method`),
   httpserver, httpclient, socketserver, socketclient, wsserver, wsclient, amqp
-  (pooled connections, a channel registry and streamed consumers over
-  `amqp091-go`)
+  (pooled connections, a channel registry, streamed consumers over `amqp091-go`,
+  and `consume_serve.go` — the self-pumping delivery stream of a supervised
+  worker, whose channels the Go side owns)
 - `internal/stats/` — neutral worker-side telemetry shared by the servers: process
   metrics plus `Pusher`, which samples a `Snapshot` and pushes it best-effort as a
   length-prefixed JSON frame over the collector's unix socket
