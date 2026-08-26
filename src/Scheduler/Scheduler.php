@@ -236,14 +236,11 @@ class Scheduler
     public function shutdown(): void
     {
         // Collect first: unwinding mutates the registry (stop() detaches members).
-        $groups  = [];
-        $spawned = [];
+        $groups = [];
 
         foreach ($this->coroutines as $coroutine) {
             if ($coroutine->group !== null) {
                 $groups[spl_object_id($coroutine->group)] = $coroutine->group;
-            } else {
-                $spawned[] = $coroutine;
             }
         }
 
@@ -255,38 +252,7 @@ class Scheduler
             }
         }
 
-        foreach ($spawned as $coroutine) {
-            unset($this->coroutines[$coroutine->id]);
-
-            if ($coroutine->fiber->isSuspended()) {
-                try {
-                    $suspendValue = $coroutine->fiber->throw(new FlowStoppedException(message: 'Flow stopped'));
-
-                    // The pooled worker loop catches the unwind and parks idle
-                    // again; recycle the fiber so the scheduler stays fully
-                    // usable after a shutdown() call.
-                    if ($suspendValue === FiberPoolSignal::Idle) {
-                        $this->fiberPool->release($coroutine->fiber);
-                    }
-                } catch (Throwable) {
-                    // The unwinding handler may surface an exception (or fiber
-                    // switching may be forbidden in a fatal-error shutdown); it
-                    // must not stop the remaining coroutines.
-                }
-            }
-
-            if ($this->spawnedCount > 0) {
-                --$this->spawnedCount;
-            }
-
-            // Same rule as forget(): a coroutine that only fired detached
-            // (fire-and-forget) pushes never created its flow on the Go side,
-            // so the stopFlow crossing is skipped.
-            State::deleteFlow(
-                flowKey: $coroutine->flowKey,
-                stopExtensionFlow: $coroutine->flowUsed,
-            );
-        }
+        $this->unwindSpawned();
 
         $this->groupWaiters       = [];
         $this->switchedCoroutines = [];
@@ -866,8 +832,11 @@ class Scheduler
                     // bind) must surface instead of returning as if it ran fine.
                     if (!$result->hasNext) {
                         if ($result->isError) {
+                            // The payload verbatim: it already names the feature that
+                            // failed, and a caller may read the scope a feature put on it
+                            // (SConcur\Features\Amqp\Support\AmqpFailure).
                             throw new TaskErrorException(
-                                message: "http server stopped with error: {$result->payload}",
+                                message: $result->payload,
                             );
                         }
 
@@ -908,6 +877,15 @@ class Scheduler
 
             // Stop the listener and abort any connections not yet answered.
             Extension::get()->stopFlow($serverFlowKey);
+
+            // A loop that drained normally has none of these. One leaving because the
+            // stream failed does: its handlers are parked on results that will never come
+            // now the flow is stopped, and nothing else would ever resume them.
+            $abandoned = $this->unwindSpawned();
+
+            if ($abandoned > 0) {
+                $onShutdownStep(sprintf('unwound %d handler(s) still in flight', $abandoned));
+            }
 
             // Results still queued from the last drained batch are left in
             // place deliberately: they may belong to live coroutines outside
@@ -1083,6 +1061,61 @@ class Scheduler
                 message: "A coroutine timeout cannot be negative, got $timeoutMs ms.",
             );
         }
+    }
+
+    /**
+     * Unwinds every spawned (groupless) coroutine still live, and answers how many there
+     * were.
+     *
+     * Only the loop that spawned them ever resumes them, so a loop leaving while they are
+     * parked would leave them parked for the life of the process — and every later serve()
+     * would count them among its own in-flight work and never finish draining. The normal
+     * way out of serve() drains to zero and finds none of these; shutdown() reaches them
+     * after it has stopped the groups.
+     */
+    protected function unwindSpawned(): int
+    {
+        $spawned = [];
+
+        foreach ($this->coroutines as $coroutine) {
+            if ($coroutine->group === null) {
+                $spawned[] = $coroutine;
+            }
+        }
+
+        foreach ($spawned as $coroutine) {
+            unset($this->coroutines[$coroutine->id]);
+
+            if ($coroutine->fiber->isSuspended()) {
+                try {
+                    $suspendValue = $coroutine->fiber->throw(new FlowStoppedException(message: 'Flow stopped'));
+
+                    // The pooled worker loop catches the unwind and parks idle again;
+                    // recycle the fiber so the scheduler stays fully usable afterwards.
+                    if ($suspendValue === FiberPoolSignal::Idle) {
+                        $this->fiberPool->release($coroutine->fiber);
+                    }
+                } catch (Throwable) {
+                    // The unwinding handler may surface an exception (or fiber switching
+                    // may be forbidden in a fatal-error shutdown); it must not stop the
+                    // remaining coroutines.
+                }
+            }
+
+            if ($this->spawnedCount > 0) {
+                --$this->spawnedCount;
+            }
+
+            // Same rule as forget(): a coroutine that only fired detached
+            // (fire-and-forget) pushes never created its flow on the Go side, so the
+            // stopFlow crossing is skipped.
+            State::deleteFlow(
+                flowKey: $coroutine->flowKey,
+                stopExtensionFlow: $coroutine->flowUsed,
+            );
+        }
+
+        return count($spawned);
     }
 
     /**
