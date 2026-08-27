@@ -130,6 +130,35 @@ readonly class ConnectionOptions
     }
 
     /**
+     * The same options under another connection name — which is what asks the Go-side pool
+     * for a socket of its own, since the name is part of its key.
+     *
+     * The one thing a caller may vary after the fact: everything else settles what the
+     * broker agreed on for the channels already open, while the name only tells two
+     * connections apart.
+     */
+    public function withConnectionName(string $connectionName): self
+    {
+        return new self(
+            host: $this->host,
+            port: $this->port,
+            login: $this->login,
+            password: $this->password,
+            vhost: $this->vhost,
+            connectTimeoutSeconds: $this->connectTimeoutSeconds,
+            readTimeoutSeconds: $this->readTimeoutSeconds,
+            writeTimeoutSeconds: $this->writeTimeoutSeconds,
+            rpcTimeoutSeconds: $this->rpcTimeoutSeconds,
+            heartbeatSeconds: $this->heartbeatSeconds,
+            channelMax: $this->channelMax,
+            frameMaxBytes: $this->frameMaxBytes,
+            tls: $this->tls,
+            saslMethod: $this->saslMethod,
+            connectionName: $connectionName,
+        );
+    }
+
+    /**
      * Builds the options from an AMQP URI, the form RabbitMQ documents:
      *
      *     amqp://login:password@host:5672/vhost?heartbeat=30&connection_timeout=3000

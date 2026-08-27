@@ -74,8 +74,12 @@ readonly class QueueSpecParser
     }
 
     /**
-     * The channels this list costs on one connection — one per coroutine, since a
-     * channel is never shared between coroutines.
+     * The channels this list costs on the delivery connection — one per consumer, which is
+     * one per unit of a queue's weight.
+     *
+     * The channels handlers publish on are not counted here: they are lent from a pool that
+     * opens connections of its own (PublishChannelPool), precisely so that a prefetch worth
+     * raising cannot run this budget out.
      *
      * @param list<QueueSpec> $specs
      */
@@ -164,9 +168,9 @@ readonly class QueueSpecParser
     }
 
     /**
-     * A coroutine is a channel, and a connection runs out of channel numbers at
+     * A consumer is a channel, and a connection runs out of channel numbers at
      * ConnectionOptions::MAX_CHANNELS. Diagnosed here rather than as the broker's "504 channel
-     * id space exhausted" on whichever coroutine happened to start last.
+     * id space exhausted" on whichever consumer happened to start last.
      *
      * @param list<QueueSpec> $specs
      */
@@ -180,7 +184,7 @@ readonly class QueueSpecParser
 
         throw new InvalidQueueSpecException(
             message: sprintf(
-                'queues: %d coroutines need %d channels, but one connection carries %d.'
+                'queues: %d consumers need %d channels, but one connection carries %d.'
                 . ' Split the queues over more workers, or give a group its own connection_name.',
                 $total,
                 $total,

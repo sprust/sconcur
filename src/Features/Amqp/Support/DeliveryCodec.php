@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Amqp\Support;
 
+use Closure;
 use SConcur\Exceptions\Amqp\PublishNackedException;
 use SConcur\Exceptions\Amqp\UnroutableMessageException;
 use SConcur\Features\Amqp\Channel;
@@ -23,15 +24,21 @@ readonly class DeliveryCodec
     /**
      * Builds a Delivery out of what the Go side sent.
      *
-     * @param array<mixed>           $delivery
-     * @param WeakReference<Channel> $channel  the channel the message arrived on; weak, so a
-     *                                         delivery an application kept does not hold the
-     *                                         channel — and through it the connection — open
-     * @param bool                   $autoAck  whether the consumer or the get asked the broker
-     *                                         to treat the message as answered on delivery
+     * @param array<mixed>            $delivery
+     * @param WeakReference<Channel>  $channel  the channel the message arrived on; weak, so a
+     *                                          delivery an application kept does not hold the
+     *                                          channel — and through it the connection — open
+     * @param bool                    $autoAck  whether the consumer or the get asked the broker
+     *                                          to treat the message as answered on delivery
+     * @param null|Closure(): Channel $lend     how the handler gets a channel of its own, where
+     *                                          the arriving one is shared; see Delivery
      */
-    public static function delivery(array $delivery, WeakReference $channel, bool $autoAck): Delivery
-    {
+    public static function delivery(
+        array $delivery,
+        WeakReference $channel,
+        bool $autoAck,
+        ?Closure $lend = null,
+    ): Delivery {
         /** @var array<mixed> $rawProperties */
         $rawProperties = is_array($delivery['ps'] ?? null) ? $delivery['ps'] : [];
 
@@ -46,6 +53,7 @@ readonly class DeliveryCodec
             properties: PropertiesCodec::decode($rawProperties),
             channel: $channel,
             settled: $autoAck,
+            lend: $lend,
         );
     }
 

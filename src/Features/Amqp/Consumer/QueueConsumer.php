@@ -35,6 +35,12 @@ use WeakReference;
  * free of questions about the runtime: a stop cancels the consumers and leaves the channels
  * open so the acknowledgements in flight still land, and the flow ending closes them.
  *
+ * Those channels are never handed to a handler. A prefetch above one puts several messages
+ * of one consumer in flight at once, each in a handler of its own, so the channel they
+ * arrived on belongs to none of them — and publisher confirms are channel-wide. A handler
+ * that publishes is lent a channel nobody else holds (PublishChannelPool); what it does
+ * there cannot reach its neighbours, whatever the prefetch.
+ *
  * Built to be supervised: the constructor takes scalars so fromArgs() can fill them from the
  * argv a WorkerMaster hands its workers, and the run ends on SIGTERM, on a life limit or on
  * losing the master.
@@ -57,8 +63,8 @@ class QueueConsumer
 
     /**
      * The handles over the channels the delivery stream opened, by their Go-side id. A
-     * message is settled — and, when a handler chooses to, republished — on the channel it
-     * arrived on, and this is how a handler reaches it.
+     * message is settled on the channel it arrived on, and this is how the runtime reaches
+     * it — a handler never sees these, see the class docblock.
      *
      * Held for the run rather than per message: one channel serves many deliveries.
      *
@@ -161,6 +167,16 @@ class QueueConsumer
         $startedAt = microtime(true);
         $handled   = 0;
 
+        // Opened here rather than lazily inside the handler path, so its whole lifetime is
+        // this run: a handler asks it for a channel, and the finally below gives back
+        // everything it opened, however the run ends.
+        $publishChannels = new PublishChannelPool(
+            options: $connection->options,
+            log: static function (string $message): void {
+                static::logServerEvent($message);
+            },
+        );
+
         try {
             $runningTask = Extension::get()->push(
                 flowKey: $flowKey,
@@ -194,9 +210,16 @@ class QueueConsumer
                 serverFlowKey: $flowKey,
                 serverTaskKey: $runningTask->key,
                 maxRequests: $this->maxMessages,
-                onRequest: function (string $payload) use ($connection, $handler, $onError, &$handled): void {
+                onRequest: function (string $payload) use (
+                    $connection,
+                    $publishChannels,
+                    $handler,
+                    $onError,
+                    &$handled,
+                ): void {
                     $this->handleDelivery(
                         connection: $connection,
+                        publishChannels: $publishChannels,
                         payload: $payload,
                         handler: $handler,
                         onError: $onError,
@@ -221,6 +244,8 @@ class QueueConsumer
             );
         } finally {
             $restoreSignals();
+
+            $publishChannels->close();
 
             $this->channels = [];
         }
@@ -276,7 +301,8 @@ class QueueConsumer
     }
 
     /**
-     * Runs the handler for one delivery and settles it, in a coroutine of its own.
+     * Takes one delivery through its handler, in a coroutine of its own, and lends that
+     * handler a channel for as long as it runs.
      *
      * The handler never learns about the drain, so the same one works supervised and
      * standalone.
@@ -286,6 +312,7 @@ class QueueConsumer
      */
     protected function handleDelivery(
         Connection $connection,
+        PublishChannelPool $publishChannels,
         string $payload,
         Closure $handler,
         null|Closure $onError,
@@ -303,8 +330,43 @@ class QueueConsumer
                 ),
             ),
             autoAck: false,
+            // Asked for at most once, and only by a handler that publishes: a worker whose
+            // handlers only read opens no channel of its own at all.
+            lend: static fn(): Channel => $publishChannels->lease(),
         );
 
+        try {
+            $this->runAndSettle(
+                delivery: $delivery,
+                handler: $handler,
+                onError: $onError,
+                handled: $handled,
+            );
+        } finally {
+            // The loan ends with the handler, whichever way the handler ended — the next
+            // message is lent this channel, and a delivery an application kept beyond its
+            // handler stops answering with it.
+            $lentChannel = $delivery->releaseChannel();
+
+            if ($lentChannel !== null) {
+                $publishChannels->release($lentChannel);
+            }
+        }
+    }
+
+    /**
+     * Runs the handler for one delivery, reports what it threw, and answers the broker for a
+     * message it left open.
+     *
+     * @param Closure(Delivery): void                 $handler
+     * @param null|Closure(Throwable, Delivery): void $onError
+     */
+    protected function runAndSettle(
+        Delivery $delivery,
+        Closure $handler,
+        null|Closure $onError,
+        int &$handled,
+    ): void {
         $failed = false;
 
         try {

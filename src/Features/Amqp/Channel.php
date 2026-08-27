@@ -346,31 +346,37 @@ class Channel extends AmqpResource
     }
 
     /**
-     * Prefer `Delivery::ack()`, which knows its own tag and refuses to settle twice.
+     * Acknowledges exactly one delivery, never a run of them. Prefer `Delivery::ack()`,
+     * which knows its own tag and refuses to settle twice.
+     *
+     * AMQP's own batch form — "and everything before this tag on the channel" — is not
+     * offered. It is only ever useful while earlier deliveries are deliberately left
+     * unsettled, which is the one moment nobody can tell a message still being worked on
+     * from one already done; the broker cannot undo it, and what it settled early is lost
+     * if the process dies. See docs/amqp.md.
      */
-    public function ack(int $deliveryTag, bool $multiple = false): void
+    public function ack(int $deliveryTag): void
     {
         $this->run(
             command: AmqpCommandEnum::Ack,
             data: [
                 'dt' => $deliveryTag,
-                'mu' => $multiple,
+                // The AMQP method carries the flag; this library never raises it.
+                'mu' => false,
             ],
             exceptionClass: QueueException::class,
             operation: 'Could not ack the delivery.',
         );
     }
 
-    /**
-     * Prefer `Delivery::nack()`.
-     */
-    public function nack(int $deliveryTag, bool $requeue = true, bool $multiple = false): void
+    /** Refuses exactly one delivery; see ack() for why there is no batch form. Prefer `Delivery::nack()`. */
+    public function nack(int $deliveryTag, bool $requeue = true): void
     {
         $this->run(
             command: AmqpCommandEnum::Nack,
             data: [
                 'dt' => $deliveryTag,
-                'mu' => $multiple,
+                'mu' => false,
                 'rq' => $requeue,
             ],
             exceptionClass: QueueException::class,
@@ -379,7 +385,8 @@ class Channel extends AmqpResource
     }
 
     /**
-     * Refuses exactly one delivery, never a run of them. Prefer `Delivery::reject()`.
+     * The same refusal as nack(), defaulting the other way: a rejected message is not put
+     * back unless asked. Prefer `Delivery::reject()`.
      */
     public function reject(int $deliveryTag, bool $requeue = false): void
     {

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Amqp;
 
+use Closure;
 use SConcur\Exceptions\Amqp\ChannelException;
 use WeakReference;
 
@@ -16,17 +17,34 @@ use WeakReference;
  *
  * A second settle is refused here rather than sent — the broker answers one by killing the
  * channel, taking every other consumer on it down as collateral.
+ *
+ * Two channels can be behind one delivery, and only one of them is ever handed out. The
+ * message arrived on a consumer's channel, which is where its acknowledgement has to go and
+ * which, under a prefetch above one, carries the messages of the handlers running beside
+ * this one; that channel stays inside the runtime. What `channel()` answers is a channel
+ * lent to this handler alone (PublishChannelPool), so publishing from a handler cannot
+ * disturb — or be disturbed by — its neighbours. A delivery from `Channel::consume()` or
+ * `Channel::get()` is lent nothing: there the channel already belongs to one coroutine, and
+ * `channel()` answers that one.
  */
 class Delivery
 {
+    /** The channel lent to this handler, once it has asked for one. */
+    protected ?Channel $lentChannel = null;
+
     /**
-     * @param WeakReference<Channel> $channel the channel the message arrived on. Weak, so a
-     *                                        delivery an application kept does not hold its
-     *                                        channel — and through it the connection — open
-     * @param bool                   $settled whether the broker already considers this
-     *                                        delivery answered. True for an auto-acknowledged
-     *                                        one: it was settled as it left, and settling it
-     *                                        again is what closes the channel
+     * @param WeakReference<Channel>  $channel the channel the message arrived on. Weak, so a
+     *                                         delivery an application kept does not hold its
+     *                                         channel — and through it the connection — open
+     * @param bool                    $settled whether the broker already considers this
+     *                                         delivery answered. True for an auto-acknowledged
+     *                                         one: it was settled as it left, and settling it
+     *                                         again is what closes the channel
+     * @param null|Closure(): Channel $lend    how this handler gets a channel of its own, for
+     *                                         a delivery that arrived on a shared one. Called
+     *                                         at most once, and only if the handler asks;
+     *                                         null leaves `channel()` answering the channel
+     *                                         the message arrived on
      */
     public function __construct(
         public readonly string $body,
@@ -38,6 +56,7 @@ class Delivery
         public readonly MessageProperties $properties,
         protected WeakReference $channel,
         protected bool $settled = false,
+        protected ?Closure $lend = null,
     ) {
     }
 
@@ -58,37 +77,31 @@ class Delivery
         return $this->settled;
     }
 
-    /**
-     * Acknowledges the delivery: the broker may forget the message.
-     *
-     * @param bool $multiple acknowledge every delivery of this channel up to and including
-     *                       this tag — the cheap way to settle a batch
-     */
-    public function ack(bool $multiple = false): void
+    /** Acknowledges the delivery: the broker may forget the message. */
+    public function ack(): void
     {
-        $this->settleWith(fn(Channel $channel) => $channel->ack(
-            deliveryTag: $this->deliveryTag,
-            multiple: $multiple,
-        ));
+        $this->settleWith(fn(Channel $channel) => $channel->ack(deliveryTag: $this->deliveryTag));
     }
 
     /**
      * Refuses the delivery. Requeued by default, which is what a failure that may pass
      * wants; `requeue: false` dead-letters the message, or drops it where the queue names no
      * exchange.
+     *
+     * One delivery, never a run of them: AMQP's batch form is not offered here, see
+     * Channel::ack().
      */
-    public function nack(bool $requeue = true, bool $multiple = false): void
+    public function nack(bool $requeue = true): void
     {
         $this->settleWith(fn(Channel $channel) => $channel->nack(
             deliveryTag: $this->deliveryTag,
             requeue: $requeue,
-            multiple: $multiple,
         ));
     }
 
     /**
-     * Refuses exactly this delivery. `reject` is `nack` without the batch form, defaulting
-     * the other way: a rejected message is not put back unless asked for.
+     * Refuses exactly this delivery. `reject` is `nack` defaulting the other way: a rejected
+     * message is not put back unless asked for.
      */
     public function reject(bool $requeue = false): void
     {
@@ -99,16 +112,46 @@ class Delivery
     }
 
     /**
-     * The channel this delivery arrived on, which is the one a handler republishing the
-     * message has to use: it belongs to the coroutine the handler is running in, and a
-     * channel taken from anywhere else would be shared across coroutines.
+     * A channel that belongs to the coroutine handling this delivery — what a handler
+     * publishes and declares through, republishing this message included.
      *
-     * Null once that channel is gone — the reference is weak, so a delivery an application
-     * kept does not hold the channel, and through it the connection, open.
+     * Under a supervised consumer it is not the channel the message arrived on: that one
+     * carries the neighbouring handlers' messages as well, and publisher confirms are
+     * channel-wide, so two handlers waiting on it would read each other's answers. The
+     * channel answered here is lent to this handler alone and goes back when the handler
+     * ends, which is why it must not be stored past that. Elsewhere — `Channel::consume()`,
+     * `Channel::get()` — the arriving channel already belongs to one coroutine and is the
+     * one answered.
+     *
+     * Null once the channel is gone: the handler has ended, or the reference — weak, so a
+     * delivery an application kept does not hold a channel and through it a connection open
+     * — has been collected.
      */
     public function channel(): ?Channel
     {
-        return $this->channel->get();
+        if ($this->lend === null) {
+            return $this->channel->get();
+        }
+
+        return $this->lentChannel ??= ($this->lend)();
+    }
+
+    /**
+     * Ends the loan: whatever was lent to this handler is going back to the pool, and this
+     * delivery stops answering with it.
+     *
+     * @internal called by the supervised consumer when the handler returns. A delivery an
+     *           application kept beyond its handler answers null from then on, exactly as it
+     *           does for a channel that was closed.
+     */
+    public function releaseChannel(): ?Channel
+    {
+        $lent = $this->lentChannel;
+
+        $this->lend        = null;
+        $this->lentChannel = null;
+
+        return $lent;
     }
 
     /**

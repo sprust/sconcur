@@ -92,7 +92,7 @@ Not every call goes to the broker:
 | `Queue` | a name and the channel to run on — a handle, built for free | `declare()`, `declarePassive()`, `bind()`, `unbind()`, `delete()`, `purge()`, `publish()`, `publishConfirmed()`, `get()`, `consume()` |
 | `Exchange` | the same, for an exchange | `declare()`, `declarePassive()`, `bind()`, `unbind()`, `delete()`, `publish()`, `publishConfirmed()` |
 | `Message` | the body and properties of a message being published | nothing, it is a value object |
-| `Delivery` | a delivered message, and the means to settle it | `ack()`, `nack()`, `reject()` |
+| `Delivery` | a delivered message, the means to settle it, and `channel()` — a channel to publish on | `ack()`, `nack()`, `reject()`; `channel()` opens one under a supervised consumer, once per handler |
 | `RetryTopology` | the wait queues a delayed publish goes through | `declare()` — the one call here that creates topology |
 
 `$channel->queue('orders')` and `$channel->exchange('events')` cost nothing and
@@ -439,18 +439,24 @@ the stream belongs to that coroutine's flow, and stopping the flow cancels it.
 
 ```php
 $delivery->ack();                    // the broker may forget the message
-$delivery->ack(multiple: true);      // and everything before it on this channel
 $delivery->nack(requeue: true);      // refuse, put the message back in the queue
 $delivery->nack(requeue: false);     // refuse, do not put it back
-$delivery->reject();                 // as nack(requeue: false), one message only
+$delivery->reject();                 // the same refusal, defaulting to not putting it back
 ```
 
-`nack` and `reject` are the same AMQP refusal and differ in two things: the default
-and the batch form. `nack` puts the message back unless told otherwise, and
-`multiple: true` refuses everything before it on the channel in one go; `reject`
-refuses exactly one message and does not put it back unless asked. A refusal that
-does not requeue goes wherever the queue sends it — the dead-letter exchange it
-names, or nowhere at all if it names none.
+`nack` and `reject` are the same AMQP refusal and differ in one thing: the default.
+`nack` puts the message back unless told otherwise; `reject` does not put it back
+unless asked. A refusal that does not requeue goes wherever the queue sends it — the
+dead-letter exchange it names, or nowhere at all if it names none.
+
+Each of the three settles one delivery. AMQP has a batch form as well — "and
+everything before this tag on the channel" — which this library does not offer: it
+pays off only while earlier deliveries are deliberately left unsettled, and that is
+the one moment nobody can tell a message still being worked on from one already
+finished. Under a [supervised consumer](#the-channel-a-handler-publishes-on) those
+earlier deliveries belong to the handlers running beside this one; on a channel of
+one's own they are whatever the caller fanned out and has not finished yet. The
+broker cannot undo a batch, and what it settled early is lost if the process dies.
 
 Settling belongs to the delivery, not to the queue. An acknowledgement names its
 message by delivery tag on the channel it arrived on, so
@@ -816,8 +822,8 @@ declares nothing.
 
 `tests/consumers/amqp/amqp-consumer.php` is such a worker written out: it declares
 its wait queues alongside its own topology at start-up, and its `retry:<n>` handler
-republishes a failed job with a delay that grows by attempt, on the delivery's own
-channel.
+republishes a failed job with a delay that grows by attempt, on [the channel it was
+lent](#the-channel-a-handler-publishes-on).
 
 ## Connections and channels on the Go side
 
@@ -1037,14 +1043,42 @@ The pool reports itself to the [panel](admin-stats.md) like any server: how many
 consumers it has open, what they delivered, acknowledged and refused, and how long
 a delivery spends in a handler.
 
-**A prefetch above one lets two handlers share a channel.** One consumer is one
-channel, and with a prefetch of N the broker may have N of its messages out at
-once, each in a handler of its own. Settling is per delivery and safe either way,
-but publisher confirms are per *channel*: two handlers publishing with
-`publishConfirmed()` on `$delivery->channel()` at the same time can read each
-other's confirmations. With the default prefetch of one there is only ever one
-handler per channel; above it, a handler that publishes with confirms should take a
-channel of its own from the connection.
+### The channel a handler publishes on
+
+One consumer is one channel, and with a prefetch of N the broker may have N of its
+messages out at once, each in a handler of its own — so the channel they arrived on
+belongs to none of them, and a publisher confirm is counted per channel rather than
+per message. `$delivery->channel()` therefore does not answer with it. It answers
+with a channel lent to that handler alone, taken from a pool the consumer keeps and
+handed back when the handler ends; a handler that publishes nothing is lent
+nothing. Settling is unaffected: `ack()`, `nack()` and `reject()` name their
+message by tag on the channel it arrived on, and the runtime keeps that channel to
+itself.
+
+The lent channel goes back to the pool when the handler returns, so it must not be
+stored past that. A `Delivery` an application kept beyond its handler answers
+`null` from `channel()`, exactly as it does for a channel that was closed.
+
+### What the lent channels cost
+
+They are opened lazily and reused, so a worker opens at most one per handler
+publishing at the same time. A channel nothing has needed for ten minutes is given
+up again, one per message settled, so a worker that was busy once does not hold
+that burst's channels — and the sockets under them — for the rest of its life.
+
+They live on connections of the pool's own — one more socket per 255 channels — so
+they never compete with the consumers for the delivery connection's channel
+numbers, and no combination of weight and prefetch is refused for wanting too many:
+`prefetchCount: 50` over eight consumers can put 400 handlers in flight, and the
+pool answers with two extra sockets instead of a `504 channel id space exhausted`.
+
+The price is those channels and sockets, not throughput. Measured against the
+shared channel it replaced — one queue, a prefetch of 10, every handler publishing
+with confirms, broker on the same machine — the lent channel is not slower: it is
+reused, so a message pays no extra round trip, and a `waitForConfirms()` on a
+channel of one's own waits for one message instead of for every publish in flight
+on the channel. The difference between the two ran inside the spread of the runs
+themselves.
 
 ### Stopping
 

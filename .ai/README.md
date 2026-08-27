@@ -168,7 +168,12 @@ feature's doc. Key PHP classes not covered there:
   A stop cancels the consumers and leaves their channels open so the
   acknowledgements in flight land; a consumer the broker takes away is reopened on
   the Go side a second later, and only the connection going away ends one for good
-  — see [docs/amqp.md](../docs/amqp.md).
+  — see [docs/amqp.md](../docs/amqp.md). `PublishChannelPool` is what keeps a
+  prefetch above one from being a trap: a consumer's channel carries the messages of
+  every handler running on it, and a publisher confirm is counted per channel, so
+  `Delivery::channel()` hands out a channel lent to one handler instead. The pool
+  opens them lazily on connections of its own and grows a connection per 255, so no
+  weight-and-prefetch combination is ever refused for want of channel numbers.
 - `Features/Socket/Dto/AbstractConnection` — shared base for the socket and
   WebSocket `Connection` DTOs (server accept-side and client dial-side); keeps the
   features decoupled, since all depend on the neutral base rather than each other.

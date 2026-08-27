@@ -71,8 +71,9 @@ function handleRetry(Delivery $delivery, RetrySchedule $schedule, string $attemp
     fwrite(STDOUT, "failed {$delivery->body} on attempt $attempt, back in {$delayMs}ms" . PHP_EOL);
     fflush(STDOUT);
 
-    // The delivery's own channel, not one from the outer scope: this handler runs in a
-    // coroutine of its own, and a channel shared between coroutines serializes them.
+    // The channel the consumer lent this handler, not one from the outer scope: it is
+    // nobody else's for as long as the handler runs, so the confirms below are this
+    // message's own.
     //
     // Confirmed, and retried when the broker refuses. Returning from this handler is what
     // acknowledges the delivery that brought the job here, so by then this publish is the

@@ -518,37 +518,6 @@ class AmqpMessageTest extends AmqpTestCase
         self::assertTrue($channel->isOpen());
     }
 
-    public function testAcknowledgingSeveralMessagesAtOnce(): void
-    {
-        $channel = $this->channel();
-        $queue   = $this->declareQueue(
-            channel: $channel,
-            durable: true,
-        );
-
-        foreach (['one', 'two', 'three'] as $body) {
-            $this->publishToQueue(
-                channel: $channel,
-                queueName: $queue->name(),
-                message: $body,
-            );
-        }
-
-        $last = null;
-
-        for ($index = 0; $index < 3; ++$index) {
-            $last = $this->waitForMessage($queue);
-
-            self::assertNotNull($last);
-        }
-
-        $last->ack(multiple: true);
-
-        // Same reasoning as above: only a count taken after the channel is closed tells an
-        // acknowledged message from one that is merely held.
-        self::assertSame(0, $this->countAfterTheChannelIsGone($channel, $queue->name()));
-    }
-
     public function testAPrefetchOutsideTheProtocolRangeIsRefused(): void
     {
         $channel = $this->channel();

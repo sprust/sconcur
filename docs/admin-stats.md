@@ -159,7 +159,7 @@ running unlike pools shows each of them beside the others.
 | `connections.active` / `totalAccepted` | connections open now / accepted over all time | counter |
 | `consumers.coroutines` | consumers open — one per coroutine, so the capacity in use | consumer registry |
 | `consumers.delivered` | deliveries handed to PHP (queue consumer) | counter |
-| `consumers.acked` / `refused` | deliveries acknowledged / nacked or rejected — deliveries, not commands, so one multiple-ack of a hundred counts a hundred | the `ack`, `nack` and `reject` commands themselves |
+| `consumers.acked` / `refused` | deliveries acknowledged / nacked or rejected, counted as deliveries rather than as commands | the `ack`, `nack` and `reject` commands themselves |
 | `consumers.timed` | of those, how many had a handler time to measure (an auto-acknowledged delivery has none) | in-flight registry |
 | `consumers.avgMs` | average time a delivery spends in a handler | delivery → its acknowledgement |
 | `consumers.inFlight` | delivered and not settled yet | in-flight registry |
