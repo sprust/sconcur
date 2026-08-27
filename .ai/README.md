@@ -173,7 +173,10 @@ feature's doc. Key PHP classes not covered there:
   every handler running on it, and a publisher confirm is counted per channel, so
   `Delivery::channel()` hands out a channel lent to one handler instead. The pool
   opens them lazily on connections of its own and grows a connection per 255, so no
-  weight-and-prefetch combination is ever refused for want of channel numbers.
+  weight-and-prefetch combination is ever refused for want of channel numbers; a
+  channel handed back with an answer the broker still owes it — a confirm or a return
+  nobody waited for — is given up rather than lent on, which is the same
+  misattribution delayed.
 - `Features/Socket/Dto/AbstractConnection` — shared base for the socket and
   WebSocket `Connection` DTOs (server accept-side and client dial-side); keeps the
   features decoupled, since all depend on the neutral base rather than each other.

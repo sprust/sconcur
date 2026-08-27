@@ -6,6 +6,7 @@ namespace SConcur\Features\Amqp;
 
 use Closure;
 use SConcur\Exceptions\Amqp\ChannelException;
+use SConcur\Exceptions\Amqp\ConcurrentDeliveryUseException;
 use WeakReference;
 
 /**
@@ -29,8 +30,18 @@ use WeakReference;
  */
 class Delivery
 {
+    /**
+     * Whether this delivery hands out a channel of its own rather than the one it arrived
+     * on. Settled at construction and never cleared, so that a delivery whose loan has ended
+     * answers with nothing instead of falling back on the channel the runtime keeps.
+     */
+    protected bool $lending;
+
     /** The channel lent to this handler, once it has asked for one. */
     protected ?Channel $lentChannel = null;
+
+    /** Guards the moment the loan is taken, which waits for the broker. */
+    protected bool $leasing = false;
 
     /**
      * @param WeakReference<Channel>  $channel the channel the message arrived on. Weak, so a
@@ -58,6 +69,7 @@ class Delivery
         protected bool $settled = false,
         protected ?Closure $lend = null,
     ) {
+        $this->lending = $lend !== null;
     }
 
     /** A header of the message, or null when it carries none by that name. */
@@ -129,11 +141,41 @@ class Delivery
      */
     public function channel(): ?Channel
     {
-        if ($this->lend === null) {
+        if (!$this->lending) {
             return $this->channel->get();
         }
 
-        return $this->lentChannel ??= ($this->lend)();
+        if ($this->lentChannel !== null) {
+            return $this->lentChannel;
+        }
+
+        // The loan is over: the handler has ended and its channel has gone back. Answering
+        // with the channel the message arrived on instead would hand out the one thing this
+        // whole arrangement keeps away from handlers.
+        if ($this->lend === null) {
+            return null;
+        }
+
+        // Taking the loan waits for the broker, so a second coroutine can arrive here while
+        // the first is still inside it. Both would be lent a channel and only one could ever
+        // be given back; the guard turns that into a failure the caller can see.
+        if ($this->leasing) {
+            throw new ConcurrentDeliveryUseException(
+                message: 'Could not lend a channel: this delivery is already taking one for another'
+                    . ' coroutine. A delivery belongs to the handler it was given to — where work'
+                    . ' fans out, give each coroutine a channel of its own from the connection.',
+            );
+        }
+
+        $this->leasing = true;
+
+        try {
+            $this->lentChannel = ($this->lend)();
+        } finally {
+            $this->leasing = false;
+        }
+
+        return $this->lentChannel;
     }
 
     /**

@@ -51,6 +51,18 @@ class Channel extends AmqpResource
     protected bool $owned = true;
 
     /**
+     * Whether the broker may still owe this channel an answer nobody has read: a publisher
+     * confirm for a message published in confirm mode, or the return of a mandatory one.
+     *
+     * Both accumulate on the channel until a `waitForConfirms()` collects them, and it
+     * collects everything the channel has, whoever published it. So a channel carrying an
+     * answer its publisher never read cannot be handed to anyone else — that reader would be
+     * told about a message that is not theirs. `PublishChannelPool` asks this before lending
+     * a channel out again.
+     */
+    protected bool $unreadPublishAnswers = false;
+
+    /**
      * A handle over a channel that is already open on the Go side. Nothing is opened here:
      * `Connection::channel()` opens one and hands the id over.
      *
@@ -228,6 +240,13 @@ class Channel extends AmqpResource
     ): void {
         $message = is_string($message) ? new Message($message) : $message;
 
+        // Marked before the command rather than after: a publish that failed on the way out
+        // may still have reached the broker, and a channel wrongly believed clean is worse
+        // than one wrongly believed dirty — the second only costs a channel.
+        if ($this->confirming || $mandatory) {
+            $this->unreadPublishAnswers = true;
+        }
+
         $this->run(
             command: AmqpCommandEnum::Publish,
             data: [
@@ -347,10 +366,29 @@ class Channel extends AmqpResource
             operation: 'Could not wait for the publisher confirms.',
         );
 
+        // Cleared here, before the two checks below rather than after them: the wait took
+        // everything the channel had collected, so what is left to raise belongs to this
+        // caller and the channel itself is owed nothing more. A wait that failed instead —
+        // its deadline passed, the coroutine was unwound, the channel died — never got here,
+        // and the channel stays marked.
+        $this->unreadPublishAnswers = false;
+
         // Returns first: an unroutable message is acknowledged too, so reading the
         // confirmations first would report success for a message that reached nothing.
         DeliveryCodec::failOnReturns(is_array($result['rt'] ?? null) ? $result['rt'] : []);
         DeliveryCodec::failOnNacks(is_array($result['cf'] ?? null) ? $result['cf'] : []);
+    }
+
+    /**
+     * Whether an answer the broker sent about a published message is still sitting on this
+     * channel unread.
+     *
+     * @internal what PublishChannelPool asks before lending a channel to the next handler;
+     *           see the property it reads.
+     */
+    public function hasUnreadPublishAnswers(): bool
+    {
+        return $this->unreadPublishAnswers;
     }
 
     /**

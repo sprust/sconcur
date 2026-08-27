@@ -5,10 +5,15 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Amqp;
 
 use SConcur\Exceptions\Amqp\AmqpException;
+use SConcur\Exceptions\Amqp\ConcurrentDeliveryUseException;
+use SConcur\Features\Amqp\Channel;
 use SConcur\Features\Amqp\Consumer\QueueConsumer;
 use SConcur\Features\Amqp\Delivery;
+use SConcur\Features\Amqp\Support\DeliveryCodec;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Impl\TestAmqpResolver;
+use SConcur\WaitGroup;
+use WeakReference;
 
 /**
  * What a handler of a supervised consumer publishes through.
@@ -150,6 +155,185 @@ class QueueConsumerChannelTest extends AmqpTestCase
         );
 
         self::assertSame(3, $this->waitForMessageCount($target, expected: 3));
+    }
+
+    /**
+     * The loan ends with the handler, and a delivery kept past it answers with nothing —
+     * never with the channel the message arrived on, which is the one the runtime keeps.
+     *
+     * Asked while the consumer is still running, on purpose: once the run ends it lets go of
+     * the arriving channels anyway, and a delivery would answer null for that reason instead
+     * of this one.
+     */
+    public function testADeliveryHandsOutNothingAfterItsHandler(): void
+    {
+        $channel = $this->channel();
+
+        $source = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
+
+        $this->publishToQueue($channel, $source->name(), 'first');
+        $this->publishToQueue($channel, $source->name(), 'second');
+
+        $first   = null;
+        $answers = [];
+
+        $queueConsumer = new QueueConsumer(
+            queues: $this->queuesJson($source->name()),
+            prefetchCount: 1,
+            maxMessages: 2,
+        );
+
+        $queueConsumer->consume(
+            connection: $this->connection(),
+            handler: static function (Delivery $delivery) use (&$first, &$answers): void {
+                $own = $delivery->channel();
+
+                self::assertNotNull($own, 'the handler is lent one while it runs');
+
+                if ($first === null) {
+                    $first = $delivery;
+
+                    return;
+                }
+
+                // The first handler has ended; its delivery must have nothing left to give.
+                $answers['kept'] = $first->channel();
+                $answers['own']  = $own;
+            },
+        );
+
+        self::assertArrayHasKey('kept', $answers);
+        self::assertNull($answers['kept'], 'a delivery kept past its handler is lent nothing');
+    }
+
+    /**
+     * Taking the loan waits for the broker, so a delivery used from two coroutines at once
+     * would be lent two channels and could give back only one. Refused instead of leaked.
+     */
+    public function testOneDeliveryCannotLendToTwoCoroutinesAtOnce(): void
+    {
+        $channel = $this->channel();
+
+        $delivery = DeliveryCodec::delivery(
+            delivery: ['bd' => 'body'],
+            channel: WeakReference::create($channel),
+            autoAck: true,
+            // Stands in for a real lease, which opens a channel on the broker and suspends
+            // the coroutine while it does.
+            lend: static function () use ($channel): Channel {
+                Sleeper::usleep(microseconds: 100_000);
+
+                return $channel;
+            },
+        );
+
+        $outcome = null;
+
+        $waitGroup = WaitGroup::create();
+
+        $waitGroup->add(static function () use ($delivery): void {
+            $delivery->channel();
+        });
+
+        $waitGroup->add(static function () use ($delivery, &$outcome): void {
+            try {
+                $delivery->channel();
+
+                $outcome = 'lent';
+            } catch (ConcurrentDeliveryUseException) {
+                $outcome = 'refused';
+            }
+        });
+
+        $waitGroup->waitAll();
+
+        self::assertSame('refused', $outcome);
+    }
+
+    /**
+     * What one handler left behind must not reach the next. A mandatory message routed
+     * nowhere leaves a return sitting on the channel, and whoever waits for confirms on that
+     * channel next would collect it as if it were about their own message.
+     */
+    public function testWhatOneHandlerLeftUnreadDoesNotReachTheNext(): void
+    {
+        $channel = $this->channel();
+
+        $source = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
+        $target = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
+
+        $this->publishToQueue($channel, $source->name(), 'poison');
+        $this->publishToQueue($channel, $source->name(), 'clean');
+
+        $nowhere = TestAmqpResolver::uniqueName('nowhere');
+
+        $outcomes = [];
+
+        // One at a time on purpose: the second handler gets the channel the first gave back,
+        // unless the pool notices what was left on it.
+        $queueConsumer = new QueueConsumer(
+            queues: $this->queuesJson($source->name()),
+            prefetchCount: 1,
+            maxMessages: 2,
+        );
+
+        $queueConsumer->consume(
+            connection: $this->connection(),
+            handler: static function (Delivery $delivery) use ($target, $nowhere, &$outcomes): void {
+                $own = $delivery->channel();
+
+                self::assertNotNull($own);
+
+                if ($delivery->body === 'poison') {
+                    // Published and never waited for — what a handler cut by its deadline,
+                    // or unwound by a drain, leaves behind.
+                    $own->publish(
+                        message: 'orphan',
+                        exchange: '',
+                        routingKey: $nowhere,
+                        mandatory: true,
+                    );
+
+                    $outcomes['poison'] = 'left';
+
+                    return;
+                }
+
+                try {
+                    $own->publishConfirmed(
+                        message: $delivery->body,
+                        exchange: '',
+                        routingKey: $target->name(),
+                        timeoutSeconds: 3.0,
+                    );
+
+                    $outcomes['clean'] = 'stored';
+                } catch (AmqpException) {
+                    $outcomes['clean'] = 'refused';
+                }
+            },
+        );
+
+        ksort($outcomes);
+
+        self::assertSame(
+            [
+                'clean'  => 'stored',
+                'poison' => 'left',
+            ],
+            $outcomes,
+        );
+
+        self::assertSame(1, $this->waitForMessageCount($target, expected: 1));
     }
 
     /**

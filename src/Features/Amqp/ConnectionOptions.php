@@ -131,7 +131,9 @@ readonly class ConnectionOptions
 
     /**
      * How many channels one connection can actually carry. Channel numbering starts at one,
-     * so the last usable number is one below the ceiling.
+     * so the last usable number is one below the ceiling — and never below one, or a
+     * connection allowed a single channel would be reported as carrying none, which turns a
+     * pool that opens a connection when the last one is full into one socket per channel.
      *
      * @param ?int $negotiated what the broker agreed on in the handshake; null, or a value
      *                         below one — which is how a broker says "no limit" — leaves the
@@ -143,7 +145,7 @@ readonly class ConnectionOptions
             return self::MAX_CHANNELS - 1;
         }
 
-        return $negotiated - 1;
+        return max(1, $negotiated - 1);
     }
 
     /**

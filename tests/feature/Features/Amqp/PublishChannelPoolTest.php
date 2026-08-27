@@ -6,6 +6,7 @@ namespace SConcur\Tests\Feature\Features\Amqp;
 
 use SConcur\Exceptions\Amqp\AmqpException;
 use SConcur\Features\Amqp\Consumer\PublishChannelPool;
+use SConcur\Features\Amqp\ConnectionOptions;
 use SConcur\Tests\Impl\TestAmqpResolver;
 
 /**
@@ -137,7 +138,107 @@ class PublishChannelPoolTest extends AmqpTestCase
             $pool->release($second);
 
             self::assertSame(0, $pool->channelCount());
+            self::assertSame(1, $pool->connectionCount(), 'one socket is kept to open the next channel on');
             self::assertTrue($pool->lease()->isOpen(), 'the pool still opens one when asked');
+        } finally {
+            $pool->close();
+        }
+    }
+
+    /**
+     * The delayed form of the misattribution the pool exists to prevent: a handler that left
+     * a confirm or a return unread hands the channel back, and whoever waits on it next
+     * collects that answer as if it were about their own message.
+     */
+    public function testAChannelTheBrokerStillOwesAnAnswerIsNotLentAgain(): void
+    {
+        $pool = new PublishChannelPool(options: $this->connection()->options);
+
+        try {
+            $channel = $pool->lease();
+
+            // Mandatory and routed nowhere, and nobody waits for the return: exactly what a
+            // handler leaves behind when its deadline cuts it mid-publish.
+            $channel->publish(
+                message: 'orphan',
+                exchange: '',
+                routingKey: TestAmqpResolver::uniqueName('nowhere'),
+                mandatory: true,
+            );
+
+            $pool->release($channel);
+
+            $next = $pool->lease();
+
+            self::assertNotSame($channel, $next, 'a channel with an unread answer must not be lent again');
+            self::assertTrue($next->isOpen());
+        } finally {
+            $pool->close();
+        }
+    }
+
+    /** A channel handed back with nothing outstanding is the ordinary case, and is reused. */
+    public function testAChannelWithNothingOutstandingIsStillReused(): void
+    {
+        $pool = new PublishChannelPool(options: $this->connection()->options);
+
+        $target = $this->declareQueue(
+            channel: $this->channel(),
+            durable: true,
+        );
+
+        try {
+            $channel = $pool->lease();
+
+            $channel->publishConfirmed(
+                message: 'stored',
+                exchange: '',
+                routingKey: $target->name(),
+                timeoutSeconds: 3.0,
+            );
+
+            $pool->release($channel);
+
+            self::assertSame($channel, $pool->lease(), 'a settled publish leaves the channel reusable');
+        } finally {
+            $pool->close();
+        }
+    }
+
+    /**
+     * A burst spreads over several connections, and the sockets go back with the channels —
+     * all but the one the next channel will be opened on.
+     */
+    public function testTheConnectionsOfAPastBurstAreGivenUp(): void
+    {
+        $options = $this->connection()->options;
+
+        $pool = new PublishChannelPool(
+            options: new ConnectionOptions(
+                host: $options->host,
+                port: $options->port,
+                login: $options->login,
+                password: $options->password,
+                vhost: $options->vhost,
+                // Two, so exactly one is usable: the growth a real pool reaches at 255
+                // fits in a test.
+                channelMax: 2,
+            ),
+            maxIdleSeconds: 0.0,
+        );
+
+        try {
+            $leased = [$pool->lease(), $pool->lease(), $pool->lease()];
+
+            self::assertSame(3, $pool->channelCount());
+            self::assertSame(3, $pool->connectionCount(), 'one channel each means one connection each');
+
+            foreach ($leased as $channel) {
+                $pool->release($channel);
+            }
+
+            self::assertSame(0, $pool->channelCount());
+            self::assertSame(1, $pool->connectionCount(), 'the burst gives its sockets back');
         } finally {
             $pool->close();
         }

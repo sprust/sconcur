@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Features\Amqp\Consumer;
 
 use Closure;
+use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Features\Amqp\Channel;
 use SConcur\Features\Amqp\Connection;
 use SConcur\Features\Amqp\ConnectionOptions;
@@ -104,13 +105,19 @@ class PublishChannelPool
     }
 
     /**
-     * Takes a lent channel back. One that died on the handler is dropped rather than lent
-     * again: the failure the handler already saw is enough, and the next one deserves a
-     * working channel.
+     * Takes a lent channel back, and keeps it only if the next handler can have it clean.
+     *
+     * Two things disqualify one. A channel that died on the handler is dropped: the failure
+     * that holder already saw is enough, and the next deserves a working channel. And a
+     * channel the broker still owes an answer — a publisher confirm, or the return of a
+     * mandatory message — is dropped as well, because whoever waits next collects everything
+     * the channel has collected, whoever published it. Lending that on would tell one
+     * handler about another's message: the very misattribution a channel of one's own
+     * exists to prevent, delayed rather than concurrent.
      */
     public function release(Channel $channel): void
     {
-        if ($channel->isOpen()) {
+        if ($channel->isOpen() && !$channel->hasUnreadPublishAnswers()) {
             $this->idleSince[spl_object_id($channel)] = microtime(true);
 
             $this->free[] = $channel;
@@ -142,27 +149,35 @@ class PublishChannelPool
         $this->idleSince    = [];
         $this->connectionOf = [];
 
-        // An unwound coroutine has nothing to await an answer on, and asking would park it
-        // for good. Dropping the objects is enough there: a Connection hands its handle back
-        // from its destructor, detached, which is the same release without the waiting.
-        if (FeatureExecutor::canAwait()) {
+        try {
+            // An unwound coroutine has nothing to await an answer on, and asking would park
+            // it for good. Dropping the objects is enough there: a Connection hands its
+            // handle back from its destructor, detached — the same release without the wait.
+            if (!FeatureExecutor::canAwait()) {
+                return;
+            }
+
             foreach ($this->connections as $connection) {
                 try {
                     $connection->close();
+                } catch (FlowStoppedException $exception) {
+                    // A deliberate unwind reached the teardown; it is not a failure to
+                    // swallow, and the arrays are cleared on the way out regardless.
+                    throw $exception;
                 } catch (Throwable) {
                     // A teardown is no place to fail: the process is going away with
                     // whatever the broker still holds open, and the connection is pooled
                     // behind a five-minute idle timeout either way.
                 }
             }
+        } finally {
+            // Let go after the connections, not before: releasing one closes its channels on
+            // the Go side and clears their handles, so the destructors that follow have
+            // nothing left to send.
+            $this->free        = [];
+            $this->connections = [];
+            $this->openCounts  = [];
         }
-
-        // Let go after the connections, not before: releasing one closes its channels on the
-        // Go side and clears their handles, so the destructors that follow have nothing left
-        // to send.
-        $this->free        = [];
-        $this->connections = [];
-        $this->openCounts  = [];
     }
 
     /**
@@ -244,9 +259,10 @@ class PublishChannelPool
         $connection = new Connection(
             $this->options->withConnectionName(
                 sprintf(
-                    '%s publish %d',
+                    '%s publish %d (pid %d)',
                     $this->options->connectionName ?? self::DEFAULT_CONNECTION_NAME,
                     $index + 1,
+                    getmypid(),
                 ),
             ),
         );
@@ -278,8 +294,45 @@ class PublishChannelPool
 
         unset($this->connectionOf[$objectId]);
 
-        if ($index !== null && $this->openCounts[$index] > 0) {
+        if ($index === null) {
+            return;
+        }
+
+        if ($this->openCounts[$index] > 0) {
             --$this->openCounts[$index];
+        }
+
+        // All but the newest, which the next channel is opened on: letting that one go would
+        // make a worker whose handlers keep giving channels back dirty — a publish nobody
+        // waited for — dial a connection per message.
+        if ($this->openCounts[$index] === 0 && $index !== count($this->connections) - 1) {
+            $this->forgetConnection($index);
+        }
+    }
+
+    /**
+     * Lets go of a connection with no channels left on it, so that a burst gives back its
+     * sockets and not only its channels.
+     *
+     * Dropped rather than closed: this runs on the path a handler returns through, and
+     * closing waits for the broker — which an unwound coroutine cannot do at all. The
+     * destructor hands the handle back detached, without the waiting.
+     */
+    protected function forgetConnection(int $index): void
+    {
+        unset($this->connections[$index], $this->openCounts[$index]);
+
+        $this->connections = array_values($this->connections);
+        $this->openCounts  = array_values($this->openCounts);
+
+        // Closing the gap moved every later connection down a place, and the channels still
+        // out are counted against those by index. Without this they would decrement the
+        // wrong connection when they come back, and a connection that never empties would
+        // hold its socket for the life of the run.
+        foreach ($this->connectionOf as $objectId => $connectionIndex) {
+            if ($connectionIndex > $index) {
+                $this->connectionOf[$objectId] = $connectionIndex - 1;
+            }
         }
     }
 }

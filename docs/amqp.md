@@ -1062,6 +1062,18 @@ The lent channel goes back to the pool when the handler returns, so it must not 
 stored past that. A `Delivery` an application kept beyond its handler answers
 `null` from `channel()`, exactly as it does for a channel that was closed.
 
+It goes back only if the broker owes it nothing. A publisher confirm, and the return
+of a mandatory message, sit on the channel until someone waits for them — and that
+wait collects everything the channel has collected, whoever published it. So a
+handler that left one unread, because its deadline cut it mid-publish or because it
+published mandatory and never looked, hands back a channel the pool gives up instead
+of lending on; the next handler opens a fresh one.
+
+The delivery belongs to one coroutine. Asking it for a channel from two at once
+raises `ConcurrentDeliveryUseException` rather than lending two, only one of which
+could ever be given back. Where a handler fans work out, take a channel per
+coroutine from the connection.
+
 ### What the lent channels cost
 
 They are opened lazily and reused, so a worker opens at most one per handler
