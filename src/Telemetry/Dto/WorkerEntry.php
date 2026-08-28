@@ -12,6 +12,7 @@ readonly class WorkerEntry
 {
     public function __construct(
         public int $pid,
+        public string $group,
         public bool $hung,
         public int $snapshotAgeMs,
         public int $startedAtMs,
@@ -21,6 +22,7 @@ readonly class WorkerEntry
         public int $goroutines,
         public ?Requests $requests,
         public ?Connections $connections,
+        public ?Consumers $consumers = null,
     ) {
     }
 
@@ -31,6 +33,7 @@ readonly class WorkerEntry
     {
         $data = [
             'pid'           => $this->pid,
+            'group'         => $this->group,
             'hung'          => $this->hung,
             'snapshotAgeMs' => $this->snapshotAgeMs,
             'startedAt'     => $this->startedAtMs > 0 ? gmdate('c', intdiv($this->startedAtMs, 1000)) : '',
@@ -42,6 +45,10 @@ readonly class WorkerEntry
 
         if ($this->requests !== null) {
             $data['requests'] = $this->requests->toArray();
+        }
+
+        if ($this->consumers !== null) {
+            $data['consumers'] = $this->consumers->toArray();
         }
 
         if ($this->connections !== null) {

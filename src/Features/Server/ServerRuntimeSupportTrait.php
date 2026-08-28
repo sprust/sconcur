@@ -9,12 +9,17 @@ use DateTimeImmutable;
 use ReflectionClass;
 use ReflectionNamedType;
 use SConcur\Exceptions\Server\InvalidServerArgumentException;
+use SConcur\Scheduler\Scheduler;
 
 /**
- * Shared runtime support for the long-lived servers (HttpServer, SocketServer):
- * build constructor overrides from CLI argv, install graceful-shutdown signal
- * handlers, and detect an orphaned worker. Stateless ("lite") — it only adds
- * behaviour, never properties.
+ * Shared runtime support for the long-lived workers a WorkerMaster supervises — the three
+ * servers and the AMQP queue consumer: build constructor overrides from CLI argv, install
+ * graceful-shutdown signal handlers, arm automatic preemption, read the telemetry
+ * environment, and detect an orphaned worker. Stateless — it only adds behaviour, never
+ * properties.
+ *
+ * None of that is about serving a socket, which is why a consumer uses it unchanged; the
+ * namespace is where the first user happened to live.
  */
 trait ServerRuntimeSupportTrait
 {
@@ -194,6 +199,39 @@ trait ServerRuntimeSupportTrait
         // buffered, so the startup banner would otherwise not surface until the buffer fills
         // or the process exits.
         fflush(STDOUT);
+    }
+
+    /**
+     * Runs a worker's serving loop with automatic preemption armed, so CPU-bound handler
+     * code cannot starve the other coroutines — and so a deadline or a stop can reach a
+     * handler that never waits for anything.
+     *
+     * The servers hand their quantum to Scheduler::serve(), which does this around its own
+     * loop. A worker without such a loop — the AMQP queue consumer waits on a WaitGroup —
+     * gets the same pairing here instead of arming the timer by hand.
+     *
+     * @template TReturn
+     *
+     * @param int                $quantumMs 0 leaves preemption off
+     * @param Closure(): TReturn $callback
+     *
+     * @return TReturn
+     */
+    protected static function withPreemption(int $quantumMs, Closure $callback): mixed
+    {
+        if ($quantumMs <= 0) {
+            return $callback();
+        }
+
+        $scheduler = Scheduler::get();
+
+        $scheduler->enablePreemption(quantumMs: $quantumMs);
+
+        try {
+            return $callback();
+        } finally {
+            $scheduler->disablePreemption();
+        }
     }
 
     /**

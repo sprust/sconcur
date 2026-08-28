@@ -3,7 +3,7 @@
 Адресат: разработчик библиотеки `sconcur/sconcur`.
 Тип: фреймворк-нейтральная фича планировщика. Никакой Laravel-специфики здесь нет и быть не
 должно — она остаётся в интеграции `sconcur-laravel` (см.
-[fiber-safe-laravel-bridge.ru.md](fiber-safe-laravel-bridge.ru.md)).
+[fiber-safe-laravel-bridge.md](fiber-safe-laravel-bridge.md)).
 
 Версия от: 2026-06-28.
 
@@ -259,4 +259,4 @@ public static function ctxSet(int $fiberId, string $key, mixed $value, bool $rep
 После появления этого примитива со стороны `sconcur-laravel` убирается весь Octane-своп
 глобалок (`clone $app`, `CurrentApplication::set`, `flush`), и per-request состояние уезжает в
 `current_context()`. Подробности интеграции — в
-[fiber-safe-laravel-bridge.ru.md](fiber-safe-laravel-bridge.ru.md).
+[fiber-safe-laravel-bridge.md](fiber-safe-laravel-bridge.md).

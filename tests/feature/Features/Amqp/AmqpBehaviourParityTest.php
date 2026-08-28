@@ -1,0 +1,304 @@
+<?php
+
+declare(strict_types=1);
+
+namespace SConcur\Tests\Feature\Features\Amqp;
+
+use AMQPChannel as NativeChannel;
+use AMQPConnection as NativeConnection;
+use AMQPEnvelope as NativeEnvelope;
+use AMQPExchange as NativeExchange;
+use AMQPQueue as NativeQueue;
+use SConcur\Features\Amqp\Delivery;
+use SConcur\Features\Amqp\Message;
+use SConcur\Tests\Impl\TestAmqpResolver;
+use Throwable;
+
+/**
+ * The two implementations must put the same bytes on the wire. A message published through
+ * ext-amqp is read back through SConcur and the other way round, and every property, header
+ * and routing field is compared.
+ *
+ * This is where a swapped argument, a misread flag or a mis-encoded field table shows up.
+ * The API shapes differ on purpose now — only the wire has to agree — which is why this
+ * test survived the move away from the calque while the reflection parity test did not.
+ */
+class AmqpBehaviourParityTest extends AmqpTestCase
+{
+    /** The properties both implementations are asked to publish. */
+    private const array HEADERS = [
+        'x-attempt' => 3,
+        'x-flag'    => true,
+        'x-name'    => 'parity',
+        'x-ratio'   => 1.5,
+        // A field array: the keys are integers all the way, so it must reach the broker as
+        // a list and come back as one.
+        'x-list'    => ['a', 'b', 'c'],
+        // A nested table with one integer key: deeper than the top level, a key that is not
+        // a string is kept as its string form rather than dropped.
+        'x-mixed'   => [
+            0   => 'zero',
+            'k' => 'value',
+        ],
+        // Shaped like the map a decimal travels in: an application's own header must not be
+        // mistaken for one.
+        'x-tagged'  => [
+            '__amqp' => 'D',
+            'e'      => 3,
+            's'      => 99,
+        ],
+    ];
+
+    protected ?NativeConnection $nativeConnection = null;
+
+    protected ?NativeChannel $nativeChannel = null;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        if (!extension_loaded('amqp')) {
+            self::markTestSkipped('ext-amqp is not installed, there is nothing to compare against.');
+        }
+    }
+
+    protected function tearDown(): void
+    {
+        try {
+            $this->nativeChannel = null;
+
+            $this->nativeConnection?->disconnect();
+        } catch (Throwable) {
+            // The broker is gone; nothing to disconnect from.
+        }
+
+        $this->nativeConnection = null;
+
+        parent::tearDown();
+    }
+
+    public function testSConcurReadsWhatTheExtensionPublished(): void
+    {
+        $channel = $this->channel();
+        $queue   = $this->declareQueue(channel: $channel, durable: true);
+
+        $queueName = $queue->name();
+
+        $nativeExchange = new NativeExchange($this->nativeChannel());
+
+        $nativeExchange->setName('');
+        $nativeExchange->publish('{"id":1}', $queueName, AMQP_NOPARAM, [
+            'content_type'     => 'application/json',
+            'content_encoding' => 'utf-8',
+            'delivery_mode'    => 2,
+            'priority'         => 3,
+            'correlation_id'   => 'correlation-1',
+            'reply_to'         => 'reply-queue',
+            'expiration'       => '60000',
+            'message_id'       => 'message-1',
+            'timestamp'        => 1_700_000_000,
+            'type'             => 'order.created',
+            'app_id'           => 'parity',
+            'headers'          => self::HEADERS,
+        ]);
+
+        $delivery = $this->waitForMessage($queue);
+
+        self::assertNotNull($delivery, 'SConcur received nothing from the extension');
+
+        self::assertSame($this->expectedFields($queueName), $this->fieldsOfDelivery($delivery));
+
+        $delivery->ack();
+    }
+
+    public function testTheExtensionReadsWhatSConcurPublished(): void
+    {
+        $channel = $this->channel();
+        $queue   = $this->declareQueue(channel: $channel, durable: true);
+
+        $queueName = $queue->name();
+
+        $queue->publish(new Message(
+            body: '{"id":1}',
+            contentType: 'application/json',
+            contentEncoding: 'utf-8',
+            persistent: true,
+            priority: 3,
+            correlationId: 'correlation-1',
+            replyTo: 'reply-queue',
+            expiration: '60000',
+            messageId: 'message-1',
+            timestamp: 1_700_000_000,
+            type: 'order.created',
+            appId: 'parity',
+            headers: self::HEADERS,
+        ));
+
+        $envelope = $this->waitForNativeMessage($queueName);
+
+        self::assertNotNull($envelope, 'the extension received nothing from SConcur');
+
+        self::assertSame($this->expectedFields($queueName), $this->fieldsOfEnvelope($envelope));
+    }
+
+    public function testAQueueDeclaredByOneImplementationIsUsableByTheOther(): void
+    {
+        $channel = $this->channel();
+        $queue   = $this->declareQueue(channel: $channel, durable: true);
+
+        // The extension declares the same queue passively: it would fail if SConcur had
+        // declared it with different durability or arguments.
+        $nativeQueue = new NativeQueue($this->nativeChannel());
+
+        $nativeQueue->setName($queue->name());
+        $nativeQueue->setFlags(AMQP_PASSIVE);
+
+        self::assertSame(0, $nativeQueue->declareQueue());
+    }
+
+    /**
+     * Sorts a field table by key, at every level: a table has no order, and the two
+     * implementations are free to hand it over in a different one. A field array keeps its
+     * order, which is what makes it an array.
+     *
+     * @param array<array-key, mixed> $table
+     */
+    protected static function sortRecursively(array &$table): void
+    {
+        foreach ($table as &$value) {
+            if (is_array($value) && !array_is_list($value)) {
+                static::sortRecursively($value);
+            }
+        }
+
+        unset($value);
+
+        if (!array_is_list($table)) {
+            ksort($table);
+        }
+    }
+
+    /**
+     * The fields both sides must report, in one map so a mismatch is shown as a diff rather
+     * than as the first failing assertion.
+     *
+     * @return array<string, mixed>
+     */
+    private function expectedFields(string $queueName): array
+    {
+        $headers = self::HEADERS;
+
+        static::sortRecursively($headers);
+
+        return [
+            'body'            => '{"id":1}',
+            'routingKey'      => $queueName,
+            'exchange'        => '',
+            'contentType'     => 'application/json',
+            'contentEncoding' => 'utf-8',
+            'deliveryMode'    => 2,
+            'priority'        => 3,
+            'correlationId'   => 'correlation-1',
+            'replyTo'         => 'reply-queue',
+            'expiration'      => '60000',
+            'messageId'       => 'message-1',
+            'timestamp'       => 1_700_000_000,
+            'type'            => 'order.created',
+            'appId'           => 'parity',
+            'headers'         => $headers,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function fieldsOfDelivery(Delivery $delivery): array
+    {
+        $properties = $delivery->properties;
+
+        $headers = $properties->headers;
+
+        static::sortRecursively($headers);
+
+        return [
+            'body'            => $delivery->body,
+            'routingKey'      => $delivery->routingKey,
+            'exchange'        => $delivery->exchange,
+            'contentType'     => $properties->contentType,
+            'contentEncoding' => $properties->contentEncoding,
+            'deliveryMode'    => $properties->deliveryMode,
+            'priority'        => $properties->priority,
+            'correlationId'   => $properties->correlationId,
+            'replyTo'         => $properties->replyTo,
+            'expiration'      => $properties->expiration,
+            'messageId'       => $properties->messageId,
+            'timestamp'       => $properties->timestamp,
+            'type'            => $properties->type,
+            'appId'           => $properties->appId,
+            'headers'         => $headers,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function fieldsOfEnvelope(NativeEnvelope $envelope): array
+    {
+        $headers = $envelope->getHeaders();
+
+        static::sortRecursively($headers);
+
+        return [
+            'body'            => $envelope->getBody(),
+            'routingKey'      => $envelope->getRoutingKey(),
+            'exchange'        => $envelope->getExchangeName(),
+            'contentType'     => $envelope->getContentType(),
+            'contentEncoding' => $envelope->getContentEncoding(),
+            'deliveryMode'    => $envelope->getDeliveryMode(),
+            'priority'        => $envelope->getPriority(),
+            'correlationId'   => $envelope->getCorrelationId(),
+            'replyTo'         => $envelope->getReplyTo(),
+            'expiration'      => $envelope->getExpiration(),
+            'messageId'       => $envelope->getMessageId(),
+            'timestamp'       => $envelope->getTimestamp(),
+            'type'            => $envelope->getType(),
+            'appId'           => $envelope->getAppId(),
+            'headers'         => $headers,
+        ];
+    }
+
+    private function nativeChannel(): NativeChannel
+    {
+        if ($this->nativeChannel !== null) {
+            return $this->nativeChannel;
+        }
+
+        $this->nativeConnection = new NativeConnection(TestAmqpResolver::getCredentials());
+
+        $this->nativeConnection->connect();
+
+        return $this->nativeChannel = new NativeChannel($this->nativeConnection);
+    }
+
+    private function waitForNativeMessage(string $queueName): ?NativeEnvelope
+    {
+        $queue = new NativeQueue($this->nativeChannel());
+
+        $queue->setName($queueName);
+        $queue->setFlags(AMQP_DURABLE);
+
+        $deadline = microtime(true) + 2;
+
+        do {
+            $envelope = $queue->get(flags: AMQP_AUTOACK);
+
+            if ($envelope instanceof NativeEnvelope) {
+                return $envelope;
+            }
+
+            usleep(20_000);
+        } while (microtime(true) < $deadline);
+
+        return null;
+    }
+}

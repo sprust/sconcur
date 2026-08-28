@@ -86,17 +86,22 @@ class MasterCliTest extends TestCase
         self::assertStringContainsString('workerScript', $err);
     }
 
-    public function testStartRejectsNonScalarServerValue(): void
+    /**
+     * A structured server value is no longer a config error: it reaches the worker as
+     * JSON in the flag (WorkerGroupConfigTest covers the encoding). The start here
+     * still fails, but on the missing script — which is what proves the config parsed.
+     */
+    public function testStartAcceptsAStructuredServerValue(): void
     {
         $configPath = $this->writeConfig([
             'workerScript' => '/tmp/x.php',
-            'server'       => ['address' => ['nested' => 1]],
+            'server'       => ['queues' => [['name' => 'orders', 'coroutineCount' => 2]]],
         ]);
 
         [$code, , $err] = $this->runCli(['start', '--configPath=' . $configPath]);
 
-        self::assertSame(MasterCli::EXIT_USAGE, $code);
-        self::assertStringContainsString('server.address', $err);
+        self::assertSame(MasterCli::EXIT_ERROR, $code);
+        self::assertStringContainsString('Worker script not found', $err);
     }
 
     public function testStartRejectsInvalidName(): void
@@ -136,6 +141,16 @@ class MasterCliTest extends TestCase
 
         self::assertSame(MasterCli::EXIT_USAGE, $code);
         self::assertStringContainsString('shutdownTimeoutMs', $err);
+    }
+
+    public function testAnUnknownGroupIsRefused(): void
+    {
+        $configPath = $this->writeConfig(['workerScript' => '/tmp/x.php']);
+
+        [$code, , $err] = $this->runCli(['reload', '--configPath=' . $configPath, '--group=nope']);
+
+        self::assertSame(MasterCli::EXIT_USAGE, $code);
+        self::assertStringContainsString('unknown group "nope"', $err);
     }
 
     public function testStatusReportsStoppedWhenNoState(): void
@@ -198,10 +213,27 @@ class MasterCliTest extends TestCase
     }
 
     /**
+     * Writes a config, moving the pool-level keys into a single group so a test can
+     * keep naming them flatly. A key listed under "groups" already is left alone.
+     *
      * @param array<string, mixed> $config
      */
     private function writeConfig(array $config): string
     {
+        if (!isset($config['groups'])) {
+            $group = ['name' => 'default'];
+
+            foreach (['workerScript', 'workerCount', 'workerArgs', 'server'] as $key) {
+                if (array_key_exists($key, $config)) {
+                    $group[$key] = $config[$key];
+
+                    unset($config[$key]);
+                }
+            }
+
+            $config['groups'] = [$group];
+        }
+
         $path = (string) tempnam(sys_get_temp_dir(), 'sc-cli-cfg-');
 
         file_put_contents($path, (string) json_encode($config));

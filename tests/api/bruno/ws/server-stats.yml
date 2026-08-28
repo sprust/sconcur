@@ -5,7 +5,7 @@ info:
 
 http:
   method: GET
-  url: http://localhost:29201/api/stats
+  url: http://localhost:28081/api/stats
   headers:
     - name: Accept
       value: text/html

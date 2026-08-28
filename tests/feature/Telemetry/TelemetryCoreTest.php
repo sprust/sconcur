@@ -136,7 +136,12 @@ class TelemetryCoreTest extends TestCase
 
         self::assertStringContainsString('sconcur_master_memory_rss_bytes{name="srv"} 52428800', $metrics);
         self::assertStringContainsString('sconcur_master_cpu_percent{name="srv"} 7.5', $metrics);
-        self::assertStringContainsString('sconcur_worker_start_time_seconds{name="srv",pid="11"} ' . intdiv($startedAtMs, 1000), $metrics);
+        // The worker series carry the pool a worker belongs to: one master runs unlike
+        // pools, and without the label a dashboard cannot tell them apart.
+        self::assertStringContainsString(
+            'sconcur_worker_start_time_seconds{name="srv",pid="11",group="srv"} ' . intdiv($startedAtMs, 1000),
+            $metrics,
+        );
 
         $html = (new HtmlRenderer())->render($aggregate);
 

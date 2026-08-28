@@ -113,6 +113,7 @@ echo "готово за {$seconds} c" . PHP_EOL;
 | `curl`, `file_get_contents`, Guzzle | `Features\HttpClient\HttpClient` (PSR-18) | стриминг ответа, скачивание в файл на стороне Go |
 | `fsockopen`, `stream_socket_client` | `Features\SocketClient\SocketClient` | TCP с length-prefix кадрами |
 | WS-клиент (библиотека) | `Features\WsClient\WsClient` | обмен text/binary сообщениями |
+| `ext-amqp`, `php-amqplib` (RabbitMQ) | `Features\Amqp\*` | консьюмер приостанавливает свою корутину, а не воркер; подтверждение принадлежит доставке |
 
 Долгоживущие серверы:
 
@@ -224,6 +225,10 @@ $collection->insertOne(['name' => 'example']);
 | PostgreSQL (сервер) | 16 |
 | jackc/pgx/v5 | 5.7.2 |
 | go.mongodb.org/mongo-driver/v2 | 2.6.0 |
+| RabbitMQ (сервер) | 4.1 |
+| ext-amqp (PHP-расширение, только тесты и бенчмарки) | 2.2.0 |
+| rabbitmq/amqp091-go | 1.14.0 |
+| coder/websocket | 1.8.15 |
 
 ## Документация
 
@@ -233,6 +238,8 @@ $collection->insertOne(['name' => 'example']);
   жизненный цикл задачи.
 - [Переключение корутин](docs/coroutine-switching.ru.md) — `Scheduler::switch()`
   и автоматическая преемпция серверов для CPU-bound кода.
+- [Таймаут корутины](docs/coroutine-timeout.ru.md) — `Deadline::run()` и
+  `add(timeoutMs: …)`: работа, которую разматывают, когда она затянулась.
 - [Контекст корутины](docs/coroutine-context.ru.md) — key-value хранилище на
   корутину.
 - [MongoDB](docs/mongodb.ru.md) — операции коллекции, курсоры, типы BSON.
@@ -250,6 +257,8 @@ $collection->insertOne(['name' => 'example']);
   стороны dial.
 - [WebSocket-клиент](docs/websocket-client.ru.md) — зеркало WS-сервера со стороны
   dial.
+- [AMQP (RabbitMQ)](docs/amqp.ru.md) — публикация, топология и консьюмеры,
+  которые приостанавливают корутину, а не воркер.
 - [Мастер воркеров](docs/worker-master.ru.md) — супервизор пула воркеров
   (`bin/sconcur-server`).
 - [Статистика сервера](docs/admin-stats.ru.md) — `GET /api/stats`, живая панель,
@@ -284,12 +293,15 @@ php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello'
   воркер или являются CPU-bound непрерываемыми монолитами (sleep, json, hash,
   gzip, хеширование паролей, файловый I/O), с выполнением в Go; поглощает
   `Sleeper`.
-- Фича `Queue` — отложенные фоновые задачи: задача публикуется в брокер и
-  разбирается воркерами в корутинах, клиент брокера — на стороне Go.
+- Fiber-safe мост к Laravel — отдельный пакет, изолирующий состояние
+  фреймворка одной джобы от другой, чтобы воркер очереди тянул несколько
+  очередей сразу. Сторона брокера сделана, см. [AMQP](docs/amqp.ru.md).
 - Авто-восстановление зависших воркеров — watchdog мастера по heartbeat:
   `SIGKILL` и respawn воркера, у которого завис PHP-поток.
 - Разнести ядро и фичи по отдельным пакетам.
-- Остановка отдельной корутины из любой точки, а не только всего флоу.
+- Остановка отдельной корутины из любой точки, а не только всего флоу. Вторая
+  половина — срок на одну корутину — сделана, см.
+  [таймаут корутины](docs/coroutine-timeout.ru.md).
 - Оптимизация синхронного пути — вызов вне корутины идёт в Go напрямую, минуя
   шедулер и машинерию Fiber.
 - Попробовать кросс-процессный режим конкурентности, чтобы одновременные

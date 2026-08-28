@@ -18,11 +18,23 @@ use SConcur\Features\Mongodb\Connection\Client as MongoClient;
 use SConcur\Features\Mongodb\Connection\Collection;
 use SConcur\Features\Mysql\Connection as MysqlConnection;
 use SConcur\Features\Pgsql\Connection as PgsqlConnection;
+use SConcur\Features\Amqp\Connection as AmqpConnection;
+use SConcur\Features\Amqp\ConnectionOptions as AmqpConnectionOptions;
+use SConcur\Features\Amqp\Queue as AmqpQueue;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Scheduler\Scheduler;
 use SConcur\Transport\MessagePackTransport;
 use SConcur\Tests\Impl\HttpServer\GeneratorStream;
 use SConcur\WaitGroup;
+
+// The name of the queue this server publishes into and the demo consumer pool reads
+// (config/sconcur.rabbitmq.config.json). Declared by the publisher, because a consumer
+// declares nothing — topology belongs to whoever owns it.
+const RABBITMQ_DEMO_QUEUE = 'sconcur_demo_queue';
+
+// The most jobs one request may queue. A path segment is user input, and a typo with an
+// extra zero should be refused rather than spend a minute publishing.
+const RABBITMQ_MAX_JOBS = 100000;
 
 /**
  * Demo / test HTTP server. The handler is PSR-7: it receives a ServerRequestInterface
@@ -44,6 +56,12 @@ use SConcur\WaitGroup;
  *   GET  /big/{n}           -> 200, body = {n} bytes of a deterministic pattern
  *   *    /redirect/{n}      -> 302 to /redirect/{n-1} until n=0, then 200 "done"
  *   GET  /msleep/{ms}       -> sleeps {ms} (async), then 200 "slept" (concurrency demo)
+ *   GET  /timeout-probe/{name}/{ms} -> sleeps {ms}, then marks {name} completed; its finally
+ *                              always marks it finished, so a test can tell an unwound
+ *                              handler from one that ran to its end
+ *   GET  /timeout-probe-cpu/{name} -> the same, but a CPU loop that never yields — only
+ *                              preemption can take control away from it
+ *   GET  /timeout-probe-result/{name} -> "completed", "unwound" or "nothing"
  *   GET  /native-msleep/{ms} -> blocks the thread {ms} natively (handler-timeout test)
  *   GET  /cpu/{n}           -> runs a CPU-bound sha256 loop of {n} rounds (bench)
  *   GET  /cpu-switch/{n}    -> the same loop, but yielding via Scheduler::switch() (fairness demo)
@@ -56,6 +74,8 @@ use SConcur\WaitGroup;
  *                              cross-request concurrency alone (each call still yields)
  *   GET  /all-native        -> the same operations on NATIVE drivers, sequentially (exactly the
  *                              RoadRunner reference worker's /all) — isolates the server layer
+ *   GET  /rabbitmq/{count}/sleep/{ms} -> publishes {count} jobs whose handler sleeps {ms},
+ *                              so the RabbitMQ consumer pool has work to show on the panel
  *   GET  /throw             -> handler throws -> framework answers 500
  *   GET  /status/{code}     -> responds with the given status code
  *   (anything else)         -> 404 "not found"
@@ -99,7 +119,10 @@ if (!in_array($ladderMode, ['', 'l1', 'l2', 'l2f', 'l2h'], true)) {
 }
 
 if ($ladderMode !== '') {
-    runLadderServer(mode: $ladderMode, argv: $_SERVER['argv']);
+    runLadderServer(
+        mode: $ladderMode,
+        argv: $_SERVER['argv'],
+    );
 
     exit(0);
 }
@@ -209,6 +232,10 @@ $server->serve(static function (ServerRequestInterface $request) use ($psr17Fact
         str_starts_with($path, '/big/')       => bigRoute($psr17Factory, $path),
         str_starts_with($path, '/redirect/')  => redirectRoute($psr17Factory, $path),
         $path === '/throw'       => throw new RuntimeException('boom in handler'),
+        str_starts_with($path, '/rabbitmq/') => rabbitmqRoute($psr17Factory, $path),
+        str_starts_with($path, '/timeout-probe-result/') => timeoutProbeResultRoute($psr17Factory, $path),
+        str_starts_with($path, '/timeout-probe-cpu/') => timeoutProbeCpuRoute($psr17Factory, $path),
+        str_starts_with($path, '/timeout-probe/') => timeoutProbeRoute($psr17Factory, $path),
         str_starts_with($path, '/msleep/') => msleepRoute($psr17Factory, $path),
         str_starts_with($path, '/native-msleep/') => nativeMsleepRoute($psr17Factory, $path),
         str_starts_with($path, '/cpu-switch/') => cpuSwitchRoute($psr17Factory, $path),
@@ -419,6 +446,88 @@ function imageMimeType(string $path): string
     };
 }
 
+/**
+ * GET /timeout-probe/{name}/{ms} — sleeps {ms}, then writes a marker file named {name}.
+ *
+ * The marker is what tells a test whether the handler ran to its end or was unwound by
+ * handlerTimeoutMs: a 504 only says the client was answered, and the handler used to go on
+ * working behind it. A file rather than a counter because the workers are separate
+ * processes and the probe has to be readable from any of them.
+ */
+function timeoutProbeRoute(Psr17Factory $factory, string $path): ResponseInterface
+{
+    // /timeout-probe/{name}/{ms}
+    $segments = explode('/', trim($path, '/'));
+
+    if (count($segments) !== 3) {
+        return text($factory, 'usage: /timeout-probe/{name}/{ms}', 404);
+    }
+
+    $marker = timeoutProbeMarker($segments[1]);
+
+    @unlink($marker);
+
+    try {
+        Sleeper::usleep(microseconds: ((int) $segments[2]) * 1000);
+
+        // Reached only when the handler was not unwound.
+        file_put_contents($marker, 'completed');
+    } finally {
+        // Runs either way, which is what proves the unwind is an unwind and not a kill.
+        file_put_contents($marker . '.finally', 'ran');
+    }
+
+    return text($factory, 'probe done');
+}
+
+/**
+ * GET /timeout-probe-cpu/{name} — the same probe, but the handler never waits for anything.
+ *
+ * A pure sha256 loop with no switch() and no I/O: nothing but automatic preemption can take
+ * control away from it, which makes it the case that tells a working handler deadline from
+ * one that only fires on handlers parked in an async call. Bounded at 30s so a regression
+ * fails a test instead of hanging the run.
+ */
+function timeoutProbeCpuRoute(Psr17Factory $factory, string $path): ResponseInterface
+{
+    $marker = timeoutProbeMarker(substr($path, strlen('/timeout-probe-cpu/')));
+
+    @unlink($marker);
+
+    try {
+        $startedAt = microtime(true);
+
+        $hash = '';
+
+        while ((microtime(true) - $startedAt) < 30) {
+            $hash = hash('sha256', $hash);
+        }
+
+        file_put_contents($marker, 'completed');
+    } finally {
+        file_put_contents($marker . '.finally', 'ran');
+    }
+
+    return text($factory, 'probe done');
+}
+
+/** GET /timeout-probe-result/{name} — "completed", "unwound" or "nothing". */
+function timeoutProbeResultRoute(Psr17Factory $factory, string $path): ResponseInterface
+{
+    $marker = timeoutProbeMarker(substr($path, strlen('/timeout-probe-result/')));
+
+    if (file_exists($marker)) {
+        return text($factory, 'completed');
+    }
+
+    return text($factory, file_exists($marker . '.finally') ? 'unwound' : 'nothing');
+}
+
+function timeoutProbeMarker(string $name): string
+{
+    return sys_get_temp_dir() . '/sconcur-timeout-probe-' . preg_replace('/[^a-z0-9_-]/i', '', $name);
+}
+
 function msleepRoute(Psr17Factory $factory, string $path): ResponseInterface
 {
     $milliseconds = (int) substr($path, strlen('/msleep/'));
@@ -426,6 +535,68 @@ function msleepRoute(Psr17Factory $factory, string $path): ResponseInterface
     Sleeper::usleep(microseconds: $milliseconds * 1000);
 
     return text($factory, 'slept');
+}
+
+// GET /rabbitmq/{count}/sleep/{ms} — queues {count} jobs whose handler sleeps {ms}, to
+// give the consumer pool something to chew on. The body the consumer understands is
+// "sleep:<ms>" (tests/consumers/amqp/amqp-consumer.php).
+//
+// Publishing is sequential on one channel on purpose: basic.publish expects no reply, so
+// there is nothing to overlap, and a channel serializes its commands anyway.
+function rabbitmqRoute(Psr17Factory $factory, string $path): ResponseInterface
+{
+    // /rabbitmq/{count}/sleep/{ms}
+    $segments = explode('/', trim($path, '/'));
+
+    if (count($segments) !== 4 || $segments[2] !== 'sleep') {
+        return text($factory, 'usage: /rabbitmq/{count}/sleep/{ms}', 404);
+    }
+
+    $count        = (int) $segments[1];
+    $milliseconds = (int) $segments[3];
+
+    if ($count < 1 || $count > RABBITMQ_MAX_JOBS) {
+        return text($factory, 'count must be between 1 and ' . RABBITMQ_MAX_JOBS, 400);
+    }
+
+    if ($milliseconds < 0) {
+        return text($factory, 'ms must not be negative', 400);
+    }
+
+    $queue = rabbitmqPublisher();
+
+    for ($index = 0; $index < $count; ++$index) {
+        $queue->publish('sleep:' . $milliseconds);
+    }
+
+    return text($factory, sprintf('queued %d job(s) sleeping %dms', $count, $milliseconds));
+}
+
+// The publisher of this worker: one pooled connection, one channel, the queue declared
+// once. Built through serverOnce because requests run as concurrent coroutines — see the
+// note there on why a plain static is not enough.
+function rabbitmqPublisher(): AmqpQueue
+{
+    /** @var AmqpQueue */
+    return serverOnce('rabbitmq-publisher', static function (): AmqpQueue {
+        Dotenv::createImmutable(dirname(__DIR__, 3))->safeLoad();
+
+        $connection = new AmqpConnection(new AmqpConnectionOptions(
+            host: (string) $_ENV['RABBITMQ_HOST'],
+            port: (int) $_ENV['RABBITMQ_PORT'],
+            login: (string) $_ENV['RABBITMQ_USER'],
+            password: (string) $_ENV['RABBITMQ_PASSWORD'],
+            vhost: (string) $_ENV['RABBITMQ_VHOST'],
+        ));
+
+        $queue = $connection->channel()->queue(RABBITMQ_DEMO_QUEUE);
+
+        $queue->declare(durable: true);
+
+        // Publishing straight into the queue: the default exchange routes by queue name,
+        // and Queue::publish() is what spares the caller from knowing that.
+        return $queue;
+    });
 }
 
 // Native, BLOCKING sleep — unlike the async usleep above it does NOT yield to the
@@ -1206,7 +1377,10 @@ function runLadderServer(string $mode, array $argv): void
                     exit(1);
                 }
 
-                $extension->push(flowKey: '', payload: $pendingRespond);
+                $extension->push(
+                    flowKey: '',
+                    payload: $pendingRespond,
+                );
 
                 $fiber->resume();
             } elseif ($mode === 'l2') {
@@ -1233,7 +1407,10 @@ function runLadderServer(string $mode, array $argv): void
                     exit(1);
                 }
 
-                $extension->push(flowKey: '', payload: $pendingRespond);
+                $extension->push(
+                    flowKey: '',
+                    payload: $pendingRespond,
+                );
 
                 $fiber->resume();
             } else {

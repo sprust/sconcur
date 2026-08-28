@@ -11,6 +11,7 @@ use Psr\Http\Message\ServerRequestFactoryInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\HttpServer\InvalidHandlerResponseException;
+use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Exceptions\HttpServer\RequestBodyTooLargeException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\HttpServer\Dto\RequestBody;
@@ -54,8 +55,9 @@ readonly class HttpServer
      *                                                                                                  response, before it is cut off and the slot freed (default 60s;
      *                                                                                                  0 disables). If nothing was written yet the client gets a 504;
      *                                                                                                  mid-stream the response is aborted (status is already on the wire).
-     *                                                                                                  Note: a CPU-bound handler still blocks the single-threaded loop;
-     *                                                                                                  this guards handlers waiting on async work.
+     *                                                                                                  The PHP handler is unwound at the same deadline rather than left
+     *                                                                                                  to finish work nobody will read — with preemption armed (the
+     *                                                                                                  default) that reaches a CPU-bound handler too.
      * @param int                                                                 $maxRequests          stop the server after it has handled this many requests
      *                                                                                                  (0 = unlimited). Meant against handler memory leaks: once the
      *                                                                                                  count is reached the server shuts down gracefully (closes the
@@ -93,25 +95,25 @@ readonly class HttpServer
      * Defaults mirror the Go server defaults.
      */
     public function __construct(
-        private ServerRequestFactoryInterface $serverRequestFactory,
-        private ResponseFactoryInterface $responseFactory,
-        private string $address = '0.0.0.0:7832',
-        private int $readHeaderTimeoutMs = 10_000,
-        private int $readTimeoutMs = 30_000,
-        private int $writeTimeoutMs = 30_000,
-        private int $idleTimeoutMs = 60_000,
-        private int $shutdownTimeoutMs = 10_000,
-        private int $maxRequestBody = 10_485_760,
-        private int $maxConcurrency = 0,
-        private int $handlerTimeoutMs = 60_000,
-        private int $maxRequests = 0,
-        private bool $reusePort = false,
-        private ?Closure $onError = null,
-        private ?int $masterPid = null,
-        private string $telemetrySocket = '',
-        private string $serverName = 'sconcur-server',
-        private int $telemetryIntervalMs = 0,
-        private int $preemptionQuantumMs = 5,
+        protected ServerRequestFactoryInterface $serverRequestFactory,
+        protected ResponseFactoryInterface $responseFactory,
+        protected string $address = '0.0.0.0:7832',
+        protected int $readHeaderTimeoutMs = 10_000,
+        protected int $readTimeoutMs = 30_000,
+        protected int $writeTimeoutMs = 30_000,
+        protected int $idleTimeoutMs = 60_000,
+        protected int $shutdownTimeoutMs = 10_000,
+        protected int $maxRequestBody = 10_485_760,
+        protected int $maxConcurrency = 0,
+        protected int $handlerTimeoutMs = 60_000,
+        protected int $maxRequests = 0,
+        protected bool $reusePort = false,
+        protected ?Closure $onError = null,
+        protected ?int $masterPid = null,
+        protected string $telemetrySocket = '',
+        protected string $serverName = 'sconcur-server',
+        protected int $telemetryIntervalMs = 0,
+        protected int $preemptionQuantumMs = 5,
     ) {
     }
 
@@ -229,6 +231,7 @@ readonly class HttpServer
                     self::logServerEvent('sconcur http server shutdown: ' . $step);
                 },
                 preemptionQuantumMs: $this->preemptionQuantumMs,
+                handlerTimeoutMs: $this->handlerTimeoutMs,
             );
         } finally {
             $restoreSignals();
@@ -326,6 +329,13 @@ readonly class HttpServer
                     payload: RespondPayload::chunk($requestId, $chunk),
                 );
             }
+        } catch (FlowStoppedException $exception) {
+            // The handler was unwound on purpose — it ran past handlerTimeoutMs, or the
+            // server is shutting down. onError is for failures, and a stop is not one:
+            // resolveResponse passes it on for the same reason, and telling the hook here
+            // would report a bug where the runtime did exactly what it was asked to. The
+            // stream is still ended in the finally below.
+            throw $exception;
         } catch (Throwable $exception) {
             self::notifyOnError($onError, $exception, $request);
         } finally {
@@ -474,6 +484,12 @@ readonly class HttpServer
             }
 
             return $response;
+        } catch (FlowStoppedException $exception) {
+            // The handler was unwound on purpose — it ran past handlerTimeoutMs, or the
+            // server is shutting down. Turning that into a 500 would answer a request the
+            // Go side has already answered with a 504, and would finish work whose whole
+            // point was to stop: the unwind is passed on, as the project's rule requires.
+            throw $exception;
         } catch (RequestBodyTooLargeException $exception) {
             // The body exceeded maxRequestBody mid-read and the response has not
             // started: answer 413 rather than a generic 500.

@@ -110,8 +110,9 @@ goes through `FeatureExecutor::execNoResult()`, so the coroutine finishes
 without waiting for the write (the socket and WS servers acknowledge every
 command).
 
-Argv parsing, signal handlers and the orphan check are already extracted into the
-stateless `SConcur\Features\Server\ServerRuntimeSupportTrait`:
+Argv parsing, signal handlers, arming automatic preemption, the orphan check and the
+lifecycle log are already extracted into the stateless
+`SConcur\Features\Server\ServerRuntimeSupportTrait`:
 
 - `parseArgs(array $argv): array` — collect the scalar (`int`/`bool`/`float`/
   `string`) constructor parameters by reflection, coerce each `--name=value` string
@@ -121,7 +122,12 @@ stateless `SConcur\Features\Server\ServerRuntimeSupportTrait`:
   restorer to call in `finally`;
 - `isOrphaned(int $masterPid): bool` — `posix_getppid() !== $masterPid`, immune to
   PID reuse because the kernel reparents the process once the master dies;
-- `applyTelemetryEnvironment(array $overrides): array` — read the telemetry env.
+- `applyTelemetryEnvironment(array $overrides): array` — read the telemetry env;
+- `withPreemption(int $quantumMs, Closure $callback): mixed` — run the callback with
+  automatic preemption armed and disarm it afterwards. A server passes its quantum to
+  `Scheduler::serve()` instead and needs this only if it has no serve loop of its own;
+- `logServerEvent(string $message): void` — one timestamped line about the worker's own
+  lifecycle, on stdout.
 
 A new server just uses the trait, and to be launchable under `bin/sconcur-server`
 it adds a static `fromArgs()` modelled on `HttpServer::fromArgs()`: call
@@ -140,7 +146,15 @@ batches are the incoming requests — and hands control to the shared
 - `shouldStop(): bool` — a signal arrived or the worker is orphaned;
 - `onDrainStart()` — called once when the shutdown begins: stop accepting early
   via `Extension::get()->httpStopAccepting($flowKey)`, so new connections go to
-  `SO_REUSEPORT` siblings.
+  `SO_REUSEPORT` siblings;
+- `onShutdownStep(string $step)` — each graceful-shutdown step in words, for the worker
+  to log;
+- `preemptionQuantumMs` — arm automatic preemption for as long as the loop serves, so a
+  CPU-bound handler cannot starve the others (`0` disables), see
+  [coroutine switching](coroutine-switching.md);
+- `handlerTimeoutMs` — how long one handler coroutine may run before it is unwound where
+  it stands (`0` disables), see [coroutine timeout](coroutine-timeout.md). Preemption is
+  what lets that deadline reach a handler that never waits.
 
 `Scheduler::serve` itself multiplexes the incoming requests and the async work
 of their handlers in a single wait loop (`waitAnyTimeoutBatch`) and on shutdown
@@ -275,10 +289,12 @@ PHP:
       `Go: payloads.<Type>`).
 - [ ] Request/response shape: your own `readonly` DTOs or PSR-7 outward.
 - [ ] `use ServerRuntimeSupportTrait;` —
-      `parseArgs`/`installSignalHandlers`/`isOrphaned`.
+      `parseArgs`/`installSignalHandlers`/`isOrphaned`/`logServerEvent`.
 - [ ] `fromArgs()` via `self::parseArgs($argv)`, accepting `--masterPid`.
 - [ ] `serve()`: start the listener via `push(ServePayload)` plus
-      `Scheduler::serve(...)` with `onRequest`/`shouldStop`/`onDrainStart`.
+      `Scheduler::serve(...)` with `onRequest`/`shouldStop`/`onDrainStart`/
+      `onShutdownStep`, and the `preemptionQuantumMs`/`handlerTimeoutMs` the
+      constructor took.
 - [ ] Statistics: `ServePayload` += `ts`/`sn`/`ti`, constructor += 3 parameters,
       `self::applyTelemetryEnvironment()` in `fromArgs()`.
 - [ ] Tests from a `BaseHttpServerTestCase` analogue (a real process + `curl`).

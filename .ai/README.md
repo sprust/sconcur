@@ -28,15 +28,17 @@ User-facing documentation (each doc also exists in Russian as `*.ru.md`):
 - [docs/cli.md](../docs/cli.md) — `sconcur-load`, `sconcur-status`,
   `sconcur-server`
 - [docs/coroutine-context.md](../docs/coroutine-context.md),
-  [docs/coroutine-switching.md](../docs/coroutine-switching.md) — per-coroutine
-  context; `Scheduler::switch()` and automatic preemption
+  [docs/coroutine-switching.md](../docs/coroutine-switching.md),
+  [docs/coroutine-timeout.md](../docs/coroutine-timeout.md) — per-coroutine context;
+  `Scheduler::switch()` and automatic preemption; `Deadline::run()` and the deadline a
+  coroutine is unwound at
 - Features: [mongodb](../docs/mongodb.md), [mysql](../docs/mysql.md),
   [pgsql](../docs/pgsql.md), [http-server](../docs/http-server.md),
   [http-client](../docs/http-client.md),
   [socket-server](../docs/socket-server.md),
   [socket-client](../docs/socket-client.md),
   [websocket-server](../docs/websocket-server.md),
-  [websocket-client](../docs/websocket-client.md)
+  [websocket-client](../docs/websocket-client.md), [amqp](../docs/amqp.md)
 - Operations: [worker-master](../docs/worker-master.md),
   [admin-stats](../docs/admin-stats.md)
 - Guides: [adding-a-feature](../docs/adding-a-feature.md),
@@ -115,6 +117,11 @@ feature's doc. Key PHP classes not covered there:
   coroutines (`FlowStoppedException`) from the shutdown handler registered in
   `get()`, so `exit()` with unfinished work cancels deterministically. `serve()`
   is the shared server loop, `spawn()` a fire-and-forget coroutine.
+  `withDeadline()` is the one primitive behind every coroutine deadline: `Deadline::run`
+  is its public face, and `add(timeoutMs:)`/`spawn(timeoutMs:)` set the same deadline at
+  launch. `0` means "no deadline" everywhere one is taken.
+- `Deadline` — the public entry to a scoped deadline, see
+  [docs/coroutine-timeout.md](../docs/coroutine-timeout.md).
 - `Scheduler/Coroutine` — a tracked fiber: id, fiber, owning group, callback key.
 - `Scheduler/FiberPool`, `Scheduler/FiberPoolSignal` — recycles the fibers of
   spawned coroutines: the worker callback never returns, it parks on
@@ -140,15 +147,47 @@ feature's doc. Key PHP classes not covered there:
   travels on the wire with every value. The envelope they cross the boundary in,
   and how to add a type, are in
   [docs/msgpack-objects.md](../docs/msgpack-objects.md).
-- `Features/Server/ServerRuntimeSupportTrait` — shared server runtime glue:
-  argv→constructor-override parsing, signal handlers, the orphaned-worker check,
-  telemetry env.
+- `Features/Server/ServerRuntimeSupportTrait` — shared runtime glue for the
+  long-lived workers (the servers and `Amqp/Consumer/QueueConsumer`):
+  argv→constructor-override parsing, signal handlers, arming automatic preemption,
+  the orphaned-worker check, telemetry env. Together with
+  `FeatureExecutor::canAwait()` it is where a feature asks the runtime a question
+  rather than reaching into the scheduler for the answer. The servers and the
+  executor still name `Scheduler` — they spawn and serve, which is what it is for;
+  what does not belong there is a feature reading its internals.
+- `Features/Amqp/RetryTopology` — the wait queues behind `publish(delayMs:)`, and
+  the only thing in the library that declares topology; it does so only when a
+  worker script calls it. `RetrySchedule` beside it answers how long a refused
+  publish waits before the next attempt.
+- `Features/Amqp/Consumer/` — the supervised consumer runtime: `QueueConsumer`,
+  plus `QueueSpec`/`QueueSpecParser` for the JSON queue list that arrives in argv.
+  It is a server without a socket: the Go side opens the consumers (one channel per
+  unit of a queue's weight) and publishes every delivery of all of them as one
+  self-pumping stream, and `Scheduler::serve()` drives it exactly as it drives the
+  three servers — one coroutine per message, one graceful drain, no loop of its own.
+  A stop cancels the consumers and leaves their channels open so the
+  acknowledgements in flight land; a consumer the broker takes away is reopened on
+  the Go side a second later, and only the connection going away ends one for good
+  — see [docs/amqp.md](../docs/amqp.md). `PublishChannelPool` is what keeps a
+  prefetch above one from being a trap: a consumer's channel carries the messages of
+  every handler running on it, and a publisher confirm is counted per channel, so
+  `Delivery::channel()` hands out a channel lent to one handler instead. The pool
+  opens them lazily on connections of its own and grows a connection per 255, so no
+  weight-and-prefetch combination is ever refused for want of channel numbers; a
+  channel handed back with an answer the broker still owes it — a confirm or a return
+  nobody waited for — is given up rather than lent on, which is the same
+  misattribution delayed.
 - `Features/Socket/Dto/AbstractConnection` — shared base for the socket and
   WebSocket `Connection` DTOs (server accept-side and client dial-side); keeps the
   features decoupled, since all depend on the neutral base rather than each other.
 - `Worker/` — the worker master (a process supervisor that does NOT load the
   extension): `WorkerMaster`, `MasterConfig`, `MasterCli`, `WorkerProcess`, `Cpu`,
-  `MasterLock`, `MasterState`/`MasterStateFile`, `MasterLogger`, `RestartPolicy`.
+  `MasterLock`, `MasterState`/`MasterGroupState`/`MasterStateFile`, `MasterLogger`,
+  `RestartPolicy`. One master supervises several **groups** — `WorkerGroupConfig`
+  (a pool's settings, with `MasterDefaults` for what it inherits) and `WorkerGroup`
+  (its live slots, backoff and rolling reload). The groups are generic: everything
+  a worker needs rides in the group's `server` block, forwarded to its argv
+  untouched, so the master stays worker-agnostic.
 - `Telemetry/` — the master-side stats collector and live panel (pure PHP):
   `TelemetryRuntime`, `Collector`, `Store`, `PanelServer`, `FrameCodec`,
   `Aggregator`, `Dto/*`, `Render/*`.
@@ -158,7 +197,7 @@ Go extension (`ext/`):
 - `main.go` — cgo exports (`ping`, `push`, `wait`, `next`, `waitAny`,
   `waitAnyTimeout`, `waitAnyBatch`, `waitAnyTimeoutBatch`, `tasksCount`,
   `stopFlow`, `httpStopAccepting`, `socketStopAccepting`, `wsStopAccepting`,
-  `preemptionArm`, `preemptionDisarm`, `destroy`, `version`)
+  `preemptionArm`, `preemptionDisarm`, `amqpStopConsuming`, `destroy`, `version`)
 - `internal/handler/` — singleton orchestrator routing messages to flows
 - `internal/flows/`, `internal/tasks/` — concurrent `Flow` instances holding tasks
   and a result channel; a task carries the flow's context directly (cancellation
@@ -172,7 +211,10 @@ Go extension (`ext/`):
   overflow), so the loop never blocks on log I/O
 - `internal/features/*` — sleeper, mongodb, sql (one handler dispatching
   Query/Exec/Begin/Commit/Rollback; the driver is selected per `Method`),
-  httpserver, httpclient, socketserver, socketclient, wsserver, wsclient
+  httpserver, httpclient, socketserver, socketclient, wsserver, wsclient, amqp
+  (pooled connections, a channel registry, streamed consumers over `amqp091-go`,
+  and `consume_serve.go` — the self-pumping delivery stream of a supervised
+  worker, whose channels the Go side owns)
 - `internal/stats/` — neutral worker-side telemetry shared by the servers: process
   metrics plus `Pusher`, which samples a `Snapshot` and pushes it best-effort as a
   length-prefixed JSON frame over the collector's unix socket
@@ -186,13 +228,16 @@ Key enums (string-backed; the 2-3 letter values cross the PHP↔Go boundary):
 - `MethodEnum`: Sleep (`sl`), Mongodb (`mng`), HttpServe (`hs`), HttpRespond
   (`hr`), HttpClient (`hc`), Mysql (`my`), Pgsql (`pg`), SocketServe (`ss`),
   SocketRespond (`sr`), SocketClient (`sc`), WsServe (`wss`), WsRespond (`wsr`),
-  WsClient (`wsc`)
+  WsClient (`wsc`), Amqp (`amq`)
 - Sub-operations selected via the payload envelope's `cm`:
   `SocketClientCommand`/`WsClientCommand` (Connect `con`, Send `snd`, Close
   `cls`), `SqlCommandEnum` (Query `qry`, Exec `exe`, Begin `beg`, Commit `cmt`,
   Rollback `rlb`), `HttpClientCommand` (Request `req`, UploadChunk `upc`,
-  UploadEnd `upe`), MongoDB's `CommandEnum` (InsertOne `ino`, BulkWrite `bw`,
-  Aggregate `agg`, … — see `src/Features/Mongodb/CommandEnum.php`)
+  UploadEnd `upe`), `AmqpCommandEnum` (Connect `con`, ChannelOpen `cho`,
+  QueueDeclare `qud`, Publish `pub`, Consume `csm`, … — see
+  `src/Features/Amqp/AmqpCommandEnum.php`), MongoDB's `CommandEnum` (InsertOne
+  `ino`, BulkWrite `bw`, Aggregate `agg`, … — see
+  `src/Features/Mongodb/CommandEnum.php`)
 - `DownloadFileMode` (HttpClient download sink, the `sm` field): Replace (`rpl`),
   Create (`crt`), Append (`app`)
 
@@ -203,14 +248,27 @@ Key enums (string-backed; the 2-3 letter values cross the PHP↔Go boundary):
 - `tests/impl/` — test helpers (MongoDB resolver, app bootstrap, server harnesses)
 - `tests/benchmarks/` — performance benchmarks comparing async vs native, grouped
   by the technology they measure: `mongodb/`, `mysql/`, `pgsql/`, `http/`,
-  `socket/`, `ws/` (each holds its per-operation benches plus, for the protocols,
+  `socket/`, `ws/`, `amqp/` (each holds its per-operation benches plus, for the protocols,
   the server benches and the load scripts), `db/` (a whole DB session: repeated
   runs and their aggregation into the markdown rows of `docs/benchmarks.md`),
   `runtime/` (scheduler and PHP↔Go boundary, no backend involved) and `lib/`
   (the shared harness the benches include). A new bench goes into its
   technology's directory, named after the operation (`mysql/select-one.php`), and
   gets a `bench-<tech>-<operation>` make target.
-- `tests/mem-leak/` — memory leak stress tests
+- `tests/consumers/` — demo/test worker scripts that are not servers (the AMQP
+  consumer), the counterpart of `tests/servers/`
+- `tests/mem-leak/` — memory leak stress tests. The AMQP soak has a target of its
+  own, `make mem-leak-amqp scenario=<name> seconds=<n>`, which sets the profiler
+  address its Go-side columns are read from, and reports the broker's own connections,
+  channels and consumers beside them — a worker flat on its own memory can still leave
+  sockets behind on the other side. Two scenarios cover `QueueConsumer` and
+  `PublishChannelPool`: `consumer` takes a handler through all twelve of its endings
+  (settled by the runtime, settled by the handler, refused, thrown, cut by a deadline,
+  a channel given back clean, dirty and dead), and `consumer-lost` takes the ground
+  away — the publish connection closed from the broker, the queue deleted under a
+  running consumer. A second publish socket appearing and being reaped again is that
+  pool recovering, not a leak: it carries no channels and the Go side closes it after
+  five idle minutes
 
 Tests use PHPUnit 11. Add feature tests in `tests/feature/...` with `*Test.php`
 suffixes; async flow tests commonly extend `BaseAsyncTestCase`,
@@ -299,9 +357,12 @@ who do not speak Russian, and it ends up pasted into issues and docs.
 
 ## Exceptions
 
-Callable signatures stay clean of `@throws` noise, so the public API does not
-advertise concrete throwables — any caught `Throwable` is wrapped before
-re-throwing.
+**No `@throws` anywhere.** Every exception here descends from `RuntimeException` or
+`LogicException`, both unchecked by PHP convention, so a tag adds nothing a reader can
+act on — and a partial list is worse than none: PHPStan reads `@throws` as exhaustive
+and kills the `catch` blocks for whatever the list left out. The public API does not
+advertise concrete throwables; any caught `Throwable` is wrapped before re-throwing, and
+what a call can fail with belongs in prose, in the docblock or in `docs/`.
 
 - **Never `throw` a built-in exception directly** (`RuntimeException`,
   `LogicException`, `DomainException`, …). Always throw a custom exception from

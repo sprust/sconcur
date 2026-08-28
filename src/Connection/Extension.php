@@ -20,6 +20,7 @@ use Throwable;
 use function SConcur\Extension\armPreemption;
 use function SConcur\Extension\destroy;
 use function SConcur\Extension\disarmPreemption;
+use function SConcur\Extension\amqpStopConsuming;
 use function SConcur\Extension\httpStopAccepting;
 use function SConcur\Extension\next;
 use function SConcur\Extension\push;
@@ -44,7 +45,7 @@ class Extension
      * rejected instead of silently misbehaving. Public so tooling (bin/sconcur-status)
      * can report the version the package expects.
      */
-    public const string REQUIRED_EXTENSION_VERSION = '0.10.0';
+    public const string REQUIRED_EXTENSION_VERSION = '0.11.0';
 
     /**
      * Result frame layout (Go -> PHP), see main.go buildResultFrame. The envelope is
@@ -231,6 +232,16 @@ class Extension
     public function socketStopAccepting(string $flowKey): void
     {
         socketStopAccepting($flowKey);
+    }
+
+    /**
+     * Cancels the consumers of an AMQP consumer flow, leaving its channels open, so the
+     * deliveries already handed to PHP can still be acknowledged while their handlers
+     * finish. The channels themselves go with the flow.
+     */
+    public function amqpStopConsuming(string $flowKey): void
+    {
+        amqpStopConsuming($flowKey);
     }
 
     /**

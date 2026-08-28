@@ -62,16 +62,21 @@ into the workers — nothing to configure on the worker side.
 
 ```json
 {
-  "workerScript": "/app/worker.php",
-  "workerCount": 8,
   "runtimeDir": "/run/sconcur",
-  "name": "sconcur-http-server",
+  "name": "sconcur-servers",
   "panelPort": 8081,
   "adminToken": "23c30b40...9894c3ec",
-  "server": {
-    "address": "0.0.0.0:8080",
-    "reusePort": true
-  }
+  "groups": [
+    {
+      "name": "http",
+      "workerScript": "/app/worker.php",
+      "workerCount": 8,
+      "server": {
+        "address": "0.0.0.0:8080",
+        "reusePort": true
+      }
+    }
+  ]
 }
 ```
 
@@ -122,18 +127,22 @@ running without a master):
 | `SCONCUR_TELEMETRY_INTERVAL_MS` | snapshot sample/push cadence | `1000` |
 
 Under the master the socket is `<runtimeDir>/<name>.telemetry.sock`, injected only
-when telemetry is enabled. The same values can be set programmatically: on the
-worker via the server constructor (`telemetrySocket`, `serverName`,
+when telemetry is enabled. The same values can be set programmatically: on a
+server via its constructor (`telemetrySocket`, `serverName`,
 `telemetryIntervalMs`), on the master via the `WorkerMaster` constructor
-(`panelPort`, `adminToken`). Several pools on one machine need different
-`panelPort`, `name` and `runtimeDir`.
+(`panelPort`, `adminToken`). A queue consumer has no such parameters — the
+extension reads the socket and the pool name from the environment, and labels its
+snapshots `<group>:<slot>` from what the master set. Several pools on one machine
+need different `panelPort`, `name` and `runtimeDir`.
 
 ## Metrics
 
 Worker numbers come from the Go side (`/proc`, `runtime`, its own counters); the
 `master` section is sampled by the PHP master from its own `/proc`. Process metrics
-are shared by all servers, the workload section is per-server: HTTP has `requests`,
-socket and WebSocket have `connections`.
+are shared by every kind of worker; the workload section says which kind reported:
+HTTP has `requests`, socket and WebSocket have `connections`, a queue consumer has
+`consumers`. A section nobody reported is absent rather than zeroed, so a master
+running unlike pools shows each of them beside the others.
 
 | Field | What it is | Source |
 |---|---|---|
@@ -148,14 +157,26 @@ socket and WebSocket have `connections`.
 | `requests.inFlight` | in progress right now | in-flight registry |
 | `requests.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | of those, by age [1s,5s) / [5s,15s) / ≥15s | in-flight age |
 | `connections.active` / `totalAccepted` | connections open now / accepted over all time | counter |
+| `consumers.coroutines` | consumers open — one per coroutine, so the capacity in use | consumer registry |
+| `consumers.delivered` | deliveries handed to PHP (queue consumer) | counter |
+| `consumers.acked` / `refused` | deliveries acknowledged / nacked or rejected, counted as deliveries rather than as commands | the `ack`, `nack` and `reject` commands themselves |
+| `consumers.timed` | of those, how many had a handler time to measure (an auto-acknowledged delivery has none) | in-flight registry |
+| `consumers.avgMs` | average time a delivery spends in a handler | delivery → its acknowledgement |
+| `consumers.inFlight` | delivered and not settled yet | in-flight registry |
+| `consumers.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | of those, by age [1s,5s) / [5s,15s) / ≥15s | in-flight age |
 | `master.pid` / `startedAt` / `uptimeSeconds` | the master process itself | master |
 | `master.memory.rssBytes` / `master.cpuPercent` | RSS and CPU of the master | `/proc/self/*` |
 
 All date-time fields are UTC (ISO-8601 with a `+00:00` offset). The duration
 buckets are exclusive: a request that has been running for 7 s lands only in
 `inFlight5to15s`. In `totals`, `requests.avgMs` is weighted by workers'
-`completed`, while `cpuPercent` is the sum of per-process values and can exceed
-100%.
+`completed` and `consumers.avgMs` by `consumers.timed`, while `cpuPercent` is the
+sum of per-process values and can exceed 100%.
+
+The consumer numbers cost nothing extra on the wire: a delivery is counted where it
+leaves for PHP, and settled by the `basic.ack` or `basic.nack` that PHP was going to
+send anyway. They are the worker process's own — a worker that finishes and is
+replaced starts its counters afresh, exactly as a server's `completed` does.
 
 `snapshotAgeMs` is computed by the master's own clock from the moment the frame
 was received, so it does not depend on clock skew; a live connection with no fresh
@@ -171,7 +192,7 @@ The same data in three representations, chosen by `Accept`. The HTTP pool's JSON
 ```json
 {
   "generatedAt": "2026-06-24T12:00:00+00:00",
-  "name": "sconcur-http-server",
+  "name": "sconcur-servers",
   "workersTotal": 8,
   "workersHung": 0,
   "master": {
@@ -187,9 +208,23 @@ The same data in three representations, chosen by `Accept`. The HTTP pool's JSON
     "goroutines": 192,
     "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
   },
+  "groups": [
+    {
+      "name": "http",
+      "workersTotal": 3,
+      "workersHung": 0,
+      "totals": {
+        "memory": { "rssBytes": 125829120, "goRuntimeBytes": 37748736, "nonExtensionBytes": 88080384 },
+        "cpuPercent": 10.6,
+        "goroutines": 72,
+        "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
+      }
+    }
+  ],
   "workers": [
     {
       "pid": 12346,
+      "group": "http",
       "hung": false,
       "snapshotAgeMs": 600,
       "startedAt": "2026-06-24T11:54:47+00:00",
@@ -218,12 +253,35 @@ Prometheus carries no strings:
 ```text
 # HELP sconcur_pool_requests_completed_total Requests completed across the pool.
 # TYPE sconcur_pool_requests_completed_total counter
-sconcur_pool_requests_completed_total{name="sconcur-http-server"} 843210
-sconcur_master_start_time_seconds{name="sconcur-http-server"} 1750762800
-sconcur_master_memory_rss_bytes{name="sconcur-http-server"} 16777216
-sconcur_worker_start_time_seconds{name="sconcur-http-server",pid="12346"} 1750766087
-sconcur_worker_requests_completed_total{name="sconcur-http-server",pid="12346"} 105432
+sconcur_pool_requests_completed_total{name="sconcur-servers"} 843210
+sconcur_pool_deliveries_total{name="sconcur-servers"} 51204
+sconcur_master_start_time_seconds{name="sconcur-servers"} 1750762800
+sconcur_master_memory_rss_bytes{name="sconcur-servers"} 16777216
+sconcur_group_workers{name="sconcur-servers",group="http"} 3
+sconcur_group_memory_rss_bytes{name="sconcur-servers",group="http"} 125829120
+sconcur_worker_start_time_seconds{name="sconcur-servers",pid="12346",group="http"} 1750766087
+sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346",group="http"} 105432
 ```
+
+Four scopes, told apart by their prefix and their labels:
+
+| Family | Scope | Labels |
+| --- | --- | --- |
+| `sconcur_pool_*` | every worker of the master together — `requests`, `connections` and `deliveries` (the queue workload) | `name` |
+| `sconcur_group_*` | one pool: its worker count, hung count, CPU, RSS and goroutines | `name`, `group` |
+| `sconcur_master_*` | the master process itself | `name` |
+| `sconcur_worker_*` | one worker | `name`, `pid`, `group` |
+
+The workload of a pool is only under `sconcur_pool_*`: `sconcur_group_*` carries the
+process metrics, because adding up requests and deliveries per group would need a
+family per kind of pool. To read one pool's workload on its own, sum the
+`sconcur_worker_*` series by `group`.
+
+The JSON view splits it the same way: `groups` sums each pool of the master on its own,
+while `totals` sums all of its workers. Adding up the workload of unlike pools means
+nothing, so the workload numbers are read off `groups`; in `totals` it is memory, CPU
+and goroutines that carry meaning. A worker says which pool it belongs to in `group`,
+taken from the `<group>:<slot>` label it stamps its snapshots with.
 
 ## Push-protocol contract
 

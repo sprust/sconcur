@@ -20,6 +20,7 @@ import (
 	"errors"
 	"math"
 	"sconcur/internal/dto"
+	amqp_feature "sconcur/internal/features/amqp"
 	httpserver_feature "sconcur/internal/features/httpserver"
 	socketserver_feature "sconcur/internal/features/socketserver"
 	wsserver_feature "sconcur/internal/features/wsserver"
@@ -464,6 +465,11 @@ func wsStopAccepting(fk *C.char) {
 	wsserver_feature.StopAccepting(C.GoString(fk))
 }
 
+//export amqpStopConsuming
+func amqpStopConsuming(fk *C.char) {
+	amqp_feature.StopConsuming(C.GoString(fk))
+}
+
 //export destroy
 func destroy() {
 	// Stop the preemption timer and flush any buffered log lines before tearing
@@ -476,7 +482,7 @@ func destroy() {
 
 //export version
 func version() *C.char {
-	return C.CString("0.10.0")
+	return C.CString("0.11.0")
 }
 
 func main() {}

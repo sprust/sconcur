@@ -4,12 +4,13 @@ DOCKER_COMPOSE = docker compose
 PHP_CLI = $(DOCKER_COMPOSE) exec php
 PHP_EXT = $(PHP_CLI) php -d extension=./ext/build/sconcur.so
 
-# Master-server control inside the `servers` container (both masters run there
-# under supervisor). Each command targets one master by its JSON config.
+# Master control inside the `servers` container: two masters run there under
+# supervisor. One holds the three servers as a group each, the other the RabbitMQ
+# consumers; a command names the master by its config and, for a single pool, the
+# group by --group.
 SERVERS_CLI = $(DOCKER_COMPOSE) exec servers php /sconcur/bin/sconcur-server
-HTTP_SERVER_CONFIG = /sconcur/config/sconcur.http-server.config.json
-SOCKET_SERVER_CONFIG = /sconcur/config/sconcur.socket-server.config.json
-WS_SERVER_CONFIG = /sconcur/config/sconcur.ws-server.config.json
+SERVERS_CONFIG = /sconcur/config/sconcur.servers.config.json
+RABBITMQ_CONFIG = /sconcur/config/sconcur.rabbitmq.config.json
 
 env-copy:
 	cp -i .env.example .env
@@ -43,32 +44,47 @@ servers-restart:
 	make ext-build
 	$(DOCKER_COMPOSE) up -d --build --force-recreate servers
 
-http-server-status:
-	$(SERVERS_CLI) status --configPath=$(HTTP_SERVER_CONFIG)
+servers-status:
+	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG)
 
-http-server-stop:
-	$(SERVERS_CLI) stop --configPath=$(HTTP_SERVER_CONFIG)
+servers-stop:
+	$(SERVERS_CLI) stop --configPath=$(SERVERS_CONFIG)
+
+# Rolls every pool of the servers master. One pool alone: make http-server-reload.
+servers-reload:
+	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG)
+
+http-server-status:
+	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG) --group=http
 
 http-server-reload:
-	$(SERVERS_CLI) reload --configPath=$(HTTP_SERVER_CONFIG)
+	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG) --group=http
 
 socket-server-status:
-	$(SERVERS_CLI) status --configPath=$(SOCKET_SERVER_CONFIG)
-
-socket-server-stop:
-	$(SERVERS_CLI) stop --configPath=$(SOCKET_SERVER_CONFIG)
+	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG) --group=socket
 
 socket-server-reload:
-	$(SERVERS_CLI) reload --configPath=$(SOCKET_SERVER_CONFIG)
+	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG) --group=socket
 
 ws-server-status:
-	$(SERVERS_CLI) status --configPath=$(WS_SERVER_CONFIG)
-
-ws-server-stop:
-	$(SERVERS_CLI) stop --configPath=$(WS_SERVER_CONFIG)
+	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG) --group=ws
 
 ws-server-reload:
-	$(SERVERS_CLI) reload --configPath=$(WS_SERVER_CONFIG)
+	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG) --group=ws
+
+# The RabbitMQ consumers are their own master, started with the container. This brings
+# it back after `make rabbitmq-stop`.
+rabbitmq-start:
+	$(DOCKER_COMPOSE) exec servers supervisorctl -c /sconcur/docker/servers/config/supervisord.conf start rabbitmq
+
+rabbitmq-status:
+	$(SERVERS_CLI) status --configPath=$(RABBITMQ_CONFIG)
+
+rabbitmq-stop:
+	$(SERVERS_CLI) stop --configPath=$(RABBITMQ_CONFIG)
+
+rabbitmq-reload:
+	$(SERVERS_CLI) reload --configPath=$(RABBITMQ_CONFIG)
 
 bash-php:
 	$(DOCKER_COMPOSE) exec php bash
@@ -136,13 +152,13 @@ ext-test:
 # named data volumes and recreates the containers. Without it writes accumulate
 # across runs (the DB data lives on disk now, not tmpfs) and the numbers drift.
 bench-reset:
-	$(DOCKER_COMPOSE) rm -sf mongodb mysql postgres
-	docker volume rm -f sconcur-php_mongodb-data sconcur-php_mongodb-configdb sconcur-php_mysql-data sconcur-php_postgres-data
-	$(DOCKER_COMPOSE) up -d --wait mongodb mysql postgres
+	$(DOCKER_COMPOSE) rm -sf mongodb mysql postgres rabbitmq
+	docker volume rm -f sconcur-php_mongodb-data sconcur-php_mongodb-configdb sconcur-php_mysql-data sconcur-php_postgres-data sconcur-php_rabbitmq-data
+	$(DOCKER_COMPOSE) up -d --wait mongodb mysql postgres rabbitmq
 
 # Benchmark scripts live in tests/benchmarks/, grouped by the technology they
-# measure: mongodb/, mysql/, pgsql/, http/, socket/, ws/, db/ (whole-session DB
-# runs), runtime/ (scheduler and PHP<->Go boundary) and lib/ (shared harness).
+# measure: mongodb/, mysql/, pgsql/, http/, socket/, ws/, amqp/, db/ (whole-session
+# DB runs), runtime/ (scheduler and PHP<->Go boundary) and lib/ (shared harness).
 bench-all:
 	make bench-sleeper
 	make bench-mongodb-insertOne
@@ -183,6 +199,34 @@ bench-all:
 	make bench-ws-throughput
 	make bench-ws-server-io
 	make bench-ws-server-cpu
+	make bench-amqp-publish
+	make bench-amqp-get
+	make bench-amqp-consume
+
+bench-amqp-publish:
+	$(PHP_EXT) tests/benchmarks/amqp/publish.php ${c}
+
+bench-amqp-get:
+	$(PHP_EXT) tests/benchmarks/amqp/get.php ${c}
+
+bench-amqp-consume:
+	$(PHP_EXT) tests/benchmarks/amqp/consume.php ${c}
+
+# Memory-leak soak for the AMQP feature: runs one scenario in a loop and prints, every
+# five seconds, what the two runtimes hold — the PHP heap and its dangling tasks, the Go
+# goroutine count and heap. Every cycle releases whatever it opened, so a column that only
+# grows is a leak. Scenarios: publish, churn, consume, fanout, errors, confirms,
+# consume-async, stop. Defaults to publish for two minutes.
+#
+# e.g.: make mem-leak-amqp scenario=churn seconds=600
+#
+# The goroutine and Go-heap columns come from the extension's own profiler, which
+# SCONCUR_PPROF_ADDR switches on (ext/pprof.go); without it the run works and reports
+# those two as zero, which hides exactly the half a soak is for.
+mem-leak-amqp:
+	$(DOCKER_COMPOSE) exec -e SCONCUR_PPROF_ADDR=127.0.0.1:6060 php \
+		php -d extension=./ext/build/sconcur.so \
+		tests/mem-leak/amqp-soak.php $(or $(scenario),publish) $(or $(seconds),120)
 
 bench-db-lifecycle:
 	$(PHP_EXT) tests/benchmarks/db/lifecycle.php ${c} ${runs} ${pool}

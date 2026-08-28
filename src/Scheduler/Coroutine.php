@@ -17,12 +17,12 @@ use SConcur\WaitGroup;
  * group: it is fire-and-forget, its return value is not collected, so $group is
  * null.
  *
- * The three mutable fields below are public and written by the Scheduler
- * directly, against the repository rule that properties are protected. It is a
- * deliberate exception: they are the scheduler's own per-suspend bookkeeping,
- * written on every awaited push, and accessors would put a method call on that
- * path for no encapsulation the Scheduler does not already have — this class is
- * its private record, not a public API. The constructor state stays readonly.
+ * The mutable fields below are public and written by the Scheduler directly,
+ * against the repository rule that properties are protected. It is a deliberate
+ * exception: they are the scheduler's own per-suspend bookkeeping, written on every
+ * awaited push, and accessors would put a method call on that path for no
+ * encapsulation the Scheduler does not already have — this class is its private
+ * record, not a public API. The constructor state stays readonly.
  */
 class Coroutine
 {

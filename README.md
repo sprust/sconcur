@@ -113,6 +113,7 @@ Operations and clients — wrapped in a coroutine (`$waitGroup->add()` +
 | `curl`, `file_get_contents`, Guzzle | `Features\HttpClient\HttpClient` (PSR-18) | response streaming, download straight to a file on the Go side |
 | `fsockopen`, `stream_socket_client` | `Features\SocketClient\SocketClient` | TCP with length-prefix framing |
 | a WS client library | `Features\WsClient\WsClient` | text/binary messages |
+| `ext-amqp`, `php-amqplib` (RabbitMQ) | `Features\Amqp\*` | a consumer suspends its coroutine, not the worker; settling belongs to the delivery |
 
 Long-lived servers:
 
@@ -224,6 +225,10 @@ The environment the project is built and tested against in CI:
 | PostgreSQL (server) | 16 |
 | jackc/pgx/v5 | 5.7.2 |
 | go.mongodb.org/mongo-driver/v2 | 2.6.0 |
+| RabbitMQ (server) | 4.1 |
+| ext-amqp (PHP extension, tests and benchmarks only) | 2.2.0 |
+| rabbitmq/amqp091-go | 1.14.0 |
+| coder/websocket | 1.8.15 |
 
 ## Documentation
 
@@ -233,6 +238,8 @@ The environment the project is built and tested against in CI:
   layers, the task lifecycle.
 - [Coroutine switching](docs/coroutine-switching.md) — `Scheduler::switch()` and
   the servers' automatic preemption for CPU-bound code.
+- [Coroutine timeout](docs/coroutine-timeout.md) — `Deadline::run()` and
+  `add(timeoutMs: …)`: work that is unwound when it runs too long.
 - [Coroutine context](docs/coroutine-context.md) — per-coroutine key-value store.
 - [MongoDB](docs/mongodb.md) — collection operations, cursors, BSON types.
 - [MySQL](docs/mysql.md) — the universal SQL feature: bindings, streaming,
@@ -249,6 +256,8 @@ The environment the project is built and tested against in CI:
   mirror.
 - [WebSocket client](docs/websocket-client.md) — the WS server's dial-side
   mirror.
+- [AMQP (RabbitMQ)](docs/amqp.md) — publishing, topology and consumers that
+  suspend a coroutine instead of the worker.
 - [Worker master](docs/worker-master.md) — a supervisor for a pool of workers
   (`bin/sconcur-server`).
 - [Server statistics](docs/admin-stats.md) — `GET /api/stats`, live panel, SSE,
@@ -281,12 +290,15 @@ php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello'
 - The `Std` feature — SConcur equivalents of standard PHP functions that block
   the worker or are CPU-bound non-preemptible monoliths (sleep, json, hash, gzip,
   password hashing, file I/O), executed in Go; absorbs `Sleeper`.
-- The `Queue` feature — deferred background jobs: a job is published to a broker
-  and picked up by workers in coroutines, with the broker client on the Go side.
+- A fiber-safe bridge to Laravel — a separate package that isolates the
+  framework state of one job from another, so a queue worker can pull several
+  queues at once. The broker side of this is done, see [AMQP](docs/amqp.md).
 - Auto-recovery of stuck workers — a master watchdog by heartbeat: `SIGKILL` and
   respawn a worker whose PHP thread has hung.
 - Split the core and the features into separate packages.
-- Stopping a single coroutine from anywhere, not just the whole flow.
+- Stopping a single coroutine from anywhere, not just the whole flow. The other
+  half of this — a deadline on one — is done, see
+  [coroutine timeout](docs/coroutine-timeout.md).
 - Optimize the synchronous path — a call outside a coroutine goes to Go
   directly, bypassing the scheduler and the Fiber machinery.
 - Explore a cross-process concurrency mode, so concurrent operations can use

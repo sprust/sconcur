@@ -5,19 +5,21 @@ import "strings"
 type Method string
 
 const (
-	MethodSleep       Method = "sl"
-	MethodMongodb     Method = "mng"
-	MethodHttpServe   Method = "hs"
-	MethodHttpRespond Method = "hr"
-	MethodHttpClient  Method = "hc"
-	MethodMysql       Method = "my"
-	MethodPgsql       Method = "pg"
+	MethodSleep         Method = "sl"
+	MethodMongodb       Method = "mng"
+	MethodHttpServe     Method = "hs"
+	MethodHttpRespond   Method = "hr"
+	MethodHttpClient    Method = "hc"
+	MethodMysql         Method = "my"
+	MethodPgsql         Method = "pg"
 	MethodSocketServe   Method = "ss"
 	MethodSocketRespond Method = "sr"
 	MethodSocketClient  Method = "sc"
-	MethodWsServe    Method = "wss"
-	MethodWsRespond  Method = "wsr"
-	MethodWsClient   Method = "wsc"
+	MethodWsServe       Method = "wss"
+	MethodWsRespond     Method = "wsr"
+	MethodWsClient      Method = "wsc"
+
+	MethodAmqp Method = "amq"
 )
 
 // internedMethods maps every known method onto its canonical constant. A map
@@ -37,6 +39,7 @@ var internedMethods = map[Method]Method{
 	MethodWsServe:       MethodWsServe,
 	MethodWsRespond:     MethodWsRespond,
 	MethodWsClient:      MethodWsClient,
+	MethodAmqp:          MethodAmqp,
 }
 
 // InternMethod returns the canonical instance of a known method, so a caller

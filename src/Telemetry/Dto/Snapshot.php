@@ -6,8 +6,8 @@ namespace SConcur\Telemetry\Dto;
 
 /**
  * One worker's statistics as pushed over the telemetry socket (the "s" field of a
- * snapshot frame). Exactly one workload section is set: requests (HTTP) or
- * connections (socket). Field names mirror the Go schema
+ * snapshot frame). Exactly one workload section is set: requests (HTTP),
+ * connections (socket) or consumers (a queue consumer). Field names mirror the Go schema
  * (ext/internal/stats/snapshot.go).
  */
 readonly class Snapshot
@@ -23,6 +23,7 @@ readonly class Snapshot
         public int $goroutines,
         public ?Requests $requests,
         public ?Connections $connections,
+        public ?Consumers $consumers = null,
     ) {
     }
 
@@ -57,6 +58,7 @@ readonly class Snapshot
             goroutines: (int) ($data['goroutines'] ?? 0),
             requests: is_array($data['requests'] ?? null) ? Requests::fromArray($data['requests']) : null,
             connections: is_array($data['connections'] ?? null) ? Connections::fromArray($data['connections']) : null,
+            consumers: is_array($data['consumers'] ?? null) ? Consumers::fromArray($data['consumers']) : null,
         );
     }
 }

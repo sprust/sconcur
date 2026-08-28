@@ -58,11 +58,11 @@ type serverConfig struct {
 // 0 as "disabled".
 func configFromPayload(payload payloads.ServePayload) serverConfig {
 	return serverConfig{
-		readTimeout:     time.Duration(max(payload.ReadTimeoutMs, 0)) * time.Millisecond,
-		writeTimeout:    msOrDefault(payload.WriteTimeoutMs, defaultWriteTimeout),
-		shutdownTimeout: msOrDefault(payload.ShutdownTimeoutMs, defaultShutdownTimeout),
-		maxMessageBytes: intOrDefault(payload.MaxMessageBytes, defaultMaxMessageBytes),
-		maxConcurrency:  max(payload.MaxConcurrency, 0),
+		readTimeout:         time.Duration(max(payload.ReadTimeoutMs, 0)) * time.Millisecond,
+		writeTimeout:        msOrDefault(payload.WriteTimeoutMs, defaultWriteTimeout),
+		shutdownTimeout:     msOrDefault(payload.ShutdownTimeoutMs, defaultShutdownTimeout),
+		maxMessageBytes:     intOrDefault(payload.MaxMessageBytes, defaultMaxMessageBytes),
+		maxConcurrency:      max(payload.MaxConcurrency, 0),
 		telemetrySocket:     payload.TelemetrySocket,
 		serverName:          payload.ServerName,
 		telemetryIntervalMs: payload.TelemetryIntervalMs,

@@ -8,7 +8,7 @@ points: a handler busy with computation blocks every other coroutine of its
 process until it finishes. Switching addresses that in two forms:
 `Scheduler::switch()` — an explicit switch point you put into your own hot loops
 — and automatic preemption, where the extension interrupts the VM on a timer and
-performs the same switch for you (on by default in the servers).
+performs the same switch for you (on by default in the long-lived workers).
 
 Switching is a latency tool, not a throughput tool. The total CPU work does not
 change and the PHP thread stays single: a heavy handler still takes its
@@ -54,20 +54,21 @@ parked crunchers.
 
 ## Automatic preemption
 
-The three servers (`HttpServer`, `SocketServer`, `WsServer`) arm automatic
-preemption while serving, so even code that never calls `switch()` — including
-third-party libraries — cannot freeze the process:
+The long-lived workers — the three servers (`HttpServer`, `SocketServer`, `WsServer`)
+and the [AMQP queue consumer](amqp.md#a-supervised-consumer) — arm automatic preemption
+while they run, so even code that never calls `switch()`, third-party libraries
+included, cannot freeze the process:
 
 1. On startup the extension hooks the engine's interrupt entry point
    (`zend_interrupt_function`), chaining the previous handler, so pcntl signal
    dispatch keeps working.
-2. A serving server arms a timer on the Go side; every quantum the timer
+2. A running worker arms a timer on the Go side; every quantum the timer
    atomically requests a VM interrupt (`EG(vm_interrupt)`), which the engine
    notices at the next opcode boundary — function calls, loop back-edges, and the
    same checks opcache JIT inserts into compiled loops.
 3. The extension's handler, called on the PHP thread, invokes the scheduler's
    preempt hook, which force-parks the running coroutine exactly like a `switch()`
-   with the quantum elapsed. When serving ends the timer is disarmed.
+   with the quantum elapsed. When the work ends the timer is disarmed.
 4. While the PHP thread is parked inside a blocking wait call (an idle server
    waiting for the next request), the timer pauses: no PHP code is running, so
    an interrupt could not be serviced anyway. It resumes as soon as the wait
@@ -81,8 +82,8 @@ flowchart TB
     Scheduler["Scheduler loop (results first, then the queue)"] -->|"resume"| Queue
 ```
 
-Configuration is the `preemptionQuantumMs` server option (default `5`, `0`
-disables), overridable like any other launch option:
+Configuration is the `preemptionQuantumMs` option (default `5`, `0` disables), carried
+by all four and overridable like any other launch option:
 
 ```php
 $server = new HttpServer(
@@ -96,7 +97,7 @@ $server = new HttpServer(
 php server.php --preemptionQuantumMs=0   # disable preemption for this worker
 ```
 
-CLI scripts and library code outside the servers never arm the timer, so there
+CLI scripts and library code outside those workers never arm the timer, so there
 `Scheduler::switch()` is the only switch point — unless the same machinery is armed
 manually:
 
@@ -114,6 +115,10 @@ try {
 the extension's interrupt timer — the same wiring the servers use, with the same
 guards. Re-enabling replaces the previous timer. Always disable in `finally`: the
 timer keeps firing until `disablePreemption()` or process shutdown.
+
+Preemption is also what lets a [coroutine timeout](coroutine-timeout.md) reach code
+that never suspends: the deadline is delivered from the same hook, so without the
+timer armed a CPU-bound coroutine is only unwound at its next wait.
 
 ## The cost under load
 
@@ -189,7 +194,8 @@ call.
 ## See also
 
 - [HTTP server](http-server.md), [Socket server](socket-server.md),
-  [WebSocket server](websocket-server.md) — the servers arming preemption.
+  [WebSocket server](websocket-server.md), [AMQP](amqp.md#a-supervised-consumer) — the
+  workers arming preemption.
 - [Architecture](architecture.md) — the scheduler, fibers and flows.
 - [Positioning](positioning.md#is-sconcur-for-you) — the CPU-bound verdict this
   feature softens (latency, not throughput).

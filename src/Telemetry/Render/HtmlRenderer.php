@@ -5,15 +5,19 @@ declare(strict_types=1);
 namespace SConcur\Telemetry\Render;
 
 use SConcur\Telemetry\Dto\Aggregate;
+use SConcur\Telemetry\Dto\Connections;
+use SConcur\Telemetry\Dto\Consumers;
+use SConcur\Telemetry\Dto\Requests;
 use SConcur\Telemetry\Dto\WorkerEntry;
 
 /**
- * Renders the aggregate as a compact, dependency-free admin page — a header line, a
- * totals row and a per-worker table. Ports the Go renderer
- * (ext/internal/stats/html.go). The workload columns (requests vs connections) are
- * chosen once from the pool totals so every row has the same shape; a worker missing
- * that section shows dashes. Hung workers are highlighted. All interpolated values
- * are escaped.
+ * Renders the aggregate as a compact, dependency-free admin page — a header line, a totals
+ * row and a per-worker table.
+ *
+ * The workload columns are whichever sections the pools reported — requests, connections,
+ * consumers, or several of them side by side under one master. They are chosen once from
+ * the pool totals so every row has the same shape, and a worker missing that section shows
+ * dashes. Hung workers are highlighted, and every interpolated value is escaped.
  */
 class HtmlRenderer
 {
@@ -32,7 +36,7 @@ class HtmlRenderer
         $totals      = $aggregate->totals;
         $requests    = $totals->requests;
         $connections = $totals->connections;
-        $hasRequests = $requests !== null;
+        $consumers   = $totals->consumers;
         $name        = $this->escape($aggregate->name);
 
         $refreshMeta = $refreshUrl !== null
@@ -66,15 +70,24 @@ class HtmlRenderer
 <div class="meta">' . $this->escape($aggregate->generatedAt) . ' · workers ' . $aggregate->workersTotal . $hungMeta . '</div>'
             . $this->masterTable($aggregate);
 
+        // Every section that is present, not the first of them: one master runs unlike
+        // pools, and showing only requests would hide a consumer pool's numbers entirely.
+        $workloadTotalsHead = '';
+        $workloadTotalsRow  = '';
+
         if ($requests !== null) {
-            $workloadTotalsHead = '<th>completed</th><th>avg ms</th><th>in-flight</th><th>1–5s</th><th>5–15s</th><th>&gt;15s</th>';
-            $workloadTotalsRow  = '<td>' . $requests->completed . '</td><td>' . $this->f1($requests->avgMs) . '</td><td>' . $requests->inFlight . '</td><td>' . $requests->inFlight1to5s . '</td><td>' . $requests->inFlight5to15s . '</td><td>' . $requests->inFlightOver15s . '</td>';
-        } elseif ($connections !== null) {
-            $workloadTotalsHead = '<th>active</th><th>accepted</th>';
-            $workloadTotalsRow  = '<td>' . $connections->active . '</td><td>' . $connections->totalAccepted . '</td>';
-        } else {
-            $workloadTotalsHead = '';
-            $workloadTotalsRow  = '';
+            $workloadTotalsHead .= '<th>completed</th><th>avg ms</th><th>in-flight</th><th>1–5s</th><th>5–15s</th><th>&gt;15s</th>';
+            $workloadTotalsRow .= '<td>' . $requests->completed . '</td><td>' . $this->f1($requests->avgMs) . '</td><td>' . $requests->inFlight . '</td><td>' . $requests->inFlight1to5s . '</td><td>' . $requests->inFlight5to15s . '</td><td>' . $requests->inFlightOver15s . '</td>';
+        }
+
+        if ($connections !== null) {
+            $workloadTotalsHead .= '<th>active</th><th>accepted</th>';
+            $workloadTotalsRow .= '<td>' . $connections->active . '</td><td>' . $connections->totalAccepted . '</td>';
+        }
+
+        if ($consumers !== null) {
+            $workloadTotalsHead .= '<th>coroutines</th><th>delivered</th><th>acked</th><th>refused</th><th>avg ms</th><th>in-flight</th>';
+            $workloadTotalsRow .= '<td>' . $consumers->coroutines . '</td><td>' . $consumers->delivered . '</td><td>' . $consumers->acked . '</td><td>' . $consumers->refused . '</td><td>' . $this->f1($consumers->avgMs) . '</td><td>' . $consumers->inFlight . '</td>';
         }
 
         $totalsTable = '
@@ -94,32 +107,25 @@ class HtmlRenderer
 </tr>
 </table>';
 
-        if ($requests !== null) {
-            $workloadWorkersHead = '<th>completed</th><th>avg ms</th><th>in-flight</th>';
-        } elseif ($connections !== null) {
-            $workloadWorkersHead = '<th>active</th><th>accepted</th>';
-        } else {
-            $workloadWorkersHead = '';
-        }
+        $groupsTable = $this->groupsTable($aggregate);
 
         $rows = '';
 
         foreach ($aggregate->workers as $worker) {
-            $rows .= $this->workerRow($worker, $hasRequests);
+            $rows .= $this->workerRow($worker);
         }
 
         $workersTable = '
 <table>
 <caption>Workers</caption>
 <tr>
-<th>pid</th><th>started (UTC)</th><th>uptime s</th><th>snap age ms</th><th>CPU %</th><th>RSS, MiB</th><th>goroutines</th>
-' . $workloadWorkersHead . '
+<th>group</th><th>pid</th><th>started (UTC)</th><th>uptime s</th><th>snap age ms</th><th>CPU %</th><th>RSS, MiB</th><th>goroutines</th><th>workload</th>
 </tr>' . $rows . '
 </table>
 </body>
 </html>';
 
-        return $head . $totalsTable . $workersTable;
+        return $head . $totalsTable . $groupsTable . $workersTable;
     }
 
     protected function masterTable(Aggregate $aggregate): string
@@ -146,23 +152,87 @@ class HtmlRenderer
 </table>';
     }
 
-    protected function workerRow(WorkerEntry $worker, bool $hasRequests): string
+    /**
+     * One row per pool. A master runs several, and their workload numbers are not
+     * comparable, so this is the table an operator actually reads; the totals above it
+     * are only meaningful for memory and CPU. Omitted when there is a single pool —
+     * it would just repeat the totals.
+     */
+    protected function groupsTable(Aggregate $aggregate): string
+    {
+        if (count($aggregate->groups) < 2) {
+            return '';
+        }
+
+        $rows = '';
+
+        foreach ($aggregate->groups as $group) {
+            $rows .= '
+<tr>
+<td>' . $this->escape($group->name) . '</td>
+<td>' . $group->workersTotal . '</td>
+<td>' . $group->workersHung . '</td>
+<td>' . $this->mib($group->totals->memory->rssBytes) . '</td>
+<td>' . $this->f1($group->totals->cpuPercent) . '</td>
+<td>' . $group->totals->goroutines . '</td>
+<td>' . $this->workloadCell(
+                $group->totals->requests,
+                $group->totals->connections,
+                $group->totals->consumers,
+            ) . '</td>
+</tr>';
+        }
+
+        return '
+<table>
+<caption>Groups</caption>
+<tr>
+<th>group</th><th>workers</th><th>hung</th><th>RSS, MiB</th><th>CPU %</th><th>goroutines</th><th>workload</th>
+</tr>' . $rows . '
+</table>';
+    }
+
+    /**
+     * A workload in one cell, because the columns differ by kind: one master runs
+     * unlike pools, and a shared column set would show one of them and leave the rest
+     * with dashes.
+     */
+    protected function workloadCell(
+        ?Requests $requests,
+        ?Connections $connections,
+        ?Consumers $consumers,
+    ): string {
+        if ($requests !== null) {
+            return 'requests ' . $requests->completed
+                . ', avg ' . $this->f1($requests->avgMs) . ' ms'
+                . ', in-flight ' . $requests->inFlight;
+        }
+
+        if ($connections !== null) {
+            return 'connections ' . $connections->active
+                . ', accepted ' . $connections->totalAccepted;
+        }
+
+        if ($consumers !== null) {
+            return 'coroutines ' . $consumers->coroutines
+                . ', delivered ' . $consumers->delivered
+                . ', acked ' . $consumers->acked
+                . ', refused ' . $consumers->refused
+                . ', avg ' . $this->f1($consumers->avgMs) . ' ms'
+                . ', in-flight ' . $consumers->inFlight;
+        }
+
+        return '—';
+    }
+
+    protected function workerRow(WorkerEntry $worker): string
     {
         $class   = $worker->hung ? ' class="hung"' : '';
         $pidMark = $worker->hung ? ' ⚠' : '';
 
-        if ($hasRequests) {
-            $workload = $worker->requests !== null
-                ? '<td>' . $worker->requests->completed . '</td><td>' . $this->f1($worker->requests->avgMs) . '</td><td>' . $worker->requests->inFlight . '</td>'
-                : '<td>—</td><td>—</td><td>—</td>';
-        } else {
-            $workload = $worker->connections !== null
-                ? '<td>' . $worker->connections->active . '</td><td>' . $worker->connections->totalAccepted . '</td>'
-                : '<td>—</td><td>—</td>';
-        }
-
         return '
 <tr' . $class . '>
+<td>' . $this->escape($worker->group) . '</td>
 <td>' . $worker->pid . $pidMark . '</td>
 <td>' . $this->utc($worker->startedAtMs) . '</td>
 <td>' . $this->f1($worker->uptimeSeconds) . '</td>
@@ -170,7 +240,11 @@ class HtmlRenderer
 <td>' . $this->f1($worker->cpuPercent) . '</td>
 <td>' . $this->mib($worker->memory->rssBytes) . '</td>
 <td>' . $worker->goroutines . '</td>
-' . $workload . '
+<td>' . $this->workloadCell(
+            requests: $worker->requests,
+            connections: $worker->connections,
+            consumers: $worker->consumers,
+        ) . '</td>
 </tr>';
     }
 

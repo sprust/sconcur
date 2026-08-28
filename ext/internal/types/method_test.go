@@ -24,6 +24,7 @@ func TestInternMethodReturnsTheCanonicalInstance(t *testing.T) {
 		MethodWsServe,
 		MethodWsRespond,
 		MethodWsClient,
+		MethodAmqp,
 	}
 
 	for _, canonical := range known {
@@ -73,7 +74,7 @@ func TestInternedMethodsCoverEveryConstant(t *testing.T) {
 		}
 	}
 
-	if len(internedMethods) != 13 {
-		t.Fatalf("expected 13 interned methods, got %d — update the table and this count together", len(internedMethods))
+	if len(internedMethods) != 14 {
+		t.Fatalf("expected 14 interned methods, got %d — update the table and this count together", len(internedMethods))
 	}
 }

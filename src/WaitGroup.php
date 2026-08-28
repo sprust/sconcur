@@ -9,6 +9,7 @@ use Fiber;
 use Generator;
 use RuntimeException;
 use SConcur\Exceptions\CallbackExecutionException;
+use SConcur\Exceptions\CoroutineTimeoutException;
 use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Flow\CurrentFlow;
 use SConcur\Scheduler\Coroutine;
@@ -48,7 +49,7 @@ class WaitGroup
      * Keyed by callback key, in add() order; each entry keeps the callback and the
      * context parent to inherit at launch time.
      *
-     * @var array<string, array{callback: Closure, parentContextFiberId: int}>
+     * @var array<string, array{callback: Closure, parentContextFiberId: int, timeoutMs: int}>
      */
     protected array $pending = [];
 
@@ -80,10 +81,20 @@ class WaitGroup
     }
 
     /**
+     * Adds a callback to the group and answers the key its result will be yielded under.
+     *
      * @param Closure(): mixed $callback
+     * @param int              $timeoutMs how long the callback may run before it is unwound
+     *                                    where it stands (CoroutineTimeoutException); 0, the
+     *                                    default, means no deadline. Counted from the moment
+     *                                    the callback starts, not from here — see launch()
      */
-    public function add(Closure $callback): string
+    public function add(Closure $callback, int $timeoutMs = 0): string
     {
+        // Screened before anything is built: a refusal after the member is registered would
+        // leave the group with a phantom one — live, never started, and waited for for ever.
+        Scheduler::assertTimeout($timeoutMs);
+
         $callbackKey = 'cb_' . (++static::$callbackKeyCounter);
 
         // Capture the context to inherit now (the coroutine adding this, or the
@@ -92,17 +103,34 @@ class WaitGroup
         $parentContextFiberId = State::currentContextFiberId();
 
         if ($this->hasFreeSlot()) {
-            $this->launch(
-                callbackKey: $callbackKey,
-                callback: $callback,
-                parentContextFiberId: $parentContextFiberId,
-            );
+            try {
+                $this->launch(
+                    callbackKey: $callbackKey,
+                    callback: $callback,
+                    parentContextFiberId: $parentContextFiberId,
+                    timeoutMs: $timeoutMs,
+                );
+            } catch (CoroutineTimeoutException $exception) {
+                // The member ran out of its own allowance before it ever suspended, which
+                // preemption makes reachable. That is the member failing, and the failure
+                // belongs to the group — fillSlots() has always routed it there, and which
+                // path a member took to its slot cannot change what its timeout means.
+                //
+                // Letting it out here would surface in the adder's stack as if the adder's
+                // own deadline had passed: its catch for that fires, and a server handler
+                // that lets one through answers nothing at all, because a stop is exactly
+                // what it reads as "unwound on purpose".
+                $this->markFailure($exception);
+            }
         } else {
             // At capacity: queue it. Nothing is created or sent to Go until a slot
-            // frees and the scheduler calls fillSlots().
+            // frees and the scheduler calls fillSlots(). The timeout travels with it
+            // rather than being turned into a deadline here — a callback that waited
+            // out a slot would otherwise be born already expired.
             $this->pending[$callbackKey] = [
                 'callback'             => $callback,
                 'parentContextFiberId' => $parentContextFiberId,
+                'timeoutMs'            => $timeoutMs,
             ];
         }
 
@@ -133,10 +161,12 @@ class WaitGroup
                     callbackKey: $callbackKey,
                     callback: $queued['callback'],
                     parentContextFiberId: $queued['parentContextFiberId'],
+                    timeoutMs: $queued['timeoutMs'],
                 );
-            } catch (CallbackExecutionException $exception) {
+            } catch (CallbackExecutionException | FlowStoppedException $exception) {
                 // A deferred callback threw before its first suspend: its failure
                 // belongs to the group (surfaced at iterate()), not to the scheduler.
+                // A deliberate unwind arrives unwrapped, as it does from anywhere else.
                 $this->markFailure($exception);
 
                 return;
@@ -305,15 +335,23 @@ class WaitGroup
     }
 
     /**
-     * Creates the fiber, registers it in State/Scheduler and runs it up to its
-     * first suspend. Shared by the immediate add() path and the deferred fillSlots()
-     * path. Throws CallbackExecutionException if the callback throws before
-     * suspending — add() lets it propagate; fillSlots() turns it into a failure.
+     * Creates the fiber, registers it in State/Scheduler and runs it up to its first
+     * suspend. Shared by the immediate add() path and the deferred fillSlots() path.
+     *
+     * A callback that throws before suspending leaves here as a CallbackExecutionException,
+     * which add() lets propagate and fillSlots() turns into a group failure. A deliberate
+     * unwind travels unwrapped instead — the way it does from everywhere else it can
+     * surface — and both callers route a member's own timeout to the group, so the same
+     * event does not mean two different things depending on whether a slot was free.
      *
      * @param Closure(): mixed $callback
      */
-    protected function launch(string $callbackKey, Closure $callback, int $parentContextFiberId): void
-    {
+    protected function launch(
+        string $callbackKey,
+        Closure $callback,
+        int $parentContextFiberId,
+        int $timeoutMs = 0,
+    ): void {
         $fiber   = new Fiber($callback);
         $fiberId = spl_object_id($fiber);
 
@@ -334,14 +372,24 @@ class WaitGroup
 
         $this->members[$fiberId] = $callbackKey;
 
-        Scheduler::get()->register(
-            new Coroutine(
-                id: $fiberId,
-                fiber: $fiber,
-                group: $this,
-                callbackKey: $callbackKey,
-            ),
+        $coroutine = new Coroutine(
+            id: $fiberId,
+            fiber: $fiber,
+            group: $this,
+            callbackKey: $callbackKey,
         );
+
+        Scheduler::get()->register($coroutine);
+
+        // Counted from here and not from add(): this is the moment the callback
+        // starts running, and a callback that waited for a free slot gets its whole
+        // allowance rather than what was left of it.
+        if ($timeoutMs > 0) {
+            Scheduler::get()->setDeadline(
+                coroutine: $coroutine,
+                timeoutMs: $timeoutMs,
+            );
+        }
 
         try {
             // First run up to the first suspend. May happen nested inside another
@@ -356,6 +404,14 @@ class WaitGroup
                 fiberId: $fiberId,
                 suspendValue: $suspendValue,
             );
+        } catch (FlowStoppedException $exception) {
+            // A deliberate unwind — the callback ran past its deadline before it ever
+            // suspended, or the group was stopped under it. It travels as it is, the way
+            // it does from every other place it can surface (Scheduler::failCoroutine,
+            // FeatureExecutor::suspend), so a catch written for one covers the other.
+            $this->discard($fiberId);
+
+            throw $exception;
         } catch (Throwable $exception) {
             $this->discard($fiberId);
 

@@ -2,7 +2,7 @@
     "name": "sconcur/sconcur",
     "description": "PHP concurrency library backed by an extension written in Go",
     "license": "MIT",
-    "version": "0.10.0",
+    "version": "0.11.0",
     "authors": [
         {
             "name": "Pavel",
@@ -21,6 +21,7 @@
         "phpstan/phpstan": "^2.1",
         "symfony/var-dumper": "^7.3",
         "vlucas/phpdotenv": "^5.6",
+        "ext-amqp": "2.2.0",
         "ext-mongodb": "^1.21",
         "mongodb/mongodb": "^1.21",
         "friendsofphp/php-cs-fixer": "^3.91",

@@ -23,6 +23,7 @@ hardware, DB settings and load. The workload-matching verdict table is in
 - [MySQL](#mysql)
 - [PostgreSQL](#postgresql)
 - [Payload size](#payload-size)
+- [AMQP (RabbitMQ)](#amqp-rabbitmq)
 - [Clients (HTTP / Socket / WebSocket)](#clients-http--socket--websocket)
 - [Servers (HTTP / Socket / WebSocket)](#servers-http--socket--websocket)
   - [HTTP throughput: `/` vs `/all`](#http-throughput--vs-all)
@@ -55,7 +56,8 @@ stderr. The run still prints a plausible requests/sec. Always check
 `Non-2xx or 3xx responses` in the wrk output before trusting a long run.
 
 Client and server numbers taken on 2026-07-22, DB and payload numbers on
-2026-08-13, the three-stack comparisons on 2026-08-09, all on an idle machine.
+2026-08-13, the AMQP numbers on 2026-08-22 and re-measured unchanged on
+2026-08-28, the three-stack comparisons on 2026-08-09, all on an idle machine.
 The SConcur rows of the server tables and of the three-stack comparison were
 re-measured on 2026-08-12, after the 0.9.1 hot-path work (fiber pool,
 request-body chunk sizing, fiber-stack cgo dispatch); the RoadRunner and Swoole
@@ -239,6 +241,46 @@ Payload 1 MB, 50 calls:
    (`WaitGroup::create(maxConcurrency: N)`) on large result sets, and move
    megabyte blobs through the native driver or a path that never crosses the
    boundary (like `HttpClient::download()`).
+
+## AMQP (RabbitMQ)
+
+Publishing is where the native extension wins and nothing can be done about it;
+`basic.get` run concurrently lands around it; consuming a queue that is already
+full is the extension's too. The gain is elsewhere — see below the tables.
+
+Median of 5 runs, 1000 calls per mode, columns as for MongoDB. The concurrent mode
+spreads its calls over 50 channels, because a channel is serialized on the broker;
+the native and the synchronous modes use one, as an application would.
+
+| Operation | count | native / sync / async, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
+| --- | ---: | ---: | ---: | ---: | --- |
+| publish | 1000 | 4.8 / 32.2 / 27.6 (−478% ❌) | 4.2 / 31.1 / 19.9 (−374% ❌) | 6.2 / 72.4 / 32.8 (−429% ❌) | 22 / 22 / 22 |
+| get | 1000 | 30.5 / 83.1 / 40.7 (−33% ❌) | 29.3 / 72.9 / 27.4 (+7% ✅) | 66.3 / 141 / 73.6 (−11% ❌) | 22 / 22 / 22 |
+
+Consuming a pre-filled set of queues, 10 queues × 200 messages, median of 5 runs:
+
+| Measurement | native | sync | async |
+| --- | ---: | ---: | ---: |
+| messages per second | 121 500 | 22 100 | 82 800 |
+
+`basic.publish` expects no reply, so it costs one write on the wire while every
+SConcur call also crosses the PHP ↔ Go boundary — there is nothing to overlap and
+the crossing is the whole difference. `basic.get` does wait for the broker, and
+running the calls at the same time recovers most of that: the concurrent mode
+halves the synchronous one and its best run beats native.
+
+These three move more between runs than any other table here — the consume row
+swung between 52 000 and 128 000 msg/s for the native mode alone, and `get`
+between 29 and 66 ms. Read them as orders of magnitude.
+
+**What the tables do not measure is the reason the feature exists.** They pit one
+call against one call on a queue that already has its messages. The gain is a
+worker that waits on several queues at once: consuming holds the PHP thread in
+both `ext-amqp` and `php-amqplib`, so a process is pinned to one queue, while
+here the same loop suspends only its coroutine — three consumers waiting on a
+200 ms delay finish in one delay, not three
+(`tests/feature/Features/Amqp/AmqpConsumeTest.php`). That is throughput a
+single-queue benchmark cannot show.
 
 ## Clients (HTTP / Socket / WebSocket)
 

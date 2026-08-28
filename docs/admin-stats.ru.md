@@ -62,16 +62,21 @@ flowchart TB
 
 ```json
 {
-  "workerScript": "/app/worker.php",
-  "workerCount": 8,
   "runtimeDir": "/run/sconcur",
-  "name": "sconcur-http-server",
+  "name": "sconcur-servers",
   "panelPort": 8081,
   "adminToken": "23c30b40...9894c3ec",
-  "server": {
-    "address": "0.0.0.0:8080",
-    "reusePort": true
-  }
+  "groups": [
+    {
+      "name": "http",
+      "workerScript": "/app/worker.php",
+      "workerCount": 8,
+      "server": {
+        "address": "0.0.0.0:8080",
+        "reusePort": true
+      }
+    }
+  ]
 }
 ```
 
@@ -120,17 +125,21 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 | `SCONCUR_TELEMETRY_INTERVAL_MS` | период сэмплирования и отправки снапшота | `1000` |
 
 Под мастером сокет — `<runtimeDir>/<name>.telemetry.sock`, инжектится только при
-включённой телеметрии. Те же значения задаются программно: на воркере — через
-конструктор сервера (`telemetrySocket`, `serverName`, `telemetryIntervalMs`), на
-мастере — через конструктор `WorkerMaster` (`panelPort`, `adminToken`). Нескольким
-пулам на одной машине нужны разные `panelPort`, `name` и `runtimeDir`.
+включённой телеметрии. Те же значения задаются программно: на сервере — через
+его конструктор (`telemetrySocket`, `serverName`, `telemetryIntervalMs`), на
+мастере — через конструктор `WorkerMaster` (`panelPort`, `adminToken`). У
+консьюмера очереди таких параметров нет: расширение берёт сокет и имя пула из
+окружения и помечает снапшоты как `<группа>:<слот>` тем, что поставил мастер.
+Нескольким пулам на одной машине нужны разные `panelPort`, `name` и `runtimeDir`.
 
 ## Метрики
 
 Числа воркера приходят с Go-стороны (`/proc`, `runtime`, собственные счётчики);
 секцию `master` PHP-мастер сэмплит из своего `/proc`. Процессные метрики общие для
-всех серверов, секция нагрузки — своя: у HTTP это `requests`, у сокета и WebSocket
-— `connections`.
+всех видов воркеров, а секция нагрузки говорит, кто отчитался: у HTTP это
+`requests`, у сокета и WebSocket — `connections`, у консьюмера очереди —
+`consumers`. Секции, которую никто не прислал, в ответе нет вовсе, она не
+обнуляется, — поэтому мастер с разнородными пулами показывает их рядом.
 
 | Поле | Что это | Источник |
 |---|---|---|
@@ -145,13 +154,26 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 | `requests.inFlight` | в обработке прямо сейчас | реестр in-flight |
 | `requests.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | из них по возрасту [1c,5c) / [5c,15c) / ≥15c | возраст in-flight |
 | `connections.active` / `totalAccepted` | открыто сейчас / принято за всё время | счётчик |
+| `consumers.coroutines` | открытых консьюмеров — по одному на корутину, то есть текущая ёмкость | реестр консьюмеров |
+| `consumers.delivered` | доставок отдано в PHP (консьюмер очереди) | счётчик |
+| `consumers.acked` / `refused` | доставок подтверждено / отклонено (nack или reject) — счёт идёт по доставкам, а не по командам | сами команды `ack`, `nack` и `reject` |
+| `consumers.timed` | из них у скольких было измеримое время обработчика (у авто-подтверждённой его нет) | реестр в работе |
+| `consumers.avgMs` | среднее время доставки в обработчике | от доставки до её подтверждения |
+| `consumers.inFlight` | отдано и ещё не рассчитано | реестр в работе |
+| `consumers.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | из них по возрасту [1с,5с) / [5с,15с) / ≥15с | возраст в работе |
 | `master.pid` / `startedAt` / `uptimeSeconds` | сам процесс мастера | мастер |
 | `master.memory.rssBytes` / `master.cpuPercent` | RSS и CPU мастера | `/proc/self/*` |
 
 Все поля даты-времени — в UTC (ISO-8601 со смещением `+00:00`). Корзины
 длительностей не пересекаются: запрос, который идёт уже 7 c, попадает только в
 `inFlight5to15s`. В `totals` `requests.avgMs` взвешен по `completed` воркеров, а
-`cpuPercent` — сумма по процессам и может превышать 100%.
+`consumers.avgMs` — по `consumers.timed`; `cpuPercent` — сумма по
+процессам и может превышать 100%.
+
+Счётчики консьюмера не стоят ничего лишнего на проводе: доставка считается там, где
+уходит в PHP, и рассчитывается тем самым `basic.ack` или `basic.nack`, который PHP и
+так собирался отправить. Они принадлежат процессу воркера — воркер, который
+завершился и был заменён, начинает счёт заново, ровно как `completed` у сервера.
 
 `snapshotAgeMs` мастер считает по своим часам от момента приёма кадра, поэтому
 он не зависит от расхождения часов; живое соединение без свежего снапшота дольше
@@ -166,7 +188,7 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 ```json
 {
   "generatedAt": "2026-06-24T12:00:00+00:00",
-  "name": "sconcur-http-server",
+  "name": "sconcur-servers",
   "workersTotal": 8,
   "workersHung": 0,
   "master": {
@@ -182,9 +204,23 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
     "goroutines": 192,
     "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
   },
+  "groups": [
+    {
+      "name": "http",
+      "workersTotal": 3,
+      "workersHung": 0,
+      "totals": {
+        "memory": { "rssBytes": 125829120, "goRuntimeBytes": 37748736, "nonExtensionBytes": 88080384 },
+        "cpuPercent": 10.6,
+        "goroutines": 72,
+        "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
+      }
+    }
+  ],
   "workers": [
     {
       "pid": 12346,
+      "group": "http",
       "hung": false,
       "snapshotAgeMs": 600,
       "startedAt": "2026-06-24T11:54:47+00:00",
@@ -212,12 +248,35 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 ```text
 # HELP sconcur_pool_requests_completed_total Requests completed across the pool.
 # TYPE sconcur_pool_requests_completed_total counter
-sconcur_pool_requests_completed_total{name="sconcur-http-server"} 843210
-sconcur_master_start_time_seconds{name="sconcur-http-server"} 1750762800
-sconcur_master_memory_rss_bytes{name="sconcur-http-server"} 16777216
-sconcur_worker_start_time_seconds{name="sconcur-http-server",pid="12346"} 1750766087
-sconcur_worker_requests_completed_total{name="sconcur-http-server",pid="12346"} 105432
+sconcur_pool_requests_completed_total{name="sconcur-servers"} 843210
+sconcur_pool_deliveries_total{name="sconcur-servers"} 51204
+sconcur_master_start_time_seconds{name="sconcur-servers"} 1750762800
+sconcur_master_memory_rss_bytes{name="sconcur-servers"} 16777216
+sconcur_group_workers{name="sconcur-servers",group="http"} 3
+sconcur_group_memory_rss_bytes{name="sconcur-servers",group="http"} 125829120
+sconcur_worker_start_time_seconds{name="sconcur-servers",pid="12346",group="http"} 1750766087
+sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346",group="http"} 105432
 ```
+
+Четыре области, различаемые префиксом и метками:
+
+| Семейство | Область | Метки |
+| --- | --- | --- |
+| `sconcur_pool_*` | все воркеры мастера вместе — `requests`, `connections` и `deliveries` (нагрузка очередей) | `name` |
+| `sconcur_group_*` | один пул: число воркеров, зависших, CPU, RSS и горутины | `name`, `group` |
+| `sconcur_master_*` | сам процесс мастера | `name` |
+| `sconcur_worker_*` | один воркер | `name`, `pid`, `group` |
+
+Нагрузка пула есть только в `sconcur_pool_*`: `sconcur_group_*` несёт метрики
+процессов, потому что складывать запросы и доставки по группам потребовало бы своего
+семейства на каждый вид пула. Чтобы прочитать нагрузку одного пула отдельно, суммируйте
+серии `sconcur_worker_*` по `group`.
+
+JSON-представление делит так же: `groups` — итог по каждому пулу мастера отдельно, а
+`totals` суммирует всех его воркеров. Складывать нагрузку разнородных пулов смысла нет,
+поэтому цифры нагрузки читают по `groups`; в `totals` осмысленны память, CPU и горутины.
+Воркер сообщает, чей он, полем `group` — оно берётся из метки `<группа>:<слот>`, которой
+он помечает свои снапшоты.
 
 ## Контракт push-протокола
 

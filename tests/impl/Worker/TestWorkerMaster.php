@@ -17,6 +17,9 @@ class TestWorkerMaster
 {
     private const string HOST = '127.0.0.1';
 
+    /** The flat option keys that describe a pool rather than the master. */
+    private const array GROUP_KEYS = ['workerScript', 'workerCount', 'workerArgs', 'server'];
+
     /** @var resource */
     private mixed $process;
 
@@ -41,7 +44,7 @@ class TestWorkerMaster
      * master is driven by a JSON config file (--configPath); $options set master-level
      * keys, $server sets the nested server block, $workerArgs are extra raw worker argv.
      *
-     * @param array<string, int|string|list<string>> $options       master-level config keys (override defaults)
+     * @param array<string, mixed>      $options       master-level config keys (override defaults)
      * @param array<string, int|string>               $env           extra env for the master (inherited by workers)
      * @param list<string>              $workerArgs    extra worker argv (e.g. ['--maxRequests=3'])
      * @param int|null                  $port          bind this exact port (default: a free one)
@@ -65,23 +68,24 @@ class TestWorkerMaster
 
         unset($options['address']);
 
-        $config = [
-            'workerScript' => self::workerScript(),
-            'workerCount'  => 2,
-            'runtimeDir'   => $runtimeDir,
-            'logDir'       => $runtimeDir,
-            'name'         => $name,
-            // Workers must load the built extension; the master itself does not need it.
-            'phpArgs'      => ['-d', 'extension=' . self::extensionPath()],
-            // Several workers behind one port: each must enable SO_REUSEPORT.
-            'server'       => ['address' => $address, 'reusePort' => true],
-            'workerArgs'   => array_values($workerArgs),
-            ...$options,
-        ];
-
         $configPath = $runtimeDir . '/config.json';
 
-        file_put_contents($configPath, (string) json_encode($config, JSON_PRETTY_PRINT));
+        file_put_contents($configPath, (string) json_encode(
+            self::buildConfig([
+                'workerScript' => self::workerScript(),
+                'workerCount'  => 2,
+                'runtimeDir'   => $runtimeDir,
+                'logDir'       => $runtimeDir,
+                'name'         => $name,
+                // Workers must load the built extension; the master itself does not need it.
+                'phpArgs'      => ['-d', 'extension=' . self::extensionPath()],
+                // Several workers behind one port: each must enable SO_REUSEPORT.
+                'server'       => ['address' => $address, 'reusePort' => true],
+                'workerArgs'   => array_values($workerArgs),
+                ...$options,
+            ]),
+            JSON_PRETTY_PRINT,
+        ));
 
         $outputFile = (string) tempnam(sys_get_temp_dir(), 'sc-master-out-');
 
@@ -118,7 +122,7 @@ class TestWorkerMaster
      */
     public static function writeConfig(array $overrides): string
     {
-        $config = [
+        $flat = [
             'workerScript' => self::workerScript(),
             'workerCount'  => 1,
             'runtimeDir'   => sys_get_temp_dir(),
@@ -127,13 +131,51 @@ class TestWorkerMaster
             ...$overrides,
         ];
 
-        $config['logDir'] ??= $config['runtimeDir'];
+        $flat['logDir'] ??= $flat['runtimeDir'];
 
         $path = (string) tempnam(sys_get_temp_dir(), 'sc-master-cfg-');
 
-        file_put_contents($path, (string) json_encode($config, JSON_PRETTY_PRINT));
+        file_put_contents($path, (string) json_encode(self::buildConfig($flat), JSON_PRETTY_PRINT));
 
         return $path;
+    }
+
+    /**
+     * Turns a flat option list into the grouped config the master reads: the keys that
+     * describe a pool go into a single group, the rest stay master-wide. Tests keep
+     * naming settings flatly, which is what most of them care about.
+     *
+     * @param array<string, mixed> $flat
+     *
+     * @return array<string, mixed>
+     */
+    private static function buildConfig(array $flat): array
+    {
+        // A test that needs several pools writes "groups" itself; the flat keys are the
+        // shorthand for the single-pool case, which is most of them.
+        if (isset($flat['groups'])) {
+            foreach (self::GROUP_KEYS as $key) {
+                unset($flat[$key]);
+            }
+
+            return $flat;
+        }
+
+        $group = ['name' => (string) ($flat['groupName'] ?? 'default')];
+
+        unset($flat['groupName']);
+
+        foreach (self::GROUP_KEYS as $key) {
+            if (array_key_exists($key, $flat)) {
+                $group[$key] = $flat[$key];
+
+                unset($flat[$key]);
+            }
+        }
+
+        $flat['groups'] = [$group];
+
+        return $flat;
     }
 
     /**
@@ -141,12 +183,17 @@ class TestWorkerMaster
      * completion and returns [exitCode, combined-output].
      *
      * @param array<string, string> $env
+     * @param list<string>          $argv extra flags after --configPath (e.g. --group=NAME)
      *
      * @return array{int, string}
      */
-    public static function runCommand(string $subcommand, string $configPath, array $env = []): array
-    {
-        $argv = [$subcommand, '--configPath=' . $configPath];
+    public static function runCommand(
+        string $subcommand,
+        string $configPath,
+        array $env = [],
+        array $argv = [],
+    ): array {
+        $argv = [$subcommand, '--configPath=' . $configPath, ...$argv];
 
         $outputFile = (string) tempnam(sys_get_temp_dir(), 'sc-master-cmd-');
 
@@ -190,6 +237,20 @@ class TestWorkerMaster
     public function configPath(): string
     {
         return $this->configPath;
+    }
+
+    /**
+     * Rewrites the config file in place, so a `reload` picks the new one up. The flat
+     * shorthand of start() applies here too.
+     *
+     * @param array<string, mixed> $config
+     */
+    public function rewriteConfig(array $config): void
+    {
+        file_put_contents(
+            $this->configPath,
+            (string) json_encode(self::buildConfig($config), JSON_PRETTY_PRINT),
+        );
     }
 
     public function pid(): int

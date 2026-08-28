@@ -351,16 +351,31 @@ to 659 ms, at the cost of p50 rising from 30 ms to 244 ms. The trade and both
 settings are covered in
 [coroutine switching](coroutine-switching.md#the-cost-under-load).
 
-`handlerTimeoutMs` bounds the total handling time, streamed response included.
-Nothing written by the deadline → `504`; a started stream → the response is
-aborted mid-way. The deadline lives on the Go side (a timer in `consumeCommands`),
-so it fires independently of PHP: the client gets its `504` even if the handler
-hangs in a native call. That saves the client (a correct status plus a freed
-connection and slot), not the server — nothing can preempt a native call, so the
-handler keeps holding the single PHP thread. A userland CPU loop is softer:
-preemption parks it every quantum and neighbours keep being served, just slower.
-Runaway handlers are contained at process level — a worker pool
-(`SO_REUSEPORT`) plus `maxRequests` recycling.
+`handlerTimeoutMs` bounds the total handling time, streamed response included, and
+it bounds two things at once.
+
+The client is answered by the Go side: a timer in `consumeCommands` sends `504` when
+nothing has been written by the deadline, or aborts a stream that already started. It
+fires independently of PHP, so the client is answered even when the handler is stuck
+in a native call.
+
+The PHP handler is unwound at the same deadline — the request coroutine is given it,
+and past it a [coroutine timeout](coroutine-timeout.md) is thrown into the handler
+where it stands. Its `finally` blocks run, its transaction rolls back, its
+connections go back to their pools, and it stops producing a response nobody will
+read. With preemption armed — the default — that reaches a handler busy with pure
+computation as well.
+
+What neither of them reaches is a handler already inside a native call: no PHP runs
+there, so nothing can be delivered until it returns. Those are bounded by the
+feature's own timeouts (a query timeout, an HTTP client deadline) and, at process
+level, by a worker pool (`SO_REUSEPORT`) plus `maxRequests` recycling.
+
+**Keep `handlerTimeoutMs` below `writeTimeoutMs`.** The `504` is a write like any
+other, so it needs the connection's write deadline to still be open when it goes out.
+Set the handler deadline above it and the timeout still fires — the handler is
+unwound and the response is generated — but it cannot be written, and the client sees
+the connection drop with no status at all.
 
 ## Scaling across cores (SO_REUSEPORT)
 
@@ -602,12 +617,16 @@ graceful shutdown.
 
 ## Running in Docker and testing
 
-`docker-compose.yml` has a `servers` service: under supervisor it brings up three
-masters — HTTP, socket and WebSocket — via `bin/sconcur-server`. Ports are
-hard-coded in compose (HTTP — `28080:8080`), since the masters' JSON configs cannot
-use environment variables. `make servers-restart` rebuilds the extension and
-recreates the container; each master is managed via
-`make http-server-{status,stop,reload}` (and `socket-server-*`, `ws-server-*`).
+`docker-compose.yml` has a `servers` service: under supervisor it brings up two masters
+via `bin/sconcur-server` — one holding the HTTP, socket and WebSocket pools as three
+groups, and one for the RabbitMQ consumers. Ports are hard-coded in compose (HTTP —
+`28080:8080`), since the masters' JSON configs cannot use environment variables.
+`make servers-restart` rebuilds the extension and recreates the container.
+
+`make servers-{status,stop,reload}` takes the whole servers master;
+`make http-server-{status,reload}` (and `socket-server-*`, `ws-server-*`) narrows the
+command to one group with `--group`. There is no per-group `stop`: one master means one
+lock and one state file, and stopping half of it is not a thing.
 
 The tests do not depend on that service: they start the server as a separate
 process via `SConcur\Tests\Impl\HttpServer\TestHttpServer`, whose launch options

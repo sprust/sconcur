@@ -17,12 +17,32 @@ use SConcur\Exceptions\TaskExecutionException;
 use SConcur\Exceptions\UnexpectedResultTypeException;
 use SConcur\Exceptions\UnexpectedTaskKeyException;
 use SConcur\Flow\CurrentFlow;
+use SConcur\Scheduler\Scheduler;
 use SConcur\State;
 use SConcur\Transport\PayloadInterface;
 use Throwable;
 
 readonly class FeatureExecutor
 {
+    /**
+     * Whether an awaited call would come back here.
+     *
+     * The answer is no on a fiber the runtime has let go of — a coroutine being unwound by
+     * a group stop or by shutdown — where exec() would suspend for ever. It is a question
+     * about the execution context, like the async/sync one this class already answers for
+     * every call, which is why a feature asks its executor rather than the scheduler.
+     *
+     * Only teardown needs it: releasing a Go-side resource can be awaited or fired and
+     * forgotten, and the two differ in what the payload says and in what the caller may do
+     * with the answer, so the choice cannot be pushed down here. Making the question go
+     * away altogether means giving an unwound coroutine a deterministic moment to release
+     * what it holds — core work, see .ai/plans/coroutine-lifetime.md §8.
+     */
+    public static function canAwait(): bool
+    {
+        return Scheduler::get()->canAwait();
+    }
+
     public static function exec(PayloadInterface $payload): TaskResultDto
     {
         $currentFlow = State::getCurrentFlow();
@@ -257,6 +277,13 @@ readonly class FeatureExecutor
 
         try {
             $result = Fiber::suspend($pendingTask);
+        } catch (FlowStoppedException $exception) {
+            // A deliberate unwind (WaitGroup::stop, Scheduler::shutdown) is not a task
+            // failure: let it propagate as-is so the coroutine's finally blocks run and
+            // the cancellation stays recognizable. Wrapping it turned every stopped
+            // coroutine's await into a domain error — a consumer told to stop reported
+            // a broker failure, and a feature could not tell the two apart.
+            throw $exception;
         } catch (Throwable $exception) {
             throw new TaskExecutionException(
                 message: $exception->getMessage(),

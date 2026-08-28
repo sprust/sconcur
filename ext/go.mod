@@ -6,6 +6,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/jackc/pgx/v5 v5.7.2
+	github.com/rabbitmq/amqp091-go v1.14.0
 	go.mongodb.org/mongo-driver/v2 v2.6.0
 )
 

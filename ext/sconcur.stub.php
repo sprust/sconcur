@@ -46,6 +46,10 @@ function wsStopAccepting(string $fk): void
 {
 }
 
+function amqpStopConsuming(string $fk): void
+{
+}
+
 function destroy(): void
 {
 }

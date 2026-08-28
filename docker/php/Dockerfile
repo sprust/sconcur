@@ -17,6 +17,7 @@ RUN apt-get update && \
       zip \
       unzip \
       libssl-dev \
+      librabbitmq-dev \
       supervisor \
       wget && \
     rm -rf /var/lib/apt/lists/*
@@ -58,6 +59,12 @@ COPY --from=ghcr.io/php/pie:bin /pie /usr/local/bin/pie
 RUN docker-php-ext-install zip pcntl pdo_mysql mysqli pdo_pgsql sockets && \
     pie install mongodb/mongodb-extension:1.21.5 && \
     pie install msgpack/msgpack-php:3.0.1
+
+# amqp is required only by the AMQP parity tests: they compare the calque in
+# SConcur\Features\Amqp against the live PECL extension instead of against
+# literals written down once (docs/amqp.md, tests/feature/Features/Amqp).
+# Pinned exactly, like the composer require-dev constraint it mirrors.
+RUN pie install php-amqp/php-amqp:2.2.0
 
 # Swoole — the second reference server for the comparison (tests/servers/swoole,
 # docs/benchmarks.ru.md). Pinned to the version the documented comparison ran on.
