@@ -6,6 +6,8 @@ namespace SConcur\Tests\Feature\Features\Amqp;
 
 use SConcur\Exceptions\Amqp\AmqpException;
 use SConcur\Exceptions\Amqp\ConcurrentDeliveryUseException;
+use SConcur\Exceptions\Amqp\ConnectionException;
+use SConcur\Exceptions\CallbackExecutionException;
 use SConcur\Features\Amqp\Channel;
 use SConcur\Features\Amqp\Consumer\QueueConsumer;
 use SConcur\Features\Amqp\Delivery;
@@ -456,6 +458,127 @@ class QueueConsumerChannelTest extends AmqpTestCase
             $arrived,
             'a lost connection must cost no message; failures seen: ' . implode(' | ', $failures),
         );
+    }
+
+    /**
+     * The runtime wraps whatever a coroutine throws, and `Channel::publish()` documents a
+     * WaitGroup around it as the way to publish a batch — so the failure a handler doing
+     * that hands back is a `CallbackExecutionException` with the real one underneath. Read
+     * only at the top, a transport failure would look like a job that failed and the message
+     * would go wherever the policy sends it, which on this queue is nowhere.
+     */
+    public function testAFailureWrappedByTheRuntimeIsStillRecognised(): void
+    {
+        $channel = $this->channel();
+
+        $source = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
+
+        $this->publishToQueue($channel, $source->name(), 'wrapped');
+
+        $seen = 0;
+
+        $queueConsumer = new QueueConsumer(
+            queues: $this->queuesJson($source->name()),
+            prefetchCount: 1,
+            // The setting that destroys a refused message on a queue with no dead-letter
+            // exchange, which is what makes the distinction matter at all.
+            requeueOnFailure: false,
+            maxMessages: 2,
+            // A wall, so that a message destroyed instead of put back shows up as this test
+            // failing rather than as it waiting for a second delivery that never comes.
+            maxRuntimeSeconds: 10,
+        );
+
+        $queueConsumer->consume(
+            connection: $this->connection(),
+            handler: static function (Delivery $delivery) use (&$seen): void {
+                ++$seen;
+
+                if ($seen > 1) {
+                    return;
+                }
+
+                throw new CallbackExecutionException(
+                    message: 'the runtime wraps what a coroutine throws',
+                    previous: new ConnectionException(message: 'the transport went away'),
+                );
+            },
+        );
+
+        self::assertSame(2, $seen, 'the message must come back rather than be destroyed');
+        $this->assertQueueStaysEmpty($source);
+    }
+
+    /**
+     * The guess this rests on — a channel already gone reports no reply code, so nobody
+     * spoke — is wrong exactly as often as a handler kills its own channel, and a 404 to an
+     * exchange that is not there does that on every attempt. It is taken only on a message
+     * the broker has not handed out before, so being wrong costs one redelivery. Without
+     * that bound this loops for ever, at full speed, with the message never reaching the
+     * policy that was supposed to place it.
+     */
+    public function testAHandlerThatKillsItsOwnChannelDoesNotLoop(): void
+    {
+        $channel = $this->channel();
+
+        $source = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
+
+        $this->publishToQueue($channel, $source->name(), 'poison');
+
+        $missing = TestAmqpResolver::uniqueName('missing_queue');
+
+        $seen = 0;
+
+        $queueConsumer = new QueueConsumer(
+            queues: $this->queuesJson($source->name()),
+            prefetchCount: 1,
+            requeueOnFailure: false,
+            // Room for far more rounds than the bound allows, so a loop shows up as the
+            // limit being reached rather than as the test hanging.
+            maxMessages: 20,
+            maxRuntimeSeconds: 15,
+        );
+
+        $queueConsumer->consume(
+            connection: $this->connection(),
+            handler: static function (Delivery $delivery) use ($missing, &$seen): void {
+                ++$seen;
+
+                $own = $delivery->channel();
+
+                self::assertNotNull($own);
+
+                try {
+                    // The shape the documentation teaches for "declare it if it is not
+                    // there": the broker answers a passive declare of a queue that does not
+                    // exist with a 404, and closes the channel doing it.
+                    $own->queue($missing)->declarePassive();
+                } catch (AmqpException) {
+                    // Expected, and caught exactly as the documented snippet catches it.
+                }
+
+                // The channel is gone now, so this is refused before it is sent — with no
+                // reply code, because nothing was asked of the broker. That is the failure
+                // the rule has to guess about, and the guess is wrong here.
+                $own->publish(
+                    message: $delivery->body,
+                    exchange: '',
+                    routingKey: 'nowhere',
+                );
+            },
+            onError: static function (): void {
+                // The failure is the point of the test.
+            },
+        );
+
+        self::assertLessThanOrEqual(2, $seen, 'a message the handler keeps killing must not go round for ever');
+        $this->assertQueueStaysEmpty($source);
     }
 
     /**

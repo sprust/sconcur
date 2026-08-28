@@ -58,6 +58,9 @@ class QueueConsumer
     /** The same default the servers use. */
     protected const int DEFAULT_PREEMPTION_QUANTUM_MS = 5;
 
+    /** How far down a `previous` chain a failure is read; deep enough for the runtime's wrappers. */
+    protected const int MAX_CAUSE_DEPTH = 8;
+
     /** How long a consumer the broker took away waits before its queue is opened again. */
     protected const int REOPEN_INTERVAL_MS = 1_000;
 
@@ -398,7 +401,16 @@ class QueueConsumer
 
             // A message the broker never judged goes back whatever the failure policy says:
             // that policy is for jobs that failed, and this one was not looked at.
-            $requeue = $requeue || static::leavesMessageUnjudged($exception);
+            //
+            // Once, though, and no more, which is what makes the guess above affordable. The
+            // broker marks a message it hands out again, so a second failure that still
+            // cannot be judged falls back to the policy: a channel dying over and over for
+            // the same reason — a handler publishing to an exchange that is not there —
+            // would otherwise take its message round for ever, and a worker spinning
+            // silently is worse than one refusing a message the way its configuration says
+            // to. A transport that really has gone is back by the second attempt.
+            $requeue = $requeue
+                || (!$delivery->redelivered && static::leavesMessageUnjudged($exception));
 
             $this->reportFailure(
                 exception: $exception,
@@ -489,26 +501,41 @@ class QueueConsumer
      * Whether a failed handler leaves its message unjudged, in which case putting it back is
      * not retrying a verdict but giving it a chance to be looked at at all.
      *
-     * The broker answers about a message with a reply code, and the three publisher verdicts
-     * — a nack, a message that routed nowhere, a confirm that never came — are answers too;
-     * all of those follow the worker's policy, and a job that threw on its own is the
-     * policy's whole reason for existing. What is left is the transport going away
-     * underneath: a channel the pool could not lend at all, a connection that died, or a
-     * channel already gone when the command was tried, which carries no code because nobody
-     * spoke.
+     * Three failures say so. The runtime could not lend the handler a channel, so the job
+     * never began; the connection went away mid-command, so whatever the broker had to say
+     * never arrived; or the channel was already gone when the command was tried, which is
+     * reported with no reply code at all because nothing was sent and nobody answered.
      *
-     * Drawing the line here and not at "the channel is closed" matters: a channel dies just
-     * as readily from what was asked of it — a publish to an exchange that is not there,
-     * which comes back as a 404 — and putting that message back would ask for it again
-     * forever.
+     * That third one is a guess and is known to be one. A channel dies from its connection
+     * going away and from what was asked of it alike — a 404 to an exchange that is not
+     * there kills the channel, and every later command on it reports the same codeless
+     * "No channel available" — and this side cannot tell those apart at the moment it has
+     * to decide. What makes the guess safe to make is that it is only taken on a message the
+     * broker has not handed out before, so being wrong costs one redelivery and never a
+     * loop; see where this is called.
+     *
+     * The chain is walked, not just the top: the runtime wraps what a coroutine throws, so a
+     * handler that batches its publishes in a WaitGroup — which is what Channel::publish()
+     * documents — has its failure delivered as a CallbackExecutionException with the real
+     * one underneath.
      */
     protected static function leavesMessageUnjudged(Throwable $exception): bool
     {
-        if ($exception instanceof ChannelLoanException || $exception instanceof ConnectionException) {
-            return true;
+        $cause = $exception;
+
+        for ($depth = 0; $cause !== null && $depth < self::MAX_CAUSE_DEPTH; ++$depth) {
+            if ($cause instanceof ChannelLoanException || $cause instanceof ConnectionException) {
+                return true;
+            }
+
+            if ($cause instanceof ChannelException && $cause->getCode() === 0) {
+                return true;
+            }
+
+            $cause = $cause->getPrevious();
         }
 
-        return $exception instanceof ChannelException && $exception->getCode() === 0;
+        return false;
     }
 
     /**

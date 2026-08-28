@@ -713,12 +713,20 @@ whole allowance first. If it has to go back, bound the rounds — a quorum queue
 `x-delivery-limit` counts them, where `x-death` does not: a requeue is not a
 dead-letter hop, so the counter above never moves.
 
-None of this covers a message the broker never judged. A handler that could not be lent
-a channel at all, one whose connection went away mid-command, or one whose channel was
-already gone when it tried — those messages were not looked at, so they go back into the
-queue whatever the setting says. The policy above is for jobs that failed. A publish the
-broker refused with a reply code — a 404 to an exchange that is not there — is a verdict
-and follows the policy, or the same message would be asked for again for ever.
+None of this covers a message the broker never judged. A handler that could not be lent a
+channel at all, one whose connection went away mid-command, or one whose channel was
+already gone when it tried — nothing the broker said is about those messages, so they go
+back into the queue whatever the setting says. The policy above is for jobs that failed.
+A publish the broker refused with a reply code — a 404 to an exchange that is not there —
+is a verdict and follows the policy.
+
+Once, and no more. The last of the three is a guess: a channel dies from its connection
+going away and from what was asked of it alike, and this side cannot tell those apart at
+the moment it has to place the message. So the second chance is only ever given to a
+message the broker has not handed out before, and a handler that keeps killing its own
+channel sends its message to the policy on the next delivery instead of round for ever.
+The worker also asks the pool twice before giving up on a channel, because the first ask
+after a connection is lost is the one that discovers it.
 
 One thing this is not: a worker being stopped while a handler is still working. There
 the application never decided anything, so the message is not settled at all and
@@ -1175,7 +1183,7 @@ for instead of the encoder refusing it.
 
 Every broker failure is a `SConcur\Exceptions\Amqp\AmqpException`, and the reply
 code the broker named is the exception's own code. The exceptions to that are the
-last five rows of the table — configuration bugs, not broker ones:
+last six rows of the table — configuration bugs, not broker ones:
 
 ```php
 use SConcur\Exceptions\Amqp\QueueException;
@@ -1192,7 +1200,7 @@ try {
 | What happened | Exception | Code |
 | --- | --- | --- |
 | the broker refused the method (404, 406, …) | `QueueException`, `ExchangeException`, `ChannelException` — the one of the call | the reply code |
-| the broker answered with a connection-level code (5xx), or the connection died | `ConnectionException` | the reply code; a connection that dropped mid-frame reports the driver's own `501`, and only a failure nobody put a code on reports 0 |
+| the broker answered with a code that closes the connection (320, 402, 5xx), or the connection died | `ConnectionException` | the reply code; a connection that dropped mid-frame reports the driver's own `501`, and only a failure nobody put a code on reports 0 |
 | the channel is gone — the broker closed it over an earlier failure | `ChannelException` | the reply code that closed it, 0 when the broker named none |
 | a publish was nacked, returned, or never confirmed | `PublishNackedException`, `UnroutableMessageException`, `PublishConfirmTimeoutException` | the reply code of a return, 0 otherwise |
 | the runtime could not lend a handler a channel of its own | `ChannelLoanException` | 0 |
@@ -1220,7 +1228,9 @@ expects none, so a publish to an exchange that is not there is answered by the c
 going away, and the reply code lands on whatever ran next.
 
 A connection that died ends the same calls differently: a command on one of its channels
-raises `ConnectionException`, and so does a consumer whose stream it took with it.
+raises `ConnectionException`, and so does a consumer whose stream it took with it — except
+`Delivery::channel()`, which reports a channel it could not lend as `ChannelLoanException`
+with the reason as its `previous`.
 
 A connection-level failure marks the `Connection` closed as well, and it is not
 reopened by itself:

@@ -50,10 +50,27 @@ const (
 	// scopeCommand: the command failed with the channel left usable.
 	scopeCommand = "err"
 
-	// connectionErrorCode is the lowest AMQP reply code that closes the connection
-	// rather than the channel (the 5xx class of AMQP 0-9-1).
-	connectionErrorCode = 500
 )
+
+// connectionCloseCodes are the AMQP 0-9-1 reply codes that close the connection rather
+// than the channel. Not a range: the specification puts CONNECTION-FORCED at 320 and
+// INVALID-PATH at 402, below the 5xx codes and below the channel codes 403 to 406. A
+// threshold would call a broker shutdown — which is a 320 to every connection at once — a
+// channel failure, and PHP would then read it as being about the message rather than about
+// the transport.
+var connectionCloseCodes = map[int]bool{
+	320: true, // CONNECTION-FORCED: the broker is shutting down, or an operator closed it
+	402: true, // INVALID-PATH
+	501: true, // FRAME-ERROR
+	502: true, // SYNTAX-ERROR
+	503: true, // COMMAND-INVALID
+	504: true, // CHANNEL-ERROR
+	505: true, // UNEXPECTED-FRAME
+	506: true, // RESOURCE-ERROR
+	530: true, // NOT-ALLOWED
+	540: true, // NOT-IMPLEMENTED
+	541: true, // INTERNAL-ERROR
+}
 
 // AmqpFeature runs the AMQP 0-9-1 methods the PHP feature exposes: it owns the pooled
 // connections, the channel registry and the delivery streams the consumers feed.
@@ -422,7 +439,7 @@ func classify(entry *channelEntry, what string, err error) (string, int, string)
 	var brokerError *amqp091.Error
 
 	if errors.As(err, &brokerError) {
-		if brokerError.Code >= connectionErrorCode {
+		if connectionCloseCodes[brokerError.Code] {
 			return scopeNetwork, brokerError.Code, fmt.Sprintf(
 				"Server connection error: %d, message: %s",
 				brokerError.Code,

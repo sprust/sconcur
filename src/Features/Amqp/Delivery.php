@@ -172,15 +172,7 @@ class Delivery
         $this->leasing = true;
 
         try {
-            $this->lentChannel = ($this->lend)();
-        } catch (AmqpException $exception) {
-            // Named for what it is, so a runtime that could not lend a channel is not read
-            // as a handler that looked at the message and refused it: the supervised
-            // consumer puts this message back whatever its failure policy says.
-            throw new ChannelLoanException(
-                message: 'Could not lend this handler a channel of its own: ' . $exception->getMessage(),
-                previous: $exception,
-            );
+            $this->lentChannel = $this->lease();
         } finally {
             $this->leasing = false;
         }
@@ -204,6 +196,40 @@ class Delivery
         $this->lentChannel = null;
 
         return $lent;
+    }
+
+    /**
+     * Takes the loan, and takes it a second time if the first fails.
+     *
+     * The first attempt after the pool loses a connection is the one that discovers it: the
+     * command fails, the connection is marked and given up, and only then can a working one
+     * be opened. Asking twice turns that discovery into a pause instead of a failed handler
+     * — otherwise the loss of a connection costs a message even though nothing was wrong
+     * with it. A second failure is real and is named for what it is, so the consumer reads
+     * it as the runtime failing rather than as a handler refusing the message.
+     */
+    protected function lease(): Channel
+    {
+        $lend = $this->lend;
+
+        if ($lend === null) {
+            throw new ChannelLoanException(message: 'Could not lend this handler a channel: the loan has ended.');
+        }
+
+        try {
+            return $lend();
+        } catch (AmqpException) {
+            // Discovered rather than failed: fall through to the second attempt.
+        }
+
+        try {
+            return $lend();
+        } catch (AmqpException $exception) {
+            throw new ChannelLoanException(
+                message: 'Could not lend this handler a channel of its own: ' . $exception->getMessage(),
+                previous: $exception,
+            );
+        }
     }
 
     /**

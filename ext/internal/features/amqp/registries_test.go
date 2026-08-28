@@ -256,6 +256,38 @@ func TestAWaitEndsOnItsDeadline(t *testing.T) {
 // A mandatory message that routed nowhere is returned AND acknowledged, so a publisher
 // waiting for its confirm has to be handed both in one drain — reading the confirmations
 // alone would report a success for a message that reached no queue.
+// The codes that close a connection are a set, not a range. A broker shutting down sends
+// CONNECTION-FORCED, which is 320 — below the 5xx codes and below the channel codes 403 to
+// 406 — so a threshold would report the whole broker going away as a failure of the one
+// channel that happened to be mid-command, and PHP would then read it as a verdict about
+// the message rather than as the transport disappearing.
+func TestConnectionCloseCodesAreScopedAsNetworkWhateverTheirNumber(t *testing.T) {
+	for _, code := range []int{320, 402, 501, 506, 530, 541} {
+		scope, reported, _ := classify(nil, "publish", &amqp091.Error{Code: code, Reason: "closed"})
+
+		if scope != scopeNetwork {
+			t.Fatalf("code %d: scope = %q, want %q", code, scope, scopeNetwork)
+		}
+
+		if reported != code {
+			t.Fatalf("code %d: reported = %d", code, reported)
+		}
+	}
+
+	// The channel codes keep their own scope: those really are about what was asked.
+	for _, code := range []int{403, 404, 405, 406, 311, 312} {
+		scope, reported, _ := classify(nil, "publish", &amqp091.Error{Code: code, Reason: "refused"})
+
+		if scope != scopeChannel {
+			t.Fatalf("code %d: scope = %q, want %q", code, scope, scopeChannel)
+		}
+
+		if reported != code {
+			t.Fatalf("code %d: reported = %d", code, reported)
+		}
+	}
+}
+
 // A wait that runs out of time is a command failure with no reply code, which is what
 // makes PHP raise it as PublishConfirmTimeoutException rather than as a dead channel.
 func TestAWaitTimeoutIsScopedAsACommandFailure(t *testing.T) {
