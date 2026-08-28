@@ -74,14 +74,16 @@ type UsedChannelsResult struct {
 // ChannelOpenParams is the `p` content of a ChannelOpen command: the connection to open
 // the channel on, plus the prefetch settings applied right after opening (ext-amqp sends
 // them as a separate basic.qos; carrying them here keeps channel creation one crossing).
+//
+// The channel-wide form of those limits is not carried here: it is asked for after the
+// channel is open, through the Qos command, and a second way to set the same thing at
+// open time was never reachable from the API.
 // PHP: built by the AmqpCommandEnum case that names this struct.
 type ChannelOpenParams struct {
-	ConnectionId            string `json:"cid" msgpack:"cid"`
-	PrefetchSizeBytes       int    `json:"sz" msgpack:"sz"`
-	PrefetchCount           int    `json:"ct" msgpack:"ct"`
-	GlobalPrefetchSizeBytes int    `json:"gsz" msgpack:"gsz"`
-	GlobalPrefetchCount     int    `json:"gct" msgpack:"gct"`
-	TimeoutMs               int    `json:"to" msgpack:"to"`
+	ConnectionId      string `json:"cid" msgpack:"cid"`
+	PrefetchSizeBytes int    `json:"sz" msgpack:"sz"`
+	PrefetchCount     int    `json:"ct" msgpack:"ct"`
+	TimeoutMs         int    `json:"to" msgpack:"to"`
 }
 
 // ChannelOpenResult answers a ChannelOpen: the handle plus the number this feature gave the
@@ -94,76 +96,94 @@ type ChannelOpenResult struct {
 	ChannelNumber int    `json:"no" msgpack:"no"`
 }
 
+// ChannelCommand is what every command that runs on an already open channel carries: the
+// handle it runs on, and the deadline PHP put on it. It is embedded rather than repeated,
+// so the two fields are declared once and one runner can read them off any of the commands
+// (onChannel, ext/internal/features/amqp/feature.go).
+//
+// Inlined on the wire — msgpack flattens an embedded struct — so the payload is exactly
+// what it was when every command declared the two fields itself.
+// PHP: written into the `p` map of every channel command by its caller.
+type ChannelCommand struct {
+	ChannelId string `json:"chid" msgpack:"chid"`
+	TimeoutMs int    `json:"to" msgpack:"to"`
+}
+
+// Channel answers the handle this command runs on.
+func (c ChannelCommand) Channel() string {
+	return c.ChannelId
+}
+
+// Timeout answers the deadline PHP put on this command, in milliseconds; 0 leaves the
+// feature's own default for the command.
+func (c ChannelCommand) Timeout() int {
+	return c.TimeoutMs
+}
+
 // ChannelParams is the `p` content of the commands that need nothing but the channel:
 // closing it, and waiting for its publisher confirms.
 // PHP: built by the AmqpCommandEnum case that names this struct.
 type ChannelParams struct {
-	ChannelId string `json:"chid" msgpack:"chid"`
-	TimeoutMs int    `json:"to" msgpack:"to"`
+	ChannelCommand `msgpack:",inline"`
 }
 
 // QosParams is the `p` content of a Qos command.
 // PHP: built by the AmqpCommandEnum case that names this struct.
 type QosParams struct {
-	ChannelId         string `json:"chid" msgpack:"chid"`
-	PrefetchSizeBytes int    `json:"sz" msgpack:"sz"`
-	PrefetchCount     int    `json:"ct" msgpack:"ct"`
-	Global            bool   `json:"gl" msgpack:"gl"`
-	TimeoutMs         int    `json:"to" msgpack:"to"`
+	ChannelCommand    `msgpack:",inline"`
+	PrefetchSizeBytes int  `json:"sz" msgpack:"sz"`
+	PrefetchCount     int  `json:"ct" msgpack:"ct"`
+	Global            bool `json:"gl" msgpack:"gl"`
 }
 
 // ExchangeDeclareParams is the `p` content of an ExchangeDeclare command; Passive selects
 // the declare-passive form.
 // PHP: built by the AmqpCommandEnum case that names this struct.
 type ExchangeDeclareParams struct {
-	ChannelId  string `json:"chid" msgpack:"chid"`
-	Name       string `json:"na" msgpack:"na"`
-	Type       string `json:"ty" msgpack:"ty"`
-	Passive    bool   `json:"pa" msgpack:"pa"`
-	Durable    bool   `json:"du" msgpack:"du"`
-	AutoDelete bool   `json:"ad" msgpack:"ad"`
-	Internal   bool   `json:"in" msgpack:"in"`
-	NoWait     bool   `json:"nw" msgpack:"nw"`
-	Arguments  Table  `json:"ar" msgpack:"ar"`
-	TimeoutMs  int    `json:"to" msgpack:"to"`
+	ChannelCommand `msgpack:",inline"`
+	Name           string `json:"na" msgpack:"na"`
+	Type           string `json:"ty" msgpack:"ty"`
+	Passive        bool   `json:"pa" msgpack:"pa"`
+	Durable        bool   `json:"du" msgpack:"du"`
+	AutoDelete     bool   `json:"ad" msgpack:"ad"`
+	Internal       bool   `json:"in" msgpack:"in"`
+	NoWait         bool   `json:"nw" msgpack:"nw"`
+	Arguments      Table  `json:"ar" msgpack:"ar"`
 }
 
 // ExchangeDeleteParams is the `p` content of an ExchangeDelete command.
 // PHP: built by the AmqpCommandEnum case that names this struct.
 type ExchangeDeleteParams struct {
-	ChannelId string `json:"chid" msgpack:"chid"`
-	Name      string `json:"na" msgpack:"na"`
-	IfUnused  bool   `json:"iu" msgpack:"iu"`
-	NoWait    bool   `json:"nw" msgpack:"nw"`
-	TimeoutMs int    `json:"to" msgpack:"to"`
+	ChannelCommand `msgpack:",inline"`
+	Name           string `json:"na" msgpack:"na"`
+	IfUnused       bool   `json:"iu" msgpack:"iu"`
+	NoWait         bool   `json:"nw" msgpack:"nw"`
 }
 
 // ExchangeBindParams is the `p` content of an ExchangeBind or ExchangeUnbind command:
 // messages flow from the source exchange to the destination one.
 // PHP: built by the AmqpCommandEnum case that names this struct.
 type ExchangeBindParams struct {
-	ChannelId   string `json:"chid" msgpack:"chid"`
-	Destination string `json:"ds" msgpack:"ds"`
-	Source      string `json:"sr" msgpack:"sr"`
-	RoutingKey  string `json:"rk" msgpack:"rk"`
-	NoWait      bool   `json:"nw" msgpack:"nw"`
-	Arguments   Table  `json:"ar" msgpack:"ar"`
-	TimeoutMs   int    `json:"to" msgpack:"to"`
+	ChannelCommand `msgpack:",inline"`
+	Destination    string `json:"ds" msgpack:"ds"`
+	Source         string `json:"sr" msgpack:"sr"`
+	RoutingKey     string `json:"rk" msgpack:"rk"`
+	NoWait         bool   `json:"nw" msgpack:"nw"`
+	Arguments      Table  `json:"ar" msgpack:"ar"`
 }
 
 // QueueDeclareParams is the `p` content of a QueueDeclare command; an empty Name asks the
 // broker to generate one, and Passive selects the declare-passive form.
 // PHP: built by the AmqpCommandEnum case that names this struct.
 type QueueDeclareParams struct {
-	ChannelId  string `json:"chid" msgpack:"chid"`
-	Name       string `json:"na" msgpack:"na"`
-	Passive    bool   `json:"pa" msgpack:"pa"`
-	Durable    bool   `json:"du" msgpack:"du"`
-	Exclusive  bool   `json:"ex" msgpack:"ex"`
-	AutoDelete bool   `json:"ad" msgpack:"ad"`
-	NoWait     bool   `json:"nw" msgpack:"nw"`
-	Arguments  Table  `json:"ar" msgpack:"ar"`
-	TimeoutMs  int    `json:"to" msgpack:"to"`
+	ChannelCommand `msgpack:",inline"`
+	Name           string `json:"na" msgpack:"na"`
+	Passive        bool   `json:"pa" msgpack:"pa"`
+	Durable        bool   `json:"du" msgpack:"du"`
+	Exclusive      bool   `json:"ex" msgpack:"ex"`
+	AutoDelete     bool   `json:"ad" msgpack:"ad"`
+	NoWait         bool   `json:"nw" msgpack:"nw"`
+	Arguments      Table  `json:"ar" msgpack:"ar"`
 }
 
 // QueueDeclareResult answers a QueueDeclare: the name (the generated one when the request
@@ -178,12 +198,11 @@ type QueueDeclareResult struct {
 // QueueDeleteParams is the `p` content of a QueueDelete command.
 // PHP: built by the AmqpCommandEnum case that names this struct.
 type QueueDeleteParams struct {
-	ChannelId string `json:"chid" msgpack:"chid"`
-	Name      string `json:"na" msgpack:"na"`
-	IfUnused  bool   `json:"iu" msgpack:"iu"`
-	IfEmpty   bool   `json:"ie" msgpack:"ie"`
-	NoWait    bool   `json:"nw" msgpack:"nw"`
-	TimeoutMs int    `json:"to" msgpack:"to"`
+	ChannelCommand `msgpack:",inline"`
+	Name           string `json:"na" msgpack:"na"`
+	IfUnused       bool   `json:"iu" msgpack:"iu"`
+	IfEmpty        bool   `json:"ie" msgpack:"ie"`
+	NoWait         bool   `json:"nw" msgpack:"nw"`
 }
 
 // MessageCountResult answers the commands that report how many messages they moved
@@ -196,22 +215,20 @@ type MessageCountResult struct {
 // QueueBindParams is the `p` content of a QueueBind or QueueUnbind command.
 // PHP: built by the AmqpCommandEnum case that names this struct.
 type QueueBindParams struct {
-	ChannelId    string `json:"chid" msgpack:"chid"`
-	QueueName    string `json:"na" msgpack:"na"`
-	ExchangeName string `json:"en" msgpack:"en"`
-	RoutingKey   string `json:"rk" msgpack:"rk"`
-	NoWait       bool   `json:"nw" msgpack:"nw"`
-	Arguments    Table  `json:"ar" msgpack:"ar"`
-	TimeoutMs    int    `json:"to" msgpack:"to"`
+	ChannelCommand `msgpack:",inline"`
+	QueueName      string `json:"na" msgpack:"na"`
+	ExchangeName   string `json:"en" msgpack:"en"`
+	RoutingKey     string `json:"rk" msgpack:"rk"`
+	NoWait         bool   `json:"nw" msgpack:"nw"`
+	Arguments      Table  `json:"ar" msgpack:"ar"`
 }
 
 // QueuePurgeParams is the `p` content of a QueuePurge command.
 // PHP: built by the AmqpCommandEnum case that names this struct.
 type QueuePurgeParams struct {
-	ChannelId string `json:"chid" msgpack:"chid"`
-	Name      string `json:"na" msgpack:"na"`
-	NoWait    bool   `json:"nw" msgpack:"nw"`
-	TimeoutMs int    `json:"to" msgpack:"to"`
+	ChannelCommand `msgpack:",inline"`
+	Name           string `json:"na" msgpack:"na"`
+	NoWait         bool   `json:"nw" msgpack:"nw"`
 }
 
 // Properties are the AMQP basic properties of a message, in both directions: published
@@ -240,23 +257,21 @@ type Properties struct {
 // PublishParams is the `p` content of a Publish command.
 // PHP: built by the AmqpCommandEnum case that names this struct.
 type PublishParams struct {
-	ChannelId    string     `json:"chid" msgpack:"chid"`
-	ExchangeName string     `json:"en" msgpack:"en"`
-	RoutingKey   string     `json:"rk" msgpack:"rk"`
-	Mandatory    bool       `json:"ma" msgpack:"ma"`
-	Immediate    bool       `json:"im" msgpack:"im"`
-	Body         string     `json:"bd" msgpack:"bd"`
-	Properties   Properties `json:"ps" msgpack:"ps"`
-	TimeoutMs    int        `json:"to" msgpack:"to"`
+	ChannelCommand `msgpack:",inline"`
+	ExchangeName   string     `json:"en" msgpack:"en"`
+	RoutingKey     string     `json:"rk" msgpack:"rk"`
+	Mandatory      bool       `json:"ma" msgpack:"ma"`
+	Immediate      bool       `json:"im" msgpack:"im"`
+	Body           string     `json:"bd" msgpack:"bd"`
+	Properties     Properties `json:"ps" msgpack:"ps"`
 }
 
 // GetParams is the `p` content of a Get command.
 // PHP: built by the AmqpCommandEnum case that names this struct.
 type GetParams struct {
-	ChannelId string `json:"chid" msgpack:"chid"`
-	QueueName string `json:"na" msgpack:"na"`
-	AutoAck   bool   `json:"aa" msgpack:"aa"`
-	TimeoutMs int    `json:"to" msgpack:"to"`
+	ChannelCommand `msgpack:",inline"`
+	QueueName      string `json:"na" msgpack:"na"`
+	AutoAck        bool   `json:"aa" msgpack:"aa"`
 }
 
 // Delivery is one message handed to PHP, by a Get or through a consumer's stream. It
@@ -274,21 +289,21 @@ type Delivery struct {
 }
 
 // ConsumeParams is the `p` content of a Consume command — the streaming one.
+//
+// It carries two deadlines. The inherited one bounds the basic.consume that opens the
+// consumer; the consumer itself then lives on, bounded by ReadTimeoutMs.
 // PHP: built by the AmqpCommandEnum case that names this struct.
 type ConsumeParams struct {
-	ChannelId   string `json:"chid" msgpack:"chid"`
-	QueueName   string `json:"na" msgpack:"na"`
-	ConsumerTag string `json:"tg" msgpack:"tg"`
-	AutoAck     bool   `json:"aa" msgpack:"aa"`
-	Exclusive   bool   `json:"ex" msgpack:"ex"`
-	NoLocal     bool   `json:"nl" msgpack:"nl"`
-	NoWait      bool   `json:"nw" msgpack:"nw"`
-	Arguments   Table  `json:"ar" msgpack:"ar"`
+	ChannelCommand `msgpack:",inline"`
+	QueueName      string `json:"na" msgpack:"na"`
+	ConsumerTag    string `json:"tg" msgpack:"tg"`
+	AutoAck        bool   `json:"aa" msgpack:"aa"`
+	Exclusive      bool   `json:"ex" msgpack:"ex"`
+	NoLocal        bool   `json:"nl" msgpack:"nl"`
+	NoWait         bool   `json:"nw" msgpack:"nw"`
+	Arguments      Table  `json:"ar" msgpack:"ar"`
 	// ReadTimeoutMs bounds the wait for the next delivery; 0 waits indefinitely.
 	ReadTimeoutMs int `json:"rt" msgpack:"rt"`
-	// TimeoutMs bounds the basic.consume that opens the consumer — the consumer itself
-	// then lives on, bounded by ReadTimeoutMs.
-	TimeoutMs int `json:"to" msgpack:"to"`
 }
 
 // ConsumeServeQueue is one queue a supervised consumer pulls: how many consumers it gets
@@ -333,46 +348,41 @@ type ConsumerMeta struct {
 // CancelParams is the `p` content of a Cancel command.
 // PHP: built by the AmqpCommandEnum case that names this struct.
 type CancelParams struct {
-	ChannelId   string `json:"chid" msgpack:"chid"`
-	ConsumerTag string `json:"tg" msgpack:"tg"`
-	NoWait      bool   `json:"nw" msgpack:"nw"`
-	TimeoutMs   int    `json:"to" msgpack:"to"`
+	ChannelCommand `msgpack:",inline"`
+	ConsumerTag    string `json:"tg" msgpack:"tg"`
+	NoWait         bool   `json:"nw" msgpack:"nw"`
 }
 
 // AckParams is the `p` content of an Ack command.
 // PHP: built by the AmqpCommandEnum case that names this struct.
 type AckParams struct {
-	ChannelId   string `json:"chid" msgpack:"chid"`
-	DeliveryTag uint64 `json:"dt" msgpack:"dt"`
-	Multiple    bool   `json:"mu" msgpack:"mu"`
-	TimeoutMs   int    `json:"to" msgpack:"to"`
+	ChannelCommand `msgpack:",inline"`
+	DeliveryTag    uint64 `json:"dt" msgpack:"dt"`
+	Multiple       bool   `json:"mu" msgpack:"mu"`
 }
 
 // NackParams is the `p` content of a Nack command.
 // PHP: built by the AmqpCommandEnum case that names this struct.
 type NackParams struct {
-	ChannelId   string `json:"chid" msgpack:"chid"`
-	DeliveryTag uint64 `json:"dt" msgpack:"dt"`
-	Multiple    bool   `json:"mu" msgpack:"mu"`
-	Requeue     bool   `json:"rq" msgpack:"rq"`
-	TimeoutMs   int    `json:"to" msgpack:"to"`
+	ChannelCommand `msgpack:",inline"`
+	DeliveryTag    uint64 `json:"dt" msgpack:"dt"`
+	Multiple       bool   `json:"mu" msgpack:"mu"`
+	Requeue        bool   `json:"rq" msgpack:"rq"`
 }
 
 // RejectParams is the `p` content of a Reject command.
 // PHP: built by the AmqpCommandEnum case that names this struct.
 type RejectParams struct {
-	ChannelId   string `json:"chid" msgpack:"chid"`
-	DeliveryTag uint64 `json:"dt" msgpack:"dt"`
-	Requeue     bool   `json:"rq" msgpack:"rq"`
-	TimeoutMs   int    `json:"to" msgpack:"to"`
+	ChannelCommand `msgpack:",inline"`
+	DeliveryTag    uint64 `json:"dt" msgpack:"dt"`
+	Requeue        bool   `json:"rq" msgpack:"rq"`
 }
 
 // ConfirmSelectParams is the `p` content of a ConfirmSelect command.
 // PHP: built by the AmqpCommandEnum case that names this struct.
 type ConfirmSelectParams struct {
-	ChannelId string `json:"chid" msgpack:"chid"`
-	NoWait    bool   `json:"nw" msgpack:"nw"`
-	TimeoutMs int    `json:"to" msgpack:"to"`
+	ChannelCommand `msgpack:",inline"`
+	NoWait         bool `json:"nw" msgpack:"nw"`
 }
 
 // Confirmation is one publisher confirm: the tag of the message and whether the broker

@@ -73,6 +73,15 @@ class QueueConsumer
     protected array $channels = [];
 
     /**
+     * How many deliveries of each channel are still in a handler, by the same id. A handle
+     * is only ever let go of at zero: a Delivery holds its channel weakly, so dropping one
+     * out from under a running handler would leave it with nothing to settle on.
+     *
+     * @var array<string, int>
+     */
+    protected array $inFlight = [];
+
+    /**
      * Every limit takes 0 to mean "no limit"; the full table is in docs/amqp.md.
      *
      * @param string $queues              the queue list as JSON, see QueueSpecParser
@@ -206,98 +215,69 @@ class QueueConsumer
 
             $masterPid = $this->masterPid;
 
-            $this->serve(
-                serverFlowKey: $flowKey,
-                serverTaskKey: $runningTask->key,
-                maxRequests: $this->maxMessages,
-                onRequest: function (string $payload) use (
-                    $connection,
-                    $publishChannels,
-                    $handler,
-                    $onError,
-                    &$handled,
-                ): void {
-                    $this->handleDelivery(
-                        connection: $connection,
-                        publishChannels: $publishChannels,
-                        payload: $payload,
-                        handler: $handler,
-                        onError: $onError,
-                        handled: $handled,
-                    );
-                },
-                shouldStop: function () use (&$stopRequested, $masterPid, $startedAt): bool {
-                    return $stopRequested
-                        || ($masterPid !== null && static::isOrphaned($masterPid))
-                        || $this->limitReached($startedAt);
-                },
-                onDrainStart: static function () use ($flowKey): void {
-                    // Cancel the consumers and keep their channels: the handlers still
-                    // running answer the broker on them, and a message finished with its
-                    // acknowledgement cut would go back to the queue for another worker.
-                    Extension::get()->amqpStopConsuming($flowKey);
-                },
-                onShutdownStep: static function (string $step): void {
-                    static::logServerEvent('sconcur amqp consumer shutdown: ' . $step);
-                },
-                preemptionQuantumMs: $this->preemptionQuantumMs,
-            );
+            // The stream's own failure carries the scope the Go side put on it and reaches
+            // here as the generic task failure every feature gets. Left that way, a worker
+            // whose broker went down would report a task error instead of a
+            // ConnectionException, and nothing catching AmqpException would see it.
+            //
+            // The deadline of a handler is deliberately not serve()'s own: that one unwinds
+            // the whole coroutine, and a message whose coroutine the runtime has let go of
+            // can no longer be refused. It is put around the handler instead, in
+            // runHandler().
+            try {
+                Scheduler::get()->serve(
+                    serverFlowKey: $flowKey,
+                    serverTaskKey: $runningTask->key,
+                    maxRequests: $this->maxMessages,
+                    onRequest: function (string $payload) use (
+                        $connection,
+                        $publishChannels,
+                        $handler,
+                        $onError,
+                        &$handled,
+                    ): void {
+                        $this->handleDelivery(
+                            connection: $connection,
+                            publishChannels: $publishChannels,
+                            payload: $payload,
+                            handler: $handler,
+                            onError: $onError,
+                            handled: $handled,
+                        );
+                    },
+                    shouldStop: function () use (&$stopRequested, $masterPid, $startedAt): bool {
+                        return $stopRequested
+                            || ($masterPid !== null && static::isOrphaned($masterPid))
+                            || $this->limitReached($startedAt);
+                    },
+                    onDrainStart: static function () use ($flowKey): void {
+                        // Cancel the consumers and keep their channels: the handlers still
+                        // running answer the broker on them, and a message finished with its
+                        // acknowledgement cut would go back to the queue for another worker.
+                        Extension::get()->amqpStopConsuming($flowKey);
+                    },
+                    onShutdownStep: static function (string $step): void {
+                        static::logServerEvent('sconcur amqp consumer shutdown: ' . $step);
+                    },
+                    preemptionQuantumMs: $this->preemptionQuantumMs,
+                    handlerTimeoutMs: 0,
+                );
+            } catch (TaskErrorException $exception) {
+                throw AmqpFailure::translate(
+                    exception: $exception,
+                    exceptionClass: QueueException::class,
+                );
+            }
         } finally {
             $restoreSignals();
 
             $publishChannels->close();
 
             $this->channels = [];
+            $this->inFlight = [];
         }
 
         return $handled;
-    }
-
-    /**
-     * The serve loop, with the stream's failure raised as what it is.
-     *
-     * A stream that ends with an error carries the scope the Go side put on it, and it
-     * reaches here as the generic task failure every feature gets. Left that way, a worker
-     * whose broker went down would report a task error instead of a ConnectionException,
-     * and nothing catching AmqpException would see it.
-     *
-     * The deadline of a handler is deliberately not serve()'s own: that one unwinds the
-     * whole coroutine, and a message whose coroutine the runtime has let go of can no
-     * longer be refused. It is put around the handler instead, in runHandler().
-     *
-     * @param Closure(string): void $onRequest
-     * @param Closure(): bool       $shouldStop
-     * @param Closure(): void       $onDrainStart
-     * @param Closure(string): void $onShutdownStep
-     */
-    protected function serve(
-        string $serverFlowKey,
-        string $serverTaskKey,
-        int $maxRequests,
-        Closure $onRequest,
-        Closure $shouldStop,
-        Closure $onDrainStart,
-        Closure $onShutdownStep,
-        int $preemptionQuantumMs,
-    ): void {
-        try {
-            Scheduler::get()->serve(
-                serverFlowKey: $serverFlowKey,
-                serverTaskKey: $serverTaskKey,
-                maxRequests: $maxRequests,
-                onRequest: $onRequest,
-                shouldStop: $shouldStop,
-                onDrainStart: $onDrainStart,
-                onShutdownStep: $onShutdownStep,
-                preemptionQuantumMs: $preemptionQuantumMs,
-                handlerTimeoutMs: 0,
-            );
-        } catch (TaskErrorException $exception) {
-            throw AmqpFailure::translate(
-                exception: $exception,
-                exceptionClass: QueueException::class,
-            );
-        }
     }
 
     /**
@@ -321,12 +301,14 @@ class QueueConsumer
         /** @var array<mixed> $event */
         $event = MessagePackTransport::unpack($payload);
 
+        $channelId = isset($event['chid']) ? (string) $event['chid'] : '';
+
         $delivery = DeliveryCodec::delivery(
             delivery: $event,
             channel: WeakReference::create(
                 $this->channelFor(
                     connection: $connection,
-                    channelId: isset($event['chid']) ? (string) $event['chid'] : '',
+                    channelId: $channelId,
                 ),
             ),
             autoAck: false,
@@ -334,6 +316,10 @@ class QueueConsumer
             // handlers only read opens no channel of its own at all.
             lend: static fn(): Channel => $publishChannels->lease(),
         );
+
+        // Counted around the handler, so the handle over this channel outlives every
+        // delivery of it that is still being worked on.
+        $this->inFlight[$channelId] = ($this->inFlight[$channelId] ?? 0) + 1;
 
         try {
             $this->runAndSettle(
@@ -343,6 +329,10 @@ class QueueConsumer
                 handled: $handled,
             );
         } finally {
+            if (--$this->inFlight[$channelId] <= 0) {
+                unset($this->inFlight[$channelId]);
+            }
+
             // The loan ends with the handler, whichever way the handler ended — the next
             // message is lent this channel, and a delivery an application kept beyond its
             // handler stops answering with it.
@@ -410,14 +400,46 @@ class QueueConsumer
 
     /**
      * The handle over the channel a delivery arrived on. The channel itself belongs to the
-     * delivery stream; this is the object a handler settles and republishes through.
+     * delivery stream; this is the object the runtime settles the message through.
+     *
+     * A consumer the broker takes away is reopened on the Go side on a channel of its own,
+     * with an id of its own, so the handle over the channel it left behind is never named
+     * again. The handles of channels that have closed are let go on the way to opening a
+     * new one — without that, a worker beside a broker that restarts nightly would hold
+     * every dead channel it ever consumed on for as long as it lived.
      */
     protected function channelFor(Connection $connection, string $channelId): Channel
     {
-        return $this->channels[$channelId] ??= new Channel(
+        $channel = $this->channels[$channelId] ?? null;
+
+        if ($channel !== null) {
+            return $channel;
+        }
+
+        // A miss means a channel this worker has not seen before, which is one consumer
+        // reopened — rare enough that the sweep below costs nothing per message.
+        $this->forgetIdleChannels();
+
+        return $this->channels[$channelId] = Channel::borrowed(
             connection: $connection,
             channelId: $channelId,
         );
+    }
+
+    /**
+     * Lets go of the handles nothing is settling on right now.
+     *
+     * The ones still in use are kept whatever their id; the rest are rebuilt on their next
+     * delivery, which costs one small object. Without this the handle over every channel a
+     * lost consumer ever left behind would be held for the life of the worker.
+     */
+    protected function forgetIdleChannels(): void
+    {
+        foreach (array_keys($this->channels) as $channelId) {
+            if (($this->inFlight[$channelId] ?? 0) === 0) {
+                unset($this->channels[$channelId]);
+            }
+        }
     }
 
     /**

@@ -195,8 +195,7 @@ class Queue
     /**
      * Publishes straight into this queue, through the default exchange that routes by queue
      * name.
-     */
-    /**
+     *
      * @param int $delayMs how long the broker holds the message before it becomes available
      *                     here; 0 publishes straight into the queue. A delay needs the wait
      *                     queue for it to exist — see RetryTopology::declare()
@@ -214,8 +213,7 @@ class Queue
     /**
      * Publishes into this queue and waits for the broker to take responsibility for the
      * message. See Channel::publishConfirmed().
-     */
-    /**
+     *
      * @param int         $delayMs            how long the broker holds the message before it
      *                                        becomes available here; 0 publishes straight in
      * @param int         $retries            how many further attempts a publish the broker

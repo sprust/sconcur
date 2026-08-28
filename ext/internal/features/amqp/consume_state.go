@@ -148,13 +148,7 @@ func (f *AmqpFeature) handleConsume(task *tasks.Task, raw msgpack.RawMessage) {
 	startTime := time.Now()
 	message := task.GetMessage()
 
-	var params payloads.ConsumeParams
-
-	if !decodeParams(task, raw, &params, "consume params") {
-		return
-	}
-
-	entry, ok := channelOf(task, params.ChannelId)
+	entry, params, ok := resolveChannel[payloads.ConsumeParams](task, raw, "consume")
 
 	if !ok {
 		return

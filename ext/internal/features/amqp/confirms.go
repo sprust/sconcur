@@ -31,13 +31,7 @@ var errWaitTimeout = errors.New("wait timeout exceeded")
 func (f *AmqpFeature) handleConfirmSelect(task *tasks.Task, raw msgpack.RawMessage) {
 	startTime := time.Now()
 
-	var params payloads.ConfirmSelectParams
-
-	if !decodeParams(task, raw, &params, "confirm select params") {
-		return
-	}
-
-	entry, ok := channelOf(task, params.ChannelId)
+	entry, params, ok := resolveChannel[payloads.ConfirmSelectParams](task, raw, "confirm select")
 
 	if !ok {
 		return
@@ -61,13 +55,7 @@ func (f *AmqpFeature) handleConfirmSelect(task *tasks.Task, raw msgpack.RawMessa
 func (f *AmqpFeature) handleConfirmWait(task *tasks.Task, raw msgpack.RawMessage) {
 	startTime := time.Now()
 
-	var params payloads.ChannelParams
-
-	if !decodeParams(task, raw, &params, "confirm wait params") {
-		return
-	}
-
-	entry, ok := channelOf(task, params.ChannelId)
+	entry, params, ok := resolveChannel[payloads.ChannelParams](task, raw, "confirm wait")
 
 	if !ok {
 		return

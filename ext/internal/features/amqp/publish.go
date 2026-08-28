@@ -13,16 +13,14 @@ import (
 // handlePublish publishes one message. basic.publish carries no reply, so a message the
 // broker cannot route is only reported when it was published as mandatory and the
 // application waits for the returns.
+//
+// It is one of the few commands that writes its own tail rather than going through
+// onChannel: the closure needs the deadline itself, to hand to the driver, and the channel
+// entry, to keep the count of messages awaiting a confirmation.
 func (f *AmqpFeature) handlePublish(task *tasks.Task, raw msgpack.RawMessage) {
 	startTime := time.Now()
 
-	var params payloads.PublishParams
-
-	if !decodeParams(task, raw, &params, "publish params") {
-		return
-	}
-
-	entry, ok := channelOf(task, params.ChannelId)
+	entry, params, ok := resolveChannel[payloads.PublishParams](task, raw, "publish")
 
 	if !ok {
 		return

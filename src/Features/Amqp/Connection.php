@@ -4,11 +4,8 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Amqp;
 
-use SConcur\Connection\Extension;
 use SConcur\Exceptions\Amqp\ConnectionException;
-use SConcur\Features\Amqp\Payloads\AmqpPayload;
 use SConcur\Features\Amqp\Support\AmqpResource;
-use Throwable;
 
 /**
  * A connection to an AMQP broker: the options plus the handle the Go side gave back for
@@ -158,8 +155,6 @@ class Connection extends AmqpResource
                 'cid' => $this->internalId,
                 'sz'  => $prefetchSizeBytes,
                 'ct'  => $prefetchCount,
-                'gsz' => 0,
-                'gct' => 0,
                 'to'  => $this->rpcTimeoutMs(),
             ],
             exceptionClass: ConnectionException::class,
@@ -309,20 +304,12 @@ class Connection extends AmqpResource
         $this->internalOpen = false;
         $this->internalId   = '';
 
-        try {
-            Extension::get()->push(
-                flowKey: '',
-                payload: new AmqpPayload(
-                    command: AmqpCommandEnum::Disconnect,
-                    data: [
-                        'cid' => $connectionId,
-                        'to'  => $this->rpcTimeoutMs(),
-                    ],
-                ),
-            );
-        } catch (Throwable) {
-            // Shutdown, a released extension, a handle the Go side already dropped —
-            // nothing worth failing a destructor over.
-        }
+        $this->pushDetached(
+            command: AmqpCommandEnum::Disconnect,
+            data: [
+                'cid' => $connectionId,
+                'to'  => $this->rpcTimeoutMs(),
+            ],
+        );
     }
 }

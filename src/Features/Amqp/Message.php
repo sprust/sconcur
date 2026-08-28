@@ -54,10 +54,23 @@ readonly class Message
      */
     public static function fromDelivery(Delivery $delivery): self
     {
-        $properties = $delivery->properties;
-
-        return new self(
+        return static::fromProperties(
             body: $delivery->body,
+            properties: $delivery->properties,
+        );
+    }
+
+    /**
+     * A publishable message out of a body and the properties it arrived with — what a
+     * delivery and a returned message are both rebuilt from.
+     *
+     * `clusterId` is dropped rather than carried: AMQP 0-9-1 excludes it from publishing,
+     * only a broker sets it, and Message has no field for it for that reason.
+     */
+    public static function fromProperties(string $body, MessageProperties $properties): self
+    {
+        return new self(
+            body: $body,
             contentType: $properties->contentType,
             contentEncoding: $properties->contentEncoding,
             persistent: $properties->isPersistent(),

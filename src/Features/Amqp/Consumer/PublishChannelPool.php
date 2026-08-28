@@ -57,6 +57,14 @@ class PublishChannelPool
     protected array $idleSince = [];
 
     /**
+     * Which connection a channel was opened on, by object id — so giving one up costs a
+     * lookup rather than a walk over the connections.
+     *
+     * @var array<int, int>
+     */
+    protected array $connectionOf = [];
+
+    /**
      * @param ConnectionOptions          $options        what the delivery connection was opened with; the
      *                                                   pool reuses everything but the connection name
      * @param null|Closure(string): void $log            where a lifecycle line goes, when the worker
@@ -131,7 +139,8 @@ class PublishChannelPool
      */
     public function close(): void
     {
-        $this->idleSince = [];
+        $this->idleSince    = [];
+        $this->connectionOf = [];
 
         // An unwound coroutine has nothing to await an answer on, and asking would park it
         // for good. Dropping the objects is enough there: a Connection hands its handle back
@@ -197,12 +206,16 @@ class PublishChannelPool
         ++$this->openCounts[$index];
 
         try {
-            return $this->connections[$index]->channel(prefetchCount: self::PREFETCH_COUNT);
+            $channel = $this->connections[$index]->channel(prefetchCount: self::PREFETCH_COUNT);
         } catch (Throwable $exception) {
             --$this->openCounts[$index];
 
             throw $exception;
         }
+
+        $this->connectionOf[spl_object_id($channel)] = $index;
+
+        return $channel;
     }
 
     /**
@@ -213,7 +226,10 @@ class PublishChannelPool
     {
         $index = count($this->connections) - 1;
 
-        if ($index >= 0 && $this->openCounts[$index] < static::capacityOf($this->connections[$index])) {
+        if (
+            $index >= 0
+            && $this->openCounts[$index] < ConnectionOptions::usableChannels($this->connections[$index]->maxChannels())
+        ) {
             return $index;
         }
 
@@ -249,22 +265,6 @@ class PublishChannelPool
     }
 
     /**
-     * How many channels one connection may carry. Channel numbering starts at one, so the
-     * last usable number is one below the ceiling; a broker that answered the handshake with
-     * "no limit" leaves the library's own.
-     */
-    protected static function capacityOf(Connection $connection): int
-    {
-        $negotiated = $connection->maxChannels();
-
-        if ($negotiated < 1) {
-            $negotiated = ConnectionOptions::MAX_CHANNELS;
-        }
-
-        return $negotiated - 1;
-    }
-
-    /**
      * Stops counting a channel the pool will not lend again and lets it go.
      *
      * Its handle is given back by the destructor, which does it detached: the pool never
@@ -273,14 +273,13 @@ class PublishChannelPool
      */
     protected function discard(Channel $channel): void
     {
-        $connection = $channel->connection();
+        $objectId = spl_object_id($channel);
+        $index    = $this->connectionOf[$objectId] ?? null;
 
-        foreach ($this->connections as $index => $candidate) {
-            if ($candidate === $connection && $this->openCounts[$index] > 0) {
-                --$this->openCounts[$index];
+        unset($this->connectionOf[$objectId]);
 
-                break;
-            }
+        if ($index !== null && $this->openCounts[$index] > 0) {
+            --$this->openCounts[$index];
         }
     }
 }

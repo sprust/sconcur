@@ -5,25 +5,20 @@ declare(strict_types=1);
 namespace SConcur\Features\Amqp;
 
 use Generator;
-use SConcur\Connection\Extension;
 use SConcur\Exceptions\Amqp\AmqpException;
 use SConcur\Exceptions\Amqp\ChannelException;
 use SConcur\Exceptions\Amqp\ConnectionException;
 use SConcur\Exceptions\Amqp\ExchangeException;
-use SConcur\Exceptions\Amqp\InvalidRetryException;
 use SConcur\Exceptions\Amqp\PublishConfirmTimeoutException;
 use SConcur\Exceptions\Amqp\PublishNackedException;
 use SConcur\Exceptions\Amqp\QueueException;
 use SConcur\Exceptions\Amqp\UnroutableMessageException;
-use SConcur\Features\Amqp\Payloads\AmqpPayload;
 use SConcur\Features\Amqp\Support\AmqpResource;
 use SConcur\Features\Amqp\Support\DeliveryCodec;
 use SConcur\Features\Amqp\Support\PropertiesCodec;
 use SConcur\Features\Amqp\Support\TableCodec;
 use SConcur\Features\FeatureExecutor;
-use SConcur\Features\Sleeper\Sleeper;
 use SConcur\State;
-use Throwable;
 use WeakReference;
 
 /**
@@ -50,10 +45,14 @@ class Channel extends AmqpResource
     protected bool $confirming = false;
 
     /**
+     * Whether letting go of this object closes the channel behind it. False for a handle
+     * over a channel the Go side owns — see borrowed().
+     */
+    protected bool $owned = true;
+
+    /**
      * A handle over a channel that is already open on the Go side. Nothing is opened here:
-     * `Connection::channel()` opens one and hands the id over, and a supervised consumer
-     * adopts the channels its delivery stream opened, so a handler can settle and republish
-     * on the channel its message arrived on.
+     * `Connection::channel()` opens one and hands the id over.
      *
      * @param string $channelId     the Go-side handle
      * @param int    $channelNumber the channel's number on its connection
@@ -68,6 +67,28 @@ class Channel extends AmqpResource
         // Releasing the connection handle is what closes this channel on the Go side, so
         // the connection needs a way back to mark it closed here.
         $connection->internalChannels[$channelId] = WeakReference::create($this);
+    }
+
+    /**
+     * A handle over a channel this side does not own — the channels a supervised consumer's
+     * delivery stream opened, which the Go side closes when that stream's flow ends.
+     *
+     * Letting go of one of these releases the handle and sends nothing. That is the whole
+     * difference, and it is what makes the handle disposable: a ChannelClose from here would
+     * take away a channel the neighbouring handlers are still answering the broker on.
+     *
+     * @internal what QueueConsumer settles a delivery through
+     */
+    public static function borrowed(Connection $connection, string $channelId): self
+    {
+        $channel = new self(
+            connection: $connection,
+            channelId: $channelId,
+        );
+
+        $channel->owned = false;
+
+        return $channel;
     }
 
     public function connection(): Connection
@@ -272,20 +293,25 @@ class Channel extends AmqpResource
         int $retries = 0,
         array $retryDelaysSeconds = [],
     ): void {
-        if ($retries < 0) {
-            throw new InvalidRetryException(
-                message: "A publish cannot be retried a negative number of times, got $retries.",
-            );
-        }
+        // Screened before confirm mode is entered, so a bad argument costs no round trip.
+        RetrySchedule::assertRetries($retries);
 
         $schedule = new RetrySchedule($retryDelaysSeconds);
 
         $this->enableConfirms();
 
-        $attempt = 0;
-
-        while (true) {
-            try {
+        $schedule->retrying(
+            retries: $retries,
+            // Only the three the broker answered with. A channel or a connection that died
+            // raises past this on purpose: the handle is gone, every further attempt fails
+            // the same way, and retrying would spend the whole schedule to arrive at the
+            // exception the first attempt already had.
+            retryable: [
+                PublishNackedException::class,
+                UnroutableMessageException::class,
+                PublishConfirmTimeoutException::class,
+            ],
+            call: function () use ($message, $exchange, $routingKey, $mandatory, $timeoutSeconds): void {
                 $this->publish(
                     message: $message,
                     exchange: $exchange,
@@ -294,26 +320,8 @@ class Channel extends AmqpResource
                 );
 
                 $this->waitForConfirms($timeoutSeconds);
-
-                return;
-            } catch (PublishNackedException | UnroutableMessageException | PublishConfirmTimeoutException $failure) {
-                // Only the three the broker answered with. A channel or a connection that
-                // died raises past this on purpose: the handle is gone, every further
-                // attempt fails the same way, and retrying would spend the whole schedule
-                // to arrive at the exception the first attempt already had.
-                if ($attempt >= $retries) {
-                    throw $failure;
-                }
-
-                ++$attempt;
-            }
-
-            $delaySeconds = $schedule->delaySecondsFor($attempt);
-
-            if ($delaySeconds > 0) {
-                Sleeper::usleep(microseconds: (int) round($delaySeconds * 1_000_000));
-            }
-        }
+            },
+        );
     }
 
     /**
@@ -555,20 +563,19 @@ class Channel extends AmqpResource
 
         $channelId = $this->releaseHandle();
 
-        try {
-            Extension::get()->push(
-                flowKey: '',
-                payload: new AmqpPayload(
-                    command: AmqpCommandEnum::ChannelClose,
-                    data: [
-                        'chid' => $channelId,
-                        'to'   => $this->connection->rpcTimeoutMs(),
-                    ],
-                ),
-            );
-        } catch (Throwable) {
-            // The extension is gone with the process, and every channel it held with it.
+        // A borrowed channel is closed by the flow that opened it, not by whoever stops
+        // holding a handle over it.
+        if (!$this->owned) {
+            return;
         }
+
+        $this->pushDetached(
+            command: AmqpCommandEnum::ChannelClose,
+            data: [
+                'chid' => $channelId,
+                'to'   => $this->connection->rpcTimeoutMs(),
+            ],
+        );
     }
 
     /**
@@ -594,19 +601,16 @@ class Channel extends AmqpResource
             'to'   => $this->connection->rpcTimeoutMs(),
         ];
 
+        if ($detached) {
+            $this->pushDetached(
+                command: AmqpCommandEnum::Cancel,
+                data: $data,
+            );
+
+            return;
+        }
+
         try {
-            if ($detached) {
-                Extension::get()->push(
-                    flowKey: '',
-                    payload: new AmqpPayload(
-                        command: AmqpCommandEnum::Cancel,
-                        data: $data,
-                    ),
-                );
-
-                return;
-            }
-
             $this->runCommand(
                 command: AmqpCommandEnum::Cancel,
                 data: $data,

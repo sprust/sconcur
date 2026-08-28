@@ -18,13 +18,7 @@ import (
 func (f *AmqpFeature) handleGet(task *tasks.Task, raw msgpack.RawMessage) {
 	startTime := time.Now()
 
-	var params payloads.GetParams
-
-	if !decodeParams(task, raw, &params, "get params") {
-		return
-	}
-
-	entry, ok := channelOf(task, params.ChannelId)
+	entry, params, ok := resolveChannel[payloads.GetParams](task, raw, "get")
 
 	if !ok {
 		return

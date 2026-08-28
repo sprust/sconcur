@@ -254,19 +254,11 @@ func (c *channels) collectExpired(now time.Time) []*channelEntry {
 	return expired
 }
 
-// applyQos sends the prefetch settings of a freshly opened channel: the per-consumer
-// limits first, then the channel-wide ones if any is set — exactly the order ext-amqp
-// uses, since writing the per-consumer limits clears the channel-wide ones.
+// applyQos sends the per-consumer prefetch settings of a freshly opened channel. The
+// channel-wide form is a Qos command of its own: writing the per-consumer limits clears it,
+// so setting both at open time only ever meant sending one to overwrite the other.
 func applyQos(channel *amqp091.Channel, params payloads.ChannelOpenParams) error {
-	if err := channel.Qos(params.PrefetchCount, params.PrefetchSizeBytes, false); err != nil {
-		return err
-	}
-
-	if params.GlobalPrefetchCount == 0 && params.GlobalPrefetchSizeBytes == 0 {
-		return nil
-	}
-
-	return channel.Qos(params.GlobalPrefetchCount, params.GlobalPrefetchSizeBytes, true)
+	return channel.Qos(params.PrefetchCount, params.PrefetchSizeBytes, false)
 }
 
 func nextChannelId() string {

@@ -321,9 +321,9 @@ func (s *consumeServeState) openConsumer(
 	consumerTag := nextConsumerTag()
 
 	deliveries, err := entry.consume(ctx, consumerTag, payloads.ConsumeParams{
-		ChannelId: entry.id,
-		QueueName: queue.Name,
-		AutoAck:   s.params.AutoAck,
+		ChannelCommand: payloads.ChannelCommand{ChannelId: entry.id},
+		QueueName:      queue.Name,
+		AutoAck:        s.params.AutoAck,
 	})
 
 	if err != nil {

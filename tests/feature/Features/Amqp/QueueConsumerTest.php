@@ -10,6 +10,7 @@ use SConcur\Exceptions\CoroutineTimeoutException;
 use SConcur\Features\Amqp\Consumer\QueueConsumer;
 use SConcur\Features\Amqp\Delivery;
 use SConcur\Features\Sleeper\Sleeper;
+use SConcur\Tests\Impl\InspectableQueueConsumer;
 use Throwable;
 
 /**
@@ -663,6 +664,67 @@ class QueueConsumerTest extends AmqpTestCase
 
         self::assertSame(2, $count, 'the consumer must come back and take the next message');
         self::assertSame(['first', 'second'], $handled);
+    }
+
+    /**
+     * A reopened consumer gets a channel of its own, with an id of its own, so the handle
+     * over the one it left behind is never named again. Those handles used to be kept for
+     * the life of the worker: a process running beside a broker that restarts nightly grew
+     * one per loss and let go of none.
+     */
+    public function testTheHandleOverALostConsumersChannelIsNotKept(): void
+    {
+        $channel = $this->channel();
+
+        $queue = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
+
+        $name = $queue->name();
+
+        $handled = [];
+        $held    = [];
+
+        $queueConsumer = new InspectableQueueConsumer(
+            queues: $this->queuesJson([$name => 1]),
+            maxMessages: 2,
+            maxRuntimeSeconds: 30,
+        );
+
+        $this->publishToQueue(
+            channel: $channel,
+            queueName: $name,
+            message: 'first',
+        );
+
+        $queueConsumer->consume(
+            connection: $this->connection(),
+            handler: function (Delivery $delivery) use (&$handled, &$held, $queueConsumer, $channel, $name): void {
+                $handled[] = $delivery->body;
+                $held[]    = $queueConsumer->heldChannels();
+
+                if ($handled !== ['first']) {
+                    return;
+                }
+
+                // Deleting the queue is how the broker takes a consumer away; the stream
+                // reopens it on a fresh channel a moment later.
+                $channel->queue($name)->delete();
+
+                $recreated = $channel->queue($name);
+
+                $recreated->declare(durable: true);
+                $recreated->publish('second');
+            },
+        );
+
+        self::assertSame(['first', 'second'], $handled);
+        self::assertSame(
+            [1, 1],
+            $held,
+            'the handle over the channel the lost consumer used must go when its successor arrives',
+        );
     }
 
     /**

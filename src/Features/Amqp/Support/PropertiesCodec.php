@@ -81,19 +81,19 @@ readonly class PropertiesCodec
         $rawHeaders = is_array($properties['hd'] ?? null) ? $properties['hd'] : [];
 
         return new MessageProperties(
-            contentType: self::readString($properties, 'ct'),
-            contentEncoding: self::readString($properties, 'ce'),
-            deliveryMode: self::readInt($properties, 'dm') ?? MessageProperties::DELIVERY_MODE_TRANSIENT,
-            priority: self::readInt($properties, 'pr'),
-            correlationId: self::readString($properties, 'ci'),
-            replyTo: self::readString($properties, 'rp'),
-            expiration: self::readString($properties, 'ep'),
-            messageId: self::readString($properties, 'mi'),
-            timestamp: self::readInt($properties, 'ts'),
-            type: self::readString($properties, 'ty'),
-            userId: self::readString($properties, 'ui'),
-            appId: self::readString($properties, 'ai'),
-            clusterId: self::readString($properties, 'cl'),
+            contentType: static::readString($properties, 'ct'),
+            contentEncoding: static::readString($properties, 'ce'),
+            deliveryMode: static::readInt($properties, 'dm') ?? MessageProperties::DELIVERY_MODE_TRANSIENT,
+            priority: static::readInt($properties, 'pr'),
+            correlationId: static::readString($properties, 'ci'),
+            replyTo: static::readString($properties, 'rp'),
+            expiration: static::readString($properties, 'ep'),
+            messageId: static::readString($properties, 'mi'),
+            timestamp: static::readInt($properties, 'ts'),
+            type: static::readString($properties, 'ty'),
+            userId: static::readString($properties, 'ui'),
+            appId: static::readString($properties, 'ai'),
+            clusterId: static::readString($properties, 'cl'),
             headers: TableCodec::decode($rawHeaders),
         );
     }
@@ -106,23 +106,9 @@ readonly class PropertiesCodec
      */
     public static function messageFrom(string $body, array $properties): Message
     {
-        $decoded = self::decode($properties);
-
-        return new Message(
+        return Message::fromProperties(
             body: $body,
-            contentType: $decoded->contentType,
-            contentEncoding: $decoded->contentEncoding,
-            persistent: $decoded->isPersistent(),
-            priority: $decoded->priority,
-            correlationId: $decoded->correlationId,
-            replyTo: $decoded->replyTo,
-            expiration: $decoded->expiration,
-            messageId: $decoded->messageId,
-            timestamp: $decoded->timestamp,
-            type: $decoded->type,
-            userId: $decoded->userId,
-            appId: $decoded->appId,
-            headers: $decoded->headers,
+            properties: static::decode($properties),
         );
     }
 

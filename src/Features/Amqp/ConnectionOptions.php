@@ -130,6 +130,23 @@ readonly class ConnectionOptions
     }
 
     /**
+     * How many channels one connection can actually carry. Channel numbering starts at one,
+     * so the last usable number is one below the ceiling.
+     *
+     * @param ?int $negotiated what the broker agreed on in the handshake; null, or a value
+     *                         below one — which is how a broker says "no limit" — leaves the
+     *                         library's own ceiling
+     */
+    public static function usableChannels(?int $negotiated = null): int
+    {
+        if ($negotiated === null || $negotiated < 1) {
+            return self::MAX_CHANNELS - 1;
+        }
+
+        return $negotiated - 1;
+    }
+
+    /**
      * The same options under another connection name — which is what asks the Go-side pool
      * for a socket of its own, since the name is part of its key.
      *

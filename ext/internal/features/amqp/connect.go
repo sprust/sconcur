@@ -139,32 +139,13 @@ func (f *AmqpFeature) handleChannelClose(task *tasks.Task, raw msgpack.RawMessag
 
 // handleQos applies one set of prefetch settings to a channel.
 func (f *AmqpFeature) handleQos(task *tasks.Task, raw msgpack.RawMessage) {
-	startTime := time.Now()
-
-	var params payloads.QosParams
-
-	if !decodeParams(task, raw, &params, "qos params") {
-		return
-	}
-
-	entry, ok := channelOf(task, params.ChannelId)
-
-	if !ok {
-		return
-	}
-
-	ctx, cancel := commandContext(task, params.TimeoutMs, defaultRpcTimeout)
-	defer cancel()
-
-	err := entry.do(ctx, func(channel *amqp091.Channel) error {
-		return channel.Qos(params.PrefetchCount, params.PrefetchSizeBytes, params.Global)
-	})
-
-	if err != nil {
-		fail(task, entry, "qos", err)
-
-		return
-	}
-
-	respondDone(task, startTime)
+	onChannel(
+		task,
+		raw,
+		"qos",
+		defaultRpcTimeout,
+		func(channel *amqp091.Channel, params payloads.QosParams) (any, error) {
+			return nil, channel.Qos(params.PrefetchCount, params.PrefetchSizeBytes, params.Global)
+		},
+	)
 }

@@ -24,12 +24,6 @@ use SConcur\Features\Amqp\ConnectionOptions;
 readonly class QueueSpecParser
 {
     /**
-     * How many channels one connection is left to open: channel numbering starts at one, so
-     * the last usable number is one below ConnectionOptions::MAX_CHANNELS.
-     */
-    protected const int MAX_CHANNELS_PER_CONNECTION = ConnectionOptions::MAX_CHANNELS - 1;
-
-    /**
      * @return list<QueueSpec>
      */
     public static function parse(string $json): array
@@ -176,9 +170,10 @@ readonly class QueueSpecParser
      */
     protected static function assertChannelBudget(array $specs): void
     {
-        $total = static::channelCount($specs);
+        $total    = static::channelCount($specs);
+        $capacity = ConnectionOptions::usableChannels();
 
-        if ($total <= self::MAX_CHANNELS_PER_CONNECTION) {
+        if ($total <= $capacity) {
             return;
         }
 
@@ -188,7 +183,7 @@ readonly class QueueSpecParser
                 . ' Split the queues over more workers, or give a group its own connection_name.',
                 $total,
                 $total,
-                self::MAX_CHANNELS_PER_CONNECTION,
+                $capacity,
             ),
         );
     }

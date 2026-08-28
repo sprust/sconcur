@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Amqp\Support;
 
+use SConcur\Connection\Extension;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\Amqp\AmqpException;
 use SConcur\Exceptions\Amqp\ChannelException;
@@ -16,6 +17,7 @@ use SConcur\Features\Amqp\Connection;
 use SConcur\Features\Amqp\Payloads\AmqpPayload;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Transport\MessagePackTransport;
+use Throwable;
 use WeakReference;
 
 /**
@@ -193,6 +195,32 @@ abstract class AmqpResource
                 exceptionClass: $exceptionClass,
                 channel: $channel,
             );
+        }
+    }
+
+    /**
+     * Sends a command nobody will wait for: no flow, no result, no failure to report.
+     *
+     * It is how a destructor and an unwound coroutine give a handle back — neither has
+     * anything to await an answer on — so everything it could go wrong with is swallowed
+     * here rather than at each of the three call sites.
+     *
+     * @param array<string, mixed> $data
+     */
+    protected function pushDetached(AmqpCommandEnum $command, array $data): void
+    {
+        try {
+            Extension::get()->push(
+                flowKey: '',
+                payload: new AmqpPayload(
+                    command: $command,
+                    data: $data,
+                ),
+            );
+        } catch (Throwable) {
+            // Shutdown, a released extension, a handle the Go side already dropped — the
+            // process is going away with whatever the broker still holds, and a teardown is
+            // no place to fail.
         }
     }
 

@@ -274,6 +274,9 @@ list takes the last entry, so `[1, 3, 4]` backs off to four seconds and stays th
 however many retries follow. The default is an empty schedule, which tries again at
 once.
 
+The two arguments are the same on all three objects that publish — `Channel`,
+`Queue` and `Exchange` — since all three end up in the same call.
+
 Only the three failures in the table above are retried, because they are the three
 the broker answered with. A channel or a connection that died raises past the loop
 on purpose: the handle is gone by then, every further attempt fails the same way,

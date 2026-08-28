@@ -150,12 +150,18 @@ class Exchange
     /**
      * Publishes through this exchange and waits for the broker to take responsibility for
      * the message. See Channel::publishConfirmed().
+     *
+     * @param int         $retries            how many further attempts a publish the broker
+     *                                        refused may have
+     * @param list<float> $retryDelaysSeconds the wait after each failure, by attempt number
      */
     public function publishConfirmed(
         Message|string $message,
         string $routingKey = '',
         float $timeoutSeconds = 0.0,
         bool $mandatory = true,
+        int $retries = 0,
+        array $retryDelaysSeconds = [],
     ): void {
         $this->channel->publishConfirmed(
             message: $message,
@@ -163,6 +169,8 @@ class Exchange
             routingKey: $routingKey,
             timeoutSeconds: $timeoutSeconds,
             mandatory: $mandatory,
+            retries: $retries,
+            retryDelaysSeconds: $retryDelaysSeconds,
         );
     }
 

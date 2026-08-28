@@ -247,6 +247,93 @@ func commandContext(
 	return context.WithTimeout(task.GetContext(), msOrDefault(timeoutMs, fallback))
 }
 
+// channelCommand is what onChannel needs of a command's parameters: which channel it runs
+// on and how long it may take. payloads.ChannelCommand answers both, and every channel
+// command embeds it.
+type channelCommand interface {
+	Channel() string
+	Timeout() int
+}
+
+// onChannel runs one broker method on the channel a command names.
+//
+// Every command on an open channel is the same five steps — decode the parameters, resolve
+// the channel, bound the call, run it serialized against the channel's other commands,
+// answer the task — and differs only in the driver call and in what it reports. That
+// difference is the closure; the steps are here, so a new command cannot get the deadline,
+// the failure scope or the execution time subtly wrong by being copied from its neighbour.
+//
+// The closure answers nil for a command that reports nothing but its success. It runs while
+// the channel's lock is held, which is what makes it the right place for a side effect that
+// must not outrun the method it belongs to.
+//
+// A command whose shape differs — one that hands its result to an abandon function, or that
+// does not go through do() at all — uses resolveChannel and writes its own tail.
+func onChannel[P channelCommand](
+	task *tasks.Task,
+	raw msgpack.RawMessage,
+	what string,
+	fallback time.Duration,
+	call func(channel *amqp091.Channel, params P) (any, error),
+) {
+	startTime := time.Now()
+
+	entry, params, ok := resolveChannel[P](task, raw, what)
+
+	if !ok {
+		return
+	}
+
+	ctx, cancel := commandContext(task, params.Timeout(), fallback)
+	defer cancel()
+
+	var result any
+
+	err := entry.do(ctx, func(channel *amqp091.Channel) error {
+		var callError error
+
+		result, callError = call(channel, params)
+
+		return callError
+	})
+
+	if err != nil {
+		fail(task, entry, what, err)
+
+		return
+	}
+
+	if result == nil {
+		respondDone(task, startTime)
+
+		return
+	}
+
+	respond(task, result, startTime)
+}
+
+// resolveChannel decodes a channel command's parameters and finds the channel it names,
+// answering the task itself on either failure.
+func resolveChannel[P channelCommand](
+	task *tasks.Task,
+	raw msgpack.RawMessage,
+	what string,
+) (*channelEntry, P, bool) {
+	var params P
+
+	if !decodeParams(task, raw, &params, what+" params") {
+		return nil, params, false
+	}
+
+	entry, ok := channelOf(task, params.Channel())
+
+	if !ok {
+		return nil, params, false
+	}
+
+	return entry, params, true
+}
+
 // channelOf resolves a channel id, answering the task with an error when nothing answers
 // to it (it was closed, its connection died, or the sweeper collected it).
 func channelOf(task *tasks.Task, channelId string) (*channelEntry, bool) {
