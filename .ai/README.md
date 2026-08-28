@@ -86,6 +86,16 @@ make bench-all          # run all benchmarks
 Rebuild the extension with `make ext-build` before running tests that depend on
 `ext/build/sconcur.so`. Use `make ext-test` when changing Go extension behavior.
 
+Two images build from the same commands. `docker/php/Dockerfile` is the development
+one and additionally carries the RoadRunner binary and a compiled Swoole — the
+reference servers `docs/benchmarks.md` compares against. The release workflow builds
+`docker/release/Dockerfile` instead, which has only what `make check` needs; the
+`docker-compose.release.yml` overlay points `php` at it and leaves the `servers`
+container out. Reproduce that run locally with
+`COMPOSE_FILE=docker-compose.yml:docker-compose.release.yml make build up check`.
+Anything a check starts needing has to be added to both images, or the release breaks
+where local development does not.
+
 A long load run (`bench-*-load-soak`, or any `/all` run past a few minutes) needs
 the disk-backed backends described in [benchmarks](../docs/benchmarks.md): on the
 default `tmpfs` mounts the backends hit their 1 GiB cap and the demo handler
