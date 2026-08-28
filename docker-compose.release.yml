@@ -1,0 +1,18 @@
+# The release overlay: `php` is built from the slim release image instead of the
+# development one, and the `servers` container — supervisor, the demo masters, the
+# published ports — is put behind a profile nothing enables, so neither `build` nor `up`
+# touches it. Everything else, the four backends included, comes from docker-compose.yml
+# unchanged; a release runs the same `make check` against the same brokers.
+#
+# Used by .github/workflows/release.yml, and reproducible locally with:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.release.yml make build up
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.release.yml make check
+services:
+  php:
+    build:
+      context: ./docker/release
+
+  servers:
+    profiles:
+      - development

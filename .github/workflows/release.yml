@@ -20,6 +20,7 @@ on:
       - 'phpstan.neon'
       - 'docker/**'
       - 'docker-compose.yml'
+      - 'docker-compose.release.yml'
       - '.env.example'
       - '.github/workflows/release.yml'
 
@@ -34,6 +35,14 @@ jobs:
   check-and-build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
+    # Every `make` target and every raw `docker compose` call below reads this, so the
+    # whole job runs on the release overlay: `php` built from docker/release/Dockerfile
+    # — the checks and nothing else — and the `servers` container left out entirely.
+    # The development image carries RoadRunner and a compiled Swoole for the benchmark
+    # comparisons, which no check reads.
+    env:
+      COMPOSE_FILE: docker-compose.yml:docker-compose.release.yml
 
     steps:
       - uses: actions/checkout@v6
