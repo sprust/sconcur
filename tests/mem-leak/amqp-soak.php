@@ -89,6 +89,22 @@ $queue->bind(
     routingKey: 'soak',
 );
 
+// Where the consumer scenarios publish what their handlers succeed at, and the two names
+// nothing answers to: a routing key no queue is bound to, and an exchange that is not there.
+$sinkName    = $queueName . '_sink';
+$nowhereKey  = $queueName . '_nowhere';
+$missingName = $queueName . '_missing_exchange';
+
+$sink = $channel->queue($sinkName);
+
+$sink->declare(durable: true);
+$sink->purge();
+
+// Where the consumer scenarios keep their place: which ending the next handler takes, and
+// which cycle takes the queue away.
+$outcome   = 0;
+$lostCycle = 0;
+
 /**
  * One cycle of each scenario. Whatever it opens, it closes.
  */
@@ -262,15 +278,19 @@ $scenarios = [
         $waitGroup->waitAll();
     },
 
-    // The supervised consumer with the channels it lends its handlers. One short run per
-    // cycle: a few messages in, a QueueConsumer takes them, and the handlers exercise every
-    // way a channel comes back — clean, dirty with an unread return, and cut by a deadline.
-    // What must stay flat is the pool: channels, connections and the handles over the
-    // channels the deliveries arrive on.
-    'consumer' => static function () use ($connection, $channel, $queueName): void {
-        // Enough for the consumer to live a while rather than start and stop: the channels
-        // are reused across messages, trimmed, given up dirty and reopened, which is the
-        // accounting a short run never reaches.
+    // The supervised consumer and the channels it lends its handlers, put through every way
+    // a handler can end. What must stay flat is the pool — channels, connections and the
+    // handles over the channels the deliveries arrive on — and the broker's own three
+    // columns beside it.
+    'consumer' => static function () use (
+        $connection,
+        $channel,
+        $queueName,
+        $sinkName,
+        $nowhereKey,
+        $missingName,
+        &$outcome,
+    ): void {
         $messages = 60;
 
         for ($index = 0; $index < $messages; ++$index) {
@@ -282,39 +302,203 @@ $scenarios = [
         }
 
         $queueConsumer = new QueueConsumer(
-            queues: (string) json_encode([['name' => $queueName, 'coroutineCount' => 1]]),
+            queues: (string) json_encode([['name' => $queueName, 'coroutineCount' => 2]]),
             prefetchCount: 4,
-            handlerTimeoutMs: 200,
+            handlerTimeoutMs: 150,
+            // Exactly what was published: the ones put back unjudged come round again and
+            // take the place of the ones their handlers refused, and whatever is left over
+            // is purged at the end of the cycle. The wall is only there so a cycle in which
+            // the ground moves still ends.
             maxMessages: $messages,
+            maxRuntimeSeconds: 10,
         );
 
         $queueConsumer->consume(
             connection: $connection,
-            handler: static function (Delivery $delivery) use ($queueName): void {
+            handler: static function (Delivery $delivery) use (
+                $sinkName,
+                $nowhereKey,
+                $missingName,
+                &$outcome,
+            ): void {
                 $own = $delivery->channel();
 
                 if ($own === null) {
                     return;
                 }
 
-                // A quarter of them leave an answer nobody reads, so the pool has to give
-                // the channel up and open another; a quarter run past the deadline and are
-                // unwound mid-handler; the rest come back clean and are reused.
-                $tail = (int) substr($delivery->body, -1) % 4;
+                // Counted rather than derived from the body, so a message put back takes a
+                // different path the second time instead of repeating its own for ever.
+                ++$outcome;
 
-                if ($tail === 0) {
-                    $own->publish(
-                        message: $delivery->body,
-                        exchange: '',
-                        routingKey: 'sconcur_soak_nowhere',
-                        mandatory: true,
-                    );
+                switch ($outcome % 12) {
+                    case 0:
+                        // Nothing at all: the runtime acknowledges it.
+                        return;
 
+                    case 1:
+                        $own->publish(
+                            message: $delivery->body,
+                            exchange: '',
+                            routingKey: $sinkName,
+                        );
+
+                        return;
+
+                    case 2:
+                        // The ordinary success: the channel comes back clean and is reused.
+                        $own->publishConfirmed(
+                            message: $delivery->body,
+                            exchange: '',
+                            routingKey: $sinkName,
+                            timeoutSeconds: 2.0,
+                            mandatory: false,
+                        );
+
+                        return;
+
+                    case 3:
+                        $delivery->ack();
+
+                        return;
+
+                    case 4:
+                        $delivery->nack(requeue: false);
+
+                        return;
+
+                    case 5:
+                        $delivery->reject();
+
+                        return;
+
+                    case 6:
+                        throw new RuntimeException('the handler failed on purpose');
+
+                    case 7:
+                        // Past the deadline: unwound mid-handler, its channel given back by
+                        // the finally rather than by the handler.
+                        Sleeper::usleep(microseconds: 400_000);
+
+                        return;
+
+                    case 8:
+                        // An answer nobody reads: the pool has to give this channel up.
+                        $own->publish(
+                            message: $delivery->body,
+                            exchange: '',
+                            routingKey: $nowhereKey,
+                            mandatory: true,
+                        );
+
+                        return;
+
+                    case 9:
+                        // A verdict the broker does give: routed nowhere.
+                        $own->publishConfirmed(
+                            message: $delivery->body,
+                            exchange: '',
+                            routingKey: $nowhereKey,
+                            timeoutSeconds: 2.0,
+                        );
+
+                        return;
+
+                    case 10:
+                        // The same, through the retry loop.
+                        $own->publishConfirmed(
+                            message: $delivery->body,
+                            exchange: '',
+                            routingKey: $nowhereKey,
+                            timeoutSeconds: 2.0,
+                            retries: 1,
+                            retryDelaysSeconds: [0.01],
+                        );
+
+                        return;
+
+                    default:
+                        // A 404 the handler asked for: it takes the lent channel down with
+                        // it, and the pool must not lend that one again.
+                        $own->publish(
+                            message: $delivery->body,
+                            exchange: $missingName,
+                            routingKey: 'soak',
+                        );
+                }
+            },
+            onError: static function (): void {
+                // Every failure above is deliberate; the run is not the place to report it.
+            },
+        );
+
+        $channel->queue($sinkName)->purge();
+        $channel->queue($queueName)->purge();
+    },
+
+    // The same worker while the ground moves: the connection its handlers publish on is
+    // taken away, and the consumer itself is taken away with its queue. Both are the paths
+    // where a handle, a channel or a socket is most likely to be left behind.
+    'consumer-lost' => static function () use (
+        $connection,
+        $channel,
+        $queueName,
+        $sinkName,
+        &$lostCycle,
+    ): void {
+        $messages = 20;
+
+        ++$lostCycle;
+
+        for ($index = 0; $index < $messages; ++$index) {
+            $channel->publish(
+                message: "job-$index",
+                exchange: '',
+                routingKey: $queueName,
+            );
+        }
+
+        $takeQueueAway = $lostCycle % 3 === 0;
+
+        $queueConsumer = new QueueConsumer(
+            queues: (string) json_encode([['name' => $queueName, 'coroutineCount' => 2]]),
+            prefetchCount: 4,
+            handlerTimeoutMs: 500,
+            maxMessages: $messages,
+            maxRuntimeSeconds: 8,
+        );
+
+        $handled = 0;
+
+        $queueConsumer->consume(
+            connection: $connection,
+            handler: static function (Delivery $delivery) use (
+                $sinkName,
+                $queueName,
+                $takeQueueAway,
+                &$handled,
+            ): void {
+                $own = $delivery->channel();
+
+                if ($own === null) {
                     return;
                 }
 
-                if ($tail === 1) {
-                    Sleeper::usleep(microseconds: 400_000);
+                ++$handled;
+
+                if ($handled === 5) {
+                    // Closes whatever the pool has open. The broker lists a connection a few
+                    // seconds after it is made, so this lands on one from an earlier cycle as
+                    // often as on this one — which is the point: the loss arrives unannounced.
+                    TestAmqpResolver::closeConnectionsNamed(' publish ');
+                }
+
+                if ($takeQueueAway && $handled === 9) {
+                    // The consumer is cancelled by the broker and reopened on a channel with
+                    // an id of its own, which is what leaves a handle behind if nothing
+                    // sweeps them. Done on this handler's own channel, never the shared one.
+                    $own->queue($queueName)->delete();
+                    $own->queue($queueName)->declare(durable: true);
 
                     return;
                 }
@@ -322,16 +506,18 @@ $scenarios = [
                 $own->publishConfirmed(
                     message: $delivery->body,
                     exchange: '',
-                    routingKey: $queueName === '' ? 'sconcur_soak_nowhere' : 'sconcur_soak_sink',
+                    routingKey: $sinkName,
                     timeoutSeconds: 2.0,
                     mandatory: false,
                 );
             },
             onError: static function (): void {
-                // A handler cut by its deadline is the point of the scenario, not a failure
-                // of the run.
+                // Losing the ground under a handler is the scenario, not a failure of it.
             },
         );
+
+        $channel->queue($sinkName)->purge();
+        $channel->queue($queueName)->purge();
     },
 ];
 
@@ -351,7 +537,8 @@ $failures   = 0;
 $lastReport = 0.0;
 
 echo "scenario=$scenario duration={$durationSecond}s\n";
-echo "elapsed cycles  php_mb  php_peak_mb  tasks  goroutines  go_heap_mb  failures\n";
+echo "elapsed cycles  php_mb  php_peak_mb  tasks  goroutines  go_heap_mb"
+    . "  br_conn  br_chan  br_cons  failures\n";
 
 while (microtime(true) < $deadline) {
     try {
@@ -377,9 +564,10 @@ while (microtime(true) < $deadline) {
     gc_collect_cycles();
 
     $runtime = $readRuntime();
+    $broker  = TestAmqpResolver::brokerCounts();
 
     printf(
-        "%7.1f %6d %7.2f %12.2f %6d %11d %11.2f %9d\n",
+        "%7.1f %6d %7.2f %12.2f %6d %11d %11.2f %8d %8d %8d %9d\n",
         $elapsed,
         $cycleCount,
         memory_get_usage() / 1024 / 1024,
@@ -387,11 +575,15 @@ while (microtime(true) < $deadline) {
         $extension->count(),
         $runtime['goroutines'],
         $runtime['heapBytes'] / 1024 / 1024,
+        $broker['connections'],
+        $broker['channels'],
+        $broker['consumers'],
         $failures,
     );
 }
 
 $queue->delete();
+$sink->delete();
 $exchange->delete();
 
 $channel->close();

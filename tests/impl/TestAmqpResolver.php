@@ -62,6 +62,33 @@ class TestAmqpResolver
     }
 
     /**
+     * What the broker itself is holding: connections, channels and consumers.
+     *
+     * The half a soak cannot see from inside the process — a worker whose own memory is flat
+     * can still leave sockets, channels or consumers behind on the other side.
+     *
+     * The management API serves these from its statistics database, which is a few seconds
+     * behind the sockets; over a long run that lag is noise, and a leak is a trend.
+     *
+     * @return array{connections: int, channels: int, consumers: int}
+     */
+    public static function brokerCounts(): array
+    {
+        return [
+            'connections' => static::countOf(path: '/api/connections'),
+            'channels'    => static::countOf(path: '/api/channels'),
+            'consumers'   => static::countOf(path: '/api/consumers'),
+        ];
+    }
+
+    protected static function countOf(string $path): int
+    {
+        $listed = static::management(path: $path);
+
+        return is_array($listed) ? count($listed) : 0;
+    }
+
+    /**
      * Closes every broker connection whose name contains the given text, through the
      * management API, and answers how many it closed.
      *
