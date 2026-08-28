@@ -713,6 +713,13 @@ whole allowance first. If it has to go back, bound the rounds — a quorum queue
 `x-delivery-limit` counts them, where `x-death` does not: a requeue is not a
 dead-letter hop, so the counter above never moves.
 
+None of this covers a message the broker never judged. A handler that could not be lent
+a channel at all, one whose connection went away mid-command, or one whose channel was
+already gone when it tried — those messages were not looked at, so they go back into the
+queue whatever the setting says. The policy above is for jobs that failed. A publish the
+broker refused with a reply code — a 404 to an exchange that is not there — is a verdict
+and follows the policy, or the same message would be asked for again for ever.
+
 One thing this is not: a worker being stopped while a handler is still working. There
 the application never decided anything, so the message is not settled at all and
 comes back on its own — see [when the worker itself dies](#when-the-worker-itself-dies)
@@ -1188,6 +1195,7 @@ try {
 | the broker answered with a connection-level code (5xx), or the connection died | `ConnectionException` | the reply code; a connection that dropped mid-frame reports the driver's own `501`, and only a failure nobody put a code on reports 0 |
 | the channel is gone — the broker closed it over an earlier failure | `ChannelException` | the reply code that closed it, 0 when the broker named none |
 | a publish was nacked, returned, or never confirmed | `PublishNackedException`, `UnroutableMessageException`, `PublishConfirmTimeoutException` | the reply code of a return, 0 otherwise |
+| the runtime could not lend a handler a channel of its own | `ChannelLoanException` | 0 |
 | a value cannot travel in a field table | `InvalidAmqpValueException` | 0 |
 | the queue list of a consumer worker is not one | `InvalidQueueSpecException` | 0 |
 | an option is outside the range the protocol allows, or a URI cannot be read | `InvalidConnectionOptionException` | 0 |

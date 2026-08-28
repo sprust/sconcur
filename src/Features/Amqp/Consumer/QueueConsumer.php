@@ -7,6 +7,9 @@ namespace SConcur\Features\Amqp\Consumer;
 use Closure;
 use SConcur\Connection\Extension;
 use SConcur\Deadline;
+use SConcur\Exceptions\Amqp\ChannelException;
+use SConcur\Exceptions\Amqp\ChannelLoanException;
+use SConcur\Exceptions\Amqp\ConnectionException;
 use SConcur\Exceptions\Amqp\QueueException;
 use SConcur\Exceptions\CoroutineTimeoutException;
 use SConcur\Exceptions\FlowStoppedException;
@@ -366,7 +369,8 @@ class QueueConsumer
         null|Closure $onError,
         int &$handled,
     ): void {
-        $failed = false;
+        $failed  = false;
+        $requeue = $this->requeueOnFailure;
 
         try {
             $this->runHandler(
@@ -392,6 +396,10 @@ class QueueConsumer
         } catch (Throwable $exception) {
             $failed = true;
 
+            // A message the broker never judged goes back whatever the failure policy says:
+            // that policy is for jobs that failed, and this one was not looked at.
+            $requeue = $requeue || static::leavesMessageUnjudged($exception);
+
             $this->reportFailure(
                 exception: $exception,
                 delivery: $delivery,
@@ -402,6 +410,7 @@ class QueueConsumer
         $this->settle(
             delivery: $delivery,
             failed: $failed,
+            requeue: $requeue,
         );
 
         ++$handled;
@@ -477,6 +486,32 @@ class QueueConsumer
     }
 
     /**
+     * Whether a failed handler leaves its message unjudged, in which case putting it back is
+     * not retrying a verdict but giving it a chance to be looked at at all.
+     *
+     * The broker answers about a message with a reply code, and the three publisher verdicts
+     * — a nack, a message that routed nowhere, a confirm that never came — are answers too;
+     * all of those follow the worker's policy, and a job that threw on its own is the
+     * policy's whole reason for existing. What is left is the transport going away
+     * underneath: a channel the pool could not lend at all, a connection that died, or a
+     * channel already gone when the command was tried, which carries no code because nobody
+     * spoke.
+     *
+     * Drawing the line here and not at "the channel is closed" matters: a channel dies just
+     * as readily from what was asked of it — a publish to an exchange that is not there,
+     * which comes back as a 404 — and putting that message back would ask for it again
+     * forever.
+     */
+    protected static function leavesMessageUnjudged(Throwable $exception): bool
+    {
+        if ($exception instanceof ChannelLoanException || $exception instanceof ConnectionException) {
+            return true;
+        }
+
+        return $exception instanceof ChannelException && $exception->getCode() === 0;
+    }
+
+    /**
      * @param null|Closure(Throwable, Delivery): void $onError
      */
     protected function reportFailure(Throwable $exception, Delivery $delivery, null|Closure $onError): void
@@ -502,8 +537,12 @@ class QueueConsumer
      * A failed settle is logged rather than thrown: the message is the broker's problem
      * again either way, and letting it escape would end the coroutine over a dead channel —
      * which the stream reopens on its own.
+     *
+     * @param bool $requeue where a refused message goes. Normally the worker's
+     *                      `requeueOnFailure`, and always true for a message whose handler
+     *                      was never given a channel to start on
      */
-    protected function settle(Delivery $delivery, bool $failed): void
+    protected function settle(Delivery $delivery, bool $failed, bool $requeue): void
     {
         if ($delivery->isSettled()) {
             return;
@@ -511,7 +550,7 @@ class QueueConsumer
 
         try {
             if ($failed) {
-                $delivery->nack(requeue: $this->requeueOnFailure);
+                $delivery->nack(requeue: $requeue);
 
                 return;
             }

@@ -13,6 +13,7 @@ use SConcur\Features\Amqp\Support\DeliveryCodec;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Impl\TestAmqpResolver;
 use SConcur\WaitGroup;
+use Throwable;
 use WeakReference;
 
 /**
@@ -348,6 +349,113 @@ class QueueConsumerChannelTest extends AmqpTestCase
         );
 
         self::assertSame(1, $this->waitForMessageCount($target, expected: 1));
+    }
+
+    /**
+     * The promise the whole arrangement has to keep: losing the connection the handlers
+     * publish on costs a worker time, not messages.
+     *
+     * The queue names no dead-letter exchange and the worker runs with the documented
+     * default `requeueOnFailure: false`, so a message refused here is a message destroyed.
+     * A handler that was never given a channel has decided nothing about its message, so it
+     * goes back to the broker whatever that default says, and the pool has a working
+     * connection for whoever picks it up next.
+     */
+    public function testLosingThePublishConnectionCostsNoMessage(): void
+    {
+        $channel = $this->channel();
+
+        $source = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
+        $target = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
+
+        $bodies = [];
+
+        for ($index = 0; $index < 8; ++$index) {
+            $bodies[] = "job-$index";
+
+            $this->publishToQueue($channel, $source->name(), "job-$index");
+        }
+
+        $killed   = 0;
+        $failures = [];
+
+        $queueConsumer = new QueueConsumer(
+            queues: $this->queuesJson($source->name()),
+            prefetchCount: 1,
+            requeueOnFailure: false,
+            maxMessages: count($bodies) + 3,
+            maxRuntimeSeconds: 30,
+        );
+
+        $queueConsumer->consume(
+            connection: $this->connection(),
+            handler: static function (Delivery $delivery) use ($target, &$killed): void {
+                $own = $delivery->channel();
+
+                self::assertNotNull($own);
+
+                if ($killed === 0) {
+                    // The broker lists a connection only once its statistics have caught up,
+                    // a few seconds behind the socket, so the first handler waits for that
+                    // and then takes the connection away from under the pool.
+                    $deadline = microtime(true) + 20.0;
+
+                    while ($killed === 0 && microtime(true) < $deadline) {
+                        $killed = TestAmqpResolver::closeConnectionsNamed(
+                            (string) $own->connection()->options->connectionName,
+                        );
+
+                        if ($killed === 0) {
+                            Sleeper::usleep(microseconds: 250_000);
+                        }
+                    }
+                }
+
+                $own->publishConfirmed(
+                    message: $delivery->body,
+                    exchange: '',
+                    routingKey: $target->name(),
+                    timeoutSeconds: 5.0,
+                );
+            },
+            onError: static function (Throwable $exception) use (&$failures): void {
+                $failures[] = $exception::class . ': ' . $exception->getMessage();
+            },
+        );
+
+        self::assertGreaterThan(0, $killed, 'the test must actually take the connection away');
+        self::assertNotSame([], $failures, 'one handler must have met the dead connection');
+
+        // Every job arrived, including the one whose handler never got a channel.
+        $arrived = [];
+
+        $deadline = microtime(true) + 5.0;
+
+        while (count($arrived) < count($bodies) && microtime(true) < $deadline) {
+            $delivery = $target->get(autoAck: true);
+
+            if ($delivery === null) {
+                usleep(100_000);
+
+                continue;
+            }
+
+            $arrived[] = $delivery->body;
+        }
+
+        sort($arrived);
+
+        self::assertSame(
+            $bodies,
+            $arrived,
+            'a lost connection must cost no message; failures seen: ' . implode(' | ', $failures),
+        );
     }
 
     /**

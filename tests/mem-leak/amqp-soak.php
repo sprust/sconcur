@@ -268,7 +268,10 @@ $scenarios = [
     // What must stay flat is the pool: channels, connections and the handles over the
     // channels the deliveries arrive on.
     'consumer' => static function () use ($connection, $channel, $queueName): void {
-        $messages = 8;
+        // Enough for the consumer to live a while rather than start and stop: the channels
+        // are reused across messages, trimmed, given up dirty and reopened, which is the
+        // accounting a short run never reaches.
+        $messages = 60;
 
         for ($index = 0; $index < $messages; ++$index) {
             $channel->publish(

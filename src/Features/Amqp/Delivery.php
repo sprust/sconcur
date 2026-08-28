@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace SConcur\Features\Amqp;
 
 use Closure;
+use SConcur\Exceptions\Amqp\AmqpException;
 use SConcur\Exceptions\Amqp\ChannelException;
+use SConcur\Exceptions\Amqp\ChannelLoanException;
 use SConcur\Exceptions\Amqp\ConcurrentDeliveryUseException;
 use WeakReference;
 
@@ -171,6 +173,14 @@ class Delivery
 
         try {
             $this->lentChannel = ($this->lend)();
+        } catch (AmqpException $exception) {
+            // Named for what it is, so a runtime that could not lend a channel is not read
+            // as a handler that looked at the message and refused it: the supervised
+            // consumer puts this message back whatever its failure policy says.
+            throw new ChannelLoanException(
+                message: 'Could not lend this handler a channel of its own: ' . $exception->getMessage(),
+                previous: $exception,
+            );
         } finally {
             $this->leasing = false;
         }
