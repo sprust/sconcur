@@ -62,6 +62,75 @@ class TestAmqpResolver
     }
 
     /**
+     * Closes every broker connection whose name contains the given text, through the
+     * management API, and answers how many it closed.
+     *
+     * What a broker restart, a proxy timeout or an operator pressing the button does to a
+     * worker — the one failure a pooled connection cannot dial its way out of, and therefore
+     * the one a test has to be able to cause on purpose.
+     */
+    public static function closeConnectionsNamed(string $namePart): int
+    {
+        $connections = static::management(path: '/api/connections');
+
+        if (!is_array($connections)) {
+            return 0;
+        }
+
+        $closed = 0;
+
+        foreach ($connections as $connection) {
+            if (!is_array($connection)) {
+                continue;
+            }
+
+            $properties = is_array($connection['client_properties'] ?? null) ? $connection['client_properties'] : [];
+            $name       = (string) ($properties['connection_name'] ?? '');
+
+            if ($name === '' || !str_contains($name, $namePart)) {
+                continue;
+            }
+
+            static::management(
+                path: '/api/connections/' . rawurlencode((string) ($connection['name'] ?? '')),
+                method: 'DELETE',
+            );
+
+            ++$closed;
+        }
+
+        return $closed;
+    }
+
+    /**
+     * One management-API call. The port is the broker's own inside the compose network; the
+     * host mapping in RABBITMQ_MANAGEMENT_DOCKER_PORT is for a browser, not for this.
+     */
+    protected static function management(string $path, string $method = 'GET'): mixed
+    {
+        $url = sprintf('http://%s:15672%s', (string) $_ENV['RABBITMQ_HOST'], $path);
+
+        $context = stream_context_create([
+            'http' => [
+                'method'        => $method,
+                'header'        => 'Authorization: Basic ' . base64_encode(
+                    $_ENV['RABBITMQ_USER'] . ':' . $_ENV['RABBITMQ_PASSWORD'],
+                ),
+                'timeout'       => 5,
+                'ignore_errors' => true,
+            ],
+        ]);
+
+        $body = @file_get_contents($url, context: $context);
+
+        if ($body === false || $body === '') {
+            return null;
+        }
+
+        return json_decode($body, associative: true);
+    }
+
+    /**
      * A name no other test run uses, so tests never fight over a queue or an exchange.
      */
     public static function uniqueName(string $prefix): string

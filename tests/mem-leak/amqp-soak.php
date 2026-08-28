@@ -20,6 +20,8 @@ declare(strict_types=1);
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\Amqp\UnroutableMessageException;
 use SConcur\Features\Amqp\Connection;
+use SConcur\Features\Amqp\Consumer\QueueConsumer;
+use SConcur\Features\Amqp\Delivery;
 use SConcur\Features\Amqp\ExchangeTypeEnum;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Impl\TestAmqpResolver;
@@ -258,6 +260,75 @@ $scenarios = [
         });
 
         $waitGroup->waitAll();
+    },
+
+    // The supervised consumer with the channels it lends its handlers. One short run per
+    // cycle: a few messages in, a QueueConsumer takes them, and the handlers exercise every
+    // way a channel comes back — clean, dirty with an unread return, and cut by a deadline.
+    // What must stay flat is the pool: channels, connections and the handles over the
+    // channels the deliveries arrive on.
+    'consumer' => static function () use ($connection, $channel, $queueName): void {
+        $messages = 8;
+
+        for ($index = 0; $index < $messages; ++$index) {
+            $channel->publish(
+                message: "job-$index",
+                exchange: '',
+                routingKey: $queueName,
+            );
+        }
+
+        $queueConsumer = new QueueConsumer(
+            queues: (string) json_encode([['name' => $queueName, 'coroutineCount' => 1]]),
+            prefetchCount: 4,
+            handlerTimeoutMs: 200,
+            maxMessages: $messages,
+        );
+
+        $queueConsumer->consume(
+            connection: $connection,
+            handler: static function (Delivery $delivery) use ($queueName): void {
+                $own = $delivery->channel();
+
+                if ($own === null) {
+                    return;
+                }
+
+                // A quarter of them leave an answer nobody reads, so the pool has to give
+                // the channel up and open another; a quarter run past the deadline and are
+                // unwound mid-handler; the rest come back clean and are reused.
+                $tail = (int) substr($delivery->body, -1) % 4;
+
+                if ($tail === 0) {
+                    $own->publish(
+                        message: $delivery->body,
+                        exchange: '',
+                        routingKey: 'sconcur_soak_nowhere',
+                        mandatory: true,
+                    );
+
+                    return;
+                }
+
+                if ($tail === 1) {
+                    Sleeper::usleep(microseconds: 400_000);
+
+                    return;
+                }
+
+                $own->publishConfirmed(
+                    message: $delivery->body,
+                    exchange: '',
+                    routingKey: $queueName === '' ? 'sconcur_soak_nowhere' : 'sconcur_soak_sink',
+                    timeoutSeconds: 2.0,
+                    mandatory: false,
+                );
+            },
+            onError: static function (): void {
+                // A handler cut by its deadline is the point of the scenario, not a failure
+                // of the run.
+            },
+        );
     },
 ];
 

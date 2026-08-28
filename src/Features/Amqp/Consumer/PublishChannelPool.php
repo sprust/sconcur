@@ -58,12 +58,18 @@ class PublishChannelPool
     protected array $idleSince = [];
 
     /**
-     * Which connection a channel was opened on, by object id — so giving one up costs a
-     * lookup rather than a walk over the connections.
+     * Which connection a channel was opened on, by the channel's object id.
      *
-     * @var array<int, int>
+     * The connection itself and not its place in the list: opening a channel waits for the
+     * broker, and a connection let go meanwhile shifts every later place down, so an index
+     * remembered across that wait names the wrong connection — or none.
+     *
+     * @var array<int, Connection>
      */
     protected array $connectionOf = [];
+
+    /** How many connections the pool has opened, ever. Names are drawn from it. */
+    protected int $connectionsOpened = 0;
 
     /**
      * @param ConnectionOptions          $options        what the delivery connection was opened with; the
@@ -83,18 +89,28 @@ class PublishChannelPool
     /**
      * A channel of the caller's own, for as long as it holds it. Opens one when the pool has
      * none free, which is why a worker whose handlers never publish opens none at all.
+     *
+     * A channel on a connection already known to have failed is never handed out. That
+     * knowledge only arrives when a command fails, though — a socket the broker closed looks
+     * open from here until something is asked of it — so the first holder after a connection
+     * dies still meets the failure, and it is the next that gets a working channel.
      */
     public function lease(): Channel
     {
-        while ($this->free !== []) {
-            $channel = array_pop($this->free);
-
+        // Taken first and judged after, never the other way around: automatic preemption
+        // switches coroutines between opcodes, so a list that was not empty when it was
+        // checked can be empty by the time it is read.
+        while (($channel = array_pop($this->free)) !== null) {
             $objectId  = spl_object_id($channel);
             $idleSince = $this->idleSince[$objectId] ?? 0.0;
 
             unset($this->idleSince[$objectId]);
 
-            if ($channel->isOpen() && (microtime(true) - $idleSince) < $this->maxIdleSeconds) {
+            if (
+                $channel->isOpen()
+                && !$channel->connection()->isFailed()
+                && (microtime(true) - $idleSince) < $this->maxIdleSeconds
+            ) {
                 return $channel;
             }
 
@@ -191,18 +207,22 @@ class PublishChannelPool
      */
     protected function trimIdle(): void
     {
-        if ($this->free === []) {
+        // Taken off the front before it is judged, and put back when it turns out to be
+        // wanted: between the check and the read another coroutine may have taken it, and
+        // preemption puts that window between any two opcodes.
+        $oldest = array_shift($this->free);
+
+        if ($oldest === null) {
             return;
         }
 
-        $oldest   = $this->free[0];
         $objectId = spl_object_id($oldest);
 
         if ((microtime(true) - ($this->idleSince[$objectId] ?? 0.0)) < $this->maxIdleSeconds) {
+            array_unshift($this->free, $oldest);
+
             return;
         }
-
-        array_shift($this->free);
 
         unset($this->idleSince[$objectId]);
 
@@ -212,7 +232,8 @@ class PublishChannelPool
     /** Opens one channel on a connection that still has room, opening that connection first if need be. */
     protected function open(): Channel
     {
-        $index = $this->connectionWithRoom();
+        $index      = $this->connectionWithRoom();
+        $connection = $this->connections[$index];
 
         // Counted before the channel is opened rather than after: opening waits for the
         // broker, and several handlers may be doing it at once. A count that only rose on
@@ -221,14 +242,16 @@ class PublishChannelPool
         ++$this->openCounts[$index];
 
         try {
-            $channel = $this->connections[$index]->channel(prefetchCount: self::PREFETCH_COUNT);
+            $channel = $connection->channel(prefetchCount: self::PREFETCH_COUNT);
         } catch (Throwable $exception) {
-            --$this->openCounts[$index];
+            // By the connection and not by the index taken above: the wait just ended may
+            // have let another coroutine give a connection up, and every later place moved.
+            $this->uncount($connection);
 
             throw $exception;
         }
 
-        $this->connectionOf[spl_object_id($channel)] = $index;
+        $this->connectionOf[spl_object_id($channel)] = $connection;
 
         return $channel;
     }
@@ -241,27 +264,49 @@ class PublishChannelPool
     {
         $index = count($this->connections) - 1;
 
-        if (
-            $index >= 0
-            && $this->openCounts[$index] < ConnectionOptions::usableChannels($this->connections[$index]->maxChannels())
-        ) {
+        if ($index >= 0 && $this->hasRoom($index)) {
             return $index;
         }
 
         return $this->openConnection();
     }
 
+    /**
+     * Whether the next channel can be opened on this connection.
+     *
+     * A connection that failed has no room, whatever its count says. It is never redialled —
+     * Connection::connect() refuses one that still holds a handle, on purpose — so a pool
+     * that went on offering it would answer every later lease with "No connection
+     * available" for the life of the worker, and under a supervised consumer that failure
+     * refuses a message rather than reporting itself.
+     */
+    protected function hasRoom(int $index): bool
+    {
+        $connection = $this->connections[$index];
+
+        if ($connection->isFailed()) {
+            return false;
+        }
+
+        return $this->openCounts[$index] < ConnectionOptions::usableChannels($connection->maxChannels());
+    }
+
     /** @return int the index of the connection that was opened */
     protected function openConnection(): int
     {
-        $index = count($this->connections);
+        // Drawn from a counter and never from a place in the list: a connection given up
+        // closes the gap behind it, so a name taken from the place would be one already in
+        // use — and the Go side pools a socket by its options, the name among them, so two
+        // of these objects would share one socket while the pool budgeted channels to each
+        // of them separately, straight into a 504.
+        ++$this->connectionsOpened;
 
         $connection = new Connection(
             $this->options->withConnectionName(
                 sprintf(
                     '%s publish %d (pid %d)',
                     $this->options->connectionName ?? self::DEFAULT_CONNECTION_NAME,
-                    $index + 1,
+                    $this->connectionsOpened,
                     getmypid(),
                 ),
             ),
@@ -273,11 +318,11 @@ class PublishChannelPool
         if ($this->log !== null) {
             ($this->log)(sprintf(
                 'consumer: opened publish connection %d for the handlers that publish',
-                $index + 1,
+                $this->connectionsOpened,
             ));
         }
 
-        return $index;
+        return count($this->connections) - 1;
     }
 
     /**
@@ -289,12 +334,29 @@ class PublishChannelPool
      */
     protected function discard(Channel $channel): void
     {
-        $objectId = spl_object_id($channel);
-        $index    = $this->connectionOf[$objectId] ?? null;
+        $objectId   = spl_object_id($channel);
+        $connection = $this->connectionOf[$objectId] ?? null;
 
         unset($this->connectionOf[$objectId]);
 
-        if ($index === null) {
+        if ($connection !== null) {
+            $this->uncount($connection);
+        }
+    }
+
+    /**
+     * Takes one channel off a connection's count, and lets the connection go once nothing
+     * is left on it.
+     *
+     * The newest is kept even when it empties — the next channel is opened on it, and
+     * letting it go would make a worker whose handlers keep giving channels back dirty dial
+     * a connection per message. A failed one is not kept: it can open nothing.
+     */
+    protected function uncount(Connection $connection): void
+    {
+        $index = array_search($connection, $this->connections, true);
+
+        if ($index === false) {
             return;
         }
 
@@ -302,10 +364,11 @@ class PublishChannelPool
             --$this->openCounts[$index];
         }
 
-        // All but the newest, which the next channel is opened on: letting that one go would
-        // make a worker whose handlers keep giving channels back dirty — a publish nobody
-        // waited for — dial a connection per message.
-        if ($this->openCounts[$index] === 0 && $index !== count($this->connections) - 1) {
+        if ($this->openCounts[$index] !== 0) {
+            return;
+        }
+
+        if ($index !== count($this->connections) - 1 || $connection->isFailed()) {
             $this->forgetConnection($index);
         }
     }
@@ -324,15 +387,5 @@ class PublishChannelPool
 
         $this->connections = array_values($this->connections);
         $this->openCounts  = array_values($this->openCounts);
-
-        // Closing the gap moved every later connection down a place, and the channels still
-        // out are counted against those by index. Without this they would decrement the
-        // wrong connection when they come back, and a connection that never empties would
-        // hold its socket for the life of the run.
-        foreach ($this->connectionOf as $objectId => $connectionIndex) {
-            if ($connectionIndex > $index) {
-                $this->connectionOf[$objectId] = $connectionIndex - 1;
-            }
-        }
     }
 }

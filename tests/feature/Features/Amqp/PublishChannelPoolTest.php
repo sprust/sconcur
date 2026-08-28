@@ -244,6 +244,127 @@ class PublishChannelPoolTest extends AmqpTestCase
         }
     }
 
+    /**
+     * The failure a pooled connection cannot dial its way out of. A broker restart, a proxy
+     * timeout or an operator closing the connection leaves the pool holding a socket that
+     * can open nothing, and `Connection::connect()` refuses to redial one that failed — so
+     * the pool has to give it up and open another, or every later lease fails for the life
+     * of the worker. Under a supervised consumer that failure refuses messages rather than
+     * reporting itself, which is how a worker turns into a shredder.
+     */
+    public function testThePoolRecoversWhenItsConnectionIsClosedByTheBroker(): void
+    {
+        $pool = new PublishChannelPool(options: $this->connection()->options);
+
+        try {
+            $channel    = $pool->lease();
+            $connection = $channel->connection();
+
+            $name = (string) $connection->options->connectionName;
+
+            self::assertNotSame('', $name);
+
+            $pool->release($channel);
+
+            // The broker's management API lists a connection only once its statistics have
+            // been collected, which is a few seconds behind the socket.
+            $closed   = 0;
+            $deadline = microtime(true) + 15.0;
+
+            while ($closed === 0 && microtime(true) < $deadline) {
+                $closed = TestAmqpResolver::closeConnectionsNamed($name);
+
+                if ($closed === 0) {
+                    usleep(500_000);
+                }
+            }
+
+            self::assertGreaterThan(0, $closed, 'the test must actually close the pool connection');
+
+            // A socket the broker closed still looks open from here, so the first holder
+            // after the kill meets the failure — one message refused, which is what the
+            // broker takes back. What must not happen, and did before this fix, is that
+            // every holder after it meets the same failure for the life of the worker.
+            $published = false;
+            $failures  = 0;
+
+            for ($attempt = 0; $attempt < 5 && !$published; ++$attempt) {
+                $leased = null;
+
+                try {
+                    $leased = $pool->lease();
+
+                    $leased->publish(
+                        message: 'after the kill',
+                        exchange: '',
+                        routingKey: TestAmqpResolver::uniqueName('nowhere'),
+                    );
+
+                    $published = true;
+                } catch (AmqpException) {
+                    ++$failures;
+
+                    if ($leased !== null) {
+                        $pool->release($leased);
+                    }
+                }
+            }
+
+            self::assertTrue($published, "the pool must come back; $failures attempts failed");
+            self::assertLessThanOrEqual(2, $failures, 'losing a connection must cost a message or two, not the run');
+        } finally {
+            $pool->close();
+        }
+    }
+
+    /**
+     * A connection given up closes the gap behind it in the list. A name taken from that
+     * list would then be one already in use, and the Go side pools a socket by its options
+     * — the name among them — so two of the pool's connections would share one socket while
+     * it budgeted channels to each of them separately, straight into a 504.
+     */
+    public function testAForgottenConnectionsNameIsNotReused(): void
+    {
+        $options = $this->connection()->options;
+
+        $pool = new PublishChannelPool(
+            options: new ConnectionOptions(
+                host: $options->host,
+                port: $options->port,
+                login: $options->login,
+                password: $options->password,
+                vhost: $options->vhost,
+                // One usable channel each, so every lease needs a connection of its own.
+                channelMax: 2,
+            ),
+            maxIdleSeconds: 0.0,
+        );
+
+        try {
+            $first  = $pool->lease();
+            $second = $pool->lease();
+
+            self::assertSame(2, $pool->connectionCount());
+
+            $secondName = (string) $second->connection()->options->connectionName;
+
+            // Trimmed on release, which drops the first connection and closes the gap.
+            $pool->release($first);
+
+            self::assertSame(1, $pool->connectionCount());
+
+            $third = $pool->lease();
+
+            self::assertNotSame(
+                $secondName,
+                (string) $third->connection()->options->connectionName,
+                'a new connection must not take the name of one still in use',
+            );
+        } finally {
+            $pool->close();
+        }
+    }
+
     public function testClosingGivesEverythingBack(): void
     {
         $pool = new PublishChannelPool(options: $this->connection()->options);

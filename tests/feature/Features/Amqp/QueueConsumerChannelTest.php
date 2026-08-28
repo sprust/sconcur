@@ -37,44 +37,58 @@ class QueueConsumerChannelTest extends AmqpTestCase
             durable: true,
         );
 
-        for ($index = 0; $index < 4; ++$index) {
+        $expected = 4;
+
+        for ($index = 0; $index < $expected; ++$index) {
             $this->publishToQueue($channel, $source->name(), "body-$index");
         }
 
         $channelIds         = [];
-        $ownConnections     = [];
+        $names              = [];
+        $arrived            = [];
         $deliveryConnection = $this->connection();
 
         $queueConsumer = new QueueConsumer(
             queues: $this->queuesJson($source->name()),
-            prefetchCount: 4,
-            maxMessages: 4,
+            prefetchCount: $expected,
+            maxMessages: $expected,
         );
 
         $queueConsumer->consume(
             connection: $deliveryConnection,
-            handler: static function (Delivery $delivery) use (&$channelIds, &$ownConnections): void {
+            handler: static function (Delivery $delivery) use (&$channelIds, &$names, &$arrived, $expected): void {
                 $own = $delivery->channel();
 
                 self::assertNotNull($own, 'a handler must be lent a channel');
 
-                $channelIds[]     = spl_object_id($own);
-                $ownConnections[] = $own->connection();
+                $channelIds[] = spl_object_id($own);
+                $names[]      = (string) $own->connection()->options->connectionName;
 
-                // Held until every one of the four has taken one, so the four leases really
-                // do overlap instead of reusing the channel of a handler already finished.
-                Sleeper::usleep(microseconds: self::OVERLAP_MICROSECONDS);
+                // A barrier, not a sleep: every handler holds its channel until all of them
+                // have one, so the leases overlap however the machine is loaded. A set and
+                // not a count — preemption can split a read-modify-write between two of
+                // them.
+                $arrived[$delivery->body] = true;
+
+                $deadline = microtime(true) + 5.0;
+
+                while (count($arrived) < $expected && microtime(true) < $deadline) {
+                    Sleeper::usleep(microseconds: 5_000);
+                }
             },
         );
 
-        self::assertCount(4, $channelIds);
+        self::assertCount($expected, $channelIds);
         self::assertSame($channelIds, array_unique($channelIds), 'four handlers at once, four channels');
 
-        foreach ($ownConnections as $connection) {
+        // A different socket, not merely a different object: the Go side pools a connection
+        // by its options, the name among them, and the deliveries arrive on an unnamed one.
+        foreach ($names as $name) {
+            self::assertNotSame('', $name, 'the lent channel must be on a connection of the pool');
             self::assertNotSame(
-                $deliveryConnection,
-                $connection,
-                'the lent channel must not be one the deliveries arrive on',
+                (string) $deliveryConnection->options->connectionName,
+                $name,
+                'the lent channel must not share the socket the deliveries arrive on',
             );
         }
     }
@@ -337,6 +351,67 @@ class QueueConsumerChannelTest extends AmqpTestCase
     }
 
     /**
+     * A handle over a channel the Go side owns closes nothing.
+     *
+     * The consumer's channels carry every handler running on them, so a `ChannelClose` sent
+     * from one of these handles would take the channel away from the neighbours still
+     * answering the broker on it — and giving the handle up locally would leave the runtime
+     * unable to settle a delivery still in a handler. Both exits keep the rule; this covers
+     * the public one.
+     */
+    public function testClosingABorrowedHandleTakesNothingAway(): void
+    {
+        $channel = $this->channel();
+
+        $source = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
+
+        $this->publishToQueue($channel, $source->name(), 'first');
+        $this->publishToQueue($channel, $source->name(), 'second');
+
+        $queueConsumer = new InspectableQueueConsumer(
+            queues: $this->queuesJson($source->name()),
+            prefetchCount: 1,
+            maxMessages: 2,
+        );
+
+        $handled = [];
+        $closed  = 0;
+
+        $count = $queueConsumer->consume(
+            connection: $this->connection(),
+            handler: static function (Delivery $delivery) use ($queueConsumer, &$handled, &$closed): void {
+                $handled[] = $delivery->body;
+
+                if ($closed > 0) {
+                    return;
+                }
+
+                foreach ($queueConsumer->borrowedChannels() as $borrowed) {
+                    self::assertTrue($borrowed->isOpen());
+
+                    $borrowed->close();
+
+                    // Still open, because a view over someone else's channel closes nothing.
+                    self::assertTrue($borrowed->isOpen(), 'closing a borrowed handle must change nothing');
+
+                    ++$closed;
+                }
+            },
+        );
+
+        self::assertGreaterThan(0, $closed, 'the test must reach a borrowed handle');
+
+        // The proof: the first delivery was acknowledged on that very channel and the second
+        // arrived on it too. A ChannelClose would have ended both.
+        self::assertSame(2, $count);
+        self::assertSame(['first', 'second'], $handled);
+        $this->assertQueueStaysEmpty($source);
+    }
+
+    /**
      * The generator is untouched: there the channel belongs to the coroutine reading it, and
      * that is the one handed out.
      */
@@ -373,5 +448,20 @@ class QueueConsumerChannelTest extends AmqpTestCase
     protected function queuesJson(string $name): string
     {
         return (string) json_encode([['name' => $name, 'coroutineCount' => 1]]);
+    }
+}
+
+/**
+ * A consumer that shows the handles it holds over the channels its deliveries arrive on —
+ * the ones a handler never sees, which is what makes them worth a test of their own.
+ */
+class InspectableQueueConsumer extends QueueConsumer
+{
+    /**
+     * @return array<string, Channel>
+     */
+    public function borrowedChannels(): array
+    {
+        return $this->channels;
     }
 }

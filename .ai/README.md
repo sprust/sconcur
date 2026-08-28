@@ -259,7 +259,10 @@ Key enums (string-backed; the 2-3 letter values cross the PHP↔Go boundary):
   consumer), the counterpart of `tests/servers/`
 - `tests/mem-leak/` — memory leak stress tests. The AMQP soak has a target of its
   own, `make mem-leak-amqp scenario=<name> seconds=<n>`, which sets the profiler
-  address its Go-side columns are read from
+  address its Go-side columns are read from. The `consumer` scenario is the one that
+  covers `QueueConsumer` and `PublishChannelPool`: it runs a short supervised consumer
+  per cycle whose handlers give their lent channel back clean, dirty, and cut by a
+  deadline, which is every way the pool has to account for one
 
 Tests use PHPUnit 11. Add feature tests in `tests/feature/...` with `*Test.php`
 suffixes; async flow tests commonly extend `BaseAsyncTestCase`,

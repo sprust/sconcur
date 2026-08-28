@@ -46,6 +46,21 @@ class Connection extends AmqpResource
     }
 
     /**
+     * Whether this object is holding a connection that failed.
+     *
+     * Told apart from one that was never opened by the handle it still carries: connect()
+     * opens the first and refuses the second, because a connection that died takes its
+     * channels and consumers with it and redialling behind the application's back would
+     * hand back a connection whose objects point at nothing. Anything that keeps a
+     * connection to lend from — PublishChannelPool — has to ask, or it would go on offering
+     * a socket that can no longer open a channel.
+     */
+    public function isFailed(): bool
+    {
+        return !$this->internalOpen && $this->internalId !== '';
+    }
+
+    /**
      * Opens the connection: the Go side dials the broker, or hands out a connection
      * already open for the same options. A connection already open here is closed first.
      */

@@ -73,11 +73,18 @@ class QueueConsumer
     protected array $channels = [];
 
     /**
-     * How many deliveries of each channel are still in a handler, by the same id. A handle
-     * is only ever let go of at zero: a Delivery holds its channel weakly, so dropping one
-     * out from under a running handler would leave it with nothing to settle on.
+     * Which deliveries of each channel are still in a handler: the channel's id, then the
+     * delivery tags being worked on. A handle is only ever let go of when its set is empty —
+     * a Delivery holds its channel weakly, so dropping one out from under a running handler
+     * would leave it with nothing to settle on.
      *
-     * @var array<string, int>
+     * A set of tags and not a count, because a count would be wrong. Automatic preemption
+     * switches coroutines between opcodes, so the read and the write of `$count + 1` can be
+     * split between two handlers and one of the two increments lost — and a count that
+     * reaches zero early is exactly the handle pulled out from under a running handler.
+     * Writing and clearing a key of one's own has nothing to lose.
+     *
+     * @var array<string, array<int, true>>
      */
     protected array $inFlight = [];
 
@@ -317,9 +324,9 @@ class QueueConsumer
             lend: static fn(): Channel => $publishChannels->lease(),
         );
 
-        // Counted around the handler, so the handle over this channel outlives every
+        // Recorded around the handler, so the handle over this channel outlives every
         // delivery of it that is still being worked on.
-        $this->inFlight[$channelId] = ($this->inFlight[$channelId] ?? 0) + 1;
+        $this->inFlight[$channelId][$delivery->deliveryTag] = true;
 
         try {
             $this->runAndSettle(
@@ -329,7 +336,9 @@ class QueueConsumer
                 handled: $handled,
             );
         } finally {
-            if (--$this->inFlight[$channelId] <= 0) {
+            unset($this->inFlight[$channelId][$delivery->deliveryTag]);
+
+            if (($this->inFlight[$channelId] ?? []) === []) {
                 unset($this->inFlight[$channelId]);
             }
 
@@ -436,7 +445,7 @@ class QueueConsumer
     protected function forgetIdleChannels(): void
     {
         foreach (array_keys($this->channels) as $channelId) {
-            if (($this->inFlight[$channelId] ?? 0) === 0) {
+            if (($this->inFlight[$channelId] ?? []) === []) {
                 unset($this->channels[$channelId]);
             }
         }

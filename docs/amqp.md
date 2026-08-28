@@ -341,11 +341,15 @@ foreach ($channel->queue('orders')->consume() as $delivery) {
 }
 ```
 
-The prefetch belongs to the channel, not to the consumer: it is what bounds how
-many unacknowledged deliveries the broker pushes at it. A channel opened with no
-argument gets 3 (`Channel::DEFAULT_PREFETCH_COUNT`); `$channel->prefetch()` changes
-it later. One is the right answer for a pool of coroutines — it hands the next
-message to whichever one is free instead of filling the buffer of a busy one.
+The prefetch bounds how many unacknowledged deliveries the broker pushes at a
+consumer. A channel opened with no argument asks for 3
+(`Channel::DEFAULT_PREFETCH_COUNT`); `$channel->prefetch()` changes it later. One is
+the right answer for a pool of coroutines — it hands the next message to whichever
+one is free instead of filling the buffer of a busy one.
+
+It is per consumer unless asked otherwise: `$channel->prefetch(count: 10, global:
+true)` makes the limit the channel's, shared by every consumer on it. Both forms are
+the broker's `basic.qos`; the difference is only what the count is counted against.
 
 The generator owns the consumer. Leaving the loop — a `break`, a `return`, an
 exception, or the coroutine being unwound by `WaitGroup::stop()` — cancels it and
@@ -1190,8 +1194,9 @@ try {
 | a prefetch limit is outside that range | `InvalidPrefetchException` | 0 |
 | a delay is not a positive number of milliseconds, or a list of them repeats one | `InvalidDelayException` | 0 |
 | a publish is told to retry a negative number of times, or to wait a negative one | `InvalidRetryException` | 0 |
+| one delivery is asked for a channel from two coroutines at once | `ConcurrentDeliveryUseException` | 0 |
 
-The last five are `LogicException`s rather than `AmqpException`s: nothing was sent, the
+The last six are `LogicException`s rather than `AmqpException`s: nothing was sent, the
 broker was never asked, and there is no reply code to carry — they are bugs in how the
 connection or the worker was described.
 

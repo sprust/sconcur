@@ -182,6 +182,24 @@ class AmqpConnectionOptionsTest extends BaseTestCase
         );
     }
 
+    /**
+     * The pool opens a connection when the last one is full, so a connection reported as
+     * carrying no channels at all would cost it a socket per channel.
+     */
+    public function testAConnectionAllowedOneChannelStillCarriesOne(): void
+    {
+        self::assertSame(1, ConnectionOptions::usableChannels(1));
+        self::assertSame(1, ConnectionOptions::usableChannels(2));
+        self::assertSame(255, ConnectionOptions::usableChannels(256));
+    }
+
+    /** A broker that answers "no limit", and a connection not yet open, leave the library's own. */
+    public function testNoNegotiatedCeilingLeavesTheLibrarysOwn(): void
+    {
+        self::assertSame(ConnectionOptions::MAX_CHANNELS - 1, ConnectionOptions::usableChannels(0));
+        self::assertSame(ConnectionOptions::MAX_CHANNELS - 1, ConnectionOptions::usableChannels(null));
+    }
+
     public function testSaslExternalWithACertificateIsAccepted(): void
     {
         $options = new ConnectionOptions(

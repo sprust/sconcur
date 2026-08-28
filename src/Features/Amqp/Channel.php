@@ -156,6 +156,16 @@ class Channel extends AmqpResource
             return;
         }
 
+        // A borrowed channel is closed by the flow that opened it, and this handle is a view
+        // over it: closing a view closes nothing. A ChannelClose from here would take away a
+        // channel the neighbouring handlers are still answering the broker on, and giving up
+        // the handle would leave this object unable to settle a delivery that is still in a
+        // handler. The destructor keeps the same rule, and letting go of a borrowed handle
+        // is dropping the object, not calling this.
+        if (!$this->owned) {
+            return;
+        }
+
         // An awaited close on a coroutine the runtime has let go of would suspend a fiber
         // nothing will resume.
         if (!FeatureExecutor::canAwait()) {
@@ -273,6 +283,13 @@ class Channel extends AmqpResource
         if ($this->confirming) {
             return;
         }
+
+        // Marked before the command, and left marked if it fails. The Go side puts the
+        // channel into confirm mode inside the driver call, so a request whose deadline
+        // passed while the broker was already answering leaves it confirming there while
+        // this side believes it is not — and every later plain publish would then collect a
+        // confirmation nobody here expects, for the next holder of the channel to read.
+        $this->unreadPublishAnswers = true;
 
         $this->run(
             command: AmqpCommandEnum::ConfirmSelect,

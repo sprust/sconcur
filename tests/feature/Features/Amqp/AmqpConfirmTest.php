@@ -7,6 +7,7 @@ namespace SConcur\Tests\Feature\Features\Amqp;
 use SConcur\Exceptions\Amqp\ChannelException;
 use SConcur\Exceptions\Amqp\UnroutableMessageException;
 use SConcur\Features\Amqp\Message;
+use SConcur\Tests\Impl\TestAmqpResolver;
 use SConcur\WaitGroup;
 
 /**
@@ -170,5 +171,38 @@ class AmqpConfirmTest extends AmqpTestCase
         );
 
         self::assertTrue($channel->isOpen());
+    }
+
+    /**
+     * `Exchange::publishConfirmed()` gained the retries `Queue`'s had all along. A message
+     * routed nowhere is one of the three failures a retry is for, so the loop runs and the
+     * caller still sees the refusal once the schedule is spent.
+     */
+    public function testAnExchangePublishIsRetriedAndThenRaises(): void
+    {
+        $channel  = $this->channel();
+        $exchange = $this->declareExchange($channel);
+
+        $startedAt = microtime(true);
+
+        try {
+            $exchange->publishConfirmed(
+                message: 'nobody is bound',
+                routingKey: TestAmqpResolver::uniqueName('nowhere'),
+                timeoutSeconds: 3.0,
+                retries: 2,
+                retryDelaysSeconds: [0.1, 0.1],
+            );
+
+            self::fail('a message that routes nowhere must raise once the retries are spent');
+        } catch (UnroutableMessageException) {
+            // What the caller is owed.
+        }
+
+        self::assertGreaterThan(
+            0.2,
+            microtime(true) - $startedAt,
+            'both waits of the schedule must have been taken, so the loop really ran',
+        );
     }
 }
