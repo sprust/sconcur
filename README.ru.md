@@ -228,6 +228,7 @@ $collection->insertOne(['name' => 'example']);
 | RabbitMQ (сервер) | 4.1 |
 | ext-amqp (PHP-расширение, только тесты и бенчмарки) | 2.2.0 |
 | rabbitmq/amqp091-go | 1.14.0 |
+| coder/websocket | 1.8.15 |
 
 ## Документация
 

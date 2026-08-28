@@ -107,8 +107,9 @@ flowchart TB
 `FeatureExecutor::execNoResult()`, так что корутина завершается, не дожидаясь
 записи (сокет- и WS-серверы подтверждают каждую команду).
 
-Разбор argv, обработчики сигналов и проверка на сироту уже вынесены в
-«лёгкий» `SConcur\Features\Server\ServerRuntimeSupportTrait`:
+Разбор argv, обработчики сигналов, включение автоматической преемпции, проверка на
+сироту и лог жизненного цикла уже вынесены в «лёгкий»
+`SConcur\Features\Server\ServerRuntimeSupportTrait`:
 
 - `parseArgs(array $argv): array` — собрать скалярные (`int`/`bool`/`float`/
   `string`) параметры конструктора рефлексией, привести каждую строку
@@ -120,7 +121,13 @@ flowchart TB
 - `isOrphaned(int $masterPid): bool` — `posix_getppid() !== $masterPid`,
   устойчиво к переиспользованию PID, потому что после смерти мастера ядро меняет
   родителя;
-- `applyTelemetryEnvironment(array $overrides): array` — прочитать env телеметрии.
+- `applyTelemetryEnvironment(array $overrides): array` — прочитать env телеметрии;
+- `withPreemption(int $quantumMs, Closure $callback): mixed` — выполнить колбэк с
+  включённой автоматической преемпцией и выключить её после. Сервер вместо этого
+  передаёт свой квант в `Scheduler::serve()`, а это нужно только тому, у кого нет
+  своего цикла обслуживания;
+- `logServerEvent(string $message): void` — одна строка с меткой времени о
+  жизненном цикле самого воркера, в stdout.
 
 Новому серверу достаточно подключить трейт, а чтобы запускаться под
 `bin/sconcur-server`, он добавляет статический `fromArgs()` по образцу
@@ -140,7 +147,15 @@ flowchart TB
 - `shouldStop(): bool` — пришёл сигнал или воркер осиротел;
 - `onDrainStart()` — вызывается один раз в начале остановки: заранее перестать
   принимать через `Extension::get()->httpStopAccepting($flowKey)`, чтобы новые
-  соединения ушли соседям по `SO_REUSEPORT`.
+  соединения ушли соседям по `SO_REUSEPORT`;
+- `onShutdownStep(string $step)` — каждый шаг штатной остановки словами, чтобы воркер
+  их записал;
+- `preemptionQuantumMs` — включить автоматическую преемпцию на всё время работы цикла,
+  чтобы CPU-bound обработчик не заморил остальных (`0` — выключено), см.
+  [переключение корутин](coroutine-switching.ru.md);
+- `handlerTimeoutMs` — сколько корутина одного обработчика может работать, прежде чем её
+  размотают на месте (`0` — выключено), см. [таймаут корутины](coroutine-timeout.ru.md).
+  Именно преемпция даёт этому сроку достать обработчика, который ничего не ждёт.
 
 `Scheduler::serve` сам мультиплексирует входящие запросы и асинхронную работу их
 обработчиков в одном цикле ожидания (`waitAnyTimeoutBatch`), а при остановке
@@ -272,10 +287,12 @@ PHP:
       `Go: payloads.<Type>`).
 - [ ] Форма запроса и ответа: свои `readonly` DTO либо PSR-7 наружу.
 - [ ] `use ServerRuntimeSupportTrait;` —
-      `parseArgs`/`installSignalHandlers`/`isOrphaned`.
+      `parseArgs`/`installSignalHandlers`/`isOrphaned`/`logServerEvent`.
 - [ ] `fromArgs()` через `self::parseArgs($argv)`, принимает `--masterPid`.
 - [ ] `serve()`: поднять листенер через `push(ServePayload)` плюс
-      `Scheduler::serve(...)` с `onRequest`/`shouldStop`/`onDrainStart`.
+      `Scheduler::serve(...)` с `onRequest`/`shouldStop`/`onDrainStart`/
+      `onShutdownStep` и с `preemptionQuantumMs`/`handlerTimeoutMs`, которые принял
+      конструктор.
 - [ ] Статистика: `ServePayload` += `ts`/`sn`/`ti`, конструктор += 3 параметра,
       `self::applyTelemetryEnvironment()` в `fromArgs()`.
 - [ ] Тесты по аналогу `BaseHttpServerTestCase` (реальный процесс + `curl`).

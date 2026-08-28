@@ -20,8 +20,9 @@ try {
 The deadline belongs to the coroutine that is running, so this works anywhere one
 does: inside a `WaitGroup` member, inside a server handler, inside a nested group.
 
-The servers set it for you: `handlerTimeoutMs` on the HTTP, socket and WebSocket
-servers is this deadline on the coroutine each request or connection is handled in.
+The long-lived workers set it for you: `handlerTimeoutMs` on the HTTP, socket and
+WebSocket servers and on the [AMQP queue consumer](amqp.md#a-supervised-consumer) is this
+deadline on the coroutine each request, connection or message is handled in.
 
 The shorthand for "the whole callback gets a second" is an argument on `add()`:
 

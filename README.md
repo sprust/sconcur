@@ -228,6 +228,7 @@ The environment the project is built and tested against in CI:
 | RabbitMQ (server) | 4.1 |
 | ext-amqp (PHP extension, tests and benchmarks only) | 2.2.0 |
 | rabbitmq/amqp091-go | 1.14.0 |
+| coder/websocket | 1.8.15 |
 
 ## Documentation
 
