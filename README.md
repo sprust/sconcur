@@ -289,8 +289,9 @@ php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello'
 - The `Std` feature — SConcur equivalents of standard PHP functions that block
   the worker or are CPU-bound non-preemptible monoliths (sleep, json, hash, gzip,
   password hashing, file I/O), executed in Go; absorbs `Sleeper`.
-- The `Queue` feature — deferred background jobs: a job is published to a broker
-  and picked up by workers in coroutines, with the broker client on the Go side.
+- A fiber-safe bridge to Laravel — a separate package that isolates the
+  framework state of one job from another, so a queue worker can pull several
+  queues at once. The broker side of this is done, see [AMQP](docs/amqp.md).
 - Auto-recovery of stuck workers — a master watchdog by heartbeat: `SIGKILL` and
   respawn a worker whose PHP thread has hung.
 - Split the core and the features into separate packages.

@@ -48,7 +48,16 @@ class PublishChannelPool
     /** @var list<Connection> in the order they were opened; the last one is the one being filled */
     protected array $connections = [];
 
-    /** @var list<int> how many channels each of those connections has open, in the same order */
+    /**
+     * How many channels each of those connections has open, by the connection's object id.
+     *
+     * By the object and never by a place in the list: asking a connection anything is a
+     * call, automatic preemption parks a coroutine at one, and a connection let go
+     * meanwhile shifts every later place down — so a place read on one side of a call
+     * names a different connection on the other, or none at all.
+     *
+     * @var array<int, int>
+     */
     protected array $openCounts = [];
 
     /** @var list<Channel> the channels nobody holds right now */
@@ -232,20 +241,17 @@ class PublishChannelPool
     /** Opens one channel on a connection that still has room, opening that connection first if need be. */
     protected function open(): Channel
     {
-        $index      = $this->connectionWithRoom();
-        $connection = $this->connections[$index];
-
         // Counted before the channel is opened rather than after: opening waits for the
         // broker, and several handlers may be doing it at once. A count that only rose on
         // success would leave them all reading the same connection as empty and crowding
         // past its last channel number.
-        ++$this->openCounts[$index];
+        $connection = $this->reserve();
 
         try {
             $channel = $connection->channel(prefetchCount: self::PREFETCH_COUNT);
         } catch (Throwable $exception) {
-            // By the connection and not by the index taken above: the wait just ended may
-            // have let another coroutine give a connection up, and every later place moved.
+            // The connection reserved above, whatever the list looks like now: the wait
+            // just ended may have let another coroutine give a connection up.
             $this->uncount($connection);
 
             throw $exception;
@@ -257,22 +263,40 @@ class PublishChannelPool
     }
 
     /**
-     * The connection the next channel is opened on: the newest one while it has channel
-     * numbers left, a fresh one once it does not.
+     * The connection the next channel is opened on, with that channel already counted on it:
+     * the newest one while it has channel numbers left, a fresh one once it does not.
+     *
+     * Choosing and counting are one step because they cannot be two. Choosing waits for
+     * nothing, but it is made of calls, and a coroutine can be parked at any of them — so a
+     * connection chosen in one step and counted in the next may have been let go in between.
      */
-    protected function connectionWithRoom(): int
+    protected function reserve(): Connection
     {
-        $index = count($this->connections) - 1;
+        $newest = $this->newestWithRoom();
 
-        if ($index >= 0 && $this->hasRoom($index)) {
-            return $index;
+        if ($newest !== null && $this->countOn($newest)) {
+            return $newest;
         }
 
-        return $this->openConnection();
+        // Either nothing had room, or what did was let go while it was being chosen. A
+        // connection nobody holds a channel on is nobody's to let go, so this one is
+        // counted on for certain.
+        $connection = $this->openConnection();
+
+        $this->countOn($connection);
+
+        return $connection;
+    }
+
+    /** The connection the pool is filling right now — the last one opened, or none at all. */
+    protected function newest(): ?Connection
+    {
+        return $this->connections[count($this->connections) - 1] ?? null;
     }
 
     /**
-     * Whether the next channel can be opened on this connection.
+     * The newest connection when the next channel can be opened on it, null when a fresh one
+     * is needed.
      *
      * A connection that failed has no room, whatever its count says. It is never redialled —
      * Connection::connect() refuses one that still holds a handle, on purpose — so a pool
@@ -280,19 +304,45 @@ class PublishChannelPool
      * available" for the life of the worker, and under a supervised consumer that failure
      * refuses a message rather than reporting itself.
      */
-    protected function hasRoom(int $index): bool
+    protected function newestWithRoom(): ?Connection
     {
-        $connection = $this->connections[$index];
+        $newest = $this->newest();
 
-        if ($connection->isFailed()) {
+        if ($newest === null || $newest->isFailed()) {
+            return null;
+        }
+
+        $usableChannels = ConnectionOptions::usableChannels($newest->maxChannels());
+
+        // The count is read after the capacity and not before: reading the capacity is a
+        // call, and the list can be a different list on the other side of one. Keyed by the
+        // connection itself, what comes back is this one's however the list moved.
+        return ($this->openCounts[spl_object_id($newest)] ?? 0) < $usableChannels ? $newest : null;
+    }
+
+    /**
+     * Counts one more channel on a connection, and says whether it could.
+     *
+     * @return bool false when the connection was let go while it was being chosen — nothing
+     *              is counted then, and the caller opens one of its own instead
+     */
+    protected function countOn(Connection $connection): bool
+    {
+        $objectId = spl_object_id($connection);
+
+        // The check and the increment with nothing between them: neither is a call, so no
+        // other coroutine runs there and the entry cannot go away under them.
+        if (!isset($this->openCounts[$objectId])) {
             return false;
         }
 
-        return $this->openCounts[$index] < ConnectionOptions::usableChannels($connection->maxChannels());
+        ++$this->openCounts[$objectId];
+
+        return true;
     }
 
-    /** @return int the index of the connection that was opened */
-    protected function openConnection(): int
+    /** @return Connection the connection that was opened, registered and ready to be counted on */
+    protected function openConnection(): Connection
     {
         // Drawn from a counter and never from a place in the list: a connection given up
         // closes the gap behind it, so a name taken from the place would be one already in
@@ -312,8 +362,10 @@ class PublishChannelPool
             ),
         );
 
-        $this->connections[] = $connection;
-        $this->openCounts[]  = 0;
+        // Both before the line is logged: logging is a call, and a connection the pool has
+        // not finished registering must not be visible to whoever runs at one.
+        $this->connections[]                          = $connection;
+        $this->openCounts[spl_object_id($connection)] = 0;
 
         if ($this->log !== null) {
             ($this->log)(sprintf(
@@ -322,7 +374,7 @@ class PublishChannelPool
             ));
         }
 
-        return count($this->connections) - 1;
+        return $connection;
     }
 
     /**
@@ -354,23 +406,29 @@ class PublishChannelPool
      */
     protected function uncount(Connection $connection): void
     {
-        $index = array_search($connection, $this->connections, true);
+        $objectId = spl_object_id($connection);
+        $count    = $this->openCounts[$objectId] ?? null;
 
-        if ($index === false) {
+        if ($count === null) {
             return;
         }
 
-        if ($this->openCounts[$index] > 0) {
-            --$this->openCounts[$index];
+        if ($count > 0) {
+            $this->openCounts[$objectId] = --$count;
         }
 
-        if ($this->openCounts[$index] !== 0) {
+        if ($count !== 0) {
             return;
         }
 
-        if ($index !== count($this->connections) - 1 || $connection->isFailed()) {
-            $this->forgetConnection($index);
+        // Asked in this order so that nothing runs between the answer and the decision:
+        // whether it failed is a question about the connection alone, whether it is the
+        // newest is a question about a list another coroutine can change.
+        if (!$connection->isFailed() && $this->newest() === $connection) {
+            return;
         }
+
+        $this->forgetConnection($connection);
     }
 
     /**
@@ -381,11 +439,21 @@ class PublishChannelPool
      * closing waits for the broker — which an unwound coroutine cannot do at all. The
      * destructor hands the handle back detached, without the waiting.
      */
-    protected function forgetConnection(int $index): void
+    protected function forgetConnection(Connection $connection): void
     {
-        unset($this->connections[$index], $this->openCounts[$index]);
+        $objectId = spl_object_id($connection);
+        $index    = array_search($connection, $this->connections, true);
+
+        if ($index === false) {
+            unset($this->openCounts[$objectId]);
+
+            return;
+        }
+
+        // The place is used in the same breath it was found in: no call stands between the
+        // search and the unset, so no other coroutine runs there to move it.
+        unset($this->connections[$index], $this->openCounts[$objectId]);
 
         $this->connections = array_values($this->connections);
-        $this->openCounts  = array_values($this->openCounts);
     }
 }

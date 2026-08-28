@@ -104,6 +104,13 @@ couple of queue-consumer pools at once:
 }
 ```
 
+Everything a pool needs lives in its group. The flat form — `workerScript`,
+`workerCount`, `workerArgs` and `server` at the top level, one pool per master —
+is no longer read: a config that still carries those keys is refused on load with
+`... belong to a group now — move them into an entry of "groups"`. Moving one
+over means wrapping what was at the top level in a single entry of `groups` and
+giving it a `name`.
+
 ```sh
 vendor/bin/sconcur-server start --configPath=/app/master.json
 ```

@@ -104,6 +104,13 @@ HTTP-пул и пару пулов консьюмеров очередей ра�
 }
 ```
 
+Всё, что нужно пулу, лежит в его группе. Плоская форма — `workerScript`,
+`workerCount`, `workerArgs` и `server` на верхнем уровне, один пул на мастер —
+больше не читается: конфиг, где эти ключи остались, отвергается при загрузке с
+`... belong to a group now — move them into an entry of "groups"`. Перевод
+сводится к тому, чтобы завернуть бывший верхний уровень в одну запись `groups`
+и дать ей `name`.
+
 ```sh
 vendor/bin/sconcur-server start --configPath=/app/master.json
 ```

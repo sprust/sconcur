@@ -7,6 +7,7 @@ namespace SConcur\Tests\Feature\Features\Amqp;
 use SConcur\Exceptions\Amqp\AmqpException;
 use SConcur\Features\Amqp\Consumer\PublishChannelPool;
 use SConcur\Features\Amqp\ConnectionOptions;
+use SConcur\Tests\Impl\LosingPublishChannelPool;
 use SConcur\Tests\Impl\TestAmqpResolver;
 
 /**
@@ -360,6 +361,37 @@ class PublishChannelPoolTest extends AmqpTestCase
                 (string) $third->connection()->options->connectionName,
                 'a new connection must not take the name of one still in use',
             );
+        } finally {
+            $pool->close();
+        }
+    }
+
+    /**
+     * Choosing the connection to open on is made of calls, and a coroutine can be parked at
+     * any of them, so the connection a lease settled on can be let go before that lease has
+     * counted a channel on it. The pool opens one of its own then, instead of counting on a
+     * connection it no longer holds — where a place in the list used to name a different
+     * connection, or none at all.
+     */
+    public function testALeaseSurvivesLosingTheConnectionItChose(): void
+    {
+        $pool = new LosingPublishChannelPool(
+            options: $this->connection()->options,
+            // Nothing is kept idle, so the second lease opens a channel instead of reusing one.
+            maxIdleSeconds: 0.0,
+        );
+
+        try {
+            $first = $pool->lease();
+
+            $pool->release($first);
+
+            $second = $pool->lease();
+
+            self::assertSame(1, $pool->lostChoices(), 'the second lease had its choice taken away');
+            self::assertTrue($second->isOpen(), 'the lease is served by a connection of its own');
+            self::assertSame(1, $pool->channelCount(), 'the channel is counted on the connection it was opened on');
+            self::assertSame(1, $pool->connectionCount());
         } finally {
             $pool->close();
         }
