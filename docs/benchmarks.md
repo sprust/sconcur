@@ -56,7 +56,7 @@ stderr. The run still prints a plausible requests/sec. Always check
 `Non-2xx or 3xx responses` in the wrk output before trusting a long run.
 
 Client and server numbers taken on 2026-07-22, DB and payload numbers on
-2026-08-13, the AMQP numbers on 2026-08-22, the three-stack comparisons on
+2026-08-13, the AMQP numbers on 2026-08-22 and re-measured unchanged on 2026-08-28, the three-stack comparisons on
 2026-08-09, all on an idle machine.
 The SConcur rows of the server tables and of the three-stack comparison were
 re-measured on 2026-08-12, after the 0.9.1 hot-path work (fiber pool,
