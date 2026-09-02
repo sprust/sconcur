@@ -121,18 +121,27 @@ fn build() -> &'static Core {
 
 impl Core {
     fn new() -> Self {
-        // Follows `available_parallelism`, which honours CPU affinity on Linux —
-        // so a worker pinned with `taskset -c N` gets exactly one worker thread,
-        // the same way Go derives GOMAXPROCS from the affinity mask.
-        // SCONCUR_RUNTIME_THREADS overrides it, mirroring GOMAXPROCS.
+        // One thread, because one process per core is the deployment model: the
+        // worker master starts as many workers as there are cores, and the PHP
+        // side of each is a single thread anyway.
+        //
+        // This used to follow `available_parallelism`, mirroring how Go derives
+        // GOMAXPROCS from the affinity mask. That only gave the right answer
+        // under `taskset`, which the benchmark harness does and the worker
+        // master does not — so the number was right in every measurement and
+        // wrong in production, where an N-core box ran N processes of N threads
+        // each.
+        //
+        // Measured on the empty endpoint, unpinned, 12 workers: +4.2% rps at
+        // -8.6% CPU per request. Neutral where the runtime has real work to
+        // schedule — /all (six DB operations per request) and a single process
+        // decoding fifty 1 MiB results at once both land inside the noise.
+        //
+        // SCONCUR_RUNTIME_THREADS raises it, which is what a single long-lived
+        // process wants if it expects the extension to use more than one core.
         let worker_threads = std::env::var("SCONCUR_RUNTIME_THREADS")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
-            .or_else(|| {
-                std::thread::available_parallelism()
-                    .ok()
-                    .map(|value| value.get())
-            })
             .unwrap_or(1)
             .max(1);
 

@@ -20,7 +20,11 @@
 #   (resource-sampling period, s), GOMAXPROCS (forwarded to each worker's Go
 #   runtime; empty = Go default, i.e. all cores), SERVER_ENV (extra VAR=value
 #   assignments for the worker environment, space-separated), SERVER_ARGS (extra
-#   --flags appended to the server command line, e.g. --ladder=l1).
+#   --flags appended to the server command line, e.g. --ladder=l1),
+#   PIN_SERVERS (1 = pin each worker to its own core, as throughput.sh does;
+#   0 = leave them unpinned, which is what the worker master actually does in
+#   production and is therefore the only way to see what the extension runtime
+#   makes of a machine it thinks it owns).
 set -euo pipefail
 
 # Force the C locale so "." is the decimal separator everywhere (docker stats emits
@@ -48,6 +52,7 @@ else
 fi
 
 WRK_THREADS=${WRK_THREADS:-4}
+PIN_SERVERS=${PIN_SERVERS:-1}
 MAXCONCURRENCY=${MAXCONCURRENCY:-0}
 # The /db* routes size their per-process MySQL pool from this (the DB connection
 # budget is split across the reuse-port pool, so the useful value depends on
@@ -179,9 +184,11 @@ $DOCKER_COMPOSE exec -T php sh -c '
             out="'"$WORKERLOGPREFIX"'$i.log"
         fi
 
+        if [ "'"$PIN_SERVERS"'" = "1" ]; then pin="taskset -c $i"; else pin=""; fi
+
         SCONCUR_DB_POOL_SIZE='"$DB_POOL_SIZE"' \
         GOMAXPROCS='"${GOMAXPROCS:-}"' \
-        env '"${SERVER_ENV:-}"' taskset -c "$i" php -d extension='"$EXTENSION"' '"$SCRIPT"' \
+        env '"${SERVER_ENV:-}"' $pin php -d extension='"$EXTENSION"' '"$SCRIPT"' \
             --address=0.0.0.0:$port --reusePort=$reuse --maxConcurrency='"$MAXCONCURRENCY"' \
             '"${SERVER_ARGS:-}"' \
             >"$out" 2>>"'"$STDERRLOG"'" &
