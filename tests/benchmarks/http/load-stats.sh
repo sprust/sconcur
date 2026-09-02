@@ -21,10 +21,13 @@
 #   runtime; empty = Go default, i.e. all cores), SERVER_ENV (extra VAR=value
 #   assignments for the worker environment, space-separated), SERVER_ARGS (extra
 #   --flags appended to the server command line, e.g. --ladder=l1),
-#   PIN_SERVERS (1 = pin each worker to its own core, as throughput.sh does;
-#   0 = leave them unpinned, which is what the worker master actually does in
-#   production and is therefore the only way to see what the extension runtime
-#   makes of a machine it thinks it owns).
+#   PIN_SERVERS: 1 = pin each worker to its own core, as throughput.sh does;
+#   group = confine the whole pool to the same cores but let the scheduler place
+#   the workers within them, which is the honest comparison for "should a
+#   deployment pin?" because both arms then have the same core budget; 0 = leave
+#   them unpinned, which is what the worker master actually does in production
+#   and is therefore the only way to see what the extension runtime makes of a
+#   machine it thinks it owns.
 set -euo pipefail
 
 # Force the C locale so "." is the decimal separator everywhere (docker stats emits
@@ -184,7 +187,11 @@ $DOCKER_COMPOSE exec -T php sh -c '
             out="'"$WORKERLOGPREFIX"'$i.log"
         fi
 
-        if [ "'"$PIN_SERVERS"'" = "1" ]; then pin="taskset -c $i"; else pin=""; fi
+        case "'"$PIN_SERVERS"'" in
+            1)     pin="taskset -c $i" ;;
+            group) pin="taskset -c 0-'"$(( SERVERS - 1 ))"'" ;;
+            *)     pin="" ;;
+        esac
 
         SCONCUR_DB_POOL_SIZE='"$DB_POOL_SIZE"' \
         GOMAXPROCS='"${GOMAXPROCS:-}"' \
