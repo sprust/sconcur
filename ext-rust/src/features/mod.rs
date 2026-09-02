@@ -2,6 +2,7 @@
 //! method to its feature handler.
 
 pub mod httpserver;
+pub mod mongodb;
 pub mod sleeper;
 pub mod sql;
 
@@ -55,6 +56,7 @@ pub fn detect_message_handler(method: Method) -> std::result::Result<&'static dy
     match method {
         Method::Sleep => Ok(sleeper::get()),
         Method::HttpServe | Method::HttpRespond => Ok(httpserver::get()),
+        Method::Mongodb => Ok(mongodb::get()),
         Method::Mysql => Ok(sql::get_mysql()),
         Method::Pgsql => Ok(sql::get_pgsql()),
         _ => Err(format!("unknown method: {}", method.as_wire())),
@@ -65,5 +67,6 @@ pub fn detect_message_handler(method: Method) -> std::result::Result<&'static dy
 /// server's listener registry and the SQL connection pools.
 pub fn shutdown() {
     httpserver::shutdown();
+    mongodb::shutdown();
     sql::close_all_pools();
 }

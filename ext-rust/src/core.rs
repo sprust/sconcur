@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Once, RwLock};
 
 use crate::features::httpserver;
+use crate::features::mongodb;
 use crate::features::sql;
 use crate::handler::Handler;
 
@@ -39,6 +40,9 @@ pub struct Core {
     /// a pool handle and an open transaction belong to the process that made
     /// them, and a child must start with neither.
     sql: sql::Registries,
+    /// The MongoDB clients, here for the same reason: a driver topology
+    /// belongs to the process that opened it.
+    mongodb: mongodb::Registries,
 }
 
 static CORE: RwLock<Option<&'static Core>> = RwLock::new(None);
@@ -124,6 +128,7 @@ impl Core {
             handler: RwLock::new(Arc::new(Handler::new())),
             http: httpserver::HttpRegistries::new(),
             sql: sql::Registries::new(),
+            mongodb: mongodb::Registries::new(),
         }
     }
 
@@ -141,6 +146,10 @@ impl Core {
 
     pub fn sql(&'static self) -> &'static sql::Registries {
         &self.sql
+    }
+
+    pub fn mongodb(&'static self) -> &'static mongodb::Registries {
+        &self.mongodb
     }
 
     /// Mirrors Handler.fresh(): the destroyed handler is dropped and a new one
