@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Once, RwLock};
 
 use crate::features::httpserver;
+use crate::features::sql;
 use crate::handler::Handler;
 
 pub struct Core {
@@ -34,6 +35,10 @@ pub struct Core {
     /// child holding a map of the parent's connections behind a mutex that may
     /// have been locked at the moment of the fork.
     http: httpserver::HttpRegistries,
+    /// The SQL feature's pools and live transactions, here for the same reason:
+    /// a pool handle and an open transaction belong to the process that made
+    /// them, and a child must start with neither.
+    sql: sql::Registries,
 }
 
 static CORE: RwLock<Option<&'static Core>> = RwLock::new(None);
@@ -118,6 +123,7 @@ impl Core {
             runtime,
             handler: RwLock::new(Arc::new(Handler::new())),
             http: httpserver::HttpRegistries::new(),
+            sql: sql::Registries::new(),
         }
     }
 
@@ -131,6 +137,10 @@ impl Core {
 
     pub fn http(&'static self) -> &'static httpserver::HttpRegistries {
         &self.http
+    }
+
+    pub fn sql(&'static self) -> &'static sql::Registries {
+        &self.sql
     }
 
     /// Mirrors Handler.fresh(): the destroyed handler is dropped and a new one
