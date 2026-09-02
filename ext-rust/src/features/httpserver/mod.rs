@@ -108,12 +108,19 @@ async fn handle_serve(task: Task) {
 
     let (requests_tx, mut requests_rx) = mpsc::channel(server::request_queue_size());
 
+    // Held for the life of the serve task: see the socket server's note. The
+    // stream must outlive the accept loop, or a graceful stop ends it while
+    // requests are still in flight and the PHP serve loop unwinds them.
+    let _stream_open = requests_tx.clone();
+
     tokio::spawn(server::accept_loop(
         registries(),
         listener,
         message.flow_key.clone(),
         requests_tx,
         payload.handler_timeout_ms,
+        payload.max_request_body,
+        payload.max_concurrency,
         task.context().clone(),
         stop_accepting,
     ));

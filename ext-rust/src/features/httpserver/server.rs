@@ -127,15 +127,27 @@ pub struct ServerState {
 /// Runs the accept loop until the flow is cancelled or accepting is stopped.
 /// Each accepted connection is served by its own task, exactly as Go gives each
 /// one a goroutine.
+#[allow(clippy::too_many_arguments)]
 pub async fn accept_loop(
     registries: &'static Registries,
     listener: TcpListener,
     flow_key: String,
     requests: mpsc::Sender<RequestEvent>,
     handler_timeout_ms: i64,
+    max_request_body: i64,
+    max_concurrency: i64,
     flow_ctx: CancellationToken,
     stop_accepting: CancellationToken,
 ) {
+    // Caps requests in flight, which bounds buffered bodies as much as it bounds
+    // work: the permit is taken before the body is read.
+    let slots = if max_concurrency > 0 {
+        Some(std::sync::Arc::new(tokio::sync::Semaphore::new(
+            max_concurrency as usize,
+        )))
+    } else {
+        None
+    };
     let handler_timeout = if handler_timeout_ms > 0 {
         Duration::from_millis(handler_timeout_ms as u64)
     } else {
@@ -161,13 +173,20 @@ pub async fn accept_loop(
 
         let flow_key = flow_key.clone();
         let requests = requests.clone();
+        let slots = slots.clone();
 
         tokio::spawn(async move {
             let service = service_fn(move |request: Request<hyper::body::Incoming>| {
                 let flow_key = flow_key.clone();
                 let requests = requests.clone();
+                let slots = slots.clone();
 
                 async move {
+                    let _permit = match &slots {
+                        Some(slots) => slots.clone().acquire_owned().await.ok(),
+                        None => None,
+                    };
+
                     Ok::<_, std::convert::Infallible>(
                         serve_request(
                             registries,
@@ -176,6 +195,7 @@ pub async fn accept_loop(
                             requests,
                             remote_addr,
                             handler_timeout,
+                            max_request_body,
                         )
                         .await,
                     )
@@ -189,6 +209,65 @@ pub async fn accept_loop(
     }
 }
 
+/// Percent-decodes a request path.
+///
+/// Go's net/http hands the handler `r.URL.Path` already decoded, and both the
+/// request event PHP receives and the access line are built from it. hyper keeps
+/// the raw path, so decoding here is not a nicety — without it `%2F` reaches an
+/// application router as three characters, and an encoded newline slips into the
+/// log unescaped because there is no control character left to escape.
+///
+/// An invalid escape is left as written, the way a permissive decoder should:
+/// the alternative is rejecting a request over a log detail.
+fn decode_path(path: &str) -> String {
+    if !path.contains('%') {
+        return path.to_string();
+    }
+
+    let raw = path.as_bytes();
+    let mut decoded: Vec<u8> = Vec::with_capacity(raw.len());
+    let mut index = 0;
+
+    while index < raw.len() {
+        if raw[index] == b'%' && index + 2 < raw.len() {
+            let high = (raw[index + 1] as char).to_digit(16);
+            let low = (raw[index + 2] as char).to_digit(16);
+
+            if let (Some(high), Some(low)) = (high, low) {
+                decoded.push((high * 16 + low) as u8);
+                index += 3;
+
+                continue;
+            }
+        }
+
+        decoded.push(raw[index]);
+        index += 1;
+    }
+
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+/// One access-log line for a finished request:
+/// `<ISO-start-time> <method> <path> <status> <ms>ms`. The method and the path
+/// are escaped, so a crafted request cannot forge a line of its own.
+fn access_line(
+    started_at: std::time::SystemTime,
+    elapsed: std::time::Duration,
+    method: &str,
+    path: &str,
+    status: u16,
+) -> String {
+    format!(
+        "{} {} {} {} {:.2}ms\n",
+        crate::logger::timestamp(started_at),
+        crate::logger::sanitize(method),
+        crate::logger::sanitize(path),
+        status,
+        elapsed.as_secs_f64() * 1000.0,
+    )
+}
+
 async fn serve_request(
     registries: &'static Registries,
     request: Request<hyper::body::Incoming>,
@@ -196,16 +275,30 @@ async fn serve_request(
     requests: mpsc::Sender<RequestEvent>,
     remote_addr: std::net::SocketAddr,
     handler_timeout: Duration,
+    max_request_body: i64,
 ) -> Response<Full<Bytes>> {
+    let started_at = std::time::SystemTime::now();
+    let started = std::time::Instant::now();
+
     if bench_ladder_l0() {
-        return text_response(StatusCode::OK, "ok");
+        let response = text_response(StatusCode::OK, "ok");
+
+        crate::logger::write(access_line(
+            started_at,
+            started.elapsed(),
+            request.method().as_str(),
+            &decode_path(request.uri().path()),
+            response.status().as_u16(),
+        ));
+
+        return response;
     }
 
     let request_id = next_request_id(&flow_key);
 
     let method = request.method().to_string();
     let proto = format!("{:?}", request.version());
-    let path = request.uri().path().to_string();
+    let path = decode_path(request.uri().path());
     let query = request.uri().query().unwrap_or_default().to_string();
 
     let mut headers: Vec<(String, Vec<String>)> = Vec::with_capacity(request.headers().len());
@@ -225,10 +318,26 @@ async fn serve_request(
         }
     }
 
+    // Refused on the declared length before a byte is read, and again on what
+    // actually arrived — a chunked body declares nothing.
+    let declared = request
+        .headers()
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<i64>().ok());
+
+    if max_request_body > 0 && declared.is_some_and(|length| length > max_request_body) {
+        return oversize_response(started_at, started, &method, &path);
+    }
+
     let body = match request.into_body().collect().await {
         Ok(collected) => collected.to_bytes().to_vec(),
         Err(_) => Vec::new(),
     };
+
+    if max_request_body > 0 && body.len() as i64 > max_request_body {
+        return oversize_response(started_at, started, &method, &path);
+    }
 
     let (response_tx, response_rx) = oneshot::channel::<WriteCommand>();
 
@@ -256,16 +365,29 @@ async fn serve_request(
         proto,
     };
 
-    if requests.send(event).await.is_err() {
-        return text_response(StatusCode::SERVICE_UNAVAILABLE, "Service Unavailable");
-    }
+    let log_method = event.method.clone();
+    let log_path = event.path.clone();
 
-    match tokio::time::timeout(handler_timeout, response_rx).await {
-        Ok(Ok(command)) => build_response(command),
-        // The handler never answered, or the request was dropped without one.
-        // The guard releases the registration either way.
-        _ => text_response(StatusCode::GATEWAY_TIMEOUT, "Gateway Timeout"),
-    }
+    let response = if requests.send(event).await.is_err() {
+        text_response(StatusCode::SERVICE_UNAVAILABLE, "Service Unavailable")
+    } else {
+        match tokio::time::timeout(handler_timeout, response_rx).await {
+            Ok(Ok(command)) => build_response(command),
+            // The handler never answered, or the request was dropped without
+            // one. The guard releases the registration either way.
+            _ => text_response(StatusCode::GATEWAY_TIMEOUT, "Gateway Timeout"),
+        }
+    };
+
+    crate::logger::write(access_line(
+        started_at,
+        started.elapsed(),
+        &log_method,
+        &log_path,
+        response.status().as_u16(),
+    ));
+
+    response
 }
 
 fn build_response(command: WriteCommand) -> Response<Full<Bytes>> {
@@ -298,6 +420,26 @@ fn build_response(command: WriteCommand) -> Response<Full<Bytes>> {
     builder
         .body(Full::new(Bytes::from(command.body)))
         .unwrap_or_else(|_| text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"))
+}
+
+/// The 413 a body over the limit gets, logged like any other answer.
+fn oversize_response(
+    started_at: std::time::SystemTime,
+    started: std::time::Instant,
+    method: &str,
+    path: &str,
+) -> Response<Full<Bytes>> {
+    let response = text_response(StatusCode::PAYLOAD_TOO_LARGE, "Payload Too Large");
+
+    crate::logger::write(access_line(
+        started_at,
+        started.elapsed(),
+        method,
+        path,
+        response.status().as_u16(),
+    ));
+
+    response
 }
 
 fn text_response(status: StatusCode, body: &'static str) -> Response<Full<Bytes>> {

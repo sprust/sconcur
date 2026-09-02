@@ -193,23 +193,22 @@ RUST_TEST_PATHS = \
 	tests/feature/Features/Mysql \
 	tests/feature/Features/Pgsql \
 	tests/feature/Features/Mongodb \
-	tests/feature/Features/HttpServer
+	tests/feature/Features/HttpServer \
+	tests/feature/Features/SocketServer
 
 # The tests inside those suites the Rust core deliberately does not answer for.
 # This list is the inventory of what the port leaves out, and it is kept here
 # rather than by dropping whole suites so the rest of each one still runs:
 #
-#   - the access log is not implemented;
-#   - maxRequestBody and maxConcurrency are accepted and ignored, so no 413 and
-#     no serialisation under a cap;
-#   - streamed responses (head/chunk/end) are outside the core spike;
+#   - streamed HTTP responses (head/chunk/end) are not implemented, which also
+#     takes the streaming half of the handler-timeout test with them;
 #   - a bytea binding of invalid UTF-8 is accepted, where pgx's text-format path
 #     rejects it (see .ai/plans/rust-core-spike.md).
 #
 # Anything that fails OUTSIDE this list is a real failure. Kept on one line:
 # make turns a backslash-newline into a space, which would put spaces inside
 # the regex and quietly match nothing.
-RUST_TEST_EXCLUDE = testEachRequestIsLoggedWithMethodPathStatusAndTiming|testEncodedNewlineInPathCannotForgeALogLine|testBodyOverTheLimitReturns413|testBodyOverTheLimitWhileStreamingReturns413|testConcurrencyIsCappedSoExcessRequestsSerialize|testStreamedBodyIsAssembledFromChunks|testStreamedResponseUsesChunkedTransferEncoding|testStreamingHandlerIsCutOffByTheTotalDeadline|testBinaryWithNulByteFailsOnUtf8
+RUST_TEST_EXCLUDE = testStreamedBodyIsAssembledFromChunks|testStreamedResponseUsesChunkedTransferEncoding|testStreamingHandlerIsCutOffByTheTotalDeadline|testBinaryWithNulByteFailsOnUtf8
 
 # The feature suites, run against the Rust core. SCONCUR_EXT reaches the server
 # harnesses too: they spawn their worker with proc_open, so without it a run

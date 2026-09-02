@@ -12,7 +12,9 @@ mod errs;
 mod features;
 mod flows;
 mod handler;
+mod socket;
 mod helpers;
+mod logger;
 mod states;
 mod tasks;
 mod types;
@@ -481,11 +483,15 @@ pub extern "C" fn httpStopAccepting(flow_key: *const c_char) {
     })
 }
 
-/// The socket, WebSocket and AMQP features are outside the core spike. Their
-/// exports stay so the same sconcur.c and the same PHP package load unchanged;
-/// a push for those methods already fails in the feature facade.
+/// The WebSocket and AMQP features are not ported yet. Their exports stay so the
+/// same sconcur.c and the same PHP package load unchanged; a push for those
+/// methods already fails in the feature facade.
 #[unsafe(no_mangle)]
-pub extern "C" fn socketStopAccepting(_flow_key: *const c_char) {}
+pub extern "C" fn socketStopAccepting(flow_key: *const c_char) {
+    guarded(|| (), || {
+        features::socketserver::stop_accepting(&unsafe { owned_string_nul(flow_key) });
+    })
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wsStopAccepting(_flow_key: *const c_char) {}
@@ -542,6 +548,10 @@ pub extern "C" fn preemptionDisarm() {
 pub extern "C" fn destroy() {
     guarded(|| (), || {
         preemptionDisarm();
+
+        // Flush the buffered access lines before the runtime goes: a process
+        // that exits right after must still show its last ones.
+        logger::flush();
 
         handler().destroy();
 

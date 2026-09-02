@@ -23,6 +23,7 @@ use std::sync::{Arc, Once, RwLock};
 
 use crate::features::httpserver;
 use crate::features::mongodb;
+use crate::features::socketserver;
 use crate::features::sql;
 use crate::handler::Handler;
 
@@ -43,6 +44,8 @@ pub struct Core {
     /// The MongoDB clients, here for the same reason: a driver topology
     /// belongs to the process that opened it.
     mongodb: mongodb::Registries,
+    /// The socket server's connections and listeners, for the same reason.
+    socketserver: socketserver::Registries,
 }
 
 static CORE: RwLock<Option<&'static Core>> = RwLock::new(None);
@@ -129,6 +132,7 @@ impl Core {
             http: httpserver::HttpRegistries::new(),
             sql: sql::Registries::new(),
             mongodb: mongodb::Registries::new(),
+            socketserver: socketserver::Registries::new(),
         }
     }
 
@@ -150,6 +154,10 @@ impl Core {
 
     pub fn mongodb(&'static self) -> &'static mongodb::Registries {
         &self.mongodb
+    }
+
+    pub fn socketserver(&'static self) -> &'static socketserver::Registries {
+        &self.socketserver
     }
 
     /// Mirrors Handler.fresh(): the destroyed handler is dropped and a new one

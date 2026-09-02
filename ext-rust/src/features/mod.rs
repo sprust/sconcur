@@ -4,6 +4,7 @@
 pub mod httpserver;
 pub mod mongodb;
 pub mod sleeper;
+pub mod socketserver;
 pub mod sql;
 
 use std::future::Future;
@@ -59,6 +60,7 @@ pub fn detect_message_handler(method: Method) -> std::result::Result<&'static dy
         Method::Mongodb => Ok(mongodb::get()),
         Method::Mysql => Ok(sql::get_mysql()),
         Method::Pgsql => Ok(sql::get_pgsql()),
+        Method::SocketServe | Method::SocketRespond => Ok(socketserver::get()),
         _ => Err(format!("unknown method: {}", method.as_wire())),
     }
 }
@@ -67,6 +69,7 @@ pub fn detect_message_handler(method: Method) -> std::result::Result<&'static dy
 /// server's listener registry and the SQL connection pools.
 pub fn shutdown() {
     httpserver::shutdown();
+    socketserver::shutdown();
     mongodb::shutdown();
     sql::close_all_pools();
 }
