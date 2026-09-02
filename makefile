@@ -175,6 +175,61 @@ ext-rust-check:
 bench-ladder-cores:
 	ext-rust/bench/ladder.sh
 
+# The extension the Rust checks load, in the container's path shape.
+RUST_EXT = /sconcur/ext-rust/build/sconcur.so
+
+# The suites the Rust core can answer for. The features it does not implement
+# (http client, socket, websocket, amqp) answer "unknown method", so running
+# them would report the gap rather than a regression.
+RUST_TEST_PATHS = \
+	tests/feature/Connection \
+	tests/feature/Scheduler \
+	tests/feature/Features/Context \
+	tests/feature/Features/Sleeper \
+	tests/feature/Features/Mysql \
+	tests/feature/Features/Pgsql \
+	tests/feature/Features/Mongodb \
+	tests/feature/Features/HttpServer
+
+# The tests inside those suites the Rust core deliberately does not answer for.
+# This list is the inventory of what the port leaves out, and it is kept here
+# rather than by dropping whole suites so the rest of each one still runs:
+#
+#   - the access log is not implemented;
+#   - maxRequestBody and maxConcurrency are accepted and ignored, so no 413 and
+#     no serialisation under a cap;
+#   - streamed responses (head/chunk/end) are outside the core spike;
+#   - a bytea binding of invalid UTF-8 is accepted, where pgx's text-format path
+#     rejects it (see .ai/plans/rust-core-spike.md).
+#
+# Anything that fails OUTSIDE this list is a real failure. Kept on one line:
+# make turns a backslash-newline into a space, which would put spaces inside
+# the regex and quietly match nothing.
+RUST_TEST_EXCLUDE = testEachRequestIsLoggedWithMethodPathStatusAndTiming|testEncodedNewlineInPathCannotForgeALogLine|testBodyOverTheLimitReturns413|testBodyOverTheLimitWhileStreamingReturns413|testConcurrencyIsCappedSoExcessRequestsSerialize|testStreamedBodyIsAssembledFromChunks|testStreamedResponseUsesChunkedTransferEncoding|testStreamingHandlerIsCutOffByTheTotalDeadline|testBinaryWithNulByteFailsOnUtf8
+
+# The feature suites, run against the Rust core. SCONCUR_EXT reaches the server
+# harnesses too: they spawn their worker with proc_open, so without it a run
+# would load Rust in the PHPUnit process and Go in the process doing the work.
+test-rust:
+	$(DOCKER_COMPOSE) exec -e SCONCUR_EXT=$(RUST_EXT) php \
+		php -d extension=$(RUST_EXT) -d memory_limit=512M vendor/bin/phpunit \
+		--colors=auto \
+		--display-incomplete \
+		--display-skipped \
+		--display-errors \
+		--exclude-filter '$(RUST_TEST_EXCLUDE)' \
+		$(RUST_TEST_PATHS) ${c}
+
+# `make check` for the Rust core: the same PHP-side gates, then the Rust build
+# and its own checks in place of ext-test, then the feature suites through the
+# Rust extension.
+check-rust:
+	make cs-fixer-check
+	make php-stan
+	make ext-rust-build
+	make ext-rust-check
+	make test-rust
+
 # Resets the DB backends to a clean state before a benchmark session: drops the
 # named data volumes and recreates the containers. Without it writes accumulate
 # across runs (the DB data lives on disk now, not tmpfs) and the numbers drift.
