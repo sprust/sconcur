@@ -44,6 +44,9 @@ macro_rules! bind_pg {
 
         for binding in $bindings {
             query = match binding {
+                // Rejected before the statement runs (see first_invalid); bound
+                // as NULL only to keep the match total.
+                PgBound::Invalid(_) => query.bind(Option::<i64>::None),
                 PgBound::Null => query.bind(Option::<i64>::None),
                 PgBound::Bool(flag) => query.bind(*flag),
                 PgBound::SmallInt(number) => query.bind(*number),
@@ -161,6 +164,13 @@ async fn pump(driver: Driver, sql: &str, bindings: &[Binding], sender: &mpsc::Se
         }
         Driver::Pgsql(pool) => {
             let bound = pg_bind(&pool, sql, bindings).await;
+
+            if let Some(error) = pg_bindings::first_invalid(&bound) {
+                let _ = sender.send(RowMessage::Error(error.to_string())).await;
+
+                return;
+            }
+
             let query = bind_pg!(sqlx::query(sql), &bound);
             let mut stream = query.fetch(&pool);
             let mut sent_columns = false;
@@ -286,6 +296,13 @@ async fn pump_transaction(
         }
         TxHandle::Pgsql(transaction) => {
             let bound = pg_bind(&mut **transaction, sql, bindings).await;
+
+            if let Some(error) = pg_bindings::first_invalid(&bound) {
+                let _ = sender.send(RowMessage::Error(error.to_string())).await;
+
+                return;
+            }
+
             let query = bind_pg!(sqlx::query(sql), &bound);
             let mut stream = query.fetch(&mut **transaction);
 
@@ -344,6 +361,11 @@ pub async fn exec_on_pool(
         }
         Driver::Pgsql(pool) => {
             let bound = pg_bind(&pool, &sql, &bindings).await;
+
+            if let Some(error) = pg_bindings::first_invalid(&bound) {
+                return Err(error.to_string());
+            }
+
             let query = bind_pg!(sqlx::query(&sql), &bound);
             let outcome = query.execute(&pool).await.map_err(|error| error.to_string())?;
 
@@ -375,6 +397,11 @@ pub async fn exec_on_transaction(
         }
         TxHandle::Pgsql(transaction) => {
             let bound = pg_bind(&mut **transaction, &sql, &bindings).await;
+
+            if let Some(error) = pg_bindings::first_invalid(&bound) {
+                return Err(error.to_string());
+            }
+
             let query = bind_pg!(sqlx::query(&sql), &bound);
             let outcome = query
                 .execute(&mut **transaction)

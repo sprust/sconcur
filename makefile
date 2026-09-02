@@ -200,13 +200,12 @@ RUST_TEST_PATHS = \
 	tests/feature/Features/WsClient \
 	tests/feature/Features/HttpClient
 
-# The one test the Rust core deliberately does not answer for. Kept here rather
-# than by dropping the suite that holds it, so the rest of that suite still runs:
-# a bytea binding of invalid UTF-8 is accepted, where pgx's text-format path
-# rejects it (see .ai/plans/rust-core-spike.md).
-#
-# Anything that fails OUTSIDE this list is a real failure.
-RUST_TEST_EXCLUDE = testBinaryWithNulByteFailsOnUtf8
+# No test is excluded any more. The list that used to live here — streamed
+# responses, the access log, the body and concurrency limits, the Postgres bytea
+# binding — is empty, so a failure here is a failure, full stop. Kept as an empty
+# variable rather than deleted: the day something has to be carved out again,
+# this is where it goes, with the reason beside it.
+RUST_TEST_EXCLUDE =
 
 # The feature suites, run against the Rust core. SCONCUR_EXT reaches the server
 # harnesses too: they spawn their worker with proc_open, so without it a run
@@ -218,7 +217,7 @@ test-rust:
 		--display-incomplete \
 		--display-skipped \
 		--display-errors \
-		--exclude-filter '$(RUST_TEST_EXCLUDE)' \
+		$(if $(RUST_TEST_EXCLUDE),--exclude-filter '$(RUST_TEST_EXCLUDE)') \
 		$(RUST_TEST_PATHS) ${c}
 
 # `make check` for the Rust core: the same PHP-side gates, then the Rust build

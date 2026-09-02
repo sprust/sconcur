@@ -24,6 +24,10 @@ use super::values::Binding;
 
 /// A binding already in the type its parameter slot expects.
 pub enum PgBound {
+    /// A binding the server would have refused. Carried rather than thrown at
+    /// conversion time so the failure surfaces as the statement's error, where
+    /// a caller expects it.
+    Invalid(String),
     Null,
     Bool(bool),
     /// Postgres parameter widths are exact: an i64 sent where the column is
@@ -47,6 +51,16 @@ pub enum PgBound {
     TimestampTz(chrono::DateTime<chrono::Utc>),
 }
 
+/// The first binding the server would have refused, if any. Checked before the
+/// statement runs so the failure names the binding rather than surfacing as a
+/// protocol error further down.
+pub fn first_invalid(bounds: &[PgBound]) -> Option<&str> {
+    bounds.iter().find_map(|bound| match bound {
+        PgBound::Invalid(error) => Some(error.as_str()),
+        _ => None,
+    })
+}
+
 /// Converts the bindings to the types the described parameters call for.
 /// Positions the description does not cover keep their natural type.
 pub fn coerce(bindings: &[Binding], parameters: &[PgTypeInfo]) -> Vec<PgBound> {
@@ -66,11 +80,13 @@ fn coerce_one(binding: &Binding, parameter: Option<&PgTypeInfo>) -> PgBound {
         Binding::Int(number) => return coerce_int(*number, name.as_deref()),
         Binding::Float(number) => return coerce_float(*number, name.as_deref()),
         Binding::Bytes(bytes) => {
-            // A PHP string that is not valid UTF-8. Where the column is bytea it
-            // is binary data; anywhere else it is a text parameter whose bytes
-            // the server gets to validate.
+            // A PHP string that is not valid UTF-8. It reaches the server as a
+            // text parameter in Go, so its encoding is checked there — including
+            // for a bytea slot, whose input is text like any other.
             return match name.as_deref() {
-                Some("BYTEA") => PgBound::Bytes(bytes.clone()),
+                Some("BYTEA") => PgBound::Invalid(
+                    "invalid byte sequence for encoding \"UTF8\"".to_string(),
+                ),
                 _ => PgBound::RawText(bytes.clone()),
             };
         }
@@ -116,21 +132,20 @@ fn coerce_one(binding: &Binding, parameter: Option<&PgTypeInfo>) -> PgBound {
             "0" | "f" | "false" | "FALSE" => PgBound::Bool(false),
             _ => PgBound::Text(text.clone()),
         },
-        // A known, narrow divergence from the Go build, and the one place this
-        // feature behaves differently on purpose.
+        // pgx sends a string parameter in text format, so a bytea slot runs it
+        // through the server's byteain. sqlx can only send binary format, where
+        // bytea takes the bytes verbatim — which would quietly accept input the
+        // server would have rejected.
         //
-        // pgx sends a string parameter in text format, so a bytea slot runs the
-        // bytes through byteain: 'plainbytes' works, "\x00\x01binary" is
-        // rejected as bad input syntax. sqlx can only send binary format, where
-        // bytea takes the bytes verbatim — so the first case still works and the
-        // second one now succeeds instead of failing.
-        //
-        // tests/feature/Features/Pgsql/PgsqlErrorTest::testBinaryWithNulByteFailsOnUtf8
-        // pins the Go behaviour and therefore fails here. Binding it as text
-        // instead would turn that failure into a type-mismatch error, which
-        // makes the test pass for the wrong reason and breaks the legitimate
-        // bytea insert PgsqlTypesTest asserts. Left as-is and declared.
-        "BYTEA" => PgBound::Bytes(text.clone().into_bytes()),
+        // So byteain is applied here instead. It is the same emulation the
+        // numeric and date arms above already do, for the same reason: the
+        // conversion the server would have performed on a text-format parameter
+        // has to happen somewhere, and this side is the only one left. The
+        // difference from Go is where the error is raised, not whether it is.
+        "BYTEA" => match byteain(text) {
+            Ok(bytes) => PgBound::Bytes(bytes),
+            Err(error) => PgBound::Invalid(error),
+        },
         _ => PgBound::Text(text.clone()),
     }
 }
@@ -182,6 +197,82 @@ fn type_name(parameter: &PgTypeInfo) -> String {
     use sqlx::TypeInfo;
 
     parameter.name().to_uppercase()
+}
+
+/// Applies Postgres' `byteain` to a text binding: the hex form (`\x` followed
+/// by hex digits), the escape form (`\\` for a backslash, `\nnn` for an octal
+/// byte), and anything else taken literally.
+///
+/// A NUL is rejected outright, as it is for any text input — that is what makes
+/// binary data sent as a string an error rather than a silent success.
+fn byteain(text: &str) -> Result<Vec<u8>, String> {
+    if text.as_bytes().contains(&0) {
+        return Err("invalid byte sequence for encoding \"UTF8\": 0x00".to_string());
+    }
+
+    let raw = text.as_bytes();
+
+    if let Some(hexadecimal) = text.strip_prefix("\\x") {
+        let digits = hexadecimal.as_bytes();
+
+        if digits.len() % 2 != 0 {
+            return Err("invalid input syntax for type bytea".to_string());
+        }
+
+        let mut decoded = Vec::with_capacity(digits.len() / 2);
+
+        for pair in digits.chunks(2) {
+            let high = (pair[0] as char)
+                .to_digit(16)
+                .ok_or_else(|| "invalid input syntax for type bytea".to_string())?;
+            let low = (pair[1] as char)
+                .to_digit(16)
+                .ok_or_else(|| "invalid input syntax for type bytea".to_string())?;
+
+            decoded.push((high * 16 + low) as u8);
+        }
+
+        return Ok(decoded);
+    }
+
+    let mut decoded = Vec::with_capacity(raw.len());
+    let mut index = 0;
+
+    while index < raw.len() {
+        if raw[index] != b'\\' {
+            decoded.push(raw[index]);
+            index += 1;
+
+            continue;
+        }
+
+        // A lone trailing backslash is not a valid escape.
+        if index + 1 >= raw.len() {
+            return Err("invalid input syntax for type bytea".to_string());
+        }
+
+        if raw[index + 1] == b'\\' {
+            decoded.push(b'\\');
+            index += 2;
+
+            continue;
+        }
+
+        if index + 3 < raw.len() {
+            let octal = &text[index + 1..index + 4];
+
+            if let Ok(byte) = u8::from_str_radix(octal, 8) {
+                decoded.push(byte);
+                index += 4;
+
+                continue;
+            }
+        }
+
+        return Err("invalid input syntax for type bytea".to_string());
+    }
+
+    Ok(decoded)
 }
 
 /// Bytes bound as `text`. sqlx cannot build a `&str` from bytes that are not
