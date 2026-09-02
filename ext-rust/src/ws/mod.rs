@@ -2,6 +2,10 @@
 //! server (accept-side) and, when it lands, the ws client. Like `socket` for the
 //! raw TCP features, both depend on this rather than on each other.
 
+pub mod message_state;
+
+pub use message_state::MessageState;
+
 use tokio::sync::{mpsc, oneshot};
 
 /// What an action does to a connection. `Frame` writes one message to the peer;

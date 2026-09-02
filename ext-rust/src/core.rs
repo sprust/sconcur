@@ -23,8 +23,10 @@ use std::sync::{Arc, Once, RwLock};
 
 use crate::features::httpserver;
 use crate::features::mongodb;
+use crate::features::socketclient;
 use crate::features::socketserver;
 use crate::features::sql;
+use crate::features::wsclient;
 use crate::features::wsserver;
 use crate::handler::Handler;
 
@@ -49,6 +51,10 @@ pub struct Core {
     socketserver: socketserver::Registries,
     /// The WebSocket server's connections and listeners, for the same reason.
     wsserver: wsserver::Registries,
+    /// The socket client's dialed connections, for the same reason.
+    socketclient: socketclient::Registries,
+    /// The WebSocket client's dialed connections, for the same reason.
+    wsclient: wsclient::Registries,
 }
 
 static CORE: RwLock<Option<&'static Core>> = RwLock::new(None);
@@ -137,6 +143,8 @@ impl Core {
             mongodb: mongodb::Registries::new(),
             socketserver: socketserver::Registries::new(),
             wsserver: wsserver::Registries::new(),
+            socketclient: socketclient::Registries::new(),
+            wsclient: wsclient::Registries::new(),
         }
     }
 
@@ -166,6 +174,14 @@ impl Core {
 
     pub fn wsserver(&'static self) -> &'static wsserver::Registries {
         &self.wsserver
+    }
+
+    pub fn socketclient(&'static self) -> &'static socketclient::Registries {
+        &self.socketclient
+    }
+
+    pub fn wsclient(&'static self) -> &'static wsclient::Registries {
+        &self.wsclient
     }
 
     /// Mirrors Handler.fresh(): the destroyed handler is dropped and a new one

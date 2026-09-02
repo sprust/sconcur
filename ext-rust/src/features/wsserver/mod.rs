@@ -10,7 +10,6 @@
 //! push-only and never reads. The data messages that task forwards are what the
 //! MessageState streams to PHP.
 
-pub mod message_state;
 pub mod payloads;
 
 use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, upgrade};
@@ -433,16 +432,15 @@ fn negotiate_subprotocol(
         .get("Sec-WebSocket-Protocol")
         .and_then(|value| value.to_str().ok())?;
 
-    offered
-        .split(',')
-        .map(str::trim)
-        .find(|candidate| {
-            config
-                .subprotocols
-                .iter()
-                .any(|supported| supported == candidate)
-        })
-        .map(str::to_string)
+    let offered: Vec<&str> = offered.split(',').map(str::trim).collect();
+
+    // The server's order decides, not the client's: the configured list is a
+    // preference, and iterating the offer instead would let a client pick.
+    config
+        .subprotocols
+        .iter()
+        .find(|supported| offered.iter().any(|candidate| candidate == supported))
+        .cloned()
 }
 
 async fn serve_connection(
@@ -478,7 +476,7 @@ async fn serve_connection(
 
     let inbound_key = format!("{connection_id}:in");
 
-    let state = Arc::new(message_state::MessageState::new(
+    let state = Arc::new(crate::ws::MessageState::new(
         message.clone(),
         messages_rx,
         pending.drain.clone(),

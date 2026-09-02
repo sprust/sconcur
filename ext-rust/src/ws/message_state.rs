@@ -4,6 +4,10 @@
 //! The connection is pumped by a dedicated read task, so control frames are
 //! processed even when the handler is push-only and never reads; this state only
 //! sees the data messages that task forwards.
+//!
+//! Kept here rather than in the server because the client needs the same thing.
+//! Go carries two copies; the only server-specific part is the drain grace, and
+//! a client simply never fires that token.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

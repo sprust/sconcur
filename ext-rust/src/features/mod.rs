@@ -4,8 +4,10 @@
 pub mod httpserver;
 pub mod mongodb;
 pub mod sleeper;
+pub mod socketclient;
 pub mod socketserver;
 pub mod sql;
+pub mod wsclient;
 pub mod wsserver;
 
 use std::future::Future;
@@ -62,7 +64,9 @@ pub fn detect_message_handler(method: Method) -> std::result::Result<&'static dy
         Method::Mysql => Ok(sql::get_mysql()),
         Method::Pgsql => Ok(sql::get_pgsql()),
         Method::SocketServe | Method::SocketRespond => Ok(socketserver::get()),
+        Method::SocketClient => Ok(socketclient::get()),
         Method::WsServe | Method::WsRespond => Ok(wsserver::get()),
+        Method::WsClient => Ok(wsclient::get()),
         _ => Err(format!("unknown method: {}", method.as_wire())),
     }
 }
