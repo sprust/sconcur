@@ -8,7 +8,7 @@ namespace SConcur\Telemetry\Dto;
  * One worker's statistics as pushed over the telemetry socket (the "s" field of a
  * snapshot frame). Exactly one workload section is set: requests (HTTP),
  * connections (socket) or consumers (a queue consumer). Field names mirror the Go schema
- * (ext/internal/stats/snapshot.go).
+ * (ext-go-legacy/internal/stats/snapshot.go).
  */
 readonly class Snapshot
 {

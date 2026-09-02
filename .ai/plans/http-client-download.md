@@ -180,7 +180,7 @@ func (f *HttpClientFeature) handleDownload(task, ctx, client, request, params):
   при не-2xx, таймаут на больших файлах, отличие от стриминга тела в PHP.
 - `.ai/README.md` — описание httpclient дополнить sink-веткой; `README.md` —
   при необходимости.
-- Бамп `0.2.2 → 0.2.3` в `ext/main.go` и `src/Connection/Extension.php`.
+- Бамп `0.2.2 → 0.2.3` в `ext-go-legacy/main.go` и `src/Connection/Extension.php`.
 
 Проверка: `make ext-build && make ext-test && make php-stan && make cs-fixer-check && make test`.
 

@@ -10,7 +10,7 @@ use SConcur\Features\Mongodb\Payloads\Dto\Connection;
 use SConcur\Features\Mongodb\Payloads\Dto\Parameters;
 
 /**
- * Go: payloads.FindOneAndUpdatePayload (ext/internal/features/mongodb/payloads/payloads.go).
+ * Go: payloads.FindOneAndUpdatePayload (ext-go-legacy/internal/features/mongodb/payloads/payloads.go).
  */
 readonly class FindOneAndUpdatePayload extends BaseMongodbPayload
 {

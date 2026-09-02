@@ -12,7 +12,7 @@ use SConcur\Transport\PayloadParametersInterface;
  * The Send command: push one message to the peer of an open connection. Text by
  * default; pass $binary = true for a binary message.
  *
- * Go: payloads.SendParams (ext/internal/features/wsclient/payloads/payloads.go).
+ * Go: payloads.SendParams (ext-go-legacy/internal/features/wsclient/payloads/payloads.go).
  */
 readonly class SendPayload extends BaseWsClientPayload
 {

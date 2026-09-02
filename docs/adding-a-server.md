@@ -9,7 +9,7 @@ ordinary feature: rather than PHP calling Go and waiting for a result, Go hands 
 a stream of incoming requests.
 
 The reference to copy is `HttpServer` (`src/Features/HttpServer/`,
-`ext/internal/features/httpserver/`). `SocketServer` follows the same pattern, and
+`ext-go-legacy/internal/features/httpserver/`). `SocketServer` follows the same pattern, and
 the code shared by both is already extracted into a trait; `WsServer` is a hybrid —
 the listener and handshake from `HttpServer`, the push model of `SocketServer`
 after the upgrade.
@@ -32,7 +32,7 @@ A server is a pair of methods, both served by one Go feature (via a `switch` on
 
 Reference: `MethodHttpServe` (`hs`) + `MethodHttpRespond` (`hr`), both →
 `httpserver_feature`. Both values are mirrored in PHP `MethodEnum` and Go
-`types/method.go`, and registered in `ext/internal/features/factory.go` with one
+`types/method.go`, and registered in `ext-go-legacy/internal/features/factory.go` with one
 case for both:
 
 ```go
@@ -163,7 +163,7 @@ need rewriting.
 
 ## Go side
 
-`ext/internal/features/<server>/feature.go` implements `contracts.FeatureContract`,
+`ext-go-legacy/internal/features/<server>/feature.go` implements `contracts.FeatureContract`,
 and `Handle` dispatches on `Method` into `handleServe`/`handleRespond`. The feature
 is a singleton with two global maps: `pendingRequests`
 (`requestId → *pendingRequest`, a write-command channel — global so that `Respond`,
@@ -218,7 +218,7 @@ export for the early stop of accepting — each server's `serverStates` is its o
 map, so another server's `httpStopAccepting` cannot be reused (cf.
 `socketStopAccepting`). Add `<server>StopAccepting` along the same chain:
 
-- `ext/main.go` — `//export <server>StopAccepting` →
+- `ext-go-legacy/main.go` — `//export <server>StopAccepting` →
   `<server>_feature.StopAccepting(...)`;
 - `ext/sconcur.c` — `PHP_FUNCTION`, `arginfo`, the `ZEND_NS_FE` registration and the
   header line;
@@ -251,7 +251,7 @@ in [Worker master](worker-master.md).
 ## Statistics
 
 To collect and report statistics out of the box, plug in the neutral
-`ext/internal/stats` package — a process-metrics sampler plus a best-effort
+`ext-go-legacy/internal/stats` package — a process-metrics sampler plus a best-effort
 `Pusher` that sends snapshots to the master's collector; aggregation and the panel
 are the master's job (`src/Telemetry`), see [Server statistics](admin-stats.md).
 
@@ -277,7 +277,7 @@ infrastructure reference is `tests/impl/HttpServer/TestHttpServer.php` (spawn vi
 `maxConcurrency`, `handlerTimeoutMs` (including a natively-blocking handler),
 graceful shutdown, `SO_REUSEPORT` (two servers on one port), `maxRequests` and
 orphan self-termination. The Go listener/state logic goes into Go tests
-(`ext/internal/features/httpserver/server_test.go`), and the end-to-end scenario
+(`ext-go-legacy/internal/features/httpserver/server_test.go`), and the end-to-end scenario
 under the master is `tests/feature/Worker/WorkerMasterTest.php`.
 
 ## Checklist

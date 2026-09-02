@@ -10,7 +10,7 @@ use SConcur\Features\Mongodb\Payloads\Dto\Connection;
 use SConcur\Features\Mongodb\Payloads\Dto\Parameters;
 
 /**
- * Go: payloads.DistinctPayload (ext/internal/features/mongodb/payloads/payloads.go).
+ * Go: payloads.DistinctPayload (ext-go-legacy/internal/features/mongodb/payloads/payloads.go).
  */
 readonly class DistinctPayload extends BaseMongodbPayload
 {

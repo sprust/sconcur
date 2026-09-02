@@ -50,7 +50,7 @@
   расширено: query-строка, заголовки запроса, бинарное тело, пустой ответ, e2e-лимит
   конкурентности, 413, graceful drain.
 - **Готово (SO_REUSEPORT):** `HttpServer(reusePort: true)` — несколько процессов на
-  одном порту, ядро балансирует соединения (process-per-core). `ext/.../listen.go`.
+  одном порту, ядро балансирует соединения (process-per-core). `ext-go-legacy/.../listen.go`.
 - **Готово (drain без потери трафика):** при shutdown листенер закрывается **в начале**
   дренажа (`httpStopAccepting` → Go `http.Server.Shutdown`, не отменяя in-flight), чтобы
   воркер вышел из reuseport-группы и ядро увело новые соединения на соседей. Новый
@@ -257,7 +257,7 @@ Go (фича httpserver):
     **готово**: respond переведён на команды записи (`op` full/head/chunk/end) с
     round-trip-подтверждением (write backpressure); PHP `StreamedResponse` +
     `ResponseStream::write`. **`SO_REUSEPORT`** — **готово**: `HttpServer(reusePort: true)`,
-    несколько процессов на одном порту (`ext/.../listen.go`), покрыто
+    несколько процессов на одном порту (`ext-go-legacy/.../listen.go`), покрыто
     `TestListenReusePort*` (Go) и `HttpServerReusePortTest` (PHP). **Стриминг тела
     запроса** — **готово**: `RequestBody::contents()/read()`, инлайн-первый-чанк +
     `bodyState`, `requestBodyChunkSize` (`HttpServerRequestStreamTest`).

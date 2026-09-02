@@ -4,7 +4,7 @@
 
 Фича верхнего уровня — это новый домен со своим `Method` (как `Sleeper`). Образец
 для копирования — `Sleeper`: PHP в `src/Features/Sleeper/`, Go в
-`ext/internal/features/sleeper/`. Ниже разбор в двух вариантах — без стриминга
+`ext-go-legacy/internal/features/sleeper/`. Ниже разбор в двух вариантах — без стриминга
 (один результат) и со стримингом (несколько батчей).
 
 > Делаете долгоживущий сетевой сервер (как `HttpServer`)? Это особый вид
@@ -38,11 +38,11 @@
 ## Method и payload'ы
 
 Домен — это значение, продублированное в двух местах, и оба должны совпадать: PHP
-`SConcur\Features\MethodEnum` и Go `ext/internal/types/method.go` (`Method`).
+`SConcur\Features\MethodEnum` и Go `ext-go-legacy/internal/types/method.go` (`Method`).
 
 Payload — контракт обмена, разложенный зеркально с обеих сторон: PHP
 `src/Features/<Feature>/Payloads/` (по классу на payload), Go
-`ext/internal/features/<feature>/payloads/payloads.go` (все типы в одном файле, в
+`ext-go-legacy/internal/features/<feature>/payloads/payloads.go` (все типы в одном файле, в
 каталоге, названном как PHP-домен). У каждого PHP `*Payload` есть Go-структура с
 тем же именем; поля структуры — это ключи, которые возвращает `getData()`, а теги
 `msgpack` (и `json`) равны этим коротким ключам — Go декодирует именно по тегам.
@@ -88,7 +88,7 @@ PHP:
 
    ```php
    /**
-    * Go: payloads.FooPayload (ext/internal/features/foo/payloads/payloads.go).
+    * Go: payloads.FooPayload (ext-go-legacy/internal/features/foo/payloads/payloads.go).
     */
    readonly class FooPayload implements PayloadInterface
    {
@@ -128,7 +128,7 @@ Go:
 
 1. `types/method.go` — та же константа: `MethodFoo Method = "foo"`.
 
-2. Пакет фичи `ext/internal/features/foo/feature.go`, реализующий
+2. Пакет фичи `ext-go-legacy/internal/features/foo/feature.go`, реализующий
    `contracts.FeatureContract` (`Handle(task *tasks.Task)`): распарсить
    `message.Payload`, выполнить работу на `task.GetContext()`, вернуть результат с
    `ExecutionMs`.
@@ -165,7 +165,7 @@ Go:
 
    Как и у `Sleeper`, фичу обычно делают синглтоном через `sync.Once` + `Get()`.
 
-3. Регистрация в `ext/internal/features/factory.go` — case в
+3. Регистрация в `ext-go-legacy/internal/features/factory.go` — case в
    `DetectMessageHandler`:
 
    ```go

@@ -11,7 +11,7 @@ use SConcur\Transport\PayloadParametersInterface;
  * Carries the mandatory hard execution limit (requestTimeoutMs), applied on the Go
  * side as a context deadline over the whole operation.
  *
- * Go: payloads.RequestParams (ext/internal/features/httpclient/payloads/payloads.go).
+ * Go: payloads.RequestParams (ext-go-legacy/internal/features/httpclient/payloads/payloads.go).
  */
 readonly class RequestPayloadParameters implements PayloadParametersInterface
 {

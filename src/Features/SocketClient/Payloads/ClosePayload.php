@@ -11,7 +11,7 @@ use SConcur\Transport\PayloadParametersInterface;
 /**
  * The Close command: close an open connection.
  *
- * Go: payloads.CloseParams (ext/internal/features/socketclient/payloads/payloads.go).
+ * Go: payloads.CloseParams (ext-go-legacy/internal/features/socketclient/payloads/payloads.go).
  */
 readonly class ClosePayload extends BaseSocketClientPayload
 {

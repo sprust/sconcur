@@ -54,7 +54,7 @@ glue». Отдельной осмысленной glue-меры не остал�
 
 - `sconcur.so` — рукописное PHP-расширение (`ext/sconcur.c`), регистрирует функции
   `SConcur\Extension\{push,next,wait,waitAny,waitAnyTimeout,stopFlow,…}`; каждая
-  вызывает cgo-экспорт из `ext/main.go`.
+  вызывает cgo-экспорт из `ext-go-legacy/main.go`.
 - **PHP → Go (`push`)**: аргументы передаются по отдельности — `flowKey` (string),
   `method` (int), `taskKey` (string), `payload` (msgpack-байты как PHP-строка). Go
   копирует их внутрь (`C.GoStringN`, `C.GoBytes`). Конверт здесь **не** msgpack'ится

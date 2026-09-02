@@ -9,7 +9,7 @@ namespace SConcur\Features\HttpClient;
  * the fopen-style flags; the actual os.O_* flags are mapped on the Go side
  * (httpclient_feature.downloadModeToFlags).
  *
- * Go: download mode constants (ext/internal/features/httpclient/download.go).
+ * Go: download mode constants (ext-go-legacy/internal/features/httpclient/download.go).
  */
 enum DownloadFileMode: string
 {

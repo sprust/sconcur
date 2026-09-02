@@ -16,7 +16,7 @@ use Throwable;
  * It travels as the message of the failed task — `"<scope>:<code>: <text>"` — because a task
  * result carries one payload and nothing else. This is the one place that reads it back.
  *
- * Go: errorPayload (ext/internal/features/amqp/feature.go).
+ * Go: errorPayload (ext-go-legacy/internal/features/amqp/feature.go).
  */
 readonly class AmqpFailure
 {

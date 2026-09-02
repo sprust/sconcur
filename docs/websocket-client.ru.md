@@ -121,13 +121,13 @@ PHP (`src/Features/WsClient/`): `WsClient::connect()` собирает `ConnectP
 `WsClientCommandEnum` и `Payloads/` — конверт `Connect`/`Send`/`Close`, зеркало
 Go-структур.
 
-Go (`ext/internal/features/wsclient/`): `connect.go` выполняет `websocket.Dial`
+Go (`ext-go-legacy/internal/features/wsclient/`): `connect.go` выполняет `websocket.Dial`
 с `connectTimeout` (отменяем контекстом флоу) и регистрирует стриминговый
 `connectionState` — первый `Next` даёт метаданные, дальше идут входящие
 сообщения из горутины чтения — плюс цикл записи, очищаемый при остановке флоу;
 `feature.go` диспетчеризует команды по `cid`. Цикл записи, ждущий сброса каждого
-сообщения, и кодек типа сообщения живут в нейтральном `ext/internal/ws/`, общем
-с WS-сервером (как `ext/internal/socket` для пары сырых TCP).
+сообщения, и кодек типа сообщения живут в нейтральном `ext-go-legacy/internal/ws/`, общем
+с WS-сервером (как `ext-go-legacy/internal/socket` для пары сырых TCP).
 
 ## Чего нет в v1
 

@@ -8,7 +8,7 @@ use SConcur\Features\MethodEnum;
 use SConcur\Transport\PayloadInterface;
 
 /**
- * Go: payloads.SleeperPayload (ext/internal/features/sleeper/payloads/payloads.go).
+ * Go: payloads.SleeperPayload (ext-go-legacy/internal/features/sleeper/payloads/payloads.go).
  */
 readonly class SleeperPayload implements PayloadInterface
 {

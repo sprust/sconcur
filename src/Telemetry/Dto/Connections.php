@@ -7,7 +7,7 @@ namespace SConcur\Telemetry\Dto;
 /**
  * Socket-server workload section of a snapshot: active is the current open
  * connection count, totalAccepted the lifetime number accepted. Field names mirror
- * the Go schema (ext/internal/stats/snapshot.go).
+ * the Go schema (ext-go-legacy/internal/stats/snapshot.go).
  */
 readonly class Connections
 {

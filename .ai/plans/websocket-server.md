@@ -9,11 +9,11 @@
 
 Эталоны для копирования:
 - листенер/рукопожатие/`SO_REUSEPORT`/graceful — `HttpServer`
-  (`src/Features/HttpServer/`, `ext/internal/features/httpserver/`);
+  (`src/Features/HttpServer/`, `ext-go-legacy/internal/features/httpserver/`);
 - push-модель соединения, `ConnectionEvent`, стриминг входящих сообщений, статистика —
-  `SocketServer` (`src/Features/SocketServer/`, `ext/internal/features/socketserver/`);
+  `SocketServer` (`src/Features/SocketServer/`, `ext-go-legacy/internal/features/socketserver/`);
 - dial-side клиент — `SocketClient` (`src/Features/SocketClient/`,
-  `ext/internal/features/socketclient/`).
+  `ext-go-legacy/internal/features/socketclient/`).
 
 ## Зафиксированные решения (согласовано с заказчиком)
 
@@ -22,7 +22,7 @@
 2. **Go-библиотека — `github.com/coder/websocket`** (бывш. `nhooyr.io/websocket`):
    context-first API (`Accept`, `Dial`, `Read(ctx)`/`Write(ctx)`, `Ping(ctx)`,
    `Close(code, reason)`), минимальная, без транзитивных зависимостей. Один новый
-   `require` в `ext/go.mod`. Сервер не маскирует фреймы, клиент маскирует — это
+   `require` в `ext-go-legacy/go.mod`. Сервер не маскирует фреймы, клиент маскирует — это
    делает библиотека.
 3. **Тип сообщений — оба, по умолчанию `text`.** `Connection::read()` возвращает
    payload и сохраняет тип входящего сообщения (text/binary); `Connection::write()`
@@ -83,7 +83,7 @@ flowchart TB
 
 ### Method (PHP ↔ Go)
 - `MethodEnum`: `WsServe = 11`, `WsRespond = 12`, `WsClient = 13`.
-- Go `ext/internal/types/method.go`: `MethodWsServe`, `MethodWsRespond`, `MethodWsClient`.
+- Go `ext-go-legacy/internal/types/method.go`: `MethodWsServe`, `MethodWsRespond`, `MethodWsClient`.
 - Клиент — командный конверт, как у `SocketClient`: `WsClientCommandEnum`
   (`Connect = 1`, `Send = 2`, `Close = 3`).
 
@@ -117,7 +117,7 @@ flowchart TB
 
 ## Go-сторона
 
-### `ext/internal/features/wsserver/` (зеркало socketserver)
+### `ext-go-legacy/internal/features/wsserver/` (зеркало socketserver)
 - `feature.go` — `Handle` switch → `handleServe`/`handleRespond`; глобальные
   `serverStates` (для `StopAccepting`) и `pendingConnections` (`connectionId → conn`,
   чтобы `Respond` нашёл соединение).
@@ -136,30 +136,30 @@ flowchart TB
 - WS-стрим входящих сообщений — свой `message_state` поверх `*websocket.Conn`
   (читает `conn.Read`), аналог `internal/socket/message_state.go`.
 
-### `ext/internal/features/wsclient/` (зеркало socketclient)
+### `ext-go-legacy/internal/features/wsclient/` (зеркало socketclient)
 - `connect.go` — `websocket.Dial(ctx, url, opts)` с `connectTimeout`; регистрирует
   `connectionState` (первый `Next()` → `ConnectionMeta`, далее входящие сообщения).
 - `feature.go` — роутит `Connect`/`Send`/`Close` (командный конверт `WsClientCommand`).
 - Ошибки дозвона несут маркер `net:` → `WsClientConnectException` (как у socketclient).
 
 ### Регистрация
-- `ext/internal/features/factory.go` (`DetectMessageHandler`): один кейс на
+- `ext-go-legacy/internal/features/factory.go` (`DetectMessageHandler`): один кейс на
   `MethodWsServe, MethodWsRespond` → `wsserver_feature.Get()`; отдельный — на
   `MethodWsClient` → `wsclient_feature.Get()`.
 
 ## cgo-экспорт и версия расширения
 
 - Новый экспорт `wsStopAccepting` (у WS-сервера своя карта `serverStates`) по цепочке
-  `ext/main.go` → `ext/sconcur.c` (`PHP_FUNCTION`/`arginfo`/`ZEND_NS_FE`) →
+  `ext-go-legacy/main.go` → `ext/sconcur.c` (`PHP_FUNCTION`/`arginfo`/`ZEND_NS_FE`) →
   `ext/sconcur.stub.php` → `src/Connection/Extension.php`.
 - Новые методы `11/12/13` + новый экспорт — **протокольное изменение**. Делается на
   отдельной ветке `feature/websocket-server`; версия расширения `0.3.1 → 0.4.0`
-  (minor — новая фича), бамп один раз на ветку (`ext/main.go` `version()` +
+  (minor — новая фича), бамп один раз на ветку (`ext-go-legacy/main.go` `version()` +
   `Extension::REQUIRED_EXTENSION_VERSION`).
 
 ## Телеметрия
 
-Бесплатно, через нейтральный `ext/internal/stats`: WS-сервер пушит снапшоты с секцией
+Бесплатно, через нейтральный `ext-go-legacy/internal/stats`: WS-сервер пушит снапшоты с секцией
 `connections` (active/totalAccepted) — идентично socket-серверу. `pusher.Start()` в
 `newServerState`, `pusher.Stop()` в `Close()`. На стороне мастера (`src/Telemetry`)
 **изменений не требуется** — панель уже умеет секцию `connections`. Под мастером

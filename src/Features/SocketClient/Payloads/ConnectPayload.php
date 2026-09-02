@@ -12,7 +12,7 @@ use SConcur\Transport\PayloadParametersInterface;
  * The Connect command: dial the remote address and open a streaming connection (the
  * first result is the connection metadata, subsequent results are inbound frames).
  *
- * Go: payloads.ConnectParams (ext/internal/features/socketclient/payloads/payloads.go).
+ * Go: payloads.ConnectParams (ext-go-legacy/internal/features/socketclient/payloads/payloads.go).
  */
 readonly class ConnectPayload extends BaseSocketClientPayload
 {

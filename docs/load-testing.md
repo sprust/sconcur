@@ -167,7 +167,7 @@ certainty about leaks in production a multi-hour soak is the answer
 ## WebSocket server under load
 
 Same load + resources pairing, but `wrk` is HTTP-only, so the generator is
-`ext/cmd/ws-load` (Go, on `coder/websocket`) — the WS analogue of `wrk`: it holds N
+`ext-go-legacy/cmd/ws-load` (Go, on `coder/websocket`) — the WS analogue of `wrk`: it holds N
 persistent connections, runs back-to-back round-trips and prints throughput and
 p50/p90/p99.
 

@@ -267,7 +267,7 @@ class WaitAnyBatchTest extends BaseTestCase
      * Builds one result frame in the documented layout (flags + methodLen +
      * execMs + flowKeyLen + taskKeyLen + ownerFiberId(uint64), then method,
      * flowKey, taskKey, payload) — must stay in sync with buildResultFrame in
-     * ext/main.go.
+     * ext-go-legacy/main.go.
      */
     protected static function buildResultFrame(string $taskKey): string
     {

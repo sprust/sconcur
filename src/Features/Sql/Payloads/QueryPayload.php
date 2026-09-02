@@ -14,7 +14,7 @@ use SConcur\Features\Sql\SqlCommandEnum;
  * bindings, streamed back batch by batch. A non-empty transactionId runs it on the
  * pinned transaction; an empty one runs it autocommit on a pooled connection.
  *
- * Go: payloads.QueryParams (ext/internal/features/sql/payloads/payloads.go).
+ * Go: payloads.QueryParams (ext-go-legacy/internal/features/sql/payloads/payloads.go).
  */
 readonly class QueryPayload extends BaseSqlPayload
 {

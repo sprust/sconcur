@@ -1,7 +1,7 @@
 #include <php.h>
 #include <stdlib.h>
 #include <zend_atomic.h>
-#include "_cgo_export.h"
+#include "sconcur_core.h"
 
 /*
  * Preemption plumbing (see .ai/plans/coroutine-switcher.md, phase 2).

@@ -1,7 +1,7 @@
 # Статистика серверов (HTTP + socket)
 
 Статус: **v2 реализовано** — выделенный stats-HTTP-сервер на своём порту
-(`/api/stats`), общая логика в нейтральном пакете `ext/internal/stats`, поддержка
+(`/api/stats`), общая логика в нейтральном пакете `ext-go-legacy/internal/stats`, поддержка
 HTTP и socket-серверов; перехват на основном порту убран. Тесты зелёные,
 документация обновлена ([docs/admin-stats.ru.md](../../docs/admin-stats.ru.md),
 [docs/adding-a-server.ru.md](../../docs/adding-a-server.ru.md)).
@@ -19,7 +19,7 @@ HTTP и socket-серверов; перехват на основном порт
 
 Перехват пути `/sconcur-server-api/admin/stats` на основном HTTP reuse-порту,
 Bearer-токен из `SCONCUR_ADMIN_TOKEN`. Снапшот-писатель (5s) + агрегатор живут в
-`ext/internal/features/httpserver/stats/`. Только HTTP-сервер.
+`ext-go-legacy/internal/features/httpserver/stats/`. Только HTTP-сервер.
 
 ## v2 (этот план)
 
@@ -31,7 +31,7 @@ Bearer-токен из `SCONCUR_ADMIN_TOKEN`. Снапшот-писатель (5
    агрегат. Ошибка бинда stats-порта логируется и **не роняет основной сервер**.
 2. Та же возможность у **socket-сервера** — для него выделенный HTTP-сервер это
    единственный способ отдать статистику (у socket нет HTTP-маршрутов).
-3. Общая логика вынесена в нейтральный пакет `ext/internal/stats/` (рядом с
+3. Общая логика вынесена в нейтральный пакет `ext-go-legacy/internal/stats/` (рядом с
    `internal/socket`, `internal/helpers`), используется обоими серверами.
 4. Перехват на основном HTTP-порту (`/sconcur-server-api/admin/stats`) —
    **убирается** (заменяется выделенным портом). См. «Открытый вопрос».
@@ -44,7 +44,7 @@ Bearer-токен из `SCONCUR_ADMIN_TOKEN`. Снапшот-писатель (5
 полностью. Остаётся единственный механизм — выделенный порт + `/api/stats`
 (один путь для http и socket, изоляция admin-трафика).
 
-### Нейтральный пакет `ext/internal/stats/`
+### Нейтральный пакет `ext-go-legacy/internal/stats/`
 
 - `snapshot.go` — типы `Memory`, `Requests`, `Connections`, `Snapshot`
   (опциональные `*Requests`/`*Connections` — workload-секция), типы агрегата,

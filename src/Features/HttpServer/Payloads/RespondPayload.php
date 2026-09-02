@@ -12,7 +12,7 @@ use SConcur\Transport\PayloadInterface;
  * one-shot full response, or the head/chunk/end of a streamed one. The op field
  * tells the Go side which.
  *
- * Go: payloads.RespondPayload (ext/internal/features/httpserver/payloads/payloads.go).
+ * Go: payloads.RespondPayload (ext-go-legacy/internal/features/httpserver/payloads/payloads.go).
  */
 readonly class RespondPayload implements PayloadInterface
 {

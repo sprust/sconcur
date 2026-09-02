@@ -70,7 +70,7 @@
   те же флаги, те же константы. Переход приложения с `ext-amqp` на SConcur должен
   сводиться к правке `use`-строк, как это уже сделано для MongoDB
   (`SConcur\Bson\*` вместо `MongoDB\BSON\*`);
-- домен называется **`Amqp`** (`MethodEnum::Amqp`, `ext/internal/features/amqp/`,
+- домен называется **`Amqp`** (`MethodEnum::Amqp`, `ext-go-legacy/internal/features/amqp/`,
   `docs/amqp.md`) — по протоколу, а не по брокеру, как и само `ext-amqp`;
 - пространство имён — **`SConcur\Features\Amqp`**: и калька, и внутренности
   фичи живут под ним, отдельного короткого пространства имён под калькой не
@@ -378,13 +378,13 @@ if ($envelope !== null) {
 Один домен с конвертом команд — как `HttpClient`, `SocketClient`, `WsClient`:
 
 - PHP: `src/Features/MethodEnum.php` → `case Amqp = 'amq';`
-- Go: `ext/internal/types/method.go` → `MethodAmqp Method = "amq"` (плюс строка в
+- Go: `ext-go-legacy/internal/types/method.go` → `MethodAmqp Method = "amq"` (плюс строка в
   `internedMethods`)
-- Go: `ext/internal/features/factory.go` → `case types.MethodAmqp`
+- Go: `ext-go-legacy/internal/features/factory.go` → `case types.MethodAmqp`
 
 Конверт: `cm` — команда, `p` — её параметры (как
 `Features\WsClient\Payloads\Base\BaseWsClientPayload`). Команды —
-`src/Features/Amqp/AmqpCommandEnum.php` и `ext/internal/types/`:
+`src/Features/Amqp/AmqpCommandEnum.php` и `ext-go-legacy/internal/types/`:
 
 | Команда | `cm` | Стриминг |
 |---|---|---|
@@ -412,7 +412,7 @@ if ($envelope !== null) {
 | дождаться возвратов | `rtw` | нет |
 
 Каждый payload — `readonly`-класс в `src/Features/Amqp/Payloads/` с
-Go-структурой того же имени в `ext/internal/features/amqp/payloads/payloads.go`;
+Go-структурой того же имени в `ext-go-legacy/internal/features/amqp/payloads/payloads.go`;
 перекрёстные ссылки в PHPDoc и в комментарии Go обязательны, как во всех фичах.
 
 Всякая команда несёт `channelId` (кроме открытия соединения), дедлайн
@@ -564,7 +564,7 @@ src/Features/Amqp/
 Go:
 
 ```
-ext/internal/features/amqp/
+ext-go-legacy/internal/features/amqp/
   feature.go            # разбор конверта, диспетчер команд
   connections.go        # пул соединений + sweeper
   channels.go           # реестр каналов
@@ -659,7 +659,7 @@ ext/internal/features/amqp/
 ## 17. Версия расширения
 
 Протокол PHP↔Go меняется → бампаются **все три** источника в одном коммите:
-`ext/main.go` → `version()`, `src/Connection/Extension.php` →
+`ext-go-legacy/main.go` → `version()`, `src/Connection/Extension.php` →
 `REQUIRED_EXTENSION_VERSION`, `composer.json` → `version`. Текущая — `0.10.0`,
 новая — `0.11.0` (минорный: добавлен домен). Бамп один на ветку.
 

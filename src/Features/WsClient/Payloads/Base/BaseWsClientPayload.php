@@ -13,7 +13,7 @@ use SConcur\Transport\PayloadParametersInterface;
  * Builds the command envelope (cm/p) every ws-client payload sends: the sub-operation
  * command plus its parameters. Mirrors Base\BaseSocketClientPayload.
  *
- * Go: payloads.Envelope (ext/internal/features/wsclient/payloads/payloads.go).
+ * Go: payloads.Envelope (ext-go-legacy/internal/features/wsclient/payloads/payloads.go).
  */
 abstract readonly class BaseWsClientPayload implements PayloadInterface
 {

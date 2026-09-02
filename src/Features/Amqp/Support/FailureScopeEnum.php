@@ -8,7 +8,7 @@ namespace SConcur\Features\Amqp\Support;
  * What a failed command did to the resource it ran on, as the Go side reports it in the
  * error payload's prefix.
  *
- * Go: the scope* constants (ext/internal/features/amqp/feature.go).
+ * Go: the scope* constants (ext-go-legacy/internal/features/amqp/feature.go).
  */
 enum FailureScopeEnum: string
 {

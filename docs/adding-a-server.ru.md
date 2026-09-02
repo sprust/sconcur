@@ -9,7 +9,7 @@ Go-расширении, принимает входящие соединени�
 запросов.
 
 Образец для копирования — `HttpServer` (`src/Features/HttpServer/`,
-`ext/internal/features/httpserver/`). `SocketServer` построен по тому же паттерну,
+`ext-go-legacy/internal/features/httpserver/`). `SocketServer` построен по тому же паттерну,
 а общий для обоих код уже вынесен в трейт; `WsServer` — гибрид: листенер и
 рукопожатие от `HttpServer`, push-модель `SocketServer` после апгрейда.
 
@@ -31,7 +31,7 @@ Go-расширении, принимает входящие соединени�
 
 Образец: `MethodHttpServe` (`hs`) + `MethodHttpRespond` (`hr`), оба →
 `httpserver_feature`. Оба значения зеркалятся в PHP `MethodEnum` и Go
-`types/method.go` и регистрируются в `ext/internal/features/factory.go` одним case
+`types/method.go` и регистрируются в `ext-go-legacy/internal/features/factory.go` одним case
 на оба:
 
 ```go
@@ -163,7 +163,7 @@ flowchart TB
 
 ## Сторона Go
 
-`ext/internal/features/<server>/feature.go` реализует `contracts.FeatureContract`,
+`ext-go-legacy/internal/features/<server>/feature.go` реализует `contracts.FeatureContract`,
 а `Handle` диспетчеризует по `Method` в `handleServe`/`handleRespond`. Фича —
 синглтон с двумя глобальными картами: `pendingRequests`
 (`requestId → *pendingRequest`, канал команд записи — глобальная, чтобы `Respond`,
@@ -217,7 +217,7 @@ Backpressure слоями: `AddResult` блокируется на общем б
 `httpStopAccepting` чужого сервера не переиспользовать (ср. `socketStopAccepting`).
 Добавьте `<server>StopAccepting` по той же цепочке:
 
-- `ext/main.go` — `//export <server>StopAccepting` →
+- `ext-go-legacy/main.go` — `//export <server>StopAccepting` →
   `<server>_feature.StopAccepting(...)`;
 - `ext/sconcur.c` — `PHP_FUNCTION`, `arginfo`, регистрация `ZEND_NS_FE` и строка
   заголовка;
@@ -249,7 +249,7 @@ Backpressure слоями: `AddResult` блокируется на общем б
 ## Статистика
 
 Чтобы сервер собирал и отдавал статистику из коробки, подключите нейтральный пакет
-`ext/internal/stats` — сэмплер процессных метрик плюс best-effort `Pusher`,
+`ext-go-legacy/internal/stats` — сэмплер процессных метрик плюс best-effort `Pusher`,
 отправляющий снапшоты коллектору мастера; агрегация и панель — работа мастера
 (`src/Telemetry`), см. [статистику сервера](admin-stats.ru.md).
 
@@ -275,7 +275,7 @@ Backpressure слоями: `AddResult` блокируется на общем б
 `maxConcurrency`, `handlerTimeoutMs` (включая нативно-блокирующий обработчик),
 graceful shutdown, `SO_REUSEPORT` (два сервера на одном порту), `maxRequests` и
 самозавершение сироты. Go-логика листенера и состояния уходит в Go-тесты
-(`ext/internal/features/httpserver/server_test.go`), а сквозной сценарий под
+(`ext-go-legacy/internal/features/httpserver/server_test.go`), а сквозной сценарий под
 мастером — `tests/feature/Worker/WorkerMasterTest.php`.
 
 ## Чек-лист

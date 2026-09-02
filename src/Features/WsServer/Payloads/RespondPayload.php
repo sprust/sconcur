@@ -12,7 +12,7 @@ use SConcur\Transport\PayloadInterface;
  * client (text or binary), or close the connection. The op field tells the Go side
  * which; messageType selects the WebSocket message type of a written message.
  *
- * Go: payloads.RespondPayload (ext/internal/features/wsserver/payloads/payloads.go).
+ * Go: payloads.RespondPayload (ext-go-legacy/internal/features/wsserver/payloads/payloads.go).
  */
 readonly class RespondPayload implements PayloadInterface
 {

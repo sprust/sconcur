@@ -11,7 +11,7 @@ use SConcur\Transport\PayloadParametersInterface;
 /**
  * The Send command: push one length-prefixed frame to the peer of an open connection.
  *
- * Go: payloads.SendParams (ext/internal/features/socketclient/payloads/payloads.go).
+ * Go: payloads.SendParams (ext-go-legacy/internal/features/socketclient/payloads/payloads.go).
  */
 readonly class SendPayload extends BaseSocketClientPayload
 {

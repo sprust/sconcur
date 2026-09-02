@@ -11,9 +11,9 @@ namespace SConcur\Features\Amqp;
  * Every case names the Go struct its parameters are decoded into. That cross-reference
  * lives here rather than on a class per command, because the parameters themselves are
  * written as short-key maps where they are built (see Payloads\AmqpPayload); the structs
- * are all in ext/internal/features/amqp/payloads/payloads.go.
+ * are all in ext-go-legacy/internal/features/amqp/payloads/payloads.go.
  *
- * Go: types.AmqpCommand (ext/internal/types/amqp.go).
+ * Go: types.AmqpCommand (ext-go-legacy/internal/types/amqp.go).
  */
 enum AmqpCommandEnum: string
 {

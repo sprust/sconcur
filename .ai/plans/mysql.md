@@ -40,7 +40,7 @@
 ## Универсальность: отдельные домены, общий код
 
 Принято решение (см. развилки в конце): **отдельный `Method` на драйвер**, оба
-маршрутизируются в **один общий Go-пакет** `ext/internal/features/sql`. Драйвер
+маршрутизируются в **один общий Go-пакет** `ext-go-legacy/internal/features/sql`. Драйвер
 определяется по `Method`.
 
 - PHP: `MethodEnum::Mysql = 6` (позже `Pgsql = 7`).
@@ -163,7 +163,7 @@ $tx->commit();                               // exec(Commit, tx=txId) → tx.Com
 
 ## Пул соединений (Go)
 
-Зеркало `ext/internal/features/mongodb/connection/clients.go`:
+Зеркало `ext-go-legacy/internal/features/mongodb/connection/clients.go`:
 
 - `sql/connection/pools.go` — реестр пулов, ключ `driver + dsn + poolOpts`,
   значение — `Pool{ *sql.DB, inUse, lastUsedAt }`. `Acquire`/`Release`
@@ -204,7 +204,7 @@ Exceptions/Sql/
 Payload несёт `MethodEnum` (передаётся из соединения) — так общие классы
 отдают нужный домен для Mysql/Pgsql.
 
-**Go (`ext/`):**
+**Go (`ext-go-legacy/`):**
 
 ```
 internal/types/method.go                        + MethodMysql = 6
@@ -348,7 +348,7 @@ query/exec. Повторный одинаковый SQL переиспользу
 ## Версия расширения
 
 Протокол меняется (новый `Method` + команды) → бамп **0.2.1 → 0.2.2** (patch) в
-`ext/main.go` (`version()`) и `src/Connection/Extension.php`
+`ext-go-legacy/main.go` (`version()`) и `src/Connection/Extension.php`
 (`REQUIRED_EXTENSION_VERSION`), один раз на ветку.
 
 ---

@@ -13,7 +13,7 @@ use SConcur\Transport\PayloadInterface;
  * net/http.Server; a request carrying a valid WebSocket upgrade becomes a streamed
  * connection, every other request is answered 426 Upgrade Required.
  *
- * Go: payloads.ServePayload (ext/internal/features/wsserver/payloads/payloads.go).
+ * Go: payloads.ServePayload (ext-go-legacy/internal/features/wsserver/payloads/payloads.go).
  */
 readonly class ServePayload implements PayloadInterface
 {

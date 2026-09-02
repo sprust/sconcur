@@ -809,7 +809,10 @@ class WorkerMasterTest extends TestCase
 
     private static function extensionPath(): string
     {
-        return dirname(__DIR__, 3) . '/ext/build/sconcur.so';
+        // The build under test, so a run that spawns its own worker loads the same
+        // extension the suite does. Without it a run would answer for one core while
+        // measuring another.
+        return getenv('SCONCUR_EXT') ?: dirname(__DIR__, 3) . '/ext/build/sconcur.so';
     }
 
     /**

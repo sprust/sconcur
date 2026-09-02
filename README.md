@@ -275,12 +275,23 @@ The environment the project is built and tested against in CI:
 - [Positioning](docs/positioning.md) — SConcur vs php-fpm, RoadRunner and Swoole.
 
 ## Build
+
+The extension core is `ext/` (Rust). It builds into `ext/build/sconcur.so`:
+
 ```shell
-cd ext && \
-  rm -f build/sconcur.so build/sconcur.h && \
-  CGO_CFLAGS=$(php-config --includes) \
-  go build -buildmode=c-shared -o build/sconcur.so .
+make ext-build
 ```
+
+The Go core it was ported from is still here, in `ext-go-legacy/`. It is what
+the releases are built from today, because it is the only one carrying the AMQP
+feature:
+
+```shell
+make ext-build-go
+```
+
+Both produce the same extension, ABI for ABI — the same PHP glue, the same
+exports, the same `version()` — so either can be loaded by an unchanged package.
 ## echo test
 ```shell
 php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello') . PHP_EOL;"

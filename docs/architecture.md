@@ -102,7 +102,7 @@ flowchart TB
 
     EXT <-->|"cgo + msgpack: push / waitAny / next ↔ result"| MAIN
 
-    subgraph GO["Go (ext/)"]
+    subgraph GO["Go (ext-go-legacy/)"]
         direction TB
         MAIN["main.go (cgo exports)"]
         H[Handler]

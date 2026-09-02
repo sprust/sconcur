@@ -9,7 +9,7 @@ use SConcur\Transport\PayloadParametersInterface;
 /**
  * Parameters of a Close command: the connection to close.
  *
- * Go: payloads.CloseParams (ext/internal/features/wsclient/payloads/payloads.go).
+ * Go: payloads.CloseParams (ext-go-legacy/internal/features/wsclient/payloads/payloads.go).
  */
 readonly class ClosePayloadParameters implements PayloadParametersInterface
 {

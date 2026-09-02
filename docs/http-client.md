@@ -235,7 +235,7 @@ Alongside it: `HttpClientOptions`, `DownloadFileMode`, `HttpClientCommandEnum` (
 envelope's sub-operations `Request`/`UploadChunk`/`UploadEnd`), `Payloads/*`
 (mirrors of the Go structs), `Dto/ResponseBodyStream` and `Dto/DownloadResult`.
 
-Go (`ext/internal/features/httpclient/`): `feature.go` builds the `*http.Request`,
+Go (`ext-go-legacy/internal/features/httpclient/`): `feature.go` builds the `*http.Request`,
 applies `context.WithTimeout`, starts the state and routes the commands;
 `response_state.go` is the streaming state (the first `Next()` runs the request and
 returns metadata plus first chunk, the rest are raw body chunks, `Close()` closes

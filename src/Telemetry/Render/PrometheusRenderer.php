@@ -13,7 +13,7 @@ use SConcur\Telemetry\Dto\WorkerEntry;
 /**
  * Renders the aggregate in the Prometheus text exposition format — the default
  * representation, schema-identical to the old Go renderer
- * (ext/internal/stats/prometheus.go): pool totals (sconcur_pool_*) plus per-worker
+ * (ext-go-legacy/internal/stats/prometheus.go): pool totals (sconcur_pool_*) plus per-worker
  * series (sconcur_worker_*, labelled with pid).
  */
 class PrometheusRenderer

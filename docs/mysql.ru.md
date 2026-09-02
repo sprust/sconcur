@@ -127,7 +127,7 @@ $connection = new \SConcur\Features\Mysql\Connection(
 
 ## Внутреннее устройство
 
-- Реестр пулов (`ext/internal/features/sql/pools.go`) — `*sql.DB` по ключу-структуре
+- Реестр пулов (`ext-go-legacy/internal/features/sql/pools.go`) — `*sql.DB` по ключу-структуре
   `драйвер+dsn+размеры пула`, с refcount и вытеснением простаивающих пулов (как пул
   клиентов MongoDB). Sweeper обходит реестр раз в минуту.
 - Стриминг SELECT (`rows_state.go`) — `rowsState` держит `*sql.Rows` и отдаёт

@@ -127,7 +127,7 @@ pool no smaller than the expected number of concurrent transactions.
 
 ## Internals
 
-- Pool registry (`ext/internal/features/sql/pools.go`) — `*sql.DB` keyed by the
+- Pool registry (`ext-go-legacy/internal/features/sql/pools.go`) — `*sql.DB` keyed by the
   `driver+dsn+pool sizes` struct, with a refcount and eviction of idle pools (like
   the MongoDB client pool). The sweeper walks the registry once a minute.
 - SELECT streaming (`rows_state.go`) — `rowsState` holds a `*sql.Rows` and gives

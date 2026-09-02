@@ -75,7 +75,7 @@
 
 Сегодня: `Channel::consume()` открывает стрим через реестр `states`, дальше PHP на
 каждое сообщение делает `next()` — пересечение границы, задача и горутина на
-сообщение. Такой протокол у серверов уже удалён (`ext/internal/features/httpserver/feature.go`:
+сообщение. Такой протокол у серверов уже удалён (`ext-go-legacy/internal/features/httpserver/feature.go`:
 «the request stream is self-pumping … PHP never pays a next() crossing per request»).
 
 Что делать:
@@ -84,7 +84,7 @@
   `QueueSpec` (очередь, число консьюмеров, prefetch), открывает каналы **на стороне Go**,
   подписывает консьюмеров и публикует каждую доставку в один флоу как результат стрима.
   В теле доставки едет `chid` и `dt` — ровно то, чем PHP уже подтверждает.
-- Экспорт `amqpStopConsuming(flowKey)` в `ext/main.go` — рядом с
+- Экспорт `amqpStopConsuming(flowKey)` в `ext-go-legacy/main.go` — рядом с
   `httpStopAccepting`/`socketStopAccepting`/`wsStopAccepting`. Делает `basic.cancel` по
   всем консьюмерам флоу и **оставляет каналы открытыми**, чтобы долетели ack'и
   обработчиков, которые ещё в работе. Каналы закрывает `stopFlow` через
@@ -290,10 +290,10 @@ $channel->queue($delivery->routingKey)->publishConfirmed(...);
 
 ### Сделано
 
-**Шаг 1 — self-pumping поток доставок.** `ext/internal/features/amqp/consume_serve.go`:
+**Шаг 1 — self-pumping поток доставок.** `ext-go-legacy/internal/features/amqp/consume_serve.go`:
 команда `ConsumeServe` (`csv`) открывает каналы и консьюмеров **на стороне Go** по списку
 очередей и публикует каждую доставку в один флоу как результат стрима. Экспорт
-`amqpStopConsuming(flowKey)` (`ext/main.go`, `ext/sconcur.c`, `sconcur.stub.php`,
+`amqpStopConsuming(flowKey)` (`ext-go-legacy/main.go`, `ext/sconcur.c`, `sconcur.stub.php`,
 `Extension::amqpStopConsuming`) отменяет консьюмеров, **не закрывая каналы**, — это то, что
 даёт долететь подтверждениям работающих обработчиков. Переоткрытие консьюмера, которого
 забрал брокер, переехало в Go; смерть соединения по-прежнему заканчивает поток ошибкой.

@@ -35,7 +35,7 @@
   («Optimize synchronous-mode execution») до сих пор не реализован.
 
 **Важная оговорка о свежести цифр.** После того профиля общий канал результатов стал
-буферизованным (`resultsBufferSize = 1024`, `ext/internal/handler/handler.go:23`) —
+буферизованным (`resultsBufferSize = 1024`, `ext-go-legacy/internal/handler/handler.go:23`) —
 именно чтобы убрать rendezvous «две futex-побудки на результат», который тогда
 доминировал в цене координации. Цифры 515/130 мкс и разрыв ⅓ потолка могли измениться.
 Поэтому план начинается с обязательной повторной атрибуции (фаза 0), и каждая
@@ -48,7 +48,7 @@
 1. Go-сторона: `Handler.WaitAny` при заполненном буфере (быстрый неблокирующий путь)
    vs пустом (парковка + побудка) — Go-бенч без cgo (`CGO_ENABLED=0`), по образцу
    бенчей из прошлого профиля.
-2. Кадр + cgo: `buildResultFrame` + `C.CBytes` (`ext/main.go:48`, `ext/main.go:82`) +
+2. Кадр + cgo: `buildResultFrame` + `C.CBytes` (`ext-go-legacy/main.go:48`, `ext-go-legacy/main.go:82`) +
    копия `RETVAL_STRINGL` (`ext/sconcur.c:192`) — микробенч цикла `waitAny` из PHP на
    заранее готовых N результатах (веер sleeper'ов, дождаться завершения всех задач,
    затем мерить чистый цикл выборки).
@@ -66,7 +66,7 @@ round-trip'а под конкуренцией). Иначе — закрыть и
 
 ### Результат пересборки профиля (2026-08-09)
 
-Инструменты: `ext/internal/handler/handler_waitany_bench_test.go` (Go, без cgo) и
+Инструменты: `ext-go-legacy/internal/handler/handler_waitany_bench_test.go` (Go, без cgo) и
 `tests/benchmarks/runtime/boundary-profile.php` (PHP + расширение). Оба добавлены этим
 заходом; PHP-профиль печатает wall и CPU, читать надо CPU — таймер sleeper даёт
 wall, но CPU почти не жжёт.
@@ -130,19 +130,19 @@ PHP-стороне. Решение по обеим — за мейнтейнер
 
 Сейчас каждый готовый результат — отдельный переход: `Scheduler::tick()` →
 `Extension::waitAny()` → один кадр (`src/Scheduler/Scheduler.php:452`,
-`ext/main.go:164`). При широком веере и на серверном цикле в буфере канала обычно
+`ext-go-legacy/main.go:164`). При широком веере и на серверном цикле в буфере канала обычно
 лежит несколько готовых результатов — их можно забирать пачкой.
 
 ### Go
 
 - `Handler.WaitAnyBatch(max int) ([]*dto.Result, error)`: сначала `popAnyPending`,
   затем блокирующий приём первого результата (как сейчас в `WaitAny`,
-  `ext/internal/handler/handler.go:62`), затем неблокирующий `select`-дренаж канала до
+  `ext-go-legacy/internal/handler/handler.go:62`), затем неблокирующий `select`-дренаж канала до
   `max` штук; каждый результат проходит `deliver()` (учёт + фильтр результатов
-  остановленных flow, `ext/internal/handler/handler.go:152`).
+  остановленных flow, `ext-go-legacy/internal/handler/handler.go:152`).
 - `Handler.WaitAnyTimeoutBatch(ms, max int)` — то же с дедлайном для серверного цикла;
   сентинел `timeout` сохраняется.
-- `ext/main.go`: экспорты `waitAnyBatch(max)` и `waitAnyTimeoutBatch(ms, max)`.
+- `ext-go-legacy/main.go`: экспорты `waitAnyBatch(max)` и `waitAnyTimeoutBatch(ms, max)`.
   Формат мультикадра: `[count uint16][len uint32][кадр]...` — внутри каждый кадр
   в текущем формате `buildResultFrame`, без изменений.
 
@@ -173,7 +173,7 @@ PHP-стороне. Решение по обеим — за мейнтейнер
 - `max` пачки — небольшая константа (например, 64): ограничивает пиковый размер
   мультикадра и время между проверками `shouldStop()` в серверном цикле.
 - Протокол меняется → **бамп минорной версии** (0.7.0 → 0.8.0) во всех трёх
-  источниках (`ext/main.go` `version()`, `Extension::REQUIRED_EXTENSION_VERSION`,
+  источниках (`ext-go-legacy/main.go` `version()`, `Extension::REQUIRED_EXTENSION_VERSION`,
   `composer.json`), один раз на ветку; `VersionConsistencyTest` следит.
 
 ### Ожидаемый эффект и мерило

@@ -23,7 +23,7 @@ use SConcur\Features\Amqp\Timestamp;
  * a tagged map the Go side turns into the real field value and back, because flattening
  * them would change the type of a header for every other client reading the same queue.
  *
- * Go: the tagged* constants (ext/internal/features/amqp/values.go).
+ * Go: the tagged* constants (ext-go-legacy/internal/features/amqp/values.go).
  */
 readonly class TableCodec
 {

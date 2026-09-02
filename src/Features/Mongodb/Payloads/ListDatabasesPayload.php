@@ -11,7 +11,7 @@ use SConcur\Features\Mongodb\Payloads\Dto\Parameters;
 
 /**
  * Go: no struct — the `dt` body is consumed as raw BSON (or is empty);
- * see ext/internal/features/mongodb/payloads/payloads.go.
+ * see ext-go-legacy/internal/features/mongodb/payloads/payloads.go.
  */
 readonly class ListDatabasesPayload extends BaseMongodbPayload
 {

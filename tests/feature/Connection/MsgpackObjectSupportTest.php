@@ -52,7 +52,7 @@ class MsgpackObjectSupportTest extends BaseTestCase
         $command = sprintf(
             'timeout 15 %s -d extension=%s -d msgpack.php_only=0 -r %s %s 2>&1',
             escapeshellarg(PHP_BINARY),
-            escapeshellarg($projectRoot . '/ext/build/sconcur.so'),
+            escapeshellarg(getenv('SCONCUR_EXT') ?: $projectRoot . '/ext/build/sconcur.so'),
             escapeshellarg($code),
             escapeshellarg($projectRoot),
         );

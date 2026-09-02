@@ -106,7 +106,7 @@ class TestWorkerMaster
             $server->stop();
 
             throw new RuntimeException(
-                'The test master did not become reachable (is ext/build/sconcur.so built?). Output: ' . $diagnostics,
+                'The test master did not become reachable (is the extension built?). Output: ' . $diagnostics,
             );
         }
 
@@ -472,7 +472,10 @@ class TestWorkerMaster
 
     private static function extensionPath(): string
     {
-        return self::root() . '/ext/build/sconcur.so';
+        // The build under test, so a run that spawns its own worker loads the same
+        // extension the suite does. Without it a run would answer for one core while
+        // measuring another.
+        return getenv('SCONCUR_EXT') ?: self::root() . '/ext/build/sconcur.so';
     }
 
     private static function makeRuntimeDir(): string

@@ -10,7 +10,7 @@ use SConcur\Transport\PayloadParametersInterface;
  * Parameters of an upload command: the request being uploaded to (requestId) and,
  * for a chunk, the bytes to append (empty for the end marker).
  *
- * Go: payloads.UploadParams (ext/internal/features/httpclient/payloads/payloads.go).
+ * Go: payloads.UploadParams (ext-go-legacy/internal/features/httpclient/payloads/payloads.go).
  */
 readonly class UploadPayloadParameters implements PayloadParametersInterface
 {

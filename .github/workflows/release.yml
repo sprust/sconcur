@@ -10,13 +10,13 @@ on:
     # build inputs — an omitted path means no release on a real change.
     paths:
       - '**.php'                        # src, tests, bin, config, cs-fixer.dist.php
-      - '**.go'                         # Go extension sources
-      - 'ext/**'                        # go.mod / go.sum, headers, build scripts
+      - '**.rs'                         # the Rust core's sources
+      - '**.go'                         # the Go core's sources
+      - 'ext/**'                        # Cargo manifests, the PHP glue, headers, build scripts
+      - 'ext-go-legacy/**'              # go.mod / go.sum, the glue, the makefile
       - 'composer.json'
       - 'composer.lock'
       - 'makefile'
-      - 'ext-build.sh'
-      - 'ext-test.sh'
       - 'phpstan.neon'
       - 'docker/**'
       - 'docker-compose.yml'
@@ -63,16 +63,23 @@ jobs:
       - name: Install composer dependencies
         run: make composer c="install --no-interaction --no-progress"
 
-      - name: Build extension
-        run: make ext-build
+      # The published artifact is still the Go build: AMQP is the one feature the
+      # Rust core has not been ported yet, so releasing that one would drop a
+      # feature from under everybody using it. check-go builds it, runs its unit
+      # tests and runs the whole PHPUnit suite against it — unfiltered, which the
+      # Rust check cannot be until AMQP lands.
+      - name: Run checks against the released core
+        run: make check-go
 
-      - name: Run checks
+      # The core everything in the repository loads by default, checked on the
+      # same commit so a release never carries a Rust core that does not build.
+      - name: Run checks against the Rust core
         run: make check
 
       - name: Resolve release version
         id: version
         run: |
-          status=$(docker compose exec -T php php -d extension=./ext/build/sconcur.so bin/sconcur-status --json)
+          status=$(docker compose exec -T php php -d extension=./ext-go-legacy/build/sconcur.so bin/sconcur-status --json)
           echo "sconcur-status: $status"
 
           ready=$(echo "$status" | jq -r '.ready')
@@ -126,7 +133,7 @@ jobs:
           # afterwards (see the immutability guard above). --latest marks it as the GitHub
           # "Latest" release (what /releases/latest resolves to). --generate-notes
           # auto-builds the changelog from PRs/commits between previous_tag and this release.
-          gh release create "$tag" ./ext/build/sconcur.so \
+          gh release create "$tag" ./ext-go-legacy/build/sconcur.so \
             --target "$GITHUB_SHA" \
             --title "$tag" \
             "${notes_args[@]}" \

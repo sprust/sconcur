@@ -5,7 +5,7 @@ English | [Русский](http-server.ru.md)
 A long-lived PHP daemon that accepts HTTP requests and handles each one in its own
 coroutine (Fiber), concurrently with the rest. The network I/O lives in the Go
 extension; PHP stays a thin orchestration layer. Implementation:
-`src/Features/HttpServer/` (PHP) and `ext/internal/features/httpserver/` (Go).
+`src/Features/HttpServer/` (PHP) and `ext-go-legacy/internal/features/httpserver/` (Go).
 
 > ⚠️ Read [What's missing compared to typical servers](#whats-missing-compared-to-typical-servers)
 > first — the model is cooperative and single-threaded, which constrains handler code.
@@ -402,7 +402,7 @@ flowchart TB
 
 Pass `reusePort: true` to every process on the shared port (on the Go side it sets
 the socket option via `net.ListenConfig` with a `Control` callback,
-`ext/internal/features/httpserver/listen.go`). Run them as separate processes — a
+`ext-go-legacy/internal/features/httpserver/listen.go`). Run them as separate processes — a
 supervisor (systemd, supervisord, docker `--scale`), the
 [worker master](worker-master.md), or a plain loop — never via `pcntl_fork`.
 
@@ -569,7 +569,7 @@ completion of the server flow, plus finishing the requests already accepted and
 its own errors, which is what `HttpServer::handle` does by turning them into a
 `500`.
 
-Go (`ext/internal/features/httpserver/`): `feature.go` serves both methods and
+Go (`ext-go-legacy/internal/features/httpserver/`): `feature.go` serves both methods and
 holds the registries `pendingRequests`
 (`requestId → {command channel, abandoned signal}`) and `serverStates`
 (`flowKey → serverState`, for `StopAccepting`); `server.go` is `serverState`, an

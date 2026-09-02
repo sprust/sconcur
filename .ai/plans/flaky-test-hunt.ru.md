@@ -17,7 +17,7 @@
   гонки: первое («сообщение уже в буфере, select выбрал drain») чинилось в `f117bcb`.
 - **Воспроизведение**: 2 фейла на 40 прогонов одиночного теста при 8 busy-циклах
   на хосте; сокет-аналог (`SocketServerMaxConnectionsTest`) чист — 0/40.
-- **Фикс** (расширение 0.7.1): `ext/internal/features/wsserver/message_state.go` —
+- **Фикс** (расширение 0.7.1): `ext-go-legacy/internal/features/wsserver/message_state.go` —
   соединение, ещё не доставившее хендлеру ни одного сообщения
   (`deliveredCount == 0`), при drain получает ограниченное окно
   (`firstMessageDrainGrace` = 250 мс) на первое сообщение и только потом EOF;

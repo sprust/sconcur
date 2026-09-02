@@ -4,7 +4,7 @@
 [«Как добавить новый сервер»](../../docs/adding-a-server.ru.md) — рядом с
 `HttpServer`, под тем же [мастером воркеров](../../docs/worker-master.ru.md).
 Эталон для копирования по всем механизмам — `HttpServer`
-(`src/Features/HttpServer/`, `ext/internal/features/httpserver/`).
+(`src/Features/HttpServer/`, `ext-go-legacy/internal/features/httpserver/`).
 
 ## Зафиксированные решения (согласовано с заказчиком)
 
@@ -243,7 +243,7 @@ async-msleep, native-block для теста handler-таймаута, close-п�
 
 ---
 
-## Go-сторона (`ext/internal/features/socketserver/`)
+## Go-сторона (`ext-go-legacy/internal/features/socketserver/`)
 
 ### `types/method.go`
 
@@ -384,7 +384,7 @@ msgs=<n> in=<байт> out=<байт> <ms>ms` — через `logger.Write(...)`
 
 Новый экспорт **`socketStopAccepting`** по цепочке эталонного
 `httpStopAccepting`:
-- `ext/main.go` — `//export socketStopAccepting` → `socketserver_feature.StopAccepting(C.GoString(fk))`;
+- `ext-go-legacy/main.go` — `//export socketStopAccepting` → `socketserver_feature.StopAccepting(C.GoString(fk))`;
 - `ext/sconcur.c` — `PHP_FUNCTION`, `arginfo`, `ZEND_NS_FE`, строка в шапке-комментарии;
 - `ext/sconcur.stub.php` — объявление `function socketStopAccepting(string $fk): void`;
 - `src/Connection/Extension.php` — `use function …\socketStopAccepting;` + метод-обёртка `socketStopAccepting(string $flowKey): void`.
@@ -396,7 +396,7 @@ msgs=<n> in=<байт> out=<байт> <ms>ms` — через `logger.Write(...)`
 
 Это протокольное изменение (2 новых метода + новый экспорт). Ветка
 `feature/socket-server` пока **без бампа** (текущая `0.2.3`, последний бамп — на
-master). Бампим **один раз на ветке**: `ext/main.go` `version()` и
+master). Бампим **один раз на ветке**: `ext-go-legacy/main.go` `version()` и
 `src/Connection/Extension.php` `REQUIRED_EXTENSION_VERSION` → **`0.2.4`** (патч —
 по прецеденту репозитория: фича http-client `download()` тоже была патчем).
 Минор/мажор — только с одобрения мейнтейнера.

@@ -5,7 +5,7 @@
 Долгоживущий PHP-демон, который принимает HTTP-запросы и обрабатывает каждый в
 отдельной корутине (Fiber), конкурентно с остальными. Сетевой I/O живёт в
 Go-расширении; PHP остаётся тонким слоем-оркестратором. Реализация:
-`src/Features/HttpServer/` (PHP) и `ext/internal/features/httpserver/` (Go).
+`src/Features/HttpServer/` (PHP) и `ext-go-legacy/internal/features/httpserver/` (Go).
 
 > ⚠️ Сначала прочитайте [«Чего нет в отличие от типовых
 > серверов»](#чего-нет-в-отличие-от-типовых-серверов) — модель кооперативная и
@@ -408,7 +408,7 @@ flowchart TB
 
 Передайте `reusePort: true` каждому процессу на общем порту (на Go-стороне опция
 выставляется через `net.ListenConfig` с `Control`-колбэком,
-`ext/internal/features/httpserver/listen.go`). Запускайте их как отдельные
+`ext-go-legacy/internal/features/httpserver/listen.go`). Запускайте их как отдельные
 процессы — через супервизор (systemd, supervisord, docker `--scale`),
 [мастер воркеров](worker-master.ru.md) или простым циклом, но не через
 `pcntl_fork`.
@@ -577,7 +577,7 @@ PHP: `HttpServer::serve()` генерирует `flowKey`, ставит обра
 вне `WaitGroup` и обязана обработать свои ошибки сама — это и делает
 `HttpServer::handle`, превращая их в `500`.
 
-Go (`ext/internal/features/httpserver/`): `feature.go` обслуживает оба метода и
+Go (`ext-go-legacy/internal/features/httpserver/`): `feature.go` обслуживает оба метода и
 держит реестры `pendingRequests` (`requestId → {канал команд, сигнал abandoned}`)
 и `serverStates` (`flowKey → serverState` для `StopAccepting`); `server.go` — это
 `serverState`, `http.Handler` поверх `net/http.Server`, отвечающий за семафор

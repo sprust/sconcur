@@ -247,7 +247,7 @@ Std::fileDelete($path);
 
 Новый метод + payloads + удалённый метод = изменение протокола PHP↔Go → минорный
 бамп версии расширения, один раз на ветке фичи, все три источника вместе
-(`ext/main.go`, `Extension.php::REQUIRED_EXTENSION_VERSION`, `composer.json`).
+(`ext-go-legacy/main.go`, `Extension.php::REQUIRED_EXTENSION_VERSION`, `composer.json`).
 
 ## Тесты
 

@@ -17,7 +17,7 @@ use WeakReference;
  * message on the wire is one subject, and Channel is the API over the commands.
  *
  * Go: payloads.Delivery, payloads.Confirmation, payloads.ReturnedMessage
- * (ext/internal/features/amqp/payloads/payloads.go).
+ * (ext-go-legacy/internal/features/amqp/payloads/payloads.go).
  */
 readonly class DeliveryCodec
 {

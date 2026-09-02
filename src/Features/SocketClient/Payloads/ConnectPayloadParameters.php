@@ -11,7 +11,7 @@ use SConcur\Transport\PayloadParametersInterface;
  * Carries the mandatory execution bounds for a long-lived connection (connect / read /
  * write timeouts), applied on the Go side as dial and per-frame deadlines.
  *
- * Go: payloads.ConnectParams (ext/internal/features/socketclient/payloads/payloads.go).
+ * Go: payloads.ConnectParams (ext-go-legacy/internal/features/socketclient/payloads/payloads.go).
  */
 readonly class ConnectPayloadParameters implements PayloadParametersInterface
 {

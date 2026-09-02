@@ -44,7 +44,7 @@ fi
 LOAD_CORES=${LOAD_CORES:-2}
 MAXCONCURRENCY=${MAXCONCURRENCY:-0}
 
-EXTENSION=/sconcur/ext/build/sconcur.so
+EXTENSION=${SCONCUR_EXT:-/sconcur/ext/build/sconcur.so}
 SCRIPT=/sconcur/tests/servers/ws/ws-server.php
 LOADBIN=/tmp/sc-ws-load
 PIDFILE=/tmp/sc-ws-load-$PORT.pids

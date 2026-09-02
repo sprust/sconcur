@@ -10,7 +10,7 @@ use SConcur\Features\Mongodb\Payloads\Dto\Connection;
 use SConcur\Features\Mongodb\Payloads\Dto\Parameters;
 
 /**
- * Go: payloads.DropIndexPayload (ext/internal/features/mongodb/payloads/payloads.go).
+ * Go: payloads.DropIndexPayload (ext-go-legacy/internal/features/mongodb/payloads/payloads.go).
  */
 readonly class DropIndexPayload extends BaseMongodbPayload
 {

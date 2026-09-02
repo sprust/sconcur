@@ -86,12 +86,12 @@ $replies = $waitGroup->waitResults(); // общее время ≈ самого 
 конвертом-командой (как `HttpClient`, не как `SocketServer` с двумя методами):
 
 - PHP: `src/Features/MethodEnum.php` → `case SocketClient = 10;`
-- Go: `ext/internal/types/method.go` → `MethodSocketClient Method = 10`
+- Go: `ext-go-legacy/internal/types/method.go` → `MethodSocketClient Method = 10`
 
-Под-операции (по образцу `HttpClientCommand`, файл `ext/internal/types/httpclient.go`):
+Под-операции (по образцу `HttpClientCommand`, файл `ext-go-legacy/internal/types/httpclient.go`):
 
 - PHP: `src/Features/SocketClient/SocketClientCommandEnum.php`
-- Go: `ext/internal/types/socketclient.go`
+- Go: `ext-go-legacy/internal/types/socketclient.go`
 
 | Команда | Значение | Назначение |
 | --- | --- | --- |
@@ -144,7 +144,7 @@ inbound (ключ `cid:in`), как у `SocketServer::Connection::read()`
 - `ConnectionMeta` (Go→PHP, первый результат connect): `['cid'=>id, 'ra'=>remoteAddr, 'la'=>localAddr]`
 
 Все payload-классы — `readonly`, типизированы, с docblock-кросс-ссылкой
-`Go: payloads.<Type> (ext/internal/features/socketclient/payloads/payloads.go)`
+`Go: payloads.<Type> (ext-go-legacy/internal/features/socketclient/payloads/payloads.go)`
 (требование [docs/adding-a-feature.ru.md](../../docs/adding-a-feature.ru.md)).
 
 ## 5. Опции (`SocketClientOptions`)
@@ -177,11 +177,11 @@ v1 — **только plain TCP**: без TLS, без unix-сокетов, бе�
 `SocketClient` зависят только от общего, но НЕ друг от друга** (фичи не связаны).
 Проект уже так делает (`ServerRuntimeSupportTrait`, `helpers.ReadChunk`).
 
-**Go — новый нейтральный пакет `ext/internal/socket/`** (не под `features/`, т.к.
+**Go — новый нейтральный пакет `ext-go-legacy/internal/socket/`** (не под `features/`, т.к.
 у него нет своего `Method` — это общая инфраструктура, как `internal/helpers`):
 
 - `frame.go` — кодек `ReadFrame`/`WriteFrame` (перенести из
-  `ext/internal/features/socketserver/frame.go`, экспортировать). Чистый, уже
+  `ext-go-legacy/internal/features/socketserver/frame.go`, экспортировать). Чистый, уже
   покрыт тестами — переносятся вместе.
 - `message_state.go` — `MessageState` (стриминг входящих фреймов), параметризуется
   `conn`/`reader`/таймаутами; одинаков для accept- и dial-соединений (из
@@ -209,7 +209,7 @@ abstract protected function connectionClosedException(...): RuntimeException; //
 наследниками: каждый подставляет свои payload'ы и своё парное исключение. Фичи
 остаются развязанными (общий родитель нейтрален).
 
-## 7. Go-слой (`ext/internal/features/socketclient/`)
+## 7. Go-слой (`ext-go-legacy/internal/features/socketclient/`)
 
 | Файл | Роль |
 | --- | --- |
@@ -220,7 +220,7 @@ abstract protected function connectionClosedException(...): RuntimeException; //
 
 Реестр живых соединений — `sync.Map` (`cid → *socket.PendingConnection`), как
 `serverState.conns` в `socketserver/server.go`. Примитивы фрейминга, inbound-стрим
-и write-loop берутся из общего `ext/internal/socket/` (§6).
+и write-loop берутся из общего `ext-go-legacy/internal/socket/` (§6).
 
 ### `handleConnect` — пошагово
 
@@ -261,7 +261,7 @@ abstract protected function connectionClosedException(...): RuntimeException; //
 
 ### Регистрация и shutdown
 
-- `ext/internal/features/factory.go`: `case types.MethodSocketClient: return socketclient_feature.Get(), nil`.
+- `ext-go-legacy/internal/features/factory.go`: `case types.MethodSocketClient: return socketclient_feature.Get(), nil`.
 - Глобального idle-пула нет (каждый connect — своё соединение), поэтому в
   `features.Shutdown()` правок не нужно; очистка — через AfterFunc по флоу.
 
@@ -282,7 +282,7 @@ abstract protected function connectionClosedException(...): RuntimeException; //
   `HttpClient\HttpClientConcurrencyTest`). Реализовать хуки `on_1_*`/`on_2_*`,
   `on_iterate`, `on_exception`/`assertException`, `assertResult`.
 
-**Go** (`ext/internal/features/socketclient/..._test.go`) — на `net.Listener` в
+**Go** (`ext-go-legacy/internal/features/socketclient/..._test.go`) — на `net.Listener` в
 тесте: успешный dial + meta, стриминг входящих фреймов, write/backpressure,
 классификация ошибки dial (`net:`), `Close`/отмена контекста. Если кодек вынесен в
 `socket/` — перенести и его тест.
@@ -299,9 +299,9 @@ abstract protected function connectionClosedException(...): RuntimeException; //
 ## 10. Версия расширения
 
 Протокол меняется (новый `Method` + команды) → бумп **один раз на ветке**
-`feature/socket-client`. Текущая — `0.2.4` (`ext/main.go:224`,
+`feature/socket-client`. Текущая — `0.2.4` (`ext-go-legacy/main.go:224`,
 `src/Connection/Extension.php:37`). Решение 2: **минорный** бамп → `0.3.0`
-(`version()` в `ext/main.go` и `REQUIRED_EXTENSION_VERSION` в
+(`version()` в `ext-go-legacy/main.go` и `REQUIRED_EXTENSION_VERSION` в
 `src/Connection/Extension.php` — вместе). Major не трогаем без согласования.
 
 ## 11. Чеклист реализации
@@ -341,7 +341,7 @@ Go:
 
 ## 12. Принятые решения
 
-1. **Вынос общего кода** — выделить нейтральные пакеты (`ext/internal/socket/` на
+1. **Вынос общего кода** — выделить нейтральные пакеты (`ext-go-legacy/internal/socket/` на
    Go, `Features/Socket/Dto/AbstractConnection` на PHP); `SocketServer` и
    `SocketClient` зависят только от общего, друг от друга — нет (§6).
 2. **Версия** — минор `0.3.0` (§10).

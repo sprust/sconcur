@@ -210,7 +210,7 @@ PSR-7 `RequestInterface::getBody()` — это `StreamInterface`. Два реж�
   Под-операции различаются командой в конверте payload (`HttpClientCommandEnum`,
   как у MongoDB), а не отдельным `MethodEnum`. См.
   [HttpClient::sendStreaming()](../../src/Features/HttpClient/HttpClient.php) и
-  Go-сторону `ext/internal/features/httpclient/upload.go`.
+  Go-сторону `ext-go-legacy/internal/features/httpclient/upload.go`.
 
 ---
 
@@ -279,7 +279,7 @@ Go-сторона различает классы ошибок и кодируе
 Новый домен (см. [adding-a-feature](../../docs/adding-a-feature.ru.md)):
 
 - PHP: `SConcur\Features\MethodEnum::HttpClient = 5`
-- Go: `ext/internal/types/method.go` → `MethodHttpClient Method = 5`
+- Go: `ext-go-legacy/internal/types/method.go` → `MethodHttpClient Method = 5`
 
 ### Конверт команд (envelope)
 
@@ -289,7 +289,7 @@ payload (`HttpClientCommandEnum`, как у MongoDB под `MethodEnum::Mongodb`
 
 - PHP: `SConcur\Features\HttpClient\HttpClientCommandEnum` — `Request = 1`,
   `UploadChunk = 2`, `UploadEnd = 3`.
-- Go: `ext/internal/types/httpclient.go` → `types.HttpClientCommand`.
+- Go: `ext-go-legacy/internal/types/httpclient.go` → `types.HttpClientCommand`.
 
 ### `RequestPayload` / `RequestPayloadParameters` (PHP → Go)
 
@@ -349,7 +349,7 @@ PHP различает фазы по taskKey: результат `exec` → ме
 
 ## Go-сторона
 
-`ext/internal/features/httpclient/`:
+`ext-go-legacy/internal/features/httpclient/`:
 
 - `payloads/payloads.go` — `RequestPayload` (1:1 с PHP, msgpack-теги, кросс-ссылка
   `// PHP: SConcur\Features\HttpClient\Payloads\RequestPayload`).
@@ -381,7 +381,7 @@ PHP различает фазы по taskKey: результат `exec` → ме
   и запустить через `states.Get().Start(ctx, message.TaskKey, state)`; вернуть
   первый результат (метаданные). Тот же `Handle` обслуживает `next` через общую
   маршрутизацию состояний (отдельно настраивать не нужно).
-- Регистрация в `ext/internal/features/factory.go`:
+- Регистрация в `ext-go-legacy/internal/features/factory.go`:
   ```go
   case types.MethodHttpClient:
       return httpclient_feature.Get(), nil

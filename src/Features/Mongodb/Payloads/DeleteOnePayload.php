@@ -10,7 +10,7 @@ use SConcur\Features\Mongodb\Payloads\Dto\Connection;
 use SConcur\Features\Mongodb\Payloads\Dto\Parameters;
 
 /**
- * Go: payloads.DeleteOnePayload (ext/internal/features/mongodb/payloads/payloads.go).
+ * Go: payloads.DeleteOnePayload (ext-go-legacy/internal/features/mongodb/payloads/payloads.go).
  */
 readonly class DeleteOnePayload extends BaseMongodbPayload
 {

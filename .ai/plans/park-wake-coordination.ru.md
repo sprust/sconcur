@@ -30,7 +30,7 @@
 они мерили либо **неблокирующий** cgo (`tasksCount`, 0.082 мкс), либо изолированное
 рандеву при `CGO_ENABLED=0` (~0.5 мкс) — то есть **без реального парка cgo-нити и её
 пробуждения Go-планировщиком с другого OS-потока**. В проде же `waitAny` —
-блокирующий cgo `select` на канале (`ext/internal/handler/handler.go:62`): при
+блокирующий cgo `select` на канале (`ext-go-legacy/internal/handler/handler.go:62`): при
 пустом буфере PHP-поток паркуется на futex, и завершившаяся горутина БД должна
 разбудить cgo-locked поток через границу. Эти park/wake round-trip'ы и съедают ⅔
 потолка.
@@ -41,7 +41,7 @@
 парковки на каждом переходе* — ортогональная и нетронутая ось.
 
 **Оговорка о свежести цифр.** После профиля 2026-07-02 канал результатов стал
-буферизованным (`resultsBufferSize = 1024`, `ext/internal/handler/handler.go:23`),
+буферизованным (`resultsBufferSize = 1024`, `ext-go-legacy/internal/handler/handler.go:23`),
 чтобы убрать rendezvous «две futex-побудки на результат». Поэтому цифры 130/⅓ могли
 измениться, и план начинается с обязательной атрибуции (фаза 0), гейтящей всё
 остальное — как замеры раньше закрыли идеи B/C.
@@ -76,7 +76,7 @@
 Замерить сегодняшнюю цену одного результата через `waitAny`, разложив на:
 
 1. **Go-сторона, пустой vs полный буфер.** Go-бенч (`CGO_ENABLED=0`,
-   `ext/internal/handler`) `Handler.WaitAny`: (а) буфер заполнен — быстрый
+   `ext-go-legacy/internal/handler`) `Handler.WaitAny`: (а) буфер заполнен — быстрый
    неблокирующий receive; (б) буфер пуст — реальная парковка на канале + пробуждение
    горутиной-продьюсером с другого P. Мерить ns/op и futex-побудки
    (`perf stat -e ...` или `GODEBUG=schedtrace`).
@@ -134,7 +134,7 @@ N из `async-fan-out-optimization.ru.md`.
 падать в блокирующий `select`. Если результат успевает прийти в окне спина — парка и
 futex-пробуждения нет вовсе.
 
-- Правка — только `ext/internal/handler/handler.go` (`WaitAny`); протокол,
+- Правка — только `ext-go-legacy/internal/handler/handler.go` (`WaitAny`); протокол,
   экспортируемые функции и PHP-сторона не меняются → **бампа версии нет**.
 - Спин — только в `WaitAny` (горячий путь планировщика), **не** в `WaitAnyTimeout`
   (это idle-poll серверного цикла на 250 мс — спин там жёг бы CPU на простое).
@@ -155,7 +155,7 @@ futex-пробуждения нет вовсе.
 
 #### Результаты (2026-07-24) — реализовано, эффект маргинальный
 
-Реализация: `ext/internal/handler/handler.go`, `WaitAny` — спин перед блокирующим
+Реализация: `ext-go-legacy/internal/handler/handler.go`, `WaitAny` — спин перед блокирующим
 `select`. Ключевой урок по механике спина:
 
 - **`runtime.Gosched()` на cgo-locked нити стоит ~4 мкс** за итерацию. Спин из 256
@@ -293,7 +293,7 @@ zval-churn/спавна горутин, не из park/wake). Многоднев
   execution»): вне корутины исполнять хендлер прямо на cgo-нити, без горутины/канала;
   слить `push+wait+stopFlow` в один экспорт `pushWait` (3 cgo → 1). Правит
   `FeatureExecutor::handleSync` (`src/Features/FeatureExecutor.php:112`), lifecycle
-  `Flow`, `ext/main.go`.
+  `Flow`, `ext-go-legacy/main.go`.
 - **Async-путь:** пул переиспользуемых `Flow`/каналов вместо одноразовых
   (`fresh−reused ≈ 8 аллокаций/вызов` по Go-профилю).
 
@@ -304,7 +304,7 @@ zval-churn/спавна горутин, не из park/wake). Многоднев
 #### Результаты атрибуции (2026-07-24)
 
 Go-бенч аллокаций round-trip'а `Push→WaitAny` (`CGO_ENABLED=0`, sleeper ms=0, чтобы
-мерить машинерию, а не таймер; `ext/internal/handler/handler_bench_test.go`,
+мерить машинерию, а не таймер; `ext-go-legacy/internal/handler/handler_bench_test.go`,
 `-benchtime=2000x`):
 
 | Бенч | ns/op | B/op | allocs/op |
@@ -337,7 +337,7 @@ struct) добавляет ~10 аллокаций / ~818 B / ~822 нс на вы
 
 #### Реализация — шаг 1: пул Flow (2026-07-24, без бампа)
 
-Сделано (`ext/internal/flows/flows.go`, `flow.go`): `sync.Pool` переиспользует
+Сделано (`ext-go-legacy/internal/flows/flows.go`, `flow.go`): `sync.Pool` переиспользует
 `Flow`-структуры и их `activeTasks`-map (через `clear()`, не переаллоцируя) между
 `DeleteFlow` и следующим `InitFlow`. Одноразовый flow — sync-путь и собственный flow
 каждой async-корутины — больше не аллоцирует свежие `Flow` + map на вызов. Остаётся
@@ -371,7 +371,7 @@ results-канал). На `Destroy` весь `Flows` c пулом заменяе
 `Cancel` не вызывается при `hasNext`), оставаясь «плавающим» — живёт только через свой
 контекст, который сейчас отменяется **пропагацией flow-контекста** на `StopFlow`
 (`states.Start` вешает `context.AfterFunc` на task-контекст,
-`ext/internal/states/states.go:45`). Явная отмена по `activeTasks` в `Flow.Cancel`
+`ext-go-legacy/internal/states/states.go:45`). Явная отмена по `activeTasks` в `Flow.Cancel`
 **пропустила бы плавающий курсорный task** → его состояние (курсор БД, тело запроса)
 утекло бы до `Destroy`. Per-flow контекст — load-bearing механизм очистки курсоров на
 стопе флоу; убирать нельзя без отдельного трекинга плавающих tasks (непропорциональная

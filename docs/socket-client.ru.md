@@ -11,7 +11,7 @@ dial, чтение, запись) живёт в Go-расширении: `connec
 
 Модель — долгоживущее двунаправленное соединение, а не «запрос-ответ»: приложение
 дозванивается, получает `Connection` и само ведёт диалог. Кодек фрейминга общий с
-сокет-сервером (`ext/internal/socket`), поэтому клиент и сервер SConcur совместимы
+сокет-сервером (`ext-go-legacy/internal/socket`), поэтому клиент и сервер SConcur совместимы
 из коробки.
 
 ## Быстрый старт
@@ -118,13 +118,13 @@ PHP (`src/Features/SocketClient/`): `SocketClient::connect()` собирает
 `SendPayload`/`ClosePayload` и парное исключение; `SocketClientCommandEnum` и
 `Payloads/` — конверт `Connect`/`Send`/`Close`, зеркало Go-структур.
 
-Go (`ext/internal/features/socketclient/`): `connect.go` дозванивается с
+Go (`ext-go-legacy/internal/features/socketclient/`): `connect.go` дозванивается с
 `connectTimeout` (отменяем контекстом флоу) и регистрирует стриминговый
 `connectionState` — первый `Next` даёт метаданные, дальше идут входящие кадры —
 плюс цикл записи, очищаемый при остановке флоу; `feature.go` диспетчеризует
 команды, маршрутизируя `Send`/`Close` по `cid` в этот цикл. Кодек кадров,
 `MessageState` и цикл записи, ждущий сброса каждого кадра, живут в нейтральном
-`ext/internal/socket/`, общем с сокет-сервером.
+`ext-go-legacy/internal/socket/`, общем с сокет-сервером.
 
 То есть чтение входящих кадров — это `next()` по стриминговому состоянию connect
 (как тело ответа у `HttpClient`), а запись и закрытие — `exec(Send/Close)` с
@@ -141,7 +141,7 @@ TLS (позже, опцией), unix-сокеты (только TCP), пул с�
 PHP feature-тесты лежат в `tests/feature/Features/SocketClient/` — edge- и
 error-случаи плюс контракт конкурентности на `BaseAsyncTestCase`, против
 реального `SocketServer` SConcur, поднятого через `TestSocketServer`. Go-тесты
-покрывают общий пакет `ext/internal/socket/` и `connect_test.go`. Бенчмарк
+покрывают общий пакет `ext-go-legacy/internal/socket/` и `connect_test.go`. Бенчмарк
 (`make bench-socket-client c=20`) гоняет N round-trip'ов к эндпоинту `msleep`
 демо-сервера: одновременный async против последовательных native (сырые сокеты
 PHP) и sync.

@@ -235,7 +235,7 @@ PHP (`src/Features/HttpClient/`): `HttpClient` собирает `RequestPayload`
 (под-операции конверта `Request`/`UploadChunk`/`UploadEnd`), `Payloads/*` (зеркала
 Go-структур), `Dto/ResponseBodyStream` и `Dto/DownloadResult`.
 
-Go (`ext/internal/features/httpclient/`): `feature.go` собирает `*http.Request`,
+Go (`ext-go-legacy/internal/features/httpclient/`): `feature.go` собирает `*http.Request`,
 применяет `context.WithTimeout`, запускает состояние и маршрутизирует команды;
 `response_state.go` — стриминговое состояние (первый `Next()` выполняет запрос и
 возвращает метаданные плюс первый чанк, дальше идут сырые чанки тела, `Close()`

@@ -148,7 +148,7 @@ confirm/return; `QueueInfo`; `publishConfirmed` с `mandatory: true`; `Propertie
 ### 1.3. AMQP, Go-сторона
 
 15. **medium — `classify` принимает закрывающийся канал за умершее соединение.**
-    `ext/internal/features/amqp/feature.go` — `ErrClosed` классифицируется по
+    `ext-go-legacy/internal/features/amqp/feature.go` — `ErrClosed` классифицируется по
     `entry.isClosed()`, т.е. по тому, отработал ли наш `watch` (`channels.go`). Драйвер
     помечает канал closed в reader'е соединения до `NotifyClose`; в этом окне любая
     команда на канале получает `ErrClosed` при `isClosed() == false` → `scopeNetwork` →

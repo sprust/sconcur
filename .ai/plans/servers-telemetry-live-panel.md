@@ -66,21 +66,21 @@ flowchart TB
     master <-->|"SSE-панель / JSON / Prometheus (Bearer)"| browser
 ```
 
-## Push-сторона (Go, `ext/internal/stats/`)
+## Push-сторона (Go, `ext-go-legacy/internal/stats/`)
 
 `pusher.go` (новый) — best-effort клиент unix-сокета:
 
 - Dial с backoff-реконнектом. Стартовая гонка «воркер раньше мастера»
   (`ENOENT`/`ECONNREFUSED`) и разрыв (рестарт мастера) → ретрай.
-- Кадр через `internal/socket.WriteFrame` (`ext/internal/socket/frame.go`) — тот же
+- Кадр через `internal/socket.WriteFrame` (`ext-go-legacy/internal/socket/frame.go`) — тот же
   length-prefix кодек, что у socket-сервера/клиента; новый формат не плодим.
 - Тело кадра — JSON: конверт `{"t":"snapshot","s":<Snapshot>}`, где `Snapshot` —
-  существующий тип из `ext/internal/stats/snapshot.go` (уже JSON-тегирован). JSON
+  существующий тип из `ext-go-legacy/internal/stats/snapshot.go` (уже JSON-тегирован). JSON
   выбран сознательно ради открытого, языко-независимого контракта (см. ниже).
 - Запись с коротким write-deadline; would-block → дроп кадра. Горутину не вешаем.
 
 Две каденции (важно при `interval=1s`). `runtime.ReadMemStats`
-(`ext/internal/stats/metrics.go`) — STW-пауза в процессе воркера; раз в секунду она
+(`ext-go-legacy/internal/stats/metrics.go`) — STW-пауза в процессе воркера; раз в секунду она
 бьёт по p99 его же запросов. Поэтому:
 
 - workload-счётчики (completed/avgMs/in-flight у HTTP, active/accepted у socket —
@@ -101,8 +101,8 @@ TODO (исправить, не оставлять). Под-сэмпл 5s — э�
 опциональный (продублировано в «Отложено»).
 
 Интеграция: в `newServerState` обоих серверов
-(`ext/internal/features/httpserver/server.go`,
-`ext/internal/features/socketserver/server.go`) поднимаем `Pusher` при заданном
+(`ext-go-legacy/internal/features/httpserver/server.go`,
+`ext-go-legacy/internal/features/socketserver/server.go`) поднимаем `Pusher` при заданном
 `telemetrySocket`; гасим в `Close()`. Горячий путь запроса не затрагивается.
 Workload-провайдеры (`httpserver/requeststats.go`, `socketserver/connectionstats.go`)
 остаются — они наполняют снапшот, который теперь пушится, а не пишется в файл.
@@ -116,7 +116,7 @@ Workload-провайдеры (`httpserver/requeststats.go`, `socketserver/conne
 - Кадрирование: 4-байтный big-endian length-prefix + тело (кодек
   `internal/socket` — `ReadFrame`/`WriteFrame`).
 - Тело: UTF-8 JSON, конверт `{"t":<type>,"s":<payload>}`. Сейчас `t="snapshot"`,
-  `s` = `Snapshot` (схема — JSON-теги `ext/internal/stats/snapshot.go`). Будущие
+  `s` = `Snapshot` (схема — JSON-теги `ext-go-legacy/internal/stats/snapshot.go`). Будущие
   типы (`worker.start`/`worker.stop`/событие порога — фаза 2) добавляются как новые
   `t` без слома существующих.
 - Семантика: best-effort, at-most-once, без ack; коллектор держит last-value по
@@ -153,7 +153,7 @@ backpressure кадр дропается; число SSE-клиентов лим
 - Детекция смерти воркера — двойной сигнал: мастер видит выход через `waitpid`
   (он сам спавнил воркера) и закрытие соединения (ядро закрывает fd при крахе).
   Никаких `kill(pid,0)`/flock/glob/гонок reuse-pid — они уходят вместе с файлами.
-- Агрегация — перенос математики `fillTotals` (бывш. `ext/internal/stats/aggregate.go`)
+- Агрегация — перенос математики `fillTotals` (бывш. `ext-go-legacy/internal/stats/aggregate.go`)
   на PHP: сумма процессных метрик, avg взвешен по completed, сумма workload-секции.
   Скоуп по имени пула (роль воркера мастер и так знает).
 - Hung: соединение живо, но пуша нет дольше N интервалов → флаг `hung`.
@@ -162,7 +162,7 @@ backpressure кадр дропается; число SSE-клиентов лим
 
 ## HTTP-эндпоинты мастера (на отдельном порту, Bearer)
 
-- `GET /` — HTML live-панель (вёрстка — перенос из `ext/internal/stats/html.go`), на
+- `GET /` — HTML live-панель (вёрстка — перенос из `ext-go-legacy/internal/stats/html.go`), на
   `EventSource`.
 - `GET /events` — SSE: агрегат пула на каждом апдейте/тике.
 - `GET /api/stats` — JSON/Prometheus/HTML по `Accept` (паритет с прежней ручкой, но
@@ -173,7 +173,7 @@ backpressure кадр дропается; число SSE-клиентов лим
 
 ## Что удаляется
 
-Go (`ext/internal/stats/`): `server.go`, `listen.go`, `aggregate.go`,
+Go (`ext-go-legacy/internal/stats/`): `server.go`, `listen.go`, `aggregate.go`,
 `prometheus.go`, `html.go`; файловая запись из `collector.go` (остаётся
 тикер+сэмплер, питающий пушер — можно слить в `pusher.go`). `stats_test.go` —
 переписывается под пушер.

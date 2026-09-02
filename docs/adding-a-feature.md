@@ -4,7 +4,7 @@ English | [Русский](adding-a-feature.ru.md)
 
 A top-level feature is a new domain with its own `Method` (like `Sleeper`). The
 reference to copy is `Sleeper`: PHP in `src/Features/Sleeper/`, Go in
-`ext/internal/features/sleeper/`. Below is the walkthrough in two variants — without
+`ext-go-legacy/internal/features/sleeper/`. Below is the walkthrough in two variants — without
 streaming (a single result) and with streaming (multiple batches).
 
 > Building a long-lived network server (like `HttpServer`)? That is a special kind
@@ -38,11 +38,11 @@ breaks `WaitGroup` behaviour.
 ## Method and payloads
 
 The domain is a value duplicated in two places, and both must match: PHP
-`SConcur\Features\MethodEnum` and Go `ext/internal/types/method.go` (`Method`).
+`SConcur\Features\MethodEnum` and Go `ext-go-legacy/internal/types/method.go` (`Method`).
 
 A payload is the exchange contract, laid out mirror-wise on both sides: PHP
 `src/Features/<Feature>/Payloads/` (one class per payload), Go
-`ext/internal/features/<feature>/payloads/payloads.go` (all types in one file, in a
+`ext-go-legacy/internal/features/<feature>/payloads/payloads.go` (all types in one file, in a
 directory named after the PHP domain). Each PHP `*Payload` has a Go struct with the
 same name; the struct fields are the keys returned by `getData()`, and the
 `msgpack` (and `json`) tags equal those short keys — Go decodes precisely by the
@@ -88,7 +88,7 @@ PHP:
 
    ```php
    /**
-    * Go: payloads.FooPayload (ext/internal/features/foo/payloads/payloads.go).
+    * Go: payloads.FooPayload (ext-go-legacy/internal/features/foo/payloads/payloads.go).
     */
    readonly class FooPayload implements PayloadInterface
    {
@@ -128,7 +128,7 @@ Go:
 
 1. `types/method.go` — the same constant: `MethodFoo Method = "foo"`.
 
-2. The feature package `ext/internal/features/foo/feature.go` implementing
+2. The feature package `ext-go-legacy/internal/features/foo/feature.go` implementing
    `contracts.FeatureContract` (`Handle(task *tasks.Task)`): parse
    `message.Payload`, do the work on `task.GetContext()`, return the result with
    `ExecutionMs`.
@@ -165,7 +165,7 @@ Go:
 
    As with `Sleeper`, the feature is usually a singleton via `sync.Once` + `Get()`.
 
-3. Registration in `ext/internal/features/factory.go` — a case in
+3. Registration in `ext-go-legacy/internal/features/factory.go` — a case in
    `DetectMessageHandler`:
 
    ```go

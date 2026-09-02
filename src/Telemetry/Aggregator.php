@@ -17,7 +17,7 @@ use SConcur\Telemetry\Dto\WorkerEntry;
 
 /**
  * Sums the live worker snapshots into the pool view. Ports the Go aggregator
- * (former ext/internal/stats/aggregate.go fillTotals): summed process metrics,
+ * (former ext-go-legacy/internal/stats/aggregate.go fillTotals): summed process metrics,
  * request average weighted by completed, only the workload section actually present.
  * A snapshot whose receipt is older than hungThresholdMs flags its worker hung — the
  * age is measured against the master's own receipt clock (skew-immune), so it does

@@ -277,12 +277,22 @@ $collection->insertOne(['name' => 'example']);
   RoadRunner и Swoole.
 
 ## Build
+
+Ядро расширения — `ext/` (Rust). Собирается в `ext/build/sconcur.so`:
+
 ```shell
-cd ext && \
-  rm -f build/sconcur.so build/sconcur.h && \
-  CGO_CFLAGS=$(php-config --includes) \
-  go build -buildmode=c-shared -o build/sconcur.so .
+make ext-build
 ```
+
+Go-ядро, с которого шёл порт, осталось здесь же, в `ext-go-legacy/`. Сегодня
+релизы собираются из него: это единственная сборка, в которой есть фича AMQP.
+
+```shell
+make ext-build-go
+```
+
+Обе дают одно и то же расширение, ABI в ABI — тот же PHP-клей, те же экспорты,
+тот же `version()`, — так что любую грузит неизменённый пакет.
 ## echo test
 ```shell
 php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello') . PHP_EOL;"

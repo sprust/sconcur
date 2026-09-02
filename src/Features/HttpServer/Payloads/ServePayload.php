@@ -11,7 +11,7 @@ use SConcur\Transport\PayloadInterface;
  * Starts the HTTP listener bound to the given address (e.g. "0.0.0.0:8080") with
  * the server tuning (timeouts in milliseconds, body limit in bytes).
  *
- * Go: payloads.ServePayload (ext/internal/features/httpserver/payloads/payloads.go).
+ * Go: payloads.ServePayload (ext-go-legacy/internal/features/httpserver/payloads/payloads.go).
  */
 readonly class ServePayload implements PayloadInterface
 {

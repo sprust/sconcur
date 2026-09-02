@@ -117,7 +117,7 @@ native-PDO-соединение того же процесса). Запуска�
 `h.results = make(chan *dto.Result)` был небуферизованным: каждый результат —
 rendezvous двух парковок (горутина на send, PHP-поток в recv) и двух
 futex-пробуждений. Теперь канал буферизован (`resultsBufferSize = 1024`,
-`ext/internal/handler/handler.go`): готовые результаты лежат в канале, `waitAny`
+`ext-go-legacy/internal/handler/handler.go`): готовые результаты лежат в канале, `waitAny`
 забирает их по fast-path, горутины завершаются не вися на send; за пределами
 буфера действует прежний backpressure. Протокол не меняется, порядок FIFO
 сохраняется.

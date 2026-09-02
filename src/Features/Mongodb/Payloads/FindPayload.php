@@ -10,7 +10,7 @@ use SConcur\Features\Mongodb\Payloads\Dto\Connection;
 use SConcur\Features\Mongodb\Payloads\Dto\Parameters;
 
 /**
- * Go: payloads.FindPayload (ext/internal/features/mongodb/payloads/payloads.go).
+ * Go: payloads.FindPayload (ext-go-legacy/internal/features/mongodb/payloads/payloads.go).
  */
 readonly class FindPayload extends BaseMongodbPayload
 {

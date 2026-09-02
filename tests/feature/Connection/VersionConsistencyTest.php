@@ -10,7 +10,7 @@ use SConcur\Tests\Feature\BaseTestCase;
 /**
  * The three places a version lives must stay in lockstep: the PHP package's
  * required version (Extension::REQUIRED_EXTENSION_VERSION), the loaded Go
- * extension's reported version (Extension::version(), sourced from ext/main.go),
+ * extension's reported version (Extension::version(), sourced from ext-go-legacy/main.go),
  * and the composer.json "version" field. The release CI tags from the extension
  * version, so any drift between them would ship a mislabeled release.
  */

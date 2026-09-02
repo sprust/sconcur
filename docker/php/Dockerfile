@@ -84,9 +84,10 @@ RUN pecl install --configureoptions '\
     "swoole-${SWOOLE_VERSION}" && \
     rm -rf /tmp/pear
 
-# Rust toolchain for the ext-rust core spike (branch spike/rust-core). Sits
-# beside the Go one for the same reason: the spike's build.sh compiles
-# ext-rust/sconcur.c and links it against the staticlib cargo produces, and both
+# Rust toolchain: the core the extension is built from lives in ext/, so
+# this is what `make ext-build` needs. It sits beside the Go one — which still
+# builds the reference core in ext-go-legacy/ — for the same reason: build.sh compiles
+# ext/sconcur.c and links it against the staticlib cargo produces, and both
 # halves have to see the same PHP headers this image already carries.
 # Placed after the Swoole build so the expensive cached layers above are reused.
 ENV RUSTUP_HOME=/usr/local/rustup \

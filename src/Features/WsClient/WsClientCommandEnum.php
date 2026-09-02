@@ -8,7 +8,7 @@ namespace SConcur\Features\WsClient;
  * Sub-operations of the ws-client feature, carried in the payload envelope (the `cm`
  * field) under the single MethodEnum::WsClient — mirrors SocketClientCommandEnum.
  *
- * Go: types.WsClientCommand (ext/internal/types/wsclient.go).
+ * Go: types.WsClientCommand (ext-go-legacy/internal/types/wsclient.go).
  */
 enum WsClientCommandEnum: string
 {

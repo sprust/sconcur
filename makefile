@@ -2,16 +2,26 @@ MAKEFLAGS += --no-print-directory
 
 DOCKER_COMPOSE = docker compose
 PHP_CLI = $(DOCKER_COMPOSE) exec php
-# The extension every benchmark and script loads. Overridable so the same targets
-# can be pointed at an alternative build without a second copy of each one:
-#   make bench-mongodb-aggregate SCONCUR_EXT=./ext-rust/build/sconcur.so
-SCONCUR_EXT ?= ./ext/build/sconcur.so
+# The extension every target, benchmark and test harness loads: the Rust core.
+# Absolute in the container's path shape, because it is handed to subprocesses
+# that do not share this one's working directory (the server harnesses spawn
+# their worker with proc_open).
+#
+# Overridable, so the same targets can be pointed at the Go build still living
+# in ext-go-legacy/ without a second copy of each one:
+#   make bench-mongodb-aggregate SCONCUR_EXT=/sconcur/ext-go-legacy/build/sconcur.so
+SCONCUR_EXT ?= /sconcur/ext/build/sconcur.so
 
 # Exported so the targets that run a script on the host (the load benchmarks)
 # pass the same choice down instead of each recipe repeating it.
 export SCONCUR_EXT
 
-PHP_EXT = $(PHP_CLI) php -d extension=$(SCONCUR_EXT)
+# Every target that loads the extension also puts the choice into the container's
+# environment: the harnesses that spawn a worker of their own read SCONCUR_EXT,
+# and without it a run would load one build in the PHPUnit process and another in
+# the process doing the work.
+PHP_CLI_EXT = $(DOCKER_COMPOSE) exec -e SCONCUR_EXT=$(SCONCUR_EXT) php
+PHP_EXT = $(PHP_CLI_EXT) php -d extension=$(SCONCUR_EXT)
 
 # Master control inside the `servers` container: two masters run there under
 # supervisor. One holds the three servers as a group each, the other the RabbitMQ
@@ -117,11 +127,32 @@ cs-fixer-fix:
 check:
 	make cs-fixer-check
 	make php-stan
+	make ext-build
+	make ext-check
 	make test
-	make ext-test
 
 status:
 	$(PHP_EXT) bin/sconcur-status ${c}
+
+# TEMPORARY. The suites the extension can answer for today. AMQP is the one
+# feature the Rust core has not been ported yet, so `tests/feature/Features/Amqp`
+# — and the PHP-side suites that reach for it — would report the gap rather than a
+# regression. The day AMQP lands this whole variable goes away and `test` runs
+# `tests` again.
+TEST_PATHS = \
+	tests/feature/Connection \
+	tests/feature/Scheduler \
+	tests/feature/Features/Context \
+	tests/feature/Features/Sleeper \
+	tests/feature/Features/Mysql \
+	tests/feature/Features/Pgsql \
+	tests/feature/Features/Mongodb \
+	tests/feature/Features/HttpServer \
+	tests/feature/Features/SocketServer \
+	tests/feature/Features/WsServer \
+	tests/feature/Features/SocketClient \
+	tests/feature/Features/WsClient \
+	tests/feature/Features/HttpClient
 
 # --log-junit persists the failing test's name for the rare flaky failure that
 # only fires on the first run after heavy host activity — see
@@ -146,89 +177,50 @@ test:
 		--display-errors \
 		--display-notices \
 		--display-warnings \
-		tests ${c} || ( \
+		$(TEST_PATHS) ${c} || ( \
 			$(PHP_CLI) sh -c 'mkdir -p .phpunit-failed && cp /tmp/sconcur-phpunit.xml .phpunit-failed/sconcur-phpunit-$$(date +%Y%m%d-%H%M%S).xml'; \
 			exit 1 \
 		)
 
+# Compiles ext/ into ext/build/sconcur.so — the extension everything here loads. Two steps in one script: cargo builds the core into a static
+# archive, gcc links it with the PHP glue (ext/build.sh).
 ext-build:
-	$(PHP_CLI) sh ./ext-build.sh
+	$(PHP_CLI) sh -c 'cd /sconcur/ext && CARGO_TARGET_DIR=/sconcur/ext/target sh ./build.sh'
 
-ext-test:
-	$(PHP_CLI) sh ./ext-test.sh
+# Exercises the core through the unmodified PHP package before the suites run:
+# the shared channel, the error path, flow teardown, the sync wait.
+ext-check:
+	$(PHP_EXT) ext/check/core-smoke.php
 
-# --- Rust core spike (branch spike/rust-core) -------------------------------
-# An alternative build of the extension core in Rust: the C exports, the shared
-# results channel, the sleeper feature and the HTTP server rungs the attribution
-# ladder needs. Not part of `make check` — it answers one question (is the L0
-# floor and the boundary cheaper in another runtime) and is thrown away or
-# promoted on the answer. See .ai/plans/rust-core-spike.md.
+# --- The Go core ------------------------------------------------------------
+# Moved to ext-go-legacy/, still buildable, no longer what anything loads. It is
+# the reference the Rust core was ported against, and the only build that carries
+# the AMQP feature today. To run something against it:
+#   make test SCONCUR_EXT=/sconcur/ext-go-legacy/build/sconcur.so
 
-# Compiles ext-rust into ext-rust/build/sconcur.so, a drop-in for the Go build.
-ext-rust-build:
-	$(PHP_CLI) sh -c 'cd /sconcur/ext-rust && CARGO_TARGET_DIR=/sconcur/ext-rust/target sh ./build.sh'
+ext-build-go:
+	$(PHP_CLI) sh ./ext-go-legacy/build.sh
 
-# Exercises the spike core through the unmodified PHP package: the shared
-# channel, the error path, flow teardown, the sync wait.
-ext-rust-check:
-	$(PHP_CLI) php -d extension=/sconcur/ext-rust/build/sconcur.so ext-rust/check/core-smoke.php
+# The Go unit tests, which only ever applied to the Go tree.
+ext-test-go:
+	$(PHP_CLI) sh ./ext-go-legacy/test.sh
 
-# Runs on the HOST (needs wrk): the L0/L1 attribution ladder on both cores,
-# interleaved in one session. Tunables via env, e.g.:
-#   make bench-ladder-cores ROUNDS=5 SERVERS=8 DURATION=20
-bench-ladder-cores:
-	ext-rust/bench/ladder.sh
-
-# The extension the Rust checks load, in the container's path shape.
-RUST_EXT = /sconcur/ext-rust/build/sconcur.so
-
-# The suites the Rust core can answer for. The features it does not implement
-# (http client, socket, websocket, amqp) answer "unknown method", so running
-# them would report the gap rather than a regression.
-RUST_TEST_PATHS = \
-	tests/feature/Connection \
-	tests/feature/Scheduler \
-	tests/feature/Features/Context \
-	tests/feature/Features/Sleeper \
-	tests/feature/Features/Mysql \
-	tests/feature/Features/Pgsql \
-	tests/feature/Features/Mongodb \
-	tests/feature/Features/HttpServer \
-	tests/feature/Features/SocketServer \
-	tests/feature/Features/WsServer \
-	tests/feature/Features/SocketClient \
-	tests/feature/Features/WsClient \
-	tests/feature/Features/HttpClient
-
-# No test is excluded any more. The list that used to live here — streamed
-# responses, the access log, the body and concurrency limits, the Postgres bytea
-# binding — is empty, so a failure here is a failure, full stop. Kept as an empty
-# variable rather than deleted: the day something has to be carved out again,
-# this is where it goes, with the reason beside it.
-RUST_TEST_EXCLUDE =
-
-# The feature suites, run against the Rust core. SCONCUR_EXT reaches the server
-# harnesses too: they spawn their worker with proc_open, so without it a run
-# would load Rust in the PHPUnit process and Go in the process doing the work.
-test-rust:
-	$(DOCKER_COMPOSE) exec -e SCONCUR_EXT=$(RUST_EXT) php \
-		php -d extension=$(RUST_EXT) -d memory_limit=512M vendor/bin/phpunit \
-		--colors=auto \
-		--display-incomplete \
-		--display-skipped \
-		--display-errors \
-		$(if $(RUST_TEST_EXCLUDE),--exclude-filter '$(RUST_TEST_EXCLUDE)') \
-		$(RUST_TEST_PATHS) ${c}
-
-# `make check` for the Rust core: the same PHP-side gates, then the Rust build
-# and its own checks in place of ext-test, then the feature suites through the
-# Rust extension.
-check-rust:
+# `make check` against the Go core. Nothing is filtered out of the suite here —
+# Go carries AMQP — so this is the wider of the two checks, and it is what the
+# release workflow runs: the published artifact is still the Go build, and it has
+# to be checked by what actually ships.
+check-go:
 	make cs-fixer-check
 	make php-stan
-	make ext-rust-build
-	make ext-rust-check
-	make test-rust
+	make ext-build-go
+	make ext-test-go
+	make test SCONCUR_EXT=/sconcur/ext-go-legacy/build/sconcur.so TEST_PATHS=tests
+
+# Runs on the HOST (needs wrk): the L0/L1 attribution ladder on both cores,
+# interleaved in one session. Needs both builds. Tunables via env, e.g.:
+#   make bench-ladder-cores ROUNDS=5 SERVERS=8 DURATION=20
+bench-ladder-cores:
+	ext/bench/ladder.sh
 
 # Resets the DB backends to a clean state before a benchmark session: drops the
 # named data volumes and recreates the containers. Without it writes accumulate
@@ -303,11 +295,14 @@ bench-amqp-consume:
 # e.g.: make mem-leak-amqp scenario=churn seconds=600
 #
 # The goroutine and Go-heap columns come from the extension's own profiler, which
-# SCONCUR_PPROF_ADDR switches on (ext/pprof.go); without it the run works and reports
+# SCONCUR_PPROF_ADDR switches on (ext-go-legacy/pprof.go); without it the run works and reports
 # those two as zero, which hides exactly the half a soak is for.
+#
+# Pinned to the Go build rather than following SCONCUR_EXT: AMQP is the one feature
+# the Rust core does not carry, so this soak has nothing else to run on.
 mem-leak-amqp:
 	$(DOCKER_COMPOSE) exec -e SCONCUR_PPROF_ADDR=127.0.0.1:6060 php \
-		php -d extension=./ext/build/sconcur.so \
+		php -d extension=./ext-go-legacy/build/sconcur.so \
 		tests/mem-leak/amqp-soak.php $(or $(scenario),publish) $(or $(seconds),120)
 
 bench-db-lifecycle:

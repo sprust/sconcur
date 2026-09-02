@@ -70,7 +70,7 @@ class TestWsServer
 
         $root      = dirname(__DIR__, 3);
         // Overridable so a test run can point the spawned worker at an
-        // alternative build (SCONCUR_EXT=/sconcur/ext-rust/build/sconcur.so).
+        // alternative build (SCONCUR_EXT=/sconcur/ext/build/sconcur.so).
         // Without this the harness always starts the Go extension, whatever the
         // PHPUnit process itself loaded — which makes such a run look like it
         // exercised the other build when it did not.
@@ -113,7 +113,7 @@ class TestWsServer
             $server->stop();
 
             throw new RuntimeException(
-                'The test ws server did not become reachable (is ext/build/sconcur.so built?).'
+                'The test ws server did not become reachable (is the extension built?).'
             );
         }
 

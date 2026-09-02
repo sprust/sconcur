@@ -13,7 +13,8 @@ goroutines; PHP and Go exchange msgpack-tagged DTOs
 
 Core PHP code lives in `src/` under the `SConcur\` namespace — main entry points
 are `WaitGroup`, `Scheduler`, `State`, `Connection/Extension` and the feature
-modules in `src/Features/`. The Go extension lives in `ext/`. Tests: feature and
+modules in `src/Features/`. The extension core lives in `ext/` (Rust), with the
+Go core it was ported from in `ext-go-legacy/`. Tests: feature and
 integration coverage in `tests/feature/`, shared helpers in `tests/impl/`,
 benchmarks in `tests/benchmarks/`, stress checks in `tests/mem-leak/`. Container
 and release build assets are under `docker/` and `docker-compose.yml`.
@@ -72,19 +73,43 @@ Requires Docker. All commands via `make`:
 make env-copy           # copy .env.example → .env (first time)
 make build              # build Docker images
 make up / make down     # start / stop containers
-make ext-build          # compile Go extension → ext/build/sconcur.so
-make ext-test           # run Go tests
-make test               # run all PHPUnit tests (loads the sconcur extension)
+make ext-build          # compile the Rust core → ext/build/sconcur.so
+make ext-check          # smoke the core through the PHP package
+make test               # run the PHPUnit suites (loads the sconcur extension)
 make test c="--filter=SleeperTest"  # run a specific test
 make php-stan           # PHPStan level 6
 make cs-fixer-check     # check code style (PSR-12 + custom rules)
 make cs-fixer-fix       # auto-fix code style
-make check              # cs-fixer, phpstan, tests, ext-test
+make check              # cs-fixer, phpstan, ext-build, ext-check, tests
 make bench-all          # run all benchmarks
 ```
 
 Rebuild the extension with `make ext-build` before running tests that depend on
-`ext/build/sconcur.so`. Use `make ext-test` when changing Go extension behavior.
+`ext/build/sconcur.so`.
+
+### Two cores
+
+The extension core exists twice. `ext/` is the Rust one, and it is what
+everything loads: `SCONCUR_EXT` names it, and every target, benchmark and test
+harness reads that variable. `ext-go-legacy/` is the Go core it was ported
+against; it still builds (`make ext-build-go`), still has its own unit tests
+(`make ext-test-go`), and anything can be pointed back at it:
+
+```bash
+make test SCONCUR_EXT=/sconcur/ext-go-legacy/build/sconcur.so
+```
+
+The two produce the same `sconcur.so`, ABI for ABI: the same hand-written PHP
+glue, the same C exports, the same binary result frame, the same `version()`.
+That is what makes the swap a path change and nothing more.
+
+Three things still run on Go on purpose, all because AMQP is the one feature not
+ported yet: the RabbitMQ consumer master
+(`config/sconcur.rabbitmq.config.json`), `make mem-leak-amqp`, and the release —
+the workflow publishes the Go build after `make check-go`, so shipping does not
+drop a feature from under the people using it. `make test` runs an explicit list
+of suites for the same reason — see `TEST_PATHS` in the makefile, which goes away
+when AMQP lands.
 
 Two images build from the same commands. `docker/php/Dockerfile` is the development
 one and additionally carries the RoadRunner binary and a compiled Swoole — the
@@ -202,7 +227,8 @@ feature's doc. Key PHP classes not covered there:
   `TelemetryRuntime`, `Collector`, `Store`, `PanelServer`, `FrameCodec`,
   `Aggregator`, `Dto/*`, `Render/*`.
 
-Go extension (`ext/`):
+Go core (`ext-go-legacy/`) — the structure the Rust core in `ext/src/` mirrors
+package for package:
 
 - `main.go` — cgo exports (`ping`, `push`, `wait`, `next`, `waitAny`,
   `waitAnyTimeout`, `waitAnyBatch`, `waitAnyTimeoutBatch`, `tasksCount`,
@@ -458,7 +484,7 @@ language is English.
 **All three version sources must be equal** — bump them together, in the same
 commit:
 
-1. `ext/main.go` → `version()` (the Go extension's reported version)
+1. `ext-go-legacy/main.go` → `version()` (the Go extension's reported version)
 2. `src/Connection/Extension.php` → `REQUIRED_EXTENSION_VERSION`
 3. `composer.json` → `"version"`
 

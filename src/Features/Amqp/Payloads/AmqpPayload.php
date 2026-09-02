@@ -17,7 +17,7 @@ use SConcur\Transport\PayloadInterface;
  * logic of their own, so the callers write the keys where the values are. The Go struct
  * each command's `p` is decoded into is named on its AmqpCommandEnum case.
  *
- * Go: payloads.Envelope (ext/internal/features/amqp/payloads/payloads.go).
+ * Go: payloads.Envelope (ext-go-legacy/internal/features/amqp/payloads/payloads.go).
  */
 readonly class AmqpPayload implements PayloadInterface
 {

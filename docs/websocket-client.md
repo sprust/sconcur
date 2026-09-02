@@ -122,13 +122,13 @@ the connect result key. That `Dto\Connection` descends from
 `WsClientCommandEnum` and `Payloads/` are the `Connect`/`Send`/`Close` envelope,
 a mirror of the Go structs.
 
-Go (`ext/internal/features/wsclient/`): `connect.go` runs `websocket.Dial` with
+Go (`ext-go-legacy/internal/features/wsclient/`): `connect.go` runs `websocket.Dial` with
 `connectTimeout` (cancellable by the flow context) and registers a streaming
 `connectionState` — the first `Next` is the metadata, then inbound messages from a
 read goroutine — plus the write loop, cleaned up on flow stop; `feature.go`
 dispatches the commands by `cid`. The write loop that waits for each flush and the
-message-type codec live in the neutral `ext/internal/ws/`, shared with the WS
-server (like `ext/internal/socket` for the raw TCP pair).
+message-type codec live in the neutral `ext-go-legacy/internal/ws/`, shared with the WS
+server (like `ext-go-legacy/internal/socket` for the raw TCP pair).
 
 ## Not in v1
 
