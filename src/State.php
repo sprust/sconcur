@@ -262,7 +262,7 @@ class State
     }
 
     /**
-     * @param bool $stopExtensionFlow false skips the Go-side stopFlow crossing —
+     * @param bool $stopExtensionFlow false skips the extension-side stopFlow crossing —
      *                                for a flow that was never created there (a
      *                                spawned coroutine that only fired detached
      *                                fire-and-forget pushes)
@@ -285,8 +285,8 @@ class State
 
         if ($stopExtensionFlow) {
             // From inside a fiber the crossing is deferred to the scheduler's
-            // main stack: a cgo call from a fiber stack costs a Go stack-bounds
-            // re-derivation through /proc/self/maps (see
+            // main stack: on the Go core a cgo call from a fiber stack costs a
+            // stack-bounds re-derivation through /proc/self/maps (see
             // Scheduler::$pendingStopFlows).
             if (Fiber::getCurrent() !== null) {
                 Scheduler::get()->deferStopFlow($flowKey);

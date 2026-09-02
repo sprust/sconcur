@@ -10,7 +10,7 @@ use SConcur\Exceptions\Amqp\ConnectionException;
 use Throwable;
 
 /**
- * What the Go side said about a command it could not run: which of the three things failed,
+ * What the extension side said about a command it could not run: which of the three things failed,
  * the AMQP reply code, and the text.
  *
  * It travels as the message of the failed task — `"<scope>:<code>: <text>"` — because a task

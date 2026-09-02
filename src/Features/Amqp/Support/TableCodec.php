@@ -20,7 +20,7 @@ use SConcur\Features\Amqp\Timestamp;
  * - a nested array with no string key anywhere is an AMQP field array, not a table.
  *
  * A decimal and a timestamp are the two values MessagePack has no type for. They travel in
- * a tagged map the Go side turns into the real field value and back, because flattening
+ * a tagged map the extension side turns into the real field value and back, because flattening
  * them would change the type of a header for every other client reading the same queue.
  *
  * Rust: the TAGGED_* constants (ext/src/features/amqp/values.rs).
@@ -102,7 +102,7 @@ readonly class TableCodec
     /**
      * A nested table: unlike the top level, a key that is not a string is kept. PHP cannot
      * hold "0" as a string key — it normalizes it back to an integer — so the key travels
-     * as it is and the Go side gives it its string form, which is what the extension sends.
+     * as it is and the extension side gives it its string form, which is what the extension sends.
      *
      * @param array<array-key, mixed> $table
      *
@@ -163,7 +163,8 @@ readonly class TableCodec
 
         if ($value instanceof Timestamp) {
             // AMQP counts unsigned 64-bit seconds, which is what Timestamp::MAX_SECONDS
-            // allows, but neither a PHP int nor the Go time the field is built from can
+            // allows, but neither a PHP int nor the seconds the extension builds the field
+            // from can
             // hold the upper half of that range. A cast would wrap it into a negative
             // number and the message would carry a timestamp from before 1970, so the
             // limit is stated instead of silently crossed (docs/amqp.md lists it).

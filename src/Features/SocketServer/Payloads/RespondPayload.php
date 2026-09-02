@@ -9,7 +9,7 @@ use SConcur\Transport\PayloadInterface;
 
 /**
  * One action a connection handler performs on its connection: write a frame to the
- * client, or close the connection. The op field tells the Go side which.
+ * client, or close the connection. The op field tells the extension side which.
  *
  * Rust: payloads::RespondPayload (ext/src/features/socketserver/payloads.rs).
  */

@@ -12,7 +12,7 @@ use SConcur\Features\Amqp\Support\TableCodec;
  * A named queue on a channel — a handle: building it talks to nobody, and the broker only
  * hears about the queue when one of these methods is called.
  *
- * It owns nothing on the Go side, so its methods run through Channel::run().
+ * It owns nothing on the extension side, so its methods run through Channel::run().
  */
 class Queue
 {

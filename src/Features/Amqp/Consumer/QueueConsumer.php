@@ -29,12 +29,12 @@ use WeakReference;
 
 /**
  * A long-lived worker pulling several queues at once. It is a server in everything but the
- * socket: the Go side opens the consumers and publishes every delivery of all of them as
+ * socket: the extension side opens the consumers and publishes every delivery of all of them as
  * one stream, `Scheduler::serve()` drives that stream, and each message is handled in a
  * coroutine of its own — the same loop, the same graceful shutdown and the same automatic
  * preemption the HTTP, socket and WebSocket servers run on.
  *
- * The channels behind the consumers belong to the Go side. That is what keeps this class
+ * The channels behind the consumers belong to the extension side. That is what keeps this class
  * free of questions about the runtime: a stop cancels the consumers and leaves the channels
  * open so the acknowledgements in flight still land, and the flow ending closes them.
  *
@@ -68,7 +68,7 @@ class QueueConsumer
     protected ?array $specs = null;
 
     /**
-     * The handles over the channels the delivery stream opened, by their Go-side id. A
+     * The handles over the channels the delivery stream opened, by their extension-side id. A
      * message is settled on the channel it arrived on, and this is how the runtime reaches
      * it — a handler never sees these, see the class docblock.
      *
@@ -228,7 +228,7 @@ class QueueConsumer
 
             $masterPid = $this->masterPid;
 
-            // The stream's own failure carries the scope the Go side put on it and reaches
+            // The stream's own failure carries the scope the extension side put on it and reaches
             // here as the generic task failure every feature gets. Left that way, a worker
             // whose broker went down would report a task error instead of a
             // ConnectionException, and nothing catching AmqpException would see it.
@@ -432,7 +432,7 @@ class QueueConsumer
      * The handle over the channel a delivery arrived on. The channel itself belongs to the
      * delivery stream; this is the object the runtime settles the message through.
      *
-     * A consumer the broker takes away is reopened on the Go side on a channel of its own,
+     * A consumer the broker takes away is reopened on the extension side on a channel of its own,
      * with an id of its own, so the handle over the channel it left behind is never named
      * again. The handles of channels that have closed are let go on the way to opening a
      * new one — without that, a worker beside a broker that restarts nightly would hold
@@ -607,7 +607,7 @@ class QueueConsumer
     }
 
     /**
-     * The queue list as the Go side takes it: a queue's weight is how many consumers it
+     * The queue list as the extension side takes it: a queue's weight is how many consumers it
      * gets, each on a channel of its own.
      *
      * @param list<QueueSpec> $specs

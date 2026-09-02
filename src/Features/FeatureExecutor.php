@@ -32,7 +32,7 @@ readonly class FeatureExecutor
      * about the execution context, like the async/sync one this class already answers for
      * every call, which is why a feature asks its executor rather than the scheduler.
      *
-     * Only teardown needs it: releasing a Go-side resource can be awaited or fired and
+     * Only teardown needs it: releasing a extension-side resource can be awaited or fired and
      * forgotten, and the two differ in what the payload says and in what the caller may do
      * with the answer, so the choice cannot be pushed down here. Making the question go
      * away altogether means giving an unwound coroutine a deterministic moment to release
@@ -84,13 +84,13 @@ readonly class FeatureExecutor
 
     /**
      * Fire-and-forget variant of exec(): the task is pushed and the coroutine
-     * continues immediately — no result is awaited, and the Go side (told by the
+     * continues immediately — no result is awaited, and the extension side (told by the
      * payload itself, e.g. RespondPayload::full) publishes none. Only for
      * operations whose outcome the caller cannot observe anyway: the final write
      * of a full HTTP response already fails silently today (the coroutine dies
      * after it, and a groupless spawn drops the failure). Outside a fiber the
      * task is pushed detached directly — falling back to the awaiting exec()
-     * would wait forever for a result the payload told Go not to publish.
+     * would wait forever for a result the payload told the extension not to publish.
      */
     public static function execNoResult(PayloadInterface $payload): void
     {
@@ -98,8 +98,8 @@ readonly class FeatureExecutor
 
         if (!$currentFlow->isAsync) {
             try {
-                // Detached push (empty flow key): no flow is created on the Go
-                // side and no result will ever come — same contract as the
+                // Detached push (empty flow key): no flow is created on the extension side and
+                // no result will ever come — same contract as the
                 // async path below, minus the fiber.
                 Extension::get()->push(
                     flowKey: '',
@@ -191,7 +191,7 @@ readonly class FeatureExecutor
     }
 
     /**
-     * Outside of a fiber every push creates a one-off flow on the Go side,
+     * Outside of a fiber every push creates a one-off flow on the extension side,
      * so the flow must be stopped here as soon as it is no longer needed —
      * otherwise it leaks for the lifetime of the process. The only flow that
      * survives is the one owning an unfinished cursor (hasNext): it is handed
@@ -258,7 +258,7 @@ readonly class FeatureExecutor
      * surfaces as TaskExecutionException, exactly like any resume-time failure.
      * The task key is unknown here (the push happens on the resuming side); result
      * routing is guaranteed by the owner id the dispatcher sends with the push —
-     * the Go side carries it back in the result frame.
+     * the extension side carries it back in the result frame.
      */
     protected static function suspend(PendingPushDto|PendingNextDto $pendingTask): TaskResultDto
     {

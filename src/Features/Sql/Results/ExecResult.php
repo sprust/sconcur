@@ -9,7 +9,7 @@ use SConcur\Transport\MessagePackTransport;
 /**
  * Result of an Exec command: rows affected and the last auto-increment id.
  *
- * Go side encodes `{ar: affectedRows, li: lastInsertId}`; a driver that does not
+ * The extension encodes `{ar: affectedRows, li: lastInsertId}`; a driver that does not
  * report one of them sends 0.
  */
 readonly class ExecResult

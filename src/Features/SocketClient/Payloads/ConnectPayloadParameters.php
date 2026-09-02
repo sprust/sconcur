@@ -9,7 +9,7 @@ use SConcur\Transport\PayloadParametersInterface;
 /**
  * Parameters of a Connect command: the remote address plus the per-connection tuning.
  * Carries the mandatory execution bounds for a long-lived connection (connect / read /
- * write timeouts), applied on the Go side as dial and per-frame deadlines.
+ * write timeouts), applied on the extension side as dial and per-frame deadlines.
  *
  * Rust: payloads::ConnectParams (ext/src/features/socketclient/payloads.rs).
  */

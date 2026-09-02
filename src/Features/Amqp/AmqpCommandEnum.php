@@ -72,9 +72,9 @@ enum AmqpCommandEnum: string
      * The consumers of one supervised worker, streamed under a single task: every result is
      * a delivery, from any of its queues. Rust: payloads::ConsumeServeParams.
      *
-     * The self-pumping counterpart of Consume — the Go side publishes the next delivery by
+     * The self-pumping counterpart of Consume — the extension side publishes the next delivery by
      * itself, so a worker pays no next() crossing per message — and the channels behind the
-     * consumers belong to the Go side, so a stop cancels them without PHP releasing
+     * consumers belong to the extension side, so a stop cancels them without PHP releasing
      * anything. Driven by Scheduler::serve(), like the three servers.
      */
     case ConsumeServe = 'csv';

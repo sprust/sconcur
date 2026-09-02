@@ -22,12 +22,12 @@ use Throwable;
  *
  * The inbound messages stream under the connect result key; each carries a one-byte type
  * marker (text/binary) that read() strips and records for lastMessageWasBinary(). Writes
- * and closes are routed by connection id to the Go write loop. See AbstractConnection for
+ * and closes are routed by connection id to the extension's write loop. See AbstractConnection for
  * the shared mechanics.
  */
 class Connection extends AbstractConnection
 {
-    /** The inbound type marker the Go side prefixes when a message is binary. */
+    /** The inbound type marker the extension side prefixes when a message is binary. */
     private const string BINARY_MARKER = "\x01";
 
     protected bool $lastMessageBinary = false;
@@ -61,7 +61,7 @@ class Connection extends AbstractConnection
         }
 
         // The first byte is the message-type marker (0 text, 1 binary); the rest is the
-        // message payload. The Go side always prefixes the marker, so a non-null payload
+        // message payload. The extension side always prefixes the marker, so a non-null payload
         // is at least one byte; the empty-string guard keeps it defensive either way.
         $this->lastMessageBinary = ($payload !== '' && $payload[0] === self::BINARY_MARKER);
 

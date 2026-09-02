@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Telemetry\Dto;
 
 /**
- * Process memory split of one snapshot. Field names mirror the Go schema
+ * Process memory split of one snapshot. Field names mirror the extension's schema
  * (ext/src/stats/mod.rs) so the JSON on the wire round-trips unchanged.
  */
 readonly class Memory

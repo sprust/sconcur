@@ -12,8 +12,8 @@ use SConcur\Transport\MessagePackTransport;
 use SConcur\Transport\PayloadInterface;
 
 /**
- * Streaming cursor over a SELECT result: each batch of rows is pulled from the Go
- * side on demand (FeatureExecutor::next), so a large result set is never buffered
+ * Streaming cursor over a SELECT result: each batch of rows is pulled from the extension side
+ * on demand (FeatureExecutor::next), so a large result set is never buffered
  * whole in the extension. Each row is an associative array (column => value).
  *
  * Mirrors Mongodb\Results\IteratorResult, but decodes plain MessagePack batches

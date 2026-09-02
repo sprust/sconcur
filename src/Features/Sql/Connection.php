@@ -14,14 +14,14 @@ use SConcur\Features\Sql\Results\ExecResult;
 use SConcur\Features\Sql\Results\RowsResult;
 
 /**
- * Shared SQL connection on top of Go `database/sql`. A driver facade
+ * Shared SQL connection on top of the extension's SQL feature. A driver facade
  * (Mysql\Connection, later Pgsql\Connection) extends this and supplies its
  * MethodEnum; everything else — queries, exec, transactions — is driver-agnostic.
  *
  * Placeholders are the driver's native dialect (`?` for MySQL, `$1` for PgSQL);
  * bindings are always a positional list passed straight to the driver.
  *
- * Each call runs in the Go extension while the calling coroutine suspends, so
+ * Each call runs in the extension while the calling coroutine suspends, so
  * many statements fan out concurrently. Outside a WaitGroup it works synchronously.
  */
 abstract readonly class Connection
@@ -37,11 +37,12 @@ abstract readonly class Connection
         ?int $maxIdleConns = null,
         ?int $connMaxLifetimeMs = null,
     ) {
-        // With maxOpenConns set but maxIdleConns left default, Go's database/sql
-        // keeps only 2 idle connections: a concurrent fan-out opens the pool up
-        // to the cap and then drops it back to 2, so the next fan pays the
-        // connection handshakes again. Defaulting idle to the cap keeps the pool
-        // warm between fan-outs.
+        // A pool that collapses between fan-outs pays the connection handshakes
+        // again on the next one. That is what the Go core does with maxOpenConns
+        // set and maxIdleConns left default — its pool keeps only 2 idle
+        // connections — so idle defaults to the cap here and the pool stays warm.
+        // The Rust core keeps every idle connection up to the cap anyway and
+        // ignores the value, so the default costs it nothing.
         $this->connection = new ConnectionDto(
             dsn: $dsn,
             timeoutMs: $timeoutMs ?: 30000,

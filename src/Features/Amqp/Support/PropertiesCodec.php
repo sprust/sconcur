@@ -9,7 +9,7 @@ use SConcur\Features\Amqp\MessageProperties;
 
 /**
  * Translates between the message objects the API takes and gives back and the properties
- * map that crosses to Go.
+ * map that crosses to the extension.
  *
  * A property nobody set does not travel, and an empty string counts as nobody setting it —
  * so a message carries exactly the properties it was built with and nothing else. The

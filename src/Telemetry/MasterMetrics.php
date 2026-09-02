@@ -8,7 +8,8 @@ use SConcur\Telemetry\Dto\MasterInfo;
 
 /**
  * Samples the worker master's own process metrics (RSS from /proc/self/status, CPU
- * from /proc/self/stat) — the PHP-side mirror of the Go worker's stats/metrics.go.
+ * from /proc/self/stat) — the PHP-side mirror of the sampler a worker runs for itself
+ * (ext/src/stats/metrics.rs).
  * RSS is read on demand; CPU is a rolling percentage refreshed by sample() on a fixed
  * cadence (the runtime calls it once per second), so the value the panel reports is a
  * real interval rate rather than a since-boot average. Linux-only: off /proc the
@@ -17,7 +18,7 @@ use SConcur\Telemetry\Dto\MasterInfo;
 class MasterMetrics
 {
     // USER_HZ — the unit of the utime/stime fields in /proc/self/stat. Fixed at 100 on
-    // virtually every Linux build (matches the Go side's assumption).
+    // virtually every Linux build (matches the extension side's assumption).
     protected const float CLOCK_TICKS_PER_SECOND = 100.0;
 
     protected int $pid;

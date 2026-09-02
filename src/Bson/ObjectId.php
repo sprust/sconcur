@@ -14,12 +14,12 @@ use Stringable;
  * The value is held as its 24-character hexadecimal form. The constructor is not
  * called when the MessagePack extension materialises the object while decoding a
  * document, so the validation here guards user code only — what arrives from the
- * wire is validated on the Go side.
+ * wire is validated on the extension side.
  */
 readonly class ObjectId implements Type, Stringable, JsonSerializable
 {
     // Public on purpose: MessagePack mangles the name of a protected property the
-    // way serialize() does ("\0*\0oid"), and the Go side writes plain names. The
+    // way serialize() does ("\0*\0oid"), and the extension side writes plain names. The
     // class is readonly, so the value object stays immutable regardless.
     public string $oid;
 

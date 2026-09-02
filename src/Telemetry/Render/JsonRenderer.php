@@ -7,8 +7,8 @@ namespace SConcur\Telemetry\Render;
 use SConcur\Telemetry\Dto\Aggregate;
 
 /**
- * Renders the aggregate as JSON — the machine format, schema-identical to the old
- * Go /api/stats JSON.
+ * Renders the aggregate as JSON — the machine format, schema-identical to the
+ * /api/stats JSON this replaced when it moved out of the extension.
  */
 class JsonRenderer
 {

@@ -27,20 +27,20 @@ use Throwable;
 
 /**
  * Asynchronous, streaming PSR-18 HTTP client. The whole network round-trip (DNS,
- * connect, TLS, send, read) lives in the Go extension; the request is run in a
- * goroutine while the calling coroutine suspends, so dozens of requests fan out
- * concurrently. Outside a WaitGroup the same call works synchronously.
+ * connect, TLS, send, read) lives in the extension; the request runs there while
+ * the calling coroutine suspends, so dozens of requests fan out concurrently.
+ * Outside a WaitGroup the same call works synchronously.
  *
  * The response body is a streaming ResponseBodyStream — it is never buffered whole
  * in the extension. See docs/http-client.md.
  */
 readonly class HttpClient implements ClientInterface
 {
-    /** Error-class markers the Go side prefixes onto its error payloads. */
+    /** Error-class markers the extension side prefixes onto its error payloads. */
     protected const string NETWORK_MARKER = 'net:';
     protected const string REQUEST_MARKER = 'req:';
 
-    /** Default io.Copy buffer size for download() (64 KiB), tunable per call. */
+    /** Default copy buffer size for download() (64 KiB), tunable per call. */
     protected const int DEFAULT_DOWNLOAD_BUFFER_SIZE_BYTES = 65_536;
 
     public function __construct(
@@ -73,14 +73,14 @@ readonly class HttpClient implements ClientInterface
     }
 
     /**
-     * Downloads the response body straight into a file on the Go side: the body is
-     * copied with io.Copy inside the extension and never crosses into PHP, so memory
+     * Downloads the response body straight into a file on the extension side: the body is
+     * copied inside the extension and never crosses into PHP, so memory
      * stays constant for any size and there are no per-chunk round-trips. Inside a
      * WaitGroup many downloads fan out concurrently; outside it works synchronously.
      *
      * Only a 2xx response is written. A non-2xx response, or a transport/file error,
      * throws a DownloadException (its getStatusCode() carries the status for a
-     * non-2xx). $bufferSize tunes the copy granularity on the Go side.
+     * non-2xx). $bufferSize tunes the copy granularity on the extension side.
      *
      * The downloaded size is DownloadResult::$filesize (the bytes actually written);
      * the returned headers are exactly what the server sent.
@@ -134,9 +134,9 @@ readonly class HttpClient implements ClientInterface
     }
 
     /**
-     * Streams the request body to Go in chunks instead of buffering it whole: open
-     * the request (Go starts the round-trip with a pipe as its body), push the body
-     * chunk by chunk (each write blocks until Go consumes it — backpressure), end
+     * Streams the request body to the extension in chunks instead of buffering it whole: open
+     * the request (the extension starts the round-trip with a pipe as its body), push the body
+     * chunk by chunk (each write blocks until the extension consumes it — backpressure), end
      * the body, then pull the response metadata. Mirrors the HTTP-server's write
      * commands in reverse.
      */
@@ -271,8 +271,8 @@ readonly class HttpClient implements ClientInterface
     }
 
     /**
-     * Maps an extension failure to the right PSR-18 exception by the marker the Go
-     * side prefixed onto the error payload (net/req), defaulting to a generic
+     * Maps an extension failure to the right PSR-18 exception by the marker the extension side
+     * prefixed onto the error payload (net/req), defaulting to a generic
      * client error. The marker may sit on a wrapped exception, so the whole chain
      * is inspected.
      */

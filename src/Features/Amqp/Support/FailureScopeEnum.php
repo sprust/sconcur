@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Features\Amqp\Support;
 
 /**
- * What a failed command did to the resource it ran on, as the Go side reports it in the
+ * What a failed command did to the resource it ran on, as the extension side reports it in the
  * error payload's prefix.
  *
  * Rust: the SCOPE_* constants (ext/src/features/amqp/mod.rs).

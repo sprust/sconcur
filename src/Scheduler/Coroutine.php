@@ -39,7 +39,7 @@ class Coroutine
     /**
      * Whether any awaited push/next ran on this coroutine's own flow. A spawned
      * coroutine that only fired detached (fire-and-forget) pushes never created
-     * its flow on the Go side, so the Scheduler skips the stopFlow crossing.
+     * its flow on the extension side, so the Scheduler skips the stopFlow crossing.
      */
     public bool $flowUsed = false;
 

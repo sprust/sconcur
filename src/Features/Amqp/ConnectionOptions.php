@@ -38,7 +38,7 @@ readonly class ConnectionOptions
 
     /**
      * @param float $connectTimeoutSeconds how long to wait for the broker to answer the dial;
-     *                                     0 leaves the Go side to apply its own default
+     *                                     0 leaves the extension side to apply its own default
      * @param float $readTimeoutSeconds    how long a consumer waits for a delivery before the
      *                                     wait fails; 0 waits forever
      * @param float $writeTimeoutSeconds   how long a publish may take
@@ -149,7 +149,7 @@ readonly class ConnectionOptions
     }
 
     /**
-     * The same options under another connection name — which is what asks the Go-side pool
+     * The same options under another connection name — which is what asks the extension-side pool
      * for a socket of its own, since the name is part of its key.
      *
      * The one thing a caller may vary after the fact: everything else settles what the

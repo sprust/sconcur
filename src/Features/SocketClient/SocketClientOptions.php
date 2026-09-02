@@ -6,7 +6,7 @@ namespace SConcur\Features\SocketClient;
 
 /**
  * Per-connection tuning for the socket client. All timeouts are in milliseconds; the
- * PHP defaults mirror the Go-side defaults. A single instance is shared by every
+ * PHP defaults mirror the extension's defaults. A single instance is shared by every
  * connection a SocketClient dials.
  *
  * A long-lived connection has no single "operation time": connectTimeoutMs bounds the

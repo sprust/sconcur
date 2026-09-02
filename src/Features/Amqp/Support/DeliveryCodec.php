@@ -22,7 +22,7 @@ use WeakReference;
 readonly class DeliveryCodec
 {
     /**
-     * Builds a Delivery out of what the Go side sent.
+     * Builds a Delivery out of what the extension side sent.
      *
      * @param array<mixed>            $delivery
      * @param WeakReference<Channel>  $channel  the channel the message arrived on; weak, so a
