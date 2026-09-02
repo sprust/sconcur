@@ -64,7 +64,7 @@ run_case() {
     output=$(
         SERVERS=$SERVERS WRK_THREADS=$WRK_THREADS CONNECTIONS=$CONNECTIONS \
         DURATION=$DURATION ROUTE="$route" PORT=$PORT DB_POOL_SIZE=$DB_POOL_SIZE \
-        EXTENSION=$extension \
+        SCONCUR_EXT=$extension \
         tests/benchmarks/http/load-stats.sh 2>&1
     )
 

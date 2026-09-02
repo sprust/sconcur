@@ -65,10 +65,12 @@ WORKER_LOGS=${WORKER_LOGS:-0}
 # selects host/port, the script selects the paths.
 WRK_SCRIPT=${WRK_SCRIPT:-}
 
-# Overridable so the same harness can drive an alternative build of the
-# extension (the Rust core spike, ext-rust/build/sconcur.so) without a second
-# copy of this script.
-EXTENSION=${EXTENSION:-/sconcur/ext/build/sconcur.so}
+# Which extension the workers load. Overridable so the same harness can drive an
+# alternative build (the Rust core spike) without a second copy of this script;
+# the name matches the makefile's, so `make bench-... SCONCUR_EXT=...` reaches
+# here too. A path relative to the repo root works as well as an absolute one —
+# the workers start with /sconcur as their working directory.
+EXTENSION=${SCONCUR_EXT:-/sconcur/ext/build/sconcur.so}
 SCRIPT=/sconcur/tests/servers/http/http-server.php
 PIDFILE=/tmp/sc-http-load-$PORT.pids
 STDERRLOG=/tmp/sc-http-load-$PORT.err

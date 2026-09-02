@@ -7,6 +7,10 @@ PHP_CLI = $(DOCKER_COMPOSE) exec php
 #   make bench-mongodb-aggregate SCONCUR_EXT=./ext-rust/build/sconcur.so
 SCONCUR_EXT ?= ./ext/build/sconcur.so
 
+# Exported so the targets that run a script on the host (the load benchmarks)
+# pass the same choice down instead of each recipe repeating it.
+export SCONCUR_EXT
+
 PHP_EXT = $(PHP_CLI) php -d extension=$(SCONCUR_EXT)
 
 # Master control inside the `servers` container: two masters run there under

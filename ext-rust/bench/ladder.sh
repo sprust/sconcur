@@ -65,7 +65,7 @@ run_rung() {
     output=$(
         SERVERS=$SERVERS WRK_THREADS=$WRK_THREADS CONNECTIONS=$CONNECTIONS \
         DURATION=$DURATION ROUTE=/ PORT=$PORT \
-        EXTENSION=$extension SERVER_ARGS="--ladder=$ladder" SERVER_ENV="$server_env" \
+        SCONCUR_EXT=$extension SERVER_ARGS="--ladder=$ladder" SERVER_ENV="$server_env" \
         tests/benchmarks/http/load-stats.sh 2>&1
     )
 
