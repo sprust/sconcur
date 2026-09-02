@@ -30,7 +30,7 @@ use SConcur\WaitGroup;
 // The name of the queue this server publishes into and the demo consumer pool reads
 // (config/sconcur.rabbitmq.config.json). Declared by the publisher, because a consumer
 // declares nothing — topology belongs to whoever owns it.
-const RABBITMQ_DEMO_QUEUE = 'sconcur_demo_queue';
+const RABBITMQ_DEMO_QUEUE = 'demo';
 
 // The most jobs one request may queue. A path segment is user input, and a typo with an
 // extra zero should be refused rather than spend a minute publishing.
