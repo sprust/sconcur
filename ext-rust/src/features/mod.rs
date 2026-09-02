@@ -1,6 +1,7 @@
 //! Mirrors ext/internal/features/factory.go: the single facade that resolves a
 //! method to its feature handler.
 
+pub mod httpclient;
 pub mod httpserver;
 pub mod mongodb;
 pub mod sleeper;
@@ -60,6 +61,7 @@ pub fn detect_message_handler(method: Method) -> std::result::Result<&'static dy
     match method {
         Method::Sleep => Ok(sleeper::get()),
         Method::HttpServe | Method::HttpRespond => Ok(httpserver::get()),
+        Method::HttpClient => Ok(httpclient::get()),
         Method::Mongodb => Ok(mongodb::get()),
         Method::Mysql => Ok(sql::get_mysql()),
         Method::Pgsql => Ok(sql::get_pgsql()),
@@ -74,6 +76,7 @@ pub fn detect_message_handler(method: Method) -> std::result::Result<&'static dy
 /// Mirrors features.Shutdown: releases what the features hold — the HTTP
 /// server's listener registry and the SQL connection pools.
 pub fn shutdown() {
+    httpclient::shutdown();
     httpserver::shutdown();
     socketserver::shutdown();
     wsserver::shutdown();

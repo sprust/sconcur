@@ -33,6 +33,15 @@ socket2     = { version = "0.5", features = ["all"] }
 # (net/http + coder/websocket): the same HTTP layer answers 426 to anything that
 # is not an upgrade.
 fastwebsockets = { version = "0.10", features = ["upgrade", "unstable-split"] }
+# The HTTP client. reqwest is what stands in for net/http's Client: redirects,
+# TLS, a connection pool and streaming bodies in one place, on the same hyper
+# the servers use.
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "stream",
+    "http2",
+    "charset",
+] }
 # The SQL feature. sqlx is the closest thing to Go's database/sql: one API over
 # both drivers, pooling and timeouts included, with the driver selected per
 # Method exactly as drivers_mysql.go / drivers_pgsql.go select theirs.
@@ -61,6 +70,9 @@ mongodb = { version = "3", default-features = false, features = [
     "bson-3",
     "compat-3-3-0",
 ] }
+# Shared by hyper, reqwest and this crate; named so the buffer type the HTTP
+# stack hands over is not an implicit dependency.
+bytes      = "1"
 rmpv       = { version = "1", features = ["with-serde"] }
 
 [profile.release]

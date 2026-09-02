@@ -21,6 +21,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Once, RwLock};
 
+use crate::features::httpclient;
 use crate::features::httpserver;
 use crate::features::mongodb;
 use crate::features::socketclient;
@@ -55,6 +56,8 @@ pub struct Core {
     socketclient: socketclient::Registries,
     /// The WebSocket client's dialed connections, for the same reason.
     wsclient: wsclient::Registries,
+    /// The HTTP client's pooled clients and open uploads, for the same reason.
+    httpclient: httpclient::Registries,
 }
 
 static CORE: RwLock<Option<&'static Core>> = RwLock::new(None);
@@ -145,6 +148,7 @@ impl Core {
             wsserver: wsserver::Registries::new(),
             socketclient: socketclient::Registries::new(),
             wsclient: wsclient::Registries::new(),
+            httpclient: httpclient::Registries::new(),
         }
     }
 
@@ -182,6 +186,10 @@ impl Core {
 
     pub fn wsclient(&'static self) -> &'static wsclient::Registries {
         &self.wsclient
+    }
+
+    pub fn httpclient(&'static self) -> &'static httpclient::Registries {
+        &self.httpclient
     }
 
     /// Mirrors Handler.fresh(): the destroyed handler is dropped and a new one

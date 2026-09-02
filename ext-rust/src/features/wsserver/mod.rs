@@ -801,15 +801,18 @@ pub fn stop_accepting(flow_key: &str) {
         pending.start_drain();
     }
 
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        handle.spawn(async move {
-            tokio::time::sleep(DRAIN_GRACE).await;
+    // The Core's handle, not Handle::try_current(): this is called from the PHP
+    // thread, which is outside the runtime, so try_current() finds nothing and
+    // the force-close is never scheduled. A push-only connection then keeps its
+    // handler alive to the shutdown timeout, and the server exits late — which
+    // is what made SocketServerMaxConnectionsTest flaky.
+    crate::core::get().runtime().spawn(async move {
+        tokio::time::sleep(DRAIN_GRACE).await;
 
-            for pending in &connections {
-                pending.close();
-            }
-        });
-    }
+        for pending in &connections {
+            pending.close();
+        }
+    });
 }
 
 pub fn shutdown() {
