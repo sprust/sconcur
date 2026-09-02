@@ -1,6 +1,5 @@
 //! Mirrors ext-go-legacy/internal/flows/flow.go.
 
-use crossbeam_channel::Sender;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -10,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::dto::{Message, Result};
 use crate::features;
 use crate::states;
-use crate::tasks::Task;
+use crate::tasks::{ResultSink, Task};
 
 pub struct Flow {
     inner: Mutex<FlowInner>,
@@ -23,7 +22,7 @@ struct FlowInner {
     /// Go keeps a map task key -> *Task here, but only ever tests membership
     /// (OnDelivered); a set carries the same information.
     active_tasks: HashSet<String>,
-    results: Sender<Result>,
+    results: ResultSink,
 }
 
 impl Flow {
@@ -31,7 +30,7 @@ impl Flow {
     /// channel owned by the handler. All flows write to the same channel so the
     /// PHP side can wait for any flow's result at once (waitAny), which is what
     /// lets nested coroutines run concurrently with the outer flow.
-    pub fn new(handler_ctx: &CancellationToken, key: String, results: Sender<Result>) -> Self {
+    pub fn new(handler_ctx: &CancellationToken, key: String, results: ResultSink) -> Self {
         Flow {
             inner: Mutex::new(FlowInner {
                 ctx: handler_ctx.child_token(),
@@ -50,7 +49,7 @@ impl Flow {
     /// key, which get_flow no longer knows, so it is dropped before ever
     /// reaching this flow. A fresh child token is derived — a cancelled one
     /// cannot be reused.
-    pub fn reset(&self, handler_ctx: &CancellationToken, key: String, results: Sender<Result>) {
+    pub fn reset(&self, handler_ctx: &CancellationToken, key: String, results: ResultSink) {
         let mut inner = self.inner.lock().unwrap();
 
         inner.ctx = handler_ctx.child_token();

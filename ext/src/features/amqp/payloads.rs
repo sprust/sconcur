@@ -635,15 +635,6 @@ pub fn encode_consumer_meta(consumer_tag: &str) -> Vec<u8> {
     buffer
 }
 
-/// The answer of a command that only reports that it ran.
-pub fn encode_done() -> Vec<u8> {
-    let mut buffer = Vec::new();
-
-    encode::write_map_len(&mut buffer, 0).ok();
-
-    buffer
-}
-
 /// One message handed to PHP, by a Get or through a consumer's stream. It
 /// carries the channel it was delivered on, because a delivery tag is only
 /// valid there.

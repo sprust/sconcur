@@ -1,19 +1,47 @@
 //! Mirrors ext-go-legacy/internal/tasks/task.go.
 
-use crossbeam_channel::{Sender, TrySendError};
+use crossbeam_channel::{Receiver, Sender};
 use std::sync::Arc;
-use std::time::Duration;
-
-/// How many scheduler hops to give the PHP side to drain the buffer before
-/// falling back to a timer. Yields are cheap; a timer costs a wakeup.
-const SEND_YIELD_ATTEMPTS: usize = 8;
-
-/// The retry interval once yielding has not helped. Long enough not to spin,
-/// short enough that a drained slot is taken promptly.
-const SEND_RETRY_INTERVAL: Duration = Duration::from_micros(100);
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::dto::{Message, Result};
+
+/// The shared results channel and the permits that bound it, which travel
+/// together because neither is correct alone: a sender without the accounting
+/// would overrun the buffer, and a permit released without a result taken out
+/// of the channel would let it.
+///
+/// One permit is one free slot. A publisher takes one before it sends and does
+/// not give it back — the side that pulls the result out does, which is what
+/// makes the wait exact: a blocked publisher is woken by the consumer that made
+/// room for it, once, instead of asking again on a timer.
+#[derive(Clone)]
+pub struct ResultSink {
+    tx: Sender<Result>,
+    slots: Arc<Semaphore>,
+}
+
+impl ResultSink {
+    pub fn new(capacity: usize) -> (Self, Receiver<Result>) {
+        let (tx, rx) = crossbeam_channel::bounded(capacity);
+
+        (
+            ResultSink {
+                tx,
+                slots: Arc::new(Semaphore::new(capacity)),
+            },
+            rx,
+        )
+    }
+
+    /// Hands back the slots of results the consumer has taken out of the
+    /// channel. Called for every result that leaves it, including one dropped
+    /// as stale — the slot is free either way.
+    pub fn release(&self, taken: usize) {
+        self.slots.add_permits(taken);
+    }
+}
 
 /// Task carries one message through its feature handler. Like the Go original
 /// it holds the owning flow's cancellation token directly instead of deriving a
@@ -23,11 +51,11 @@ use crate::dto::{Message, Result};
 pub struct Task {
     message: Arc<Message>,
     flow_ctx: CancellationToken,
-    results: Sender<Result>,
+    results: ResultSink,
 }
 
 impl Task {
-    pub fn new(flow_ctx: CancellationToken, results: Sender<Result>, message: Arc<Message>) -> Self {
+    pub fn new(flow_ctx: CancellationToken, results: ResultSink, message: Arc<Message>) -> Self {
         Task {
             message,
             flow_ctx,
@@ -60,49 +88,56 @@ impl Task {
     /// the tail fell apart — /db held p50 at 1.2 ms while p99 sat at ~400 ms,
     /// reproducibly, across every run.
     ///
-    /// Yielding instead keeps the worker running other tasks while this one
-    /// waits, which is what parking a goroutine actually costs.
+    /// The second version yielded eight times and then woke itself every 100 µs
+    /// until a slot appeared. That fixed the tail but kept the shape wrong: a
+    /// goroutine parked on a channel send is woken once, by the receiver, and
+    /// this asked again on a timer. A thousand blocked tasks meant a thousand
+    /// timers firing at 10 kHz, which is a cliff Go did not have in the very
+    /// place a wide fan-out lands.
+    ///
+    /// A permit is a slot, so acquiring one *is* the park, and the consumer's
+    /// release is the wake.
     pub async fn add_result(&self, result: Result) {
-        let mut pending = match self.results.try_send(result) {
-            Ok(()) => return,
-            Err(TrySendError::Full(back)) => back,
-            Err(TrySendError::Disconnected(_)) => return,
+        let permit = tokio::select! {
+            biased;
+
+            permit = self.results.slots.acquire() => permit,
+            // The flow went away while this task waited for room. Nobody is
+            // coming for the result.
+            _ = self.flow_ctx.cancelled() => return,
         };
 
-        // A full buffer means PHP has not drained it yet; it usually will
-        // within a scheduling hop, so yield before ever reaching for a timer.
-        for _ in 0..SEND_YIELD_ATTEMPTS {
-            tokio::task::yield_now().await;
+        let Ok(permit) = permit else {
+            return;
+        };
 
-            pending = match self.results.try_send(pending) {
-                Ok(()) => return,
-                Err(TrySendError::Full(back)) => back,
-                Err(TrySendError::Disconnected(_)) => return,
-            };
-        }
+        // The consumer releases it, not this scope: the slot stays taken for as
+        // long as the result sits in the channel.
+        permit.forget();
 
-        loop {
-            if self.flow_ctx.is_cancelled() {
-                return;
-            }
-
-            tokio::time::sleep(SEND_RETRY_INTERVAL).await;
-
-            pending = match self.results.try_send(pending) {
-                Ok(()) => return,
-                Err(TrySendError::Full(back)) => back,
-                Err(TrySendError::Disconnected(_)) => return,
-            };
+        if self.results.tx.try_send(result).is_err() {
+            // Unreachable while the accounting holds — a permit means a free
+            // slot — but a leaked permit would shrink the buffer for the life of
+            // the process, so it goes back rather than being trusted away.
+            self.results.release(1);
         }
     }
 
     /// Publishes a result from a detached fire-and-forget task, which runs
     /// synchronously on the PHP thread inside push() — the very thread that
-    /// drains the channel. Blocking here with a full buffer would deadlock the
-    /// worker, and nothing awaits these results anyway (owner id 0, PHP drops
-    /// them on delivery), so they go best-effort and are dropped when full.
-    /// Mirrors the empty-flow-key branch of tasks.Task.AddResult.
+    /// drains the channel. Waiting for a slot here would deadlock the worker,
+    /// and nothing awaits these results anyway (owner id 0, PHP drops them on
+    /// delivery), so they go best-effort and are dropped when the buffer is
+    /// full. Mirrors the empty-flow-key branch of tasks.Task.AddResult.
     pub fn add_result_detached(&self, result: Result) {
-        let _ = self.results.try_send(result);
+        let Ok(permit) = self.results.slots.try_acquire() else {
+            return;
+        };
+
+        permit.forget();
+
+        if self.results.tx.try_send(result).is_err() {
+            self.results.release(1);
+        }
     }
 }

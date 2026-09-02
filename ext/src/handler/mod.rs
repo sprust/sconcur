@@ -2,7 +2,7 @@
 //! messages to flows and holding the one shared results channel the PHP side
 //! waits on.
 
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError};
+use crossbeam_channel::{Receiver, RecvTimeoutError, TryRecvError};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::dto::{Message, Result};
 use crate::features;
 use crate::flows::Flows;
-use crate::tasks::Task;
+use crate::tasks::{ResultSink, Task};
 use crate::types::method::Method;
 
 /// Buffers the shared results channel so a finished task publishes its result
@@ -43,7 +43,7 @@ pub struct Handler {
     /// wait for the first ready result of any flow (wait_any). This is the
     /// foundation for nested coroutines running concurrently with the outer
     /// flow.
-    results_tx: Sender<Result>,
+    results_tx: ResultSink,
     results_rx: Receiver<Result>,
 
     /// Results already pulled from the channel (post-processed once via
@@ -80,7 +80,7 @@ fn detachable(method: Method) -> bool {
 
 impl Handler {
     pub fn new() -> Self {
-        let (results_tx, results_rx) = crossbeam_channel::bounded(RESULTS_BUFFER_SIZE);
+        let (results_tx, results_rx) = ResultSink::new(RESULTS_BUFFER_SIZE);
 
         Handler {
             ctx: CancellationToken::new(),
@@ -165,6 +165,8 @@ impl Handler {
         loop {
             match self.results_rx.recv() {
                 Ok(result) => {
+                    self.results_tx.release(1);
+
                     if !self.deliver(&result) {
                         continue;
                     }
@@ -190,6 +192,8 @@ impl Handler {
 
             match self.results_rx.recv_timeout(remaining) {
                 Ok(result) => {
+                    self.results_tx.release(1);
+
                     if !self.deliver(&result) {
                         continue;
                     }
@@ -244,6 +248,8 @@ impl Handler {
         while results.len() < max {
             match self.results_rx.try_recv() {
                 Ok(result) => {
+                    self.results_tx.release(1);
+
                     if !self.deliver(&result) {
                         continue;
                     }
@@ -279,6 +285,8 @@ impl Handler {
         loop {
             match self.results_rx.recv() {
                 Ok(result) => {
+                    self.results_tx.release(1);
+
                     if !self.deliver(&result) {
                         continue;
                     }

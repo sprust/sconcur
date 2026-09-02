@@ -182,13 +182,6 @@ pub fn encode_table(buffer: &mut Vec<u8>, table: &FieldTable) {
     }
 }
 
-/// The table of a message that carries none. PHP reads a missing `hd` key and
-/// an empty map the same way, and an empty map is what Go's `omitempty` on a
-/// nil table produces once the key is written at all.
-pub fn encode_empty_table(buffer: &mut Vec<u8>) {
-    encode::write_map_len(buffer, 0).ok();
-}
-
 fn encode_value(buffer: &mut Vec<u8>, value: &AMQPValue) {
     match value {
         AMQPValue::Boolean(flag) => {

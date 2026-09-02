@@ -1,12 +1,11 @@
 //! Mirrors ext-go-legacy/internal/flows/flows.go.
 
-use crossbeam_channel::Sender;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
-use crate::dto::Result;
 use crate::flows::Flow;
+use crate::tasks::ResultSink;
 
 pub struct Flows {
     inner: Mutex<FlowsInner>,
@@ -37,7 +36,7 @@ impl Flows {
         &self,
         handler_ctx: &CancellationToken,
         flow_key: &str,
-        results: &Sender<Result>,
+        results: &ResultSink,
     ) -> Arc<Flow> {
         let mut inner = self.inner.lock().unwrap();
 

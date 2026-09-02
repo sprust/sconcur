@@ -280,6 +280,13 @@ bench-http-client-download:
 bench-sleeper:
 	$(PHP_EXT) tests/benchmarks/runtime/sleeper.php ${c}
 
+# What a fan-out costs per member on both sides of the shared results buffer.
+# Nothing else here reaches the far side: a server serves tens of requests at
+# once, not thousands, so the backpressure path is invisible to every other
+# target.
+bench-fan-out:
+	$(PHP_EXT) tests/benchmarks/runtime/fan-out.php
+
 bench-mongodb-insertOne:
 	$(PHP_EXT) tests/benchmarks/mongodb/insert-one.php ${c}
 

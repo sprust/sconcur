@@ -18,7 +18,7 @@ use lapin::{Channel, Error as LapinError};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use super::connections::{ConnectionHandle, DEFAULT_RPC_TIMEOUT};
+use super::connections::ConnectionHandle;
 use super::consumerstats;
 use super::payloads::ChannelOpenParams;
 
@@ -757,5 +757,3 @@ impl Channels {
             .collect()
     }
 }
-
-pub const DEFAULT_COMMAND_TIMEOUT: Duration = DEFAULT_RPC_TIMEOUT;
