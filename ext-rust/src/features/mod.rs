@@ -6,6 +6,7 @@ pub mod mongodb;
 pub mod sleeper;
 pub mod socketserver;
 pub mod sql;
+pub mod wsserver;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -61,6 +62,7 @@ pub fn detect_message_handler(method: Method) -> std::result::Result<&'static dy
         Method::Mysql => Ok(sql::get_mysql()),
         Method::Pgsql => Ok(sql::get_pgsql()),
         Method::SocketServe | Method::SocketRespond => Ok(socketserver::get()),
+        Method::WsServe | Method::WsRespond => Ok(wsserver::get()),
         _ => Err(format!("unknown method: {}", method.as_wire())),
     }
 }
@@ -70,6 +72,7 @@ pub fn detect_message_handler(method: Method) -> std::result::Result<&'static dy
 pub fn shutdown() {
     httpserver::shutdown();
     socketserver::shutdown();
+    wsserver::shutdown();
     mongodb::shutdown();
     sql::close_all_pools();
 }

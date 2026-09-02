@@ -13,6 +13,7 @@ mod features;
 mod flows;
 mod handler;
 mod socket;
+mod ws;
 mod helpers;
 mod logger;
 mod states;
@@ -483,9 +484,9 @@ pub extern "C" fn httpStopAccepting(flow_key: *const c_char) {
     })
 }
 
-/// The WebSocket and AMQP features are not ported yet. Their exports stay so the
-/// same sconcur.c and the same PHP package load unchanged; a push for those
-/// methods already fails in the feature facade.
+/// AMQP is not ported yet. Its export stays so the same sconcur.c and the same
+/// PHP package load unchanged; a push for that method already fails in the
+/// feature facade.
 #[unsafe(no_mangle)]
 pub extern "C" fn socketStopAccepting(flow_key: *const c_char) {
     guarded(|| (), || {
@@ -494,7 +495,11 @@ pub extern "C" fn socketStopAccepting(flow_key: *const c_char) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wsStopAccepting(_flow_key: *const c_char) {}
+pub extern "C" fn wsStopAccepting(flow_key: *const c_char) {
+    guarded(|| (), || {
+        features::wsserver::stop_accepting(&unsafe { owned_string_nul(flow_key) });
+    })
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn amqpStopConsuming(_flow_key: *const c_char) {}

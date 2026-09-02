@@ -194,7 +194,8 @@ RUST_TEST_PATHS = \
 	tests/feature/Features/Pgsql \
 	tests/feature/Features/Mongodb \
 	tests/feature/Features/HttpServer \
-	tests/feature/Features/SocketServer
+	tests/feature/Features/SocketServer \
+	tests/feature/Features/WsServer
 
 # The tests inside those suites the Rust core deliberately does not answer for.
 # This list is the inventory of what the port leaves out, and it is kept here

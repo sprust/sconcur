@@ -28,6 +28,11 @@ hyper       = { version = "1", features = ["server", "http1"] }
 hyper-util  = { version = "0.1", features = ["tokio", "server"] }
 http-body-util = "0.1"
 socket2     = { version = "0.5", features = ["all"] }
+# The WebSocket server. Chosen over a standalone implementation because it
+# upgrades a hyper request in place, which is how the Go side gets there too
+# (net/http + coder/websocket): the same HTTP layer answers 426 to anything that
+# is not an upgrade.
+fastwebsockets = { version = "0.10", features = ["upgrade", "unstable-split"] }
 # The SQL feature. sqlx is the closest thing to Go's database/sql: one API over
 # both drivers, pooling and timeouts included, with the driver selected per
 # Method exactly as drivers_mysql.go / drivers_pgsql.go select theirs.

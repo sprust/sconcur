@@ -25,6 +25,7 @@ use crate::features::httpserver;
 use crate::features::mongodb;
 use crate::features::socketserver;
 use crate::features::sql;
+use crate::features::wsserver;
 use crate::handler::Handler;
 
 pub struct Core {
@@ -46,6 +47,8 @@ pub struct Core {
     mongodb: mongodb::Registries,
     /// The socket server's connections and listeners, for the same reason.
     socketserver: socketserver::Registries,
+    /// The WebSocket server's connections and listeners, for the same reason.
+    wsserver: wsserver::Registries,
 }
 
 static CORE: RwLock<Option<&'static Core>> = RwLock::new(None);
@@ -133,6 +136,7 @@ impl Core {
             sql: sql::Registries::new(),
             mongodb: mongodb::Registries::new(),
             socketserver: socketserver::Registries::new(),
+            wsserver: wsserver::Registries::new(),
         }
     }
 
@@ -158,6 +162,10 @@ impl Core {
 
     pub fn socketserver(&'static self) -> &'static socketserver::Registries {
         &self.socketserver
+    }
+
+    pub fn wsserver(&'static self) -> &'static wsserver::Registries {
+        &self.wsserver
     }
 
     /// Mirrors Handler.fresh(): the destroyed handler is dropped and a new one

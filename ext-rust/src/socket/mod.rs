@@ -9,7 +9,7 @@ pub mod message_state;
 use std::sync::atomic::{AtomicI64, Ordering};
 use tokio::sync::{mpsc, oneshot};
 
-pub use frame::{FrameError, read_frame, write_frame};
+pub use frame::write_frame;
 pub use message_state::MessageState;
 
 /// What an action does to a connection. `Frame` writes one length-prefixed frame

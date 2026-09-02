@@ -58,8 +58,10 @@ pub fn documents_from_msgpack(data: &[u8]) -> Result<Vec<Document>, Error> {
         .collect()
 }
 
-/// A pipeline is an array of stage documents; kept as its own entry point
-/// because that is how the Go side names it.
+/// A pipeline is an array of stage documents. Kept as its own entry point
+/// because that is how the Go side names it, though the aggregate handler reads
+/// its stages off the already-converted params instead.
+#[allow(dead_code)]
 pub fn pipeline_from_msgpack(data: &[u8]) -> Result<Vec<Document>, Error> {
     documents_from_msgpack(data)
 }
