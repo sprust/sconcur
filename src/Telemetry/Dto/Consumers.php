@@ -11,7 +11,7 @@ namespace SConcur\Telemetry\Dto;
  * way and are exclusive. `coroutines` is how many consumers the worker has open — one
  * per coroutine — which is the capacity `inFlight` is spent out of, and `timed` how many
  * deliveries `avgMs` was measured over (an auto-acknowledged one has no handler time).
- * Field names mirror the Go schema (ext-go-legacy/internal/stats/snapshot.go).
+ * Field names mirror the Go schema (ext/src/stats/mod.rs).
  */
 readonly class Consumers
 {

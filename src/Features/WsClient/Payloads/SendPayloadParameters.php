@@ -10,7 +10,7 @@ use SConcur\Transport\PayloadParametersInterface;
  * Parameters of a Send command: the connection to write to, the WebSocket message type
  * (0 text, 1 binary) and the message bytes (binary-safe).
  *
- * Go: payloads.SendParams (ext-go-legacy/internal/features/wsclient/payloads/payloads.go).
+ * Rust: payloads::SendParams (ext/src/features/wsclient/payloads.rs).
  */
 readonly class SendPayloadParameters implements PayloadParametersInterface
 {

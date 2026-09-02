@@ -17,7 +17,7 @@ use SConcur\Transport\PayloadInterface;
  * The concrete MethodEnum (Mysql now, Pgsql later) is supplied by the driver
  * facade, so one shared payload serves every SQL driver.
  *
- * Go: payloads.Envelope (ext-go-legacy/internal/features/sql/payloads/payloads.go).
+ * Rust: payloads::Envelope (ext/src/features/sql/payloads.rs).
  */
 abstract readonly class BaseSqlPayload implements PayloadInterface
 {

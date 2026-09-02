@@ -134,25 +134,9 @@ check:
 status:
 	$(PHP_EXT) bin/sconcur-status ${c}
 
-# TEMPORARY. The suites the extension can answer for today. AMQP is the one
-# feature the Rust core has not been ported yet, so `tests/feature/Features/Amqp`
-# — and the PHP-side suites that reach for it — would report the gap rather than a
-# regression. The day AMQP lands this whole variable goes away and `test` runs
-# `tests` again.
-TEST_PATHS = \
-	tests/feature/Connection \
-	tests/feature/Scheduler \
-	tests/feature/Features/Context \
-	tests/feature/Features/Sleeper \
-	tests/feature/Features/Mysql \
-	tests/feature/Features/Pgsql \
-	tests/feature/Features/Mongodb \
-	tests/feature/Features/HttpServer \
-	tests/feature/Features/SocketServer \
-	tests/feature/Features/WsServer \
-	tests/feature/Features/SocketClient \
-	tests/feature/Features/WsClient \
-	tests/feature/Features/HttpClient
+# The suites `make test` runs. It is the whole tree; the variable stays because
+# `check-go` overrides it to point the same target at the other core.
+TEST_PATHS = tests
 
 # --log-junit persists the failing test's name for the rare flaky failure that
 # only fires on the first run after heavy host activity — see
@@ -205,16 +189,15 @@ ext-build-go:
 ext-test-go:
 	$(PHP_CLI) sh ./ext-go-legacy/test.sh
 
-# `make check` against the Go core. Nothing is filtered out of the suite here —
-# Go carries AMQP — so this is the wider of the two checks, and it is what the
-# release workflow runs: the published artifact is still the Go build, and it has
-# to be checked by what actually ships.
+# `make check` against the Go core. It is the reference the Rust core was ported
+# against, and it is kept passing so it stays one — a reference that has rotted
+# answers no questions.
 check-go:
 	make cs-fixer-check
 	make php-stan
 	make ext-build-go
 	make ext-test-go
-	make test SCONCUR_EXT=/sconcur/ext-go-legacy/build/sconcur.so TEST_PATHS=tests
+	make test SCONCUR_EXT=/sconcur/ext-go-legacy/build/sconcur.so
 
 # Runs on the HOST (needs wrk): the L0/L1 attribution ladder on both cores,
 # interleaved in one session. Needs both builds. Tunables via env, e.g.:
@@ -297,12 +280,9 @@ bench-amqp-consume:
 # The goroutine and Go-heap columns come from the extension's own profiler, which
 # SCONCUR_PPROF_ADDR switches on (ext-go-legacy/pprof.go); without it the run works and reports
 # those two as zero, which hides exactly the half a soak is for.
-#
-# Pinned to the Go build rather than following SCONCUR_EXT: AMQP is the one feature
-# the Rust core does not carry, so this soak has nothing else to run on.
 mem-leak-amqp:
 	$(DOCKER_COMPOSE) exec -e SCONCUR_PPROF_ADDR=127.0.0.1:6060 php \
-		php -d extension=./ext-go-legacy/build/sconcur.so \
+		php -d extension=$(SCONCUR_EXT) \
 		tests/mem-leak/amqp-soak.php $(or $(scenario),publish) $(or $(seconds),120)
 
 bench-db-lifecycle:

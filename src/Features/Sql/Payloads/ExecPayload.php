@@ -14,7 +14,7 @@ use SConcur\Features\Sql\SqlCommandEnum;
  * bindings, returning affected-rows and last-insert-id. A non-empty transactionId
  * runs it on the pinned transaction; an empty one runs it autocommit.
  *
- * Go: payloads.ExecParams (ext-go-legacy/internal/features/sql/payloads/payloads.go).
+ * Rust: payloads::ExecParams (ext/src/features/sql/payloads.rs).
  */
 readonly class ExecPayload extends BaseSqlPayload
 {

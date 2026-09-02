@@ -10,7 +10,7 @@ use SConcur\Features\Mongodb\Payloads\Dto\Connection;
 use SConcur\Features\Mongodb\Payloads\Dto\Parameters;
 
 /**
- * Go: payloads.AggregatePayload (ext-go-legacy/internal/features/mongodb/payloads/payloads.go).
+ * Rust: payloads::AggregatePayload (ext/src/features/mongodb/payloads.rs).
  */
 readonly class AggregatePayload extends BaseMongodbPayload
 {

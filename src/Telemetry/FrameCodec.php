@@ -8,7 +8,7 @@ use SConcur\Exceptions\Telemetry\FrameTooLargeException;
 
 /**
  * Decodes the length-prefix framing used on the telemetry socket — the exact mirror
- * of the Go writer (ext-go-legacy/internal/socket/frame.go): a 4-byte big-endian length
+ * of the Go writer (ext/src/socket/frame.rs): a 4-byte big-endian length
  * followed by that many payload bytes. Pulls every complete frame out of a
  * per-connection buffer and returns the unconsumed tail (a partial next frame) so
  * the caller can append more bytes and decode again.

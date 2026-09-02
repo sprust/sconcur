@@ -14,7 +14,7 @@ use SConcur\Features\Sql\SqlCommandEnum;
  * alive (the result carries hasNext) so later query/exec/commit/rollback commands
  * reach it by the returned task key (the transaction id).
  *
- * Go: payloads.BeginParams (ext-go-legacy/internal/features/sql/payloads/payloads.go).
+ * Rust: payloads::BeginParams (ext/src/features/sql/payloads.rs).
  */
 readonly class BeginPayload extends BaseSqlPayload
 {

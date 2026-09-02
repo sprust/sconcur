@@ -6,7 +6,7 @@ namespace SConcur\Telemetry\Dto;
 
 /**
  * Process memory split of one snapshot. Field names mirror the Go schema
- * (ext-go-legacy/internal/stats/snapshot.go) so the JSON on the wire round-trips unchanged.
+ * (ext/src/stats/mod.rs) so the JSON on the wire round-trips unchanged.
  */
 readonly class Memory
 {

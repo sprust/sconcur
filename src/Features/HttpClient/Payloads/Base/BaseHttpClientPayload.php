@@ -13,7 +13,7 @@ use SConcur\Transport\PayloadParametersInterface;
  * Builds the command envelope (cm/p) every HTTP-client payload sends: the
  * sub-operation command plus its parameters. Mirrors Base\BaseMongodbPayload.
  *
- * Go: payloads.Envelope (ext-go-legacy/internal/features/httpclient/payloads/payloads.go).
+ * Rust: payloads::Envelope (ext/src/features/httpclient/payloads.rs).
  */
 abstract readonly class BaseHttpClientPayload implements PayloadInterface
 {

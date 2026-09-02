@@ -10,8 +10,8 @@ use SConcur\Features\Mongodb\Payloads\Dto\Connection;
 use SConcur\Features\Mongodb\Payloads\Dto\Parameters;
 
 /**
- * Go: no struct — the `dt` body is consumed as raw BSON (or is empty);
- * see ext-go-legacy/internal/features/mongodb/payloads/payloads.go.
+ * Rust: no struct — the `dt` body is consumed as raw BSON (or is empty);
+ * see ext/src/features/mongodb/payloads.rs.
  */
 readonly class CreateIndexesPayload extends BaseMongodbPayload
 {

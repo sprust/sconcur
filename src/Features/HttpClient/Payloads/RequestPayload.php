@@ -12,7 +12,7 @@ use SConcur\Transport\PayloadParametersInterface;
  * The Request command: open one HTTP request (buffered body, or the start of a
  * streamed-body upload when the parameters carry streamBody).
  *
- * Go: payloads.RequestParams (ext-go-legacy/internal/features/httpclient/payloads/payloads.go).
+ * Rust: payloads::RequestParams (ext/src/features/httpclient/payloads.rs).
  */
 readonly class RequestPayload extends BaseHttpClientPayload
 {

@@ -12,7 +12,7 @@ use SConcur\Transport\PayloadParametersInterface;
  * The Connect command: dial the remote ws:// URL and open a streaming connection (the
  * first result is the connection metadata, subsequent results are inbound messages).
  *
- * Go: payloads.ConnectParams (ext-go-legacy/internal/features/wsclient/payloads/payloads.go).
+ * Rust: payloads::ConnectParams (ext/src/features/wsclient/payloads.rs).
  */
 readonly class ConnectPayload extends BaseWsClientPayload
 {

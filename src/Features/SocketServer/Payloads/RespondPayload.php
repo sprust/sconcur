@@ -11,7 +11,7 @@ use SConcur\Transport\PayloadInterface;
  * One action a connection handler performs on its connection: write a frame to the
  * client, or close the connection. The op field tells the Go side which.
  *
- * Go: payloads.RespondPayload (ext-go-legacy/internal/features/socketserver/payloads/payloads.go).
+ * Rust: payloads::RespondPayload (ext/src/features/socketserver/payloads.rs).
  */
 readonly class RespondPayload implements PayloadInterface
 {

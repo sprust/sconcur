@@ -12,7 +12,7 @@ use SConcur\Transport\PayloadParametersInterface;
  * write timeouts), applied on the Go side as the dial/handshake and per-message
  * deadlines.
  *
- * Go: payloads.ConnectParams (ext-go-legacy/internal/features/wsclient/payloads/payloads.go).
+ * Rust: payloads::ConnectParams (ext/src/features/wsclient/payloads.rs).
  */
 readonly class ConnectPayloadParameters implements PayloadParametersInterface
 {

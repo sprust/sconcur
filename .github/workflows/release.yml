@@ -63,23 +63,21 @@ jobs:
       - name: Install composer dependencies
         run: make composer c="install --no-interaction --no-progress"
 
-      # The published artifact is still the Go build: AMQP is the one feature the
-      # Rust core has not been ported yet, so releasing that one would drop a
-      # feature from under everybody using it. check-go builds it, runs its unit
-      # tests and runs the whole PHPUnit suite against it — unfiltered, which the
-      # Rust check cannot be until AMQP lands.
+      # The core the release publishes, and what everything in the repository
+      # loads. Nothing is filtered out of the suite: every feature is ported.
       - name: Run checks against the released core
-        run: make check-go
-
-      # The core everything in the repository loads by default, checked on the
-      # same commit so a release never carries a Rust core that does not build.
-      - name: Run checks against the Rust core
         run: make check
+
+      # The Go core is the reference the Rust one was ported against, and it is
+      # kept passing on the same commit so it stays a reference. It is not what
+      # ships.
+      - name: Run checks against the reference core
+        run: make check-go
 
       - name: Resolve release version
         id: version
         run: |
-          status=$(docker compose exec -T php php -d extension=./ext-go-legacy/build/sconcur.so bin/sconcur-status --json)
+          status=$(docker compose exec -T php php -d extension=./ext/build/sconcur.so bin/sconcur-status --json)
           echo "sconcur-status: $status"
 
           ready=$(echo "$status" | jq -r '.ready')
@@ -133,7 +131,7 @@ jobs:
           # afterwards (see the immutability guard above). --latest marks it as the GitHub
           # "Latest" release (what /releases/latest resolves to). --generate-notes
           # auto-builds the changelog from PRs/commits between previous_tag and this release.
-          gh release create "$tag" ./ext-go-legacy/build/sconcur.so \
+          gh release create "$tag" ./ext/build/sconcur.so \
             --target "$GITHUB_SHA" \
             --title "$tag" \
             "${notes_args[@]}" \

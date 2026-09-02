@@ -103,13 +103,16 @@ The two produce the same `sconcur.so`, ABI for ABI: the same hand-written PHP
 glue, the same C exports, the same binary result frame, the same `version()`.
 That is what makes the swap a path change and nothing more.
 
-Three things still run on Go on purpose, all because AMQP is the one feature not
-ported yet: the RabbitMQ consumer master
-(`config/sconcur.rabbitmq.config.json`), `make mem-leak-amqp`, and the release —
-the workflow publishes the Go build after `make check-go`, so shipping does not
-drop a feature from under the people using it. `make test` runs an explicit list
-of suites for the same reason — see `TEST_PATHS` in the makefile, which goes away
-when AMQP lands.
+Every feature is on the Rust core now, AMQP included, so the Rust build is what
+the release publishes and `make test` runs the whole tree. The Go core is kept
+passing on the same commit (`make check-go`, which the release workflow also
+runs) so it stays a reference rather than rotting into one.
+
+Two differences the Rust core has from it, both because its AMQP driver cannot
+send what the Go one could, and both refused rather than dropped in silence: a
+prefetch **size** (`basic.qos`'s prefetch-size is absent from the driver's frame
+altogether) and `verify: false` on a TLS connection. Both are in
+[docs/amqp.md](../docs/amqp.md).
 
 Two images build from the same commands. `docker/php/Dockerfile` is the development
 one and additionally carries the RoadRunner binary and a compiled Swoole — the

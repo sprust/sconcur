@@ -14,10 +14,10 @@ use SConcur\Transport\PayloadInterface;
  *
  * One class for all of them, unlike the pair-per-command the other multi-command features
  * use: AMQP has two dozen methods whose parameters are flat maps of short keys with no
- * logic of their own, so the callers write the keys where the values are. The Go struct
+ * logic of their own, so the callers write the keys where the values are. The Rust struct
  * each command's `p` is decoded into is named on its AmqpCommandEnum case.
  *
- * Go: payloads.Envelope (ext-go-legacy/internal/features/amqp/payloads/payloads.go).
+ * Rust: payloads::Envelope (ext/src/features/amqp/payloads.rs).
  */
 readonly class AmqpPayload implements PayloadInterface
 {

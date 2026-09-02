@@ -12,7 +12,7 @@ use SConcur\Features\Sql\SqlCommandEnum;
 /**
  * The Commit command: commits the transaction identified by transactionId.
  *
- * Go: payloads.TransactionRefParams (ext-go-legacy/internal/features/sql/payloads/payloads.go).
+ * Rust: payloads::TransactionRefParams (ext/src/features/sql/payloads.rs).
  */
 readonly class CommitPayload extends BaseSqlPayload
 {

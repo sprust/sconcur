@@ -10,7 +10,7 @@ use SConcur\Features\Mongodb\Payloads\Dto\Connection;
 use SConcur\Features\Mongodb\Payloads\Dto\Parameters;
 
 /**
- * Go: payloads.CreateIndexPayload (ext-go-legacy/internal/features/mongodb/payloads/payloads.go).
+ * Rust: payloads::CreateIndexPayload (ext/src/features/mongodb/payloads.rs).
  */
 readonly class CreateIndexPayload extends BaseMongodbPayload
 {

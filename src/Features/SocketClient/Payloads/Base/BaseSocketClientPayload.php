@@ -13,7 +13,7 @@ use SConcur\Transport\PayloadParametersInterface;
  * Builds the command envelope (cm/p) every socket-client payload sends: the
  * sub-operation command plus its parameters. Mirrors Base\BaseHttpClientPayload.
  *
- * Go: payloads.Envelope (ext-go-legacy/internal/features/socketclient/payloads/payloads.go).
+ * Rust: payloads::Envelope (ext/src/features/socketclient/payloads.rs).
  */
 abstract readonly class BaseSocketClientPayload implements PayloadInterface
 {

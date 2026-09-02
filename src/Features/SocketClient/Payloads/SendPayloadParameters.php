@@ -10,7 +10,7 @@ use SConcur\Transport\PayloadParametersInterface;
  * Parameters of a Send command: the connection to write to and the frame bytes
  * (binary-safe).
  *
- * Go: payloads.SendParams (ext-go-legacy/internal/features/socketclient/payloads/payloads.go).
+ * Rust: payloads::SendParams (ext/src/features/socketclient/payloads.rs).
  */
 readonly class SendPayloadParameters implements PayloadParametersInterface
 {
