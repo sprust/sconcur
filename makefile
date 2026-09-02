@@ -200,22 +200,13 @@ RUST_TEST_PATHS = \
 	tests/feature/Features/WsClient \
 	tests/feature/Features/HttpClient
 
-# The tests inside those suites the Rust core deliberately does not answer for.
-# This list is the inventory of what the port leaves out, and it is kept here
-# rather than by dropping whole suites so the rest of each one still runs:
+# The one test the Rust core deliberately does not answer for. Kept here rather
+# than by dropping the suite that holds it, so the rest of that suite still runs:
+# a bytea binding of invalid UTF-8 is accepted, where pgx's text-format path
+# rejects it (see .ai/plans/rust-core-spike.md).
 #
-#   - streamed HTTP responses (head/chunk/end) are not implemented. That takes
-#     the streaming half of the handler-timeout test with them, and one HTTP
-#     *client* test too: it asks the server for a chunked response, which this
-#     server cannot produce, so the failure is the server's gap seen from the
-#     other side;
-#   - a bytea binding of invalid UTF-8 is accepted, where pgx's text-format path
-#     rejects it (see .ai/plans/rust-core-spike.md).
-#
-# Anything that fails OUTSIDE this list is a real failure. Kept on one line:
-# make turns a backslash-newline into a space, which would put spaces inside
-# the regex and quietly match nothing.
-RUST_TEST_EXCLUDE = testStreamedBodyIsAssembledFromChunks|testStreamedResponseUsesChunkedTransferEncoding|testStreamingHandlerIsCutOffByTheTotalDeadline|testGetSizeIsNullForChunkedResponse|testBinaryWithNulByteFailsOnUtf8
+# Anything that fails OUTSIDE this list is a real failure.
+RUST_TEST_EXCLUDE = testBinaryWithNulByteFailsOnUtf8
 
 # The feature suites, run against the Rust core. SCONCUR_EXT reaches the server
 # harnesses too: they spawn their worker with proc_open, so without it a run

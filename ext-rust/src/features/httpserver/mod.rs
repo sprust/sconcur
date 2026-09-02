@@ -42,7 +42,7 @@ impl Feature for HttpFeature {
             match task.message().method {
                 Method::HttpServe => handle_serve(task).await,
                 Method::HttpRespond => {
-                    if let Some(result) = respond(&task) {
+                    if let Some(result) = respond(&task).await {
                         task.add_result(result).await;
                     }
                 }
@@ -57,7 +57,7 @@ impl Feature for HttpFeature {
     }
 
     fn handle_detached(&self, task: Task) {
-        if let Some(result) = respond(&task) {
+        if let Some(result) = respond_detached(&task) {
             task.add_result_detached(result);
         }
     }
@@ -169,7 +169,7 @@ async fn handle_serve(task: Task) {
 /// Routes one write command from a PHP handler to the waiting connection. It
 /// never leaves the connection hanging: as long as the request id resolves, the
 /// client always gets an answer.
-fn respond(task: &Task) -> Option<Result> {
+async fn respond(task: &Task) -> Option<Result> {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -186,7 +186,7 @@ fn respond(task: &Task) -> Option<Result> {
         return Some(fail_respond(task, ERR_FACTORY.by_text("empty respond requestId")));
     }
 
-    let Some(connection) = registries().take_pending(&id_only.request_id) else {
+    let Some(writer) = registries().writer(&id_only.request_id) else {
         // The connection is already gone (answered or disconnected).
         return Some(fail_respond(
             task,
@@ -199,39 +199,51 @@ fn respond(task: &Task) -> Option<Result> {
         Err(error) => {
             // Malformed payload: answer the client with a 500 instead of
             // hanging, exactly as Go does.
-            let _ = connection.send(WriteCommand {
-                kind: WriteKind::Full,
-                status: 500,
-                headers: HashMap::new(),
-                body: b"Internal Server Error".to_vec(),
-            });
+            let (done, _) = tokio::sync::oneshot::channel();
+
+            let _ = writer
+                .send(WriteCommand {
+                    kind: WriteKind::Full,
+                    status: 500,
+                    headers: HashMap::new(),
+                    body: b"Internal Server Error".to_vec(),
+                    done,
+                })
+                .await;
 
             return Some(fail_respond(task, ERR_FACTORY.by_err("parse respond payload", error)));
         }
     };
 
-    if payload.op != WriteKind::Full as i64 {
-        let _ = connection.send(WriteCommand {
-            kind: WriteKind::Full,
-            status: 500,
-            headers: HashMap::new(),
-            body: b"Internal Server Error".to_vec(),
-        });
-
+    let Some(kind) = WriteKind::from_code(payload.op) else {
         return Some(fail_respond(
             task,
-            ERR_FACTORY.by_text("streamed responses are out of the core spike's scope"),
+            ERR_FACTORY.by_text(&format!("unknown respond op {}", payload.op)),
         ));
+    };
+
+    // The end of a response releases its registration; a head or a chunk leaves
+    // it in place for what follows.
+    if matches!(kind, WriteKind::Full | WriteKind::End) {
+        registries().forget(&id_only.request_id);
     }
 
-    let sent = connection
-        .send(WriteCommand {
-            kind: WriteKind::Full,
-            status: payload.status.clamp(100, 599) as u16,
-            body: payload.body_bytes(),
-            headers: payload.headers,
-        })
-        .is_ok();
+    let (done, outcome) = tokio::sync::oneshot::channel();
+
+    let command = WriteCommand {
+        kind,
+        status: payload.status.clamp(100, 599) as u16,
+        body: payload.body_bytes(),
+        headers: payload.headers,
+        done,
+    };
+
+    if writer.send(command).await.is_err() {
+        return Some(fail_respond(
+            task,
+            ERR_FACTORY.by_text("write response: request abandoned"),
+        ));
+    }
 
     // A fire-and-forget write (the final write of a full response): the PHP
     // coroutine does not await this task, so no result is published — success
@@ -240,18 +252,83 @@ fn respond(task: &Task) -> Option<Result> {
         return None;
     }
 
-    if !sent {
-        return Some(fail_respond(
+    match outcome.await {
+        Ok(Ok(())) => Some(Result::success(
+            message,
+            Vec::new(),
+            calc_execution_ms(start_time),
+        )),
+        Ok(Err(error)) => Some(fail_respond(task, ERR_FACTORY.by_text(&format!("write response: {error}")))),
+        Err(_) => Some(fail_respond(
             task,
             ERR_FACTORY.by_text("write response: request abandoned"),
+        )),
+    }
+}
+
+/// The detached path, on the PHP thread: the write is handed over without
+/// waiting for it to be applied.
+///
+/// Go's hand-over is a rendezvous, which guarantees the connection goroutine
+/// accepted the command before push returns. A one-slot channel buys the same
+/// guarantee more cheaply — the command is in the channel the receiver is
+/// already waiting on — without blocking the thread that drains the results.
+fn respond_detached(task: &Task) -> Option<Result> {
+    let message = task.message();
+
+    let id_only: payloads::RespondRequestId = match rmp_serde::from_slice(&message.payload) {
+        Ok(id_only) => id_only,
+        Err(error) => {
+            return Some(fail_respond(task, ERR_FACTORY.by_err("parse respond requestId", error)));
+        }
+    };
+
+    let Some(writer) = registries().writer(&id_only.request_id) else {
+        return Some(fail_respond(
+            task,
+            ERR_FACTORY.by_text(&format!("unknown requestId {}", id_only.request_id)),
         ));
+    };
+
+    let payload: payloads::RespondPayload = match rmp_serde::from_slice(&message.payload) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return Some(fail_respond(task, ERR_FACTORY.by_err("parse respond payload", error)));
+        }
+    };
+
+    let Some(kind) = WriteKind::from_code(payload.op) else {
+        return Some(fail_respond(
+            task,
+            ERR_FACTORY.by_text(&format!("unknown respond op {}", payload.op)),
+        ));
+    };
+
+    if matches!(kind, WriteKind::Full | WriteKind::End) {
+        registries().forget(&id_only.request_id);
     }
 
-    Some(Result::success(
-        message,
-        Vec::new(),
-        calc_execution_ms(start_time),
-    ))
+    let (done, _) = tokio::sync::oneshot::channel();
+
+    let sent = writer.try_send(WriteCommand {
+        kind,
+        status: payload.status.clamp(100, 599) as u16,
+        body: payload.body_bytes(),
+        headers: payload.headers,
+        done,
+    });
+
+    if payload.no_result {
+        return None;
+    }
+
+    match sent {
+        Ok(()) => Some(Result::success(message, Vec::new(), 0)),
+        Err(_) => Some(fail_respond(
+            task,
+            ERR_FACTORY.by_text("write response: request abandoned"),
+        )),
+    }
 }
 
 /// Builds a respond failure result. A detached task carries no flow, so the

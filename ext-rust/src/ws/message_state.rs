@@ -57,6 +57,25 @@ impl MessageState {
         Result::success(&self.message, Vec::new(), calc_execution_ms(self.start_time))
     }
 
+    /// What a drained stream answers: a message already in hand wins, a
+    /// connection that has delivered one ends immediately, and one that has not
+    /// gets a bounded window for its first — its request may still be on the
+    /// wire.
+    async fn drained(&self, messages: &mut mpsc::Receiver<InboundMessage>) -> Result {
+        if let Ok(message) = messages.try_recv() {
+            return self.delivered(message);
+        }
+
+        if self.delivered.load(Ordering::Relaxed) > 0 {
+            return self.finished();
+        }
+
+        match tokio::time::timeout(FIRST_MESSAGE_DRAIN_GRACE, messages.recv()).await {
+            Ok(Some(message)) => self.delivered(message),
+            _ => self.finished(),
+        }
+    }
+
     fn delivered(&self, message: InboundMessage) -> Result {
         self.delivered.fetch_add(1, Ordering::Relaxed);
 
@@ -84,15 +103,7 @@ impl StateContract for MessageState {
             }
 
             if self.drain.is_cancelled() {
-                if self.delivered.load(Ordering::Relaxed) > 0 {
-                    return self.finished();
-                }
-
-                return match tokio::time::timeout(FIRST_MESSAGE_DRAIN_GRACE, messages.recv()).await
-                {
-                    Ok(Some(message)) => self.delivered(message),
-                    _ => self.finished(),
-                };
+                return self.drained(&mut messages).await;
             }
 
             tokio::select! {
@@ -102,14 +113,14 @@ impl StateContract for MessageState {
                     Some(message) => self.delivered(message),
                     None => self.finished(),
                 },
-                _ = self.drain.cancelled() => {
-                    // Same rule on the racing path: flush a message that landed
-                    // with the signal rather than answering EOF over it.
-                    match messages.try_recv() {
-                        Ok(message) => self.delivered(message),
-                        _ => self.finished(),
-                    }
-                }
+                // The drain arriving while this call is already parked is the
+                // common case, not the rare one: the connection that reaches the
+                // limit is dispatched and drained almost at once, so its handler
+                // is usually waiting here when the signal lands. It gets the same
+                // grace as one that arrived after — answering EOF here bounced
+                // that connection's first exchange, which is what made the
+                // maxConnections test flaky.
+                _ = self.drain.cancelled() => self.drained(&mut messages).await,
             }
         })
     }
