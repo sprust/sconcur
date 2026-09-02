@@ -17,6 +17,7 @@ declare(strict_types=1);
  * Run: php -d extension=./ext/build/sconcur.so tests/benchmarks/runtime/boundary-profile.php
  */
 
+use RuntimeException;
 use SConcur\Connection\Extension;
 use SConcur\Features\Sleeper\Payloads\SleeperPayload;
 use SConcur\Features\Sleeper\Sleeper;
@@ -54,9 +55,17 @@ $drain = static function (): void {
 };
 
 /**
- * Seeds RESULTS finished results into the Go-side buffer: pushes sleeper tasks
- * with the smallest allowed delay and waits until every one of them has produced
- * its result, so the measured loop only pays for taking them across the boundary.
+ * Seeds RESULTS finished results into the extension's buffer: pushes sleeper
+ * tasks with the smallest allowed delay and waits until every one of them has
+ * produced its result, so the measured loop only pays for taking them across the
+ * boundary.
+ *
+ * The wait is on the count, not on a clock. A fixed sleep was what made every row
+ * here untrustworthy: results still being produced when the case started put the
+ * CPU of producing them inside the measured window, and getrusage counts the
+ * extension's threads because they are threads of this process. That is how the
+ * same work came out as 1.5 us in one run and 9.9 us in the next, and how the
+ * isolated rows stopped summing to the composed one.
  */
 $seedResults = static function () use ($extension): void {
     $flowKey = 'profile-' . uniqid();
@@ -66,7 +75,17 @@ $seedResults = static function () use ($extension): void {
         $extension->push($flowKey, $payload);
     }
 
-    usleep(300_000);
+    $deadline = microtime(true) + 10.0;
+
+    while (tasksCount() < RESULTS) {
+        if (microtime(true) > $deadline) {
+            throw new RuntimeException(
+                'seeding did not settle: ' . tasksCount() . ' of ' . RESULTS . ' results ready',
+            );
+        }
+
+        usleep(1000);
+    }
 };
 
 /**
@@ -158,19 +177,40 @@ $report['waitAnyBatch(64) (per result)'] = $measure(
     setUp: $seedResults,
 );
 
-// 5. PHP-side frame parsing in isolation, on one captured frame.
+// 5. The two halves in one loop, on fresh frames, which is the only row that
+//    describes the real path. The isolated rows below do NOT sum to it, and the
+//    difference is not a missing component: parsing one frame over and over with
+//    the extension idle costs ~2 us, while parsing the frames of a run that is
+//    actually taking results costs ~9 us. The extra is allocator and refcount
+//    work on the objects each result becomes, which only exists when results are
+//    really flowing.
+//
+//    Reading the isolated rows as an attribution is what produced the "~6 us
+//    unattributed" of .ai/plans/php-go-boundary-batching.md. There was nothing
+//    unattributed; the parts were measured in a state the whole never has.
+$parseFrame = Closure::bind(
+    static fn (string $response): object => Extension::parseWaitResponse($response, 'profile', microtime(true)),
+    null,
+    Extension::class,
+);
+
+$report['raw waitAny + parse (composed, fresh frames)'] = $measure(
+    case: static function () use ($parseFrame): void {
+        for ($i = 0; $i < RESULTS; $i++) {
+            $parseFrame(rawWaitAny());
+        }
+    },
+    operations: RESULTS,
+    setUp: $seedResults,
+);
+
+// 6. PHP-side frame parsing in isolation, on one captured frame.
 $seedResults();
 $frame = rawWaitAny();
 
 while (tasksCount() > 0) {
     rawWaitAny();
 }
-
-$parseFrame = Closure::bind(
-    static fn (string $response): object => Extension::parseWaitResponse($response, 'profile', microtime(true)),
-    null,
-    Extension::class,
-);
 
 $report['parseWaitResponse (PHP only)'] = $measure(
     case: static function () use ($parseFrame, $frame): void {
@@ -181,7 +221,7 @@ $report['parseWaitResponse (PHP only)'] = $measure(
     operations: RESULTS,
 );
 
-// 6. Scheduler coordination: a fan-out of coroutines that never suspend versus
+// 7. Scheduler coordination: a fan-out of coroutines that never suspend versus
 //    one where every coroutine suspends on the cheapest possible feature call.
 //    Read the CPU column — the sleeper's Go timer inflates wall, not CPU.
 $report['coroutine, no suspend (fiber machinery)'] = $measure(
