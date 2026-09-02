@@ -93,6 +93,7 @@ impl WorkloadProvider for RequestStats {
         Workload {
             requests: Some(requests),
             connections: None,
+            consumers: None,
         }
     }
 }

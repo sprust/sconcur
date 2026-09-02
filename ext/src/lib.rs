@@ -485,9 +485,6 @@ pub extern "C" fn httpStopAccepting(flow_key: *const c_char) {
     })
 }
 
-/// AMQP is not ported yet. Its export stays so the same sconcur.c and the same
-/// PHP package load unchanged; a push for that method already fails in the
-/// feature facade.
 #[unsafe(no_mangle)]
 pub extern "C" fn socketStopAccepting(flow_key: *const c_char) {
     guarded(|| (), || {
@@ -502,8 +499,16 @@ pub extern "C" fn wsStopAccepting(flow_key: *const c_char) {
     })
 }
 
+/// Cancels every consumer of a supervised worker's stream, leaving its channels
+/// open so the acknowledgements of the handlers still running land. Mirrors the
+/// servers' early listener close: the stream stops taking new work while the
+/// work already handed over finishes.
 #[unsafe(no_mangle)]
-pub extern "C" fn amqpStopConsuming(_flow_key: *const c_char) {}
+pub extern "C" fn amqpStopConsuming(flow_key: *const c_char) {
+    guarded(|| (), || {
+        features::amqp::consume_serve::stop_consuming(&unsafe { owned_string_nul(flow_key) });
+    })
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn preemptionArm(quantum_ms: c_int) {

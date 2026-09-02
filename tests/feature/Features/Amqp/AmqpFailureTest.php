@@ -66,41 +66,41 @@ class AmqpFailureTest extends AmqpTestCase
         self::assertSame(0, $connection->usedChannels());
     }
 
+    /**
+     * A connection-level failure takes the connection, not just the channel that ran into
+     * it.
+     *
+     * The failure is caused by asking the broker to close the connection, which is what an
+     * operator pressing the button or a node going down does. It used to be caused with a
+     * prefetch size — RabbitMQ answers a non-zero one with 540 NOT_IMPLEMENTED, a
+     * connection-level reply code — but the extension's AMQP driver cannot put that field
+     * on the wire at all (see docs/amqp.md), so the device changed and the subject did not:
+     * what such a failure does to the handles on this side.
+     */
     public function testAConnectionLevelFailureIsReportedAsOne(): void
     {
-        // Its own connection, named so the pool gives it one: this test kills the
-        // connection, and the pooled one is shared by every other AMQP test.
-        $connection = new Connection(new ConnectionOptions(
-            host: (string) $_ENV['RABBITMQ_HOST'],
-            port: (int) $_ENV['RABBITMQ_PORT'],
-            login: (string) $_ENV['RABBITMQ_USER'],
-            password: (string) $_ENV['RABBITMQ_PASSWORD'],
-            vhost: (string) $_ENV['RABBITMQ_VHOST'],
-            connectionName: 'connection-failure-probe',
-        ));
+        // Its own connection, named so the pool gives it one and so the broker can be asked
+        // to close exactly this one: the pooled connection is shared by every other test.
+        $name = TestAmqpResolver::uniqueName('connection-failure-probe');
+
+        $connection = $this->namedConnection($name);
 
         $connection->connect();
 
         $channel = $connection->channel();
 
-        try {
-            // RabbitMQ has never implemented basic.qos's prefetch_size, and answers one
-            // with 540 NOT_IMPLEMENTED — a connection-level reply code.
-            $channel->prefetch(
-                count: 1,
-                sizeBytes: 1024,
-            );
+        $this->closeFromTheBroker($name);
 
-            self::fail('RabbitMQ does not implement a prefetch size');
-        } catch (ConnectionException $exception) {
-            self::assertSame(540, $exception->getCode());
-            self::assertStringContainsString('NOT_IMPLEMENTED', $exception->getMessage());
+        try {
+            $channel->queue(TestAmqpResolver::uniqueName('anything'))->declare();
+
+            self::fail('a command cannot run on a connection the broker closed');
+        } catch (ConnectionException) {
+            // The class is the assertion: a dead connection is not a channel failure.
         }
 
-        // A connection-level failure takes the connection, not just the channel that ran
-        // into it.
-        self::assertFalse($connection->isOpen());
-        self::assertFalse($channel->isOpen());
+        self::assertFalse($connection->isOpen(), 'the connection must report itself closed');
+        self::assertFalse($channel->isOpen(), 'its channels go with it');
 
         try {
             $connection->channel();
@@ -115,36 +115,31 @@ class AmqpFailureTest extends AmqpTestCase
     }
 
     /**
-     * The same connection-level failure, raised while the channel is being opened — the one
+     * The same connection-level failure, met while the channel is being opened — the one
      * moment there is no channel object for the resolver to read the connection off. It used
      * to leave the connection reporting itself open, and the reopen guard every consumer is
      * built on (`if (!$connection->isOpen())`) then never fired again.
      */
     public function testAConnectionLostWhileAChannelWasOpeningIsReportedClosed(): void
     {
-        $connection = new Connection(new ConnectionOptions(
-            host: (string) $_ENV['RABBITMQ_HOST'],
-            port: (int) $_ENV['RABBITMQ_PORT'],
-            login: (string) $_ENV['RABBITMQ_USER'],
-            password: (string) $_ENV['RABBITMQ_PASSWORD'],
-            vhost: (string) $_ENV['RABBITMQ_VHOST'],
-            connectionName: 'channel-open-failure-probe',
-        ));
+        $name = TestAmqpResolver::uniqueName('channel-open-failure-probe');
+
+        $connection = $this->namedConnection($name);
 
         $connection->connect();
 
-        try {
-            // The prefetch is applied while the channel is opening, and RabbitMQ answers a
-            // prefetch size with 540 NOT_IMPLEMENTED — a connection-level reply code, from
-            // inside the constructor.
-            $connection->channel(
-                prefetchCount: 1,
-                prefetchSizeBytes: 1024,
-            );
+        // A channel is opened first: the connection has to be one the broker has listed
+        // before it can be asked to close it, and this is also what makes the next open the
+        // first thing to meet the dead connection.
+        $connection->channel();
 
-            self::fail('RabbitMQ does not implement a prefetch size');
-        } catch (ConnectionException $exception) {
-            self::assertSame(540, $exception->getCode());
+        $this->closeFromTheBroker($name);
+
+        try {
+            $connection->channel();
+
+            self::fail('a channel cannot be opened on a connection the broker closed');
+        } catch (ConnectionException) {
         }
 
         self::assertFalse(
@@ -517,6 +512,47 @@ class AmqpFailureTest extends AmqpTestCase
         }
 
         self::assertSame($before, count($registry->getValue($connection)));
+    }
+
+    /**
+     * A connection of this test's own, named so the pool does not share it.
+     */
+    protected function namedConnection(string $name): Connection
+    {
+        return new Connection(new ConnectionOptions(
+            host: (string) $_ENV['RABBITMQ_HOST'],
+            port: (int) $_ENV['RABBITMQ_PORT'],
+            login: (string) $_ENV['RABBITMQ_USER'],
+            password: (string) $_ENV['RABBITMQ_PASSWORD'],
+            vhost: (string) $_ENV['RABBITMQ_VHOST'],
+            connectionName: $name,
+        ));
+    }
+
+    /**
+     * Asks the broker to close the named connection, waiting for it to appear first: the
+     * management API lists a connection only once its statistics have been collected, which
+     * is a few seconds behind the socket.
+     */
+    protected function closeFromTheBroker(string $name): void
+    {
+        $closed   = 0;
+        $deadline = microtime(true) + 15.0;
+
+        while ($closed === 0 && microtime(true) < $deadline) {
+            $closed = TestAmqpResolver::closeConnectionsNamed($name);
+
+            if ($closed === 0) {
+                usleep(500_000);
+            }
+        }
+
+        self::assertGreaterThan(0, $closed, 'the test must actually close the connection');
+
+        // The close travels to the client as a frame; give the extension the moment it
+        // takes to read it, so the assertions below are about the failure and not about a
+        // race with it.
+        Sleeper::usleep(microseconds: 200_000);
     }
 
     /**

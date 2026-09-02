@@ -1,6 +1,7 @@
 //! Mirrors ext-go-legacy/internal/features/factory.go: the single facade that resolves a
 //! method to its feature handler.
 
+pub mod amqp;
 pub mod httpclient;
 pub mod httpserver;
 pub mod mongodb;
@@ -54,9 +55,9 @@ pub enum Handler {
     State,
 }
 
-/// Mirrors features.DetectMessageHandler. The spike carries the two features
-/// the ladder needs; every other method answers exactly as Go's default branch
-/// does, so an unsupported push fails loudly instead of hanging.
+/// Mirrors features.DetectMessageHandler. Every method the PHP package can push
+/// is here; anything else answers exactly as Go's default branch does, so an
+/// unsupported push fails loudly instead of hanging.
 pub fn detect_message_handler(method: Method) -> std::result::Result<&'static dyn Feature, String> {
     match method {
         Method::Sleep => Ok(sleeper::get()),
@@ -69,6 +70,7 @@ pub fn detect_message_handler(method: Method) -> std::result::Result<&'static dy
         Method::SocketClient => Ok(socketclient::get()),
         Method::WsServe | Method::WsRespond => Ok(wsserver::get()),
         Method::WsClient => Ok(wsclient::get()),
+        Method::Amqp => Ok(amqp::get()),
         _ => Err(format!("unknown method: {}", method.as_wire())),
     }
 }
@@ -81,5 +83,6 @@ pub fn shutdown() {
     socketserver::shutdown();
     wsserver::shutdown();
     mongodb::shutdown();
+    amqp::shutdown();
     sql::close_all_pools();
 }

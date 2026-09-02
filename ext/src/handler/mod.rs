@@ -70,11 +70,12 @@ fn clamp_batch_max(max: i32) -> usize {
 /// call, so a handler that blocks stalls the entire worker — the list is an
 /// explicit opt-in, not a documented convention.
 ///
-/// Spike scope: only the HTTP respond handler, which is bounded by the
-/// connection-side guards. Go additionally allows Amqp for its teardown
-/// commands; that feature is not part of the core spike.
+/// Two methods qualify. The HTTP respond handler is bounded by the
+/// connection-side guards, and Amqp carries the teardown commands a PHP
+/// destructor pushes — a channel close, a disconnect, a consumer cancel — which
+/// hand their work to the runtime rather than doing it here.
 fn detachable(method: Method) -> bool {
-    matches!(method, Method::HttpRespond)
+    matches!(method, Method::HttpRespond | Method::Amqp)
 }
 
 impl Handler {

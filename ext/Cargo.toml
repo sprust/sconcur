@@ -77,6 +77,20 @@ rmpv       = { version = "1", features = ["with-serde"] }
 # The telemetry snapshot, and nothing else: the collector's wire format is JSON
 # (src/stats), while every feature payload is MessagePack.
 serde_json = "1"
+# The AMQP feature. lapin is what stands in for amqp091-go, and it was chosen by
+# checking the five places the feature is thin rather than by reputation: a
+# publisher confirm resolves per publish and carries its returned message with
+# it, wait_for_confirms drains a channel's outstanding ones, basic_get answers
+# Option, the field-table types carry D and T of their own, and a broker refusal
+# arrives as ProtocolError(AMQPError) with the reply code the PHP side branches
+# on. See .ai/plans/amqp-rust-port.md.
+# ring rather than the default provider: rustls is already in this build through
+# reqwest and the MongoDB driver, and it is ring that is in the lock file.
+lapin = { version = "4", default-features = false, features = [
+    "rustls",
+    "rustls--ring",
+    "tokio",
+] }
 
 [profile.release]
 opt-level      = 3

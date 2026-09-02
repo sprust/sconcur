@@ -894,15 +894,22 @@ $connection = new Connection(new ConnectionOptions(
 | --- | --- |
 | `caCert` | the authority the broker's certificate is checked against; with none named, the system store is used |
 | `cert`, `key` | the client certificate and its private key. The two go together — naming one without the other fails the dial |
-| `verify` | `true` by default; `false` skips the check of the broker's certificate altogether |
+| `verify` | `true` by default. `false` asks to accept a certificate that was not checked, which the extension refuses — see below |
 
 The files are read by the extension inside the worker's own process, so the paths
 are the ones that process sees.
 
 The broker's certificate is checked against `host`, so it has to be valid for
-exactly that name, and as a SAN entry — Go does not accept a bare common name. A
+exactly that name, and as a SAN entry — a bare common name is not accepted. A
 dial that cannot read a file, cannot parse the CA or fails the handshake raises
 `ConnectionException`.
+
+`verify: false` is refused rather than honoured: the TLS layer takes a
+certificate chain and a client identity and has no switch for accepting a
+certificate it cannot check. A dial asking for it fails with a
+`ConnectionException` saying so. Point `caCert` at the authority that signed the
+broker's certificate instead — that is what the option was reached for against a
+self-signed development broker.
 
 `SaslMethodEnum::External` replaces the login and password with the client
 certificate: the broker takes the identity out of it, and neither is sent at all.
@@ -1290,6 +1297,11 @@ The general limits — CLI only, Linux only, NTS only, no `pcntl_fork` — are i
   [TLS and SASL EXTERNAL](#tls-and-sasl-external).
 - `basic.publish`'s `immediate` flag is never sent: RabbitMQ has not implemented
   it since 3.0 and closes the channel on one that sets it.
+- A prefetch **size** is refused rather than sent. `basic.qos` carries the field,
+  but RabbitMQ has never implemented it and the extension's AMQP driver leaves it
+  out of the frame altogether, so a size asked for could only be dropped in
+  silence. `prefetch(sizeBytes:)` and `channel(prefetchSizeBytes:)` therefore
+  raise instead. The prefetch **count** is the limit that works.
 - AMQP transactions are not implemented. Publisher confirms replaced them, and the
   broker's own documentation recommends against them.
 - A consume is bounded by the connection's `readTimeoutSeconds`, not by a per-call one.

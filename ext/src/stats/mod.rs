@@ -77,6 +77,28 @@ pub struct Connections {
     pub total_accepted: i64,
 }
 
+/// The queue-consumer workload section. `coroutines` is how many consumers the
+/// worker has open — one per coroutine, so the capacity in use; the in-flight
+/// buckets are exclusive, as the request ones are.
+#[derive(Serialize, Default)]
+pub struct Consumers {
+    pub coroutines: i64,
+    pub delivered: i64,
+    pub acked: i64,
+    pub refused: i64,
+    pub timed: i64,
+    #[serde(rename = "avgMs")]
+    pub avg_ms: f64,
+    #[serde(rename = "inFlight")]
+    pub in_flight: i64,
+    #[serde(rename = "inFlight1to5s")]
+    pub in_flight_1_to_5s: i64,
+    #[serde(rename = "inFlight5to15s")]
+    pub in_flight_5_to_15s: i64,
+    #[serde(rename = "inFlightOver15s")]
+    pub in_flight_over_15s: i64,
+}
+
 /// The feature-specific part of a snapshot. Exactly one section is set per
 /// server kind, and a worker that has done nothing reports none at all — so a
 /// snapshot never claims a workload it does not have.
@@ -84,6 +106,7 @@ pub struct Connections {
 pub struct Workload {
     pub requests: Option<Requests>,
     pub connections: Option<Connections>,
+    pub consumers: Option<Consumers>,
 }
 
 /// Yields the current feature-specific counters at snapshot time.
@@ -119,6 +142,8 @@ struct Snapshot {
     requests: Option<Requests>,
     #[serde(skip_serializing_if = "Option::is_none")]
     connections: Option<Connections>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    consumers: Option<Consumers>,
 }
 
 #[derive(Serialize)]
@@ -284,6 +309,7 @@ async fn push_once(
         goroutines: crate::core::get().runtime().metrics().num_alive_tasks() as i64,
         requests: workload.requests,
         connections: workload.connections,
+        consumers: workload.consumers,
     };
 
     let Ok(body) = serde_json::to_vec(&SnapshotFrame {
@@ -349,6 +375,7 @@ impl WorkloadProvider for ConnectionStats {
     fn workload_snapshot(&self) -> Workload {
         Workload {
             requests: None,
+            consumers: None,
             connections: Some(Connections {
                 active: self.active.load(std::sync::atomic::Ordering::Relaxed),
                 total_accepted: self
