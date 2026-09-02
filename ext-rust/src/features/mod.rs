@@ -2,6 +2,7 @@
 //! method to its feature handler.
 
 pub mod httpserver;
+pub mod sleeper;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -51,6 +52,7 @@ pub enum Handler {
 /// does, so an unsupported push fails loudly instead of hanging.
 pub fn detect_message_handler(method: Method) -> std::result::Result<&'static dyn Feature, String> {
     match method {
+        Method::Sleep => Ok(sleeper::get()),
         Method::HttpServe | Method::HttpRespond => Ok(httpserver::get()),
         _ => Err(format!("unknown method: {}", method.as_wire())),
     }
