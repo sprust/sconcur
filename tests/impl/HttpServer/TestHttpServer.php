@@ -52,7 +52,12 @@ class TestHttpServer
         $options['address'] = self::HOST . ':' . $port;
 
         $root      = dirname(__DIR__, 3);
-        $extension = $root . '/ext/build/sconcur.so';
+        // Overridable so a test run can point the spawned worker at an
+        // alternative build (SCONCUR_EXT=/sconcur/ext-rust/build/sconcur.so).
+        // Without this the harness always starts the Go extension, whatever the
+        // PHPUnit process itself loaded — which makes such a run look like it
+        // exercised the other build when it did not.
+        $extension = getenv('SCONCUR_EXT') ?: $root . '/ext/build/sconcur.so';
         $script    = $root . '/tests/servers/http/http-server.php';
 
         $command = ['php', '-d', 'extension=' . $extension, $script];

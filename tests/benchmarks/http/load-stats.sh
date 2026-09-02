@@ -65,7 +65,10 @@ WORKER_LOGS=${WORKER_LOGS:-0}
 # selects host/port, the script selects the paths.
 WRK_SCRIPT=${WRK_SCRIPT:-}
 
-EXTENSION=/sconcur/ext/build/sconcur.so
+# Overridable so the same harness can drive an alternative build of the
+# extension (the Rust core spike, ext-rust/build/sconcur.so) without a second
+# copy of this script.
+EXTENSION=${EXTENSION:-/sconcur/ext/build/sconcur.so}
 SCRIPT=/sconcur/tests/servers/http/http-server.php
 PIDFILE=/tmp/sc-http-load-$PORT.pids
 STDERRLOG=/tmp/sc-http-load-$PORT.err

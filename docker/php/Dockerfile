@@ -84,6 +84,22 @@ RUN pecl install --configureoptions '\
     "swoole-${SWOOLE_VERSION}" && \
     rm -rf /tmp/pear
 
+# Rust toolchain for the ext-rust core spike (branch spike/rust-core). Sits
+# beside the Go one for the same reason: the spike's build.sh compiles
+# ext-rust/sconcur.c and links it against the staticlib cargo produces, and both
+# halves have to see the same PHP headers this image already carries.
+# Placed after the Swoole build so the expensive cached layers above are reused.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    RUST_VERSION="1.98.0"
+
+ENV PATH=/usr/local/cargo/bin:$PATH
+
+RUN curl -fsSL https://sh.rustup.rs -o /tmp/rustup.sh && \
+    sh /tmp/rustup.sh -y --no-modify-path --profile minimal --default-toolchain "$RUST_VERSION" && \
+    rm /tmp/rustup.sh && \
+    chmod -R 777 "$RUSTUP_HOME" "$CARGO_HOME"
+
 # Check if user and group doesn't exist before creating
 RUN getent group "$GROUP_ID" || addgroup --gid "$GROUP_ID" user
 RUN getent passwd "$USER_ID" || adduser --disabled-password --gecos '' --uid "$USER_ID" --gid "$GROUP_ID" user

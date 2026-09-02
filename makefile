@@ -2,7 +2,12 @@ MAKEFLAGS += --no-print-directory
 
 DOCKER_COMPOSE = docker compose
 PHP_CLI = $(DOCKER_COMPOSE) exec php
-PHP_EXT = $(PHP_CLI) php -d extension=./ext/build/sconcur.so
+# The extension every benchmark and script loads. Overridable so the same targets
+# can be pointed at an alternative build without a second copy of each one:
+#   make bench-mongodb-aggregate SCONCUR_EXT=./ext-rust/build/sconcur.so
+SCONCUR_EXT ?= ./ext/build/sconcur.so
+
+PHP_EXT = $(PHP_CLI) php -d extension=$(SCONCUR_EXT)
 
 # Master control inside the `servers` container: two masters run there under
 # supervisor. One holds the three servers as a group each, the other the RabbitMQ
@@ -147,6 +152,28 @@ ext-build:
 
 ext-test:
 	$(PHP_CLI) sh ./ext-test.sh
+
+# --- Rust core spike (branch spike/rust-core) -------------------------------
+# An alternative build of the extension core in Rust: the C exports, the shared
+# results channel, the sleeper feature and the HTTP server rungs the attribution
+# ladder needs. Not part of `make check` — it answers one question (is the L0
+# floor and the boundary cheaper in another runtime) and is thrown away or
+# promoted on the answer. See .ai/plans/rust-core-spike.md.
+
+# Compiles ext-rust into ext-rust/build/sconcur.so, a drop-in for the Go build.
+ext-rust-build:
+	$(PHP_CLI) sh -c 'cd /sconcur/ext-rust && CARGO_TARGET_DIR=/sconcur/ext-rust/target sh ./build.sh'
+
+# Exercises the spike core through the unmodified PHP package: the shared
+# channel, the error path, flow teardown, the sync wait.
+ext-rust-check:
+	$(PHP_CLI) php -d extension=/sconcur/ext-rust/build/sconcur.so ext-rust/check/core-smoke.php
+
+# Runs on the HOST (needs wrk): the L0/L1 attribution ladder on both cores,
+# interleaved in one session. Tunables via env, e.g.:
+#   make bench-ladder-cores ROUNDS=5 SERVERS=8 DURATION=20
+bench-ladder-cores:
+	ext-rust/bench/ladder.sh
 
 # Resets the DB backends to a clean state before a benchmark session: drops the
 # named data volumes and recreates the containers. Without it writes accumulate
@@ -325,7 +352,7 @@ bench-pgsql-transaction:
 
 # Payload-size benches: p = payload bytes per operation (default 1024), c = calls.
 # E.g.: make bench-mysql-payloadWrite p=1048576 c=50
-PHP_EXT_PAYLOAD = $(DOCKER_COMPOSE) exec -e SCONCUR_BENCH_PAYLOAD_BYTES=$(p) php php -d extension=./ext/build/sconcur.so
+PHP_EXT_PAYLOAD = $(DOCKER_COMPOSE) exec -e SCONCUR_BENCH_PAYLOAD_BYTES=$(p) php php -d extension=$(SCONCUR_EXT)
 
 bench-mongodb-payloadWrite:
 	$(PHP_EXT_PAYLOAD) tests/benchmarks/mongodb/payload-write.php ${c}
