@@ -8,12 +8,13 @@ on:
     # the resolved version actually changes. A push touching none of these paths
     # (e.g. docs-only) skips the whole workflow. Keep this list in sync with new
     # build inputs — an omitted path means no release on a real change.
+    #
+    # ext-go-legacy/ is deliberately absent. It is the reference core, not the
+    # artifact, and nothing here builds or checks it.
     paths:
       - '**.php'                        # src, tests, bin, config, cs-fixer.dist.php
-      - '**.rs'                         # the Rust core's sources
-      - '**.go'                         # the Go core's sources
+      - '**.rs'                         # the released core's sources
       - 'ext/**'                        # Cargo manifests, the PHP glue, headers, build scripts
-      - 'ext-go-legacy/**'              # go.mod / go.sum, the glue, the makefile
       - 'composer.json'
       - 'composer.lock'
       - 'makefile'
@@ -65,14 +66,8 @@ jobs:
 
       # The core the release publishes, and what everything in the repository
       # loads. Nothing is filtered out of the suite: every feature is ported.
-      - name: Run checks against the released core
+      - name: Run checks
         run: make check
-
-      # The Go core is the reference the Rust one was ported against, and it is
-      # kept passing on the same commit so it stays a reference. It is not what
-      # ships.
-      - name: Run checks against the reference core
-        run: make check-go
 
       - name: Resolve release version
         id: version

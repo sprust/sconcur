@@ -124,8 +124,8 @@ check:
 status:
 	$(PHP_EXT) bin/sconcur-status ${c}
 
-# The suites `make test` runs. It is the whole tree; the variable stays because
-# `check-go` overrides it to point the same target at the other core.
+# The suites `make test` runs. Overridable, so a run can be narrowed to one
+# directory without a target of its own.
 TEST_PATHS = tests
 
 # --log-junit persists the failing test's name for the rare flaky failure that
@@ -178,16 +178,6 @@ ext-build-go:
 # The Go unit tests, which only ever applied to the Go tree.
 ext-test-go:
 	$(PHP_CLI) sh ./ext-go-legacy/test.sh
-
-# `make check` against the Go core. It is the reference the Rust core was ported
-# against, and it is kept passing so it stays one — a reference that has rotted
-# answers no questions.
-check-go:
-	make cs-fixer-check
-	make php-stan
-	make ext-build-go
-	make ext-test-go
-	make test SCONCUR_EXT=/sconcur/ext-go-legacy/build/sconcur.so
 
 # Runs on the HOST (needs wrk): the L0/L1 attribution ladder on both cores,
 # interleaved in one session. Needs both builds. Tunables via env, e.g.:

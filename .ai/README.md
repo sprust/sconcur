@@ -104,9 +104,10 @@ glue, the same C exports, the same binary result frame, the same `version()`.
 That is what makes the swap a path change and nothing more.
 
 Every feature is on the Rust core now, AMQP included, so the Rust build is what
-the release publishes and `make test` runs the whole tree. The Go core is kept
-passing on the same commit (`make check-go`, which the release workflow also
-runs) so it stays a reference rather than rotting into one.
+the release publishes and `make test` runs the whole tree. Nothing builds or
+checks the Go core any more — CI does not touch it — but `make ext-build-go`,
+`make ext-test-go` and pointing `SCONCUR_EXT` at it still work, so it can answer
+a question about what the port was ported from.
 
 Two differences the Rust core has from it, both because its AMQP driver cannot
 send what the Go one could, and both refused rather than dropped in silence: a
@@ -484,22 +485,26 @@ language is English.
 
 ## Extension versioning
 
-**All three version sources must be equal** — bump them together, in the same
+**All five version sources must be equal** — bump them together, in the same
 commit:
 
-1. `ext-go-legacy/main.go` → `version()` (the Go extension's reported version)
-2. `src/Connection/Extension.php` → `REQUIRED_EXTENSION_VERSION`
-3. `composer.json` → `"version"`
+1. `ext/src/lib.rs` → `VERSION` (what the released core reports)
+2. `ext/Cargo.toml` → `version` (the crate, kept in step with it)
+3. `ext-go-legacy/main.go` → `version()` (nothing enforces this one, but a run
+   pointed at the reference core reads its version like any other, so it is kept
+   in step rather than left to fail)
+4. `src/Connection/Extension.php` → `REQUIRED_EXTENSION_VERSION`
+5. `composer.json` → `"version"`
 
-They are bumped on any PHP↔Go protocol change. **Never bump the major version
-without the maintainer's approval**; bump the minor only when warranted, otherwise
-the patch. **Bump at most once per git branch** — the first protocol change on a
-branch bumps it, later commits on the same branch reuse that version.
+They are bumped on any PHP↔extension protocol change. **Never bump the major
+version without the maintainer's approval**; bump the minor only when warranted,
+otherwise the patch. **Bump at most once per git branch** — the first protocol
+change on a branch bumps it, later commits on the same branch reuse that version.
 
 The release CI derives the release tag from the extension version (via
 `bin/sconcur-status`), so a drift between these would ship a mislabeled release.
-`tests/feature/Connection/VersionConsistencyTest.php` enforces the equality and
-fails the build if any of the three diverges.
+`tests/feature/Connection/VersionConsistencyTest.php` enforces the equality
+against whichever core the run loaded.
 
 ## Workflow rules
 

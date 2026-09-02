@@ -1,6 +1,6 @@
 [package]
 name    = "sconcur"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 
 # staticlib, not cdylib: build.sh compiles ext/sconcur.c (the same PHP glue
