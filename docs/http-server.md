@@ -617,16 +617,17 @@ graceful shutdown.
 
 ## Running in Docker and testing
 
-`docker-compose.yml` has a `servers` service: under supervisor it brings up two masters
-via `bin/sconcur-server` — one holding the HTTP, socket and WebSocket pools as three
-groups, and one for the RabbitMQ consumers. Ports are hard-coded in compose (HTTP —
-`28080:8080`), since the masters' JSON configs cannot use environment variables.
-`make servers-restart` rebuilds the extension and recreates the container.
+`docker-compose.yml` has a `servers` service: under supervisor it brings up one master
+via `bin/sconcur-server`, holding the HTTP, socket and WebSocket pools and the RabbitMQ
+consumers as a group each. Ports are hard-coded in compose (HTTP — `28080:8080`), since
+the master's JSON config cannot use environment variables. `make servers-restart`
+rebuilds the extension and recreates the container.
 
-`make servers-{status,stop,reload}` takes the whole servers master;
-`make http-server-{status,reload}` (and `socket-server-*`, `ws-server-*`) narrows the
-command to one group with `--group`. There is no per-group `stop`: one master means one
-lock and one state file, and stopping half of it is not a thing.
+`make servers-{status,stop,reload}` takes the whole master;
+`make http-server-{status,reload}` (and `socket-server-*`, `ws-server-*`,
+`rabbitmq-*`) narrows the command to one group with `--group`. There is no per-group
+`stop`: one master means one lock and one state file, and stopping half of it is not a
+thing.
 
 The tests do not depend on that service: they start the server as a separate
 process via `SConcur\Tests\Impl\HttpServer\TestHttpServer`, whose launch options

@@ -622,16 +622,16 @@ TCP-листенер и `SO_REUSEPORT`.
 
 ## Запуск в Docker и тестирование
 
-В `docker-compose.yml` есть сервис `servers`: он под supervisor поднимает двух
-мастеров через `bin/sconcur-server` — одного с пулами HTTP, socket и WebSocket в виде
-трёх групп и одного для консьюмеров RabbitMQ. Порты захардкожены в compose (HTTP —
-`28080:8080`), так как JSON-конфиги мастеров не умеют переменные окружения.
-`make servers-restart` пересобирает расширение и пересоздаёт контейнер.
+В `docker-compose.yml` есть сервис `servers`: он под supervisor поднимает одного
+мастера через `bin/sconcur-server` — с пулами HTTP, socket и WebSocket и консьюмерами
+RabbitMQ, каждый в своей группе. Порты захардкожены в compose (HTTP — `28080:8080`),
+так как JSON-конфиг мастера не умеет переменные окружения. `make servers-restart`
+пересобирает расширение и пересоздаёт контейнер.
 
-`make servers-{status,stop,reload}` берёт мастера серверов целиком;
-`make http-server-{status,reload}` (и `socket-server-*`, `ws-server-*`) сужает команду
-до одной группы через `--group`. Отдельного `stop` на группу нет: один мастер — это
-один лок и один файл состояния, и остановить его наполовину нельзя.
+`make servers-{status,stop,reload}` берёт мастера целиком;
+`make http-server-{status,reload}` (и `socket-server-*`, `ws-server-*`, `rabbitmq-*`)
+сужает команду до одной группы через `--group`. Отдельного `stop` на группу нет: один
+мастер — это один лок и один файл состояния, и остановить его наполовину нельзя.
 
 Автотесты от этого сервиса не зависят: они поднимают сервер отдельным процессом
 через `SConcur\Tests\Impl\HttpServer\TestHttpServer`, опции запуска которого

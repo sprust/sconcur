@@ -23,13 +23,12 @@ export SCONCUR_EXT
 PHP_CLI_EXT = $(DOCKER_COMPOSE) exec -e SCONCUR_EXT=$(SCONCUR_EXT) php
 PHP_EXT = $(PHP_CLI_EXT) php -d extension=$(SCONCUR_EXT)
 
-# Master control inside the `servers` container: two masters run there under
-# supervisor. One holds the three servers as a group each, the other the RabbitMQ
-# consumers; a command names the master by its config and, for a single pool, the
-# group by --group.
+# Master control inside the `servers` container: one master runs there under
+# supervisor, holding the three servers and the RabbitMQ consumers as a group
+# each. A command names it by its config and, for a single pool, the group by
+# --group.
 SERVERS_CLI = $(DOCKER_COMPOSE) exec servers php /sconcur/bin/sconcur-server
 SERVERS_CONFIG = /sconcur/config/sconcur.servers.config.json
-RABBITMQ_CONFIG = /sconcur/config/sconcur.rabbitmq.config.json
 
 env-copy:
 	cp -i .env.example .env
@@ -57,8 +56,7 @@ restart:
 	make stop
 	make up
 
-# Rebuilds the extension and recreates the `servers` container (both master
-# servers under supervisor).
+# Rebuilds the extension and recreates the `servers` container.
 servers-restart:
 	make ext-build
 	$(DOCKER_COMPOSE) up -d --build --force-recreate servers
@@ -91,19 +89,11 @@ ws-server-status:
 ws-server-reload:
 	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG) --group=ws
 
-# The RabbitMQ consumers are their own master, started with the container. This brings
-# it back after `make rabbitmq-stop`.
-rabbitmq-start:
-	$(DOCKER_COMPOSE) exec servers supervisorctl -c /sconcur/docker/servers/config/supervisord.conf start rabbitmq
-
 rabbitmq-status:
-	$(SERVERS_CLI) status --configPath=$(RABBITMQ_CONFIG)
-
-rabbitmq-stop:
-	$(SERVERS_CLI) stop --configPath=$(RABBITMQ_CONFIG)
+	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG) --group=rabbitmq
 
 rabbitmq-reload:
-	$(SERVERS_CLI) reload --configPath=$(RABBITMQ_CONFIG)
+	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG) --group=rabbitmq
 
 bash-php:
 	$(DOCKER_COMPOSE) exec php bash
