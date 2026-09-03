@@ -293,6 +293,13 @@ bench-fan-out:
 bench-coordination:
 	$(PHP_EXT) tests/benchmarks/runtime/coordination-profile.php
 
+# What a member of a nested fan-out costs — a WaitGroup created inside a
+# coroutine, the only shape whose pushes come off a coroutine's own stack and so
+# the only one that feeds Scheduler::$pendingDispatches. Every other runtime
+# bench here is flat, which is why that path had never been measured.
+bench-nested-fan-out:
+	$(PHP_EXT) tests/benchmarks/runtime/nested-fan-out.php
+
 bench-mongodb-insertOne:
 	$(PHP_EXT) tests/benchmarks/mongodb/insert-one.php ${c}
 
