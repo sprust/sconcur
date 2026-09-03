@@ -287,6 +287,12 @@ bench-sleeper:
 bench-fan-out:
 	$(PHP_EXT) tests/benchmarks/runtime/fan-out.php
 
+# Where the scheduler's suspend -> push -> waitAny -> resume cycle spends its
+# time. The companion of the boundary profile: that one prices taking a result
+# across the boundary, this one prices the PHP coordination wrapped around it.
+bench-coordination:
+	$(PHP_EXT) tests/benchmarks/runtime/coordination-profile.php
+
 bench-mongodb-insertOne:
 	$(PHP_EXT) tests/benchmarks/mongodb/insert-one.php ${c}
 

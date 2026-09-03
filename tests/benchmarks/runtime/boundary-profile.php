@@ -224,7 +224,13 @@ $report['parseWaitResponse (PHP only)'] = $measure(
 // 7. Scheduler coordination: a fan-out of coroutines that never suspend versus
 //    one where every coroutine suspends on the cheapest possible feature call.
 //    Read the CPU column — the sleeper's Go timer inflates wall, not CPU.
-$report['coroutine, no suspend (fiber machinery)'] = $measure(
+//
+//    The first row is NOT the fiber machinery, which is what it used to be
+//    called here. coordination-profile.php prices a bare Fiber::suspend/resume
+//    pair at 0.08 us; what this row measures is everything a group member costs
+//    around it — the fiber's construction, the State and Scheduler registration,
+//    the Coroutine object, and the teardown of all three.
+$report['coroutine, no suspend (scheduler bookkeeping)'] = $measure(
     case: static function (): void {
         $waitGroup = WaitGroup::create();
 
