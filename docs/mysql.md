@@ -70,7 +70,8 @@ try {
 
 `begin(int $isolationLevel = 0, bool $readOnly = false)` takes an isolation level
 (Go `sql.IsolationLevel` values; `0` — the driver's default) and a read-only flag.
-`Transaction` has the same `query`/`fetchAll`/`exec` as the connection.
+On MySQL the isolation level is refused — see [Limits](#limits). `Transaction` has
+the same `query`/`fetchAll`/`exec` as the connection.
 
 If a transaction is abandoned without `commit()`/`rollback()` (an exception, an
 early exit, a `WaitGroup` stop), the Go side rolls it back automatically: the
@@ -141,14 +142,20 @@ pool no smaller than the expected number of concurrent transactions.
 
 ## Limits
 
-- Value types. The Go side normalizes scanned values: `[]byte` → string,
-  `time.Time` → an RFC3339 string with nanoseconds; integers, floats, booleans and
-  `NULL` pass through as is. On MySQL that means: integers → `int`,
-  `FLOAT`/`DOUBLE` → `float`, `VARCHAR`/`TEXT`/`CHAR` and binary
-  (`BLOB`/`BINARY`) → string, `DECIMAL` → string (to avoid losing precision),
-  `DATE`/`DATETIME`/`TIMESTAMP` with `parseTime=true` → an RFC3339 string, `NULL` →
-  `null`. An unsigned `BIGINT` larger than `PHP_INT_MAX` is outside the range of a
-  signed 64-bit int — store and read such values as a string.
+- Value types. Integers → `int`, `FLOAT`/`DOUBLE` → `float`, `VARCHAR`/`TEXT`/`CHAR`
+  and every binary type (`BLOB`/`BINARY`/`JSON`/`BIT`/`GEOMETRY`) → string, byte for
+  byte, `DECIMAL` → string (to avoid losing precision), `DATE`/`DATETIME`/`TIMESTAMP`
+  → an RFC3339 string, `TIME` → `HH:MM:SS` (with `.ffffff` when the column has
+  fractional seconds, and a leading `-` for a negative span), `NULL` → `null`.
+  `TINYINT(1)` is an `int`, not a `bool`.
+- An unsigned `BIGINT` larger than `PHP_INT_MAX` arrives as its decimal **string**,
+  because it does not fit a signed 64-bit int. Compare and store such values as
+  strings.
+- `begin(isolationLevel:)` is **refused** on MySQL. The level has to be set by a
+  separate statement before the transaction starts, on the same connection, and
+  the driver hands out a transaction that already owns its pooled connection —
+  there is no moment in between. Set it on the session or on the server instead.
+  `begin(readOnly:)` works: it rides in `START TRANSACTION`.
 - A cursor inside a transaction must either be read to the end or replaced with
   `fetchAll` before running the next command of the same transaction — otherwise
   the connection is busy with the open cursor.

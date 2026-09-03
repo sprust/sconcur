@@ -413,56 +413,89 @@ pub async fn exec_on_transaction(
     }
 }
 
-/// Opens the transaction. The isolation level and read-only flag are applied
-/// with an explicit statement before BEGIN, which is what database/sql's
-/// TxOptions does under the hood.
+/// Opens the transaction, with the isolation level and the read-only flag folded
+/// into the statement that starts it.
+///
+/// They used to be applied by a `SET TRANSACTION` issued after `pool.begin()`,
+/// which the docblock described as happening "before BEGIN" and which MySQL
+/// rejects outright: error 1568, "Transaction characteristics can't be changed
+/// while a transaction is in progress". Both `begin(isolationLevel:)` and
+/// `begin(readOnly:)` therefore failed on MySQL, and Postgres survived only
+/// because it tolerates `SET TRANSACTION` as a transaction's first statement.
 pub async fn begin_transaction(driver: Driver, params: &BeginParams) -> Result<TxHandle, String> {
-    let prelude = isolation_statement(params);
-
     match driver {
         Driver::Mysql(pool) => {
-            let mut transaction = pool.begin().await.map_err(|error| error.to_string())?;
+            let statement = mysql_begin_statement(params)?;
 
-            if let Some(statement) = prelude {
-                sqlx::query(&statement)
-                    .execute(&mut *transaction)
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
+            let transaction = pool
+                .begin_with(statement)
+                .await
+                .map_err(|error| error.to_string())?;
 
             Ok(TxHandle::Mysql(transaction))
         }
         Driver::Pgsql(pool) => {
-            let mut transaction = pool.begin().await.map_err(|error| error.to_string())?;
-
-            if let Some(statement) = prelude {
-                sqlx::query(&statement)
-                    .execute(&mut *transaction)
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
+            let transaction = pool
+                .begin_with(pg_begin_statement(params))
+                .await
+                .map_err(|error| error.to_string())?;
 
             Ok(TxHandle::Pgsql(transaction))
         }
     }
 }
 
+/// Postgres takes both characteristics in the BEGIN itself, so one statement
+/// says everything.
+fn pg_begin_statement(params: &BeginParams) -> String {
+    let mut statement = String::from("BEGIN");
+
+    if let Some(level) = isolation_level(params.isolation_level) {
+        statement.push_str(" ISOLATION LEVEL ");
+        statement.push_str(level);
+    }
+
+    if params.read_only {
+        statement.push_str(" READ ONLY");
+    }
+
+    statement
+}
+
+/// MySQL takes the access mode in `START TRANSACTION` but not the isolation
+/// level: that one needs a separate `SET TRANSACTION` issued on the same
+/// connection *before* the transaction starts, and sqlx hands out a transaction
+/// that owns its pooled connection, so there is no moment at which this code
+/// holds that connection and has not yet begun.
+///
+/// It is refused rather than applied wrongly, the way the AMQP driver refuses a
+/// prefetch size it cannot put on the wire (see docs/amqp.md). Silently ignoring
+/// it would be worse: a caller who asked for SERIALIZABLE and got REPEATABLE
+/// READ has no way to find out.
+fn mysql_begin_statement(params: &BeginParams) -> Result<String, String> {
+    if isolation_level(params.isolation_level).is_some() {
+        return Err(
+            "isolationLevel is not supported on MySQL; set it on the session or the server"
+                .to_string(),
+        );
+    }
+
+    Ok(if params.read_only {
+        "START TRANSACTION READ ONLY".to_string()
+    } else {
+        "START TRANSACTION".to_string()
+    })
+}
+
 /// Maps Go's sql.IsolationLevel constants, which the PHP side sends verbatim.
 /// Levels with no portable statement (Snapshot, Linearizable, WriteCommitted)
 /// fall through to the server default rather than guessing.
-fn isolation_statement(params: &BeginParams) -> Option<String> {
-    let level = match params.isolation_level {
+fn isolation_level(level: i64) -> Option<&'static str> {
+    match level {
         1 => Some("READ UNCOMMITTED"),
         2 => Some("READ COMMITTED"),
         4 => Some("REPEATABLE READ"),
         6 => Some("SERIALIZABLE"),
         _ => None,
-    };
-
-    match (level, params.read_only) {
-        (None, false) => None,
-        (None, true) => Some("SET TRANSACTION READ ONLY".to_string()),
-        (Some(level), false) => Some(format!("SET TRANSACTION ISOLATION LEVEL {level}")),
-        (Some(level), true) => Some(format!("SET TRANSACTION ISOLATION LEVEL {level}, READ ONLY")),
     }
 }

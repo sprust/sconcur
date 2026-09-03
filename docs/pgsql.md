@@ -50,5 +50,20 @@ echo $result->affectedRows;
 Binary data with NUL bytes in `BYTEA` via a binding does not work: the string value
 is passed as text, and PostgreSQL rejects invalid UTF-8 (`0x00`). Encode arbitrary
 binary data (hex, base64) and decode it on the DB or application side; ASCII bytes
-in `BYTEA` work. Other limits and internals (pool, streaming, cancellation, value
-types) are shared with [MySQL](mysql.md).
+in `BYTEA` work.
+
+Results arrive in PostgreSQL's binary format, so a column is readable only if this
+core knows how to render its binary form. Decoded: the integer, floating-point and
+`NUMERIC` types (including `NaN` and the infinities, as those words), `BOOL`,
+`DATE`/`TIMESTAMP`/`TIMESTAMPTZ`, `TIME`, `UUID`, `BYTEA`, `JSON`, `JSONB`, `TEXT`
+/`VARCHAR`/`CHAR`/`NAME`, `XML`, and enum types.
+
+Anything else — arrays, `INTERVAL`, `INET`/`CIDR`, `MONEY`, `OID`, ranges, composite
+types, the geometric types — is **refused by name**, with an error saying which
+column and type. Cast it in the query (`SELECT tags::text`) and parse the text on
+the PHP side. The refusal is deliberate: those bytes are a wire structure, and
+handing them over as a string is indistinguishable from a value the application
+asked for.
+
+Other limits and internals (pool, streaming, cancellation) are shared with
+[MySQL](mysql.md).
