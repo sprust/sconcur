@@ -212,7 +212,7 @@ The next keys are the defaults every group inherits unless it names its own:
 |---|---|---|
 | `name` | — (required) | Identifies the pool in the journal, in `status` and in `--group`. Unique. |
 | `workerScript` | — (required) | The script each of its workers runs. |
-| `workerCount` | `0` (= number of cores) | How many workers to bring up. |
+| `workerCount` | `0` (= logical CPUs, what `nproc` reports — twice the core count where hyperthreading is on) | How many workers to bring up. |
 | `server` | `{}` | Worker parameters → expanded into the worker's `argv`. |
 | `workerArgs` | `[]` | Extra raw worker `argv` flags, appended after `server`. |
 | `phpBinary` | the master's | Interpreter for this group's workers. |
