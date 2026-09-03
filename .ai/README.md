@@ -89,25 +89,20 @@ Rebuild the extension with `make ext-build` before running tests that depend on
 
 ### Two cores
 
-The extension core exists twice. `ext/` is the Rust one, and it is what
-everything loads: `SCONCUR_EXT` names it, and every target, benchmark and test
-harness reads that variable. `ext-go-legacy/` is the Go core it was ported
-against; it still builds (`make ext-build-go`), still has its own unit tests
-(`make ext-test-go`), and anything can be pointed back at it:
+**`ext/` is the extension core. There is no other one.** It is the Rust core,
+`SCONCUR_EXT` names it, and every target, benchmark and test harness reads that
+variable. Every feature is on it, AMQP included; it is what the release publishes
+and what `make test` runs the whole tree against.
 
-```bash
-make test SCONCUR_EXT=/sconcur/ext-go-legacy/build/sconcur.so
-```
+`ext-go-legacy/` is the Go core it was ported against, kept as **historical data
+and nothing else**. It is not supported, not built, not checked, and CI does not
+touch it.
 
-The two produce the same `sconcur.so`, ABI for ABI: the same hand-written PHP
-glue, the same C exports, the same binary result frame, the same `version()`.
-That is what makes the swap a path change and nothing more.
-
-Every feature is on the Rust core now, AMQP included, so the Rust build is what
-the release publishes and `make test` runs the whole tree. Nothing builds or
-checks the Go core any more — CI does not touch it — but `make ext-build-go`,
-`make ext-test-go` and pointing `SCONCUR_EXT` at it still work, so it can answer
-a question about what the port was ported from.
+**Compatibility with it is not a requirement, and must not be weighed when
+deciding whether to change something.** A simplification that would break only
+the Go core costs nothing — judge it on its own merits. This paragraph exists
+because the reverse was assumed once and killed a correct change: see item 1 of
+[rust-core-hot-path.md](plans/rust-core-hot-path.md).
 
 Two differences the Rust core has from it, both because its AMQP driver cannot
 send what the Go one could, and both refused rather than dropped in silence: a
