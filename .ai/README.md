@@ -74,6 +74,7 @@ make env-copy           # copy .env.example → .env (first time)
 make build              # build Docker images
 make up / make down     # start / stop containers
 make ext-build          # compile the Rust core → ext/build/sconcur.so
+make ext-test           # the core's own Rust unit tests (cargo test --lib)
 make ext-check          # smoke the core through the PHP package
 make test               # run the PHPUnit suites (loads the sconcur extension)
 make test c="--filter=SleeperTest"  # run a specific test
@@ -278,6 +279,14 @@ Key enums (string-backed; the 2-3 letter values cross the PHP↔Go boundary):
 
 ## Tests
 
+- `ext/src/**/mod tests` — the Rust core's own unit tests, run by `make ext-test`
+  and part of `make check`. They exist for what the PHP suites can only catch
+  statistically: a race whose window is microseconds wide surfaces there as one
+  failure in forty full runs and here as a red test. Kept beside their subject
+  in a `#[cfg(test)] mod tests`, the way the Go core keeps `*_test.go`. A change
+  to concurrent behaviour in `ext/` — a drain, a cancellation, a select over two
+  ready branches — belongs here, and the way to show a test earns its keep is to
+  undo the fix and watch it fail
 - `tests/feature/` — PHPUnit feature tests with `BaseTestCase` (extension
   lifecycle) and `BaseAsyncTestCase` (async event ordering framework)
 - `tests/impl/` — test helpers (MongoDB resolver, app bootstrap, server harnesses)

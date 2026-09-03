@@ -168,3 +168,195 @@ impl StateContract for MessageState {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! The drain semantics, which is where the port diverged from Go and where
+    //! SocketServerMaxConnectionsTest kept catching it.
+    //!
+    //! Go's drain half-closes the socket, so a frame already buffered is handed
+    //! back before EOF and one still on the wire arrives normally. This port
+    //! cancels a token instead, which can pre-empt a read that was about to
+    //! succeed — so both halves of the compensation are asserted here rather
+    //! than left to the PHP suite to catch statistically, once in forty runs.
+
+    use std::time::Duration;
+    use tokio::net::{TcpListener, TcpStream};
+
+    use super::*;
+    use crate::dto::Message;
+    use crate::socket::frame::write_frame;
+    use crate::types::method::Method;
+
+    static ERRORS: Factory = Factory::new("socket");
+
+    /// A connected pair: the state reads the server end, the test writes the
+    /// client end. A real socket rather than a mock, because what is being
+    /// asserted is a race between a read of one and a cancellation.
+    async fn connected_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let connecting = tokio::spawn(async move { TcpStream::connect(address).await.unwrap() });
+
+        let (server, _) = listener.accept().await.unwrap();
+        let client = connecting.await.unwrap();
+
+        (server, client)
+    }
+
+    fn message() -> Arc<Message> {
+        Arc::new(Message {
+            flow_key: "flow".to_string(),
+            method: Method::SocketServe,
+            task_key: "task".to_string(),
+            payload: Vec::new(),
+            is_next: false,
+            owner_id: 0,
+        })
+    }
+
+    fn state(server: TcpStream, drain: CancellationToken, grace: Duration) -> MessageState {
+        let (reader, _writer) = server.into_split();
+
+        // The write half is dropped: nothing here writes back, and keeping it
+        // would hold the connection open past the test.
+        MessageState::new(message(), reader, 0, 0, &ERRORS, drain, grace)
+    }
+
+    /// The regression the biased select exists for, on the second frame.
+    ///
+    /// Both branches are ready — the frame is in the socket buffer and the drain
+    /// has fired — and an unbiased select answers EOF about half the time. It has
+    /// to be the SECOND frame: on the first the window below would rescue the
+    /// read anyway, because the pinned future is handed to the timeout with the
+    /// buffered bytes still in it. Past the first delivery there is no window,
+    /// and the ordering is the only thing left.
+    ///
+    /// Repeated, because a coin flip asserted once is not an assertion.
+    #[tokio::test]
+    async fn a_buffered_frame_wins_over_a_fired_drain_after_a_delivery() {
+        for attempt in 0..20 {
+            let (server, mut client) = connected_pair().await;
+            let drain = CancellationToken::new();
+
+            let state = state(server, drain.clone(), FIRST_FRAME_DRAIN_GRACE);
+
+            write_frame(&mut client, b"first").await.unwrap();
+
+            assert!(state.next().await.has_next, "attempt {attempt}: the first frame was lost");
+
+            write_frame(&mut client, b"second").await.unwrap();
+
+            // Let the bytes land in the receive buffer, so the read really is
+            // ready when the drain fires.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+
+            drain.cancel();
+
+            let result = state.next().await;
+
+            assert!(result.has_next, "attempt {attempt}: the drain swallowed a buffered frame");
+            assert_eq!(result.payload, b"second");
+        }
+    }
+
+    /// The same ordering on the client's shape, where there is no window at all
+    /// and so nothing else can save a buffered frame.
+    #[tokio::test]
+    async fn a_buffered_frame_wins_over_a_fired_drain_without_a_window() {
+        for attempt in 0..20 {
+            let (server, mut client) = connected_pair().await;
+            let drain = CancellationToken::new();
+
+            write_frame(&mut client, b"ping").await.unwrap();
+
+            tokio::time::sleep(Duration::from_millis(20)).await;
+
+            drain.cancel();
+
+            let state = state(server, drain, Duration::ZERO);
+            let result = state.next().await;
+
+            assert!(result.has_next, "attempt {attempt}: the drain swallowed a buffered frame");
+            assert_eq!(result.payload, b"ping");
+        }
+    }
+
+    /// The window the biased select cannot cover: when the drain lands the read
+    /// is honestly pending, because the frame is still on the wire. The limiting
+    /// connection under a concurrency cap is dispatched and drained almost at
+    /// once, which is exactly this.
+    #[tokio::test]
+    async fn a_first_frame_still_in_flight_gets_its_window() {
+        let (server, mut client) = connected_pair().await;
+        let drain = CancellationToken::new();
+
+        drain.cancel();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            write_frame(&mut client, b"late").await.unwrap();
+
+            // Held open past the write: dropping the client here would close the
+            // connection and could race the frame with an EOF.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        });
+
+        let state = state(server, drain, FIRST_FRAME_DRAIN_GRACE);
+        let result = state.next().await;
+
+        assert!(result.has_next, "the first frame was dropped inside its own window");
+        assert_eq!(result.payload, b"late");
+    }
+
+    /// The window is for the FIRST frame only: a connection that has already
+    /// been served keeps the immediate EOF, or a drained server would wait a
+    /// quarter second per connection for nothing.
+    #[tokio::test]
+    async fn a_connection_that_delivered_ends_at_once() {
+        let (server, mut client) = connected_pair().await;
+        let drain = CancellationToken::new();
+
+        write_frame(&mut client, b"first").await.unwrap();
+
+        let state = state(server, drain.clone(), FIRST_FRAME_DRAIN_GRACE);
+
+        assert!(state.next().await.has_next);
+
+        drain.cancel();
+
+        let start = Instant::now();
+        let result = state.next().await;
+
+        assert!(!result.has_next, "the stream should have ended");
+        assert!(
+            start.elapsed() < FIRST_FRAME_DRAIN_GRACE,
+            "waited {:?}, so the window was applied after a delivery",
+            start.elapsed(),
+        );
+    }
+
+    /// The client's shape: zero grace, because there the token means "the
+    /// connection is over" and waiting past it would only delay the news.
+    #[tokio::test]
+    async fn zero_grace_ends_at_once() {
+        let (server, _client) = connected_pair().await;
+        let drain = CancellationToken::new();
+
+        drain.cancel();
+
+        let state = state(server, drain, Duration::ZERO);
+
+        let start = Instant::now();
+        let result = state.next().await;
+
+        assert!(!result.has_next, "the stream should have ended");
+        assert!(
+            start.elapsed() < FIRST_FRAME_DRAIN_GRACE,
+            "waited {:?}, so a client paid the server's window",
+            start.elapsed(),
+        );
+    }
+}

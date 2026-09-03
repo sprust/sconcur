@@ -118,6 +118,7 @@ check:
 	make cs-fixer-check
 	make php-stan
 	make ext-build
+	make ext-test
 	make ext-check
 	make test
 
@@ -165,6 +166,18 @@ ext-build:
 # the shared channel, the error path, flow teardown, the sync wait.
 ext-check:
 	$(PHP_EXT) ext/check/core-smoke.php
+
+# The Rust core's own unit tests, for what the PHP suites can only catch
+# statistically — a race whose window is a few microseconds wide shows up there
+# as one failure in forty runs, and here as a red test.
+#
+# --lib, and the crate stays a plain staticlib: cargo compiles the unit-test
+# harness straight from the sources, so nothing about the shipped build changes.
+# Adding "lib" to crate-type to make this work is the wrong instinct and was
+# tried — an rlib beside the staticlib costs full LTO, and ext/build/sconcur.so
+# went from 21.9 MB to 39.6.
+ext-test:
+	$(PHP_CLI) sh -c 'cd /sconcur/ext && CARGO_TARGET_DIR=/sconcur/ext/target cargo test --lib ${c}'
 
 # --- The Go core ------------------------------------------------------------
 # Moved to ext-go-legacy/, still buildable, no longer what anything loads. It is
