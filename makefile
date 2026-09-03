@@ -485,7 +485,23 @@ bench-http-load-soak:
 bench-http-load-stats-empty:
 	ROUTE=/ tests/benchmarks/http/load-stats.sh
 
-# RoadRunner counterparts of the three targets above: the same harness against
+# Response-size variant: the same harness against /big/N, whose handler answers N
+# bytes and does no I/O. It is what /  and /all cannot see — everything they
+# measure carries a body of a few bytes, so a cost that scales with the response
+# is invisible to both. That blind spot is how a response body crossed as three
+# copies unnoticed until 2026-09-03 (.ai/plans/rust-core-hot-path.md, item 2);
+# removing one of them was worth +16% rps here and nothing at all on "/".
+# Size via BODY_BYTES, e.g.: make bench-http-load-stats-big BODY_BYTES=1048576
+#
+# No RoadRunner or Swoole counterpart: neither reference server has a /big route,
+# so this compares SConcur against itself over time, not against another stack.
+BODY_BYTES ?= 102400
+
+bench-http-load-stats-big:
+	ROUTE=/big/$(BODY_BYTES) tests/benchmarks/http/load-stats.sh
+
+# RoadRunner counterpart of bench-http-load-stats, -soak and -empty (not of
+# -big, whose route the reference servers do not have): the same harness against
 # the native-driver reference stack (tests/servers/roadrunner), so the numbers
 # are directly comparable. Tunables via env, e.g.: make bench-rr-load-stats
 # WORKERS=12 DURATION=30
