@@ -59,10 +59,6 @@ pub struct ServePayload {
 /// PHP: SConcur\Features\HttpServer\Payloads\RespondPayload.
 #[derive(Deserialize)]
 pub struct RespondPayload {
-    /// Decoded but unused: the id is resolved from RespondRequestId before this
-    /// struct is parsed at all. Kept so the struct stays a faithful picture of
-    /// the wire payload.
-    #[allow(dead_code)]
     #[serde(rename = "rid", default)]
     pub request_id: String,
     #[serde(rename = "op", default)]
@@ -85,20 +81,33 @@ pub struct RespondPayload {
 }
 
 impl RespondPayload {
-    /// The body as raw bytes, whether PHP sent text or binary.
-    pub fn body_bytes(&self) -> Vec<u8> {
-        match &self.body {
-            rmpv::Value::String(text) => text.as_bytes().to_vec(),
-            rmpv::Value::Binary(bytes) => bytes.clone(),
+    /// The body as raw bytes, whether PHP sent text or binary, taken out of the
+    /// payload rather than copied out of it.
+    ///
+    /// The value already owns those bytes: they were allocated when the payload
+    /// was decoded and nothing reads `body` again afterwards. Cloning them made
+    /// a 100 KB response cross as three copies — the C buffer, the decoded
+    /// value, the write command — where two will do. The rest of the struct is
+    /// still needed at the call site (the headers go into the same command),
+    /// which is why this takes `&mut self` and leaves nil behind instead of
+    /// consuming the whole payload.
+    pub fn take_body_bytes(&mut self) -> Vec<u8> {
+        match std::mem::replace(&mut self.body, rmpv::Value::Nil) {
+            rmpv::Value::String(text) => text.into_bytes(),
+            rmpv::Value::Binary(bytes) => bytes,
             rmpv::Value::Nil => Vec::new(),
             other => other.to_string().into_bytes(),
         }
     }
 }
 
-/// Decoded on its own first, exactly as Go does: a struct with only this field
-/// ignores every other key, so a response can always be routed back even if the
-/// rest of the payload is malformed.
+/// The fallback when the full payload does not decode: a struct with only this
+/// field ignores every other key, so a response can still be routed back — and
+/// the client answered — when the rest of the payload is malformed.
+///
+/// Go decoded it first and the full payload second, on every response. Here the
+/// order is reversed: the full payload carries `rid` too, so the happy path
+/// decodes once and this struct is only reached when that failed.
 #[derive(Deserialize, Default)]
 pub struct RespondRequestId {
     #[serde(rename = "rid", default)]

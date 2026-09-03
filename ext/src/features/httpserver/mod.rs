@@ -198,32 +198,29 @@ async fn respond(task: &Task) -> Option<Result> {
     let message = task.message();
     let start_time = Instant::now();
 
-    // Decode the request id on its own first, so a response can be routed back
-    // even if the rest of the payload is malformed.
-    let id_only: payloads::RespondRequestId = match rmp_serde::from_slice(&message.payload) {
-        Ok(id_only) => id_only,
-        Err(error) => {
-            return Some(fail_respond(task, ERR_FACTORY.by_err("parse respond requestId", error)));
-        }
-    };
-
-    if id_only.request_id.is_empty() {
-        return Some(fail_respond(task, ERR_FACTORY.by_text("empty respond requestId")));
-    }
-
-    let Some(writer) = registries().writer(&id_only.request_id) else {
-        // The connection is already gone (answered or disconnected).
-        return Some(fail_respond(
-            task,
-            ERR_FACTORY.by_text(&format!("unknown requestId {}", id_only.request_id)),
-        ));
-    };
-
-    let payload: payloads::RespondPayload = match rmp_serde::from_slice(&message.payload) {
+    // The payload carries the request id, so the happy path decodes once. A
+    // malformed payload falls back to the id-only struct below, which ignores
+    // every other key — the connection is still answered rather than left
+    // hanging, which is the property the two-decode order used to buy on every
+    // single response.
+    let mut payload: payloads::RespondPayload = match rmp_serde::from_slice(&message.payload) {
         Ok(payload) => payload,
-        Err(error) => {
-            // Malformed payload: answer the client with a 500 instead of
-            // hanging, exactly as Go does.
+        Err(parse_error) => {
+            let id_only: payloads::RespondRequestId = match rmp_serde::from_slice(&message.payload) {
+                Ok(id_only) => id_only,
+                Err(error) => {
+                    return Some(fail_respond(task, ERR_FACTORY.by_err("parse respond requestId", error)));
+                }
+            };
+
+            let Some(writer) = registries().writer(&id_only.request_id) else {
+                return Some(fail_respond(
+                    task,
+                    ERR_FACTORY.by_text(&format!("unknown requestId {}", id_only.request_id)),
+                ));
+            };
+
+            // Answer the client with a 500 instead of hanging, exactly as Go does.
             let (done, _) = tokio::sync::oneshot::channel();
 
             let _ = writer
@@ -236,8 +233,20 @@ async fn respond(task: &Task) -> Option<Result> {
                 })
                 .await;
 
-            return Some(fail_respond(task, ERR_FACTORY.by_err("parse respond payload", error)));
+            return Some(fail_respond(task, ERR_FACTORY.by_err("parse respond payload", parse_error)));
         }
+    };
+
+    if payload.request_id.is_empty() {
+        return Some(fail_respond(task, ERR_FACTORY.by_text("empty respond requestId")));
+    }
+
+    let Some(writer) = registries().writer(&payload.request_id) else {
+        // The connection is already gone (answered or disconnected).
+        return Some(fail_respond(
+            task,
+            ERR_FACTORY.by_text(&format!("unknown requestId {}", payload.request_id)),
+        ));
     };
 
     let Some(kind) = WriteKind::from_code(payload.op) else {
@@ -250,7 +259,7 @@ async fn respond(task: &Task) -> Option<Result> {
     // The end of a response releases its registration; a head or a chunk leaves
     // it in place for what follows.
     if matches!(kind, WriteKind::Full | WriteKind::End) {
-        registries().forget(&id_only.request_id);
+        registries().forget(&payload.request_id);
     }
 
     let (done, outcome) = tokio::sync::oneshot::channel();
@@ -258,7 +267,7 @@ async fn respond(task: &Task) -> Option<Result> {
     let command = WriteCommand {
         kind,
         status: payload.status.clamp(100, 599) as u16,
-        body: payload.body_bytes(),
+        body: payload.take_body_bytes(),
         headers: payload.headers,
         done,
     };
@@ -301,25 +310,29 @@ async fn respond(task: &Task) -> Option<Result> {
 fn respond_detached(task: &Task) -> Option<Result> {
     let message = task.message();
 
-    let id_only: payloads::RespondRequestId = match rmp_serde::from_slice(&message.payload) {
-        Ok(id_only) => id_only,
-        Err(error) => {
-            return Some(fail_respond(task, ERR_FACTORY.by_err("parse respond requestId", error)));
+    // One decode on the happy path, the id-only fallback only when it fails —
+    // the same order as the awaited respond above. Nothing is written back to a
+    // malformed detached response: this path has no oneshot to wait on and the
+    // coroutine that sent it awaits no result either.
+    let mut payload: payloads::RespondPayload = match rmp_serde::from_slice(&message.payload) {
+        Ok(payload) => payload,
+        Err(parse_error) => {
+            if rmp_serde::from_slice::<payloads::RespondRequestId>(&message.payload).is_err() {
+                return Some(fail_respond(
+                    task,
+                    ERR_FACTORY.by_err("parse respond requestId", parse_error),
+                ));
+            }
+
+            return Some(fail_respond(task, ERR_FACTORY.by_err("parse respond payload", parse_error)));
         }
     };
 
-    let Some(writer) = registries().writer(&id_only.request_id) else {
+    let Some(writer) = registries().writer(&payload.request_id) else {
         return Some(fail_respond(
             task,
-            ERR_FACTORY.by_text(&format!("unknown requestId {}", id_only.request_id)),
+            ERR_FACTORY.by_text(&format!("unknown requestId {}", payload.request_id)),
         ));
-    };
-
-    let payload: payloads::RespondPayload = match rmp_serde::from_slice(&message.payload) {
-        Ok(payload) => payload,
-        Err(error) => {
-            return Some(fail_respond(task, ERR_FACTORY.by_err("parse respond payload", error)));
-        }
     };
 
     let Some(kind) = WriteKind::from_code(payload.op) else {
@@ -330,7 +343,7 @@ fn respond_detached(task: &Task) -> Option<Result> {
     };
 
     if matches!(kind, WriteKind::Full | WriteKind::End) {
-        registries().forget(&id_only.request_id);
+        registries().forget(&payload.request_id);
     }
 
     let (done, _) = tokio::sync::oneshot::channel();
@@ -338,7 +351,7 @@ fn respond_detached(task: &Task) -> Option<Result> {
     let sent = writer.try_send(WriteCommand {
         kind,
         status: payload.status.clamp(100, 599) as u16,
-        body: payload.body_bytes(),
+        body: payload.take_body_bytes(),
         headers: payload.headers,
         done,
     });

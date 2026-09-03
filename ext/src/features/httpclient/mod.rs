@@ -118,7 +118,7 @@ impl Feature for HttpClientFeature {
 async fn handle_request(task: &Task, params: rmpv::Value) {
     let message = task.message();
 
-    let params: payloads::RequestParams = match rmpv::ext::from_value(params) {
+    let mut params: payloads::RequestParams = match rmpv::ext::from_value(params) {
         Ok(params) => params,
         Err(error) => {
             task.add_result(Result::error(
@@ -173,7 +173,7 @@ async fn handle_request(task: &Task, params: rmpv::Value) {
     }
 
     if !params.sink_path.is_empty() {
-        download(task, builder, &params).await;
+        download(task, builder, &mut params).await;
 
         return;
     }
@@ -186,7 +186,7 @@ async fn handle_request(task: &Task, params: rmpv::Value) {
 
     let state = Arc::new(ResponseState::new(
         task.message_arc(),
-        Pending::Buffered(builder.body(params.body_bytes())),
+        Pending::Buffered(builder.body(params.take_body_bytes())),
         params.chunk_size,
         params.max_response_body,
         params.response_header_timeout_ms,
@@ -332,7 +332,7 @@ async fn handle_upload(task: &Task, params: rmpv::Value, end: bool) {
     let message = task.message();
     let start_time = Instant::now();
 
-    let params: payloads::UploadParams = match rmpv::ext::from_value(params) {
+    let mut params: payloads::UploadParams = match rmpv::ext::from_value(params) {
         Ok(params) => params,
         Err(error) => {
             task.add_result(Result::error(
@@ -373,7 +373,7 @@ async fn handle_upload(task: &Task, params: rmpv::Value, end: bool) {
     };
 
     if !end {
-        let chunk = bytes::Bytes::from(params.body_bytes());
+        let chunk = bytes::Bytes::from(params.take_body_bytes());
 
         if session.chunks.send(Ok(chunk)).await.is_err() {
             // The request is gone. Report why, so PHP raises a network error
@@ -409,7 +409,7 @@ async fn handle_upload(task: &Task, params: rmpv::Value, end: bool) {
 /// Copies the response body straight into a file; it never crosses into PHP.
 /// Only a 2xx is written — a non-2xx returns its status without touching the
 /// file, and PHP turns that into a DownloadException.
-async fn download(task: &Task, builder: reqwest::RequestBuilder, params: &payloads::RequestParams) {
+async fn download(task: &Task, builder: reqwest::RequestBuilder, params: &mut payloads::RequestParams) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -420,7 +420,7 @@ async fn download(task: &Task, builder: reqwest::RequestBuilder, params: &payloa
         return;
     };
 
-    let response = match builder.body(params.body_bytes()).send().await {
+    let response = match builder.body(params.take_body_bytes()).send().await {
         Ok(response) => response,
         Err(error) => {
             task.add_result(Result::error(message, network_error(&error.to_string())))

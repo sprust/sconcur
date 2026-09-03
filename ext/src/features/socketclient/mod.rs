@@ -318,7 +318,7 @@ async fn handle_connect(task: &Task, params: rmpv::Value) {
 }
 
 async fn handle_send(task: &Task, params: rmpv::Value) {
-    let params: payloads::SendParams = match rmpv::ext::from_value(params) {
+    let mut params: payloads::SendParams = match rmpv::ext::from_value(params) {
         Ok(params) => params,
         Err(error) => {
             task.add_result(Result::error(
@@ -331,13 +331,11 @@ async fn handle_send(task: &Task, params: rmpv::Value) {
         }
     };
 
-    route(
-        task,
-        &params.connection_id,
-        WriteKind::Frame,
-        params.data_bytes(),
-    )
-    .await;
+    // Taken before the call: the frame is moved out of the params, which the
+    // same call reads the connection id from.
+    let data = params.take_data_bytes();
+
+    route(task, &params.connection_id, WriteKind::Frame, data).await;
 }
 
 async fn handle_close(task: &Task, params: rmpv::Value) {

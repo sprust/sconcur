@@ -43,10 +43,6 @@ pub struct ServePayload {
 /// PHP: SConcur\Features\SocketServer\Payloads\RespondPayload.
 #[derive(Deserialize)]
 pub struct RespondPayload {
-    /// Decoded but unused: the id is resolved from RespondConnectionId before
-    /// this struct is parsed at all. Kept so the struct stays a faithful
-    /// picture of the wire payload.
-    #[allow(dead_code)]
     #[serde(rename = "cid", default)]
     pub connection_id: String,
     #[serde(rename = "op", default)]
@@ -62,17 +58,21 @@ fn nil_value() -> rmpv::Value {
 }
 
 impl RespondPayload {
-    pub fn data_bytes(&self) -> Vec<u8> {
-        match &self.data {
-            rmpv::Value::String(text) => text.as_bytes().to_vec(),
-            rmpv::Value::Binary(bytes) => bytes.clone(),
+    /// The frame's bytes, taken out of the payload rather than copied out of
+    /// it: the decoded value already owns them and nothing reads `data` again.
+    pub fn take_data_bytes(&mut self) -> Vec<u8> {
+        match std::mem::replace(&mut self.data, rmpv::Value::Nil) {
+            rmpv::Value::String(text) => text.into_bytes(),
+            rmpv::Value::Binary(bytes) => bytes,
             _ => Vec::new(),
         }
     }
 }
 
-/// Decoded on its own first, so a response can be routed even if the rest of the
-/// payload is malformed.
+/// The fallback when the full payload does not decode: a struct with only this
+/// field ignores every other key, so a malformed response is still named for
+/// what is wrong with it. The full payload carries `cid` too, so the happy path
+/// decodes once and never reaches this.
 #[derive(Deserialize, Default)]
 pub struct RespondConnectionId {
     #[serde(rename = "cid", default)]

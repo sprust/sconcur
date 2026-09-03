@@ -738,14 +738,22 @@ async fn handle_respond(task: Task) {
     let message = task.message();
     let start_time = Instant::now();
 
-    let id_only: payloads::RespondConnectionId = match rmp_serde::from_slice(&message.payload) {
-        Ok(id_only) => id_only,
-        Err(error) => {
-            task.add_result(Result::error(
-                message,
-                ERRORS.by_err("parse respond connectionId", error),
-            ))
-            .await;
+    // The payload carries the connection id, so the happy path decodes once; the
+    // id-only struct is the fallback that still tells a malformed payload apart
+    // from one whose id alone is unreadable.
+    let mut payload: payloads::RespondPayload = match rmp_serde::from_slice(&message.payload) {
+        Ok(payload) => payload,
+        Err(parse_error) => {
+            // The id-only struct ignores every other key, so it still names the
+            // connection whose payload is malformed — which is the difference
+            // between a report an operator can act on and one they cannot.
+            let text = match rmp_serde::from_slice::<payloads::RespondConnectionId>(&message.payload) {
+                Ok(id_only) => format!("parse respond payload of connectionId {}", id_only.connection_id),
+                Err(_) => "parse respond connectionId".to_string(),
+            };
+
+            task.add_result(Result::error(message, ERRORS.by_err(&text, parse_error)))
+                .await;
 
             return;
         }
@@ -755,37 +763,24 @@ async fn handle_respond(task: Task) {
         .connections
         .lock()
         .unwrap()
-        .get(&id_only.connection_id)
+        .get(&payload.connection_id)
         .cloned();
 
     let Some(pending) = pending else {
         task.add_result(Result::error(
             message,
-            ERRORS.by_text(&format!("unknown connectionId {}", id_only.connection_id)),
+            ERRORS.by_text(&format!("unknown connectionId {}", payload.connection_id)),
         ))
         .await;
 
         return;
     };
 
-    let payload: payloads::RespondPayload = match rmp_serde::from_slice(&message.payload) {
-        Ok(payload) => payload,
-        Err(error) => {
-            task.add_result(Result::error(
-                message,
-                ERRORS.by_err("parse respond payload", error),
-            ))
-            .await;
-
-            return;
-        }
-    };
-
     match dispatch(
         &pending,
         WriteKind::from_code(payload.op),
         is_binary(payload.message_type),
-        payload.data_bytes(),
+        payload.take_data_bytes(),
     )
     .await
     {

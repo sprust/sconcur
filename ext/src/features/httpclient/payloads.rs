@@ -84,10 +84,14 @@ pub struct RequestParams {
 }
 
 impl RequestParams {
-    pub fn body_bytes(&self) -> Vec<u8> {
-        match &self.body {
-            rmpv::Value::String(text) => text.as_bytes().to_vec(),
-            rmpv::Value::Binary(bytes) => bytes.clone(),
+    /// The request body, taken out of the params rather than copied out of
+    /// them: the decoded value already owns those bytes and nothing reads
+    /// `body` again. The rest of the params is still needed at the call site,
+    /// which is why this takes `&mut self` instead of consuming them.
+    pub fn take_body_bytes(&mut self) -> Vec<u8> {
+        match std::mem::replace(&mut self.body, rmpv::Value::Nil) {
+            rmpv::Value::String(text) => text.into_bytes(),
+            rmpv::Value::Binary(bytes) => bytes,
             _ => Vec::new(),
         }
     }
@@ -104,10 +108,12 @@ pub struct UploadParams {
 }
 
 impl UploadParams {
-    pub fn body_bytes(&self) -> Vec<u8> {
-        match &self.body {
-            rmpv::Value::String(text) => text.as_bytes().to_vec(),
-            rmpv::Value::Binary(bytes) => bytes.clone(),
+    /// The chunk's bytes, taken out of the params rather than copied out of
+    /// them — see RequestParams::take_body_bytes.
+    pub fn take_body_bytes(&mut self) -> Vec<u8> {
+        match std::mem::replace(&mut self.body, rmpv::Value::Nil) {
+            rmpv::Value::String(text) => text.into_bytes(),
+            rmpv::Value::Binary(bytes) => bytes,
             _ => Vec::new(),
         }
     }

@@ -495,7 +495,7 @@ fn spawn_write_loop(
 }
 
 async fn handle_send(task: &Task, params: rmpv::Value) {
-    let params: payloads::SendParams = match rmpv::ext::from_value(params) {
+    let mut params: payloads::SendParams = match rmpv::ext::from_value(params) {
         Ok(params) => params,
         Err(error) => {
             task.add_result(Result::error(
@@ -508,12 +508,16 @@ async fn handle_send(task: &Task, params: rmpv::Value) {
         }
     };
 
+    // Taken before the call: the message is moved out of the params, which the
+    // same call reads the connection id from.
+    let data = params.take_data_bytes();
+
     route(
         task,
         &params.connection_id,
         WriteKind::Frame,
         is_binary(params.message_type),
-        params.data_bytes(),
+        data,
     )
     .await;
 }

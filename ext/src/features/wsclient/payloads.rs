@@ -49,10 +49,13 @@ pub struct SendParams {
 }
 
 impl SendParams {
-    pub fn data_bytes(&self) -> Vec<u8> {
-        match &self.data {
-            rmpv::Value::String(text) => text.as_bytes().to_vec(),
-            rmpv::Value::Binary(bytes) => bytes.clone(),
+    /// The message's bytes, taken out of the params rather than copied out of
+    /// them: the decoded value already owns them and nothing reads `data`
+    /// again.
+    pub fn take_data_bytes(&mut self) -> Vec<u8> {
+        match std::mem::replace(&mut self.data, rmpv::Value::Nil) {
+            rmpv::Value::String(text) => text.into_bytes(),
+            rmpv::Value::Binary(bytes) => bytes,
             _ => Vec::new(),
         }
     }
