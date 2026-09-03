@@ -284,15 +284,7 @@ class State
         }
 
         if ($stopExtensionFlow) {
-            // From inside a fiber the crossing is deferred to the scheduler's
-            // main stack: on the Go core a cgo call from a fiber stack costs a
-            // stack-bounds re-derivation through /proc/self/maps (see
-            // Scheduler::$pendingStopFlows).
-            if (Fiber::getCurrent() !== null) {
-                Scheduler::get()->deferStopFlow($flowKey);
-            } else {
-                Extension::get()->stopFlow($flowKey);
-            }
+            Extension::get()->stopFlow($flowKey);
         }
     }
 

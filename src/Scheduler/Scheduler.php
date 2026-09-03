@@ -160,40 +160,6 @@ class Scheduler
     protected int $droppedResultsCount = 0;
 
     /**
-     * Dispatches handed over from fiber stacks, waiting to run on the main C
-     * stack: [coroutine, pending DTO]. A cgo call entering the Go core with the
-     * stack pointer inside a fiber stack forces its runtime to re-derive the
-     * system-stack bounds, which glibc answers for the process main thread with
-     * a full /proc/self/maps read+parse — hundreds of microseconds per crossing
-     * in a mapping-heavy process. The Rust core makes no cgo call and pays none
-     * of it; the queue is kept because both cores are supported, and on the one
-     * that does not pay it the extra hop is all it costs. Queued by
-     * dispatchPendingTask when it runs on
-     * a fiber stack (a nested WaitGroup::add / spawn), drained by
-     * takeReadyResult before any wait crossing.
-     *
-     * The queue holds the Coroutine, not the fiber: under the FiberPool one
-     * Fiber object serves many coroutines in turn, so fiber identity no longer
-     * identifies the owner of a queued dispatch (see drainPendingDispatches).
-     *
-     * @var list<array{0: Coroutine, 1: PendingPushDto|PendingNextDto}>
-     */
-    protected array $pendingDispatches = [];
-
-    /**
-     * extension-side stopFlow crossings deferred off fiber stacks (same reason as
-     * $pendingDispatches; queued via deferStopFlow from State::deleteFlow when
-     * a flow is deleted from inside a fiber, e.g. WaitGroup::stop in a nested
-     * group's iterate). Drained after the pending dispatches: a queued push of
-     * a live flow must land before an unrelated flow's stop, never after its
-     * own — group flow keys are never reused, so the order across flows is
-     * free, but draining pushes first keeps the invariant simple.
-     *
-     * @var list<string>
-     */
-    protected array $pendingStopFlows = [];
-
-    /**
      * Monotonic counter feeding spawned-coroutine flow keys. A flow key only has
      * to be unique among live flows in this process, so a never-reused counter is
      * enough — and far cheaper than uniqid() on the per-request hot path.
@@ -263,15 +229,6 @@ class Scheduler
         $this->nearestDeadlineNs  = 0;
         $this->lastSwitchNs       = [];
         $this->readyResults       = [];
-
-        // Queued dispatches belong to coroutines just unwound — drop them. The
-        // queued stopFlows still name live extension-side flows: flush the crossings
-        // (this is the main stack) so shutdown leaves nothing behind there.
-        $this->pendingDispatches = [];
-
-        while ($this->pendingStopFlows !== []) {
-            Extension::get()->stopFlow(array_shift($this->pendingStopFlows));
-        }
     }
 
     public function register(Coroutine $coroutine): void
@@ -922,25 +879,6 @@ class Scheduler
      */
     public function dispatchPendingTask(Fiber $fiber, int $fiberId, mixed $suspendValue): mixed
     {
-        // On a fiber stack (a nested WaitGroup::add / spawn), don't perform the
-        // cgo call here: entering the extension with the stack pointer inside a fiber stack
-        // makes the runtime re-derive its system-stack bounds through a full
-        // /proc/self/maps read (see $pendingDispatches). Queue the dispatch for
-        // the scheduler loop, which drains it on the main C stack before its
-        // next wait crossing. No result can arrive before the push happens, so
-        // deferring opens no routing window. An unregistered fiber cannot be
-        // queued (the queue is keyed by Coroutine) — it falls through and
-        // dispatches inline, which is correct, just not deferred.
-        if (
-            Fiber::getCurrent() !== null
-            && ($suspendValue instanceof PendingPushDto || $suspendValue instanceof PendingNextDto)
-            && ($queuedCoroutine = $this->coroutines[$fiberId] ?? null) !== null
-        ) {
-            $this->pendingDispatches[] = [$queuedCoroutine, $suspendValue];
-
-            return $suspendValue;
-        }
-
         // The dispatch may run on a coroutine's stack (a nested WaitGroup::add
         // starts members from inside the parent coroutine). Preempting the
         // caller between push() and the awaited-keys bookkeeping would let the
@@ -1039,17 +977,6 @@ class Scheduler
     public function droppedResultsCount(): int
     {
         return $this->droppedResultsCount;
-    }
-
-    /**
-     * Queues a extension-side stopFlow to run on the scheduler's main stack instead of
-     * the current fiber's (see $pendingStopFlows). Called by State::deleteFlow
-     * when a flow is deleted from inside a fiber. Flow keys are never reused,
-     * so a deferred stop can only ever target its own flow.
-     */
-    public function deferStopFlow(string $flowKey): void
-    {
-        $this->pendingStopFlows[] = $flowKey;
     }
 
     /**
@@ -1279,29 +1206,6 @@ class Scheduler
     }
 
     /**
-     * Drops the dispatches one coroutine queued from a fiber stack but that must no longer
-     * be sent. Needed only where the coroutine keeps its registry entry across the unwind
-     * (expire); every other exit — detach, forget — removes it, and the identity check in
-     * drainPendingDispatches skips its queued work on its own.
-     */
-    protected function purgePendingDispatches(Coroutine $coroutine): void
-    {
-        if ($this->pendingDispatches === []) {
-            return;
-        }
-
-        $kept = [];
-
-        foreach ($this->pendingDispatches as $queued) {
-            if ($queued[0] !== $coroutine) {
-                $kept[] = $queued;
-            }
-        }
-
-        $this->pendingDispatches = $kept;
-    }
-
-    /**
      * One scheduler step: take the next ready result and resume the coroutine it
      * belongs to. With coroutines parked by switch() the step never blocks: a
      * deliverable result keeps priority, an empty poll resumes the queue head
@@ -1339,15 +1243,6 @@ class Scheduler
      */
     protected function takeReadyResult(?int $timeoutMs): ?TaskResultDto
     {
-        // Fiber-stack work deferred to this (main) stack runs first: a blocking
-        // wait below would otherwise wait for results of pushes that were never
-        // sent. The emptiness test is deliberately duplicated here (the drain
-        // loops re-check it): both queues are empty on every iteration of the
-        // hot serve loop, and this saves the call.
-        if ($this->pendingDispatches !== [] || $this->pendingStopFlows !== []) {
-            $this->drainPendingDispatches();
-        }
-
         if ($this->readyResults !== []) {
             return array_shift($this->readyResults);
         }
@@ -1468,14 +1363,6 @@ class Scheduler
         // A coroutine parked by switch() is queued for a resume that must not also happen.
         $this->purgeSwitchedCoroutine($coroutine->id);
 
-        // Nor may a push it queued from a fiber stack still go out. The coroutine stays
-        // registered through its own unwinding — that is the point, it has to run its
-        // finally blocks — so the identity check in drainPendingDispatches would let the
-        // stale push through, and it would overwrite the awaited keys of whatever the
-        // coroutine asked for next inside its catch. Its result would then wake the
-        // coroutine in place of the answer it is actually waiting for.
-        $this->purgePendingDispatches($coroutine);
-
         $this->resumeCoroutine(
             coroutine: $coroutine,
             resumeValue: null,
@@ -1594,9 +1481,7 @@ class Scheduler
      * Routes a coroutine's post-dispatch state to its completion path: a pooled
      * fiber parking idle goes back to the pool, a terminated group member
      * reports to its group. A coroutine that suspended again on its next task
-     * is left parked — the next delivered result resumes it. Shared by
-     * resumeCoroutine and drainPendingDispatches (a drained fire-and-forget
-     * push resumes its coroutine internally and may run it to completion).
+     * is left parked — the next delivered result resumes it.
      */
     protected function settleDispatched(Coroutine $coroutine, mixed $suspendValue): void
     {
@@ -1612,48 +1497,6 @@ class Scheduler
 
         if ($coroutine->fiber->isTerminated()) {
             $this->completeCoroutine($coroutine);
-        }
-    }
-
-    /**
-     * Performs the dispatches and stopFlow crossings queued from fiber stacks,
-     * now that execution is on the main C stack (see $pendingDispatches). A
-     * dispatch may itself queue more work (a fire-and-forget push resumes its
-     * coroutine, which may spawn or stop a nested group), so both queues drain
-     * to empty. Failure handling mirrors resumeCoroutine: whatever escapes the
-     * coroutine goes to failCoroutine, never up the scheduler stack.
-     */
-    protected function drainPendingDispatches(): void
-    {
-        while ($this->pendingDispatches !== []) {
-            [$coroutine, $pendingTask] = array_shift($this->pendingDispatches);
-
-            // The coroutine may have been detached (group stop, shutdown) while
-            // its push waited in the queue. Compared by identity, not by id or
-            // by fiber: spl_object_id is reused once a fiber is freed, and a
-            // pooled fiber outlives its coroutine by design — the same Fiber
-            // object, under the same id, may already serve the next request.
-            if (($this->coroutines[$coroutine->id] ?? null) !== $coroutine) {
-                continue;
-            }
-
-            try {
-                $suspendValue = $this->dispatchPendingTask(
-                    fiber: $coroutine->fiber,
-                    fiberId: $coroutine->id,
-                    suspendValue: $pendingTask,
-                );
-            } catch (Throwable $exception) {
-                $this->failCoroutine($coroutine, $exception);
-
-                continue;
-            }
-
-            $this->settleDispatched($coroutine, $suspendValue);
-        }
-
-        while ($this->pendingStopFlows !== []) {
-            Extension::get()->stopFlow(array_shift($this->pendingStopFlows));
         }
     }
 

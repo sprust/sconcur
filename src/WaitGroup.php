@@ -248,16 +248,9 @@ class WaitGroup
      * group's flow. Called by iterate()'s finally, by the destructor, and
      * directly to abandon whatever work is left.
      *
-     * The extension-side cancellation is not synchronous when stop() runs inside a
-     * coroutine: on the Go core a cgo call made from a fiber stack costs a
-     * system-stack bounds re-derivation, so State::deleteFlow queues the
-     * stopFlow and the scheduler performs it on its own stack before its next
-     * wait (Scheduler::deferStopFlow). The members are unwound here and now —
-     * only the abort of their in-flight extension tasks lands a scheduler hop later,
-     * and their results are dropped when they arrive. A coroutine that calls
-     * stop() and then runs CPU-bound code without ever suspending holds that
-     * hop off; automatic preemption — which the servers enable by default —
-     * closes the gap on its own.
+     * The members are unwound here and now, and so is the extension-side flow:
+     * State::deleteFlow crosses immediately, from wherever stop() was called.
+     * Results of tasks that were already in flight are dropped when they arrive.
      */
     public function stop(): void
     {

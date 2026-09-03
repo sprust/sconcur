@@ -13,8 +13,11 @@ coroutine, the coroutine suspends and hands out a deferred task
 (`Fiber::suspend(PendingPushDto)`). The push to Go is done by whoever took over
 control — `WaitGroup::launch` or the scheduler — through
 `Scheduler::dispatchPendingTask()` from its own stack, and the task runs in a
-separate goroutine. cgo is never called from a coroutine's stack: when N live
-fibers had each crossed the PHP↔Go boundary, the cost grew quadratically with N.
+separate goroutine. The suspend is the point: a coroutine never crosses the
+boundary for its own task, because when N live fibers had each crossed the PHP↔Go
+boundary from its own stack, the cost grew quadratically with N. The crossing
+itself runs on whichever stack took control — the main one, or a parent
+coroutine's when a nested group starts a member.
 
 Every `WaitGroup` owns one flow — the group of its tasks on the Go side; flows
 are what the extension cancels, waits on and routes results by.

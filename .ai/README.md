@@ -105,6 +105,12 @@ the Go core costs nothing — judge it on its own merits. This paragraph exists
 because the reverse was assumed once and killed a correct change: see item 1 of
 [rust-core-hot-path.md](plans/rust-core-hot-path.md).
 
+It does still build (`make ext-build-go`), still has its own unit tests
+(`make ext-test-go`), and `SCONCUR_EXT` can still be pointed at it — the two
+produce the same `sconcur.so`, ABI for ABI, so the swap is a path change. Use
+that to answer a question about what the port was ported from, never to decide
+what the port may do next.
+
 Two differences the Rust core has from it, both because its AMQP driver cannot
 send what the Go one could, and both refused rather than dropped in silence: a
 prefetch **size** (`basic.qos`'s prefetch-size is absent from the driver's frame
@@ -135,9 +141,12 @@ on `FeatureExecutor::exec()` handing over a pending task
 off the fiber stack → a Go goroutine executes it → the result goes to the shared
 channel → `Scheduler` retrieves it with `Extension::waitAnyBatch()` (the first
 ready result plus the already-ready tail in one crossing) and resumes the owning
-Fiber → `WaitGroup::iterate()` yields the result. cgo is never called from a
-coroutine's stack — N live boundary-crossing fibers made the fan-out quadratic
-(see `.ai/plans/async-fan-out-optimization.ru.md`).
+Fiber → `WaitGroup::iterate()` yields the result. The suspend is the point: a
+coroutine never crosses the boundary for its own task, because N live fibers each
+parked inside a crossing made the fan-out quadratic (see
+`.ai/plans/async-fan-out-optimization.ru.md`). The crossing itself runs on
+whichever stack took control — the main one, or a parent coroutine's when a
+nested group starts a member.
 
 A single process-wide `Scheduler` is the only place that waits on the extension
 and resumes fibers, so coroutines never nest on each other's call stack. A nested
@@ -166,8 +175,8 @@ feature's doc. Key PHP classes not covered there:
   is an enum case on purpose — an identity comparison handler code cannot forge.
   Stale-result safety rests on the awaited flow/task key validation in
   `Scheduler::resumeByResult` (the keys are fed by never-reused monotonic
-  counters), not on fiber identity; for the same reason
-  `Scheduler::$pendingDispatches` keys its queue by `Coroutine`, not by fiber.
+  counters), not on fiber identity — a pooled Fiber outlives the coroutine it
+  served, so `spl_object_id` alone identifies nothing.
 - `State` — the static registry mapping Fibers ↔ flows, plus the per-coroutine
   context store (released in `unRegisterFiber`). Results route by the owner id
   carried in the frame, so there is no task → fiber map.

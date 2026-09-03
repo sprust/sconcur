@@ -87,7 +87,7 @@ class SchedulerFireAndForgetTest extends BaseTestCase
      * A deliberate unwind is not a task failure: it must reach the coroutine as
      * FlowStoppedException so its finally blocks run and the cancellation stays
      * recognizable. Driven at the fiber level because the window only exists
-     * while the push is still queued (see Scheduler::$pendingDispatches).
+     * between the suspend and the dispatch, which no higher-level API exposes.
      */
     public function testFlowStoppedPropagatesUnwrapped(): void
     {

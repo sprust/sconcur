@@ -11,23 +11,24 @@ use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\WaitGroup;
 
 /**
- * A cgo call made from a fiber stack costs the Go runtime a system-stack bounds
- * re-derivation through /proc/self/maps, so State::deleteFlow does not cross into
- * Go when it runs inside a coroutine: it queues the stopFlow
- * (Scheduler::deferStopFlow) and the scheduler performs it on its own stack
- * before the next wait.
+ * A flow stopped from inside a coroutine is released on the extension side, and
+ * its in-flight tasks are cancelled with it. tearDown's assertNoTasksCount is
+ * where that is actually asserted: a crossing that never happened leaves live
+ * tasks behind on the other side.
  *
- * What must not change because of that: a flow stopped from inside a coroutine is
- * still released on the Go side, and its in-flight tasks are still cancelled.
- * tearDown's assertNoTasksCount is the assertion that the deferred crossings
- * actually happened — a queue that never drained leaves live Go tasks behind.
+ * These cases were written for the deferred-dispatch queue — State::deleteFlow
+ * used to hand the stopFlow to the scheduler instead of crossing from a fiber
+ * stack, and the risk was a queue that never drained. The queue is gone and the
+ * crossing is immediate, which is why the cases are worth more now than they
+ * were then: they assert the outcome, not the mechanism, so they carried over to
+ * the mechanism's removal unchanged.
  */
-class SchedulerDeferredStopFlowTest extends BaseTestCase
+class SchedulerNestedFlowReleaseTest extends BaseTestCase
 {
     /**
      * The nested group is abandoned mid-flight: iterate() is left after the first
      * result, so its finally → stop() runs inside the outer coroutine with a
-     * member still running. That stop is the deferred one.
+     * member still running — a flow released from a coroutine's own stack.
      */
     public function testANestedGroupStoppedInsideACoroutineReleasesItsFlow(): void
     {
@@ -68,8 +69,8 @@ class SchedulerDeferredStopFlowTest extends BaseTestCase
 
     /**
      * The same path for a spawned coroutine: its own flow is deleted by the
-     * scheduler while the coroutine's fiber is what finished, so the crossing is
-     * deferred exactly like above and must still land.
+     * scheduler while the coroutine's fiber is what finished, and that crossing
+     * must land too.
      */
     public function testSpawnedCoroutineFlowsAreReleasedAfterNestedSpawns(): void
     {
@@ -88,8 +89,8 @@ class SchedulerDeferredStopFlowTest extends BaseTestCase
 
     /**
      * Runs $callback in a spawned coroutine nested inside a group member, so the
-     * spawn (and its dispatch) happen on a fiber stack — the queued path — and
-     * the group keeps the scheduler pumping until everything settles.
+     * spawn and its dispatch happen on a fiber stack, and the group keeps the
+     * scheduler pumping until everything settles.
      *
      * @param Closure(): void $callback
      */
@@ -102,7 +103,7 @@ class SchedulerDeferredStopFlowTest extends BaseTestCase
                 Scheduler::get()->spawn($callback);
 
                 // Outlive the spawned coroutine so the scheduler is still running
-                // when its deferred dispatch and stopFlow are drained.
+                // when it finishes and its flow is released.
                 Sleeper::usleep(microseconds: 20_000);
 
                 return 'done';
