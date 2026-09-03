@@ -294,6 +294,10 @@ async fn handle_connect(task: &Task, params: rmpv::Value) {
             max_message_bytes,
             &ERRORS,
             pending.read_stopped.clone(),
+            // No first-frame window: on this side the token fires when the
+            // connection is over, not when a server stops taking new input, and
+            // waiting past that would only delay the news.
+            Duration::ZERO,
         ),
         start_time,
         closed: pending.closed.clone(),

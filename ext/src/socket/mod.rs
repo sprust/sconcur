@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use tokio::sync::{mpsc, oneshot};
 
 pub use frame::write_frame;
-pub use message_state::MessageState;
+pub use message_state::{FIRST_FRAME_DRAIN_GRACE, MessageState};
 
 /// What an action does to a connection. `Frame` writes one length-prefixed frame
 /// to the peer; `Close` closes the connection. The numeric values are part of
@@ -59,8 +59,16 @@ pub struct PendingConnection {
 impl PendingConnection {
     /// Ends the read side only (graceful drain). Go half-closes the TCP
     /// connection so a blocked read returns EOF; here the read future is
-    /// cancelled instead, which ends the handler's loop the same way. The
-    /// difference is on the wire — the peer is not sent a FIN until the
+    /// cancelled instead.
+    ///
+    /// Not quite the same thing, and the difference had to be paid for in
+    /// MessageState: a half-close cannot lose data, because read() must hand
+    /// back what is already buffered before it may report EOF, while a
+    /// cancellation can cut a read that was about to return a frame. The stream
+    /// side compensates — it polls the read first and gives a connection that
+    /// has delivered nothing yet a bounded window for its first frame.
+    ///
+    /// The other difference is on the wire: the peer is not sent a FIN until the
     /// connection is closed for good.
     pub fn close_read(&self) {
         self.read_stopped.cancel();

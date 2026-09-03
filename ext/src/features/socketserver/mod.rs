@@ -353,6 +353,7 @@ async fn serve_connection(
         config.max_message_bytes,
         &ERRORS,
         pending.read_stopped.clone(),
+        crate::socket::FIRST_FRAME_DRAIN_GRACE,
     ));
 
     {
