@@ -14,6 +14,7 @@ use SConcur\Exceptions\HttpServer\InvalidHandlerResponseException;
 use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Exceptions\HttpServer\RequestBodyTooLargeException;
 use SConcur\Features\FeatureExecutor;
+use SConcur\Features\HttpServer\Dto\LazyHeadersRequest;
 use SConcur\Features\HttpServer\Dto\RequestBody;
 use SConcur\Features\HttpServer\Dto\RequestBodyStream;
 use SConcur\Features\HttpServer\Payloads\RespondPayload;
@@ -393,18 +394,6 @@ readonly class HttpServer
             ),
         );
 
-        // An empty header map decodes to stdClass (a MessagePack quirk), and nested
-        // values may too; normalize to array<string, array<int, string>> and set each.
-        foreach ((array) ($data['hd'] ?? []) as $name => $values) {
-            $request = $request->withHeader((string) $name, array_values((array) $values));
-        }
-
-        if ($query !== '') {
-            parse_str($query, $queryParams);
-
-            $request = $request->withQueryParams($queryParams);
-        }
-
         $protocolVersion = str_starts_with($proto, 'HTTP/') ? substr($proto, 5) : $proto;
 
         // PSR-7 withers clone the request; skip the clone when the factory's
@@ -422,7 +411,27 @@ readonly class HttpServer
             ),
         );
 
-        return [$requestId, $request];
+        // The headers and the query string are handed over unapplied: setting
+        // seven headers costs 4.17 us of the 7.75 one decode takes, and parsing
+        // a query string another 1.9, while a handler that dispatches on the
+        // method and the path reads 0.12 of it (`make bench-request`). An
+        // empty header map decodes to stdClass (a MessagePack quirk), and nested
+        // values may too, so they are normalized here rather than on first use —
+        // that part is cheap and keeps the deferral a pure postponement.
+        $headers = [];
+
+        foreach ((array) ($data['hd'] ?? []) as $name => $values) {
+            $headers[(string) $name] = array_values((array) $values);
+        }
+
+        return [
+            $requestId,
+            new LazyHeadersRequest(
+                request: $request,
+                pendingHeaders: $headers,
+                pendingQuery: $query === '' ? null : $query,
+            ),
+        ];
     }
 
     /**

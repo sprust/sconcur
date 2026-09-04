@@ -390,6 +390,11 @@ bench-coordination:
 bench-request:
 	$(PHP_EXT) tests/benchmarks/runtime/request-profile.php
 
+# What taking a result out of the batch costs on the PHP side: the frame parse
+# the profile puts at 17%, priced stage by stage on a captured batch.
+bench-result:
+	$(PHP_EXT) tests/benchmarks/runtime/result-profile.php
+
 # Whether tearing a coroutine down costs more when more coroutines are alive:
 # the same group of short-lived members against a growing crowd of parked
 # neighbours. Two steps of that path are scans, and a scan costs what the

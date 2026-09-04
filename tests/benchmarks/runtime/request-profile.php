@@ -181,6 +181,23 @@ $stages = [
     // The URI on its own: the factory parses the string into a Uri object.
     'createServerRequest only' => static fn () => $factory->createServerRequest('GET', $uri, []),
 
+    // What the handler actually receives now: the same decode, then the two reads
+    // a router makes. The difference from the row above is what the deferral
+    // saves when nothing asks for a header.
+    'decodeRequest + method/path' => static function () use ($decodeRequest, $factory, $plain): string {
+        [, $request] = $decodeRequest($factory, $plain);
+
+        return $request->getMethod() . $request->getUri()->getPath();
+    },
+
+    // The same, for a handler that does read a header: the deferral has to be
+    // paid back here, and this row is what it costs to pay it.
+    'decodeRequest + one header' => static function () use ($decodeRequest, $factory, $plain): string {
+        [, $request] = $decodeRequest($factory, $plain);
+
+        return $request->getHeaderLine('user-agent');
+    },
+
     // What a typical handler reads out of all of it.
     'getMethod + getPath' => static function () use ($factory, $uri) {
         static $request = null;
