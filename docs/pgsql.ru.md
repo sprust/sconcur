@@ -2,7 +2,7 @@
 
 # PostgreSQL (на универсальной SQL-фиче)
 
-PgSQL — второй драйвер той же SQL-фичи поверх Go `database/sql` (драйвер
+PgSQL — второй драйвер той же SQL-фичи поверх sqlx (драйвер
 `jackc/pgx`). Ядро (`SConcur\Features\Sql`) общее с MySQL, а
 `SConcur\Features\Pgsql\Connection` — тонкий фасад, задающий драйвер. Стриминг,
 пул, транзакции и конкурентность ведут себя одинаково — см.

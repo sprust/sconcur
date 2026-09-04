@@ -3,11 +3,12 @@ English | [Русский](README.ru.md)
 # SConcur
 
 > ⚠️ Experimental project, not for production. Yet another attempt to make
-> PHP asynchronous, but without a C extension — with one written in Go.
+> PHP asynchronous, but without a hand-written C extension — with one written in
+> Rust.
 
-A concurrency library for PHP on top of a custom Go extension. The PHP side
-(a Fiber) suspends while the Go extension runs the task (MongoDB operations,
-sleep, and so on) concurrently in goroutines. PHP and Go exchange data over
+A concurrency library for PHP on top of a custom Rust extension. The PHP side
+(a Fiber) suspends while the extension runs the task (MongoDB operations, sleep,
+and so on) concurrently on an async runtime. The two sides exchange data over
 MessagePack.
 
 ## Numbers against RoadRunner and Swoole
@@ -27,8 +28,8 @@ generator does not yet share cores with the servers):
 
 Swoole is faster on the cheap paths, but its concurrency rests on hooks into the
 existing PHP drivers: whatever the hooks do not cover blocks the whole worker (as
-`ext-mongodb` does). In SConcur a feature is ordinary blocking Go code on top of a
-mature Go driver, which makes new features easier to add and to maintain.
+`ext-mongodb` does). In SConcur a feature is ordinary async Rust on top of a
+mature Rust driver, which makes new features easier to add and to maintain.
 
 Where SConcur does not win — single cheap queries, megabyte payloads, CPU-bound
 handlers — is listed just as plainly in
@@ -43,7 +44,7 @@ handlers — is listed just as plainly in
 - [Example](#example)
 - [What it replaces](#what-it-replaces)
 - [How it works](#how-it-works)
-- [Why Go specifically](#why-go-specifically)
+- [Why an extension, and why Rust](#why-an-extension-and-why-rust)
 - [Use and limitations](#use-and-limitations)
 - [Tested versions](#tested-versions)
 - [Documentation](#documentation)
@@ -59,9 +60,9 @@ operations take two seconds.
 
 SConcur runs such operations at the same time. You swap the blocking calls for
 SConcur equivalents (see [What it replaces](#what-it-replaces)), wrap them in
-coroutines, and the work moves into Go and runs in parallel goroutines. The total
-time is bound by the slowest operation, not by their sum. PHP stays a thin
-orchestration layer; all concurrency lives in Go.
+coroutines, and the work moves into the extension and runs there in parallel. The
+total time is bound by the slowest operation, not by their sum. PHP stays a thin
+orchestration layer; all concurrency lives below it.
 
 ## Example
 
@@ -107,10 +108,10 @@ Operations and clients — wrapped in a coroutine (`$waitGroup->add()` +
 | Native PHP | SConcur | What changes |
 | --- | --- | --- |
 | `sleep()`, `usleep()` | `Sleeper::sleep()`, `Sleeper::usleep()` | pause for seconds or microseconds |
-| `PDO` / `mysqli` (MySQL) | `Features\Mysql\Connection` | queries, transactions, SELECT streaming; a connection pool in Go |
+| `PDO` / `mysqli` (MySQL) | `Features\Mysql\Connection` | queries, transactions, SELECT streaming; a connection pool in the extension |
 | `PDO` (PostgreSQL) | `Features\Pgsql\Connection` | the same SQL feature on the pgx driver |
 | `mongodb/mongodb`, `ext-mongodb` | `Features\Mongodb\Connection\*` | CRUD, aggregation, cursors; BSON values are `SConcur\Bson\*` |
-| `curl`, `file_get_contents`, Guzzle | `Features\HttpClient\HttpClient` (PSR-18) | response streaming, download straight to a file on the Go side |
+| `curl`, `file_get_contents`, Guzzle | `Features\HttpClient\HttpClient` (PSR-18) | response streaming, download straight to a file inside the extension |
 | `fsockopen`, `stream_socket_client` | `Features\SocketClient\SocketClient` | TCP with length-prefix framing |
 | a WS client library | `Features\WsClient\WsClient` | text/binary messages |
 | `ext-amqp`, `php-amqplib` (RabbitMQ) | `Features\Amqp\*` | a consumer suspends its coroutine, not the worker; settling belongs to the delivery |
@@ -126,8 +127,9 @@ Long-lived servers:
 ## How it works
 
 `WaitGroup` wraps each closure in a `Fiber`. When an async feature is called,
-the coroutine suspends and the task goes to Go, into its own goroutine. Every
-`WaitGroup` owns one flow — the group of tasks that belong to it on the Go side.
+the coroutine suspends and the task goes to the extension, onto its own runtime
+task. Every `WaitGroup` owns one flow — the group of tasks that belong to it on
+the extension side.
 A single process-wide `Scheduler` waits on the extension (`waitAnyBatch`): it
 blocks until the first result of any flow is ready, picks up the results that
 are already ready together with it in one crossing of the boundary, and resumes
@@ -139,14 +141,14 @@ To bound memory or a DB connection pool, set a limit:
 `WaitGroup::create(maxConcurrency: N)` — excess `add()` calls queue and start as
 slots free up.
 
-Details — the "PHP Fiber ↔ Go goroutine" diagrams, the layers and the task
+Details — the "PHP Fiber ↔ runtime task" diagrams, the layers and the task
 lifecycle — in [docs/architecture.md](docs/architecture.md).
 
-## Why Go specifically
+## Why an extension, and why Rust
 
 The whole concurrency model reduces to one primitive: a channel. Every task runs
-in its own goroutine, and the results of all goroutines of all flows land in one
-shared buffered channel. PHP runs no event loop and polls nothing — the single
+as its own task on the runtime, and the results of every flow land in one shared
+bounded channel. PHP runs no event loop and polls nothing — the single
 process-wide `Scheduler` blocks reading a message from that channel
 (`waitAnyBatch`) and wakes on the first ready result, taking the results that
 are already ready with it in the same crossing. Which task finished first is
@@ -154,15 +156,15 @@ decided by the channel; PHP only resumes the matching coroutine by `taskKey`.
 
 Everything else follows from that:
 
-- A feature is ordinary synchronous Go code. You write a blocking handler; the
-  runtime runs it on a goroutine and puts the result into the channel. No
-  promises, no callbacks, no event-loop reasoning.
-- Mature drivers are reused as-is — mongo-driver, pgx, go-sql-driver, `net/http`,
-  coder/websocket — and run concurrently right away. No waiting for async drivers
-  or extensions.
+- A feature is one async Rust function. You write the handler; the runtime runs
+  it as a task and puts the result into the channel. No promises, no callbacks,
+  no event-loop reasoning on the PHP side.
+- Mature drivers are reused as-is — the MongoDB driver, sqlx, hyper, reqwest,
+  lapin, fastwebsockets — and run concurrently right away. No waiting for async
+  PHP drivers or extensions.
 - The C glue is frozen: `push`, `wait`, `waitAny`/`waitAnyBatch`, `next`,
   `stopFlow` plus the `version`/`destroy` lifecycle. A new feature is data (a
-  `MethodEnum` value, a MessagePack payload DTO, a Go handler), not a new C
+  `MethodEnum` value, a MessagePack payload DTO, a Rust handler), not a new C
   symbol, so the export set never grows. A new long-lived server adds at most
   one control function, like `httpStopAccepting`, which stops accepting new
   connections while the ones in progress are finished.
@@ -186,11 +188,12 @@ Everything else follows from that:
   WebSocket and socket servers themselves, which are ordinary PHP scripts that
   listen on a port on their own (the Swoole / ReactPHP model). It also drops into
   a long-lived process you already run, including a RoadRunner worker. PHP-FPM
-  and mod_php are impossible: the extension holds the Go runtime at process
-  level, which contradicts the FPM model.
-- No `pcntl_fork` after the extension is loaded. The Go runtime does not survive
-  a `fork` (the child hangs or crashes). Fork before the first call into the
-  extension, or launch separate processes (`exec`).
+  and mod_php are out: the extension keeps a runtime at process level, which
+  contradicts the request-per-process model.
+- `pcntl_fork` is supported, including after the extension has run work. Only the
+  forking thread survives into the child, so the runtime it inherits has no
+  worker threads left; the extension notices and rebuilds it on the child's next
+  call. The parent is unaffected.
 - NTS (non-thread-safe) only; a ZTS build is not supported.
 - Linux only — core-count detection, signals/`posix`, `SO_REUSEPORT`, the
   master's `flock`.
@@ -215,7 +218,7 @@ The environment the project is built and tested against in CI:
 | Component | Version |
 | --- | --- |
 | PHP | 8.4.15 (NTS, cli) |
-| Go (extension build) | 1.26.1 |
+| Rust (extension build) | 1.98.0 |
 | MongoDB (server) | 8.0.5 |
 | ext-mongodb (PHP extension, tests and benchmarks only) | 1.21.5 |
 | mongodb/mongodb (composer package, tests and benchmarks only) | 1.21.3 |
@@ -234,7 +237,7 @@ The environment the project is built and tested against in CI:
 
 - [Console commands](docs/cli.md) — `sconcur-load`, `sconcur-status`,
   `sconcur-server`.
-- [Architecture](docs/architecture.md) — Fiber ↔ goroutine, the scheduler, the
+- [Architecture](docs/architecture.md) — Fiber ↔ runtime task, the scheduler, the
   layers, the task lifecycle.
 - [Coroutine switching](docs/coroutine-switching.md) — `Scheduler::switch()` and
   the servers' automatic preemption for CPU-bound code.
@@ -267,7 +270,7 @@ The environment the project is built and tested against in CI:
 - [How to add a new server](docs/adding-a-server.md) — the Serve/Respond pattern
   and the serve loop.
 - [Objects over MessagePack](docs/msgpack-objects.md) — how a PHP object crosses
-  to Go and back, and how to add a type.
+  to the extension and back, and how to add a type.
 - [Feature benchmarks](docs/benchmarks.md) — per-feature measurements
   (native/sync/async).
 - [Load testing](docs/load-testing.md) — server behaviour under load with all I/O
@@ -282,16 +285,10 @@ The extension core is `ext/` (Rust). It builds into `ext/build/sconcur.so`:
 make ext-build
 ```
 
-The Go core it was ported from is still here, in `ext-go-legacy/`. It is what
-the releases are built from today, because it is the only one carrying the AMQP
-feature:
-
-```shell
-make ext-build-go
-```
-
-Both produce the same extension, ABI for ABI — the same PHP glue, the same
-exports, the same `version()` — so either can be loaded by an unchanged package.
+The Go core it was ported from is kept in `ext-go-legacy/` as history. It still
+builds (`make ext-build-go`) and produces the same extension ABI for ABI, so it
+can be loaded by an unchanged package — but nothing here is built on it, and
+nothing is checked against it.
 ## echo test
 ```shell
 php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello') . PHP_EOL;"
@@ -300,7 +297,7 @@ php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello'
 
 - The `Std` feature — SConcur equivalents of standard PHP functions that block
   the worker or are CPU-bound non-preemptible monoliths (sleep, json, hash, gzip,
-  password hashing, file I/O), executed in Go; absorbs `Sleeper`.
+  password hashing, file I/O), executed in the extension; absorbs `Sleeper`.
 - A fiber-safe bridge to Laravel — a separate package that isolates the
   framework state of one job from another, so a queue worker can pull several
   queues at once. The broker side of this is done, see [AMQP](docs/amqp.md).
@@ -310,7 +307,7 @@ php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello'
 - Stopping a single coroutine from anywhere, not just the whole flow. The other
   half of this — a deadline on one — is done, see
   [coroutine timeout](docs/coroutine-timeout.md).
-- Optimize the synchronous path — a call outside a coroutine goes to Go
-  directly, bypassing the scheduler and the Fiber machinery.
+- Optimize the synchronous path — a call outside a coroutine goes to the
+  extension directly, bypassing the scheduler and the Fiber machinery.
 - Explore a cross-process concurrency mode, so concurrent operations can use
-  several processes (and cores) instead of the goroutines of one process.
+  several processes (and cores) instead of the runtime tasks of one process.

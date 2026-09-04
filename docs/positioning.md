@@ -19,7 +19,7 @@ of adding up.
 | A high-concurrency I/O-bound HTTP/WS service | On the same hardware SConcur serves [~6× the requests per second](benchmarks.md#comparison-with-roadrunner-and-swoole) RoadRunner does, and holding that load takes ~5× less memory than RoadRunner and ~15–30× less than php-fpm — [resources](#resources-to-hold-the-same-load) | ✅ |
 | One request or job needs several DB or network calls | Running them concurrently instead of one after another finishes SQL writes [~3–15×](benchmarks.md#mysql) faster, heavy reads [~2–7×](benchmarks.md#mongodb), network waits [~44×](benchmarks.md#clients-http--socket--websocket) | ✅ |
 | MongoDB with concurrency | SConcur is the only way to have several MongoDB operations in progress at once inside one PHP process — [tables](benchmarks.md#mongodb) | ✅ |
-| Single cheap queries, one at a time (SConcur used as a library) | Slower than the native driver: one call costs ~50 µs of [PHP↔Go boundary](benchmarks.md#conversion-overhead-the-phpgo-boundary) crossing, more than a cheap query itself takes | ❌ |
+| Single cheap queries, one at a time (SConcur used as a library) | Slower than the native driver: one call costs ~50 µs of [PHP↔extension boundary](benchmarks.md#conversion-overhead-the-phpextension-boundary) crossing, more than a cheap query itself takes | ❌ |
 | Megabyte payloads per operation | Moving data across the boundary costs ~1.7–2.6 ms per MB in each direction, and the results of all operations running at once are held in memory together — [payload size](benchmarks.md#payload-size) | ❌ |
 | CPU-bound handlers | No gain: PHP stays single-threaded, and a handler busy with computation blocks the whole process — [servers](benchmarks.md#servers-http--socket--websocket). [Coroutine switching](coroutine-switching.md) keeps such a handler from freezing its neighbours for long, but it does not add throughput | ❌ |
 
@@ -75,7 +75,7 @@ suspended fiber, not a worker.
 | `/all` | RoadRunner (native drivers) | ≈448 | 573 ms | ~158% | ~232 MiB |
 
 On the empty endpoint the gap is ~2.9×: RoadRunner pays an extra inter-process
-step (proxy → worker) on every request, SConcur pays the PHP↔Go boundary, which
+step (proxy → worker) on every request, SConcur pays the PHP↔extension boundary, which
 after the 0.9.1 hot-path work is the cheaper of the two. On `/all` the gap is
 ~6.7× and structural: the sequential worker performs its 3 disk commits one
 after another and idles at ~158% CPU while all 12 workers sit in that chain;
@@ -102,7 +102,7 @@ To hold the measured ≈2 670 rps of the `/all` workload:
   bare PSR-7 worker is ~20 MiB → ~1.4 GiB, about 5× more memory. Also 70 workers
   × 3 backends = 210 DB connections, so PostgreSQL's default
   `max_connections = 100` is already broken. SConcur keeps one connection pool
-  per process on the Go side, and the measurement ran with a cap of 5
+  per process inside the extension, and the measurement ran with a cap of 5
   connections per process.
 - php-fpm (model, no fpm reference in this repo): the same ~70 workers, but a
   worker with a booted framework is 60–120 MiB → 4–8 GiB, i.e. 15–30×, plus the
@@ -124,7 +124,7 @@ zero.
   recycles workers; a watchdog for hung workers is on the roadmap. A native
   blocking call, or a single computation that never returns to the scheduler,
   still freezes the process — preemption cannot interrupt those.
-- Every call crosses the PHP↔Go boundary and costs ~50 µs, which makes cheap
+- Every call crosses the PHP↔extension boundary and costs ~50 µs, which makes cheap
   point reads slower than the native driver at any dataset size. Large payloads
   cost ~1.7–2.6 ms per MB in each direction, and the results of all operations
   running at once are held in memory together (RSS ≈ number of concurrent

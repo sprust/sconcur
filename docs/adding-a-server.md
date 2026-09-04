@@ -3,13 +3,13 @@ English | [Русский](adding-a-server.ru.md)
 # How to add a new server
 
 A server is a special kind of feature: a long-lived network listener that lives in
-the Go extension, accepts incoming connections and streams every event into PHP,
+the extension, accepts incoming connections and streams every event into PHP,
 which handles it in a separate coroutine and sends the response back. It inverts an
-ordinary feature: rather than PHP calling Go and waiting for a result, Go hands PHP
-a stream of incoming requests.
+ordinary feature: rather than PHP calling the extension and waiting for a result,
+the extension hands PHP a stream of incoming requests.
 
 The reference to copy is `HttpServer` (`src/Features/HttpServer/`,
-`ext-go-legacy/internal/features/httpserver/`). `SocketServer` follows the same pattern, and
+`ext/src/features/httpserver/`). `SocketServer` follows the same pattern, and
 the code shared by both is already extracted into a trait; `WsServer` is a hybrid —
 the listener and handshake from `HttpServer`, the push model of `SocketServer`
 after the upgrade.
@@ -21,32 +21,30 @@ a network layer and a serving loop on top. See also the
 
 ## Model: two `Method`s per server
 
-A server is a pair of methods, both served by one Go feature (via a `switch` on
-`Method`):
+A server is a pair of methods, both served by one feature (matched on `Method`):
 
 - `<Server>Serve` — open the listener and stream accepted requests into PHP (a
-  self-pumping stream: a Go-side goroutine publishes each request as the next
+  self-pumping stream: an extension-side runtime task publishes each request as the next
   stream result, no per-request `next()` crossing);
 - `<Server>Respond` — deliver one response record (whole, or head/chunk/end of a
   stream) from the PHP handler back to the waiting connection.
 
-Reference: `MethodHttpServe` (`hs`) + `MethodHttpRespond` (`hr`), both →
-`httpserver_feature`. Both values are mirrored in PHP `MethodEnum` and Go
-`types/method.go`, and registered in `ext-go-legacy/internal/features/factory.go` with one
-case for both:
+Reference: `HttpServe` (`hs`) + `HttpRespond` (`hr`), both → the httpserver
+feature. Both values are mirrored in PHP `MethodEnum` and Rust
+`ext/src/types/method.rs`, and registered in `ext/src/features/mod.rs` with one arm
+for both:
 
-```go
-case types.MethodHttpServe, types.MethodHttpRespond:
-    return httpserver_feature.Get(), nil
+```rust
+Method::HttpServe | Method::HttpRespond => Ok(httpserver::get()),
 ```
 
 ```mermaid
 flowchart TB
     client["client"]
-    serve["ServeHTTP goroutine (Go listener)"]
+    serve["connection task (the extension's listener)"]
     sched["Scheduler::serve (PHP)"]
     handler["handler(Request): Response"]
-    respond["handleRespond (Go)"]
+    respond["handle_respond (extension)"]
 
     client <-->|"connection / response into socket"| serve
     serve -->|"RequestEvent → requests channel → self-pumping Next() → AddResult"| sched
@@ -65,7 +63,7 @@ deadline), a server has its own:
    `stopFlow` tears down the listener and all waiting connections. **No request may
    outlive the server's stop.**
 2. A per-request limit, not only a per-server one. Each handler is bounded by
-   `handlerTimeoutMs` on the Go side (a timer in a separate goroutine, firing
+   `handlerTimeoutMs` inside the extension (a timer in a separate runtime task, firing
    independently of PHP): before the first write the client gets a `504`, after
    the stream has started the response is aborted.
 3. Graceful shutdown and orphaned workers. A server must be able to stop
@@ -84,14 +82,15 @@ cross-references). A server needs at least three:
    for `HttpServer` these are `OP_FULL`(0) / `OP_HEAD`(1) / `OP_CHUNK`(2) /
    `OP_END`(3), built by the factories `RespondPayload::full()/head()/chunk()/end()`.
    Headers are normalized to `array<string, list<string>>`.
-3. `RequestEvent` — what Go streams into PHP per request (a Go-only struct; PHP
+3. `RequestEvent` — what the extension streams into PHP per request (an
+   extension-side struct only; PHP
    decodes it straight into the handler's request object). It carries `requestId`,
    the method/path/headers, the inline first body chunk and a streaming key for the
    rest of the body (`BodyKey`).
 
-> `requestId` is the end-to-end identifier: Go generates it on accept
+> `requestId` is the end-to-end identifier: the extension generates it on accept
 > (`flowKey:r:<n>`), puts it into `RequestEvent`, PHP returns it in every
-> `RespondPayload`, and Go uses it to find the waiting connection. Make it unique
+> `RespondPayload`, and the extension uses it to find the waiting connection. Make it unique
 > within a flow.
 
 ## PHP side
@@ -161,7 +160,7 @@ of their handlers in a single wait loop (`waitAnyTimeoutBatch`) and on shutdown
 closes the flow down cleanly (`stopFlow`). This mechanic is shared and does not
 need rewriting.
 
-## Go side
+## extension side
 
 `ext-go-legacy/internal/features/<server>/feature.go` implements `contracts.FeatureContract`,
 and `Handle` dispatches on `Method` into `handleServe`/`handleRespond`. The feature
@@ -173,7 +172,7 @@ which arrives on a different flow, can find the connection) and `serverStates`
 `handleServe` parses `ServePayload`, opens the TCP listener (`listen.go`, which sets
 `SO_REUSEPORT` when asked), builds the `serverState` — it brings up a standard
 `net/http.Server` whose `http.Handler` it is, with `BaseContext` bound to the task
-context — stores it in `serverStates` and starts the self-pumping goroutine: a
+context — stores it in `serverStates` and starts the self-pumping runtime task: a
 `state.Next()` → `task.AddResult(...)` loop publishes every accepted request as the
 next stream result until the first no-next result (server stopped). The accept
 stream bypasses the `states` registry — the registry serves only the secondary
@@ -186,7 +185,8 @@ semaphore before reading the body (so a request waiting for a slot does not hold
 a body buffer), registers a `pendingRequest`, sends a `RequestEvent` into the
 buffered `requests` channel and waits for write commands from PHP, applying them
 to the socket; on `handlerTimeout` or disconnect it closes `abandoned`, so a
-late response does not hang forever, and it writes the access-log line on the Go
+late response does not hang forever, and it writes the access-log line on the
+extension
 side. `Next()` yields the next `RequestEvent` with the "more coming" flag (on
 `ctx.Done()` a final result without it, which ends the PHP loop). The listener
 is closed by `stopAccepting()` (the shutdown path calls it via the
@@ -202,7 +202,7 @@ cancellation arrives. A payload with the no-result flag (`nr`, the full write) i
 dispatched fire-and-forget instead: no result is published, and the handover does
 not select on the flow context — the coroutine may already be gone.
 
-If the body is larger than the inline first chunk, Go puts the remainder into a
+If the body is larger than the inline first chunk, the extension puts the remainder into a
 separate streaming state (`bodyState`, registered under `<requestId>:body`) and
 yields that key in `RequestEvent.BodyKey`; PHP reads the pieces via the same shared
 `next()` mechanism, with a fixed 64 KiB transport granularity. The inline
@@ -210,7 +210,7 @@ first-chunk buffer is sized by the declared `Content-Length` when that is smalle
 (a per-request allocation hot spot); chunked or unknown lengths use the full
 64 KiB.
 
-## The cgo export `StopAccepting`
+## The C export `StopAccepting`
 
 The shared exports (`push`, `next`, `stopFlow`, `waitAnyBatch`,
 `waitAnyTimeoutBatch`) are reused as they are. A server additionally needs its own
@@ -227,7 +227,7 @@ map, so another server's `httpStopAccepting` cannot be reused (cf.
 
 `StopAccepting(flowKey)` finds the `serverState` and calls its
 `stopAccepting()`, which closes only the listener (`http.Server.Shutdown` in a
-separate goroutine on a background context) without cancelling the requests
+separate runtime task on a background context) without cancelling the requests
 already accepted. In a `SO_REUSEPORT` pool the kernel immediately hands new
 connections to siblings while this process finishes its own.
 
@@ -260,7 +260,7 @@ PHP side: `ServePayload` += `telemetrySocket`/`serverName`/`telemetryIntervalMs`
 `fromArgs()` calls `self::applyTelemetryEnvironment($overrides)`, which reads the
 env the master injects when telemetry is enabled.
 
-Go side: add a workload counter implementing `stats.WorkloadProvider`
+extension side: add a workload counter implementing `stats.WorkloadProvider`
 (`requestStats` for HTTP, `connectionStats` for socket) and increment it in the
 connection/request handler; thread the three telemetry fields through
 `serverConfig`; in `newServerState` create
@@ -276,7 +276,7 @@ infrastructure reference is `tests/impl/HttpServer/TestHttpServer.php` (spawn vi
 `BaseHttpServerTestCase.php`. Cover a basic request/response, streaming,
 `maxConcurrency`, `handlerTimeoutMs` (including a natively-blocking handler),
 graceful shutdown, `SO_REUSEPORT` (two servers on one port), `maxRequests` and
-orphan self-termination. The Go listener/state logic goes into Go tests
+orphan self-termination. The listener and state logic goes into the core's unit tests
 (`ext-go-legacy/internal/features/httpserver/server_test.go`), and the end-to-end scenario
 under the master is `tests/feature/Worker/WorkerMasterTest.php`.
 
@@ -286,7 +286,7 @@ PHP:
 
 - [ ] `MethodEnum` — two values (`<Server>Serve`, `<Server>Respond`).
 - [ ] Payloads: `ServePayload`, `RespondPayload` (+ cross-references
-      `Go: payloads.<Type>`).
+      `Rust: payloads::<Type>`).
 - [ ] Request/response shape: your own `readonly` DTOs or PSR-7 outward.
 - [ ] `use ServerRuntimeSupportTrait;` —
       `parseArgs`/`installSignalHandlers`/`isOrphaned`/`logServerEvent`.
@@ -299,24 +299,24 @@ PHP:
       `self::applyTelemetryEnvironment()` in `fromArgs()`.
 - [ ] Tests from a `BaseHttpServerTestCase` analogue (a real process + `curl`).
 
-Go:
+Rust:
 
-- [ ] The same two constants in `types/method.go`.
-- [ ] Payload structs in `payloads.go` plus `RequestEvent`; mirror PHP 1:1.
-- [ ] The feature: `Handle` switch → `handleServe` (listen → `serverState` → the
-  self-pumping `Next()`/`AddResult` goroutine) and `handleRespond` (rendezvous
-  by `requestId`, waiting for the write to be applied; `nr` — fire-and-forget).
-- [ ] `serverStates`/`pendingRequests` maps; `StopAccepting(flowKey)`;
-      `SO_REUSEPORT` in `listen`.
-- [ ] `BaseContext` = the task context; `handlerTimeout`; the access log on the Go
-      side.
-- [ ] Statistics: a `stats.WorkloadProvider` counter, `stats.NewPusher` + `Start` in
-      `newServerState`, `pusher.Stop()` in `Close`.
-- [ ] Registration in `features/factory.go` (one case for both methods).
+- [ ] The same two constants in `ext/src/types/method.rs`.
+- [ ] Payload structs in `payloads.rs` plus `RequestEvent`; mirror PHP 1:1.
+- [ ] The feature: `handle` matches on the method → `handle_serve` (bind → the
+  server state → the self-pumping stream task) and `handle_respond` (hand-over by
+  `requestId`, waiting for the write to be applied; `nr` — fire-and-forget).
+- [ ] The server-state and pending-request registries; `stop_accepting(flow_key)`;
+      `SO_REUSEPORT` in the listener.
+- [ ] the flow's cancellation token honoured; `handlerTimeout`; the access log
+      written on the extension side.
+- [ ] Statistics: a workload counter, a `stats::Pusher` started with the server
+      state and dropped with it.
+- [ ] Registration in `ext/src/features/mod.rs` (one arm for both methods).
 
-cgo / protocol:
+Boundary / protocol:
 
-- [ ] `<server>StopAccepting` along the chain `main.go` → `sconcur.c` →
+- [ ] `<server>StopAccepting` along the chain `lib.rs` → `sconcur.c` →
       `sconcur.stub.php` → `Extension.php`; account for the extension version (bump
       once per branch).
 

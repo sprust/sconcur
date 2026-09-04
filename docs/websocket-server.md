@@ -2,7 +2,7 @@ English | [Русский](websocket-server.ru.md)
 
 # WebSocket server
 
-A long-lived WebSocket server: the network lives in the Go extension, and every
+A long-lived WebSocket server: the network lives in the extension, and every
 upgraded connection is streamed into PHP and handled in its own coroutine. It is a
 hybrid — the handshake and listener come from the [HTTP server](http-server.md)
 (`net/http.Server`), and after the upgrade the connection works in the push model
@@ -23,7 +23,7 @@ server has its own inbound message stream on top of `*websocket.Conn`.
 ```mermaid
 flowchart TB
     client["WS client (browser / Bruno / WsClient)"]
-    serve["ServeHTTP goroutine: websocket.Accept"]
+    serve["ServeHTTP runtime task: websocket.Accept"]
     sched["Scheduler::serve (PHP)"]
     handler["handler(Connection): void — read/write loop"]
 
@@ -97,11 +97,11 @@ $server->serve(static function (Connection $connection): void {
 
 Broadcast to other connections is not built in — the application can keep
 references to `Connection` and write to them itself (`write` is routed by `id` on
-the Go side).
+the extension).
 
 ## Parameters
 
-The `WsServer` constructor; the PHP defaults mirror Go.
+The `WsServer` constructor; the PHP defaults mirror the extension's.
 
 | Parameter | Default | Purpose |
 | --- | --- | --- |
@@ -162,7 +162,7 @@ kernel immediately hands new connections to siblings, and the process exits on
 its own.
 
 Lifecycle lines go to `STDOUT` alongside the per-connection access log written by
-the Go side:
+the extension:
 
 ```
 2026-06-28T12:00:00.000000 sconcur ws server listening on 0.0.0.0:9200 pid=12345 version=0.9.0 maxConcurrency=0 maxConnections=0 reusePort=0

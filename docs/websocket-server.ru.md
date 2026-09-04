@@ -2,7 +2,7 @@
 
 # WebSocket-сервер
 
-Долгоживущий WebSocket-сервер: сеть живёт в Go-расширении, а каждое поднятое до WS
+Долгоживущий WebSocket-сервер: сеть живёт в расширении, а каждое поднятое до WS
 соединение стримится в PHP и обрабатывается в своей корутине. Это гибрид —
 листенер и рукопожатие взяты у [HTTP-сервера](http-server.ru.md)
 (`net/http.Server`), а после апгрейда соединение работает в push-модели
@@ -22,7 +22,7 @@ ping/pong/close, валидация UTF-8 у текста), а не length-prefi
 ```mermaid
 flowchart TB
     client["WS-клиент (браузер / Bruno / WsClient)"]
-    serve["горутина ServeHTTP: websocket.Accept"]
+    serve["задача рантайма ServeHTTP: websocket.Accept"]
     sched["Scheduler::serve (PHP)"]
     handler["handler(Connection): void — цикл read/write"]
 
@@ -96,11 +96,11 @@ $server->serve(static function (Connection $connection): void {
 ```
 
 Broadcast в другие соединения не встроен — приложение может держать ссылки на
-`Connection` и писать в них само (`write` маршрутизируется по `id` на Go-стороне).
+`Connection` и писать в них само (`write` маршрутизируется по `id` на стороне расширения).
 
 ## Параметры
 
-Конструктор `WsServer`; дефолты PHP зеркалят Go.
+Конструктор `WsServer`; дефолты PHP зеркалят дефолты расширения.
 
 | Параметр | Дефолт | Назначение |
 | --- | --- | --- |
@@ -159,7 +159,7 @@ push-соединение, в которое клиент ничего не шл
 сразу отдаёт новые соединения соседям, и процесс выходит сам.
 
 Строки жизненного цикла идут в `STDOUT` рядом с access-логом на соединение,
-который пишет Go-сторона:
+который пишет Расширение:
 
 ```
 2026-06-28T12:00:00.000000 sconcur ws server listening on 0.0.0.0:9200 pid=12345 version=0.9.0 maxConcurrency=0 maxConnections=0 reusePort=0

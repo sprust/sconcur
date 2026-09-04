@@ -3,12 +3,12 @@
 # HTTP-клиент (PSR-18) со стримингом
 
 Асинхронный PSR-18 HTTP-клиент. Весь сетевой I/O (DNS, соединение, TLS, отправка
-запроса, чтение ответа) живёт в Go-расширении поверх `net/http.Client`: запрос
-уходит в горутину, корутина приостанавливается, и десятки запросов могут
+запроса, чтение ответа) живёт в расширении поверх reqwest: запрос
+уходит в задачу рантайма, корутина приостанавливается, и десятки запросов могут
 выполняться одновременно. Вне `WaitGroup` тот же API работает синхронно.
 
 Тело ответа — PSR-7 `StreamInterface` (`ResponseBodyStream`), который лениво тянет
-чанки из Go, как курсор Mongo, поэтому ответ никогда не буферизуется целиком.
+чанки из расширения, как курсор Mongo, поэтому ответ никогда не буферизуется целиком.
 
 ## Быстрый старт
 
@@ -39,20 +39,20 @@ $body   = (string) $response->getBody();     // читает поток до к�
 ```mermaid
 sequenceDiagram
     participant PHP as PHP (HttpClient)
-    participant Go as Go (httpclient)
+    participant EXT as Расширение (httpclient)
 
-    PHP->>Go: exec(RequestPayload) — открыть запрос
+    PHP->>EXT: exec(RequestPayload) — открыть запрос
     Note over PHP: Fiber::suspend() — управление планировщику
-    Note over Go: Next#1: http.Client.Do(ctx) — соединение, отправка
-    Note over Go: читаем статус + заголовки + первый чанк тела
-    Go-->>PHP: result#1 {st, hd, b: firstChunk, cl} (WithNext / Success)
+    Note over EXT: Next#1: http.Client.Do(ctx) — соединение, отправка
+    Note over EXT: читаем статус + заголовки + первый чанк тела
+    EXT-->>PHP: result#1 {st, hd, b: firstChunk, cl} (WithNext / Success)
     Note over PHP: собираем PSR-7 Response + ResponseBodyStream → return $response
 
-    PHP->>Go: next(bodyKey) — на read() / __toString()
-    Note over Go: Next#2..N: следующий чанк resp.Body
-    Go-->>PHP: result#k — сырой чанк (WithNext, последний → Success)
+    PHP->>EXT: next(bodyKey) — на read() / __toString()
+    Note over EXT: Next#2..N: следующий чанк resp.Body
+    EXT-->>PHP: result#k — сырой чанк (WithNext, последний → Success)
     Note over PHP: поток исчерпан → состояние удалено
-    Note over Go: Close(): resp.Body.Close()
+    Note over EXT: Close(): resp.Body.Close()
 ```
 
 `sendRequest()` внутри корутины приостанавливает её, не блокируя другие запросы;
@@ -87,7 +87,7 @@ Fiber прозрачна для вызывающего — он получает
 байт — сначала inline-чанк первого результата, затем остаток через
 `next($bodyKey)`, который приостанавливает корутину, поэтому медленный сервер не
 блокирует другие запросы. `getSize()` — это `Content-Length`, если он известен (не
-chunked), иначе `null`; `close()`/`detach()`/`__destruct()` освобождают Go-флоу при
+chunked), иначе `null`; `close()`/`detach()`/`__destruct()` освобождают флоу при
 раннем отказе от тела.
 
 ```php
@@ -106,7 +106,7 @@ while (!$stream->eof()) {
 идёт кусками по round-trip'у.
 
 > Тело лучше читать в той же корутине, что и `sendRequest`: когда корутина
-> завершается, её флоу останавливается и недочитанный поток на Go-стороне
+> завершается, её флоу останавливается и недочитанный поток на стороне расширения
 > закрывается. Небольшие ответы (≤ 64 KiB) приходят inline с первым результатом и
 > доступны после `waitResults()` без оговорок.
 
@@ -114,8 +114,8 @@ while (!$stream->eof()) {
 
 По умолчанию тело запроса читается целиком и уходит в payload. Для крупных тел
 включите `streamRequestBody: true`: тело отправляется кусками по `chunkSize` PHP
-→ Go и пишется в `io.Pipe`, переданный как `req.Body`: темп записи задаёт
-Go-сторона, и тело нигде не буферизуется целиком.
+→ расширение и пишется в исходящее тело: темп записи задаёт
+Расширение, и тело нигде не буферизуется целиком.
 
 ```php
 $client = new HttpClient($factory, new HttpClientOptions(streamRequestBody: true));
@@ -132,11 +132,11 @@ $response = $client->sendRequest(
 ## Параметры и таймауты
 
 `SConcur\Features\HttpClient\HttpClientOptions` (`readonly`), все таймауты в мс;
-дефолты PHP зеркалят Go.
+дефолты PHP зеркалят транспортные.
 
 | Параметр | Дефолт | Назначение |
 |---|---|---|
-| `requestTimeoutMs` | `30000` | Полный дедлайн запроса (соединение + отправка + чтение всего тела), жёсткий лимит контекста на Go-стороне. `0` — выкл. (не рекомендуется). |
+| `requestTimeoutMs` | `30000` | Полный дедлайн запроса (соединение + отправка + чтение всего тела), жёсткий лимит контекста на стороне расширения. `0` — выкл. (не рекомендуется). |
 | `connectTimeoutMs` | `10000` | Предел установления TCP/TLS-соединения (`net.Dialer.Timeout`). |
 | `responseHeaderTimeoutMs` | `15000` | Предел ожидания статуса и заголовков. |
 | `maxResponseBody` | `0` (без лимита) | Кап тела ответа в байтах; превышение → ошибка чтения потока. **Внимание:** `0` — без лимита, следите за OOM. |
@@ -160,7 +160,7 @@ $client = new HttpClient($factory, new HttpClientOptions(
 ));
 ```
 
-Пул соединений и keep-alive: Go-сторона держит переиспользуемые
+Пул соединений и keep-alive: Расширение держит переиспользуемые
 `http.Transport`ы — по одному на различающийся набор транспортных опций
 (`connectTimeout`/`responseHeaderTimeout`/`verifyTls` плюс параметры пула),
 поэтому keep-alive работает между запросами внутри процесса. Простаивающие
@@ -168,7 +168,7 @@ $client = new HttpClient($factory, new HttpClientOptions(
 
 ## Скачивание в файл
 
-`download()` пишет тело ответа прямо в файл на Go-стороне (`io.CopyBuffer`
+`download()` пишет тело ответа прямо в файл на стороне расширения (`io.CopyBuffer`
 внутри расширения) — байты вообще не переходят в PHP. Память постоянна при любом
 размере, round-trip'ов на чанк нет, а внутри `WaitGroup` несколько скачиваний
 идут одновременно.
@@ -215,7 +215,7 @@ $result->executionMs;         // время скачивания
 | Прочая ошибка клиента | `Exceptions\HttpClient\HttpClientException` | `ClientExceptionInterface` |
 
 `NetworkException`/`RequestException` несут `getRequest(): RequestInterface`.
-Go-сторона помечает класс ошибки префиксом (`net: `/`req: `) в payload, а PHP
+Расширение помечает класс ошибки префиксом (`net: `/`req: `) в payload, а PHP
 раскладывает его по всей цепочке `getPrevious()` в нужный класс.
 
 ```php
@@ -233,9 +233,9 @@ PHP (`src/Features/HttpClient/`): `HttpClient` собирает `RequestPayload`
 результата, строит ответ и подвешивает `ResponseBodyStream`; здесь же `download()`.
 Рядом — `HttpClientOptions`, `DownloadFileMode`, `HttpClientCommandEnum`
 (под-операции конверта `Request`/`UploadChunk`/`UploadEnd`), `Payloads/*` (зеркала
-Go-структур), `Dto/ResponseBodyStream` и `Dto/DownloadResult`.
+структур расширения), `Dto/ResponseBodyStream` и `Dto/DownloadResult`.
 
-Go (`ext-go-legacy/internal/features/httpclient/`): `feature.go` собирает `*http.Request`,
+Rust (`ext/src/features/httpclient/`): `mod.rs` собирает запрос,
 применяет `context.WithTimeout`, запускает состояние и маршрутизирует команды;
 `response_state.go` — стриминговое состояние (первый `Next()` выполняет запрос и
 возвращает метаданные плюс первый чанк, дальше идут сырые чанки тела, `Close()`
@@ -255,7 +255,7 @@ PSR-7 middleware), прокси и собственный CA-бандл (поз�
 PHP feature-тесты лежат в `tests/feature/Features/HttpClient/` — edge-случаи,
 скачивание в файл и контракт конкурентности на `BaseAsyncTestCase`, причём
 запросы идут в реальный HTTP-сервер SConcur, поднятый через `TestHttpServer`.
-Go-тесты работают против `httptest.Server` и покрывают метаданные первого
+Собственные тесты ядра покрывают метаданные первого
 результата, стриминг тела, лимит `maxResponseBody`, классификацию ошибок, сборку
 запроса и скачивание. Бенчмарк (`make bench-http-client c=20`) шлёт N запросов к
 `/msleep`: одновременный async против последовательных native/sync.

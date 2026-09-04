@@ -3,9 +3,9 @@
 # Как добавить новый сервер
 
 Сервер — это особый вид фичи: долгоживущий сетевой листенер, который живёт в
-Go-расширении, принимает входящие соединения и стримит каждое событие в PHP, а тот
+расширении, принимает входящие соединения и стримит каждое событие в PHP, а тот
 обрабатывает его в отдельной корутине и отправляет ответ обратно. Это инверсия
-обычной фичи: не PHP зовёт Go и ждёт результат, а Go отдаёт PHP поток входящих
+обычной фичи: не PHP зовёт расширение и ждёт результат, а расширение отдаёт PHP поток входящих
 запросов.
 
 Образец для копирования — `HttpServer` (`src/Features/HttpServer/`,
@@ -20,32 +20,31 @@ Go-расширении, принимает входящие соединени�
 
 ## Модель: два `Method` на сервер
 
-Сервер — это пара методов, которые обслуживает одна Go-фича (через `switch` по
+Сервер — это пара методов, которые обслуживает одна фича (по совпадению с
 `Method`):
 
 - `<Server>Serve` — поднять листенер и стримить принятые запросы в PHP
-  (самокачающийся поток: горутина на Go-стороне публикует каждый запрос очередным
+  (самокачающийся поток: задача рантайма на стороне расширения публикует каждый запрос очередным
   результатом стрима, без `next()`-перехода на запрос);
 - `<Server>Respond` — доставить одну запись ответа (целиком либо head/chunk/end
   стрима) из PHP-обработчика обратно в ждущее соединение.
 
 Образец: `MethodHttpServe` (`hs`) + `MethodHttpRespond` (`hr`), оба →
-`httpserver_feature`. Оба значения зеркалятся в PHP `MethodEnum` и Go
+фичу httpserver. Оба значения зеркалятся в PHP `MethodEnum` и Rust
 `types/method.go` и регистрируются в `ext-go-legacy/internal/features/factory.go` одним case
 на оба:
 
-```go
-case types.MethodHttpServe, types.MethodHttpRespond:
-    return httpserver_feature.Get(), nil
+```rust
+Method::HttpServe | Method::HttpRespond => Ok(httpserver::get()),
 ```
 
 ```mermaid
 flowchart TB
     client["клиент"]
-    serve["горутина ServeHTTP (листенер Go)"]
+    serve["задача соединения (листенер расширения)"]
     sched["Scheduler::serve (PHP)"]
     handler["handler(Request): Response"]
-    respond["handleRespond (Go)"]
+    respond["handle_respond (расширение)"]
 
     client <-->|"соединение / ответ в сокет"| serve
     serve -->|"RequestEvent → канал requests → самокачающийся Next() → AddResult"| sched
@@ -64,7 +63,7 @@ flowchart TB
    сносит листенер и все ждущие соединения. **Ни один запрос не должен пережить
    остановку сервера.**
 2. Лимит на запрос, а не только на сервер. Каждый обработчик ограничен
-   `handlerTimeoutMs` на Go-стороне (таймер в отдельной горутине, срабатывает
+   `handlerTimeoutMs` на стороне расширения (таймер в отдельной задаче рантайма, срабатывает
    независимо от PHP): до первой записи клиент получает `504`, после начала
    стрима ответ обрывается.
 3. Graceful shutdown и осиротевшие воркеры. Сервер обязан уметь перестать
@@ -83,14 +82,14 @@ flowchart TB
    `HttpServer` это `OP_FULL`(0) / `OP_HEAD`(1) / `OP_CHUNK`(2) / `OP_END`(3),
    которые строят фабрики `RespondPayload::full()/head()/chunk()/end()`. Заголовки
    нормализуются к `array<string, list<string>>`.
-3. `RequestEvent` — то, что Go стримит в PHP на каждый запрос (структура только на
-   Go; PHP декодирует её прямо в объект запроса обработчика). Она несёт
+3. `RequestEvent` — то, что расширение стримит в PHP на каждый запрос (структура
+   только на его стороне; PHP декодирует её прямо в объект запроса обработчика). Она несёт
    `requestId`, метод/путь/заголовки, inline-первый чанк тела и ключ потока для
    остатка тела (`BodyKey`).
 
-> `requestId` — сквозной идентификатор: Go генерирует его при приёме
+> `requestId` — сквозной идентификатор: расширение генерирует его при приёме
 > (`flowKey:r:<n>`), кладёт в `RequestEvent`, PHP возвращает его в каждом
-> `RespondPayload`, и Go по нему находит ждущее соединение. Он должен быть
+> `RespondPayload`, и расширение по нему находит ждущее соединение. Он должен быть
 > уникален внутри флоу.
 
 ## Сторона PHP
@@ -161,7 +160,7 @@ flowchart TB
 обработчиков в одном цикле ожидания (`waitAnyTimeoutBatch`), а при остановке
 штатно гасит флоу (`stopFlow`). Эта механика общая и переписывать её не нужно.
 
-## Сторона Go
+## Сторона расширения
 
 `ext-go-legacy/internal/features/<server>/feature.go` реализует `contracts.FeatureContract`,
 а `Handle` диспетчеризует по `Method` в `handleServe`/`handleRespond`. Фича —
@@ -174,7 +173,7 @@ flowchart TB
 при необходимости выставляет `SO_REUSEPORT`), строит `serverState` — он поднимает
 стандартный `net/http.Server`, чьим `http.Handler` и является, с `BaseContext`,
 привязанным к контексту задачи, — кладёт его в `serverStates` и запускает
-самокачающуюся горутину: цикл `state.Next()` → `task.AddResult(...)` публикует
+самокачающуюся задачу рантайма: цикл `state.Next()` → `task.AddResult(...)` публикует
 каждый принятый запрос очередным результатом стрима до первого результата без
 продолжения (сервер остановлен). Accept-стрим обходит реестр `states` — реестр
 обслуживает только вторичные стримы (тело запроса, входящие потоки сообщений).
@@ -186,7 +185,7 @@ Backpressure слоями: `AddResult` блокируется на общем б
 регистрирует `pendingRequest`, отправляет `RequestEvent` в буферизованный канал
 `requests` и ждёт команды записи от PHP, применяя их к сокету; по
 `handlerTimeout` или обрыву он закрывает `abandoned`, чтобы запоздавший ответ не
-висел вечно, и сам же пишет строку access-лога на Go-стороне. `Next()` отдаёт
+висел вечно, и сам же пишет строку access-лога на стороне расширения. `Next()` отдаёт
 следующий `RequestEvent` с флагом «будет продолжение» (по `ctx.Done()` —
 финальный результат без флага, завершающий PHP-цикл). Листенер закрывает
 `stopAccepting()` (остановка зовёт его через экспорт `StopAccepting`), а отмена
@@ -202,14 +201,14 @@ Backpressure слоями: `AddResult` блокируется на общем б
 запись) диспетчеризуется fire-and-forget: результат не публикуется, а передача не
 слушает контекст флоу — корутины может уже не быть.
 
-Если тело больше inline-первого чанка, Go кладёт остаток в отдельное стриминговое
+Если тело больше inline-первого чанка, расширение кладёт остаток в отдельное стриминговое
 состояние (`bodyState`, регистрируется под ключом `<requestId>:body`) и отдаёт этот
 ключ в `RequestEvent.BodyKey`; PHP читает куски тем же общим механизмом `next()` с
 фиксированной гранулярностью 64 KiB. Буфер inline-первого чанка сайзится по
 объявленному `Content-Length`, когда тот меньше (горячая точка аллокаций на
 запрос); chunked и неизвестная длина используют полные 64 KiB.
 
-## cgo-экспорт `StopAccepting`
+## C-экспорт `StopAccepting`
 
 Общие экспорты (`push`, `next`, `stopFlow`, `waitAnyBatch`, `waitAnyTimeoutBatch`)
 переиспользуются как есть. Дополнительно серверу нужен собственный экспорт для
@@ -225,7 +224,7 @@ Backpressure слоями: `AddResult` блокируется на общем б
 - `src/Connection/Extension.php` — `use function` плюс PHP-обёртка.
 
 `StopAccepting(flowKey)` находит `serverState` и вызывает его `stopAccepting()`,
-который закрывает только листенер (`http.Server.Shutdown` в отдельной горутине
+который закрывает только листенер (`http.Server.Shutdown` в отдельной задаче рантайма
 на фоновом контексте), не отменяя активные запросы. В пуле `SO_REUSEPORT` ядро
 сразу отдаёт новые соединения соседям, пока этот процесс дорабатывает свои.
 
@@ -258,7 +257,7 @@ Backpressure слоями: `AddResult` блокируется на общем б
 `self::applyTelemetryEnvironment($overrides)`, который читает env, инжектируемый
 мастером при включённой телеметрии.
 
-Сторона Go: добавьте счётчик нагрузки, реализующий `stats.WorkloadProvider`
+Сторона расширения: добавьте счётчик нагрузки
 (`requestStats` у HTTP, `connectionStats` у сокета), и инкрементируйте его в
 обработчике соединения/запроса; прокиньте три поля телеметрии через
 `serverConfig`; в `newServerState` создайте
@@ -274,7 +273,7 @@ Backpressure слоями: `AddResult` блокируется на общем б
 `BaseHttpServerTestCase.php`. Покройте базовый запрос-ответ, стриминг,
 `maxConcurrency`, `handlerTimeoutMs` (включая нативно-блокирующий обработчик),
 graceful shutdown, `SO_REUSEPORT` (два сервера на одном порту), `maxRequests` и
-самозавершение сироты. Go-логика листенера и состояния уходит в Go-тесты
+самозавершение сироты. Логика листенера и состояния уходит в юнит-тесты ядра
 (`ext-go-legacy/internal/features/httpserver/server_test.go`), а сквозной сценарий под
 мастером — `tests/feature/Worker/WorkerMasterTest.php`.
 
@@ -284,7 +283,7 @@ PHP:
 
 - [ ] `MethodEnum` — два значения (`<Server>Serve`, `<Server>Respond`).
 - [ ] Payload'ы: `ServePayload`, `RespondPayload` (+ перекрёстные ссылки
-      `Go: payloads.<Type>`).
+      `Rust: payloads::<Type>`).
 - [ ] Форма запроса и ответа: свои `readonly` DTO либо PSR-7 наружу.
 - [ ] `use ServerRuntimeSupportTrait;` —
       `parseArgs`/`installSignalHandlers`/`isOrphaned`/`logServerEvent`.
@@ -297,23 +296,24 @@ PHP:
       `self::applyTelemetryEnvironment()` в `fromArgs()`.
 - [ ] Тесты по аналогу `BaseHttpServerTestCase` (реальный процесс + `curl`).
 
-Go:
+Rust:
 
-- [ ] Те же две константы в `types/method.go`.
-- [ ] Структуры payload'ов в `payloads.go` плюс `RequestEvent`; зеркальны PHP 1:1.
-- [ ] Фича: switch в `Handle` → `handleServe` (listen → `serverState` →
-  самокачающаяся горутина `Next()`/`AddResult`) и `handleRespond` (рандеву по
-  `requestId` с ожиданием применения записи; `nr` — fire-and-forget).
-- [ ] Карты `serverStates`/`pendingRequests`; `StopAccepting(flowKey)`;
-      `SO_REUSEPORT` в `listen`.
-- [ ] `BaseContext` = контекст задачи; `handlerTimeout`; access-лог на Go-стороне.
-- [ ] Статистика: счётчик `stats.WorkloadProvider`, `stats.NewPusher` + `Start` в
-      `newServerState`, `pusher.Stop()` в `Close`.
-- [ ] Регистрация в `features/factory.go` (один case на оба метода).
+- [ ] Те же две константы в `ext/src/types/method.rs`.
+- [ ] Структуры payload'ов в `payloads.rs` плюс `RequestEvent`; зеркальны PHP 1:1.
+- [ ] Фича: `handle` разбирает метод → `handle_serve` (bind → состояние сервера →
+  самокачающаяся задача-поток) и `handle_respond` (передача по `requestId` с
+  ожиданием применения записи; `nr` — fire-and-forget).
+- [ ] Реестры состояний серверов и ждущих запросов; `stop_accepting(flow_key)`;
+      `SO_REUSEPORT` в листенере.
+- [ ] Токен отмены флоу учитывается; `handlerTimeout`; access-лог на стороне
+      расширения.
+- [ ] Статистика: счётчик нагрузки, `stats::Pusher`, запускаемый вместе с
+      состоянием сервера и умирающий вместе с ним.
+- [ ] Регистрация в `ext/src/features/mod.rs` (одна ветка на оба метода).
 
-cgo / протокол:
+Граница / протокол:
 
-- [ ] `<server>StopAccepting` по цепочке `main.go` → `sconcur.c` →
+- [ ] `<server>StopAccepting` по цепочке `lib.rs` → `sconcur.c` →
       `sconcur.stub.php` → `Extension.php`; учесть версию расширения (бамп раз на
       ветку).
 

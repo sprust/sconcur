@@ -68,7 +68,7 @@ of which the cost of the `/all` feature calls is added.
 | Worker RSS (sum of 12) | ~590 MiB (flat) | ~660 MiB |
 
 Three runs held ~133k req/sec with 0 errors. The ~44× gap is the price of the
-feature calls: `/all` crosses the PHP↔Go boundary for three feature blocks at
+feature calls: `/all` crosses the PHP↔extension boundary for three feature blocks at
 once and pays the fsync of 3 disk writes per request. Throughput hits exactly
 that, not the cheap DB read. The empty endpoint has none of it and is CPU-bound
 at ~1200 %.
@@ -148,15 +148,15 @@ Single connection (1 server / 1 wrk thread / 1 connection / 5 s):
 
 1. Memory is stable — the main result. ~50 MiB RSS per worker, and a 10-minute
    soak (1.74M requests) held RSS flat at +0.11 MiB/min (= noise). For a
-   long-lived server this is the key signal: the Go runtime + PHP fibers +
-   connection pools + PHP↔Go boundary pairing accumulates nothing. Consistent
+   long-lived server this is the key signal: the extension's runtime + PHP fibers +
+   connection pools + PHP↔extension boundary pairing accumulates nothing. Consistent
    with `MemLeakTest`.
 2. Robustness: saturation with three concurrent feature blocks per request → 0
    errors, p99 ≈ 130 ms under sustained soak load.
 3. On disk backends the bottleneck is fsync, not CPU. The servers draw ~7–8 of 12
    cores versus ~0.5–1.5 on each DB — the ~2.7k rps ceiling is set by the 3 disk
    commits per request plus the framework overhead (msgpack, fiber
-   spawn/scheduling, 3× PHP↔Go crossing), not by the `SELECT 1`/`findOne` reads.
+   spawn/scheduling, 3× boundary crossing), not by the `SELECT 1`/`findOne` reads.
 
 Caveats: the runs are synthetic and on a laptop (a consumer CPU understates core
 scaling); trivial queries understate the point of SConcur — the I/O-bound scenario
@@ -167,7 +167,7 @@ certainty about leaks in production a multi-hour soak is the answer
 ## WebSocket server under load
 
 Same load + resources pairing, but `wrk` is HTTP-only, so the generator is
-`ext-go-legacy/cmd/ws-load` (Go, on `coder/websocket`) — the WS analogue of `wrk`: it holds N
+`ext-go-legacy/cmd/ws-load` (a Go tool kept beside the legacy core) — the WS analogue of `wrk`: it holds N
 persistent connections, runs back-to-back round-trips and prints throughput and
 p50/p90/p99.
 

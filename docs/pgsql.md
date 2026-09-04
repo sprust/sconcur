@@ -2,7 +2,7 @@ English | [Русский](pgsql.ru.md)
 
 # PostgreSQL (on top of the universal SQL feature)
 
-PgSQL is the second driver of the same SQL feature on Go `database/sql` (the
+PgSQL is the second driver of the same SQL feature on sqlx (the
 `jackc/pgx` driver). The core (`SConcur\Features\Sql`) is shared with MySQL, and
 `SConcur\Features\Pgsql\Connection` is a thin facade that sets the driver.
 Streaming, pool, transactions and concurrency behave identically — see

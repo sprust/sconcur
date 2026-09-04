@@ -2,7 +2,7 @@ English | [Русский](socket-server.ru.md)
 
 # Socket server (TCP)
 
-A long-lived TCP server: the network lives in the Go extension, each accepted
+A long-lived TCP server: the network lives in the extension, each accepted
 connection is streamed into PHP and handled in its own coroutine. The model is
 push — the handler receives a connection object and drives the dialogue itself,
 reading inbound frames and pushing frames to the client at any time, rather than
@@ -75,12 +75,12 @@ $server->serve(static function (Connection $connection): void {
 
 Push to other connections (broadcast, chat, pub-sub) is not built in — the
 application can keep references to `Connection` and write to them itself
-(`write` is routed by `id` on the Go side through the global `pendingConnections`
+(`write` is routed by `id` inside the extension through the global `pendingConnections`
 map).
 
 ## Parameters
 
-The `SocketServer` constructor; the PHP defaults mirror Go.
+The `SocketServer` constructor; the PHP defaults mirror the extension's.
 
 | Parameter | Default | Purpose |
 | --- | --- | --- |
@@ -149,7 +149,7 @@ connections to siblings, and the process exits on its own. `reusePort: true` —
 several processes on one port, one per core — is the basis for scaling under the
 worker master.
 
-Lifecycle lines go to `STDOUT`, alongside the per-connection access log that the Go
+Lifecycle lines go to `STDOUT`, alongside the per-connection access log that the extension
 side writes when each connection closes:
 
 ```

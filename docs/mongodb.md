@@ -2,12 +2,12 @@ English | [Русский](mongodb.ru.md)
 
 # MongoDB
 
-Asynchronous MongoDB on top of the official Go driver. Each operation goes into the
-Go extension and runs in a goroutine while the coroutine is suspended; inside a
+Asynchronous MongoDB on top of the official Rust driver. Each operation goes into the
+extension and runs in a runtime task while the coroutine is suspended; inside a
 `WaitGroup` operations run in parallel and the total time is bounded by the slowest
 one. Outside a `WaitGroup` the same API works synchronously.
 
-Documents are exchanged with the Go side as MessagePack, which PHP already speaks
+Documents are exchanged with the extension as MessagePack, which PHP already speaks
 through `ext-msgpack`. BSON values that MessagePack has no equivalent for arrive as
 `SConcur\Bson\*` objects (`ObjectId`, `UTCDateTime`, `Decimal128`, …); documents
 and arrays arrive as plain PHP arrays.
@@ -50,10 +50,10 @@ $collection = $database->selectCollection('users');
 | `Client` parameter | Default | Purpose |
 |---|---|---|
 | `uri` | — | MongoDB connection string |
-| `timeoutMs` | 30000 | operation deadline; Go applies it as the driver's CSOT (`SetTimeout`), exceeding it gives an error like `mongodb: … deadline exceeded` |
+| `timeoutMs` | 30000 | operation deadline, applied as the driver's client-side timeout; exceeding it gives an error like `mongodb: … deadline exceeded` |
 | `serverSelectionTimeoutMs` | 10000 | how long to wait for an available server (`SetServerSelectionTimeout`), so an unreachable MongoDB fails fast instead of hanging on the driver default of 30 s |
 
-Clients are reused on the Go side by the key
+Clients are reused inside the extension by the key
 `uri + timeoutMs + serverSelectionTimeoutMs`, so creating a `Client` per request is
 cheap.
 
@@ -233,7 +233,7 @@ and `selectDatabase()`.
 ## Cursors and streaming
 
 `find()` and `aggregate()` return an `Iterator` that lazily pulls the next batches
-from Go (by `batchSize`), so a large result set is not buffered whole either in the
+from the extension (by `batchSize`), so a large result set is not buffered whole either in the
 extension or in PHP:
 
 ```php
@@ -244,7 +244,7 @@ foreach ($collection->find(['active' => true], batchSize: 100) as $document) {
 }
 ```
 
-An early `break`, an exception, or a `WaitGroup` stop closes the cursor on the Go
+An early `break`, an exception, or a `WaitGroup` stop closes the cursor on the extension
 side (`cursor.Close` → `killCursors`). Each cursor in concurrent flows is
 independent.
 
@@ -276,13 +276,13 @@ driver still wins) is in the [benchmarks](benchmarks.md#mongodb).
 
 ## Internals
 
-- All operations are run by `go.mongodb.org/mongo-driver/v2` in a goroutine: the
+- All operations are run by `go.mongodb.org/mongo-driver/v2` in a runtime task: the
   blocking driver is used as-is, concurrency comes from the runtime.
 - Client pool (`ext-go-legacy/internal/features/mongodb/connection`) — a `*mongo.Client`
   per key `uri + timeoutMs + serverSelectionTimeoutMs`, with refcounting and
   eviction of idle clients (TTL 5 minutes, checked once a minute). A client with
   operations still running is not disconnected.
-- Cursors (`states/find_state`, `states/aggregation_state`) — Go holds the cursor
+- Cursors (`states/find_state`, `states/aggregation_state`) — the extension holds the cursor
   as state and hands out batches on a `next` request; it is closed on exhaustion,
   early exit, or a flow stop. Closing runs on a fresh context, because the task
   context may already be cancelled by then.
@@ -315,6 +315,6 @@ and how to add a type and test it.
 
 The BSON side of it is the type table in
 [Documents and BSON types](#documents-and-bson-types): adding a type means a class in
-`src/Bson/` mirroring its `MongoDB\BSON\*` counterpart, a `case` in the Go encoder
-and one in the Go decoder, plus a value in `TestRoundTripsEveryBSONType` and a pair in
+`src/Bson/` mirroring its `MongoDB\BSON\*` counterpart, an arm in the encoder and
+one in the decoder, plus a value in `TestRoundTripsEveryBSONType` and a pair in
 `BsonDriverParityTest`.

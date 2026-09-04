@@ -2,8 +2,8 @@ English | [Русский](mysql.ru.md)
 
 # MySQL (universal SQL feature)
 
-Asynchronous work with a relational database on top of Go `database/sql`. Every
-query goes into the Go extension and runs in a goroutine while the coroutine is
+Asynchronous work with a relational database on top of sqlx. Every
+query goes into the extension and runs in a runtime task while the coroutine is
 suspended, so dozens of queries proceed in parallel. Outside a `WaitGroup` the same
 API works synchronously.
 
@@ -69,12 +69,13 @@ try {
 ```
 
 `begin(int $isolationLevel = 0, bool $readOnly = false)` takes an isolation level
-(Go `sql.IsolationLevel` values; `0` — the driver's default) and a read-only flag.
+(the `sql.IsolationLevel` values the API was first written against; `0` — the
+server's default) and a read-only flag.
 On MySQL the isolation level is refused — see [Limits](#limits). `Transaction` has
 the same `query`/`fetchAll`/`exec` as the connection.
 
 If a transaction is abandoned without `commit()`/`rollback()` (an exception, an
-early exit, a `WaitGroup` stop), the Go side rolls it back automatically: the
+early exit, a `WaitGroup` stop), the extension rolls it back automatically: the
 transaction is bound to the begin task's context, which is cancelled when the flow
 stops. On the synchronous path the `Transaction` destructor additionally releases
 the held flow. Within one `WaitGroup` each coroutine holds its own transaction on
@@ -98,12 +99,12 @@ until commit/rollback or a flow stop.
 
 ## Connection pool and concurrency
 
-Every operation runs on a connection from a `*sql.DB` pool that lives in the Go
+Every operation runs on a connection from a pool that lives in the
 extension and is reused across tasks and coroutines. The pool is shared by all
 `Connection`s with the same DSN and pool sizes (the key is `driver+dsn+sizes`);
 an unused pool untouched for longer than 5 minutes is closed, and all pools are
 closed when the extension stops. If `maxIdleConns` is not set, the
-`maxOpenConns` value is used — otherwise Go keeps only 2 idle, the pool
+`maxOpenConns` value is used — otherwise a small idle floor lets the pool
 collapses after each batch of concurrent queries, and the next batch pays for
 the handshakes again.
 

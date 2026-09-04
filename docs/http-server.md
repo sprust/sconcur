@@ -3,9 +3,9 @@ English | [Русский](http-server.ru.md)
 # HTTP server
 
 A long-lived PHP daemon that accepts HTTP requests and handles each one in its own
-coroutine (Fiber), concurrently with the rest. The network I/O lives in the Go
+coroutine (Fiber), concurrently with the rest. The network I/O lives in the
 extension; PHP stays a thin orchestration layer. Implementation:
-`src/Features/HttpServer/` (PHP) and `ext-go-legacy/internal/features/httpserver/` (Go).
+`src/Features/HttpServer/` (PHP) and `ext/src/features/httpserver/` (Rust).
 
 > ⚠️ Read [What's missing compared to typical servers](#whats-missing-compared-to-typical-servers)
 > first — the model is cooperative and single-threaded, which constrains handler code.
@@ -33,7 +33,7 @@ extension; PHP stays a thin orchestration layer. Implementation:
 ## Model
 
 The network stack (accepting connections, HTTP parsing, keep-alive, timeouts,
-writing the response) runs in Go on a standard `net/http.Server`. Each accepted
+writing the response) runs inside the extension, on hyper. Each accepted
 request becomes an ordinary result and reaches PHP through the same shared result
 channel as every other task, so the server reuses the existing `Scheduler` and
 introduces no second event loop.
@@ -51,14 +51,14 @@ the handler, and let `maxRequests` recycle the process.
 ```mermaid
 flowchart TB
     Client["client"]
-    Go["Go (net/http.Server)"]
+    EXT["Extension (hyper)"]
     Sched["PHP Scheduler::serve()"]
     Handler["spawn(coroutine) — your handler"]
 
-    Client <-->|"request / response"| Go
-    Go -->|"request event"| Sched
+    Client <-->|"request / response"| EXT
+    EXT -->|"request event"| Sched
     Sched -->|"spawn"| Handler
-    Handler -->|"returns ResponseInterface"| Go
+    Handler -->|"returns ResponseInterface"| EXT
 ```
 
 The handler contract is PSR-7: in `ServerRequestInterface`, out
@@ -109,7 +109,7 @@ HTTP client) do not block other requests.
 ## Server parameters
 
 The `HttpServer` constructor (`src/Features/HttpServer/HttpServer.php`). All
-timeouts are in milliseconds; the PHP defaults mirror the Go ones.
+timeouts are in milliseconds.
 
 | Parameter | Default | Purpose |
 |---|---|---|
@@ -120,7 +120,7 @@ timeouts are in milliseconds; the PHP defaults mirror the Go ones.
 | `readTimeoutMs` | `30000` | Deadline for reading the whole request (`ReadTimeout`). |
 | `writeTimeoutMs` | `30000` | Deadline for writing the response (`WriteTimeout`). |
 | `idleTimeoutMs` | `60000` | Idle deadline for a keep-alive connection (`IdleTimeout`). |
-| `shutdownTimeoutMs` | `10000` | How long Go waits for the active connections to finish at shutdown. |
+| `shutdownTimeoutMs` | `10000` | How long the extension waits for the active connections to finish at shutdown. |
 | `maxRequestBody` | `10485760` (10 MiB) | Request body limit; exceeding it → `413`. |
 | `maxConcurrency` | `0` (no limit) | Requests handled at once, see [limits](#concurrency-and-limits). |
 | `handlerTimeoutMs` | `60000` | Max total handling time including streaming, otherwise `504`/abort. `0` — off. |
@@ -134,7 +134,7 @@ timeouts are in milliseconds; the PHP defaults mirror the Go ones.
 | `preemptionQuantumMs` | `5` | Automatic-preemption quantum while serving; `0` — off. See [coroutine switching](coroutine-switching.md). |
 
 `0` means "off" for `maxConcurrency`/`handlerTimeoutMs`/`maxRequests`, and "take
-the Go default" for the other timeouts.
+the default" for the other timeouts.
 
 `HttpServer::fromArgs()` assembles the server from `argv`: every `--name=value` is
 matched to the constructor's scalar parameter of the same name (type-checked), an
@@ -151,7 +151,7 @@ $server = HttpServer::fromArgs(
 
 ## Request and response (PSR-7)
 
-The handler receives an ordinary `ServerRequestInterface` assembled from the Go
+The handler receives an ordinary `ServerRequestInterface` assembled from the
 event by your factory:
 
 | What you need | PSR-7 method |
@@ -208,7 +208,7 @@ return $factory->createResponse(200)
 
 - A body of known size goes out in a single write; `getSize() === null` means a
   stream, see below.
-- Without `Content-Type` Go detects it from the body (`http.DetectContentType`).
+- Without `Content-Type` the extension does not guess one.
 - 204/304 responses have their body discarded by `net/http`.
 - Returning a non-`ResponseInterface` is a contract error
   (`InvalidHandlerResponseException`): the client gets `500`, `onError` is called.
@@ -236,7 +236,7 @@ return $factory->createResponse(200)
     ->withBody(new GeneratorStream($chunks));
 ```
 
-- The client sets the pace: each chunk is acknowledged only after Go has written
+- The client sets the pace: each chunk is acknowledged only after the extension has written
   and flushed it, so a fast producer cannot outrun a slow client.
 - No `Content-Length` — a header without length, then chunked transfer encoding.
 - The status cannot change after the first chunk (headers are on the wire), so an
@@ -302,10 +302,11 @@ overflow, a dropped connection):
 
 The time is the moment the request was accepted; the last field is the total
 handling time (for a stream — its whole duration). The line is formatted by the
-same Go goroutine that writes the response, so the log costs no PHP↔Go crossing
+same runtime task that writes the response, so the log costs no crossing
 per request (that crossing is the most expensive part of a tiny request — moving
-the log to Go nearly doubles the throughput of one core on hello-world). Output
-is asynchronous: a background goroutine writes from a buffer with a ~100 ms
+moving the log out of PHP nearly doubles the throughput of one core on
+hello-world). Output
+is asynchronous: a background runtime task writes from a buffer with a ~100 ms
 timer flush; on overflow the extra lines are discarded and counted. The method
 and path are escaped (control bytes, including `CR`/`LF` from a URL-encoded
 path, become `\xNN`), so a request cannot forge a second log line.
@@ -337,8 +338,8 @@ current one suspends on an SConcur feature (`Fiber::suspend()`).
 > delays neighbours by at most the quantum — but a single monolithic internal call
 > (a huge `preg_match`, `json_decode`) is still not interruptible.
 
-`maxConcurrency` limits requests handled at once. It is a semaphore in Go
-acquired before the body is read, so it bounds goroutines, memory (bodies are
+`maxConcurrency` limits requests handled at once. It is a semaphore in the extension
+acquired before the body is read, so it bounds runtime tasks, memory (bodies are
 read only for requests that got a slot) and PHP coroutines at once. Excess
 connections wait for a free slot, so the load throttles itself. `0` is a risk of
 OOM under a flood of large bodies; set a limit on public servers.
@@ -354,7 +355,7 @@ settings are covered in
 `handlerTimeoutMs` bounds the total handling time, streamed response included, and
 it bounds two things at once.
 
-The client is answered by the Go side: a timer in `consumeCommands` sends `504` when
+The client is answered by the extension: a timer in `consumeCommands` sends `504` when
 nothing has been written by the deadline, or aborts a stream that already started. It
 fires independently of PHP, so the client is answered even when the handler is stuck
 in a native call.
@@ -400,7 +401,7 @@ flowchart TB
     Port --> P4
 ```
 
-Pass `reusePort: true` to every process on the shared port (on the Go side it sets
+Pass `reusePort: true` to every process on the shared port (inside the extension it sets
 the socket option via `net.ListenConfig` with a `Control` callback,
 `ext-go-legacy/internal/features/httpserver/listen.go`). Run them as separate processes — a
 supervisor (systemd, supervisord, docker `--scale`), the
@@ -416,7 +417,7 @@ wait
 
 Caveats:
 
-- Processes are independent: no shared memory, each has its own Go runtime,
+- Processes are independent: no shared memory, each has its own runtime,
   scheduler and coroutines. Shared state (sessions, cache, counters) goes to
   external storage.
 - Every process must set `reusePort: true` — if one did not and started first, the
@@ -517,7 +518,7 @@ is not aborted, and requests rejected while the server is stopping do not count.
 ## Graceful shutdown
 
 On `SIGTERM`/`SIGINT` (or a lost master, or the `maxRequests` limit) the server
-closes the listening socket immediately (`http.Server.Shutdown` on the Go side,
+closes the listening socket immediately (`http.Server.Shutdown` inside the extension,
 without cancelling the connections already accepted), waits for the running
 handlers, and exits. Each step is logged, see [Logs](#logs).
 
@@ -543,20 +544,20 @@ yet answered in the narrow window between the signal and the socket close gets
 ```mermaid
 sequenceDiagram
     participant PHP as PHP (HttpServer + Scheduler)
-    participant Go as Go (httpserver)
+    participant EXT as Extension (httpserver)
     participant Client as client
 
-    PHP->>Go: push(ServePayload, MethodHttpServe)
-    Note over Go: handleServe — net.Listen + net/http.Server.Serve()
-    Note over Go: serverState is the http.Handler (self-pumping request stream)
+    PHP->>EXT: push(ServePayload, MethodHttpServe)
+    Note over EXT: handle_serve — bind the listener + serve it with hyper
+    Note over EXT: the server state is the request handler (self-pumping request stream)
     Note over PHP: Scheduler::serve() — waitAnyTimeoutBatch(250ms) loop
-    Client->>Go: HTTP request
-    Note over Go: ServeHTTP — acquire slot, read body, RequestEvent into the requests channel
-    Go-->>PHP: request event (batch, HasNext=true; the stream pumps itself)
+    Client->>EXT: HTTP request
+    Note over EXT: serve — acquire slot, read body, request event into the requests channel
+    EXT-->>PHP: request event (batch, HasNext=true; the stream pumps itself)
     Note over PHP: spawn(coroutine) — handle($handler)
-    PHP->>Go: execNoResult(RespondPayload::full, MethodHttpRespond)
-    Note over Go: handleRespond — dispatch writeCommand, ServeHTTP writes status+headers+body
-    Go->>Client: response
+    PHP->>EXT: execNoResult(RespondPayload::full, MethodHttpRespond)
+    Note over EXT: handle_respond — dispatch the write command, the connection writes status+headers+body
+    EXT->>Client: response
     Note over PHP: coroutine finished right after the push, the flow is cleaned up
 ```
 
@@ -569,7 +570,7 @@ completion of the server flow, plus finishing the requests already accepted and
 its own errors, which is what `HttpServer::handle` does by turning them into a
 `500`.
 
-Go (`ext-go-legacy/internal/features/httpserver/`): `feature.go` serves both methods and
+Rust (`ext/src/features/httpserver/`): `mod.rs` serves both methods and
 holds the registries `pendingRequests`
 (`requestId → {command channel, abandoned signal}`) and `serverStates`
 (`flowKey → serverState`, for `StopAccepting`); `server.go` is `serverState`, an
@@ -577,7 +578,7 @@ holds the registries `pendingRequests`
 handler timeout, 503/504 and graceful `Shutdown`; `listen.go` is the TCP
 listener and `SO_REUSEPORT`.
 
-The listener is a self-pumping stream: a Go-side goroutine publishes every
+The listener is a self-pumping stream: an extension-side runtime task publishes every
 accepted request as the next batch result (`HasNext=true`), so PHP pays no
 `next()` crossing per request. The throttling is layered — the shared results
 buffer, the requests channel, and beyond that `ServeHTTP` itself blocks. Each
@@ -599,8 +600,8 @@ an `abandoned` error and unwinds cleanly instead of hanging.
 
 | What | Status | Comment |
 |---|---|---|
-| PHP-FPM / mod_php | ❌ no | CLI-only, long-lived; the extension holds the Go runtime at process level. |
-| `pcntl_fork` after loading the extension | ❌ no | The Go runtime does not survive a `fork`. |
+| PHP-FPM / mod_php | ❌ no | CLI-only, long-lived; the extension holds the extension's runtime at process level. |
+| `pcntl_fork` after loading the extension | ❌ no | The extension's runtime does not survive a `fork`. |
 | A ZTS build of PHP | ❌ no | NTS only. |
 | TLS / HTTPS | ❌ not yet | Plain TCP; terminate TLS in front (nginx/HAProxy). |
 | HTTP/2, WebSocket | ❌ no | `net/http` without TLS is HTTP/1.1. WebSocket is a [separate server](websocket-server.md). |

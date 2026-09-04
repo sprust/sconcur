@@ -2,7 +2,7 @@ English | [Русский](msgpack-objects.ru.md)
 
 # Objects over MessagePack
 
-PHP and the Go extension exchange every payload and every result as MessagePack.
+PHP and the extension exchange every payload and every result as MessagePack.
 Scalars, arrays and maps have a MessagePack type of their own and cross unchanged.
 A value that has none — an id, a date, a decimal — crosses as a PHP object, in the
 encoding `ext-msgpack` already uses for objects.
@@ -20,24 +20,24 @@ On the PHP side:
 
 | Direction | Entry point |
 |---|---|
-| PHP → Go, a payload | `Transport\MessagePackTransport::pack` — packs `PayloadInterface::getData()` |
-| Go → PHP, a task result | `Transport\MessagePackTransport::unpack` |
-| PHP → Go, a MongoDB document | `Features\Mongodb\Serialization\DocumentSerializer::serialize` |
-| Go → PHP, a document or a cursor batch | `DocumentSerializer::unserialize` / `::unserializeBatch` |
+| PHP → extension, a payload | `Transport\MessagePackTransport::pack` — packs `PayloadInterface::getData()` |
+| extension → PHP, a task result | `Transport\MessagePackTransport::unpack` |
+| PHP → extension, a MongoDB document | `Features\Mongodb\Serialization\DocumentSerializer::serialize` |
+| extension → PHP, a document or a cursor batch | `DocumentSerializer::unserialize` / `::unserializeBatch` |
 
 Each is one call to `msgpack_pack()` or `msgpack_unpack()`. PHP never walks the
 decoded structure: `ext-msgpack` builds the objects in C while parsing, and a
 second pass over every document in userland would cost more than the decoding
 itself.
 
-On the Go side (MongoDB's, as the worked example):
+Inside the extension (MongoDB's, as the worked example):
 
 | Direction | Entry point |
 |---|---|
-| PHP → Go, `dt` is a parameter struct | `payloads.UnmarshalParams` |
-| PHP → Go, `dt` is the document itself | `serializer.PayloadDocument` / `PayloadDocuments` |
-| Go → PHP, one document | `serializer.MarshalDocument` |
-| Go → PHP, a cursor batch | `serializer.MarshalDocumentBatchRaw` |
+| PHP → extension, `dt` is a parameter struct | `payloads::params_from_msgpack` |
+| PHP → extension, `dt` is the document itself | `serializer::document_from_msgpack` / `documents_from_msgpack` |
+| extension → PHP, one document | `serializer::document_to_msgpack` |
+| extension → PHP, a cursor batch | `serializer::documents_to_msgpack` |
 
 Each converts once, at the outer edge of the message. Everything inside is BSON
 from there on, so the bulkWrite walk, the option parsers and the per-command code
@@ -69,8 +69,9 @@ The `nil` key is unambiguous: a PHP array cannot hold a `null` key — it coerce
 `''` — so no ordinary map can start with one. The C unpacker recognises the shape
 while parsing and constructs the object at that point.
 
-Go writes the same shape with `encodeObjectHeader` (`msgpack.go`), so a value
-coming back from a Go driver arrives in PHP as an object with nothing for PHP to
+The extension writes the same shape with `write_object_header`
+(`serializer/to_msgpack.rs`), so a value coming back from the driver arrives in
+PHP as an object with nothing for PHP to
 do.
 
 ## The extension flag
@@ -81,7 +82,7 @@ directions degrade quietly — nothing throws:
 - packing an object drops the class and the property names and leaves a list of
   the values, so `["id" => new ObjectId("6919…")]` packs as `81 a2 6964 91 b8 …`
   and reads back as `['id' => ['6919…']]`;
-- unpacking bytes Go wrote raises
+- unpacking bytes the extension wrote raises
   `Warning: [msgpack] (msgpack_unserialize_map_item) illegal key type` and yields a
   plain array whose `nil` key has coerced to `''`.
 
@@ -120,7 +121,7 @@ first.
 `ext-msgpack` does not write the same object twice. The second appearance of one
 instance becomes a reference — `{nil: 4, 0: <index>}` — where the index counts every
 container written so far: maps, arrays, objects and references alike, numbered from
-1. Reusing a single value object across a document is ordinary code, so the Go
+1. Reusing a single value object across a document is ordinary code, so the
 decoder keeps the same counter and resolves references against it (`converter` in
 `msgpack_values.go`).
 
@@ -154,50 +155,48 @@ emits.
 Two constraints come from the wire format rather than from taste:
 
 - properties must be public — MessagePack mangles a protected property's name the
-  way `serialize()` does (`"\0*\0oid"`), and the Go side writes plain names. Declare
+  way `serialize()` does (`"\0*\0oid"`), and the extension writes plain names. Declare
   the class `readonly` to keep the object immutable anyway. This is the one place the
   project's "properties are `protected`" rule does not apply, and the classes in
   `src/Bson/` carry a comment saying so.
 - the constructor is not called when the extension materialises the object while
   decoding, so validation there guards user code only. What arrives from the wire is
-  validated on the Go side, by the `property*` helpers described below.
+  validated inside the extension, by the `property*` helpers described below.
 
 Beyond that: give the class a marker interface (`SConcur\Bson\Type` for the BSON
 set) so a document walk can recognise it, and keep the class name short — it travels
 on the wire with every value.
 
-## The Go encoder
+## The encoder
 
-`encodeBSONValue` in `msgpack.go` writes a `case` per source type: an
-`encodeObjectHeader(encoder, class, propertyCount)` followed by the property
-name/value pairs, in the order the PHP class declares them. Class names are
-constants at the top of the file.
+`write_value` in `serializer/to_msgpack.rs` has an arm per source type: a
+`write_object_header(buffer, class, properties)` followed by the property
+name/value pairs, in the order the PHP class declares them.
 
-`encodeObjectHeader` writes a map of `propertyCount + 1` pairs whose first pair is
+`write_object_header` writes a map of `properties + 1` pairs whose first pair is
 `nil` → the class name. A property count that does not match the pairs actually
 written corrupts the stream — the decoder on either side reads the next value as a
 key.
 
-## The Go decoder
+## The decoder
 
-`converter` in `msgpack_values.go` walks the MessagePack stream and appends BSON as
-it goes, without building an intermediate map:
+`serializer/from_msgpack.rs` decodes the payload into a value tree and walks it,
+turning maps into BSON as it goes:
 
-- `appendMapValue` / `appendMapBody` read a map, ask `startsWithNilKey` whether it is
-  an envelope, and hand an envelope to `readObject`;
-- `readObject` reads the class name and the properties, records the instance under
-  its container index, and `readObjectReference` resolves a repeat against that
-  index;
-- `appendObject` turns the decoded object into a BSON element — one `case` per class
-  name, an unknown class is an error;
-- the `property*` helpers (`propertyString`, `propertyBytes`, `propertyInt`,
-  `propertyRange`, `propertyPairs`) read one property each. They fail on a property
-  that is missing, of the wrong type, or too wide for the target field, instead of
+- `document_from_walked` reads a map and asks whether its first key is nil — the
+  envelope marker — handing an envelope to `read_envelope`;
+- `read_envelope` reads the class name and the properties, records the instance
+  under its container index, and resolves a repeat against that index;
+- `bson_from_envelope` turns the decoded object into a BSON element — one arm per
+  class name, an unknown class is an error;
+- the `property_*` helpers (`property_string`, `property_bytes`, `property_int`,
+  `property_range`) read one property each. They fail on a property that is
+  missing, of the wrong type, or too wide for the target field, instead of
   substituting a zero that would reach the database as a real date or subtype.
 
-`decodeValue` is the odd one out: an object's property is read whole rather than
-streamed into the document, because the property can only become BSON once the class
-is known. It still walks containers itself, for the counter reason above.
+The container counter is why this walks a tree rather than streaming: every map
+and array has to be numbered in the same order `ext-msgpack` numbered them, and a
+tree walk makes that trivially correct.
 
 ## Adding a type
 
@@ -208,11 +207,12 @@ Four places, in this order:
    [What a PHP class must look like](#what-a-php-class-must-look-like). If the class
    mirrors one from another library, mirror it exactly: same constructor, same
    getters, same `__toString()` and `jsonSerialize()`.
-2. The Go encoder, `encodeBSONValue` in `msgpack.go`: a `case` for the source type
-   writing `encodeObjectHeader(encoder, class, propertyCount)` and the property
-   pairs. Add the class-name constant next to the others at the top of the file.
-3. The Go decoder, `appendObject` in `msgpack_values.go`: a `case` for the class name
-   that reads the properties with the `property*` helpers and appends the value.
+2. The encoder, `write_value` in `serializer/to_msgpack.rs`: an arm for the source
+   type writing `write_object_header(buffer, class, properties)` and the property
+   pairs.
+3. The decoder, `bson_from_envelope` in `serializer/from_msgpack.rs`: an arm for
+   the class name that reads the properties with the `property_*` helpers and
+   builds the value.
 4. The tests — the next section.
 
 Then rebuild the extension and run the checks:
@@ -228,7 +228,7 @@ A type that does not round-trip is caught immediately. The cases that do not fai
 their own — a reordered envelope, a miscounted reference, a class that drifts from the
 library it mirrors — are what the rest of the suite is for.
 
-### The round trip, in Go
+### The round trip, in the extension
 
 `TestRoundTripsEveryBSONType` in `msgpack_test.go` is where a new type goes first: it
 builds a document holding a value of every type, runs it through
@@ -241,7 +241,7 @@ The helpers in that file are `roundTrip` (encode, decode, fail on error) and
 
 ### Pinning the layout on bytes PHP really emits
 
-A round trip only proves Go agrees with itself. What PHP writes is pinned separately,
+A round trip only proves the extension agrees with itself. What PHP writes is pinned separately,
 and the fixtures are taken from PHP rather than written by hand:
 
 ```shell
@@ -277,7 +277,7 @@ A new type gets a row in the parity provider and a value in the serializer test.
 
 ### Cost
 
-`msgpack_bench_test.go` measures the conversion in Go; `make bench-mongodb-serializer`
+`make bench-mongodb-serializer`
 measures the PHP pack/unpack alone, with no database and no extension. Worth a look
 when a type is added to a document that is already large, since the class name travels
 with every value.
@@ -286,9 +286,9 @@ with every value.
 
 ```shell
 make ext-build                                    # rebuild ext/build/sconcur.so first
-make ext-test                                     # the Go tests
+make ext-test                                     # the core's own tests
 make test c="--filter=BsonDriverParityTest"       # one PHP test
-make check                                        # cs-fixer, phpstan, PHP tests, Go tests
+make check                                        # cs-fixer, phpstan, PHP tests, core tests
 ```
 
 ## Gotchas

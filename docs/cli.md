@@ -12,7 +12,7 @@ repository they run as `bin/<command>`, from a consumer application as
 Downloads the built extension `.so` from GitHub Releases. The project is
 experimental, so the extension is not published in PECL or other registries. Before
 downloading, check [Tested versions](../README.md#tested-versions): the extension
-is built against specific versions of PHP, Go and the database servers, and
+is built against specific versions of PHP, Rust and the database servers, and
 compatibility is guaranteed only with them.
 
 The version is not set manually — it comes from

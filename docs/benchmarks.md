@@ -17,7 +17,7 @@ hardware, DB settings and load. The workload-matching verdict table is in
 ## Contents
 
 - [Environment](#environment)
-- [Conversion overhead (the PHP↔Go boundary)](#conversion-overhead-the-phpgo-boundary)
+- [Conversion overhead (the PHP↔extension boundary)](#conversion-overhead-the-phpextension-boundary)
 - [Methodology](#methodology)
 - [MongoDB](#mongodb)
 - [MySQL](#mysql)
@@ -60,18 +60,18 @@ Client and server numbers taken on 2026-07-22, DB and payload numbers on
 2026-08-28, the three-stack comparisons on 2026-08-09, all on an idle machine.
 The SConcur rows of the server tables and of the three-stack comparison were
 re-measured on 2026-08-12, after the 0.9.1 hot-path work (fiber pool,
-request-body chunk sizing, fiber-stack cgo dispatch); the RoadRunner and Swoole
+request-body chunk sizing, fiber-stack boundary dispatch); the RoadRunner and Swoole
 rows of the `/db` tables are kept from 2026-08-09 — same machine, same setup,
 idle both times. The empty-endpoint worker ladder measured all three stacks in
 one session on 2026-08-12.
 
-## Conversion overhead (the PHP↔Go boundary)
+## Conversion overhead (the PHP↔extension boundary)
 
 Every call crosses the boundary and converts its data: arguments are packed into
 MessagePack (`Transport/MessagePackTransport`), the result is unpacked back; Mongo
 documents ride in the same format, with the BSON values that MessagePack cannot
 express carried as objects. This is a fixed CPU price
-per operation, on top of the cgo call and goroutine dispatch. On cheap cached reads
+per operation, on top of the boundary call and runtime task dispatch. On cheap cached reads
 it shows up as the `native` → `sync` gap (both sequential, but `sync` goes through
 Go): `pgsql-selectOne` 3.6 → 9.0 ms over 100 calls, `mysql-selectOne` 7.7 →
 21.9 ms. On a slow operation the same surcharge is a small fraction of the total.
@@ -296,7 +296,7 @@ concurrently in the time of about one call.
 | ws-client (`msleep:100`) | 50 | 5255 | 5345 | 131 | 4 / 4 / 4 | +98% ✅ |
 
 On I/O latency async gives ~44× (5.2 s → 0.12 s). `download` writes a 4 MiB body
-straight to a file on the Go side, so memory stays flat and running the
+straight to a file inside the extension, so memory stays flat and running the
 downloads concurrently still speeds them up ~6×.
 
 ## Servers (HTTP / Socket / WebSocket)
@@ -396,7 +396,7 @@ blocks the whole worker.
 
 - On the empty endpoint the ranking is the price of the transport: Swoole
   answers from a C event loop in the same process as the PHP closure, while
-  SConcur is ~2.9× RoadRunner because crossing the PHP↔Go boundary is cheaper
+  SConcur is ~2.9× RoadRunner because crossing the PHP↔extension boundary is cheaper
   than RoadRunner's extra inter-process step (proxy → worker) per request.
 - On `/all` with disk backends both concurrent servers are ~6–7× RoadRunner and
   land in the same class. The reason is fsync: 3 writes per request turn into a

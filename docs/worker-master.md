@@ -9,7 +9,7 @@ all cores without an external load balancer. Implementation: `src/Worker/` plus 
 universal CLI `bin/sconcur-server`.
 
 Each worker is a separate process started via `proc_open` (`pcntl_fork` after
-loading the extension is forbidden — the Go runtime does not survive a fork). The
+loading the extension is forbidden — the extension's runtime does not survive a fork). The
 master itself does not load the extension: it is a pure supervisor on
 `pcntl`/`posix` (both are required, otherwise it throws `MissingPcntlException`).
 
@@ -275,7 +275,7 @@ A handler that goes into a native blocking call (`sleep()`, synchronous PDO/`cur
 or a single monolithic internal call (a huge `preg_match`, `json_decode`) freezes
 the worker's single PHP thread — nothing can preempt a native call (a userland CPU
 loop is a different case, see [coroutine switching](coroutine-switching.md)).
-`handlerTimeoutMs` on the Go side will return `504` to clients, but the worker
+`handlerTimeoutMs` inside the extension will return `504` to clients, but the worker
 itself stays `running` and silently drops out of service. Neither `maxRequests` nor
 the orphan check helps: a stuck worker does not *finish* a request, and the master
 is alive.

@@ -7,7 +7,7 @@ brought up via [`SO_REUSEPORT`](http-server.md) under the
 [master](worker-master.md). Every worker pushes its snapshot over a unix socket to
 the master once a second; the master keeps the pool state in memory and serves it
 on its own port — `GET /api/stats`, a live HTML panel and an SSE stream. Sampling
-and push happen on the Go side of the worker; the collector and panel are pure PHP
+and push happen inside the extension of the worker; the collector and panel are pure PHP
 in the master, which does not load the extension.
 
 ## Contents
@@ -43,8 +43,8 @@ client it degrades the panel, not supervision.
 ```mermaid
 flowchart TB
     master["Master (PHP) — collector (unix socket) and panel (/api/stats, /, /events)"]
-    worker1["Worker #1 (Go Pusher)"]
-    worker2["Worker #2 (Go Pusher)"]
+    worker1["Worker #1 (extension pusher)"]
+    worker2["Worker #2 (extension pusher)"]
     client["Browser / Prometheus / curl (Bearer)"]
 
     master -->|"spawn and supervise"| worker1
@@ -137,7 +137,7 @@ need different `panelPort`, `name` and `runtimeDir`.
 
 ## Metrics
 
-Worker numbers come from the Go side (`/proc`, `runtime`, its own counters); the
+Worker numbers come from the extension (`/proc`, `runtime`, its own counters); the
 `master` section is sampled by the PHP master from its own `/proc`. Process metrics
 are shared by every kind of worker; the workload section says which kind reported:
 HTTP has `requests`, socket and WebSocket have `connections`, a queue consumer has
@@ -180,7 +180,7 @@ replaced starts its counters afresh, exactly as a server's `completed` does.
 was received, so it does not depend on clock skew; a live connection with no fresh
 snapshot for longer than 15 s flags the worker `hung`. That catches a wedged worker
 runtime (the pusher task itself stalled), not a stuck request handler — the
-pusher is independent and keeps sending snapshots as long as the Go runtime is
+pusher is independent and keeps sending snapshots as long as the extension's runtime is
 alive.
 
 ## Response format
@@ -278,7 +278,7 @@ family per kind of pool. To read one pool's workload on its own, sum the
 The JSON view splits it the same way: `groups` sums each pool of the master on its own,
 while `totals` sums all of its workers. Adding up the workload of unlike pools means
 nothing, so the workload numbers are read off `groups`; in `totals` it is memory, CPU
-and goroutines that carry meaning. A worker says which pool it belongs to in `group`,
+and runtime tasks that carry meaning. A worker says which pool it belongs to in `group`,
 taken from the `<group>:<slot>` label it stamps its snapshots with.
 
 ## Push-protocol contract
