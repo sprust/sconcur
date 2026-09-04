@@ -161,7 +161,7 @@ $client = new HttpClient($factory, new HttpClientOptions(
 ));
 ```
 
-Connection pool / keep-alive: the extension keeps reusable `http.Transport`s, one per
+Connection pool / keep-alive: the extension keeps reusable `reqwest::Client`s, one per
 distinct set of transport options (`connectTimeout`/`responseHeaderTimeout`/
 `verifyTls` plus the pool parameters), so keep-alive works between requests within
 the process. Idle connections are released in `features.Shutdown()`.
@@ -238,11 +238,11 @@ envelope's sub-operations `Request`/`UploadChunk`/`UploadEnd`), `Payloads/*`
 
 Rust (`ext/src/features/httpclient/`): `mod.rs` builds the request,
 applies `context.WithTimeout`, starts the state and routes the commands;
-`response_state.go` is the streaming state (the first `Next()` runs the request and
+`response_state.rs` is the streaming state (the first `Next()` runs the request and
 returns metadata plus first chunk, the rest are raw body chunks, `Close()` closes
-`resp.Body`) and also holds the `maxResponseBody` limit; `client.go` is the
-registry of reusable `*http.Transport`s; `download.go` and `upload.go` are the file
-sink and the request-body pipe. The shared helper `internal/helpers.ReadChunk`
+the response body stream) and also holds the `maxResponseBody` limit; `client.rs` is the
+registry of reusable `reqwest::Client`s; `download` and `upload` command handlers are the file
+sink and the request-body pipe. The shared helper `ext/src/helpers.rs`
 slices bodies for both the server and the client.
 
 ## Not in v1

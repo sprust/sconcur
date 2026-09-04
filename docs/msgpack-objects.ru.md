@@ -113,7 +113,7 @@ PHP.
 `"ext-msgpack": "3.0.1"`, а не диапазон. Относитесь к этому пину как к части
 механизма, а не как к общей осторожности с зависимостями: поднять его — значит
 перепрогнать тесты, которые держат формат, прежде всего `TestObjectEnvelopeLayout` и
-`TestResolvesRepeatedObjectInstances` в `msgpack_test.go`: они проверяют раскладку
+`TestResolvesRepeatedObjectInstances` в the serializer's unit tests: они проверяют раскладку
 байтов и нумерацию ссылок против того, что PHP действительно выдаёт. Прошли на новой
 версии — пин можно двигать; упали — сначала правится кодировщик и декодировщик.
 
@@ -124,7 +124,7 @@ PHP.
 контейнеры, записанные к этому моменту: карты, массивы, объекты и сами ссылки,
 нумерация с 1. Переиспользовать один объект-значение внутри документа — обычный код,
 поэтому декодировщик расширения ведёт такой же счётчик и разрешает ссылки по нему
-(`converter` в `msgpack_values.go`).
+(`converter` в `ext/src/features/mongodb/serializer/`).
 
 ```shell
 docker compose exec php php -d extension=./ext/build/sconcur.so \
@@ -230,7 +230,7 @@ make check
 
 ### Круговой рейс, в расширении
 
-`TestRoundTripsEveryBSONType` в `msgpack_test.go` — первое место для нового типа: он
+`TestRoundTripsEveryBSONType` в the serializer's unit tests — первое место для нового типа: он
 строит документ со значением каждого типа, прогоняет его через
 `BSONToMsgpack` → `MsgpackToBSON` и сравнивает результат побайтово, так что
 расхождение в любую сторону падает там. `TestRoundTripsNestedSpecialValues` делает то

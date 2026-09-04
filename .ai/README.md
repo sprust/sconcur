@@ -13,9 +13,8 @@ async runtime; the two sides exchange msgpack-tagged DTOs
 
 Core PHP code lives in `src/` under the `SConcur\` namespace — main entry points
 are `WaitGroup`, `Scheduler`, `State`, `Connection/Extension` and the feature
-modules in `src/Features/`. The extension core lives in `ext/` (Rust); the Go core
-it was ported from is kept in `ext-go-legacy/` as history and nothing else (see
-[Two cores](#two-cores)). Tests: feature and
+modules in `src/Features/`. The extension core lives in `ext/` (Rust, see
+[The core](#the-core)). Tests: feature and
 integration coverage in `tests/feature/`, shared helpers in `tests/impl/`,
 benchmarks in `tests/benchmarks/`, stress checks in `tests/mem-leak/`. Container
 and release build assets are under `docker/` and `docker-compose.yml`.
@@ -97,28 +96,18 @@ make bench-all          # run all benchmarks
 Rebuild the extension with `make ext-build` before running tests that depend on
 `ext/build/sconcur.so`.
 
-### Two cores
+### The core
 
-**`ext/` is the extension core. There is no other one.** It is the Rust core,
-`SCONCUR_EXT` names it, and every target, benchmark and test harness reads that
-variable. Every feature is on it, AMQP included; it is what the release publishes
-and what `make test` runs the whole tree against.
+**`ext/` is the extension core, and there is no other one.** It is Rust,
+`SCONCUR_EXT` names the `.so` it builds, and every target, benchmark and test
+harness reads that variable. Every feature is on it, AMQP included; it is what
+the release publishes and what `make test` runs the whole tree against.
 
-`ext-go-legacy/` is the Go core it was ported against, kept as **historical data
-and nothing else**. It is not supported, not built, not checked, and CI does not
-touch it.
-
-**Compatibility with it is not a requirement, and must not be weighed when
-deciding whether to change something.** A simplification that would break only
-the Go core costs nothing — judge it on its own merits. This paragraph exists
-because the reverse was assumed once and killed a correct change: see item 1 of
-[rust-core-hot-path.md](plans/rust-core-hot-path.md).
-
-It does still build (`make ext-build-go`), still has its own unit tests
-(`make ext-test-go`), and `SCONCUR_EXT` can still be pointed at it — the two
-produce the same `sconcur.so`, ABI for ABI, so the swap is a path change. Use
-that to answer a question about what the port was ported from, never to decide
-what the port may do next.
+There was a Go core, which this one was ported from; it was deleted in September
+2026, toolchain and all. Nothing is compatible with it, nothing is compared
+against it, and a change that would have broken it costs nothing — the question
+does not exist any more. If a comment or a doc still mentions it, that text is
+stale and should be fixed rather than honoured.
 
 Two AMQP options are refused rather than dropped in silence, because the driver
 cannot put them on the wire: a prefetch **size** (`basic.qos`'s prefetch-size is
@@ -509,16 +498,13 @@ language is English.
 
 ## Extension versioning
 
-**All five version sources must be equal** — bump them together, in the same
+**All four version sources must be equal** — bump them together, in the same
 commit:
 
 1. `ext/src/lib.rs` → `VERSION` (what the released core reports)
 2. `ext/Cargo.toml` → `version` (the crate, kept in step with it)
-3. `ext-go-legacy/main.go` → `version()` (nothing enforces this one, but a run
-   pointed at the reference core reads its version like any other, so it is kept
-   in step rather than left to fail)
-4. `src/Connection/Extension.php` → `REQUIRED_EXTENSION_VERSION`
-5. `composer.json` → `"version"`
+3. `src/Connection/Extension.php` → `REQUIRED_EXTENSION_VERSION`
+4. `composer.json` → `"version"`
 
 They are bumped on any PHP↔extension protocol change. **Never bump the major
 version without the maintainer's approval**; bump the minor only when warranted,
@@ -528,7 +514,7 @@ change on a branch bumps it, later commits on the same branch reuse that version
 The release CI derives the release tag from the extension version (via
 `bin/sconcur-status`), so a drift between these would ship a mislabeled release.
 `tests/feature/Connection/VersionConsistencyTest.php` enforces the equality
-against whichever core the run loaded.
+against the core the run loaded.
 
 ## Workflow rules
 

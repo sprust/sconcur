@@ -125,9 +125,9 @@ Rust (`ext/src/features/wsclient/`): путь подключения выпол�
 с `connectTimeout` (отменяем контекстом флоу) и регистрирует стриминговый
 `connectionState` — первый `Next` даёт метаданные, дальше идут входящие
 сообщения из задачи рантайма чтения — плюс цикл записи, очищаемый при остановке флоу;
-`feature.go` диспетчеризует команды по `cid`. Цикл записи, ждущий сброса каждого
-сообщения, и кодек типа сообщения живут в нейтральном `ext-go-legacy/internal/ws/`, общем
-с WS-сервером (как `ext-go-legacy/internal/socket` для пары сырых TCP).
+`mod.rs` диспетчеризует команды по `cid`. Цикл записи, ждущий сброса каждого
+сообщения, и кодек типа сообщения живут в нейтральном `ext/src/ws/`, общем
+с WS-сервером (как `ext/src/socket/` для пары сырых TCP).
 
 ## Чего нет в v1
 
@@ -141,7 +141,7 @@ TLS (`wss://`), `permessage-deflate` (библиотека умеет, пока 
 PHP feature-тесты лежат в `tests/feature/Features/WsClient/` — edge- и
 error-случаи плюс контракт конкурентности на `BaseAsyncTestCase`, против
 реального `WsServer` SConcur, поднятого через `TestWsServer`; сторону расширения
-покрывает `connect_test.go`. Бенчмарк (`make bench-ws-client c=20`) гоняет N
+покрывает the core's own unit tests. Бенчмарк (`make bench-ws-client c=20`) гоняет N
 round-trip'ов к эндпоинту `msleep` демо-сервера: одновременный async против
 последовательных native (сырой WS-фрейминг на PHP) и sync; серверные бенчи пула
 — `make bench-ws-server-io` / `bench-ws-server-cpu` / `bench-ws-throughput`.

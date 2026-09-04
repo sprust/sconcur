@@ -93,8 +93,16 @@ echo "=================================================================="
 
 stop_servers
 
-# Build the load generator once (unpinned), then spawn one server per core.
-$DOCKER_COMPOSE exec -T php sh -c 'cd /sconcur/ext && go build -o "'"$LOADBIN"'" ./cmd/ws-load'
+# The load generator: wrk speaks HTTP only, so the WS side needs one of its own.
+# The Go tool that used to fill this role went with the Go core, and nothing has
+# replaced it yet — so the harness stops here rather than half-running.
+if ! $DOCKER_COMPOSE exec -T php test -x "$LOADBIN"; then
+    echo "no WS load generator at $LOADBIN inside the php container." >&2
+    echo "The Go one was removed with the Go core; supply a binary there (it takes" >&2
+    echo "  -url ws://host:port/ -conns N -duration S -msg NAME" >&2
+    echo "and prints 'msgs/sec' plus p50/p90/p99) or port it." >&2
+    exit 2
+fi
 
 $DOCKER_COMPOSE exec -T php sh -c '
     : > "'"$PIDFILE"'"

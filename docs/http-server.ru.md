@@ -432,7 +432,7 @@ flowchart TB
 
 Передайте `reusePort: true` каждому процессу на общем порту (на стороне расширения опция
 выставляется через `net.ListenConfig` с `Control`-колбэком,
-`ext-go-legacy/internal/features/httpserver/listen.go`). Запускайте их как отдельные
+`ext/src/features/httpserver/listen.rs`). Запускайте их как отдельные
 процессы — через супервизор (systemd, supervisord, docker `--scale`),
 [мастер воркеров](worker-master.ru.md) или простым циклом, но не через
 `pcntl_fork`.
@@ -603,9 +603,9 @@ PHP: `HttpServer::serve()` генерирует `flowKey`, ставит обра
 
 Rust (`ext/src/features/httpserver/`): `mod.rs` обслуживает оба метода и
 держит реестры `pendingRequests` (`requestId → {канал команд, сигнал abandoned}`)
-и `serverStates` (`flowKey → serverState` для `StopAccepting`); `server.go` — это
+и `serverStates` (`flowKey → serverState` для `StopAccepting`); `server.rs` — это
 `serverState`, `http.Handler` поверх `net/http.Server`, отвечающий за семафор
-конкурентности, таймаут хендлера, 503/504 и graceful `Shutdown`; `listen.go` —
+конкурентности, таймаут хендлера, 503/504 и graceful `Shutdown`; `listen.rs` —
 TCP-листенер и `SO_REUSEPORT`.
 
 Листенер — самокачающийся поток: задача рантайма на стороне расширения публикует каждый

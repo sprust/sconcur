@@ -111,7 +111,7 @@ arrays without their types.
 `"ext-msgpack": "3.0.1"`, not a range. Treat that pin as part of the mechanism, not
 as caution about dependencies in general: raising it means re-running the tests that
 hold the format, above all `TestObjectEnvelopeLayout` and
-`TestResolvesRepeatedObjectInstances` in `msgpack_test.go`, which assert the byte
+`TestResolvesRepeatedObjectInstances` in the serializer's unit tests, which assert the byte
 layout and the reference numbering against what PHP actually emits. If those pass on
 a new version, the pin can move; if they fail, the encoder and decoder need updating
 first.
@@ -123,7 +123,7 @@ instance becomes a reference — `{nil: 4, 0: <index>}` — where the index coun
 container written so far: maps, arrays, objects and references alike, numbered from
 1. Reusing a single value object across a document is ordinary code, so the
 decoder keeps the same counter and resolves references against it (`converter` in
-`msgpack_values.go`).
+`ext/src/features/mongodb/serializer/`).
 
 ```shell
 docker compose exec php php -d extension=./ext/build/sconcur.so \
@@ -230,7 +230,7 @@ library it mirrors — are what the rest of the suite is for.
 
 ### The round trip, in the extension
 
-`TestRoundTripsEveryBSONType` in `msgpack_test.go` is where a new type goes first: it
+`TestRoundTripsEveryBSONType` in the serializer's unit tests is where a new type goes first: it
 builds a document holding a value of every type, runs it through
 `BSONToMsgpack` → `MsgpackToBSON` and compares the result byte for byte, so a
 mismatch in either direction fails there. `TestRoundTripsNestedSpecialValues` does the

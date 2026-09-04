@@ -248,8 +248,8 @@ Std::fileDelete($path);
 ## Версионирование
 
 Новый метод + payloads + удалённый метод = изменение протокола PHP↔расширение → минорный
-бамп версии расширения, один раз на ветке фичи, все три источника вместе
-(`ext-go-legacy/main.go`, `Extension.php::REQUIRED_EXTENSION_VERSION`, `composer.json`).
+бамп версии расширения, один раз на ветке фичи, все источники вместе — их список
+в `.ai/README.md`, раздел «Extension versioning».
 
 ## Тесты
 

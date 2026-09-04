@@ -125,10 +125,10 @@ a mirror of the extension's structs.
 Rust (`ext/src/features/wsclient/`): the connect path performs the upgrade with
 `connectTimeout` (cancellable by the flow context) and registers a streaming
 `connectionState` — the first `Next` is the metadata, then inbound messages from a
-read runtime task — plus the write loop, cleaned up on flow stop; `feature.go`
+read runtime task — plus the write loop, cleaned up on flow stop; `mod.rs`
 dispatches the commands by `cid`. The write loop that waits for each flush and the
-message-type codec live in the neutral `ext-go-legacy/internal/ws/`, shared with the WS
-server (like `ext-go-legacy/internal/socket` for the raw TCP pair).
+message-type codec live in the neutral `ext/src/ws/`, shared with the WS
+server (like `ext/src/socket/` for the raw TCP pair).
 
 ## Not in v1
 
@@ -142,7 +142,7 @@ auto-reconnect (application side). The library's general limits — see the
 PHP feature tests are in `tests/feature/Features/WsClient/` — edge and error
 cases plus the concurrency contract on `BaseAsyncTestCase`, against a real
 SConcur `WsServer` spawned via `TestWsServer`; the extension is covered by
-`connect_test.go`. The benchmark (`make bench-ws-client c=20`) runs N
+the core's own unit tests. The benchmark (`make bench-ws-client c=20`) runs N
 round-trips to the demo server's `msleep` endpoint, concurrent async against
 sequential native (raw WS framing in PHP) and sync; server-side pool benches are
 `make bench-ws-server-io` / `bench-ws-server-cpu` / `bench-ws-throughput`.

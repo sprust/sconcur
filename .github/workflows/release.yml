@@ -8,9 +8,6 @@ on:
     # the resolved version actually changes. A push touching none of these paths
     # (e.g. docs-only) skips the whole workflow. Keep this list in sync with new
     # build inputs — an omitted path means no release on a real change.
-    #
-    # ext-go-legacy/ is deliberately absent. It is the reference core, not the
-    # artifact, and nothing here builds or checks it.
     paths:
       - '**.php'                        # src, tests, bin, config, cs-fixer.dist.php
       - '**.rs'                         # the released core's sources

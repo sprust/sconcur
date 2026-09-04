@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# Attribution ladder, Go core vs Rust core, in one interleaved session.
+# Attribution ladder: what a request costs before PHP is involved, and what the
+# crossing into PHP adds.
 #
 # Rungs:
 #   L0 — the core's HTTP server answers 200 "ok" itself, PHP is never called
@@ -10,18 +11,16 @@
 #        respond push. The price of the boundary.
 #   l2 — L1 plus a fresh Fiber per request, the push issued off the fiber stack
 #        (the production shape).
-#   l2f — the same, with the push issued ON the fiber stack. On the Go build
-#        this is the documented pathology: a cgo call entered with the stack
-#        pointer inside a fiber stack makes glibc re-read /proc/self/maps, four
-#        times per fan-out request. Run it
-#        against both cores to see whether the mechanism exists at all without
-#        cgo — it is the reason Scheduler keeps pendingDispatches.
+#   l2f — the same, with the push issued ON the fiber stack. It exists because
+#        the retired cgo build had a documented pathology there: a call entered
+#        with the stack pointer inside a fiber stack made glibc re-read
+#        /proc/self/maps, four times per fan-out request. This rung says whether
+#        anything of that kind survives without cgo.
 #
 # Both rungs run the SAME PHP script (--ladder=l1) and differ only by that env
-# var, so L1 - L0 is the boundary and nothing else. Both cores run the same
-# geometry, in the same session, alternating rung by rung, because the delta
-# between them is the measurement — absolute numbers drift with whatever else
-# the machine is doing.
+# var, so L1 - L0 is the boundary and nothing else. The rungs alternate round by
+# round rather than running one to completion, because absolute numbers drift
+# with whatever else the machine is doing and the delta is the measurement.
 #
 # The metric is microseconds of CPU per request (CPU_avg_percent * 10000 / rps),
 # not rps: rps mixes efficiency with saturation.
@@ -46,8 +45,7 @@ PORT=${PORT:-18080}
 # whether the boundary punishes a crossing from a coroutine stack at all.
 RUNGS=${RUNGS:-"l0 l1"}
 
-GO_EXTENSION=/sconcur/ext-go-legacy/build/sconcur.so
-RUST_EXTENSION=/sconcur/ext/build/sconcur.so
+EXTENSION=${SCONCUR_EXT:-/sconcur/ext/build/sconcur.so}
 
 RESULTS=$(mktemp)
 trap 'rm -f "$RESULTS"' EXIT
@@ -108,8 +106,7 @@ for round in $(seq 1 "$ROUNDS"); do
             *)  ladder=$rung; bench_l0=0 ;;
         esac
 
-        run_rung "go-$rung"   "$GO_EXTENSION"   "$ladder" "$bench_l0"
-        run_rung "rust-$rung" "$RUST_EXTENSION" "$ladder" "$bench_l0"
+        run_rung "$rung" "$EXTENSION" "$ladder" "$bench_l0"
     done
 done
 
@@ -127,10 +124,8 @@ median() {
 }
 
 for rung in $RUNGS; do
-    for core in go rust; do
-        printf '%-10s %12.0f %9s%% %14s\n' \
-            "$core-$rung" "$(median "$core-$rung" 2)" "$(median "$core-$rung" 3 | tr -d '%')" "$(median "$core-$rung" 4)"
-    done
+    printf '%-10s %12.0f %9s%% %14s\n' \
+        "$rung" "$(median "$rung" 2)" "$(median "$rung" 3 | tr -d '%')" "$(median "$rung" 4)"
 done
 
 case " $RUNGS " in
@@ -138,12 +133,10 @@ case " $RUNGS " in
         echo
         echo "deltas (L1 - L0 is the boundary):"
 
-        for core in go rust; do
-            l0=$(median "$core-l0" 4)
-            l1=$(median "$core-l1" 4)
+        l0=$(median "l0" 4)
+        l1=$(median "l1" 4)
 
-            awk -v core="$core" -v l0="$l0" -v l1="$l1" \
-                'BEGIN { printf "  %-5s L0 %6.2f   boundary %6.2f   L1 total %6.2f  (us CPU/req)\n", core, l0, l1 - l0, l1 }'
-        done
+        awk -v l0="$l0" -v l1="$l1" \
+            'BEGIN { printf "  L0 %6.2f   boundary %6.2f   L1 total %6.2f  (us CPU/req)\n", l0, l1 - l0, l1 }'
         ;;
 esac

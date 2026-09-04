@@ -7,9 +7,9 @@ PHP_CLI = $(DOCKER_COMPOSE) exec php
 # that do not share this one's working directory (the server harnesses spawn
 # their worker with proc_open).
 #
-# Overridable, so the same targets can be pointed at the Go build still living
-# in ext-go-legacy/ without a second copy of each one:
-#   make bench-mongodb-aggregate SCONCUR_EXT=/sconcur/ext-go-legacy/build/sconcur.so
+# Overridable, so a target can be pointed at another build without a second copy
+# of each recipe:
+#   make bench-mongodb-aggregate SCONCUR_EXT=/path/to/sconcur.so
 SCONCUR_EXT ?= /sconcur/ext/build/sconcur.so
 
 # Exported so the targets that run a script on the host (the load benchmarks)
@@ -254,23 +254,11 @@ profile-verify:
 		echo "profilers:"; php -d extension=excimer.so -m | grep -i excimer | sed "s/^/  /"; \
 		perf --version | sed "s/^/  /"'
 
-# --- The Go core ------------------------------------------------------------
-# Moved to ext-go-legacy/, still buildable, no longer what anything loads. It is
-# the reference the Rust core was ported against, and the only build that carries
-# the AMQP feature today. To run something against it:
-#   make test SCONCUR_EXT=/sconcur/ext-go-legacy/build/sconcur.so
-
-ext-build-go:
-	$(PHP_CLI) sh ./ext-go-legacy/build.sh
-
-# The Go unit tests, which only ever applied to the Go tree.
-ext-test-go:
-	$(PHP_CLI) sh ./ext-go-legacy/test.sh
-
-# Runs on the HOST (needs wrk): the L0/L1 attribution ladder on both cores,
-# interleaved in one session. Needs both builds. Tunables via env, e.g.:
-#   make bench-ladder-cores ROUNDS=5 SERVERS=8 DURATION=20
-bench-ladder-cores:
+# Runs on the HOST (needs wrk): the L0/L1 attribution ladder — what a request
+# costs before PHP is involved, and what crossing into PHP adds. Tunables via
+# env, e.g.:
+#   make bench-ladder ROUNDS=5 SERVERS=8 DURATION=20
+bench-ladder:
 	ext/bench/ladder.sh
 
 # Resets the DB backends to a clean state before a benchmark session: drops the

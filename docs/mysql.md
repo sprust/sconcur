@@ -69,7 +69,7 @@ try {
 ```
 
 `begin(int $isolationLevel = 0, bool $readOnly = false)` takes an isolation level
-(the `sql.IsolationLevel` values the API was first written against; `0` — the
+(the numeric values the API was first written against; `0` — the
 server's default) and a read-only flag.
 On MySQL the isolation level is refused — see [Limits](#limits). `Transaction` has
 the same `query`/`fetchAll`/`exec` as the connection.
@@ -129,17 +129,18 @@ pool no smaller than the expected number of concurrent transactions.
 
 ## Internals
 
-- Pool registry (`ext-go-legacy/internal/features/sql/pools.go`) — `*sql.DB` keyed by the
+- Pool registry (`ext/src/features/sql/pools.rs`) — `sqlx::MySqlPool`/`PgPool` keyed by the
   `driver+dsn+pool sizes` struct, with a refcount and eviction of idle pools (like
   the MongoDB client pool). The sweeper walks the registry once a minute.
-- SELECT streaming (`rows_state.go`) — `rowsState` holds a `*sql.Rows` and gives
+- SELECT streaming (`rows_state.rs`) — `RowsState` holds the live sqlx stream and gives
   out rows in batches (`batchSize` comes from the PHP side, default 50; `<= 0` —
   one unbounded batch) with a one-row look-ahead to detect whether a next batch
   exists. It is closed on exhaustion, an early `break` or a flow stop.
-- Transactions (`transactions.go`) — `begin` puts a `transactionSession` (with a
-  `*sql.Tx`) into `pendingTransactions` keyed by the holding begin task and keeps
+- Transactions (`transactions.rs`) — `begin` puts a `TransactionSession` (holding the
+  sqlx transaction) into the registry keyed by the holding begin task and keeps
   that task alive (`hasNext`) so the connection survives the series of commands;
-  `commit`/`rollback` finalize the session idempotently (`sync.Once`).
+  `commit`/`rollback` finalize the session idempotently — the handle is taken out
+  of its slot, so the second finalizer finds nothing to do.
 
 ## Limits
 

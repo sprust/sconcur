@@ -22,20 +22,7 @@ RUN apt-get update && \
       wget && \
     rm -rf /var/lib/apt/lists/*
 
-ENV GO_VERSION="1.26.1"
-
-RUN wget -P /tmp "https://dl.google.com/go/go${GO_VERSION}.linux-amd64.tar.gz"
-
-RUN tar -C /usr/local -xzf "/tmp/go${GO_VERSION}.linux-amd64.tar.gz"
-RUN rm "/tmp/go${GO_VERSION}.linux-amd64.tar.gz"
-
-ENV GOPATH=/go
-ENV PATH=$GOPATH/bin:/usr/local/go/bin:$PATH
-RUN mkdir -p "$GOPATH/src" "$GOPATH/bin" && chmod -R 777 "$GOPATH" && mkdir -p /.cache && chmod -R 777 /.cache
-
-RUN mkdir -p -m 777 /go/pkg/mod/cache/download
-RUN chown $USER_ID:$GROUP_ID /go/pkg/mod/cache/download
-RUN chmod -R 777 /go/
+RUN mkdir -p /.cache && chmod -R 777 /.cache
 
 RUN curl -sS https://getcomposer.org/installer  \
     | php -- --install-dir=/usr/local/bin --filename=composer
@@ -84,11 +71,11 @@ RUN pecl install --configureoptions '\
     "swoole-${SWOOLE_VERSION}" && \
     rm -rf /tmp/pear
 
-# Rust toolchain: the core the extension is built from lives in ext/, so
-# this is what `make ext-build` needs. It sits beside the Go one — which still
-# builds the reference core in ext-go-legacy/ — for the same reason: build.sh compiles
-# ext/sconcur.c and links it against the staticlib cargo produces, and both
-# halves have to see the same PHP headers this image already carries.
+# Rust toolchain: the core the extension is built from lives in ext/, so this is
+# what `make ext-build` needs. It has to sit in this image rather than a builder
+# stage because build.sh compiles ext/sconcur.c and links it against the
+# staticlib cargo produces, and both halves have to see the same PHP headers
+# this image already carries.
 # Placed after the Swoole build so the expensive cached layers above are reused.
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \

@@ -162,49 +162,44 @@ need rewriting.
 
 ## extension side
 
-`ext-go-legacy/internal/features/<server>/feature.go` implements `contracts.FeatureContract`,
-and `Handle` dispatches on `Method` into `handleServe`/`handleRespond`. The feature
-is a singleton with two global maps: `pendingRequests`
-(`requestId → *pendingRequest`, a write-command channel — global so that `Respond`,
-which arrives on a different flow, can find the connection) and `serverStates`
-(`flowKey → *serverState`, so `StopAccepting` can find the listener).
+`ext/src/features/<server>/mod.rs` implements the `Feature` trait, and its
+`handle` dispatches on the message's `Method` into `handle_serve`/`handle_respond`.
+The feature itself is a unit struct behind a `OnceLock`; its state lives in a
+`Registries` struct owned by the core (`ext/src/core.rs`), so a fork discards it
+with everything else. Two maps: `pending_requests` (`requestId` → the channel its
+connection task reads write commands from — global, because a respond arrives on a
+different flow than the request) and `server_states` (`flowKey` → `ServerState`,
+so stop-accepting can find the listener).
 
-`handleServe` parses `ServePayload`, opens the TCP listener (`listen.go`, which sets
-`SO_REUSEPORT` when asked), builds the `serverState` — it brings up a standard
-`net/http.Server` whose `http.Handler` it is, with `BaseContext` bound to the task
-context — stores it in `serverStates` and starts the self-pumping runtime task: a
-`state.Next()` → `task.AddResult(...)` loop publishes every accepted request as the
-next stream result until the first no-next result (server stopped). The accept
-stream bypasses the `states` registry — the registry serves only the secondary
-streams (the request body, the inbound message streams). Backpressure is layered:
-`AddResult` blocks on the shared results buffer, the `requests` channel buffers
-accepts, and beyond that `ServeHTTP` itself blocks.
+`handle_serve` parses `ServePayload`, opens the listener (`listen.rs`, which sets
+`SO_REUSEPORT` when asked), registers the `ServerState` and starts two things: an
+accept loop task and the self-pumping stream that publishes every accepted request
+as the next result of the serve task, until the flow is cancelled. The accept
+stream bypasses the `states` registry — that one serves only the secondary streams
+(the request body, the inbound message streams). Backpressure is layered:
+publishing a result waits on the shared results buffer, the requests channel
+buffers accepts, and beyond that the connection task itself waits.
 
-Inside `serverState` (`server.go`), `ServeHTTP` acquires the `maxConcurrency`
-semaphore before reading the body (so a request waiting for a slot does not hold
-a body buffer), registers a `pendingRequest`, sends a `RequestEvent` into the
-buffered `requests` channel and waits for write commands from PHP, applying them
-to the socket; on `handlerTimeout` or disconnect it closes `abandoned`, so a
-late response does not hang forever, and it writes the access-log line on the
-extension
-side. `Next()` yields the next `RequestEvent` with the "more coming" flag (on
-`ctx.Done()` a final result without it, which ends the PHP loop). The listener
-is closed by `stopAccepting()` (the shutdown path calls it via the
-`StopAccepting` export), and cancelling the flow context unblocks every running
-handler through `BaseContext`; `Close()` is the full teardown — `http.Server`
-shutdown plus `pusher.Stop()` on a fresh context.
+The accept loop (`server.rs`) takes a `maxConcurrency` permit before reading the
+body — so a request waiting for a slot does not hold a body buffer — registers the
+request in `pending_requests`, sends a `RequestEvent` into the requests channel and
+waits for write commands from PHP, applying them to the socket. On the handler
+timeout or a disconnect it drops the pending entry, so a late response does not
+hang forever, and it writes the access-log line on the extension side. Cancelling
+the flow token unblocks every running connection task at once, which is what the
+full teardown does.
 
-`handleRespond` decodes `requestId` (with a separate mini-struct, so routing works
-even when the rest of the payload is corrupt), finds the `pendingRequest` and
-dispatches the write command, waiting for it to be applied — the handler coroutine
-continues only once the bytes have gone into the socket, or `abandoned`/context
-cancellation arrives. A payload with the no-result flag (`nr`, the full write) is
-dispatched fire-and-forget instead: no result is published, and the handover does
-not select on the flow context — the coroutine may already be gone.
+`handle_respond` decodes the `requestId` first (with a separate mini-struct, so
+routing works even when the rest of the payload is corrupt), finds the pending
+request and hands over the write command, waiting for it to be applied — the
+handler coroutine continues only once the bytes have gone into the socket, or the
+request is gone. A payload with the no-result flag (`nr`, the full write) is handed
+over fire-and-forget instead: no result is published, and the handover does not
+wait on the flow token, because the coroutine may already be gone.
 
-If the body is larger than the inline first chunk, the extension puts the remainder into a
-separate streaming state (`bodyState`, registered under `<requestId>:body`) and
-yields that key in `RequestEvent.BodyKey`; PHP reads the pieces via the same shared
+If the body is larger than the inline first chunk, the extension puts the remainder
+into a separate streaming state (registered under `<requestId>:body`) and yields
+that key in the request event's `bk`; PHP reads the pieces through the same shared
 `next()` mechanism, with a fixed 64 KiB transport granularity. The inline
 first-chunk buffer is sized by the declared `Content-Length` when that is smaller
 (a per-request allocation hot spot); chunked or unknown lengths use the full
@@ -218,8 +213,10 @@ export for the early stop of accepting — each server's `serverStates` is its o
 map, so another server's `httpStopAccepting` cannot be reused (cf.
 `socketStopAccepting`). Add `<server>StopAccepting` along the same chain:
 
-- `ext-go-legacy/main.go` — `//export <server>StopAccepting` →
-  `<server>_feature.StopAccepting(...)`;
+- `ext/src/lib.rs` — the `#[unsafe(no_mangle)] pub extern "C"` function that
+  calls into the feature;
+- `ext/include/sconcur_core.h` — its declaration, which is what the glue links
+  against;
 - `ext/sconcur.c` — `PHP_FUNCTION`, `arginfo`, the `ZEND_NS_FE` registration and the
   header line;
 - `ext/sconcur.stub.php` — the function declaration;
@@ -251,9 +248,9 @@ in [Worker master](worker-master.md).
 ## Statistics
 
 To collect and report statistics out of the box, plug in the neutral
-`ext-go-legacy/internal/stats` package — a process-metrics sampler plus a best-effort
-`Pusher` that sends snapshots to the master's collector; aggregation and the panel
-are the master's job (`src/Telemetry`), see [Server statistics](admin-stats.md).
+`ext/src/stats/` module — a process-metrics sampler plus a best-effort `Pusher`
+that sends snapshots to the master's collector; aggregation and the panel are the
+master's job (`src/Telemetry`), see [Server statistics](admin-stats.md).
 
 PHP side: `ServePayload` += `telemetrySocket`/`serverName`/`telemetryIntervalMs`
 (keys `ts`/`sn`/`ti`), the constructor += the same three parameters, and
@@ -276,9 +273,10 @@ infrastructure reference is `tests/impl/HttpServer/TestHttpServer.php` (spawn vi
 `BaseHttpServerTestCase.php`. Cover a basic request/response, streaming,
 `maxConcurrency`, `handlerTimeoutMs` (including a natively-blocking handler),
 graceful shutdown, `SO_REUSEPORT` (two servers on one port), `maxRequests` and
-orphan self-termination. The listener and state logic goes into the core's unit tests
-(`ext-go-legacy/internal/features/httpserver/server_test.go`), and the end-to-end scenario
-under the master is `tests/feature/Worker/WorkerMasterTest.php`.
+orphan self-termination. Logic the PHP suites can only catch statistically — a
+race whose window is microseconds wide — goes into the core's own unit tests
+(`#[cfg(test)] mod tests` beside the code, run by `make ext-test`), and the
+end-to-end scenario under the master is `tests/feature/Worker/WorkerMasterTest.php`.
 
 ## Checklist
 

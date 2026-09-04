@@ -250,10 +250,15 @@ certainty about leaks in production a multi-hour soak is the answer
 
 ## WebSocket server under load
 
-Same load + resources pairing, but `wrk` is HTTP-only, so the generator is
-`ext-go-legacy/cmd/ws-load` (a Go tool kept beside the legacy core) — the WS analogue of `wrk`: it holds N
-persistent connections, runs back-to-back round-trips and prints throughput and
-p50/p90/p99.
+Same load + resources pairing, but `wrk` is HTTP-only, so the WS side needs a
+generator of its own: one that holds N persistent connections, runs back-to-back
+round-trips and prints throughput with p50/p90/p99.
+
+**There is no such generator in the repository right now.** The Go one went with
+the Go core, and `tests/benchmarks/ws/load-stats.sh` stops with a message instead
+of running half a benchmark. The numbers below were taken with it while it
+existed; reproducing them needs a replacement binary that takes
+`-url -conns -duration -msg` and prints `msgs/sec`.
 
 The `all` command of the demo server (`tests/servers/ws/ws-server.php`) runs the
 same backend features concurrently for every message, with `Sleeper` added to

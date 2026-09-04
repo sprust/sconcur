@@ -13,8 +13,8 @@ FROM php:8.4.15-cli
 WORKDIR /app
 
 # Container user & group. `.env.example` — the file CI copies — sets both to 0: the
-# repository is bind-mounted and the build writes ext-go-legacy/build/sconcur.so back to the host,
-# which is the artifact the release is made of.
+# repository is bind-mounted and the build writes ext/build/sconcur.so back to
+# the host, which is the artifact the release is made of.
 ARG USER_ID
 ARG GROUP_ID
 
@@ -43,20 +43,7 @@ RUN curl -fsSL https://sh.rustup.rs -o /tmp/rustup.sh && \
     rm /tmp/rustup.sh && \
     chmod -R 777 "$RUSTUP_HOME" "$CARGO_HOME"
 
-# The Go toolchain stays: ext-go-legacy/ is the reference core the Rust one was
-# ported against, it is the only build carrying the AMQP feature today, and it is
-# still what the release publishes — so `make check-go` has to work here.
-ENV GO_VERSION="1.26.1"
-
-RUN curl -fsSL "https://dl.google.com/go/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz && \
-    tar -C /usr/local -xzf /tmp/go.tar.gz && \
-    rm /tmp/go.tar.gz
-
-ENV GOPATH=/go
-ENV PATH=$GOPATH/bin:/usr/local/go/bin:$PATH
-
-RUN mkdir -p "$GOPATH/src" "$GOPATH/bin" "$GOPATH/pkg/mod/cache/download" /.cache && \
-    chmod -R 777 "$GOPATH" /.cache
+RUN mkdir -p /.cache && chmod -R 777 /.cache
 
 RUN curl -sS https://getcomposer.org/installer \
     | php -- --install-dir=/usr/local/bin --filename=composer

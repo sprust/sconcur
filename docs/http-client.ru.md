@@ -161,7 +161,7 @@ $client = new HttpClient($factory, new HttpClientOptions(
 ```
 
 Пул соединений и keep-alive: Расширение держит переиспользуемые
-`http.Transport`ы — по одному на различающийся набор транспортных опций
+`reqwest::Client`ы — по одному на различающийся набор транспортных опций
 (`connectTimeout`/`responseHeaderTimeout`/`verifyTls` плюс параметры пула),
 поэтому keep-alive работает между запросами внутри процесса. Простаивающие
 соединения освобождаются в `features.Shutdown()`.
@@ -237,11 +237,11 @@ PHP (`src/Features/HttpClient/`): `HttpClient` собирает `RequestPayload`
 
 Rust (`ext/src/features/httpclient/`): `mod.rs` собирает запрос,
 применяет `context.WithTimeout`, запускает состояние и маршрутизирует команды;
-`response_state.go` — стриминговое состояние (первый `Next()` выполняет запрос и
+`response_state.rs` — стриминговое состояние (первый `Next()` выполняет запрос и
 возвращает метаданные плюс первый чанк, дальше идут сырые чанки тела, `Close()`
-закрывает `resp.Body`), там же лимит `maxResponseBody`; `client.go` — реестр
-переиспользуемых `*http.Transport`; `download.go` и `upload.go` — файловый приёмник
-и pipe тела запроса. Общий хелпер `internal/helpers.ReadChunk` нарезает тела и для
+закрывает the response body stream), там же лимит `maxResponseBody`; `client.rs` — реестр
+переиспользуемых `reqwest::Client`; обработчики команд `download` и `upload` — файловый приёмник
+и pipe тела запроса. Общий хелпер `ext/src/helpers.rs` нарезает тела и для
 сервера, и для клиента.
 
 ## Чего нет в v1

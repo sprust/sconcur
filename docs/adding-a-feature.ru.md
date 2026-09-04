@@ -42,7 +42,7 @@
 
 Payload — контракт обмена, разложенный зеркально с обеих сторон: PHP
 `src/Features/<Feature>/Payloads/` (по классу на payload), Rust
-`ext-go-legacy/internal/features/<feature>/payloads/payloads.go` (все типы в одном файле, в
+`ext/src/features/<feature>/payloads.rs` (все типы в одном файле, в
 модуле, названном как PHP-домен). У каждого PHP `*Payload` есть Rust-структура с
 тем же именем; поля структуры — это ключи, которые возвращает `getData()`, а теги
 `serde(rename)` равны этим коротким ключам — структура декодируется именно по ним.

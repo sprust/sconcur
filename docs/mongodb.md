@@ -278,7 +278,7 @@ driver still wins) is in the [benchmarks](benchmarks.md#mongodb).
 
 - All operations are run by `go.mongodb.org/mongo-driver/v2` in a runtime task: the
   blocking driver is used as-is, concurrency comes from the runtime.
-- Client pool (`ext-go-legacy/internal/features/mongodb/connection`) — a `*mongo.Client`
+- Client pool (`ext/src/features/mongodb/clients.rs`) — a `mongodb::Client`
   per key `uri + timeoutMs + serverSelectionTimeoutMs`, with refcounting and
   eviction of idle clients (TTL 5 minutes, checked once a minute). A client with
   operations still running is not disconnected.

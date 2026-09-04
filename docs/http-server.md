@@ -427,7 +427,7 @@ flowchart TB
 
 Pass `reusePort: true` to every process on the shared port (inside the extension it sets
 the socket option via `net.ListenConfig` with a `Control` callback,
-`ext-go-legacy/internal/features/httpserver/listen.go`). Run them as separate processes — a
+`ext/src/features/httpserver/listen.rs`). Run them as separate processes — a
 supervisor (systemd, supervisord, docker `--scale`), the
 [worker master](worker-master.md), or a plain loop — never via `pcntl_fork`.
 
@@ -597,9 +597,9 @@ its own errors, which is what `HttpServer::handle` does by turning them into a
 Rust (`ext/src/features/httpserver/`): `mod.rs` serves both methods and
 holds the registries `pendingRequests`
 (`requestId → {command channel, abandoned signal}`) and `serverStates`
-(`flowKey → serverState`, for `StopAccepting`); `server.go` is `serverState`, an
+(`flowKey → serverState`, for `StopAccepting`); `server.rs` is `serverState`, an
 `http.Handler` over `net/http.Server` handling the concurrency semaphore,
-handler timeout, 503/504 and graceful `Shutdown`; `listen.go` is the TCP
+handler timeout, 503/504 and graceful `Shutdown`; `listen.rs` is the TCP
 listener and `SO_REUSEPORT`.
 
 The listener is a self-pumping stream: an extension-side runtime task publishes every

@@ -19,20 +19,15 @@ set -uo pipefail
 
 cd "$(dirname "$0")/../.."
 
-CORE=${1:-rust}
 REQUESTS=${REQUESTS:-8}
 # How long one request may take before it counts as hung. A working core answers
 # in ~100ms; a core whose runtime did not survive the fork never answers at all.
 REQUEST_TIMEOUT=${REQUEST_TIMEOUT:-20}
 
-case "$CORE" in
-    rust) EXTENSION=/sconcur/ext/build/sconcur.so ;;
-    go)   EXTENSION=/sconcur/ext-go-legacy/build/sconcur.so ;;
-    *)    echo "usage: $0 [rust|go]" >&2; exit 2 ;;
-esac
+EXTENSION=${SCONCUR_EXT:-/sconcur/ext/build/sconcur.so}
 
 echo "=================================================================="
-echo " PHP-FPM check: $CORE core"
+echo " PHP-FPM check"
 echo "   extension : $EXTENSION"
 echo "   pool      : 4 static workers, $REQUESTS requests"
 echo "=================================================================="

@@ -280,7 +280,7 @@ $waitGroup->waitAll();
 
 - Все операции выполняет `go.mongodb.org/mongo-driver/v2` в задаче рантайма: блокирующий
   драйвер берётся как есть, конкурентность даёт рантайм.
-- Пул клиентов (`ext-go-legacy/internal/features/mongodb/connection`) — `*mongo.Client` на
+- Пул клиентов (`ext/src/features/mongodb/clients.rs`) — `mongodb::Client` на
   ключ `uri + timeoutMs + serverSelectionTimeoutMs`, с refcount и вытеснением
   простаивающих клиентов (TTL 5 минут, проверка раз в минуту). Пока есть
   незавершённые операции, клиент не отключается.
