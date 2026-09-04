@@ -36,7 +36,7 @@ readonly class FeatureExecutor
      * forgotten, and the two differ in what the payload says and in what the caller may do
      * with the answer, so the choice cannot be pushed down here. Making the question go
      * away altogether means giving an unwound coroutine a deterministic moment to release
-     * what it holds — core work, see .ai/plans/coroutine-lifetime.md §8.
+     * what it holds, which is core work nobody has done.
      */
     public static function canAwait(): bool
     {

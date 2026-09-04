@@ -5,12 +5,10 @@ declare(strict_types=1);
 /**
  * Where the per-request PSR-7 construction goes, stage by stage.
  *
- * The article this prices is the one .ai/plans/rust-core-hot-path.md names as the
- * largest one left on the PHP side: every request builds a full ServerRequest —
- * URI parsed, headers set one by one, query decoded — while a typical handler
- * reads the path and the method. Whether a lazy request is worth building
- * depends on how those microseconds actually split, and the plan's number (~76
- * us for everything between the ladder's rungs) covers more than this.
+ * Every request builds a full ServerRequest — URI parsed, headers set one by
+ * one, query decoded — while a typical handler reads the path and the method.
+ * Whether deferring any of that is worth it depends on how those microseconds
+ * actually split, which is what this measures.
  *
  * The stages are measured by rebuilding decodeRequest's steps here rather than
  * by instrumenting it: the private method is called whole for the total, and the

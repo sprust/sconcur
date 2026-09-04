@@ -1,13 +1,10 @@
 /*
- * The C view of the Rust core — the hand-written counterpart of the
- * _cgo_export.h cgo generates for the Go build.
- *
- * ext/sconcur.c is a copy of ext-go-legacy/sconcur.c with exactly one line
- * changed (this include in place of "_cgo_export.h"), so the glue this core is
- * linked with is the glue the Go build was: the same arginfo, the same
- * zend_parse_parameters, the same free() of every buffer the core hands back.
+ * The C view of the Rust core: what ext/sconcur.c may call, and the shape of
+ * what comes back.
  *
  * Every function below is defined in src/lib.rs and must keep this signature.
+ * The two files are one contract with nothing but the linker checking it, so a
+ * change here is a change there in the same commit.
  */
 
 #ifndef SCONCUR_CORE_H
@@ -20,8 +17,8 @@ extern "C" {
 #endif
 
 /*
- * Mirrors the struct main.go declares in its cgo preamble. `data` and `err` are
- * malloc'ed by the core and freed by the caller.
+ * One buffer the core hands back: `data` and `err` are malloc'ed there and freed
+ * by the caller, and the glue frees every one of them.
  */
 typedef struct {
 	void *data;

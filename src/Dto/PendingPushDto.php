@@ -11,7 +11,7 @@ use SConcur\Transport\PayloadInterface;
  * of pushing it to the extension from the fiber's own stack: the push is performed by
  * Scheduler::dispatchPendingTask on the resuming side. Keeps crossings off
  * coroutine stacks — a fan-out of N live fibers that each crossed the PHP<->extension
- * boundary degrades quadratically (see .ai/plans/async-fan-out-optimization.ru.md).
+ * boundary degrades quadratically.
  */
 readonly class PendingPushDto
 {

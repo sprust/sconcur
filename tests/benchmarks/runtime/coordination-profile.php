@@ -3,8 +3,8 @@
 declare(strict_types=1);
 
 /**
- * Item 4 of .ai/plans/rust-core-hot-path.md — attribution of the scheduler's
- * coordination cycle, the way boundary-profile.php attributed the boundary.
+ * Attribution of the scheduler's coordination cycle, the way
+ * boundary-profile.php attributed the boundary.
  *
  * The boundary costs 1.70 us per result. One `suspend -> push -> waitAny ->
  * resume` round trip costs several times that, and the difference is PHP: State

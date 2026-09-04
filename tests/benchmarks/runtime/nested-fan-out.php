@@ -9,9 +9,9 @@ declare(strict_types=1);
  * The only shape whose pushes are issued from a coroutine's own stack. Every
  * other runtime bench here is flat — coordination-profile.php builds its groups
  * from the main stack on purpose, and fan-out.php is one wide group — so that
- * path was measured by nothing at all until this existed. That is what made
- * item 1 of .ai/plans/rust-core-hot-path.md an estimate rather than a number,
- * and it is what the deferred-dispatch queue was removed on the strength of.
+ * path was measured by nothing at all until this existed. That is what kept the
+ * cost of that queue an estimate rather than a number, and it is what the
+ * deferred-dispatch queue was removed on the strength of.
  *
  * Interleaved-round discipline is not needed for one case, but the warm-up round
  * and the median are: see coordination-profile.php for why a single timed run of

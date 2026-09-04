@@ -1417,7 +1417,7 @@ function runLadderServer(string $mode, array $argv): void
                 // l2f: the pathological reference — the same respond, but the
                 // push happens ON the fiber stack. Reproduces the
                 // known-quadratic boundary-crossing cost the scheduler exists
-                // to avoid (.ai/plans/async-fan-out-optimization.ru.md).
+                // to avoid.
                 (new Fiber($respond))->start($result->payload);
             }
         }

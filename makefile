@@ -130,9 +130,8 @@ status:
 TEST_PATHS = tests
 
 # --log-junit persists the failing test's name for the rare flaky failure that
-# only fires on the first run after heavy host activity — see
-# .ai/plans/flaky-test-hunt.ru.md. A failed run's report is copied to
-# .phpunit-failed/ (gitignored, survives container restarts) with a timestamped
+# only fires on the first run after heavy host activity. A failed run's report is
+# copied to .phpunit-failed/ (gitignored, survives restarts) with a timestamped
 # name, so a one-off failure is never lost to the next run overwriting
 # /tmp/sconcur-phpunit.xml. The stale report is removed up front: phpunit
 # writes the XML at the end of the run, so a run that dies before that
@@ -195,10 +194,9 @@ ext-bench-push:
 # only, and even here excimer is installed but not enabled, so nothing loads it
 # unless a target below says so.
 #
-# Why it exists: two plans stalled on the same thing — the PSR-7 line in
-# .ai/plans/hot-path-optimization.md and the residue of the coordination cycle in
-# .ai/plans/rust-core-hot-path.md — because the stock binary makes PHP-side call
-# graphs unreadable.
+# Why it exists: the two PHP-side articles worth taking apart — building the
+# PSR-7 request, and the residue of the coordination cycle — could not be, because
+# the stock binary makes PHP-side call graphs unreadable.
 #
 # Needs the development image first (`make build`), and rebuilds PHP from source,
 # so the first run takes a while.
@@ -612,7 +610,7 @@ bench-http-load-stats-empty:
 # bytes and does no I/O. It is what /  and /all cannot see — everything they
 # measure carries a body of a few bytes, so a cost that scales with the response
 # is invisible to both. That blind spot is how a response body crossed as three
-# copies unnoticed until 2026-09-03 (.ai/plans/rust-core-hot-path.md, item 2);
+# copies unnoticed until 2026-09-03;
 # removing one of them was worth +16% rps here and nothing at all on "/".
 # Size via BODY_BYTES, e.g.: make bench-http-load-stats-big BODY_BYTES=1048576
 #

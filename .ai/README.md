@@ -60,11 +60,19 @@ decision; the `.ru.md` suffix on some older plan files is historical — new pla
 use plain `.md` names with Russian content). Code identifiers, paths and code
 blocks stay as-is.
 
-**Plans are a development-only artifact.** Never link to `.ai/plans/*` (or
-reference the directory) from the main `README.md` or from anything under `docs/`
-— those are user-facing. Plan links belong only here, in `.ai/`, and in other
-`.ai/plans/` files. Once a plan ships, point the README/docs at the feature's
-`docs/*.md` instead.
+**Plans are a development-only artifact, and nothing outside `.ai/` may point at
+one.** Not `README.md`, not `docs/`, and **not the code** — no `.ai/plans/...` in
+a docblock, a comment, a benchmark header, the makefile or a test. Plan links
+belong in `.ai/README.md` and in other `.ai/plans/` files, nowhere else.
+
+The reason is that a plan is a snapshot of a decision being made, while a
+comment is read as a statement about the code as it is. Plans get rewritten,
+renamed and deleted — several referenced from code had been deleted already — and
+a pointer into them ages into a dead end that a reader cannot even check.
+
+So when a comment wants to lean on a plan, put the fact in the comment instead:
+say what is true and why, in the sentence itself. If it is too long for that, it
+belongs in `docs/*.md`, and the comment points there.
 
 ## Build & run
 

@@ -12,8 +12,8 @@ use SConcur\Tests\Impl\DestructorProbe;
 use SConcur\WaitGroup;
 
 /**
- * Stress checks for automatic preemption (see .ai/plans/coroutine-switcher.md,
- * phase 2): a high-frequency quantum interleaving with feature suspends, nested
+ * Stress checks for automatic preemption: a high-frequency quantum
+ * interleaving with feature suspends, nested
  * groups, unwinding through finally/destructors, and arm/disarm cycling. The
  * preempt hook is armed manually here — the same plumbing the servers arm.
  */

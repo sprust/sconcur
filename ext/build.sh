@@ -1,10 +1,8 @@
 #!/usr/bin/env sh
 #
-# Builds the Rust core into ext/build/sconcur.so, the extension the
-# project loads. It is a drop-in for the Go build in ext-go-legacy/, and is
-# loaded by an unmodified PHP package.
+# Builds the core into ext/build/sconcur.so, the extension the project loads.
 #
-# Two steps, mirroring what cgo does in one for the Go build:
+# Two steps, where the retired Go build had one (cgo did both):
 #   1. cargo builds src/ into a static archive (libsconcur_core.a);
 #   2. gcc compiles the PHP glue (sconcur.c) and links it against that archive.
 #

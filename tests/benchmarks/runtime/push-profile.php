@@ -4,10 +4,9 @@ declare(strict_types=1);
 
 /**
  * What it costs to push one task across the boundary — the half
- * boundary-profile.php leaves out, and the hole .ai/plans/rust-core-hot-path.md
- * records as the one its attribution round left open.
+ * boundary-profile.php leaves out, and the one the attribution round left open.
  *
- * It matters because the two ladders there do not reconcile without it: a
+ * It matters because the two ladders do not reconcile without it: a
  * scheduler trip that pushes a task, has it executed and takes the result back
  * prices the same as one that does none of that. Either the push is nearly free
  * or something in the accounting is wrong, and only a number tells which.
@@ -23,7 +22,6 @@ declare(strict_types=1);
  * Run: php -d extension=./ext/build/sconcur.so tests/benchmarks/runtime/push-profile.php
  */
 
-use RuntimeException;
 use SConcur\Connection\Extension;
 use SConcur\Features\Sleeper\Payloads\SleeperPayload;
 use SConcur\Tests\Impl\TestApplication;

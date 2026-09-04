@@ -2,7 +2,7 @@
 #
 # Attribution ladder, Go core vs Rust core, in one interleaved session.
 #
-# Rungs (.ai/plans/cpu-per-request-attribution.md, phase 4):
+# Rungs:
 #   L0 — the core's HTTP server answers 200 "ok" itself, PHP is never called
 #        (SCONCUR_HTTP_BENCH_L0=1). The floor the runtime gives without PHP.
 #   L1 — the same server, but every request crosses to PHP and back: the core
@@ -13,7 +13,7 @@
 #   l2f — the same, with the push issued ON the fiber stack. On the Go build
 #        this is the documented pathology: a cgo call entered with the stack
 #        pointer inside a fiber stack makes glibc re-read /proc/self/maps, four
-#        times per fan-out request (hot-path-optimization.md, section 8). Run it
+#        times per fan-out request. Run it
 #        against both cores to see whether the mechanism exists at all without
 #        cgo — it is the reason Scheduler keeps pendingDispatches.
 #

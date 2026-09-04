@@ -514,7 +514,7 @@ class Scheduler
      * coroutine is resumed. Turns "a heavy handler starves all in-flight
      * neighbours" into "a heavy handler adds them at most a quantum of delay".
      * Throughput is unchanged (the PHP thread is still one); this is a latency
-     * tool. See .ai/plans/coroutine-switcher.md.
+     * tool. The user-facing side of it is docs/coroutine-switching.md.
      *
      * Cheap no-op (returns false) outside a fiber, from an untracked fiber, and
      * while the quantum has not elapsed — so the call can sit inside a hot loop:
@@ -588,7 +588,7 @@ class Scheduler
     /**
      * The automatic-preemption hook: invoked by the extension's interrupt handler
      * between opcodes while a server has preemption armed (see
-     * Extension::armPreemption and .ai/plans/coroutine-switcher.md, phase 2).
+     * Extension::armPreemption, and sconcur.c for the interrupt plumbing).
      * Force-parks the current coroutine; a no-op outside tracked coroutines (the
      * scheduler's own loop, the sync path), so only handler code is preempted.
      */
@@ -863,8 +863,7 @@ class Scheduler
      * pending task (PendingPushDto / PendingNextDto). Runs on the resuming side —
      * the scheduler loop or the code that started the fiber — so the crossing
      * happens off the coroutine's stack: a fan-out of N live fibers that each
-     * crossed the PHP<->extension boundary degrades quadratically (see
-     * .ai/plans/async-fan-out-optimization.ru.md).
+     * crossed the PHP<->extension boundary degrades quadratically.
      *
      * A push failure is thrown back into the coroutine at its suspend point,
      * where it surfaces as TaskExecutionException; the coroutine may catch it

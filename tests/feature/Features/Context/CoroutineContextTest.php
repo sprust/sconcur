@@ -15,7 +15,8 @@ use SConcur\WaitGroup;
  * Framework-neutral acceptance tests for the per-coroutine context: isolation
  * between concurrent coroutines, survival across await, read-through inheritance,
  * local-only writes (shadowing without leaking), cleanup on completion, and the
- * root context outside any fiber. Mirrors .ai/plans/sconcur-coroutine-context §9.
+ * root context outside any fiber — the contract docs/coroutine-context.md
+ * states, asserted.
  */
 class CoroutineContextTest extends BaseTestCase
 {
