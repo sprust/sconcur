@@ -163,12 +163,26 @@ reset_load_tables() {
     $DOCKER_COMPOSE exec -T postgres sh -c \
         'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "TRUNCATE TABLE load_all"' \
         >/dev/null 2>&1 || true
+    # The database is spelled with a hyphen (tests/servers/http/http-server.php
+    # selects "u-test"), and mongosh needs the root credentials the container was
+    # started with — a command missing either fails quietly and leaves the
+    # collection growing, which is what happened before this was checked.
     $DOCKER_COMPOSE exec -T mongodb sh -c \
-        'mongosh --quiet --eval "db.getSiblingDB(process.env.MONGO_INITDB_DATABASE || \"u_test\").load_all.deleteMany({})"' \
+        'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" \
+            --authenticationDatabase admin \
+            --eval "db.getSiblingDB(\"u-test\").load_all.deleteMany({})"' \
         >/dev/null 2>&1 || true
 }
 
-trap 'stop_servers; reset_load_tables' EXIT
+# One handler, because the script installs its EXIT trap twice — the second one
+# replaces the first, and a cleanup listed only in the earlier one silently stops
+# happening. Everything that has to run on the way out goes here.
+cleanup() {
+    stop_servers
+    reset_load_tables
+}
+
+trap cleanup EXIT
 
 reset_load_tables
 
@@ -306,7 +320,7 @@ echo
 
 SAMPLES=$(mktemp)
 RSS=$(mktemp)
-trap 'rm -f "$SAMPLES" "$RSS"; stop_servers' EXIT
+trap 'rm -f "$SAMPLES" "$RSS"; cleanup' EXIT
 
 # Background sampler: container CPU%/MEM (one docker stats call covers all) + summed
 # worker RSS (recorded as "elapsed_seconds total_kb" for the soak trend), until the
