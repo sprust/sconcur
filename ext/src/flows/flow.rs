@@ -123,16 +123,54 @@ impl Flow {
 ///
 /// Exported for the handler's detached (flowless) task path.
 pub async fn run_task_protected(task: Task, handler: features::Handler) {
-    let guarded = std::panic::AssertUnwindSafe(async {
+    // Both arms are resolved to a boxed future before this function's own state
+    // machine is built, because a state machine is as large as its largest arm
+    // and tokio copies what it is handed into the spawned task's allocation.
+    // The feature arm is a BoxFuture already; the state arm used to be inlined,
+    // and that one arm made every spawned task 1312 bytes — paid by every push,
+    // feature pushes included, which is all of them on the hot path. Boxing it
+    // leaves 280 bytes (with the panic path below) and takes the spawn from
+    // 1.835 us to 0.762 — both shapes measured in the same binary, alternating
+    // rounds, by ext/src/bench.rs, which keeps a copy of the old one for that.
+    // The state arm allocates a Box of its own now, which it can afford: it is
+    // the streaming next() path, not the per-request one.
+    //
+    // Building it is guarded too, and separately: it happens here rather than
+    // inside the guarded future, so without this a panic while a feature builds
+    // its future would escape into the spawned task and leave PHP waiting for a
+    // result that can no longer come. The guard around a synchronous call costs
+    // nothing when nothing panics.
+    let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> features::BoxFuture {
         match handler {
-            features::Handler::Feature(feature) => feature.handle(task.clone()).await,
-            features::Handler::State => states::get().next(&task).await,
-        }
-    });
+            features::Handler::Feature(feature) => feature.handle(task.clone()),
+            features::Handler::State => {
+                let task = task.clone();
 
-    if let Err(panic) = futures_catch_unwind(guarded).await {
-        task.add_result(Result::error(task.message(), format!("panic: {panic}"))).await;
+                Box::pin(async move { states::get().next(&task).await })
+            }
+        }
+    }));
+
+    let inner = match built {
+        Ok(inner) => inner,
+        Err(panic) => {
+            Box::pin(report_panic(task, describe_panic(panic.as_ref()))).await;
+
+            return;
+        }
+    };
+
+    if let Err(panic) = futures_catch_unwind(std::panic::AssertUnwindSafe(inner)).await {
+        // Boxed for the same reason: publishing the error is a whole future of
+        // its own, and inlined it would sit in every spawned task's allocation
+        // to serve the one task in a million that panics.
+        Box::pin(report_panic(task, panic)).await;
     }
+}
+
+/// The panic path, kept out of the caller's state machine.
+async fn report_panic(task: Task, panic: String) {
+    task.add_result(Result::error(task.message(), format!("panic: {panic}"))).await;
 }
 
 /// `catch_unwind` for a future: polls it inside the guard so a panic raised on

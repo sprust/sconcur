@@ -6,6 +6,8 @@
 //! ladder needs. Every other feature answers "unknown method" through the same
 //! facade.
 
+#[cfg(test)]
+mod bench;
 mod core;
 mod dto;
 mod errs;

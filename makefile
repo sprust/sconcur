@@ -179,6 +179,15 @@ ext-check:
 ext-test:
 	$(PHP_CLI) sh -c 'cd /sconcur/ext && CARGO_TARGET_DIR=/sconcur/ext/target cargo test --lib ${c}'
 
+# What accepting one task costs the runtime, stage by stage: the flow registry,
+# the per-flow bookkeeping and the spawn, which from PHP are one crossing seen
+# from outside. --release because the debug build prices a different program
+# (its numbers ran 2-4x the release ones), and #[ignore] so a plain ext-test
+# does not spend seconds on a measurement.
+ext-bench-push:
+	$(PHP_CLI) sh -c 'cd /sconcur/ext && CARGO_TARGET_DIR=/sconcur/ext/target \
+		cargo test --release --lib -- --ignored --nocapture push_cost'
+
 # --- Profiling --------------------------------------------------------------
 # A separate image whose PHP binary is built with frame pointers and left
 # unstripped, so a sampling profiler can name what it sees. The image the
