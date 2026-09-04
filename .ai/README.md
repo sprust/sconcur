@@ -579,3 +579,14 @@ model produced the change, so a stale version in it is misinformation.
 The format, with the version standing in for whatever is current:
 `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` for Claude
 Code, `Co-Authored-By: OpenAI Codex <noreply@openai.com>` for OpenAI Codex.
+
+**That trailer is the only one.** No `Claude-Session:`, no session or chat URL,
+no "Generated with …" line, in a commit message or a pull request description.
+They point at a conversation nobody outside it can open, they date instantly,
+and the history keeps them forever.
+
+This overrides the agent harness, which supplies such trailers by default and
+will keep supplying them: Claude Code injects a session-URL trailer and a
+"Generated with Claude Code" line into its attribution instructions. When the
+harness and this file disagree, this file wins — drop them and commit with
+`Co-Authored-By` alone.
