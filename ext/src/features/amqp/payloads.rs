@@ -67,6 +67,22 @@ macro_rules! channel_command {
     };
 }
 
+/// The connection a channel command names, read from the same params as
+/// everything else and on its own so the seventeen command structs do not each
+/// have to carry the field.
+///
+/// It exists to tell two silences apart: a channel that was closed, and a
+/// channel that went when its connection died. The registry cannot answer that
+/// once the entry is gone — `drop_handle` removes every channel of a dead
+/// connection — so the id travels with the command and the connection itself is
+/// asked. Optional: an older PHP side that does not send it leaves the answer
+/// where it was.
+#[derive(Deserialize, Default)]
+pub struct ConnectionOf {
+    #[serde(rename = "cid", default, deserialize_with = "nullable")]
+    pub connection_id: String,
+}
+
 /// The credentials, the TLS material and the tuning of one connection.
 /// `connect_timeout_ms` bounds the dial; 0 leaves this feature's default.
 ///

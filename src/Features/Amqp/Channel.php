@@ -138,6 +138,12 @@ class Channel extends AmqpResource
         string $operation = '',
     ): array {
         $data['chid'] = $this->internalId;
+        // The connection this channel belongs to, so a command that finds no
+        // channel can tell the two reasons apart: a channel that was closed, and
+        // a channel that went with its connection. Without it the extension can
+        // only answer "no channel available", which is the wrong failure for a
+        // dead connection and the wrong thing for a caller to retry.
+        $data['cid'] ??= $this->connection->connectionId();
         $data['to'] ??= $this->connection->rpcTimeoutMs();
 
         return $this->runCommand(

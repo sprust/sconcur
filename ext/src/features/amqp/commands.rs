@@ -23,8 +23,8 @@ use super::connections::{DEFAULT_RPC_TIMEOUT, DEFAULT_WRITE_TIMEOUT, ms_or_defau
 use super::consumerstats;
 use super::payloads::{self, ChannelCommand};
 use super::{
-    ERRORS, SCOPE_COMMAND, channels, connections, error_payload, fail, network_error_payload,
-    respond, respond_done,
+    ERRORS, SCOPE_CHANNEL, SCOPE_COMMAND, channels, connections, error_payload, fail,
+    network_error_payload, respond, respond_done,
 };
 
 pub async fn dispatch(task: &Task, envelope: &payloads::Envelope) {
@@ -906,26 +906,54 @@ where
 
     let params = decoded::<P>(task, raw, &format!("{what} params")).await?;
 
-    let entry = channel_of(task, params.channel_id()).await?;
+    // Read separately and leniently: it is only used to explain a missing
+    // channel, so a payload without it costs nothing here.
+    let connection_id = rmpv::ext::from_value::<super::payloads::ConnectionOf>(raw.clone())
+        .map(|of| of.connection_id)
+        .unwrap_or_default();
+
+    let entry = channel_of(task, params.channel_id(), &connection_id).await?;
 
     Some((entry, params, start_time))
 }
 
 /// Resolves a channel id, answering the task with an error when nothing answers
 /// to it (it was closed, its connection died, or the sweeper collected it).
-pub async fn channel_of(task: &Task, channel_id: &str) -> Option<Arc<ChannelEntry>> {
-    match channels().find(channel_id) {
-        Some(entry) => Some(entry),
-        None => {
-            task.add_result(Result::error(
-                task.message(),
-                error_payload(super::SCOPE_CHANNEL, 0, "No channel available."),
-            ))
-            .await;
-
-            None
-        }
+///
+/// Which of those it was decides the failure PHP raises, and the difference
+/// matters to the caller: a channel that is gone can be reopened on the same
+/// connection, a connection that is gone cannot. A dead connection takes its
+/// channels with it (`Connections::drop_handle`), so a missing channel alone
+/// cannot tell the two apart — the connection named by the command is asked, and
+/// a connection that is no longer there, or no longer connected, makes this a
+/// connection failure. Reported before this, both looked like "no channel
+/// available", and which one a caller saw depended on whether the sweep had run
+/// yet: the same broker-side close raised a channel error about half the time
+/// and a connection error the rest.
+pub async fn channel_of(
+    task: &Task,
+    channel_id: &str,
+    connection_id: &str,
+) -> Option<Arc<ChannelEntry>> {
+    if let Some(entry) = channels().find(channel_id) {
+        return Some(entry);
     }
+
+    let connection_is_gone = !connection_id.is_empty()
+        && match connections().find(connection_id) {
+            Some(handle) => handle.pooled.is_closed(),
+            None => true,
+        };
+
+    let payload = if connection_is_gone {
+        network_error_payload("No connection available.")
+    } else {
+        error_payload(SCOPE_CHANNEL, 0, "No channel available.")
+    };
+
+    task.add_result(Result::error(task.message(), payload)).await;
+
+    None
 }
 
 fn decode<P: serde::de::DeserializeOwned>(raw: &rmpv::Value) -> std::result::Result<P, String> {
