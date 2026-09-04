@@ -330,11 +330,12 @@ bench-amqp-get:
 bench-amqp-consume:
 	$(PHP_EXT) tests/benchmarks/amqp/consume.php ${c}
 
-# Memory-leak soak for the AMQP feature: runs one scenario in a loop and prints, every
-# five seconds, what the two runtimes hold — the PHP heap and its dangling tasks, the Go
-# goroutine count and heap. Every cycle releases whatever it opened, so a column that only
-# grows is a leak. Scenarios: publish, churn, consume, fanout, errors, confirms,
-# consume-async, stop. Defaults to publish for two minutes.
+# Memory-leak soak for the AMQP feature: runs one scenario in a loop and prints,
+# every five seconds, what is held on both sides — the PHP heap and its dangling
+# tasks, and what the broker still has open. Every cycle releases whatever it
+# opened, so a column that only grows is a leak. Scenarios: publish, churn,
+# consume, fanout, errors, confirms, consume-async, stop, consumer, consumer-lost.
+# Defaults to publish for two minutes.
 #
 # e.g.: make mem-leak-amqp scenario=churn seconds=600
 #
