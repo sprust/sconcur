@@ -1,0 +1,38 @@
+# The profiling overlay: `php` is built from docker/profiling instead of the
+# development image, so its PHP binary carries frame pointers and symbols and a
+# sampling profiler can name what it sees. Everything else — the backends, the
+# volumes, the `servers` container — comes from docker-compose.yml unchanged.
+#
+# It is an overlay rather than a second service because profiling has to run
+# against the same tree, the same extension build and the same backends as the
+# measurement it is explaining; a separate container would drift from them.
+#
+# The image is built ON TOP of the development one, so that has to exist first:
+#
+#   make build           # the development image
+#   make profile-build   # this overlay's image
+#   make profile c="tests/benchmarks/runtime/push-profile.php"
+#
+# perf needs to read kernel symbols and the process's own maps, which the default
+# container security profile blocks. The two settings below are why this is an
+# overlay you opt into and not something the development compose file carries.
+services:
+  php:
+    # Named explicitly, and this is not decoration. Without it compose derives the
+    # image name from the project and service — the same `sconcur-php-php` the
+    # development image uses — so building this overlay would overwrite the image
+    # every benchmark runs on, and the next build of this one would take *itself*
+    # as its base. The whole point of a separate profiling image is that the
+    # measured image does not carry a profiler.
+    image: sconcur-php-profiling
+    build:
+      context: ./docker/profiling
+      args:
+        - BASE_IMAGE=sconcur-php-php
+        - GROUP_ID=${DOCKER_GROUP_ID}
+        - USER_ID=${DOCKER_USER_ID}
+    cap_add:
+      - SYS_ADMIN
+      - PERFMON
+    security_opt:
+      - seccomp:unconfined

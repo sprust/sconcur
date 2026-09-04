@@ -179,6 +179,74 @@ ext-check:
 ext-test:
 	$(PHP_CLI) sh -c 'cd /sconcur/ext && CARGO_TARGET_DIR=/sconcur/ext/target cargo test --lib ${c}'
 
+# --- Profiling --------------------------------------------------------------
+# A separate image whose PHP binary is built with frame pointers and left
+# unstripped, so a sampling profiler can name what it sees. The image the
+# benchmark numbers come from is untouched: the profilers live here and here
+# only, and even here excimer is installed but not enabled, so nothing loads it
+# unless a target below says so.
+#
+# Why it exists: two plans stalled on the same thing — the PSR-7 line in
+# .ai/plans/hot-path-optimization.md and the residue of the coordination cycle in
+# .ai/plans/rust-core-hot-path.md — because the stock binary makes PHP-side call
+# graphs unreadable.
+#
+# Needs the development image first (`make build`), and rebuilds PHP from source,
+# so the first run takes a while.
+PROFILE_COMPOSE = COMPOSE_FILE=docker-compose.yml:docker-compose.profiling.yml
+
+profile-build:
+	$(PROFILE_COMPOSE) docker compose build php
+
+# Recreates the php container from the profiling image. The backends keep
+# running; only php is replaced.
+profile-up:
+	$(PROFILE_COMPOSE) docker compose up -d --no-deps php
+
+# Back to the development image.
+profile-down:
+	docker compose up -d --no-deps php
+
+# Runs as root inside the container: the capabilities the overlay grants are
+# only effective for uid 0, and a container running as a normal user has an
+# empty CapEff whatever cap_add says.
+# Samples a script with perf and writes a folded stack file next to it, which
+# reads directly and also feeds a flame graph.
+#   make profile-perf c="tests/benchmarks/runtime/push-profile.php"
+profile-perf:
+	$(PROFILE_COMPOSE) docker compose exec -u root -e SCONCUR_EXT=$(SCONCUR_EXT) php \
+		perf record -F 999 -g --call-graph fp -o /tmp/sconcur-perf.data -- \
+		php -d extension=$(SCONCUR_EXT) ${c}
+	$(PROFILE_COMPOSE) docker compose exec -u root php \
+		sh -c 'perf report -i /tmp/sconcur-perf.data --stdio --no-children --percent-limit 0.5 | head -60'
+
+# Whether this host will let perf sample at all. kernel.perf_event_paranoid is a
+# host setting a container cannot change: at 2 or below the target above works,
+# at 3 or more (Ubuntu ships 4) the kernel refuses whatever capabilities the
+# container was given.
+profile-perf-check:
+	@echo "kernel.perf_event_paranoid = $$(cat /proc/sys/kernel/perf_event_paranoid)"
+	@echo "  <= 2  perf works"
+	@echo "  >= 3  blocked; allow it for this boot with:"
+	@echo "        sudo sysctl kernel.perf_event_paranoid=1"
+
+# Samples the PHP stack rather than the C one: which PHP function was running,
+# not which engine function it was inside. The two answer different halves.
+#   make profile-php c="tests/benchmarks/runtime/push-profile.php"
+profile-php:
+	$(PROFILE_COMPOSE) docker compose exec -e SCONCUR_EXT=$(SCONCUR_EXT) php \
+		php -d extension=excimer.so -d extension=$(SCONCUR_EXT) \
+		tests/benchmarks/lib/excimer-profile.php ${c}
+
+# Proof the image is what it claims: unstripped, with frame pointers, and
+# carrying both profilers.
+profile-verify:
+	$(PROFILE_COMPOSE) docker compose exec php sh -c '\
+		echo "php binary:"; file $$(which php) | sed "s/^/  /"; \
+		echo "frame pointers:"; objdump -d $$(which php) | grep -c "push   %rbp" | sed "s/^/  push %rbp sites: /"; \
+		echo "profilers:"; php -d extension=excimer.so -m | grep -i excimer | sed "s/^/  /"; \
+		perf --version | sed "s/^/  /"'
+
 # --- The Go core ------------------------------------------------------------
 # Moved to ext-go-legacy/, still buildable, no longer what anything loads. It is
 # the reference the Rust core was ported against, and the only build that carries
@@ -305,6 +373,13 @@ bench-fan-out:
 # across the boundary, this one prices the PHP coordination wrapped around it.
 bench-coordination:
 	$(PHP_EXT) tests/benchmarks/runtime/coordination-profile.php
+
+# The push half of the boundary, which neither of the two above prices. Pushes
+# sleepers that hold for seconds, so the runtime cannot execute anything inside
+# the measured window — its threads are this process's threads, and their CPU
+# would otherwise land in the number.
+bench-push:
+	$(PHP_EXT) tests/benchmarks/runtime/push-profile.php
 
 # What a member of a nested fan-out costs — a WaitGroup created inside a
 # coroutine, the only shape whose pushes come off a coroutine's own stack and so
