@@ -390,6 +390,13 @@ bench-coordination:
 bench-request:
 	$(PHP_EXT) tests/benchmarks/runtime/request-profile.php
 
+# Whether tearing a coroutine down costs more when more coroutines are alive:
+# the same group of short-lived members against a growing crowd of parked
+# neighbours. Two steps of that path are scans, and a scan costs what the
+# process is holding.
+bench-teardown:
+	$(PHP_EXT) tests/benchmarks/runtime/teardown-profile.php
+
 # The push half of the boundary, which neither of the two above prices. Pushes
 # sleepers that hold for seconds, so the runtime cannot execute anything inside
 # the measured window — its threads are this process's threads, and their CPU
