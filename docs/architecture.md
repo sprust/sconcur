@@ -34,7 +34,10 @@ one.
 Because every resumption comes from the scheduler, coroutines do not nest on each
 other's call stack. So a nested `WaitGroup` inside a coroutine does not block the
 outer flow: it cooperatively suspends (`Scheduler::awaitGroup()`) until its group
-finishes, while the outer coroutines keep running.
+has a result to hand over or has finished, while the outer coroutines keep
+running. A ready result wakes it as soon as it lands, so a nested `iterate()`
+streams the way the top-level one does — it does not hold the first result until
+the slowest member is done.
 
 The synchronous path — a feature called outside a Fiber — waits for its flow
 through `Extension::wait(flowKey)`; there is no concurrency there.

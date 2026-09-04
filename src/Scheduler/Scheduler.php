@@ -1518,7 +1518,19 @@ class Scheduler
 
         $this->forget($coroutine);
 
-        if ($coroutine->group !== null && !$coroutine->group->isLive()) {
+        if ($coroutine->group === null) {
+            return;
+        }
+
+        // Woken on a ready result, not only on the group settling. A coroutine
+        // awaiting a nested group parks in awaitGroup(); waking it only when the
+        // last member finished made the nested iterate() hold the first result
+        // until the slowest member was done — a group of a 1 ms member and a 10 s
+        // one yielded nothing for ten seconds, while the same group at top level
+        // yields at once (that path loops in run() instead of parking). A wake
+        // with nothing to take costs a re-check: iterate() finds no result and
+        // parks again.
+        if (!$coroutine->group->isLive() || $coroutine->group->hasReadyOrFailure()) {
             $this->wakeGroupWaiters($coroutine->group);
         }
     }
