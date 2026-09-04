@@ -110,13 +110,18 @@ pub struct ConnectParams {
     pub connection_name: String,
 }
 
-/// The `p` content of the commands addressing a connection handle as a whole.
+/// The `p` content of the commands addressing a connection handle as a whole:
+/// disconnect, and counting the channels it holds.
+///
+/// No timeout, unlike every other command's params. Both commands are answered
+/// out of the local registry — releasing a handle and counting its channels — so
+/// there is no broker round trip for a deadline to bound. PHP used to send one
+/// anyway and neither core ever read it, this one included; it is not sent any
+/// more.
 #[derive(Deserialize, Default)]
 pub struct ConnectionParams {
     #[serde(rename = "cid", default, deserialize_with = "nullable")]
     pub connection_id: String,
-    #[serde(rename = "to", default, deserialize_with = "nullable")]
-    pub timeout_ms: i64,
 }
 
 /// The `p` content of a ChannelOpen: the connection to open the channel on,

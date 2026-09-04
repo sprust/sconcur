@@ -196,7 +196,6 @@ class Connection extends AmqpResource
             command: AmqpCommandEnum::UsedChannels,
             data: [
                 'cid' => $this->internalId,
-                'to'  => $this->rpcTimeoutMs(),
             ],
             exceptionClass: ConnectionException::class,
         );
@@ -270,7 +269,6 @@ class Connection extends AmqpResource
             command: AmqpCommandEnum::Disconnect,
             data: [
                 'cid' => $connectionId,
-                'to'  => $this->rpcTimeoutMs(),
             ],
             exceptionClass: ConnectionException::class,
         );
@@ -323,7 +321,6 @@ class Connection extends AmqpResource
             command: AmqpCommandEnum::Disconnect,
             data: [
                 'cid' => $connectionId,
-                'to'  => $this->rpcTimeoutMs(),
             ],
         );
     }
