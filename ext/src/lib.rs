@@ -1,10 +1,10 @@
 //! The C exports the PHP glue (sconcur.c) binds to, the
 //! binary result frame, and the preemption timer.
 //!
-//! Core spike (branch spike/rust-core): the exports, the shared results
-//! channel, the sleeper feature and the HTTP server rungs the attribution
-//! ladder needs. Every other feature answers "unknown method" through the same
-//! facade.
+//! Everything the PHP side can call ends up here: the exports themselves, the
+//! shared results channel behind them, and the frame the results cross in.
+//! A method the build does not carry answers "unknown method" through the same
+//! facade rather than failing differently.
 
 #[cfg(test)]
 mod bench;
