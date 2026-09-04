@@ -141,3 +141,163 @@ impl Task {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::types::method::Method;
+    use std::time::Duration;
+
+    /// Long enough that a publisher which was going to make progress has, short
+    /// enough that a test which parks forever fails quickly rather than hanging
+    /// the suite.
+    const SETTLE: Duration = Duration::from_millis(50);
+
+    fn message() -> Arc<Message> {
+        Arc::new(Message {
+            flow_key: "flow".to_string(),
+            method: Method::Sleep,
+            task_key: "flow:1".to_string(),
+            payload: Vec::new(),
+            is_next: false,
+            owner_id: 1,
+        })
+    }
+
+    fn task(sink: ResultSink, flow_ctx: CancellationToken) -> Task {
+        Task::new(flow_ctx, sink, message())
+    }
+
+    fn result() -> Result {
+        Result::success(&message(), Vec::new(), 0)
+    }
+
+    /// The invariant the permits exist for. Both ways of getting it wrong are
+    /// caught here: a publisher that drops the result on a full buffer finishes
+    /// immediately, and one that oversends it finishes immediately too — the
+    /// test wants it to still be parked.
+    #[tokio::test]
+    async fn a_publisher_parks_on_a_full_buffer_until_a_slot_is_released() {
+        let (sink, rx) = ResultSink::new(2);
+        let task = task(sink.clone(), CancellationToken::new());
+
+        task.add_result(result()).await;
+        task.add_result(result()).await;
+
+        assert_eq!(rx.len(), 2, "the buffer should be full");
+
+        let parked = tokio::spawn({
+            let task = task.clone();
+
+            async move { task.add_result(result()).await }
+        });
+
+        tokio::time::sleep(SETTLE).await;
+
+        assert!(!parked.is_finished(), "the third publisher should be parked");
+        assert_eq!(rx.len(), 2, "and nothing should have been oversent");
+
+        // Taking one out is what wakes it — the consumer's release, not a timer.
+        let _ = rx.recv().unwrap();
+        sink.release(1);
+
+        tokio::time::timeout(SETTLE, parked)
+            .await
+            .expect("releasing a slot should have woken the publisher")
+            .expect("the publisher should not have panicked");
+
+        assert_eq!(rx.len(), 2);
+    }
+
+    /// A flow that goes away while a publisher waits for room releases it.
+    /// Without this the task would hold its permit-less park for the life of the
+    /// process, and stopFlow would not actually stop anything.
+    #[tokio::test]
+    async fn a_cancelled_flow_releases_a_parked_publisher() {
+        let (sink, rx) = ResultSink::new(1);
+        let flow_ctx = CancellationToken::new();
+        let task = task(sink, flow_ctx.clone());
+
+        task.add_result(result()).await;
+
+        let parked = tokio::spawn({
+            let task = task.clone();
+
+            async move { task.add_result(result()).await }
+        });
+
+        tokio::time::sleep(SETTLE).await;
+
+        assert!(!parked.is_finished());
+
+        flow_ctx.cancel();
+
+        tokio::time::timeout(SETTLE, parked)
+            .await
+            .expect("cancelling the flow should have released the publisher")
+            .expect("the publisher should not have panicked");
+
+        // The result was never published: nobody was coming for it.
+        assert_eq!(rx.len(), 1);
+    }
+
+    /// A detached result runs on the PHP thread inside push() — the same thread
+    /// that drains the channel — so waiting for room there is a deadlock, not a
+    /// delay. It drops the result instead, and the slot accounting survives the
+    /// drop.
+    #[tokio::test]
+    async fn a_detached_result_is_dropped_rather_than_waiting() {
+        let (sink, rx) = ResultSink::new(1);
+        let task = task(sink.clone(), CancellationToken::new());
+
+        task.add_result(result()).await;
+
+        // Synchronous on purpose: if this ever waits, it hangs here.
+        task.add_result_detached(result());
+
+        assert_eq!(rx.len(), 1, "the detached result should have been dropped");
+
+        // And the slot it could not take was not consumed: one release makes
+        // room for exactly one more.
+        let _ = rx.recv().unwrap();
+        sink.release(1);
+
+        task.add_result_detached(result());
+
+        assert_eq!(rx.len(), 1);
+    }
+
+    /// The permits and the channel have to stay in step over many rounds: a slot
+    /// leaked per result would shrink the buffer until it wedged, which is a
+    /// failure that only shows up after hours of traffic.
+    #[tokio::test]
+    async fn slots_and_results_stay_in_step_over_many_rounds() {
+        let (sink, rx) = ResultSink::new(4);
+        let task = task(sink.clone(), CancellationToken::new());
+
+        for _ in 0..50 {
+            for _ in 0..4 {
+                task.add_result(result()).await;
+            }
+
+            assert_eq!(rx.len(), 4);
+
+            for _ in 0..4 {
+                let _ = rx.recv().unwrap();
+            }
+
+            sink.release(4);
+        }
+
+        // The buffer still holds its whole capacity, which it would not if a
+        // permit had gone missing on any of the 200 round trips.
+        for _ in 0..4 {
+            tokio::time::timeout(SETTLE, task.add_result(result()))
+                .await
+                .expect("the buffer should still take its full capacity");
+        }
+
+        assert_eq!(rx.len(), 4);
+    }
+}
