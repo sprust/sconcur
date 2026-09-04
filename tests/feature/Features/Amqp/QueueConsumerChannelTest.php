@@ -391,8 +391,15 @@ class QueueConsumerChannelTest extends AmqpTestCase
             queues: $this->queuesJson($source->name()),
             prefetchCount: 1,
             requeueOnFailure: false,
-            maxMessages: count($bodies) + 3,
-            maxRuntimeSeconds: 30,
+            // Exactly what will be delivered: the eight jobs, plus the one whose
+            // handler was given a dead connection and left it for the broker to
+            // hand out again. Reaching that count is what ends the run, so the
+            // test costs what the work costs instead of sitting out a time limit.
+            maxMessages: count($bodies) + 1,
+            // The backstop, not the duration. It only matters when the count above
+            // is never reached — a message that never comes back — and then the
+            // assertions below fail on the evidence rather than the suite hanging.
+            maxRuntimeSeconds: 10,
         );
 
         $queueConsumer->consume(
@@ -541,8 +548,15 @@ class QueueConsumerChannelTest extends AmqpTestCase
             requeueOnFailure: false,
             // Room for far more rounds than the bound allows, so a loop shows up as the
             // limit being reached rather than as the test hanging.
-            maxMessages: 20,
-            maxRuntimeSeconds: 15,
+            // Three rounds are already a loop: the assertion below allows two.
+            // Stopping there makes a real loop end the run immediately instead of
+            // spinning until the time limit, and it is the failing case that
+            // should be quick to see.
+            maxMessages: 3,
+            // The negative case has nothing to end it — no loop means no further
+            // delivery — so this is what the test watches for. A handler that goes
+            // round does so at full speed, which three seconds show many times over.
+            maxRuntimeSeconds: 3,
         );
 
         $queueConsumer->consume(

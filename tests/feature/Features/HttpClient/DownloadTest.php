@@ -11,6 +11,15 @@ use SConcur\WaitGroup;
 
 class DownloadTest extends BaseHttpClientTestCase
 {
+    /**
+     * What the three truncated-response cases wait for: the server promises more
+     * body than it sends, so the download ends when the client gives up, and the
+     * timeout is the whole duration of each test. None of them asserts the
+     * timeout itself — they assert that the failure surfaces and the partial file
+     * is gone — so the wait is cut to what proves that, and the three tests cost
+     * 4.5 s together instead of 15.
+     */
+    protected const int TRUNCATED_TIMEOUT_MS = 1_500;
     /** @var list<string> */
     protected array $paths = [];
 
@@ -223,7 +232,7 @@ class DownloadTest extends BaseHttpClientTestCase
         $exception = null;
 
         try {
-            $this->client(new HttpClientOptions(requestTimeoutMs: 5_000))->download(
+            $this->client(new HttpClientOptions(requestTimeoutMs: self::TRUNCATED_TIMEOUT_MS))->download(
                 request: $this->request('GET', '/truncated'),
                 path: $path,
                 mode: DownloadFileMode::Replace,
@@ -245,7 +254,7 @@ class DownloadTest extends BaseHttpClientTestCase
         $exception = null;
 
         try {
-            $this->client(new HttpClientOptions(requestTimeoutMs: 5_000))->download(
+            $this->client(new HttpClientOptions(requestTimeoutMs: self::TRUNCATED_TIMEOUT_MS))->download(
                 request: $this->request('GET', '/truncated'),
                 path: $path,
                 mode: DownloadFileMode::Create,
@@ -266,7 +275,7 @@ class DownloadTest extends BaseHttpClientTestCase
 
         file_put_contents($path, 'original-');
 
-        $client = $this->client(new HttpClientOptions(requestTimeoutMs: 5_000));
+        $client = $this->client(new HttpClientOptions(requestTimeoutMs: self::TRUNCATED_TIMEOUT_MS));
 
         $exception = null;
 

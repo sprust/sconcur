@@ -149,7 +149,28 @@ stop_servers() {
         rm -f "'"$PIDFILE"'"
     ' 2>/dev/null || true
 }
-trap stop_servers EXIT
+
+# The /all and /db* routes write a row per request, and the databases live on a
+# 1 GiB tmpfs (docker-compose.yml). A ten-minute soak at a few thousand rps puts
+# millions of rows there and fills it; what breaks then is not the next benchmark
+# but the next test run, with "The table ... is full" on anything needing space —
+# a failure with nothing in it to point back here. So the tables the load routes
+# write to are emptied around every run.
+reset_load_tables() {
+    $DOCKER_COMPOSE exec -T mysql sh -c \
+        'mysql -u root -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" -e "TRUNCATE TABLE load_all"' \
+        >/dev/null 2>&1 || true
+    $DOCKER_COMPOSE exec -T postgres sh -c \
+        'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "TRUNCATE TABLE load_all"' \
+        >/dev/null 2>&1 || true
+    $DOCKER_COMPOSE exec -T mongodb sh -c \
+        'mongosh --quiet --eval "db.getSiblingDB(process.env.MONGO_INITDB_DATABASE || \"u_test\").load_all.deleteMany({})"' \
+        >/dev/null 2>&1 || true
+}
+
+trap 'stop_servers; reset_load_tables' EXIT
+
+reset_load_tables
 
 # The CPU list each worker is pinned to, one entry per worker, space separated —
 # empty when PIN_SERVERS leaves them unpinned. Built here rather than inside the

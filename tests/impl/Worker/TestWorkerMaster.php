@@ -74,6 +74,12 @@ class TestWorkerMaster
             self::buildConfig([
                 'workerScript' => self::workerScript(),
                 'workerCount'  => 2,
+                // The production default is 10 s per worker, which the CLI turns
+                // into a stop bound of workers × (drain + 2 s) + 5 s — 29 s for
+                // the two here. Nothing in these tests drains for more than
+                // milliseconds, so the budget is cut to keep both a legitimate
+                // stop and the hang detector below in the seconds.
+                'shutdownTimeoutMs' => 1_500,
                 'runtimeDir'   => $runtimeDir,
                 'logDir'       => $runtimeDir,
                 'name'         => $name,
@@ -187,6 +193,18 @@ class TestWorkerMaster
      *
      * @return array{int, string}
      */
+    /**
+     * How long a one-shot subcommand may take before the wait gives up.
+     *
+     * Sized above what the CLI itself allows a stop to take with this config —
+     * workers × (shutdownTimeoutMs + 2 s) + 5 s, i.e. 2 × 3.5 + 5 = 12 s — so a
+     * slow-but-legitimate stop is never killed. Everything measured is far under
+     * it: the whole Worker suite is 68 tests in 11 s, its slowest single test 2 s.
+     * The number is a hang detector, and a hang costs 15 s rather than a run that
+     * never ends.
+     */
+    protected const float COMMAND_TIMEOUT_SECONDS = 15.0;
+
     public static function runCommand(
         string $subcommand,
         string $configPath,
@@ -199,17 +217,46 @@ class TestWorkerMaster
 
         $process = self::open($argv, $env, $outputFile);
 
+        // Bounded, because these are one-shot subcommands: start, status, stop.
+        // A wait without a deadline turns a subcommand that hangs — a master that
+        // never releases the lock, a stop that never returns — into a suite that
+        // hangs with it, with no output and no failing test to point at. The
+        // process is killed and the caller gets what it printed, so the assertion
+        // that follows fails on the evidence instead of never running.
+        $deadline = microtime(true) + self::COMMAND_TIMEOUT_SECONDS;
+
         do {
             $status = proc_get_status($process);
 
+            if (!$status['running']) {
+                break;
+            }
+
+            if (microtime(true) >= $deadline) {
+                proc_terminate($process, SIGKILL);
+
+                $timedOut = true;
+
+                break;
+            }
+
             usleep(20_000);
-        } while ($status['running']);
+        } while (true);
 
         proc_close($process);
 
         $output = (string) @file_get_contents($outputFile);
 
         @unlink($outputFile);
+
+        if (isset($timedOut)) {
+            throw new RuntimeException(sprintf(
+                'sconcur-master %s did not finish in %.1fs; killed. Output so far: %s',
+                $subcommand,
+                self::COMMAND_TIMEOUT_SECONDS,
+                $output === '' ? '<empty>' : trim($output),
+            ));
+        }
 
         return [(int) $status['exitcode'], $output];
     }

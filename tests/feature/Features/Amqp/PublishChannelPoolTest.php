@@ -276,7 +276,9 @@ class PublishChannelPoolTest extends AmqpTestCase
                 $closed = TestAmqpResolver::closeConnectionsNamed($name);
 
                 if ($closed === 0) {
-                    usleep(500_000);
+                    // Fine steps: the listing lags the socket by about a second,
+                    // and a half-second step rounds that up to the next one.
+                    usleep(100_000);
                 }
             }
 

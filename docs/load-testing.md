@@ -189,8 +189,14 @@ requests (~5.2M feature operations).
 RSS stayed flat (618–622 MiB) for the whole distance — the slope is within noise,
 there is no slow leak. The `mongodb` container's MEM meanwhile grew to ~372 MiB
 because of the unbounded inserts of `/all` into the `load_all` collection, while
-the worker RSS did not budge: the data is accumulated by the DB, not by SConcur
-(the collection can be dropped after the runs).
+the worker RSS did not budge: the data is accumulated by the DB, not by SConcur.
+
+The harness empties those tables around every run, and that is not tidiness. The
+three databases keep their data on a 1 GiB tmpfs (`docker-compose.yml`), which a
+ten-minute soak at a few thousand rps fills — after which everything that needs
+space fails with "the table is full". What breaks then is not the next benchmark
+but the next test run, with an error that points nowhere near the benchmark that
+caused it.
 
 ## Concurrent vs sequential calls (`/all` vs `/all-nowg`)
 

@@ -630,11 +630,15 @@ class AmqpFailureTest extends AmqpTestCase
         $closed   = 0;
         $deadline = microtime(true) + 15.0;
 
+        // Polled finely rather than twice a second: the broker lists a fresh
+        // connection about a second after the socket, and a 500 ms step rounded
+        // that up to two or three. The management call is cheap next to the wait
+        // it replaces.
         while ($closed === 0 && microtime(true) < $deadline) {
             $closed = TestAmqpResolver::closeConnectionsNamed($name);
 
             if ($closed === 0) {
-                usleep(500_000);
+                usleep(100_000);
             }
         }
 
