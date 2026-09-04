@@ -183,13 +183,21 @@ Everything else follows from that:
 
 ## Use and limitations
 
-- CLI only (the `cli` SAPI) — about the SAPI, not about "no web". The target is
-  long-lived CLI processes: workers, daemons, console commands, and the HTTP,
-  WebSocket and socket servers themselves, which are ordinary PHP scripts that
-  listen on a port on their own (the Swoole / ReactPHP model). It also drops into
-  a long-lived process you already run, including a RoadRunner worker. PHP-FPM
-  and mod_php are out: the extension keeps a runtime at process level, which
-  contradicts the request-per-process model.
+- Built for long-lived processes, and that is what it is tested on: workers,
+  daemons, console commands, and the HTTP, WebSocket and socket servers
+  themselves, which are ordinary PHP scripts listening on a port (the Swoole /
+  ReactPHP model). It also drops into a long-lived process you already run,
+  including a RoadRunner worker. Nothing checks the SAPI, so this is what it is
+  meant for rather than what it enforces.
+- PHP-FPM works, with a caveat worth understanding. A pool of 4 static workers,
+  each request fanning out twelve 100 ms coroutines, serves every request in
+  ~102 ms rather than 1200 (`ext/check/fpm-check.sh`): a worker rebuilds the
+  runtime after the master forks it, and concurrency inside one request is real.
+  What FPM cannot give is concurrency *between* requests — the fan-out has to
+  finish before the request does — and every worker carries a runtime of its own.
+  So it buys the same thing a `curl_multi` would, and the servers above are where
+  the library pays off. ZTS builds (mod_php on a threaded MPM) are not supported
+  at all.
 - `pcntl_fork` is supported, including after the extension has run work. Only the
   forking thread survives into the child, so the runtime it inherits has no
   worker threads left; the extension notices and rebuilds it on the child's next
@@ -285,10 +293,6 @@ The extension core is `ext/` (Rust). It builds into `ext/build/sconcur.so`:
 make ext-build
 ```
 
-The Go core it was ported from is kept in `ext-go-legacy/` as history. It still
-builds (`make ext-build-go`) and produces the same extension ABI for ABI, so it
-can be loaded by an unchanged package — but nothing here is built on it, and
-nothing is checked against it.
 ## echo test
 ```shell
 php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello') . PHP_EOL;"
