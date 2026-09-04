@@ -264,7 +264,7 @@ function allFeaturesContext(): array
         )
             ->selectDatabase('u-test')
             ->selectCollection('load_all'),
-        // Pool cap mirrors the HTTP demo server: the Go-side pool is per worker
+        // Pool cap mirrors the HTTP demo server: the extension-side pool is per worker
         // process, and an unbounded pool under the load harness exhausts the DB
         // server limits (PostgreSQL max_connections=100).
         new MysqlConnection(

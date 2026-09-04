@@ -2,7 +2,7 @@
 //!
 //! The connection, the channels, the topology, publishing and consuming all
 //! live here; PHP stays a thin orchestrator. See docs/amqp.md for the shape the
-//! feature exposes and .ai/plans/amqp-rust-port.md for how it was ported.
+//! feature exposes.
 
 pub mod channels;
 pub mod commands;

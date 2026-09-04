@@ -184,7 +184,7 @@ class SchedulerFiberPoolTest extends BaseTestCase
 
     /**
      * A coroutine spawned from inside another one has its first push queued
-     * (the dispatch may not cross into Go from a fiber stack) and drained later by
+     * (the dispatch may not cross the boundary from a fiber stack) and drained later by
      * the scheduler. The queue is keyed by Coroutine, not by fiber: a pooled fiber
      * outlives its coroutine, so fiber identity would match the wrong owner.
      */

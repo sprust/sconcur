@@ -92,8 +92,8 @@ const RABBITMQ_MAX_JOBS = 100000;
  * normal server (see runLadderServer below).
  */
 
-// Attribution-ladder bench modes (.ai/plans/cpu-per-request-attribution.md,
-// phase 4): --ladder=l1 answers every request 200 "ok" inline from the loop (no
+// Attribution-ladder bench modes: --ladder=l1 answers every request 200 "ok"
+// inline from the loop (no
 // Fiber), --ladder=l2 answers the same from a fresh Fiber per request. Both talk
 // to the extension directly — no Scheduler, no PSR-7, no HttpServer::serve().
 // The option is stripped from argv before fromArgs(), which rejects unknown args.
@@ -601,7 +601,7 @@ function rabbitmqPublisher(): AmqpQueue
 
 // Native, BLOCKING sleep — unlike the async usleep above it does NOT yield to the
 // scheduler, so it freezes the whole single-threaded server. Used to verify that the
-// Go-side handlerTimeoutMs still answers the client with a 504 even when the PHP
+// extension-side handlerTimeoutMs still answers the client with a 504 even when the PHP
 // handler is blocked natively (the timer fires independently of PHP).
 function nativeMsleepRoute(Psr17Factory $factory, string $path): ResponseInterface
 {
@@ -691,7 +691,8 @@ function dbPoolSize(): int
     return max(1, (int) (getenv('SCONCUR_DB_POOL_SIZE') ?: 9));
 }
 
-// The MySQL DSN shared by the /db* bench routes (Go driver format).
+// The MySQL DSN shared by the /db* bench routes (go-sql-driver format, which is
+// the wire contract — see docs/mysql.md).
 function dbMysqlDsn(): string
 {
     Dotenv::createImmutable(dirname(__DIR__, 3))->safeLoad();
@@ -943,7 +944,7 @@ function allFeaturesContext(): array
             )
                 ->selectDatabase('u-test')
                 ->selectCollection('load_all'),
-            // The Go-side pool is per worker process; the load harness runs up to
+            // The extension-side pool is per worker process; the load harness runs up to
             // ~nproc workers, so an unbounded pool exhausts the DB server limits
             // (PostgreSQL max_connections=100 -> "too many clients" -> 500s under
             // load). 5 conns x 16 processes stays under the limit for both DBs.
@@ -1246,8 +1247,7 @@ function statusRoute(Psr17Factory $factory, string $path): ResponseInterface
 }
 
 /**
- * Attribution-ladder serve loop (.ai/plans/cpu-per-request-attribution.md,
- * phase 4). Speaks to the extension directly: push the listener flow, pull
+ * Attribution-ladder serve loop. Speaks to the extension directly: push the listener flow, pull
  * results with waitAnyBatch(), re-arm with next() and answer every request with
  * a constant 200 "ok" — inline in l1; in l2 from a fresh Fiber per request that
  * suspends with the pending respond so the push stays off the fiber stack

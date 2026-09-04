@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # nginx in front of the worker pool — the "someone else already wrote the
-# dispatcher" arm of .ai/plans/dispatch-experiment.md.
+# dispatcher" arm of the dispatch experiment.
 #
 # Runs nginx inside the php container's network namespace, so the hop to the
 # workers is loopback rather than the docker bridge: that is the closest honest

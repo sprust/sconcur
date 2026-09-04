@@ -19,7 +19,7 @@ use Throwable;
 
 /**
  * The fire-and-forget push (FeatureExecutor::execNoResult): the coroutine hands a
- * task to Go and continues without awaiting a result — none is ever published
+ * task to the extension and continues without awaiting a result — none is ever published
  * for it. Used for the final write of a full HTTP response.
  */
 class SchedulerFireAndForgetTest extends BaseTestCase

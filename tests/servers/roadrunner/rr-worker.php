@@ -464,7 +464,7 @@ function rrAllFeaturesSconcurRoute(Psr17Factory $factory): ResponseInterface
 /**
  * Lazily builds and caches the per-worker SConcur connections on the first
  * /all-sconcur hit (mirror of allFeaturesContext() in http-server.php, including
- * the maxOpenConns: 5 cap — the Go-side pool is per worker process, and an
+ * the maxOpenConns: 5 cap — the extension-side pool is per worker process, and an
  * unbounded pool across ~nproc workers would exhaust PostgreSQL's
  * max_connections). Same .env, same backends, same collection/table names.
  *

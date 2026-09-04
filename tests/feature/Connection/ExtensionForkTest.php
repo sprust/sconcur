@@ -54,6 +54,86 @@ class ExtensionForkTest extends BaseTestCase
     }
 
     /**
+     * A fork of a fork, which is the case the registration is easy to get wrong:
+     * `pthread_atfork` is registered once per process image, and a child inherits
+     * the registration rather than having to repeat it.
+     *
+     * The grandchild is the one that proves it. It is two rebuilds deep — the
+     * child rebuilt the runtime it inherited, used it, and only then forked — so
+     * a registration that did not survive the first fork would leave the
+     * grandchild with a runtime that has no worker threads and never answers.
+     */
+    public function testForkOfAForkWorksTwoRebuildsDeep(): void
+    {
+        self::assertTrue(function_exists('pcntl_fork'), 'pcntl is required for this test');
+        self::assertSame('parent', $this->runOneTask('parent'));
+
+        $pid = pcntl_fork();
+
+        self::assertNotSame(-1, $pid, 'fork failed');
+
+        if ($pid === 0) {
+            // Use the extension first, so the child forks with a runtime of its
+            // own rather than the inherited shell.
+            $childOutcome = $this->runOneTask('child');
+
+            $grandchildPid = pcntl_fork();
+
+            if ($grandchildPid === 0) {
+                exit($this->runOneTask('grandchild') === 'grandchild' ? 0 : 1);
+            }
+
+            $grandchildStatus = 0;
+
+            pcntl_waitpid($grandchildPid, $grandchildStatus);
+
+            // The child has to keep working after forking, too.
+            $stillWorks = $this->runOneTask('child-again') === 'child-again';
+
+            exit(
+                $childOutcome === 'child'
+                && $stillWorks
+                && pcntl_wifexited($grandchildStatus)
+                && pcntl_wexitstatus($grandchildStatus) === 0
+                    ? 0
+                    : 1
+            );
+        }
+
+        $status = 0;
+
+        pcntl_waitpid($pid, $status);
+
+        self::assertTrue(pcntl_wifexited($status), 'the child did not exit normally');
+        self::assertSame(0, pcntl_wexitstatus($status), 'a fork of a fork could not use the extension');
+
+        self::assertSame('parent-again', $this->runOneTask('parent-again'));
+    }
+
+    /**
+     * Forking before the extension has run anything: nothing has started, so each
+     * child gets a clean slate rather than an inherited runtime to rebuild.
+     */
+    public function testForkBeforeFirstUseGivesTheChildACleanSlate(): void
+    {
+        self::assertTrue(function_exists('pcntl_fork'), 'pcntl is required for this test');
+
+        $pid = pcntl_fork();
+
+        self::assertNotSame(-1, $pid, 'fork failed');
+
+        if ($pid === 0) {
+            exit($this->runOneTask('fresh') === 'fresh' ? 0 : 1);
+        }
+
+        $status = 0;
+
+        pcntl_waitpid($pid, $status);
+
+        self::assertSame(0, pcntl_wexitstatus($status), 'the child could not start the extension');
+    }
+
+    /**
      * One coroutine through the extension and back, answering the label it was
      * given.
      */

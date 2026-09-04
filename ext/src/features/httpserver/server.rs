@@ -21,7 +21,7 @@ use crate::stats::Pusher;
 
 /// Short-circuits every request with a constant 200 "ok" written directly from
 /// the connection task — PHP is never called. Rung L0 of the attribution ladder
-/// (.ai/plans/cpu-per-request-attribution.md): the floor the server gives
+/// the floor the server gives
 /// without PHP. Bench-only; off unless the worker starts with
 /// SCONCUR_HTTP_BENCH_L0=1. Read once, at first use.
 pub fn bench_ladder_l0() -> bool {

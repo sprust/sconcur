@@ -64,7 +64,7 @@ function runSerial(int $count, Closure $operation): void
 
 /**
  * Fans `count` operations out across coroutines and drains the results (async path).
- * Actual concurrency is capped by WaitGroup's maxConcurrency and the Go-side pool.
+ * Actual concurrency is capped by WaitGroup's maxConcurrency and the extension-side pool.
  */
 function runFanout(int $count, Closure $operation): void
 {

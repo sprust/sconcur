@@ -17,8 +17,7 @@
 #
 # Tunables (env): SERVERS, WRK_THREADS, CONNECTIONS, DURATION, PORT, ROUTE (=/all),
 #   MAXCONCURRENCY, DB_POOL_SIZE (the /db* pool per process), SAMPLE_INTERVAL
-#   (resource-sampling period, s), GOMAXPROCS (forwarded to each worker's Go
-#   runtime; empty = Go default, i.e. all cores), SERVER_ENV (extra VAR=value
+#   (resource-sampling period, s), SERVER_ENV (extra VAR=value
 #   assignments for the worker environment, space-separated), SERVER_ARGS (extra
 #   --flags appended to the server command line, e.g. --ladder=l1),
 #   PIN_SERVERS: 1 = pin each worker to one logical CPU, as throughput.sh does —
@@ -68,7 +67,7 @@ MAXCONCURRENCY=${MAXCONCURRENCY:-0}
 # budget is split across the reuse-port pool, so the useful value depends on
 # SERVERS — the worker-count ladder in docs/benchmarks.md walks it).
 DB_POOL_SIZE=${DB_POOL_SIZE:-9}
-# Dispatch experiment (.ai/plans/dispatch-experiment.md). DISTINCT_PORTS=1 binds
+# Dispatch experiment. DISTINCT_PORTS=1 binds
 # worker i to PORT+1+i without SO_REUSEPORT, so a proxy (nginx) can sit in front
 # on PORT itself and balance per request; the readiness probe then goes to the
 # first worker, not to PORT. WORKER_LOGS=1 keeps each worker's access log (one
@@ -218,7 +217,6 @@ else
     echo "   route           : $ROUTE"
 fi
 echo "   db pool / proc  : $DB_POOL_SIZE  (the /db* routes)"
-[ -n "${GOMAXPROCS:-}" ] && echo "   GOMAXPROCS      : $GOMAXPROCS  (per worker)"
 [ -n "$WRK_SCRIPT" ] && echo "   wrk script      : $WRK_SCRIPT  (mixed profile; ROUTE used only for the readiness probe)"
 [ "$WORKER_LOGS" = "1" ] && echo "   worker logs     : ${WORKERLOGPREFIX}<i>.log  (access log per worker)"
 echo "   target          : http://$IP:$PORT$ROUTE  (container bridge IP, no NAT)"
@@ -258,7 +256,6 @@ $DOCKER_COMPOSE exec -T php sh -c '
         fi
 
         SCONCUR_DB_POOL_SIZE='"$DB_POOL_SIZE"' \
-        GOMAXPROCS='"${GOMAXPROCS:-}"' \
         env '"${SERVER_ENV:-}"' $pin php -d extension='"$EXTENSION"' '"$SCRIPT"' \
             --address=0.0.0.0:$port --reusePort=$reuse --maxConcurrency='"$MAXCONCURRENCY"' \
             '"${SERVER_ARGS:-}"' \
@@ -381,7 +378,7 @@ awk -v trend="$TREND" '
 ' "$RSS"
 
 # Per-worker access-log spread (WORKER_LOGS=1) — the balance check of
-# .ai/plans/dispatch-experiment.md, phase 0: does the kernel (or the proxy in
+# Dispatch experiment, phase 0: does the kernel (or the proxy in
 # front) place requests evenly, and does one worker's tail differ from the rest.
 # FAST_PATH selects which path counts as the cheap one in a mixed profile; every
 # other path is counted as "heavy". The percentiles are of the FAST requests

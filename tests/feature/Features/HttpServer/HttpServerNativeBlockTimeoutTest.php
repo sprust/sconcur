@@ -33,7 +33,7 @@ class HttpServerNativeBlockTimeoutTest extends BaseHttpServerTestCase
         self::assertLessThan(
             1.5,
             $elapsed,
-            sprintf('504 took %.3fs; the Go-side deadline did not fire independently of the blocked PHP thread.', $elapsed),
+            sprintf('504 took %.3fs; the extension-side deadline did not fire independently of the blocked PHP thread.', $elapsed),
         );
     }
 

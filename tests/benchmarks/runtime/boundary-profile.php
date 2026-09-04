@@ -3,15 +3,15 @@
 declare(strict_types=1);
 
 /**
- * Phase 0 of .ai/plans/php-go-boundary-batching.md — attribution of today's cost
- * of one result taken through waitAny, on the PHP side of the boundary.
+ * Attribution of what one result taken through waitAny costs, on the PHP side of
+ * the boundary.
  *
  * It splits the per-result price into: a bare boundary crossing, the frame the
  * extension builds plus its copies, the PHP frame parsing into a TaskResultDto,
  * and — separately —
  * the scheduler's coroutine coordination (suspend -> waitAny -> resume).
  *
- * Both wall and CPU time are reported: the sleeper's own Go timer shows up in
+ * Both wall and CPU time are reported: the sleeper's own timer shows up in
  * wall but burns almost no CPU, so the coordination rows must be read on the CPU
  * column (the same choice the 2026-07-02 profile made).
  *
@@ -187,8 +187,8 @@ $report['waitAnyBatch(64) (per result)'] = $measure(
 //    really flowing.
 //
 //    Reading the isolated rows as an attribution is what produced the "~6 us
-//    unattributed" of .ai/plans/php-go-boundary-batching.md. There was nothing
-//    unattributed; the parts were measured in a state the whole never has.
+//    unattributed" of an earlier round. There was nothing unattributed; the
+//    parts were measured in a state the whole never has.
 $parseFrame = Closure::bind(
     static fn (string $response): object => Extension::parseWaitResponse($response, 'profile', microtime(true)),
     null,
@@ -224,7 +224,7 @@ $report['parseWaitResponse (PHP only)'] = $measure(
 
 // 7. Scheduler coordination: a fan-out of coroutines that never suspend versus
 //    one where every coroutine suspends on the cheapest possible feature call.
-//    Read the CPU column — the sleeper's Go timer inflates wall, not CPU.
+//    Read the CPU column — the sleeper's timer inflates wall, not CPU.
 //
 //    The first row is NOT the fiber machinery, which is what it used to be
 //    called here. coordination-profile.php prices a bare Fiber::suspend/resume

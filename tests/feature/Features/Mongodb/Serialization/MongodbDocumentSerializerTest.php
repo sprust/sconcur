@@ -123,7 +123,7 @@ class MongodbDocumentSerializerTest extends BaseTestCase
 
     /**
      * Every BSON type must round-trip unchanged through the full path:
-     * PHP (MessagePack) → Go (BSON) → MongoDB → Go (BSON) → PHP (MessagePack).
+     * PHP (MessagePack) → extension (BSON) → MongoDB → extension (BSON) → PHP (MessagePack).
      */
     public function testRoundTripsAllBsonTypes(): void
     {

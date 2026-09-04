@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # All-features WebSocket load + resource benchmark. Spawns N demo ws-server processes
-# (SO_REUSEPORT, one per core) in the `php` container, drives them with the Go ws-load
+# (SO_REUSEPORT, one per core) in the `php` container, drives them with the ws-load
 # generator (the WS counterpart of wrk) on the "all" command — which fans out across
 # EVERY async I/O feature (Sleeper, MongoDB, MySQL, PostgreSQL) concurrently per
 # message — and samples CPU/memory of the server and backend containers throughout,

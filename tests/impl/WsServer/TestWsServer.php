@@ -349,7 +349,7 @@ class TestWsServer
 
         $expectedAccept = base64_encode(sha1($key . self::ACCEPT_GUID, true));
 
-        // The header name is matched case-insensitively (Go canonicalizes it to
+        // The header name is matched case-insensitively (it is canonicalised to
         // "Sec-Websocket-Accept"); the base64 accept value itself is exact.
         if (!str_contains(strtolower($response), strtolower('Sec-WebSocket-Accept: ') . strtolower($expectedAccept))) {
             throw new RuntimeException('WebSocket handshake returned an invalid accept key.');

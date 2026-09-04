@@ -10,12 +10,12 @@ declare(strict_types=1);
 // is a leak.
 //
 // Run it through `make mem-leak-amqp scenario=<name> seconds=<n>`, which sets the profiler
-// address the Go-side columns are read from. By hand:
+// address the extension-side columns are read from. By hand:
 //
 //   SCONCUR_PPROF_ADDR=127.0.0.1:6060 php -d extension=./ext-go-legacy/build/sconcur.so \
 //       tests/mem-leak/amqp-soak.php <scenario> <seconds>
 //
-// Without SCONCUR_PPROF_ADDR the run still works and reports the two Go columns as zero.
+// Without SCONCUR_PPROF_ADDR the run still works and reports those two columns as zero.
 
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\Amqp\UnroutableMessageException;

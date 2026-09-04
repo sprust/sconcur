@@ -80,7 +80,7 @@ impl Flow {
         drop(inner);
 
         // One spawned task per message, rather than a worker pool: measured
-        // against one and kept (.ai/plans/cpu-per-request-attribution.md).
+        // against one and kept, because the pool cost more than it saved.
         tokio::spawn(async move {
             run_task_protected(task, handler).await;
         });

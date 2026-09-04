@@ -113,7 +113,7 @@ class SocketClientTest extends BaseSocketClientTestCase
     {
         $connection = $this->client()->connect($this->address());
 
-        // Far larger than the Go-side 64 KiB read buffer, so the inbound frame is
+        // Far larger than the extension-side 64 KiB read buffer, so the inbound frame is
         // reassembled across several bufio refills.
         $payload = random_bytes(256 * 1024);
 

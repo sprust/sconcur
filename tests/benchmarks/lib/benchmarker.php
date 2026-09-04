@@ -106,7 +106,7 @@ readonly class Benchmarker
         // one full-size fan. This is symmetric to native, which enters the
         // measurement with an established connection (and usually a prepared
         // statement) anyway; without it the async fan pays the whole backend
-        // connection-pool ramp-up inside the measured phase (Go database/sql and
+        // connection-pool ramp-up inside the measured phase (the SQL pool and
         // the mongo driver open connections on demand up to the fan width).
         if ($warmup) {
             $this->logProcess("\n\n---- Warm-up ----\n");

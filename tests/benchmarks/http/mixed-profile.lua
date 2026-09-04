@@ -1,4 +1,4 @@
--- Mixed load profile for the dispatch experiment (.ai/plans/dispatch-experiment.md).
+-- Mixed load profile for the dispatch experiment.
 --
 -- The profile the dispatch proposal is built around: most requests cheap, a few
 -- expensive, mixed inside the same keep-alive connections. Two wrk instances

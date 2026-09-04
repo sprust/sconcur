@@ -480,7 +480,7 @@ class HttpClientTest extends BaseHttpClientTestCase
 
     public function testStreamedUploadErrorReleasesOpenFlow(): void
     {
-        // A long requestTimeoutMs means the Go-side deadline cannot be what cleans
+        // A long requestTimeoutMs means the extension-side deadline cannot be what cleans
         // up within the tearDown window: only sendStreaming's catch releasing the
         // open request's flow can. So this is a strict guard for that leak fix.
         $client = $this->client(
@@ -573,7 +573,7 @@ class HttpClientTest extends BaseHttpClientTestCase
             ),
         );
 
-        // PSR-7 header access is case-insensitive regardless of the casing Go sent.
+        // PSR-7 header access is case-insensitive regardless of the casing the server sent.
         self::assertSame(['a=1', 'b=2'], $response->getHeader('set-cookie'));
         self::assertSame('a=1, b=2', $response->getHeaderLine('SET-COOKIE'));
         self::assertTrue($response->hasHeader('Set-Cookie'));

@@ -45,7 +45,7 @@ class SchedulerBatchStaleResultTest extends BaseTestCase
             },
         );
 
-        // Let both results land in the Go-side channel, so the scheduler's
+        // Let both results land in the extension-side channel, so the scheduler's
         // first crossing drains them into one batch: consuming the first one
         // leaves the second queued in PHP when stop() kills its flow.
         usleep(50_000);

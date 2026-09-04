@@ -29,7 +29,7 @@
 #   ROUTE         path to hit                                  (default: /)
 #   MAXCONCURRENCY per-process maxConcurrency (0 = unlimited)  (default: 0)
 #   PIN_SERVERS   1 = pin each server to its own core (process-per-core, like
-#                 nginx workers); 0 = leave them unpinned so each process's Go
+#                 nginx workers); 0 = leave them unpinned so each process's
 #                 runtime may spread across cores                (default: 1)
 #
 set -euo pipefail

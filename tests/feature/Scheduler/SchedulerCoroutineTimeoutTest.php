@@ -507,7 +507,7 @@ class SchedulerCoroutineTimeoutTest extends BaseTestCase
 
     /**
      * A server's handler timeout comes from argv, where a negative one is a typo. It is
-     * screened when the loop starts rather than by the spawn of the first request: the Go
+     * screened when the loop starts rather than by the spawn of the first request: the extension
      * side clamps its own copy to zero and serves happily, so left to spawn() the process
      * would bind its listener and then raise on every request it accepted.
      */
@@ -650,7 +650,7 @@ class SchedulerCoroutineTimeoutTest extends BaseTestCase
 
     /**
      * A nested add() hands its first push to the scheduler's queue instead of crossing into
-     * Go from a fiber stack. When the deadline fires before that queue is drained, the
+     * the boundary from a fiber stack. When the deadline fires before that queue is drained, the
      * queued push must be dropped: sending it would overwrite the keys of whatever the
      * coroutine asked for inside its catch, and the old task's result would wake it in
      * place of the answer it is actually waiting for.
@@ -666,7 +666,7 @@ class SchedulerCoroutineTimeoutTest extends BaseTestCase
                 static function (): string {
                     try {
                         // Pushed from the adder's fiber stack, so it waits in the
-                        // scheduler's dispatch queue rather than crossing into Go here.
+                        // scheduler's dispatch queue rather than crossing the boundary here.
                         Sleeper::usleep(microseconds: 3_000_000);
 
                         return 'slept it out';
