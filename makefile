@@ -375,6 +375,12 @@ bench-fan-out:
 bench-coordination:
 	$(PHP_EXT) tests/benchmarks/runtime/coordination-profile.php
 
+# Where the per-request PSR-7 construction goes, stage by stage: the decode the
+# server pays for on every request, split into unpack, URI, headers and body, so
+# a lazy request can be judged against what it would actually save.
+bench-request:
+	$(PHP_EXT) tests/benchmarks/runtime/request-profile.php
+
 # The push half of the boundary, which neither of the two above prices. Pushes
 # sleepers that hold for seconds, so the runtime cannot execute anything inside
 # the measured window — its threads are this process's threads, and their CPU
