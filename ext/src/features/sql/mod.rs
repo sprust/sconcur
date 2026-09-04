@@ -4,7 +4,7 @@
 pub mod drivers;
 pub mod dsn;
 pub mod payloads;
-pub mod pg_bindings;
+pub mod pg_simple;
 pub mod pools;
 pub mod rows_state;
 pub mod transactions;

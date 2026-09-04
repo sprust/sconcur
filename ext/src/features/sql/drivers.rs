@@ -6,7 +6,7 @@
 //! are distinct, so each operation is written twice — the price of not having a
 //! single dynamic driver interface, and the reason this file exists at all.
 
-use sqlx::{Column, Row};
+use sqlx::{Column, Executor, Row};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -14,7 +14,7 @@ use super::payloads::BeginParams;
 use super::pools::Driver;
 use super::rows_state::RowMessage;
 use super::transactions::{TransactionSession, TxHandle};
-use super::pg_bindings::{self, PgBound, PgRawText};
+use super::pg_simple;
 use super::values::{Binding, read_mysql_row, read_pg_row};
 use futures_util::StreamExt;
 use std::sync::Arc;
@@ -38,56 +38,7 @@ macro_rules! bind_mysql {
     }};
 }
 
-macro_rules! bind_pg {
-    ($query:expr, $bindings:expr) => {{
-        let mut query = $query;
 
-        for binding in $bindings {
-            query = match binding {
-                // Rejected before the statement runs (see first_invalid); bound
-                // as NULL only to keep the match total.
-                PgBound::Invalid(_) => query.bind(Option::<i64>::None),
-                PgBound::Null => query.bind(Option::<i64>::None),
-                PgBound::Bool(flag) => query.bind(*flag),
-                PgBound::SmallInt(number) => query.bind(*number),
-                PgBound::Int4(number) => query.bind(*number),
-                PgBound::Int(number) => query.bind(*number),
-                PgBound::Float4(number) => query.bind(*number),
-                PgBound::Float(number) => query.bind(*number),
-                PgBound::Text(text) => query.bind(text.as_str()),
-                PgBound::RawText(bytes) => query.bind(PgRawText(bytes.as_slice())),
-                PgBound::Bytes(bytes) => query.bind(bytes.as_slice()),
-                PgBound::Decimal(number) => query.bind(number.clone()),
-                PgBound::Date(date) => query.bind(*date),
-                PgBound::Timestamp(stamp) => query.bind(*stamp),
-                PgBound::TimestampTz(stamp) => query.bind(*stamp),
-            };
-        }
-
-        query
-    }};
-}
-
-/// Describes the statement so each text binding can be sent as the type its
-/// parameter slot actually holds. See pg_bindings for why this round-trip is
-/// unavoidable; sqlx caches it with the prepared statement, so it is paid once
-/// per distinct SQL string, not per call.
-async fn pg_bind<'e, E>(executor: E, sql: &str, bindings: &[Binding]) -> Vec<PgBound>
-where
-    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
-{
-    let parameters = match executor.describe(sql).await {
-        Ok(described) => match described.parameters() {
-            Some(sqlx::Either::Left(types)) => types.to_vec(),
-            _ => Vec::new(),
-        },
-        // A describe failure is not reported here: the statement is about to run
-        // anyway and will fail with the real message.
-        Err(_) => Vec::new(),
-    };
-
-    pg_bindings::coerce(bindings, &parameters)
-}
 
 /// Runs a SELECT on a pooled connection and pushes its rows into the channel the
 /// cursor state reads. Ends on the last row, on an error, on the cursor closing
@@ -163,16 +114,18 @@ async fn pump(driver: Driver, sql: &str, bindings: &[Binding], sender: &mpsc::Se
             }
         }
         Driver::Pgsql(pool) => {
-            let bound = pg_bind(&pool, sql, bindings).await;
+            // Executed as a bare &str: sqlx's Execute for &str reports no
+            // arguments, which is what sends this down the simple protocol.
+            let statement = match pg_simple::statement(sql, bindings) {
+                Ok(statement) => statement,
+                Err(error) => {
+                    let _ = sender.send(RowMessage::Error(error)).await;
 
-            if let Some(error) = pg_bindings::first_invalid(&bound) {
-                let _ = sender.send(RowMessage::Error(error.to_string())).await;
+                    return;
+                }
+            };
 
-                return;
-            }
-
-            let query = bind_pg!(sqlx::query(sql), &bound);
-            let mut stream = query.fetch(&pool);
+            let mut stream = pool.fetch(statement.as_str());
             let mut sent_columns = false;
 
             while let Some(item) = stream.next().await {
@@ -295,16 +248,16 @@ async fn pump_transaction(
             }
         }
         TxHandle::Pgsql(transaction) => {
-            let bound = pg_bind(&mut **transaction, sql, bindings).await;
+            let statement = match pg_simple::statement(sql, bindings) {
+                Ok(statement) => statement,
+                Err(error) => {
+                    let _ = sender.send(RowMessage::Error(error)).await;
 
-            if let Some(error) = pg_bindings::first_invalid(&bound) {
-                let _ = sender.send(RowMessage::Error(error.to_string())).await;
+                    return;
+                }
+            };
 
-                return;
-            }
-
-            let query = bind_pg!(sqlx::query(sql), &bound);
-            let mut stream = query.fetch(&mut **transaction);
+            let mut stream = (&mut **transaction).fetch(statement.as_str());
 
             while let Some(item) = stream.next().await {
                 match item {
@@ -360,14 +313,12 @@ pub async fn exec_on_pool(
             Ok((outcome.rows_affected() as i64, outcome.last_insert_id() as i64))
         }
         Driver::Pgsql(pool) => {
-            let bound = pg_bind(&pool, &sql, &bindings).await;
+            let statement = pg_simple::statement(&sql, &bindings)?;
 
-            if let Some(error) = pg_bindings::first_invalid(&bound) {
-                return Err(error.to_string());
-            }
-
-            let query = bind_pg!(sqlx::query(&sql), &bound);
-            let outcome = query.execute(&pool).await.map_err(|error| error.to_string())?;
+            let outcome = pool
+                .execute(statement.as_str())
+                .await
+                .map_err(|error| error.to_string())?;
 
             Ok((outcome.rows_affected() as i64, 0))
         }
@@ -396,15 +347,10 @@ pub async fn exec_on_transaction(
             Ok((outcome.rows_affected() as i64, outcome.last_insert_id() as i64))
         }
         TxHandle::Pgsql(transaction) => {
-            let bound = pg_bind(&mut **transaction, &sql, &bindings).await;
+            let statement = pg_simple::statement(&sql, &bindings)?;
 
-            if let Some(error) = pg_bindings::first_invalid(&bound) {
-                return Err(error.to_string());
-            }
-
-            let query = bind_pg!(sqlx::query(&sql), &bound);
-            let outcome = query
-                .execute(&mut **transaction)
+            let outcome = (&mut **transaction)
+                .execute(statement.as_str())
                 .await
                 .map_err(|error| error.to_string())?;
 
@@ -499,3 +445,4 @@ fn isolation_level(level: i64) -> Option<&'static str> {
         _ => None,
     }
 }
+

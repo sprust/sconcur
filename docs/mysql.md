@@ -145,8 +145,10 @@ pool no smaller than the expected number of concurrent transactions.
 - Value types. Integers → `int`, `FLOAT`/`DOUBLE` → `float`, `VARCHAR`/`TEXT`/`CHAR`
   and every binary type (`BLOB`/`BINARY`/`JSON`/`BIT`/`GEOMETRY`) → string, byte for
   byte, `DECIMAL` → string (to avoid losing precision), `DATE`/`DATETIME`/`TIMESTAMP`
-  → an RFC3339 string, `TIME` → `HH:MM:SS` (with `.ffffff` when the column has
-  fractional seconds, and a leading `-` for a negative span), `NULL` → `null`.
+  → an RFC3339 string with the fractional second trimmed of trailing zeroes
+  (`2026-12-06T14:30:00.25Z`), `TIME` → `HH:MM:SS` padded to the column's declared
+  precision (`14:30:00.500000`), with a leading `-` for a negative span, `NULL` →
+  `null`.
   `TINYINT(1)` is an `int`, not a `bool`.
 - An unsigned `BIGINT` larger than `PHP_INT_MAX` arrives as its decimal **string**,
   because it does not fit a signed 64-bit int. Compare and store such values as

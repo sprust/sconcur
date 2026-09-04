@@ -39,31 +39,59 @@ echo $result->affectedRows;
   ```
 - `BOOLEAN` is a real type and comes back as a PHP `bool`, not `0/1` (in MySQL it
   is `TINYINT(1)` → `int`). `NUMERIC`/`DECIMAL` is a string, as in MySQL.
-- No `interpolateParams` — pgx has no such flag, and queries go through the
-  extended (prepared) protocol by default.
+- No `interpolateParams`. A parameterised statement is sent as a
+  `PREPARE`/`EXECUTE`/`DEALLOCATE` batch in one round trip: your SQL goes into the
+  `PREPARE` untouched, the parameters are dollar-quoted literals in the `EXECUTE`,
+  and the server infers each parameter's type from where it appears. That is what
+  makes results arrive in the text format — see [Value types](#value-types).
 - A transaction aborts on error: after a failing query PostgreSQL puts it into the
   aborted state, and further commands fail with `current transaction is aborted`
   until `rollback()`.
 
 ## Limits
 
-Binary data with NUL bytes in `BYTEA` via a binding does not work: the string value
-is passed as text, and PostgreSQL rejects invalid UTF-8 (`0x00`). Encode arbitrary
-binary data (hex, base64) and decode it on the DB or application side; ASCII bytes
-in `BYTEA` work.
+A `TEXT` binding cannot carry a NUL byte — PostgreSQL holds none in a text value —
+and one is refused by name before the statement runs. Bind such a value to a
+`BYTEA` parameter, which takes arbitrary bytes.
 
-Results arrive in PostgreSQL's binary format, so a column is readable only if this
-core knows how to render its binary form. Decoded: the integer, floating-point and
-`NUMERIC` types (including `NaN` and the infinities, as those words), `BOOL`,
-`DATE`/`TIMESTAMP`/`TIMESTAMPTZ`, `TIME`, `UUID`, `BYTEA`, `JSON`, `JSONB`, `TEXT`
-/`VARCHAR`/`CHAR`/`NAME`, `XML`, and enum types.
+## Value types
 
-Anything else — arrays, `INTERVAL`, `INET`/`CIDR`, `MONEY`, `OID`, ranges, composite
-types, the geometric types — is **refused by name**, with an error saying which
-column and type. Cast it in the query (`SELECT tags::text`) and parse the text on
-the PHP side. The refusal is deliberate: those bytes are a wire structure, and
-handing them over as a string is indistinguishable from a value the application
-asked for.
+A value reaches PHP as the text PostgreSQL itself prints for it — the same string
+`SELECT column::text` would return, because that is literally where it comes from:
+statements run through the simple query protocol, so the server does the printing.
+Integers, floating-point columns and `BOOL` arrive as an `int`, `float` and `bool`;
+`OID`, `XID` and `CID` as an `int`; `BYTEA` as its raw bytes; `NULL` as `null`.
+Everything else is a string.
+
+`DATE`, `TIMESTAMP` and `TIMESTAMPTZ` are the one exception to "what Postgres
+prints": they arrive as an RFC3339 timestamp (`2026-12-06T14:30:00Z`, a `DATE` at
+midnight UTC), with the fractional second trimmed of trailing zeroes. A
+`TIMESTAMPTZ` is rendered at UTC. `infinity` and `-infinity` arrive as those words.
+
+The rest keep their Postgres text form, including the parts of it that are easy to
+guess wrong:
+
+| Type | Example value |
+|---|---|
+| `NUMERIC` | `1.500` — the scale the column declared, not the shortest form |
+| `NUMERIC` specials | `NaN`, `Infinity`, `-Infinity` |
+| `MONEY` | `$1,234,567.89` (follows the server's `lc_monetary`) |
+| `TIME`, `TIMETZ` | `14:30:00.25`, `14:30:00+02` |
+| `INTERVAL` | `1 year 2 mons 3 days 04:05:06.789`, `-1 days -02:03:04` |
+| arrays | `{1,NULL,3}`, `{{1,2},{3,4}}`, `{"a b","c,d"}`, `[2:4]={7,8,9}` |
+| ranges, multiranges | `[1,5)`, `empty`, `(,5)`, `{[1,5),[7,9)}` |
+| composite types | `(1,a)`, `(1,"a,b","c""d",,"")` |
+| `INET`, `CIDR` | `192.168.0.1`, `192.168.0.1/24`, `10.0.0.0/8` |
+| `MACADDR`, `MACADDR8` | `08:00:2b:01:02:03` |
+| `BIT`, `VARBIT` | `1010` |
+| `TSVECTOR`, `TSQUERY` | `'fox':3 'quick':2`, `( 'a' \| 'b' ) & 'c'` |
+| geometric types | `(1,2)`, `[(0,0),(1,1)]`, `<(0,0),1>`, `{1,2,3}` |
+| `JSON`, `JSONB`, `XML`, `UUID` | the document, the dashed UUID |
+| `OIDVECTOR`, `INT2VECTOR`, `PG_LSN` | `1 2 3`, `0/16B374D` |
+
+There is no list of unsupported types, and no type needs registering: enum,
+composite and domain types you define yourself read the same way, and so do the
+`reg*` types and `ACLITEM`, which have no usable binary form at all.
 
 Other limits and internals (pool, streaming, cancellation) are shared with
 [MySQL](mysql.md).

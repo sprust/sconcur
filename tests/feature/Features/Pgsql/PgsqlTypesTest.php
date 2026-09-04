@@ -168,7 +168,7 @@ class PgsqlTypesTest extends BaseTestCase
 
         self::assertSame('00112233-4455-6677-8899-aabbccddeeff', $row['uuid_col']);
         self::assertSame('14:30:00', $row['time_col']);
-        self::assertSame('14:30:00.500000', $row['fractional_time_col']);
+        self::assertSame('14:30:00.5', $row['fractional_time_col']);
 
         // NaN and the infinities have no BigDecimal, and refusing them failed the
         // whole result set where the value itself is perfectly reportable.
@@ -176,14 +176,13 @@ class PgsqlTypesTest extends BaseTestCase
     }
 
     /**
-     * A type this core has no decoder for is refused by name. The alternative is
-     * what used to happen: an int4[] handed to PHP as the bytes of its own array
-     * header, indistinguishable from a string the application asked for.
+     * INTERVAL, the arrays and the rest of the binary-only types are covered in
+     * PgsqlBinaryTypesTest, which pins the text form of each of them.
      */
-    public function testAStructuredBinaryTypeIsRefusedByName(): void
+    public function testAStructuredBinaryTypeReachesPhpAsItsTextForm(): void
     {
-        $this->expectExceptionMessageMatches('/column v \(INTERVAL\) arrives in a binary form/');
+        $rows = $this->connection->fetchAll(sql: "SELECT '1 day'::interval AS v");
 
-        $this->connection->fetchAll(sql: "SELECT '1 day'::interval AS v");
+        self::assertSame('1 day', $rows[0]['v']);
     }
 }

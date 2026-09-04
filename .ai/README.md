@@ -543,10 +543,20 @@ applies to replies — docs carry no line numbers, see "Documentation style".)
 ## Commit & pull request guidelines
 
 Use short, imperative subjects (`update mongodb serializer`, `remove obsolete
-handler tests`). Pull requests should explain the behavioral change, list
-validation performed (`make check`, targeted tests, benchmarks if relevant), and
-link the related issue or task. Screenshots are usually unnecessary unless
-documentation or tooling output changed materially.
+handler tests`).
+
+**Keep commit messages short.** The subject is at most 120 characters, and the
+body at most 500 — a couple of short paragraphs, no more. Sign-off trailers do
+not count towards either. Say what changed and why in the space that gives you;
+detail that does not fit belongs in the code's own comments, in `docs/`, or in a
+`.ai/plans/` file, all of which a later reader can find from the code. A long
+commit message is the one place that detail cannot be maintained, because
+nothing updates it when the code moves on.
+
+Pull requests should explain the behavioral change, list validation performed
+(`make check`, targeted tests, benchmarks if relevant), and link the related
+issue or task. Screenshots are usually unnecessary unless documentation or
+tooling output changed materially.
 
 When an AI agent creates a git commit itself, it must add a sign-off trailer
 identifying the agent:

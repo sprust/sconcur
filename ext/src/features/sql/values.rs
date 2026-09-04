@@ -68,6 +68,27 @@ pub enum ColumnValue {
 /// Encodes a batch of rows as a MessagePack array of maps. An empty batch
 /// encodes as an empty array, never null, so the PHP side always decodes a list.
 /// A DATE in the shape the Go build produces (see the DATE arms above).
+/// RFC3339 with the fractional second trimmed of its trailing zeroes, which is
+/// what Go's time.RFC3339Nano produced and so what PHP has always been handed:
+/// `.5`, not `.500`. chrono's own AutoSi pads to three, six or nine places
+/// instead, and the difference reaches any code comparing the string.
+fn render_rfc3339(stamp: chrono::DateTime<chrono::Utc>) -> Vec<u8> {
+    let mut rendered = stamp.format("%Y-%m-%dT%H:%M:%S").to_string();
+
+    let nanoseconds = stamp.timestamp_subsec_nanos();
+
+    if nanoseconds != 0 {
+        let fraction = format!("{nanoseconds:09}");
+
+        rendered.push('.');
+        rendered.push_str(fraction.trim_end_matches('0'));
+    }
+
+    rendered.push('Z');
+
+    rendered.into_bytes()
+}
+
 fn render_date(date: chrono::NaiveDate) -> Vec<u8> {
     date.and_hms_opt(0, 0, 0)
         .map(|stamp| {
@@ -173,16 +194,18 @@ pub fn read_mysql_row(row: &sqlx::mysql::MySqlRow) -> Result<Vec<ColumnValue>, S
                 .try_get::<chrono::NaiveDate, _>(index)
                 .map(|date| ColumnValue::Text(render_date(date)))
                 .map_err(|error| error.to_string())?,
-            "DATETIME" | "TIMESTAMP" => row
+            "DATETIME" => row
                 .try_get::<chrono::NaiveDateTime, _>(index)
-                .map(|stamp| {
-                    ColumnValue::Text(
-                        stamp
-                            .and_utc()
-                            .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
-                            .into_bytes(),
-                    )
-                })
+                .map(|stamp| ColumnValue::Text(render_rfc3339(stamp.and_utc())))
+                .map_err(|error| error.to_string())?,
+            // Separately from DATETIME, and not by preference: sqlx pairs
+            // NaiveDateTime with DATETIME and DateTime<Utc> with TIMESTAMP, and
+            // refuses the crossed pair. Reading both as NaiveDateTime is what the
+            // port did, so a TIMESTAMP column failed its whole query — one of the
+            // two column types anybody writing a schema reaches for first.
+            "TIMESTAMP" => row
+                .try_get::<chrono::DateTime<chrono::Utc>, _>(index)
+                .map(|stamp| ColumnValue::Text(render_rfc3339(stamp)))
                 .map_err(|error| error.to_string())?,
             "TIME" => row
                 .try_get::<sqlx::mysql::types::MySqlTime, _>(index)
@@ -266,8 +289,18 @@ fn render_mysql_time(time: &sqlx::mysql::types::MySqlTime) -> Vec<u8> {
     rendered.into_bytes()
 }
 
-/// The Postgres counterpart. pgx reports the same logical shapes to PHP, so the
-/// mapping targets are identical; only the type names differ.
+/// Reads one Postgres row.
+///
+/// The values arrive in the *text* format — see [`super::pg_simple`] for why the
+/// statement is sent the way it is — so a column is already the string Postgres
+/// would have printed. That is the shape the PHP side has always been handed,
+/// because the Go core scanned an unknown type into a string through pgx.
+///
+/// So most types need no work at all: an array is `{1,NULL,3}`, an interval is
+/// `1 day`, a composite is `(1,a)`, a `NUMERIC` keeps the scale its column
+/// declared. What is left is the handful of columns whose PHP shape is not a
+/// string, and the two date shapes the Go driver reported differently from the
+/// server.
 pub fn read_pg_row(row: &sqlx::postgres::PgRow) -> Result<Vec<ColumnValue>, String> {
     let mut values = Vec::with_capacity(row.columns().len());
 
@@ -280,85 +313,36 @@ pub fn read_pg_row(row: &sqlx::postgres::PgRow) -> Result<Vec<ColumnValue>, Stri
             continue;
         }
 
+        let bytes = raw.as_bytes().map_err(|error| error.to_string())?;
         let type_name = column.type_info().name().to_uppercase();
 
         let value = match type_name.as_str() {
-            "INT2" | "SMALLINT" => row
-                .try_get::<i16, _>(index)
-                .map(|number| ColumnValue::Int(number as i64))
-                .map_err(|error| error.to_string())?,
-            "INT4" | "INT" | "INTEGER" => row
-                .try_get::<i32, _>(index)
-                .map(|number| ColumnValue::Int(number as i64))
-                .map_err(|error| error.to_string())?,
-            "INT8" | "BIGINT" => row
-                .try_get::<i64, _>(index)
-                .map(ColumnValue::Int)
-                .map_err(|error| error.to_string())?,
-            // pgx hands a bool to database/sql, which reaches PHP as a bool —
-            // PgsqlTypesTest asserts exactly that.
-            "BOOL" | "BOOLEAN" => row
-                .try_get::<bool, _>(index)
-                .map(ColumnValue::Bool)
-                .map_err(|error| error.to_string())?,
-            "FLOAT4" | "REAL" => row
-                .try_get::<f32, _>(index)
-                .map(|number| ColumnValue::Float(number as f64))
-                .map_err(|error| error.to_string())?,
-            "FLOAT8" | "DOUBLE PRECISION" => row
-                .try_get::<f64, _>(index)
-                .map(ColumnValue::Float)
-                .map_err(|error| error.to_string())?,
-            "NUMERIC" | "DECIMAL" => read_pg_numeric(row, index, &raw)?,
-            // Rendered as a full RFC3339 timestamp at midnight UTC, not as a
-            // bare date: the Go driver runs with parseTime=true, so a DATE
-            // reaches PHP as "2026-12-06T00:00:00Z" and application code may
-            // well be parsing that shape.
-            "DATE" => row
-                .try_get::<chrono::NaiveDate, _>(index)
-                .map(|date| ColumnValue::Text(render_date(date)))
-                .map_err(|error| error.to_string())?,
-            "TIMESTAMP" => row
-                .try_get::<chrono::NaiveDateTime, _>(index)
-                .map(|stamp| {
-                    ColumnValue::Text(
-                        stamp
-                            .and_utc()
-                            .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
-                            .into_bytes(),
-                    )
-                })
-                .map_err(|error| error.to_string())?,
-            "TIMESTAMPTZ" => row
-                .try_get::<chrono::DateTime<chrono::Utc>, _>(index)
-                .map(|stamp| {
-                    ColumnValue::Text(
-                        stamp
-                            .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
-                            .into_bytes(),
-                    )
-                })
-                .map_err(|error| error.to_string())?,
-            "BYTEA" => ColumnValue::Text(
-                row.try_get::<Vec<u8>, _>(index)
-                    .map_err(|error| error.to_string())?,
-            ),
-            // JSONB's binary form is a one-byte format version followed by the
-            // JSON text. Read as a String it kept that byte, so PHP received
-            // "\x01{...}" and json_decode answered null — a defect nothing
-            // reports, because nothing about it looks like an error.
-            "JSONB" => ColumnValue::Text(strip_jsonb_version(raw_bytes(&raw)?)),
-            "UUID" => ColumnValue::Text(render_uuid(raw_bytes(&raw)?)?),
-            "TIME" => row
-                .try_get::<chrono::NaiveTime, _>(index)
-                .map(|time| ColumnValue::Text(render_pg_time(time)))
-                .map_err(|error| error.to_string())?,
-            _ => read_pg_text(
-                column.name(),
-                &type_name,
-                column.type_info().kind(),
-                &raw,
-            )?,
+            "INT2" | "SMALLINT" | "INT4" | "INT" | "INTEGER" | "INT8" | "BIGINT" | "OID" => {
+                parse_pg_int(bytes, &type_name, column.name())?
+            }
+            "BOOL" | "BOOLEAN" => ColumnValue::Bool(bytes == b"t"),
+            // Widened from f32 rather than parsed as f64: pgx handed database/sql
+            // a float32 and PHP got the double it widens to, so 0.1::float4 has
+            // always arrived as 0.10000000149011612 and not as 0.1.
+            "FLOAT4" | "REAL" => parse_pg_float(bytes, &type_name, column.name(), true)?,
+            "FLOAT8" | "DOUBLE PRECISION" => {
+                parse_pg_float(bytes, &type_name, column.name(), false)?
+            }
+            // The Go driver ran with pgx's time.Time scanning, so a date reached
+            // PHP as an RFC3339 timestamp and a bare DATE as midnight UTC. The
+            // server prints neither, so these three are the only reformatting
+            // left. Both infinities pass through as the words they are.
+            "DATE" | "TIMESTAMP" | "TIMESTAMPTZ" => render_pg_stamp(bytes, &type_name)?,
+            // BYTEA prints as hex, and PHP has always received the bytes.
+            "BYTEA" => ColumnValue::Text(decode_pg_hex(bytes, column.name())?),
+            // xid and cid reach here unnamed: sqlx resolves a type name only for
+            // the types it knows, and the simple protocol does no Describe to
+            // fill in the rest. They are integers to PHP like their sibling OID,
+            // so they are recognised by the OID the row description carries.
+            _ => match column.type_info().oid().map(|oid| oid.0) {
+                Some(28 | 29) => parse_pg_int(bytes, &type_name, column.name())?,
+                _ => ColumnValue::Text(bytes.to_vec()),
+            },
         };
 
         values.push(value);
@@ -367,161 +351,144 @@ pub fn read_pg_row(row: &sqlx::postgres::PgRow) -> Result<Vec<ColumnValue>, Stri
     Ok(values)
 }
 
-/// The value's bytes exactly as the server sent them.
-fn raw_bytes<'a>(raw: &'a sqlx::postgres::PgValueRef<'a>) -> Result<&'a [u8], String> {
-    raw.as_bytes().map_err(|error| error.to_string())
+/// An integer column, which Postgres prints and PHP expects as an int.
+fn parse_pg_int(bytes: &[u8], type_name: &str, column_name: &str) -> Result<ColumnValue, String> {
+    let text = pg_text(bytes, type_name, column_name)?;
+
+    text.parse::<i64>()
+        .map(ColumnValue::Int)
+        .map_err(|error| format!("column {column_name} ({type_name}): {error}"))
 }
 
-/// JSONB arrives as `[version][json text]`; version 1 is the only one Postgres
-/// has ever sent. The byte is dropped rather than trusted blindly, so a future
-/// version cannot be handed to PHP as if it were part of the document.
-fn strip_jsonb_version(bytes: &[u8]) -> Vec<u8> {
-    match bytes.split_first() {
-        Some((1, rest)) => rest.to_vec(),
-        _ => bytes.to_vec(),
-    }
-}
-
-/// A UUID is sixteen raw bytes on the wire and canonical dashed text everywhere
-/// a person reads one. Decoded as a String it was not valid UTF-8 and failed the
-/// whole query.
-fn render_uuid(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    if bytes.len() != 16 {
-        return Err(format!("uuid: expected 16 bytes, got {}", bytes.len()));
-    }
-
-    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-
-    Ok(format!(
-        "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32],
-    )
-    .into_bytes())
-}
-
-/// Postgres TIME is microseconds since midnight in binary; pgx handed PHP the
-/// text form, so this renders the shape MySQL's TIME renders.
-fn render_pg_time(time: chrono::NaiveTime) -> Vec<u8> {
-    use chrono::Timelike;
-
-    let mut rendered = format!(
-        "{:02}:{:02}:{:02}",
-        time.hour(),
-        time.minute(),
-        time.second(),
-    );
-
-    let microseconds = time.nanosecond() / 1_000;
-
-    if microseconds != 0 {
-        rendered.push_str(&format!(".{microseconds:06}"));
-    }
-
-    rendered.into_bytes()
-}
-
-/// The fallback: everything whose binary form IS its text — TEXT, VARCHAR,
-/// NAME, JSON, XML and the enum types.
-///
-/// It used to accept anything, decoding whatever bytes arrived as a String, and
-/// that was wrong for every structured binary type in two different ways.
-/// int4[], INTERVAL and INET happen to be valid UTF-8, so their wire structure
-/// reached PHP dressed as a string with no error at all; UUID and TIME failed
-/// UTF-8 and took the whole query down with a message naming neither the column
-/// nor its type.
-///
-/// Note that a UTF-8 check is not enough to tell the two groups apart — that is
-/// exactly what let the first group through. The decision has to be made on the
-/// type, so this is an allow-list: a type not on it is refused by name, and the
-/// error says what to do about it.
-fn read_pg_text(
-    column_name: &str,
+fn parse_pg_float(
+    bytes: &[u8],
     type_name: &str,
-    kind: &sqlx::postgres::PgTypeKind,
-    raw: &sqlx::postgres::PgValueRef<'_>,
+    column_name: &str,
+    single: bool,
 ) -> Result<ColumnValue, String> {
-    if !pg_sends_text(type_name, kind) {
-        return Err(format!(
-            "column {column_name} ({type_name}) arrives in a binary form this core cannot render; cast it to text in the query, for example {column_name}::text"
-        ));
-    }
+    let text = pg_text(bytes, type_name, column_name)?;
 
-    let bytes = raw_bytes(raw)?;
+    // Postgres spells these as words; Rust parses them under other names, so
+    // they are named here rather than left to a parser that would refuse them.
+    let number = match text {
+        "NaN" => f64::NAN,
+        "Infinity" => f64::INFINITY,
+        "-Infinity" => f64::NEG_INFINITY,
+        _ => match single {
+            true => f64::from(
+                text.parse::<f32>()
+                    .map_err(|error| format!("column {column_name} ({type_name}): {error}"))?,
+            ),
+            false => text
+                .parse::<f64>()
+                .map_err(|error| format!("column {column_name} ({type_name}): {error}"))?,
+        },
+    };
 
+    Ok(ColumnValue::Float(number))
+}
+
+fn pg_text<'a>(
+    bytes: &'a [u8],
+    type_name: &str,
+    column_name: &str,
+) -> Result<&'a str, String> {
     std::str::from_utf8(bytes)
-        .map_err(|error| format!("column {column_name} ({type_name}): {error}"))?;
-
-    Ok(ColumnValue::Text(bytes.to_vec()))
+        .map_err(|error| format!("column {column_name} ({type_name}): {error}"))
 }
 
-/// Whether a type's binary wire form is simply its text.
-///
-/// A domain is transparent — it is its underlying type with a constraint — so it
-/// is unwrapped once. An enum travels as its label. Everything else with a
-/// structured encoding (arrays, ranges, composites, INTERVAL, INET, MONEY, OID,
-/// the geometric types) is refused rather than reinterpreted.
-fn pg_sends_text(type_name: &str, kind: &sqlx::postgres::PgTypeKind) -> bool {
-    use sqlx::postgres::PgTypeKind;
+/// `DATE`, `TIMESTAMP` and `TIMESTAMPTZ` as RFC3339, which is the one shape the
+/// server's own text form does not already provide. A `DATE` becomes midnight
+/// UTC, a `TIMESTAMPTZ` is normalised to UTC, and the fractional second keeps
+/// only the digits it has — `.5`, not `.500`, the way Go's time.RFC3339Nano
+/// printed it.
+fn render_pg_stamp(bytes: &[u8], type_name: &str) -> Result<ColumnValue, String> {
+    let text = std::str::from_utf8(bytes).map_err(|error| error.to_string())?;
 
-    match kind {
-        PgTypeKind::Enum(_) => return true,
-        PgTypeKind::Domain(inner) => {
-            return pg_sends_text(&inner.name().to_uppercase(), inner.kind());
-        }
-        _ => {}
+    // The infinities have no calendar form, and the server names them.
+    if text == "infinity" || text == "-infinity" {
+        return Ok(ColumnValue::Text(bytes.to_vec()));
     }
 
-    matches!(
-        type_name,
-        "TEXT"
-            | "VARCHAR"
-            | "CHAR"
-            | "BPCHAR"
-            | "NAME"
-            | "JSON"
-            | "XML"
-            | "CITEXT"
-            | "UNKNOWN"
-            // VOID carries no bytes at all, which makes the empty string the
-            // right and only rendering. pg_sleep() returns one, so refusing it
-            // broke a test the moment the allow-list went in.
-            | "VOID"
-    )
+    // There is no year zero in the calendar Postgres prints, so 1 BC is the year
+    // ISO numbers 0. chrono counts the ISO way and cannot read the suffix, so the
+    // era is folded into the year before it is handed over.
+    let (text, era) = match text.strip_suffix(" BC") {
+        Some(without) => (without.to_string(), true),
+        None => (text.to_string(), false),
+    };
+
+    let text = match era {
+        false => text,
+        true => shift_pg_era(&text)?,
+    };
+
+    let text = text.as_str();
+
+    let stamp = match type_name {
+        "DATE" => chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
+            .map_err(|error| format!("date {text:?}: {error}"))?
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc(),
+        "TIMESTAMPTZ" => chrono::DateTime::parse_from_str(&pad_pg_offset(text), "%Y-%m-%d %H:%M:%S%.f%z")
+            .map_err(|error| format!("timestamptz {text:?}: {error}"))?
+            .with_timezone(&chrono::Utc),
+        _ => chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f")
+            .map_err(|error| format!("timestamp {text:?}: {error}"))?
+            .and_utc(),
+    };
+
+    Ok(ColumnValue::Text(render_rfc3339(stamp)))
 }
 
-/// NUMERIC has three values that are not numbers: NaN and the two infinities.
-/// BigDecimal cannot hold them and sqlx's decoder refuses them, which failed the
-/// whole result set where pgx handed the text form straight through.
-///
-/// They are read off the wire header rather than from the error text: the binary
-/// form is four 16-bit fields, and the third is the sign.
-fn read_pg_numeric(
-    row: &sqlx::postgres::PgRow,
-    index: usize,
-    raw: &sqlx::postgres::PgValueRef<'_>,
-) -> Result<ColumnValue, String> {
-    if let Some(special) = pg_numeric_special(raw_bytes(raw)?) {
-        return Ok(ColumnValue::Text(special.as_bytes().to_vec()));
-    }
+/// Postgres prints an offset as `+02`, `-05:30` or `+00`; chrono's `%z` wants
+/// four digits, so the hour-only form is filled out.
+fn pad_pg_offset(text: &str) -> String {
+    let Some(position) = text.rfind(['+', '-']).filter(|position| *position > 10) else {
+        return text.to_string();
+    };
 
-    row.try_get::<sqlx::types::BigDecimal, _>(index)
-        .map(|number| ColumnValue::Text(number.to_string().into_bytes()))
-        .map_err(|error| error.to_string())
+    let (stamp, offset) = text.split_at(position);
+
+    match offset.len() {
+        3 => format!("{stamp}{offset}00"),
+        _ => format!("{stamp}{}", offset.replace(':', "")),
+    }
 }
 
-fn pg_numeric_special(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.len() < 8 {
-        return None;
+/// BYTEA's text form is `\x` followed by hex, which is turned back into the
+/// bytes PHP has always received. (The `escape` form predates 9.0 and is not
+/// emitted by a server this core can talk to.)
+fn decode_pg_hex(bytes: &[u8], column_name: &str) -> Result<Vec<u8>, String> {
+    let Some(hex) = bytes.strip_prefix(b"\\x") else {
+        return Ok(bytes.to_vec());
+    };
+
+    if hex.len() % 2 != 0 {
+        return Err(format!("column {column_name}: bytea has an odd hex length"));
     }
 
-    match u16::from_be_bytes([bytes[4], bytes[5]]) {
-        0xC000 => Some("NaN"),
-        0xD000 => Some("Infinity"),
-        0xF000 => Some("-Infinity"),
-        _ => None,
-    }
+    hex.chunks(2)
+        .map(|pair| {
+            let text = std::str::from_utf8(pair).map_err(|error| error.to_string())?;
+
+            u8::from_str_radix(text, 16).map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<u8>, String>>()
+        .map_err(|error| format!("column {column_name}: bytea: {error}"))
+}
+
+/// Rewrites a BC date's year the way ISO 8601 counts it: 1 BC is year 0, 2 BC is
+/// year -1. Applied to the text, before parsing, because chrono has no era.
+fn shift_pg_era(text: &str) -> Result<String, String> {
+    let (year, rest) = text
+        .split_once('-')
+        .ok_or_else(|| format!("date {text:?}: no year"))?;
+
+    let year: i32 = year
+        .parse()
+        .map_err(|error| format!("date {text:?}: {error}"))?;
+
+    Ok(format!("{:04}-{rest}", 1 - year))
 }

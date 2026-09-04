@@ -251,4 +251,45 @@ class MysqlTypesTest extends BaseTestCase
 
         $this->connection->begin(isolationLevel: 2);
     }
+
+    /**
+     * A TIMESTAMP column, which the port could not read at all: sqlx pairs
+     * NaiveDateTime with DATETIME and DateTime<Utc> with TIMESTAMP and refuses
+     * the crossed pair, so reading both as the former failed the whole query on
+     * one of the two column types a schema reaches for first. Nothing caught it
+     * because no test table had declared one.
+     */
+    public function testTimestampAndFractionalDatetimeColumns(): void
+    {
+        $table = $this->table . '_stamps';
+
+        $this->connection->exec(sql: "DROP TABLE IF EXISTS $table");
+        $this->connection->exec(
+            sql: "CREATE TABLE $table (
+                stamp_col TIMESTAMP(3) NULL,
+                datetime_col DATETIME(6) NULL,
+                fractional_time_col TIME(6) NULL
+            ) ENGINE=InnoDB",
+        );
+
+        try {
+            $this->connection->exec(
+                sql: "INSERT INTO $table VALUES ('2026-12-06 14:30:00.250', '2026-12-06 14:30:00.500000', '14:30:00.500000')",
+            );
+
+            $row = $this->connection->fetchAll(sql: "SELECT * FROM $table")[0];
+
+            // The RFC3339 fraction keeps only the digits it has, the way Go's
+            // time.RFC3339Nano printed it: .25, not .250.
+            self::assertSame('2026-12-06T14:30:00.25Z', $row['stamp_col']);
+            self::assertSame('2026-12-06T14:30:00.5Z', $row['datetime_col']);
+
+            // TIME does not: MySQL pads a TIME(6) to its declared precision, and
+            // that padding is part of the value the reference core returned.
+            // Postgres trims the same fraction, and both are pinned as they are.
+            self::assertSame('14:30:00.500000', $row['fractional_time_col']);
+        } finally {
+            $this->connection->exec(sql: "DROP TABLE IF EXISTS $table");
+        }
+    }
 }
