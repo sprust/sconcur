@@ -42,7 +42,12 @@ reqwest = { version = "0.13", default-features = false, features = [
     # default, so the trust anchors stay the bundled Mozilla set the client used
     # before — reading the host's store instead would change who is trusted
     # depending on the image the extension runs in.
-    "rustls",
+    #
+    # no-provider, because reqwest's own "rustls" feature would pull aws-lc-rs
+    # while lapin and the MongoDB driver are on ring: two crypto providers in one
+    # process leave rustls unable to pick a default, which it says out loud on
+    # every TLS connection. The provider is installed once at core start.
+    "rustls-no-provider",
     "webpki-roots",
     "stream",
     "http2",
@@ -81,6 +86,9 @@ mongodb = { version = "3", default-features = false, features = [
     "bson-3",
     "compat-3-3-0",
 ] }
+# Named directly for one line of code: the process-wide crypto provider, which
+# three dependencies would otherwise each pick for themselves. See core.rs.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 # Shared by hyper, reqwest and this crate; named so the buffer type the HTTP
 # stack hands over is not an implicit dependency.
 bytes      = "1"

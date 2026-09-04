@@ -144,6 +144,15 @@ impl Core {
             .unwrap_or(1)
             .max(1);
 
+        // One crypto provider for the process, chosen here rather than left to
+        // whichever dependency initializes TLS first. rustls refuses to guess
+        // when a build carries more than one, and says so on every connection;
+        // ring is the one lapin and the MongoDB driver already ask for.
+        //
+        // The error means another provider was installed first — nothing to do
+        // about it here, and nothing worth failing the whole runtime over.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(worker_threads)
             .enable_all()
