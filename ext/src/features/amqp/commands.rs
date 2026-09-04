@@ -207,6 +207,24 @@ async fn handle_channel_open(task: &Task, raw: &rmpv::Value) {
         return;
     };
 
+    // A connection that has lost most of its channel numbers to broker-side
+    // closes cannot open reliable channels any more: the driver hands a lost
+    // number to the next open, which is then answered with the error the number's
+    // previous owner died of. Reported as connection-scoped, which is what makes
+    // the PHP side mark the connection closed and reconnect — the alternative is
+    // an open that fails with somebody else's error and never recovers.
+    if handle.pooled.is_exhausted() {
+        task.add_result(Result::error(
+            task.message(),
+            network_error_payload(
+                "Connection exhausted: too many channels were closed by the broker. Reconnect.",
+            ),
+        ))
+        .await;
+
+        return;
+    }
+
     if params.prefetch_size_bytes > 0 {
         task.add_result(Result::error(
             task.message(),

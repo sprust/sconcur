@@ -184,6 +184,12 @@ impl ChannelEntry {
 
         self.record_close_reason(code, text);
 
+        // The number this channel had is unusable from here on: the driver will
+        // hand it to a later `channel.open`, which is then answered with the
+        // error above. The connection counts them and retires itself before it
+        // runs out — see PooledConnection::note_channel_lost.
+        self.handle.pooled.note_channel_lost();
+
         // Detached synchronously, so a `usedChannels()` on the very next
         // crossing already reports it gone; the teardown itself talks to the
         // broker and goes to the runtime.
@@ -475,6 +481,17 @@ impl ChannelEntry {
         // Everything parked on this channel ends now.
         self.gone.cancel();
         self.changed.notify_waiters();
+
+        // Only a channel that is still up gets a channel.close. One the broker
+        // already closed is mid-teardown inside the driver, which finishes it and
+        // frees its number; sending our own close there registers a wait for a
+        // close-ok the broker will never send, and the number stays taken for the
+        // life of the connection. After `channel_max` of those — 255 — every
+        // further open fails with the *first* channel's error, which is how this
+        // was found: a passive declare of a missing queue is enough to trigger it.
+        if !self.channel.status().connected() {
+            return;
+        }
 
         let _ = tokio::time::timeout(
             CHANNEL_CLOSE_TIMEOUT,

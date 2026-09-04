@@ -35,6 +35,12 @@ const CONNECTION_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 /// certificate instead of a login and a password.
 const SASL_METHOD_EXTERNAL: i64 = 1;
 
+/// How many channel numbers a connection keeps in reserve before it is retired.
+/// Small, because a lost number is rare — every one of them is a channel the
+/// broker refused something on — but not zero, so the swap happens while opens
+/// still succeed.
+const EXHAUSTION_MARGIN: u16 = 16;
+
 /// Identifies a pooled connection. It holds what the broker sees of a
 /// connection: the address, the credentials, the TLS material and everything
 /// the handshake settles on.
@@ -108,11 +114,44 @@ pub struct PooledConnection {
     pub heartbeat: u16,
     in_use: AtomicI64,
     last_used_at: Mutex<Instant>,
+    /// Channel numbers this connection can no longer hand out.
+    ///
+    /// A channel the broker closes leaves its number unusable for the life of
+    /// the connection: the driver hands the number to the next `channel.open`,
+    /// and that open is answered with the error the *previous* owner died of.
+    /// Nothing on the connection says so — it stays connected, the broker is
+    /// fine, and every later open fails with somebody else's error.
+    ///
+    /// So they are counted, and a connection that has lost too many is retired
+    /// (see `is_closed`). Without this the 256th broker-closed channel makes the
+    /// connection permanently useless — a passive declare of a missing queue in
+    /// a loop is enough to do it.
+    lost_channels: AtomicI64,
 }
 
 impl PooledConnection {
     fn touch(&self) {
         *self.last_used_at.lock().unwrap() = Instant::now();
+    }
+
+    /// Records a channel number lost to a broker-side close.
+    pub fn note_channel_lost(&self) {
+        self.lost_channels.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Whether the connection has burnt enough channel numbers to be worth
+    /// replacing. The margin is deliberate: retiring it while numbers are still
+    /// available means the swap is reported on an open that could still have
+    /// succeeded, rather than as the confusing failure of one that could not.
+    ///
+    /// Deliberately NOT folded into `is_closed`: that answers "the socket is
+    /// gone", and a channel consults it to decide whether its own failure was
+    /// connection-level. An exhausted connection is still perfectly alive for
+    /// every channel already open on it.
+    pub fn is_exhausted(&self) -> bool {
+        let budget = i64::from(self.max_channels) - i64::from(EXHAUSTION_MARGIN);
+
+        self.lost_channels.load(Ordering::SeqCst) >= budget.max(1)
     }
 
     pub fn is_closed(&self) -> bool {
@@ -219,7 +258,11 @@ impl Connections {
 
         let pooled = pool.get(key)?.clone();
 
-        if pooled.is_closed() {
+        // An exhausted connection leaves the pool the way a dead one does: it
+        // still works for the channels already on it, but it cannot open new
+        // ones, so handing it to the next caller would only reproduce the
+        // failure. The connection itself lives until its last handle goes.
+        if pooled.is_closed() || pooled.is_exhausted() {
             pool.remove(key);
 
             return None;
@@ -239,7 +282,7 @@ impl Connections {
         let mut pool = self.pool.lock().unwrap();
 
         if let Some(existing) = pool.get(&key) {
-            if !existing.is_closed() {
+            if !existing.is_closed() && !existing.is_exhausted() {
                 let existing = existing.clone();
 
                 existing.in_use.fetch_add(1, Ordering::SeqCst);
@@ -263,6 +306,7 @@ impl Connections {
             connection,
             in_use: AtomicI64::new(1),
             last_used_at: Mutex::new(Instant::now()),
+            lost_channels: AtomicI64::new(0),
         });
 
         pool.insert(key, pooled.clone());
@@ -350,6 +394,14 @@ impl Connections {
         }
 
         handle.pooled.touch();
+
+        // A retired connection is out of the pool, and the sweeper only walks the
+        // pool — so the last handle to let go is the only thing left that can
+        // close it. Without this the socket stays open on the broker for the life
+        // of the process, one per retirement.
+        if handle.pooled.is_exhausted() && handle.pooled.in_use.load(Ordering::SeqCst) == 0 {
+            close_connection_owned(handle.pooled.clone());
+        }
     }
 
     fn start_sweeper(&'static self) {

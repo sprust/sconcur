@@ -515,6 +515,71 @@ class AmqpFailureTest extends AmqpTestCase
     }
 
     /**
+     * A channel the broker closes costs the connection that channel's number for
+     * good: the driver hands the number to the next `channel.open`, and that open
+     * is answered with the error the number's previous owner died of.
+     *
+     * Left alone, the 256th such close makes the connection permanently useless —
+     * every later `channel()` fails with a 404 about a queue some earlier cycle
+     * asked for, while the connection reports itself open and the broker is fine.
+     * A passive declare of a missing queue in a loop is enough to reach it, which
+     * is how it was found: the AMQP soak's `errors` scenario counted 2.6M of them.
+     *
+     * The core now counts the numbers it has lost and retires the connection
+     * before they run out, so the failure a caller sees is one it can act on —
+     * "reconnect" — rather than somebody else's error forever.
+     */
+    public function testAConnectionSurvivesMoreBrokerClosesThanItHasChannelNumbers(): void
+    {
+        $connection = TestAmqpResolver::getConnection();
+
+        $completed  = 0;
+        $reconnects = 0;
+
+        // Comfortably past the channel-number ceiling: without the fix everything
+        // from the 256th on fails, and reconnecting does not help either, because
+        // the pool hands back the same exhausted connection.
+        for ($cycle = 0; $cycle < 400; $cycle++) {
+            try {
+                $channel = $connection->channel();
+            } catch (ConnectionException) {
+                // The connection retired itself; the next one is fresh.
+                ++$reconnects;
+
+                $connection = TestAmqpResolver::getConnection();
+
+                continue;
+            }
+
+            try {
+                $channel->queue(TestAmqpResolver::uniqueName('missing'))->declarePassive();
+
+                self::fail('a passive declare of a missing queue must be refused');
+            } catch (QueueException) {
+                // The point of the cycle: the broker closes the channel over this.
+            }
+
+            $channel->close();
+
+            ++$completed;
+        }
+
+        // A handful of cycles are spent on the swap itself; everything else works.
+        self::assertGreaterThan(
+            380,
+            $completed,
+            "only $completed of 400 cycles completed ($reconnects reconnects)",
+        );
+
+        // And the connection in hand is usable, not a husk that reports itself open.
+        $channel = $connection->channel();
+
+        self::assertTrue($channel->isOpen());
+
+        $channel->close();
+    }
+
+    /**
      * A connection of this test's own, named so the pool does not share it.
      */
     protected function namedConnection(string $name): Connection

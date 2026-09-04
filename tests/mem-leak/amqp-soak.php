@@ -9,19 +9,17 @@ declare(strict_types=1);
 // Everything a cycle creates is released inside that cycle, so any value that only grows
 // is a leak.
 //
-// Run it through `make mem-leak-amqp scenario=<name> seconds=<n>`, which sets the profiler
-// address the extension-side columns are read from. By hand:
+// Run it through `make mem-leak-amqp scenario=<name> seconds=<n>`, or by hand:
 //
-//   SCONCUR_PPROF_ADDR=127.0.0.1:6060 php -d extension=./ext-go-legacy/build/sconcur.so \
+//   php -d extension=./ext/build/sconcur.so \
 //       tests/mem-leak/amqp-soak.php <scenario> <seconds>
-//
-// Without SCONCUR_PPROF_ADDR the run still works and reports those two columns as zero.
 
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\Amqp\UnroutableMessageException;
 use SConcur\Features\Amqp\Connection;
 use SConcur\Features\Amqp\Consumer\QueueConsumer;
 use SConcur\Features\Amqp\Delivery;
+use SConcur\Exceptions\Amqp\ConnectionException;
 use SConcur\Features\Amqp\ExchangeTypeEnum;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Impl\TestAmqpResolver;
@@ -152,8 +150,33 @@ $scenarios = [
 
     // The failure path: every cycle kills a channel with a 404 and throws it away. This is
     // where a dead channel would pile up if the registries did not release it.
-    'errors' => static function () use ($connection): void {
-        $channel = $connection->channel();
+    //
+    // On its own connection, and it replaces it when the core retires one. Every
+    // cycle costs a channel number — a channel the broker closes never hands its
+    // number back — so a long enough run has to reconnect, which is what an
+    // application doing this has to do too. Closing the retired one is part of
+    // that: dropping it instead leaves its flow registered and the task count
+    // climbs by one per swap.
+    'errors' => static function () use ($options): void {
+        static $own = null;
+
+        if ($own === null) {
+            $own = new Connection($options);
+
+            $own->connect();
+        }
+
+        try {
+            $channel = $own->channel();
+        } catch (ConnectionException) {
+            $own->close();
+
+            $own = new Connection($options);
+
+            $own->connect();
+
+            return;
+        }
 
         try {
             $channel->queue('sconcur_soak_missing_' . bin2hex(random_bytes(4)))->declarePassive();
