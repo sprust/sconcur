@@ -68,6 +68,8 @@ CORES=$(nproc)
 (( WORKERS >= 1 )) || WORKERS=1
 
 if (( WORKERS < CORES )); then
+    # The whole server on the budget, the scheduler placing the workers:
+    # PIN_SERVERS=group in load-stats.sh, not its default of one per CPU.
     SWOOLE_CPULIST="0-$(( WORKERS - 1 ))"
     WRK_CPULIST="${WORKERS}-$(( CORES - 1 ))"
 else

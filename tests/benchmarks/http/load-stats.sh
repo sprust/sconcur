@@ -25,11 +25,15 @@
 #   the same logical CPU, which they are not meant to share;
 #   physical = pin each worker to one physical core, meaning the whole sibling
 #   pair, so those two threads can run at the same time — this is what "a process
-#   per core" usually means and it is the only pinning mode worth deploying;
+#   per core" usually means, and it measured no better than 1 (see the pinning
+#   section of docs/load-testing.md);
 #   group = confine the whole pool to the same cores but let the scheduler place
 #   the workers within them, which is the honest comparison for "should a
 #   deployment pin?" because every arm then has the same core budget; 0 = leave
-#   them unpinned, which is what the worker master actually does in production
+#   them unpinned, which is what the worker master actually does in production.
+#   NOTE: rr-load-stats.sh and swoole-load-stats.sh pin their stack the way
+#   `group` does, so a comparison against them wants PIN_SERVERS=group here —
+#   the default (1) measures this stack ~20% below the others' placement
 #   and is therefore the only way to see what the extension runtime makes of a
 #   machine it thinks it owns.
 #   All four modes draw from the same budget, cpu 0..SERVERS-1, so only the

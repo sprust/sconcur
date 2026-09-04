@@ -108,6 +108,21 @@ the `vs RoadRunner`/`vs Swoole` columns compare throughput against that stack's
 row for the same endpoint. Sub-50 ms rows are noise-sensitive — a sign flip
 between a row's `min` and `max` marks exactly that.
 
+The server rows are taken with the workers and the load generator on
+non-overlapping cores, because that is what makes a run comparable to the next
+one. Production does not pin, and the difference is not zero — see
+[CPU pinning](load-testing.md#cpu-pinning) for the measurements.
+
+Before re-measuring the server rows, put every stack in the same placement.
+The rows below do not: `load-stats.sh` defaults to `PIN_SERVERS=1`, one worker
+per logical CPU, while `rr-load-stats.sh` and `swoole-load-stats.sh` hand the
+whole server `taskset -c 0-$((WORKERS-1))` and let the scheduler place the
+workers inside it — the `group` placement, worth about 20% on the empty
+endpoint. Same core budget, different placement, and it is SConcur that carries
+the slower one, so its rows here are a floor rather than a like-for-like
+figure. Run every stack with `PIN_SERVERS=group` (and re-measure all of them in
+one session, since cross-session drift alone reaches ±20%).
+
 ## MongoDB
 
 Run concurrently what makes the server work — `count` ~7×, `bulkWrite` ~7×,
@@ -364,6 +379,12 @@ container, 12 workers, `wrk` 4 threads / 256 connections / 20 s, 3 runs
 numbers are comparable, cross-session drift reaches ±20%. Pools per worker
 process: SConcur 5 connections per SQL feature, Swoole a `PDOPool` of 5,
 RoadRunner one PDO per worker.
+
+With one exception, since found: CPU placement. The reference scripts run their
+stack in the `group` placement and `load-stats.sh` defaults to one worker per
+logical CPU, which costs SConcur about 20% on the empty endpoint. Anyone
+re-measuring these rows should equalise it first —
+[CPU pinning](load-testing.md#cpu-pinning).
 
 The endpoints are copies of each other; only the driver stack and the execution
 model differ. `/` returns `200 "ok"`; `/all` runs the three features (SConcur

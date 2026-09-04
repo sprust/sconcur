@@ -546,7 +546,9 @@ applies to replies — docs carry no line numbers, see "Documentation style".)
 ## Commit & pull request guidelines
 
 Use short, imperative subjects (`update mongodb serializer`, `remove obsolete
-handler tests`).
+handler tests`). Write them in English, whatever language the conversation that
+produced the change was held in — the history is English throughout, and a
+message in another language is unreadable in the middle of it.
 
 **Keep commit messages short.** The subject is at most 120 characters, and the
 body at most 500 — a couple of short paragraphs, no more. Sign-off trailers do

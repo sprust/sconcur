@@ -53,6 +53,90 @@ The methodology matches `http-throughput.sh`: the servers and the load generator
 are pinned to non-overlapping cores (`taskset`), and `wrk` hits the container's
 bridge IP directly, bypassing docker-proxy (NAT caps throughput).
 
+## CPU pinning
+
+Normally the kernel decides which core a process runs on and may move it. Pinning
+tells a process to stay on the core it was given — `taskset` on Linux.
+
+The harness pins for one reason: repeatability. Twelve servers and `wrk` on one
+machine otherwise fight for the same cores, the load generator steals CPU from the
+thing being measured, and the number depends on who won that round. Splitting
+them across non-overlapping sets — servers on `0..SERVERS-1`, `wrk` on the rest —
+is what makes a run comparable to the next one.
+
+Comparability against the other stacks is weaker than that, and the mode table
+below says why: `rr-load-stats.sh` and `swoole-load-stats.sh` give the whole
+server `taskset -c 0-$((WORKERS-1))` and let the scheduler place the workers
+inside it, which is the `group` placement, while this harness defaults to `1`.
+The core budget is the same in both, the placement is not, and the placement is
+worth about twenty percent.
+
+`PIN_SERVERS` selects the placement. Every mode draws from the same budget
+(`cpu 0..SERVERS-1`), so the modes differ only in where inside it the workers sit:
+
+| `PIN_SERVERS` | placement |
+|---|---|
+| `1` (default) | one logical CPU per worker — `taskset -c $i` |
+| `physical` | one physical core per worker: the whole sibling pair, read from `/sys/devices/system/cpu/cpuN/topology/thread_siblings_list` |
+| `group` | the pool confined to the budget, the scheduler placing workers inside it |
+| `0` | unpinned, the way the worker master actually runs them |
+
+```shell
+PIN_SERVERS=group ROUTE=/ tests/benchmarks/http/load-stats.sh
+```
+
+### What was measured, and why the library has no pinning option
+
+The empty endpoint, 12 workers, the same `cpu0-11` budget in every arm, `wrk` on
+12-19, three interleaved rounds of 20 s:
+
+| placement | rps per round | median |
+|---|---|---:|
+| `1` — one logical CPU each | 121 446 / 125 284 / 123 185 | 123 185 |
+| `physical` — a sibling pair each | 123 055 / 120 984 / 115 566 | 120 984 |
+| `group` — the scheduler places them | 151 761 / 146 644 / 147 654 | **147 654** |
+
+`physical` does not differ from `1` — the ranges overlap and its median is
+slightly lower. `group` beats both by 19.9%, and its range does not overlap
+theirs at all (its worst round, 146 644, is above their best, 125 284).
+
+So the gap is not a detail of naive pinning that a smarter placement would fix.
+It comes from pinning as such. The explanation that fits both measurements: each
+worker has two threads — PHP and a runtime thread — so twelve workers put about
+twenty-four runnable threads on twelve logical CPUs. A static placement cannot
+rebalance uneven load, and the scheduler can: a pinned idle worker has no way to
+lend its core to a busy neighbour.
+
+That is why there is no `cpuAffinity` setting. Shipping a knob that, on an equal
+core budget, enables something twenty percent slower is not a choice. The current
+behaviour — `WorkerMaster` pins nothing — is the measured optimum.
+
+Two things this does not say anything about, because they were not measured: one
+worker per physical core with no neighbour (that is a different worker count, so a
+different experiment), and a machine given over to a single pool.
+
+### The catch worth knowing
+
+A pinned process sees only its own cores:
+
+```
+unpinned:            nproc → 16
+under taskset -c 3:  nproc → 1
+```
+
+The extension sizes its runtime from that number. Under the harness it was told
+"one" and built one thread; in production, where nothing pins, it was told
+"sixteen" and each of twelve processes built sixteen. The number was right in
+every measurement and wrong in every deployment, and nothing in the numbers could
+show it. It now uses one thread regardless, and `SCONCUR_RUNTIME_THREADS` raises
+it for a process that wants the extension on more than one core.
+
+The wider consequence: every figure in [benchmarks](benchmarks.md) is taken with
+pinning, and production does not pin. For comparing stacks against each other that
+is the correct methodology, but it is not the configuration the library runs in,
+and the difference is not zero. Comparisons are only valid between runs with the
+same `PIN_SERVERS`.
+
 ## Baseline run (empty endpoint)
 
 An Intel i7-13620H laptop (16 threads), services in Docker, 12 servers / 4 wrk
