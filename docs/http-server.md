@@ -151,8 +151,8 @@ $server = HttpServer::fromArgs(
 
 ## Request and response (PSR-7)
 
-The handler receives an ordinary `ServerRequestInterface` assembled from the
-event by your factory:
+The handler receives a `ServerRequestInterface` assembled from the event by your
+factory:
 
 | What you need | PSR-7 method |
 |---|---|
@@ -169,6 +169,30 @@ event by your factory:
 Cookies, the parsed body and uploaded files (`getCookieParams()`,
 `getParsedBody()`, `getUploadedFiles()`) are not populated — by PSR-7 convention
 that is your middleware's job.
+
+### The request is lazy about its headers
+
+The object handed to the handler is `Dto/LazyHeadersRequest`, a
+`ServerRequestInterface` wrapping the one your factory built. The headers and the
+query string are held aside and applied on first use, because setting seven
+headers costs 4.17 us of the 7.75 one decode takes and parsing a query string
+another 1.9, while a router reads the method and the path — 0.12 us worth
+(`make bench-request`). The deferral survives `withAttribute` and the other
+withers, so filing route parameters does not force it.
+
+Nothing about the PSR-7 surface changes: every method answers what the eager
+request would have answered, and `getHeaders()` returns the same array in the
+same order. Two things do change, and only for code that looks past the
+interface:
+
+- a `instanceof Nyholm\Psr7\ServerRequest` (or any other concrete class) is
+  false now, because the concrete object is one level in. Type against
+  `ServerRequestInterface`, as PSR-7 intends;
+- `$request->materialize()` returns the plain request with everything applied,
+  for the rare caller that has to hand a concrete object to something else.
+
+A handler that reads one header pays 0.36 us more than it used to. That is the
+trade: the deferral is worth it unless more than 91% of requests read a header.
 
 The body is `Dto/RequestBodyStream` over the streaming `Dto/RequestBody` and is
 never buffered whole in the extension: the first chunk arrives with the request,
