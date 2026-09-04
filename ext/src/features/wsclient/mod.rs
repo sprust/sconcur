@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/wsclient.
+//! The WebSocket client feature: dialling, sending and closing.
 //!
 //! The ws server's per-connection handling, initiated by a dial and a client
 //! handshake instead of an upgrade. The shape is the socket client's — the

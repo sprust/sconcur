@@ -44,7 +44,7 @@ class HttpServerStatsTest extends TestCase
             self::assertArrayHasKey('requests', $data['totals'], 'an HTTP pool reports a requests section');
             self::assertArrayNotHasKey('connections', $data['totals'], 'an HTTP pool has no connections section');
             self::assertArrayHasKey('memory', $data['totals']);
-            self::assertArrayHasKey('goroutines', $data['totals']);
+            self::assertArrayHasKey('runtimeTasks', $data['totals']);
 
             // The token travels in the Authorization header / config, never the log.
             self::assertStringNotContainsString(self::TOKEN, $master->logText());

@@ -1,4 +1,4 @@
-//! BSON -> MessagePack. Mirrors ext-go-legacy/internal/features/mongodb/serializer/msgpack.go.
+//! BSON -> MessagePack.
 //!
 //! Values BSON has and MessagePack does not are written in the object envelope
 //! `ext-msgpack` reads back as a PHP object: a map whose first key is nil and

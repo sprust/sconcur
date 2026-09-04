@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/sql/payloads: the Rust counterparts of the PHP
+//! The Rust counterparts of the PHP
 //! SQL payload objects. The renames are the short keys emitted by the PHP
 //! getData()/getCommandData() methods.
 
@@ -28,9 +28,9 @@ pub struct Envelope {
     #[serde(rename = "cl", default)]
     pub conn_max_lifetime_ms: i64,
     /// The command body, kept as a decoded-but-untyped value until the
-    /// sub-operation is known. Go holds the raw bytes here (msgpack.RawMessage)
-    /// and decodes them a second time; the PHP side nests a map rather than an
-    /// encoded blob, so the value is what is actually on the wire.
+    /// sub-operation is known. The PHP side nests a map rather than an encoded
+    /// blob, so this is the value that is actually on the wire and there is no
+    /// second decode.
     #[serde(rename = "dt", default = "nil_value")]
     pub data: rmpv::Value,
 }

@@ -1,6 +1,6 @@
-//! Mirrors ext/internal/stats/metrics.go: the process metrics every snapshot
-//! carries, read from /proc rather than from any runtime API — so they measure
-//! the whole worker, PHP included, and not just this half of it.
+//! The process metrics every snapshot carries, read from /proc rather than from
+//! any runtime API — so they measure the whole worker, PHP included, and not
+//! just this half of it.
 
 use std::time::Instant;
 
@@ -11,27 +11,16 @@ use super::Memory;
 /// rather than reaching for `sysconf`.
 const CLOCK_TICKS_PER_SECOND: f64 = 100.0;
 
-/// Builds the process memory split.
+/// The worker's resident set size, PHP and extension together.
 ///
-/// `go_runtime_bytes` is the one field with no counterpart here, and it is
-/// reported as zero rather than filled with a lookalike. Go reads
-/// `/memory/classes/total:bytes`, which is everything the Go runtime has mapped
-/// — a number that exists because the runtime owns its own arena. The Rust core
-/// allocates through the system allocator alongside PHP itself, so nothing in
-/// the process can say which resident page belongs to which side without a
-/// tracking global allocator, and that would put an atomic on every allocation
-/// this core makes. Zero underclaims; a process-wide malloc figure under a field
-/// named for the extension's own footprint would misattribute, which is worse.
-///
-/// The field name stays as it is: it is the wire contract the collector, the
-/// panel and SConcur\Telemetry\Dto\Memory all decode.
+/// There is deliberately no split between the two. Attributing a resident page
+/// to one side would need a tracking global allocator, which is an atomic on
+/// every allocation this core makes; the fields that used to carry the split
+/// reported a zero and a copy of the total, which is worse than not reporting
+/// it.
 pub fn read_memory() -> Memory {
-    let rss_bytes = read_rss_bytes();
-
     Memory {
-        rss_bytes,
-        go_runtime_bytes: 0,
-        non_extension_bytes: rss_bytes,
+        rss_bytes: read_rss_bytes(),
     }
 }
 

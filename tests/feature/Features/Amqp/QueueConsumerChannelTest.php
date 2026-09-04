@@ -84,7 +84,7 @@ class QueueConsumerChannelTest extends AmqpTestCase
         self::assertCount($expected, $channelIds);
         self::assertSame($channelIds, array_unique($channelIds), 'four handlers at once, four channels');
 
-        // A different socket, not merely a different object: the Go side pools a connection
+        // A different socket, not merely a different object: the extension pools a connection
         // by its options, the name among them, and the deliveries arrive on an unnamed one.
         foreach ($names as $name) {
             self::assertNotSame('', $name, 'the lent channel must be on a connection of the pool');
@@ -582,7 +582,7 @@ class QueueConsumerChannelTest extends AmqpTestCase
     }
 
     /**
-     * A handle over a channel the Go side owns closes nothing.
+     * A handle over a channel the extension owns closes nothing.
      *
      * The consumer's channels carry every handler running on them, so a `ChannelClose` sent
      * from one of these handles would take the channel away from the neighbours still

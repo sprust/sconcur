@@ -252,7 +252,7 @@ class WsClientTest extends BaseWsClientTestCase
 
             self::fail('Expected a connect exception.');
         } catch (WsClientConnectException $exception) {
-            // The Go side tags network failures with a "net:" marker, preserved through
+            // The extension tags network failures with a "net:" marker, preserved through
             // the wrapping exception.
             self::assertStringContainsString('net:', $exception->getMessage());
         }

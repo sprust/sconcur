@@ -1,9 +1,9 @@
-//! Mirrors ext-go-legacy/internal/features/wsserver.
+//! The WebSocket server feature: upgrading a request and answering on the
+//! connection it becomes.
 //!
 //! The listener is an HTTP server: a request carrying a valid WebSocket upgrade
-//! becomes a streamed connection, anything else is answered 426. That is how the
-//! Go side gets there too (net/http + coder/websocket), so the same path,
-//! origin and subprotocol checks live in the same place.
+//! becomes a streamed connection, anything else is answered 426 — so the path,
+//! origin and subprotocol checks all live in one place, on the HTTP layer.
 //!
 //! Each connection is pumped by a read task rather than by the handler, so
 //! control frames — ping, pong, close — are processed even when the handler is
@@ -597,8 +597,8 @@ async fn read_loop(
         let frame = if idle_timeout_ms > 0 {
             match tokio::time::timeout(Duration::from_millis(idle_timeout_ms as u64), read).await {
                 Ok(frame) => frame,
-                // The idle deadline ends the input, the way Go's read deadline
-                // does; the handler sees end-of-stream, not an error.
+                // The idle deadline ends the input the way a read deadline
+                // would: the handler sees end-of-stream, not an error.
                 Err(_) => return,
             }
         } else {
@@ -643,9 +643,9 @@ async fn write_loop(
     let write_timeout = Duration::from_millis(config.write_timeout_ms as u64);
 
     // interval_at, not interval: tokio's ticker fires immediately on its first
-    // tick where Go's time.NewTicker waits a full period. That difference put a
-    // keepalive ping on the wire before the connection's first real reply, and a
-    // client reading one frame took the ping for the answer.
+    // tick, where waiting a full period is what a keepalive wants. Firing at
+    // once put a ping on the wire before the connection's first real reply, and
+    // a client reading one frame took the ping for the answer.
     let mut ping = config.ping_interval_ms.gt(&0).then(|| {
         let period = Duration::from_millis(config.ping_interval_ms as u64);
 

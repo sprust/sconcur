@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/wsserver/payloads.
+//! The parameters of the WebSocket server commands.
 
 use serde::Deserialize;
 

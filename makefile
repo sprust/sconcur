@@ -338,11 +338,11 @@ bench-amqp-consume:
 #
 # e.g.: make mem-leak-amqp scenario=churn seconds=600
 #
-# The goroutine and Go-heap columns come from the extension's own profiler, which
-# SCONCUR_PPROF_ADDR switches on (ext-go-legacy/pprof.go); without it the run works and reports
-# those two as zero, which hides exactly the half a soak is for.
+# The extension side is reported through the task count and the broker's own
+# connections, channels and consumers: a worker flat on its own memory can still
+# leave sockets behind on the other side.
 mem-leak-amqp:
-	$(DOCKER_COMPOSE) exec -e SCONCUR_PPROF_ADDR=127.0.0.1:6060 php \
+	$(DOCKER_COMPOSE) exec php \
 		php -d extension=$(SCONCUR_EXT) \
 		tests/mem-leak/amqp-soak.php $(or $(scenario),publish) $(or $(seconds),120)
 

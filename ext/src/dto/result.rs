@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/dto/result.go.
+//! The result a task hands back, encoded into the boundary frame.
 
 use crate::dto::Message;
 use crate::types::method::Method;
@@ -8,8 +8,8 @@ pub struct Result {
     pub method: Method,
     pub task_key: String,
     pub is_error: bool,
-    /// The feature payload, already encoded. Bytes rather than Go's `string`:
-    /// the frame writes it verbatim and nothing here treats it as text.
+    /// The feature payload, already encoded. Bytes rather than a string: the
+    /// frame writes it verbatim and nothing here treats it as text.
     pub payload: Vec<u8>,
     pub has_next: bool,
     pub execution_ms: u32,

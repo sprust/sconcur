@@ -1,9 +1,9 @@
-//! Mirrors ext-go-legacy/internal/socket/message_state.go: the inbound frames of one
+//! The inbound frames of one
 //! connection, streamed to PHP one frame per `next()`.
 //!
 //! Shared by the server (a handler reading via Connection::read()) and, when it
-//! lands, the client. The read half lives in the state, the way Go keeps the
-//! connection and its buffered reader there.
+//! lands, the client. The read half lives in the state, beside the connection
+//! and its buffered reader.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,8 +40,9 @@ pub struct MessageState {
     max_message_bytes: i64,
     err_factory: &'static Factory,
     start_time: Instant,
-    /// Ends the stream on a graceful drain: Go half-closes the socket so the
-    /// blocked read returns EOF, and this is the local equivalent.
+    /// Ends the stream on a graceful drain. A half-close of the socket would do
+    /// the same by making the blocked read return EOF; this is the local
+    /// equivalent, and the difference is what the drain tests below pin.
     read_stopped: CancellationToken,
     /// How many frames this connection has handed to its handler. Only the
     /// first-or-not distinction is used, but a counter says what it means where
@@ -101,9 +102,9 @@ impl StateContract for MessageState {
 
             // `biased`, and the read polled first. With a frame readable and the
             // drain signal already fired, an unbiased select picks at random and
-            // can answer EOF while the bytes sit there unread. Go cannot lose
-            // them — its drain half-closes the socket, and read() must hand back
-            // what is buffered before it may report EOF — so this ordering is
+            // can answer EOF while the bytes sit there unread. A half-closing
+            // drain could not lose them, because a read must hand back what is
+            // buffered before it may report EOF, so this ordering is
             // what makes the two cores behave alike.
             let outcome = if self.read_timeout.is_zero() {
                 tokio::select! {
@@ -117,8 +118,8 @@ impl StateContract for MessageState {
                     biased;
 
                     outcome = &mut read => Some(outcome),
-                    // The idle deadline ends the stream cleanly, exactly as Go's
-                    // read deadline does.
+                    // The idle deadline ends the stream cleanly, the way a read
+                    // deadline would.
                     _ = tokio::time::sleep(self.read_timeout) => return self.finished(),
                     _ = self.read_stopped.cancelled() => None,
                 }
@@ -171,14 +172,14 @@ impl StateContract for MessageState {
 
 #[cfg(test)]
 mod tests {
-    //! The drain semantics, which is where the port diverged from Go and where
-    //! SocketServerMaxConnectionsTest kept catching it.
+    //! The drain semantics, which SocketServerMaxConnectionsTest kept catching
+    //! from the outside.
     //!
-    //! Go's drain half-closes the socket, so a frame already buffered is handed
-    //! back before EOF and one still on the wire arrives normally. This port
-    //! cancels a token instead, which can pre-empt a read that was about to
-    //! succeed — so both halves of the compensation are asserted here rather
-    //! than left to the PHP suite to catch statistically, once in forty runs.
+    //! A drain that half-closed the socket would hand back a frame already
+    //! buffered before EOF, and one still on the wire would arrive normally.
+    //! Cancelling a token instead can pre-empt a read that was about to succeed
+    //! — so both halves of the compensation are asserted here rather than left
+    //! to the PHP suite to catch statistically, once in forty runs.
 
     use std::time::Duration;
     use tokio::net::{TcpListener, TcpStream};

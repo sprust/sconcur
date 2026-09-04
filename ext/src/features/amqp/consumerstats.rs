@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/amqp/consumerstats.go: the worker's
+//! The worker's
 //! queue-consumer telemetry.
 //!
 //! Read off the traffic that already crosses the boundary rather than reported

@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/amqp: the AMQP 0-9-1 client.
+//! The AMQP 0-9-1 client.
 //!
 //! The connection, the channels, the topology, publishing and consuming all
 //! live here; PHP stays a thin orchestrator. See docs/amqp.md for the shape the

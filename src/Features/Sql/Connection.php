@@ -38,9 +38,8 @@ abstract readonly class Connection
         ?int $connMaxLifetimeMs = null,
     ) {
         // A pool that collapses between fan-outs pays the connection handshakes
-        // again on the next one. That is what the Go core does with maxOpenConns
-        // set and maxIdleConns left default — its pool keeps only 2 idle
-        // connections — so idle defaults to the cap here and the pool stays warm.
+        // again on the next one, which is what a small idle floor under a large
+        // cap costs. So idle defaults to the cap here and the pool stays warm.
         // The Rust core keeps every idle connection up to the cap anyway and
         // ignores the value, so the default costs it nothing.
         $this->connection = new ConnectionDto(

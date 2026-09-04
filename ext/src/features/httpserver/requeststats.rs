@@ -15,8 +15,8 @@ const WARN_AFTER: Duration = Duration::from_secs(1);
 const SLOW_AFTER: Duration = Duration::from_secs(5);
 const STUCK_AFTER: Duration = Duration::from_secs(15);
 
-/// One lock over both halves, where Go splits them into a mutex for the counters
-/// and a `sync.Map` for the in-flight set.
+/// One lock over both halves — the counters and the in-flight set — rather than
+/// one for each.
 ///
 /// It can be one lock because it is never taken on a server that is not being
 /// watched: the counters exist only when a collector is configured (see

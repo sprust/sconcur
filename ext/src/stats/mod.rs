@@ -4,7 +4,7 @@
 //! the /api/stats endpoint live in the collector, not here — this module only
 //! samples and pushes.
 //!
-//! Wire contract, unchanged from the Go build so the same collector reads both:
+//! Wire contract, and the collector reads it verbatim:
 //! a unix SOCK_STREAM connection carrying length-prefixed frames (the
 //! `socket::frame` codec — 4-byte big-endian length + body); each body is UTF-8
 //! JSON `{"t":"snapshot","s":<Snapshot>}`.
@@ -35,19 +35,17 @@ const DEFAULT_INTERVAL_MS: u64 = 1000;
 const PUSH_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The process memory split. `rss_bytes` is the whole resident set;
-/// `go_runtime_bytes` has no counterpart on this core and is reported as zero
-/// (see `metrics::read_memory`); `non_extension_bytes` is the remainder.
+/// One number, because one is all this can honestly report. A split between the
+/// extension's memory and PHP's would need a tracking allocator — this core
+/// allocates through the system one, alongside the interpreter, so nothing in
+/// the process can say which resident page belongs to which side.
 ///
-/// The JSON names are Go's, because they are the wire contract the collector and
+/// The JSON name is the wire contract the collector and
 /// SConcur\Telemetry\Dto\Memory decode.
 #[derive(Serialize)]
 pub struct Memory {
     #[serde(rename = "rssBytes")]
     pub rss_bytes: i64,
-    #[serde(rename = "goRuntimeBytes")]
-    pub go_runtime_bytes: i64,
-    #[serde(rename = "nonExtensionBytes")]
-    pub non_extension_bytes: i64,
 }
 
 /// The HTTP-server workload section. The in-flight buckets are exclusive: a
@@ -133,11 +131,10 @@ struct Snapshot {
     memory: Memory,
     #[serde(rename = "cpuPercent")]
     cpu_percent: f64,
-    /// The live task count of the async runtime — this core's counterpart of Go's
-    /// goroutine count, and the same thing the panel column means: how much work
-    /// the worker currently has in flight below PHP. The field keeps its name
-    /// because that name is the wire contract.
-    goroutines: i64,
+    /// The live task count of the async runtime: how much work the worker
+    /// currently has in flight below PHP.
+    #[serde(rename = "runtimeTasks")]
+    runtime_tasks: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     requests: Option<Requests>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -155,14 +152,12 @@ struct SnapshotFrame<'a> {
 /// Samples one worker's snapshot and pushes it, framed, to the collector's unix
 /// socket.
 ///
-/// Where Go runs a goroutine with a ticker, this runs one task on the shared
-/// runtime — the same shape, and it costs no thread.
+/// One task on the shared runtime, driven by a ticker; it costs no thread.
 ///
 /// There is no `stop()`: dropping the pusher ends the loop, and the pusher is
 /// owned by the server's registry entry, so it stops exactly when the server
-/// does. Go needs an explicit `Stop()` and a `sync.Once` around it, because its
-/// second close of the stop channel panics — a shape that only exists because a
-/// goroutine has no owner to be dropped by.
+/// does. An explicit `stop()` would need guarding against a second call, which
+/// ownership makes unnecessary here.
 pub struct Pusher {
     stop: CancellationToken,
 }
@@ -246,7 +241,7 @@ async fn run(
     let mut cpu = metrics::CpuSampler::new();
     let mut connection: Option<UnixStream> = None;
 
-    // interval_at, not interval: tokio's first tick fires immediately, while Go's
+    // interval_at, not interval: tokio's first tick fires immediately, while a
     // ticker waits out a period. A snapshot pushed before the server has served
     // anything is not wrong, but the cadence would be off by one for the life of
     // the worker.
@@ -306,7 +301,7 @@ async fn push_once(
         uptime_seconds: now.duration_since(start_time).as_secs_f64(),
         memory: metrics::read_memory(),
         cpu_percent: cpu.sample(now),
-        goroutines: crate::core::get().runtime().metrics().num_alive_tasks() as i64,
+        runtime_tasks: crate::core::get().runtime().metrics().num_alive_tasks() as i64,
         requests: workload.requests,
         connections: workload.connections,
         consumers: workload.consumers,
@@ -337,7 +332,7 @@ fn epoch_millis() -> i64 {
 
 /// The workload provider both connection servers use.
 ///
-/// One type, where Go declares `connectionStats` twice — once in
+/// One type for both servers, rather than a declaration in each of
 /// socketserver, once in wsserver — because the two are in different packages
 /// and the type is unexported. The counters are identical, and so is the section
 /// they fill.

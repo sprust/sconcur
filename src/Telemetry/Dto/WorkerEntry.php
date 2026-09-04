@@ -19,7 +19,7 @@ readonly class WorkerEntry
         public float $uptimeSeconds,
         public Memory $memory,
         public float $cpuPercent,
-        public int $goroutines,
+        public int $runtimeTasks,
         public ?Requests $requests,
         public ?Connections $connections,
         public ?Consumers $consumers = null,
@@ -32,15 +32,15 @@ readonly class WorkerEntry
     public function toArray(): array
     {
         $data = [
-            'pid'           => $this->pid,
-            'group'         => $this->group,
-            'hung'          => $this->hung,
-            'snapshotAgeMs' => $this->snapshotAgeMs,
-            'startedAt'     => $this->startedAtMs > 0 ? gmdate('c', intdiv($this->startedAtMs, 1000)) : '',
-            'uptimeSeconds' => $this->uptimeSeconds,
-            'memory'        => $this->memory->toArray(),
-            'cpuPercent'    => $this->cpuPercent,
-            'goroutines'    => $this->goroutines,
+            'pid'             => $this->pid,
+            'group'           => $this->group,
+            'hung'            => $this->hung,
+            'snapshotAgeMs'   => $this->snapshotAgeMs,
+            'startedAt'       => $this->startedAtMs > 0 ? gmdate('c', intdiv($this->startedAtMs, 1000)) : '',
+            'uptimeSeconds'   => $this->uptimeSeconds,
+            'memory'          => $this->memory->toArray(),
+            'cpuPercent'      => $this->cpuPercent,
+            'runtimeTasks'    => $this->runtimeTasks,
         ];
 
         if ($this->requests !== null) {

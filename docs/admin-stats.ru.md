@@ -144,10 +144,8 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 | Поле | Что это | Источник |
 |---|---|---|
 | `memory.rssBytes` | RSS всего процесса (вместе с расширением) | `/proc/self/status` `VmRSS` |
-| `memory.goRuntimeBytes` | память Go-рантайма | `runtime/metrics` |
-| `memory.nonExtensionBytes` | остаток без расширения (PHP + интерпретатор) | `rssBytes − goRuntimeBytes` |
 | `cpuPercent` | загрузка CPU процессом за интервал | разница `/proc/self/stat` |
-| `goroutines` | число горутин | `runtime.NumGoroutine()` |
+| `runtimeTasks` | живые задачи в рантайме расширения | собственные метрики рантайма |
 | `startedAt` / `uptimeSeconds` | когда стартовал serve-цикл воркера (UTC) и сколько живёт | старт serve-цикла |
 | `requests.completed` | обслужено запросов (HTTP) | счётчик |
 | `requests.avgMs` | средняя длительность запроса | сумма / количество |
@@ -199,9 +197,9 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
     "cpuPercent": 0.6
   },
   "totals": {
-    "memory": { "rssBytes": 335544320, "goRuntimeBytes": 100663296, "nonExtensionBytes": 234881024 },
+    "memory": { "rssBytes": 335544320 },
     "cpuPercent": 28.4,
-    "goroutines": 192,
+    "runtimeTasks": 192,
     "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
   },
   "groups": [
@@ -210,9 +208,9 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
       "workersTotal": 3,
       "workersHung": 0,
       "totals": {
-        "memory": { "rssBytes": 125829120, "goRuntimeBytes": 37748736, "nonExtensionBytes": 88080384 },
+        "memory": { "rssBytes": 125829120 },
         "cpuPercent": 10.6,
-        "goroutines": 72,
+        "runtimeTasks": 72,
         "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
       }
     }
@@ -225,9 +223,9 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
       "snapshotAgeMs": 600,
       "startedAt": "2026-06-24T11:54:47+00:00",
       "uptimeSeconds": 312.5,
-      "memory": { "rssBytes": 41943040, "goRuntimeBytes": 12582912, "nonExtensionBytes": 29360128 },
+      "memory": { "rssBytes": 41943040 },
       "cpuPercent": 3.7,
-      "goroutines": 24,
+      "runtimeTasks": 24,
       "requests": { "completed": 105432, "avgMs": 2.4, "inFlight": 7, "inFlight1to5s": 2, "inFlight5to15s": 1, "inFlightOver15s": 0 }
     }
   ]

@@ -1,19 +1,18 @@
-//! Mirrors ext-go-legacy/internal/features/sql/values.go: turning MessagePack bindings
+//! Turning MessagePack bindings
 //! into driver arguments, and driver rows back into MessagePack.
 //!
 //! The shapes here are a wire contract, not a preference. `tests/feature/
 //! Features/Mysql/MysqlTypesTest.php` pins them: integers arrive as integers,
 //! DECIMAL as the string `'123.4500'`, TINYINT(1) as `1` and not `true`,
 //! DATE/DATETIME as an RFC3339 string, BLOB as a string that survives
-//! `\x00`..`\xff` byte for byte, NULL as null. Go reaches those shapes because
-//! its driver hands back `[]byte` for most things and `time.Time` for dates
-//! (parseTime=true); here every one of them is an explicit decision.
+//! `\x00`..`\xff` byte for byte, NULL as null. Each of those is an explicit
+//! decision here, made once and pinned by the test.
 
 use rmp::encode;
 use sqlx::{Column, Row, TypeInfo, ValueRef};
 
 /// One binding, normalized out of MessagePack into something a driver accepts.
-/// Go collapses msgpack's int8/int16/uint64/… into int64/float64 for the same
+/// msgpack's int8/int16/uint64/… all collapse into int64/float64, for one
 /// reason: the driver's converter should see one integer type, not nine.
 pub enum Binding {
     Null,
@@ -52,14 +51,14 @@ fn normalize_binding(value: &rmpv::Value) -> Binding {
     }
 }
 
-/// A column value on its way back to PHP, in the shape Go would have produced.
+/// A column value on its way back to PHP, in the shape the PHP side expects.
 pub enum ColumnValue {
     Null,
     Bool(bool),
     Int(i64),
     Float(f64),
     /// Text or bytes. Written as a MessagePack *str* either way, because that is
-    /// what Go's `string([]byte)` becomes on the wire and what the PHP side
+    /// what a PHP string is on the wire, and what the PHP side
     /// expects to read back as a plain string — including for a BLOB whose
     /// bytes are not valid UTF-8.
     Text(Vec<u8>),
@@ -67,9 +66,9 @@ pub enum ColumnValue {
 
 /// Encodes a batch of rows as a MessagePack array of maps. An empty batch
 /// encodes as an empty array, never null, so the PHP side always decodes a list.
-/// A DATE in the shape the Go build produces (see the DATE arms above).
+/// A DATE in the shape the PHP side expects (see the DATE arms above).
 /// RFC3339 with the fractional second trimmed of its trailing zeroes, which is
-/// what Go's time.RFC3339Nano produced and so what PHP has always been handed:
+/// the shape PHP has always been handed:
 /// `.5`, not `.500`. chrono's own AutoSi pads to three, six or nine places
 /// instead, and the difference reaches any code comparing the string.
 fn render_rfc3339(stamp: chrono::DateTime<chrono::Utc>) -> Vec<u8> {
@@ -136,7 +135,7 @@ pub fn encode_batch(columns: &[String], rows: &[Vec<ColumnValue>]) -> Vec<u8> {
 }
 
 /// Encodes the answer to an Exec: affected rows and last insert id, under the
-/// same two keys Go writes.
+/// same two keys the PHP side reads.
 pub fn encode_exec_result(affected_rows: i64, last_insert_id: i64) -> Vec<u8> {
     let mut buffer = Vec::with_capacity(16);
 
@@ -169,8 +168,8 @@ pub fn read_mysql_row(row: &sqlx::mysql::MySqlRow) -> Result<Vec<ColumnValue>, S
         let type_name = column.type_info().name().to_uppercase();
 
         let value = match type_name.as_str() {
-            // TINYINT(1) included: Go's driver reports it as an integer and the
-            // PHP side asserts 1, not true.
+            // TINYINT(1) included: it reaches PHP as an integer, and the PHP
+            // side asserts 1, not true.
             "TINYINT" | "SMALLINT" | "MEDIUMINT" | "INT" | "INTEGER" | "BIGINT" | "BOOLEAN"
             | "BOOL" | "YEAR" | "TINYINT UNSIGNED" | "SMALLINT UNSIGNED"
             | "MEDIUMINT UNSIGNED" | "INT UNSIGNED" | "BIGINT UNSIGNED" => {
@@ -187,9 +186,8 @@ pub fn read_mysql_row(row: &sqlx::mysql::MySqlRow) -> Result<Vec<ColumnValue>, S
                 .map(|number| ColumnValue::Text(number.to_string().into_bytes()))
                 .map_err(|error| error.to_string())?,
             // Rendered as a full RFC3339 timestamp at midnight UTC, not as a
-            // bare date: the Go driver runs with parseTime=true, so a DATE
-            // reaches PHP as "2026-12-06T00:00:00Z" and application code may
-            // well be parsing that shape.
+            // bare date: a DATE reaches PHP as "2026-12-06T00:00:00Z", and
+            // application code may well be parsing that shape.
             "DATE" => row
                 .try_get::<chrono::NaiveDate, _>(index)
                 .map(|date| ColumnValue::Text(render_date(date)))
@@ -261,7 +259,7 @@ fn read_mysql_integer(row: &sqlx::mysql::MySqlRow, index: usize) -> Result<Colum
 /// ±838:59:59, which `chrono::NaiveTime` cannot hold, so sqlx carries it in
 /// `MySqlTime`. Rendered here the way the text protocol wrote it — zero-padded
 /// hours, and a fractional part only when there is one — because that is the
-/// shape Go's `[]byte` handed to PHP.
+/// shape PHP receives.
 ///
 /// Decoding this as a `String` is what the port did before, and `try_get_unchecked`
 /// meant nothing caught it: the binary protocol keeps TIME's length byte in the
@@ -294,13 +292,12 @@ fn render_mysql_time(time: &sqlx::mysql::types::MySqlTime) -> Vec<u8> {
 /// The values arrive in the *text* format — see [`super::pg_simple`] for why the
 /// statement is sent the way it is — so a column is already the string Postgres
 /// would have printed. That is the shape the PHP side has always been handed,
-/// because the Go core scanned an unknown type into a string through pgx.
+/// because that is the form the PHP side has always been handed.
 ///
 /// So most types need no work at all: an array is `{1,NULL,3}`, an interval is
 /// `1 day`, a composite is `(1,a)`, a `NUMERIC` keeps the scale its column
 /// declared. What is left is the handful of columns whose PHP shape is not a
-/// string, and the two date shapes the Go driver reported differently from the
-/// server.
+/// string, and the three date shapes that differ from what the server prints.
 pub fn read_pg_row(row: &sqlx::postgres::PgRow) -> Result<Vec<ColumnValue>, String> {
     let mut values = Vec::with_capacity(row.columns().len());
 
@@ -328,10 +325,10 @@ pub fn read_pg_row(row: &sqlx::postgres::PgRow) -> Result<Vec<ColumnValue>, Stri
             "FLOAT8" | "DOUBLE PRECISION" => {
                 parse_pg_float(bytes, &type_name, column.name(), false)?
             }
-            // The Go driver ran with pgx's time.Time scanning, so a date reached
-            // PHP as an RFC3339 timestamp and a bare DATE as midnight UTC. The
-            // server prints neither, so these three are the only reformatting
-            // left. Both infinities pass through as the words they are.
+            // A date reaches PHP as an RFC3339 timestamp and a bare DATE as
+            // midnight UTC. The server prints neither, so these three are the
+            // only reformatting left. Both infinities pass through as the words
+            // they are.
             "DATE" | "TIMESTAMP" | "TIMESTAMPTZ" => render_pg_stamp(bytes, &type_name)?,
             // BYTEA prints as hex, and PHP has always received the bytes.
             "BYTEA" => ColumnValue::Text(decode_pg_hex(bytes, column.name())?),
@@ -400,8 +397,7 @@ fn pg_text<'a>(
 /// `DATE`, `TIMESTAMP` and `TIMESTAMPTZ` as RFC3339, which is the one shape the
 /// server's own text form does not already provide. A `DATE` becomes midnight
 /// UTC, a `TIMESTAMPTZ` is normalised to UTC, and the fractional second keeps
-/// only the digits it has — `.5`, not `.500`, the way Go's time.RFC3339Nano
-/// printed it.
+/// only the digits it has — `.5`, not `.500`.
 fn render_pg_stamp(bytes: &[u8], type_name: &str) -> Result<ColumnValue, String> {
     let text = std::str::from_utf8(bytes).map_err(|error| error.to_string())?;
 

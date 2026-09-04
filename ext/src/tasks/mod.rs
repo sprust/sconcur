@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/tasks/task.go.
+//! One task in flight, and the shared results channel it publishes into.
 
 use crossbeam_channel::{Receiver, Sender};
 use std::sync::Arc;
@@ -43,9 +43,8 @@ impl ResultSink {
     }
 }
 
-/// Task carries one message through its feature handler. Like the Go original
-/// it holds the owning flow's cancellation token directly instead of deriving a
-/// per-task child: a task is never cancelled individually before its result is
+/// Task carries one message through its feature handler. It holds the owning
+/// flow's cancellation token directly rather than deriving a per-task child: a task is never cancelled individually before its result is
 /// delivered (stopFlow cancels the whole flow).
 #[derive(Clone)]
 pub struct Task {
@@ -81,8 +80,8 @@ impl Task {
     /// buffer. This is the flow-task path, and it is async on purpose.
     ///
     /// The first version blocked the worker with `block_in_place`, reasoning
-    /// that it is the literal equivalent of a goroutine parking on a channel
-    /// send. It is not, and the measurement said so: on a pinned worker the
+    /// that it is the literal equivalent of parking on a full channel. It is
+    /// not, and the measurement said so: on a pinned worker the
     /// runtime has one thread, so every full-buffer send made tokio hand its
     /// work to a freshly spawned replacement. Median latency stayed fine and
     /// the tail fell apart — /db held p50 at 1.2 ms while p99 sat at ~400 ms,
@@ -90,10 +89,10 @@ impl Task {
     ///
     /// The second version yielded eight times and then woke itself every 100 µs
     /// until a slot appeared. That fixed the tail but kept the shape wrong: a
-    /// goroutine parked on a channel send is woken once, by the receiver, and
-    /// this asked again on a timer. A thousand blocked tasks meant a thousand
-    /// timers firing at 10 kHz, which is a cliff Go did not have in the very
-    /// place a wide fan-out lands.
+    /// publisher blocked on a full channel should be woken once, by the
+    /// receiver, and this asked again on a timer. A thousand blocked tasks meant
+    /// a thousand timers firing at 10 kHz, which is a cliff in the very place a
+    /// wide fan-out lands.
     ///
     /// A permit is a slot, so acquiring one *is* the park, and the consumer's
     /// release is the wake.

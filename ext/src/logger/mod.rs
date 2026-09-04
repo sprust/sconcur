@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/logger: a fire-and-forget asynchronous log sink.
+//! A fire-and-forget asynchronous log sink.
 //!
 //! Callers compose a line — the access-log line a server emits per request or
 //! per connection — and hand it over; the write happens off the caller's thread.
@@ -106,8 +106,8 @@ pub fn flush() {
     }
 }
 
-/// Renders the timestamp prefix every access line starts with, in the format the
-/// Go side writes: `2006-01-02T15:04:05.000000`.
+/// Renders the timestamp prefix every access line starts with:
+/// `2026-01-02T15:04:05.000000`.
 pub fn timestamp(at: std::time::SystemTime) -> String {
     let stamp: chrono::DateTime<chrono::Local> = at.into();
 

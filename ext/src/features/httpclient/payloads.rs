@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/httpclient/payloads.
+//! The parameters of the HTTP client commands.
 //!
 //! Every message is a command envelope (`cm`/`p`): `cm` selects the
 //! sub-operation, `p` carries a nested map of that command's parameters.
@@ -77,7 +77,7 @@ pub struct RequestParams {
     #[serde(rename = "spm", default)]
     pub sink_perm: i64,
     /// Decoded but unused: the body arrives as a stream of buffers the transport
-    /// already sized, where Go copies through a buffer of its own choosing.
+    /// already sized, so there is no buffer here to size.
     #[allow(dead_code)]
     #[serde(rename = "dbs", default)]
     pub download_buffer_size_bytes: i64,

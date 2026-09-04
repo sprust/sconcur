@@ -65,7 +65,7 @@ class WaitGroup
      *                            0 = unlimited (default). Extra add()s queue and launch as
      *                            slots free. The limit is a resource backpressure knob
      *                            (memory, DB connection pools, in-flight extension tasks): since
-     *                            cgo calls left the fiber stacks (dispatchPendingTask) the
+     *                            boundary crossings left the fiber stacks (dispatchPendingTask) the
      *                            fan-out scales linearly and needs no cap for speed.
      */
     protected function __construct(protected int $maxConcurrency = 0)

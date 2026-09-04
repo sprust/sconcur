@@ -123,7 +123,7 @@ function runLifecycle(int $count, array $operations, bool $fanout): array
 {
     // Unmeasured warm-up (same rules as Benchmarker): sequential modes prime the
     // connection with a few reads; the fan-out mode runs one full-width fan so the
-    // measured fan does not pay the pool ramp-up (the Go pool and the mongo driver
+    // measured fan does not pay the pool ramp-up (the SQL pool and the mongo driver
     // open connections on demand up to the fan width).
     runPhase(count: $fanout ? $count : min(20, $count), operation: $operations['read'], fanout: $fanout);
 

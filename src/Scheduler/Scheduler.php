@@ -756,7 +756,7 @@ class Scheduler
 
                 // Poll rather than block forever: on an idle server this is the
                 // only way the loop notices a shutdown signal (it flips a flag the
-                // blocking cgo wait would not return for). A timeout just loops
+                // blocking wait would not return for). A timeout just loops
                 // back to re-check shouldStop()/drain above. With coroutines parked
                 // by switch() the poll is non-blocking: results keep priority, and
                 // a pause with nothing deliverable resumes the queue head. Results
@@ -861,7 +861,7 @@ class Scheduler
     /**
      * Performs the extension-side push/next for a coroutine that suspended with a
      * pending task (PendingPushDto / PendingNextDto). Runs on the resuming side —
-     * the scheduler loop or the code that started the fiber — so the cgo call
+     * the scheduler loop or the code that started the fiber — so the crossing
      * happens off the coroutine's stack: a fan-out of N live fibers that each
      * crossed the PHP<->extension boundary degrades quadratically (see
      * .ai/plans/async-fan-out-optimization.ru.md).
@@ -1236,7 +1236,7 @@ class Scheduler
 
     /**
      * Takes the next ready result: from the local queue first, otherwise by
-     * draining a fresh batch from the extension in one cgo crossing
+     * draining a fresh batch from the extension in one crossing
      * (Extension::waitAnyBatch). $timeoutMs bounds the wait for the batch's
      * first result (null = block indefinitely); null is returned only on a
      * timeout with an empty queue.

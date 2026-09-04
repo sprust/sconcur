@@ -62,7 +62,7 @@ class AmqpFailureTest extends AmqpTestCase
             self::assertStringContainsString('No channel available.', $exception->getMessage());
         }
 
-        // And the channel is gone on the Go side too, instead of waiting for the sweeper.
+        // And the channel is gone on the extension too, instead of waiting for the sweeper.
         self::assertSame(0, $connection->usedChannels());
     }
 
@@ -221,7 +221,7 @@ class AmqpFailureTest extends AmqpTestCase
         }
 
         try {
-            // The wait is what reaches the Go side: a command refused by the local guard
+            // The wait is what reaches the extension: a command refused by the local guard
             // knows only that the channel is closed, while this one asks and is told why.
             $channel->waitForConfirms(timeoutSeconds: 2.0);
 
@@ -463,7 +463,7 @@ class AmqpFailureTest extends AmqpTestCase
 
         $handle = new ReflectionProperty(AmqpResource::class, 'internalId');
 
-        // The handles are numbered in the Go registry, so the next one tells how many
+        // The handles are numbered in the extension's registry, so the next one tells how many
         // connects happened in between.
         $before = (int) filter_var($handle->getValue($probe), FILTER_SANITIZE_NUMBER_INT);
 

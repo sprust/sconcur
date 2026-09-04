@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/dto/message.go.
+//! The message a push carries in, decoded from the boundary frame.
 
 use crate::types::method::Method;
 

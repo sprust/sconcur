@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/mongodb/connection/clients.go: one client per
+//! One client per
 //! connection string, shared by every task that names it.
 //!
 //! The driver's `Client` is itself a pooled, cheaply cloneable handle, so this

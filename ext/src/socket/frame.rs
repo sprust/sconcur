@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/socket/frame.go: one length-prefixed frame is a
+//! One length-prefixed frame is a
 //! big-endian uint32 byte count followed by that many payload bytes.
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -46,8 +46,8 @@ where
 
     match reader.read_exact(&mut payload).await {
         Ok(_) => Ok(payload),
-        // A stream that ends mid-frame is still an end, not a protocol error:
-        // Go reports io.ErrUnexpectedEOF here and treats it as a clean close.
+        // A stream that ends mid-frame is still an end, not a protocol error,
+        // and is reported as a clean close.
         Err(error) if is_closed(&error) => Err(FrameError::Closed),
         Err(error) => Err(FrameError::Failed(error.to_string())),
     }

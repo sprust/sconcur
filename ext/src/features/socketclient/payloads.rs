@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/socketclient/payloads.
+//! The parameters of the socket client commands.
 //!
 //! Every message is a command envelope (`cm`/`p`) under the socketClient method:
 //! `cm` selects the sub-operation, `p` carries that command's parameters. `p` is

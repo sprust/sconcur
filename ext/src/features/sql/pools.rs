@@ -1,8 +1,8 @@
-//! Mirrors ext-go-legacy/internal/features/sql/pools.go.
+//! The connection pools, one per DSN, shared by every task of both drivers.
 //!
 //! One pool per driver+DSN+sizing, refcounted so an idle unreferenced pool can
 //! be swept while in-flight work keeps it alive. sqlx's pool is itself the
-//! connection pool, exactly as `*sql.DB` is on the Go side; what this adds is
+//! connection pool; what this adds is
 //! the sharing between tasks and the sweep.
 
 use std::collections::HashMap;
@@ -17,7 +17,7 @@ const POOL_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 /// The cap applied when the caller asks for none. See `build`.
 const DEFAULT_MAX_CONNECTIONS: u32 = 32;
 
-/// The driver behind a pool. Go selects a registered database/sql driver by
+/// The driver behind a pool, selected by
 /// name; the two concrete pool types make that an enum here.
 #[derive(Clone)]
 pub enum Driver {
@@ -25,7 +25,7 @@ pub enum Driver {
     Pgsql(sqlx::PgPool),
 }
 
-/// Identifies a pool by driver, DSN and sizing — the comparable key Go uses to
+/// Identifies a pool by driver, DSN and sizing — the comparable key used to
 /// avoid formatting a string on every acquire.
 #[derive(PartialEq, Eq, Hash, Clone)]
 struct PoolKey {
@@ -181,7 +181,7 @@ impl Pools {
             .collect();
 
         // Dropping the handle is the close: sqlx tears the pool's connections
-        // down when the last clone goes. Go needs an explicit, timeout-bounded
+        // down when the last clone goes, where an explicit, timeout-bounded
         // Close because a *sql.DB is not reference-counted that way.
         drop(drained);
     }
@@ -196,12 +196,12 @@ fn build(
 ) -> std::result::Result<Driver, String> {
     // sqlx wants a minimum too, and defaults it to the maximum — which would
     // hold open as many connections as the cap allows for the life of the
-    // process. Go's pool starts empty and grows, so the floor is zero here.
+    // process. The pool starts empty and grows, so the floor is zero here.
     let max_connections = if max_open_conns > 0 {
         max_open_conns as u32
     } else {
         // A deliberate divergence, and the one place this feature cannot match
-        // Go exactly: database/sql leaves the pool unbounded by default, while
+        // the historical default: the pool used to be unbounded, while
         // sqlx requires a maximum and sizes its slot table from it — asking for
         // u32::MAX asks the allocator for ~200 GiB. Callers that care set
         // maxOpenConns (every benchmark route and the demo server do); this is
@@ -209,7 +209,7 @@ fn build(
         DEFAULT_MAX_CONNECTIONS
     };
 
-    // Go's pool starts empty and grows on demand; sqlx would otherwise default
+    // The pool starts empty and grows on demand; sqlx would otherwise default
     // its minimum to the maximum and hold that many connections open for the
     // life of the process. max_idle_conns has no direct counterpart — sqlx keeps
     // every idle connection up to the maximum — so it is accepted and unused.

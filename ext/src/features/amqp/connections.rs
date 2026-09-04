@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/amqp/connections.go and dial.go: the pool of
+//! The pool of
 //! connections to the broker, and the handles PHP holds on them.
 //!
 //! Two `Connection` objects built with the same options share one socket, so
@@ -420,9 +420,9 @@ impl Connections {
     }
 }
 
-/// Opens one connection, bounded by the connect timeout. Unlike the Go build
-/// this needs no goroutine to abandon a late arrival: the dial is a future, and
-/// a timeout drops it.
+/// Opens one connection, bounded by the connect timeout. Abandoning a late
+/// arrival needs nothing of its own: the dial is a future, and a timeout drops
+/// it.
 async fn dial(params: &ConnectParams, key: &ConnectionKey) -> Result<Connection, lapin::Error> {
     let timeout = ms_or_default(params.connect_timeout_ms, DEFAULT_CONNECT_TIMEOUT);
 
@@ -478,8 +478,7 @@ fn dial_error(reason: String) -> lapin::Error {
 /// The TLS material, read here in the worker's own process — so the paths are
 /// the ones that process sees.
 ///
-/// One deviation from the Go build, and it is stated rather than hidden:
-/// `verify: false` is refused. The driver's TLS layer takes a certificate chain
+/// One thing this refuses rather than pretends to do: `verify: false`. The driver's TLS layer takes a certificate chain
 /// and a client identity, and has no switch for accepting a certificate it
 /// cannot check; silently verifying anyway would fail confusingly against the
 /// self-signed broker the option exists for, and silently skipping is not
@@ -506,8 +505,7 @@ fn tls_config(key: &ConnectionKey) -> Result<OwnedTLSConfig, String> {
         )
     };
 
-    // The two go together: naming one without the other fails the dial, as it
-    // does in the Go build.
+    // The two go together: naming one without the other fails the dial.
     let identity = if key.cert_path.is_empty() && key.key_path.is_empty() {
         None
     } else {
@@ -531,7 +529,8 @@ fn tls_config(key: &ConnectionKey) -> Result<OwnedTLSConfig, String> {
 /// Builds what the driver dials. The credentials go into the URI's user info
 /// rather than being spelled into the string, so nothing has to survive URI
 /// escaping — a login or password holding `%`, `/`, `?`, `#` or `:` travels as
-/// it is, which is the same reason the Go build hands them to the dial config.
+/// it is, which is why they are handed to the dial config rather than a URI
+/// string.
 fn connection_uri(key: &ConnectionKey, params: &ConnectParams) -> AMQPUri {
     let secure = key.secure_dial();
 

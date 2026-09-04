@@ -1,9 +1,10 @@
-//! Mirrors ext-go-legacy/internal/features/mongodb/connection/{collection,database}.go.
+//! One handler per MongoDB command the PHP feature exposes, over a collection
+//! or a database.
 //!
 //! One function per command. The result documents are built by hand with the
-//! key names the PHP side reads (`insertedid`, `matchedcount`, …): those are
-//! Go's driver result structs marshalled with lowercased field names, so they
-//! are a wire contract rather than a naming choice.
+//! key names the PHP side reads (`insertedid`, `matchedcount`, …): they are a
+//! wire contract rather than a naming choice, and their lowercasing is
+//! historical.
 
 use mongodb::bson::{Bson, Document};
 use mongodb::options::{IndexOptions, ReturnDocument};
@@ -110,7 +111,7 @@ async fn insert_many(collection: &Collection<Document>, envelope: &Envelope) -> 
         .await
         .map_err(|error| error.to_string())?;
 
-    // Go hands PHP a list of ids in insertion order; the driver keys them by
+    // PHP is handed a list of ids in insertion order; the driver keys them by
     // position, so the map is flattened back into that order here.
     let mut ids: Vec<(usize, Bson)> = outcome.inserted_ids.into_iter().collect();
     ids.sort_by_key(|(position, _)| *position);
@@ -498,7 +499,7 @@ async fn create_index(collection: &Collection<Document>, envelope: &Envelope) ->
 async fn create_indexes(collection: &Collection<Document>, envelope: &Envelope) -> Result<Outcome, Error> {
     let params = decode_params(&envelope.data)?;
 
-    // dt is {ix: [{k, n}, ...]}, read inline the way Go reads it.
+    // dt is {ix: [{k, n}, ...]}, read inline.
     let entries = params.documents("ix");
 
     let mut models = Vec::with_capacity(entries.len());

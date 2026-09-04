@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/errs/factory.go: prefixed error strings, so a task
+//! Prefixed error strings, so a task
 //! error reaching PHP names the feature it came from.
 
 pub struct Factory {

@@ -1,10 +1,9 @@
-//! Mirrors ext-go-legacy/internal/types/method.go.
+//! The method enum, parsed from the two- or three-letter code the boundary
+//! frame carries.
 //!
-//! Go stores the method as a string and interns it through a map so a message
-//! can hold the canonical constant instead of a per-push copy
-//! (types.InternMethod). An enum makes that free here: parsing the boundary
-//! bytes yields a Copy value with no allocation and no map lookup at all, so
-//! the interning table has no counterpart on this side.
+//! An enum rather than a string: parsing the boundary bytes yields a Copy value
+//! with no allocation and no lookup, so a message holds the method itself and
+//! there is nothing to intern.
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Method {
@@ -24,7 +23,7 @@ pub enum Method {
     Amqp,
     /// A method the core does not know. Kept as a variant rather than a parse
     /// error so the unknown-method message still reaches the feature factory,
-    /// which is where Go reports it.
+    /// which is where it is reported.
     Unknown,
 }
 

@@ -1,12 +1,11 @@
-//! Mirrors ext-go-legacy/internal/features/httpserver/listen.go: binding the listener,
+//! Binding the listener,
 //! with SO_REUSEPORT when the PHP side asked for a process-per-core pool.
 
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
-/// Backlog for the pending-connection queue. Matches what Go's net.Listen asks
-/// the kernel for (somaxconn), so the two servers queue accepts alike.
+/// Backlog for the pending-connection queue, asked of the kernel at bind time.
 const LISTEN_BACKLOG: i32 = 4096;
 
 pub fn listen(address: &str, reuse_port: bool) -> std::io::Result<TcpListener> {

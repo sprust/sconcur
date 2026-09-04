@@ -68,7 +68,7 @@ class Aggregator
                 uptimeSeconds: $snapshot->uptimeSeconds,
                 memory: $snapshot->memory,
                 cpuPercent: $snapshot->cpuPercent,
-                goroutines: $snapshot->goroutines,
+                runtimeTasks: $snapshot->runtimeTasks,
                 requests: $snapshot->requests,
                 connections: $snapshot->connections,
                 consumers: $snapshot->consumers,
@@ -139,30 +139,24 @@ class Aggregator
      */
     protected function sum(array $storedSnapshots): Totals
     {
-        $rssBytes          = 0;
-        $goRuntimeBytes    = 0;
-        $nonExtensionBytes = 0;
-        $cpuPercent        = 0.0;
-        $goroutines        = 0;
+        $rssBytes     = 0;
+        $cpuPercent   = 0.0;
+        $runtimeTasks = 0;
 
         foreach ($storedSnapshots as $storedSnapshot) {
             $snapshot = $storedSnapshot->snapshot;
 
             $rssBytes += $snapshot->memory->rssBytes;
-            $goRuntimeBytes += $snapshot->memory->goRuntimeBytes;
-            $nonExtensionBytes += $snapshot->memory->nonExtensionBytes;
             $cpuPercent += $snapshot->cpuPercent;
-            $goroutines += $snapshot->goroutines;
+            $runtimeTasks += $snapshot->runtimeTasks;
         }
 
         return new Totals(
             memory: new Memory(
                 rssBytes: $rssBytes,
-                goRuntimeBytes: $goRuntimeBytes,
-                nonExtensionBytes: $nonExtensionBytes,
             ),
             cpuPercent: $cpuPercent,
-            goroutines: $goroutines,
+            runtimeTasks: $runtimeTasks,
             requests: static::sumRequests($storedSnapshots),
             connections: static::sumConnections($storedSnapshots),
             consumers: static::sumConsumers($storedSnapshots),

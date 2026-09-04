@@ -125,7 +125,7 @@ $report = [];
 
 // 1. The floor every crossing pays, measured here rather than borrowed from
 //    boundary-profile.php so both halves are priced in one run on one machine.
-$report['cgo crossing (tasksCount)'] = $measure(
+$report['boundary crossing (tasksCount)'] = $measure(
     case: static function (): void {
         for ($index = 0; $index < PUSHES; $index++) {
             tasksCount();
@@ -181,7 +181,7 @@ foreach ($report as $name => $timing) {
 // boundary-profile.php's isolated rows: every row above ran with the extension
 // in the same state — idle, holding timers — so none of them is priced in a
 // state the whole never has.
-$crossing = $report['cgo crossing (tasksCount)']['cpu'];
+$crossing = $report['boundary crossing (tasksCount)']['cpu'];
 $packing  = $report['MessagePackTransport::pack']['cpu'];
 $raw      = $report['raw push (crossing + runtime)']['cpu'];
 $full     = $report['Extension::push (full path)']['cpu'];

@@ -237,7 +237,7 @@ function allFeaturesStatus(): string
 /**
  * Lazily builds and caches the per-worker DB connections used by "all" on its first
  * use (so the other demo commands never pay for them and never require the backends).
- * The Go side pools the real connections by URI/DSN, so reusing these objects is cheap.
+ * The extension pools the real connections by URI/DSN, so reusing these objects is cheap.
  *
  * @return array{0: Collection, 1: MysqlConnection, 2: PgsqlConnection}
  */

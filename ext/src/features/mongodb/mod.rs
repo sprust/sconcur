@@ -1,8 +1,7 @@
-//! Mirrors ext-go-legacy/internal/features/mongodb.
+//! The MongoDB feature: the command dispatch over one pooled client.
 //!
 //! One feature handling every MongoDB command. The dispatch, the client pool,
-//! the cursors and the msgpack<->BSON serializer are each their own module, the
-//! way the Go side splits them.
+//! the cursors and the msgpack<->BSON serializer are each their own module.
 
 pub mod bulk;
 pub mod clients;
@@ -96,7 +95,7 @@ impl Feature for MongodbFeature {
 
             // The per-call deadline the PHP side sends. A cursor's later batches
             // are not covered by it: they are pulled by their own next() call,
-            // which is a task of its own, exactly as on the Go side.
+            // which is a task of its own.
             let outcome = match envelope.timeout_ms {
                 timeout if timeout > 0 => {
                     match tokio::time::timeout(

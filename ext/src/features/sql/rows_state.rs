@@ -1,12 +1,12 @@
-//! Mirrors ext-go-legacy/internal/features/sql/rows_state.go.
+//! A result set streamed to PHP one batch per `next()`.
 //!
 //! Streams a SELECT to PHP batch by batch, with the one-row look-ahead that
 //! decides whether a batch is the last one.
 //!
-//! Go holds the open `*sql.Rows` in the state and pulls it on each Next. A
-//! borrowed stream cannot be parked in a struct here, so the query runs in a
-//! task of its own and hands rows over a bounded channel. The observable
-//! behaviour is the same, including backpressure: the producer blocks once the
+//! A borrowed row stream cannot be parked in a struct, so the query runs in a
+//! task of its own and hands rows over a bounded channel rather than being
+//! pulled directly on each next(). Backpressure survives that: the producer
+//! blocks once the
 //! channel is full, so a slow PHP consumer still throttles the database read
 //! instead of buffering the whole result.
 
@@ -92,8 +92,7 @@ impl StateContract for RowsState {
             }
 
             loop {
-                // A batch size of zero means "everything in one batch", which is
-                // how Go reads `batchSize <= 0`.
+                // A batch size of zero means "everything in one batch".
                 if self.batch_size > 0 && rows.len() as usize >= self.batch_size as usize {
                     // Look one row ahead: if there is more, this batch is
                     // non-final and the peeked row is stashed for the next call.
@@ -130,8 +129,7 @@ impl StateContract for RowsState {
     fn close(&self) -> StateCloseFuture<'_> {
         Box::pin(async move {
             // Stops the producing task; the pooled connection it holds is
-            // released when that task unwinds, which is the counterpart of Go's
-            // `release`.
+            // released when that task unwinds.
             self.cancel.cancel();
         })
     }

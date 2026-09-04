@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\HttpServer;
 
 /**
- * The handler-timeout deadline lives on the Go side, so it fires independently of
+ * The handler-timeout deadline lives on the extension, so it fires independently of
  * PHP: a handler stuck in a NATIVE blocking call (here usleep, which never yields to
  * the scheduler) still gets the client a 504 at the deadline — it does not wait for
  * the blocking call to return. (The timeout cannot un-freeze the single PHP thread;
@@ -19,7 +19,7 @@ class HttpServerNativeBlockTimeoutTest extends BaseHttpServerTestCase
     public function testNativeBlockingHandlerIsAnsweredWith504WithoutWaitingForIt(): void
     {
         // The handler blocks natively for 3s; the 250ms deadline must answer 504 long
-        // before that (proving the Go timer fires without PHP yielding).
+        // before that (proving the extension's timer fires without PHP yielding).
         $start = microtime(true);
 
         [$status] = $this->request(

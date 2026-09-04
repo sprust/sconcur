@@ -1,9 +1,9 @@
 //! Connection strings.
 //!
-//! The PHP side emits the DSN the Go drivers expect, and that is part of the
-//! wire contract — the demo server, the benchmarks and the tests all write
+//! The PHP side emits MySQL DSNs in go-sql-driver's format, and that is part of
+//! the wire contract — the demo server, the benchmarks and the tests all write
 //! `user:pass@tcp(host:port)/db?parseTime=true`. Postgres is already a URL and
-//! passes straight through; MySQL's Go format is not one and has to be parsed.
+//! passes straight through; that format is not one and has to be parsed.
 //!
 //! Rewriting the PHP side to emit URLs was the alternative and was rejected:
 //! the point of the spike is a core an unmodified package can load.
@@ -11,14 +11,14 @@
 use sqlx::mysql::MySqlConnectOptions;
 use std::str::FromStr;
 
-/// Parses the Go MySQL DSN:
+/// Parses a go-sql-driver MySQL DSN:
 ///
 ///   [user[:password]@][tcp(host[:port])][/database][?param=value&...]
 ///
-/// The parameters are Go-driver options (`parseTime`, `loc`, `charset`, …).
-/// They are read for the ones that change observable behaviour and otherwise
-/// dropped: passing them on would make the options parser reject the DSN, and
-/// silently ignoring an unknown one is what the Go driver does too.
+/// The parameters are that driver's options (`parseTime`, `loc`, `charset`, …).
+/// The ones that change observable behaviour are read and the rest dropped:
+/// passing them on would make the options parser reject the DSN, and an unknown
+/// option is ignored rather than refused.
 pub fn mysql_options(dsn: &str) -> Result<MySqlConnectOptions, String> {
     // Already a URL (the tests use both shapes for Postgres; accept it here too).
     if dsn.starts_with("mysql://") {

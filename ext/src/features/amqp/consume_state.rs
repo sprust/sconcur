@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/amqp/consume_state.go: one consumer streamed to
+//! One consumer streamed to
 //! PHP through the shared streaming-state registry.
 //!
 //! The first `next()` returns the consumer tag, and every following one returns

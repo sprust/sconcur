@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/httpserver/payloads: the Rust counterparts of
+//! The Rust counterparts of
 //! the PHP HTTP-server payload objects and the request event the server streams
 //! back to PHP. The renames are the short keys exchanged via MessagePack.
 
@@ -17,8 +17,8 @@ use std::collections::HashMap;
 /// Every field of the wire payload is decoded, but the spike only acts on
 /// `address`, `reuse_port` and `handler_timeout_ms`. The read/write/idle
 /// timeouts, the body limit, `max_concurrency` and the telemetry block are
-/// accepted and ignored — a scope limit worth knowing before comparing
-/// anything but the ladder against the Go server, which enforces them all.
+/// accepted and ignored — a scope limit worth knowing before reading anything
+/// but the ladder into a comparison.
 #[allow(dead_code)]
 #[derive(Deserialize, Default)]
 pub struct ServePayload {
@@ -105,9 +105,9 @@ impl RespondPayload {
 /// field ignores every other key, so a response can still be routed back — and
 /// the client answered — when the rest of the payload is malformed.
 ///
-/// Go decoded it first and the full payload second, on every response. Here the
-/// order is reversed: the full payload carries `rid` too, so the happy path
-/// decodes once and this struct is only reached when that failed.
+/// The full payload carries `rid` too, so the happy path decodes once and this
+/// struct is only reached when that failed — rather than decoding the id first
+/// and the payload second on every response.
 #[derive(Deserialize, Default)]
 pub struct RespondRequestId {
     #[serde(rename = "rid", default)]
@@ -132,9 +132,8 @@ pub struct RequestEvent {
 }
 
 impl RequestEvent {
-    /// Writes the event by hand instead of through a derived serializer, for
-    /// the same reason Go implements msgpack.CustomEncoder here: one event is
-    /// marshaled per accepted request, and it is on the hot path. The wire
+    /// Writes the event by hand instead of through a derived serializer: one
+    /// event is marshaled per accepted request, and it is on the hot path. The wire
     /// bytes are a plain MessagePack map with the struct's short keys, so the
     /// PHP side is unaffected.
     pub fn encode(&self) -> Vec<u8> {
@@ -162,9 +161,8 @@ impl RequestEvent {
             let _ = encode::write_str(&mut buffer, value);
         }
 
-        // The body is bytes, but PHP reads it as a string and the Go side sends
-        // a msgpack string too — keep the type identical or ext-msgpack hands
-        // the handler a different value than it does today.
+        // The body is bytes, but PHP reads it as a string — it has to stay a
+        // msgpack string, or ext-msgpack hands the handler a different value.
         let _ = encode::write_str(&mut buffer, "bd");
         let _ = encode::write_str_len(&mut buffer, self.body.len() as u32);
         buffer.extend_from_slice(&self.body);

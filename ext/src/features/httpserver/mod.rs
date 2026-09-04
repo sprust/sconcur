@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/httpserver/feature.go.
+//! The HTTP server feature: the command dispatch behind serve and respond.
 
 pub mod listen;
 pub mod payloads;
@@ -103,8 +103,7 @@ async fn handle_serve(task: Task) {
 
     // Counted only when somebody is collecting. Without a telemetry socket the
     // pusher is a no-op and nothing would ever read these numbers, so an
-    // unwatched server keeps its request path free of the bookkeeping entirely —
-    // which Go cannot do, its counters being unconditional.
+    // unwatched server keeps its request path free of the bookkeeping entirely.
     let request_stats = if payload.telemetry_socket.is_empty() {
         None
     } else {
@@ -220,7 +219,7 @@ async fn respond(task: &Task) -> Option<Result> {
                 ));
             };
 
-            // Answer the client with a 500 instead of hanging, exactly as Go does.
+            // Answer the client with a 500 instead of hanging.
             let (done, _) = tokio::sync::oneshot::channel();
 
             let _ = writer
@@ -303,10 +302,10 @@ async fn respond(task: &Task) -> Option<Result> {
 /// The detached path, on the PHP thread: the write is handed over without
 /// waiting for it to be applied.
 ///
-/// Go's hand-over is a rendezvous, which guarantees the connection goroutine
-/// accepted the command before push returns. A one-slot channel buys the same
-/// guarantee more cheaply — the command is in the channel the receiver is
-/// already waiting on — without blocking the thread that drains the results.
+/// A one-slot channel, not a rendezvous: it gives the same guarantee that the
+/// connection task has the command before push returns — it is in the channel
+/// the receiver is already waiting on — without blocking the thread that drains
+/// the results.
 fn respond_detached(task: &Task) -> Option<Result> {
     let message = task.message();
 
@@ -370,9 +369,8 @@ fn respond_detached(task: &Task) -> Option<Result> {
 }
 
 /// Builds a respond failure result. A detached task carries no flow, so the
-/// handler finds none and drops it before it ever crosses to PHP — which is why
-/// Go also logs it there. The spike has no log sink, so the result is all there
-/// is; noted rather than silently lost.
+/// handler finds none and drops it before it ever crosses to PHP. The result is
+/// all there is to carry it, so it is noted rather than silently lost.
 fn fail_respond(task: &Task, text: String) -> Result {
     Result::error(task.message(), text)
 }

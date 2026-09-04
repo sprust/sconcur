@@ -1,9 +1,9 @@
-//! MessagePack -> BSON. Mirrors ext-go-legacy/internal/features/mongodb/serializer/msgpack_values.go.
+//! MessagePack -> BSON.
 //!
-//! Go streams the bytes straight into a BSON buffer. Here the payload is decoded
-//! into an `rmpv::Value` tree first and walked afterwards. That costs one
-//! intermediate allocation per document which the Go side does not pay — a real
-//! difference, named rather than hidden — and buys the thing that matters most
+//! The payload is decoded into an `rmpv::Value` tree first and walked
+//! afterwards, rather than streamed straight into a BSON buffer. That costs one
+//! intermediate allocation per document — a real price, named rather than
+//! hidden — and buys the thing that matters most
 //! for this converter: the container counter below is trivially correct on a
 //! tree walk, where on a hand-rolled streaming decoder it is the single easiest
 //! thing in the whole feature to get subtly, silently wrong.
@@ -58,9 +58,9 @@ pub fn documents_from_msgpack(data: &[u8]) -> Result<Vec<Document>, Error> {
         .collect()
 }
 
-/// A pipeline is an array of stage documents. Kept as its own entry point
-/// because that is how the Go side names it, though the aggregate handler reads
-/// its stages off the already-converted params instead.
+/// A pipeline is an array of stage documents. Kept as its own entry point,
+/// though the aggregate handler reads its stages off the already-converted
+/// params instead.
 #[allow(dead_code)]
 pub fn pipeline_from_msgpack(data: &[u8]) -> Result<Vec<Document>, Error> {
     documents_from_msgpack(data)
@@ -403,9 +403,8 @@ impl Converter {
             None | Some(Value::Nil) => None,
             Some(Value::Map(pairs)) if pairs.is_empty() => None,
             Some(Value::Map(pairs)) => {
-                // The scope map is itself a container: Go counts it when
-                // readObject decodes the property, and missing it here shifts
-                // every later object reference by one.
+                // The scope map is itself a container and has to be counted:
+                // missing it shifts every later object reference by one.
                 self.next_index();
 
                 let mut document = Document::new();

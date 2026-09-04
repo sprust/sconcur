@@ -1,9 +1,9 @@
-//! Mirrors ext-go-legacy/internal/features/sql/transactions.go.
+//! An open transaction and the connection it holds for its whole life.
 //!
 //! A transaction outlives the task that opened it: PHP begins on one task and
 //! then sends queries, execs and the final commit on tasks of their own. The
 //! begin task stays alive as a registered stream (hasNext) so its pooled
-//! connection survives, exactly as on the Go side.
+//! connection survives for the transaction's whole life.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -16,8 +16,8 @@ use crate::states::{StateCloseFuture, StateContract, StateFuture};
 use super::pools::Acquired;
 
 /// The live transaction. sqlx's commit/rollback consume it, so it sits in an
-/// Option that the first finaliser takes — which is also what makes finalising
-/// idempotent, the job `sync.Once` does in the Go original.
+/// Option that the first finaliser takes, which is also what makes finalising
+/// idempotent without a guard of its own.
 pub enum TxHandle {
     Mysql(sqlx::Transaction<'static, sqlx::MySql>),
     Pgsql(sqlx::Transaction<'static, sqlx::Postgres>),
@@ -28,8 +28,8 @@ pub struct TransactionSession {
     /// An async mutex, not a std one: a query on this transaction is held across
     /// an await, and the driver serialises statements on one connection anyway.
     pub handle: tokio::sync::Mutex<Option<TxHandle>>,
-    /// Released when the session is dropped — the counterpart of Go's
-    /// `pools.release` inside `cleanup`.
+    /// Released when the session is dropped, so no explicit cleanup path has to
+    /// remember to do it.
     _acquired: Acquired,
 }
 

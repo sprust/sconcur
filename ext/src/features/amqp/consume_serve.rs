@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/amqp/consume_serve.go: the delivery stream of a
+//! The delivery stream of a
 //! supervised worker.
 //!
 //! It is the AMQP counterpart of the servers' accept stream, and it is

@@ -42,9 +42,9 @@ trait TelemetryFixturesTrait
             'pid'         => $pid,
             'updatedAtMs' => $updatedAtMs,
             'startedAtMs' => $startedAtMs,
-            'memory'      => ['rssBytes' => 1000, 'goRuntimeBytes' => 400, 'nonExtensionBytes' => 600],
+            'memory'      => ['rssBytes' => 1000],
             'cpuPercent'  => 5.0,
-            'goroutines'  => 3,
+            'runtimeTasks'  => 3,
             'requests'    => ['completed' => $completed, 'avgMs' => $avgMs, 'inFlight' => 2],
         ]);
 
@@ -60,9 +60,9 @@ trait TelemetryFixturesTrait
             'pid'         => $pid,
             'updatedAtMs' => $updatedAtMs,
             'startedAtMs' => $startedAtMs,
-            'memory'      => ['rssBytes' => 1000, 'goRuntimeBytes' => 400, 'nonExtensionBytes' => 600],
+            'memory'      => ['rssBytes' => 1000],
             'cpuPercent'  => 5.0,
-            'goroutines'  => 3,
+            'runtimeTasks'  => 3,
             'connections' => ['active' => $active, 'totalAccepted' => $totalAccepted],
         ]);
 

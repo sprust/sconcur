@@ -1,4 +1,5 @@
-//! Mirrors ext-go-legacy/internal/features/httpclient.
+//! The HTTP client feature: the command dispatch behind request, upload and
+//! download.
 //!
 //! One request per command envelope: a buffered body is sent when PHP first
 //! pulls the response, a streamed one is already in flight so the upload chunks
@@ -132,7 +133,7 @@ async fn handle_request(task: &Task, params: rmpv::Value) {
     };
 
     // A streamed body cannot be replayed, so a redirect would fail opaquely
-    // mid-upload; Go disables following for the same reason.
+    // mid-upload, so following is disabled for a streamed one.
     let follow_redirects = params.follow_redirects && !params.stream_body;
 
     let http = match registries().clients.get(&params, follow_redirects) {
@@ -215,8 +216,8 @@ async fn handle_request(task: &Task, params: rmpv::Value) {
 ///
 /// Reading the first batch here would wait for the response, and the response
 /// cannot arrive until PHP has pushed the body it is being kept from pushing —
-/// a deadlock, which is why Go registers rather than starts. HasNext keeps the
-/// state alive so the response can be pulled afterwards.
+/// a deadlock, which is why the state is registered rather than started.
+/// HasNext keeps it alive so the response can be pulled afterwards.
 async fn start_streamed(
     task: &Task,
     params: &payloads::RequestParams,
@@ -449,7 +450,7 @@ async fn download(task: &Task, builder: reqwest::RequestBuilder, params: &mut pa
         return;
     }
 
-    // The PHP side's create permission, or the same default Go opens with.
+    // The PHP side's create permission, or the usual default.
     // tokio's OpenOptions carries mode() itself, so the unix extension trait is
     // not imported for it.
     options.mode(if params.sink_perm > 0 {
@@ -534,7 +535,7 @@ async fn drop_partial(path: &str, mode: &str) {
 }
 
 /// Maps a PHP DownloadFileMode to open options — the single place those flags
-/// live on this side, as downloadModeToFlags is on the Go one.
+/// live.
 fn sink_options(mode: &str) -> Option<tokio::fs::OpenOptions> {
     let mut options = tokio::fs::OpenOptions::new();
 

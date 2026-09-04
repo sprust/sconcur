@@ -22,8 +22,8 @@
 //!
 //! The caller's SQL is never parsed or rewritten — it goes into PREPARE verbatim,
 //! so a `$1` inside a string literal of theirs stays a `$1` of theirs. The server
-//! infers each parameter's type from where it appears, which is what pgx did and
-//! what the Go core's behaviour rests on.
+//! infers each parameter's type from where it appears, which is what the PHP
+//! side's shapes rest on.
 //!
 //! Injection safety rests on dollar quoting rather than on escaping. A dollar
 //! quoted literal has no escape sequences at all: nothing inside `$tag$…$tag$`

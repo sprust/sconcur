@@ -94,15 +94,13 @@ class HtmlRenderer
 <table>
 <caption>Totals</caption>
 <tr>
-<th>RSS, MiB</th><th>Go runtime, MiB</th><th>non-ext, MiB</th><th>CPU %</th><th>goroutines</th>
+<th>RSS, MiB</th><th>non-ext, MiB</th><th>CPU %</th><th>ext tasks</th>
 ' . $workloadTotalsHead . '
 </tr>
 <tr>
 <td>' . $this->mib($totals->memory->rssBytes) . '</td>
-<td>' . $this->mib($totals->memory->goRuntimeBytes) . '</td>
-<td>' . $this->mib($totals->memory->nonExtensionBytes) . '</td>
 <td>' . $this->f1($totals->cpuPercent) . '</td>
-<td>' . $totals->goroutines . '</td>
+<td>' . $totals->runtimeTasks . '</td>
 ' . $workloadTotalsRow . '
 </tr>
 </table>';
@@ -119,7 +117,7 @@ class HtmlRenderer
 <table>
 <caption>Workers</caption>
 <tr>
-<th>group</th><th>pid</th><th>started (UTC)</th><th>uptime s</th><th>snap age ms</th><th>CPU %</th><th>RSS, MiB</th><th>goroutines</th><th>workload</th>
+<th>group</th><th>pid</th><th>started (UTC)</th><th>uptime s</th><th>snap age ms</th><th>CPU %</th><th>RSS, MiB</th><th>ext tasks</th><th>workload</th>
 </tr>' . $rows . '
 </table>
 </body>
@@ -174,7 +172,7 @@ class HtmlRenderer
 <td>' . $group->workersHung . '</td>
 <td>' . $this->mib($group->totals->memory->rssBytes) . '</td>
 <td>' . $this->f1($group->totals->cpuPercent) . '</td>
-<td>' . $group->totals->goroutines . '</td>
+<td>' . $group->totals->runtimeTasks . '</td>
 <td>' . $this->workloadCell(
                 $group->totals->requests,
                 $group->totals->connections,
@@ -187,7 +185,7 @@ class HtmlRenderer
 <table>
 <caption>Groups</caption>
 <tr>
-<th>group</th><th>workers</th><th>hung</th><th>RSS, MiB</th><th>CPU %</th><th>goroutines</th><th>workload</th>
+<th>group</th><th>workers</th><th>hung</th><th>RSS, MiB</th><th>CPU %</th><th>ext tasks</th><th>workload</th>
 </tr>' . $rows . '
 </table>';
     }
@@ -239,7 +237,7 @@ class HtmlRenderer
 <td>' . $worker->snapshotAgeMs . '</td>
 <td>' . $this->f1($worker->cpuPercent) . '</td>
 <td>' . $this->mib($worker->memory->rssBytes) . '</td>
-<td>' . $worker->goroutines . '</td>
+<td>' . $worker->runtimeTasks . '</td>
 <td>' . $this->workloadCell(
             requests: $worker->requests,
             connections: $worker->connections,

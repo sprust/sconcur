@@ -60,9 +60,9 @@ class SchedulerFireAndForgetTest extends BaseTestCase
     }
 
     /**
-     * A detached task runs synchronously on the PHP thread inside the push cgo
+     * A detached task runs synchronously on the PHP thread inside the push crossing
      * call, so a blocking handler would freeze the whole worker. Only the HTTP
-     * respond is allow-listed on the Go side; anything else must be refused
+     * respond is allow-listed on the extension; anything else must be refused
      * loudly rather than silently accepted.
      */
     public function testANonDetachableMethodIsRejected(): void
@@ -119,7 +119,7 @@ class SchedulerFireAndForgetTest extends BaseTestCase
 
     /**
      * The respond payload used throughout: its request id resolves to nothing, so
-     * the Go side logs the failure and drops it. That is exactly the contract
+     * the extension logs the failure and drops it. That is exactly the contract
      * under test — PHP must neither wait for the outcome nor learn about it.
      */
     protected static function unroutableRespond(): RespondPayload

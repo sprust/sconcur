@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/socketserver/payloads.
+//! The parameters of the socket server commands.
 
 use serde::Deserialize;
 
@@ -7,8 +7,8 @@ use serde::Deserialize;
 ///
 /// As with the HTTP server, every field is decoded but not all are acted on:
 /// `max_concurrency`, `shutdown_timeout_ms` and the telemetry block are accepted
-/// and ignored in this port. A scope limit worth knowing before comparing
-/// anything but throughput against the Go server.
+/// and ignored. A scope limit worth knowing before reading anything but
+/// throughput into a comparison.
 /// PHP: SConcur\Features\SocketServer\Payloads\ServePayload.
 #[allow(dead_code)]
 #[derive(Deserialize, Default)]

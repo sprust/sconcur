@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/amqp/payloads/payloads.go: the parameters of
+//! The parameters of
 //! every AMQP command and the results the feature sends back.
 //!
 //! Every message is a command envelope (`cm`/`p`) under `MethodEnum::Amqp` —
@@ -6,9 +6,8 @@
 //! PHP side each command builds its own short-key map in the `AmqpCommandEnum`
 //! case that names it, and the `serde` renames here are those same keys.
 //!
-//! Go declares the channel handle and the deadline once, in an embedded
-//! `ChannelCommand` that msgpack inlines. Here they are declared per struct and
-//! read through the `ChannelCommand` trait: `serde(flatten)` would buffer every
+//! The channel handle and the deadline are declared per struct and read through
+//! the `ChannelCommand` trait rather than shared through one embedded struct: `serde(flatten)` would buffer every
 //! field through an intermediate value on a hot path, for no gain the wire can
 //! see.
 
@@ -19,9 +18,9 @@ use super::values;
 
 /// Reads a field that may arrive as an explicit nil.
 ///
-/// `ext-msgpack` writes `null` for a PHP option nobody set, while Go's decoder
-/// turns that into the zero value without comment. serde refuses it, so the two
-/// are reconciled here: a missing key and a null one both mean "not set".
+/// `ext-msgpack` writes `null` for a PHP option nobody set, and serde refuses a
+/// null where a value is expected. The two are reconciled here: a missing key
+/// and a null one both mean "not set".
 fn nullable<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -548,8 +547,8 @@ channel_command!(ConfirmSelectParams);
 // --- results -----------------------------------------------------------------
 //
 // Written with rmp directly rather than through serde, so an omitted property
-// is omitted rather than sent as an empty string — the same `omitempty` the Go
-// structs carry, and what PropertiesCodec reads back as "nobody set this".
+// is omitted rather than sent as an empty string, which is what PropertiesCodec
+// reads back as "nobody set this".
 
 /// What a Connect answers with: the handle the later commands address, plus the
 /// values the handshake settled on.
@@ -731,9 +730,9 @@ pub fn encode_wait_result(confirmations: &[(u64, bool)], returns: &[ReturnOut<'_
     buffer
 }
 
-/// Writes the properties a message actually carries and nothing else — the
-/// `omitempty` of the Go struct, which `PropertiesCodec::decode` reads as "this
-/// one was never set".
+/// Writes the properties a message actually carries and nothing else; an
+/// omitted one is what `PropertiesCodec::decode` reads as "this one was never
+/// set".
 pub fn encode_properties(buffer: &mut Vec<u8>, properties: &lapin::protocol::basic::AMQPProperties) {
     let mut fields: Vec<(&str, PropertyValue<'_>)> = Vec::with_capacity(13);
 
@@ -797,9 +796,8 @@ fn push_number(
     key: &'static str,
     value: Option<i64>,
 ) {
-    // Zero is "not set" here, matching Go's omitempty on an integer: a delivery
-    // mode of 0 is not a mode, and a priority of 0 is the default the broker
-    // assumes anyway.
+    // Zero is "not set" for these two: a delivery mode of 0 is not a mode, and
+    // a priority of 0 is the default the broker assumes anyway.
     if let Some(number) = value {
         if number != 0 {
             fields.push((key, PropertyValue::Number(number)));
@@ -831,7 +829,7 @@ fn write_str(buffer: &mut Vec<u8>, text: &str) {
 }
 
 /// A MessagePack *str*, not *bin*: a message body is a PHP string whatever
-/// bytes it holds, which is what `string([]byte)` becomes on the Go wire.
+/// bytes it holds.
 fn write_bytes_as_str(buffer: &mut Vec<u8>, bytes: &[u8]) {
     encode::write_str_len(buffer, bytes.len() as u32).ok();
     buffer.extend_from_slice(bytes);

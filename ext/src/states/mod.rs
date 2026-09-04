@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/states/states.go: the registry of streaming states
+//! The registry of streaming states
 //! (cursor batches, request-body chunks, client message streams) driven by
 //! `next()`.
 
@@ -16,8 +16,8 @@ pub type StateCloseFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
 /// A stream PHP pulls one batch at a time.
 ///
-/// Both halves are async where Go's are plain methods: a goroutine may block on
-/// the driver, a task here may not. `close` in particular has to be awaited
+/// Both halves are async, because a task here may not block on the driver.
+/// `close` in particular has to be awaited
 /// rather than fired and forgotten — abandoning a MongoDB cursor must reach the
 /// server before PHP looks at the open-cursor count, which is exactly what
 /// MongodbAbandonedCursorTest asserts.

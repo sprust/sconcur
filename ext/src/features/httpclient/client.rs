@@ -1,8 +1,8 @@
-//! Mirrors ext-go-legacy/internal/features/httpclient/client.go: one client per distinct
+//! One client per distinct
 //! tuning, reused across requests.
 //!
 //! Building a client per request would build a connection pool per request, so
-//! nothing would ever be kept alive — the Go side caches for the same reason.
+//! nothing would ever be kept alive, which is what this cache is for.
 
 use reqwest::Client;
 use std::collections::HashMap;
@@ -42,8 +42,7 @@ impl Clients {
     }
 
     /// A streamed body cannot be replayed, so a redirect would fail opaquely
-    /// mid-upload; the caller passes `follow_redirects: false` for those, which
-    /// is what Go does when it sees a piped body.
+    /// mid-upload, so the caller passes `follow_redirects: false` for those.
     pub fn get(&self, params: &RequestParams, follow_redirects: bool) -> Result<Client, String> {
         let key = ClientKey {
             follow_redirects,

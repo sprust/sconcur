@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/amqp/values.go: the field table in both
+//! The field table in both
 //! directions.
 //!
 //! An AMQP field table — queue and exchange arguments, message headers —
@@ -71,8 +71,8 @@ fn table_key(key: &rmpv::Value) -> String {
     }
 }
 
-/// Go renders a float key with `strconv.FormatFloat(_, 'f', -1, 64)`, which
-/// writes the shortest form that round-trips and never an exponent.
+/// A float key is rendered in the shortest form that round-trips, and never as
+/// an exponent.
 fn format_float(number: f64) -> String {
     if number == number.trunc() && number.abs() < 1e15 {
         return format!("{}", number as i64);
@@ -248,8 +248,8 @@ fn write_str(buffer: &mut Vec<u8>, text: &str) {
 }
 
 /// A MessagePack *str*, not *bin*: PHP reads a header value as a plain string,
-/// and that is what Go's `string([]byte)` becomes on the wire — including for
-/// bytes that are not valid UTF-8.
+/// so it stays a string on the wire — including for bytes that are not valid
+/// UTF-8.
 fn write_bytes_as_str(buffer: &mut Vec<u8>, bytes: &[u8]) {
     encode::write_str_len(buffer, bytes.len() as u32).ok();
     buffer.extend_from_slice(bytes);

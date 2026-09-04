@@ -159,7 +159,7 @@ class Extension
     /**
      * waitAny draining the batch: blocks for the first ready result exactly like
      * waitAny(), then returns it together with every further result that was
-     * already ready — up to $maxResults — all in one cgo crossing. The batch
+     * already ready — up to $maxResults — all in one crossing. The batch
      * never waits to fill up, so the first result's latency is unchanged.
      *
      * @return non-empty-list<TaskResultDto>

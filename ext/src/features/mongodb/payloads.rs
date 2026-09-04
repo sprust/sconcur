@@ -1,13 +1,12 @@
-//! Mirrors ext-go-legacy/internal/features/mongodb/payloads.
+//! The parameters of the MongoDB commands.
 //!
 //! Every command arrives as an envelope (`ul`/`db`/`cl`/`to`/`sst`/`cm`/`dt`).
 //! `dt` is one MessagePack blob: for some commands the document itself, for
 //! others a map of named parameters whose values are **ordinary nested values**,
 //! not blobs of their own — `'f' => $this->filter` on the PHP side.
 //!
-//! Go declares those parameters as `[]byte` and fills each from the raw bytes of
-//! its field (`payloads.UnmarshalParams`), converting them one at a time. Here
-//! the whole map is converted once under a single counter instead, which is what
+//! The whole map is converted once under a single counter, rather than field by
+//! field from its own raw bytes. That is what
 //! keeps object references resolvable: ext-msgpack numbers containers across the
 //! entire blob, so a per-field conversion would count them wrong.
 

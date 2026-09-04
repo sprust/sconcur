@@ -1,9 +1,8 @@
-//! Process-wide state, and the one thing the Go build cannot do: surviving a
-//! `fork`.
+//! Process-wide state, and what it takes to survive a `fork`.
 //!
-//! Go starts its runtime inside `dlopen`, so by the time PHP's `MINIT` runs
-//! there are already threads in the process — which is why the library forbids
-//! `pcntl_fork` after the extension is loaded, and why FPM and mod_php are out.
+//! A runtime started inside `dlopen` would already have threads in the process
+//! by the time PHP's `MINIT` runs — which is what makes `pcntl_fork` after
+//! loading unsafe, and what rules FPM and mod_php out.
 //! Nothing here starts until the first push, so a process that loads the
 //! extension and forks without using it hands each child a clean slate.
 //!
@@ -125,8 +124,8 @@ impl Core {
         // worker master starts as many workers as there are cores, and the PHP
         // side of each is a single thread anyway.
         //
-        // This used to follow `available_parallelism`, mirroring how Go derives
-        // GOMAXPROCS from the affinity mask. That only gave the right answer
+        // This used to follow `available_parallelism`, which reads the affinity
+        // mask. That only gave the right answer
         // under `taskset`, which the benchmark harness does and the worker
         // master does not — so the number was right in every measurement and
         // wrong in production, where an N-core box ran N processes of N threads

@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/ws: the neutral WebSocket plumbing shared by the ws
+//! The neutral WebSocket plumbing shared by the ws
 //! server (accept-side) and, when it lands, the ws client. Like `socket` for the
 //! raw TCP features, both depend on this rather than on each other.
 

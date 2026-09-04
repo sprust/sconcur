@@ -3,8 +3,8 @@
 declare(strict_types=1);
 
 // Soak test for the AMQP feature: runs one scenario in a loop and prints, every five
-// seconds, what the two runtimes are holding — the PHP heap and its dangling tasks, the Go
-// runtime's goroutines and heap.
+// seconds, what is held on both sides — the PHP heap and its dangling tasks, and what the
+// broker itself still has open.
 //
 // Everything a cycle creates is released inside that cycle, so any value that only grows
 // is a leak.
@@ -35,31 +35,6 @@ TestApplication::init();
 $scenario       = (string) ($_SERVER['argv'][1] ?? 'publish');
 $durationSecond = (int) ($_SERVER['argv'][2] ?? 120);
 
-$profilerAddress = getenv('SCONCUR_PPROF_ADDR') ?: '';
-
-/**
- * The Go runtime's goroutine count and heap, read from the profiler the extension exposes.
- *
- * @return array{goroutines: int, heapBytes: int}
- */
-$readRuntime = static function () use ($profilerAddress): array {
-    if ($profilerAddress === '') {
-        return ['goroutines' => 0, 'heapBytes' => 0];
-    }
-
-    $context = stream_context_create(['http' => ['timeout' => 2]]);
-
-    $goroutines = @file_get_contents("http://$profilerAddress/debug/pprof/goroutine?debug=1", false, $context);
-    $heap       = @file_get_contents("http://$profilerAddress/debug/pprof/heap?debug=1", false, $context);
-
-    preg_match('/goroutine profile: total (\d+)/', (string) $goroutines, $goroutineMatch);
-    preg_match('/# HeapInuse = (\d+)/', (string) $heap, $heapMatch);
-
-    return [
-        'goroutines' => (int) ($goroutineMatch[1] ?? 0),
-        'heapBytes'  => (int) ($heapMatch[1] ?? 0),
-    ];
-};
 
 $options = TestAmqpResolver::getOptions();
 
@@ -537,7 +512,7 @@ $failures   = 0;
 $lastReport = 0.0;
 
 echo "scenario=$scenario duration={$durationSecond}s\n";
-echo "elapsed cycles  php_mb  php_peak_mb  tasks  goroutines  go_heap_mb"
+echo "elapsed cycles  php_mb  php_peak_mb  tasks"
     . "  br_conn  br_chan  br_cons  failures\n";
 
 while (microtime(true) < $deadline) {
@@ -563,18 +538,15 @@ while (microtime(true) < $deadline) {
 
     gc_collect_cycles();
 
-    $runtime = $readRuntime();
     $broker  = TestAmqpResolver::brokerCounts();
 
     printf(
-        "%7.1f %6d %7.2f %12.2f %6d %11d %11.2f %8d %8d %8d %9d\n",
+        "%7.1f %6d %7.2f %12.2f %6d %8d %8d %8d %9d\n",
         $elapsed,
         $cycleCount,
         memory_get_usage() / 1024 / 1024,
         memory_get_peak_usage() / 1024 / 1024,
         $extension->count(),
-        $runtime['goroutines'],
-        $runtime['heapBytes'] / 1024 / 1024,
         $broker['connections'],
         $broker['channels'],
         $broker['consumers'],

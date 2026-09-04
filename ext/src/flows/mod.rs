@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/flows.
+//! Flows: the concurrent groups tasks belong to, and the registry of them.
 
 pub mod flow;
 pub mod flows;

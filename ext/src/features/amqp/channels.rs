@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/amqp/channels.go and channel_entry.go: the
+//! The
 //! process-wide registry of open channels, and what one open channel holds.
 //!
 //! The registry is global on purpose: an acknowledgement may well arrive from
@@ -80,8 +80,8 @@ pub struct ChannelEntry {
     pub handle: Arc<ConnectionHandle>,
     channel: Channel,
 
-    /// Serializes the driver channel, mirroring the Go build: a cancel or a
-    /// qos may arrive from another coroutine while a command is running, and
+    /// Serializes the driver channel: a cancel or a qos may arrive from another
+    /// coroutine while a command is running, and
     /// keeping the order the broker sees is what makes a failure attributable.
     command_lock: tokio::sync::Mutex<()>,
 
@@ -145,9 +145,8 @@ impl ChannelEntry {
     /// Runs one driver call serialized against the other commands of this
     /// channel and bounded by the deadline PHP gave it.
     ///
-    /// Go needs a goroutine, a buffered channel and a select here, because the
-    /// amqp091 methods take no context. A future needs neither: the timeout
-    /// drops it.
+    /// Bounding a driver call needs nothing of its own here: the call is a
+    /// future, and the timeout drops it.
     pub async fn run<T, F>(&self, timeout: Duration, call: F) -> Result<T, CommandError>
     where
         F: std::future::Future<Output = Result<T, LapinError>>,
@@ -171,9 +170,9 @@ impl ChannelEntry {
     /// counting towards the connection's channel limit, until the idle sweeper
     /// gets to it half an hour later.
     ///
-    /// Go reaches the same place through the channel's close listener; lapin
-    /// reports the close as the error of whatever ran into it, which is earlier
-    /// and needs no listener.
+    /// lapin reports the close as the error of whatever ran into it, so no
+    /// close listener is needed — and the reason arrives earlier than a listener
+    /// would deliver it.
     pub fn note_protocol_failure(&self, error: &LapinError) {
         let Some((code, text)) = protocol_failure(error) else {
             return;
@@ -641,8 +640,8 @@ impl Channels {
 
     /// Watches one channel for the broker taking it away with no command of
     /// ours running into it — a channel that only consumes, whose queue is
-    /// deleted under it. The Go build hears this on the channel's close
-    /// listener; lapin reports the state instead, so it is read on a slow tick.
+    /// deleted under it. lapin reports the state rather than announcing the
+    /// close, so it is read on a slow tick.
     /// The task ends with the channel.
     fn watch(&'static self, entry: Arc<ChannelEntry>) {
         crate::core::get().runtime().spawn(async move {

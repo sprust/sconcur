@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/httpclient/response_state.go: the request is
+//! The request is
 //! performed on the first `next()`, which answers with the response metadata and
 //! the inline first chunk of the body; every `next()` after it is another chunk.
 
@@ -41,8 +41,8 @@ struct Inner {
     /// Counted as *delivered*, not as read off the socket. The stream hands over
     /// items of whatever size the transport produced, so one item can be the
     /// whole body — counting reads would trip the cap on the very first call and
-    /// fail the request upfront, where Go fails it mid-stream after the metadata
-    /// has already reached PHP.
+    /// fail the request upfront, rather than mid-stream once the metadata has
+    /// reached PHP.
     delivered_total: i64,
     exhausted: bool,
 }

@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/mongodb/serializer.
+//! Converting between BSON and MessagePack in both directions.
 //!
 //! PHP and the extension exchange documents as MessagePack. Values BSON has and
 //! MessagePack does not — an id, a date, a decimal — ride in the object envelope

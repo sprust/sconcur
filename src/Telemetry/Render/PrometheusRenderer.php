@@ -34,10 +34,8 @@ class PrometheusRenderer
         $output .= $this->family('sconcur_pool_workers', 'Live workers in the pool.', 'gauge', $poolLabels, (string) $aggregate->workersTotal);
         $output .= $this->family('sconcur_pool_workers_hung', 'Workers flagged hung (alive but stale snapshot).', 'gauge', $poolLabels, (string) $aggregate->workersHung);
         $output .= $this->family('sconcur_pool_memory_rss_bytes', 'Pool resident set size (with the extension).', 'gauge', $poolLabels, (string) $totals->memory->rssBytes);
-        $output .= $this->family('sconcur_pool_memory_go_runtime_bytes', 'Pool Go-runtime memory footprint.', 'gauge', $poolLabels, (string) $totals->memory->goRuntimeBytes);
-        $output .= $this->family('sconcur_pool_memory_non_extension_bytes', 'Pool memory outside the extension (PHP interpreter).', 'gauge', $poolLabels, (string) $totals->memory->nonExtensionBytes);
         $output .= $this->family('sconcur_pool_cpu_percent', 'Pool CPU usage (sum of per-process percentages).', 'gauge', $poolLabels, $this->float($totals->cpuPercent));
-        $output .= $this->family('sconcur_pool_goroutines', 'Pool goroutine count.', 'gauge', $poolLabels, (string) $totals->goroutines);
+        $output .= $this->family('sconcur_pool_runtime_tasks', 'Live tasks in the extension runtime, summed over the pool.', 'gauge', $poolLabels, (string) $totals->runtimeTasks);
 
         $master = $aggregate->master;
 
@@ -97,10 +95,8 @@ class PrometheusRenderer
             ['sconcur_worker_start_time_seconds', 'Worker serve-loop start (unix seconds).', fn(WorkerEntry $worker): string => (string) intdiv($worker->startedAtMs, 1000)],
             ['sconcur_worker_uptime_seconds', 'Worker serve-loop uptime, in seconds.', fn(WorkerEntry $worker): string => $this->float($worker->uptimeSeconds)],
             ['sconcur_worker_cpu_percent', 'Worker CPU usage percent.', fn(WorkerEntry $worker): string => $this->float($worker->cpuPercent)],
-            ['sconcur_worker_goroutines', 'Worker goroutine count.', fn(WorkerEntry $worker): string => (string) $worker->goroutines],
+            ['sconcur_worker_runtime_tasks', 'Live tasks in the extension runtime.', fn(WorkerEntry $worker): string => (string) $worker->runtimeTasks],
             ['sconcur_worker_memory_rss_bytes', 'Worker resident set size (with the extension).', fn(WorkerEntry $worker): string => (string) $worker->memory->rssBytes],
-            ['sconcur_worker_memory_go_runtime_bytes', 'Worker Go-runtime memory footprint.', fn(WorkerEntry $worker): string => (string) $worker->memory->goRuntimeBytes],
-            ['sconcur_worker_memory_non_extension_bytes', 'Worker memory outside the extension (PHP interpreter).', fn(WorkerEntry $worker): string => (string) $worker->memory->nonExtensionBytes],
         ];
 
         foreach ($processMetrics as [$metricName, $help, $value]) {
@@ -141,7 +137,7 @@ class PrometheusRenderer
             ['sconcur_group_workers_hung', 'Workers of the group flagged hung.', fn(GroupAggregate $group): string => (string) $group->workersHung],
             ['sconcur_group_cpu_percent', 'CPU usage summed over the group.', fn(GroupAggregate $group): string => $this->float($group->totals->cpuPercent)],
             ['sconcur_group_memory_rss_bytes', 'Resident set size summed over the group.', fn(GroupAggregate $group): string => (string) $group->totals->memory->rssBytes],
-            ['sconcur_group_goroutines', 'Goroutines summed over the group.', fn(GroupAggregate $group): string => (string) $group->totals->goroutines],
+            ['sconcur_group_runtime_tasks', 'Live tasks in the extension runtime, summed over the group.', fn(GroupAggregate $group): string => (string) $group->totals->runtimeTasks],
         ];
 
         $output = '';

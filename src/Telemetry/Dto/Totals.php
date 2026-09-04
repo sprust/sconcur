@@ -17,7 +17,7 @@ readonly class Totals
     public function __construct(
         public Memory $memory,
         public float $cpuPercent,
-        public int $goroutines,
+        public int $runtimeTasks,
         public ?Requests $requests,
         public ?Connections $connections,
         public ?Consumers $consumers = null,
@@ -30,9 +30,9 @@ readonly class Totals
     public function toArray(): array
     {
         $data = [
-            'memory'     => $this->memory->toArray(),
-            'cpuPercent' => $this->cpuPercent,
-            'goroutines' => $this->goroutines,
+            'memory'       => $this->memory->toArray(),
+            'cpuPercent'   => $this->cpuPercent,
+            'runtimeTasks' => $this->runtimeTasks,
         ];
 
         if ($this->requests !== null) {

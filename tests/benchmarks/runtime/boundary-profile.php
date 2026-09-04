@@ -6,8 +6,9 @@ declare(strict_types=1);
  * Phase 0 of .ai/plans/php-go-boundary-batching.md — attribution of today's cost
  * of one result taken through waitAny, on the PHP side of the boundary.
  *
- * It splits the per-result price into: a bare cgo crossing, the Go-built frame
- * plus its copies, the PHP frame parsing into a TaskResultDto, and — separately —
+ * It splits the per-result price into: a bare boundary crossing, the frame the
+ * extension builds plus its copies, the PHP frame parsing into a TaskResultDto,
+ * and — separately —
  * the scheduler's coroutine coordination (suspend -> waitAny -> resume).
  *
  * Both wall and CPU time are reported: the sleeper's own Go timer shows up in
@@ -34,7 +35,7 @@ require_once __DIR__ . '/../../../vendor/autoload.php';
 
 TestApplication::init();
 
-const RESULTS    = 1000;   // must stay under the Go results buffer (1024)
+const RESULTS    = 1000;   // must stay under the extension's result buffer (1024)
 const COROUTINES = 500;
 const REPEATS    = 7;      // measurements per case, the median is reported
 
@@ -131,8 +132,8 @@ $measure = static function (callable $case, int $operations, ?callable $setUp = 
 
 $report = [];
 
-// 1. Bare cgo crossing — the floor every call pays.
-$report['cgo crossing (tasksCount)'] = $measure(
+// 1. Bare boundary crossing — the floor every call pays.
+$report['boundary crossing (tasksCount)'] = $measure(
     case: static function (): void {
         for ($i = 0; $i < RESULTS; $i++) {
             tasksCount();
@@ -141,9 +142,9 @@ $report['cgo crossing (tasksCount)'] = $measure(
     operations: RESULTS,
 );
 
-// 2. Raw waitAny: cgo crossing + Go frame build + C.CBytes + zend_string copy,
-//    without any PHP-side parsing.
-$report['raw waitAny (cgo + frame + copies)'] = $measure(
+// 2. Raw waitAny: the crossing, the frame the extension builds and the copies it
+//    takes, without any PHP-side parsing.
+$report['raw waitAny (crossing + frame + copies)'] = $measure(
     case: static function (): void {
         for ($i = 0; $i < RESULTS; $i++) {
             rawWaitAny();

@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/socketclient.
+//! The raw TCP client feature: dialling, sending and closing.
 //!
 //! The socket server's per-connection handling, initiated by a dial instead of
 //! an accept: the same `socket` plumbing carries the framing, the write loop and

@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/socketserver/listen.go.
+//! Binding the socket listener and the accept loop behind it.
 
 use tokio::net::TcpListener;
 

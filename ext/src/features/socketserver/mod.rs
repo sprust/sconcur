@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/socketserver.
+//! The raw TCP server feature: accepting connections and answering on them.
 //!
 //! The shape is the HTTP server's: a self-pumping accept stream publishes one
 //! connection event per accepted connection, and a respond command routes a
@@ -154,7 +154,7 @@ async fn handle_serve(task: Task) {
     // closes as soon as the accept loop returns — which is exactly what a
     // graceful stop does — and the stream would end while handlers are still in
     // flight. The PHP serve loop would then leave its drain and unwind them,
-    // instead of waiting. Go gets this from selecting on the flow context.
+    // instead of waiting.
     let _stream_open = connections_tx.clone();
 
     tokio::spawn(accept_loop(

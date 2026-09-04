@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/handler/handler.go: the singleton orchestrator routing
+//! The singleton orchestrator routing
 //! messages to flows and holding the one shared results channel the PHP side
 //! waits on.
 
@@ -151,10 +151,10 @@ impl Handler {
     /// PHP-side scheduler: one global wait point that lets every flow progress
     /// concurrently instead of each flow blocking on its own channel.
     ///
-    /// Go hand-rolls a spin-before-park here (waitSpinIterations
-    /// runtime.Gosched calls) because parking a cgo-locked thread and waking it
-    /// across the boundary costs a futex round-trip of ~20-30us. crossbeam's
-    /// recv already spins before parking, and this thread is a plain OS thread
+    /// A hand-rolled spin-before-park would buy nothing here: parking a thread
+    /// and waking it across the boundary costs a futex round trip of ~20-30us,
+    /// but crossbeam's recv already spins before parking, and this thread is a
+    /// plain OS thread
     /// with no runtime attached to hand off to — so the spin has no counterpart
     /// to write here.
     pub fn wait_any(&self) -> std::result::Result<Result, String> {
@@ -266,8 +266,7 @@ impl Handler {
     /// Hands the batch's backing allocation back for the next wait. Called
     /// after the batch has been framed and copied across the boundary — the
     /// results themselves are dropped here, so no payload stays pinned by the
-    /// buffer through a later trickle of small batches (the `clear` Go needs on
-    /// its reused slice).
+    /// buffer through a later trickle of small batches.
     pub fn recycle_batch(&self, mut results: Vec<Result>) {
         results.clear();
 

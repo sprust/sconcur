@@ -1,9 +1,9 @@
-//! Mirrors ext-go-legacy/internal/features/mongodb/states: the find and aggregate cursors
+//! The find and aggregate cursors
 //! PHP pulls one batch at a time through `next()`.
 //!
 //! The driver's cursor is an owned value, so unlike the SQL rows it can simply
 //! live in the state — no producer task, no channel. A one-document look-ahead
-//! decides whether a batch is the last one, exactly as on the Go side.
+//! decides whether a batch is the last one.
 
 use mongodb::bson::Document;
 use mongodb::Cursor;
@@ -87,8 +87,8 @@ impl StateContract for CursorState {
                 documents.push(pending);
             }
 
-            // A batch size of zero means "everything in one batch", which is how
-            // Go reads a non-positive batchSize.
+            // A batch size of zero, or any non-positive one, means "everything
+            // in one batch".
             let limit = if self.batch_size > 0 {
                 self.batch_size as usize
             } else {

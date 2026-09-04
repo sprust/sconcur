@@ -1,10 +1,9 @@
-//! Mirrors ext-go-legacy/internal/features/sql/drivers_mysql.go and drivers_pgsql.go:
-//! everything that differs between the two drivers, kept in one place so the
-//! feature above stays driver-agnostic.
+//! Everything that differs between the two SQL drivers, kept in one place so
+//! the feature above stays driver-agnostic.
 //!
-//! Go gets this separation for free from database/sql. Here the two pool types
-//! are distinct, so each operation is written twice — the price of not having a
-//! single dynamic driver interface, and the reason this file exists at all.
+//! The two pool types are distinct, so each operation is written twice — the
+//! price of not having one dynamic driver interface, and the reason this file
+//! exists at all.
 
 use sqlx::{Column, Executor, Row};
 use tokio::sync::mpsc;
@@ -433,7 +432,8 @@ fn mysql_begin_statement(params: &BeginParams) -> Result<String, String> {
     })
 }
 
-/// Maps Go's sql.IsolationLevel constants, which the PHP side sends verbatim.
+/// Maps the isolation levels the PHP side sends, which are the database/sql
+/// constants the API was first written against and are part of its contract.
 /// Levels with no portable statement (Snapshot, Linearizable, WriteCommitted)
 /// fall through to the server default rather than guessing.
 fn isolation_level(level: i64) -> Option<&'static str> {

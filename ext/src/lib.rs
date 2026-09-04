@@ -1,10 +1,10 @@
-//! Mirrors ext-go-legacy/main.go: the C exports the PHP glue (sconcur.c) binds to, the
+//! The C exports the PHP glue (sconcur.c) binds to, the
 //! binary result frame, and the preemption timer.
 //!
 //! Core spike (branch spike/rust-core): the exports, the shared results
 //! channel, the sleeper feature and the HTTP server rungs the attribution
 //! ladder needs. Every other feature answers "unknown method" through the same
-//! facade the Go build uses.
+//! facade.
 
 mod core;
 mod dto;
@@ -198,7 +198,7 @@ fn error_buffer(text: &str) -> BufferResult {
 // Runtime and handler singletons
 // ---------------------------------------------------------------------------
 
-/// The runtime every task runs on — the goroutine scheduler's counterpart.
+/// The runtime every task runs on.
 ///
 /// Built on first use, together with the rest of the process state, and rebuilt
 /// after a fork. See the `core` module for why that matters.
@@ -223,9 +223,9 @@ fn replace_handler() {
 /// only be used for lookups that do not retain it: comparisons, map reads, or
 /// resolving against a fixed set.
 ///
-/// Where Go must still copy to store a key (C.GoStringN), the copy here is an
-/// explicit `.to_vec()` / `String::from_utf8_lossy(...).into_owned()` at the
-/// call site, so every retained copy is visible in the code.
+/// Retaining one means an explicit `.to_vec()` or
+/// `String::from_utf8_lossy(...).into_owned()` at the call site, so every copy
+/// that outlives the call is visible in the code.
 unsafe fn byte_view<'a>(pointer: *const c_char, length: c_int) -> &'a [u8] {
     if pointer.is_null() || length <= 0 {
         return &[];

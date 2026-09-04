@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/dto: the message a push carries in, and the result a
+//! The message a push carries in, and the result a
 //! task publishes back into the shared channel.
 
 pub mod message;

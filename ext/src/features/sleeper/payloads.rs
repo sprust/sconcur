@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/sleeper/payloads: the Rust counterpart of the
+//! The Rust counterpart of the
 //! PHP Sleeper payload objects. The field renames are the short keys emitted by
 //! the PHP getData() methods.
 

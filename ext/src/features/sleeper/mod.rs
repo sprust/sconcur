@@ -1,4 +1,5 @@
-//! Mirrors ext-go-legacy/internal/features/sleeper.
+//! The sleeper feature: the smallest task there is, and what the runtime
+//! benchmarks are written against.
 
 pub mod payloads;
 

@@ -1,11 +1,10 @@
 //! Mirrors serializer.UnmarshalBulkWriteModels and Collection.BulkWrite.
 //!
-//! The payload is a document whose elements are `{type, model}` pairs. The Go
-//! driver's collection-level BulkWrite has no counterpart in this driver: the
-//! Rust one exposes bulk write at the client level (`Client::bulk_write`),
-//! which is the server 8.0 `bulkWrite` command. That is the same single
-//! round-trip the Go path gets, so the shape of the operation is preserved;
-//! what it costs is a hard requirement on a 8.0+ server, which the project runs.
+//! The payload is a document whose elements are `{type, model}` pairs. This
+//! driver exposes bulk write at the client level (`Client::bulk_write`), which
+//! is the server 8.0 `bulkWrite` command, rather than per collection. It is
+//! still one round trip, so the shape of the operation is what PHP expects; what
+//! it costs is a hard requirement on a 8.0+ server, which the project runs.
 
 use mongodb::bson::{Bson, Document};
 use mongodb::options::{

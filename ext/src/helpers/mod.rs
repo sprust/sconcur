@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/helpers.
+//! Small shared helpers: the execution time a result reports.
 
 use std::time::Instant;
 

@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/socket: the length-prefix framing and per-connection I/O
+//! The length-prefix framing and per-connection I/O
 //! shared by the socket server (accept-side) and the socket client (dial-side).
 //! Neutral infrastructure with no Method of its own; a feature depends on this,
 //! not on the other feature.
@@ -42,10 +42,9 @@ pub struct WriteCommand {
 /// The rendezvous between a connection's write loop and the PHP handler's
 /// write/close commands.
 ///
-/// Go needs three channels here — commands, abandoned, and a per-command done —
-/// because a send and an abandon have to be selected over. A bounded sender
-/// carries the first two: the write loop dropping its receiver *is* the
-/// abandon signal, and a send onto a dropped channel fails instead of hanging.
+/// One bounded sender carries both the commands and the abandon signal: the
+/// write loop dropping its receiver *is* the abandon, and a send onto a dropped
+/// channel fails instead of hanging — so neither needs a channel of its own.
 pub struct PendingConnection {
     pub commands: mpsc::Sender<WriteCommand>,
     /// Ends the connection's inbound stream on a graceful drain, so a handler
@@ -57,9 +56,9 @@ pub struct PendingConnection {
 }
 
 impl PendingConnection {
-    /// Ends the read side only (graceful drain). Go half-closes the TCP
-    /// connection so a blocked read returns EOF; here the read future is
-    /// cancelled instead.
+    /// Ends the read side only (graceful drain). A half-close of the TCP
+    /// connection would do it by making a blocked read return EOF; here the read
+    /// future is cancelled instead.
     ///
     /// Not quite the same thing, and the difference had to be paid for in
     /// MessageState: a half-close cannot lose data, because read() must hand

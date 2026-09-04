@@ -1,5 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/amqp/{feature,connect,topology,publish,get,acks,confirms}.go:
-//! one handler per AMQP method the PHP feature exposes.
+//! One handler per AMQP method the PHP feature exposes.
 //!
 //! Every command on an open channel is the same five steps — decode the
 //! parameters, resolve the channel, bound the call, run it serialized against
@@ -559,11 +558,11 @@ async fn handle_publish(task: &Task, raw: &rmpv::Value) {
 
 /// Awaits one publisher confirm and records it on the channel.
 ///
-/// Go reads a single `NotifyPublish` listener per channel and matches the
-/// broker's tags to its own count. lapin resolves a confirm per publish
-/// instead, which is stronger — the returned message that belongs to it arrives
-/// with it, so a return can never be recorded after the confirmation of the
-/// same message and be missed by a wait that already saw the ack.
+/// lapin resolves a confirm per publish, rather than handing out one stream of
+/// confirmations per channel to be matched against a count. That is stronger:
+/// the returned message that belongs to a confirm arrives with it, so a return
+/// can never be recorded after the confirmation of the same message and be
+/// missed by a wait that already saw the ack.
 ///
 /// It is also where the reason a channel closed comes from: the broker answers
 /// a publish to a missing exchange by closing the channel, and lapin rejects

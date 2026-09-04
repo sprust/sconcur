@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/wsclient/payloads. The envelope is the socket
+//! The parameters of the WebSocket client commands. The envelope is the socket
 //! client's: `cm` selects the sub-operation, `p` carries a nested map of that
 //! command's parameters.
 

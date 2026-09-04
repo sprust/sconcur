@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/httpserver/server.go: the connection side —
+//! The connection side —
 //! the per-request hand-off to PHP and the write command that answers it.
 
 use http_body_util::combinators::BoxBody;
@@ -23,7 +23,7 @@ use crate::stats::Pusher;
 /// the connection task — PHP is never called. Rung L0 of the attribution ladder
 /// (.ai/plans/cpu-per-request-attribution.md): the floor the server gives
 /// without PHP. Bench-only; off unless the worker starts with
-/// SCONCUR_HTTP_BENCH_L0=1. Read once, like Go's package-level var.
+/// SCONCUR_HTTP_BENCH_L0=1. Read once, at first use.
 pub fn bench_ladder_l0() -> bool {
     static FLAG: OnceLock<bool> = OnceLock::new();
 
@@ -111,11 +111,11 @@ impl Registries {
 /// removal is a no-op), the handler timed out, or the client disconnected and
 /// the connection future was dropped mid-flight.
 ///
-/// Go is covered here by the connection goroutine's own defer; the equivalent
+/// The equivalent
 /// on a dropped future has to be a guard, and without one every client that
 /// hangs up while PHP is still handling leaks one map entry, unbounded.
 ///
-/// It carries the telemetry end as well, and for the same reason: Go closes a
+/// It carries the telemetry end as well, and for the same reason: something closes a
 /// request's counters with a `defer` in ServeHTTP, which fires once the whole
 /// response — a streamed one included — has been written. This guard is dropped
 /// at exactly that moment on both paths, because a streamed response moves it
@@ -158,14 +158,13 @@ fn next_request_id(flow_key: &str) -> String {
 pub struct ServerState {
     pub stop_accepting: CancellationToken,
     /// Dropped with the state — which is what stops the push loop when the
-    /// server flow ends. Go stops its pusher explicitly and guards the second
+    /// server flow ends. An explicit stop would need a guard against the second
     /// stop with a sync.Once; here the lifetime says it.
     pub _pusher: Pusher,
 }
 
 /// Runs the accept loop until the flow is cancelled or accepting is stopped.
-/// Each accepted connection is served by its own task, exactly as Go gives each
-/// one a goroutine.
+/// Each accepted connection is served by its own task on the shared runtime.
 #[allow(clippy::too_many_arguments)]
 pub async fn accept_loop(
     registries: &'static Registries,
@@ -259,7 +258,7 @@ pub type ResponseBody = BoxBody<Bytes, std::convert::Infallible>;
 
 /// Percent-decodes a request path.
 ///
-/// Go's net/http hands the handler `r.URL.Path` already decoded, and both the
+/// The handler is given the path already decoded, and both the
 /// request event PHP receives and the access line are built from it. hyper keeps
 /// the raw path, so decoding here is not a nicety — without it `%2F` reaches an
 /// application router as three characters, and an encoded newline slips into the
@@ -531,7 +530,7 @@ fn build_response(command: WriteCommand) -> Response<ResponseBody> {
     // lands directly in the ladder's transfer figures, so the header is
     // mirrored here to keep the two servers byte-comparable.
     //
-    // Spike simplification: Go inspects the first 512 bytes, this assumes text.
+    // Simplification: the body is assumed to be text rather than sniffed.
     // The only body any spike feature emits is the ladder's constant.
     if !has_content_type && !command.body.is_empty() {
         builder = builder.header("Content-Type", "text/plain; charset=utf-8");
@@ -568,7 +567,7 @@ fn text_response(status: StatusCode, body: &'static str) -> Response<ResponseBod
     Response::builder()
         .status(status)
         // Same reason as in build_response: net/http would sniff this header,
-        // and the L0 rung must put the same bytes on the wire as the Go one.
+        // and the L0 rung must put the same bytes on the wire as the full one.
         .header("Content-Type", "text/plain; charset=utf-8")
         .body(BodyExt::boxed(Full::new(Bytes::from_static(body.as_bytes()))))
         .expect("static response is always valid")

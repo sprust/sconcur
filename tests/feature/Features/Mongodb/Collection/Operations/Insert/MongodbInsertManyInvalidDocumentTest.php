@@ -11,7 +11,7 @@ use SConcur\Tests\Impl\TestMongodbResolver;
 use SConcur\WaitGroup;
 
 /**
- * A scalar element in insertMany() used to panic inside the Go extension,
+ * A scalar element in insertMany() used to panic inside the extension,
  * aborting the whole PHP process. The panic must surface as a task error
  * (wrapped in a CallbackExecutionException on the async path), and the
  * extension must stay usable afterwards.

@@ -177,7 +177,7 @@ class HttpClientTest extends BaseHttpClientTestCase
         self::assertNotSame('', $response->getBody()->read(1024));
 
         // Dropping the response releases the streaming body (__destruct), which
-        // stops the abandoned flow on the Go side.
+        // stops the abandoned flow on the extension.
         unset($response);
 
         $this->assertNoTasksCount();
@@ -544,7 +544,7 @@ class HttpClientTest extends BaseHttpClientTestCase
     {
         // A "req:"-marked extension error (a request that could not be built/sent)
         // must surface as a PSR-18 RequestException carrying the original request.
-        // The Go side produces this marker for invalid method/URL; here the mapping
+        // The extension produces this marker for invalid method/URL; here the mapping
         // branch is exercised directly (the network branch is covered end-to-end).
         $client  = $this->client();
         $request = $this->request(
@@ -611,7 +611,7 @@ class HttpClientTest extends BaseHttpClientTestCase
             $response = $client->sendRequest($factory->createRequest('GET', $baseUrl . '/big/200000'));
 
             // Read only the first chunk and abandon the rest: when the coroutine
-            // ends its flow is stopped, so the Go side cancels the streamed body.
+            // ends its flow is stopped, so the extension cancels the streamed body.
             self::assertNotSame('', $response->getBody()->read(1024));
         });
 

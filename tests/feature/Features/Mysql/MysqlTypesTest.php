@@ -279,8 +279,7 @@ class MysqlTypesTest extends BaseTestCase
 
             $row = $this->connection->fetchAll(sql: "SELECT * FROM $table")[0];
 
-            // The RFC3339 fraction keeps only the digits it has, the way Go's
-            // time.RFC3339Nano printed it: .25, not .250.
+            // The RFC3339 fraction keeps only the digits it has: .25, not .250.
             self::assertSame('2026-12-06T14:30:00.25Z', $row['stamp_col']);
             self::assertSame('2026-12-06T14:30:00.5Z', $row['datetime_col']);
 

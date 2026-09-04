@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/factory.go: the single facade that resolves a
+//! The single facade that resolves a
 //! method to its feature handler.
 
 pub mod amqp;
@@ -23,10 +23,9 @@ pub type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
 /// Mirrors contracts.FeatureContract.
 ///
-/// Go has one `Handle(task)` because a goroutine can block wherever it likes.
-/// Here the awaiting path and the detached path are different functions: the
-/// detached one runs synchronously on the PHP thread inside push() and must
-/// never block, which the type system is better placed to enforce than a
+/// The awaiting path and the detached path are different functions rather than
+/// one: the detached one runs synchronously on the PHP thread inside push() and
+/// must never block, which the type system is better placed to enforce than a
 /// comment.
 pub trait Feature: Send + Sync {
     fn handle(&self, task: Task) -> BoxFuture;
@@ -55,9 +54,8 @@ pub enum Handler {
     State,
 }
 
-/// Mirrors features.DetectMessageHandler. Every method the PHP package can push
-/// is here; anything else answers exactly as Go's default branch does, so an
-/// unsupported push fails loudly instead of hanging.
+/// Every method the PHP package can push is here; anything else is refused by
+/// name, so an unsupported push fails loudly instead of hanging.
 pub fn detect_message_handler(method: Method) -> std::result::Result<&'static dyn Feature, String> {
     match method {
         Method::Sleep => Ok(sleeper::get()),

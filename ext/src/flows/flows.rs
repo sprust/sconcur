@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/flows/flows.go.
+//! The registry of live flows, keyed by the flow key PHP sends.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -17,8 +17,8 @@ struct FlowsInner {
     /// and the next init_flow, so the common one-shot flow — the sync path and
     /// every async coroutine's own flow — stops allocating a fresh Flow + set
     /// on each call. Safe because flow keys are never reused (see Flow::reset).
-    /// A plain Vec stands in for Go's sync.Pool: the registry lock is already
-    /// held on both paths, so a lock-free pool would buy nothing here.
+    /// A plain Vec, not a lock-free pool: the registry lock is already held on
+    /// both paths, so one would buy nothing here.
     pool: Vec<Arc<Flow>>,
 }
 

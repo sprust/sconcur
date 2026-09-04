@@ -1,4 +1,5 @@
-//! Mirrors ext-go-legacy/internal/flows/flow.go.
+//! One flow: the tasks it holds, its cancellation token, and the states
+//! registered under it.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -19,8 +20,7 @@ pub struct Flow {
 struct FlowInner {
     ctx: CancellationToken,
     key: String,
-    /// Go keeps a map task key -> *Task here, but only ever tests membership
-    /// (OnDelivered); a set carries the same information.
+    /// A set, not a map to the tasks: membership is the only thing ever asked.
     active_tasks: HashSet<String>,
     results: ResultSink,
 }
@@ -79,9 +79,8 @@ impl Flow {
 
         drop(inner);
 
-        // One spawned task per message — the goroutine-per-task model, which
-        // the Go side re-validated against a worker pool and kept
-        // (.ai/plans/cpu-per-request-attribution.md).
+        // One spawned task per message, rather than a worker pool: measured
+        // against one and kept (.ai/plans/cpu-per-request-attribution.md).
         tokio::spawn(async move {
             run_task_protected(task, handler).await;
         });
@@ -120,7 +119,7 @@ impl Flow {
 
 /// Converts a panic into a task error result: an unwind escaping into the C
 /// caller is undefined behaviour and would abort the whole PHP process, which
-/// is exactly what flows.RunTaskProtected exists to prevent on the Go side.
+/// is exactly what this exists to prevent.
 ///
 /// Exported for the handler's detached (flowless) task path.
 pub async fn run_task_protected(task: Task, handler: features::Handler) {

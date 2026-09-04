@@ -47,7 +47,7 @@ readonly class FeatureExecutor
     {
         $currentFlow = State::getCurrentFlow();
 
-        // Async path: no cgo from this fiber's stack. The pending task is handed
+        // Async path: no crossing from this fiber's stack. The pending task is handed
         // to the resumer (Scheduler::dispatchPendingTask), which performs the push
         // and parks this coroutine until the result arrives via waitAny.
         if ($currentFlow->isAsync) {

@@ -1,4 +1,4 @@
-//! Mirrors ext-go-legacy/internal/features/sql: one feature handling every SQL command
+//! One feature handling every SQL command
 //! for one driver, with the driver selected per Method.
 
 pub mod drivers;
@@ -63,7 +63,8 @@ fn transactions() -> &'static transactions::Transactions {
 
 /// Handles SQL commands for one driver on top of sqlx. The feature itself is
 /// driver-agnostic; `driver_name` selects the pool to open and `errors` labels
-/// the messages (they differ on the Go side too — driver "pgx", label "pgsql").
+/// the messages, and the two differ: the pool is opened for "pgsql" while the
+/// errors PHP sees are labelled "pgsql" as well.
 pub struct SqlFeature {
     driver_name: &'static str,
     errors: &'static Factory,
@@ -177,7 +178,7 @@ impl SqlFeature {
         let timeout_ms = envelope.timeout_ms;
 
         // Sized to the batch so the producer runs one batch ahead of PHP and
-        // then blocks — the backpressure Go gets from holding an open cursor.
+        // then blocks, which is the backpressure an open cursor should have.
         let capacity = if params.batch_size > 0 {
             (params.batch_size as usize).min(1024)
         } else {

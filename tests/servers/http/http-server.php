@@ -919,7 +919,7 @@ function allFeaturesNoWaitGroupRoute(Psr17Factory $factory): ResponseInterface
 /**
  * Lazily builds and caches the per-worker DB connections used by /all on its first
  * hit (so the other demo routes never pay for them and never require the backends).
- * The Go side pools the real connections by URI/DSN, so reusing these objects across
+ * The extension pools the real connections by URI/DSN, so reusing these objects across
  * requests is cheap. Also makes sure the load_all tables exist (the /all SQL write
  * targets; mirrored by the RoadRunner reference worker in tests/servers/roadrunner).
  *
@@ -1346,7 +1346,7 @@ function runLadderServer(string $mode, array $argv): void
                 return;
             }
 
-            // No re-arm: the Go server pumps the next request event itself.
+            // No re-arm: the extension's server pumps the next request event itself.
             if ($mode === 'l1') {
                 $respond($result->payload);
             } elseif ($mode === 'l2h') {
@@ -1385,7 +1385,7 @@ function runLadderServer(string $mode, array $argv): void
                 $fiber->resume();
             } elseif ($mode === 'l2') {
                 // Production-shaped Fiber rung: the fiber suspends with its
-                // pending respond payload, the loop performs the cgo push off
+                // pending respond payload, the loop performs the push off
                 // the fiber stack (like Scheduler::dispatchPendingTask) and
                 // resumes the fiber to completion.
                 $fiber = new Fiber(static function (string $requestPayload): void {
@@ -1415,7 +1415,7 @@ function runLadderServer(string $mode, array $argv): void
                 $fiber->resume();
             } else {
                 // l2f: the pathological reference — the same respond, but the
-                // cgo push happens ON the fiber stack. Reproduces the
+                // push happens ON the fiber stack. Reproduces the
                 // known-quadratic boundary-crossing cost the scheduler exists
                 // to avoid (.ai/plans/async-fan-out-optimization.ru.md).
                 (new Fiber($respond))->start($result->payload);
