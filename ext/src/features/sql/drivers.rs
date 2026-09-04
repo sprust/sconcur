@@ -5,7 +5,12 @@
 //! price of not having one dynamic driver interface, and the reason this file
 //! exists at all.
 
-use sqlx::{Column, Executor, Row};
+// sqlx 0.9 refuses a non-literal SQL string unless the caller says it audited
+// it. Here the string IS the product: the PHP side hands the extension the query
+// it wants run, exactly as PDO does, and parameters travel as bindings beside it
+// rather than interpolated into it. The assertion states that; it does not make
+// anything safe that was not.
+use sqlx::{AssertSqlSafe, Column, Executor, Row};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -72,7 +77,7 @@ pub async fn run_query(
 async fn pump(driver: Driver, sql: &str, bindings: &[Binding], sender: &mpsc::Sender<RowMessage>) {
     match driver {
         Driver::Mysql(pool) => {
-            let query = bind_mysql!(sqlx::query(sql), bindings);
+            let query = bind_mysql!(sqlx::query(AssertSqlSafe(sql)), bindings);
             let mut stream = query.fetch(&pool);
             let mut sent_columns = false;
 
@@ -124,7 +129,7 @@ async fn pump(driver: Driver, sql: &str, bindings: &[Binding], sender: &mpsc::Se
                 }
             };
 
-            let mut stream = pool.fetch(statement.as_str());
+            let mut stream = pool.fetch(sqlx::raw_sql(AssertSqlSafe(statement.as_str())));
             let mut sent_columns = false;
 
             while let Some(item) = stream.next().await {
@@ -211,7 +216,7 @@ async fn pump_transaction(
 
     match handle {
         TxHandle::Mysql(transaction) => {
-            let query = bind_mysql!(sqlx::query(sql), bindings);
+            let query = bind_mysql!(sqlx::query(AssertSqlSafe(sql)), bindings);
             let mut stream = query.fetch(&mut **transaction);
 
             while let Some(item) = stream.next().await {
@@ -256,7 +261,7 @@ async fn pump_transaction(
                 }
             };
 
-            let mut stream = (&mut **transaction).fetch(statement.as_str());
+            let mut stream = (&mut **transaction).fetch(sqlx::raw_sql(AssertSqlSafe(statement.as_str())));
 
             while let Some(item) = stream.next().await {
                 match item {
@@ -306,7 +311,7 @@ pub async fn exec_on_pool(
 ) -> Result<(i64, i64), String> {
     match driver {
         Driver::Mysql(pool) => {
-            let query = bind_mysql!(sqlx::query(&sql), &bindings);
+            let query = bind_mysql!(sqlx::query(AssertSqlSafe(sql.as_str())), &bindings);
             let outcome = query.execute(&pool).await.map_err(|error| error.to_string())?;
 
             Ok((outcome.rows_affected() as i64, outcome.last_insert_id() as i64))
@@ -315,7 +320,7 @@ pub async fn exec_on_pool(
             let statement = pg_simple::statement(&sql, &bindings)?;
 
             let outcome = pool
-                .execute(statement.as_str())
+                .execute(sqlx::raw_sql(AssertSqlSafe(statement.as_str())))
                 .await
                 .map_err(|error| error.to_string())?;
 
@@ -337,7 +342,7 @@ pub async fn exec_on_transaction(
 
     match handle {
         TxHandle::Mysql(transaction) => {
-            let query = bind_mysql!(sqlx::query(&sql), &bindings);
+            let query = bind_mysql!(sqlx::query(AssertSqlSafe(sql.as_str())), &bindings);
             let outcome = query
                 .execute(&mut **transaction)
                 .await
@@ -349,7 +354,7 @@ pub async fn exec_on_transaction(
             let statement = pg_simple::statement(&sql, &bindings)?;
 
             let outcome = (&mut **transaction)
-                .execute(statement.as_str())
+                .execute(sqlx::raw_sql(AssertSqlSafe(statement.as_str())))
                 .await
                 .map_err(|error| error.to_string())?;
 
@@ -372,8 +377,11 @@ pub async fn begin_transaction(driver: Driver, params: &BeginParams) -> Result<T
         Driver::Mysql(pool) => {
             let statement = mysql_begin_statement(params)?;
 
+            // Unlike the queries above, this string is ours: mysql_begin_statement
+            // builds it out of the enum values the payload was parsed into, so
+            // nothing of the caller's text reaches it.
             let transaction = pool
-                .begin_with(statement)
+                .begin_with(AssertSqlSafe(statement))
                 .await
                 .map_err(|error| error.to_string())?;
 
@@ -381,7 +389,7 @@ pub async fn begin_transaction(driver: Driver, params: &BeginParams) -> Result<T
         }
         Driver::Pgsql(pool) => {
             let transaction = pool
-                .begin_with(pg_begin_statement(params))
+                .begin_with(AssertSqlSafe(pg_begin_statement(params)))
                 .await
                 .map_err(|error| error.to_string())?;
 
