@@ -250,15 +250,16 @@ certainty about leaks in production a multi-hour soak is the answer
 
 ## WebSocket server under load
 
-Same load + resources pairing, but `wrk` is HTTP-only, so the WS side needs a
-generator of its own: one that holds N persistent connections, runs back-to-back
-round-trips and prints throughput with p50/p90/p99.
+Same load + resources pairing, but `wrk` is HTTP-only, so the WS side has a
+generator of its own: `tests/benchmarks/ws/ws-load/`, which holds N persistent
+connections, runs back-to-back round-trips and prints throughput with
+p50/p90/p99. The harness builds it before a run.
 
-**There is no such generator in the repository right now.** The Go one went with
-the Go core, and `tests/benchmarks/ws/load-stats.sh` stops with a message instead
-of running half a benchmark. The numbers below were taken with it while it
-existed; reproducing them needs a replacement binary that takes
-`-url -conns -duration -msg` and prints `msgs/sec`.
+It is a crate separate from the core on purpose — the core is built with fat LTO
+on every `make ext-build`, and a benchmark tool has no business making that
+slower. Latencies go into a fixed histogram (0.1 ms per bucket) rather than a
+list of samples: at a few hundred thousand round-trips the list would be the
+largest allocation in the generator, and a percentile does not need it.
 
 The `all` command of the demo server (`tests/servers/ws/ws-server.php`) runs the
 same backend features concurrently for every message, with `Sleeper` added to

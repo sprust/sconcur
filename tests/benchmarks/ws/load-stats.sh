@@ -93,16 +93,14 @@ echo "=================================================================="
 
 stop_servers
 
-# The load generator: wrk speaks HTTP only, so the WS side needs one of its own.
-# The Go tool that used to fill this role went with the Go core, and nothing has
-# replaced it yet — so the harness stops here rather than half-running.
-if ! $DOCKER_COMPOSE exec -T php test -x "$LOADBIN"; then
-    echo "no WS load generator at $LOADBIN inside the php container." >&2
-    echo "The Go one was removed with the Go core; supply a binary there (it takes" >&2
-    echo "  -url ws://host:port/ -conns N -duration S -msg NAME" >&2
-    echo "and prints 'msgs/sec' plus p50/p90/p99) or port it." >&2
-    exit 2
-fi
+# The load generator, built once before the run: wrk speaks HTTP only, so the WS
+# side needs one of its own (ws-load/, a crate separate from the core so that
+# building the extension never waits on a benchmark tool).
+$DOCKER_COMPOSE exec -T php sh -c '
+    cd /sconcur/tests/benchmarks/ws/ws-load \
+        && cargo build --release --quiet \
+        && cp target/release/ws-load "'"$LOADBIN"'"
+' || { echo "could not build the WS load generator" >&2; exit 2; }
 
 $DOCKER_COMPOSE exec -T php sh -c '
     : > "'"$PIDFILE"'"
