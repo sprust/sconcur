@@ -46,7 +46,10 @@ echo $result->affectedRows;
   makes results arrive in the text format — see [Value types](#value-types).
 - A transaction aborts on error: after a failing query PostgreSQL puts it into the
   aborted state, and further commands fail with `current transaction is aborted`
-  until `rollback()`.
+  until `rollback()` — or until `ROLLBACK TO SAVEPOINT`, which returns the
+  transaction to a savepoint taken before the failure and lets it carry on. Nested
+  transactions are savepoints here as they are on MySQL, see
+  [docs/mysql.md](mysql.md#nested-transactions).
 
 ## Limits
 

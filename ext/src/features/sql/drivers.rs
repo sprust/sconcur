@@ -10,7 +10,7 @@
 // it wants run, exactly as PDO does, and parameters travel as bindings beside it
 // rather than interpolated into it. The assertion states that; it does not make
 // anything safe that was not.
-use sqlx::{AssertSqlSafe, Column, Executor, Row};
+use sqlx::{AssertSqlSafe, Column, Either, Executor, Row};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -42,7 +42,70 @@ macro_rules! bind_mysql {
     }};
 }
 
+/// Whether a MySQL statement has to travel as text rather than as a prepared
+/// statement.
+///
+/// MySQL refuses a whole class of commands in the prepared-statement protocol
+/// with error 1295, "This command is not supported in the prepared statement
+/// protocol yet": `SAVEPOINT`, `RELEASE SAVEPOINT`, `ROLLBACK TO SAVEPOINT`,
+/// `LOCK TABLES`, `UNLOCK TABLES` and the rest of the list in docs/mysql.md.
+/// Nested transactions rest on the three savepoint commands, so without this a
+/// framework that opens a transaction inside a transaction cannot run at all.
+///
+/// sqlx picks the protocol by whether the query carries arguments, so the way to
+/// reach the text one is to pass none — which is exactly what `raw_sql` does,
+/// and what the Postgres side already does for its own reason (see pg_simple).
+/// A statement with nothing to bind loses nothing by travelling as text;
+/// anything with bindings keeps the prepared protocol and its escaping.
+///
+/// What the text protocol does add is statement stacking: sqlx asks for
+/// `CLIENT_MULTI_STATEMENTS` in the handshake, so a bindings-free string holding
+/// several statements separated by `;` runs all of them. That it runs them is
+/// named in docs/mysql.md rather than guarded against here, because guarding
+/// would mean parsing the caller's SQL to find a `;` that is not inside a
+/// literal — and this core never parses it (see pg_simple for the same rule on
+/// the other driver). What is guarded is the part that cannot be described on
+/// the way back: a second *result set*, see `MULTI_RESULT_SET`.
+fn mysql_is_textual(bindings: &[Binding]) -> bool {
+    bindings.is_empty()
+}
 
+/// What a stacked SELECT is refused with. A cursor describes one result set —
+/// one column list for the whole stream — so rows of a second one would reach
+/// PHP keyed by the first one's column names, which is silent nonsense rather
+/// than a shortfall. `fetch_many` marks the end of each statement, so the
+/// boundary is visible and this says so out loud.
+const MULTI_RESULT_SET: &str =
+    "query error: the statement returned more than one result set; run one select per query";
+
+/// Sends one MySQL row, preceded by the column list on the first row. `Err`
+/// means the stream is over — the receiver is gone, or the row could not be
+/// read and the error has already been sent.
+async fn send_mysql_row(
+    row: &sqlx::mysql::MySqlRow,
+    sent_columns: &mut bool,
+    sender: &mpsc::Sender<RowMessage>,
+) -> std::result::Result<(), ()> {
+    if !*sent_columns {
+        *sent_columns = true;
+
+        if sender.send(RowMessage::Columns(column_names(row))).await.is_err() {
+            return Err(());
+        }
+    }
+
+    match read_mysql_row(row) {
+        Ok(values) => match sender.send(RowMessage::Row(values)).await {
+            Ok(()) => Ok(()),
+            Err(_) => Err(()),
+        },
+        Err(error) => {
+            let _ = sender.send(RowMessage::Error(format!("scan error: {error}"))).await;
+
+            Err(())
+        }
+    }
+}
 
 /// Runs a SELECT on a pooled connection and pushes its rows into the channel the
 /// cursor state reads. Ends on the last row, on an error, on the cursor closing
@@ -77,38 +140,48 @@ pub async fn run_query(
 async fn pump(driver: Driver, sql: &str, bindings: &[Binding], sender: &mpsc::Sender<RowMessage>) {
     match driver {
         Driver::Mysql(pool) => {
-            let query = bind_mysql!(sqlx::query(AssertSqlSafe(sql)), bindings);
-            let mut stream = query.fetch(&pool);
             let mut sent_columns = false;
 
-            while let Some(item) = stream.next().await {
-                match item {
-                    Ok(row) => {
-                        if !sent_columns {
-                            sent_columns = true;
+            if mysql_is_textual(bindings) {
+                let mut stream = pool.fetch_many(sqlx::raw_sql(AssertSqlSafe(sql)));
+                let mut statement_ended = false;
 
-                            if sender.send(RowMessage::Columns(column_names(&row))).await.is_err() {
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(Either::Left(_)) => statement_ended = true,
+                        Ok(Either::Right(row)) => {
+                            if statement_ended {
+                                let _ = sender.send(RowMessage::Error(MULTI_RESULT_SET.to_string())).await;
+
+                                return;
+                            }
+
+                            if send_mysql_row(&row, &mut sent_columns, sender).await.is_err() {
                                 return;
                             }
                         }
+                        Err(error) => {
+                            let _ = sender.send(RowMessage::Error(format!("query error: {error}"))).await;
 
-                        match read_mysql_row(&row) {
-                            Ok(values) => {
-                                if sender.send(RowMessage::Row(values)).await.is_err() {
-                                    return;
-                                }
-                            }
-                            Err(error) => {
-                                let _ = sender.send(RowMessage::Error(format!("scan error: {error}"))).await;
-
-                                return;
-                            }
+                            return;
                         }
                     }
-                    Err(error) => {
-                        let _ = sender.send(RowMessage::Error(format!("query error: {error}"))).await;
+                }
+            } else {
+                let mut stream = bind_mysql!(sqlx::query(AssertSqlSafe(sql)), bindings).fetch(&pool);
 
-                        return;
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(row) => {
+                            if send_mysql_row(&row, &mut sent_columns, sender).await.is_err() {
+                                return;
+                            }
+                        }
+                        Err(error) => {
+                            let _ = sender.send(RowMessage::Error(format!("query error: {error}"))).await;
+
+                            return;
+                        }
                     }
                 }
             }
@@ -216,37 +289,47 @@ async fn pump_transaction(
 
     match handle {
         TxHandle::Mysql(transaction) => {
-            let query = bind_mysql!(sqlx::query(AssertSqlSafe(sql)), bindings);
-            let mut stream = query.fetch(&mut **transaction);
+            if mysql_is_textual(bindings) {
+                let mut stream = (&mut **transaction).fetch_many(sqlx::raw_sql(AssertSqlSafe(sql)));
+                let mut statement_ended = false;
 
-            while let Some(item) = stream.next().await {
-                match item {
-                    Ok(row) => {
-                        if !sent_columns {
-                            sent_columns = true;
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(Either::Left(_)) => statement_ended = true,
+                        Ok(Either::Right(row)) => {
+                            if statement_ended {
+                                let _ = sender.send(RowMessage::Error(MULTI_RESULT_SET.to_string())).await;
 
-                            if sender.send(RowMessage::Columns(column_names(&row))).await.is_err() {
+                                return;
+                            }
+
+                            if send_mysql_row(&row, &mut sent_columns, sender).await.is_err() {
                                 return;
                             }
                         }
+                        Err(error) => {
+                            let _ = sender.send(RowMessage::Error(format!("query error: {error}"))).await;
 
-                        match read_mysql_row(&row) {
-                            Ok(values) => {
-                                if sender.send(RowMessage::Row(values)).await.is_err() {
-                                    return;
-                                }
-                            }
-                            Err(error) => {
-                                let _ = sender.send(RowMessage::Error(format!("scan error: {error}"))).await;
-
-                                return;
-                            }
+                            return;
                         }
                     }
-                    Err(error) => {
-                        let _ = sender.send(RowMessage::Error(format!("query error: {error}"))).await;
+                }
+            } else {
+                let mut stream =
+                    bind_mysql!(sqlx::query(AssertSqlSafe(sql)), bindings).fetch(&mut **transaction);
 
-                        return;
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(row) => {
+                            if send_mysql_row(&row, &mut sent_columns, sender).await.is_err() {
+                                return;
+                            }
+                        }
+                        Err(error) => {
+                            let _ = sender.send(RowMessage::Error(format!("query error: {error}"))).await;
+
+                            return;
+                        }
                     }
                 }
             }
@@ -311,8 +394,14 @@ pub async fn exec_on_pool(
 ) -> Result<(i64, i64), String> {
     match driver {
         Driver::Mysql(pool) => {
-            let query = bind_mysql!(sqlx::query(AssertSqlSafe(sql.as_str())), &bindings);
-            let outcome = query.execute(&pool).await.map_err(|error| error.to_string())?;
+            let outcome = if mysql_is_textual(&bindings) {
+                pool.execute(sqlx::raw_sql(AssertSqlSafe(sql.as_str()))).await
+            } else {
+                bind_mysql!(sqlx::query(AssertSqlSafe(sql.as_str())), &bindings)
+                    .execute(&pool)
+                    .await
+            }
+            .map_err(|error| error.to_string())?;
 
             Ok((outcome.rows_affected() as i64, outcome.last_insert_id() as i64))
         }
@@ -342,11 +431,16 @@ pub async fn exec_on_transaction(
 
     match handle {
         TxHandle::Mysql(transaction) => {
-            let query = bind_mysql!(sqlx::query(AssertSqlSafe(sql.as_str())), &bindings);
-            let outcome = query
-                .execute(&mut **transaction)
-                .await
-                .map_err(|error| error.to_string())?;
+            let outcome = if mysql_is_textual(&bindings) {
+                (&mut **transaction)
+                    .execute(sqlx::raw_sql(AssertSqlSafe(sql.as_str())))
+                    .await
+            } else {
+                bind_mysql!(sqlx::query(AssertSqlSafe(sql.as_str())), &bindings)
+                    .execute(&mut **transaction)
+                    .await
+            }
+            .map_err(|error| error.to_string())?;
 
             Ok((outcome.rows_affected() as i64, outcome.last_insert_id() as i64))
         }

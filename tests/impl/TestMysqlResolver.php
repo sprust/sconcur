@@ -121,18 +121,26 @@ class TestMysqlResolver
         static::getPdo()->exec("DROP TABLE IF EXISTS $tableName");
     }
 
-    protected static function getDsn(): string
+    /**
+     * The test database's DSN with the given parameter string, for the tests
+     * that are about the parameters themselves. Each distinct string is its own
+     * pool key, so such a test cannot disturb the shared connection.
+     */
+    public static function buildDsn(string $parameters = ''): string
     {
-        if (static::$dsn !== null) {
-            return static::$dsn;
-        }
-
         $host     = $_ENV['MYSQL_HOST'];
         $port     = $_ENV['MYSQL_PORT'];
         $database = $_ENV['MYSQL_DATABASE'];
         $user     = $_ENV['MYSQL_USER'];
         $password = $_ENV['MYSQL_PASSWORD'];
 
-        return static::$dsn = "$user:$password@tcp($host:$port)/$database?parseTime=true";
+        $dsn = "$user:$password@tcp($host:$port)/$database";
+
+        return $parameters === '' ? $dsn : "$dsn?$parameters";
+    }
+
+    protected static function getDsn(): string
+    {
+        return static::$dsn ??= static::buildDsn(parameters: 'parseTime=true');
     }
 }

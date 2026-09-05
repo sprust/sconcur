@@ -47,7 +47,11 @@ echo $result->affectedRows;
   поэтому результаты приходят в текстовом формате — см.
   [Типы значений](#типы-значений).
 - Транзакция аварийна после ошибки: PostgreSQL переводит её в aborted-состояние, и
-  дальнейшие команды падают с `current transaction is aborted` до `rollback()`.
+  дальнейшие команды падают с `current transaction is aborted` до `rollback()` —
+  либо до `ROLLBACK TO SAVEPOINT`, который возвращает транзакцию к savepoint'у,
+  снятому до ошибки, и она продолжает работать. Вложенные транзакции здесь —
+  savepoint'ы, как и на MySQL, см.
+  [docs/mysql.ru.md](mysql.ru.md#вложенные-транзакции).
 
 ## Ограничения
 

@@ -5,6 +5,7 @@
 //! connection pool; what this adds is
 //! the sharing between tasks and the sweep.
 
+use sqlx::{AssertSqlSafe, Executor};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -187,6 +188,23 @@ impl Pools {
     }
 }
 
+/// One `SET` carrying every session variable the DSN named, so a new connection
+/// costs one round trip however many there are.
+///
+/// The names were held to `[A-Za-z0-9_.]` when the DSN was parsed, and the
+/// values travel exactly as the DSN wrote them — quoted there where quoting is
+/// needed, which is what this format asks of whoever writes the DSN and what the
+/// Go client does with the same string.
+fn mysql_session_statement(variables: &[(String, String)]) -> String {
+    let assignments = variables
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!("SET {assignments}")
+}
+
 fn build(
     driver_name: &'static str,
     dsn: &str,
@@ -223,15 +241,33 @@ fn build(
 
     match driver_name {
         "mysql" => {
-            let options = dsn::mysql_options(dsn)?;
+            let parsed = dsn::mysql_dsn(dsn)?;
 
-            let pool = sqlx::mysql::MySqlPoolOptions::new()
+            let mut pool_options = sqlx::mysql::MySqlPoolOptions::new()
                 .max_connections(max_connections)
                 .min_connections(0)
-                .max_lifetime(max_lifetime)
-                .connect_lazy_with(options);
+                .max_lifetime(max_lifetime);
 
-            Ok(Driver::Mysql(pool))
+            // The DSN's session variables, in the one place they can be issued:
+            // sqlx sends its own SET while connecting, so these have to land
+            // after it, on every connection the pool opens rather than once.
+            // This is what makes `?transaction_isolation=…` and the rest of the
+            // format's system-variable parameters mean something — see dsn.rs.
+            if !parsed.session_variables.is_empty() {
+                let statement = mysql_session_statement(&parsed.session_variables);
+
+                pool_options = pool_options.after_connect(move |connection, _meta| {
+                    let statement = statement.clone();
+
+                    Box::pin(async move {
+                        connection.execute(AssertSqlSafe(statement)).await?;
+
+                        Ok(())
+                    })
+                });
+            }
+
+            Ok(Driver::Mysql(pool_options.connect_lazy_with(parsed.options)))
         }
         _ => {
             let options: sqlx::postgres::PgConnectOptions =
