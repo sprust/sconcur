@@ -37,7 +37,7 @@ hardware, DB settings and load. The workload-matching verdict table is in
 
 Intel Core i7-13620H (16 threads), 15 GiB RAM, Linux, everything in Docker: the
 benchmarks from the `php` container (`make bench-*`), the server pools from the
-`servers` container (3 workers, `SO_REUSEPORT`). Component versions — see
+`servers` container (2 workers per group, `SO_REUSEPORT`). Component versions — see
 [Tested versions](../README.md#tested-versions).
 
 DB data lives on the host disk (SSD), as in a real deployment: writes pay a real
@@ -55,13 +55,11 @@ worker log stays empty: it reports a failed feature in the response body, not to
 stderr. The run still prints a plausible requests/sec. Always check
 `Non-2xx or 3xx responses` in the wrk output before trusting a long run.
 
-Client numbers taken on 2026-07-22, the AMQP numbers on 2026-08-22 and
-re-measured unchanged on 2026-08-28, all on an idle machine. Everything about
-the HTTP servers — the empty-endpoint throughput, the three-stack comparison and
-the three worker ladders — was re-measured on 2026-09-04/05 with all three
-stacks in one session, on the Rust core and with the placement equalised (see
-[Methodology](#methodology)). The DB and payload numbers were re-measured on
-2026-09-05, on the same disk-backed volumes.
+Every number on this page was taken on 2026-09-04/05, on an idle machine and on
+the Rust core. The three stacks of the HTTP-server tables ran in one session with
+the placement equalised (see [Methodology](#methodology)); the DB, payload,
+client, server-feature and AMQP numbers were taken on the same disk-backed
+volumes.
 
 ## Conversion overhead (the PHP↔extension boundary)
 
@@ -278,24 +276,25 @@ the native and the synchronous modes use one, as an application would.
 
 | Operation | count | native / sync / async, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
 | --- | ---: | ---: | ---: | ---: | --- |
-| publish | 1000 | 4.8 / 32.2 / 27.6 (−478% ❌) | 4.2 / 31.1 / 19.9 (−374% ❌) | 6.2 / 72.4 / 32.8 (−429% ❌) | 22 / 22 / 22 |
-| get | 1000 | 30.5 / 83.1 / 40.7 (−33% ❌) | 29.3 / 72.9 / 27.4 (+7% ✅) | 66.3 / 141 / 73.6 (−11% ❌) | 22 / 22 / 22 |
+| publish | 1000 | 4.1 / 29.9 / 19.6 (−379% ❌) | 3.8 / 27.8 / 18.7 (−389% ❌) | 4.2 / 38.9 / 20.1 (−379% ❌) | 22 / 22 / 22 |
+| get | 1000 | 29.0 / 64.2 / 29.6 (−2% ❌) | 27.7 / 56.1 / 26.0 (+6% ✅) | 46.9 / 101 / 69.9 (−49% ❌) | 22 / 22 / 22 |
 
 Consuming a pre-filled set of queues, 10 queues × 200 messages, median of 5 runs:
 
 | Measurement | native | sync | async |
 | --- | ---: | ---: | ---: |
-| messages per second | 121 500 | 22 100 | 82 800 |
+| messages per second | 122 100 | 53 800 | 111 000 |
 
 `basic.publish` expects no reply, so it costs one write on the wire while every
-SConcur call also crosses the PHP ↔ extension boundary — there is nothing to overlap and
-the crossing is the whole difference. `basic.get` does wait for the broker, and
-running the calls at the same time recovers most of that: the concurrent mode
-halves the synchronous one and its best run beats native.
+SConcur call also crosses the PHP ↔ extension boundary — there is nothing to
+overlap and the crossing is the whole difference. `basic.get` does wait for the
+broker, and running the calls at the same time recovers all of it: the concurrent
+mode now matches native and halves the synchronous one.
 
-These three move more between runs than any other table here — the consume row
-swung between 52 000 and 128 000 msg/s for the native mode alone, and `get`
-between 29 and 66 ms. Read them as orders of magnitude.
+Consuming moved the most since these rows were last taken: the synchronous mode
+went from 22 100 to 53 800 msg/s and the concurrent one from 82 800 to 111 000,
+against an unchanged native. These three still move more between runs than any
+other table here — read them as orders of magnitude.
 
 **What the tables do not measure is the reason the feature exists.** They pit one
 call against one call on a queue that already has its messages. The gain is a
@@ -314,40 +313,53 @@ concurrently in the time of about one call.
 
 | Benchmark | count | native, ms | sync, ms | async, ms | Memory n/s/a, MB | async vs native |
 | --- | ---: | ---: | ---: | ---: | --- | :---: |
-| http-client (`/msleep/100`) | 50 | 5243 | 5222 | 120 | 4 / 4 / 4 | +98% ✅ |
-| http-client-download (4 MiB) | 50 | 1105 | 844 | 192 | 4 / 4 / 4 | +83% ✅ |
-| socket-client (`msleep:100`) | 50 | 5222 | 5287 | 119 | 4 / 4 / 4 | +98% ✅ |
-| ws-client (`msleep:100`) | 50 | 5255 | 5345 | 131 | 4 / 4 / 4 | +98% ✅ |
+| http-client (`/msleep/100`) | 50 | 5216 | 5185 | 120 | 4 / 4 / 4 | +98% ✅ |
+| socket-client (`msleep:100`) | 50 | 5203 | 5238 | 118 | 4 / 4 / 4 | +98% ✅ |
+| ws-client (`msleep:100`) | 50 | 5203 | 5263 | 123 | 4 / 4 / 4 | +98% ✅ |
 
-On I/O latency async gives ~44× (5.2 s → 0.12 s). `download` writes a 4 MiB body
-straight to a file inside the extension, so memory stays flat and running the
-downloads concurrently still speeds them up ~6×.
+On I/O latency async gives ~44× (5.2 s → 0.12 s).
+
+`http-client-download` has no row. At 50 concurrent downloads of a 4 MiB body it
+fails against a multi-worker pool about half the time: the server answers `500`
+and its log carries
+`fopen(Nyholm-Psr7-Zval://): Failed to open stream: infinite recursion prevented`,
+which is PHP refusing to re-enter the userland stream wrapper Nyholm PSR-7 wraps
+a string body in. A single worker never reproduces it and neither does a pool
+below ~30 concurrent downloads. Publishing a median over the runs that happen to
+survive would describe the successes and not the benchmark, so the row waits for
+the bug.
 
 ## Servers (HTTP / Socket / WebSocket)
 
 One cooperative process can wait on any number of I/O operations at the same
 time; CPU-bound requests rely on the per-core pool, not on the scheduler. A pool
-of 3 workers (`SO_REUSEPORT`), 100 concurrent requests/connections per run
+of 2 workers (`SO_REUSEPORT`), 100 concurrent requests/connections per run
 (throughput — 50 connections × 2000 round-trips), median of 3 runs, all
 responses successful.
 
 | Benchmark | Load | elapsed, s | Throughput |
 | --- | --- | ---: | --- |
-| http-server-io | 100 × `GET /msleep/1000` (1 s async sleep) | 1.04 | — |
-| http-server-cpu | 100 × `GET /cpu/100000` (sha256 loop) | 0.72 | — |
-| socket-server-io | 100 × `msleep:1000` round-trip | 1.01 | — |
-| socket-server-cpu | 100 × `cpu:100000` round-trip | 0.68 | — |
-| socket-throughput | 50 conn × 2000 × `ping` | 0.58 | ≈171 000 rt/s |
+| http-server-io | 100 × `GET /msleep/1000` (1 s async sleep) | 1.03 | — |
+| http-server-cpu | 100 × `GET /cpu/100000` (sha256 loop) | 1.04 | — |
+| socket-server-io | 100 × `msleep:1000` round-trip | 1.00 | — |
+| socket-server-cpu | 100 × `cpu:100000` round-trip | 0.96 | — |
+| socket-throughput | 50 conn × 2000 × `ping` | 0.78 | ≈127 500 rt/s |
 | ws-server-io | 100 × `msleep:1000` round-trip | 1.01 | — |
-| ws-server-cpu | 100 × `cpu:100000` round-trip | 0.70 | — |
-| ws-throughput | 50 conn × 2000 × `ping` | 0.89 | ≈112 000 rt/s |
+| ws-server-cpu | 100 × `cpu:100000` round-trip | 0.99 | — |
+| ws-throughput | 50 conn × 2000 × `ping` | 0.83 | ≈120 900 rt/s |
 
 100 handlers each sleeping 1 s asynchronously finish in ≈one sleep regardless of
 the worker count — a single cooperative process already holds all those waits at
-once. The sha256 loop does not yield, but the `SO_REUSEPORT` pool spreads the
-100 requests across cores, so they still complete in ~0.7 s. Throughput measures
-the pure round-trip price under concurrency. Behaviour under sustained load is
-in [load testing](load-testing.md).
+once. Throughput measures the pure round-trip price under concurrency. Behaviour
+under sustained load is in [load testing](load-testing.md).
+
+The three `-cpu` rows sit ~40% above the 0.68–0.72 s this table used to carry,
+and the pool is the whole reason: `config/sconcur.servers.config.json` went from
+three workers per group to two, while this page kept saying three. A single
+`/cpu/100000` costs ~19 ms, so 100 of them take ~0.95 s across two workers and
+~0.63 s across three — which is what a freshly started three-worker pool
+measures, at any preemption quantum. The sha256 loop never yields, so these rows
+scale with the worker count and nothing else.
 
 ### HTTP throughput: the empty endpoint
 
