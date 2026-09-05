@@ -77,8 +77,8 @@ RUN set -eux; \
     echo "extension=sconcur.so" > /usr/local/etc/php/conf.d/docker-php-ext-sconcur.ini
 ```
 
-В `composer.lock` версия может лежать с префиксом `v` (`v0.11.0`), поэтому ведущий
-`v` срезается и добавляется обратно в URL — иначе получится `vv0.11.0`. В этом слое
+В `composer.lock` версия может лежать с префиксом `v` (`v0.12.0`), поэтому ведущий
+`v` срезается и добавляется обратно в URL — иначе получится `vv0.12.0`. В этом слое
 сборки нужны `jq` и `curl`.
 
 ## sconcur-status — проверить установку
@@ -91,12 +91,12 @@ RUN set -eux; \
 vendor/bin/sconcur-status
 #   sconcur status
 #     extension installed:  yes
-#     package version:      0.11.0
-#     extension version:    0.11.0
+#     package version:      0.12.0
+#     extension version:    0.12.0
 #     ready:                yes
 
 vendor/bin/sconcur-status --json
-#   {"extension_installed":true,"package_version":"0.11.0","extension_version":"0.11.0","ready":true}
+#   {"extension_installed":true,"package_version":"0.12.0","extension_version":"0.12.0","ready":true}
 ```
 
 Расширение должно быть включено для того же процесса, иначе скрипт его не увидит:

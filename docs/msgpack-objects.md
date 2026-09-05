@@ -34,7 +34,7 @@ Inside the extension (MongoDB's, as the worked example):
 
 | Direction | Entry point |
 |---|---|
-| PHP → extension, `dt` is a parameter struct | `payloads::params_from_msgpack` |
+| PHP → extension, `dt` is a parameter struct | `payloads::decode_params` |
 | PHP → extension, `dt` is the document itself | `serializer::document_from_msgpack` / `documents_from_msgpack` |
 | extension → PHP, one document | `serializer::document_to_msgpack` |
 | extension → PHP, a cursor batch | `serializer::documents_to_msgpack` |

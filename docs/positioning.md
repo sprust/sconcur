@@ -82,11 +82,10 @@ sequential worker performs its 3 disk commits one after another and idles at
 at the same time — both the ones inside a single request and the ones belonging
 to different requests.
 
-Swoole is absent from the `/all` rows and cannot be added to them: `ext-mongodb`
-is outside its runtime hooks, so the endpoint blocks a Swoole worker outright and
-the number would describe a driver rather than an execution model. Where the
-workload is the same for all three — the empty endpoint and the `/db`, `/db-rw`
-ladders in [benchmarks](benchmarks.md) — Swoole is measured beside the other two.
+Swoole is measured beside the other two where the workload is the same for all
+three: the empty endpoint and the `/db`, `/db-rw` ladders in
+[benchmarks](benchmarks.md). On `/all` a Swoole worker blocks — `ext-mongodb` is
+outside its runtime hooks.
 
 ## Resources to hold the same load
 
@@ -124,9 +123,13 @@ zero.
   Mitigations: [automatic preemption](coroutine-switching.md) bounds how long
   such code delays the other requests in the process, the per-core pool spreads
   requests over processes, `handlerTimeoutMs` still answers 504, `maxRequests`
-  recycles workers; a watchdog for hung workers is on the roadmap. A native
-  blocking call, or a single computation that never returns to the scheduler,
-  still freezes the process — preemption cannot interrupt those.
+  recycles workers; a watchdog for hung workers is on the roadmap. What
+  preemption cannot interrupt is a native blocking call (`sleep`, PDO, `curl`)
+  or one long internal call — `preg_match` over a huge subject, `json_decode` of
+  a huge blob: the interrupt is serviced at an opcode boundary, and neither of
+  those reaches the next boundary until it returns. Both freeze the process for
+  their whole duration — see
+  [coroutine switching](coroutine-switching.md#semantics-to-be-aware-of).
 - Every call crosses the PHP↔extension boundary and costs ~50 µs, which makes cheap
   point reads slower than the native driver at any dataset size. Large payloads
   cost ~1.7–2.6 ms per MB in each direction, and the results of all operations
@@ -139,22 +142,7 @@ zero.
   decides where SConcur realistically fits: new services and hand-written query
   code, not a drop-in migration of an existing framework app.
 
-## When to choose what
-
-- php-fpm — classic request/response sites with cheap short requests, the simplest
-  operations story, shared hosting.
-- RoadRunner — an existing framework app that wants to drop the per-request
-  bootstrap without touching how it talks to databases.
-- Swoole — the same concurrency effect on native drivers and cheaper per
-  request, as long as the drivers you need are covered by its runtime hooks
-  (`ext-mongodb` is not).
-- SConcur — I/O-intensive services where one request makes many calls or waits a
-  lot: aggregators and BFF gateways, MongoDB-heavy backends, queue consumers and
-  ETL, handlers making many external calls. Code is written against the SConcur
-  API, so it fits new services best.
-
-The technology side is proven by the measurements above; how far the project goes
-is decided by ecosystem bridges rather than by the extension — framework
-integration packages, splitting the core and features into separate packages,
+The technology side is proven by the measurements above; what is left is the
+work around it — splitting the core and the features into separate packages,
 optimizing the synchronous path, and the hung-worker watchdog (see the
 [roadmap](../README.md#roadmap)).

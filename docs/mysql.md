@@ -16,7 +16,7 @@ facade over the same core.
 
 ```php
 $connection = new \SConcur\Features\Mysql\Connection(
-    dsn: 'user:pass@tcp(127.0.0.1:3306)/app?parseTime=true',
+    dsn: 'user:pass@tcp(127.0.0.1:3306)/app',
     timeoutMs: 5000,
 );
 
@@ -37,18 +37,13 @@ Inside `WaitGroup::add(...)` the same calls run concurrently.
 
 ## DSN and bindings
 
-- DSN is the go-sql-driver/mysql format:
-  `user:pass@tcp(host:port)/dbname?param=value`. Useful parameters:
-  `parseTime=true` (dates as `time.Time`), `charset`, `loc`.
-- `interpolateParams=true` is added to the DSN by default by the `Mysql\Connection`
-  facade unless the flag is already there. A query with bindings then goes in one
-  round-trip (COM_QUERY with client-side interpolation) instead of PREPARE +
-  EXECUTE + CLOSE — faster on the synchronous path and matching PDO's default
-  behaviour; escaping is done by the driver. Pass `interpolateParams=false`
-  explicitly to get server-side prepared statements back.
-- Placeholders are the driver's native `?`. Bindings are a positional list; the SQL
-  is not rewritten and values go to the driver as parameters (integers normalized
-  to int64, floats to float64), which protects against SQL injection.
+- The DSN shape is `user:pass@tcp(host:port)/dbname`; a `mysql://` URL is
+  accepted too. Only the host, port, user, password and database are read — a
+  query string after them is parsed off and dropped, so no DSN parameter changes
+  anything.
+- Placeholders are `?`. Bindings are a positional list; the SQL is not rewritten
+  and the values reach the server as parameters of a prepared statement (integers
+  as 64-bit, floats as doubles), which protects against SQL injection.
 
 ## Transactions
 
@@ -87,9 +82,9 @@ its own connection, so transactions run in parallel.
 |---|---|---|
 | `dsn` | — | driver connection string |
 | `timeoutMs` | 30000 | deadline for one exec; for a query — for the whole cursor lifetime |
-| `maxOpenConns` | 0 (no limit) | pool `SetMaxOpenConns` |
-| `maxIdleConns` | = `maxOpenConns` | pool `SetMaxIdleConns` |
-| `connMaxLifetimeMs` | 0 (no limit) | pool `SetConnMaxLifetime` |
+| `maxOpenConns` | 0 → 32 | connection cap of the pool; `0` means the built-in 32, not "unlimited" |
+| `maxIdleConns` | = `maxOpenConns` | accepted and not applied: the pool keeps every idle connection up to the cap. It is still part of the pool key, so two values mean two pools |
+| `connMaxLifetimeMs` | 0 (no limit) | how long a connection may be reused before the pool retires it |
 
 `timeoutMs` bounds each individual exec; for a query it is carried into the
 streaming cursor and bounds its whole lifetime — every `next()` batch and the
@@ -103,16 +98,15 @@ Every operation runs on a connection from a pool that lives in the
 extension and is reused across tasks and coroutines. The pool is shared by all
 `Connection`s with the same DSN and pool sizes (the key is `driver+dsn+sizes`);
 an unused pool untouched for longer than 5 minutes is closed, and all pools are
-closed when the extension stops. If `maxIdleConns` is not set, the
-`maxOpenConns` value is used — otherwise a small idle floor lets the pool
-collapses after each batch of concurrent queries, and the next batch pays for
-the handshakes again.
+closed when the extension stops. The pool starts empty, grows on demand and keeps
+what it has opened up to the cap, so a batch of concurrent queries does not pay
+the handshakes again on the next batch.
 
 In a `WaitGroup` each autocommit operation and each transaction takes a separate
-connection for its duration. Launch `N` coroutines with an unlimited pool and you
-will open up to `N` connections at once — and **hit the server limit**
-(`max_connections`, MySQL error `1040 Too many connections`). So keep
-`maxOpenConns` `<= max_connections` and matched to the desired parallelism:
+connection for its duration, so `N` coroutines open up to `maxOpenConns`
+connections at once. The cap is per process: with a pool of servers, multiply it
+by their number before comparing against `max_connections`, or the server answers
+`1040 Too many connections`. Set `maxOpenConns` to the parallelism you expect:
 
 ```php
 $connection = new \SConcur\Features\Mysql\Connection(
@@ -121,8 +115,8 @@ $connection = new \SConcur\Features\Mysql\Connection(
 );
 ```
 
-When the pool is saturated, autocommit queries are queued by `database/sql`
-until a connection frees up rather than failing. Transactions hold a connection
+When the pool is saturated, autocommit queries wait for a connection to free up
+rather than failing. Transactions hold a connection
 for their whole life, so with `maxOpenConns` less than the number of coroutines
 the extra `begin()` calls block and the transactions proceed in waves — keep the
 pool no smaller than the expected number of concurrent transactions.
@@ -130,8 +124,9 @@ pool no smaller than the expected number of concurrent transactions.
 ## Internals
 
 - Pool registry (`ext/src/features/sql/pools.rs`) — `sqlx::MySqlPool`/`PgPool` keyed by the
-  `driver+dsn+pool sizes` struct, with a refcount and eviction of idle pools (like
-  the MongoDB client pool). The sweeper walks the registry once a minute.
+  `driver+dsn+pool sizes` struct, with a refcount so a pool in use is never swept
+  and eviction of idle ones after 5 minutes. The sweeper walks the registry once a
+  minute.
 - SELECT streaming (`rows_state.rs`) — `RowsState` holds the live sqlx stream and gives
   out rows in batches (`batchSize` comes from the PHP side, default 50; `<= 0` —
   one unbounded batch) with a one-row look-ahead to detect whether a next batch

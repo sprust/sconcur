@@ -2,8 +2,8 @@ English | [Русский](pgsql.ru.md)
 
 # PostgreSQL (on top of the universal SQL feature)
 
-PgSQL is the second driver of the same SQL feature on sqlx (the
-`jackc/pgx` driver). The core (`SConcur\Features\Sql`) is shared with MySQL, and
+PgSQL is the second driver of the same SQL feature, sqlx's PostgreSQL one. The
+core (`SConcur\Features\Sql`) is shared with MySQL, and
 `SConcur\Features\Pgsql\Connection` is a thin facade that sets the driver.
 Streaming, pool, transactions and concurrency behave identically — see
 [docs/mysql.md](mysql.md); only the PostgreSQL differences are described here.
@@ -27,10 +27,10 @@ echo $result->affectedRows;
 ## Differences from MySQL
 
 - Placeholders are numbered `$1, $2, …`, not `?`. Bindings stay a positional list.
-- The DSN is the pgx/libpq format:
-  `postgres://user:pass@host:port/dbname?sslmode=...` (or keyword/value
-  `host=… port=… user=… dbname=…`). Useful parameters: `sslmode`,
-  `connect_timeout` (seconds).
+- The DSN is a URL: `postgres://user:pass@host:port/dbname?sslmode=...`. The
+  keyword/value form (`host=… port=… dbname=…`) is refused. `sslmode` takes
+  effect; a parameter the driver does not know is ignored silently, including
+  `connect_timeout` — the deadline on an operation is `timeoutMs`.
 - No last-insert-id: `exec()->lastInsertId` is always `0`. Use
   `INSERT … RETURNING id` and read it as a result row:
   ```php

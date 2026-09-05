@@ -4,8 +4,9 @@ English | [Русский](websocket-server.ru.md)
 
 A long-lived WebSocket server: the network lives in the extension, and every
 upgraded connection is streamed into PHP and handled in its own coroutine. It is a
-hybrid — the handshake and listener come from the [HTTP server](http-server.md)
-(`net/http.Server`), and after the upgrade the connection works in the push model
+hybrid — the listener and the handshake are the same HTTP layer the
+[HTTP server](http-server.md) runs on (`hyper`), and after the upgrade the
+connection works in the push model
 of the [socket server](socket-server.md). It runs under the same
 [worker master](worker-master.md).
 
@@ -13,17 +14,17 @@ of the [socket server](socket-server.md). It runs under the same
 
 A connection starts as an ordinary HTTP request with `Upgrade: websocket`. A
 request with a valid upgrade is accepted by
-[`coder/websocket`](https://github.com/coder/websocket) and becomes a
+[`fastwebsockets`](https://github.com/denoland/fastwebsockets) and becomes a
 bidirectional message stream; any other request gets `426 Upgrade Required`, and
-a request not on the configured `path` gets `404`. Framing is the library's WS
-protocol (opcode, client masking, ping/pong/close control frames, UTF-8
-validation of text), not the length-prefix of the socket server, so the WS
-server has its own inbound message stream on top of `*websocket.Conn`.
+a request not on the configured `path` gets `404`. Framing is the WS protocol
+itself (opcode, client masking, ping/pong/close control frames, UTF-8 validation
+of text), not the length-prefix of the socket server, so the WS server has its
+own inbound message stream on top of the upgraded connection.
 
 ```mermaid
 flowchart TB
     client["WS client (browser / Bruno / WsClient)"]
-    serve["ServeHTTP runtime task: websocket.Accept"]
+    serve["connection task: the upgrade, then the WS stream"]
     sched["Scheduler::serve (PHP)"]
     handler["handler(Connection): void — read/write loop"]
 
@@ -114,7 +115,7 @@ The `WsServer` constructor; the PHP defaults mirror the extension's.
 | `maxConcurrency` | `0` (no limit) | max connections served at once; excess ones wait for a free slot |
 | `handlerTimeoutMs` | `0` (no limit) | how long one connection handler may run before it is unwound where it stands — see [coroutine timeout](coroutine-timeout.md) |
 | `maxConnections` | `0` (no limit) | stop the server after N served connections (a leak guard) |
-| `shutdownTimeoutMs` | `10000` | how long to wait for the active connections to finish on stop |
+| `shutdownTimeoutMs` | `10000` | accepted and not applied: the drain is bounded by the grace period below, not by a clock of its own |
 | `reusePort` | `false` | `SO_REUSEPORT` — a pool of processes on one port (Linux) |
 | `path` | `/` | the path on which the upgrade is accepted (empty string — any path); another path → `404` |
 | `allowedOrigins` | `[]` | host patterns for the origin check (empty — the check is skipped) |
@@ -156,8 +157,7 @@ On a signal (SIGTERM/SIGINT), on reaching `maxConnections`, or on being orphaned
 (`masterPid`), the server stops accepting new connections and ends the input of
 the active ones: a handler reading in a loop gets `null` (its current write
 still goes through) and returns. A push-only handler that does not read is
-finished by a forced close once the grace elapses (`drainGrace`, 2 s), after
-which the wait is bounded by `shutdownTimeoutMs`. In an `SO_REUSEPORT` pool the
+finished by a forced close once the grace elapses (2 s). In an `SO_REUSEPORT` pool the
 kernel immediately hands new connections to siblings, and the process exits on
 its own.
 
@@ -165,7 +165,7 @@ Lifecycle lines go to `STDOUT` alongside the per-connection access log written b
 the extension:
 
 ```
-2026-06-28T12:00:00.000000 sconcur ws server listening on 0.0.0.0:9200 pid=12345 version=0.9.0 maxConcurrency=0 maxConnections=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur ws server listening on 0.0.0.0:9200 pid=12345 version=0.12.0 maxConcurrency=0 maxConnections=0 reusePort=0
 2026-06-28T12:00:01.000000 sconcur ws server shutdown: stop accepting (reason=signal), draining 2 in-flight
 2026-06-28T12:00:01.050000 sconcur ws server shutdown: drained all in-flight
 2026-06-28T12:00:01.060000 sconcur ws server shutdown: stopped

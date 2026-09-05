@@ -11,36 +11,6 @@ A concurrency library for PHP on top of a custom Rust extension. The PHP side
 and so on) concurrently on an async runtime. The two sides exchange data over
 MessagePack.
 
-## Numbers against RoadRunner and Swoole
-
-The same demo application on the same machine: `wrk` 4 threads / 256 connections
-/ 20 s, database data on disk. The worker count per server is given in the row:
-the empty response was measured at 12, while `/db` and `/db-rw` come from the
-worker-count ladder, at its 8-worker rung (where SConcur peaks and the load
-generator does not yet share cores with the servers):
-
-| Request | SConcur | RoadRunner | Swoole |
-| --- | ---: | ---: | ---: |
-| empty response (12 workers) | ≈194 300 rps, p50 0.9 ms | ≈45 100 rps, p50 5.4 ms | ≈365 600 rps, p50 0.35 ms |
-| point SELECT by id, `/db` (8 workers) | 44 200 rps, p50 5.4 ms | 22 887 rps, p50 10.7 ms | 117 693 rps, p50 2.0 ms |
-| INSERT + COUNT(*) + SELECT, `/db-rw` (8 workers) | 2 366 rps, p50 95.8 ms | 289 rps, p50 877 ms | 2 467 rps, p50 89.8 ms |
-
-There is no row for an endpoint that uses MongoDB. `ext-mongodb` is outside
-Swoole's runtime hooks, so the same handler blocks a Swoole worker outright and
-the row would report the state of a driver as if it were a property of the
-execution model.
-
-Swoole is faster on the cheap paths, but its concurrency rests on hooks into the
-existing PHP drivers: whatever the hooks do not cover blocks the whole worker (as
-`ext-mongodb` does). In SConcur a feature is ordinary async Rust on top of a
-mature Rust driver, which makes new features easier to add and to maintain.
-
-Where SConcur does not win — single cheap queries, megabyte payloads, CPU-bound
-handlers — is listed just as plainly in
-["Is SConcur for you?"](docs/positioning.md#is-sconcur-for-you), next to the
-[feature benchmarks](docs/benchmarks.md) and the
-[behaviour under load](docs/load-testing.md).
-
 ## Contents
 
 - [Numbers against RoadRunner and Swoole](#numbers-against-roadrunner-and-swoole)
@@ -55,6 +25,31 @@ handlers — is listed just as plainly in
 - [Build](#build)
 - [echo test](#echo-test)
 - [Roadmap](#roadmap)
+
+## Numbers against RoadRunner and Swoole
+
+The same demo application on the same machine: `wrk` 4 threads / 256 connections
+/ 20 s, database data on disk. The worker count per server is given in the row:
+the empty response was measured at 12, while `/db` and `/db-rw` come from the
+worker-count ladder, at its 8-worker rung (where SConcur peaks and the load
+generator does not yet share cores with the servers):
+
+| Request | SConcur | RoadRunner | Swoole |
+| --- | ---: | ---: | ---: |
+| empty response (12 workers) | ≈194 300 rps, p50 0.9 ms | ≈45 100 rps, p50 5.4 ms | ≈365 600 rps, p50 0.35 ms |
+| point SELECT by id, `/db` (8 workers) | 44 200 rps, p50 5.4 ms | 22 887 rps, p50 10.7 ms | 117 693 rps, p50 2.0 ms |
+| INSERT + COUNT(*) + SELECT, `/db-rw` (8 workers) | 2 366 rps, p50 95.8 ms | 289 rps, p50 877 ms | 2 467 rps, p50 89.8 ms |
+
+Swoole is faster on the cheap paths, but its concurrency rests on hooks into the
+existing PHP drivers: whatever the hooks do not cover blocks the whole worker (as
+`ext-mongodb` does). In SConcur a feature is ordinary async Rust on top of a
+mature Rust driver, which makes new features easier to add and to maintain.
+
+Where SConcur does not win — single cheap queries, megabyte payloads, CPU-bound
+handlers — is listed just as plainly in
+["Is SConcur for you?"](docs/positioning.md#is-sconcur-for-you), next to the
+[feature benchmarks](docs/benchmarks.md) and the
+[behaviour under load](docs/load-testing.md).
 
 ## Idea
 
@@ -187,26 +182,31 @@ Everything else follows from that:
 
 ## Use and limitations
 
-- Built for long-lived processes, and that is what it is tested on: workers,
-  daemons, console commands, and the HTTP, WebSocket and socket servers
-  themselves, which are ordinary PHP scripts listening on a port (the Swoole /
-  ReactPHP model). It also drops into a long-lived process you already run,
-  including a RoadRunner worker. Nothing checks the SAPI, so this is what it is
-  meant for rather than what it enforces.
-- PHP-FPM works, with a caveat worth understanding. A pool of 4 static workers,
-  each request fanning out twelve 100 ms coroutines, serves every request in
-  ~102 ms rather than 1200 (`ext/check/fpm-check.sh`): a worker rebuilds the
-  runtime after the master forks it, and concurrency inside one request is real.
-  What FPM cannot give is concurrency *between* requests — the fan-out has to
-  finish before the request does — and every worker carries a runtime of its own.
-  So it buys the same thing a `curl_multi` would, and the servers above are where
-  the library pays off. ZTS builds (mod_php on a threaded MPM) are not supported
-  at all.
+- A long-lived process is where the gain is real, and that is what the library
+  is tested on: workers, daemons, console commands, and the HTTP, WebSocket and
+  socket servers themselves, which are ordinary PHP scripts listening on a port
+  (the Swoole / ReactPHP model). It also drops into a long-lived process you
+  already run, including a RoadRunner worker. Nothing checks the SAPI.
+- PHP-FPM is supported. Either style works inside a request: a plain
+  synchronous call, or several operations at once through a `WaitGroup`. A pool
+  of 4 static workers, each request running twelve 100 ms coroutines at the
+  same time, answers in ~102 ms rather than 1200 (`ext/check/fpm-check.sh`) — a
+  worker rebuilds the runtime after the master forks it. Connections are pooled
+  inside the extension (one pool per DSN, per MongoDB URI, per set of AMQP
+  credentials), shared by every coroutine of the process, so a request opens no
+  connection of its own while the pool is alive. What FPM does not give is
+  concurrency *between* requests: the request ends when its work does, and the
+  pools go with it, because releasing the extension at request shutdown closes
+  them.
 - `pcntl_fork` is supported, including after the extension has run work. Only the
   forking thread survives into the child, so the runtime it inherits has no
   worker threads left; the extension notices and rebuilds it on the child's next
   call. The parent is unaffected.
-- NTS (non-thread-safe) only; a ZTS build is not supported.
+- NTS (non-thread-safe) only. A ZTS PHP refuses to load the NTS `.so` outright,
+  and rebuilding it for ZTS would not help: the extension holds its state per
+  process on the assumption that one PHP thread issues every call, while the PHP
+  side numbers flows with a class static that a ZTS build gives each thread a
+  copy of — two request threads would collide on the same flow key.
 - Linux only — core-count detection, signals/`posix`, `SO_REUSEPORT`, the
   master's `flock`.
 - `exit()`/`die()` with active tasks is safe but loses their results. The
@@ -229,21 +229,28 @@ The environment the project is built and tested against in CI:
 
 | Component | Version |
 | --- | --- |
-| PHP | 8.4.15 (NTS, cli) |
+| PHP | 8.4.15 (NTS) |
 | Rust (extension build) | 1.98.0 |
 | MongoDB (server) | 8.0.5 |
 | ext-mongodb (PHP extension, tests and benchmarks only) | 1.21.5 |
 | mongodb/mongodb (composer package, tests and benchmarks only) | 1.21.3 |
 | ext-msgpack | 3.0.1 |
 | MySQL (server) | 8.4 |
-| go-sql-driver/mysql | 1.8.1 |
 | PostgreSQL (server) | 16 |
-| jackc/pgx/v5 | 5.7.2 |
-| go.mongodb.org/mongo-driver/v2 | 2.6.0 |
 | RabbitMQ (server) | 4.1 |
 | ext-amqp (PHP extension, tests and benchmarks only) | 2.2.0 |
-| rabbitmq/amqp091-go | 1.14.0 |
-| coder/websocket | 1.8.15 |
+
+The crates the core is built on:
+
+| Crate | Version | Used for |
+| --- | --- | --- |
+| tokio | 1.53 | the async runtime every task runs on |
+| sqlx | 0.9 | MySQL and PostgreSQL |
+| mongodb | 3.9 | MongoDB |
+| lapin | 4.10 | AMQP |
+| hyper | 1.11 | the HTTP server |
+| reqwest | 0.13 | the HTTP client |
+| fastwebsockets | 0.10 | the WebSocket server and client |
 
 ## Documentation
 
@@ -308,9 +315,6 @@ php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello'
 - The `Std` feature — SConcur equivalents of standard PHP functions that block
   the worker or are CPU-bound non-preemptible monoliths (sleep, json, hash, gzip,
   password hashing, file I/O), executed in the extension; absorbs `Sleeper`.
-- A fiber-safe bridge to Laravel — a separate package that isolates the
-  framework state of one job from another, so a queue worker can pull several
-  queues at once. The broker side of this is done, see [AMQP](docs/amqp.md).
 - Auto-recovery of stuck workers — a master watchdog by heartbeat: `SIGKILL` and
   respawn a worker whose PHP thread has hung.
 - Split the core and the features into separate packages.

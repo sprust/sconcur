@@ -68,10 +68,10 @@ sequenceDiagram
     Note over EXT: results go to the shared bounded results channel
 
     WG->>S: iterate() → Scheduler::run()
-    S->>EXT: waitAny()
+    S->>EXT: waitAnyBatch()
     EXT-->>S: resultB — first ready
     S->>WG: resume(fiberB) → yield keyB
-    S->>EXT: waitAny()
+    S->>EXT: waitAnyBatch()
     EXT-->>S: resultA — sleep finished
     S->>WG: resume(fiberA) → yield keyA
 
@@ -95,7 +95,7 @@ flowchart TB
         F["Features: Sleeper, Mongodb Collection, …"]
         FE[FeatureExecutor]
         EXT["Connection\Extension"]
-        SCH["Scheduler (waitAny + resume loop)"]
+        SCH["Scheduler (waitAnyBatch + resume loop)"]
         ST["State (Fiber ↔ flow registry)"]
 
         WG -->|"coroutine body calls a feature"| F
@@ -106,7 +106,7 @@ flowchart TB
         SCH -.->|"releases the Fiber's flow on completion"| ST
     end
 
-    EXT <-->|"boundary + msgpack: push / waitAny / next ↔ result"| LIB
+    EXT <-->|"boundary + msgpack: push / waitAnyBatch / next ↔ result"| LIB
 
     subgraph EXTENSION["Extension (ext/)"]
         direction TB
@@ -131,7 +131,7 @@ Key entities:
   ready. `create(maxConcurrency: N)` caps the number of simultaneously live
   coroutines (0 = no limit, the default); extra `add()`s wait in a queue.
 - `Scheduler` (`src/Scheduler/`) — the process-wide singleton: the coroutine
-  registry (`Coroutine`), one `waitAny` loop, resuming by the result's owner id,
+  registry (`Coroutine`), one `waitAnyBatch` loop, resuming by the result's owner id,
   waking nested-group waiters (`awaitGroup`), dispatching deferred tasks to the
   extension (`dispatchPendingTask`). Spawned coroutines (`spawn` — one per server request)
   run on recycled fibers from `FiberPool`: the fiber's callback is an infinite
@@ -144,7 +144,7 @@ Key entities:
   task to the side that will send it across. On the async path it never crosses
   the boundary itself.
 - `Connection\Extension` — a singleton over the extension's exported C functions
-  (`push`, `waitAny`, `wait`, `next`, `stopFlow`, `destroy`, …).
+  (`push`, `waitAnyBatch`, `wait`, `next`, `stopFlow`, `destroy`, …).
 - Extension: `Handler → Flows → Flow → Task`. Each task runs on the runtime;
   results of all flows go into one shared bounded channel, from which
   `Handler::wait_any()` hands out the first ready one (`wait(flow_key)` remains

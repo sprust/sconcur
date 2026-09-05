@@ -16,24 +16,22 @@ streaming (a single result) and with streaming (multiple batches).
 Every handler inside the extension must satisfy both; violating them leaks resources and
 breaks `WaitGroup` behaviour.
 
-1. **Context cancellation.** The task context `task.GetContext()` is cancelled when
-   a flow stops (`WaitGroup::stop()`, an early `break`, `WaitGroup` destruction,
-   `destroy`). Do the work on that context; for long operations listen on
-   `ctx.Done()` via `select`, otherwise the task cannot be stopped. For streaming,
-   release the resource on a **fresh** context (`context.Background()` + timeout):
-   by the time cleanup runs, the task context is already cancelled.
+1. **Cancellation.** The task's cancellation token, `task.context()`, is
+   cancelled when a flow stops (`WaitGroup::stop()`, an early `break`, `WaitGroup`
+   destruction, `destroy`). For a long operation put `_ = task.context().cancelled()`
+   into the `select!` beside it, otherwise the task cannot be stopped. Cleanup
+   after a stream must not run under that token — it is already cancelled by the
+   time the cleanup starts, so give the release its own bound.
 
 2. **Passing the execution deadline.** The payload pushed from PHP must carry the
    execution deadline, and the extension must bound the operation with it — a task
    must not run indefinitely. How it is applied varies: sometimes the time is the
-   essence of the operation (`Sleeper`); sometimes the timeout is applied natively
-   (MongoDB passes `Client::$timeoutMs` and `::$serverSelectionTimeoutMs` into
-   `options.Client().SetTimeout(...).SetServerSelectionTimeout(...)`); the generic
-   way is to bound the task context:
-   `ctx, cancel := context.WithTimeout(task.GetContext(), timeout)`.
+   essence of the operation (`Sleeper`); sometimes the driver takes it (the
+   MongoDB client is keyed by `serverSelectionTimeoutMs`); the generic way is
+   `tokio::time::timeout(Duration::from_millis(timeout_ms), work)`.
 
-   (`ExecutionMs` in the result is the actual work time set by
-   `dto.NewSuccessResult` — not the timeout.)
+   (`executionMs` in the result is the actual work time, measured by
+   `calc_execution_ms` — not the timeout.)
 
 ## Method and payloads
 

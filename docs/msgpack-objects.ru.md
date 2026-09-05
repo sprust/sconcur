@@ -36,7 +36,7 @@ MessagePack. У скаляров, массивов и карт есть собс
 
 | Направление | Точка входа |
 |---|---|
-| PHP → расширение, `dt` — структура параметров | `payloads::params_from_msgpack` |
+| PHP → расширение, `dt` — структура параметров | `payloads::decode_params` |
 | PHP → расширение, `dt` — сам документ | `serializer::document_from_msgpack` / `documents_from_msgpack` |
 | расширение → PHP, один документ | `serializer::document_to_msgpack` |
 | расширение → PHP, пачка курсора | `serializer::documents_to_msgpack` |
@@ -155,7 +155,7 @@ docker compose exec php php -d extension=./ext/build/sconcur.so \
 Два ограничения идут от формата обмена, а не от вкуса:
 
 - свойства должны быть `public` — MessagePack искажает имя `protected`-свойства так
-  же, как `serialize()` (`"\0*\0oid"`), а Расширение пишет обычные имена. Объявите
+  же, как `serialize()` (`"\0*\0oid"`), а расширение пишет обычные имена. Объявите
   класс `readonly`, чтобы объект всё равно остался неизменяемым. Это единственное
   место, где не действует правило проекта «свойства — `protected`», и классы в
   `src/Bson/` несут комментарий об этом.

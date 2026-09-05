@@ -87,7 +87,7 @@ work on distinct ids per mode, so no two calls share a hot row and a row lock
 cannot force the concurrent calls to run one after another. A discarded warm-up
 precedes each measurement, otherwise the concurrent calls would pay for spinning
 up the connection pool inside the measured phase; the SQL pools are
-`maxOpenConns: 50` with `maxIdleConns` defaulting to the same value. Memory is
+`maxOpenConns: 50`. Memory is
 the peak RSS of the PHP process per mode.
 
 Calls per mode: 100 by default, 50 for client I/O benchmarks. Three MongoDB
@@ -153,13 +153,13 @@ async wins biggest where a call makes the server chew through the dataset —
 every `count` scans all 100k documents, every `updateMany` rewrites them, the
 unindexed `bulkWrite` filters scan the collection several times per call.
 
-Single-document operations used to stay with the native driver and no longer do:
-`findOne` +47%, `updateOne` +77%, `deleteOne` +42%, `insertOne` +25%. MongoDB
-pays no per-operation fsync on the default write concern, so there is no I/O wait
-to hide other work behind; what the concurrent mode overlaps here is the
-round-trip to the server, and that is now worth more than the boundary
-conversion costs. `insertMany` is the exception — it already batches its
-documents into one round-trip, so there is nothing left to overlap.
+Single-document operations gain as well: `findOne` +47%, `updateOne` +77%,
+`deleteOne` +42%, `insertOne` +25%. MongoDB pays no per-operation fsync on the
+default write concern, so there is no I/O wait to hide other work behind; what
+the concurrent mode overlaps here is the round-trip to the server, and that is
+worth more than the boundary conversion costs. `insertMany` is the exception —
+it already batches its documents into one round-trip, so there is nothing left
+to overlap.
 
 ## MySQL
 
@@ -291,10 +291,8 @@ overlap and the crossing is the whole difference. `basic.get` does wait for the
 broker, and running the calls at the same time recovers all of it: the concurrent
 mode now matches native and halves the synchronous one.
 
-Consuming moved the most since these rows were last taken: the synchronous mode
-went from 22 100 to 53 800 msg/s and the concurrent one from 82 800 to 111 000,
-against an unchanged native. These three still move more between runs than any
-other table here — read them as orders of magnitude.
+The three consuming numbers move more between runs than any other table here —
+read them as orders of magnitude, not as figures to compare percentages on.
 
 **What the tables do not measure is the reason the feature exists.** They pit one
 call against one call on a queue that already has its messages. The gain is a
@@ -319,15 +317,13 @@ concurrently in the time of about one call.
 
 On I/O latency async gives ~44× (5.2 s → 0.12 s).
 
-`http-client-download` has no row. At 50 concurrent downloads of a 4 MiB body it
-fails against a multi-worker pool about half the time: the server answers `500`
-and its log carries
-`fopen(Nyholm-Psr7-Zval://): Failed to open stream: infinite recursion prevented`,
-which is PHP refusing to re-enter the userland stream wrapper Nyholm PSR-7 wraps
-a string body in. A single worker never reproduces it and neither does a pool
-below ~30 concurrent downloads. Publishing a median over the runs that happen to
-survive would describe the successes and not the benchmark, so the row waits for
-the bug.
+`http-client-download` is unmeasured because of an open bug: at 50 concurrent
+downloads of a 4 MiB body against a multi-worker pool the server answers `500`
+about half the time, with
+`fopen(Nyholm-Psr7-Zval://): Failed to open stream: infinite recursion prevented`
+in its log — PHP refusing to re-enter the userland stream wrapper Nyholm PSR-7
+wraps a string body in. A single worker never reproduces it, and neither does a
+pool below ~30 concurrent downloads.
 
 ## Servers (HTTP / Socket / WebSocket)
 
@@ -353,13 +349,10 @@ the worker count — a single cooperative process already holds all those waits 
 once. Throughput measures the pure round-trip price under concurrency. Behaviour
 under sustained load is in [load testing](load-testing.md).
 
-The three `-cpu` rows sit ~40% above the 0.68–0.72 s this table used to carry,
-and the pool is the whole reason: `config/sconcur.servers.config.json` went from
-three workers per group to two, while this page kept saying three. A single
-`/cpu/100000` costs ~19 ms, so 100 of them take ~0.95 s across two workers and
-~0.63 s across three — which is what a freshly started three-worker pool
-measures, at any preemption quantum. The sha256 loop never yields, so these rows
-scale with the worker count and nothing else.
+The `-cpu` rows scale with the worker count and nothing else: the sha256 loop
+never yields, so a single `/cpu/100000` costs ~19 ms and 100 of them take ~0.95 s
+across the two workers per group of `config/sconcur.servers.config.json` (~0.63 s
+across three, at any preemption quantum).
 
 ### HTTP throughput: the empty endpoint
 
@@ -379,14 +372,6 @@ connections are multiplexed onto 12 cooperative processes, so a request that
 arrives behind a queue waits for it. What that tail does across pool sizes, and
 where it behaves unexpectedly, is in the
 [worker ladder](#empty-endpoint-the-worker-count-ladder).
-
-There is no `/all` row. That endpoint runs MongoDB, MySQL and PostgreSQL at the
-same time, and it is measured nowhere in this document any more: `ext-mongodb`
-sits outside Swoole's runtime hooks, so the same handler blocks a Swoole worker
-outright, and a table putting the two side by side would report the state of a
-driver as if it were a property of the execution model. The route still exists
-in the demo server and the load harness — see
-[load testing](load-testing.md) — it just does not produce a comparison row.
 
 ### Comparison with RoadRunner and Swoole
 
@@ -430,10 +415,6 @@ figure below is a floor.
   SConcur multiplexes 256 connections onto 12 cooperative processes: the median
   is 5.7× lower and the tail is 280× the median. Which of the two matters
   depends on whether a slow request may be paid for by a fast one.
-
-There is no `/all` row here either, for the reason given
-[above](#http-throughput-the-empty-endpoint): `ext-mongodb` blocks a Swoole
-worker, so the endpoint does not run the same workload on the three stacks.
 
 ### Empty endpoint: the worker-count ladder
 
@@ -556,8 +537,7 @@ heavier — the comparison is conservative.
   every write wins, as do heavy reads on the 100k dataset, and 100 ms network
   waits run ~44× faster together. Cheap point operations stay with native.
 - The connection pool is decisive: a cold pool cost the concurrent runs 3–15×,
-  which is why the methodology includes a warm-up and `maxIdleConns` defaults to
-  `maxOpenConns`.
+  which is why the methodology includes a warm-up.
 - The boundary itself is cheap under concurrency: socket/ws throughput ~112–171k
   round-trips/s, the empty HTTP endpoint ~194k rps (~4.3× RoadRunner).
 - Against RoadRunner and Swoole: on a write-and-read request all three stand on

@@ -2,8 +2,8 @@
 
 # PostgreSQL (на универсальной SQL-фиче)
 
-PgSQL — второй драйвер той же SQL-фичи поверх sqlx (драйвер
-`jackc/pgx`). Ядро (`SConcur\Features\Sql`) общее с MySQL, а
+PgSQL — второй драйвер той же SQL-фичи, PostgreSQL-драйвер sqlx. Ядро
+(`SConcur\Features\Sql`) общее с MySQL, а
 `SConcur\Features\Pgsql\Connection` — тонкий фасад, задающий драйвер. Стриминг,
 пул, транзакции и конкурентность ведут себя одинаково — см.
 [docs/mysql.ru.md](mysql.ru.md); здесь описаны только отличия PostgreSQL.
@@ -28,9 +28,10 @@ echo $result->affectedRows;
 
 - Плейсхолдеры нумерованные `$1, $2, …`, а не `?`. Биндинги остаются позиционным
   списком.
-- DSN — формат pgx/libpq: `postgres://user:pass@host:port/dbname?sslmode=...`
-  (либо keyword/value `host=… port=… user=… dbname=…`). Полезные параметры:
-  `sslmode`, `connect_timeout` (в секундах).
+- DSN — это URL: `postgres://user:pass@host:port/dbname?sslmode=...`. Форма
+  keyword/value (`host=… port=… dbname=…`) отвергается. `sslmode` работает, а
+  неизвестный драйверу параметр молча игнорируется — в том числе
+  `connect_timeout`: срок операции задаёт `timeoutMs`.
 - Нет last-insert-id: `exec()->lastInsertId` всегда `0`. Используйте
   `INSERT … RETURNING id` и читайте его как строку результата:
   ```php

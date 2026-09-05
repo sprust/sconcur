@@ -90,7 +90,7 @@ $server->serve(static function (Connection $connection): void {
 | `maxConcurrency` | `0` (без лимита) | сколько соединений обслуживается одновременно; лишние ждут слот |
 | `handlerTimeoutMs` | `0` (без лимита) | сколько один обработчик соединения может работать, прежде чем его размотают там, где он стоит — см. [таймаут корутины](coroutine-timeout.ru.md) |
 | `maxConnections` | `0` (без лимита) | остановить сервер после N обслуженных соединений (защита от утечек) |
-| `shutdownTimeoutMs` | `10000` | сколько ждать завершения активных соединений при остановке |
+| `shutdownTimeoutMs` | `10000` | принимается и не применяется: слив ограничен grace-периодом ниже, а не собственными часами |
 | `reusePort` | `false` | `SO_REUSEPORT` — пул процессов на одном порту (Linux) |
 | `onError` | `null` | хук ошибки обработчика |
 | `masterPid` | `null` | проверка на сироту под мастером |
@@ -143,16 +143,16 @@ $server = new SocketServer(
 чтение (`CloseRead`): обработчик, читающий в цикле, получает EOF (текущая запись
 всё же проходит) и возвращает управление. Push-обработчик, который не читает,
 EOF не замечает, и его добивает принудительное закрытие после grace-периода
-(`drainGrace`, 2 c), а дальше ожидание ограничено `shutdownTimeoutMs`. В пуле
+(2 c). В пуле
 `SO_REUSEPORT` ядро сразу отдаёт новые соединения соседям, и процесс выходит
 сам. `reusePort: true` — несколько процессов на одном порту, по процессу на ядро
 — основа масштабирования под мастером воркеров.
 
 Строки жизненного цикла идут в `STDOUT` — рядом с access-логом на соединение,
-который Расширение пишет при закрытии каждого соединения:
+который расширение пишет при закрытии каждого соединения:
 
 ```
-2026-06-28T12:00:00.000000 sconcur socket server listening on 0.0.0.0:9100 pid=12345 version=0.9.0 maxConcurrency=0 maxConnections=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur socket server listening on 0.0.0.0:9100 pid=12345 version=0.12.0 maxConcurrency=0 maxConnections=0 reusePort=0
 2026-06-28T12:00:01.000000 sconcur socket server shutdown: stop accepting (reason=signal), draining 2 in-flight
 2026-06-28T12:00:01.050000 sconcur socket server shutdown: drained all in-flight
 2026-06-28T12:00:01.060000 sconcur socket server shutdown: stopped

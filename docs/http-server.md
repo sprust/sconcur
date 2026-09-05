@@ -116,11 +116,11 @@ timeouts are in milliseconds.
 | `serverRequestFactory` | — (required) | PSR-17 `ServerRequestFactoryInterface` — builds the handler's request. |
 | `responseFactory` | — (required) | PSR-17 `ResponseFactoryInterface` — builds the fallback `413`/`500` responses. |
 | `address` | `0.0.0.0:7832` | Listen address, e.g. `0.0.0.0:8080`. |
-| `readHeaderTimeoutMs` | `10000` | Deadline for reading request headers (`ReadHeaderTimeout`). |
-| `readTimeoutMs` | `30000` | Deadline for reading the whole request (`ReadTimeout`). |
-| `writeTimeoutMs` | `30000` | Deadline for writing the response (`WriteTimeout`). |
-| `idleTimeoutMs` | `60000` | Idle deadline for a keep-alive connection (`IdleTimeout`). |
-| `shutdownTimeoutMs` | `10000` | How long the extension waits for the active connections to finish at shutdown. |
+| `readHeaderTimeoutMs` | `10000` | Accepted and not applied — see [Connection timeouts](#connection-timeouts). |
+| `readTimeoutMs` | `30000` | Accepted and not applied. |
+| `writeTimeoutMs` | `30000` | Accepted and not applied. |
+| `idleTimeoutMs` | `60000` | Accepted and not applied. |
+| `shutdownTimeoutMs` | `10000` | Accepted and not applied. |
 | `maxRequestBody` | `10485760` (10 MiB) | Request body limit; exceeding it → `413`. |
 | `maxConcurrency` | `0` (no limit) | Requests handled at once, see [limits](#concurrency-and-limits). |
 | `handlerTimeoutMs` | `60000` | Max total handling time including streaming, otherwise `504`/abort. `0` — off. |
@@ -133,8 +133,17 @@ timeouts are in milliseconds.
 | `telemetryIntervalMs` | `0` | Snapshot cadence; `0` — the default of the component that sends them (1000 ms). |
 | `preemptionQuantumMs` | `5` | Automatic-preemption quantum while serving; `0` — off. See [coroutine switching](coroutine-switching.md). |
 
-`0` means "off" for `maxConcurrency`/`handlerTimeoutMs`/`maxRequests`, and "take
-the default" for the other timeouts.
+`0` means "off" for `maxConcurrency`/`handlerTimeoutMs`/`maxRequests`.
+
+### Connection timeouts
+
+The four connection deadlines and `shutdownTimeoutMs` cross the boundary and are
+not acted on: the extension bounds a request by `handlerTimeoutMs` and nothing
+else. A slow client therefore holds its connection for as long as it likes, and
+the shutdown drain waits for the handlers rather than for a clock — bounded in
+practice by `handlerTimeoutMs`, which is why leaving it at `0` on a public
+listener is what actually costs you. Terminate slow clients in the reverse proxy
+in front.
 
 `HttpServer::fromArgs()` assembles the server from `argv`: every `--name=value` is
 matched to the constructor's scalar parameter of the same name (type-checked), an
@@ -233,7 +242,7 @@ return $factory->createResponse(200)
 - A body of known size goes out in a single write; `getSize() === null` means a
   stream, see below.
 - Without `Content-Type` the extension does not guess one.
-- 204/304 responses have their body discarded by `net/http`.
+- 204/304 responses have their body discarded.
 - Returning a non-`ResponseInterface` is a contract error
   (`InvalidHandlerResponseException`): the client gets `500`, `onError` is called.
 
@@ -339,7 +348,7 @@ Lifecycle lines are written by the PHP side and flushed immediately — one at
 startup, one per shutdown step:
 
 ```
-2026-06-28T12:00:00.000000 sconcur http server listening on 0.0.0.0:8080 pid=12345 version=0.9.0 maxConcurrency=0 maxRequests=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur http server listening on 0.0.0.0:8080 pid=12345 version=0.12.0 maxConcurrency=0 maxRequests=0 reusePort=0
 2026-06-28T12:00:01.000000 sconcur http server shutdown: stop accepting (reason=signal), draining 2 in-flight
 2026-06-28T12:00:01.050000 sconcur http server shutdown: drained all in-flight
 2026-06-28T12:00:01.060000 sconcur http server shutdown: stopped
@@ -379,10 +388,10 @@ settings are covered in
 `handlerTimeoutMs` bounds the total handling time, streamed response included, and
 it bounds two things at once.
 
-The client is answered by the extension: a timer in `consumeCommands` sends `504` when
-nothing has been written by the deadline, or aborts a stream that already started. It
-fires independently of PHP, so the client is answered even when the handler is stuck
-in a native call.
+The client is answered by the extension: the connection task waits for the
+handler's first write with that deadline and answers `504` when it does not
+arrive, or aborts a stream that already started. It fires independently of PHP,
+so the client is answered even when the handler is stuck in a native call.
 
 The PHP handler is unwound at the same deadline — the request coroutine is given it,
 and past it a [coroutine timeout](coroutine-timeout.md) is thrown into the handler
@@ -395,12 +404,6 @@ What neither of them reaches is a handler already inside a native call: no PHP r
 there, so nothing can be delivered until it returns. Those are bounded by the
 feature's own timeouts (a query timeout, an HTTP client deadline) and, at process
 level, by a worker pool (`SO_REUSEPORT`) plus `maxRequests` recycling.
-
-**Keep `handlerTimeoutMs` below `writeTimeoutMs`.** The `504` is a write like any
-other, so it needs the connection's write deadline to still be open when it goes out.
-Set the handler deadline above it and the timeout still fires — the handler is
-unwound and the response is generated — but it cannot be written, and the client sees
-the connection drop with no status at all.
 
 ## Scaling across cores (SO_REUSEPORT)
 
@@ -425,8 +428,8 @@ flowchart TB
     Port --> P4
 ```
 
-Pass `reusePort: true` to every process on the shared port (inside the extension it sets
-the socket option via `net.ListenConfig` with a `Control` callback,
+Pass `reusePort: true` to every process on the shared port (inside the extension
+it sets `SO_REUSEPORT` on the socket before the bind,
 `ext/src/features/httpserver/listen.rs`). Run them as separate processes — a
 supervisor (systemd, supervisord, docker `--scale`), the
 [worker master](worker-master.md), or a plain loop — never via `pcntl_fork`.
@@ -542,9 +545,8 @@ is not aborted, and requests rejected while the server is stopping do not count.
 ## Graceful shutdown
 
 On `SIGTERM`/`SIGINT` (or a lost master, or the `maxRequests` limit) the server
-closes the listening socket immediately (`http.Server.Shutdown` inside the extension,
-without cancelling the connections already accepted), waits for the running
-handlers, and exits. Each step is logged, see [Logs](#logs).
+closes the listening socket immediately — the accept loop stops, the connections
+already accepted are not cancelled — waits for the running handlers, and exits. Each step is logged, see [Logs](#logs).
 
 Closing the socket first matters for `SO_REUSEPORT`: the terminating worker
 leaves the reuseport group, so the kernel routes new connections to its
@@ -558,10 +560,8 @@ yet answered in the narrow window between the signal and the socket close gets
 - On an idle server shutdown fires within ~250 ms — the `serve()` loop polls
   `waitAnyTimeoutBatch` at that interval and notices the signal without traffic.
 - The final response write is fire-and-forget: a handler finishes once its
-  response is handed to the connection's write loop, and `shutdownTimeoutMs`
-  bounds how long the shutdown then waits for the active connections to finish
-  writing. A client slower than that timeout on the very last response of a
-  shutdown gets it truncated; raise `shutdownTimeoutMs` if such clients matter.
+  response is handed to the connection's write loop, and the shutdown then waits
+  for the active connections to finish writing, with no deadline of its own.
 
 ## Internals
 
@@ -597,15 +597,16 @@ its own errors, which is what `HttpServer::handle` does by turning them into a
 Rust (`ext/src/features/httpserver/`): `mod.rs` serves both methods and
 holds the registries `pendingRequests`
 (`requestId → {command channel, abandoned signal}`) and `serverStates`
-(`flowKey → serverState`, for `StopAccepting`); `server.rs` is `serverState`, an
-`http.Handler` over `net/http.Server` handling the concurrency semaphore,
-handler timeout, 503/504 and graceful `Shutdown`; `listen.rs` is the TCP
-listener and `SO_REUSEPORT`.
+(`flowKey → serverState`, for `StopAccepting`); `server.rs` is the accept loop and
+the per-request service over `hyper`, handling the concurrency semaphore, the
+handler timeout, 503/504 and the graceful stop; `listen.rs` is the TCP listener
+and `SO_REUSEPORT`.
 
 The listener is a self-pumping stream: an extension-side runtime task publishes every
 accepted request as the next batch result (`HasNext=true`), so PHP pays no
 `next()` crossing per request. The throttling is layered — the shared results
-buffer, the requests channel, and beyond that `ServeHTTP` itself blocks. Each
+buffer, the requests channel, and beyond that the connection task waits on the
+send. Each
 request is handled in its own flow (the group of that request's tasks), so a
 handler's sub-tasks are isolated and stopping one request does not take down the
 server.
@@ -624,11 +625,11 @@ an `abandoned` error and unwinds cleanly instead of hanging.
 
 | What | Status | Comment |
 |---|---|---|
-| PHP-FPM / mod_php | ❌ no | CLI-only, long-lived; the extension holds the extension's runtime at process level. |
-| `pcntl_fork` after loading the extension | ❌ no | The extension's runtime does not survive a `fork`. |
+| PHP-FPM | ⚠️ not for this | The library runs there ([README](../README.md#use-and-limitations)), but a server listening on a port needs a long-lived process. |
+| `pcntl_fork` after loading the extension | ✅ yes | The child rebuilds the runtime on its next call; the parent is unaffected. |
 | A ZTS build of PHP | ❌ no | NTS only. |
-| TLS / HTTPS | ❌ not yet | Plain TCP; terminate TLS in front (nginx/HAProxy). |
-| HTTP/2, WebSocket | ❌ no | `net/http` without TLS is HTTP/1.1. WebSocket is a [separate server](websocket-server.md). |
+| TLS / HTTPS | ❌ no | Plain TCP; terminate TLS in front (nginx/HAProxy). |
+| HTTP/2, WebSocket | ❌ no | The server is built on HTTP/1.1 only. WebSocket is a [separate server](websocket-server.md). |
 | Multi-core parallelism in one process | ❌ no | One process = one PHP thread; scale with [`SO_REUSEPORT`](#scaling-across-cores-so_reuseport). |
 | CPU-bound handlers | ⚠️ limited | Neighbours' latency is bounded by [preemption](coroutine-switching.md); throughput comes from the per-core pool. |
 | Synchronous I/O in a handler | ⚠️ dangerous | Native `sleep`/PDO/`curl`/files freeze the loop. |

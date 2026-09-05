@@ -58,10 +58,10 @@ flowchart TB
 Besides the two general feature requirements (context cancellation and execution
 deadline), a server has its own:
 
-1. The server state's context = the server's lifetime. The context of the `Serve`
-   task is propagated into `http.Server.BaseContext`, so cancelling the flow or
-   `stopFlow` tears down the listener and all waiting connections. **No request may
-   outlive the server's stop.**
+1. The server state's cancellation token = the server's lifetime. The `Serve`
+   task's token is handed to the listener and to every connection task, so
+   cancelling the flow or `stopFlow` tears down the listener and all waiting
+   connections. **No request may outlive the server's stop.**
 2. A per-request limit, not only a per-server one. Each handler is bounded by
    `handlerTimeoutMs` inside the extension (a timer in a separate runtime task, firing
    independently of PHP): before the first write the client gets a `504`, after
@@ -222,10 +222,9 @@ map, so another server's `httpStopAccepting` cannot be reused (cf.
 - `ext/sconcur.stub.php` — the function declaration;
 - `src/Connection/Extension.php` — `use function` plus a PHP wrapper.
 
-`StopAccepting(flowKey)` finds the `serverState` and calls its
-`stopAccepting()`, which closes only the listener (`http.Server.Shutdown` in a
-separate runtime task on a background context) without cancelling the requests
-already accepted. In a `SO_REUSEPORT` pool the kernel immediately hands new
+`StopAccepting(flowKey)` finds the `serverState` and cancels its
+`stopAccepting` token, which ends the accept loop and nothing else — the requests
+already accepted are untouched. In a `SO_REUSEPORT` pool the kernel immediately hands new
 connections to siblings while this process finishes its own.
 
 This is a protocol change, so the extension-version rule applies (bump at most once
@@ -257,13 +256,14 @@ PHP side: `ServePayload` += `telemetrySocket`/`serverName`/`telemetryIntervalMs`
 `fromArgs()` calls `self::applyTelemetryEnvironment($overrides)`, which reads the
 env the master injects when telemetry is enabled.
 
-extension side: add a workload counter implementing `stats.WorkloadProvider`
-(`requestStats` for HTTP, `connectionStats` for socket) and increment it in the
-connection/request handler; thread the three telemetry fields through
-`serverConfig`; in `newServerState` create
-`pusher := stats.NewPusher(name, telemetrySocket, intervalMs, startTime, provider)`
-and `pusher.Start()`; call `pusher.Stop()` in `Close()` (safe on a disabled
-configuration).
+extension side: add a workload counter implementing `stats::WorkloadProvider`
+(`RequestStats` for HTTP, `ConnectionStats` for the socket and WebSocket pairs)
+and increment it in the connection/request handler; thread the three telemetry
+fields through the server config; build the pusher with
+`Pusher::start(name, telemetry_socket, interval_ms, start_time, provider)` and
+keep it in the server state. `Pusher::disabled()` covers a server started
+without a collector, and dropping the pusher stops its loop, so nothing has to
+be stopped by hand.
 
 ## Tests (mandatory)
 

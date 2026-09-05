@@ -276,19 +276,19 @@ driver still wins) is in the [benchmarks](benchmarks.md#mongodb).
 
 ## Internals
 
-- All operations are run by `go.mongodb.org/mongo-driver/v2` in a runtime task: the
-  blocking driver is used as-is, concurrency comes from the runtime.
-- Client pool (`ext/src/features/mongodb/clients.rs`) — a `mongodb::Client`
-  per key `uri + timeoutMs + serverSelectionTimeoutMs`, with refcounting and
-  eviction of idle clients (TTL 5 minutes, checked once a minute). A client with
-  operations still running is not disconnected.
-- Cursors (`states/find_state`, `states/aggregation_state`) — the extension holds the cursor
+- All operations are run by the Rust `mongodb` driver in a runtime task; the
+  driver is async, so the concurrency is the runtime's.
+- Client registry (`ext/src/features/mongodb/clients.rs`) — one `mongodb::Client`
+  per key `uri + serverSelectionTimeoutMs`, shared by every task that names it.
+  The driver's own `Client` is already a pooled handle, so this layer only keeps
+  two tasks from building two topologies for the same URI. A client lives until
+  the extension is released; there is no idle eviction.
+- Cursors (`ext/src/features/mongodb/states.rs`) — the extension holds the cursor
   as state and hands out batches on a `next` request; it is closed on exhaustion,
-  early exit, or a flow stop. Closing runs on a fresh context, because the task
-  context may already be cancelled by then.
+  early exit, or a flow stop.
 - Documents are converted between BSON and MessagePack exactly once per message,
-  at the outer boundary (`payloads.UnmarshalParams` on the way in, the result
-  marshalling on the way out). Everything inside — filters, updates, pipeline
+  at the outer boundary (`payloads::decode_params` on the way in, the result
+  encoding on the way out). Everything inside — filters, updates, pipeline
   stages, the bulkWrite walk, the option parsers — reads plain BSON, so a new
   command needs no conversion code of its own. See
   [Objects over MessagePack](msgpack-objects.md).

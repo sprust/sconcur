@@ -4,7 +4,7 @@ English | [Русский](http-client.ru.md)
 
 An asynchronous PSR-18 HTTP client. All network I/O (DNS, connection, TLS,
 sending the request, reading the response) lives in the extension on top of
-`net/http.Client`: the request goes into a runtime task, the coroutine suspends,
+`reqwest`: the request goes into a runtime task, the coroutine suspends,
 and dozens of requests can be in progress at once. Outside a `WaitGroup` the
 same API works synchronously.
 
@@ -60,7 +60,7 @@ sequenceDiagram
 `sendRequest()` inside a coroutine suspends it without blocking other requests;
 outside a Fiber it works synchronously (`Extension::wait`). An unfinished response
 (an early `break`, object destruction) is cleaned up by the streaming-state
-machinery: context cancellation → `Close()` → `resp.Body.Close`.
+machinery: the state is closed and the response body stream dropped with it.
 
 ## Running requests concurrently
 
@@ -126,9 +126,9 @@ $response = $client->sendRequest(
 );
 ```
 
-> With `streamRequestBody: true` redirects are not followed (the body is an
-> `io.Pipe` without `GetBody`, so it cannot be replayed on a 3xx): a redirect
-> response is returned as-is. For requests with redirects use the buffered mode.
+> With `streamRequestBody: true` redirects are not followed — a streamed body is
+> read once and cannot be replayed on a 3xx, so the redirect response is returned
+> as-is. For requests with redirects use the buffered mode.
 
 ## Options and timeouts
 
@@ -138,17 +138,17 @@ the PHP defaults mirror the transport's.
 | Option | Default | Purpose |
 |---|---|---|
 | `requestTimeoutMs` | `30000` | Full request deadline (connect + send + reading the whole body), a hard context limit inside the extension. `0` — off (not recommended). |
-| `connectTimeoutMs` | `10000` | TCP/TLS connection establishment limit (`net.Dialer.Timeout`). |
+| `connectTimeoutMs` | `10000` | Connection establishment limit, TLS handshake included. |
 | `responseHeaderTimeoutMs` | `15000` | Limit waiting for status + headers. |
 | `maxResponseBody` | `0` (unlimited) | Response body cap in bytes; exceeding it → stream read error. **Warning:** `0` is unlimited — watch for OOM. |
 | `followRedirects` | `true` | Whether to follow 3xx redirects. |
 | `maxRedirects` | `10` | Redirect hop limit. |
 | `chunkSize` | `65536` | Granularity of reading the response body and sending the request body. |
 | `verifyTls` | `true` | Whether to verify TLS certificates. |
-| `maxIdleConns` | `100` | Total idle keep-alive connections in the pool. |
+| `maxIdleConns` | `100` | Accepted and not applied: the pool is sized per host, so a process-wide total has nothing to set. `maxIdleConnsPerHost` is what takes effect. |
 | `maxIdleConnsPerHost` | `16` | Idle keep-alive connections per host. |
 | `idleConnTimeoutMs` | `90000` | How long an idle keep-alive connection is kept. |
-| `tlsHandshakeTimeoutMs` | `10000` | TLS handshake limit. |
+| `tlsHandshakeTimeoutMs` | `10000` | Accepted and not applied: there is no separate handshake limit, `connectTimeoutMs` bounds the handshake with the connection. |
 | `streamRequestBody` | `false` | Stream the request body in chunks instead of buffering it whole. |
 | `throwOnToStringError` | `true` | Whether `ResponseBodyStream::__toString()` may throw on a read error. PSR-7 forbids throwing from `__toString`; when `false` the error becomes an `E_USER_WARNING` and an empty string. |
 
@@ -161,17 +161,19 @@ $client = new HttpClient($factory, new HttpClientOptions(
 ));
 ```
 
-Connection pool / keep-alive: the extension keeps reusable `reqwest::Client`s, one per
-distinct set of transport options (`connectTimeout`/`responseHeaderTimeout`/
-`verifyTls` plus the pool parameters), so keep-alive works between requests within
-the process. Idle connections are released in `features.Shutdown()`.
+Connection pool / keep-alive: the extension keeps reusable `reqwest::Client`s, one
+per distinct set of transport options (redirects, `connectTimeoutMs`, `verifyTls`
+and the pool parameters), so keep-alive works between requests within the
+process. Releasing the extension drops the clients and with them the idle
+connections.
 
 ## Downloading to a file
 
-`download()` writes the response body straight into a file inside the extension
-(`io.CopyBuffer` inside the extension) — the bytes never cross into PHP. Memory
-is constant for any size, there are no per-chunk round-trips, and inside a
-`WaitGroup` several downloads run at the same time.
+`download()` writes the response body straight into a file inside the extension —
+the bytes never cross into PHP. The body is consumed as a stream of chunks and
+each is written as it arrives, so memory is constant for any size, there are no
+per-chunk round-trips, and inside a `WaitGroup` several downloads run at the same
+time.
 
 ```php
 use SConcur\Features\HttpClient\DownloadFileMode;
@@ -180,19 +182,21 @@ $result = $httpClient->download(
     request: $factory->createRequest('GET', 'https://example.com/big.iso'),
     path: '/var/data/big.iso',
     mode: DownloadFileMode::Replace,   // default
-    bufferSizeBytes: 1 << 20,          // opt., default 64 KiB — the io.CopyBuffer buffer
+    bufferSizeBytes: 1 << 20,          // opt., accepted and not applied — see below
     perm: 0644,                        // opt., create permissions
 );
 
 $result->statusCode;          // always 2xx (otherwise an exception)
 $result->headers;             // response headers as the server returned them
-$result->filesizeBytes;       // exact bytes written, measured by io.CopyBuffer
+$result->filesizeBytes;       // exact bytes written, counted as they are written
 $result->executionMs;         // download time
 ```
 
-Modes: `Replace` — create or overwrite (`O_CREATE|O_TRUNC`); `Create` — create,
-error if the file exists (`O_CREATE|O_EXCL`); `Append` — create or append
-(`O_CREATE|O_APPEND`).
+Modes: `Replace` — create or truncate; `Create` — create, error if the file
+exists; `Append` — create or append.
+
+`bufferSizeBytes` is accepted and not applied: the body arrives as buffers the
+transport has already sized, so there is no buffer here to size.
 
 The file is written only on 2xx. A non-2xx, transport or file error →
 `SConcur\Exceptions\HttpClient\DownloadException` (`getStatusCode()` carries the
@@ -236,20 +240,24 @@ Alongside it: `HttpClientOptions`, `DownloadFileMode`, `HttpClientCommandEnum` (
 envelope's sub-operations `Request`/`UploadChunk`/`UploadEnd`), `Payloads/*`
 (mirrors of the extension's structs), `Dto/ResponseBodyStream` and `Dto/DownloadResult`.
 
-Rust (`ext/src/features/httpclient/`): `mod.rs` builds the request,
-applies `context.WithTimeout`, starts the state and routes the commands;
-`response_state.rs` is the streaming state (the first `Next()` runs the request and
-returns metadata plus first chunk, the rest are raw body chunks, `Close()` closes
-the response body stream) and also holds the `maxResponseBody` limit; `client.rs` is the
-registry of reusable `reqwest::Client`s; `download` and `upload` command handlers are the file
-sink and the request-body pipe. The shared helper `ext/src/helpers.rs`
+Rust (`ext/src/features/httpclient/`): `mod.rs` builds the request, applies the
+request deadline, starts the state and routes the commands; `response_state.rs`
+is the streaming state (the first step runs the request and returns metadata plus
+the first chunk, the rest are raw body chunks, closing it drops the response body
+stream) and also holds the `maxResponseBody` limit; `client.rs` is the registry
+of reusable `reqwest::Client`s; the `download` and `upload` command handlers are
+the file sink and the request-body pipe. The shared helper `ext/src/helpers/`
 slices bodies for both the server and the client.
 
-## Not in v1
+## Limitations
 
-HTTP/2 and h2c (`net/http` HTTP/1.1 for now), a cookie jar (application side or
-PSR-7 middleware), proxy and a custom CA bundle (later, via options), PSR-18 async
-(`sendAsyncRequest`) — concurrency goes through `WaitGroup`, not promises.
+HTTP/2 is negotiated over TLS when the server offers it; over plain HTTP the
+connection is HTTP/1.1 and there is no prior-knowledge h2c. The protocol version
+is not surfaced to PHP.
+
+Not supported: a cookie jar (do it application-side or in PSR-7 middleware), a
+proxy and a custom CA bundle, and PSR-18 async (`sendAsyncRequest`) — concurrency
+goes through `WaitGroup`, not promises.
 
 ## Testing
 

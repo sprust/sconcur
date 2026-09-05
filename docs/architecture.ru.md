@@ -69,10 +69,10 @@ sequenceDiagram
     Note over EXT: результаты идут в общий ограниченный канал results
 
     WG->>S: iterate() → Scheduler::run()
-    S->>EXT: waitAny()
+    S->>EXT: waitAnyBatch()
     EXT-->>S: resultB — первый готовый
     S->>WG: resume(fiberB) → yield keyB
-    S->>EXT: waitAny()
+    S->>EXT: waitAnyBatch()
     EXT-->>S: resultA — sleep завершился
     S->>WG: resume(fiberA) → yield keyA
 
@@ -96,7 +96,7 @@ flowchart TB
         F["Features: Sleeper, Mongodb Collection, …"]
         FE[FeatureExecutor]
         EXT["Connection\Extension"]
-        SCH["Scheduler (цикл waitAny + resume)"]
+        SCH["Scheduler (цикл waitAnyBatch + resume)"]
         ST["State (реестр Fiber ↔ flow)"]
 
         WG -->|"тело корутины вызывает фичу"| F
@@ -107,7 +107,7 @@ flowchart TB
         SCH -.->|"освобождает flow файбера по завершении"| ST
     end
 
-    EXT <-->|"граница + msgpack: push / waitAny / next ↔ результат"| LIB
+    EXT <-->|"граница + msgpack: push / waitAnyBatch / next ↔ результат"| LIB
 
     subgraph EXTENSION["Расширение (ext/)"]
         direction TB
@@ -132,7 +132,7 @@ flowchart TB
   мере готовности. `create(maxConcurrency: N)` ограничивает число одновременно
   живых корутин (0 = без лимита, дефолт); лишние `add()` ждут в очереди.
 - `Scheduler` (`src/Scheduler/`) — процессный синглтон: реестр корутин
-  (`Coroutine`), один цикл `waitAny`, возобновление по id владельца из
+  (`Coroutine`), один цикл `waitAnyBatch`, возобновление по id владельца из
   результата, пробуждение
   ждущих вложенную группу (`awaitGroup`), отправка отложенных задач в расширение
   (`dispatchPendingTask`). Spawned-корутины (`spawn` — по одной на запрос
@@ -147,7 +147,7 @@ flowchart TB
   задачу той стороне, которая отправит её через границу. На async-пути сам границу
   не пересекает.
 - `Connection\Extension` — синглтон над экспортированными C-функциями расширения
-  (`push`, `waitAny`, `wait`, `next`, `stopFlow`, `destroy` и др.).
+  (`push`, `waitAnyBatch`, `wait`, `next`, `stopFlow`, `destroy` и др.).
 - Расширение: `Handler → Flows → Flow → Task`. Каждая задача исполняется на
   рантайме; результаты всех флоу идут в один общий ограниченный канал, откуда
   `Handler::wait_any()` отдаёт первый готовый (`wait(flow_key)` остаётся для

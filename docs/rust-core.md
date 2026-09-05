@@ -89,9 +89,8 @@ put "CLI only, no `pcntl_fork`" in the README.
 
 The Rust core starts its runtime lazily and rebuilds it in a child through a
 `pthread_atfork` handler, at the cost of one relaxed atomic on the hot path. A
-check counts only if a fan-out of 12 coroutines of 100 ms each really ran
-concurrently, so a worker that quietly fell back to running them one after
-another fails it.
+check counts only if 12 coroutines of 100 ms each really ran at the same time,
+so a worker that quietly fell back to running them one after another fails it.
 
 | Scenario | Go | Rust |
 | --- | --- | --- |

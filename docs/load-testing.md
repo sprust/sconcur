@@ -88,33 +88,24 @@ PIN_SERVERS=group ROUTE=/ tests/benchmarks/http/load-stats.sh
 ### What was measured, and why the library has no pinning option
 
 The empty endpoint, 12 workers, the same `cpu0-11` budget in every arm, `wrk` on
-12-19, three interleaved rounds of 20 s:
-
-| placement | rps per round | median |
-|---|---|---:|
-| `1` — one logical CPU each | 121 446 / 125 284 / 123 185 | 123 185 |
-| `physical` — a sibling pair each | 123 055 / 120 984 / 115 566 | 120 984 |
-| `group` — the scheduler places them | 151 761 / 146 644 / 147 654 | **147 654** |
-
-`physical` does not differ from `1` — the ranges overlap and its median is
-slightly lower. `group` beats both by 19.9%, and its range does not overlap
-theirs at all (its worst round, 146 644, is above their best, 125 284).
-
-Re-measured on 2026-09-05, on the Rust core and against the tighter arms the
-benchmark tables now use (median of three, `1` against `group` only):
+12-19, median of three interleaved rounds of 20 s:
 
 | placement | rps | p50 | p90 | p99 |
 |---|---:|---:|---:|---:|
 | `1` — one logical CPU each | 154 432 | 0.62 ms | 202 ms | 334 ms |
 | `group` — the scheduler places them | **194 338** | 0.94 ms | 73 ms | 263 ms |
 
-The gap grew to 26%, and the tail moved with it: pinning costs nearly three times
-the p90. So the gap is not a detail of naive pinning that a smarter placement
-would fix. It comes from pinning as such. The explanation that fits every
-measurement: each worker has two threads — PHP and a runtime thread — so twelve
-workers put about twenty-four runnable threads on twelve logical CPUs. A static
-placement cannot rebalance uneven load, and the scheduler can: a pinned idle
-worker has no way to lend its core to a busy neighbour.
+`group` is 26% ahead, and the tail moves with it: pinning costs nearly three
+times the p90. `physical` lands on `1` rather than between the two — in an arm
+of its own it holds 120 984 rps against 123 185 for `1`, the two ranges
+overlapping.
+
+The gap is not a detail of naive pinning that a smarter placement would fix; it
+comes from pinning as such. The explanation that fits every measurement: each
+worker has two threads — PHP and a runtime thread — so twelve workers put about
+twenty-four runnable threads on twelve logical CPUs. A static placement cannot
+rebalance uneven load, and the scheduler can: a pinned idle worker has no way to
+lend its core to a busy neighbour.
 
 That is why there is no `cpuAffinity` setting. Shipping a knob that, on an equal
 core budget, enables something a quarter slower is not a choice. The current
@@ -140,12 +131,12 @@ unpinned:            nproc → 16
 under taskset -c 3:  nproc → 1
 ```
 
-The extension sizes its runtime from that number. Under the harness it was told
-"one" and built one thread; in production, where nothing pins, it was told
-"sixteen" and each of twelve processes built sixteen. The number was right in
-every measurement and wrong in every deployment, and nothing in the numbers could
-show it. It now uses one thread regardless, and `SCONCUR_RUNTIME_THREADS` raises
-it for a process that wants the extension on more than one core.
+Sizing the runtime from that number would give one thread under the harness and
+sixteen in production, where nothing pins — right in every measurement and wrong
+in every deployment, with nothing in the numbers to show it. So the extension
+builds one runtime thread regardless of the core count, and
+`SCONCUR_RUNTIME_THREADS` raises it for a process that wants the extension on
+more than one core.
 
 The wider consequence: every figure in [benchmarks](benchmarks.md) is taken with
 pinning, and production does not pin. For comparing stacks against each other that
