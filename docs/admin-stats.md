@@ -31,6 +31,12 @@ and sends its snapshot there once a second as a length-prefix frame. The master 
 the sole consumer: it holds the last snapshot of each worker in memory (keyed by
 connection) and serves the pool sum on a separate port.
 
+A worker holds exactly one connection whatever mix it runs. A process that serves
+WebSocket connections and consumes a queue at the same time reports both sections in
+one snapshot rather than dialing twice — the collector reads a connection as a
+worker, so a second connection would show the same pid as two workers with two
+different start times.
+
 Push is best-effort — with no collector (master not up or restarting) the worker
 drops the frame and keeps serving traffic. Closing the connection means the worker
 is gone, so the master removes it from the live pool immediately: no files, no
@@ -292,7 +298,9 @@ third-party supervisor too:
 - body: UTF-8 JSON, envelope `{"t":"snapshot","s":<snapshot>}`; the snapshot schema
   is the [metrics](#metrics) table;
 - semantics: best-effort, at-most-once, no ack; the collector holds last-value per
-  connection, and closing the connection means the worker is gone.
+  connection, and closing the connection means the worker is gone;
+- one connection per worker process: a snapshot carries every section that process
+  has, and the same pid never arrives on two connections.
 
 ## Limits
 

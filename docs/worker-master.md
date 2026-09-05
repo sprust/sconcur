@@ -13,6 +13,11 @@ loading the extension is forbidden — the extension's runtime does not survive 
 master itself does not load the extension: it is a pure supervisor on
 `pcntl`/`posix` (both are required, otherwise it throws `MissingPcntlException`).
 
+A worker gets its stdin/stdout/stderr and nothing else: `proc_open` would otherwise
+leave every descriptor the master holds open in the child — the telemetry sockets,
+the panel's connections, the lock and the log — so the spawn points all of them at
+`/dev/null` instead.
+
 ## Table of contents
 
 - [Quick start](#quick-start)

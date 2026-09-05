@@ -2,7 +2,7 @@
     "name": "sconcur/sconcur",
     "description": "PHP concurrency library backed by an extension written in Rust",
     "license": "MIT",
-    "version": "0.12.1",
+    "version": "0.12.2",
     "authors": [
         {
             "name": "Pavel",

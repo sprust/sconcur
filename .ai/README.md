@@ -264,7 +264,11 @@ The core (`ext/src/`), module by module:
   whose channels the extension owns)
 - `stats/` — neutral worker-side telemetry shared by the servers: process metrics
   plus `Pusher`, which samples a `Snapshot` and pushes it best-effort as a
-  length-prefixed JSON frame over the collector's unix socket
+  length-prefixed JSON frame over the collector's unix socket. One loop and one
+  connection per process, not per server: every `WorkloadProvider` registers into a
+  process-wide registry and the loop merges their sections into one snapshot, because
+  the collector keys its store by connection — a worker that both serves and consumes
+  dialing twice is counted as two workers
 - `socket/`, `ws/` — neutral shared plumbing for the raw TCP and WebSocket pairs
   (frame codec, inbound message stream, write loop with backpressure); each pair
   uses the shared module, not each other

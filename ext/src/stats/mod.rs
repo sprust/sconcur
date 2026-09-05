@@ -14,11 +14,20 @@
 //!
 //! The process metrics (memory, CPU, uptime) are universal; the workload section
 //! is feature-specific and supplied through a `WorkloadProvider` — HTTP fills
-//! `requests`, the two connection servers fill `connections`.
+//! `requests`, the two connection servers fill `connections`, the queue consumer
+//! fills `consumers`.
+//!
+//! There is exactly one push loop, and one collector connection, per process. The
+//! collector reads a connection as a worker — it keys its store by connection and
+//! evicts on close — so a worker that both serves and consumes must not dial twice,
+//! or it is counted as two workers with two different start times. Every
+//! `WorkloadProvider` of the process registers into one registry instead, and the
+//! loop merges their sections into the single snapshot the `Snapshot` struct was
+//! always shaped to carry.
 
 pub mod metrics;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -107,6 +116,91 @@ pub struct Workload {
     pub consumers: Option<Consumers>,
 }
 
+impl Workload {
+    /// Folds another provider's sections into these. A section nobody reported
+    /// stays absent; one reported twice — a process running two servers of the
+    /// same kind — is summed, with the averages weighted by the denominator each
+    /// side divided by, the same rule the collector's aggregator applies across
+    /// workers.
+    fn merge(&mut self, other: Workload) {
+        merge_requests(&mut self.requests, other.requests);
+        merge_connections(&mut self.connections, other.connections);
+        merge_consumers(&mut self.consumers, other.consumers);
+    }
+}
+
+fn merge_requests(into: &mut Option<Requests>, other: Option<Requests>) {
+    let Some(other) = other else {
+        return;
+    };
+
+    let Some(current) = into else {
+        *into = Some(other);
+
+        return;
+    };
+
+    let completed = current.completed + other.completed;
+
+    current.avg_ms = if completed > 0 {
+        (current.avg_ms * current.completed as f64 + other.avg_ms * other.completed as f64)
+            / completed as f64
+    } else {
+        0.0
+    };
+
+    current.completed = completed;
+    current.in_flight += other.in_flight;
+    current.in_flight_1_to_5s += other.in_flight_1_to_5s;
+    current.in_flight_5_to_15s += other.in_flight_5_to_15s;
+    current.in_flight_over_15s += other.in_flight_over_15s;
+}
+
+fn merge_connections(into: &mut Option<Connections>, other: Option<Connections>) {
+    let Some(other) = other else {
+        return;
+    };
+
+    let Some(current) = into else {
+        *into = Some(other);
+
+        return;
+    };
+
+    current.active += other.active;
+    current.total_accepted += other.total_accepted;
+}
+
+fn merge_consumers(into: &mut Option<Consumers>, other: Option<Consumers>) {
+    let Some(other) = other else {
+        return;
+    };
+
+    let Some(current) = into else {
+        *into = Some(other);
+
+        return;
+    };
+
+    let timed = current.timed + other.timed;
+
+    current.avg_ms = if timed > 0 {
+        (current.avg_ms * current.timed as f64 + other.avg_ms * other.timed as f64) / timed as f64
+    } else {
+        0.0
+    };
+
+    current.timed = timed;
+    current.coroutines += other.coroutines;
+    current.delivered += other.delivered;
+    current.acked += other.acked;
+    current.refused += other.refused;
+    current.in_flight += other.in_flight;
+    current.in_flight_1_to_5s += other.in_flight_1_to_5s;
+    current.in_flight_5_to_15s += other.in_flight_5_to_15s;
+    current.in_flight_over_15s += other.in_flight_over_15s;
+}
+
 /// Yields the current feature-specific counters at snapshot time.
 pub trait WorkloadProvider: Send + Sync {
     fn workload_snapshot(&self) -> Workload;
@@ -149,17 +243,37 @@ struct SnapshotFrame<'a> {
     s: Snapshot,
 }
 
-/// Samples one worker's snapshot and pushes it, framed, to the collector's unix
-/// socket.
+/// The `WorkloadProvider`s registered in this process, and the one push loop that
+/// reads them.
 ///
-/// One task on the shared runtime, driven by a ticker; it costs no thread.
+/// A process gets a single loop and therefore a single collector connection: the
+/// collector counts connections, not pids. The first registration decides where
+/// to push, under which name and how often, and fixes the start the snapshots
+/// report — every provider here belongs to the same worker, and its telemetry
+/// settings come from the same environment the master injected.
+struct Registry {
+    providers: Vec<(u64, Arc<dyn WorkloadProvider>)>,
+    next_id: u64,
+    /// Cancels the push loop; `None` while no provider is registered.
+    loop_stop: Option<CancellationToken>,
+}
+
+static REGISTRY: Mutex<Registry> = Mutex::new(Registry {
+    providers: Vec::new(),
+    next_id: 0,
+    loop_stop: None,
+});
+
+/// A registration in the process-wide push loop.
 ///
-/// There is no `stop()`: dropping the pusher ends the loop, and the pusher is
-/// owned by the server's registry entry, so it stops exactly when the server
-/// does. An explicit `stop()` would need guarding against a second call, which
-/// ownership makes unnecessary here.
+/// There is no `stop()`: dropping the pusher unregisters its provider, and the
+/// last one out cancels the loop. The pusher is owned by the server's registry
+/// entry, so it goes exactly when the server does. An explicit `stop()` would
+/// need guarding against a second call, which ownership makes unnecessary here.
 pub struct Pusher {
-    stop: CancellationToken,
+    /// The registration to withdraw on drop; `None` for a pusher that registered
+    /// nothing (push is off).
+    id: Option<u64>,
 }
 
 impl Pusher {
@@ -167,16 +281,16 @@ impl Pusher {
     /// It exists so a server state holds a `Pusher` either way and nothing has to
     /// branch on an Option to stop one.
     pub fn disabled() -> Self {
-        Pusher {
-            stop: CancellationToken::new(),
-        }
+        Pusher { id: None }
     }
 
-    /// Starts the push loop for one server. `name` labels the snapshot (pool
-    /// scope), `socket_path` is the collector's unix socket, `interval_ms` the
-    /// cadence (0 = default), `provider` supplies the workload section.
+    /// Registers one server's or consumer's counters with the process push loop,
+    /// starting the loop if this is the first registration. `name` labels the
+    /// snapshot (pool scope), `socket_path` is the collector's unix socket,
+    /// `interval_ms` the cadence (0 = default), `start_time` the moment this
+    /// worker began working.
     ///
-    /// A pusher with no socket path does nothing: push is off, which is the
+    /// A pusher with no socket path registers nothing: push is off, which is the
     /// ordinary case for a server started outside a master.
     pub fn start(
         name: String,
@@ -185,48 +299,83 @@ impl Pusher {
         start_time: Instant,
         provider: Arc<dyn WorkloadProvider>,
     ) -> Self {
-        let stop = CancellationToken::new();
-
         if socket_path.is_empty() {
-            return Pusher { stop };
+            return Pusher { id: None };
         }
 
-        let runtime = crate::core::get().runtime();
+        let mut registry = REGISTRY.lock().unwrap();
 
-        let interval = Duration::from_millis(if interval_ms > 0 {
-            interval_ms as u64
-        } else {
-            DEFAULT_INTERVAL_MS
-        });
+        let id = registry.next_id;
 
-        // The wall-clock stamp of the serve-loop start is derived once, by taking
-        // the monotonic start's distance from now: `Instant` cannot be turned into
-        // an epoch time, and the loop must report the same value every tick.
-        let started_at_ms = epoch_millis() - start_time.elapsed().as_millis() as i64;
+        registry.next_id += 1;
+        registry.providers.push((id, provider));
 
-        let loop_stop = stop.clone();
+        if registry.loop_stop.is_none() {
+            let stop = CancellationToken::new();
 
-        runtime.spawn(async move {
-            run(
-                name,
-                socket_path,
-                interval,
-                start_time,
-                started_at_ms,
-                provider,
-                loop_stop,
-            )
-            .await;
-        });
+            registry.loop_stop = Some(stop.clone());
 
-        Pusher { stop }
+            let interval = Duration::from_millis(if interval_ms > 0 {
+                interval_ms as u64
+            } else {
+                DEFAULT_INTERVAL_MS
+            });
+
+            // The wall-clock stamp of the start is derived once, by taking the
+            // monotonic start's distance from now: `Instant` cannot be turned into
+            // an epoch time, and the loop must report the same value every tick.
+            let started_at_ms = epoch_millis() - start_time.elapsed().as_millis() as i64;
+
+            crate::core::get().runtime().spawn(async move {
+                run(name, socket_path, interval, start_time, started_at_ms, stop).await;
+            });
+        }
+
+        Pusher { id: Some(id) }
     }
 }
 
 impl Drop for Pusher {
     fn drop(&mut self) {
-        self.stop.cancel();
+        let Some(id) = self.id else {
+            return;
+        };
+
+        let mut registry = REGISTRY.lock().unwrap();
+
+        registry.providers.retain(|(other, _)| *other != id);
+
+        if registry.providers.is_empty() {
+            // Nothing left to report: end the loop, which closes the connection —
+            // and that is how the collector learns this worker is gone.
+            if let Some(stop) = registry.loop_stop.take() {
+                stop.cancel();
+            }
+        }
     }
+}
+
+/// The sections of every provider registered right now, merged into one.
+///
+/// The registry lock is released before any provider is asked: a provider takes a
+/// lock of its own, and holding both would order two unrelated locks against each
+/// other for no reason.
+fn collect_workload() -> Workload {
+    let providers: Vec<Arc<dyn WorkloadProvider>> = REGISTRY
+        .lock()
+        .unwrap()
+        .providers
+        .iter()
+        .map(|(_, provider)| provider.clone())
+        .collect();
+
+    let mut merged = Workload::default();
+
+    for provider in providers {
+        merged.merge(provider.workload_snapshot());
+    }
+
+    merged
 }
 
 async fn run(
@@ -235,7 +384,6 @@ async fn run(
     interval: Duration,
     start_time: Instant,
     started_at_ms: i64,
-    provider: Arc<dyn WorkloadProvider>,
     stop: CancellationToken,
 ) {
     let mut cpu = metrics::CpuSampler::new();
@@ -245,10 +393,7 @@ async fn run(
     // ticker waits out a period. A snapshot pushed before the server has served
     // anything is not wrong, but the cadence would be off by one for the life of
     // the worker.
-    let mut ticker = tokio::time::interval_at(
-        tokio::time::Instant::now() + interval,
-        interval,
-    );
+    let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
 
     loop {
         tokio::select! {
@@ -261,7 +406,6 @@ async fn run(
             &socket_path,
             start_time,
             started_at_ms,
-            provider.as_ref(),
             &mut cpu,
             &mut connection,
         )
@@ -277,7 +421,6 @@ async fn push_once(
     socket_path: &str,
     start_time: Instant,
     started_at_ms: i64,
-    provider: &dyn WorkloadProvider,
     cpu: &mut metrics::CpuSampler,
     connection: &mut Option<UnixStream>,
 ) {
@@ -290,7 +433,7 @@ async fn push_once(
         }
     }
 
-    let workload = provider.workload_snapshot();
+    let workload = collect_workload();
     let now = Instant::now();
 
     let snapshot = Snapshot {
@@ -390,5 +533,137 @@ impl Drop for ConnectionGuard {
         self.stats
             .active
             .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The case that made a worker count twice: one process serving WebSocket
+    /// connections and consuming a queue reports both sections in one snapshot,
+    /// instead of dialing the collector once per feature.
+    #[test]
+    fn merges_disjoint_sections_of_one_process() {
+        let mut merged = Workload {
+            connections: Some(Connections {
+                active: 1,
+                total_accepted: 7,
+            }),
+            ..Workload::default()
+        };
+
+        merged.merge(Workload {
+            consumers: Some(Consumers {
+                delivered: 20,
+                acked: 20,
+                ..Consumers::default()
+            }),
+            ..Workload::default()
+        });
+
+        let connections = merged.connections.expect("connections kept");
+
+        assert_eq!(1, connections.active);
+        assert_eq!(7, connections.total_accepted);
+
+        let consumers = merged.consumers.expect("consumers added");
+
+        assert_eq!(20, consumers.delivered);
+        assert_eq!(20, consumers.acked);
+
+        assert!(merged.requests.is_none());
+    }
+
+    /// A section nobody reported stays absent, so a snapshot never claims a
+    /// workload the process does not have.
+    #[test]
+    fn keeps_an_unreported_section_absent() {
+        let mut merged = Workload::default();
+
+        merged.merge(Workload::default());
+
+        assert!(merged.requests.is_none());
+        assert!(merged.connections.is_none());
+        assert!(merged.consumers.is_none());
+    }
+
+    /// Two servers of the same kind in one process sum, and the average follows
+    /// the count each side divided by rather than the plain mean of the two.
+    #[test]
+    fn weights_the_request_average_by_completed() {
+        let mut merged = Workload {
+            requests: Some(Requests {
+                completed: 10,
+                avg_ms: 1.0,
+                in_flight: 2,
+                ..Requests::default()
+            }),
+            ..Workload::default()
+        };
+
+        merged.merge(Workload {
+            requests: Some(Requests {
+                completed: 30,
+                avg_ms: 5.0,
+                in_flight: 1,
+                ..Requests::default()
+            }),
+            ..Workload::default()
+        });
+
+        let requests = merged.requests.expect("requests merged");
+
+        assert_eq!(40, requests.completed);
+        assert_eq!(3, requests.in_flight);
+        assert!((requests.avg_ms - 4.0).abs() < f64::EPSILON);
+    }
+
+    /// The consumer average is weighted by the deliveries each side actually
+    /// timed — the denominator it divided by.
+    #[test]
+    fn weights_the_consumer_average_by_timed() {
+        let mut merged = Workload {
+            consumers: Some(Consumers {
+                timed: 1,
+                avg_ms: 10.0,
+                coroutines: 2,
+                ..Consumers::default()
+            }),
+            ..Workload::default()
+        };
+
+        merged.merge(Workload {
+            consumers: Some(Consumers {
+                timed: 3,
+                avg_ms: 2.0,
+                coroutines: 4,
+                ..Consumers::default()
+            }),
+            ..Workload::default()
+        });
+
+        let consumers = merged.consumers.expect("consumers merged");
+
+        assert_eq!(4, consumers.timed);
+        assert_eq!(6, consumers.coroutines);
+        assert!((consumers.avg_ms - 4.0).abs() < f64::EPSILON);
+    }
+
+    /// Nothing settled anywhere: the average has no denominator and must not
+    /// come out as a division by zero.
+    #[test]
+    fn leaves_the_average_at_zero_without_a_denominator() {
+        let mut merged = Workload {
+            requests: Some(Requests::default()),
+            ..Workload::default()
+        };
+
+        merged.merge(Workload {
+            requests: Some(Requests::default()),
+            ..Workload::default()
+        });
+
+        assert_eq!(0.0, merged.requests.expect("requests merged").avg_ms);
     }
 }

@@ -13,6 +13,10 @@ use SConcur\Exceptions\Worker\WorkerSpawnException;
  * and signals reach it directly — there is no intermediate `sh -c` to absorb them.
  * stdout/stderr are kept as non-blocking pipes; the master drains them line-by-line
  * (drainOutput) into its log, so a worker crash's output is preserved in one place.
+ *
+ * Everything above stderr is shut out of the worker (see inheritedDescriptorGuard):
+ * proc_open hands the child every other descriptor the master holds, and none of them
+ * are the worker's business.
  */
 class WorkerProcess
 {
@@ -59,7 +63,7 @@ class WorkerProcess
             0 => ['pipe', 'r'],
             1 => ['pipe', 'w'],
             2 => ['pipe', 'w'],
-        ];
+        ] + self::inheritedDescriptorGuard();
 
         $pipes = [];
 
@@ -226,6 +230,52 @@ class WorkerProcess
         if (is_resource($this->process)) {
             @proc_close($this->process);
         }
+    }
+
+    /**
+     * A descriptor spec that points every descriptor above stderr at /dev/null in the
+     * child, so the worker inherits none of the master's own.
+     *
+     * proc_open only rewires the descriptors it is given and leaves the rest open in the
+     * child. The master holds the telemetry collector's unix listener and one accepted
+     * socket per live worker, the panel's listener and its open browser connections, its
+     * lock, state and log files, and the pipes of every other worker — a worker spawned
+     * later got a copy of all of them, kept them for its whole life and could hold a lock
+     * or a connection open long after the master let go of it. PHP cannot set FD_CLOEXEC
+     * on a stream, and pcntl_fork is out (the extension does not survive one), so the
+     * spawn itself is where this is closed.
+     *
+     * Reads /proc, which is where this library already runs; without it the guard is
+     * empty and the spawn behaves as it did before.
+     *
+     * @return array<int, array{0: string, 1: string, 2: string}>
+     */
+    protected static function inheritedDescriptorGuard(): array
+    {
+        $entries = @scandir('/proc/self/fd');
+
+        if ($entries === false) {
+            return [];
+        }
+
+        $guard = [];
+
+        foreach ($entries as $entry) {
+            if (!ctype_digit($entry)) {
+                continue;
+            }
+
+            $descriptor = (int) $entry;
+
+            // 0/1/2 are the worker's own pipes, spelled out by the caller.
+            if ($descriptor < 3) {
+                continue;
+            }
+
+            $guard[$descriptor] = ['file', '/dev/null', 'r'];
+        }
+
+        return $guard;
     }
 
     /**

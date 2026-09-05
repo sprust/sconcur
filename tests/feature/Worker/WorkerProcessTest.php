@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Worker;
 
 use PHPUnit\Framework\TestCase;
+use SConcur\Worker\WorkerOutputLine;
 use SConcur\Worker\WorkerProcess;
 
 /**
@@ -158,6 +159,64 @@ class WorkerProcessTest extends TestCase
             self::assertContains('end', $stdoutLines, 'the trailing real line still surfaces');
         } finally {
             $process->close();
+        }
+    }
+
+    public function testWorkerInheritsNoneOfTheMasterDescriptors(): void
+    {
+        // Stand in for what the master holds while it spawns: the telemetry collector's
+        // unix listener, an accepted worker connection and a log file. proc_open leaves
+        // every one of them open in the child unless the spawn shuts them out.
+        $socketPath = sys_get_temp_dir() . '/sconcur-fd-guard-' . getmypid() . '.sock';
+
+        @unlink($socketPath);
+
+        $listener = stream_socket_server('unix://' . $socketPath, $errorNumber, $errorMessage);
+
+        self::assertIsResource($listener, 'the stand-in collector must bind: ' . (string) $errorMessage);
+
+        $client   = stream_socket_client('unix://' . $socketPath);
+        $accepted = stream_socket_accept($listener, 1);
+        $logFile  = fopen($socketPath . '.log', 'w');
+
+        $process = $this->spawn(
+            'foreach (scandir("/proc/self/fd") as $entry) {'
+            . ' if (!ctype_digit($entry) || (int) $entry < 3) { continue; }'
+            . ' $target = @readlink("/proc/self/fd/" . $entry);'
+            . ' if ($target !== false) { echo $target, "\n"; } }',
+        );
+
+        try {
+            self::assertTrue($this->waitForExit($process));
+
+            $targets = array_map(
+                static fn(WorkerOutputLine $line): string => $line->line,
+                array_filter($process->drainFinalOutput(), static fn(WorkerOutputLine $line): bool => !$line->isError),
+            );
+
+            $inherited = array_values(array_filter(
+                $targets,
+                static fn(string $target): bool => str_starts_with($target, 'socket:') || str_ends_with($target, '.sock.log'),
+            ));
+
+            self::assertSame([], $inherited, 'the worker must inherit no socket and no file of the master');
+        } finally {
+            $process->close();
+
+            fclose($logFile);
+
+            if (is_resource($accepted)) {
+                fclose($accepted);
+            }
+
+            if (is_resource($client)) {
+                fclose($client);
+            }
+
+            fclose($listener);
+
+            @unlink($socketPath);
+            @unlink($socketPath . '.log');
         }
     }
 
