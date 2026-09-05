@@ -15,16 +15,20 @@ MessagePack.
 
 The same demo application on the same machine: `wrk` 4 threads / 256 connections
 / 20 s, database data on disk. The worker count per server is given in the row:
-the first two endpoints were measured at 12, while `/db` and `/db-rw` come from
-the worker-count ladder, at its 8-worker rung (where SConcur peaks and the load
+the empty response was measured at 12, while `/db` and `/db-rw` come from the
+worker-count ladder, at its 8-worker rung (where SConcur peaks and the load
 generator does not yet share cores with the servers):
 
 | Request | SConcur | RoadRunner | Swoole |
 | --- | ---: | ---: | ---: |
-| empty response (12 workers) | ≈133 500 rps, p50 1.8 ms | ≈46 600 rps, p50 5.4 ms | ≈353 000 rps, p50 0.4 ms |
-| 6 DB operations: MongoDB + MySQL + PostgreSQL (12 workers) | ≈3 010 rps, p50 76 ms | ≈448 rps, p50 573 ms | ≈3 030 rps, p50 83 ms |
-| point SELECT by id, `/db` (8 workers) | 38 617 rps, p50 6.2 ms | 23 665 rps, p50 10.6 ms | 123 359 rps, p50 1.9 ms |
-| INSERT + COUNT(*) + SELECT, `/db-rw` (8 workers) | 2 529 rps, p50 89.7 ms | 425 rps, p50 606 ms | 2 654 rps, p50 87 ms |
+| empty response (12 workers) | ≈194 300 rps, p50 0.9 ms | ≈45 100 rps, p50 5.4 ms | ≈365 600 rps, p50 0.35 ms |
+| point SELECT by id, `/db` (8 workers) | 44 200 rps, p50 5.4 ms | 22 887 rps, p50 10.7 ms | 117 693 rps, p50 2.0 ms |
+| INSERT + COUNT(*) + SELECT, `/db-rw` (8 workers) | 2 366 rps, p50 95.8 ms | 289 rps, p50 877 ms | 2 467 rps, p50 89.8 ms |
+
+There is no row for an endpoint that uses MongoDB. `ext-mongodb` is outside
+Swoole's runtime hooks, so the same handler blocks a Swoole worker outright and
+the row would report the state of a driver as if it were a property of the
+execution model.
 
 Swoole is faster on the cheap paths, but its concurrency rests on hooks into the
 existing PHP drivers: whatever the hooks do not cover blocks the whole worker (as

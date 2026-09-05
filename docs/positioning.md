@@ -16,7 +16,7 @@ of adding up.
 
 | Your workload | What the measurements show | Verdict |
 | --- | --- | :---: |
-| A high-concurrency I/O-bound HTTP/WS service | On the same hardware SConcur serves [~6× the requests per second](benchmarks.md#comparison-with-roadrunner-and-swoole) RoadRunner does, and holding that load takes ~5× less memory than RoadRunner and ~15–30× less than php-fpm — [resources](#resources-to-hold-the-same-load) | ✅ |
+| A high-concurrency I/O-bound HTTP/WS service | On the same hardware SConcur serves [~4.5× the requests per second](#throughput-on-the-same-hardware) RoadRunner does, and holding that load takes ~2× less memory than RoadRunner and ~6–12× less than php-fpm — [resources](#resources-to-hold-the-same-load) | ✅ |
 | One request or job needs several DB or network calls | Running them concurrently instead of one after another finishes SQL writes [~3–15×](benchmarks.md#mysql) faster, heavy reads [~2–7×](benchmarks.md#mongodb), network waits [~44×](benchmarks.md#clients-http--socket--websocket) | ✅ |
 | MongoDB with concurrency | SConcur is the only way to have several MongoDB operations in progress at once inside one PHP process — [tables](benchmarks.md#mongodb) | ✅ |
 | Single cheap queries, one at a time (SConcur used as a library) | Slower than the native driver: one call costs ~50 µs of [PHP↔extension boundary](benchmarks.md#conversion-overhead-the-phpextension-boundary) crossing, more than a cheap query itself takes | ❌ |
@@ -42,7 +42,7 @@ which makes its six calls strictly one after another, still holds ≈2 570 rps
 against RoadRunner's ≈460 on the same operations
 ([load testing](load-testing.md#concurrent-vs-sequential-calls-all-vs-all-nowg)).
 Only on microsecond cache hits does the edge shrink to what the server layer
-alone gives (~2.9× on the empty endpoint) — it never turns into a loss.
+alone gives (~4.3× on the empty endpoint) — it never turns into a loss.
 
 ## Execution models
 
@@ -69,44 +69,47 @@ suspended fiber, not a worker.
 
 | Endpoint | Server | Requests/sec | p50 | CPU avg | MEM peak |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `/` (empty) | SConcur | ≈133 500 | 1.8 ms | ~1218% | ~221 MiB |
-| `/` (empty) | RoadRunner | ≈46 600 | 5.4 ms | ~1050% | ~228 MiB |
-| `/all` (3 features, 6 DB ops) | SConcur | ≈3 010 | 76 ms | ~563% | ~279 MiB |
-| `/all` | RoadRunner (native drivers) | ≈448 | 573 ms | ~158% | ~232 MiB |
+| `/` (empty) | SConcur | ≈194 300 | 0.9 ms | ~1081% | ~185 MiB |
+| `/` (empty) | RoadRunner | ≈45 100 | 5.4 ms | ~1018% | ~225 MiB |
+| `/all` (3 features, 6 DB ops) | SConcur | ≈1 371 | 183 ms | ~383% | ~237 MiB |
+| `/all` | RoadRunner (native drivers) | ≈302 | 839 ms | ~102% | ~243 MiB |
 
-On the empty endpoint the gap is ~2.9×: RoadRunner pays an extra inter-process
-step (proxy → worker) on every request, SConcur pays the PHP↔extension boundary, which
-after the 0.9.1 hot-path work is the cheaper of the two. On `/all` the gap is
-~6.7× and structural: the sequential worker performs its 3 disk commits one
-after another and idles at ~158% CPU while all 12 workers sit in that chain;
-SConcur runs those same commits at the same time — both the ones inside a single
-request and the ones belonging to different requests. That the gap comes from
-the execution model and not from the driver stack is shown by the third server
-in the same session: Swoole, on native drivers but with coroutine workers, lands
-in the same class (≈2 670 rps against SConcur's ≈3 010).
+On the empty endpoint the gap is ~4.3×: RoadRunner pays an extra inter-process
+step (proxy → worker) on every request, SConcur pays the PHP↔extension boundary,
+which is the cheaper of the two. On `/all` the gap is ~4.5× and structural: the
+sequential worker performs its 3 disk commits one after another and idles at
+~102% CPU while all 12 workers sit in that chain; SConcur runs those same commits
+at the same time — both the ones inside a single request and the ones belonging
+to different requests.
+
+Swoole is absent from the `/all` rows and cannot be added to them: `ext-mongodb`
+is outside its runtime hooks, so the endpoint blocks a Swoole worker outright and
+the number would describe a driver rather than an execution model. Where the
+workload is the same for all three — the empty endpoint and the `/db`, `/db-rw`
+ladders in [benchmarks](benchmarks.md) — Swoole is measured beside the other two.
 
 ## Resources to hold the same load
 
 The number of requests being served at any moment is throughput × latency
 (Little's law). The worker model needs a worker for each of them; SConcur needs
 a fiber. That is where the resource difference lives — not in CPU, which is
-comparable per request: on `/all` SConcur spends ~2.7 cores per 1 000 rps
-against RoadRunner's ~3.5, on the empty endpoint 0.09 against 0.23.
+comparable per request: on `/all` SConcur spends ~2.8 cores per 1 000 rps
+against RoadRunner's ~3.4, on the empty endpoint 0.06 against 0.23.
 
-To hold the measured ≈2 670 rps of the `/all` workload:
+To hold the measured ≈1 370 rps of the `/all` workload:
 
-- SConcur (measured): 12 per-core processes, ~650 MiB of worker RSS total (~54
+- SConcur (measured): 12 per-core processes, ~535 MiB of worker RSS total (~45
   MiB each), and that figure does not grow with the number of requests being
   served.
-- RoadRunner (linear extrapolation from 460 rps at 12 workers): ~70 workers. A
-  bare PSR-7 worker is ~20 MiB → ~1.4 GiB, about 5× more memory. Also 70 workers
-  × 3 backends = 210 DB connections, so PostgreSQL's default
+- RoadRunner (linear extrapolation from 302 rps at 12 workers): ~55 workers. A
+  bare PSR-7 worker is ~20 MiB → ~1.1 GiB, about 2× more memory. Also 55 workers
+  × 3 backends = 165 DB connections, so PostgreSQL's default
   `max_connections = 100` is already broken. SConcur keeps one connection pool
   per process inside the extension, and the measurement ran with a cap of 5
   connections per process.
-- php-fpm (model, no fpm reference in this repo): the same ~70 workers, but a
-  worker with a booted framework is 60–120 MiB → 4–8 GiB, i.e. 15–30×, plus the
-  per-request bootstrap CPU (at 10 ms of bootstrap, 2 670 rps costs ~27 cores of
+- php-fpm (model, no fpm reference in this repo): the same ~55 workers, but a
+  worker with a booted framework is 60–120 MiB → 3–7 GiB, i.e. 6–12×, plus the
+  per-request bootstrap CPU (at 10 ms of bootstrap, 1 370 rps costs ~14 cores of
   pure framework boot). In practice fpm does not reach this throughput on this
   hardware at all.
 

@@ -100,16 +100,32 @@ The empty endpoint, 12 workers, the same `cpu0-11` budget in every arm, `wrk` on
 slightly lower. `group` beats both by 19.9%, and its range does not overlap
 theirs at all (its worst round, 146 644, is above their best, 125 284).
 
-So the gap is not a detail of naive pinning that a smarter placement would fix.
-It comes from pinning as such. The explanation that fits both measurements: each
-worker has two threads — PHP and a runtime thread — so twelve workers put about
-twenty-four runnable threads on twelve logical CPUs. A static placement cannot
-rebalance uneven load, and the scheduler can: a pinned idle worker has no way to
-lend its core to a busy neighbour.
+Re-measured on 2026-09-05, on the Rust core and against the tighter arms the
+benchmark tables now use (median of three, `1` against `group` only):
+
+| placement | rps | p50 | p90 | p99 |
+|---|---:|---:|---:|---:|
+| `1` — one logical CPU each | 154 432 | 0.62 ms | 202 ms | 334 ms |
+| `group` — the scheduler places them | **194 338** | 0.94 ms | 73 ms | 263 ms |
+
+The gap grew to 26%, and the tail moved with it: pinning costs nearly three times
+the p90. So the gap is not a detail of naive pinning that a smarter placement
+would fix. It comes from pinning as such. The explanation that fits every
+measurement: each worker has two threads — PHP and a runtime thread — so twelve
+workers put about twenty-four runnable threads on twelve logical CPUs. A static
+placement cannot rebalance uneven load, and the scheduler can: a pinned idle
+worker has no way to lend its core to a busy neighbour.
 
 That is why there is no `cpuAffinity` setting. Shipping a knob that, on an equal
-core budget, enables something twenty percent slower is not a choice. The current
+core budget, enables something a quarter slower is not a choice. The current
 behaviour — `WorkerMaster` pins nothing — is the measured optimum.
+
+Confining a pool to part of a machine does not need one either. `group` is what a
+mask on the master gives you for free, because the workers inherit it:
+`taskset -c 0-11 sconcur-server …`, or `--cpuset-cpus` on the container, or
+`CPUAffinity=` in the unit. The placements that would need per-worker support
+from the library are `1` and `physical`, and those are the two that measured
+worse.
 
 Two things this does not say anything about, because they were not measured: one
 worker per physical core with no neighbour (that is a different worker count, so a
@@ -146,14 +162,14 @@ of which the cost of the `/all` feature calls is added.
 
 | Metric | `/` (empty) | `/all` (all features) |
 |---|---|---|
-| Throughput | ≈133 500 req/sec | ≈3 010 req/sec |
-| Latency | p50 1.8 · p90 7.1 · p99 30.1 ms | p50 76 · p90 155 · p99 267 ms |
-| Servers CPU (`php`) | avg ~1218 % | avg ~563 % |
-| Worker RSS (sum of 12) | ~590 MiB (flat) | ~660 MiB |
+| Throughput | ≈194 300 req/sec | ≈1 371 req/sec |
+| Latency | p50 0.9 · p90 73 · p99 263 ms | p50 183 · p90 258 · p99 364 ms |
+| Servers CPU (`php`) | avg ~1149 % | avg ~383 % |
+| Worker RSS (sum of 12) | ~441 MiB (flat) | ~535 MiB |
 
-Three runs held ~133k req/sec with 0 errors. The ~44× gap is the price of the
-feature calls: `/all` crosses the PHP↔extension boundary for three feature blocks at
-once and pays the fsync of 3 disk writes per request. Throughput hits exactly
+Three runs held ~194k req/sec with 0 errors. The ~140× gap is the price of the
+feature calls: `/all` crosses the PHP↔extension boundary for three feature blocks
+at once and pays the fsync of 3 disk writes per request. Throughput hits exactly
 that, not the cheap DB read. The empty endpoint has none of it and is CPU-bound
 at ~1200 %.
 
@@ -164,12 +180,12 @@ the same time in three feature blocks, 3 of them disk writes.
 
 | Metric | Value |
 |---|---|
-| Throughput | ≈3 010 req/sec (0 errors — all 3 features `ok`) |
-| Latency | p50 76 · p90 155 · p99 267 ms |
-| Worker RSS (sum of 12) | first 652.6 / peak 659.7 / last 659.7 MiB → drift +7.0 MiB |
-| Servers CPU (`php`) | avg 561 % / peak 582 % (≈ 5–6 of 12 cores) |
-| Backends CPU | MongoDB 189 %/222 peak · MySQL 120 %/124 · PostgreSQL 84 %/93 |
-| MEM (containers) | php 279 · mongo 178 · mysql 667 · pg 139 MiB |
+| Throughput | ≈1 371 req/sec (0 errors — all 3 features `ok`) |
+| Latency | p50 183 · p90 258 · p99 364 ms |
+| Worker RSS (sum of 12) | ~535 MiB |
+| Servers CPU (`php`) | avg 383 % / peak 453 % (≈ 4–5 of 12 cores) |
+| Backends CPU | MongoDB ~146 % · MySQL ~126 % · PostgreSQL ~101 % |
+| MEM (containers) | php 237 MiB |
 
 The RSS drift over 20 s is warm-up noise; the authoritative leak verdict comes from
 the soak below.
