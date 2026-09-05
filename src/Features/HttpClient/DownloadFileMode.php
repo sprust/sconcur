@@ -6,10 +6,10 @@ namespace SConcur\Features\HttpClient;
 
 /**
  * How HttpClient::download() opens the destination file. Human-readable names over
- * the fopen-style flags; the actual os.O_* flags are mapped on the Go side
+ * the fopen-style flags; the actual open flags are mapped on the extension side
  * (httpclient_feature.downloadModeToFlags).
  *
- * Go: download mode constants (ext/internal/features/httpclient/download.go).
+ * Rust: the values sink_options() matches (ext/src/features/httpclient/mod.rs).
  */
 enum DownloadFileMode: string
 {

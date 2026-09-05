@@ -10,13 +10,11 @@ on:
     # build inputs — an omitted path means no release on a real change.
     paths:
       - '**.php'                        # src, tests, bin, config, cs-fixer.dist.php
-      - '**.go'                         # Go extension sources
-      - 'ext/**'                        # go.mod / go.sum, headers, build scripts
+      - '**.rs'                         # the released core's sources
+      - 'ext/**'                        # Cargo manifests, the PHP glue, headers, build scripts
       - 'composer.json'
       - 'composer.lock'
       - 'makefile'
-      - 'ext-build.sh'
-      - 'ext-test.sh'
       - 'phpstan.neon'
       - 'docker/**'
       - 'docker-compose.yml'
@@ -63,9 +61,8 @@ jobs:
       - name: Install composer dependencies
         run: make composer c="install --no-interaction --no-progress"
 
-      - name: Build extension
-        run: make ext-build
-
+      # The core the release publishes, and what everything in the repository
+      # loads. Nothing is filtered out of the suite: every feature is ported.
       - name: Run checks
         run: make check
 

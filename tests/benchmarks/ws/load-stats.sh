@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # All-features WebSocket load + resource benchmark. Spawns N demo ws-server processes
-# (SO_REUSEPORT, one per core) in the `php` container, drives them with the Go ws-load
+# (SO_REUSEPORT, one per core) in the `php` container, drives them with the ws-load
 # generator (the WS counterpart of wrk) on the "all" command — which fans out across
 # EVERY async I/O feature (Sleeper, MongoDB, MySQL, PostgreSQL) concurrently per
 # message — and samples CPU/memory of the server and backend containers throughout,
@@ -44,7 +44,7 @@ fi
 LOAD_CORES=${LOAD_CORES:-2}
 MAXCONCURRENCY=${MAXCONCURRENCY:-0}
 
-EXTENSION=/sconcur/ext/build/sconcur.so
+EXTENSION=${SCONCUR_EXT:-/sconcur/ext/build/sconcur.so}
 SCRIPT=/sconcur/tests/servers/ws/ws-server.php
 LOADBIN=/tmp/sc-ws-load
 PIDFILE=/tmp/sc-ws-load-$PORT.pids
@@ -93,8 +93,14 @@ echo "=================================================================="
 
 stop_servers
 
-# Build the load generator once (unpinned), then spawn one server per core.
-$DOCKER_COMPOSE exec -T php sh -c 'cd /sconcur/ext && go build -o "'"$LOADBIN"'" ./cmd/ws-load'
+# The load generator, built once before the run: wrk speaks HTTP only, so the WS
+# side needs one of its own (ws-load/, a crate separate from the core so that
+# building the extension never waits on a benchmark tool).
+$DOCKER_COMPOSE exec -T php sh -c '
+    cd /sconcur/tests/benchmarks/ws/ws-load \
+        && cargo build --release --quiet \
+        && cp target/release/ws-load "'"$LOADBIN"'"
+' || { echo "could not build the WS load generator" >&2; exit 2; }
 
 $DOCKER_COMPOSE exec -T php sh -c '
     : > "'"$PIDFILE"'"

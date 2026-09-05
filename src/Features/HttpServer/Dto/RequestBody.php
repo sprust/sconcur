@@ -17,7 +17,7 @@ use SConcur\Features\FeatureExecutor;
  */
 class RequestBody
 {
-    /** Marker the Go side returns when the body exceeds maxRequestBody. */
+    /** Marker the extension side returns when the body exceeds maxRequestBody. */
     private const string TOO_LARGE_MARKER = 'request body too large';
 
     /** Bytes already pulled from the source but not yet returned by read(). */

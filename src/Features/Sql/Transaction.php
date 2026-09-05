@@ -19,12 +19,12 @@ use SConcur\Transport\PayloadInterface;
 /**
  * A database transaction pinned to a single connection across a series of tasks.
  * Opened by Connection::begin(); every query/exec carries the transaction id so
- * the Go side routes it to the held connection.
+ * the extension side routes it to the held connection.
  *
- * The Go side keeps the connection alive through a held "begin" task; commit() and
+ * The extension side keeps the connection alive through a held "begin" task; commit() and
  * rollback() finalize the transaction and then release that task. If the
- * transaction is abandoned (no commit/rollback, an exception, a flow stop), the Go
- * side rolls it back automatically when the flow's context is cancelled.
+ * transaction is abandoned (no commit/rollback, an exception, a flow stop), the extension side
+ * rolls it back automatically when the flow's context is cancelled.
  */
 class Transaction
 {
@@ -130,7 +130,7 @@ class Transaction
     /**
      * Abandoned without commit/rollback (e.g. an exception unwound the scope):
      * release the held begin flow on the synchronous path so no task dangles. The
-     * Go side rolls the transaction back from the cancelled context. No-op in async
+     * extension side rolls the transaction back from the cancelled context. No-op in async
      * mode and after an explicit commit/rollback.
      */
     public function __destruct()

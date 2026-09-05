@@ -3,7 +3,7 @@ English | [Русский](amqp.ru.md)
 # AMQP (RabbitMQ)
 
 An asynchronous AMQP 0-9-1 client. The connection, the channels, the topology,
-publishing and consuming all live in the Go extension; PHP stays a thin
+publishing and consuming all live in the extension; PHP stays a thin
 orchestrator. Inside a `WaitGroup` dozens of publishes and consumers run at the
 same time; outside a fiber the same API works synchronously, as with every
 SConcur feature.
@@ -150,7 +150,7 @@ The timeouts bound different things: `connectTimeoutSeconds` the dial,
 `writeTimeoutSeconds` a publish, `readTimeoutSeconds` a consumer's wait for the next
 delivery, and `rpcTimeoutSeconds` every other single method. They are seconds because
 that is the unit an AMQP URI and the broker's own documentation state them in; the wire
-carries milliseconds. `0` leaves the Go side to apply its own default, and for
+carries milliseconds. `0` leaves the extension to apply its own default, and for
 `readTimeoutSeconds` it means "wait indefinitely".
 
 ## Topology
@@ -368,7 +368,7 @@ $queue->consume(
 ```
 
 The consumer must be read in the coroutine that opened it: when the coroutine
-ends its flow is stopped, and the Go side cancels the consumer. This is the same
+ends its flow is stopped, and the extension cancels the consumer. This is the same
 caveat as for `HttpClient`, `SocketClient` and `WsClient`.
 
 The loop ends quietly only when this coroutine's flow is stopped. Everything else
@@ -391,10 +391,10 @@ property of this implementation.
 
 ### How a delivery reaches the handler
 
-Nothing in Go ever calls into PHP. The extension is a library PHP calls, and every
-crossing starts on the PHP side — so a consumer is not Go pushing work at a worker
-that listens for it. It is PHP leaving a standing question in Go, and being resumed
-once Go can answer it.
+The extension never calls into PHP. It is a library PHP calls, and every crossing
+starts on the PHP side — so a consumer is not the extension pushing work at a
+worker that listens for it. It is PHP leaving a standing question inside the
+extension, and being resumed once the extension can answer it.
 
 `consume()` sends one `Consume` command and gets back a task key, the handle for
 this stream. That command opens the consumer on the broker and registers the stream
@@ -402,7 +402,8 @@ under that key, holding on to the delivery channel the driver fills from the soc
 Every turn of the `foreach` is a `next()` on that key — "the next delivery for this
 stream" — and the coroutine parks until it is answered.
 
-The waiting happens in Go, on the goroutine that runs the `next`, not by PHP
+The waiting happens inside the extension, on the runtime task that runs the
+`next`, not by PHP
 polling the broker for a message. The
 PHP side sits in a single `waitAny()` that serves every parked coroutine at once:
 whichever answer becomes ready first is routed back to the coroutine that asked for
@@ -412,7 +413,7 @@ it, and that coroutine is resumed with its `Delivery`.
 sequenceDiagram
     participant H as Handler (PHP coroutine)
     participant S as Scheduler (PHP)
-    participant G as Consumer goroutine (Go)
+    participant G as Consumer runtime task
     participant B as Broker
 
     H->>S: consume() — push(Consume)
@@ -425,7 +426,7 @@ sequenceDiagram
     H->>S: next(taskKey), the coroutine parks
     S->>G: next, returns at once
     S->>S: waitAny() — one wait for every parked coroutine
-    Note over G,B: the goroutine waits on the driver's delivery channel
+    Note over G,B: the runtime task waits on the driver's delivery channel
     B-->>G: delivery
     G-->>S: result
     S->>H: resume with the Delivery
@@ -847,7 +848,7 @@ its wait queues alongside its own topology at start-up, and its `retry:<n>` hand
 republishes a failed job with a delay that grows by attempt, on [the channel it was
 lent](#the-channel-a-handler-publishes-on).
 
-## Connections and channels on the Go side
+## Connections and channels inside the extension
 
 A connection is pooled by its options: two `Connection` objects built with the
 same ones share a single socket to the broker, so building one per request is
@@ -894,15 +895,22 @@ $connection = new Connection(new ConnectionOptions(
 | --- | --- |
 | `caCert` | the authority the broker's certificate is checked against; with none named, the system store is used |
 | `cert`, `key` | the client certificate and its private key. The two go together — naming one without the other fails the dial |
-| `verify` | `true` by default; `false` skips the check of the broker's certificate altogether |
+| `verify` | `true` by default. `false` asks to accept a certificate that was not checked, which the extension refuses — see below |
 
 The files are read by the extension inside the worker's own process, so the paths
 are the ones that process sees.
 
 The broker's certificate is checked against `host`, so it has to be valid for
-exactly that name, and as a SAN entry — Go does not accept a bare common name. A
+exactly that name, and as a SAN entry — a bare common name is not accepted. A
 dial that cannot read a file, cannot parse the CA or fails the handshake raises
 `ConnectionException`.
+
+`verify: false` is refused rather than honoured: the TLS layer takes a
+certificate chain and a client identity and has no switch for accepting a
+certificate it cannot check. A dial asking for it fails with a
+`ConnectionException` saying so. Point `caCert` at the authority that signed the
+broker's certificate instead — that is what the option was reached for against a
+self-signed development broker.
 
 `SaslMethodEnum::External` replaces the login and password with the client
 certificate: the broker takes the identity out of it, and neither is sent at all.
@@ -948,7 +956,7 @@ $waitGroup->waitAll();
 
 Processes are the other axis: the [worker master](worker-master.md) supervises a
 pool of them running one script, and a consumer worker needs no listening socket
-to be supervised. Each process runs its own Go runtime and its own connection
+to be supervised. Each process runs its own runtime and its own connection
 pool; nothing is shared between them.
 
 What bounds each axis:
@@ -971,14 +979,14 @@ several queues pulled at once by one process, each queue weighted by how many
 consumers pull it, and a stop that drains rather than cuts. It is what a
 [worker master](worker-master.md) group runs.
 
-It is a server in everything but the socket. The Go side opens the consumers and
+It is a server in everything but the socket. The extension opens the consumers and
 publishes every delivery of all of them as one stream; the same loop that runs the
 HTTP, socket and WebSocket servers reads that stream and hands each message to a
 coroutine of its own. Nothing is polled and nothing is pulled per message — the
 next delivery is published as soon as the previous one is taken, so a worker pays
 no boundary crossing per message beyond the delivery itself.
 
-The channels behind those consumers belong to the Go side, which is what makes the
+The channels behind those consumers belong to the extension, which is what makes the
 stop simple: cancelling the consumers leaves the channels open, so the
 acknowledgements of the handlers still running land, and the flow ending closes
 them.
@@ -1218,7 +1226,7 @@ connection or the worker was described.
 
 A failure the broker punishes with a closed channel (a passive declare of a queue
 that does not exist, a publish to a missing exchange) leaves the `Channel` closed:
-`isOpen()` reports it, every later call on it raises `ChannelException`, and the Go
+`isOpen()` reports it, every later call on it raises `ChannelException`, and the
 side has already released it. Open a new channel to carry on — the connection is
 untouched.
 
@@ -1262,7 +1270,7 @@ The API is SConcur's own, not either library's. What moves where:
 | `setReturnCallback()` + `waitForBasicReturn()` | `set_return_listener()` | `UnroutableMessageException` |
 | `startTransaction()` / `commitTransaction()` | `tx_select()` / `tx_commit()` | — publisher confirms replaced them; RabbitMQ discourages transactions |
 | `basicRecover()` | `basic_recover()` | — `$delivery->nack(requeue: true)` |
-| `pconnect()`, `pdisconnect()` | — | — persistent connections are a php-fpm notion; the Go-side pool outlives the PHP object anyway |
+| `pconnect()`, `pdisconnect()` | — | — persistent connections are a php-fpm notion; the extension-side pool outlives the PHP object anyway |
 | `AMQP_*` bit masks | positional booleans | named arguments and `ExchangeTypeEnum` |
 
 Neither extension is required at runtime. `ext-amqp` stays a `require-dev`
@@ -1290,6 +1298,11 @@ The general limits — CLI only, Linux only, NTS only, no `pcntl_fork` — are i
   [TLS and SASL EXTERNAL](#tls-and-sasl-external).
 - `basic.publish`'s `immediate` flag is never sent: RabbitMQ has not implemented
   it since 3.0 and closes the channel on one that sets it.
+- A prefetch **size** is refused rather than sent. `basic.qos` carries the field,
+  but RabbitMQ has never implemented it and the extension's AMQP driver leaves it
+  out of the frame altogether, so a size asked for could only be dropped in
+  silence. `prefetch(sizeBytes:)` and `channel(prefetchSizeBytes:)` therefore
+  raise instead. The prefetch **count** is the limit that works.
 - AMQP transactions are not implemented. Publisher confirms replaced them, and the
   broker's own documentation recommends against them.
 - A consume is bounded by the connection's `readTimeoutSeconds`, not by a per-call one.
@@ -1301,7 +1314,7 @@ The general limits — CLI only, Linux only, NTS only, no `pcntl_fork` — are i
   itself defines. The delay patterns that need no plugin are in
   [retries and delays](#retries-and-delays).
 - A `Timestamp` at or above 2^63 is refused when published. AMQP counts unsigned
-  64-bit seconds, but neither a PHP int nor the Go time the field is built from holds
+  64-bit seconds, but neither a PHP int nor the timestamp the field is built from holds
   the upper half of that range.
 - A `Decimal` significand above 2^31-1 travels through SConcur bit for bit and reads
   back the same, but the field carries it as 32 bits and RabbitMQ's own clients read
@@ -1319,7 +1332,7 @@ The numbers are in [benchmarks](benchmarks.md#amqp-rabbitmq), where they sit
 beside the other features and are read the same way. The short of it: publishing
 is where the native extension wins and nothing can be done about it —
 `basic.publish` expects no reply, so it costs one write while every SConcur call
-also crosses the PHP ↔ Go boundary, and there is nothing to overlap. `basic.get`
+also crosses the boundary, and there is nothing to overlap. `basic.get`
 does wait for the broker, and running the calls at the same time recovers most of
 that.
 

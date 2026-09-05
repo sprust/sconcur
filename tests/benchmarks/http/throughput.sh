@@ -29,7 +29,7 @@
 #   ROUTE         path to hit                                  (default: /)
 #   MAXCONCURRENCY per-process maxConcurrency (0 = unlimited)  (default: 0)
 #   PIN_SERVERS   1 = pin each server to its own core (process-per-core, like
-#                 nginx workers); 0 = leave them unpinned so each process's Go
+#                 nginx workers); 0 = leave them unpinned so each process's
 #                 runtime may spread across cores                (default: 1)
 #
 set -euo pipefail
@@ -45,7 +45,7 @@ WRK_THREADS=${WRK_THREADS:-4}
 MAXCONCURRENCY=${MAXCONCURRENCY:-0}
 PIN_SERVERS=${PIN_SERVERS:-1}
 
-EXTENSION=/sconcur/ext/build/sconcur.so
+EXTENSION=${SCONCUR_EXT:-/sconcur/ext/build/sconcur.so}
 SCRIPT=/sconcur/tests/servers/http/http-server.php
 # The container has no procps (pkill/pgrep), so the spawn loop records each PID to
 # this file and teardown/liveness use plain kill / kill -0 (shell builtins).

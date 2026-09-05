@@ -17,7 +17,7 @@ use Throwable;
  * time (server push), close() ends the connection.
  *
  * The inbound frames stream under "<id>:in"; writes/closes are routed by connection
- * id to the Go write loop. See AbstractConnection for the shared mechanics.
+ * id to the extension's write loop. See AbstractConnection for the shared mechanics.
  */
 class Connection extends AbstractConnection
 {

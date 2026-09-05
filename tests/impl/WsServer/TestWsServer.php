@@ -69,7 +69,12 @@ class TestWsServer
         $options['address'] = self::HOST . ':' . $port;
 
         $root      = dirname(__DIR__, 3);
-        $extension = $root . '/ext/build/sconcur.so';
+        // Overridable so a test run can point the spawned worker at an
+        // alternative build (SCONCUR_EXT=/sconcur/ext/build/sconcur.so).
+        // Without this the harness always starts the default extension, whatever the
+        // PHPUnit process itself loaded — which makes such a run look like it
+        // exercised the other build when it did not.
+        $extension = getenv('SCONCUR_EXT') ?: $root . '/ext/build/sconcur.so';
         $script    = $serverScript ?? $root . '/tests/servers/ws/ws-server.php';
 
         $command = ['php', '-d', 'extension=' . $extension, $script];
@@ -108,7 +113,7 @@ class TestWsServer
             $server->stop();
 
             throw new RuntimeException(
-                'The test ws server did not become reachable (is ext/build/sconcur.so built?).'
+                'The test ws server did not become reachable (is the extension built?).'
             );
         }
 
@@ -344,7 +349,7 @@ class TestWsServer
 
         $expectedAccept = base64_encode(sha1($key . self::ACCEPT_GUID, true));
 
-        // The header name is matched case-insensitively (Go canonicalizes it to
+        // The header name is matched case-insensitively (it is canonicalised to
         // "Sec-Websocket-Accept"); the base64 accept value itself is exact.
         if (!str_contains(strtolower($response), strtolower('Sec-WebSocket-Accept: ') . strtolower($expectedAccept))) {
             throw new RuntimeException('WebSocket handshake returned an invalid accept key.');

@@ -11,7 +11,7 @@ use Stringable;
 readonly class Javascript implements Type, Stringable, JsonSerializable
 {
     // Public on purpose: MessagePack mangles the name of a protected property the
-    // way serialize() does ("\0*\0data"), and the Go side writes plain names. The
+    // way serialize() does ("\0*\0data"), and the extension side writes plain names. The
     // class is readonly, so the value object stays immutable regardless.
     public string $code;
 

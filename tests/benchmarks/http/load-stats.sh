@@ -17,10 +17,27 @@
 #
 # Tunables (env): SERVERS, WRK_THREADS, CONNECTIONS, DURATION, PORT, ROUTE (=/all),
 #   MAXCONCURRENCY, DB_POOL_SIZE (the /db* pool per process), SAMPLE_INTERVAL
-#   (resource-sampling period, s), GOMAXPROCS (forwarded to each worker's Go
-#   runtime; empty = Go default, i.e. all cores), SERVER_ENV (extra VAR=value
+#   (resource-sampling period, s), SERVER_ENV (extra VAR=value
 #   assignments for the worker environment, space-separated), SERVER_ARGS (extra
-#   --flags appended to the server command line, e.g. --ladder=l1).
+#   --flags appended to the server command line, e.g. --ladder=l1),
+#   PIN_SERVERS: 1 = pin each worker to one logical CPU, as throughput.sh does —
+#   on an SMT machine that puts a worker's PHP thread and its runtime thread on
+#   the same logical CPU, which they are not meant to share;
+#   physical = pin each worker to one physical core, meaning the whole sibling
+#   pair, so those two threads can run at the same time — this is what "a process
+#   per core" usually means, and it measured no better than 1 (see the pinning
+#   section of docs/load-testing.md);
+#   group = confine the whole pool to the same cores but let the scheduler place
+#   the workers within them, which is the honest comparison for "should a
+#   deployment pin?" because every arm then has the same core budget; 0 = leave
+#   them unpinned, which is what the worker master actually does in production.
+#   NOTE: rr-load-stats.sh and swoole-load-stats.sh pin their stack the way
+#   `group` does, so a comparison against them wants PIN_SERVERS=group here —
+#   the default (1) measures this stack ~20% below the others' placement
+#   and is therefore the only way to see what the extension runtime makes of a
+#   machine it thinks it owns.
+#   All four modes draw from the same budget, cpu 0..SERVERS-1, so only the
+#   placement inside it differs and the arms stay comparable.
 set -euo pipefail
 
 # Force the C locale so "." is the decimal separator everywhere (docker stats emits
@@ -48,12 +65,13 @@ else
 fi
 
 WRK_THREADS=${WRK_THREADS:-4}
+PIN_SERVERS=${PIN_SERVERS:-1}
 MAXCONCURRENCY=${MAXCONCURRENCY:-0}
 # The /db* routes size their per-process MySQL pool from this (the DB connection
 # budget is split across the reuse-port pool, so the useful value depends on
 # SERVERS — the worker-count ladder in docs/benchmarks.md walks it).
 DB_POOL_SIZE=${DB_POOL_SIZE:-9}
-# Dispatch experiment (.ai/plans/dispatch-experiment.md). DISTINCT_PORTS=1 binds
+# Dispatch experiment. DISTINCT_PORTS=1 binds
 # worker i to PORT+1+i without SO_REUSEPORT, so a proxy (nginx) can sit in front
 # on PORT itself and balance per request; the readiness probe then goes to the
 # first worker, not to PORT. WORKER_LOGS=1 keeps each worker's access log (one
@@ -65,7 +83,12 @@ WORKER_LOGS=${WORKER_LOGS:-0}
 # selects host/port, the script selects the paths.
 WRK_SCRIPT=${WRK_SCRIPT:-}
 
-EXTENSION=/sconcur/ext/build/sconcur.so
+# Which extension the workers load. Overridable so the same harness can drive an
+# alternative build (the Rust core spike) without a second copy of this script;
+# the name matches the makefile's, so `make bench-... SCONCUR_EXT=...` reaches
+# here too. A path relative to the repo root works as well as an absolute one —
+# the workers start with /sconcur as their working directory.
+EXTENSION=${SCONCUR_EXT:-/sconcur/ext/build/sconcur.so}
 SCRIPT=/sconcur/tests/servers/http/http-server.php
 PIDFILE=/tmp/sc-http-load-$PORT.pids
 STDERRLOG=/tmp/sc-http-load-$PORT.err
@@ -126,16 +149,104 @@ stop_servers() {
         rm -f "'"$PIDFILE"'"
     ' 2>/dev/null || true
 }
-trap stop_servers EXIT
+
+# The /all and /db* routes write a row per request, and the databases live on a
+# 1 GiB tmpfs (docker-compose.yml). A ten-minute soak at a few thousand rps puts
+# millions of rows there and fills it; what breaks then is not the next benchmark
+# but the next test run, with "The table ... is full" on anything needing space —
+# a failure with nothing in it to point back here. So the tables the load routes
+# write to are emptied around every run.
+reset_load_tables() {
+    $DOCKER_COMPOSE exec -T mysql sh -c \
+        'mysql -u root -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" -e "TRUNCATE TABLE load_all"' \
+        >/dev/null 2>&1 || true
+    $DOCKER_COMPOSE exec -T postgres sh -c \
+        'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "TRUNCATE TABLE load_all"' \
+        >/dev/null 2>&1 || true
+    # The database is spelled with a hyphen (tests/servers/http/http-server.php
+    # selects "u-test"), and mongosh needs the root credentials the container was
+    # started with — a command missing either fails quietly and leaves the
+    # collection growing, which is what happened before this was checked.
+    $DOCKER_COMPOSE exec -T mongodb sh -c \
+        'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" \
+            --authenticationDatabase admin \
+            --eval "db.getSiblingDB(\"u-test\").load_all.deleteMany({})"' \
+        >/dev/null 2>&1 || true
+}
+
+# One handler, because the script installs its EXIT trap twice — the second one
+# replaces the first, and a cleanup listed only in the earlier one silently stops
+# happening. Everything that has to run on the way out goes here.
+cleanup() {
+    stop_servers
+    reset_load_tables
+}
+
+trap cleanup EXIT
+
+reset_load_tables
+
+# The CPU list each worker is pinned to, one entry per worker, space separated —
+# empty when PIN_SERVERS leaves them unpinned. Built here rather than inside the
+# container because placement IS what the flag is about, and it is worth reading
+# in one place instead of as a case arm wedged into the spawn loop.
+#
+# Every mode draws from the same budget (cpu 0..SERVERS-1), so an arm differs
+# from another only in where inside it the workers sit.
+build_pin_cpulists() {
+    case "$PIN_SERVERS" in
+        1)
+            # One logical CPU per worker.
+            awk -v n="$SERVERS" 'BEGIN { for (i = 0; i < n; i++) printf "%s ", i }'
+            ;;
+        physical)
+            # One physical core per worker: the sibling pair, read from the
+            # kernel rather than assumed, because the budget may cross from
+            # SMT cores into cores that have no sibling at all (this host has
+            # both). With more workers than pairs they wrap, which is what a
+            # 12-worker run on six cores does.
+            pairs=$(
+                cpu=0
+                while [ "$cpu" -lt "$SERVERS" ]; do
+                    cat "/sys/devices/system/cpu/cpu$cpu/topology/thread_siblings_list" 2>/dev/null \
+                        || echo "$cpu"
+                    cpu=$(( cpu + 1 ))
+                done | awk '!seen[$0]++'
+            )
+
+            echo "$pairs" | awk -v n="$SERVERS" '
+                { pair[NR] = $0 }
+                END { for (i = 0; i < n; i++) printf "%s ", pair[(i % NR) + 1] }
+            '
+            ;;
+        group)
+            # The whole pool in the budget; the scheduler places them.
+            awk -v n="$SERVERS" -v list="0-$(( SERVERS - 1 ))" \
+                'BEGIN { for (i = 0; i < n; i++) printf "%s ", list }'
+            ;;
+        *)
+            ;;
+    esac
+}
+
+PIN_CPULISTS=$(build_pin_cpulists)
 
 echo "=================================================================="
 echo " All-features load + resource benchmark${MODE:+  [$MODE]}"
 echo "   host cores      : $CORES"
+case "$PIN_SERVERS" in
+    1)        placement="one logical CPU each, cores 0-$(( SERVERS - 1 ))" ;;
+    physical) placement="one physical core each (sibling pairs), cores 0-$(( SERVERS - 1 ))" ;;
+    group)    placement="pool confined to cores 0-$(( SERVERS - 1 )), scheduler places" ;;
+    *)        placement="unpinned, as the worker master runs them" ;;
+esac
+
 if (( DISTINCT_PORTS == 1 )); then
-    echo "   server procs    : $SERVERS  (pinned to cores 0-$(( SERVERS - 1 )), ports $(( PORT + 1 ))-$(( PORT + SERVERS )), no reusePort)"
+    echo "   server procs    : $SERVERS  (ports $(( PORT + 1 ))-$(( PORT + SERVERS )), no reusePort)"
 else
-    echo "   server procs    : $SERVERS  (pinned to cores 0-$(( SERVERS - 1 )), reusePort)"
+    echo "   server procs    : $SERVERS  (reusePort)"
 fi
+echo "   placement       : $placement  (PIN_SERVERS=$PIN_SERVERS)"
 echo "   wrk threads     : $WRK_THREADS (pinned to cores $WRK_CPULIST)"
 echo "   connections     : $CONNECTIONS"
 echo "   duration        : ${DURATION}s   (sampling every ${SAMPLE_INTERVAL}s)"
@@ -145,7 +256,6 @@ else
     echo "   route           : $ROUTE"
 fi
 echo "   db pool / proc  : $DB_POOL_SIZE  (the /db* routes)"
-[ -n "${GOMAXPROCS:-}" ] && echo "   GOMAXPROCS      : $GOMAXPROCS  (per worker)"
 [ -n "$WRK_SCRIPT" ] && echo "   wrk script      : $WRK_SCRIPT  (mixed profile; ROUTE used only for the readiness probe)"
 [ "$WORKER_LOGS" = "1" ] && echo "   worker logs     : ${WORKERLOGPREFIX}<i>.log  (access log per worker)"
 echo "   target          : http://$IP:$PORT$ROUTE  (container bridge IP, no NAT)"
@@ -174,9 +284,18 @@ $DOCKER_COMPOSE exec -T php sh -c '
             out="'"$WORKERLOGPREFIX"'$i.log"
         fi
 
+        # The i-th entry of the list the host computed, or nothing when the
+        # list is empty (PIN_SERVERS=0).
+        pin=""
+        if [ -n "'"$PIN_CPULISTS"'" ]; then
+            set -- '"$PIN_CPULISTS"'
+            skip=$i
+            while [ "$skip" -gt 0 ]; do shift; skip=$(( skip - 1 )); done
+            pin="taskset -c $1"
+        fi
+
         SCONCUR_DB_POOL_SIZE='"$DB_POOL_SIZE"' \
-        GOMAXPROCS='"${GOMAXPROCS:-}"' \
-        env '"${SERVER_ENV:-}"' taskset -c "$i" php -d extension='"$EXTENSION"' '"$SCRIPT"' \
+        env '"${SERVER_ENV:-}"' $pin php -d extension='"$EXTENSION"' '"$SCRIPT"' \
             --address=0.0.0.0:$port --reusePort=$reuse --maxConcurrency='"$MAXCONCURRENCY"' \
             '"${SERVER_ARGS:-}"' \
             >"$out" 2>>"'"$STDERRLOG"'" &
@@ -201,7 +320,7 @@ echo
 
 SAMPLES=$(mktemp)
 RSS=$(mktemp)
-trap 'rm -f "$SAMPLES" "$RSS"; stop_servers' EXIT
+trap 'rm -f "$SAMPLES" "$RSS"; cleanup' EXIT
 
 # Background sampler: container CPU%/MEM (one docker stats call covers all) + summed
 # worker RSS (recorded as "elapsed_seconds total_kb" for the soak trend), until the
@@ -298,7 +417,7 @@ awk -v trend="$TREND" '
 ' "$RSS"
 
 # Per-worker access-log spread (WORKER_LOGS=1) — the balance check of
-# .ai/plans/dispatch-experiment.md, phase 0: does the kernel (or the proxy in
+# Dispatch experiment, phase 0: does the kernel (or the proxy in
 # front) place requests evenly, and does one worker's tail differ from the rest.
 # FAST_PATH selects which path counts as the cheap one in a mixed profile; every
 # other path is counted as "heavy". The percentiles are of the FAST requests

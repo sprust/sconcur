@@ -7,7 +7,7 @@ brought up via [`SO_REUSEPORT`](http-server.md) under the
 [master](worker-master.md). Every worker pushes its snapshot over a unix socket to
 the master once a second; the master keeps the pool state in memory and serves it
 on its own port — `GET /api/stats`, a live HTML panel and an SSE stream. Sampling
-and push happen on the Go side of the worker; the collector and panel are pure PHP
+and push happen inside the extension of the worker; the collector and panel are pure PHP
 in the master, which does not load the extension.
 
 ## Contents
@@ -43,8 +43,8 @@ client it degrades the panel, not supervision.
 ```mermaid
 flowchart TB
     master["Master (PHP) — collector (unix socket) and panel (/api/stats, /, /events)"]
-    worker1["Worker #1 (Go Pusher)"]
-    worker2["Worker #2 (Go Pusher)"]
+    worker1["Worker #1 (extension pusher)"]
+    worker2["Worker #2 (extension pusher)"]
     client["Browser / Prometheus / curl (Bearer)"]
 
     master -->|"spawn and supervise"| worker1
@@ -137,7 +137,7 @@ need different `panelPort`, `name` and `runtimeDir`.
 
 ## Metrics
 
-Worker numbers come from the Go side (`/proc`, `runtime`, its own counters); the
+Worker numbers come from the extension (`/proc`, `runtime`, its own counters); the
 `master` section is sampled by the PHP master from its own `/proc`. Process metrics
 are shared by every kind of worker; the workload section says which kind reported:
 HTTP has `requests`, socket and WebSocket have `connections`, a queue consumer has
@@ -147,10 +147,8 @@ running unlike pools shows each of them beside the others.
 | Field | What it is | Source |
 |---|---|---|
 | `memory.rssBytes` | RSS of the whole process (with the extension) | `/proc/self/status` `VmRSS` |
-| `memory.goRuntimeBytes` | Go-runtime memory | `runtime/metrics` |
-| `memory.nonExtensionBytes` | remainder without the extension (PHP + interpreter) | `rssBytes − goRuntimeBytes` |
 | `cpuPercent` | CPU usage by the process over the interval | diff of `/proc/self/stat` |
-| `goroutines` | goroutine count | `runtime.NumGoroutine()` |
+| `runtimeTasks` | live tasks in the extension's runtime | the runtime's own metrics |
 | `startedAt` / `uptimeSeconds` | when the worker's serve loop started (UTC) and its lifetime | serve-loop start |
 | `requests.completed` | requests served (HTTP) | counter |
 | `requests.avgMs` | average request duration | sum / count |
@@ -181,8 +179,8 @@ replaced starts its counters afresh, exactly as a server's `completed` does.
 `snapshotAgeMs` is computed by the master's own clock from the moment the frame
 was received, so it does not depend on clock skew; a live connection with no fresh
 snapshot for longer than 15 s flags the worker `hung`. That catches a wedged worker
-runtime (the pusher goroutine itself stalled), not a stuck request handler — the
-pusher is independent and keeps sending snapshots as long as the Go runtime is
+runtime (the pusher task itself stalled), not a stuck request handler — the
+pusher is independent and keeps sending snapshots as long as the extension's runtime is
 alive.
 
 ## Response format
@@ -203,9 +201,9 @@ The same data in three representations, chosen by `Accept`. The HTTP pool's JSON
     "cpuPercent": 0.6
   },
   "totals": {
-    "memory": { "rssBytes": 335544320, "goRuntimeBytes": 100663296, "nonExtensionBytes": 234881024 },
+    "memory": { "rssBytes": 335544320 },
     "cpuPercent": 28.4,
-    "goroutines": 192,
+    "runtimeTasks": 192,
     "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
   },
   "groups": [
@@ -214,9 +212,9 @@ The same data in three representations, chosen by `Accept`. The HTTP pool's JSON
       "workersTotal": 3,
       "workersHung": 0,
       "totals": {
-        "memory": { "rssBytes": 125829120, "goRuntimeBytes": 37748736, "nonExtensionBytes": 88080384 },
+        "memory": { "rssBytes": 125829120 },
         "cpuPercent": 10.6,
-        "goroutines": 72,
+        "runtimeTasks": 72,
         "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
       }
     }
@@ -229,9 +227,9 @@ The same data in three representations, chosen by `Accept`. The HTTP pool's JSON
       "snapshotAgeMs": 600,
       "startedAt": "2026-06-24T11:54:47+00:00",
       "uptimeSeconds": 312.5,
-      "memory": { "rssBytes": 41943040, "goRuntimeBytes": 12582912, "nonExtensionBytes": 29360128 },
+      "memory": { "rssBytes": 41943040 },
       "cpuPercent": 3.7,
-      "goroutines": 24,
+      "runtimeTasks": 24,
       "requests": { "completed": 105432, "avgMs": 2.4, "inFlight": 7, "inFlight1to5s": 2, "inFlight5to15s": 1, "inFlightOver15s": 0 }
     }
   ]
@@ -268,7 +266,7 @@ Four scopes, told apart by their prefix and their labels:
 | Family | Scope | Labels |
 | --- | --- | --- |
 | `sconcur_pool_*` | every worker of the master together — `requests`, `connections` and `deliveries` (the queue workload) | `name` |
-| `sconcur_group_*` | one pool: its worker count, hung count, CPU, RSS and goroutines | `name`, `group` |
+| `sconcur_group_*` | one pool: its worker count, hung count, CPU, RSS and runtime tasks | `name`, `group` |
 | `sconcur_master_*` | the master process itself | `name` |
 | `sconcur_worker_*` | one worker | `name`, `pid`, `group` |
 
@@ -280,7 +278,7 @@ family per kind of pool. To read one pool's workload on its own, sum the
 The JSON view splits it the same way: `groups` sums each pool of the master on its own,
 while `totals` sums all of its workers. Adding up the workload of unlike pools means
 nothing, so the workload numbers are read off `groups`; in `totals` it is memory, CPU
-and goroutines that carry meaning. A worker says which pool it belongs to in `group`,
+and runtime tasks that carry meaning. A worker says which pool it belongs to in `group`,
 taken from the `<group>:<slot>` label it stamps its snapshots with.
 
 ## Push-protocol contract

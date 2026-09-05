@@ -12,7 +12,7 @@ repository they run as `bin/<command>`, from a consumer application as
 Downloads the built extension `.so` from GitHub Releases. The project is
 experimental, so the extension is not published in PECL or other registries. Before
 downloading, check [Tested versions](../README.md#tested-versions): the extension
-is built against specific versions of PHP, Go and the database servers, and
+is built against specific versions of PHP, Rust and the database servers, and
 compatibility is guaranteed only with them.
 
 The version is not set manually — it comes from
@@ -74,8 +74,8 @@ RUN set -eux; \
     echo "extension=sconcur.so" > /usr/local/etc/php/conf.d/docker-php-ext-sconcur.ini
 ```
 
-In `composer.lock` the version may carry a `v` prefix (`v0.11.0`), so the leading
-`v` is stripped and added back in the URL — otherwise it becomes `vv0.11.0`. `jq`
+In `composer.lock` the version may carry a `v` prefix (`v0.12.0`), so the leading
+`v` is stripped and added back in the URL — otherwise it becomes `vv0.12.0`. `jq`
 and `curl` are required in this build layer.
 
 ## sconcur-status — check the installation
@@ -88,12 +88,12 @@ report; with `--json` — a single machine-readable line.
 vendor/bin/sconcur-status
 #   sconcur status
 #     extension installed:  yes
-#     package version:      0.11.0
-#     extension version:    0.11.0
+#     package version:      0.12.0
+#     extension version:    0.12.0
 #     ready:                yes
 
 vendor/bin/sconcur-status --json
-#   {"extension_installed":true,"package_version":"0.11.0","extension_version":"0.11.0","ready":true}
+#   {"extension_installed":true,"package_version":"0.12.0","extension_version":"0.12.0","ready":true}
 ```
 
 The extension must be enabled for the same process, otherwise the script cannot see

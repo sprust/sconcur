@@ -8,10 +8,10 @@ use SConcur\Transport\PayloadParametersInterface;
 
 /**
  * Parameters of a Request command: the request itself plus the per-request tuning.
- * Carries the mandatory hard execution limit (requestTimeoutMs), applied on the Go
- * side as a context deadline over the whole operation.
+ * Carries the mandatory hard execution limit (requestTimeoutMs), applied on the extension side
+ * as a context deadline over the whole operation.
  *
- * Go: payloads.RequestParams (ext/internal/features/httpclient/payloads/payloads.go).
+ * Rust: payloads::RequestParams (ext/src/features/httpclient/payloads.rs).
  */
 readonly class RequestPayloadParameters implements PayloadParametersInterface
 {

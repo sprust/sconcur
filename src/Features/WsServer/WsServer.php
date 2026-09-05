@@ -15,7 +15,7 @@ use SConcur\Transport\MessagePackTransport;
 use Throwable;
 
 /**
- * WebSocket server: the network lives in the Go extension. The listener is an HTTP
+ * WebSocket server: the network lives in the extension. The listener is an HTTP
  * server; a request carrying a valid WebSocket upgrade becomes a long-lived connection
  * streamed back as a result and handled in its own coroutine, while every other request
  * is answered 426 Upgrade Required. After the upgrade the connection is a bidirectional
@@ -38,7 +38,7 @@ readonly class WsServer
      * @param int                                       $maxMessageBytes     max size of a single inbound message; an oversize message
      *                                                                       closes the connection with 1009 (message too big). 0 = no limit.
      * @param int                                       $maxConcurrency      max connections handled at once (0 = unlimited). Bounds
-     *                                                                       goroutines and connection coroutines; excess connections wait
+     *                                                                       extension tasks and connection coroutines; excess connections wait
      *                                                                       for a free slot.
      * @param int                                       $handlerTimeoutMs    max time one connection handler may run before it is unwound
      *                                                                       where it stands (0 = unlimited). A handler cut this way ends
@@ -79,7 +79,7 @@ readonly class WsServer
      *                                                                       starve the other in-flight connections. Enabled by default
      *                                                                       (5 ms); 0 disables.
      *
-     * Defaults mirror the Go server defaults.
+     * Defaults mirror the extension's defaults.
      */
     public function __construct(
         protected string $address = '0.0.0.0:9200',

@@ -3,8 +3,8 @@ English | [Русский](adding-a-feature.ru.md)
 # How to add a new top-level feature
 
 A top-level feature is a new domain with its own `Method` (like `Sleeper`). The
-reference to copy is `Sleeper`: PHP in `src/Features/Sleeper/`, Go in
-`ext/internal/features/sleeper/`. Below is the walkthrough in two variants — without
+reference to copy is `Sleeper`: PHP in `src/Features/Sleeper/`, Rust in
+`ext/src/features/sleeper/`. Below is the walkthrough in two variants — without
 streaming (a single result) and with streaming (multiple batches).
 
 > Building a long-lived network server (like `HttpServer`)? That is a special kind
@@ -13,62 +13,63 @@ streaming (a single result) and with streaming (multiple batches).
 
 ## Two mandatory requirements
 
-Every handler on the Go side must satisfy both; violating them leaks resources and
+Every handler inside the extension must satisfy both; violating them leaks resources and
 breaks `WaitGroup` behaviour.
 
-1. **Context cancellation.** The task context `task.GetContext()` is cancelled when
-   a flow stops (`WaitGroup::stop()`, an early `break`, `WaitGroup` destruction,
-   `destroy`). Do the work on that context; for long operations listen on
-   `ctx.Done()` via `select`, otherwise the task cannot be stopped. For streaming,
-   release the resource on a **fresh** context (`context.Background()` + timeout):
-   by the time cleanup runs, the task context is already cancelled.
+1. **Cancellation.** The task's cancellation token, `task.context()`, is
+   cancelled when a flow stops (`WaitGroup::stop()`, an early `break`, `WaitGroup`
+   destruction, `destroy`). For a long operation put `_ = task.context().cancelled()`
+   into the `select!` beside it, otherwise the task cannot be stopped. Cleanup
+   after a stream must not run under that token — it is already cancelled by the
+   time the cleanup starts, so give the release its own bound.
 
 2. **Passing the execution deadline.** The payload pushed from PHP must carry the
-   execution deadline, and the Go side must bound the operation with it — a task
+   execution deadline, and the extension must bound the operation with it — a task
    must not run indefinitely. How it is applied varies: sometimes the time is the
-   essence of the operation (`Sleeper`); sometimes the timeout is applied natively
-   (MongoDB passes `Client::$timeoutMs` and `::$serverSelectionTimeoutMs` into
-   `options.Client().SetTimeout(...).SetServerSelectionTimeout(...)`); the generic
-   way is to bound the task context:
-   `ctx, cancel := context.WithTimeout(task.GetContext(), timeout)`.
+   essence of the operation (`Sleeper`); sometimes the driver takes it (the
+   MongoDB client is keyed by `serverSelectionTimeoutMs`); the generic way is
+   `tokio::time::timeout(Duration::from_millis(timeout_ms), work)`.
 
-   (`ExecutionMs` in the result is the actual work time set by
-   `dto.NewSuccessResult` — not the timeout.)
+   (`executionMs` in the result is the actual work time, measured by
+   `calc_execution_ms` — not the timeout.)
 
 ## Method and payloads
 
 The domain is a value duplicated in two places, and both must match: PHP
-`SConcur\Features\MethodEnum` and Go `ext/internal/types/method.go` (`Method`).
+`SConcur\Features\MethodEnum` and Rust `ext/src/types/method.rs` (`Method`).
 
 A payload is the exchange contract, laid out mirror-wise on both sides: PHP
-`src/Features/<Feature>/Payloads/` (one class per payload), Go
-`ext/internal/features/<feature>/payloads/payloads.go` (all types in one file, in a
-directory named after the PHP domain). Each PHP `*Payload` has a Go struct with the
-same name; the struct fields are the keys returned by `getData()`, and the
-`msgpack` (and `json`) tags equal those short keys — Go decodes precisely by the
-tags. Cross-references are mandatory in both directions.
+`src/Features/<Feature>/Payloads/` (one class per payload), Rust
+`ext/src/features/<feature>/payloads.rs` (all types in one file, in a module named
+after the PHP domain). Each PHP `*Payload` has a Rust struct with the same name;
+the struct fields are the keys returned by `getData()`, and each `serde(rename)`
+equals that short key — the struct decodes precisely by them. Cross-references are
+mandatory in both directions.
 
-```go
-// SleeperPayload is the payload of a sleep command.
-// PHP: SConcur\Features\Sleeper\Payloads\SleeperPayload.
-type SleeperPayload struct {
-    Microseconds int64 `json:"us" msgpack:"us"`
+```rust
+/// The payload of a sleep command.
+/// PHP: SConcur\Features\Sleeper\Payloads\SleeperPayload.
+#[derive(Deserialize)]
+pub struct SleeperPayload {
+    #[serde(rename = "us")]
+    pub microseconds: i64,
 }
 ```
 
 Multi-command features (the reference is `Mongodb`) use a two-level payload: a
 shared envelope with a command field and `dt` (the serialized body) — one `Payload`
-type on Go, built by `Base\BaseMongodbPayload` on PHP — plus one struct per command
-for the contents of `dt`. There the PHP `*PayloadParameters` classes are a PHP-only
-convenience for assembling `dt` and are not carried over: their fields are expanded
-directly into the corresponding Go struct. If a command's `dt` is an arbitrary user
-document (insert, count, runCommand, …) or empty (drop, list…), it has no Go struct
-— `dt` is read as raw BSON in the handler, and that case is marked with a comment,
-so every PHP `*Payload` corresponds to either a Go struct or an explicit note.
+type in Rust, built by `Base\BaseMongodbPayload` on PHP — plus one struct per
+command for the contents of `dt`. There the PHP `*PayloadParameters` classes are a
+PHP-only convenience for assembling `dt` and are not carried over: their fields are
+expanded directly into the corresponding Rust struct. If a command's `dt` is an
+arbitrary user document (insert, count, runCommand, …) or empty (drop, list…), it
+has no struct — `dt` is read as an untyped value in the handler, and that case is
+marked with a comment, so every PHP `*Payload` corresponds to either a struct or an
+explicit note.
 
 A feature with many commands whose parameters are flat maps of short keys can skip the
 class-per-command entirely: `Amqp` has one `AmqpPayload(AmqpCommandEnum $command, array
-$data)`, the callers write the keys where the values are, and each enum case names the Go
+$data)`, the callers write the keys where the values are, and each enum case names the
 struct its `dt` is decoded into. Two dozen near-identical classes buy nothing a named
 argument at the call site does not already give. Prefer that shape when the parameters
 carry no logic, and the Mongodb one when they do.
@@ -88,7 +89,7 @@ PHP:
 
    ```php
    /**
-    * Go: payloads.FooPayload (ext/internal/features/foo/payloads/payloads.go).
+    * Rust: payloads::FooPayload (ext/src/features/foo/payloads.rs).
     */
    readonly class FooPayload implements PayloadInterface
    {
@@ -124,58 +125,75 @@ PHP:
    );
    ```
 
-Go:
+Rust:
 
-1. `types/method.go` — the same constant: `MethodFoo Method = "foo"`.
+1. `ext/src/types/method.rs` — the same constant: a `Foo` case whose wire value is
+   `"foo"`.
 
-2. The feature package `ext/internal/features/foo/feature.go` implementing
-   `contracts.FeatureContract` (`Handle(task *tasks.Task)`): parse
-   `message.Payload`, do the work on `task.GetContext()`, return the result with
-   `ExecutionMs`.
+2. The feature module `ext/src/features/foo/mod.rs` implementing `Feature`
+   (`handle(&self, task: Task) -> BoxFuture`): decode `message.payload`, do the
+   work under `task.context()`, and answer with a result.
 
-   ```go
-   func (f *FooFeature) Handle(task *tasks.Task) {
-       start := time.Now()
-       message := task.GetMessage()
+   ```rust
+   impl Feature for FooFeature {
+       fn handle(&self, task: Task) -> BoxFuture {
+           Box::pin(async move {
+               let start_time = Instant::now();
+               let message = task.message();
 
-       var payload payloads.FooPayload
+               let payload: payloads::FooPayload = match rmp_serde::from_slice(&message.payload) {
+                   Ok(payload) => payload,
+                   Err(error) => {
+                       task.add_result(Result::error(
+                           message,
+                           ERR_FACTORY.by_err("parse error", error),
+                       )).await;
 
-       if err := msgpack.Unmarshal(message.Payload, &payload); err != nil {
-           task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("parse error", err)))
-           return
+                       return;
+                   }
+               };
+
+               // The flow's token cancels this on stop; the timeout bounds it.
+               tokio::select! {
+                   _ = task.context().cancelled() => {
+                       task.add_result(Result::error(
+                           message,
+                           ERR_FACTORY.by_text("closed by task stop"),
+                       )).await;
+                   }
+                   outcome = do_foo(&payload) => match outcome {
+                       Ok(body) => {
+                           task.add_result(Result::success(
+                               message,
+                               body,
+                               calc_execution_ms(start_time),
+                           )).await;
+                       }
+                       Err(error) => {
+                           task.add_result(Result::error(
+                               message,
+                               ERR_FACTORY.by_err("foo error", error),
+                           )).await;
+                       }
+                   },
+               }
+           })
        }
-
-       // Bound the work with the passed timeout; this same ctx is cancelled on stop.
-       ctx, cancel := context.WithTimeout(
-           task.GetContext(),
-           time.Duration(payload.TimeoutMs)*time.Millisecond,
-       )
-       defer cancel()
-
-       result, err := doFoo(ctx) // your operation; must respect ctx
-
-       if err != nil {
-           task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("foo error", err)))
-           return
-       }
-
-       task.AddResult(dto.NewSuccessResult(message, result, helpers.CalcExecutionMs(start)))
    }
    ```
 
-   As with `Sleeper`, the feature is usually a singleton via `sync.Once` + `Get()`.
+   As with `Sleeper`, the feature is a singleton behind `OnceLock` + `get()`.
 
-3. Registration in `ext/internal/features/factory.go` — a case in
-   `DetectMessageHandler`:
+3. Registration in `ext/src/features/mod.rs` — an arm in `detect_message_handler`:
 
-   ```go
-   case types.MethodFoo:
-       return foo_feature.Get(), nil
+   ```rust
+   Method::Foo => Ok(foo::get()),
    ```
 
 ## Variant B. With streaming (in batches)
 
-Streaming returns the result in parts: Go holds state, PHP pulls the next batches.
+Streaming returns the result in parts: the extension holds state, PHP pulls the
+next batches.
 Routing `next` to the state is shared across all features, so no separate setup is
 needed.
 
@@ -198,63 +216,59 @@ public function doFoo(int $someParam): Iterator
 }
 ```
 
-Go: the constant as in A, plus a state file in the feature package (`rows_state.go`
-in `sql`, `message_state.go` in `wsserver`; mongodb keeps them under `states/`)
-implementing `contracts.StateContract` (`Next() *dto.Result`, `Close()`):
+Rust: the constant as in A, plus a state module in the feature (`rows_state.rs`
+in `sql`, `message_state.rs` in `wsserver`; mongodb keeps them under `states.rs`)
+implementing `StateContract` (`next()`, `close()`, both async):
 
-```go
-type FooState struct {
-    // the mutex serializes Next and Close: Close may arrive from context cancellation
-    // while Next is still using the resource.
-    mutex     sync.Mutex
-    ctx       context.Context
-    message   *dto.Message
-    startTime time.Time
-    // the held resource + parameters
+```rust
+pub struct FooState {
+    // A mutex, because close() may arrive from cancellation while next() is
+    // still using the resource.
+    resource: tokio::sync::Mutex<Option<Resource>>,
+    message: Arc<Message>,
+    start_time: Instant,
 }
 
-func (s *FooState) Next() *dto.Result {
-    s.mutex.Lock()
-    defer s.mutex.Unlock()
+impl StateContract for FooState {
+    fn next(&self) -> StateFuture<'_> {
+        Box::pin(async move {
+            let mut resource = self.resource.lock().await;
 
-    // lazily initialize the resource on s.ctx on the first call, read a batch
+            // Open the resource on the first call, then read one batch.
 
-    // more data → a batch with the "more coming" flag:
-    return dto.NewSuccessResultWithNext(s.message, response, helpers.CalcExecutionMs(s.startTime))
-    // the last batch → without the flag (the state is removed, Close() is called)
-}
+            // More data → a batch that says so:
+            Result::success_with_next(&self.message, body, calc_execution_ms(self.start_time))
+            // The last batch → without it, and the registry closes the state.
+        })
+    }
 
-// Close releases the resource on a FRESH context: the task context is already cancelled.
-func (s *FooState) Close() {
-    s.mutex.Lock()
-    defer s.mutex.Unlock()
-
-    closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-    defer cancel()
-
-    // release the held resource on closeCtx
+    fn close(&self) -> StateCloseFuture<'_> {
+        Box::pin(async move {
+            // Release the resource. This is awaited, so an abandoned MongoDB
+            // cursor reaches the server before PHP looks at the cursor count.
+        })
+    }
 }
 ```
 
-The feature's `Handle` creates the state and starts it through the registry;
-`states.Get().Start` registers `Close()` on context cancellation and returns the
-first batch:
+The feature's `handle` builds the state and starts it through the registry;
+`states::get().start()` hooks `close()` to the flow ending and returns the first
+batch:
 
-```go
-state := newFooState(task.GetContext(), message /*, parameters */)
+```rust
+let state = Arc::new(FooState::new(task.message_arc() /*, parameters */));
 
-result, err := states.Get().Start(task.GetContext(), message.TaskKey, state)
-if err != nil {
-    task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("foo", err)))
-    return
+match states::get().start(task.context().clone(), &message.task_key, state).await {
+    Ok(result) => task.add_result(result).await,
+    Err(error) => {
+        task.add_result(Result::error(message, ERR_FACTORY.by_text(&error))).await;
+    }
 }
-
-task.AddResult(result)
 ```
 
 An unfinished stream (an early `break` on PHP) is closed automatically: PHP releases
-the flow, the task context is cancelled, and the state registry hook calls
-`Close()` — which is why `Close()` must work on a fresh context.
+the flow, its cancellation token fires, and the state registry hook calls
+`close()` — which is why `close()` must not depend on the flow still being alive.
 
 ## Tests (mandatory)
 
@@ -271,7 +285,7 @@ the flow, the task context is cancelled, and the state registry hook calls
   verify concurrency, i.e. that the total time ≈ the slowest operation rather than
   their sum. The reference is `tests/feature/Features/Sleeper/SleeperTest.php`.
 - Add edge and synchronous checks as separate tests inheriting from
-  `BaseTestCase`, and cover the Go logic with Go tests (`make ext-test`).
+  `BaseTestCase`, and cover the extension's own logic with unit tests (`make ext-test`).
 
 ## Checklist
 
@@ -280,20 +294,20 @@ PHP:
 - [ ] `MethodEnum` — a new value.
 - [ ] Payload class (`PayloadInterface`) in `src/Features/<Feature>/Payloads/`;
       parameter assembly happens inside it; the payload carries the execution
-      deadline; docblock with the cross-reference `Go: payloads.<Type>`.
+      deadline; docblock with the cross-reference `Rust: payloads::<Type>`.
 - [ ] Public API (for streaming — returns `IteratorResult`).
 - [ ] A test from `BaseAsyncTestCase` plus edge tests from `BaseTestCase`.
 
-Go:
+Rust:
 
-- [ ] The same constant in `types/method.go`.
-- [ ] Payload structs in `payloads.go`, mirroring the PHP `*Payload` 1:1 (names,
-      `msgpack` tags) plus the cross-reference `// PHP: …`.
-- [ ] A feature package with `Handle`: the task context into every call; the work
-      bounded by the passed timeout; for streaming — a `StateContract` state plus
-      `Close()` on a fresh context.
-- [ ] Registration in `features/factory.go`.
-- [ ] (opt.) Go tests.
+- [ ] The same constant in `ext/src/types/method.rs`.
+- [ ] Payload structs in `payloads.rs`, mirroring the PHP `*Payload` 1:1 (names,
+      `serde(rename)` keys) plus the cross-reference `// PHP: …`.
+- [ ] A feature module with `handle`: the task's cancellation token honoured by
+      every call; the work bounded by the passed timeout; for streaming — a
+      `StateContract` state whose `close()` is awaited.
+- [ ] Registration in `ext/src/features/mod.rs`.
+- [ ] (opt.) unit tests in the extension.
 
 Verification:
 `make ext-build && make ext-test && make php-stan && make cs-fixer-check && make test`.

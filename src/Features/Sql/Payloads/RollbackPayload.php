@@ -12,7 +12,7 @@ use SConcur\Features\Sql\SqlCommandEnum;
 /**
  * The Rollback command: rolls back the transaction identified by transactionId.
  *
- * Go: payloads.TransactionRefParams (ext/internal/features/sql/payloads/payloads.go).
+ * Rust: payloads::TransactionRefParams (ext/src/features/sql/payloads.rs).
  */
 readonly class RollbackPayload extends BaseSqlPayload
 {

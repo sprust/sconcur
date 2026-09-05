@@ -1,0 +1,120 @@
+[package]
+name    = "sconcur"
+version = "0.12.0"
+edition = "2024"
+
+# staticlib, not cdylib: build.sh compiles ext/sconcur.c (the same PHP glue
+# the Go build uses, unchanged) and links it against this archive into one
+# sconcur.so. Same shape as the Go build, where cgo compiles sconcur.c into the
+# c-shared object.
+[lib]
+name       = "sconcur_core"
+path       = "src/lib.rs"
+crate-type = ["staticlib"]
+
+[dependencies]
+# The shared results channel. Its recv() already spins before parking, which is
+# what handler.waitSpinIterations hand-rolls with runtime.Gosched on the Go side.
+crossbeam-channel = "0.5"
+libc              = "0.2"
+# MessagePack, the wire format of every feature payload (the frame envelope
+# itself is hand-built binary, exactly as in main.go).
+rmp        = "0.8"
+rmp-serde  = "1.3"
+serde      = { version = "1", features = ["derive"] }
+tokio      = { version = "1", features = ["rt", "rt-multi-thread", "net", "time", "sync", "io-util", "macros"] }
+tokio-util = "0.7"
+hyper       = { version = "1", features = ["server", "http1"] }
+hyper-util  = { version = "0.1", features = ["tokio", "server"] }
+http-body-util = "0.1"
+socket2     = { version = "0.6", features = ["all"] }
+# The WebSocket server. Chosen over a standalone implementation because it
+# upgrades a hyper request in place, which is how the Go side gets there too
+# (net/http + coder/websocket): the same HTTP layer answers 426 to anything that
+# is not an upgrade.
+fastwebsockets = { version = "0.10", features = ["upgrade", "unstable-split"] }
+# The HTTP client. reqwest is what stands in for net/http's Client: redirects,
+# TLS, a connection pool and streaming bodies in one place, on the same hyper
+# the servers use.
+reqwest = { version = "0.13", default-features = false, features = [
+    # 0.13 split what 0.12 called "rustls-tls": the backend and the root store
+    # are separate features now. Both are named here rather than left to a
+    # default, so the trust anchors stay the bundled Mozilla set the client used
+    # before — reading the host's store instead would change who is trusted
+    # depending on the image the extension runs in.
+    #
+    # no-provider, because reqwest's own "rustls" feature would pull aws-lc-rs
+    # while lapin and the MongoDB driver are on ring: two crypto providers in one
+    # process leave rustls unable to pick a default, which it says out loud on
+    # every TLS connection. The provider is installed once at core start.
+    "rustls-no-provider",
+    "webpki-roots",
+    "stream",
+    "http2",
+    "charset",
+] }
+# The SQL feature. sqlx is the closest thing to Go's database/sql: one API over
+# both drivers, pooling and timeouts included, with the driver selected per
+# Method exactly as drivers_mysql.go / drivers_pgsql.go select theirs.
+# chrono and bigdecimal are not decoration — MySQL's binary protocol packs DATE
+# and DATETIME, and Postgres sends NUMERIC in binary, so without them those
+# columns cannot be rendered the way the Go build renders them.
+sqlx = { version = "0.9", default-features = false, features = [
+    "runtime-tokio",
+    "mysql",
+    # 0.9 moved the RSA key exchange behind a feature of its own, off by default.
+    # Without it a MySQL 8 server refuses the connection outright: its default
+    # auth plugin is caching_sha2_password, which needs RSA to send the password
+    # over a plaintext link, and every SQL test failed on exactly that.
+    "mysql-rsa",
+    "postgres",
+    "chrono",
+    "bigdecimal",
+] }
+# rmpv carries a decoded-but-not-yet-typed MessagePack value: SQL bindings
+# arrive as a heterogeneous list, which is Go's []any here.
+# StreamExt, for consuming sqlx's row stream.
+futures-util = { version = "0.3", default-features = false }
+# chrono directly, not through sqlx's re-export: that one carries only the
+# types sqlx implements Decode for, and the RFC3339 formatting options are
+# not among them. Cargo unifies it with the copy sqlx already pulls in.
+chrono     = { version = "0.4", default-features = false, features = ["std"] }
+# The MongoDB feature. The driver brings its own bson crate, which is what the
+# serializer converts to and from — the same shape the Go build works in.
+mongodb = { version = "3", default-features = false, features = [
+    "rustls-tls",
+    "bson-3",
+    "compat-3-3-0",
+] }
+# Named directly for one line of code: the process-wide crypto provider, which
+# three dependencies would otherwise each pick for themselves. See core.rs.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# Shared by hyper, reqwest and this crate; named so the buffer type the HTTP
+# stack hands over is not an implicit dependency.
+bytes      = "1"
+rmpv       = { version = "1", features = ["with-serde"] }
+# The telemetry snapshot, and nothing else: the collector's wire format is JSON
+# (src/stats), while every feature payload is MessagePack.
+serde_json = "1"
+# The AMQP feature. lapin is what stands in for amqp091-go, and it was chosen by
+# checking the five places the feature is thin rather than by reputation: a
+# publisher confirm resolves per publish and carries its returned message with
+# it, wait_for_confirms drains a channel's outstanding ones, basic_get answers
+# Option, the field-table types carry D and T of their own, and a broker refusal
+# arrives as ProtocolError(AMQPError) with the reply code the PHP side branches
+# on.
+# ring rather than the default provider: rustls is already in this build through
+# reqwest and the MongoDB driver, and it is ring that is in the lock file.
+lapin = { version = "4", default-features = false, features = [
+    "rustls",
+    "rustls--ring",
+    "tokio",
+] }
+
+[profile.release]
+opt-level      = 3
+lto            = true
+codegen-units  = 1
+# catch_unwind in flows::run_task_protected needs unwinding: an abort would take
+# the whole PHP process down, which is what RunTaskProtected exists to prevent.
+panic          = "unwind"

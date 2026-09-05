@@ -15,7 +15,7 @@ class SocketServerMaxMessageBytesTest extends BaseSocketServerTestCase
     {
         $connection = $this->connect();
 
-        // A frame whose length prefix exceeds maxMessageBytes is rejected on the Go
+        // A frame whose length prefix exceeds maxMessageBytes is rejected on the extension
         // side without buffering the payload, and the connection is closed.
         $this->sendFrame($connection, str_repeat('x', 64));
 

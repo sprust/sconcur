@@ -11,7 +11,7 @@ require_once __DIR__ . '/../lib/http-bench.php';
 
 /**
  * HTTP-client download benchmark: N downloads of a 4 MiB body to files from the
- * running `servers` HTTP pool. The sink path copies the body to disk inside the Go
+ * running `servers` HTTP pool. The sink path copies the body to disk inside the
  * extension (io.Copy) and never buffers it in PHP; the async run fans the downloads
  * out through a WaitGroup, so its total time stays ≈ one download while native/sync
  * scale with N. Native is a streamed copy from PHP's HTTP stream wrapper into a file.

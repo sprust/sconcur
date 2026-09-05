@@ -9,10 +9,10 @@ use SConcur\Transport\PayloadParametersInterface;
 /**
  * Parameters of a Connect command: the remote ws:// URL plus the per-connection tuning.
  * Carries the mandatory execution bounds for a long-lived connection (connect / read /
- * write timeouts), applied on the Go side as the dial/handshake and per-message
+ * write timeouts), applied on the extension side as the dial/handshake and per-message
  * deadlines.
  *
- * Go: payloads.ConnectParams (ext/internal/features/wsclient/payloads/payloads.go).
+ * Rust: payloads::ConnectParams (ext/src/features/wsclient/payloads.rs).
  */
 readonly class ConnectPayloadParameters implements PayloadParametersInterface
 {

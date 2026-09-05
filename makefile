@@ -2,15 +2,33 @@ MAKEFLAGS += --no-print-directory
 
 DOCKER_COMPOSE = docker compose
 PHP_CLI = $(DOCKER_COMPOSE) exec php
-PHP_EXT = $(PHP_CLI) php -d extension=./ext/build/sconcur.so
+# The extension every target, benchmark and test harness loads: the Rust core.
+# Absolute in the container's path shape, because it is handed to subprocesses
+# that do not share this one's working directory (the server harnesses spawn
+# their worker with proc_open).
+#
+# Overridable, so a target can be pointed at another build without a second copy
+# of each recipe:
+#   make bench-mongodb-aggregate SCONCUR_EXT=/path/to/sconcur.so
+SCONCUR_EXT ?= /sconcur/ext/build/sconcur.so
 
-# Master control inside the `servers` container: two masters run there under
-# supervisor. One holds the three servers as a group each, the other the RabbitMQ
-# consumers; a command names the master by its config and, for a single pool, the
-# group by --group.
+# Exported so the targets that run a script on the host (the load benchmarks)
+# pass the same choice down instead of each recipe repeating it.
+export SCONCUR_EXT
+
+# Every target that loads the extension also puts the choice into the container's
+# environment: the harnesses that spawn a worker of their own read SCONCUR_EXT,
+# and without it a run would load one build in the PHPUnit process and another in
+# the process doing the work.
+PHP_CLI_EXT = $(DOCKER_COMPOSE) exec -e SCONCUR_EXT=$(SCONCUR_EXT) php
+PHP_EXT = $(PHP_CLI_EXT) php -d extension=$(SCONCUR_EXT)
+
+# Master control inside the `servers` container: one master runs there under
+# supervisor, holding the three servers and the RabbitMQ consumers as a group
+# each. A command names it by its config and, for a single pool, the group by
+# --group.
 SERVERS_CLI = $(DOCKER_COMPOSE) exec servers php /sconcur/bin/sconcur-server
 SERVERS_CONFIG = /sconcur/config/sconcur.servers.config.json
-RABBITMQ_CONFIG = /sconcur/config/sconcur.rabbitmq.config.json
 
 env-copy:
 	cp -i .env.example .env
@@ -38,8 +56,7 @@ restart:
 	make stop
 	make up
 
-# Rebuilds the extension and recreates the `servers` container (both master
-# servers under supervisor).
+# Rebuilds the extension and recreates the `servers` container.
 servers-restart:
 	make ext-build
 	$(DOCKER_COMPOSE) up -d --build --force-recreate servers
@@ -72,19 +89,11 @@ ws-server-status:
 ws-server-reload:
 	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG) --group=ws
 
-# The RabbitMQ consumers are their own master, started with the container. This brings
-# it back after `make rabbitmq-stop`.
-rabbitmq-start:
-	$(DOCKER_COMPOSE) exec servers supervisorctl -c /sconcur/docker/servers/config/supervisord.conf start rabbitmq
-
 rabbitmq-status:
-	$(SERVERS_CLI) status --configPath=$(RABBITMQ_CONFIG)
-
-rabbitmq-stop:
-	$(SERVERS_CLI) stop --configPath=$(RABBITMQ_CONFIG)
+	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG) --group=rabbitmq
 
 rabbitmq-reload:
-	$(SERVERS_CLI) reload --configPath=$(RABBITMQ_CONFIG)
+	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG) --group=rabbitmq
 
 bash-php:
 	$(DOCKER_COMPOSE) exec php bash
@@ -108,16 +117,21 @@ cs-fixer-fix:
 check:
 	make cs-fixer-check
 	make php-stan
-	make test
+	make ext-build
 	make ext-test
+	make ext-check
+	make test
 
 status:
 	$(PHP_EXT) bin/sconcur-status ${c}
 
+# The suites `make test` runs. Overridable, so a run can be narrowed to one
+# directory without a target of its own.
+TEST_PATHS = tests
+
 # --log-junit persists the failing test's name for the rare flaky failure that
-# only fires on the first run after heavy host activity — see
-# .ai/plans/flaky-test-hunt.ru.md. A failed run's report is copied to
-# .phpunit-failed/ (gitignored, survives container restarts) with a timestamped
+# only fires on the first run after heavy host activity. A failed run's report is
+# copied to .phpunit-failed/ (gitignored, survives restarts) with a timestamped
 # name, so a one-off failure is never lost to the next run overwriting
 # /tmp/sconcur-phpunit.xml. The stale report is removed up front: phpunit
 # writes the XML at the end of the run, so a run that dies before that
@@ -137,16 +151,115 @@ test:
 		--display-errors \
 		--display-notices \
 		--display-warnings \
-		tests ${c} || ( \
+		$(TEST_PATHS) ${c} || ( \
 			$(PHP_CLI) sh -c 'mkdir -p .phpunit-failed && cp /tmp/sconcur-phpunit.xml .phpunit-failed/sconcur-phpunit-$$(date +%Y%m%d-%H%M%S).xml'; \
 			exit 1 \
 		)
 
+# Compiles ext/ into ext/build/sconcur.so — the extension everything here loads. Two steps in one script: cargo builds the core into a static
+# archive, gcc links it with the PHP glue (ext/build.sh).
 ext-build:
-	$(PHP_CLI) sh ./ext-build.sh
+	$(PHP_CLI) sh -c 'cd /sconcur/ext && CARGO_TARGET_DIR=/sconcur/ext/target sh ./build.sh'
 
+# Exercises the core through the unmodified PHP package before the suites run:
+# the shared channel, the error path, flow teardown, the sync wait.
+ext-check:
+	$(PHP_EXT) ext/check/core-smoke.php
+
+# The Rust core's own unit tests, for what the PHP suites can only catch
+# statistically — a race whose window is a few microseconds wide shows up there
+# as one failure in forty runs, and here as a red test.
+#
+# --lib, and the crate stays a plain staticlib: cargo compiles the unit-test
+# harness straight from the sources, so nothing about the shipped build changes.
+# Adding "lib" to crate-type to make this work is the wrong instinct and was
+# tried — an rlib beside the staticlib costs full LTO, and ext/build/sconcur.so
+# went from 21.9 MB to 39.6.
 ext-test:
-	$(PHP_CLI) sh ./ext-test.sh
+	$(PHP_CLI) sh -c 'cd /sconcur/ext && CARGO_TARGET_DIR=/sconcur/ext/target cargo test --lib ${c}'
+
+# What accepting one task costs the runtime, stage by stage: the flow registry,
+# the per-flow bookkeeping and the spawn, which from PHP are one crossing seen
+# from outside. --release because the debug build prices a different program
+# (its numbers ran 2-4x the release ones), and #[ignore] so a plain ext-test
+# does not spend seconds on a measurement.
+ext-bench-push:
+	$(PHP_CLI) sh -c 'cd /sconcur/ext && CARGO_TARGET_DIR=/sconcur/ext/target \
+		cargo test --release --lib -- --ignored --nocapture push_cost'
+
+# --- Profiling --------------------------------------------------------------
+# A separate image whose PHP binary is built with frame pointers and left
+# unstripped, so a sampling profiler can name what it sees. The image the
+# benchmark numbers come from is untouched: the profilers live here and here
+# only, and even here excimer is installed but not enabled, so nothing loads it
+# unless a target below says so.
+#
+# Why it exists: the two PHP-side articles worth taking apart — building the
+# PSR-7 request, and the residue of the coordination cycle — could not be, because
+# the stock binary makes PHP-side call graphs unreadable.
+#
+# Needs the development image first (`make build`), and rebuilds PHP from source,
+# so the first run takes a while.
+PROFILE_COMPOSE = COMPOSE_FILE=docker-compose.yml:docker-compose.profiling.yml
+
+profile-build:
+	$(PROFILE_COMPOSE) docker compose build php
+
+# Recreates the php container from the profiling image. The backends keep
+# running; only php is replaced.
+profile-up:
+	$(PROFILE_COMPOSE) docker compose up -d --no-deps php
+
+# Back to the development image.
+profile-down:
+	docker compose up -d --no-deps php
+
+# Runs as root inside the container: the capabilities the overlay grants are
+# only effective for uid 0, and a container running as a normal user has an
+# empty CapEff whatever cap_add says.
+# Samples a script with perf and writes a folded stack file next to it, which
+# reads directly and also feeds a flame graph.
+#   make profile-perf c="tests/benchmarks/runtime/push-profile.php"
+profile-perf:
+	$(PROFILE_COMPOSE) docker compose exec -u root -e SCONCUR_EXT=$(SCONCUR_EXT) php \
+		perf record -F 999 -g --call-graph fp -o /tmp/sconcur-perf.data -- \
+		php -d extension=$(SCONCUR_EXT) ${c}
+	$(PROFILE_COMPOSE) docker compose exec -u root php \
+		sh -c 'perf report -i /tmp/sconcur-perf.data --stdio --no-children --percent-limit 0.5 | head -60'
+
+# Whether this host will let perf sample at all. kernel.perf_event_paranoid is a
+# host setting a container cannot change: at 2 or below the target above works,
+# at 3 or more (Ubuntu ships 4) the kernel refuses whatever capabilities the
+# container was given.
+profile-perf-check:
+	@echo "kernel.perf_event_paranoid = $$(cat /proc/sys/kernel/perf_event_paranoid)"
+	@echo "  <= 2  perf works"
+	@echo "  >= 3  blocked; allow it for this boot with:"
+	@echo "        sudo sysctl kernel.perf_event_paranoid=1"
+
+# Samples the PHP stack rather than the C one: which PHP function was running,
+# not which engine function it was inside. The two answer different halves.
+#   make profile-php c="tests/benchmarks/runtime/push-profile.php"
+profile-php:
+	$(PROFILE_COMPOSE) docker compose exec -e SCONCUR_EXT=$(SCONCUR_EXT) php \
+		php -d extension=excimer.so -d extension=$(SCONCUR_EXT) \
+		tests/benchmarks/lib/excimer-profile.php ${c}
+
+# Proof the image is what it claims: unstripped, with frame pointers, and
+# carrying both profilers.
+profile-verify:
+	$(PROFILE_COMPOSE) docker compose exec php sh -c '\
+		echo "php binary:"; file $$(which php) | sed "s/^/  /"; \
+		echo "frame pointers:"; objdump -d $$(which php) | grep -c "push   %rbp" | sed "s/^/  push %rbp sites: /"; \
+		echo "profilers:"; php -d extension=excimer.so -m | grep -i excimer | sed "s/^/  /"; \
+		perf --version | sed "s/^/  /"'
+
+# Runs on the HOST (needs wrk): the L0/L1 attribution ladder — what a request
+# costs before PHP is involved, and what crossing into PHP adds. Tunables via
+# env, e.g.:
+#   make bench-ladder ROUNDS=5 SERVERS=8 DURATION=20
+bench-ladder:
+	ext/bench/ladder.sh
 
 # Resets the DB backends to a clean state before a benchmark session: drops the
 # named data volumes and recreates the containers. Without it writes accumulate
@@ -212,20 +325,21 @@ bench-amqp-get:
 bench-amqp-consume:
 	$(PHP_EXT) tests/benchmarks/amqp/consume.php ${c}
 
-# Memory-leak soak for the AMQP feature: runs one scenario in a loop and prints, every
-# five seconds, what the two runtimes hold — the PHP heap and its dangling tasks, the Go
-# goroutine count and heap. Every cycle releases whatever it opened, so a column that only
-# grows is a leak. Scenarios: publish, churn, consume, fanout, errors, confirms,
-# consume-async, stop. Defaults to publish for two minutes.
+# Memory-leak soak for the AMQP feature: runs one scenario in a loop and prints,
+# every five seconds, what is held on both sides — the PHP heap and its dangling
+# tasks, and what the broker still has open. Every cycle releases whatever it
+# opened, so a column that only grows is a leak. Scenarios: publish, churn,
+# consume, fanout, errors, confirms, consume-async, stop, consumer, consumer-lost.
+# Defaults to publish for two minutes.
 #
 # e.g.: make mem-leak-amqp scenario=churn seconds=600
 #
-# The goroutine and Go-heap columns come from the extension's own profiler, which
-# SCONCUR_PPROF_ADDR switches on (ext/pprof.go); without it the run works and reports
-# those two as zero, which hides exactly the half a soak is for.
+# The extension side is reported through the task count and the broker's own
+# connections, channels and consumers: a worker flat on its own memory can still
+# leave sockets behind on the other side.
 mem-leak-amqp:
-	$(DOCKER_COMPOSE) exec -e SCONCUR_PPROF_ADDR=127.0.0.1:6060 php \
-		php -d extension=./ext/build/sconcur.so \
+	$(DOCKER_COMPOSE) exec php \
+		php -d extension=$(SCONCUR_EXT) \
 		tests/mem-leak/amqp-soak.php $(or $(scenario),publish) $(or $(seconds),120)
 
 bench-db-lifecycle:
@@ -242,6 +356,51 @@ bench-http-client-download:
 
 bench-sleeper:
 	$(PHP_EXT) tests/benchmarks/runtime/sleeper.php ${c}
+
+# What a fan-out costs per member on both sides of the shared results buffer.
+# Nothing else here reaches the far side: a server serves tens of requests at
+# once, not thousands, so the backpressure path is invisible to every other
+# target.
+bench-fan-out:
+	$(PHP_EXT) tests/benchmarks/runtime/fan-out.php
+
+# Where the scheduler's suspend -> push -> waitAny -> resume cycle spends its
+# time. The companion of the boundary profile: that one prices taking a result
+# across the boundary, this one prices the PHP coordination wrapped around it.
+bench-coordination:
+	$(PHP_EXT) tests/benchmarks/runtime/coordination-profile.php
+
+# Where the per-request PSR-7 construction goes, stage by stage: the decode the
+# server pays for on every request, split into unpack, URI, headers and body, so
+# a lazy request can be judged against what it would actually save.
+bench-request:
+	$(PHP_EXT) tests/benchmarks/runtime/request-profile.php
+
+# What taking a result out of the batch costs on the PHP side: the frame parse
+# the profile puts at 17%, priced stage by stage on a captured batch.
+bench-result:
+	$(PHP_EXT) tests/benchmarks/runtime/result-profile.php
+
+# Whether tearing a coroutine down costs more when more coroutines are alive:
+# the same group of short-lived members against a growing crowd of parked
+# neighbours. Two steps of that path are scans, and a scan costs what the
+# process is holding.
+bench-teardown:
+	$(PHP_EXT) tests/benchmarks/runtime/teardown-profile.php
+
+# The push half of the boundary, which neither of the two above prices. Pushes
+# sleepers that hold for seconds, so the runtime cannot execute anything inside
+# the measured window — its threads are this process's threads, and their CPU
+# would otherwise land in the number.
+bench-push:
+	$(PHP_EXT) tests/benchmarks/runtime/push-profile.php
+
+# What a member of a nested fan-out costs — a WaitGroup created inside a
+# coroutine, the only shape whose pushes come off a coroutine's own stack and so
+# the only one that feeds Scheduler::$pendingDispatches. Every other runtime
+# bench here is flat, which is why that path had never been measured.
+bench-nested-fan-out:
+	$(PHP_EXT) tests/benchmarks/runtime/nested-fan-out.php
 
 bench-mongodb-insertOne:
 	$(PHP_EXT) tests/benchmarks/mongodb/insert-one.php ${c}
@@ -325,7 +484,7 @@ bench-pgsql-transaction:
 
 # Payload-size benches: p = payload bytes per operation (default 1024), c = calls.
 # E.g.: make bench-mysql-payloadWrite p=1048576 c=50
-PHP_EXT_PAYLOAD = $(DOCKER_COMPOSE) exec -e SCONCUR_BENCH_PAYLOAD_BYTES=$(p) php php -d extension=./ext/build/sconcur.so
+PHP_EXT_PAYLOAD = $(DOCKER_COMPOSE) exec -e SCONCUR_BENCH_PAYLOAD_BYTES=$(p) php php -d extension=$(SCONCUR_EXT)
 
 bench-mongodb-payloadWrite:
 	$(PHP_EXT_PAYLOAD) tests/benchmarks/mongodb/payload-write.php ${c}
@@ -435,7 +594,23 @@ bench-http-load-soak:
 bench-http-load-stats-empty:
 	ROUTE=/ tests/benchmarks/http/load-stats.sh
 
-# RoadRunner counterparts of the three targets above: the same harness against
+# Response-size variant: the same harness against /big/N, whose handler answers N
+# bytes and does no I/O. It is what /  and /all cannot see — everything they
+# measure carries a body of a few bytes, so a cost that scales with the response
+# is invisible to both. That blind spot is how a response body crossed as three
+# copies unnoticed until 2026-09-03;
+# removing one of them was worth +16% rps here and nothing at all on "/".
+# Size via BODY_BYTES, e.g.: make bench-http-load-stats-big BODY_BYTES=1048576
+#
+# No RoadRunner or Swoole counterpart: neither reference server has a /big route,
+# so this compares SConcur against itself over time, not against another stack.
+BODY_BYTES ?= 102400
+
+bench-http-load-stats-big:
+	ROUTE=/big/$(BODY_BYTES) tests/benchmarks/http/load-stats.sh
+
+# RoadRunner counterpart of bench-http-load-stats, -soak and -empty (not of
+# -big, whose route the reference servers do not have): the same harness against
 # the native-driver reference stack (tests/servers/roadrunner), so the numbers
 # are directly comparable. Tunables via env, e.g.: make bench-rr-load-stats
 # WORKERS=12 DURATION=30

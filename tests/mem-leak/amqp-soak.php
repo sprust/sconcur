@@ -3,25 +3,23 @@
 declare(strict_types=1);
 
 // Soak test for the AMQP feature: runs one scenario in a loop and prints, every five
-// seconds, what the two runtimes are holding — the PHP heap and its dangling tasks, the Go
-// runtime's goroutines and heap.
+// seconds, what is held on both sides — the PHP heap and its dangling tasks, and what the
+// broker itself still has open.
 //
 // Everything a cycle creates is released inside that cycle, so any value that only grows
 // is a leak.
 //
-// Run it through `make mem-leak-amqp scenario=<name> seconds=<n>`, which sets the profiler
-// address the Go-side columns are read from. By hand:
+// Run it through `make mem-leak-amqp scenario=<name> seconds=<n>`, or by hand:
 //
-//   SCONCUR_PPROF_ADDR=127.0.0.1:6060 php -d extension=./ext/build/sconcur.so \
+//   php -d extension=./ext/build/sconcur.so \
 //       tests/mem-leak/amqp-soak.php <scenario> <seconds>
-//
-// Without SCONCUR_PPROF_ADDR the run still works and reports the two Go columns as zero.
 
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\Amqp\UnroutableMessageException;
 use SConcur\Features\Amqp\Connection;
 use SConcur\Features\Amqp\Consumer\QueueConsumer;
 use SConcur\Features\Amqp\Delivery;
+use SConcur\Exceptions\Amqp\ConnectionException;
 use SConcur\Features\Amqp\ExchangeTypeEnum;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Impl\TestAmqpResolver;
@@ -35,31 +33,6 @@ TestApplication::init();
 $scenario       = (string) ($_SERVER['argv'][1] ?? 'publish');
 $durationSecond = (int) ($_SERVER['argv'][2] ?? 120);
 
-$profilerAddress = getenv('SCONCUR_PPROF_ADDR') ?: '';
-
-/**
- * The Go runtime's goroutine count and heap, read from the profiler the extension exposes.
- *
- * @return array{goroutines: int, heapBytes: int}
- */
-$readRuntime = static function () use ($profilerAddress): array {
-    if ($profilerAddress === '') {
-        return ['goroutines' => 0, 'heapBytes' => 0];
-    }
-
-    $context = stream_context_create(['http' => ['timeout' => 2]]);
-
-    $goroutines = @file_get_contents("http://$profilerAddress/debug/pprof/goroutine?debug=1", false, $context);
-    $heap       = @file_get_contents("http://$profilerAddress/debug/pprof/heap?debug=1", false, $context);
-
-    preg_match('/goroutine profile: total (\d+)/', (string) $goroutines, $goroutineMatch);
-    preg_match('/# HeapInuse = (\d+)/', (string) $heap, $heapMatch);
-
-    return [
-        'goroutines' => (int) ($goroutineMatch[1] ?? 0),
-        'heapBytes'  => (int) ($heapMatch[1] ?? 0),
-    ];
-};
 
 $options = TestAmqpResolver::getOptions();
 
@@ -177,8 +150,33 @@ $scenarios = [
 
     // The failure path: every cycle kills a channel with a 404 and throws it away. This is
     // where a dead channel would pile up if the registries did not release it.
-    'errors' => static function () use ($connection): void {
-        $channel = $connection->channel();
+    //
+    // On its own connection, and it replaces it when the core retires one. Every
+    // cycle costs a channel number — a channel the broker closes never hands its
+    // number back — so a long enough run has to reconnect, which is what an
+    // application doing this has to do too. Closing the retired one is part of
+    // that: dropping it instead leaves its flow registered and the task count
+    // climbs by one per swap.
+    'errors' => static function () use ($options): void {
+        static $own = null;
+
+        if ($own === null) {
+            $own = new Connection($options);
+
+            $own->connect();
+        }
+
+        try {
+            $channel = $own->channel();
+        } catch (ConnectionException) {
+            $own->close();
+
+            $own = new Connection($options);
+
+            $own->connect();
+
+            return;
+        }
 
         try {
             $channel->queue('sconcur_soak_missing_' . bin2hex(random_bytes(4)))->declarePassive();
@@ -537,7 +535,7 @@ $failures   = 0;
 $lastReport = 0.0;
 
 echo "scenario=$scenario duration={$durationSecond}s\n";
-echo "elapsed cycles  php_mb  php_peak_mb  tasks  goroutines  go_heap_mb"
+echo "elapsed cycles  php_mb  php_peak_mb  tasks"
     . "  br_conn  br_chan  br_cons  failures\n";
 
 while (microtime(true) < $deadline) {
@@ -563,18 +561,15 @@ while (microtime(true) < $deadline) {
 
     gc_collect_cycles();
 
-    $runtime = $readRuntime();
     $broker  = TestAmqpResolver::brokerCounts();
 
     printf(
-        "%7.1f %6d %7.2f %12.2f %6d %11d %11.2f %8d %8d %8d %9d\n",
+        "%7.1f %6d %7.2f %12.2f %6d %8d %8d %8d %9d\n",
         $elapsed,
         $cycleCount,
         memory_get_usage() / 1024 / 1024,
         memory_get_peak_usage() / 1024 / 1024,
         $extension->count(),
-        $runtime['goroutines'],
-        $runtime['heapBytes'] / 1024 / 1024,
         $broker['connections'],
         $broker['channels'],
         $broker['consumers'],

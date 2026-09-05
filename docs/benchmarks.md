@@ -2,7 +2,7 @@ English | [Русский](benchmarks.ru.md)
 
 # Feature benchmarks
 
-Per-feature measurements (except `Sleeper`): what a call across the PHP↔Go
+Per-feature measurements (except `Sleeper`): what a call across the PHP↔extension
 boundary costs against the native driver, and what running several such calls at
 the same time gains. Reference numbers, not a guarantee — they depend on
 hardware, DB settings and load. The workload-matching verdict table is in
@@ -17,7 +17,7 @@ hardware, DB settings and load. The workload-matching verdict table is in
 ## Contents
 
 - [Environment](#environment)
-- [Conversion overhead (the PHP↔Go boundary)](#conversion-overhead-the-phpgo-boundary)
+- [Conversion overhead (the PHP↔extension boundary)](#conversion-overhead-the-phpextension-boundary)
 - [Methodology](#methodology)
 - [MongoDB](#mongodb)
 - [MySQL](#mysql)
@@ -26,7 +26,7 @@ hardware, DB settings and load. The workload-matching verdict table is in
 - [AMQP (RabbitMQ)](#amqp-rabbitmq)
 - [Clients (HTTP / Socket / WebSocket)](#clients-http--socket--websocket)
 - [Servers (HTTP / Socket / WebSocket)](#servers-http--socket--websocket)
-  - [HTTP throughput: `/` vs `/all`](#http-throughput--vs-all)
+  - [HTTP throughput: the empty endpoint](#http-throughput-the-empty-endpoint)
   - [Comparison with RoadRunner and Swoole](#comparison-with-roadrunner-and-swoole)
   - [Empty endpoint: the worker-count ladder](#empty-endpoint-the-worker-count-ladder)
   - [Point query: the worker-count ladder](#point-query-the-worker-count-ladder)
@@ -37,7 +37,7 @@ hardware, DB settings and load. The workload-matching verdict table is in
 
 Intel Core i7-13620H (16 threads), 15 GiB RAM, Linux, everything in Docker: the
 benchmarks from the `php` container (`make bench-*`), the server pools from the
-`servers` container (3 workers, `SO_REUSEPORT`). Component versions — see
+`servers` container (2 workers per group, `SO_REUSEPORT`). Component versions — see
 [Tested versions](../README.md#tested-versions).
 
 DB data lives on the host disk (SSD), as in a real deployment: writes pay a real
@@ -55,26 +55,23 @@ worker log stays empty: it reports a failed feature in the response body, not to
 stderr. The run still prints a plausible requests/sec. Always check
 `Non-2xx or 3xx responses` in the wrk output before trusting a long run.
 
-Client and server numbers taken on 2026-07-22, DB and payload numbers on
-2026-08-13, the AMQP numbers on 2026-08-22 and re-measured unchanged on
-2026-08-28, the three-stack comparisons on 2026-08-09, all on an idle machine.
-The SConcur rows of the server tables and of the three-stack comparison were
-re-measured on 2026-08-12, after the 0.9.1 hot-path work (fiber pool,
-request-body chunk sizing, fiber-stack cgo dispatch); the RoadRunner and Swoole
-rows of the `/db` tables are kept from 2026-08-09 — same machine, same setup,
-idle both times. The empty-endpoint worker ladder measured all three stacks in
-one session on 2026-08-12.
+Every number on this page was taken on 2026-09-04/05, on an idle machine and on
+the Rust core. The three stacks of the HTTP-server tables ran in one session with
+the placement equalised (see [Methodology](#methodology)); the DB, payload,
+client, server-feature and AMQP numbers were taken on the same disk-backed
+volumes.
 
-## Conversion overhead (the PHP↔Go boundary)
+## Conversion overhead (the PHP↔extension boundary)
 
 Every call crosses the boundary and converts its data: arguments are packed into
 MessagePack (`Transport/MessagePackTransport`), the result is unpacked back; Mongo
 documents ride in the same format, with the BSON values that MessagePack cannot
 express carried as objects. This is a fixed CPU price
-per operation, on top of the cgo call and goroutine dispatch. On cheap cached reads
+per operation, on top of the boundary call and runtime task dispatch. On cheap cached reads
 it shows up as the `native` → `sync` gap (both sequential, but `sync` goes through
-Go): `pgsql-selectOne` 3.6 → 9.0 ms over 100 calls, `mysql-selectOne` 7.7 →
-21.9 ms. On a slow operation the same surcharge is a small fraction of the total.
+the extension): `pgsql-selectOne` 4.2 → 22.7 ms over 100 calls, `mysql-selectOne`
+7.3 → 35.3 ms. On a slow operation the same surcharge is a small fraction of the
+total.
 
 ## Methodology
 
@@ -90,7 +87,7 @@ work on distinct ids per mode, so no two calls share a hot row and a row lock
 cannot force the concurrent calls to run one after another. A discarded warm-up
 precedes each measurement, otherwise the concurrent calls would pay for spinning
 up the connection pool inside the measured phase; the SQL pools are
-`maxOpenConns: 50` with `maxIdleConns` defaulting to the same value. Memory is
+`maxOpenConns: 50`. Memory is
 the peak RSS of the PHP process per mode.
 
 Calls per mode: 100 by default, 50 for client I/O benchmarks. Three MongoDB
@@ -108,67 +105,92 @@ the `vs RoadRunner`/`vs Swoole` columns compare throughput against that stack's
 row for the same endpoint. Sub-50 ms rows are noise-sensitive — a sign flip
 between a row's `min` and `max` marks exactly that.
 
+The server rows are taken with the workers and the load generator on
+non-overlapping cores, because that is what makes a run comparable to the next
+one. Production does not pin, and the difference is not zero — see
+[CPU pinning](load-testing.md#cpu-pinning) for the measurements.
+
+Two things have to be equal before the stacks can be compared, and neither is
+by default. **Placement**: `load-stats.sh` defaults to `PIN_SERVERS=1`, one
+worker per logical CPU, while `rr-load-stats.sh` and `swoole-load-stats.sh` can
+only `taskset` the master and let it fork — the `group` placement. The core
+budget is the same either way, the placement is not, and it is worth 26% on the
+empty endpoint. Every server row below runs `group`; what `pin=1` costs is
+measured separately in [CPU pinning](load-testing.md#cpu-pinning). **Table
+state**: the three stacks share `load_all` and `bench_rw`, and only
+`load-stats.sh` empties the first while nothing empties the second, so whichever
+stack ran later inherited a bigger table. The rows below were taken with both
+truncated before every single run.
+
+Re-measure all three stacks in one session: cross-session drift alone reaches
+±20%, and a reference row carried over from an older session is what made the
+previous version of these tables incomparable.
+
 ## MongoDB
 
-Run concurrently what makes the server work — `count` ~7×, `bulkWrite` ~7×,
-`updateMany` ~5.5×, `createIndex` +28%; single-document operations stay with the
-native driver.
+Everything gains except `insertMany`. What makes the server chew through the
+dataset gains most — `count` ~7×, `bulkWrite` ~7×, `updateMany` ~5.7×,
+`createIndex` +27% — and single-document operations now gain too, by 19–77%.
 
 Median of 5 runs against a cold dataset of 100 000 documents. Cells hold
 `native / sync / async`, ms, with the `async vs native` percent in parentheses.
 
 | Operation | count | native / sync / async, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
 | --- | ---: | ---: | ---: | ---: | --- |
-| insertOne | 100 | 13.5 / 40.8 / 12.2 (+10% ✅) | 6.4 / 17.6 / 5.8 (+10% ✅) | 21.6 / 92.9 / 28.0 (−30% ❌) | 10 / 10 / 10 |
-| insertMany | 100 | 45.7 / 92.0 / 65.8 (−44% ❌) | 22.1 / 37.4 / 11.9 (+46% ✅) | 146 / 258 / 73.3 (+50% ✅) | 10 / 10 / 10 |
-| bulkWrite | 20 | 3434 / 3521 / 501 (+85% ✅) | 3405 / 3469 / 479 (+86% ✅) | 3449 / 3535 / 514 (+85% ✅) | 8 / 8 / 8 |
-| updateOne | 100 | 7.6 / 10.1 / 9.6 (−27% ❌) | 6.3 / 9.7 / 6.1 (+3% ✅) | 10.6 / 72.2 / 35.3 (−231% ❌) | 10 / 10 / 10 |
-| updateMany | 10 | 1760 / 1703 / 313 (+82% ✅) | 1740 / 1697 / 306 (+82% ✅) | 1780 / 1739 / 336 (+81% ✅) | 8 / 8 / 8 |
-| deleteOne | 100 | 6.5 / 22.7 / 7.3 (−11% ❌) | 6.0 / 10.1 / 4.6 (+23% ✅) | 36.3 / 58.7 / 31.9 (+12% ✅) | 10 / 10 / 10 |
-| findOne | 100 | 11.9 / 21.3 / 12.9 (−8% ❌) | 8.2 / 10.4 / 4.2 (+49% ✅) | 16.6 / 88.9 / 52.8 (−218% ❌) | 10 / 10 / 10 |
-| aggregate | 100 | 20.0 / 38.6 / 30.3 (−51% ❌) | 12.1 / 21.1 / 12.9 (−7% ❌) | 26.8 / 63.2 / 45.6 (−71% ❌) | 10 / 10 / 10 |
-| count | 100 | 2269 / 2304 / 316 (+86% ✅) | 2236 / 2264 / 308 (+86% ✅) | 2316 / 2381 / 324 (+86% ✅) | 10 / 10 / 10 |
-| command | 100 | 8.5 / 15.0 / 13.4 (−58% ❌) | 6.5 / 12.6 / 3.2 (+52% ✅) | 14.7 / 46.6 / 22.9 (−56% ❌) | 6 / 6 / 6 |
-| createIndex | 20 | 2164 / 2202 / 1566 (+28% ✅) | 2127 / 2160 / 1510 (+29% ✅) | 2179 / 2248 / 1618 (+26% ✅) | 8 / 8 / 8 |
+| insertOne | 100 | 9.7 / 19.3 / 7.2 (+25% ✅) | 5.7 / 13.0 / 3.1 (+45% ✅) | 43.8 / 46.8 / 15.0 (+66% ✅) | 10 / 10 / 10 |
+| insertMany | 100 | 26.9 / 59.7 / 33.4 (−24% ❌) | 24.3 / 54.0 / 33.0 (−36% ❌) | 67.0 / 130 / 38.3 (+43% ✅) | 10 / 10 / 10 |
+| bulkWrite | 20 | 3566 / 3539 / 508 (+86% ✅) | 3466 / 3453 / 486 (+86% ✅) | 3603 / 3676 / 530 (+85% ✅) | 8 / 8 / 8 |
+| updateOne | 100 | 24.0 / 25.6 / 5.4 (+77% ✅) | 7.0 / 12.5 / 2.7 (+61% ✅) | 39.9 / 31.9 / 17.5 (+56% ✅) | 10 / 10 / 10 |
+| updateMany | 10 | 1788 / 1797 / 312 (+83% ✅) | 1745 / 1696 / 298 (+83% ✅) | 2123 / 1996 / 340 (+84% ✅) | 8 / 8 / 8 |
+| deleteOne | 100 | 7.9 / 10.0 / 4.5 (+42% ✅) | 6.2 / 7.4 / 2.4 (+61% ✅) | 37.6 / 33.4 / 7.3 (+80% ✅) | 10 / 10 / 10 |
+| findOne | 100 | 8.9 / 13.6 / 4.7 (+47% ✅) | 5.9 / 9.6 / 3.0 (+50% ✅) | 27.3 / 32.2 / 12.4 (+55% ✅) | 10 / 10 / 10 |
+| aggregate | 100 | 21.6 / 23.5 / 7.4 (+66% ✅) | 11.5 / 13.1 / 4.8 (+58% ✅) | 32.7 / 157 / 39.2 (−20% ❌) | 10 / 10 / 10 |
+| count | 100 | 2344 / 2299 / 322 (+86% ✅) | 2312 / 2281 / 296 (+87% ✅) | 2423 / 2355 / 341 (+86% ✅) | 10 / 10 / 10 |
+| command | 100 | 8.4 / 11.9 / 6.8 (+19% ✅) | 3.4 / 11.6 / 3.3 (+3% ✅) | 18.8 / 23.0 / 11.8 (+37% ✅) | 6 / 6 / 6 |
+| createIndex | 20 | 2679 / 2603 / 1965 (+27% ✅) | 2615 / 2490 / 1840 (+30% ✅) | 2793 / 2778 / 2023 (+28% ✅) | 8 / 8 / 8 |
 
-async wins where a call makes the server chew through the dataset — every
-`count` scans all 100k documents, every `updateMany` rewrites them, the
-unindexed `bulkWrite` filters scan the collection several times per call. Point
-single-document operations stay with native: MongoDB pays no per-operation fsync
-on the default write concern, so a write is a fast in-memory operation with no
-I/O wait for other work to hide behind, and the boundary conversion costs more
-than the operation itself.
+async wins biggest where a call makes the server chew through the dataset —
+every `count` scans all 100k documents, every `updateMany` rewrites them, the
+unindexed `bulkWrite` filters scan the collection several times per call.
+
+Single-document operations gain as well: `findOne` +47%, `updateOne` +77%,
+`deleteOne` +42%, `insertOne` +25%. MongoDB pays no per-operation fsync on the
+default write concern, so there is no I/O wait to hide other work behind; what
+the concurrent mode overlaps here is the round-trip to the server, and that is
+worth more than the boundary conversion costs. `insertMany` is the exception —
+it already batches its documents into one round-trip, so there is nothing left
+to overlap.
 
 ## MySQL
 
-Disk writes run concurrently are ~12–15× faster (their fsyncs happen in
-parallel), `transaction` ~11×, `count` ~2×; cheap reads stay with PDO. Median of
-5 runs against a cold dataset of 100 000 rows, columns as for MongoDB.
+Disk writes run concurrently are ~14–22× faster (their fsyncs happen in
+parallel), `transaction` ~22×, `count` ~1.6×; cheap reads stay with PDO. Median
+of 5 runs against a cold dataset of 100 000 rows, columns as for MongoDB.
 
 | Operation | count | native / sync / async, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
 | --- | ---: | ---: | ---: | ---: | --- |
-| insert | 100 | 622 / 671 / 50.5 (+92% ✅) | 589 / 662 / 27.5 (+95% ✅) | 662 / 696 / 55.5 (+92% ✅) | 6 / 6 / 6 |
-| selectOne | 100 | 7.7 / 21.9 / 15.6 (−103% ❌) | 3.9 / 9.4 / 4.0 (−5% ❌) | 25.9 / 70.3 / 24.5 (+5% ✅) | 6 / 6 / 6 |
-| selectMany | 100 | 9.4 / 80.5 / 45.7 (−388% ❌) | 8.0 / 28.1 / 14.0 (−74% ❌) | 23.9 / 230 / 52.9 (−121% ❌) | 6 / 6 / 10 |
-| count | 100 | 148 / 158 / 77.4 (+48% ✅) | 138 / 144 / 62.5 (+55% ✅) | 163 / 198 / 92.1 (+44% ✅) | 6 / 6 / 6 |
-| update | 100 | 637 / 680 / 41.3 (+94% ✅) | 610 / 654 / 28.0 (+95% ✅) | 643 / 702 / 47.3 (+93% ✅) | 6 / 6 / 6 |
-| delete | 100 | 639 / 706 / 42.3 (+93% ✅) | 617 / 656 / 41.0 (+93% ✅) | 640 / 716 / 43.2 (+93% ✅) | 6 / 6 / 6 |
-| transaction | 100 | 641 / 820 / 56.3 (+91% ✅) | 578 / 734 / 28.4 (+95% ✅) | 656 / 828 / 68.9 (+89% ✅) | 6 / 6 / 6 |
+| insert | 100 | 1042 / 1127 / 73.6 (+93% ✅) | 1020 / 1006 / 65.0 (+94% ✅) | 1204 / 1171 / 90.1 (+93% ✅) | 6 / 6 / 6 |
+| selectOne | 100 | 7.3 / 35.3 / 8.1 (−11% ❌) | 6.4 / 17.0 / 4.9 (+24% ✅) | 11.0 / 46.9 / 13.7 (−25% ❌) | 6 / 6 / 6 |
+| selectMany | 100 | 7.9 / 28.5 / 14.5 (−84% ❌) | 7.2 / 25.3 / 11.2 (−55% ❌) | 9.7 / 96.8 / 34.9 (−259% ❌) | 6 / 6 / 10 |
+| count | 100 | 150 / 168 / 93.2 (+38% ✅) | 145 / 163 / 74.9 (+48% ✅) | 153 / 170 / 120 (+22% ✅) | 6 / 6 / 6 |
+| update | 100 | 1122 / 1235 / 53.4 (+95% ✅) | 1113 / 1172 / 40.4 (+96% ✅) | 1195 / 1317 / 62.3 (+95% ✅) | 6 / 6 / 6 |
+| delete | 100 | 1200 / 1246 / 68.4 (+94% ✅) | 1180 / 1222 / 44.6 (+96% ✅) | 1249 / 1287 / 70.9 (+94% ✅) | 6 / 6 / 6 |
+| transaction | 100 | 1230 / 1329 / 57.1 (+95% ✅) | 1149 / 1255 / 48.1 (+96% ✅) | 1251 / 1381 / 93.0 (+93% ✅) | 6 / 6 / 6 |
 
 ## PostgreSQL
 
-Writes run concurrently are ~3–8× faster, `count` ~7×; point reads stay with
+Writes run concurrently are ~6–11× faster, `count` ~6×; point reads stay with
 PDO.
 
 | Operation | count | native / sync / async, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
 | --- | ---: | ---: | ---: | ---: | --- |
-| insert | 100 | 128 / 179 / 16.5 (+87% ✅) | 123 / 114 / 5.7 (+95% ✅) | 133 / 187 / 25.5 (+81% ✅) | 6 / 6 / 6 |
-| selectOne | 100 | 3.6 / 9.0 / 9.6 (−169% ❌) | 2.9 / 7.6 / 3.7 (−31% ❌) | 4.8 / 18.0 / 17.9 (−270% ❌) | 6 / 6 / 6 |
-| selectMany | 100 | 7.1 / 37.4 / 43.3 (−510% ❌) | 6.9 / 25.6 / 12.7 (−85% ❌) | 8.2 / 47.1 / 49.1 (−502% ❌) | 6 / 6 / 10 |
-| count | 100 | 287 / 306 / 41.1 (+86% ✅) | 281 / 293 / 39.5 (+86% ✅) | 290 / 312 / 43.1 (+85% ✅) | 6 / 6 / 6 |
-| update | 100 | 130 / 190 / 28.7 (+78% ✅) | 121 / 177 / 19.7 (+84% ✅) | 133 / 204 / 30.4 (+77% ✅) | 6 / 6 / 6 |
-| delete | 100 | 138 / 185 / 18.7 (+86% ✅) | 126 / 151 / 15.3 (+88% ✅) | 141 / 194 / 24.2 (+83% ✅) | 6 / 6 / 6 |
-| transaction | 100 | 161 / 306 / 49.8 (+69% ✅) | 131 / 181 / 11.0 (+92% ✅) | 177 / 330 / 50.7 (+71% ✅) | 6 / 6 / 6 |
+| insert | 100 | 297 / 423 / 27.8 (+91% ✅) | 267 / 306 / 12.1 (+95% ✅) | 328 / 479 / 30.8 (+91% ✅) | 6 / 6 / 6 |
+| selectOne | 100 | 4.2 / 22.7 / 5.5 (−33% ❌) | 3.0 / 16.9 / 3.8 (−27% ❌) | 5.2 / 39.8 / 7.5 (−44% ❌) | 6 / 6 / 6 |
+| selectMany | 100 | 6.7 / 39.9 / 15.6 (−134% ❌) | 6.6 / 28.7 / 11.6 (−77% ❌) | 12.2 / 128 / 41.8 (−244% ❌) | 6 / 6 / 10 |
+| count | 100 | 296 / 627 / 48.0 (+84% ✅) | 288 / 345 / 43.7 (+85% ✅) | 302 / 736 / 61.5 (+80% ✅) | 6 / 6 / 6 |
+| update | 100 | 278 / 399 / 27.7 (+90% ✅) | 251 / 339 / 12.5 (+95% ✅) | 283 / 446 / 37.8 (+87% ✅) | 6 / 6 / 6 |
+| delete | 100 | 257 / 364 / 24.9 (+90% ✅) | 232 / 231 / 12.5 (+95% ✅) | 264 / 408 / 34.9 (+87% ✅) | 6 / 6 / 6 |
+| transaction | 100 | 270 / 453 / 44.3 (+84% ✅) | 259 / 366 / 21.8 (+92% ✅) | 307 / 485 / 46.8 (+85% ✅) | 6 / 6 / 6 |
 
 The disk flips the SQL picture on writes: every committed write pays an fsync,
 the sequential modes sum it over all 100 calls, and `async` waits for all of
@@ -197,47 +219,47 @@ Payload 1 KB, 100 calls:
 
 | Operation | median n/s/a, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
 | --- | ---: | ---: | ---: | --- |
-| mongodb insertOne | 13.6 / 32.5 / 30.3 (−123% ❌) | 9.0 / 9.6 / 4.5 (+50% ✅) | 37.0 / 138 / 36.1 (+2% ✅) | 6 / 6 / 6 |
-| mongodb findOne | 10.4 / 20.4 / 9.8 (+6% ✅) | 6.3 / 8.8 / 4.9 (+23% ✅) | 16.5 / 78.7 / 18.6 (−13% ❌) | 6 / 6 / 6 |
-| mysql insert | 739 / 813 / 132 (+82% ✅) | 736 / 746 / 128 (+83% ✅) | 753 / 841 / 143 (+81% ✅) | 6 / 6 / 6 |
-| mysql selectOne | 10.1 / 15.0 / 13.2 (−30% ❌) | 9.6 / 10.7 / 4.4 (+55% ✅) | 12.5 / 68.6 / 25.4 (−103% ❌) | 6 / 6 / 6 |
-| pgsql insert | 123 / 179 / 28.0 (+77% ✅) | 111 / 165 / 21.1 (+81% ✅) | 143 / 195 / 28.6 (+80% ✅) | 6 / 6 / 6 |
-| pgsql selectOne | 3.1 / 9.5 / 4.2 (−35% ❌) | 2.7 / 7.5 / 3.8 (−42% ❌) | 5.5 / 16.3 / 18.5 (−233% ❌) | 6 / 6 / 6 |
+| mongodb insertOne | 38.2 / 55.0 / 15.7 (+59% ✅) | 20.9 / 14.2 / 2.7 (+87% ✅) | 53.4 / 64.7 / 17.1 (+68% ✅) | 6 / 6 / 6 |
+| mongodb findOne | 19.8 / 28.4 / 8.3 (+58% ✅) | 13.2 / 10.7 / 5.3 (+60% ✅) | 31.2 / 69.4 / 29.8 (+5% ✅) | 6 / 6 / 6 |
+| mysql insert | 1003 / 1047 / 188 (+81% ✅) | 986 / 1028 / 177 (+82% ✅) | 1025 / 1070 / 210 (+80% ✅) | 6 / 6 / 6 |
+| mysql selectOne | 8.2 / 70.9 / 19.1 (−133% ❌) | 7.5 / 16.8 / 3.2 (+57% ✅) | 17.3 / 77.9 / 26.8 (−55% ❌) | 6 / 6 / 6 |
+| pgsql insert | 160 / 236 / 25.6 (+84% ✅) | 140 / 188 / 10.1 (+93% ✅) | 171 / 321 / 31.8 (+81% ✅) | 6 / 6 / 6 |
+| pgsql selectOne | 3.4 / 29.5 / 12.4 (−263% ❌) | 2.8 / 17.6 / 6.0 (−116% ❌) | 8.3 / 66.8 / 23.5 (−183% ❌) | 6 / 6 / 6 |
 
 Payload 64 KB, 100 calls:
 
 | Operation | median n/s/a, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
 | --- | ---: | ---: | ---: | --- |
-| mongodb insertOne | 29.8 / 51.8 / 38.3 (−29% ❌) | 24.9 / 46.4 / 14.5 (+42% ✅) | 50.8 / 259 / 72.2 (−42% ❌) | 6 / 6 / 6 |
-| mongodb findOne | 12.5 / 45.5 / 38.5 (−209% ❌) | 11.6 / 31.0 / 19.3 (−66% ❌) | 26.9 / 138 / 61.5 (−129% ❌) | 6 / 6 / 14 |
-| mysql insert | 1629 / 1700 / 192 (+88% ✅) | 1307 / 1171 / 118 (+91% ✅) | 1782 / 1744 / 213 (+88% ✅) | 6 / 6 / 6 |
-| mysql selectOne | 6.1 / 26.4 / 42.5 (−599% ❌) | 5.6 / 23.4 / 14.5 (−158% ❌) | 6.4 / 79.4 / 48.8 (−660% ❌) | 8 / 8 / 16 |
-| pgsql insert | 255 / 349 / 66.8 (+74% ✅) | 141 / 169 / 57.5 (+59% ✅) | 314 / 423 / 91.2 (+71% ✅) | 6 / 6 / 6 |
-| pgsql selectOne | 12.4 / 31.0 / 22.0 (−77% ❌) | 10.3 / 24.5 / 14.9 (−44% ❌) | 14.2 / 55.4 / 55.0 (−286% ❌) | 6 / 6 / 14 |
+| mongodb insertOne | 20.9 / 27.1 / 10.2 (+51% ✅) | 16.3 / 18.1 / 7.9 (+51% ✅) | 68.7 / 43.2 / 25.1 (+64% ✅) | 6 / 6 / 6 |
+| mongodb findOne | 26.4 / 23.1 / 16.4 (+38% ✅) | 12.3 / 12.9 / 12.9 (−4% ❌) | 41.7 / 63.2 / 27.6 (+34% ✅) | 6 / 6 / 15 |
+| mysql insert | 2030 / 1726 / 236 (+88% ✅) | 1771 / 1632 / 196 (+89% ✅) | 2216 / 1775 / 261 (+88% ✅) | 6 / 6 / 6 |
+| mysql selectOne | 24.8 / 37.0 / 16.3 (+35% ✅) | 6.5 / 17.6 / 10.1 (−55% ❌) | 42.5 / 153 / 50.3 (−18% ❌) | 6 / 6 / 14 |
+| pgsql insert | 421 / 720 / 128 (+70% ✅) | 379 / 710 / 38.7 (+90% ✅) | 480 / 868 / 161 (+66% ✅) | 6 / 6 / 6 |
+| pgsql selectOne | 10.6 / 45.2 / 20.6 (−94% ❌) | 10.4 / 27.6 / 17.3 (−67% ❌) | 37.5 / 55.8 / 33.4 (+11% ✅) | 6 / 6 / 14 |
 
 Payload 1 MB, 50 calls:
 
 | Operation | median n/s/a, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
 | --- | ---: | ---: | ---: | --- |
-| mongodb insertOne | 149 / 264 / 83.1 (+44% ✅) | 116 / 206 / 78.7 (+32% ✅) | 274 / 317 / 118 (+57% ✅) | 6 / 10 / 10 |
-| mongodb findOne | 54.5 / 150 / 127 (−134% ❌) | 53.8 / 135 / 119 (−121% ❌) | 58.0 / 164 / 144 (−149% ❌) | 8 / 10 / 145 |
-| mysql insert | 2761 / 3262 / 1085 (+61% ✅) | 1939 / 2085 / 462 (+76% ✅) | 4271 / 3640 / 1421 (+67% ✅) | 10 / 10 / 10 |
-| mysql selectOne | 39.4 / 122 / 105 (−166% ❌) | 37.9 / 117 / 99.6 (−163% ❌) | 51.2 / 186 / 129 (−152% ❌) | 12 / 16 / 151 |
-| pgsql insert | 716 / 874 / 528 (+26% ✅) | 476 / 784 / 372 (+22% ✅) | 740 / 1273 / 880 (−19% ❌) | 8 / 8 / 8 |
-| pgsql selectOne | 86.7 / 215 / 106 (−22% ❌) | 84.8 / 187 / 89.7 (−6% ❌) | 93.1 / 269 / 108 (−16% ❌) | 8 / 10 / 142 |
+| mongodb insertOne | 191 / 171 / 130 (+32% ✅) | 116 / 141 / 57.4 (+51% ✅) | 202 / 288 / 172 (+15% ✅) | 6 / 10 / 10 |
+| mongodb findOne | 59.8 / 90.0 / 85.8 (−44% ❌) | 54.2 / 87.4 / 67.8 (−25% ❌) | 69.3 / 173 / 87.2 (−26% ❌) | 8 / 10 / 126 |
+| mysql insert | 3796 / 2962 / 951 (+75% ✅) | 3202 / 2744 / 778 (+76% ✅) | 4112 / 3141 / 1121 (+73% ✅) | 10 / 10 / 10 |
+| mysql selectOne | 36.8 / 101 / 97.8 (−165% ❌) | 36.0 / 95.6 / 86.3 (−139% ❌) | 39.5 / 104 / 112 (−183% ❌) | 12 / 16 / 141 |
+| pgsql insert | 635 / 1206 / 351 (+45% ✅) | 587 / 1146 / 264 (+55% ✅) | 915 / 1291 / 556 (+39% ✅) | 8 / 8 / 8 |
+| pgsql selectOne | 83.0 / 295 / 103 (−25% ❌) | 77.9 / 237 / 89.4 (−15% ❌) | 96.2 / 331 / 113 (−18% ❌) | 8 / 10 / 129 |
 
 1. Writes: concurrency wins while fsync dominates, but the margin shrinks as the
-   payload grows — pgsql insert goes +77% → +74% → +26% at 1 MB, because
+   payload grows — pgsql insert goes +84% → +70% → +45% at 1 MB, because
    PostgreSQL commits a large row cheaply via TOAST and the transfer cost
    catches up.
-2. Reads: native leads at every size (the 1 KB mongodb row is noise — the sign
-   flips between its `min` and `max`) — a point read has no waiting time to hide
-   other work behind, and the payload pays the boundary both ways. Measured by
-   the `sync − native` gap, that cost is ~1.7–2.6 ms per 1 MB, i.e. ~0.2 ms at
-   64 KB.
-3. **Memory is the main finding.** The async column at 1 MB reads 142–151 MB
+2. Reads split by driver. MongoDB gains up to 64 KB (+58% at 1 KB, +38% at
+   64 KB) and loses at 1 MB; the SQL reads lose at every size except
+   `mysql selectOne` at 64 KB. A point read has no waiting time to hide other
+   work behind, and the payload pays the boundary both ways.
+3. **Memory is the main finding.** The async column at 1 MB reads 126–141 MB
    against 8–12 MB for native: 50 concurrent 1 MB reads hold all 50 results in
-   memory at once. Limit how many such operations run at the same time
+   memory at once. It already shows at 64 KB, where the async reads sit at
+   14–15 MB against 6. Limit how many such operations run at the same time
    (`WaitGroup::create(maxConcurrency: N)`) on large result sets, and move
    megabyte blobs through the native driver or a path that never crosses the
    boundary (like `HttpClient::download()`).
@@ -254,24 +276,23 @@ the native and the synchronous modes use one, as an application would.
 
 | Operation | count | native / sync / async, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
 | --- | ---: | ---: | ---: | ---: | --- |
-| publish | 1000 | 4.8 / 32.2 / 27.6 (−478% ❌) | 4.2 / 31.1 / 19.9 (−374% ❌) | 6.2 / 72.4 / 32.8 (−429% ❌) | 22 / 22 / 22 |
-| get | 1000 | 30.5 / 83.1 / 40.7 (−33% ❌) | 29.3 / 72.9 / 27.4 (+7% ✅) | 66.3 / 141 / 73.6 (−11% ❌) | 22 / 22 / 22 |
+| publish | 1000 | 4.1 / 29.9 / 19.6 (−379% ❌) | 3.8 / 27.8 / 18.7 (−389% ❌) | 4.2 / 38.9 / 20.1 (−379% ❌) | 22 / 22 / 22 |
+| get | 1000 | 29.0 / 64.2 / 29.6 (−2% ❌) | 27.7 / 56.1 / 26.0 (+6% ✅) | 46.9 / 101 / 69.9 (−49% ❌) | 22 / 22 / 22 |
 
 Consuming a pre-filled set of queues, 10 queues × 200 messages, median of 5 runs:
 
 | Measurement | native | sync | async |
 | --- | ---: | ---: | ---: |
-| messages per second | 121 500 | 22 100 | 82 800 |
+| messages per second | 122 100 | 53 800 | 111 000 |
 
 `basic.publish` expects no reply, so it costs one write on the wire while every
-SConcur call also crosses the PHP ↔ Go boundary — there is nothing to overlap and
-the crossing is the whole difference. `basic.get` does wait for the broker, and
-running the calls at the same time recovers most of that: the concurrent mode
-halves the synchronous one and its best run beats native.
+SConcur call also crosses the PHP ↔ extension boundary — there is nothing to
+overlap and the crossing is the whole difference. `basic.get` does wait for the
+broker, and running the calls at the same time recovers all of it: the concurrent
+mode now matches native and halves the synchronous one.
 
-These three move more between runs than any other table here — the consume row
-swung between 52 000 and 128 000 msg/s for the native mode alone, and `get`
-between 29 and 66 ms. Read them as orders of magnitude.
+The three consuming numbers move more between runs than any other table here —
+read them as orders of magnitude, not as figures to compare percentages on.
 
 **What the tables do not measure is the reason the feature exists.** They pit one
 call against one call on a queue that already has its messages. The gain is a
@@ -290,67 +311,72 @@ concurrently in the time of about one call.
 
 | Benchmark | count | native, ms | sync, ms | async, ms | Memory n/s/a, MB | async vs native |
 | --- | ---: | ---: | ---: | ---: | --- | :---: |
-| http-client (`/msleep/100`) | 50 | 5243 | 5222 | 120 | 4 / 4 / 4 | +98% ✅ |
-| http-client-download (4 MiB) | 50 | 1105 | 844 | 192 | 4 / 4 / 4 | +83% ✅ |
-| socket-client (`msleep:100`) | 50 | 5222 | 5287 | 119 | 4 / 4 / 4 | +98% ✅ |
-| ws-client (`msleep:100`) | 50 | 5255 | 5345 | 131 | 4 / 4 / 4 | +98% ✅ |
+| http-client (`/msleep/100`) | 50 | 5216 | 5185 | 120 | 4 / 4 / 4 | +98% ✅ |
+| socket-client (`msleep:100`) | 50 | 5203 | 5238 | 118 | 4 / 4 / 4 | +98% ✅ |
+| ws-client (`msleep:100`) | 50 | 5203 | 5263 | 123 | 4 / 4 / 4 | +98% ✅ |
 
-On I/O latency async gives ~44× (5.2 s → 0.12 s). `download` writes a 4 MiB body
-straight to a file on the Go side, so memory stays flat and running the
-downloads concurrently still speeds them up ~6×.
+On I/O latency async gives ~44× (5.2 s → 0.12 s).
+
+`http-client-download` is unmeasured because of an open bug: at 50 concurrent
+downloads of a 4 MiB body against a multi-worker pool the server answers `500`
+about half the time, with
+`fopen(Nyholm-Psr7-Zval://): Failed to open stream: infinite recursion prevented`
+in its log — PHP refusing to re-enter the userland stream wrapper Nyholm PSR-7
+wraps a string body in. A single worker never reproduces it, and neither does a
+pool below ~30 concurrent downloads.
 
 ## Servers (HTTP / Socket / WebSocket)
 
 One cooperative process can wait on any number of I/O operations at the same
 time; CPU-bound requests rely on the per-core pool, not on the scheduler. A pool
-of 3 workers (`SO_REUSEPORT`), 100 concurrent requests/connections per run
+of 2 workers (`SO_REUSEPORT`), 100 concurrent requests/connections per run
 (throughput — 50 connections × 2000 round-trips), median of 3 runs, all
 responses successful.
 
 | Benchmark | Load | elapsed, s | Throughput |
 | --- | --- | ---: | --- |
-| http-server-io | 100 × `GET /msleep/1000` (1 s async sleep) | 1.04 | — |
-| http-server-cpu | 100 × `GET /cpu/100000` (sha256 loop) | 0.72 | — |
-| socket-server-io | 100 × `msleep:1000` round-trip | 1.01 | — |
-| socket-server-cpu | 100 × `cpu:100000` round-trip | 0.68 | — |
-| socket-throughput | 50 conn × 2000 × `ping` | 0.58 | ≈171 000 rt/s |
+| http-server-io | 100 × `GET /msleep/1000` (1 s async sleep) | 1.03 | — |
+| http-server-cpu | 100 × `GET /cpu/100000` (sha256 loop) | 1.04 | — |
+| socket-server-io | 100 × `msleep:1000` round-trip | 1.00 | — |
+| socket-server-cpu | 100 × `cpu:100000` round-trip | 0.96 | — |
+| socket-throughput | 50 conn × 2000 × `ping` | 0.78 | ≈127 500 rt/s |
 | ws-server-io | 100 × `msleep:1000` round-trip | 1.01 | — |
-| ws-server-cpu | 100 × `cpu:100000` round-trip | 0.70 | — |
-| ws-throughput | 50 conn × 2000 × `ping` | 0.89 | ≈112 000 rt/s |
+| ws-server-cpu | 100 × `cpu:100000` round-trip | 0.99 | — |
+| ws-throughput | 50 conn × 2000 × `ping` | 0.83 | ≈120 900 rt/s |
 
 100 handlers each sleeping 1 s asynchronously finish in ≈one sleep regardless of
 the worker count — a single cooperative process already holds all those waits at
-once. The sha256 loop does not yield, but the `SO_REUSEPORT` pool spreads the
-100 requests across cores, so they still complete in ~0.7 s. Throughput measures
-the pure round-trip price under concurrency. Behaviour under sustained load is
-in [load testing](load-testing.md).
+once. Throughput measures the pure round-trip price under concurrency. Behaviour
+under sustained load is in [load testing](load-testing.md).
 
-### HTTP throughput: `/` vs `/all`
+The `-cpu` rows scale with the worker count and nothing else: the sha256 loop
+never yields, so a single `/cpu/100000` costs ~19 ms and 100 of them take ~0.95 s
+across the two workers per group of `config/sconcur.servers.config.json` (~0.63 s
+across three, at any preemption quantum).
+
+### HTTP throughput: the empty endpoint
 
 Sustained throughput under `wrk` (the `http-load-stats.sh` script, methodology
 in [load testing](load-testing.md)): 12 processes in the `php` container, `wrk`
 4 threads / 256 connections / 20 s hitting the bridge IP directly, 3 runs per
-endpoint, all responses `200`. `/` is an empty endpoint (the pure ceiling of the
-server and the framework); `/all` runs MongoDB (insert + findOne), MySQL and
-PostgreSQL (`INSERT` + `SELECT 1` each) at the same time in a nested
-`WaitGroup`, with the SQL pools capped at `maxOpenConns: 5` per process so 12–16
-processes do not break through PostgreSQL's `max_connections = 100`.
+endpoint, all responses `200`. `/` returns `200 "ok"` and does no I/O, so it
+measures the ceiling of the server and the framework and nothing else.
 
 | Endpoint | Requests/sec | Latency p50 / p90 / p99 | CPU `php` avg / peak | MEM peak |
 | --- | ---: | --- | --- | ---: |
-| `/` (empty) | ≈133 500 | 1.8 / 7.1 / 30.1 ms | ~1218% / ~1225% | ~221 MiB |
-| `/all` (all features) | ≈3 010 | 76 / 155 / 267 ms | ~563% / ~590% | ~279 MiB |
+| `/` (empty) | ≈194 300 | 0.9 / 73 / 263 ms | ~1081% / ~1199% | ~185 MiB |
 
-The pool ceiling is 12 pinned cores (~1200%). The empty endpoint hits CPU;
-`/all` on disk backends hits not CPU (~565% of 1200) but fsync — 6 DB operations
-per request, 3 of them writes.
+The pool ceiling is 12 cores (~1200%), and the empty endpoint reaches it. The
+median is under a millisecond while the tail is two orders above it: 256
+connections are multiplexed onto 12 cooperative processes, so a request that
+arrives behind a queue waits for it. What that tail does across pool sizes, and
+where it behaves unexpectedly, is in the
+[worker ladder](#empty-endpoint-the-worker-count-ladder).
 
 ### Comparison with RoadRunner and Swoole
 
-Three execution models on the same endpoints: the worker model (RoadRunner)
-loses ~6× as soon as a request does real I/O, while the two concurrent models
-(SConcur and Swoole) land together at the top; on empty responses Swoole's C
-event loop is ahead of everything.
+Three execution models on the same endpoint. On an empty response the ranking is
+the price of each transport, and Swoole's C event loop is ahead of everything.
 
 Two reference stacks are measured next to SConcur, both on native drivers and
 both committed (`tests/servers/roadrunner/`, `tests/servers/swoole/`) with load
@@ -360,88 +386,72 @@ its whole duration) and [Swoole](https://swoole.com) 6.2.2 (a coroutine worker
 serves many requests at once, blocking drivers become non-blocking via
 `hook_flags => SWOOLE_HOOK_ALL`). Conditions are identical: the same `php`
 container, 12 workers, `wrk` 4 threads / 256 connections / 20 s, 3 runs
-(median), DB data on disk, all in one session (2026-08-09) — only in-session
-numbers are comparable, cross-session drift reaches ±20%. Pools per worker
-process: SConcur 5 connections per SQL feature, Swoole a `PDOPool` of 5,
-RoadRunner one PDO per worker.
+(median), all three in one session (2026-09-05) in the `group` placement — only
+in-session numbers are comparable, cross-session drift reaches ±20%.
 
-The endpoints are copies of each other; only the driver stack and the execution
-model differ. `/` returns `200 "ok"`; `/all` runs the three features (SConcur
-runs them at the same time in a nested `WaitGroup`, RoadRunner and Swoole one
-after another); `/all-coro` is Swoole running the same three concurrently in a
-`Swoole\Coroutine\WaitGroup`; `/all-sconcur` runs them concurrently through
-SConcur inside a RoadRunner worker that loads the extension.
+`/` returns `200 "ok"` in all three; only the driver stack and the execution
+model differ.
 
-Honesty checks: every stack actually did the work (hundreds of thousands of
-inserts per run, every response `200`). The one row that is not what it seems is
-Swoole's `/`: there the load generator is the limit, not the server — with 8
+Honesty checks: every response was `200`. The one row that is not what it seems
+is Swoole's: there the load generator is the limit, not the server — with 8
 generator threads instead of 4 the same endpoint answered ≈865 000 rps, so the
 figure below is a floor.
 
-| Endpoint | Server | Requests/sec | p50 / p90 / p99 | CPU avg / peak | MEM peak | vs RoadRunner | vs Swoole |
-| --- | --- | ---: | --- | --- | ---: | :---: | :---: |
-| `/` (empty) | Swoole | ≈353 000 | 0.4 / 0.4 / 0.7 ms | ~257% / ~264% | ~72 MiB | — | — |
-| `/` (empty) | SConcur | ≈133 500 | 1.8 / 7.1 / 30.1 ms | ~1218% / ~1225% | ~221 MiB | +186% ✅ | −62% ❌ |
-| `/` (empty) | RoadRunner | ≈46 600 | 5.4 / 6.0 / 6.9 ms | ~1050% / ~1062% | ~228 MiB | — | — |
-| `/all-coro` | Swoole (concurrent, own coroutines) | ≈3 030 | 83 / 204 / 303 ms | ~263% / ~275% | ~137 MiB | — | — |
-| `/all` | SConcur (concurrent, in a `WaitGroup`) | ≈3 010 | 76 / 155 / 267 ms | ~563% / ~590% | ~279 MiB | +572% ✅ | — |
-| `/all` | Swoole (native drivers, sequential within a request) | ≈2 671 | 80 / 267 / 322 ms | ~237% / ~249% | ~126 MiB | — | — |
-| `/all-sconcur` | RoadRunner (concurrent through SConcur in the worker) | ≈586 | 435 / 462 / 589 ms | ~592% / ~647% | ~360 MiB | +31% ✅ | — |
-| `/all` | RoadRunner (native drivers, sequential) | ≈448 | 573 / 611 / 711 ms | ~158% / ~167% | ~232 MiB | — | — |
+| Server | Requests/sec | p50 / p90 / p99 | CPU avg / peak | MEM peak | vs RoadRunner | vs Swoole |
+| --- | ---: | --- | --- | ---: | :---: | :---: |
+| Swoole | ≈365 600 | 0.35 / 0.45 / 0.70 ms | ~261% / ~272% | ~74 MiB | +710% ✅ | — |
+| SConcur | ≈194 300 | 0.94 / 73 / 263 ms | ~1081% / ~1199% | ~185 MiB | +331% ✅ | −47% ❌ |
+| RoadRunner | ≈45 100 | 5.4 / 6.5 / 9.2 ms | ~1018% / ~1058% | ~225 MiB | — | −88% ❌ |
 
-The `vs Swoole` column is filled on the empty endpoint only: on `/all` the two
-stacks do not run the same workload, because MongoDB has no coroutine path in
-Swoole (`ext-mongodb`/libmongoc is outside the runtime hooks) and its call
-blocks the whole worker.
-
-- On the empty endpoint the ranking is the price of the transport: Swoole
-  answers from a C event loop in the same process as the PHP closure, while
-  SConcur is ~2.9× RoadRunner because crossing the PHP↔Go boundary is cheaper
-  than RoadRunner's extra inter-process step (proxy → worker) per request.
-- On `/all` with disk backends both concurrent servers are ~6–7× RoadRunner and
-  land in the same class. The reason is fsync: 3 writes per request turn into a
-  chain of disk commits in a sequential worker (p50 ≈ 0.57 s at ~158% CPU),
-  while both concurrent models wait for those same fsyncs in parallel across
-  dozens of suspended requests — the ceiling stops being the server and becomes
-  the disk.
-- CPU and memory go to Swoole (~237% against ~565%, ~126 MiB against ~279 MiB at
-  comparable throughput; part of that saving lands on the backends, which burn
-  ~1.5–2× more CPU under Swoole). SConcur pays for the boundary: MessagePack
-  plus cgo on every operation.
-- Running the calls of one request concurrently goes to SConcur: Swoole's own
-  variant (`/all-coro`) adds only +13% over its sequential endpoint, because the
-  blocking MongoDB call leaves it only the two SQL features to run in parallel.
-  That also shows in the tails — Swoole holds the better median and the worse
-  p90/p99.
-- `/all-sconcur` is the reverse experiment: running the calls concurrently
-  inside a RoadRunner worker waits for the request's three fsyncs in parallel
-  (+31% rps, p50 573 → 435 ms), but a worker serves one request at a time, so
-  the ceiling stays workers × request time. This is the "complement RoadRunner,
-  not replace it" scenario.
+- The ranking is the price of the transport. Swoole answers from a C event loop
+  in the same process as the PHP closure. SConcur is ~4.3× RoadRunner because
+  crossing the PHP↔extension boundary is cheaper than RoadRunner's extra
+  inter-process step (proxy → worker) per request.
+- The three differ in what they spend to get there. Swoole holds its number on
+  ~261% of CPU and 74 MiB; SConcur and RoadRunner both saturate the 12-core
+  budget, and SConcur turns it into 4.3× the requests.
+- They also differ in the shape of the latency. RoadRunner queues at accept, so
+  its median is the highest and its tail is the tightest — p99 is 1.7× p50.
+  SConcur multiplexes 256 connections onto 12 cooperative processes: the median
+  is 5.7× lower and the tail is 280× the median. Which of the two matters
+  depends on whether a slow request may be paid for by a fast one.
 
 ### Empty endpoint: the worker-count ladder
 
 The three stacks on `/` (200 "ok", no I/O) across worker counts — the pure price
 of each server layer as it scales over cores. Same wrk harness (4 threads / 256
-connections / 20 s, median of 3), all three stacks in one session (2026-08-12).
+connections / 20 s, median of 3), all three stacks in one session (2026-09-04).
 The script pins workers to the first N cores and wrk to the rest, so at 16
 workers the generator shares cores with the server — that is what caps Swoole's
 16-worker row, not the server itself.
 
 | Workers | RoadRunner rps / p50 / p99 | SConcur rps / p50 / p99 | Swoole rps / p50 / p99 | SConcur vs RR | SConcur vs Swoole |
 | ---: | --- | --- | --- | :---: | :---: |
-| 1 | 7 970 / 31.5 ms / 36.2 ms | 23 845 / 8.4 ms / 155 ms | 183 429 / 1.4 ms / 1.9 ms | +199% ✅ | −87% ❌ |
-| 3 | 14 080 / 17.9 ms / 22.0 ms | 46 035 / 3.8 ms / 117 ms | 440 814 / 0.4 ms / 1.7 ms | +227% ✅ | −90% ❌ |
-| 8 | 31 932 / 7.9 ms / 9.3 ms | 90 175 / 2.6 ms / 45.3 ms | 584 657 / 0.2 ms / 0.7 ms | +182% ✅ | −85% ❌ |
-| 16 | 51 034 / 4.9 ms / 6.9 ms | 141 176 / 1.3 ms / 61.8 ms | 353 414 / 0.4 ms / 0.5 ms | +177% ✅ | −60% ❌ |
+| 1 | 8 142 / 30.6 ms / 38.7 ms | 27 642 / 0.07 ms / 5.6 ms | 179 929 / 1.4 ms / 2.0 ms | +240% ✅ | −85% ❌ |
+| 3 | 14 218 / 17.5 ms / 23.1 ms | 66 033 / 2.9 ms / 1 320 ms | 437 989 / 0.6 ms / 1.3 ms | +364% ✅ | −85% ❌ |
+| 8 | 31 576 / 7.9 ms / 10.5 ms | 154 946 / 1.3 ms / 24.7 ms | 586 904 / 0.2 ms / 0.7 ms | +391% ✅ | −74% ❌ |
+| 16 | 49 571 / 4.8 ms / 8.9 ms | 186 203 / 1.1 ms / 9.7 ms | 359 497 / 0.4 ms / 0.7 ms | +276% ✅ | −48% ❌ |
 
-- All three scale near-linearly until the cores run out; the per-request price
-  keeps the ranking constant: SConcur holds ~2.8–3.3× RoadRunner on every rung,
-  Swoole's C event loop stays far ahead of both.
-- The SConcur p99 tails at small worker counts are queueing, not work: 256
-  connections multiplex onto one PHP thread, so the median stays low (8.4 ms
-  against RoadRunner's 31.5 ms on one worker) while the tail absorbs the queue.
-  RoadRunner queues at accept instead — tight tails, high median.
+- All three scale near-linearly until the cores run out, and SConcur holds
+  ~3.4–4.9× RoadRunner on every rung. Swoole's C event loop stays far ahead of
+  both, though the gap narrows from −85% to −48% as the pool grows.
+- RoadRunner queues at accept: its median is the highest on every rung and its
+  p99 never exceeds 1.6× its p50. SConcur multiplexes connections onto
+  cooperative processes, so the median is far lower and the tail carries the
+  queue instead.
+- **The three-worker rung is the exception, and it is not explained.** Its p99
+  is 1.3 s against a p50 of 2.9 ms, while one worker holds the same 256
+  connections at a p99 of 5.6 ms and eight workers at 24.7 ms. Two causes were
+  measured and ruled out: it is not the CPU placement (`PIN_SERVERS=1` gives the
+  same tail and less throughput), and it is not an uneven `SO_REUSEPORT` split
+  (the per-worker request counts are as uneven at twelve workers, 1.30×, as at
+  three, 1.34×, while the p99 differs fivefold). Cutting the load to 64
+  connections — the per-worker count twelve workers see — drops the p99 to
+  431 ms, which points at the depth of a single worker's queue; the one-worker
+  rung contradicts that, since it queues the most connections of all and has the
+  tightest tail. The same shape appears on `/db`, so it is not specific to a
+  route that does no I/O. A pool of three is worth avoiding until this is
+  understood.
 
 ### Point query: the worker-count ladder
 
@@ -455,24 +465,23 @@ per worker. Same wrk setup, one session.
 
 | Workers | RoadRunner rps / p50 / p99 | SConcur rps / p50 / p99 (pool) | Swoole rps / p50 / p99 (pool) | SConcur vs RR | SConcur vs Swoole |
 | ---: | --- | --- | --- | :---: | :---: |
-| 1 | 5 280 / 47.3 ms / 62.9 ms | 9 957 / 24.3 ms / 45.7 ms (150) | 46 225 / 5.4 ms / 7.2 ms (150) | +89% ✅ | −78% ❌ |
-| 3 | 10 282 / 24.4 ms / 31.2 ms | 19 779 / 11.4 ms / 118 ms (50×3) | 100 686 / 2.5 ms / 3.8 ms (50×3) | +92% ✅ | −80% ❌ |
-| 8 | 23 665 / 10.6 ms / 12.6 ms | 38 617 / 6.2 ms / 19.3 ms (18×8) | 123 359 / 1.9 ms / 6.3 ms (18×8) | +63% ✅ | −69% ❌ |
-| 16 | 28 272 / 8.7 ms / 74.2 ms | 37 860 / 6.1 ms / 40.1 ms (9×16) | 113 880 / 2.0 ms / 7.2 ms (9×16) | +34% ✅ | −67% ❌ |
+| 1 | 5 129 / 47.3 ms / 81.9 ms | 10 201 / 0.8 ms / 20.2 ms (150) | 45 644 / 5.3 ms / 8.8 ms (150) | +99% ✅ | −78% ❌ |
+| 3 | 10 199 / 24.0 ms / 37.2 ms | 27 657 / 7.0 ms / 1 240 ms (50×3) | 97 265 / 2.8 ms / 5.8 ms (50×3) | +171% ✅ | −72% ❌ |
+| 8 | 22 887 / 10.7 ms / 16.9 ms | 44 200 / 5.4 ms / 32.7 ms (18×8) | 117 693 / 2.0 ms / 6.2 ms (18×8) | +93% ✅ | −62% ❌ |
+| 16 | 27 541 / 8.7 ms / 15.5 ms | 37 823 / 6.2 ms / 31.6 ms (9×16) | 108 765 / 2.0 ms / 10.7 ms (9×16) | +37% ✅ | −65% ❌ |
 
-- Against RoadRunner the SConcur advantage tapers with pool size — around +90%
-  on small pools, +34% at the full per-core pool, where both approach the
-  shared hardware ceiling (MySQL plus total CPU); SConcur now peaks at 8
-  workers and holds a clear lead on every rung.
-- Swoole is 3–5× ahead of both, and this is where SConcur's price is most
+- Against RoadRunner the SConcur advantage tapers with pool size — +99% on a
+  single worker, +37% at the full per-core pool, where both approach the shared
+  hardware ceiling (MySQL plus total CPU). SConcur peaks at 8 workers.
+- Swoole is 2.5–4× ahead of both, and this is where SConcur's price is most
   visible. Both saturate one PHP thread on a single worker (~101% CPU), but
-  that thread buys ≈10k rps for SConcur (~102 µs of CPU per request) against
-  ≈46k for Swoole (~21 µs): the hooked `mysqlnd` never leaves the process. The
+  that thread buys ≈10k rps for SConcur (~98 µs of CPU per request) against
+  ≈46k for Swoole (~22 µs): the hooked `mysqlnd` never leaves the process. The
   work moves to the database accordingly — at one worker the mysql container
-  burns ~194% CPU under Swoole against ~35% under SConcur.
-- Tails: RoadRunner is tight until the full pool and then breaks (p99 74 ms at
-  16 workers); SConcur serves dozens of requests at once per thread and holds
-  p99 40 ms; Swoole stays under 8 ms everywhere.
+  burns ~202% CPU under Swoole against ~70% under SConcur.
+- Tails: RoadRunner stays tight throughout (p99 under 2× its p50); Swoole under
+  11 ms everywhere; SConcur holds p99 20–33 ms except on the three-worker rung,
+  where the same unexplained tail as on the empty endpoint puts it at 1.24 s.
 - Pool sizing: the pool lives per process, so the DB connection budget is divided
   across processes — 16 processes × a 150-connection pool against
   `max_connections = 151` turns a third of the responses into "Too many
@@ -496,20 +505,21 @@ heavier — the comparison is conservative.
 
 | Workers | RoadRunner rps / p50 / p99 | SConcur rps / p50 / p99 (pool) | Swoole rps / p50 / p99 (pool) | SConcur vs RR | SConcur vs Swoole |
 | ---: | --- | --- | --- | :---: | :---: |
-| 1 | 96 / 1.03 s / 1.98 s | 2 468 / 92.5 ms / 312 ms (150) | 2 657 / 87 ms / 337 ms (150) | ×26 ✅ | −7% ❌ |
-| 3 | 204 / 1.24 s / 1.46 s | 2 535 / 88.2 ms / 444 ms (50×3) | 2 681 / 88 ms / 347 ms (50×3) | ×12 ✅ | −5% ❌ |
-| 8 | 425 / 606 ms / 657 ms | 2 529 / 89.7 ms / 385 ms (18×8) | 2 654 / 87 ms / 304 ms (18×8) | ×6.0 ✅ | −5% ❌ |
-| 16 | 754 / 343 ms / 433 ms | 2 471 / 91.2 ms / 366 ms (9×16) | 2 593 / 88 ms / 323 ms (9×16) | ×3.3 ✅ | −5% ❌ |
+| 1 | 76 / 984 ms / 1.98 s | 2 350 / 98.6 ms / 289 ms (150) | 2 459 / 93.5 ms / 279 ms (150) | ×31 ✅ | −4% ❌ |
+| 3 | 137 / 1.78 s / 1.97 s | 2 360 / 96.8 ms / 380 ms (50×3) | 2 480 / 93.9 ms / 296 ms (50×3) | ×17 ✅ | −5% ❌ |
+| 8 | 289 / 877 ms / 1.01 s | 2 366 / 95.8 ms / 316 ms (18×8) | 2 467 / 89.8 ms / 344 ms (18×8) | ×8.2 ✅ | −4% ❌ |
+| 16 | 508 / 506 ms / 598 ms | 2 300 / 99.9 ms / 318 ms (9×16) | 2 376 / 98.9 ms / 371 ms (9×16) | ×4.5 ✅ | −3% ❌ |
 
 - One disk commit per request flips the ladder. Both concurrent stacks stand on
-  the same ceiling from the first worker on (≈2.3–2.7k rps, flat across the
+  the same ceiling from the first worker on (≈2.3–2.5k rps, flat across the
   ladder) — serving many requests at once lets MySQL fold the commits of dozens
-  of them into group commits, and the limit becomes MySQL itself (~1 300–1 380%
-  CPU on the mysql container while php sits at 24–62% for Swoole and 93–211% for
-  SConcur). Swoole's 5–7% edge is the cost of the boundary, not a different
-  ceiling.
-- RoadRunner scales almost linearly with workers but even 16 stay 3.3× behind;
-  parity would take around 55 processes. Its latencies at small pools are
+  of them into group commits, and the limit becomes MySQL itself (~1 050–1 300%
+  CPU on the mysql container while php sits at 23–59% for Swoole and 65–184% for
+  SConcur). Swoole's 3–5% edge is the cost of the boundary, not a different
+  ceiling. This is also the one table where the three-worker rung behaves: the
+  disk sets the pace, so the queue never gets deep enough for the tail to show.
+- RoadRunner scales almost linearly with workers but even 16 stay 4.5× behind;
+  parity would take around 70 processes. Its latencies at small pools are
   queueing, not work: 256 wrk connections share 1–3 workers.
 - The applicability boundary is the same as for concurrent calls, one level up:
   as soon as the request contains an operation with real waiting, what decides
@@ -519,7 +529,7 @@ heavier — the comparison is conservative.
 ## Conclusions
 
 - A single call through SConcur is always more expensive than the native driver
-  — the conversion at the boundary (MessagePack + BSON for MongoDB + cgo), most
+  — the conversion at the boundary (MessagePack, plus BSON for MongoDB), most
   noticeable on cheap cached reads.
 - The gain from concurrency is proportional to the price of an operation — an
   I/O wait (fsync, a network round-trip) or real server-side work — because
@@ -527,15 +537,15 @@ heavier — the comparison is conservative.
   every write wins, as do heavy reads on the 100k dataset, and 100 ms network
   waits run ~44× faster together. Cheap point operations stay with native.
 - The connection pool is decisive: a cold pool cost the concurrent runs 3–15×,
-  which is why the methodology includes a warm-up and `maxIdleConns` defaults to
-  `maxOpenConns`.
+  which is why the methodology includes a warm-up.
 - The boundary itself is cheap under concurrency: socket/ws throughput ~112–171k
-  round-trips/s, the empty HTTP endpoint ~133.5k rps (~2.9× RoadRunner).
-- Against RoadRunner and Swoole on disk backends: on `/all` both concurrent
-  models are ~6–7× the sequential worker and in the same class. Swoole holds it
-  on ~237% CPU against ~565%, but running the three features concurrently adds
-  only +13% for it, because `ext-mongodb` is outside its runtime hooks. On cheap
-  point queries the ranking reverses — ≈46k rps against ≈10k on the same core,
-  which is the boundary tax.
+  round-trips/s, the empty HTTP endpoint ~194k rps (~4.3× RoadRunner).
+- Against RoadRunner and Swoole: on a write-and-read request all three stand on
+  MySQL's own ceiling, and the two concurrent models reach it from the first
+  worker while RoadRunner needs around 70 processes to match them. On cheap
+  point queries the ranking reverses against Swoole — ≈46k rps against ≈10k on
+  the same core, which is the boundary tax.
+- A pool of three workers has an unexplained latency tail on every route that is
+  not disk-bound; until that is understood, size the pool away from it.
 - Memory is practically flat across the modes — the fibers of 100 concurrent
   operations do not move the peak noticeably.

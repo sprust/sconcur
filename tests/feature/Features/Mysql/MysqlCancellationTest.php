@@ -34,7 +34,7 @@ class MysqlCancellationTest extends BaseTestCase
 
         // The SELECT SLEEP(5) is in flight after add(). stop() cancels the flow, so
         // iterate() yields nothing and returns immediately instead of waiting 5s — and
-        // the Go side kills the running query (tearDown asserts no dangling tasks).
+        // the extension kills the running query (tearDown asserts no dangling tasks).
         $waitGroup->stop();
 
         $startedAt = microtime(true);

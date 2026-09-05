@@ -15,7 +15,7 @@ use Throwable;
 /**
  * Shared base for both socket connection DTOs: the server's accepted Connection and
  * the client's dialed Connection. Both directions are length-prefix framed and
- * binary-safe; the only difference is which payloads carry a frame/close to Go and
+ * binary-safe; the only difference is which payloads carry a frame/close to the extension and
  * which exception a dead connection raises, supplied by the subclass hooks.
  *
  * read() pulls the next inbound frame (cooperatively suspending the coroutine);
@@ -63,7 +63,7 @@ abstract class AbstractConnection
         try {
             $result = FeatureExecutor::next(taskKey: $this->inboundKey);
         } catch (TaskErrorException | TaskExecutionException) {
-            // The connection was reset/abandoned on the Go side: treat as end of input.
+            // The connection was reset/abandoned on the extension side: treat as end of input.
             $this->inboundEnded = true;
 
             return null;

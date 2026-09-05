@@ -18,7 +18,7 @@ use Throwable;
  * close() ends the connection. Both directions are length-prefix framed.
  *
  * The inbound frames stream under the connect result key; writes/closes are routed by
- * connection id to the Go write loop. See AbstractConnection for the shared mechanics.
+ * connection id to the extension's write loop. See AbstractConnection for the shared mechanics.
  */
 class Connection extends AbstractConnection
 {

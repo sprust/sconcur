@@ -3,7 +3,7 @@ English | [Русский](coroutine-switching.ru.md)
 # Coroutine switching: `Scheduler::switch()` and automatic preemption
 
 The PHP thread is one, and coroutines switch cooperatively — normally at feature
-calls, where a fiber suspends while Go does the I/O. CPU-bound code has no such
+calls, where a fiber suspends while the extension does the I/O. CPU-bound code has no such
 points: a handler busy with computation blocks every other coroutine of its
 process until it finishes. Switching addresses that in two forms:
 `Scheduler::switch()` — an explicit switch point you put into your own hot loops
@@ -62,7 +62,7 @@ included, cannot freeze the process:
 1. On startup the extension hooks the engine's interrupt entry point
    (`zend_interrupt_function`), chaining the previous handler, so pcntl signal
    dispatch keeps working.
-2. A running worker arms a timer on the Go side; every quantum the timer
+2. A running worker arms a timer inside the extension; every quantum the timer
    atomically requests a VM interrupt (`EG(vm_interrupt)`), which the engine
    notices at the next opcode boundary — function calls, loop back-edges, and the
    same checks opcache JIT inserts into compiled loops.
@@ -76,7 +76,7 @@ included, cannot freeze the process:
 
 ```mermaid
 flowchart TB
-    Timer["Go timer goroutine (every quantum)"] -->|"EG(vm_interrupt) = true"| Engine["Zend VM (next opcode boundary)"]
+    Timer["timer thread in the extension (every quantum)"] -->|"EG(vm_interrupt) = true"| Engine["Zend VM (next opcode boundary)"]
     Engine -->|"interrupt handler"| Preempt["Scheduler::preempt() — park the running coroutine"]
     Preempt -->|"PendingSwitchDto"| Queue["switched queue (FIFO)"]
     Scheduler["Scheduler loop (results first, then the queue)"] -->|"resume"| Queue

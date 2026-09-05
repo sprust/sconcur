@@ -142,7 +142,7 @@ The scheduler enforces it at the points where it already takes control:
 | parked by `Scheduler::switch()` | unwound before it would have been resumed |
 | running PHP, with preemption armed | unwound by the preemption hook, between two opcodes |
 | running PHP, without preemption | unwound at its next suspension point |
-| inside a cgo call | **not** unwound until the call returns |
+| inside a boundary call | **not** unwound until the call returns |
 
 The last two rows are the honest limits.
 
@@ -152,8 +152,8 @@ code is interruptible there; a CLI script or library code has to ask — `Schedu
 see [coroutine switching](coroutine-switching.md). Without it a loop that computes
 and never waits runs to its end, and the timeout is delivered afterwards.
 
-**Inside a cgo call** no PHP runs at all, so nothing can be delivered. A query, a
-request or a publish that hangs is bounded by that feature's own timeout on the Go
+**Inside a boundary call** no PHP runs at all, so nothing can be delivered. A query, a
+request or a publish that hangs is bounded by that feature's own timeout on the extension
 side — `rpcTimeoutSeconds` and `readTimeoutSeconds` on an AMQP connection, the
 HTTP client's own deadlines — and not by this one. A coroutine deadline bounds the
 PHP coroutine, which is not the same as bounding everything it can wait for.

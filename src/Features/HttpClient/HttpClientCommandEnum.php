@@ -9,7 +9,7 @@ namespace SConcur\Features\HttpClient;
  * `cm` field) under the single MethodEnum::HttpClient — mirrors how MongoDB uses
  * CommandEnum under MethodEnum::Mongodb.
  *
- * Go: types.HttpClientCommand (ext/internal/types/httpclient.go).
+ * Rust: the command values matched in ext/src/features/httpclient/mod.rs.
  */
 enum HttpClientCommandEnum: string
 {

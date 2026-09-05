@@ -106,7 +106,7 @@ class SchedulerShutdownTest extends BaseTestCase
         $command = sprintf(
             'timeout 15 %s -d extension=%s -r %s %s 2>&1; echo "EXIT:$?"',
             escapeshellarg(PHP_BINARY),
-            escapeshellarg($projectRoot . '/ext/build/sconcur.so'),
+            escapeshellarg(getenv('SCONCUR_EXT') ?: $projectRoot . '/ext/build/sconcur.so'),
             escapeshellarg($childCode),
             escapeshellarg($projectRoot),
         );

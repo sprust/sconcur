@@ -7,7 +7,7 @@ namespace SConcur\Telemetry\Dto;
 /**
  * HTTP-server workload section of a snapshot. The in-flight buckets are exclusive
  * (a request in flight for 7s counts only in inFlight5to15s). Field names mirror
- * the Go schema (ext/internal/stats/snapshot.go).
+ * the extension's schema (ext/src/stats/mod.rs).
  */
 readonly class Requests
 {

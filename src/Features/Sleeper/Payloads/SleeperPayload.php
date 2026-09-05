@@ -8,7 +8,7 @@ use SConcur\Features\MethodEnum;
 use SConcur\Transport\PayloadInterface;
 
 /**
- * Go: payloads.SleeperPayload (ext/internal/features/sleeper/payloads/payloads.go).
+ * Rust: payloads::SleeperPayload (ext/src/features/sleeper/payloads.rs).
  */
 readonly class SleeperPayload implements PayloadInterface
 {

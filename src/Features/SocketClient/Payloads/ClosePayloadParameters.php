@@ -9,7 +9,7 @@ use SConcur\Transport\PayloadParametersInterface;
 /**
  * Parameters of a Close command: the connection to close.
  *
- * Go: payloads.CloseParams (ext/internal/features/socketclient/payloads/payloads.go).
+ * Rust: payloads::CloseParams (ext/src/features/socketclient/payloads.rs).
  */
 readonly class ClosePayloadParameters implements PayloadParametersInterface
 {

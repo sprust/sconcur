@@ -9,7 +9,7 @@ namespace SConcur\Features\SocketClient;
  * `cm` field) under the single MethodEnum::SocketClient — mirrors how the HTTP client
  * uses HttpClientCommandEnum under MethodEnum::HttpClient.
  *
- * Go: types.SocketClientCommand (ext/internal/types/socketclient.go).
+ * Rust: the command values matched in ext/src/features/socketclient/mod.rs.
  */
 enum SocketClientCommandEnum: string
 {

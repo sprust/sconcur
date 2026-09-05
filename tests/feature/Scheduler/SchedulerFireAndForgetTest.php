@@ -19,7 +19,7 @@ use Throwable;
 
 /**
  * The fire-and-forget push (FeatureExecutor::execNoResult): the coroutine hands a
- * task to Go and continues without awaiting a result — none is ever published
+ * task to the extension and continues without awaiting a result — none is ever published
  * for it. Used for the final write of a full HTTP response.
  */
 class SchedulerFireAndForgetTest extends BaseTestCase
@@ -60,9 +60,9 @@ class SchedulerFireAndForgetTest extends BaseTestCase
     }
 
     /**
-     * A detached task runs synchronously on the PHP thread inside the push cgo
+     * A detached task runs synchronously on the PHP thread inside the push crossing
      * call, so a blocking handler would freeze the whole worker. Only the HTTP
-     * respond is allow-listed on the Go side; anything else must be refused
+     * respond is allow-listed on the extension; anything else must be refused
      * loudly rather than silently accepted.
      */
     public function testANonDetachableMethodIsRejected(): void
@@ -87,7 +87,7 @@ class SchedulerFireAndForgetTest extends BaseTestCase
      * A deliberate unwind is not a task failure: it must reach the coroutine as
      * FlowStoppedException so its finally blocks run and the cancellation stays
      * recognizable. Driven at the fiber level because the window only exists
-     * while the push is still queued (see Scheduler::$pendingDispatches).
+     * between the suspend and the dispatch, which no higher-level API exposes.
      */
     public function testFlowStoppedPropagatesUnwrapped(): void
     {
@@ -119,7 +119,7 @@ class SchedulerFireAndForgetTest extends BaseTestCase
 
     /**
      * The respond payload used throughout: its request id resolves to nothing, so
-     * the Go side logs the failure and drops it. That is exactly the contract
+     * the extension logs the failure and drops it. That is exactly the contract
      * under test — PHP must neither wait for the outcome nor learn about it.
      */
     protected static function unroutableRespond(): RespondPayload

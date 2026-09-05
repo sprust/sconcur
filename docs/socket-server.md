@@ -2,7 +2,7 @@ English | [Русский](socket-server.ru.md)
 
 # Socket server (TCP)
 
-A long-lived TCP server: the network lives in the Go extension, each accepted
+A long-lived TCP server: the network lives in the extension, each accepted
 connection is streamed into PHP and handled in its own coroutine. The model is
 push — the handler receives a connection object and drives the dialogue itself,
 reading inbound frames and pushing frames to the client at any time, rather than
@@ -75,12 +75,12 @@ $server->serve(static function (Connection $connection): void {
 
 Push to other connections (broadcast, chat, pub-sub) is not built in — the
 application can keep references to `Connection` and write to them itself
-(`write` is routed by `id` on the Go side through the global `pendingConnections`
+(`write` is routed by `id` inside the extension through the global `pendingConnections`
 map).
 
 ## Parameters
 
-The `SocketServer` constructor; the PHP defaults mirror Go.
+The `SocketServer` constructor; the PHP defaults mirror the extension's.
 
 | Parameter | Default | Purpose |
 | --- | --- | --- |
@@ -91,7 +91,7 @@ The `SocketServer` constructor; the PHP defaults mirror Go.
 | `maxConcurrency` | `0` (unlimited) | max connections served at once; excess ones wait for a free slot |
 | `handlerTimeoutMs` | `0` (unlimited) | how long one connection handler may run before it is unwound where it stands — see [coroutine timeout](coroutine-timeout.md) |
 | `maxConnections` | `0` (unlimited) | stop the server after N served connections (a guard against leaks) |
-| `shutdownTimeoutMs` | `10000` | how long to wait for the active connections to finish on shutdown |
+| `shutdownTimeoutMs` | `10000` | accepted and not applied: the drain is bounded by the grace period below, not by a clock of its own |
 | `reusePort` | `false` | `SO_REUSEPORT` — a process pool on one port (Linux) |
 | `onError` | `null` | handler-error hook |
 | `masterPid` | `null` | orphan check under the master |
@@ -143,17 +143,16 @@ On a signal (SIGTERM/SIGINT), on reaching `maxConnections`, or on being orphaned
 connections for reading (`CloseRead`): a handler reading in a loop gets EOF (its
 current write still goes through) and returns. A push-only handler that never
 reads does not notice the EOF and is finished off by a forced close after the
-grace period (`drainGrace`, 2 s), after which the wait is bounded by
-`shutdownTimeoutMs`. In a `SO_REUSEPORT` pool the kernel immediately hands new
+grace period (2 s). In a `SO_REUSEPORT` pool the kernel immediately hands new
 connections to siblings, and the process exits on its own. `reusePort: true` —
 several processes on one port, one per core — is the basis for scaling under the
 worker master.
 
-Lifecycle lines go to `STDOUT`, alongside the per-connection access log that the Go
+Lifecycle lines go to `STDOUT`, alongside the per-connection access log that the extension
 side writes when each connection closes:
 
 ```
-2026-06-28T12:00:00.000000 sconcur socket server listening on 0.0.0.0:9100 pid=12345 version=0.9.0 maxConcurrency=0 maxConnections=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur socket server listening on 0.0.0.0:9100 pid=12345 version=0.12.0 maxConcurrency=0 maxConnections=0 reusePort=0
 2026-06-28T12:00:01.000000 sconcur socket server shutdown: stop accepting (reason=signal), draining 2 in-flight
 2026-06-28T12:00:01.050000 sconcur socket server shutdown: drained all in-flight
 2026-06-28T12:00:01.060000 sconcur socket server shutdown: stopped

@@ -276,7 +276,9 @@ class PublishChannelPoolTest extends AmqpTestCase
                 $closed = TestAmqpResolver::closeConnectionsNamed($name);
 
                 if ($closed === 0) {
-                    usleep(500_000);
+                    // Fine steps: the listing lags the socket by about a second,
+                    // and a half-second step rounds that up to the next one.
+                    usleep(100_000);
                 }
             }
 
@@ -320,7 +322,7 @@ class PublishChannelPoolTest extends AmqpTestCase
 
     /**
      * A connection given up closes the gap behind it in the list. A name taken from that
-     * list would then be one already in use, and the Go side pools a socket by its options
+     * list would then be one already in use, and the extension pools a socket by its options
      * — the name among them — so two of the pool's connections would share one socket while
      * it budgeted channels to each of them separately, straight into a 504.
      */

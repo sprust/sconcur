@@ -6,14 +6,15 @@ here.
 
 ## Project
 
-SConcur is a PHP concurrency library backed by a custom Go-based PHP extension.
-PHP Fibers suspend while the Go extension executes tasks concurrently via
-goroutines; PHP and Go exchange msgpack-tagged DTOs
+SConcur is a PHP concurrency library backed by a custom PHP extension written in
+Rust. PHP Fibers suspend while the extension executes tasks concurrently on an
+async runtime; the two sides exchange msgpack-tagged DTOs
 (`Transport/MessagePackTransport`).
 
 Core PHP code lives in `src/` under the `SConcur\` namespace — main entry points
 are `WaitGroup`, `Scheduler`, `State`, `Connection/Extension` and the feature
-modules in `src/Features/`. The Go extension lives in `ext/`. Tests: feature and
+modules in `src/Features/`. The extension core lives in `ext/` (Rust, see
+[The core](#the-core)). Tests: feature and
 integration coverage in `tests/feature/`, shared helpers in `tests/impl/`,
 benchmarks in `tests/benchmarks/`, stress checks in `tests/mem-leak/`. Container
 and release build assets are under `docker/` and `docker-compose.yml`.
@@ -23,7 +24,7 @@ and release build assets are under `docker/` and `docker-compose.yml`.
 User-facing documentation (each doc also exists in Russian as `*.ru.md`):
 
 - [README.md](../README.md) — overview and usage
-- [docs/architecture.md](../docs/architecture.md) — Fiber ↔ goroutine, the
+- [docs/architecture.md](../docs/architecture.md) — Fiber ↔ runtime task, the
   scheduler, the layers, the task lifecycle
 - [docs/cli.md](../docs/cli.md) — `sconcur-load`, `sconcur-status`,
   `sconcur-server`
@@ -46,6 +47,8 @@ User-facing documentation (each doc also exists in Russian as `*.ru.md`):
   [msgpack-objects](../docs/msgpack-objects.md)
 - Measurements: [benchmarks](../docs/benchmarks.md),
   [load-testing](../docs/load-testing.md), [positioning](../docs/positioning.md)
+- History: [the move to Rust](../docs/rust-core.md) — the gate the port had to
+  pass and what it measured, kept as a record rather than a live comparison
 - [.ai/plans/](plans/) — detailed designs for roadmap items
 
 ## Plans
@@ -58,11 +61,19 @@ decision; the `.ru.md` suffix on some older plan files is historical — new pla
 use plain `.md` names with Russian content). Code identifiers, paths and code
 blocks stay as-is.
 
-**Plans are a development-only artifact.** Never link to `.ai/plans/*` (or
-reference the directory) from the main `README.md` or from anything under `docs/`
-— those are user-facing. Plan links belong only here, in `.ai/`, and in other
-`.ai/plans/` files. Once a plan ships, point the README/docs at the feature's
-`docs/*.md` instead.
+**Plans are a development-only artifact, and nothing outside `.ai/` may point at
+one.** Not `README.md`, not `docs/`, and **not the code** — no `.ai/plans/...` in
+a docblock, a comment, a benchmark header, the makefile or a test. Plan links
+belong in `.ai/README.md` and in other `.ai/plans/` files, nowhere else.
+
+The reason is that a plan is a snapshot of a decision being made, while a
+comment is read as a statement about the code as it is. Plans get rewritten,
+renamed and deleted — several referenced from code had been deleted already — and
+a pointer into them ages into a dead end that a reader cannot even check.
+
+So when a comment wants to lean on a plan, put the fact in the comment instead:
+say what is true and why, in the sentence itself. If it is too long for that, it
+belongs in `docs/*.md`, and the comment points there.
 
 ## Build & run
 
@@ -72,19 +83,38 @@ Requires Docker. All commands via `make`:
 make env-copy           # copy .env.example → .env (first time)
 make build              # build Docker images
 make up / make down     # start / stop containers
-make ext-build          # compile Go extension → ext/build/sconcur.so
-make ext-test           # run Go tests
-make test               # run all PHPUnit tests (loads the sconcur extension)
+make ext-build          # compile the Rust core → ext/build/sconcur.so
+make ext-test           # the core's own Rust unit tests (cargo test --lib)
+make ext-check          # smoke the core through the PHP package
+make test               # run the PHPUnit suites (loads the sconcur extension)
 make test c="--filter=SleeperTest"  # run a specific test
 make php-stan           # PHPStan level 6
 make cs-fixer-check     # check code style (PSR-12 + custom rules)
 make cs-fixer-fix       # auto-fix code style
-make check              # cs-fixer, phpstan, tests, ext-test
+make check              # cs-fixer, phpstan, ext-build, ext-check, tests
 make bench-all          # run all benchmarks
 ```
 
 Rebuild the extension with `make ext-build` before running tests that depend on
-`ext/build/sconcur.so`. Use `make ext-test` when changing Go extension behavior.
+`ext/build/sconcur.so`.
+
+### The core
+
+**`ext/` is the extension core, and there is no other one.** It is Rust,
+`SCONCUR_EXT` names the `.so` it builds, and every target, benchmark and test
+harness reads that variable. Every feature is on it, AMQP included; it is what
+the release publishes and what `make test` runs the whole tree against.
+
+There was a Go core, which this one was ported from; it was deleted in September
+2026, toolchain and all. Nothing is compatible with it, nothing is compared
+against it, and a change that would have broken it costs nothing — the question
+does not exist any more. If a comment or a doc still mentions it, that text is
+stale and should be fixed rather than honoured.
+
+Two AMQP options are refused rather than dropped in silence, because the driver
+cannot put them on the wire: a prefetch **size** (`basic.qos`'s prefetch-size is
+absent from its frame altogether) and `verify: false` on a TLS connection. Both
+are in [docs/amqp.md](../docs/amqp.md).
 
 Two images build from the same commands. `docker/php/Dockerfile` is the development
 one and additionally carries the RoadRunner binary and a compiled Swoole — the
@@ -107,12 +137,15 @@ Execution flow: `WaitGroup::add(closure)` → `Fiber::start()` → the fiber sus
 on `FeatureExecutor::exec()` handing over a pending task
 (`PendingPushDto`/`PendingNextDto`) → the resumer (`WaitGroup::launch` /
 `Scheduler`) performs `Extension::push()` via `Scheduler::dispatchPendingTask()`
-off the fiber stack → a Go goroutine executes it → the result goes to the shared
+off the fiber stack → the runtime executes it as a task → the result goes to the shared
 channel → `Scheduler` retrieves it with `Extension::waitAnyBatch()` (the first
 ready result plus the already-ready tail in one crossing) and resumes the owning
-Fiber → `WaitGroup::iterate()` yields the result. cgo is never called from a
-coroutine's stack — N live boundary-crossing fibers made the fan-out quadratic
-(see `.ai/plans/async-fan-out-optimization.ru.md`).
+Fiber → `WaitGroup::iterate()` yields the result. The suspend is the point: a
+coroutine never crosses the boundary for its own task, because N live fibers each
+parked inside a crossing made the fan-out quadratic (see
+`.ai/plans/async-fan-out-optimization.ru.md`). The crossing itself runs on
+whichever stack took control — the main one, or a parent coroutine's when a
+nested group starts a member.
 
 A single process-wide `Scheduler` is the only place that waits on the extension
 and resumes fibers, so coroutines never nest on each other's call stack. A nested
@@ -141,8 +174,8 @@ feature's doc. Key PHP classes not covered there:
   is an enum case on purpose — an identity comparison handler code cannot forge.
   Stale-result safety rests on the awaited flow/task key validation in
   `Scheduler::resumeByResult` (the keys are fed by never-reused monotonic
-  counters), not on fiber identity; for the same reason
-  `Scheduler::$pendingDispatches` keys its queue by `Coroutine`, not by fiber.
+  counters), not on fiber identity — a pooled Fiber outlives the coroutine it
+  served, so `spl_object_id` alone identifies nothing.
 - `State` — the static registry mapping Fibers ↔ flows, plus the per-coroutine
   context store (released in `unRegisterFiber`). Results route by the owner id
   carried in the frame, so there is no task → fiber map.
@@ -171,13 +204,13 @@ feature's doc. Key PHP classes not covered there:
   publish waits before the next attempt.
 - `Features/Amqp/Consumer/` — the supervised consumer runtime: `QueueConsumer`,
   plus `QueueSpec`/`QueueSpecParser` for the JSON queue list that arrives in argv.
-  It is a server without a socket: the Go side opens the consumers (one channel per
+  It is a server without a socket: the extension opens the consumers (one channel per
   unit of a queue's weight) and publishes every delivery of all of them as one
   self-pumping stream, and `Scheduler::serve()` drives it exactly as it drives the
   three servers — one coroutine per message, one graceful drain, no loop of its own.
   A stop cancels the consumers and leaves their channels open so the
   acknowledgements in flight land; a consumer the broker takes away is reopened on
-  the Go side a second later, and only the connection going away ends one for good
+  the extension a second later, and only the connection going away ends one for good
   — see [docs/amqp.md](../docs/amqp.md). `PublishChannelPool` is what keeps a
   prefetch above one from being a trap: a consumer's channel carries the messages of
   every handler running on it, and a publisher confirm is counted per channel, so
@@ -202,38 +235,42 @@ feature's doc. Key PHP classes not covered there:
   `TelemetryRuntime`, `Collector`, `Store`, `PanelServer`, `FrameCodec`,
   `Aggregator`, `Dto/*`, `Render/*`.
 
-Go extension (`ext/`):
+The core (`ext/src/`), module by module:
 
-- `main.go` — cgo exports (`ping`, `push`, `wait`, `next`, `waitAny`,
-  `waitAnyTimeout`, `waitAnyBatch`, `waitAnyTimeoutBatch`, `tasksCount`,
-  `stopFlow`, `httpStopAccepting`, `socketStopAccepting`, `wsStopAccepting`,
-  `preemptionArm`, `preemptionDisarm`, `amqpStopConsuming`, `destroy`, `version`)
-- `internal/handler/` — singleton orchestrator routing messages to flows
-- `internal/flows/`, `internal/tasks/` — concurrent `Flow` instances holding tasks
-  and a result channel; a task carries the flow's context directly (cancellation
-  is per flow, `stopFlow`), plus a detached flowless path for fire-and-forget
-  pushes (`Handler.Push`, allow-listed by `detachable`)
-- `internal/states/` — registry of streaming states (cursor batches,
-  request-body chunks, client message streams) driven by `next()`; the server
-  accept streams are self-pumping and bypass it
-- `internal/logger/` — fire-and-forget async log sink: a background goroutine
-  writes pre-formatted lines to stdout (buffered, timer-flushed, drops on
-  overflow), so the loop never blocks on log I/O
-- `internal/features/*` — sleeper, mongodb, sql (one handler dispatching
+- `lib.rs` — the C exports the PHP glue binds to (`ping`, `push`, `wait`, `next`,
+  `waitAny`, `waitAnyTimeout`, `waitAnyBatch`, `waitAnyTimeoutBatch`,
+  `tasksCount`, `stopFlow`, `httpStopAccepting`, `socketStopAccepting`,
+  `wsStopAccepting`, `preemptionArm`, `preemptionDisarm`, `amqpStopConsuming`,
+  `destroy`, `version`)
+- `core.rs` — the process-wide state and what it takes to survive a `fork`:
+  nothing starts until the first push, and a `pthread_atfork` handler flags the
+  inherited runtime so the next call rebuilds it
+- `handler/` — the singleton orchestrator routing messages to flows
+- `flows/`, `tasks/` — concurrent `Flow` instances holding tasks and the shared
+  result sink; a task carries the flow's cancellation token directly
+  (cancellation is per flow, `stopFlow`), plus a detached flowless path for
+  fire-and-forget pushes, allow-listed by `detachable`
+- `states/` — registry of streaming states (cursor batches, request-body chunks,
+  client message streams) driven by `next()`; the server accept streams are
+  self-pumping and bypass it
+- `logger/` — fire-and-forget async log sink: a background task writes
+  pre-formatted lines to stdout (buffered, timer-flushed, drops on overflow), so
+  the loop never blocks on log I/O
+- `features/*` — sleeper, mongodb, sql (one handler dispatching
   Query/Exec/Begin/Commit/Rollback; the driver is selected per `Method`),
   httpserver, httpclient, socketserver, socketclient, wsserver, wsclient, amqp
-  (pooled connections, a channel registry, streamed consumers over `amqp091-go`,
-  and `consume_serve.go` — the self-pumping delivery stream of a supervised
-  worker, whose channels the Go side owns)
-- `internal/stats/` — neutral worker-side telemetry shared by the servers: process
-  metrics plus `Pusher`, which samples a `Snapshot` and pushes it best-effort as a
+  (pooled connections, a channel registry, streamed consumers over `lapin`, and
+  `consume_serve.rs` — the self-pumping delivery stream of a supervised worker,
+  whose channels the extension owns)
+- `stats/` — neutral worker-side telemetry shared by the servers: process metrics
+  plus `Pusher`, which samples a `Snapshot` and pushes it best-effort as a
   length-prefixed JSON frame over the collector's unix socket
-- `internal/socket/`, `internal/ws/` — neutral shared plumbing for the raw TCP and
-  WebSocket pairs (frame codec, inbound message stream, write loop with
-  backpressure); each pair uses the shared package, not each other
-- `internal/helpers/` — `CalcExecutionMs`, `ReadChunk`
+- `socket/`, `ws/` — neutral shared plumbing for the raw TCP and WebSocket pairs
+  (frame codec, inbound message stream, write loop with backpressure); each pair
+  uses the shared module, not each other
+- `helpers/` — `calc_execution_ms`
 
-Key enums (string-backed; the 2-3 letter values cross the PHP↔Go boundary):
+Key enums (string-backed; the 2-3 letter values cross the boundary):
 
 - `MethodEnum`: Sleep (`sl`), Mongodb (`mng`), HttpServe (`hs`), HttpRespond
   (`hr`), HttpClient (`hc`), Mysql (`my`), Pgsql (`pg`), SocketServe (`ss`),
@@ -253,6 +290,14 @@ Key enums (string-backed; the 2-3 letter values cross the PHP↔Go boundary):
 
 ## Tests
 
+- `ext/src/**/mod tests` — the Rust core's own unit tests, run by `make ext-test`
+  and part of `make check`. They exist for what the PHP suites can only catch
+  statistically: a race whose window is microseconds wide surfaces there as one
+  failure in forty full runs and here as a red test. Kept beside their subject
+  in a `#[cfg(test)] mod tests`, beside the code they check. A change
+  to concurrent behaviour in `ext/` — a drain, a cancellation, a select over two
+  ready branches — belongs here, and the way to show a test earns its keep is to
+  undo the fix and watch it fail
 - `tests/feature/` — PHPUnit feature tests with `BaseTestCase` (extension
   lifecycle) and `BaseAsyncTestCase` (async event ordering framework)
 - `tests/impl/` — test helpers (MongoDB resolver, app bootstrap, server harnesses)
@@ -261,7 +306,7 @@ Key enums (string-backed; the 2-3 letter values cross the PHP↔Go boundary):
   `socket/`, `ws/`, `amqp/` (each holds its per-operation benches plus, for the protocols,
   the server benches and the load scripts), `db/` (a whole DB session: repeated
   runs and their aggregation into the markdown rows of `docs/benchmarks.md`),
-  `runtime/` (scheduler and PHP↔Go boundary, no backend involved) and `lib/`
+  `runtime/` (scheduler and the boundary, no backend involved) and `lib/`
   (the shared harness the benches include). A new bench goes into its
   technology's directory, named after the operation (`mysql/select-one.php`), and
   gets a `bench-<tech>-<operation>` make target.
@@ -269,7 +314,7 @@ Key enums (string-backed; the 2-3 letter values cross the PHP↔Go boundary):
   consumer), the counterpart of `tests/servers/`
 - `tests/mem-leak/` — memory leak stress tests. The AMQP soak has a target of its
   own, `make mem-leak-amqp scenario=<name> seconds=<n>`, which sets the profiler
-  address its Go-side columns are read from, and reports the broker's own connections,
+  and reports the broker's own connections,
   channels and consumers beside them — a worker flat on its own memory can still leave
   sockets behind on the other side. Two scenarios cover `QueueConsumer` and
   `PublishChannelPool`: `consumer` takes a handler through all twelve of its endings
@@ -277,7 +322,7 @@ Key enums (string-backed; the 2-3 letter values cross the PHP↔Go boundary):
   a channel given back clean, dirty and dead), and `consumer-lost` takes the ground
   away — the publish connection closed from the broker, the queue deleted under a
   running consumer. A second publish socket appearing and being reaped again is that
-  pool recovering, not a leak: it carries no channels and the Go side closes it after
+  pool recovering, not a leak: it carries no channels and the extension closes it after
   five idle minutes
 
 Tests use PHPUnit 11. Add feature tests in `tests/feature/...` with `*Test.php`
@@ -315,7 +360,7 @@ where it mirrors the English original, and `.ai/plans/`, which is written in
 Russian by a maintainer decision.
 
 Everything else is English, with no exceptions: code and its comments, PHPDoc,
-Go comments, exception and log messages, test names and failure messages, shell
+Rust comments, exception and log messages, test names and failure messages, shell
 and benchmark scripts including everything they print, table headers and verdict
 strings in their output, and commit messages. A benchmark whose table headers or verdict strings come out
 in Russian is a bug, not a style preference — that output is read by contributors
@@ -388,7 +433,7 @@ what a call can fail with belongs in prose, in the docblock or in `docs/`.
   `Fiber::suspend()`/`Fiber::resume()` is wrapped the same way (see
   `FeatureExecutor::suspend`, `Scheduler::awaitGroup`); a deliberate unwind signal
   (`FlowStoppedException`) is re-thrown as-is.
-- A task error from Go surfaces as `TaskErrorException`; on the async path it is
+- A task error from the extension surfaces as `TaskErrorException`; on the async path it is
   wrapped in `CallbackExecutionException` (original reachable via
   `getPrevious()`).
 
@@ -455,22 +500,23 @@ language is English.
 
 ## Extension versioning
 
-**All three version sources must be equal** — bump them together, in the same
+**All four version sources must be equal** — bump them together, in the same
 commit:
 
-1. `ext/main.go` → `version()` (the Go extension's reported version)
-2. `src/Connection/Extension.php` → `REQUIRED_EXTENSION_VERSION`
-3. `composer.json` → `"version"`
+1. `ext/src/lib.rs` → `VERSION` (what the released core reports)
+2. `ext/Cargo.toml` → `version` (the crate, kept in step with it)
+3. `src/Connection/Extension.php` → `REQUIRED_EXTENSION_VERSION`
+4. `composer.json` → `"version"`
 
-They are bumped on any PHP↔Go protocol change. **Never bump the major version
-without the maintainer's approval**; bump the minor only when warranted, otherwise
-the patch. **Bump at most once per git branch** — the first protocol change on a
-branch bumps it, later commits on the same branch reuse that version.
+They are bumped on any PHP↔extension protocol change. **Never bump the major
+version without the maintainer's approval**; bump the minor only when warranted,
+otherwise the patch. **Bump at most once per git branch** — the first protocol
+change on a branch bumps it, later commits on the same branch reuse that version.
 
 The release CI derives the release tag from the extension version (via
 `bin/sconcur-status`), so a drift between these would ship a mislabeled release.
-`tests/feature/Connection/VersionConsistencyTest.php` enforces the equality and
-fails the build if any of the three diverges.
+`tests/feature/Connection/VersionConsistencyTest.php` enforces the equality
+against the core the run loaded.
 
 ## Workflow rules
 
@@ -496,10 +542,22 @@ applies to replies — docs carry no line numbers, see "Documentation style".)
 ## Commit & pull request guidelines
 
 Use short, imperative subjects (`update mongodb serializer`, `remove obsolete
-handler tests`). Pull requests should explain the behavioral change, list
-validation performed (`make check`, targeted tests, benchmarks if relevant), and
-link the related issue or task. Screenshots are usually unnecessary unless
-documentation or tooling output changed materially.
+handler tests`). Write them in English, whatever language the conversation that
+produced the change was held in — the history is English throughout, and a
+message in another language is unreadable in the middle of it.
+
+**Keep commit messages short.** The subject is at most 120 characters, and the
+body at most 500 — a couple of short paragraphs, no more. Sign-off trailers do
+not count towards either. Say what changed and why in the space that gives you;
+detail that does not fit belongs in the code's own comments, in `docs/`, or in a
+`.ai/plans/` file, all of which a later reader can find from the code. A long
+commit message is the one place that detail cannot be maintained, because
+nothing updates it when the code moves on.
+
+Pull requests should explain the behavioral change, list validation performed
+(`make check`, targeted tests, benchmarks if relevant), and link the related
+issue or task. Screenshots are usually unnecessary unless documentation or
+tooling output changed materially.
 
 When an AI agent creates a git commit itself, it must add a sign-off trailer
 identifying the agent:
@@ -517,3 +575,14 @@ model produced the change, so a stale version in it is misinformation.
 The format, with the version standing in for whatever is current:
 `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` for Claude
 Code, `Co-Authored-By: OpenAI Codex <noreply@openai.com>` for OpenAI Codex.
+
+**That trailer is the only one.** No `Claude-Session:`, no session or chat URL,
+no "Generated with …" line, in a commit message or a pull request description.
+They point at a conversation nobody outside it can open, they date instantly,
+and the history keeps them forever.
+
+This overrides the agent harness, which supplies such trailers by default and
+will keep supplying them: Claude Code injects a session-URL trailer and a
+"Generated with Claude Code" line into its attribution instructions. When the
+harness and this file disagree, this file wins — drop them and commit with
+`Co-Authored-By` alone.

@@ -16,9 +16,9 @@ use SConcur\Telemetry\Dto\Totals;
 use SConcur\Telemetry\Dto\WorkerEntry;
 
 /**
- * Sums the live worker snapshots into the pool view. Ports the Go aggregator
- * (former ext/internal/stats/aggregate.go fillTotals): summed process metrics,
- * request average weighted by completed, only the workload section actually present.
+ * Sums the live worker snapshots into the pool view. Ports the aggregator that used to
+ * live in the extension: summed process metrics, request average weighted by completed,
+ * only the workload section actually present.
  * A snapshot whose receipt is older than hungThresholdMs flags its worker hung — the
  * age is measured against the master's own receipt clock (skew-immune), so it does
  * not depend on the worker's stamped updatedAtMs.
@@ -68,7 +68,7 @@ class Aggregator
                 uptimeSeconds: $snapshot->uptimeSeconds,
                 memory: $snapshot->memory,
                 cpuPercent: $snapshot->cpuPercent,
-                goroutines: $snapshot->goroutines,
+                runtimeTasks: $snapshot->runtimeTasks,
                 requests: $snapshot->requests,
                 connections: $snapshot->connections,
                 consumers: $snapshot->consumers,
@@ -139,30 +139,24 @@ class Aggregator
      */
     protected function sum(array $storedSnapshots): Totals
     {
-        $rssBytes          = 0;
-        $goRuntimeBytes    = 0;
-        $nonExtensionBytes = 0;
-        $cpuPercent        = 0.0;
-        $goroutines        = 0;
+        $rssBytes     = 0;
+        $cpuPercent   = 0.0;
+        $runtimeTasks = 0;
 
         foreach ($storedSnapshots as $storedSnapshot) {
             $snapshot = $storedSnapshot->snapshot;
 
             $rssBytes += $snapshot->memory->rssBytes;
-            $goRuntimeBytes += $snapshot->memory->goRuntimeBytes;
-            $nonExtensionBytes += $snapshot->memory->nonExtensionBytes;
             $cpuPercent += $snapshot->cpuPercent;
-            $goroutines += $snapshot->goroutines;
+            $runtimeTasks += $snapshot->runtimeTasks;
         }
 
         return new Totals(
             memory: new Memory(
                 rssBytes: $rssBytes,
-                goRuntimeBytes: $goRuntimeBytes,
-                nonExtensionBytes: $nonExtensionBytes,
             ),
             cpuPercent: $cpuPercent,
-            goroutines: $goroutines,
+            runtimeTasks: $runtimeTasks,
             requests: static::sumRequests($storedSnapshots),
             connections: static::sumConnections($storedSnapshots),
             consumers: static::sumConsumers($storedSnapshots),

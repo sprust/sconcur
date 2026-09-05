@@ -21,7 +21,7 @@ use Throwable;
 use WeakReference;
 
 /**
- * The internal base of the two objects that own something on the Go side — a Connection and
+ * The internal base of the two objects that own something on the extension side — a Connection and
  * a Channel.
  *
  * They share a base because PHP only lets one object read another's protected state through
@@ -37,13 +37,13 @@ abstract class AmqpResource
 
     protected const int MAX_PREFETCH_SIZE_BYTES = 4294967295;
 
-    /** The id on the Go side; empty while nothing is open. */
+    /** The id on the extension side; empty while nothing is open. */
     protected string $internalId = '';
 
     protected bool $internalOpen = false;
 
     /**
-     * The channels opened on this connection, by their Go-side id. Only Connection fills it,
+     * The channels opened on this connection, by their extension-side id. Only Connection fills it,
      * and only so close() can tell them they are gone.
      *
      * Weak on purpose: a strong reference would keep every channel an application dropped
@@ -63,7 +63,7 @@ abstract class AmqpResource
     /**
      * Marks every channel of this connection closed and forgets the handle each held.
      *
-     * Releasing the connection handle is what closed them on the Go side, so there is
+     * Releasing the connection handle is what closed them on the extension side, so there is
      * nothing left to hand back — and a channel that kept its id would send a ChannelClose
      * for a channel that no longer exists.
      */
@@ -218,7 +218,7 @@ abstract class AmqpResource
                 ),
             );
         } catch (Throwable) {
-            // Shutdown, a released extension, a handle the Go side already dropped — the
+            // Shutdown, a released extension, a handle the extension side already dropped — the
             // process is going away with whatever the broker still holds, and a teardown is
             // no place to fail.
         }

@@ -14,7 +14,7 @@ use Throwable;
 /**
  * The response body as a PSR-7 stream. It is never buffered whole in the
  * extension: the inline first chunk arrives with the response, the rest is pulled
- * on demand from Go (like the HTTP-server's RequestBody / a Mongo cursor).
+ * on demand from the extension (like the HTTP-server's RequestBody / a Mongo cursor).
  *
  * One-directional, read-only and not seekable: seek/rewind/write throw, as PSR-7
  * allows for non-rewindable streams. Inside a coroutine read() suspends it while a

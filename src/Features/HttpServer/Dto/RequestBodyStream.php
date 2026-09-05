@@ -11,7 +11,7 @@ use Throwable;
 /**
  * The request body as a PSR-7 stream, wrapping the streaming RequestBody. It is
  * never buffered whole in the extension: the inline first chunk arrives with the
- * request, the rest is pulled on demand from Go. So the handler receives an
+ * request, the rest is pulled on demand from the extension. So the handler receives an
  * ordinary ServerRequestInterface whose getBody() streams.
  *
  * One-directional, read-only and not seekable: seek/rewind/write throw, as PSR-7

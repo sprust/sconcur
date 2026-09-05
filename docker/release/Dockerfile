@@ -13,8 +13,8 @@ FROM php:8.4.15-cli
 WORKDIR /app
 
 # Container user & group. `.env.example` — the file CI copies — sets both to 0: the
-# repository is bind-mounted and the build writes ext/build/sconcur.so back to the host,
-# which is the artifact the release is made of.
+# repository is bind-mounted and the build writes ext/build/sconcur.so back to
+# the host, which is the artifact the release is made of.
 ARG USER_ID
 ARG GROUP_ID
 
@@ -29,19 +29,21 @@ RUN apt-get update && \
       unzip && \
     rm -rf /var/lib/apt/lists/*
 
-# The Go toolchain both builds the extension (ext-build.sh) and runs its tests
-# (ext-test.sh), so it is as much a part of `make check` as PHP is.
-ENV GO_VERSION="1.26.1"
+# The Rust toolchain builds the extension (ext/build.sh: cargo produces a
+# static archive, gcc links it with the PHP glue), so it is as much a part of
+# `make check` as PHP is.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    RUST_VERSION="1.98.0"
 
-RUN curl -fsSL "https://dl.google.com/go/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz && \
-    tar -C /usr/local -xzf /tmp/go.tar.gz && \
-    rm /tmp/go.tar.gz
+ENV PATH=/usr/local/cargo/bin:$PATH
 
-ENV GOPATH=/go
-ENV PATH=$GOPATH/bin:/usr/local/go/bin:$PATH
+RUN curl -fsSL https://sh.rustup.rs -o /tmp/rustup.sh && \
+    sh /tmp/rustup.sh -y --no-modify-path --profile minimal --default-toolchain "$RUST_VERSION" && \
+    rm /tmp/rustup.sh && \
+    chmod -R 777 "$RUSTUP_HOME" "$CARGO_HOME"
 
-RUN mkdir -p "$GOPATH/src" "$GOPATH/bin" "$GOPATH/pkg/mod/cache/download" /.cache && \
-    chmod -R 777 "$GOPATH" /.cache
+RUN mkdir -p /.cache && chmod -R 777 /.cache
 
 RUN curl -sS https://getcomposer.org/installer \
     | php -- --install-dir=/usr/local/bin --filename=composer

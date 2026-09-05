@@ -8,11 +8,15 @@ use SConcur\Connection\Extension;
 use SConcur\Tests\Feature\BaseTestCase;
 
 /**
- * The three places a version lives must stay in lockstep: the PHP package's
- * required version (Extension::REQUIRED_EXTENSION_VERSION), the loaded Go
- * extension's reported version (Extension::version(), sourced from ext/main.go),
- * and the composer.json "version" field. The release CI tags from the extension
- * version, so any drift between them would ship a mislabeled release.
+ * The places a version lives must stay in lockstep: the PHP package's required
+ * version (Extension::REQUIRED_EXTENSION_VERSION), the loaded extension's own
+ * reported version (Extension::version()), and the composer.json "version"
+ * field. The release CI tags from the extension version, so any drift between
+ * them would ship a mislabeled release.
+ *
+ * The loaded one is whichever core the run was pointed at — the Rust one
+ * (ext/src/lib.rs) unless SCONCUR_EXT says otherwise. The full list of sources
+ * is in .ai/README.md.
  */
 class VersionConsistencyTest extends BaseTestCase
 {

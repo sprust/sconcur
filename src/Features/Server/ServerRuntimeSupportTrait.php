@@ -188,7 +188,7 @@ trait ServerRuntimeSupportTrait
 
     /**
      * Writes one server lifecycle line to stdout, prefixed with a microsecond ISO
-     * timestamp (same shape as the Go access log), so the startup banner and the
+     * timestamp (same shape as the extension's access log), so the startup banner and the
      * graceful-shutdown steps land in the same stream a supervisor already captures.
      */
     protected static function logServerEvent(string $message): void

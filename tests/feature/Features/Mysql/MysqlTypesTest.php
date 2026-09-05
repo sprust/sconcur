@@ -160,4 +160,135 @@ class MysqlTypesTest extends BaseTestCase
         self::assertEqualsWithDelta(1.5, $rows[0]['double_col'], 0.0001);
         self::assertSame('hi', $rows[0]['varchar_col']);
     }
+
+    /**
+     * The types the port decoded wrongly, every one of them silently or fatally:
+     * TIME reached PHP as the binary protocol's own bytes, JSON/BIT/YEAR and
+     * TINYINT(1) UNSIGNED failed the whole query on a type-compatibility check,
+     * and a BIGINT UNSIGNED past PHP_INT_MAX wrapped to a negative.
+     *
+     * Kept in one case because they share a table and the point is the set: the
+     * decoder had a hole for every column shape it did not name explicitly.
+     */
+    public function testTypesThePortUsedToDecodeWrongly(): void
+    {
+        $table = $this->table . '_wire';
+
+        $this->connection->exec(sql: "DROP TABLE IF EXISTS $table");
+        $this->connection->exec(
+            sql: "CREATE TABLE $table (
+                time_col TIME NULL,
+                negative_time_col TIME NULL,
+                year_col YEAR NULL,
+                json_col JSON NULL,
+                bit_col BIT(4) NULL,
+                unsigned_tiny_col TINYINT(1) UNSIGNED NULL,
+                big_unsigned_col BIGINT UNSIGNED NULL,
+                fitting_unsigned_col BIGINT UNSIGNED NULL
+            ) ENGINE=InnoDB",
+        );
+
+        try {
+            $this->connection->exec(
+                sql: "INSERT INTO $table VALUES ('14:30:00', '-05:00:01', 2026, ?, b'1010', 1, ?, ?)",
+                bindings: [
+                    '{"a": 1}',
+                    '18446744073709551615',
+                    '42',
+                ],
+            );
+
+            $rows = $this->connection->fetchAll(sql: "SELECT * FROM $table");
+
+            self::assertCount(1, $rows);
+
+            $row = $rows[0];
+
+            // A clock reading, not the nine bytes the binary protocol carries.
+            self::assertSame('14:30:00', $row['time_col']);
+
+            // MySQL's TIME is a signed span over +-838 hours, so the sign has to
+            // survive — and sqlx's MySqlTime::is_negative() answers is_positive(),
+            // which is why this column is here.
+            self::assertSame('-05:00:01', $row['negative_time_col']);
+
+            self::assertSame(2026, $row['year_col']);
+            self::assertSame(1, $row['unsigned_tiny_col']);
+
+            // JSON and BIT travel as raw bytes, like every other binary column.
+            self::assertSame('{"a": 1}', $row['json_col']);
+            self::assertSame("\x0a", $row['bit_col']);
+
+            // Past PHP_INT_MAX the value becomes its decimal string rather than a
+            // wrapped negative — docs/mysql.md already tells callers to read such
+            // a column as a string, and -1 is the one answer nobody can act on.
+            self::assertSame('18446744073709551615', $row['big_unsigned_col']);
+
+            // Inside the range it stays an integer.
+            self::assertSame(42, $row['fitting_unsigned_col']);
+        } finally {
+            $this->connection->exec(sql: "DROP TABLE IF EXISTS $table");
+        }
+    }
+
+    /**
+     * MySQL refuses SET TRANSACTION once a transaction is open (error 1568), so
+     * applying the characteristics after BEGIN broke both options outright.
+     * readOnly rides in START TRANSACTION; the isolation level cannot, and is
+     * refused by name rather than silently ignored.
+     */
+    public function testReadOnlyTransactionAndRefusedIsolationLevel(): void
+    {
+        $transaction = $this->connection->begin(readOnly: true);
+
+        try {
+            self::assertSame([], $transaction->fetchAll(sql: "SELECT * FROM {$this->table}"));
+        } finally {
+            $transaction->rollback();
+        }
+
+        $this->expectExceptionMessageMatches('/isolationLevel is not supported on MySQL/');
+
+        $this->connection->begin(isolationLevel: 2);
+    }
+
+    /**
+     * A TIMESTAMP column, which the port could not read at all: sqlx pairs
+     * NaiveDateTime with DATETIME and DateTime<Utc> with TIMESTAMP and refuses
+     * the crossed pair, so reading both as the former failed the whole query on
+     * one of the two column types a schema reaches for first. Nothing caught it
+     * because no test table had declared one.
+     */
+    public function testTimestampAndFractionalDatetimeColumns(): void
+    {
+        $table = $this->table . '_stamps';
+
+        $this->connection->exec(sql: "DROP TABLE IF EXISTS $table");
+        $this->connection->exec(
+            sql: "CREATE TABLE $table (
+                stamp_col TIMESTAMP(3) NULL,
+                datetime_col DATETIME(6) NULL,
+                fractional_time_col TIME(6) NULL
+            ) ENGINE=InnoDB",
+        );
+
+        try {
+            $this->connection->exec(
+                sql: "INSERT INTO $table VALUES ('2026-12-06 14:30:00.250', '2026-12-06 14:30:00.500000', '14:30:00.500000')",
+            );
+
+            $row = $this->connection->fetchAll(sql: "SELECT * FROM $table")[0];
+
+            // The RFC3339 fraction keeps only the digits it has: .25, not .250.
+            self::assertSame('2026-12-06T14:30:00.25Z', $row['stamp_col']);
+            self::assertSame('2026-12-06T14:30:00.5Z', $row['datetime_col']);
+
+            // TIME does not: MySQL pads a TIME(6) to its declared precision, and
+            // that padding is part of the value the reference core returned.
+            // Postgres trims the same fraction, and both are pinned as they are.
+            self::assertSame('14:30:00.500000', $row['fractional_time_col']);
+        } finally {
+            $this->connection->exec(sql: "DROP TABLE IF EXISTS $table");
+        }
+    }
 }

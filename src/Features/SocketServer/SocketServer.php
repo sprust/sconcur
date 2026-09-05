@@ -15,7 +15,7 @@ use SConcur\Transport\MessagePackTransport;
 use Throwable;
 
 /**
- * TCP socket server: the network lives in the Go extension, each accepted connection
+ * TCP socket server: the network lives in the extension, each accepted connection
  * is streamed back as a result and handled in its own coroutine. The handler drives
  * the connection itself — it reads inbound frames and pushes frames to the client at
  * any time (server push), both length-prefix framed. See docs/socket-server.md.
@@ -31,7 +31,7 @@ readonly class SocketServer
      * @param int                                       $maxMessageBytes     max length of a single inbound frame (guards against a huge
      *                                                                       length prefix); an oversize frame ends the connection's input.
      * @param int                                       $maxConcurrency      max connections handled at once (0 = unlimited). Bounds
-     *                                                                       goroutines and connection coroutines; excess connections wait
+     *                                                                       extension tasks and connection coroutines; excess connections wait
      *                                                                       for a free slot.
      * @param int                                       $handlerTimeoutMs    max time one connection handler may run before it is unwound
      *                                                                       where it stands (0 = unlimited). A handler cut this way ends
@@ -67,7 +67,7 @@ readonly class SocketServer
      *                                                                       starve the other in-flight connections. Enabled by default
      *                                                                       (5 ms); 0 disables.
      *
-     * Defaults mirror the Go server defaults.
+     * Defaults mirror the extension's defaults.
      */
     public function __construct(
         protected string $address = '0.0.0.0:9100',

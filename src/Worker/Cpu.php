@@ -5,9 +5,14 @@ declare(strict_types=1);
 namespace SConcur\Worker;
 
 /**
- * Determines the number of CPU cores, used as the default worker count. Linux-only
- * (like the rest of the library): tries nproc, then /proc/cpuinfo, then falls back
- * to 1.
+ * The number of logical CPUs, used as the default worker count. Linux-only (like
+ * the rest of the library): tries nproc, then the processor lines of
+ * /proc/cpuinfo, then falls back to 1.
+ *
+ * Logical, not physical: with hyperthreading both sources count every sibling, so
+ * on such a machine the default worker count comes out twice the number of cores.
+ * This docblock used to say "cores", which is the one thing a caller must not
+ * believe of it.
  */
 class Cpu
 {

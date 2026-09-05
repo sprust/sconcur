@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 // Throughput benchmark: many concurrent connections each doing back-to-back ping
 // round-trips (a 4-byte frame each way) against the running `servers` socket pool.
-// Measures the raw round-trips/sec the pool sustains — i.e. the per-frame PHP<->Go
+// Measures the raw round-trips/sec the pool sustains — i.e. the per-frame PHP<->extension
 // overhead under concurrency.
 
 require __DIR__ . '/../lib/socket-bench.php';

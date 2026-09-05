@@ -1,16 +1,16 @@
 #include <php.h>
 #include <stdlib.h>
 #include <zend_atomic.h>
-#include "_cgo_export.h"
+#include "sconcur_core.h"
 
 /*
- * Preemption plumbing (see .ai/plans/coroutine-switcher.md, phase 2).
+ * Preemption plumbing: what turns a CPU-bound handler into one that yields.
  *
- * A Go timer goroutine periodically requests a VM interrupt; on the next opcode
- * boundary the engine calls sconcur_interrupt_function on the PHP thread, which
- * invokes the PHP callback registered by armPreemption() (the Scheduler's
- * preempt hook that parks the current coroutine). The original interrupt
- * handler is always chained so pcntl signal dispatch keeps working.
+ * A ticker task in the core's runtime periodically requests a VM interrupt; on
+ * the next opcode boundary the engine calls sconcur_interrupt_function on the
+ * PHP thread, which invokes the PHP callback registered by armPreemption() (the
+ * Scheduler's preempt hook that parks the current coroutine). The original
+ * interrupt handler is always chained so pcntl signal dispatch keeps working.
  */
 
 static void (*sconcur_original_interrupt_function)(zend_execute_data *execute_data) = NULL;
@@ -21,9 +21,9 @@ static int sconcur_preemption_armed = 0;
 static zval sconcur_preemption_callback;
 
 /*
- * Called from the Go timer goroutine (a non-PHP thread): atomically requests a
- * VM interrupt on the single (NTS) PHP thread. The engine clears the flag and
- * calls zend_interrupt_function at the next opcode boundary.
+ * Called from the core's preemption ticker (a non-PHP thread): atomically
+ * requests a VM interrupt on the single (NTS) PHP thread. The engine clears the
+ * flag and calls zend_interrupt_function at the next opcode boundary.
  */
 void sconcur_request_vm_interrupt(void)
 {
@@ -198,7 +198,7 @@ PHP_FUNCTION(ping)
         RETURN_THROWS();
     }
 
-    // The Go ping function (from //export ping)
+    // The core's ping (src/lib.rs), which mallocs the string this frees.
     char *response = ping(name);
 
     RETVAL_STRING(response);

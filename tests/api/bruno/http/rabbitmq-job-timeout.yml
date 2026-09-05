@@ -5,7 +5,7 @@ info:
 
 http:
   method: GET
-  url: http://localhost:28080/rabbitmq/1/sleep/8000
+  url: http://localhost:28080/rabbitmq/20/sleep/1000
 
 settings:
   encodeUrl: true

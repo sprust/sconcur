@@ -7,7 +7,7 @@
 [мастером](worker-master.ru.md). Каждый воркер раз в секунду отправляет свой
 снапшот мастеру по unix-сокету; мастер держит состояние пула в памяти и отдаёт
 его на своём порту — `GET /api/stats`, живая HTML-панель и SSE-поток.
-Сэмплирование и отправка живут на Go-стороне воркера; коллектор и панель —
+Сэмплирование и отправка живут на стороне расширения воркера; коллектор и панель —
 чистый PHP в мастере, который расширение не загружает.
 
 ## Содержание
@@ -43,8 +43,8 @@
 ```mermaid
 flowchart TB
     master["Мастер (PHP) — коллектор (unix-сокет) и панель (/api/stats, /, /events)"]
-    worker1["Воркер #1 (Go Pusher)"]
-    worker2["Воркер #2 (Go Pusher)"]
+    worker1["Воркер #1 (pusher расширения)"]
+    worker2["Воркер #2 (pusher расширения)"]
     client["Браузер / Prometheus / curl (Bearer)"]
 
     master -->|"запуск и супервизия"| worker1
@@ -134,7 +134,7 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 
 ## Метрики
 
-Числа воркера приходят с Go-стороны (`/proc`, `runtime`, собственные счётчики);
+Числа воркера приходят с стороны расширения (`/proc`, `runtime`, собственные счётчики);
 секцию `master` PHP-мастер сэмплит из своего `/proc`. Процессные метрики общие для
 всех видов воркеров, а секция нагрузки говорит, кто отчитался: у HTTP это
 `requests`, у сокета и WebSocket — `connections`, у консьюмера очереди —
@@ -144,10 +144,8 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 | Поле | Что это | Источник |
 |---|---|---|
 | `memory.rssBytes` | RSS всего процесса (вместе с расширением) | `/proc/self/status` `VmRSS` |
-| `memory.goRuntimeBytes` | память Go-рантайма | `runtime/metrics` |
-| `memory.nonExtensionBytes` | остаток без расширения (PHP + интерпретатор) | `rssBytes − goRuntimeBytes` |
 | `cpuPercent` | загрузка CPU процессом за интервал | разница `/proc/self/stat` |
-| `goroutines` | число горутин | `runtime.NumGoroutine()` |
+| `runtimeTasks` | живые задачи в рантайме расширения | собственные метрики рантайма |
 | `startedAt` / `uptimeSeconds` | когда стартовал serve-цикл воркера (UTC) и сколько живёт | старт serve-цикла |
 | `requests.completed` | обслужено запросов (HTTP) | счётчик |
 | `requests.avgMs` | средняя длительность запроса | сумма / количество |
@@ -178,8 +176,8 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 `snapshotAgeMs` мастер считает по своим часам от момента приёма кадра, поэтому
 он не зависит от расхождения часов; живое соединение без свежего снапшота дольше
 15 c помечает воркер как `hung`. Это ловит заклинивший рантайм воркера (застряла
-сама горутина-отправитель), а не зависший обработчик запроса — отправитель
-независим и шлёт снапшоты, пока жив Go-рантайм.
+сама задача рантайма-отправитель), а не зависший обработчик запроса — отправитель
+независим и шлёт снапшоты, пока жив рантайм расширения.
 
 ## Формат ответа
 
@@ -199,9 +197,9 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
     "cpuPercent": 0.6
   },
   "totals": {
-    "memory": { "rssBytes": 335544320, "goRuntimeBytes": 100663296, "nonExtensionBytes": 234881024 },
+    "memory": { "rssBytes": 335544320 },
     "cpuPercent": 28.4,
-    "goroutines": 192,
+    "runtimeTasks": 192,
     "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
   },
   "groups": [
@@ -210,9 +208,9 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
       "workersTotal": 3,
       "workersHung": 0,
       "totals": {
-        "memory": { "rssBytes": 125829120, "goRuntimeBytes": 37748736, "nonExtensionBytes": 88080384 },
+        "memory": { "rssBytes": 125829120 },
         "cpuPercent": 10.6,
-        "goroutines": 72,
+        "runtimeTasks": 72,
         "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
       }
     }
@@ -225,9 +223,9 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
       "snapshotAgeMs": 600,
       "startedAt": "2026-06-24T11:54:47+00:00",
       "uptimeSeconds": 312.5,
-      "memory": { "rssBytes": 41943040, "goRuntimeBytes": 12582912, "nonExtensionBytes": 29360128 },
+      "memory": { "rssBytes": 41943040 },
       "cpuPercent": 3.7,
-      "goroutines": 24,
+      "runtimeTasks": 24,
       "requests": { "completed": 105432, "avgMs": 2.4, "inFlight": 7, "inFlight1to5s": 2, "inFlight5to15s": 1, "inFlightOver15s": 0 }
     }
   ]
@@ -263,7 +261,7 @@ sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346",group
 | Семейство | Область | Метки |
 | --- | --- | --- |
 | `sconcur_pool_*` | все воркеры мастера вместе — `requests`, `connections` и `deliveries` (нагрузка очередей) | `name` |
-| `sconcur_group_*` | один пул: число воркеров, зависших, CPU, RSS и горутины | `name`, `group` |
+| `sconcur_group_*` | один пул: число воркеров, зависших, CPU, RSS и задачи рантайма | `name`, `group` |
 | `sconcur_master_*` | сам процесс мастера | `name` |
 | `sconcur_worker_*` | один воркер | `name`, `pid`, `group` |
 
@@ -274,7 +272,7 @@ sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346",group
 
 JSON-представление делит так же: `groups` — итог по каждому пулу мастера отдельно, а
 `totals` суммирует всех его воркеров. Складывать нагрузку разнородных пулов смысла нет,
-поэтому цифры нагрузки читают по `groups`; в `totals` осмысленны память, CPU и горутины.
+поэтому цифры нагрузки читают по `groups`; в `totals` осмысленны память, CPU и задачи рантайма.
 Воркер сообщает, чей он, полем `group` — оно берётся из метки `<группа>:<слот>`, которой
 он помечает свои снапшоты.
 

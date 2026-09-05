@@ -45,7 +45,7 @@ class WaitGroup
 
     /**
      * Callbacks added while the group was at its concurrency limit, not launched
-     * yet (no fiber, nothing sent to Go). Drained by fillSlots() as members finish.
+     * yet (no fiber, nothing sent to the extension). Drained by fillSlots() as members finish.
      * Keyed by callback key, in add() order; each entry keeps the callback and the
      * context parent to inherit at launch time.
      *
@@ -64,8 +64,8 @@ class WaitGroup
      * @param int $maxConcurrency max simultaneously live (launched, unfinished) members;
      *                            0 = unlimited (default). Extra add()s queue and launch as
      *                            slots free. The limit is a resource backpressure knob
-     *                            (memory, DB connection pools, in-flight Go tasks): since
-     *                            cgo calls left the fiber stacks (dispatchPendingTask) the
+     *                            (memory, DB connection pools, in-flight extension tasks): since
+     *                            boundary crossings left the fiber stacks (dispatchPendingTask) the
      *                            fan-out scales linearly and needs no cap for speed.
      */
     protected function __construct(protected int $maxConcurrency = 0)
@@ -123,7 +123,7 @@ class WaitGroup
                 $this->markFailure($exception);
             }
         } else {
-            // At capacity: queue it. Nothing is created or sent to Go until a slot
+            // At capacity: queue it. Nothing is created or sent to the extension until a slot
             // frees and the scheduler calls fillSlots(). The timeout travels with it
             // rather than being turned into a deadline here — a callback that waited
             // out a slot would otherwise be born already expired.
@@ -248,16 +248,9 @@ class WaitGroup
      * group's flow. Called by iterate()'s finally, by the destructor, and
      * directly to abandon whatever work is left.
      *
-     * The Go-side cancellation is not synchronous when stop() runs inside a
-     * coroutine: a cgo call made from a fiber stack costs the Go runtime a
-     * system-stack bounds re-derivation, so State::deleteFlow queues the
-     * stopFlow and the scheduler performs it on its own stack before its next
-     * wait (Scheduler::deferStopFlow). The members are unwound here and now —
-     * only the abort of their in-flight Go tasks lands a scheduler hop later,
-     * and their results are dropped when they arrive. A coroutine that calls
-     * stop() and then runs CPU-bound code without ever suspending holds that
-     * hop off; automatic preemption — which the servers enable by default —
-     * closes the gap on its own.
+     * The members are unwound here and now, and so is the extension-side flow:
+     * State::deleteFlow crosses immediately, from wherever stop() was called.
+     * Results of tasks that were already in flight are dropped when they arrive.
      */
     public function stop(): void
     {
@@ -394,7 +387,7 @@ class WaitGroup
         try {
             // First run up to the first suspend. May happen nested inside another
             // coroutine; that is fine — it ends at a suspend that returns here.
-            // An async call suspends with a pending task instead of pushing to Go
+            // An async call suspends with a pending task instead of pushing to the extension
             // from the fiber stack; the push is performed here, on the adder's
             // stack (the root at the top level).
             $suspendValue = $fiber->start();

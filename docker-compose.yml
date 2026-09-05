@@ -14,13 +14,13 @@ services:
       - "host.docker.internal:host-gateway"
     command: ["sh", "-c", "echo \"Starting infinite wait loop...\"; while sleep 1; do :; done"]
 
-  # Runs two sconcur masters under supervisor in one container (reuses the php image
-  # build): one holding the HTTP, socket and WebSocket pools as three groups, and one
-  # for the RabbitMQ consumers. Ports are hardcoded (host 28080->8080 for HTTP,
-  # 29100->9100 for socket, 29200->9200 for WebSocket) because the JSON master configs
-  # cannot use env vars. Rebuild/recreate it with `make servers-restart`; take the whole
-  # servers master with `make servers-{status,stop,reload}`, or one group with
-  # `make {http,socket,ws}-server-{status,reload}`.
+  # Runs one sconcur master under supervisor in this container (reuses the php image
+  # build), holding the HTTP, socket and WebSocket pools and the RabbitMQ consumers as
+  # a group each. Ports are hardcoded (host 28080->8080 for HTTP, 29100->9100 for
+  # socket, 29200->9200 for WebSocket) because the JSON master config cannot use env
+  # vars. Rebuild/recreate it with `make servers-restart`; take the whole master with
+  # `make servers-{status,stop,reload}`, or one group with
+  # `make {http,socket,ws}-server-{status,reload}` and `make rabbitmq-{status,reload}`.
   servers:
     container_name: sc-servers
     restart: unless-stopped
@@ -35,14 +35,13 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      # 8080/9100/9200 are the HTTP, socket and WebSocket servers, one group each of
-      # the `servers` master; 8081 is that master's single panel (the three separate
-      # panels it replaced are gone). 9301 is the RabbitMQ master's own panel.
+      # 8080/9100/9200 are the HTTP, socket and WebSocket servers, three of the four
+      # groups of the `servers` master — the fourth, the RabbitMQ consumers, listens
+      # on nothing. 8081 is the master's single panel, which reports all four.
       - "28080:8080"
       - "28081:8081"
       - "29100:9100"
       - "29200:9200"
-      - "29301:9301"
     command: ["supervisord", "-c", "/sconcur/docker/servers/config/supervisord.conf"]
 
   # DB data lives in tmpfs (fast tests, state wiped on container restart). For

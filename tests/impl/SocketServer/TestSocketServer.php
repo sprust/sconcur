@@ -52,7 +52,12 @@ class TestSocketServer
         $options['address'] = self::HOST . ':' . $port;
 
         $root      = dirname(__DIR__, 3);
-        $extension = $root . '/ext/build/sconcur.so';
+        // Overridable so a test run can point the spawned worker at an
+        // alternative build (SCONCUR_EXT=/sconcur/ext/build/sconcur.so).
+        // Without this the harness always starts the default extension, whatever the
+        // PHPUnit process itself loaded — which makes such a run look like it
+        // exercised the other build when it did not.
+        $extension = getenv('SCONCUR_EXT') ?: $root . '/ext/build/sconcur.so';
         $script    = $root . '/tests/servers/socket/socket-server.php';
 
         $command = ['php', '-d', 'extension=' . $extension, $script];
@@ -91,7 +96,7 @@ class TestSocketServer
             $server->stop();
 
             throw new RuntimeException(
-                'The test socket server did not become reachable (is ext/build/sconcur.so built?).'
+                'The test socket server did not become reachable (is the extension built?).'
             );
         }
 

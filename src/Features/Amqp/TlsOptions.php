@@ -8,7 +8,7 @@ namespace SConcur\Features\Amqp;
  * The TLS material of a connection. Passing any of it turns the connection into an
  * `amqps` one; a DSN with the `amqps` scheme builds an instance with the defaults.
  *
- * The paths are read by the Go side, in the process that dials the broker — a container
+ * The paths are read by the extension side, in the process that dials the broker — a container
  * that runs the worker must have the files, not the one that built the options.
  */
 readonly class TlsOptions

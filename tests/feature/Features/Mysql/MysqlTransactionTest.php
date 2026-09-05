@@ -75,7 +75,7 @@ class MysqlTransactionTest extends BaseTestCase
         );
 
         // No commit/rollback: dropping the only reference releases the held flow,
-        // and the Go side rolls the transaction back from the cancelled context.
+        // and the extension rolls the transaction back from the cancelled context.
         unset($transaction);
 
         self::assertSame(0, $this->countRows());

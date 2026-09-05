@@ -9,11 +9,11 @@ use SConcur\Transport\PayloadInterface;
 
 /**
  * Starts the WebSocket listener bound to the given address (e.g. "0.0.0.0:9200") with
- * the server tuning (timeouts in milliseconds, sizes in bytes). The listener is a
- * net/http.Server; a request carrying a valid WebSocket upgrade becomes a streamed
+ * the server tuning (timeouts in milliseconds, sizes in bytes). The listener is an
+ * HTTP server; a request carrying a valid WebSocket upgrade becomes a streamed
  * connection, every other request is answered 426 Upgrade Required.
  *
- * Go: payloads.ServePayload (ext/internal/features/wsserver/payloads/payloads.go).
+ * Rust: payloads::ServePayload (ext/src/features/wsserver/payloads.rs).
  */
 readonly class ServePayload implements PayloadInterface
 {

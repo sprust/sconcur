@@ -46,7 +46,7 @@ class Channel extends AmqpResource
 
     /**
      * Whether letting go of this object closes the channel behind it. False for a handle
-     * over a channel the Go side owns — see borrowed().
+     * over a channel the extension side owns — see borrowed().
      */
     protected bool $owned = true;
 
@@ -63,10 +63,10 @@ class Channel extends AmqpResource
     protected bool $unreadPublishAnswers = false;
 
     /**
-     * A handle over a channel that is already open on the Go side. Nothing is opened here:
+     * A handle over a channel that is already open on the extension side. Nothing is opened here:
      * `Connection::channel()` opens one and hands the id over.
      *
-     * @param string $channelId     the Go-side handle
+     * @param string $channelId     the extension-side handle
      * @param int    $channelNumber the channel's number on its connection
      */
     public function __construct(Connection $connection, string $channelId, int $channelNumber = 0)
@@ -76,14 +76,14 @@ class Channel extends AmqpResource
         $this->channelNumber = $channelNumber;
         $this->internalOpen  = $channelId !== '';
 
-        // Releasing the connection handle is what closes this channel on the Go side, so
+        // Releasing the connection handle is what closes this channel on the extension side, so
         // the connection needs a way back to mark it closed here.
         $connection->internalChannels[$channelId] = WeakReference::create($this);
     }
 
     /**
      * A handle over a channel this side does not own — the channels a supervised consumer's
-     * delivery stream opened, which the Go side closes when that stream's flow ends.
+     * delivery stream opened, which the extension side closes when that stream's flow ends.
      *
      * Letting go of one of these releases the handle and sends nothing. That is the whole
      * difference, and it is what makes the handle disposable: a ChannelClose from here would
@@ -123,7 +123,7 @@ class Channel extends AmqpResource
     /**
      * Runs one command on this channel and answers its decoded result.
      *
-     * @internal how Queue and Exchange reach the broker, so they own nothing on the Go side
+     * @internal how Queue and Exchange reach the broker, so they own nothing on the extension side
      *           and cannot skip the bookkeeping a failure implies.
      *
      * @param array<string, mixed>        $data           `chid` and `to` are filled in here
@@ -138,6 +138,12 @@ class Channel extends AmqpResource
         string $operation = '',
     ): array {
         $data['chid'] = $this->internalId;
+        // The connection this channel belongs to, so a command that finds no
+        // channel can tell the two reasons apart: a channel that was closed, and
+        // a channel that went with its connection. Without it the extension can
+        // only answer "no channel available", which is the wrong failure for a
+        // dead connection and the wrong thing for a caller to retry.
+        $data['cid'] ??= $this->connection->connectionId();
         $data['to'] ??= $this->connection->rpcTimeoutMs();
 
         return $this->runCommand(
@@ -284,7 +290,7 @@ class Channel extends AmqpResource
             return;
         }
 
-        // Marked before the command, and left marked if it fails. The Go side puts the
+        // Marked before the command, and left marked if it fails. The extension side puts the
         // channel into confirm mode inside the driver call, so a request whose deadline
         // passed while the broker was already answering leaves it confirming there while
         // this side believes it is not — and every later plain publish would then collect a

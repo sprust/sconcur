@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 // Throughput benchmark: many concurrent connections each doing back-to-back ping
 // round-trips (one WebSocket message each way) against the running `servers` ws pool.
-// Measures the raw round-trips/sec the pool sustains — i.e. the per-message PHP<->Go
+// Measures the raw round-trips/sec the pool sustains — i.e. the per-message PHP<->extension
 // plus WebSocket-framing overhead under concurrency.
 
 require __DIR__ . '/../lib/ws-bench.php';

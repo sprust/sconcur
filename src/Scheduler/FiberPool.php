@@ -13,7 +13,7 @@ use Throwable;
  * Recycles the fibers running spawned coroutines. Creating and destroying a
  * fiber per request is dominated not by the switching but by the stack
  * lifecycle: minor faults on the first touch of the stack pages plus the
- * munmap TLB shootdown across the Go runtime's threads. A pooled fiber maps
+ * munmap TLB shootdown across the extension runtime's threads. A pooled fiber maps
  * and touches its stack once and then serves many jobs.
  *
  * A fiber terminates when its callback returns, and a terminated fiber cannot

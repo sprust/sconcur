@@ -1,0 +1,19 @@
+# The WebSocket load generator, a crate of its own rather than a bin target in
+# ext/: that crate is a staticlib built with fat LTO on every `make ext-build`,
+# and a benchmark tool has no business making that slower. Its deps are the ones
+# the core already pulls, so the container's registry cache covers them.
+[package]
+name = "ws-load"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+fastwebsockets = { version = "0.10", features = ["upgrade", "unstable-split"] }
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time", "macros", "sync"] }
+
+[profile.release]
+opt-level = 3

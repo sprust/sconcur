@@ -7,8 +7,8 @@ namespace SConcur\Telemetry\Dto;
 /**
  * One worker's statistics as pushed over the telemetry socket (the "s" field of a
  * snapshot frame). Exactly one workload section is set: requests (HTTP),
- * connections (socket) or consumers (a queue consumer). Field names mirror the Go schema
- * (ext/internal/stats/snapshot.go).
+ * connections (socket) or consumers (a queue consumer). Field names mirror the extension's schema
+ * (ext/src/stats/mod.rs).
  */
 readonly class Snapshot
 {
@@ -20,7 +20,7 @@ readonly class Snapshot
         public float $uptimeSeconds,
         public Memory $memory,
         public float $cpuPercent,
-        public int $goroutines,
+        public int $runtimeTasks,
         public ?Requests $requests,
         public ?Connections $connections,
         public ?Consumers $consumers = null,
@@ -45,7 +45,7 @@ readonly class Snapshot
             return null;
         }
 
-        $memory = is_array($data['memory'] ?? null) ? Memory::fromArray($data['memory']) : new Memory(0, 0, 0);
+        $memory = is_array($data['memory'] ?? null) ? Memory::fromArray($data['memory']) : new Memory(rssBytes: 0);
 
         return new self(
             name: $name,
@@ -55,7 +55,7 @@ readonly class Snapshot
             uptimeSeconds: (float) ($data['uptimeSeconds'] ?? 0),
             memory: $memory,
             cpuPercent: (float) ($data['cpuPercent'] ?? 0),
-            goroutines: (int) ($data['goroutines'] ?? 0),
+            runtimeTasks: (int) ($data['runtimeTasks'] ?? 0),
             requests: is_array($data['requests'] ?? null) ? Requests::fromArray($data['requests']) : null,
             connections: is_array($data['connections'] ?? null) ? Connections::fromArray($data['connections']) : null,
             consumers: is_array($data['consumers'] ?? null) ? Consumers::fromArray($data['consumers']) : null,

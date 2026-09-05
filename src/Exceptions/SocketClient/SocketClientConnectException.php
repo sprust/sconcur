@@ -8,8 +8,8 @@ use RuntimeException;
 
 /**
  * Dialing a socket-client connection failed (connection refused, DNS failure or a
- * connect timeout). A runtime failure thrown from SocketClient::connect(); the Go
- * side tags the cause with a "net:" marker, preserved in the message.
+ * connect timeout). A runtime failure thrown from SocketClient::connect(); the extension side
+ * tags the cause with a "net:" marker, preserved in the message.
  */
 class SocketClientConnectException extends RuntimeException
 {

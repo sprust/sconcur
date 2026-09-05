@@ -5,13 +5,13 @@
 Асинхронный TCP-клиент с фреймингом length-prefix — зеркало
 [сокет-сервера](socket-server.ru.md) со стороны dial, как
 [HTTP-клиент](http-client.ru.md) — пара к HTTP-серверу. Весь сетевой I/O (DNS,
-dial, чтение, запись) живёт в Go-расширении: `connect()` уходит в горутину,
+dial, чтение, запись) живёт в расширении: `connect()` уходит в задачу рантайма,
 корутина приостанавливается, поэтому десятки соединений можно поднимать
 одновременно. Вне `WaitGroup` тот же API работает синхронно.
 
 Модель — долгоживущее двунаправленное соединение, а не «запрос-ответ»: приложение
 дозванивается, получает `Connection` и само ведёт диалог. Кодек фрейминга общий с
-сокет-сервером (`ext/internal/socket`), поэтому клиент и сервер SConcur совместимы
+сокет-сервером (`ext/src/socket/`), поэтому клиент и сервер SConcur совместимы
 из коробки.
 
 ## Быстрый старт
@@ -30,7 +30,7 @@ $connection->close();
 ```
 
 Весь диалог лучше вести внутри той же корутины, что и `connect()`: когда корутина
-завершается, её флоу останавливается и незавершённое соединение на Go-стороне
+завершается, её флоу останавливается и незавершённое соединение на стороне расширения
 закрывается (та же оговорка, что у `HttpClient`/`SocketServer`).
 
 ## Connection: read / write / close
@@ -78,7 +78,7 @@ $replies = $waitGroup->waitResults(); // суммарное время ≈ са�
 ## Параметры и таймауты
 
 `SConcur\Features\SocketClient\SocketClientOptions` (`readonly`), все таймауты в
-мс; дефолты PHP зеркалят Go. У долгоживущего соединения нет единого «времени
+мс; дефолты PHP зеркалят дефолты расширения. У долгоживущего соединения нет единого «времени
 операции» — эту роль играют таймауты dial/read/write.
 
 | Параметр | Дефолт | Назначение |
@@ -105,7 +105,7 @@ $client = new SocketClient(new SocketClientOptions(
 | `write()` в порванное соединение | `SConcur\Exceptions\SocketClient\SocketClientConnectionClosedException` |
 | Пир закрыл соединение / EOF / idle-таймаут / превышен `maxMessageBytes` | не исключение — `read()` возвращает `null` |
 
-Go-сторона помечает сетевые сбои маркером `net:`, и он сохраняется в сообщении
+Расширение помечает сетевые сбои маркером `net:`, и он сохраняется в сообщении
 исключения (удобно для логов и ретраев).
 
 ## Внутреннее устройство
@@ -116,15 +116,15 @@ PHP (`src/Features/SocketClient/`): `SocketClient::connect()` собирает
 входящего потока — ключ результата connect. `Dto\Connection` — тонкий наследник
 `Features\Socket\Dto\AbstractConnection` (общего с сокет-сервером), подставляющий
 `SendPayload`/`ClosePayload` и парное исключение; `SocketClientCommandEnum` и
-`Payloads/` — конверт `Connect`/`Send`/`Close`, зеркало Go-структур.
+`Payloads/` — конверт `Connect`/`Send`/`Close`, зеркало структур расширения.
 
-Go (`ext/internal/features/socketclient/`): `connect.go` дозванивается с
+Rust (`ext/src/features/socketclient/`): путь подключения дозванивается с
 `connectTimeout` (отменяем контекстом флоу) и регистрирует стриминговый
 `connectionState` — первый `Next` даёт метаданные, дальше идут входящие кадры —
-плюс цикл записи, очищаемый при остановке флоу; `feature.go` диспетчеризует
+плюс цикл записи, очищаемый при остановке флоу; `mod.rs` диспетчеризует
 команды, маршрутизируя `Send`/`Close` по `cid` в этот цикл. Кодек кадров,
 `MessageState` и цикл записи, ждущий сброса каждого кадра, живут в нейтральном
-`ext/internal/socket/`, общем с сокет-сервером.
+`ext/src/socket/`, общем с сокет-сервером.
 
 То есть чтение входящих кадров — это `next()` по стриминговому состоянию connect
 (как тело ответа у `HttpClient`), а запись и закрытие — `exec(Send/Close)` с
@@ -140,8 +140,8 @@ TLS (позже, опцией), unix-сокеты (только TCP), пул с�
 
 PHP feature-тесты лежат в `tests/feature/Features/SocketClient/` — edge- и
 error-случаи плюс контракт конкурентности на `BaseAsyncTestCase`, против
-реального `SocketServer` SConcur, поднятого через `TestSocketServer`. Go-тесты
-покрывают общий пакет `ext/internal/socket/` и `connect_test.go`. Бенчмарк
+реального `SocketServer` SConcur, поднятого через `TestSocketServer`. Тесты ядра
+покрывают общий пакет `ext/src/socket/` и the core's own unit tests. Бенчмарк
 (`make bench-socket-client c=20`) гоняет N round-trip'ов к эндпоинту `msleep`
 демо-сервера: одновременный async против последовательных native (сырые сокеты
 PHP) и sync.

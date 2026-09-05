@@ -10,7 +10,7 @@ use SConcur\Features\Mongodb\Payloads\Dto\Connection;
 use SConcur\Features\Mongodb\Payloads\Dto\Parameters;
 
 /**
- * Go: payloads.FindOneAndReplacePayload (ext/internal/features/mongodb/payloads/payloads.go).
+ * Rust: payloads::FindOneAndReplacePayload (ext/src/features/mongodb/payloads.rs).
  */
 readonly class FindOneAndReplacePayload extends BaseMongodbPayload
 {

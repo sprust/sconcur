@@ -7,7 +7,8 @@ namespace SConcur\Features\HttpClient\Dto;
 /**
  * The result of HttpClient::download(): the response status, the response headers
  * exactly as the server returned them, the number of bytes actually written to the
- * file (the authoritative size — measured by io.Copy on the Go side, independent of
+ * file (the authoritative size — counted as the bytes are copied on the extension side,
+ * independent of
  * any Content-Length header) and how long the download took.
  */
 readonly class DownloadResult

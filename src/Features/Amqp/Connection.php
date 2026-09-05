@@ -8,7 +8,7 @@ use SConcur\Exceptions\Amqp\ConnectionException;
 use SConcur\Features\Amqp\Support\AmqpResource;
 
 /**
- * A connection to an AMQP broker: the options plus the handle the Go side gave back for
+ * A connection to an AMQP broker: the options plus the handle the extension side gave back for
  * them. The socket lives there, pooled by those options, so building one per request is
  * cheap and the connection outlives this object.
  *
@@ -61,7 +61,7 @@ class Connection extends AmqpResource
     }
 
     /**
-     * Opens the connection: the Go side dials the broker, or hands out a connection
+     * Opens the connection: the extension side dials the broker, or hands out a connection
      * already open for the same options. A connection already open here is closed first.
      */
     public function connect(): void
@@ -104,7 +104,7 @@ class Connection extends AmqpResource
         $connectionId = isset($result['cid']) ? (string) $result['cid'] : '';
 
         // Dialling suspends, so another coroutine may have opened this connection while
-        // this call was in flight. Both answers name the same socket — the Go side pools by
+        // this call was in flight. Both answers name the same socket — the extension side pools by
         // options — so the one that arrived second gives its handle straight back instead
         // of overwriting a handle nothing would ever release.
         if ($this->internalId !== '' && $this->internalId !== $connectionId) {
@@ -140,7 +140,7 @@ class Connection extends AmqpResource
         $this->negotiatedFrameMaxBytes    = null;
         $this->negotiatedHeartbeatSeconds = null;
 
-        // Releasing the handle closes the channels on the Go side, so a reconnect must not
+        // Releasing the handle closes the channels on the extension side, so a reconnect must not
         // leave an application holding ones that still pass isOpen().
         $this->forgetChannels();
 
@@ -183,7 +183,7 @@ class Connection extends AmqpResource
     }
 
     /**
-     * How many channels are open, counted in the Go-side registry — where the sweeper may
+     * How many channels are open, counted in the extension's registry — where the sweeper may
      * also have closed ones an application dropped without closing.
      */
     public function usedChannels(): int
@@ -196,7 +196,6 @@ class Connection extends AmqpResource
             command: AmqpCommandEnum::UsedChannels,
             data: [
                 'cid' => $this->internalId,
-                'to'  => $this->rpcTimeoutMs(),
             ],
             exceptionClass: ConnectionException::class,
         );
@@ -205,7 +204,7 @@ class Connection extends AmqpResource
     }
 
     /**
-     * The handle the Go side answers to for this connection.
+     * The handle the extension side answers to for this connection.
      *
      * @internal what a supervised consumer opens its delivery stream on — that stream is
      *           pushed with a flow key of its own, so it cannot go through the executor the
@@ -235,7 +234,7 @@ class Connection extends AmqpResource
     }
 
     /**
-     * The deadline every one-shot command carries, in milliseconds; 0 leaves the Go side to
+     * The deadline every one-shot command carries, in milliseconds; 0 leaves the extension side to
      * apply its own default.
      *
      * @internal the one place the channels, queues and exchanges of this connection read it
@@ -263,14 +262,13 @@ class Connection extends AmqpResource
         return $this;
     }
 
-    /** Hands one handle back to the Go side. */
+    /** Hands one handle back to the extension side. */
     protected function disconnect(string $connectionId): void
     {
         $this->runCommand(
             command: AmqpCommandEnum::Disconnect,
             data: [
                 'cid' => $connectionId,
-                'to'  => $this->rpcTimeoutMs(),
             ],
             exceptionClass: ConnectionException::class,
         );
@@ -323,7 +321,6 @@ class Connection extends AmqpResource
             command: AmqpCommandEnum::Disconnect,
             data: [
                 'cid' => $connectionId,
-                'to'  => $this->rpcTimeoutMs(),
             ],
         );
     }

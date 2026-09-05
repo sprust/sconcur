@@ -11,7 +11,7 @@ use SConcur\Transport\PayloadInterface;
  * Starts the HTTP listener bound to the given address (e.g. "0.0.0.0:8080") with
  * the server tuning (timeouts in milliseconds, body limit in bytes).
  *
- * Go: payloads.ServePayload (ext/internal/features/httpserver/payloads/payloads.go).
+ * Rust: payloads::ServePayload (ext/src/features/httpserver/payloads.rs).
  */
 readonly class ServePayload implements PayloadInterface
 {

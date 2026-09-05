@@ -102,7 +102,7 @@ class WsClientConcurrencyTest extends BaseAsyncTestCase
 
     protected function assertException(Throwable $exception): void
     {
-        // The Go side tags network failures with a "net:" marker, preserved through the
+        // The extension tags network failures with a "net:" marker, preserved through the
         // wrapping exceptions (WsClientConnectException on the sync path, wrapped again in
         // CallbackExecutionException on the async path).
         self::assertStringContainsString(

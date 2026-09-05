@@ -7,7 +7,7 @@ namespace SConcur\Features\Mongodb\Payloads;
 use SConcur\Features\Mongodb\CommandEnum;
 
 /**
- * Go: payloads.DeleteManyPayload (ext/internal/features/mongodb/payloads/payloads.go).
+ * Rust: payloads::DeleteManyPayload (ext/src/features/mongodb/payloads.rs).
  */
 readonly class DeleteManyPayload extends DeleteOnePayload
 {

@@ -14,8 +14,8 @@ use Throwable;
 
 /**
  * Asynchronous WebSocket client — the dial-side mirror of WsServer. The whole network
- * round-trip (dial, upgrade handshake, read, write) lives in the Go extension; connect()
- * runs in a goroutine while the calling coroutine suspends, so many connections fan out
+ * round-trip (dial, upgrade handshake, read, write) lives in the extension; connect()
+ * runs there while the calling coroutine suspends, so many connections fan out
  * concurrently. Outside a WaitGroup the same call works synchronously.
  *
  * connect() returns a long-lived Connection the caller drives itself: read() pulls

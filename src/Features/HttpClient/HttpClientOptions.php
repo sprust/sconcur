@@ -6,11 +6,11 @@ namespace SConcur\Features\HttpClient;
 
 /**
  * Per-request tuning for the HTTP client. All timeouts are in milliseconds; the
- * PHP defaults mirror the Go-side defaults. A single instance is shared by every
+ * PHP defaults mirror the extension's defaults. A single instance is shared by every
  * request a HttpClient sends.
  *
  * requestTimeoutMs is the mandatory hard limit for the whole operation (connect +
- * send + reading the entire body), enforced on the Go side as a context deadline.
+ * send + reading the entire body), enforced on the extension side as a context deadline.
  */
 readonly class HttpClientOptions
 {
@@ -28,9 +28,9 @@ readonly class HttpClientOptions
      * @param int  $maxIdleConnsPerHost     idle keep-alive connections kept per host
      * @param int  $idleConnTimeoutMs       how long an idle keep-alive connection is kept before closing
      * @param int  $tlsHandshakeTimeoutMs   TLS handshake limit
-     * @param bool $streamRequestBody       stream the request body to Go in chunks (chunkSize granularity) instead of
-     *                                      buffering it whole; gives write-backpressure for large uploads. Off by
-     *                                      default (v1 buffered behaviour).
+     * @param bool $streamRequestBody       stream the request body to the extension in chunks (chunkSize
+     *                                      granularity) instead of buffering it whole; gives write-backpressure
+     *                                      for large uploads. Off by default (v1 buffered behaviour).
      * @param bool $throwOnToStringError    whether ResponseBodyStream::__toString may throw on a read error. PSR-7 says
      *                                      __toString must not throw, so when false a read failure is turned into an
      *                                      E_USER_WARNING and an empty string. Defaults to true, mirroring Guzzle's

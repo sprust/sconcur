@@ -3,13 +3,14 @@ English | [Русский](http-client.ru.md)
 # HTTP client (PSR-18) with streaming
 
 An asynchronous PSR-18 HTTP client. All network I/O (DNS, connection, TLS,
-sending the request, reading the response) lives in the Go extension on top of
-`net/http.Client`: the request goes into a goroutine, the coroutine suspends,
+sending the request, reading the response) lives in the extension on top of
+`reqwest`: the request goes into a runtime task, the coroutine suspends,
 and dozens of requests can be in progress at once. Outside a `WaitGroup` the
 same API works synchronously.
 
 The response body is a PSR-7 `StreamInterface` (`ResponseBodyStream`) that lazily
-pulls chunks from Go, like a Mongo cursor, so a response is never buffered whole.
+pulls chunks from the extension, like a Mongo cursor, so a response is never
+buffered whole.
 
 ## Quick start
 
@@ -40,26 +41,26 @@ body chunks, which `ResponseBodyStream` pulls on demand.
 ```mermaid
 sequenceDiagram
     participant PHP as PHP (HttpClient)
-    participant Go as Go (httpclient)
+    participant EXT as Extension (httpclient)
 
-    PHP->>Go: exec(RequestPayload) — open the request
+    PHP->>EXT: exec(RequestPayload) — open the request
     Note over PHP: Fiber::suspend() — control to Scheduler
-    Note over Go: Next#1: http.Client.Do(ctx) — connect, send
-    Note over Go: read status + headers + first body chunk
-    Go-->>PHP: result#1 {st, hd, b: firstChunk, cl} (WithNext / Success)
+    Note over EXT: Next#1: reqwest: connect, send
+    Note over EXT: read status + headers + first body chunk
+    EXT-->>PHP: result#1 {st, hd, b: firstChunk, cl} (WithNext / Success)
     Note over PHP: build PSR-7 Response + ResponseBodyStream → return $response
 
-    PHP->>Go: next(bodyKey) — on read() / __toString()
-    Note over Go: Next#2..N: the next chunk of resp.Body
-    Go-->>PHP: result#k — raw chunk (WithNext, last → Success)
+    PHP->>EXT: next(bodyKey) — on read() / __toString()
+    Note over EXT: Next#2..N: the next chunk of the response body
+    EXT-->>PHP: result#k — raw chunk (WithNext, last → Success)
     Note over PHP: stream exhausted → state removed
-    Note over Go: Close(): resp.Body.Close()
+    Note over EXT: Close(): the response body is dropped
 ```
 
 `sendRequest()` inside a coroutine suspends it without blocking other requests;
 outside a Fiber it works synchronously (`Extension::wait`). An unfinished response
 (an early `break`, object destruction) is cleaned up by the streaming-state
-machinery: context cancellation → `Close()` → `resp.Body.Close`.
+machinery: the state is closed and the response body stream dropped with it.
 
 ## Running requests concurrently
 
@@ -88,7 +89,7 @@ streams). `read($length)` returns up to `$length` bytes — first the inline chu
 the first result, then the rest via `next($bodyKey)`, which suspends the coroutine
 so a slow server does not block other requests. `getSize()` is `Content-Length` if
 known (not chunked), otherwise `null`; `close()`/`detach()`/`__destruct()` release
-the Go flow on early abandonment.
+the flow on early abandonment.
 
 ```php
 $response = $client->sendRequest($factory->createRequest('GET', $url));
@@ -106,7 +107,7 @@ that size arrives inline with the first result without extra round-trips, a larg
 one comes in pieces per round-trip.
 
 > Better to read the body inside the same coroutine as `sendRequest`: once the
-> coroutine finishes its flow stops and the unread stream on the Go side is closed.
+> coroutine finishes its flow stops and the unread stream inside the extension is closed.
 > Small responses (≤ 64 KiB) arrive inline with the first result and are available
 > after `waitResults()` with no caveats.
 
@@ -114,7 +115,7 @@ one comes in pieces per round-trip.
 
 By default the request body is read whole and goes into the payload. For large
 bodies enable `streamRequestBody: true`: the body is sent in `chunkSize` pieces
-PHP → Go and written to an `io.Pipe` handed over as `req.Body`; Go dictates the
+PHP → the extension and written into the outgoing body; the transport dictates the
 pace of the writes, and the body is never buffered whole.
 
 ```php
@@ -125,29 +126,29 @@ $response = $client->sendRequest(
 );
 ```
 
-> With `streamRequestBody: true` redirects are not followed (the body is an
-> `io.Pipe` without `GetBody`, so it cannot be replayed on a 3xx): a redirect
-> response is returned as-is. For requests with redirects use the buffered mode.
+> With `streamRequestBody: true` redirects are not followed — a streamed body is
+> read once and cannot be replayed on a 3xx, so the redirect response is returned
+> as-is. For requests with redirects use the buffered mode.
 
 ## Options and timeouts
 
 `SConcur\Features\HttpClient\HttpClientOptions` (`readonly`), all timeouts in ms;
-the PHP defaults mirror Go.
+the PHP defaults mirror the transport's.
 
 | Option | Default | Purpose |
 |---|---|---|
-| `requestTimeoutMs` | `30000` | Full request deadline (connect + send + reading the whole body), a hard context limit on the Go side. `0` — off (not recommended). |
-| `connectTimeoutMs` | `10000` | TCP/TLS connection establishment limit (`net.Dialer.Timeout`). |
+| `requestTimeoutMs` | `30000` | Full request deadline (connect + send + reading the whole body), a hard context limit inside the extension. `0` — off (not recommended). |
+| `connectTimeoutMs` | `10000` | Connection establishment limit, TLS handshake included. |
 | `responseHeaderTimeoutMs` | `15000` | Limit waiting for status + headers. |
 | `maxResponseBody` | `0` (unlimited) | Response body cap in bytes; exceeding it → stream read error. **Warning:** `0` is unlimited — watch for OOM. |
 | `followRedirects` | `true` | Whether to follow 3xx redirects. |
 | `maxRedirects` | `10` | Redirect hop limit. |
 | `chunkSize` | `65536` | Granularity of reading the response body and sending the request body. |
 | `verifyTls` | `true` | Whether to verify TLS certificates. |
-| `maxIdleConns` | `100` | Total idle keep-alive connections in the pool. |
+| `maxIdleConns` | `100` | Accepted and not applied: the pool is sized per host, so a process-wide total has nothing to set. `maxIdleConnsPerHost` is what takes effect. |
 | `maxIdleConnsPerHost` | `16` | Idle keep-alive connections per host. |
 | `idleConnTimeoutMs` | `90000` | How long an idle keep-alive connection is kept. |
-| `tlsHandshakeTimeoutMs` | `10000` | TLS handshake limit. |
+| `tlsHandshakeTimeoutMs` | `10000` | Accepted and not applied: there is no separate handshake limit, `connectTimeoutMs` bounds the handshake with the connection. |
 | `streamRequestBody` | `false` | Stream the request body in chunks instead of buffering it whole. |
 | `throwOnToStringError` | `true` | Whether `ResponseBodyStream::__toString()` may throw on a read error. PSR-7 forbids throwing from `__toString`; when `false` the error becomes an `E_USER_WARNING` and an empty string. |
 
@@ -160,17 +161,19 @@ $client = new HttpClient($factory, new HttpClientOptions(
 ));
 ```
 
-Connection pool / keep-alive: the Go side keeps reusable `http.Transport`s, one per
-distinct set of transport options (`connectTimeout`/`responseHeaderTimeout`/
-`verifyTls` plus the pool parameters), so keep-alive works between requests within
-the process. Idle connections are released in `features.Shutdown()`.
+Connection pool / keep-alive: the extension keeps reusable `reqwest::Client`s, one
+per distinct set of transport options (redirects, `connectTimeoutMs`, `verifyTls`
+and the pool parameters), so keep-alive works between requests within the
+process. Releasing the extension drops the clients and with them the idle
+connections.
 
 ## Downloading to a file
 
-`download()` writes the response body straight into a file on the Go side
-(`io.CopyBuffer` inside the extension) — the bytes never cross into PHP. Memory
-is constant for any size, there are no per-chunk round-trips, and inside a
-`WaitGroup` several downloads run at the same time.
+`download()` writes the response body straight into a file inside the extension —
+the bytes never cross into PHP. The body is consumed as a stream of chunks and
+each is written as it arrives, so memory is constant for any size, there are no
+per-chunk round-trips, and inside a `WaitGroup` several downloads run at the same
+time.
 
 ```php
 use SConcur\Features\HttpClient\DownloadFileMode;
@@ -179,19 +182,21 @@ $result = $httpClient->download(
     request: $factory->createRequest('GET', 'https://example.com/big.iso'),
     path: '/var/data/big.iso',
     mode: DownloadFileMode::Replace,   // default
-    bufferSizeBytes: 1 << 20,          // opt., default 64 KiB — the io.CopyBuffer buffer
+    bufferSizeBytes: 1 << 20,          // opt., accepted and not applied — see below
     perm: 0644,                        // opt., create permissions
 );
 
 $result->statusCode;          // always 2xx (otherwise an exception)
 $result->headers;             // response headers as the server returned them
-$result->filesizeBytes;       // exact bytes written, measured by io.CopyBuffer
+$result->filesizeBytes;       // exact bytes written, counted as they are written
 $result->executionMs;         // download time
 ```
 
-Modes: `Replace` — create or overwrite (`O_CREATE|O_TRUNC`); `Create` — create,
-error if the file exists (`O_CREATE|O_EXCL`); `Append` — create or append
-(`O_CREATE|O_APPEND`).
+Modes: `Replace` — create or truncate; `Create` — create, error if the file
+exists; `Append` — create or append.
+
+`bufferSizeBytes` is accepted and not applied: the body arrives as buffers the
+transport has already sized, so there is no buffer here to size.
 
 The file is written only on 2xx. A non-2xx, transport or file error →
 `SConcur\Exceptions\HttpClient\DownloadException` (`getStatusCode()` carries the
@@ -215,7 +220,7 @@ Exceptions are thrown only on a send or connection failure:
 | Other client error | `Exceptions\HttpClient\HttpClientException` | `ClientExceptionInterface` |
 
 `NetworkException`/`RequestException` carry `getRequest(): RequestInterface`. The
-Go side marks the error class with a prefix (`net: `/`req: `) in the payload, and
+extension side marks the error class with a prefix (`net: `/`req: `) in the payload, and
 PHP maps it across the whole `getPrevious()` chain to the right class.
 
 ```php
@@ -233,29 +238,33 @@ sends it via `FeatureExecutor::exec()`, decodes the first result's metadata, bui
 the response and attaches `ResponseBodyStream`; `download()` lives here too.
 Alongside it: `HttpClientOptions`, `DownloadFileMode`, `HttpClientCommandEnum` (the
 envelope's sub-operations `Request`/`UploadChunk`/`UploadEnd`), `Payloads/*`
-(mirrors of the Go structs), `Dto/ResponseBodyStream` and `Dto/DownloadResult`.
+(mirrors of the extension's structs), `Dto/ResponseBodyStream` and `Dto/DownloadResult`.
 
-Go (`ext/internal/features/httpclient/`): `feature.go` builds the `*http.Request`,
-applies `context.WithTimeout`, starts the state and routes the commands;
-`response_state.go` is the streaming state (the first `Next()` runs the request and
-returns metadata plus first chunk, the rest are raw body chunks, `Close()` closes
-`resp.Body`) and also holds the `maxResponseBody` limit; `client.go` is the
-registry of reusable `*http.Transport`s; `download.go` and `upload.go` are the file
-sink and the request-body pipe. The shared helper `internal/helpers.ReadChunk`
+Rust (`ext/src/features/httpclient/`): `mod.rs` builds the request, applies the
+request deadline, starts the state and routes the commands; `response_state.rs`
+is the streaming state (the first step runs the request and returns metadata plus
+the first chunk, the rest are raw body chunks, closing it drops the response body
+stream) and also holds the `maxResponseBody` limit; `client.rs` is the registry
+of reusable `reqwest::Client`s; the `download` and `upload` command handlers are
+the file sink and the request-body pipe. The shared helper `ext/src/helpers/`
 slices bodies for both the server and the client.
 
-## Not in v1
+## Limitations
 
-HTTP/2 and h2c (`net/http` HTTP/1.1 for now), a cookie jar (application side or
-PSR-7 middleware), proxy and a custom CA bundle (later, via options), PSR-18 async
-(`sendAsyncRequest`) — concurrency goes through `WaitGroup`, not promises.
+HTTP/2 is negotiated over TLS when the server offers it; over plain HTTP the
+connection is HTTP/1.1 and there is no prior-knowledge h2c. The protocol version
+is not surfaced to PHP.
+
+Not supported: a cookie jar (do it application-side or in PSR-7 middleware), a
+proxy and a custom CA bundle, and PSR-18 async (`sendAsyncRequest`) — concurrency
+goes through `WaitGroup`, not promises.
 
 ## Testing
 
 PHP feature tests are in `tests/feature/Features/HttpClient/` — edge cases,
 download to a file and the concurrency contract on `BaseAsyncTestCase`, with
 requests targeting the real SConcur HTTP server started via `TestHttpServer`.
-The Go tests run against an `httptest.Server` and cover the first-result
+The core's own tests cover the first-result
 metadata, body streaming, the `maxResponseBody` limit, error classification,
 request assembly and download. The benchmark (`make bench-http-client c=20`)
 sends N requests to `/msleep`, concurrent async against sequential native/sync.

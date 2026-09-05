@@ -33,7 +33,7 @@ class PublishChannelPool
 {
     /**
      * How long a channel may sit unused before the pool gives it up, unless the caller says
-     * otherwise. Comfortably under the half hour after which the Go side sweeps a channel
+     * otherwise. Comfortably under the half hour after which the extension side sweeps a channel
      * that has run no command: a swept channel would surface as a failed publish on the
      * handler unlucky enough to lease it.
      */
@@ -167,7 +167,7 @@ class PublishChannelPool
 
     /**
      * Gives up everything the pool holds. Releasing a connection closes its channels on the
-     * Go side, so they need no closing of their own.
+     * extension side, so they need no closing of their own.
      */
     public function close(): void
     {
@@ -197,7 +197,7 @@ class PublishChannelPool
             }
         } finally {
             // Let go after the connections, not before: releasing one closes its channels on
-            // the Go side and clears their handles, so the destructors that follow have
+            // the extension side and clears their handles, so the destructors that follow have
             // nothing left to send.
             $this->free        = [];
             $this->connections = [];
@@ -346,7 +346,7 @@ class PublishChannelPool
     {
         // Drawn from a counter and never from a place in the list: a connection given up
         // closes the gap behind it, so a name taken from the place would be one already in
-        // use — and the Go side pools a socket by its options, the name among them, so two
+        // use — and the extension side pools a socket by its options, the name among them, so two
         // of these objects would share one socket while the pool budgeted channels to each
         // of them separately, straight into a 504.
         ++$this->connectionsOpened;

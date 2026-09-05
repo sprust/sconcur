@@ -34,7 +34,7 @@ class PgsqlCancellationTest extends BaseTestCase
 
         // The pg_sleep(5) is in flight after add(). stop() cancels the flow, so
         // iterate() yields nothing and returns immediately instead of waiting 5s — and
-        // the Go side cancels the running query (tearDown asserts no dangling tasks).
+        // the extension cancels the running query (tearDown asserts no dangling tasks).
         $waitGroup->stop();
 
         $startedAt = microtime(true);

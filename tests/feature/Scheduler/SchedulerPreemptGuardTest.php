@@ -11,8 +11,7 @@ use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\WaitGroup;
 
 /**
- * Deterministic regression tests for the suspend-transition guard (see the
- * "Stress findings" section of .ai/plans/coroutine-switcher.md): preempt()
+ * Deterministic regression tests for the suspend-transition guard: preempt()
  * must park a running coroutine normally, and must be a no-op while the
  * coroutine is inside a suspend transition — the stress-found races (a group
  * waiter woken onto its switch parking, a task pushed but not yet mapped) all

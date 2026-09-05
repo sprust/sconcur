@@ -3,8 +3,8 @@
 # Как добавить новую фичу верхнего уровня
 
 Фича верхнего уровня — это новый домен со своим `Method` (как `Sleeper`). Образец
-для копирования — `Sleeper`: PHP в `src/Features/Sleeper/`, Go в
-`ext/internal/features/sleeper/`. Ниже разбор в двух вариантах — без стриминга
+для копирования — `Sleeper`: PHP в `src/Features/Sleeper/`, Rust в
+`ext/src/features/sleeper/`. Ниже разбор в двух вариантах — без стриминга
 (один результат) и со стримингом (несколько батчей).
 
 > Делаете долгоживущий сетевой сервер (как `HttpServer`)? Это особый вид
@@ -13,64 +13,64 @@
 
 ## Два обязательных требования
 
-Каждый обработчик на Go-стороне обязан выполнять оба; их нарушение приводит к
+Каждый обработчик на стороне расширения обязан выполнять оба; их нарушение приводит к
 утечкам ресурсов и ломает поведение `WaitGroup`.
 
-1. **Отмена по контексту.** Контекст задачи `task.GetContext()` отменяется при
-   остановке флоу (`WaitGroup::stop()`, ранний `break`, разрушение `WaitGroup`,
-   `destroy`). Выполняйте работу на этом контексте; для долгих операций слушайте
-   `ctx.Done()` через `select`, иначе задачу нельзя остановить. Для стриминга
-   освобождайте ресурс на **свежем** контексте (`context.Background()` + таймаут):
-   к моменту очистки контекст задачи уже отменён.
+1. **Отмена.** Токен отмены задачи, `task.context()`, отменяется при остановке
+   флоу (`WaitGroup::stop()`, ранний `break`, разрушение `WaitGroup`, `destroy`).
+   Для долгой операции ставьте рядом с ней в `select!` ветку
+   `_ = task.context().cancelled()`, иначе задачу нельзя остановить. Очистка
+   после стрима под этим токеном идти не может — к её началу он уже отменён,
+   поэтому у освобождения ресурса должен быть свой предел.
 
 2. **Передача предельного времени выполнения.** Payload, отправляемый из PHP,
-   обязан нести предельное время, а Go-сторона обязана ограничить им операцию —
+   обязан нести предельное время, а расширение обязано ограничить им операцию —
    задача не должна выполняться бесконечно. Как именно оно применяется, зависит от
-   фичи: иногда время и есть суть операции (`Sleeper`); иногда таймаут применяется
-   нативно (MongoDB передаёт `Client::$timeoutMs` и `::$serverSelectionTimeoutMs` в
-   `options.Client().SetTimeout(...).SetServerSelectionTimeout(...)`); общий способ
-   — ограничить контекст задачи:
-   `ctx, cancel := context.WithTimeout(task.GetContext(), timeout)`.
+   фичи: иногда время и есть суть операции (`Sleeper`); иногда его забирает
+   драйвер (клиент MongoDB ключуется по `serverSelectionTimeoutMs`); общий способ
+   — `tokio::time::timeout(Duration::from_millis(timeout_ms), work)`.
 
-   (`ExecutionMs` в результате — это фактическое время работы, которое ставит
-   `dto.NewSuccessResult`, а не таймаут.)
+   (`executionMs` в результате — это фактическое время работы, которое меряет
+   `calc_execution_ms`, а не таймаут.)
 
 ## Method и payload'ы
 
 Домен — это значение, продублированное в двух местах, и оба должны совпадать: PHP
-`SConcur\Features\MethodEnum` и Go `ext/internal/types/method.go` (`Method`).
+`SConcur\Features\MethodEnum` и Rust `ext/src/types/method.rs` (`Method`).
 
 Payload — контракт обмена, разложенный зеркально с обеих сторон: PHP
-`src/Features/<Feature>/Payloads/` (по классу на payload), Go
-`ext/internal/features/<feature>/payloads/payloads.go` (все типы в одном файле, в
-каталоге, названном как PHP-домен). У каждого PHP `*Payload` есть Go-структура с
+`src/Features/<Feature>/Payloads/` (по классу на payload), Rust
+`ext/src/features/<feature>/payloads.rs` (все типы в одном файле, в
+модуле, названном как PHP-домен). У каждого PHP `*Payload` есть Rust-структура с
 тем же именем; поля структуры — это ключи, которые возвращает `getData()`, а теги
-`msgpack` (и `json`) равны этим коротким ключам — Go декодирует именно по тегам.
+`serde(rename)` равны этим коротким ключам — структура декодируется именно по ним.
 Перекрёстные ссылки обязательны в обе стороны.
 
-```go
-// SleeperPayload is the payload of a sleep command.
-// PHP: SConcur\Features\Sleeper\Payloads\SleeperPayload.
-type SleeperPayload struct {
-    Microseconds int64 `json:"us" msgpack:"us"`
+```rust
+/// The payload of a sleep command.
+/// PHP: SConcur\Features\Sleeper\Payloads\SleeperPayload.
+#[derive(Deserialize)]
+pub struct SleeperPayload {
+    #[serde(rename = "us")]
+    pub microseconds: i64,
 }
 ```
 
 Многокомандные фичи (образец — `Mongodb`) используют двухуровневый payload: общий
-конверт с полем команды и `dt` (сериализованное тело) — на Go это один тип
+конверт с полем команды и `dt` (сериализованное тело) — в Rust это один тип
 `Payload`, на PHP его строит `Base\BaseMongodbPayload` — плюс по структуре на
 команду для содержимого `dt`. Там PHP-классы `*PayloadParameters` — удобство только
-для PHP при сборке `dt`, на Go они не переносятся: их поля разворачиваются прямо в
-соответствующую Go-структуру. Если `dt` команды — произвольный пользовательский
-документ (insert, count, runCommand, …) или пуст (drop, list…), Go-структуры у неё
+для PHP при сборке `dt`, в Rust они не переносятся: их поля разворачиваются прямо
+в соответствующую Rust-структуру. Если `dt` команды — произвольный
+пользовательский документ (insert, count, runCommand, …) или пуст (drop, list…), структуры у неё
 нет: `dt` читается в обработчике как сырой BSON, и такой случай помечается
-комментарием, чтобы каждому PHP `*Payload` соответствовала либо Go-структура, либо
+комментарием, чтобы каждому PHP `*Payload` соответствовала либо структура, либо
 явная пометка.
 
 Фича, у которой много команд, а параметры каждой — плоская карта коротких ключей, может
 обойтись вовсе без класса на команду: у `Amqp` один
 `AmqpPayload(AmqpCommandEnum $command, array $data)`, вызывающие пишут ключи там же, где
-значения, а Go-структуру, в которую разбирается `dt`, называет докблок кейса перечисления.
+значения, а структуру, в которую разбирается `dt`, называет докблок кейса перечисления.
 Два десятка почти одинаковых классов не дают ничего сверх именованного аргумента на месте
 вызова. Выбирайте эту форму, когда в параметрах нет логики, и форму Mongodb — когда есть.
 
@@ -88,7 +88,7 @@ PHP:
 
    ```php
    /**
-    * Go: payloads.FooPayload (ext/internal/features/foo/payloads/payloads.go).
+    * Rust: payloads::FooPayload (ext/src/features/foo/payloads.rs).
     */
    readonly class FooPayload implements PayloadInterface
    {
@@ -124,58 +124,74 @@ PHP:
    );
    ```
 
-Go:
+Rust:
 
-1. `types/method.go` — та же константа: `MethodFoo Method = "foo"`.
+1. `ext/src/types/method.rs` — та же константа: вариант `Foo` со значением `"foo"`
+   на проводе.
 
-2. Пакет фичи `ext/internal/features/foo/feature.go`, реализующий
-   `contracts.FeatureContract` (`Handle(task *tasks.Task)`): распарсить
-   `message.Payload`, выполнить работу на `task.GetContext()`, вернуть результат с
-   `ExecutionMs`.
+2. Модуль фичи `ext/src/features/foo/mod.rs`, реализующий `Feature`
+   (`handle(&self, task: Task) -> BoxFuture`): раскодировать `message.payload`,
+   сделать работу под `task.context()` и ответить результатом.
 
-   ```go
-   func (f *FooFeature) Handle(task *tasks.Task) {
-       start := time.Now()
-       message := task.GetMessage()
+   ```rust
+   impl Feature for FooFeature {
+       fn handle(&self, task: Task) -> BoxFuture {
+           Box::pin(async move {
+               let start_time = Instant::now();
+               let message = task.message();
 
-       var payload payloads.FooPayload
+               let payload: payloads::FooPayload = match rmp_serde::from_slice(&message.payload) {
+                   Ok(payload) => payload,
+                   Err(error) => {
+                       task.add_result(Result::error(
+                           message,
+                           ERR_FACTORY.by_err("parse error", error),
+                       )).await;
 
-       if err := msgpack.Unmarshal(message.Payload, &payload); err != nil {
-           task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("parse error", err)))
-           return
+                       return;
+                   }
+               };
+
+               // Токен флоу отменяет это на остановке, таймаут — ограничивает.
+               tokio::select! {
+                   _ = task.context().cancelled() => {
+                       task.add_result(Result::error(
+                           message,
+                           ERR_FACTORY.by_text("closed by task stop"),
+                       )).await;
+                   }
+                   outcome = do_foo(&payload) => match outcome {
+                       Ok(body) => {
+                           task.add_result(Result::success(
+                               message,
+                               body,
+                               calc_execution_ms(start_time),
+                           )).await;
+                       }
+                       Err(error) => {
+                           task.add_result(Result::error(
+                               message,
+                               ERR_FACTORY.by_err("foo error", error),
+                           )).await;
+                       }
+                   },
+               }
+           })
        }
-
-       // Ограничиваем работу переданным таймаутом; этот же ctx отменяется при остановке.
-       ctx, cancel := context.WithTimeout(
-           task.GetContext(),
-           time.Duration(payload.TimeoutMs)*time.Millisecond,
-       )
-       defer cancel()
-
-       result, err := doFoo(ctx) // ваша операция; обязана уважать ctx
-
-       if err != nil {
-           task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("foo error", err)))
-           return
-       }
-
-       task.AddResult(dto.NewSuccessResult(message, result, helpers.CalcExecutionMs(start)))
    }
    ```
 
-   Как и у `Sleeper`, фичу обычно делают синглтоном через `sync.Once` + `Get()`.
+   Как и у `Sleeper`, фича — синглтон через `OnceLock` + `get()`.
 
-3. Регистрация в `ext/internal/features/factory.go` — case в
-   `DetectMessageHandler`:
+3. Регистрация в `ext/src/features/mod.rs` — ветка в `detect_message_handler`:
 
-   ```go
-   case types.MethodFoo:
-       return foo_feature.Get(), nil
+   ```rust
+   Method::Foo => Ok(foo::get()),
    ```
 
 ## Вариант B. Со стримингом (батчами)
 
-Стриминг отдаёт результат по частям: Go держит состояние, PHP тянет следующие
+Стриминг отдаёт результат по частям: расширение держит состояние, PHP тянет следующие
 батчи. Маршрутизация `next` к состоянию общая для всех фич, отдельной настройки не
 требует.
 
@@ -198,62 +214,59 @@ public function doFoo(int $someParam): Iterator
 }
 ```
 
-Go: константа как в A, плюс файл состояния в пакете фичи (`rows_state.go` в `sql`,
-`message_state.go` в `wsserver`; у mongodb они лежат в `states/`), реализующий
-`contracts.StateContract` (`Next() *dto.Result`, `Close()`):
+Rust: константа как в A, плюс модуль состояния в фиче (`rows_state.rs` в `sql`,
+`message_state.rs` в `wsserver`; у mongodb они лежат в `states.rs`), реализующий
+`StateContract` (`next()`, `close()`, оба асинхронные):
 
-```go
-type FooState struct {
-    // мьютекс сериализует Next и Close: Close может прийти по отмене контекста,
-    // пока Next ещё использует ресурс.
-    mutex     sync.Mutex
-    ctx       context.Context
-    message   *dto.Message
-    startTime time.Time
-    // удерживаемый ресурс + параметры
+```rust
+pub struct FooState {
+    // Мьютекс, потому что close() может прийти по отмене, пока next() ещё
+    // использует ресурс.
+    resource: tokio::sync::Mutex<Option<Resource>>,
+    message: Arc<Message>,
+    start_time: Instant,
 }
 
-func (s *FooState) Next() *dto.Result {
-    s.mutex.Lock()
-    defer s.mutex.Unlock()
+impl StateContract for FooState {
+    fn next(&self) -> StateFuture<'_> {
+        Box::pin(async move {
+            let mut resource = self.resource.lock().await;
 
-    // на первом вызове лениво инициализируем ресурс на s.ctx, читаем батч
+            // На первом вызове открываем ресурс, дальше читаем один батч.
 
-    // есть ещё данные → батч с флагом «будет продолжение»:
-    return dto.NewSuccessResultWithNext(s.message, response, helpers.CalcExecutionMs(s.startTime))
-    // последний батч → без флага (состояние удаляется, вызывается Close())
-}
+            // Есть ещё данные → батч, который об этом говорит:
+            Result::success_with_next(&self.message, body, calc_execution_ms(self.start_time))
+            // Последний батч → без флага, и реестр закрывает состояние.
+        })
+    }
 
-// Close освобождает ресурс на СВЕЖЕМ контексте: контекст задачи уже отменён.
-func (s *FooState) Close() {
-    s.mutex.Lock()
-    defer s.mutex.Unlock()
-
-    closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-    defer cancel()
-
-    // освобождаем удерживаемый ресурс на closeCtx
+    fn close(&self) -> StateCloseFuture<'_> {
+        Box::pin(async move {
+            // Освобождаем ресурс. Этого дожидаются, поэтому брошенный курсор
+            // MongoDB доезжает до сервера раньше, чем PHP посмотрит на счётчик
+            // открытых курсоров.
+        })
+    }
 }
 ```
 
-`Handle` фичи создаёт состояние и запускает его через реестр; `states.Get().Start`
-сам вешает `Close()` на отмену контекста и возвращает первый батч:
+`handle` фичи создаёт состояние и запускает его через реестр; `states::get().start()`
+сам вешает `close()` на завершение флоу и возвращает первый батч:
 
-```go
-state := newFooState(task.GetContext(), message /*, параметры */)
+```rust
+let state = Arc::new(FooState::new(task.message_arc() /*, параметры */));
 
-result, err := states.Get().Start(task.GetContext(), message.TaskKey, state)
-if err != nil {
-    task.AddResult(dto.NewErrorResult(message, errFactory.ByErr("foo", err)))
-    return
+match states::get().start(task.context().clone(), &message.task_key, state).await {
+    Ok(result) => task.add_result(result).await,
+    Err(error) => {
+        task.add_result(Result::error(message, ERR_FACTORY.by_text(&error))).await;
+    }
 }
-
-task.AddResult(result)
 ```
 
 Недочитанный поток (ранний `break` на PHP) закрывается автоматически: PHP
-освобождает флоу, контекст задачи отменяется, и хук реестра состояний вызывает
-`Close()` — поэтому `Close()` обязан работать на свежем контексте.
+освобождает флоу, срабатывает его токен отмены, и хук реестра состояний вызывает
+`close()` — поэтому `close()` не должен зависеть от того, жив ли ещё флоу.
 
 ## Тесты (обязательно)
 
@@ -270,7 +283,7 @@ task.AddResult(result)
   проверяется конкурентность, то есть что общее время ≈ самой медленной операции, а
   не их сумме. Образец — `tests/feature/Features/Sleeper/SleeperTest.php`.
 - Edge- и синхронные проверки добавляйте отдельными тестами от `BaseTestCase`, а
-  Go-логику покрывайте Go-тестами (`make ext-test`).
+  логику расширения покрывайте юнит-тестами (`make ext-test`).
 
 ## Чек-лист
 
@@ -279,20 +292,20 @@ PHP:
 - [ ] `MethodEnum` — новое значение.
 - [ ] Класс payload'а (`PayloadInterface`) в `src/Features/<Feature>/Payloads/`;
       сборка параметров внутри него; payload несёт предельное время выполнения;
-      докблок с перекрёстной ссылкой `Go: payloads.<Type>`.
+      докблок с перекрёстной ссылкой `Rust: payloads::<Type>`.
 - [ ] Публичный API (для стриминга — возвращает `IteratorResult`).
 - [ ] Тест от `BaseAsyncTestCase` плюс edge-тесты от `BaseTestCase`.
 
-Go:
+Rust:
 
-- [ ] Та же константа в `types/method.go`.
-- [ ] Структуры payload'ов в `payloads.go`, зеркальные PHP `*Payload` 1:1 (имена,
-      теги `msgpack`) плюс перекрёстная ссылка `// PHP: …`.
-- [ ] Пакет фичи с `Handle`: контекст задачи в каждый вызов; работа ограничена
-      переданным таймаутом; для стриминга — состояние `StateContract` плюс
-      `Close()` на свежем контексте.
-- [ ] Регистрация в `features/factory.go`.
-- [ ] (опц.) Go-тесты.
+- [ ] Та же константа в `ext/src/types/method.rs`.
+- [ ] Структуры payload'ов в `payloads.rs`, зеркальные PHP `*Payload` 1:1 (имена,
+      ключи `serde(rename)`) плюс перекрёстная ссылка `// PHP: …`.
+- [ ] Модуль фичи с `handle`: токен отмены задачи учитывается каждым вызовом;
+      работа ограничена переданным таймаутом; для стриминга — состояние
+      `StateContract`, чей `close()` дожидаются.
+- [ ] Регистрация в `ext/src/features/mod.rs`.
+- [ ] (опц.) юнит-тесты в расширении.
 
 Проверка:
 `make ext-build && make ext-test && make php-stan && make cs-fixer-check && make test`.

@@ -14,6 +14,7 @@ use SConcur\Exceptions\HttpServer\InvalidHandlerResponseException;
 use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Exceptions\HttpServer\RequestBodyTooLargeException;
 use SConcur\Features\FeatureExecutor;
+use SConcur\Features\HttpServer\Dto\LazyHeadersRequest;
 use SConcur\Features\HttpServer\Dto\RequestBody;
 use SConcur\Features\HttpServer\Dto\RequestBodyStream;
 use SConcur\Features\HttpServer\Payloads\RespondPayload;
@@ -24,7 +25,7 @@ use SConcur\Transport\MessagePackTransport;
 use Throwable;
 
 /**
- * HTTP server: the network lives in the Go extension, each accepted request is
+ * HTTP server: the network lives in the extension, each accepted request is
  * streamed back as a result and handled in its own coroutine (spawn-on-request).
  *
  * The public surface is PSR-7: the handler receives a ServerRequestInterface and
@@ -48,7 +49,7 @@ readonly class HttpServer
      *                                                                                                  the fallback 413/500 responses (and any error response).
      * @param int                                                                 $maxRequestBody       request body read limit, in bytes
      * @param int                                                                 $maxConcurrency       max requests handled at once (0 = unlimited).
-     *                                                                                                  Bounds goroutines, buffered request bodies (memory) and request
+     *                                                                                                  Bounds extension tasks, buffered request bodies (memory) and request
      *                                                                                                  coroutines; excess connections wait for a free slot. Set it to
      *                                                                                                  cap resource use under load.
      * @param int                                                                 $handlerTimeoutMs     max total time to handle a request, including a streamed
@@ -92,7 +93,7 @@ readonly class HttpServer
      *                                                                                                  in-flight requests (see docs/http-server.md). Enabled by
      *                                                                                                  default (5 ms); 0 disables.
      *
-     * Defaults mirror the Go server defaults.
+     * Defaults mirror the extension's defaults.
      */
     public function __construct(
         protected ServerRequestFactoryInterface $serverRequestFactory,
@@ -240,7 +241,7 @@ readonly class HttpServer
 
     /**
      * Runs inside a spawned coroutine: decode the request, resolve the handler's
-     * result, then send it back to Go. A response of known size is one atomic write;
+     * result, then send it back to the extension. A response of known size is one atomic write;
      * a response whose body is a streaming, unknown-size StreamInterface is driven
      * head/chunk/end. Resolution is guarded so the connection is always answered — a
      * handler that throws or returns the wrong type still gets a 500 instead of
@@ -270,8 +271,8 @@ readonly class HttpServer
 
         $body = $response->getBody();
 
-        // The access log is written on the Go side (see ext httpserver server.go),
-        // so the per-request hot path here makes no extra PHP->Go crossing for it.
+        // The access log is written on the extension side (ext/src/features/httpserver/server.rs),
+        // so the per-request hot path here makes no extra PHP->extension crossing for it.
         //
         // A known-size body is sent whole in one write; an unknown-size (null) body
         // is a streaming StreamInterface, drained chunk by chunk with backpressure.
@@ -352,7 +353,7 @@ readonly class HttpServer
     }
 
     /**
-     * Decodes the streaming payload the Go server emits (payloads.RequestEvent) into
+     * Decodes the streaming payload the extension's server emits (payloads.RequestEvent) into
      * a PSR-7 ServerRequestInterface, returning it together with the request id used
      * to address the response. The body is wrapped in a lazy RequestBodyStream so it
      * is never buffered whole.
@@ -393,18 +394,6 @@ readonly class HttpServer
             ),
         );
 
-        // An empty header map decodes to stdClass (a MessagePack quirk), and nested
-        // values may too; normalize to array<string, array<int, string>> and set each.
-        foreach ((array) ($data['hd'] ?? []) as $name => $values) {
-            $request = $request->withHeader((string) $name, array_values((array) $values));
-        }
-
-        if ($query !== '') {
-            parse_str($query, $queryParams);
-
-            $request = $request->withQueryParams($queryParams);
-        }
-
         $protocolVersion = str_starts_with($proto, 'HTTP/') ? substr($proto, 5) : $proto;
 
         // PSR-7 withers clone the request; skip the clone when the factory's
@@ -422,7 +411,27 @@ readonly class HttpServer
             ),
         );
 
-        return [$requestId, $request];
+        // The headers and the query string are handed over unapplied: setting
+        // seven headers costs 4.17 us of the 7.75 one decode takes, and parsing
+        // a query string another 1.9, while a handler that dispatches on the
+        // method and the path reads 0.12 of it (`make bench-request`). An
+        // empty header map decodes to stdClass (a MessagePack quirk), and nested
+        // values may too, so they are normalized here rather than on first use —
+        // that part is cheap and keeps the deferral a pure postponement.
+        $headers = [];
+
+        foreach ((array) ($data['hd'] ?? []) as $name => $values) {
+            $headers[(string) $name] = array_values((array) $values);
+        }
+
+        return [
+            $requestId,
+            new LazyHeadersRequest(
+                request: $request,
+                pendingHeaders: $headers,
+                pendingQuery: $query === '' ? null : $query,
+            ),
+        ];
     }
 
     /**
@@ -487,7 +496,7 @@ readonly class HttpServer
         } catch (FlowStoppedException $exception) {
             // The handler was unwound on purpose — it ran past handlerTimeoutMs, or the
             // server is shutting down. Turning that into a 500 would answer a request the
-            // Go side has already answered with a 504, and would finish work whose whole
+            // extension side has already answered with a 504, and would finish work whose whole
             // point was to stop: the unwind is passed on, as the project's rule requires.
             throw $exception;
         } catch (RequestBodyTooLargeException $exception) {

@@ -140,7 +140,7 @@ class WaitAnyBatchTest extends BaseTestCase
             payload: new SleeperPayload(microseconds: 1),
         );
 
-        // microseconds: 0 is rejected by the Go-side sleeper with an error result.
+        // microseconds: 0 is rejected by the extension-side sleeper with an error result.
         $this->extension->push(
             flowKey: 'batch-bad',
             payload: new SleeperPayload(microseconds: 0),
@@ -266,8 +266,8 @@ class WaitAnyBatchTest extends BaseTestCase
     /**
      * Builds one result frame in the documented layout (flags + methodLen +
      * execMs + flowKeyLen + taskKeyLen + ownerFiberId(uint64), then method,
-     * flowKey, taskKey, payload) — must stay in sync with buildResultFrame in
-     * ext/main.go.
+     * flowKey, taskKey, payload) — must stay in sync with append_result_frame
+     * in ext/src/lib.rs.
      */
     protected static function buildResultFrame(string $taskKey): string
     {

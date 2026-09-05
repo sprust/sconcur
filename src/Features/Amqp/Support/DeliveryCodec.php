@@ -16,13 +16,13 @@ use WeakReference;
  * publisher confirm can carry. It sits beside PropertiesCodec because the shape of a
  * message on the wire is one subject, and Channel is the API over the commands.
  *
- * Go: payloads.Delivery, payloads.Confirmation, payloads.ReturnedMessage
- * (ext/internal/features/amqp/payloads/payloads.go).
+ * Rust: payloads::Delivery, payloads.Confirmation, payloads.ReturnedMessage
+ * (ext/src/features/amqp/payloads.rs).
  */
 readonly class DeliveryCodec
 {
     /**
-     * Builds a Delivery out of what the Go side sent.
+     * Builds a Delivery out of what the extension side sent.
      *
      * @param array<mixed>            $delivery
      * @param WeakReference<Channel>  $channel  the channel the message arrived on; weak, so a

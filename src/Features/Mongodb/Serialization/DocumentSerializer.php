@@ -9,7 +9,7 @@ use function msgpack_pack;
 use function msgpack_unpack;
 
 /**
- * Documents are exchanged with the Go extension as MessagePack, so nothing here
+ * Documents are exchanged with the extension as MessagePack, so nothing here
  * depends on ext-mongodb.
  *
  * BSON types MessagePack has no equivalent for (an id, a date, a decimal, ...)
@@ -22,7 +22,7 @@ class DocumentSerializer
 {
     /**
      * Encode a document for the wire. MessagePack preserves the PHP shape — a list
-     * packs as a list, a map as a map — and the Go side turns either into a BSON
+     * packs as a list, a map as a map — and the extension side turns either into a BSON
      * document, so the caller does not have to say which one it is.
      *
      * @param array<int|string, mixed> $document

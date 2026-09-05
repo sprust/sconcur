@@ -9,7 +9,7 @@ all cores without an external load balancer. Implementation: `src/Worker/` plus 
 universal CLI `bin/sconcur-server`.
 
 Each worker is a separate process started via `proc_open` (`pcntl_fork` after
-loading the extension is forbidden — the Go runtime does not survive a fork). The
+loading the extension is forbidden — the extension's runtime does not survive a fork). The
 master itself does not load the extension: it is a pure supervisor on
 `pcntl`/`posix` (both are required, otherwise it throws `MissingPcntlException`).
 
@@ -212,7 +212,7 @@ The next keys are the defaults every group inherits unless it names its own:
 |---|---|---|
 | `name` | — (required) | Identifies the pool in the journal, in `status` and in `--group`. Unique. |
 | `workerScript` | — (required) | The script each of its workers runs. |
-| `workerCount` | `0` (= number of cores) | How many workers to bring up. |
+| `workerCount` | `0` (= logical CPUs, what `nproc` reports — twice the core count where hyperthreading is on) | How many workers to bring up. |
 | `server` | `{}` | Worker parameters → expanded into the worker's `argv`. |
 | `workerArgs` | `[]` | Extra raw worker `argv` flags, appended after `server`. |
 | `phpBinary` | the master's | Interpreter for this group's workers. |
@@ -275,7 +275,7 @@ A handler that goes into a native blocking call (`sleep()`, synchronous PDO/`cur
 or a single monolithic internal call (a huge `preg_match`, `json_decode`) freezes
 the worker's single PHP thread — nothing can preempt a native call (a userland CPU
 loop is a different case, see [coroutine switching](coroutine-switching.md)).
-`handlerTimeoutMs` on the Go side will return `504` to clients, but the worker
+`handlerTimeoutMs` inside the extension will return `504` to clients, but the worker
 itself stays `running` and silently drops out of service. Neither `maxRequests` nor
 the orphan check helps: a stuck worker does not *finish* a request, and the master
 is alive.

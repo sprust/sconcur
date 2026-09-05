@@ -10,7 +10,7 @@ use SConcur\Features\Mongodb\Payloads\Dto\Connection;
 use SConcur\Features\Mongodb\Payloads\Dto\Parameters;
 
 /**
- * Go: payloads.DeleteOnePayload (ext/internal/features/mongodb/payloads/payloads.go).
+ * Rust: payloads::DeleteOnePayload (ext/src/features/mongodb/payloads.rs).
  */
 readonly class DeleteOnePayload extends BaseMongodbPayload
 {

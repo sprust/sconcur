@@ -113,7 +113,7 @@ class SocketClientTest extends BaseSocketClientTestCase
     {
         $connection = $this->client()->connect($this->address());
 
-        // Far larger than the Go-side 64 KiB read buffer, so the inbound frame is
+        // Far larger than the extension-side 64 KiB read buffer, so the inbound frame is
         // reassembled across several bufio refills.
         $payload = random_bytes(256 * 1024);
 
@@ -230,7 +230,7 @@ class SocketClientTest extends BaseSocketClientTestCase
 
             self::fail('Expected a connect exception.');
         } catch (SocketClientConnectException $exception) {
-            // The Go side tags network failures with a "net:" marker, preserved through
+            // The extension tags network failures with a "net:" marker, preserved through
             // the wrapping exception.
             self::assertStringContainsString('net:', $exception->getMessage());
         }

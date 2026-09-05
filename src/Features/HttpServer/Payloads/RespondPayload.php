@@ -10,9 +10,9 @@ use SConcur\Transport\PayloadInterface;
 /**
  * One write a request-handler coroutine sends back for a given request: either a
  * one-shot full response, or the head/chunk/end of a streamed one. The op field
- * tells the Go side which.
+ * tells the extension side which.
  *
- * Go: payloads.RespondPayload (ext/internal/features/httpserver/payloads/payloads.go).
+ * Rust: payloads::RespondPayload (ext/src/features/httpserver/payloads.rs).
  */
 readonly class RespondPayload implements PayloadInterface
 {
@@ -30,7 +30,7 @@ readonly class RespondPayload implements PayloadInterface
 
     /**
      * @param array<string, string|array<int, string>> $headers
-     * @param bool                                     $noResult tells the Go side to publish no task
+     * @param bool                                     $noResult tells the extension side to publish no task
      *                                                           result for this write — the fire-and-forget
      *                                                           final write of a full response (the
      *                                                           coroutine does not await it)
@@ -117,10 +117,11 @@ readonly class RespondPayload implements PayloadInterface
             $data['nr'] = true;
         }
 
-        // Normalize each header to a list of strings so the Go side (map[string]
-        // []string) decodes it uniformly, whether the handler gave a single string
-        // or several values. Omit empty headers: an empty PHP array encodes as a
-        // MessagePack array, which the Go side cannot decode into its map (stays nil).
+        // Normalize each header to a list of strings so the extension side — which
+        // reads a map of name to values — decodes it uniformly, whether the handler
+        // gave a single string or several values. Omit empty headers: an empty PHP
+        // array encodes as a MessagePack array, which the extension cannot decode
+        // into that map at all.
         if ($this->headers !== []) {
             $headers = [];
 

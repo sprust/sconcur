@@ -87,7 +87,7 @@ for entry in "${BENCHES[@]}"; do
         run_started=$(date +%s)
 
         output=$($DOCKER_COMPOSE exec -T -e SCONCUR_BENCH_DATASET="$DATASET" php \
-            php -d extension=./ext/build/sconcur.so "tests/benchmarks/${bench%%-*}/${bench#*-}.php" "$calls")
+            php -d extension="${SCONCUR_EXT:-/sconcur/ext/build/sconcur.so}" "tests/benchmarks/${bench%%-*}/${bench#*-}.php" "$calls")
 
         times=$(printf '%s\n' "$output" | awk -F'\t' '/^Total time/{value=$2} END{print value}')
         memories=$(printf '%s\n' "$output" | awk -F'\t' '/^Mem peak/{value=$2} END{print value}')

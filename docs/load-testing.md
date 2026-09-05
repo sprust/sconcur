@@ -53,6 +53,97 @@ The methodology matches `http-throughput.sh`: the servers and the load generator
 are pinned to non-overlapping cores (`taskset`), and `wrk` hits the container's
 bridge IP directly, bypassing docker-proxy (NAT caps throughput).
 
+## CPU pinning
+
+Normally the kernel decides which core a process runs on and may move it. Pinning
+tells a process to stay on the core it was given — `taskset` on Linux.
+
+The harness pins for one reason: repeatability. Twelve servers and `wrk` on one
+machine otherwise fight for the same cores, the load generator steals CPU from the
+thing being measured, and the number depends on who won that round. Splitting
+them across non-overlapping sets — servers on `0..SERVERS-1`, `wrk` on the rest —
+is what makes a run comparable to the next one.
+
+Comparability against the other stacks is weaker than that, and the mode table
+below says why: `rr-load-stats.sh` and `swoole-load-stats.sh` give the whole
+server `taskset -c 0-$((WORKERS-1))` and let the scheduler place the workers
+inside it, which is the `group` placement, while this harness defaults to `1`.
+The core budget is the same in both, the placement is not, and the placement is
+worth about twenty percent.
+
+`PIN_SERVERS` selects the placement. Every mode draws from the same budget
+(`cpu 0..SERVERS-1`), so the modes differ only in where inside it the workers sit:
+
+| `PIN_SERVERS` | placement |
+|---|---|
+| `1` (default) | one logical CPU per worker — `taskset -c $i` |
+| `physical` | one physical core per worker: the whole sibling pair, read from `/sys/devices/system/cpu/cpuN/topology/thread_siblings_list` |
+| `group` | the pool confined to the budget, the scheduler placing workers inside it |
+| `0` | unpinned, the way the worker master actually runs them |
+
+```shell
+PIN_SERVERS=group ROUTE=/ tests/benchmarks/http/load-stats.sh
+```
+
+### What was measured, and why the library has no pinning option
+
+The empty endpoint, 12 workers, the same `cpu0-11` budget in every arm, `wrk` on
+12-19, median of three interleaved rounds of 20 s:
+
+| placement | rps | p50 | p90 | p99 |
+|---|---:|---:|---:|---:|
+| `1` — one logical CPU each | 154 432 | 0.62 ms | 202 ms | 334 ms |
+| `group` — the scheduler places them | **194 338** | 0.94 ms | 73 ms | 263 ms |
+
+`group` is 26% ahead, and the tail moves with it: pinning costs nearly three
+times the p90. `physical` lands on `1` rather than between the two — in an arm
+of its own it holds 120 984 rps against 123 185 for `1`, the two ranges
+overlapping.
+
+The gap is not a detail of naive pinning that a smarter placement would fix; it
+comes from pinning as such. The explanation that fits every measurement: each
+worker has two threads — PHP and a runtime thread — so twelve workers put about
+twenty-four runnable threads on twelve logical CPUs. A static placement cannot
+rebalance uneven load, and the scheduler can: a pinned idle worker has no way to
+lend its core to a busy neighbour.
+
+That is why there is no `cpuAffinity` setting. Shipping a knob that, on an equal
+core budget, enables something a quarter slower is not a choice. The current
+behaviour — `WorkerMaster` pins nothing — is the measured optimum.
+
+Confining a pool to part of a machine does not need one either. `group` is what a
+mask on the master gives you for free, because the workers inherit it:
+`taskset -c 0-11 sconcur-server …`, or `--cpuset-cpus` on the container, or
+`CPUAffinity=` in the unit. The placements that would need per-worker support
+from the library are `1` and `physical`, and those are the two that measured
+worse.
+
+Two things this does not say anything about, because they were not measured: one
+worker per physical core with no neighbour (that is a different worker count, so a
+different experiment), and a machine given over to a single pool.
+
+### The catch worth knowing
+
+A pinned process sees only its own cores:
+
+```
+unpinned:            nproc → 16
+under taskset -c 3:  nproc → 1
+```
+
+Sizing the runtime from that number would give one thread under the harness and
+sixteen in production, where nothing pins — right in every measurement and wrong
+in every deployment, with nothing in the numbers to show it. So the extension
+builds one runtime thread regardless of the core count, and
+`SCONCUR_RUNTIME_THREADS` raises it for a process that wants the extension on
+more than one core.
+
+The wider consequence: every figure in [benchmarks](benchmarks.md) is taken with
+pinning, and production does not pin. For comparing stacks against each other that
+is the correct methodology, but it is not the configuration the library runs in,
+and the difference is not zero. Comparisons are only valid between runs with the
+same `PIN_SERVERS`.
+
 ## Baseline run (empty endpoint)
 
 An Intel i7-13620H laptop (16 threads), services in Docker, 12 servers / 4 wrk
@@ -62,14 +153,14 @@ of which the cost of the `/all` feature calls is added.
 
 | Metric | `/` (empty) | `/all` (all features) |
 |---|---|---|
-| Throughput | ≈133 500 req/sec | ≈3 010 req/sec |
-| Latency | p50 1.8 · p90 7.1 · p99 30.1 ms | p50 76 · p90 155 · p99 267 ms |
-| Servers CPU (`php`) | avg ~1218 % | avg ~563 % |
-| Worker RSS (sum of 12) | ~590 MiB (flat) | ~660 MiB |
+| Throughput | ≈194 300 req/sec | ≈1 371 req/sec |
+| Latency | p50 0.9 · p90 73 · p99 263 ms | p50 183 · p90 258 · p99 364 ms |
+| Servers CPU (`php`) | avg ~1149 % | avg ~383 % |
+| Worker RSS (sum of 12) | ~441 MiB (flat) | ~535 MiB |
 
-Three runs held ~133k req/sec with 0 errors. The ~44× gap is the price of the
-feature calls: `/all` crosses the PHP↔Go boundary for three feature blocks at
-once and pays the fsync of 3 disk writes per request. Throughput hits exactly
+Three runs held ~194k req/sec with 0 errors. The ~140× gap is the price of the
+feature calls: `/all` crosses the PHP↔extension boundary for three feature blocks
+at once and pays the fsync of 3 disk writes per request. Throughput hits exactly
 that, not the cheap DB read. The empty endpoint has none of it and is CPU-bound
 at ~1200 %.
 
@@ -80,12 +171,12 @@ the same time in three feature blocks, 3 of them disk writes.
 
 | Metric | Value |
 |---|---|
-| Throughput | ≈3 010 req/sec (0 errors — all 3 features `ok`) |
-| Latency | p50 76 · p90 155 · p99 267 ms |
-| Worker RSS (sum of 12) | first 652.6 / peak 659.7 / last 659.7 MiB → drift +7.0 MiB |
-| Servers CPU (`php`) | avg 561 % / peak 582 % (≈ 5–6 of 12 cores) |
-| Backends CPU | MongoDB 189 %/222 peak · MySQL 120 %/124 · PostgreSQL 84 %/93 |
-| MEM (containers) | php 279 · mongo 178 · mysql 667 · pg 139 MiB |
+| Throughput | ≈1 371 req/sec (0 errors — all 3 features `ok`) |
+| Latency | p50 183 · p90 258 · p99 364 ms |
+| Worker RSS (sum of 12) | ~535 MiB |
+| Servers CPU (`php`) | avg 383 % / peak 453 % (≈ 4–5 of 12 cores) |
+| Backends CPU | MongoDB ~146 % · MySQL ~126 % · PostgreSQL ~101 % |
+| MEM (containers) | php 237 MiB |
 
 The RSS drift over 20 s is warm-up noise; the authoritative leak verdict comes from
 the soak below.
@@ -105,8 +196,14 @@ requests (~5.2M feature operations).
 RSS stayed flat (618–622 MiB) for the whole distance — the slope is within noise,
 there is no slow leak. The `mongodb` container's MEM meanwhile grew to ~372 MiB
 because of the unbounded inserts of `/all` into the `load_all` collection, while
-the worker RSS did not budge: the data is accumulated by the DB, not by SConcur
-(the collection can be dropped after the runs).
+the worker RSS did not budge: the data is accumulated by the DB, not by SConcur.
+
+The harness empties those tables around every run, and that is not tidiness. The
+three databases keep their data on a 1 GiB tmpfs (`docker-compose.yml`), which a
+ten-minute soak at a few thousand rps fills — after which everything that needs
+space fails with "the table is full". What breaks then is not the next benchmark
+but the next test run, with an error that points nowhere near the benchmark that
+caused it.
 
 ## Concurrent vs sequential calls (`/all` vs `/all-nowg`)
 
@@ -148,15 +245,15 @@ Single connection (1 server / 1 wrk thread / 1 connection / 5 s):
 
 1. Memory is stable — the main result. ~50 MiB RSS per worker, and a 10-minute
    soak (1.74M requests) held RSS flat at +0.11 MiB/min (= noise). For a
-   long-lived server this is the key signal: the Go runtime + PHP fibers +
-   connection pools + PHP↔Go boundary pairing accumulates nothing. Consistent
+   long-lived server this is the key signal: the extension's runtime + PHP fibers +
+   connection pools + PHP↔extension boundary pairing accumulates nothing. Consistent
    with `MemLeakTest`.
 2. Robustness: saturation with three concurrent feature blocks per request → 0
    errors, p99 ≈ 130 ms under sustained soak load.
 3. On disk backends the bottleneck is fsync, not CPU. The servers draw ~7–8 of 12
    cores versus ~0.5–1.5 on each DB — the ~2.7k rps ceiling is set by the 3 disk
    commits per request plus the framework overhead (msgpack, fiber
-   spawn/scheduling, 3× PHP↔Go crossing), not by the `SELECT 1`/`findOne` reads.
+   spawn/scheduling, 3× boundary crossing), not by the `SELECT 1`/`findOne` reads.
 
 Caveats: the runs are synthetic and on a laptop (a consumer CPU understates core
 scaling); trivial queries understate the point of SConcur — the I/O-bound scenario
@@ -166,10 +263,16 @@ certainty about leaks in production a multi-hour soak is the answer
 
 ## WebSocket server under load
 
-Same load + resources pairing, but `wrk` is HTTP-only, so the generator is
-`ext/cmd/ws-load` (Go, on `coder/websocket`) — the WS analogue of `wrk`: it holds N
-persistent connections, runs back-to-back round-trips and prints throughput and
-p50/p90/p99.
+Same load + resources pairing, but `wrk` is HTTP-only, so the WS side has a
+generator of its own: `tests/benchmarks/ws/ws-load/`, which holds N persistent
+connections, runs back-to-back round-trips and prints throughput with
+p50/p90/p99. The harness builds it before a run.
+
+It is a crate separate from the core on purpose — the core is built with fat LTO
+on every `make ext-build`, and a benchmark tool has no business making that
+slower. Latencies go into a fixed histogram (0.1 ms per bucket) rather than a
+list of samples: at a few hundred thousand round-trips the list would be the
+largest allocation in the generator, and a percentile does not need it.
 
 The `all` command of the demo server (`tests/servers/ws/ws-server.php`) runs the
 same backend features concurrently for every message, with `Sleeper` added to

@@ -64,7 +64,7 @@ function runSerial(int $count, Closure $operation): void
 
 /**
  * Fans `count` operations out across coroutines and drains the results (async path).
- * Actual concurrency is capped by WaitGroup's maxConcurrency and the Go-side pool.
+ * Actual concurrency is capped by WaitGroup's maxConcurrency and the extension-side pool.
  */
 function runFanout(int $count, Closure $operation): void
 {
@@ -123,7 +123,7 @@ function runLifecycle(int $count, array $operations, bool $fanout): array
 {
     // Unmeasured warm-up (same rules as Benchmarker): sequential modes prime the
     // connection with a few reads; the fan-out mode runs one full-width fan so the
-    // measured fan does not pay the pool ramp-up (the Go pool and the mongo driver
+    // measured fan does not pay the pool ramp-up (the SQL pool and the mongo driver
     // open connections on demand up to the fan width).
     runPhase(count: $fanout ? $count : min(20, $count), operation: $operations['read'], fanout: $fanout);
 

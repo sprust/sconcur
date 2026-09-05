@@ -10,13 +10,13 @@ use SConcur\Exceptions\Amqp\ConnectionException;
 use Throwable;
 
 /**
- * What the Go side said about a command it could not run: which of the three things failed,
+ * What the extension side said about a command it could not run: which of the three things failed,
  * the AMQP reply code, and the text.
  *
  * It travels as the message of the failed task — `"<scope>:<code>: <text>"` — because a task
  * result carries one payload and nothing else. This is the one place that reads it back.
  *
- * Go: errorPayload (ext/internal/features/amqp/feature.go).
+ * Rust: error_payload (ext/src/features/amqp/mod.rs).
  */
 readonly class AmqpFailure
 {

@@ -138,4 +138,51 @@ class PgsqlTypesTest extends BaseTestCase
         self::assertCount(1, $rows);
         self::assertSame('match', $rows[0]['varchar_col']);
     }
+
+    /**
+     * Postgres sends results in the binary format, and the port's fallback read
+     * whatever arrived as a String. That was wrong in two directions: JSONB, TIME
+     * and UUID were mangled or fatal, while INTERVAL, INET and the array types
+     * happen to be valid UTF-8 and so reached PHP as their own wire structure
+     * with no error at all.
+     */
+    public function testBinaryFormatTypesAreDecodedRatherThanReinterpreted(): void
+    {
+        $rows = $this->connection->fetchAll(
+            sql: "SELECT
+                '{\"a\": 1}'::jsonb                                 AS jsonb_col,
+                '00112233-4455-6677-8899-aabbccddeeff'::uuid       AS uuid_col,
+                '14:30:00'::time                                   AS time_col,
+                '14:30:00.5'::time                                 AS fractional_time_col,
+                'NaN'::numeric                                     AS nan_col",
+        );
+
+        self::assertCount(1, $rows);
+
+        $row = $rows[0];
+
+        // The leading format-version byte belongs to the wire, not to the value:
+        // with it still attached json_decode answered null and nothing errored.
+        self::assertSame('{"a": 1}', $row['jsonb_col']);
+        self::assertSame(['a' => 1], json_decode($row['jsonb_col'], true));
+
+        self::assertSame('00112233-4455-6677-8899-aabbccddeeff', $row['uuid_col']);
+        self::assertSame('14:30:00', $row['time_col']);
+        self::assertSame('14:30:00.5', $row['fractional_time_col']);
+
+        // NaN and the infinities have no BigDecimal, and refusing them failed the
+        // whole result set where the value itself is perfectly reportable.
+        self::assertSame('NaN', $row['nan_col']);
+    }
+
+    /**
+     * INTERVAL, the arrays and the rest of the binary-only types are covered in
+     * PgsqlBinaryTypesTest, which pins the text form of each of them.
+     */
+    public function testAStructuredBinaryTypeReachesPhpAsItsTextForm(): void
+    {
+        $rows = $this->connection->fetchAll(sql: "SELECT '1 day'::interval AS v");
+
+        self::assertSame('1 day', $rows[0]['v']);
+    }
 }

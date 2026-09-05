@@ -14,7 +14,7 @@ use SConcur\Transport\PayloadInterface;
 /**
  * Builds the command envelope (ul/db/cl/to/sst/cm/dt) every MongoDB payload sends.
  *
- * Go: payloads.Payload (ext/internal/features/mongodb/payloads/payloads.go).
+ * Rust: payloads::Payload (ext/src/features/mongodb/payloads.rs).
  */
 abstract readonly class BaseMongodbPayload implements PayloadInterface
 {

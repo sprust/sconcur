@@ -98,7 +98,7 @@ class HttpClientConcurrencyTest extends BaseAsyncTestCase
 
     protected function assertException(Throwable $exception): void
     {
-        // The Go side tags network failures with a "net:" marker, preserved through
+        // The extension tags network failures with a "net:" marker, preserved through
         // the wrapping exceptions.
         self::assertTrue(
             str_contains($exception->getMessage(), 'net:'),

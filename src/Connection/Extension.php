@@ -39,16 +39,16 @@ class Extension
 {
     /**
      * The exact "sconcur" extension version this package is built against. The PHP
-     * package and the Go extension are versioned and released together, so the loaded
-     * .so must match this exactly (see checkExtension); bump it whenever the PHP <-> Go
+     * package and the extension are versioned and released together, so the loaded
+     * .so must match this exactly (see checkExtension); bump it whenever the PHP <-> extension
      * protocol changes (payload keys, exported functions) so a mismatched .so is
      * rejected instead of silently misbehaving. Public so tooling (bin/sconcur-status)
      * can report the version the package expects.
      */
-    public const string REQUIRED_EXTENSION_VERSION = '0.11.0';
+    public const string REQUIRED_EXTENSION_VERSION = '0.12.0';
 
     /**
-     * Result frame layout (Go -> PHP), see main.go buildResultFrame. The envelope is
+     * Result frame layout (extension -> PHP), see ext/src/lib.rs. The envelope is
      * a fixed binary header, not MessagePack; only the feature payload stays
      * MessagePack and is decoded once by the feature. Header: flags(1) +
      * methodLen(1) + execMs(uint32) + flowKeyLen(uint16) + taskKeyLen(uint16) +
@@ -142,7 +142,7 @@ class Extension
 
         $response = waitAnyTimeout($timeoutMs);
 
-        // Distinct, non-"error:" sentinel the Go side returns on timeout. A real
+        // Distinct, non-"error:" sentinel the extension side returns on timeout. A real
         // result is msgpack (binary) and an error starts with "error:", so this
         // never collides.
         if ($response === 'timeout') {
@@ -159,7 +159,7 @@ class Extension
     /**
      * waitAny draining the batch: blocks for the first ready result exactly like
      * waitAny(), then returns it together with every further result that was
-     * already ready — up to $maxResults — all in one cgo crossing. The batch
+     * already ready — up to $maxResults — all in one crossing. The batch
      * never waits to fill up, so the first result's latency is unchanged.
      *
      * @return non-empty-list<TaskResultDto>
@@ -190,7 +190,7 @@ class Extension
 
         $response = waitAnyTimeoutBatch($timeoutMs, $maxResults);
 
-        // Distinct, non-"error:" sentinel the Go side returns on timeout. A real
+        // Distinct, non-"error:" sentinel the extension side returns on timeout. A real
         // batch is binary and an error starts with "error:", so this never
         // collides.
         if ($response === 'timeout') {
@@ -364,7 +364,7 @@ class Extension
 
     /**
      * Parses the result multiframe of waitAnyBatch/waitAnyTimeoutBatch (see
-     * buildResultBatchFrame in main.go): [count uint16][frameLen uint32][frame]...
+     * the batch frame builder in ext/src/lib.rs): [count uint16][frameLen uint32][frame]...
      * — each inner frame in the exact single-result format of parseWaitResponse.
      *
      * @return non-empty-list<TaskResultDto>

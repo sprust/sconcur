@@ -8,7 +8,7 @@ namespace SConcur\Tests\Feature\Features\SocketServer;
  * `handlerTimeoutMs` on a socket server: a connection handler that runs too long is unwound
  * where it stands instead of holding its coroutine for the life of the process.
  *
- * There is no Go-side timer here answering for it, as there is for HTTP — the deadline is
+ * There is no extension-side timer here answering for it, as there is for HTTP — the deadline is
  * the whole mechanism, and what the client sees is the connection ending without the reply
  * the handler never got to write.
  */

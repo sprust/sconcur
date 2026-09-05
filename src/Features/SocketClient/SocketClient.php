@@ -14,9 +14,9 @@ use Throwable;
 
 /**
  * Asynchronous TCP client with length-prefix framing — the dial-side mirror of
- * SocketServer. The whole network round-trip (DNS, dial, read, write) lives in the Go
- * extension; connect() runs in a goroutine while the calling coroutine suspends, so
- * dozens of connections fan out concurrently. Outside a WaitGroup the same call works
+ * SocketServer. The whole network round-trip (DNS, dial, read, write) lives in the
+ * extension; connect() runs there while the calling coroutine suspends, so dozens of
+ * connections fan out concurrently. Outside a WaitGroup the same call works
  * synchronously.
  *
  * connect() returns a long-lived Connection the caller drives itself: read() pulls

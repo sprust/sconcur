@@ -12,7 +12,7 @@ use SConcur\Transport\PayloadInterface;
  * server tuning (timeouts in milliseconds, sizes in bytes). Messages are framed with
  * a 4-byte big-endian length prefix.
  *
- * Go: payloads.ServePayload (ext/internal/features/socketserver/payloads/payloads.go).
+ * Rust: payloads::ServePayload (ext/src/features/socketserver/payloads.rs).
  */
 readonly class ServePayload implements PayloadInterface
 {

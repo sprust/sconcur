@@ -19,7 +19,7 @@
     {
       "name": "http",
       "workerScript": "/sconcur/tests/servers/http/http-server.php",
-      "workerCount": 3,
+      "workerCount": 2,
       "workerArgs": [],
       "server": {
         "address": "0.0.0.0:8080",
@@ -38,7 +38,7 @@
     {
       "name": "socket",
       "workerScript": "/sconcur/tests/servers/socket/socket-server.php",
-      "workerCount": 3,
+      "workerCount": 2,
       "workerArgs": [],
       "server": {
         "address": "0.0.0.0:9100",
@@ -54,7 +54,7 @@
     {
       "name": "ws",
       "workerScript": "/sconcur/tests/servers/ws/ws-server.php",
-      "workerCount": 3,
+      "workerCount": 2,
       "workerArgs": [],
       "server": {
         "address": "0.0.0.0:9200",
@@ -69,6 +69,21 @@
         "pingIntervalMs": 30000,
         "shutdownTimeoutMs": 10000
       }
+    },
+    {
+        "name": "rabbitmq",
+        "workerScript": "/sconcur/tests/consumers/amqp/amqp-consumer.php",
+        "workerCount": 2,
+        "server": {
+            "queues": [
+                {
+                    "name": "demo",
+                    "coroutineCount": 4
+                }
+            ],
+            "prefetchCount": 1,
+            "handlerTimeoutMs": 5000
+        }
     }
   ]
 }
