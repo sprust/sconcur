@@ -290,6 +290,8 @@ $collection->insertOne(['name' => 'example']);
   нагрузкой всеми I/O-фичами сразу.
 - [Позиционирование](docs/positioning.ru.md) — SConcur против php-fpm,
   RoadRunner и Swoole.
+- [Переезд на Rust](docs/rust-core.ru.md) — зачем ядро перенесли с Go, какой
+  гейт оно проходило и что намерило.
 
 ## Build
 

@@ -47,6 +47,8 @@ User-facing documentation (each doc also exists in Russian as `*.ru.md`):
   [msgpack-objects](../docs/msgpack-objects.md)
 - Measurements: [benchmarks](../docs/benchmarks.md),
   [load-testing](../docs/load-testing.md), [positioning](../docs/positioning.md)
+- History: [the move to Rust](../docs/rust-core.md) — the gate the port had to
+  pass and what it measured, kept as a record rather than a live comparison
 - [.ai/plans/](plans/) — detailed designs for roadmap items
 
 ## Plans

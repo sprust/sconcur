@@ -288,6 +288,8 @@ The environment the project is built and tested against in CI:
 - [Load testing](docs/load-testing.md) — server behaviour under load with all I/O
   features at once.
 - [Positioning](docs/positioning.md) — SConcur vs php-fpm, RoadRunner and Swoole.
+- [The move to Rust](docs/rust-core.md) — why the core was ported from Go, the
+  gate it had to pass and what it measured.
 
 ## Build
 
