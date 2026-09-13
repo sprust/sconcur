@@ -70,7 +70,11 @@ impl Method {
             Method::WsClient => "wsc",
             Method::Amqp => "amq",
             Method::Redis => "rds",
-            Method::Unknown => "",
+            // Spelled, not empty. The PHP enum has carried 'unk' for this case all
+            // along, so an empty string was a value the other end could not parse at
+            // all — and the frame of an unknown-method failure is exactly the one that
+            // has to arrive intact, since it is carrying the report of what went wrong.
+            Method::Unknown => "unk",
         }
     }
 }

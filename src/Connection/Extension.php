@@ -341,14 +341,25 @@ class Extension
             $cursor += $header['taskKeyLen'];
             $payload = substr($response, $cursor, ($offset + $frameLength) - $cursor);
 
+            $methodEnum = MethodEnum::tryFrom($method);
+
+            if ($methodEnum === null) {
+                // Reported rather than folded into MethodEnum::Unknown. A method this
+                // package does not know is the version skew REQUIRED_EXTENSION_VERSION
+                // exists to catch, and decoding it as a valid result is how that signal
+                // would be lost at the one point it could be seen. The core's own
+                // unknown method is not this case: it travels as 'unk' and resolves
+                // here like any other, so the failure it carries still reaches the
+                // caller as the failure it is.
+                throw new UnexpectedResponseFormatException(
+                    message: "Result frame carries the method '$method', which this package does not know: "
+                        . 'the loaded core is newer than the package.',
+                );
+            }
+
             return new TaskResultDto(
                 flowKey: $flowKey,
-                // tryFrom, because a frame the core builds without a method — the
-                // "state not started" error answers with Method::Unknown, whose
-                // wire value is empty — would otherwise throw here instead of
-                // reaching the caller as the failure it is, and the caller would
-                // see a ValueError about an enum rather than what went wrong.
-                method: MethodEnum::tryFrom($method) ?? MethodEnum::Unknown,
+                method: $methodEnum,
                 key: $taskKey,
                 isError: ($header['flags'] & self::FRAME_FLAG_ERROR) !== 0,
                 payload: $payload,
