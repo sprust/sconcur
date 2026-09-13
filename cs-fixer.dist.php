@@ -130,6 +130,11 @@ return $config
         'ordered_class_elements' => [
             'order' => [
                 'use_trait',
+                // An element type missing from this list is moved to the end of the
+                // class, so leaving 'case' out sent the cases of every enum that has a
+                // method below those methods, glued to the last one. The fixer's own
+                // default puts it right here, and so does every enum in src/.
+                'case',
                 'constant',
                 'constant_public',
                 'constant_protected',
