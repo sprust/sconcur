@@ -32,6 +32,21 @@ TestApplication::init();
 $scenario        = (string) ($_SERVER['argv'][1] ?? 'command');
 $durationSeconds = (int) ($_SERVER['argv'][2] ?? 120);
 
+/**
+ * How long the subscribe scenario waits between cycles.
+ *
+ * A subscription owns a socket of its own, and a closed socket holds its local port in
+ * TIME_WAIT for a minute afterwards. Unpaced, the loop opens about a thousand a second
+ * and the machine's ephemeral port range — 28232 of them on a stock Linux — is gone in
+ * half a minute: the run then dies of EADDRNOTAVAIL having leaked nothing at all, and
+ * what the scenario measured was how fast it can exhaust the kernel.
+ *
+ * Measured at this pace: 15780 cycles in 200 seconds, and 4709 ports held at the end
+ * of it — a sixth of the range, steady rather than climbing. A leak of one socket per
+ * cycle has nowhere to hide in that many cycles.
+ */
+const SUBSCRIBE_PACE_MICROSECONDS = 10_000;
+
 $connection = TestRedisResolver::getConnection();
 
 $connection->flushDb(confirm: true);
@@ -165,6 +180,9 @@ $cycle = static function (int $iteration) use ($connection, $scenario, $keyPrefi
             );
 
             $waitGroup->waitAll();
+
+            // The pace is the kernel's, not the feature's — see the constant.
+            usleep(SUBSCRIBE_PACE_MICROSECONDS);
 
             break;
 
