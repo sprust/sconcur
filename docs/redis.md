@@ -366,5 +366,9 @@ allowed for the same reason and stall the whole server while they run.
   anything else, so it cannot be shared. RESP3 lifts that restriction, and using
   it to put subscriptions back on the shared pool is the obvious next step, not a
   thing this version does.
+- **Nothing is reported to the panel.** The workload sections a worker sends are
+  the servers' and the queue consumer's (see [the panel](admin-stats.md)); redis
+  adds none of its own, so a worker busy with nothing but redis shows its process
+  metrics and nothing about the commands it ran.
 - **RESP2 only.** See the dsn section.
 - The library's general limits are in the [README](../README.md).
