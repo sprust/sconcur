@@ -70,17 +70,33 @@ readonly class Arguments
      * exact but would send `0.10000000000000001` for `0.1`, so the shortest
      * exact form is found instead — at most seventeen cheap formats, and the
      * common values land in one or two.
+     *
+     * An exponent form is only taken when no fixed one reads back as the same
+     * double. `%G` reaches for an exponent as soon as the decimal exponent
+     * reaches the precision, so the shortest form of `60.0` is `6E+1` — and that
+     * is not a number Redis takes where it takes an integer: `EXPIRE k 6E+1` is
+     * refused outright, and `SET k 1E+2` stores those five bytes where `100` was
+     * meant. Only magnitudes no fixed form can carry (`1e-7`, `1e300`) end up in
+     * exponent form, and a score is the only argument they can be.
      */
     protected static function formatFloat(float $value): string
     {
-        for ($digits = 1; $digits < 17; ++$digits) {
+        $exponential = null;
+
+        for ($digits = 1; $digits <= 17; ++$digits) {
             $formatted = sprintf('%.' . $digits . 'G', $value);
 
-            if ((float) $formatted === $value) {
+            if ((float) $formatted !== $value) {
+                continue;
+            }
+
+            if (stripos($formatted, 'E') === false) {
                 return $formatted;
             }
+
+            $exponential ??= $formatted;
         }
 
-        return sprintf('%.17G', $value);
+        return $exponential ?? sprintf('%.17G', $value);
     }
 }

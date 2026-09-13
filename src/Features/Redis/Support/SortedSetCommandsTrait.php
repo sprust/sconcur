@@ -23,7 +23,10 @@ trait SortedSetCommandsTrait
     ): mixed;
 
     /**
-     * @param array<string, float|int> $members member => score
+     * A member that looks like an integer arrives as an int key, the same way a hash
+     * field does; the cast below takes it back to the bytes the server stores.
+     *
+     * @param array<array-key, float|int> $members member => score
      */
     public function zAdd(string $key, array $members): int
     {
@@ -45,7 +48,7 @@ trait SortedSetCommandsTrait
      * ZRANGE. With $withScores the reply comes back as member => score; without it, as a
      * list of members in range order.
      *
-     * @return list<string>|array<string, float>
+     * @return list<string>|array<int|string, float>
      */
     public function zRange(string $key, int $start, int $stop, bool $withScores = false): array
     {
@@ -60,7 +63,7 @@ trait SortedSetCommandsTrait
      * ZRANGEBYSCORE. The bounds are written the way Redis takes them, so "-inf", "+inf"
      * and the exclusive "(5" all work.
      *
-     * @return list<string>|array<string, float>
+     * @return list<string>|array<int|string, float>
      */
     public function zRangeByScore(
         string $key,
@@ -101,9 +104,12 @@ trait SortedSetCommandsTrait
     }
 
     /**
+     * A member that looks like an integer comes back as an int key, the same way a
+     * hash field does — see HashCommandsTrait::pairsToMap.
+     *
      * @param list<mixed> $arguments
      *
-     * @return list<string>|array<string, float>
+     * @return list<string>|array<int|string, float>
      */
     protected function range(string $name, array $arguments, bool $withScores): array
     {

@@ -213,6 +213,84 @@ class RedisCommandTest extends BaseTestCase
         }
     }
 
+    public function testAWholeFloatIsNotSentInScientificNotation(): void
+    {
+        // The shortest form %G finds for 60.0 is 6E+1, and that is not an integer to
+        // Redis: EXPIRE refuses it outright, and SET would store those four bytes
+        // where 60 was meant. Whole floats are ordinary arguments — a ttl computed
+        // from a division arrives here as one.
+        $this->connection->set('ttl-key', 'value');
+
+        self::assertSame(1, $this->connection->command('EXPIRE', ['ttl-key', 60.0]));
+        self::assertSame(60, $this->connection->ttl('ttl-key'));
+
+        $this->connection->mSet(['whole' => 100.0]);
+
+        self::assertSame('100', $this->connection->get('whole'));
+    }
+
+    public function testAFloatNoFixedFormCanCarryKeepsItsValue(): void
+    {
+        // The other half of the same rule: a magnitude no fixed form reaches still
+        // goes out in exponent form, because a score is the only argument it can be
+        // and Redis reads a score that way.
+        $score = 1.0E-7;
+
+        $this->connection->zAdd('tiny', ['member' => $score]);
+
+        self::assertSame($score, $this->connection->zScore('tiny', 'member'));
+    }
+
+    public function testKeysThatAreNotAListAreLinedUpWithTheReply(): void
+    {
+        $this->connection->mSet([
+            'a' => 'va',
+            'b' => 'vb',
+        ]);
+
+        // array_filter keeps the positions it found, so these keys are [0 => 'a', 2 => 'b']
+        // while the reply is dense. Lining the two up by the array's own keys reports a
+        // key the server answered for as missing, and the caller writes a default over it.
+        $keys = array_filter(['a', '', 'b'], static fn(string $key): bool => $key !== '');
+
+        self::assertSame(
+            [
+                'a' => 'va',
+                'b' => 'vb',
+            ],
+            $this->connection->mGet($keys),
+        );
+    }
+
+    public function testSetRefusesNxAndXxTogether(): void
+    {
+        // SET k v NX XX is a syntax error at the server, and the same method already
+        // guards the ttlSeconds/ttlMs pair rather than letting it be sent.
+        $this->expectException(InvalidRedisArgumentException::class);
+
+        $this->connection->set('k', 'v', ifNotExists: true, ifExists: true);
+    }
+
+    public function testAnIntegerLikeFieldComesBackAsAnIntegerKey(): void
+    {
+        // PHP casts canonical integer strings to int keys on assignment, so the folded
+        // map cannot promise a string key. It says so instead of pretending otherwise.
+        $this->connection->hSet(
+            key: 'hash',
+            fields: [
+                '1'   => 'one',
+                'two' => '2',
+            ],
+        );
+
+        $map = $this->connection->hGetAll('hash');
+
+        self::assertArrayHasKey(1, $map);
+        self::assertArrayHasKey('two', $map);
+        self::assertSame('one', $map[1]);
+        self::assertSame('2', $map['two']);
+    }
+
     public function testCommandsRunConcurrentlyInAWaitGroup(): void
     {
         $waitGroup = WaitGroup::create();

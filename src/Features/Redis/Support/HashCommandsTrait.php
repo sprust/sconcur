@@ -27,7 +27,11 @@ trait HashCommandsTrait
     /**
      * HSET with one field or many. Returns how many fields were new.
      *
-     * @param array<string, string|int|float> $fields
+     * The key type is int|string for the reason pairsToMap gives: a caller cannot
+     * write an integer-like field as a string key either. The cast below takes it
+     * back to the bytes the server stores.
+     *
+     * @param array<array-key, string|int|float> $fields
      */
     public function hSet(string $key, array $fields): int
     {
@@ -49,15 +53,21 @@ trait HashCommandsTrait
      * HMGET keyed by field, like mGet: a missing field is null, and a field asked
      * for twice appears once.
      *
-     * @param list<string> $fields
+     * A field that looks like an integer comes back as an int key, for the reason
+     * mGet gives.
      *
-     * @return array<string, string|null>
+     * @param array<array-key, string> $fields
+     *
+     * @return array<int|string, string|null>
      */
     public function hMGet(string $key, array $fields): array
     {
         if ($fields === []) {
             return [];
         }
+
+        // Dense, so the positions line up with the reply — see mGet.
+        $fields = array_values($fields);
 
         /** @var list<string|null> $reply */
         $reply = $this->command('HMGET', array_merge([$key], $fields));
@@ -78,7 +88,9 @@ trait HashCommandsTrait
      * The shape is built here: the server answers with field and value alternating
      * in one flat list, and folding it is the point of the method existing.
      *
-     * @return array<string, string>
+     * A field that looks like an integer comes back as an int key — see pairsToMap.
+     *
+     * @return array<int|string, string>
      */
     public function hGetAll(string $key): array
     {
@@ -141,9 +153,16 @@ trait HashCommandsTrait
      * directions (a hash whose fields are "0" and "1" decodes into something a
      * list check calls a list).
      *
+     * The key type is PHP's, not a choice made here: a canonical integer string
+     * becomes an int key on assignment, and no array can hold "1" as a string. So a
+     * hash whose fields are "0" and "1" folds into something array_is_list() calls a
+     * list and json_encode writes as an array. The map says int|string rather than
+     * promising a string key it cannot keep; cast a key back with (string) before
+     * passing it to a method that takes one.
+     *
      * @param array<int|string, mixed> $reply
      *
-     * @return array<string, string>
+     * @return array<int|string, string>
      */
     protected static function pairsToMap(array $reply): array
     {

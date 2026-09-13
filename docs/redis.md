@@ -136,6 +136,12 @@ instead of by position (so a key asked for twice appears once). `ttl` answers
 `null` for a key without an expiry and `false` for a key that is not there,
 because Redis says `-1` and `-2` and both read like a duration.
 
+In any of those maps, a key that looks like an integer arrives as an `int`: PHP
+casts canonical integer strings on assignment and no array can hold `"1"` as a
+string. A hash whose fields are `0` and `1` therefore folds into something
+`json_encode` writes as an array rather than an object — cast a key back with
+`(string)` before passing it to a method that takes one.
+
 `evalSha` falls back to `EVAL` when the server answers `NOSCRIPT`: a flushed
 script cache after a restart is expected, not exceptional.
 

@@ -72,6 +72,13 @@ trait StringCommandsTrait
             $arguments[] = 'KEEPTTL';
         }
 
+        if ($ifNotExists && $ifExists) {
+            throw new InvalidRedisArgumentException(
+                message: 'Pass either ifNotExists or ifExists, not both: NX and XX are mutually '
+                    . 'exclusive, and both would build a command the server refuses.',
+            );
+        }
+
         if ($ifNotExists) {
             $arguments[] = 'NX';
         }
@@ -108,15 +115,25 @@ trait StringCommandsTrait
      *
      * A key asked for twice appears once, because a map has one entry per key.
      *
-     * @param list<string> $keys
+     * A key that looks like an integer comes back as an int key: PHP casts those, and
+     * no array can hold "1" as a string. Cast a key back with (string) before passing
+     * it to another method.
      *
-     * @return array<string, string|null>
+     * @param array<array-key, string> $keys
+     *
+     * @return array<int|string, string|null>
      */
     public function mGet(array $keys): array
     {
         if ($keys === []) {
             return [];
         }
+
+        // The reply is positional and dense, because Arguments::encode re-indexes what
+        // goes on the wire. The keys need the same treatment before they can be lined
+        // up with it: array_filter and array_unique both leave gaps, and a gap would
+        // read a key the server answered for as missing.
+        $keys = array_values($keys);
 
         /** @var list<string|null> $reply */
         $reply = $this->command('MGET', $keys);
@@ -132,7 +149,10 @@ trait StringCommandsTrait
     }
 
     /**
-     * @param array<string, string|int|float> $values
+     * A key that looks like an integer arrives as an int key — see mGet; the cast
+     * below takes it back to the bytes the server stores.
+     *
+     * @param array<array-key, string|int|float> $values
      */
     public function mSet(array $values): bool
     {
