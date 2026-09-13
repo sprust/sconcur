@@ -88,26 +88,12 @@ impl ScanState {
         }
     }
 
-    /// One round trip: <NAME> [key] <cursor> [MATCH …] [COUNT …]. The key, when
-    /// the command takes one, is already the first of the stored arguments —
-    /// the cursor goes after it, which is where every cursor command puts it.
+    /// One round trip: ask with the cursor the last reply carried, and add what
+    /// came back to the buffer.
     async fn fetch(&self, cursor: &mut Cursor) -> Outcome {
         let previous = cursor.cursor.clone().unwrap_or_else(|| b"0".to_vec());
 
-        let mut args: Vec<Vec<u8>> = Vec::with_capacity(self.args.len() + 1);
-
-        let takes_key = self.name != "SCAN";
-
-        if takes_key && !self.args.is_empty() {
-            args.push(self.args[0].clone());
-            args.push(previous);
-            args.extend(self.args[1..].iter().cloned());
-        } else {
-            args.push(previous);
-            args.extend(self.args.iter().cloned());
-        }
-
-        let command = commands::build(&self.name, &args);
+        let command = commands::build(&self.name, &scan_args(&self.name, &self.args, &previous));
 
         let mut connection = cursor.acquired.connection();
 
@@ -116,38 +102,13 @@ impl ScanState {
             .await
             .map_err(|error| values::classify_error(&error))?;
 
-        let Value::Array(mut parts) = value else {
-            return Err(self.unexpected("an unexpected reply"));
-        };
-
-        if parts.len() != 2 {
-            return Err(self.unexpected("an unexpected reply"));
-        }
-
-        let elements = match parts.pop() {
-            Some(Value::Array(elements)) => elements,
-            _ => return Err(self.unexpected("no element list")),
-        };
-
-        let next_cursor = match parts.pop() {
-            Some(Value::BulkString(bytes)) => bytes,
-            Some(Value::Int(number)) => number.to_string().into_bytes(),
-            Some(Value::SimpleString(text)) => text.into_bytes(),
-            _ => return Err(self.unexpected("no cursor")),
-        };
+        let (next_cursor, elements) = parse_reply(&self.name, value)?;
 
         cursor.finished = next_cursor == b"0";
         cursor.cursor = Some(next_cursor);
         cursor.buffered.extend(elements);
 
         Ok(())
-    }
-
-    /// A reply this side cannot make sense of. It is the server's answer, so it
-    /// is a command failure — the command asked for something the server does not
-    /// answer the way a cursor command answers.
-    fn unexpected(&self, what: &str) -> (Kind, String) {
-        (Kind::Command, format!("{} answered with {what}", self.name))
     }
 
     /// One batch: keep asking the server until there is something to hand over
@@ -177,6 +138,59 @@ impl ScanState {
             Result::success(&self.message, payload, calc_execution_ms(self.start_time))
         })
     }
+}
+
+/// The arguments of one round trip: <NAME> [key] <cursor> [MATCH …] [COUNT …].
+/// The key, when the command takes one, is already the first of the stored
+/// arguments — the cursor goes after it, which is where every cursor command
+/// puts it.
+fn scan_args(name: &str, stored: &[Vec<u8>], cursor: &[u8]) -> Vec<Vec<u8>> {
+    let mut args: Vec<Vec<u8>> = Vec::with_capacity(stored.len() + 1);
+
+    let takes_key = name != "SCAN";
+
+    if takes_key && !stored.is_empty() {
+        args.push(stored[0].clone());
+        args.push(cursor.to_vec());
+        args.extend(stored[1..].iter().cloned());
+    } else {
+        args.push(cursor.to_vec());
+        args.extend(stored.iter().cloned());
+    }
+
+    args
+}
+
+/// The two halves of a cursor reply: the cursor to ask with next time, and the
+/// elements this round trip found.
+///
+/// A reply this side cannot make sense of is still the server's answer, so it is
+/// a command failure — the command asked for something the server does not
+/// answer the way a cursor command answers.
+fn parse_reply(name: &str, value: Value) -> std::result::Result<(Vec<u8>, Vec<Value>), (Kind, String)> {
+    let unexpected = |what: &str| (Kind::Command, format!("{name} answered with {what}"));
+
+    let Value::Array(mut parts) = value else {
+        return Err(unexpected("an unexpected reply"));
+    };
+
+    if parts.len() != 2 {
+        return Err(unexpected("an unexpected reply"));
+    }
+
+    let elements = match parts.pop() {
+        Some(Value::Array(elements)) => elements,
+        _ => return Err(unexpected("no element list")),
+    };
+
+    let next_cursor = match parts.pop() {
+        Some(Value::BulkString(bytes)) => bytes,
+        Some(Value::Int(number)) => number.to_string().into_bytes(),
+        Some(Value::SimpleString(text)) => text.into_bytes(),
+        _ => return Err(unexpected("no cursor")),
+    };
+
+    Ok((next_cursor, elements))
 }
 
 /// Bounds a batch by the payload's deadline. Zero means the caller asked for
@@ -236,5 +250,119 @@ impl StateContract for ScanState {
 
             drop(taken);
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<Vec<u8>> {
+        values.iter().map(|value| value.as_bytes().to_vec()).collect()
+    }
+
+    fn text(values: &[Vec<u8>]) -> Vec<String> {
+        values
+            .iter()
+            .map(|value| String::from_utf8_lossy(value).to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_keyless_scan_asks_with_the_cursor_first() {
+        let built = scan_args("SCAN", &args(&["MATCH", "a*", "COUNT", "100"]), b"12");
+
+        assert_eq!(text(&built), ["12", "MATCH", "a*", "COUNT", "100"]);
+    }
+
+    #[test]
+    fn a_keyed_scan_keeps_the_key_before_the_cursor() {
+        // HSCAN/SSCAN/ZSCAN take the key first and the cursor second. The other
+        // order asks about a key named after the cursor, which is a WRONGTYPE at
+        // best and somebody else's data at worst.
+        let built = scan_args("HSCAN", &args(&["hash", "COUNT", "10"]), b"7");
+
+        assert_eq!(text(&built), ["hash", "7", "COUNT", "10"]);
+    }
+
+    #[test]
+    fn a_keyed_scan_without_its_key_still_sends_the_cursor() {
+        let built = scan_args("HSCAN", &[], b"0");
+
+        assert_eq!(text(&built), ["0"]);
+    }
+
+    #[test]
+    fn a_reply_is_split_into_the_next_cursor_and_the_elements() {
+        let value = Value::Array(vec![
+            Value::BulkString(b"17".to_vec()),
+            Value::Array(vec![Value::BulkString(b"key:1".to_vec())]),
+        ]);
+
+        let (cursor, elements) = parse_reply("SCAN", value).expect("a cursor reply");
+
+        assert_eq!(cursor, b"17".to_vec());
+        assert_eq!(elements.len(), 1);
+    }
+
+    #[test]
+    fn a_numeric_cursor_is_read_as_its_digits() {
+        // RESP3 answers the cursor as a number where RESP2 answers a bulk string.
+        let value = Value::Array(vec![Value::Int(42), Value::Array(Vec::new())]);
+
+        let (cursor, elements) = parse_reply("SCAN", value).expect("a cursor reply");
+
+        assert_eq!(cursor, b"42".to_vec());
+        assert!(elements.is_empty());
+    }
+
+    #[test]
+    fn a_reply_that_is_not_a_pair_is_a_command_failure() {
+        let (kind, error) = parse_reply("SCAN", Value::Okay).expect_err("refused");
+
+        assert_eq!(kind, Kind::Command);
+        assert!(error.contains("SCAN answered with"), "{error}");
+    }
+
+    #[test]
+    fn a_reply_without_an_element_list_names_what_is_missing() {
+        let value = Value::Array(vec![Value::BulkString(b"0".to_vec()), Value::Okay]);
+
+        let (_, error) = parse_reply("HSCAN", value).expect_err("refused");
+
+        assert!(error.contains("no element list"), "{error}");
+    }
+
+    #[test]
+    fn a_reply_without_a_cursor_names_what_is_missing() {
+        let value = Value::Array(vec![Value::Okay, Value::Array(Vec::new())]);
+
+        let (_, error) = parse_reply("SSCAN", value).expect_err("refused");
+
+        assert!(error.contains("no cursor"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_deadline_ends_a_batch_as_a_timeout() {
+        // The kind is half the point: a scan that ran out of time reaching PHP as
+        // a command failure is a RedisCommandException with no error code in it.
+        let outcome: std::result::Result<(), (Kind, String)> = with_deadline(10, async {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            Ok(())
+        })
+        .await;
+
+        let (kind, error) = outcome.expect_err("the deadline fired");
+
+        assert_eq!(kind, Kind::Timeout);
+        assert!(error.contains("10 ms"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn no_deadline_lets_a_batch_run() {
+        let outcome: std::result::Result<u8, (Kind, String)> = with_deadline(0, async { Ok(7) }).await;
+
+        assert_eq!(outcome.expect("no deadline"), 7);
     }
 }

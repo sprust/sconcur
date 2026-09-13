@@ -154,3 +154,121 @@ fn encode_messages(messages: &[Vec<u8>]) -> Vec<u8> {
 
     buffer
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use redis::Value;
+    use rmpv::decode::read_value;
+
+    /// A message the way the server sends one: the kind, then its parts.
+    fn message(kind: &str, parts: &[&str]) -> redis::Msg {
+        let mut raw: Vec<Value> = vec![Value::BulkString(kind.as_bytes().to_vec())];
+
+        raw.extend(parts.iter().map(|part| Value::BulkString(part.as_bytes().to_vec())));
+
+        redis::Msg::from_value(&Value::Array(raw)).expect("a pubsub message")
+    }
+
+    fn decoded(bytes: &[u8]) -> rmpv::Value {
+        read_value(&mut &bytes[..]).expect("the encoder wrote valid MessagePack")
+    }
+
+    fn field<'a>(map: &'a rmpv::Value, key: &str) -> &'a rmpv::Value {
+        match map {
+            rmpv::Value::Map(pairs) => pairs
+                .iter()
+                .find(|(name, _)| name.as_str() == Some(key))
+                .map(|(_, value)| value)
+                .unwrap_or_else(|| panic!("the message carries no {key}")),
+            other => panic!("expected a map, got {other:?}"),
+        }
+    }
+
+    fn binary(value: &rmpv::Value) -> &[u8] {
+        match value {
+            rmpv::Value::Binary(bytes) => bytes,
+            other => panic!("expected binary, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_plain_message_carries_its_channel_and_payload() {
+        let value = decoded(&encode_message(&message("message", &["news", "hello"])));
+
+        assert_eq!(field(&value, "k").as_str(), Some("msg"));
+        assert_eq!(binary(field(&value, "c")), b"news");
+        assert_eq!(binary(field(&value, "d")), b"hello");
+        assert!(binary(field(&value, "p")).is_empty());
+    }
+
+    #[test]
+    fn a_pattern_message_carries_the_pattern_that_matched() {
+        let value = decoded(&encode_message(&message(
+            "pmessage",
+            &["news.*", "news.sport", "hello"],
+        )));
+
+        assert_eq!(field(&value, "k").as_str(), Some("pmsg"));
+        assert_eq!(binary(field(&value, "p")), b"news.*");
+        assert_eq!(binary(field(&value, "c")), b"news.sport");
+        assert_eq!(binary(field(&value, "d")), b"hello");
+    }
+
+    #[test]
+    fn an_empty_pattern_is_still_a_pattern_message() {
+        // The kind comes from from_pattern, not from the pattern having bytes in
+        // it: a psubscribe to an empty pattern is legal, however pointless, and
+        // reading its messages as plain ones loses which subscription they match.
+        let value = decoded(&encode_message(&message("pmessage", &["", "news", "hello"])));
+
+        assert_eq!(field(&value, "k").as_str(), Some("pmsg"));
+        assert!(binary(field(&value, "p")).is_empty());
+    }
+
+    #[test]
+    fn a_channel_and_a_payload_may_be_any_bytes() {
+        // A channel is a Redis key, and a key is bytes — reading either as a name
+        // would drop whatever is not valid UTF-8.
+        let raw = Value::Array(vec![
+            Value::BulkString(b"message".to_vec()),
+            Value::BulkString(vec![0x00, 0xff]),
+            Value::BulkString(vec![0x00, 0x01, 0xfe]),
+        ]);
+
+        let value = decoded(&encode_message(
+            &redis::Msg::from_value(&raw).expect("a pubsub message"),
+        ));
+
+        assert_eq!(binary(field(&value, "c")), &[0x00, 0xff]);
+        assert_eq!(binary(field(&value, "d")), &[0x00, 0x01, 0xfe]);
+    }
+
+    #[test]
+    fn a_batch_keeps_the_messages_in_the_order_they_arrived() {
+        let batch = vec![
+            encode_message(&message("message", &["news", "one"])),
+            encode_message(&message("message", &["news", "two"])),
+        ];
+
+        match decoded(&encode_messages(&batch)) {
+            rmpv::Value::Array(messages) => {
+                assert_eq!(messages.len(), 2);
+                assert_eq!(binary(field(&messages[0], "d")), b"one");
+                assert_eq!(binary(field(&messages[1], "d")), b"two");
+            }
+            other => panic!("expected an array, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_empty_batch_is_an_empty_list() {
+        // What a stream that ended answers with: PHP sees the iteration finish
+        // rather than a message nobody published.
+        match decoded(&encode_messages(&[])) {
+            rmpv::Value::Array(messages) => assert!(messages.is_empty()),
+            other => panic!("expected an array, got {other:?}"),
+        }
+    }
+}

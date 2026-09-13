@@ -292,7 +292,7 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
 - `MethodEnum`: Sleep (`sl`), Mongodb (`mng`), HttpServe (`hs`), HttpRespond
   (`hr`), HttpClient (`hc`), Mysql (`my`), Pgsql (`pg`), SocketServe (`ss`),
   SocketRespond (`sr`), SocketClient (`sc`), WsServe (`wss`), WsRespond (`wsr`),
-  WsClient (`wsc`), Amqp (`amq`)
+  WsClient (`wsc`), Amqp (`amq`), Redis (`rds`)
 - Sub-operations selected via the payload envelope's `cm`:
   `SocketClientCommand`/`WsClientCommand` (Connect `con`, Send `snd`, Close
   `cls`), `SqlCommandEnum` (Query `qry`, Exec `exe`, Begin `beg`, Commit `cmt`,
@@ -301,7 +301,9 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
   QueueDeclare `qud`, Publish `pub`, Consume `csm`, … — see
   `src/Features/Amqp/AmqpCommandEnum.php`), MongoDB's `CommandEnum` (InsertOne
   `ino`, BulkWrite `bw`, Aggregate `agg`, … — see
-  `src/Features/Mongodb/CommandEnum.php`)
+  `src/Features/Mongodb/CommandEnum.php`), `RedisCommandEnum` (Command `cmd`,
+  Pipeline `pip`, Scan `scn`, Subscribe `sub`, SubscriptionUpdate `sup`,
+  SubscriptionClose `suc`)
 - `DownloadFileMode` (HttpClient download sink, the `sm` field): Replace (`rpl`),
   Create (`crt`), Append (`app`)
 
