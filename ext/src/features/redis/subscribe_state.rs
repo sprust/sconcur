@@ -24,6 +24,12 @@ pub struct SubscribeState {
     stream: Mutex<Option<PubSubStream>>,
     batch_size: usize,
     message: Arc<Message>,
+    /// What this subscription is registered under, so closing the stream takes
+    /// the registry entry with it. Every other path removes it by hand; a stream
+    /// that ends by itself is closed by the states registry, and without this the
+    /// id, its sink and its mutex would stay in a process-wide map for the life
+    /// of the process — one entry per subscription that ever lost its server.
+    subscription_id: String,
     /// Ends a next() that is waiting on a message. Cancelled when the
     /// subscription closes, so a pull that nobody will answer does not hold the
     /// state's mutex forever.
@@ -36,12 +42,14 @@ impl SubscribeState {
         stream: PubSubStream,
         batch_size: usize,
         message: Arc<Message>,
+        subscription_id: String,
         cancel: CancellationToken,
     ) -> Self {
         SubscribeState {
             stream: Mutex::new(Some(stream)),
             batch_size,
             message,
+            subscription_id,
             cancel,
             start_time: Instant::now(),
         }
@@ -69,9 +77,26 @@ impl StateContract for SubscribeState {
             };
 
             let Some(first) = first else {
-                // The stream ended: the connection went away, or the
-                // subscription was closed while this call waited.
-                return Result::success(&self.message, encode_messages(&[]), calc_execution_ms(self.start_time));
+                // The stream ended, and which of the two ways it ended decides
+                // what PHP sees. Closed from this side: the iteration is over,
+                // and an empty batch says so. The connection going away is not
+                // that — a subscriber whose socket died would otherwise just stop
+                // receiving, with no exception, nothing logged, and isClosed()
+                // still answering false. Nothing re-establishes it either: a
+                // subscription is a raw PubSubStream, not the pooled manager that
+                // reconnects behind the commands.
+                if self.cancel.is_cancelled() {
+                    return Result::success(
+                        &self.message,
+                        encode_messages(&[]),
+                        calc_execution_ms(self.start_time),
+                    );
+                }
+
+                return Result::error(
+                    &self.message,
+                    fail(Kind::Connection, "the subscription's connection went away"),
+                );
             };
 
             messages.push(encode_message(&first));
@@ -96,6 +121,10 @@ impl StateContract for SubscribeState {
     fn close(&self) -> StateCloseFuture<'_> {
         Box::pin(async move {
             self.cancel.cancel();
+
+            // The registry entry goes with the stream, however the stream ended.
+            // Idempotent, like every other removal of it.
+            super::registry_subscriptions().remove(&self.subscription_id);
 
             // Dropping the stream closes the connection, which is what
             // unsubscribes: the socket was the subscription.

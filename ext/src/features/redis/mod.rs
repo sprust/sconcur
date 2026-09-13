@@ -188,10 +188,7 @@ impl RedisFeature {
             // for 1500 ms means the whole thing, and a connect that outlives that
             // is exactly the case where the difference shows.
             run_bounded(task, envelope.timeout_ms, async move {
-                let mut dedicated = pools::get()
-                    .dedicated(&dsn)
-                    .await
-                    .map_err(|error| (Kind::Connection, error))?;
+                let mut dedicated = pools::get().dedicated(&dsn).await?;
 
                 let outcome = run_one(dedicated.connection(), &command).await;
 
@@ -577,6 +574,7 @@ impl RedisFeature {
             stream,
             normalize_batch_size(params.batch_size),
             task.message_arc(),
+            subscription_id.clone(),
             CancellationToken::new(),
         ));
 
@@ -725,11 +723,17 @@ impl RedisFeature {
             }
         };
 
-        registry_subscriptions().remove(&params.subscription_id);
-
-        // Deleting the state closes the stream, which closes the connection:
-        // the socket was the subscription.
-        states::get().delete_state(&params.subscription_id).await;
+        // Only a subscription this registry knows is closed through here. The id
+        // arrives off the wire, and States is one process-wide map shared with the
+        // MongoDB cursors, the SQL row sets and the request-body streams — deleting
+        // whatever key it names would close somebody else's stream mid-iteration.
+        // A miss answers success rather than a failure: the flow hook may have got
+        // there first, and closing twice is not an error.
+        if registry_subscriptions().remove(&params.subscription_id).is_some() {
+            // Deleting the state closes the stream, which closes the connection:
+            // the socket was the subscription.
+            states::get().delete_state(&params.subscription_id).await;
+        }
 
         task.add_result(Result::success(
             message,

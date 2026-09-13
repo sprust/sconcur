@@ -15,6 +15,7 @@
 //!   connection itself into subscriber mode.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -22,6 +23,7 @@ use redis::aio::{ConnectionManager, ConnectionManagerConfig, MultiplexedConnecti
 use redis::{AsyncConnectionConfig, Client};
 
 use super::dsn;
+use super::errors::Kind;
 
 const POOL_IDLE_TTL: Duration = Duration::from_secs(5 * 60);
 const POOL_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
@@ -100,7 +102,14 @@ struct Entry {
     opened_at: Instant,
     in_use: i64,
     last_used_at: Instant,
+    /// Tells this pool from the one that replaces it under the same key. A
+    /// command that started on the old pool must not be counted off the new one.
+    generation: u64,
 }
+
+/// Hands out the generations. Process-wide and monotonic: a number is never
+/// reused, so an old pool's release can always be recognised as one.
+static GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// The connections held for blocking commands on one dsn: the ones parked for
 /// reuse, and how many exist at all.
@@ -145,6 +154,9 @@ impl Pools {
 pub struct Acquired {
     key: PoolKey,
     connection: ConnectionManager,
+    /// The pool this was taken from. The one under that key may be a later one by
+    /// the time this is given back.
+    generation: u64,
 }
 
 impl Acquired {
@@ -158,7 +170,7 @@ impl Acquired {
 
 impl Drop for Acquired {
     fn drop(&mut self) {
-        get().release(&self.key);
+        get().release(&self.key, self.generation);
     }
 }
 
@@ -203,13 +215,15 @@ impl Dedicated {
     /// Keeps the connection for the next command when this one finished on the
     /// wire. A failure that is not the server's answer — a dropped socket, a
     /// deadline, a stop — leaves it dirty, and it is dropped instead.
-    pub fn keep_if_clean<T>(
-        &mut self,
-        outcome: &std::result::Result<T, (super::errors::Kind, String)>,
-    ) {
+    ///
+    /// Kind::Command means exactly "the server answered": values::classify_error
+    /// gives it only to an error carrying a code, which is the first token of an
+    /// error reply. Nothing whose framing is in doubt wears it, so nothing whose
+    /// framing is in doubt is lent on.
+    pub fn keep_if_clean<T>(&mut self, outcome: &std::result::Result<T, (Kind, String)>) {
         self.reusable = match outcome {
             Ok(_) => true,
-            Err((super::errors::Kind::Command, _)) => true,
+            Err((Kind::Command, _)) => true,
             Err(_) => false,
         };
     }
@@ -270,8 +284,15 @@ impl Pools {
         // A lifetime cap is honoured by dropping the pool and opening a new one:
         // the manager holds the socket, so retiring one connection means
         // replacing the handle that owns it.
+        //
+        // It goes whether or not commands are still on it. Waiting for in_use to
+        // reach zero is waiting for a moment that never comes under continuous
+        // traffic, or while one cursor holds its connection for the length of a
+        // walk — and the setting then reads as honoured while nothing ever retires
+        // anything. The commands already running keep the manager they took, and
+        // their generation is what stops them counting themselves off the new pool.
         if let Some(entry) = entries.get(&key) {
-            if is_expired(entry, conn_max_lifetime_ms) && entry.in_use == 0 {
+            if is_expired(entry, conn_max_lifetime_ms) {
                 entries.remove(&key);
             }
         }
@@ -290,16 +311,25 @@ impl Pools {
         entry.in_use += 1;
         entry.last_used_at = Instant::now();
 
+        let generation = entry.generation;
+
         Ok(Acquired {
             key,
             connection,
+            generation,
         })
     }
 
     /// Lends a connection nothing else will use for the length of one blocking
     /// command. Taken from the parked ones when there is a fresh one, opened
     /// otherwise, and refused once this dsn is holding as many as it may.
-    pub async fn dedicated(&'static self, dsn: &str) -> std::result::Result<Dedicated, String> {
+    ///
+    /// The failure carries its kind, because the first thing this does is parse
+    /// the dsn: a blocking command against an unusable dsn has to raise what
+    /// every other path raises for it, and reporting the lot as a connection
+    /// failure made `blPop` the one call where a typo in the scheme arrived as a
+    /// RuntimeException rather than the usage mistake it is.
+    pub async fn dedicated(&'static self, dsn: &str) -> std::result::Result<Dedicated, (Kind, String)> {
         let parked = {
             let mut pools = self.dedicated.lock().unwrap();
 
@@ -314,8 +344,11 @@ impl Pools {
                 Some((connection, _)) => Some(connection),
                 None => {
                     if pool.live >= MAX_DEDICATED_PER_DSN {
-                        return Err(format!(
-                            "this connection is already holding {MAX_DEDICATED_PER_DSN} connections for blocking commands"
+                        return Err((
+                            Kind::Connection,
+                            format!(
+                                "this connection is already holding {MAX_DEDICATED_PER_DSN} connections for blocking commands"
+                            ),
                         ));
                     }
 
@@ -339,7 +372,7 @@ impl Pools {
             return Ok(dedicated);
         }
 
-        let client = self.client(dsn)?;
+        let client = self.client(dsn).map_err(|error| (Kind::Dsn, error))?;
 
         let config = AsyncConnectionConfig::new()
             .set_response_timeout(RESPONSE_TIMEOUT)
@@ -348,7 +381,7 @@ impl Pools {
         let connection = client
             .get_multiplexed_async_connection_with_config(&config)
             .await
-            .map_err(|error| format!("connect: {error}"))?;
+            .map_err(|error| (Kind::Connection, format!("connect: {error}")))?;
 
         dedicated.connection = Some(connection);
 
@@ -385,8 +418,16 @@ impl Pools {
         Client::open(parsed.url.as_str()).map_err(|error| format!("open client: {error}"))
     }
 
-    fn release(&self, key: &PoolKey) {
+    fn release(&self, key: &PoolKey, generation: u64) {
         if let Some(entry) = self.entries.lock().unwrap().get_mut(key) {
+            // The pool under this key may be a later one: a lifetime cap retires a
+            // pool while its commands are still running. Counting an old pool's
+            // command off the new one leaves that pool permanently short, and with
+            // in_use never reaching zero it would never be swept either.
+            if entry.generation != generation {
+                return;
+            }
+
             if entry.in_use > 0 {
                 entry.in_use -= 1;
             }
@@ -401,10 +442,16 @@ impl Pools {
     fn sweep(&self) {
         let now = Instant::now();
 
-        self.entries
-            .lock()
-            .unwrap()
-            .retain(|_, entry| entry.in_use > 0 || now.duration_since(entry.last_used_at) <= POOL_IDLE_TTL);
+        self.entries.lock().unwrap().retain(|key, entry| {
+            // The other half of the lifetime cap. Retiring on acquire alone leaves a
+            // pool whose traffic stopped exactly as it aged out open for ever, and a
+            // pool nobody acquires from is precisely the one no acquire can retire.
+            if is_expired(entry, key.conn_max_lifetime_ms) {
+                return false;
+            }
+
+            entry.in_use > 0 || now.duration_since(entry.last_used_at) <= POOL_IDLE_TTL
+        });
     }
 
     /// Drops the parked connections of every dsn that have aged out. Without it
@@ -492,6 +539,7 @@ fn build(key: &PoolKey) -> Result<Entry, String> {
         opened_at: Instant::now(),
         in_use: 0,
         last_used_at: Instant::now(),
+        generation: GENERATION.fetch_add(1, Ordering::Relaxed),
     })
 }
 
@@ -581,9 +629,99 @@ mod tests {
             opened_at: Instant::now() - Duration::from_secs(3600),
             in_use: 0,
             last_used_at: Instant::now(),
+            generation: 1,
         };
 
         assert!(!is_expired(&entry, 0));
         assert!(is_expired(&entry, 1000));
+    }
+
+    fn key(conn_max_lifetime_ms: i64) -> PoolKey {
+        PoolKey {
+            dsn: "redis://127.0.0.1:6379".to_string(),
+            pool_size: 1,
+            conn_max_lifetime_ms,
+        }
+    }
+
+    fn entry(generation: u64, in_use: i64, age: Duration) -> Entry {
+        Entry {
+            connections: Vec::new(),
+            next_index: 0,
+            opened_at: Instant::now() - age,
+            in_use,
+            last_used_at: Instant::now(),
+            generation,
+        }
+    }
+
+    fn in_use(pools: &Pools, key: &PoolKey) -> i64 {
+        pools
+            .entries
+            .lock()
+            .unwrap()
+            .get(key)
+            .map(|entry| entry.in_use)
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_command_of_a_retired_pool_is_not_counted_off_the_one_that_replaced_it() {
+        let pools = Pools::new();
+        let pool_key = key(0);
+
+        pools
+            .entries
+            .lock()
+            .unwrap()
+            .insert(pool_key.clone(), entry(7, 2, Duration::ZERO));
+
+        // A command that started before the lifetime cap retired the old pool.
+        pools.release(&pool_key, 6);
+
+        assert_eq!(in_use(&pools, &pool_key), 2, "an older pool's command was counted off this one");
+
+        pools.release(&pool_key, 7);
+
+        assert_eq!(in_use(&pools, &pool_key), 1);
+    }
+
+    #[test]
+    fn a_pool_past_its_lifetime_is_swept_even_with_commands_on_it() {
+        // The case the old condition could not reach: under continuous traffic, or
+        // while a cursor holds its connection, in_use is never zero at the moment
+        // anything looks — and conn_max_lifetime_ms read as honoured while nothing
+        // was ever retired.
+        let pools = Pools::new();
+        let pool_key = key(1000);
+
+        pools
+            .entries
+            .lock()
+            .unwrap()
+            .insert(pool_key.clone(), entry(1, 3, Duration::from_secs(60)));
+
+        pools.sweep();
+
+        assert!(
+            pools.entries.lock().unwrap().get(&pool_key).is_none(),
+            "a pool past its lifetime stayed open because commands were still running",
+        );
+    }
+
+    #[test]
+    fn a_pool_inside_its_lifetime_survives_the_sweep() {
+        let pools = Pools::new();
+        let pool_key = key(60_000);
+
+        pools
+            .entries
+            .lock()
+            .unwrap()
+            .insert(pool_key.clone(), entry(1, 0, Duration::from_secs(1)));
+
+        pools.sweep();
+
+        assert!(pools.entries.lock().unwrap().get(&pool_key).is_some());
     }
 }

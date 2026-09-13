@@ -176,25 +176,29 @@ pub fn decode_args(values: &[rmpv::Value]) -> Result<Vec<Vec<u8>>, String> {
 /// the message: a Lua script can answer whatever it likes, and classifying that
 /// text would let it choose the exception the application catches.
 pub fn classify_error(error: &RedisError) -> (Kind, String) {
+    // A code is the first token of an error reply, so having one means the server
+    // answered and the connection carried the answer whole. That is the entire
+    // test: reading the code itself would put the choice of exception in the hands
+    // of whatever answered, and a Lua script answering "NOAUTH nice try" would pick
+    // it. A refused password is not this case — it fails in the handshake, with no
+    // code at all, and the kinds below have it.
     if let Some(code) = error.code() {
         let detail = error.detail().unwrap_or("").to_string();
 
-        // NOAUTH and WRONGPASS are the server saying the connection is not
-        // usable, not that this command was wrong.
-        let kind = match code {
-            "NOAUTH" | "WRONGPASS" => Kind::Connection,
-            _ => Kind::Command,
-        };
-
-        return (kind, format!("{code} {detail}").trim_end().to_string());
+        return (Kind::Command, format!("{code} {detail}").trim_end().to_string());
     }
 
+    // Without a code the failure belongs to the socket or to this side, never to
+    // the server's answer. Anything unrecognised counts as a connection failure
+    // rather than a command one, and that default is load-bearing: a reply this
+    // side could not parse leaves the connection's framing in doubt, and
+    // pools::Dedicated::keep_if_clean reads Kind::Command as the proof that a
+    // connection is safe to lend to the next blocking command.
     let kind = match error.kind() {
         ErrorKind::Io | ErrorKind::AuthenticationFailed => Kind::Connection,
         ErrorKind::InvalidClientConfig => Kind::Dsn,
         _ if error.is_timeout() => Kind::Timeout,
-        _ if error.is_connection_dropped() || error.is_connection_refusal() => Kind::Connection,
-        _ => Kind::Command,
+        _ => Kind::Connection,
     };
 
     (kind, error.to_string())
@@ -393,6 +397,40 @@ mod tests {
         let error = decode_arg(&rmpv::Value::from(7)).unwrap_err();
 
         assert!(error.contains("must be a string"), "{error}");
+    }
+
+    /// The RedisError a connection hands back for an error reply.
+    fn server_failure(reply: &[u8]) -> RedisError {
+        match redis::parse_redis_value(reply) {
+            Ok(value) => value.extract_error().expect_err("an error reply is a failure"),
+            Err(error) => panic!("the reply should parse: {error:?}"),
+        }
+    }
+
+    #[test]
+    fn an_answer_from_the_server_is_a_command_failure_whatever_it_spells() {
+        assert_eq!(classify_error(&server_failure(b"-WRONGTYPE bad\r\n")).0, Kind::Command);
+
+        // NOAUTH was read as a connection failure, out of the code the server sent.
+        // A Lua script answering redis.error_reply('NOAUTH nice try') could pick the
+        // exception PHP raises that way — and a connection the server had plainly
+        // answered looked too dirty to lend to the next blocking command.
+        assert_eq!(classify_error(&server_failure(b"-NOAUTH nice try\r\n")).0, Kind::Command);
+    }
+
+    #[test]
+    fn a_failure_the_server_did_not_answer_is_never_a_command_failure() {
+        let dropped = RedisError::from((ErrorKind::Io, "connection reset"));
+
+        assert_eq!(classify_error(&dropped).0, Kind::Connection);
+
+        // The catch-all carries as much weight as the named kinds: Kind::Command is
+        // what pools::Dedicated::keep_if_clean parks a connection on, so a reply this
+        // side could not read must not wear it.
+        let unreadable = RedisError::from((ErrorKind::UnexpectedReturnType, "unexpected reply"));
+
+        assert!(unreadable.code().is_none(), "the case only holds for an error with no code");
+        assert_eq!(classify_error(&unreadable).0, Kind::Connection);
     }
 
     /// A server error to encode with: what the parser makes of an error reply,

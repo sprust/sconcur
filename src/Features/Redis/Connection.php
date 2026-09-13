@@ -217,9 +217,11 @@ readonly class Connection
                 'pt' => Arguments::encode($patterns),
                 'bs' => $batchSize,
             ],
-            // A subscription waits for messages that may never come; the deadline belongs
-            // to the commands, not to the wait.
-            timeoutMs: 0,
+            // SUBSCRIBE is a command on the wire, so the connection's own deadline covers
+            // it: a host that finishes the handshake and then stops answering would
+            // otherwise park this call for ever, with nothing but a flow stop able to end
+            // it. What the deadline does not cover is the wait for messages — each batch
+            // is pulled by a call of its own, and that one deliberately has none.
         );
 
         /** @var array<string, mixed> $meta */

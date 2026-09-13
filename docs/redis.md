@@ -68,10 +68,11 @@ it would hand them a shape they read wrongly and quietly.
 The object owns no socket. Connections live in the extension, keyed by the dsn
 and the sizing, and an unused pool is closed five minutes after its last command.
 
-`timeoutMs` is the deadline over a command and over a cursor batch. Subscribing
-is bounded by the dial timeout below rather than by it, because a subscription
-waits for messages that may never come and the connection's own deadline is not
-the right bound for that. The driver's per-command timeout is turned off
+`timeoutMs` is the deadline over a command, over a cursor batch, and over the
+`SUBSCRIBE` itself — subscribing is a command on the wire like any other. What it
+does not bound is the wait for messages: they may never come, and each batch is
+pulled by a call of its own that deliberately has no deadline. The driver's
+per-command timeout is turned off
 deliberately: it defaults to 500 ms, which would cut off every blocking command
 by design and every slow one by accident.
 
@@ -348,33 +349,33 @@ allowed for the same reason and stall the whole server while they run.
 
 ## Limits
 
-- **No cluster and no sentinel.** The driver can do both, so this is scope rather
+- No cluster and no sentinel. The driver can do both, so this is scope rather
   than impossibility — but a cluster is a different connection model, not a
   switch: keys route by slot, the server answers `MOVED`/`ASK` mid-command, a
   pipeline cannot span slots, and pub/sub needs sharded channels. It has to be
   designed, and v1 is not it.
-- **No `WATCH`, so no optimistic locking.** `WATCH` only means anything on the
+- No `WATCH`, so no optimistic locking. `WATCH` only means anything on the
   connection that later runs `MULTI`/`EXEC`, with the caller reading values in
   between to decide. Ordinary commands here share a connection with every other
   coroutine, so a `WATCH` on it would be watching on their behalf too. Supporting
   it means pinning one connection across several round trips, the way the SQL
   feature pins one for a transaction.
-- **No consumer groups over streams.** `XREAD` and `XREADGROUP` work as commands
+- No consumer groups over streams. `XREAD` and `XREADGROUP` work as commands
   (with `blocking: true` where the arguments carry `BLOCK`). What is missing is
   the supervised consumer AMQP has — a worker the scheduler drives, with
   acknowledgement and a graceful drain — which is a subsystem rather than a
   command.
-- **No sharded pub/sub.** The driver does not say whether a message arrived as
+- No sharded pub/sub. The driver does not say whether a message arrived as
   `message` or `smessage`, so the kind could not be reported honestly; and
   sharded channels exist for a cluster, which is out anyway.
-- **A subscription costs a connection.** In RESP2 a connection in subscriber mode
+- A subscription costs a connection. In RESP2 a connection in subscriber mode
   accepts only the subscribe commands, `PING` and `QUIT` — it cannot carry
   anything else, so it cannot be shared. RESP3 lifts that restriction, and using
   it to put subscriptions back on the shared pool is the obvious next step, not a
   thing this version does.
-- **Nothing is reported to the panel.** The workload sections a worker sends are
+- Nothing is reported to the panel. The workload sections a worker sends are
   the servers' and the queue consumer's (see [the panel](admin-stats.md)); redis
   adds none of its own, so a worker busy with nothing but redis shows its process
   metrics and nothing about the commands it ran.
-- **RESP2 only.** See the dsn section.
+- RESP2 only. See the dsn section.
 - The library's general limits are in the [README](../README.md).
