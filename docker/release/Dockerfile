@@ -56,13 +56,14 @@ COPY --from=ghcr.io/php/pie:bin /pie /usr/local/bin/pie
 # with the dev dependencies whether or not RoadRunner is ever run.
 RUN docker-php-ext-install pcntl pdo_mysql pdo_pgsql sockets
 
-# msgpack carries every payload across the PHP↔Go boundary and is what the library
-# itself requires. mongodb and amqp are test-only: the feature tests compare SConcur
-# against the live native extension rather than against literals written down once.
-# Pinned exactly, like the composer constraints they mirror.
+# msgpack carries every payload across the PHP↔extension boundary and is what the
+# library itself requires. mongodb, amqp and redis are test-only: the feature tests
+# compare SConcur against the live native extension rather than against literals
+# written down once. Pinned exactly, like the composer constraints they mirror.
 RUN pie install msgpack/msgpack-php:3.0.1 && \
     pie install mongodb/mongodb-extension:1.21.5 && \
-    pie install php-amqp/php-amqp:2.2.0
+    pie install php-amqp/php-amqp:2.2.0 && \
+    pie install phpredis/phpredis:6.3.0
 
 # Check if user and group doesn't exist before creating
 RUN getent group "$GROUP_ID" || addgroup --gid "$GROUP_ID" user

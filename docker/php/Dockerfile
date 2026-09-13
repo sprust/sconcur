@@ -88,6 +88,13 @@ RUN curl -fsSL https://sh.rustup.rs -o /tmp/rustup.sh && \
     rm /tmp/rustup.sh && \
     chmod -R 777 "$RUSTUP_HOME" "$CARGO_HOME"
 
+# redis is the native baseline the Redis benchmarks measure against and the
+# reference the parity tests compare the feature's replies to, the same role
+# mongodb and amqp play above. Pinned exactly, like the composer require-dev
+# constraint it mirrors.
+# Placed after the Swoole and Rust layers so neither is invalidated by it.
+RUN pie install phpredis/phpredis:6.3.0
+
 # Check if user and group doesn't exist before creating
 RUN getent group "$GROUP_ID" || addgroup --gid "$GROUP_ID" user
 RUN getent passwd "$USER_ID" || adduser --disabled-password --gecos '' --uid "$USER_ID" --gid "$GROUP_ID" user

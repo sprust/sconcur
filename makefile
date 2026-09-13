@@ -315,6 +315,9 @@ bench-all:
 	make bench-amqp-publish
 	make bench-amqp-get
 	make bench-amqp-consume
+	make bench-redis-get
+	make bench-redis-set
+	make bench-redis-pipeline
 
 bench-amqp-publish:
 	$(PHP_EXT) tests/benchmarks/amqp/publish.php ${c}
@@ -341,6 +344,41 @@ mem-leak-amqp:
 	$(DOCKER_COMPOSE) exec php \
 		php -d extension=$(SCONCUR_EXT) \
 		tests/mem-leak/amqp-soak.php $(or $(scenario),publish) $(or $(seconds),120)
+
+# Soak test for the Redis feature: one scenario in a loop, reporting the PHP heap,
+# the dangling task count and the server's own client count every five seconds.
+# Scenarios: command, pipeline, blocking, cursor, subscribe.
+# e.g.: make mem-leak-redis scenario=subscribe seconds=600
+#
+# The client count is there for the three things this feature opens connections
+# for — a blocking command, a cursor and a subscription: a worker flat on its own
+# memory can still leave sockets behind on the other side.
+mem-leak-redis:
+	$(DOCKER_COMPOSE) exec php \
+		php -d extension=$(SCONCUR_EXT) \
+		tests/mem-leak/redis-soak.php $(or $(scenario),command) $(or $(seconds),120)
+
+bench-redis-get:
+	$(PHP_EXT) tests/benchmarks/redis/get.php ${c}
+
+bench-redis-set:
+	$(PHP_EXT) tests/benchmarks/redis/set.php ${c}
+
+# A batch of commands against the same commands one at a time: the one shape where
+# the boundary is paid once for the whole batch.
+bench-redis-pipeline:
+	$(PHP_EXT) tests/benchmarks/redis/pipeline.php ${c}
+
+# The same GET at one value size, to find where copying the value costs more than
+# the concurrency saves. Size in bytes as the third argument:
+# `make bench-redis-value-size c="5 0 1048576"`.
+bench-redis-value-size:
+	$(PHP_EXT) tests/benchmarks/redis/value-size.php ${c}
+
+# The async GET at one pool size; run it over 1/2/4/8 to settle the default.
+# `make bench-redis-pool-size c="5 0 8"`.
+bench-redis-pool-size:
+	$(PHP_EXT) tests/benchmarks/redis/pool-size.php ${c}
 
 bench-db-lifecycle:
 	$(PHP_EXT) tests/benchmarks/db/lifecycle.php ${c} ${runs} ${pool}

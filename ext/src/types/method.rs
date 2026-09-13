@@ -21,6 +21,7 @@ pub enum Method {
     WsRespond,
     WsClient,
     Amqp,
+    Redis,
     /// A method the core does not know. Kept as a variant rather than a parse
     /// error so the unknown-method message still reaches the feature factory,
     /// which is where it is reported.
@@ -46,6 +47,7 @@ impl Method {
             b"wsr" => Method::WsRespond,
             b"wsc" => Method::WsClient,
             b"amq" => Method::Amqp,
+            b"rds" => Method::Redis,
             _ => Method::Unknown,
         }
     }
@@ -67,7 +69,12 @@ impl Method {
             Method::WsRespond => "wsr",
             Method::WsClient => "wsc",
             Method::Amqp => "amq",
-            Method::Unknown => "",
+            Method::Redis => "rds",
+            // Spelled, not empty. The PHP enum has carried 'unk' for this case all
+            // along, so an empty string was a value the other end could not parse at
+            // all — and the frame of an unknown-method failure is exactly the one that
+            // has to arrive intact, since it is carrying the report of what went wrong.
+            Method::Unknown => "unk",
         }
     }
 }

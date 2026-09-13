@@ -115,6 +115,7 @@ echo "готово за {$seconds} c" . PHP_EOL;
 | `fsockopen`, `stream_socket_client` | `Features\SocketClient\SocketClient` | TCP с length-prefix кадрами |
 | WS-клиент (библиотека) | `Features\WsClient\WsClient` | обмен text/binary сообщениями |
 | `ext-amqp`, `php-amqplib` (RabbitMQ) | `Features\Amqp\*` | консьюмер приостанавливает свою корутину, а не воркер; подтверждение принадлежит доставке |
+| `ext-redis` (phpredis), predis | `Features\Redis\Connection` | команды многих корутин идут в один сокет пайплайном; pub/sub и курсоры стримятся |
 
 Долгоживущие серверы:
 
@@ -239,6 +240,8 @@ $collection->insertOne(['name' => 'example']);
 | PostgreSQL (сервер) | 16 |
 | RabbitMQ (сервер) | 4.1 |
 | ext-amqp (PHP-расширение, только тесты и бенчмарки) | 2.2.0 |
+| Redis (сервер) | 8.2 |
+| ext-redis / phpredis (PHP-расширение, только тесты и бенчмарки) | 6.3.0 |
 
 Крейты, на которых собрано ядро:
 
@@ -248,6 +251,7 @@ $collection->insertOne(['name' => 'example']);
 | sqlx | 0.9 | MySQL и PostgreSQL |
 | mongodb | 3.9 | MongoDB |
 | lapin | 4.10 | AMQP |
+| redis | 1.7 | Redis |
 | hyper | 1.11 | HTTP-сервер |
 | reqwest | 0.13 | HTTP-клиент |
 | fastwebsockets | 0.10 | WebSocket-сервер и клиент |
@@ -281,6 +285,8 @@ $collection->insertOne(['name' => 'example']);
   dial.
 - [AMQP (RabbitMQ)](docs/amqp.ru.md) — публикация, топология и консьюмеры,
   которые приостанавливают корутину, а не воркер.
+- [Redis](docs/redis.ru.md) — команды, пайплайны и транзакции, блокирующие
+  команды, курсоры, pub/sub.
 - [Мастер воркеров](docs/worker-master.ru.md) — супервизор пула воркеров
   (`bin/sconcur-server`).
 - [Статистика сервера](docs/admin-stats.ru.md) — `GET /api/stats`, живая панель,

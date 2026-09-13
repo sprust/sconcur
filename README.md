@@ -114,6 +114,7 @@ Operations and clients — wrapped in a coroutine (`$waitGroup->add()` +
 | `fsockopen`, `stream_socket_client` | `Features\SocketClient\SocketClient` | TCP with length-prefix framing |
 | a WS client library | `Features\WsClient\WsClient` | text/binary messages |
 | `ext-amqp`, `php-amqplib` (RabbitMQ) | `Features\Amqp\*` | a consumer suspends its coroutine, not the worker; settling belongs to the delivery |
+| `ext-redis` (phpredis), predis | `Features\Redis\Connection` | commands of many coroutines share one socket as a pipeline; pub/sub and cursors stream |
 
 Long-lived servers:
 
@@ -239,6 +240,8 @@ The environment the project is built and tested against in CI:
 | PostgreSQL (server) | 16 |
 | RabbitMQ (server) | 4.1 |
 | ext-amqp (PHP extension, tests and benchmarks only) | 2.2.0 |
+| Redis (server) | 8.2 |
+| ext-redis / phpredis (PHP extension, tests and benchmarks only) | 6.3.0 |
 
 The crates the core is built on:
 
@@ -248,6 +251,7 @@ The crates the core is built on:
 | sqlx | 0.9 | MySQL and PostgreSQL |
 | mongodb | 3.9 | MongoDB |
 | lapin | 4.10 | AMQP |
+| redis | 1.7 | Redis |
 | hyper | 1.11 | the HTTP server |
 | reqwest | 0.13 | the HTTP client |
 | fastwebsockets | 0.10 | the WebSocket server and client |
@@ -280,6 +284,8 @@ The crates the core is built on:
   mirror.
 - [AMQP (RabbitMQ)](docs/amqp.md) — publishing, topology and consumers that
   suspend a coroutine instead of the worker.
+- [Redis](docs/redis.md) — commands, pipelines and transactions, blocking
+  commands, cursors, pub/sub.
 - [Worker master](docs/worker-master.md) — a supervisor for a pool of workers
   (`bin/sconcur-server`).
 - [Server statistics](docs/admin-stats.md) — `GET /api/stats`, live panel, SSE,

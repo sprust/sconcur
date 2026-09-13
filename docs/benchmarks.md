@@ -24,6 +24,7 @@ hardware, DB settings and load. The workload-matching verdict table is in
 - [PostgreSQL](#postgresql)
 - [Payload size](#payload-size)
 - [AMQP (RabbitMQ)](#amqp-rabbitmq)
+- [Redis](#redis)
 - [Clients (HTTP / Socket / WebSocket)](#clients-http--socket--websocket)
 - [Servers (HTTP / Socket / WebSocket)](#servers-http--socket--websocket)
   - [HTTP throughput: the empty endpoint](#http-throughput-the-empty-endpoint)
@@ -55,11 +56,16 @@ worker log stays empty: it reports a failed feature in the response body, not to
 stderr. The run still prints a plausible requests/sec. Always check
 `Non-2xx or 3xx responses` in the wrk output before trusting a long run.
 
-Every number on this page was taken on 2026-09-04/05, on an idle machine and on
-the Rust core. The three stacks of the HTTP-server tables ran in one session with
-the placement equalised (see [Methodology](#methodology)); the DB, payload,
-client, server-feature and AMQP numbers were taken on the same disk-backed
-volumes.
+Every number on this page except the Redis ones was taken on 2026-09-04/05, on
+an idle machine and on the Rust core. The three stacks of the HTTP-server tables
+ran in one session with the placement equalised (see
+[Methodology](#methodology)); the DB, payload, client, server-feature and AMQP
+numbers were taken on the same disk-backed volumes.
+
+The Redis tables were taken on 2026-09-07, on the same machine, against the
+server in `docker-compose.yml` on its default `tmpfs` mount — the feature stores
+nothing that survives a run, so the disk-backed session those other numbers
+needed does not apply to it.
 
 ## Conversion overhead (the PHP↔extension boundary)
 
@@ -302,6 +308,56 @@ here the same loop suspends only its coroutine — three consumers waiting on a
 200 ms delay finish in one delay, not three
 (`tests/feature/Features/Amqp/AmqpConsumeTest.php`). That is throughput a
 single-queue benchmark cannot show.
+
+## Redis
+
+phpredis wins every shape measured here, and the reason is the latency it is
+measured against: a `GET` on a Redis in the same container answers in about 11 µs,
+which is less than one crossing of the PHP ↔ extension boundary costs. There is
+no server wait to overlap, so the concurrency has nothing to recover and the
+crossing is the whole difference.
+
+Median of 5 runs, columns as for MongoDB; min and max are the fastest and the
+slowest of those runs. `get` and `set` make 2000 calls; `pipeline` makes 200
+calls of 20 commands each, so both sides send 4000 commands.
+
+| Operation | count | native / sync / async, ms | min n/s/a, ms | max n/s/a, ms | Memory n/s/a, MB |
+| --- | ---: | ---: | ---: | ---: | --- |
+| get | 2000 | 30.1 / 84.9 / 52.1 (−73% ❌) | 23.4 / 59.2 / 43.7 (−87% ❌) | 34.2 / 245 / 79.1 (−131% ❌) | 40 / 40 / 42 |
+| set | 2000 | 26.0 / 182 / 52.6 (−102% ❌) | 24.5 / 127 / 51.9 (−112% ❌) | 36.1 / 272 / 60.3 (−67% ❌) | 40 / 40 / 42 |
+| pipeline (20 commands) | 200 | 7.2 / 18.2 / 7.9 (−11% ❌) | 5.6 / 14.0 / 6.7 (−21% ❌) | 12.0 / 35.3 / 14.3 (−19% ❌) | 10 / 10 / 10 |
+
+Batching is what closes the gap: a pipeline pays one crossing for twenty commands
+instead of twenty, and the async path lands within about a tenth of the native
+extension. A command at a time costs about twice it.
+
+Value size, 500 `GET` calls of one value, single run:
+
+| Value | native / sync / async, ms | Memory n/s/a, MB |
+| --- | ---: | --- |
+| 100 B | 8.8 / 23.9 / 16.5 | 12 / 12 / 12 |
+| 10 KB | 9.1 / 125 / 24.6 | 14 / 14 / 16 |
+| 1 MB | 452 / 915 / 1357 | 16 / 16 / 204 |
+
+A megabyte value is where the concurrent path turns from slower into wrong for
+the job: 500 of them in flight at once hold 204 MB against the native driver's
+16, because every result exists in the extension and in PHP at the same time.
+Read blobs one at a time, or through a path that never crosses the boundary.
+
+`poolSize`, 2000 concurrent `GET` calls, single run: 1 → 51.3 ms, 2 → 45.6 ms,
+4 → 45.1 ms, 8 → 44.9 ms. One multiplexed connection already carries every
+concurrent command; a second one buys the last 11%, and past two the line is
+flat. The default is 4, which is that flat part with room for a large value in
+flight not to hold up what is behind it.
+
+**What the tables do not measure is the reason the feature exists.** They time a
+process whose only job is Redis. In a request handler the phpredis call blocks
+the whole worker for its 11 µs plus whatever the network adds, while this one
+suspends one coroutine and the worker serves other requests; and against a Redis
+across a network, where a round trip is a millisecond rather than eleven
+microseconds, it is the round trips that overlap rather than the crossings that
+accumulate. Neither shows up in a benchmark that runs one call at a time on
+localhost.
 
 ## Clients (HTTP / Socket / WebSocket)
 
@@ -547,5 +603,13 @@ heavier — the comparison is conservative.
   the same core, which is the boundary tax.
 - A pool of three workers has an unexplained latency tail on every route that is
   not disk-bound; until that is understood, size the pool away from it.
-- Memory is practically flat across the modes — the fibers of 100 concurrent
-  operations do not move the peak noticeably.
+- Memory is practically flat across the modes for ordinary payloads — the fibers
+  of 100 concurrent operations do not move the peak noticeably. It stops being
+  flat when the payloads themselves are large: 50 concurrent 1 MB MongoDB reads
+  and 500 concurrent 1 MB Redis values both hold every result in the extension
+  and in PHP at once (see [Payload size](#payload-size) and [Redis](#redis)).
+- Redis is the one feature where the native extension wins every shape measured.
+  A command against a local server answers in about 11 µs, which is less than one
+  crossing of the boundary costs, so there is nothing to overlap; batching brings
+  the concurrent path back to within a tenth of phpredis. The gain the tables
+  cannot show is the worker that is not blocked while it waits.

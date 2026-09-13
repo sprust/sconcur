@@ -33,7 +33,6 @@ TestApplication::init();
 $scenario       = (string) ($_SERVER['argv'][1] ?? 'publish');
 $durationSecond = (int) ($_SERVER['argv'][2] ?? 120);
 
-
 $options = TestAmqpResolver::getOptions();
 
 $queueName    = 'sconcur_soak_' . $scenario;

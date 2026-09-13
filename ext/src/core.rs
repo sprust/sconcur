@@ -24,6 +24,7 @@ use crate::features::amqp;
 use crate::features::httpclient;
 use crate::features::httpserver;
 use crate::features::mongodb;
+use crate::features::redis;
 use crate::features::socketclient;
 use crate::features::socketserver;
 use crate::features::sql;
@@ -62,6 +63,10 @@ pub struct Core {
     /// same reason: a socket to the broker and the channels multiplexed over it
     /// belong to the process that opened them.
     amqp: amqp::Registries,
+    /// The Redis connections — the pooled multiplexed ones, the dedicated ones
+    /// the blocking commands hold, and the live subscriptions — for the same
+    /// reason: every one of them is a socket this process opened.
+    redis: redis::Registries,
 }
 
 static CORE: RwLock<Option<&'static Core>> = RwLock::new(None);
@@ -172,6 +177,7 @@ impl Core {
             wsclient: wsclient::Registries::new(),
             httpclient: httpclient::Registries::new(),
             amqp: amqp::Registries::new(),
+            redis: redis::Registries::new(),
         }
     }
 
@@ -217,6 +223,10 @@ impl Core {
 
     pub fn amqp(&'static self) -> &'static amqp::Registries {
         &self.amqp
+    }
+
+    pub fn redis(&'static self) -> &'static redis::Registries {
+        &self.redis
     }
 
     /// Mirrors Handler.fresh(): the destroyed handler is dropped and a new one

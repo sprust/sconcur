@@ -14,6 +14,10 @@ namespace SConcur\Worker;
  */
 enum RestartPolicy: string
 {
+    case Always    = 'always';
+    case OnFailure = 'on-failure';
+    case Never     = 'never';
+
     /**
      * Decides whether a worker that just exited should be restarted.
      *
@@ -28,7 +32,4 @@ enum RestartPolicy: string
             self::Never     => false,
         };
     }
-    case Always    = 'always';
-    case OnFailure = 'on-failure';
-    case Never     = 'never';
 }

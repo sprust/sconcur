@@ -5,6 +5,7 @@ pub mod amqp;
 pub mod httpclient;
 pub mod httpserver;
 pub mod mongodb;
+pub mod redis;
 pub mod sleeper;
 pub mod socketclient;
 pub mod socketserver;
@@ -69,12 +70,14 @@ pub fn detect_message_handler(method: Method) -> std::result::Result<&'static dy
         Method::WsServe | Method::WsRespond => Ok(wsserver::get()),
         Method::WsClient => Ok(wsclient::get()),
         Method::Amqp => Ok(amqp::get()),
+        Method::Redis => Ok(redis::get()),
         _ => Err(format!("unknown method: {}", method.as_wire())),
     }
 }
 
 /// Mirrors features.Shutdown: releases what the features hold — the HTTP
-/// server's listener registry and the SQL connection pools.
+/// server's listener registry, the SQL connection pools and the Redis
+/// connections.
 pub fn shutdown() {
     httpclient::shutdown();
     httpserver::shutdown();
@@ -82,5 +85,6 @@ pub fn shutdown() {
     wsserver::shutdown();
     mongodb::shutdown();
     amqp::shutdown();
+    redis::shutdown();
     sql::close_all_pools();
 }

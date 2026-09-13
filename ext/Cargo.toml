@@ -1,6 +1,6 @@
 [package]
 name    = "sconcur"
-version = "0.12.2"
+version = "0.13.0"
 edition = "2024"
 
 # staticlib, not cdylib: build.sh compiles ext/sconcur.c (the same PHP glue
@@ -109,6 +109,30 @@ lapin = { version = "4", default-features = false, features = [
     "rustls",
     "rustls--ring",
     "tokio",
+] }
+# The Redis feature. redis-rs is what the feature is thin over, and it was picked
+# by the five places that thinness shows: a Cmd builds from a name and byte
+# arguments (so the raw command path needs to know no command), Value covers RESP2
+# and RESP3 in one enum that maps onto the msgpack encoding here one for one,
+# MultiplexedConnection pipelines the commands of many tasks into one socket —
+# which is the whole reason this feature exists — ConnectionManager reconnects on
+# its own, and PubSub::split hands out a sink and a stream so a live subscription
+# can be changed while it is being read.
+#
+# default-features off: the defaults are typed command helpers (acl, streams,
+# geospatial, script, num-bigint) that nothing here calls, and num-bigint would
+# only change RESP3 big numbers from bytes into a BigInt this side would have to
+# render back into a string anyway.
+#
+# webpki-roots, not the host store, for the same reason as reqwest: which
+# certificates are trusted must not depend on the image the extension runs in.
+# redis-rs asks for rustls without a provider feature of its own, so it takes the
+# process-wide provider core.rs installs, like everything else here.
+redis = { version = "1.7", default-features = false, features = [
+    "tokio-comp",
+    "connection-manager",
+    "tokio-rustls-comp",
+    "tls-rustls-webpki-roots",
 ] }
 
 [profile.release]

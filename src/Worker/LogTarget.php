@@ -11,6 +11,10 @@ namespace SConcur\Worker;
  */
 enum LogTarget: string
 {
+    case File   = 'file';
+    case Stdout = 'stdout';
+    case Both   = 'both';
+
     public function toFile(): bool
     {
         return $this === self::File || $this === self::Both;
@@ -20,7 +24,4 @@ enum LogTarget: string
     {
         return $this === self::Stdout || $this === self::Both;
     }
-    case File   = 'file';
-    case Stdout = 'stdout';
-    case Both   = 'both';
 }

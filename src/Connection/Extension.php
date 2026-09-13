@@ -45,7 +45,7 @@ class Extension
      * rejected instead of silently misbehaving. Public so tooling (bin/sconcur-status)
      * can report the version the package expects.
      */
-    public const string REQUIRED_EXTENSION_VERSION = '0.12.2';
+    public const string REQUIRED_EXTENSION_VERSION = '0.13.0';
 
     /**
      * Result frame layout (extension -> PHP), see ext/src/lib.rs. The envelope is
@@ -341,9 +341,25 @@ class Extension
             $cursor += $header['taskKeyLen'];
             $payload = substr($response, $cursor, ($offset + $frameLength) - $cursor);
 
+            $methodEnum = MethodEnum::tryFrom($method);
+
+            if ($methodEnum === null) {
+                // Reported rather than folded into MethodEnum::Unknown. A method this
+                // package does not know is the version skew REQUIRED_EXTENSION_VERSION
+                // exists to catch, and decoding it as a valid result is how that signal
+                // would be lost at the one point it could be seen. The core's own
+                // unknown method is not this case: it travels as 'unk' and resolves
+                // here like any other, so the failure it carries still reaches the
+                // caller as the failure it is.
+                throw new UnexpectedResponseFormatException(
+                    message: "Result frame carries the method '$method', which this package does not know: "
+                        . 'the loaded core is newer than the package.',
+                );
+            }
+
             return new TaskResultDto(
                 flowKey: $flowKey,
-                method: MethodEnum::from($method),
+                method: $methodEnum,
                 key: $taskKey,
                 isError: ($header['flags'] & self::FRAME_FLAG_ERROR) !== 0,
                 payload: $payload,
