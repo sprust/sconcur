@@ -201,7 +201,9 @@ everything queued behind it on the same socket. A blocking command therefore get
 a connection of its own for the length of the call, and the commands of every
 other coroutine keep flowing.
 
-The task deadline has to cover the wait. `blPop`/`brPop` raise it themselves; on
+The task deadline has to cover the wait. `blPop`/`brPop` raise it themselves, to
+the wait plus this connection's `timeoutMs` — a connection with `timeoutMs: 0`
+gets no deadline here either, since the command's own wait already bounds it. On
 the raw path you pass both, and a deadline shorter than the command's own timeout
 is refused rather than cutting the wait short:
 

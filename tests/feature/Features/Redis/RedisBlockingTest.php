@@ -20,7 +20,7 @@ use Throwable;
  */
 class RedisBlockingTest extends BaseTestCase
 {
-    private Connection $connection;
+    protected Connection $connection;
 
     protected function setUp(): void
     {
@@ -214,6 +214,8 @@ class RedisBlockingTest extends BaseTestCase
         // no socket ever opening.
         $unreachable = TestRedisResolver::getUnreachableConnection(timeoutMs: 100);
 
+        $startTime = microtime(true);
+
         for ($index = 0; $index < 70; ++$index) {
             try {
                 $unreachable->blPop(['slot:queue'], timeoutSeconds: 0.01);
@@ -225,6 +227,36 @@ class RedisBlockingTest extends BaseTestCase
                 );
             }
         }
+
+        $elapsedMs = (microtime(true) - $startTime) * 1000;
+
+        // Seventy attempts of 110 ms, which is the 10 ms wait plus the 100 ms this
+        // connection was given. The deadline used to be floored at a second whatever
+        // the caller asked for, and this loop took a minute and a half for want of a
+        // number it had already been handed.
+        self::assertTrue(
+            $elapsedMs < 30_000,
+            "70 cut-off dials took {$elapsedMs}ms: the connection's own timeoutMs is not what bounds them",
+        );
+    }
+
+    public function testTheDeadlineOfABlockingCallIsTheWaitPlusTheConnectionsBudget(): void
+    {
+        // Neither number is invented here. A connection configured tight stays tight —
+        // the floor of one second that used to be applied turned timeoutMs: 100 into
+        // 1010 — and one told to work without a deadline gets none for a blocking call
+        // either, where that same floor gave it the strictest deadline of all.
+        $tight = new Connection(dsn: TestRedisResolver::getDsn(), timeoutMs: 100);
+
+        self::assertSame(110, $tight->blockingDeadlineMs(0.01));
+        self::assertSame(5100, $tight->blockingDeadlineMs(5.0));
+
+        $unbounded = new Connection(dsn: TestRedisResolver::getDsn(), timeoutMs: 0);
+
+        self::assertSame(0, $unbounded->blockingDeadlineMs(5.0));
+
+        // Waiting forever stays deadline-free on any connection.
+        self::assertSame(0, $tight->blockingDeadlineMs(0.0));
     }
 
     public function testBlockingPopReturnsTheKeyThatAnswered(): void

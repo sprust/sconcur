@@ -10,7 +10,7 @@ use SConcur\Tests\Impl\TestRedisResolver;
 
 class RedisScanTest extends BaseTestCase
 {
-    private Connection $connection;
+    protected Connection $connection;
 
     protected function setUp(): void
     {
@@ -74,7 +74,11 @@ class RedisScanTest extends BaseTestCase
     {
         $fields = [];
 
-        for ($index = 0; $index < 100; ++$index) {
+        // Past hash-max-listpack-entries, which defaults to 128: under it a hash is a
+        // flat list and HSCAN happens to answer in insertion order, which is not a
+        // promise it makes. Over it the answer comes in bucket order, and an assertion
+        // that depended on the coincidence would fail here rather than in production.
+        for ($index = 0; $index < 200; ++$index) {
             $fields["field:$index"] = "value:$index";
         }
 
@@ -85,6 +89,9 @@ class RedisScanTest extends BaseTestCase
         foreach ($this->connection->hScan('hash', batchSize: 7) as $field => $value) {
             $seen[$field] = $value;
         }
+
+        ksort($fields);
+        ksort($seen);
 
         self::assertSame($fields, $seen);
     }
@@ -98,6 +105,9 @@ class RedisScanTest extends BaseTestCase
         foreach ($this->connection->zScan('zset') as $member => $score) {
             $seen[$member] = (float) $score;
         }
+
+        // ZSCAN promises no order either.
+        ksort($seen);
 
         self::assertSame(['a' => 1.0, 'b' => 2.5], $seen);
     }

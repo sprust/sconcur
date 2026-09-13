@@ -15,7 +15,7 @@ use SConcur\Tests\Impl\TestRedisResolver;
 
 class RedisPipelineTest extends BaseTestCase
 {
-    private Connection $connection;
+    protected Connection $connection;
 
     protected function setUp(): void
     {

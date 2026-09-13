@@ -141,11 +141,22 @@ class Subscription implements Iterator
         // a read() has already taken one: handing that message to the loop as well would
         // deliver it twice, and a subscriber doing the work twice is the whole cost of a
         // duplicate.
+        $wasStarted    = $this->started;
         $this->started = true;
 
         if ($this->currentConsumed) {
             $this->currentConsumed = false;
 
+            $this->pull();
+
+            return;
+        }
+
+        // A loop entered on a subscription that has already been iterated — one broken
+        // out of, typically — holds a message its body has already seen. Serving it to
+        // the new loop as well is the same duplicate the read() case above avoids, and
+        // costs the same: the subscriber does the work twice.
+        if ($wasStarted && $this->current !== null) {
             $this->pull();
 
             return;

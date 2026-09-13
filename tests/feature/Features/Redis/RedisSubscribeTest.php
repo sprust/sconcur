@@ -14,7 +14,7 @@ use SConcur\WaitGroup;
 
 class RedisSubscribeTest extends BaseTestCase
 {
-    private Connection $connection;
+    protected Connection $connection;
 
     protected function setUp(): void
     {
@@ -230,6 +230,55 @@ class RedisSubscribeTest extends BaseTestCase
         $waitGroup->waitAll();
 
         // A subscriber doing the work twice is the whole cost of a duplicate.
+        self::assertSame(['first', 'second'], $received);
+    }
+
+    public function testIterationResumedAfterABreakDoesNotDeliverTheSameMessageTwice(): void
+    {
+        $received = [];
+
+        $waitGroup = WaitGroup::create();
+
+        $waitGroup->add(
+            callback: function () use (&$received): void {
+                $subscription = $this->connection->subscribe(channels: ['resumed']);
+
+                $published = false;
+
+                Scheduler::get()->spawn(
+                    callback: function () use (&$published): void {
+                        $this->connection->command('PUBLISH', ['resumed', 'first']);
+                        $this->connection->command('PUBLISH', ['resumed', 'second']);
+
+                        $published = true;
+                    },
+                );
+
+                // The other direction of the read()-then-loop rule: a loop broken out of
+                // holds a message its body has already handled, and a loop entered after
+                // it has to go on to the next one rather than serve that message again.
+                foreach ($subscription as $message) {
+                    $received[] = $message->payload;
+
+                    break;
+                }
+
+                foreach ($subscription as $message) {
+                    $received[] = $message->payload;
+
+                    break;
+                }
+
+                $subscription->close();
+
+                while (!$published) {
+                    Sleeper::usleep(microseconds: 1000);
+                }
+            },
+        );
+
+        $waitGroup->waitAll();
+
         self::assertSame(['first', 'second'], $received);
     }
 

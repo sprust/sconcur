@@ -261,16 +261,28 @@ readonly class Connection
         }
     }
 
-    /** The deadline a blocking command needs: its own wait plus one command's budget. */
+    /**
+     * The deadline a blocking command needs: its own wait plus this connection's budget
+     * for a command.
+     *
+     * Neither number is invented here. A connection told to work without a deadline gets
+     * none for a blocking call either — the command's own wait is the bound, and the
+     * budget is added on top of it rather than floored at anything, so a connection
+     * configured tight stays tight instead of being quietly widened to a second.
+     */
     public function blockingDeadlineMs(float $timeoutSeconds): int
     {
+        if ($this->timeoutMs <= 0) {
+            return 0;
+        }
+
         if ($timeoutSeconds <= 0.0) {
             // Waiting forever is only coherent without a deadline; the core refuses the
             // combination rather than cutting the wait short.
             return 0;
         }
 
-        return (int) round($timeoutSeconds * 1000) + max($this->timeoutMs, 1000);
+        return (int) round($timeoutSeconds * 1000) + $this->timeoutMs;
     }
 
     /**

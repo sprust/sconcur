@@ -20,7 +20,7 @@ use SConcur\WaitGroup;
  */
 class RedisCommandTest extends BaseTestCase
 {
-    private Connection $connection;
+    protected Connection $connection;
 
     protected function setUp(): void
     {
@@ -289,6 +289,16 @@ class RedisCommandTest extends BaseTestCase
         self::assertArrayHasKey('two', $map);
         self::assertSame('one', $map[1]);
         self::assertSame('2', $map['two']);
+    }
+
+    public function testFlushDbWithoutConfirmationIsRefused(): void
+    {
+        // It used to answer false — which is also what a flush that did not land
+        // returns, so the one value said both "you did not confirm" and "the database
+        // may or may not still be there".
+        $this->expectException(InvalidRedisArgumentException::class);
+
+        $this->connection->flushDb(confirm: false);
     }
 
     public function testCommandsRunConcurrentlyInAWaitGroup(): void

@@ -18,11 +18,11 @@ use Throwable;
  */
 class RedisTest extends BaseAsyncTestCase
 {
-    private Connection $connection;
+    protected Connection $connection;
 
-    private float $startTime = 0;
+    protected float $startTime = 0;
 
-    private float $endTime = 0;
+    protected float $endTime = 0;
 
     protected function setUp(): void
     {

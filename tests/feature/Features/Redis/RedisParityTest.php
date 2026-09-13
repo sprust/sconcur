@@ -16,9 +16,9 @@ use SConcur\Tests\Impl\TestRedisResolver;
  */
 class RedisParityTest extends BaseTestCase
 {
-    private Connection $connection;
+    protected Connection $connection;
 
-    private NativeRedis $native;
+    protected NativeRedis $native;
 
     protected function setUp(): void
     {
@@ -130,9 +130,12 @@ class RedisParityTest extends BaseTestCase
 
     public function testEvalShaFallsBackWhenTheScriptIsNotCached(): void
     {
-        $script = "return redis.call('SET', KEYS[1], ARGV[1])";
-
-        $this->native->script('flush');
+        // A script this run invents, so the server cannot be holding it — rather than
+        // SCRIPT FLUSH, which empties the script cache of the whole server. That cache
+        // is not per-database, so flushing it here reaches outside the database the
+        // tests are kept in and takes the scripts of anything else on the same server
+        // with it, this suite's own testScriptCommands included.
+        $script = "return redis.call('SET', KEYS[1], ARGV[1]) -- " . uniqid('sconcur', true);
 
         $this->connection->evalSha(sha1($script), $script, keys: ['fallback'], arguments: ['value']);
 

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Redis\Support;
 
+use SConcur\Exceptions\Redis\InvalidRedisArgumentException;
+
 /** The few server commands worth a method. */
 trait ServerCommandsTrait
 {
@@ -35,7 +37,13 @@ trait ServerCommandsTrait
     public function flushDb(bool $confirm): bool
     {
         if (!$confirm) {
-            return false;
+            // Refused rather than answered false: false is also what a flush that did
+            // not land would return, so the one value said both "you did not confirm"
+            // and "the database may or may not still be there". Every other guard in
+            // the feature throws, and this is the one with the most to lose.
+            throw new InvalidRedisArgumentException(
+                message: 'flushDb() empties the whole database: pass confirm: true to say that is meant.',
+            );
         }
 
         return $this->command('FLUSHDB') !== null;

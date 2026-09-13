@@ -21,9 +21,9 @@ use Throwable;
  */
 class RedisCancellationTest extends BaseTestCase
 {
-    private Connection $connection;
+    protected Connection $connection;
 
-    private int $baselineConnections = 0;
+    protected int $baselineConnections = 0;
 
     protected function setUp(): void
     {
@@ -33,9 +33,17 @@ class RedisCancellationTest extends BaseTestCase
 
         $this->connection = TestRedisResolver::getConnection();
 
-        // Taken after the pool is warm, so the baseline counts the connections the
-        // feature keeps rather than the ones it is about to open.
-        $this->connection->ping();
+        // Warmed with enough commands to reach every connection of the pool, not just
+        // the first one: the pool is lazy and round-robins, so a single ping leaves
+        // three sockets unopened, and the first command of a scenario opening one of
+        // them would read as a connection the scenario leaked.
+        $waitGroup = WaitGroup::create();
+
+        for ($index = 0; $index < 16; ++$index) {
+            $waitGroup->add(callback: fn(): bool => $this->connection->ping());
+        }
+
+        $waitGroup->waitAll();
 
         $this->baselineConnections = TestRedisResolver::countServerConnections();
     }
@@ -153,19 +161,23 @@ class RedisCancellationTest extends BaseTestCase
     }
 
     /**
-     * The server's client count comes back to where it started. Retried for a
+     * The server's client count comes back to where it started, exactly. Retried for a
      * moment, because the core releases a stopped task's connection as soon as it
      * unwinds and PHP gets there first.
+     *
+     * No slack: each scenario here leaks at most the one socket it opened, so a
+     * tolerance of even one would let every leak these tests exist for pass. The
+     * baseline covers the whole warm pool, which is what the slack used to be hiding.
      */
-    private function assertConnectionsSettleBack(): void
+    protected function assertConnectionsSettleBack(): void
     {
         $baseline = $this->baselineConnections;
 
         for ($attempt = 0; $attempt < 40; ++$attempt) {
             $connections = TestRedisResolver::countServerConnections();
 
-            if ($connections <= $baseline + 4) {
-                self::assertLessThanOrEqual($baseline + 4, $connections);
+            if ($connections <= $baseline) {
+                self::assertLessThanOrEqual($baseline, $connections);
 
                 return;
             }

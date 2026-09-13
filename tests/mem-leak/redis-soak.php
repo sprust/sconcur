@@ -114,15 +114,26 @@ $cycle = static function (int $iteration) use ($connection, $scenario, $keyPrefi
 
             $pipeline->execute();
 
-            $seen = 0;
+            // Inside a WaitGroup, like every other scenario here. Run synchronously the
+            // abandoned cursor is released by ScanResult's destructor, which is the path
+            // that already works; the one worth watching is the coroutine's, where that
+            // release is a no-op and only the flow ending closes the cursor and gives its
+            // pooled connection back.
+            $waitGroup = WaitGroup::create();
 
-            foreach ($connection->scan(match: "$keyPrefix:key:*", count: 20, batchSize: 10) as $ignored) {
-                ++$seen;
-            }
+            $waitGroup->add(
+                callback: static function () use ($connection, $keyPrefix): void {
+                    foreach ($connection->scan(match: "$keyPrefix:key:*", count: 20, batchSize: 10) as $ignored) {
+                        // Walked to the end.
+                    }
 
-            foreach ($connection->scan(match: "$keyPrefix:key:*", count: 20, batchSize: 10) as $ignored) {
-                break;
-            }
+                    foreach ($connection->scan(match: "$keyPrefix:key:*", count: 20, batchSize: 10) as $ignored) {
+                        break;
+                    }
+                },
+            );
+
+            $waitGroup->waitAll();
 
             $connection->command('DEL', ["$keyPrefix:key:0"]);
 
