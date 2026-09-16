@@ -642,8 +642,11 @@ bench-http-load-soak:
 
 # Baseline variant: same harness against the bare "/" route (no I/O fan-out) —
 # measures the pure HTTP + framework ceiling, the floor under the /all numbers.
+# Placement defaults to group, the one the docs/benchmarks.md numbers are taken
+# with: the harness's own default (1) runs ~20% slower on this route, which reads
+# as a regression next to them. Override via env, e.g. PIN_SERVERS=1.
 bench-http-load-stats-empty:
-	ROUTE=/ tests/benchmarks/http/load-stats.sh
+	ROUTE=/ PIN_SERVERS=$${PIN_SERVERS:-group} tests/benchmarks/http/load-stats.sh
 
 # Response-size variant: the same harness against /big/N, whose handler answers N
 # bytes and does no I/O. It is what /  and /all cannot see — everything they

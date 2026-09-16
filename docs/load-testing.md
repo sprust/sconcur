@@ -37,7 +37,7 @@ make bench-http-load-stats
 SERVERS=12 WRK_THREADS=4 CONNECTIONS=256 DURATION=20 SAMPLE_INTERVAL=2 \
     tests/benchmarks/http/load-stats.sh
 
-# baseline against the empty "/" endpoint:
+# baseline against the empty "/" endpoint (PIN_SERVERS=group unless set):
 make bench-http-load-stats-empty
 
 # soak mode: a long run with an RSS trend and slope (MiB/min) for slow-leak detection

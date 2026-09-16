@@ -37,7 +37,7 @@ make bench-http-load-stats
 SERVERS=12 WRK_THREADS=4 CONNECTIONS=256 DURATION=20 SAMPLE_INTERVAL=2 \
     tests/benchmarks/http/load-stats.sh
 
-# базовый прогон по пустому эндпоинту "/":
+# базовый прогон по пустому эндпоинту "/" (PIN_SERVERS=group, если не задан):
 make bench-http-load-stats-empty
 
 # soak: длинный прогон с трендом RSS и наклоном (MiB/мин) — детект медленной утечки
