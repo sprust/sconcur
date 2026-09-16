@@ -27,7 +27,17 @@ pub trait StateContract: Send + Sync {
 }
 
 pub struct States {
-    states: Mutex<HashMap<String, Arc<dyn StateContract>>>,
+    states: Mutex<HashMap<String, Entry>>,
+}
+
+/// A registered state and, when its cleanup is hooked to a flow, the token that
+/// retires the hook. The hook has to be told: a flow outlives the streams opened
+/// on it, and one that is never cancelled — the flow of a coroutine that loops
+/// for the life of the process — would otherwise keep one parked task per
+/// stream it ever read, long after each was closed.
+struct Entry {
+    state: Arc<dyn StateContract>,
+    released: Option<CancellationToken>,
 }
 
 static INSTANCE: OnceLock<States> = OnceLock::new();
@@ -40,7 +50,7 @@ pub fn get() -> &'static States {
 
 impl States {
     /// Registers a state, hooks its cleanup to the flow, and reads its first
-    /// batch. Mirrors States.Start, including the `context.AfterFunc` half.
+    /// batch.
     ///
     /// The hook is not optional. When PHP abandons a stream — breaks out of a
     /// cursor early — nothing calls `next()` again, so the only thing that ever
@@ -53,26 +63,67 @@ impl States {
         task_key: &str,
         state: Arc<dyn StateContract>,
     ) -> std::result::Result<Result, String> {
-        self.register(task_key.to_string(), state.clone())?;
-
-        let key = task_key.to_string();
-
-        tokio::spawn(async move {
-            flow_ctx.cancelled().await;
-
-            get().delete_state(&key).await;
-        });
+        self.register_with_flow(flow_ctx, task_key.to_string(), state.clone(), || {})?;
 
         Ok(self.handle_next(task_key, state).await)
     }
 
     /// Stores a state without reading its first batch and without hooking
     /// cleanup — the caller owns its lifetime and must call delete_state.
-    /// Mirrors States.Register.
     pub fn register(
         &self,
         task_key: String,
         state: Arc<dyn StateContract>,
+    ) -> std::result::Result<(), String> {
+        self.insert(task_key, state, None)
+    }
+
+    /// Stores a state without reading its first batch, and deletes it when the
+    /// flow ends unless something deleted it first — for a state the caller
+    /// cannot start because its first batch is not ready yet.
+    ///
+    /// `on_flow_end` runs right before that deletion, and only then: whatever
+    /// the caller keeps beside the state is its own to release on the ordinary
+    /// path. The hook ends with the state either way, so a flow that is never
+    /// cancelled keeps nothing of a state that is gone.
+    pub fn register_with_flow<F>(
+        &self,
+        flow_ctx: CancellationToken,
+        task_key: String,
+        state: Arc<dyn StateContract>,
+        on_flow_end: F,
+    ) -> std::result::Result<(), String>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let released = CancellationToken::new();
+
+        self.insert(task_key.clone(), state, Some(released.clone()))?;
+
+        tokio::spawn(async move {
+            // Biased towards the release: when the last batch and the flow's end
+            // land together the state is already gone, and the flow branch would
+            // only run on_flow_end for nothing. Taking either branch is still
+            // safe — delete_state closes a state exactly once.
+            tokio::select! {
+                biased;
+                _ = released.cancelled() => {}
+                _ = flow_ctx.cancelled() => {
+                    on_flow_end();
+
+                    get().delete_state(&task_key).await;
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    fn insert(
+        &self,
+        task_key: String,
+        state: Arc<dyn StateContract>,
+        released: Option<CancellationToken>,
     ) -> std::result::Result<(), String> {
         let mut states = self.states.lock().unwrap();
 
@@ -80,7 +131,7 @@ impl States {
             return Err("state already exists".to_string());
         }
 
-        states.insert(task_key, state);
+        states.insert(task_key, Entry { state, released });
 
         Ok(())
     }
@@ -91,7 +142,12 @@ impl States {
         // The state is cloned out and the lock released before awaiting: a batch
         // can take as long as the database does, and holding the registry for
         // that would serialize every other stream in the process.
-        let state = self.states.lock().unwrap().get(&message.task_key).cloned();
+        let state = self
+            .states
+            .lock()
+            .unwrap()
+            .get(&message.task_key)
+            .map(|entry| entry.state.clone());
 
         let Some(state) = state else {
             task.add_result(Result::error(message, "state not started".to_string())).await;
@@ -125,12 +181,18 @@ impl States {
     }
 
     pub async fn delete_state(&self, task_key: &str) {
-        let state = self.states.lock().unwrap().remove(task_key);
+        let Some(entry) = self.states.lock().unwrap().remove(task_key) else {
+            return;
+        };
+
+        // Only the call that took the entry gets here, so the hook is retired
+        // and the state closed once, whichever path deleted it.
+        if let Some(released) = entry.released {
+            released.cancel();
+        }
 
         // Closed outside the registry lock: it may talk to the server.
-        if let Some(state) = state {
-            state.close().await;
-        }
+        entry.state.close().await;
     }
 }
 
@@ -278,6 +340,134 @@ mod tests {
             1,
             "cancelling the flow should have closed the abandoned stream",
         );
+    }
+
+    /// Waits for the spawned tasks of this test's runtime to finish and returns
+    /// how many are still alive. `#[tokio::test]` builds a runtime per test, so
+    /// the count sees this test's tasks and nobody else's.
+    async fn alive_tasks_after_settling() -> usize {
+        let metrics = tokio::runtime::Handle::current().metrics();
+
+        for _ in 0..100 {
+            if metrics.num_alive_tasks() == 0 {
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        metrics.num_alive_tasks()
+    }
+
+    /// The leak a long-lived coroutine used to have: its flow is never
+    /// cancelled, so a flow hook that waited for nothing else outlived every
+    /// stream the coroutine read to the end — one parked task per cursor, for
+    /// the life of the process.
+    #[tokio::test]
+    async fn a_stream_read_to_the_end_leaves_no_flow_hook_behind() {
+        let flow_ctx = CancellationToken::new();
+
+        for index in 0..50 {
+            let task_key = key(&format!("finished-{index}"));
+            let (stream, _, _) = FakeStream::new(1);
+
+            get()
+                .start(flow_ctx.clone(), &task_key, stream)
+                .await
+                .expect("the stream should have registered");
+        }
+
+        assert_eq!(
+            alive_tasks_after_settling().await,
+            0,
+            "a finished stream should not keep its flow hook waiting",
+        );
+
+        assert!(!flow_ctx.is_cancelled());
+    }
+
+    /// The same leak through the other door: a state registered with a flow
+    /// hook and deleted by its owner — a committed transaction, a closed
+    /// subscription — must take the hook with it, and must not run the flow's
+    /// cleanup for a flow that has not ended.
+    #[tokio::test]
+    async fn a_deleted_state_retires_its_flow_hook_without_running_it() {
+        let flow_ctx = CancellationToken::new();
+        let flow_ends = Arc::new(AtomicUsize::new(0));
+
+        for index in 0..50 {
+            let task_key = key(&format!("owner-deleted-{index}"));
+            let (stream, _, _) = FakeStream::new(5);
+            let counted = flow_ends.clone();
+
+            get()
+                .register_with_flow(flow_ctx.clone(), task_key.clone(), stream, move || {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                })
+                .expect("the state should have registered");
+
+            get().delete_state(&task_key).await;
+        }
+
+        assert_eq!(alive_tasks_after_settling().await, 0);
+
+        flow_ctx.cancel();
+
+        tokio::task::yield_now().await;
+
+        assert_eq!(flow_ends.load(Ordering::SeqCst), 0);
+    }
+
+    /// What the hook is for, on the registered path: nobody deletes the state,
+    /// so the flow ending does — after the caller's own cleanup, and once.
+    #[tokio::test]
+    async fn an_abandoned_registered_state_is_released_when_its_flow_ends() {
+        let task_key = key("registered-abandoned");
+        let flow_ctx = CancellationToken::new();
+        let flow_ends = Arc::new(AtomicUsize::new(0));
+        let (stream, closes, _) = FakeStream::new(5);
+        let counted = flow_ends.clone();
+
+        get()
+            .register_with_flow(flow_ctx.clone(), task_key.clone(), stream, move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+            })
+            .expect("the state should have registered");
+
+        flow_ctx.cancel();
+
+        assert_eq!(alive_tasks_after_settling().await, 0);
+        assert_eq!(flow_ends.load(Ordering::SeqCst), 1);
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+    }
+
+    /// The last batch and the flow's end racing each other, on a runtime with
+    /// real threads so the two deletions can truly overlap: whichever wins,
+    /// the stream is closed exactly once and the hook does not survive it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_flow_ending_with_the_last_batch_closes_the_stream_once() {
+        for index in 0..200 {
+            let task_key = key(&format!("race-{index}"));
+            let flow_ctx = CancellationToken::new();
+            let (stream, closes, _) = FakeStream::new(5);
+
+            get()
+                .register_with_flow(flow_ctx.clone(), task_key.clone(), stream, || {})
+                .expect("the state should have registered");
+
+            let deleting = tokio::spawn({
+                let task_key = task_key.clone();
+
+                async move { get().delete_state(&task_key).await }
+            });
+
+            flow_ctx.cancel();
+
+            deleting.await.expect("the deletion should not panic");
+
+            assert_eq!(alive_tasks_after_settling().await, 0);
+            assert_eq!(closes.load(Ordering::SeqCst), 1, "closed once, iteration {index}");
+        }
     }
 
     /// A result belongs to whoever issued THIS next, not to the flow that opened

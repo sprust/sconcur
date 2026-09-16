@@ -331,8 +331,12 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
   gets a `bench-<tech>-<operation>` make target.
 - `tests/consumers/` — demo/test worker scripts that are not servers (the AMQP
   consumer), the counterpart of `tests/servers/`
-- `tests/mem-leak/` — memory leak stress tests. Two features have a soak of their
-  own. `make mem-leak-redis scenario=<name> seconds=<n>` runs one of five
+- `tests/mem-leak/` — memory leak stress tests. `make mem-leak-long-flow
+  scenario=<name> seconds=<n>` covers what no single feature owns: streams opened by
+  one coroutine that never ends (mongodb, sql-query, sql-transaction, redis-scan,
+  redis-subscribe), whose flow is never stopped between them. It prints RSS beside
+  the PHP heap, because what such a flow keeps is native memory. Two features have
+  a soak of their own. `make mem-leak-redis scenario=<name> seconds=<n>` runs one of five
   scenarios (command, pipeline, blocking, cursor, subscribe) and reports the PHP
   heap beside the server's own client count — the three things that feature opens
   connections for (a blocking command, a cursor, a subscription) would show up

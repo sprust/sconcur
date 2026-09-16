@@ -578,10 +578,24 @@ impl RedisFeature {
             CancellationToken::new(),
         ));
 
-        // register, not start: start would read the first batch, and the first
-        // batch of a subscription is the first message somebody publishes.
-        // Subscribing must answer as soon as the server confirms it.
-        if let Err(error) = states::get().register(subscription_id.clone(), state.clone()) {
+        // Registered, not started: start would read the first batch, and the
+        // first batch of a subscription is the first message somebody publishes.
+        // Subscribing must answer as soon as the server confirms it. The flow
+        // hook stays: PHP may abandon the subscription without closing it, and
+        // then the flow ending is the only thing that ever releases the
+        // connection.
+        let stop_id = subscription_id.clone();
+
+        let registered = states::get().register_with_flow(
+            task.context().clone(),
+            subscription_id.clone(),
+            state.clone(),
+            move || {
+                registry_subscriptions().remove(&stop_id);
+            },
+        );
+
+        if let Err(error) = registered {
             registry_subscriptions().remove(&subscription_id);
             state.close().await;
 
@@ -593,19 +607,6 @@ impl RedisFeature {
 
             return;
         }
-
-        // Registering by hand means hooking the cleanup by hand too: PHP may
-        // abandon the subscription without closing it, and then the flow ending
-        // is the only thing that ever releases the connection.
-        let flow_cancel = task.context().clone();
-        let stop_id = subscription_id.clone();
-
-        tokio::spawn(async move {
-            flow_cancel.cancelled().await;
-
-            registry_subscriptions().remove(&stop_id);
-            states::get().delete_state(&stop_id).await;
-        });
 
         // The first result carries the subscription id, not a message: PHP needs
         // it to add channels or close, and the messages start at the next pull.

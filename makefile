@@ -358,6 +358,19 @@ mem-leak-redis:
 		php -d extension=$(SCONCUR_EXT) \
 		tests/mem-leak/redis-soak.php $(or $(scenario),command) $(or $(seconds),120)
 
+# Soak test for streams opened by a coroutine that never ends — a task-pool task, a
+# WebSocket connection handler: one coroutine loops for the whole run, opening a stream
+# each cycle and reading it to the end, so its flow is never stopped in between.
+# Scenarios: mongodb, sql-query, sql-transaction, redis-scan, redis-subscribe.
+# e.g.: make mem-leak-long-flow scenario=sql-transaction seconds=600
+#
+# The resident set size is the column to watch: whatever the extension ties to the end of
+# the flow rather than the end of the stream is native memory the PHP heap never shows.
+mem-leak-long-flow:
+	$(DOCKER_COMPOSE) exec php \
+		php -d extension=$(SCONCUR_EXT) \
+		tests/mem-leak/long-flow-soak.php $(or $(scenario),mongodb) $(or $(seconds),120)
+
 bench-redis-get:
 	$(PHP_EXT) tests/benchmarks/redis/get.php ${c}
 

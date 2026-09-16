@@ -244,7 +244,20 @@ async fn start_streamed(
         params.response_header_timeout_ms,
     ));
 
-    if let Err(error) = core_states::get().register(message.task_key.clone(), state) {
+    // On flow stop: drop the state and forget the session, so an upload still
+    // waiting to be written unblocks instead of hanging on a dead request.
+    let request_id = params.request_id.clone();
+
+    let registered = core_states::get().register_with_flow(
+        task.context().clone(),
+        message.task_key.clone(),
+        state,
+        move || {
+            registries().uploads.lock().unwrap().remove(&request_id);
+        },
+    );
+
+    if let Err(error) = registered {
         registries().uploads.lock().unwrap().remove(&params.request_id);
 
         task.add_result(Result::error(
@@ -255,19 +268,6 @@ async fn start_streamed(
 
         return;
     }
-
-    // On flow stop: drop the state and forget the session, so an upload still
-    // waiting to be written unblocks instead of hanging on a dead request.
-    let flow_ctx = task.context().clone();
-    let task_key = message.task_key.clone();
-    let request_id = params.request_id.clone();
-
-    tokio::spawn(async move {
-        flow_ctx.cancelled().await;
-
-        registries().uploads.lock().unwrap().remove(&request_id);
-        core_states::get().delete_state(&task_key).await;
-    });
 
     task.add_result(Result::success_with_next(
         message,

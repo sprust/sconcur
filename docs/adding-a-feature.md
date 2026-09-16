@@ -270,6 +270,15 @@ An unfinished stream (an early `break` on PHP) is closed automatically: PHP rele
 the flow, its cancellation token fires, and the state registry hook calls
 `close()` — which is why `close()` must not depend on the flow still being alive.
 
+The hook ends with the state as well: a stream read to the end, or deleted by the
+feature, takes its hook with it. This matters because a flow can live as long as the
+process — a coroutine that loops forever, such as a task-pool task, keeps one flow for
+every stream it ever opens. A state that cannot be started, because its first batch
+is not ready yet (a transaction, a subscription, a streamed upload), is registered
+with `states::get().register_with_flow()`, which hooks it the same way. Do not spawn
+a task of your own that waits for `task.context().cancelled()` to delete a state:
+nothing ends that task before the flow does.
+
 ## Tests (mandatory)
 
 - One test per feature; if the feature has sub-operations, a test for each.

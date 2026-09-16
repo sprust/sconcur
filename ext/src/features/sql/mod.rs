@@ -368,7 +368,20 @@ impl SqlFeature {
             start_time,
         });
 
-        if let Err(error) = states::get().register(transaction_id.clone(), holder) {
+        // On flow stop: drop the holder, which rolls back (if not already
+        // finalised) and releases the pool.
+        let stop_id = transaction_id.clone();
+
+        let registered = states::get().register_with_flow(
+            task.context().clone(),
+            transaction_id.clone(),
+            holder,
+            move || {
+                transactions().remove(&stop_id);
+            },
+        );
+
+        if let Err(error) = registered {
             let _ = session.rollback().await;
 
             transactions().remove(&transaction_id);
@@ -380,18 +393,6 @@ impl SqlFeature {
 
             return;
         }
-
-        // On flow stop: drop the holder, which rolls back (if not already
-        // finalised) and releases the pool.
-        let flow_cancel = task.context().clone();
-        let stop_id = transaction_id.clone();
-
-        tokio::spawn(async move {
-            flow_cancel.cancelled().await;
-
-            transactions().remove(&stop_id);
-            states::get().delete_state(&stop_id).await;
-        });
 
         task.add_result(Result::success_with_next(
             message,
