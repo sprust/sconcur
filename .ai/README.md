@@ -143,8 +143,7 @@ channel → `Scheduler` retrieves it with `Extension::waitAnyBatch()` (the first
 ready result plus the already-ready tail in one crossing) and resumes the owning
 Fiber → `WaitGroup::iterate()` yields the result. The suspend is the point: a
 coroutine never crosses the boundary for its own task, because N live fibers each
-parked inside a crossing made the fan-out quadratic (see
-`.ai/plans/async-fan-out-optimization.ru.md`). The crossing itself runs on
+parked inside a crossing made the fan-out quadratic. The crossing itself runs on
 whichever stack took control — the main one, or a parent coroutine's when a
 nested group starts a member.
 
