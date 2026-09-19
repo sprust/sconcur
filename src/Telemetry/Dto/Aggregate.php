@@ -22,6 +22,7 @@ readonly class Aggregate
         public string $name,
         public int $workersTotal,
         public int $workersHung,
+        public int $watchdogKills,
         public Totals $totals,
         public array $workers,
         public ?MasterInfo $master = null,
@@ -35,10 +36,11 @@ readonly class Aggregate
     public function toArray(): array
     {
         $data = [
-            'generatedAt'  => $this->generatedAt,
-            'name'         => $this->name,
-            'workersTotal' => $this->workersTotal,
-            'workersHung'  => $this->workersHung,
+            'generatedAt'   => $this->generatedAt,
+            'name'          => $this->name,
+            'workersTotal'  => $this->workersTotal,
+            'workersHung'   => $this->workersHung,
+            'watchdogKills' => $this->watchdogKills,
         ];
 
         if ($this->master !== null) {

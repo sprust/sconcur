@@ -99,6 +99,7 @@ class WorkerMaster
         protected readonly LogTarget $logTo = LogTarget::File,
         protected readonly int $panelPort = 0,
         protected readonly string $adminToken = '',
+        protected readonly ?Closure $onWatchdogEvent = null,
     ) {
     }
 
@@ -215,8 +216,30 @@ class WorkerMaster
                 masterPid: $this->masterPid,
                 cwd: $this->cwd,
                 telemetrySocket: $this->telemetrySocket(),
+                onWatchdogEvent: $this->watchdogReporter(),
             );
         }
+    }
+
+    /**
+     * What the pools call when the watchdog acts: counts the kill for the panel and then
+     * hands the event on to the application's own handler, if it gave one.
+     *
+     * @return Closure(WatchdogEvent): void
+     */
+    protected function watchdogReporter(): Closure
+    {
+        return function (WatchdogEvent $event): void {
+            if ($event->event === WatchdogEventEnum::HeartbeatLost) {
+                $this->telemetry?->recordWatchdogKill($event->group);
+            }
+
+            if ($this->onWatchdogEvent === null) {
+                return;
+            }
+
+            ($this->onWatchdogEvent)($event);
+        };
     }
 
     protected function totalWorkerCount(): int
@@ -650,6 +673,7 @@ class WorkerMaster
                     masterPid: $this->masterPid,
                     cwd: $this->cwd,
                     telemetrySocket: $this->telemetrySocket(),
+                    onWatchdogEvent: $this->watchdogReporter(),
                 );
 
                 $this->pools[$group->name] = $pool;

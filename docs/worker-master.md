@@ -369,6 +369,45 @@ What the watch leaves alone:
 Killing one by hand still works as before: `kill -9 <pid>`, and under `always` the
 master brings up a replacement.
 
+### Seeing it happen
+
+Three places, in order of how far the news travels:
+
+- The master's journal, on every step: `no heartbeat for …; sending SIGTERM`, then
+  `hung worker did not exit on SIGTERM; sending SIGKILL`, then `still alive … after
+  SIGKILL` if even that did not free the slot.
+- `watchdogKills` per pool in [server statistics](admin-stats.md), and
+  `sconcur_pool_watchdog_kills_total` / `sconcur_group_watchdog_kills_total` in the
+  Prometheus scrape. Note that the older `workersHung` answers a different question —
+  it means the extension's runtime stopped sending snapshots, and a worker killed by
+  the watchdog usually never looked `hung` at all.
+- A handler of your own, wherever the master is started from your code. Through the
+  CLI, which is what an application embedding `sconcur-server` drives:
+
+```php
+use SConcur\Worker\MasterCli;
+use SConcur\Worker\WatchdogEvent;
+use SConcur\Worker\WatchdogEventEnum;
+
+$onWatchdogEvent = static function (WatchdogEvent $event): void {
+    // $event->event is HeartbeatLost, KillEscalated or KillSurvived; ->group, ->slot,
+    // ->pid, ->ageSeconds and ->watchdogTimeoutMs say which worker and why. Send it
+    // wherever you watch things from.
+    if ($event->event === WatchdogEventEnum::HeartbeatLost) {
+        error_log(sprintf('worker %d of %s hung for %.1fs', $event->pid, $event->group, (float) $event->ageSeconds));
+    }
+};
+
+exit(new MasterCli(onWatchdogEvent: $onWatchdogEvent)->run($argv));
+```
+
+  Or straight on the master, when the config is built in memory rather than read from
+  a file: `MasterConfig::fromFile($path)->toWorkerMaster($onWatchdogEvent)->run()`.
+
+The handler runs inside the supervision tick, so keep it short — and whatever it
+throws is written to the journal and dropped, because alerting must not be able to
+stop the supervisor from supervising.
+
 The watch is on by default, including for a config written before it existed. If any
 of your handlers legitimately holds the PHP thread longer than 60 s — a native
 `file_get_contents` off a slow volume, a synchronous call to a slow upstream, a long

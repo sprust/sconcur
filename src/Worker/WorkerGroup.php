@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace SConcur\Worker;
 
+use Closure;
 use SConcur\Exceptions\Worker\WorkerSpawnException;
+use Throwable;
 
 /**
  * One live pool inside a master: the processes of a single WorkerGroupConfig, plus the
@@ -67,11 +69,15 @@ class WorkerGroup
     protected array $watchdogServedSeconds = [];
 
     /**
-     * @param string $telemetrySocket the collector socket the master listens on, empty
-     *                                when telemetry is off. It reaches the workers through
-     *                                their environment rather than their argv, so the
-     *                                worker-agnostic master never feeds a non-matching
-     *                                worker an unknown --flag
+     * @param string                            $telemetrySocket the collector socket the master listens on, empty
+     *                                                           when telemetry is off. It reaches the workers through
+     *                                                           their environment rather than their argv, so the
+     *                                                           worker-agnostic master never feeds a non-matching
+     *                                                           worker an unknown --flag
+     * @param null|Closure(WatchdogEvent): void $onWatchdogEvent called when the watchdog
+     *                                                           acts on a worker of this pool. Failures in it are
+     *                                                           logged and swallowed: watching must not be able to
+     *                                                           take the supervisor down
      */
     public function __construct(
         protected WorkerGroupConfig $config,
@@ -79,6 +85,7 @@ class WorkerGroup
         protected int $masterPid,
         protected string $cwd,
         protected string $telemetrySocket = '',
+        protected ?Closure $onWatchdogEvent = null,
     ) {
         $this->workers = $config->workerCount > 0 ? $config->workerCount : Cpu::count();
     }
@@ -442,6 +449,13 @@ class WorkerGroup
             );
 
             $process->signal(SIGTERM);
+
+            $this->reportWatchdogEvent(
+                event: WatchdogEventEnum::HeartbeatLost,
+                index: $index,
+                pid: $process->pid(),
+                ageSeconds: $ageSeconds,
+            );
         }
     }
 
@@ -477,6 +491,12 @@ class WorkerGroup
         );
 
         $process->signal(SIGKILL);
+
+        $this->reportWatchdogEvent(
+            event: WatchdogEventEnum::KillEscalated,
+            index: $index,
+            pid: $process->pid(),
+        );
     }
 
     /**
@@ -502,6 +522,46 @@ class WorkerGroup
                 self::SIGKILL_REPORT_AFTER_SECONDS,
             ),
         );
+
+        $this->reportWatchdogEvent(
+            event: WatchdogEventEnum::KillSurvived,
+            index: $index,
+            pid: $process->pid(),
+        );
+    }
+
+    /**
+     * Hands the event to the master's handler, if it has one. Anything the handler throws
+     * is written to the journal and dropped: an application's alerting must not be able to
+     * stop the supervisor from supervising.
+     */
+    protected function reportWatchdogEvent(
+        WatchdogEventEnum $event,
+        int $index,
+        int $pid,
+        ?float $ageSeconds = null,
+    ): void {
+        if ($this->onWatchdogEvent === null) {
+            return;
+        }
+
+        try {
+            ($this->onWatchdogEvent)(new WatchdogEvent(
+                event: $event,
+                group: $this->config->name,
+                slot: $index,
+                pid: $pid,
+                ageSeconds: $ageSeconds,
+                watchdogTimeoutMs: $this->config->watchdogTimeoutMs,
+            ));
+        } catch (Throwable $exception) {
+            $this->logWorker(
+                level: MasterLogger::ERROR,
+                pid: $pid,
+                index: $index,
+                message: sprintf('watchdog handler failed: %s', $exception->getMessage()),
+            );
+        }
     }
 
     /** Drops whatever the watchdog had decided about the worker that held this slot. */

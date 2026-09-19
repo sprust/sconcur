@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Worker;
 
+use Closure;
 use SConcur\Exceptions\Worker\InvalidConfigException;
 
 /**
@@ -211,7 +212,11 @@ readonly class MasterConfig
     /**
      * Builds the supervisor.
      */
-    public function toWorkerMaster(): WorkerMaster
+    /**
+     * @param null|Closure(WatchdogEvent): void $onWatchdogEvent notified when the watchdog
+     *                                                           acts on a worker — see docs/worker-master.md
+     */
+    public function toWorkerMaster(?Closure $onWatchdogEvent = null): WorkerMaster
     {
         return new WorkerMaster(
             runtimeDir: $this->runtimeDir,
@@ -222,6 +227,7 @@ readonly class MasterConfig
             logTo: $this->logTo,
             panelPort: $this->panelPort,
             adminToken: $this->adminToken,
+            onWatchdogEvent: $onWatchdogEvent,
         );
     }
 

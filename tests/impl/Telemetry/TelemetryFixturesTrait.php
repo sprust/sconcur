@@ -21,10 +21,23 @@ trait TelemetryFixturesTrait
 {
     /**
      * @param list<StoredSnapshot> $storedSnapshots
+     * @param array<string, int>   $watchdogKills
      */
-    protected function aggregateOf(array $storedSnapshots, string $name, int $nowMs, ?MasterInfo $master = null): Aggregate
-    {
-        return (new Aggregator())->aggregate($storedSnapshots, $name, $nowMs, '2026-01-01T00:00:00+00:00', $master);
+    protected function aggregateOf(
+        array $storedSnapshots,
+        string $name,
+        int $nowMs,
+        ?MasterInfo $master = null,
+        array $watchdogKills = [],
+    ): Aggregate {
+        return (new Aggregator())->aggregate(
+            $storedSnapshots,
+            $name,
+            $nowMs,
+            '2026-01-01T00:00:00+00:00',
+            $master,
+            $watchdogKills,
+        );
     }
 
     protected function stored(Snapshot $snapshot, int $receivedAtMs): StoredSnapshot

@@ -367,6 +367,45 @@ PHP-потоком продолжает отчитываться как ни в 
 Убить вручную можно как и раньше: `kill -9 <pid>`, и при `always` мастер поднимет
 замену.
 
+### Где это видно
+
+Три места, по мере того как новость расходится:
+
+- Журнал мастера, на каждом шаге: `no heartbeat for …; sending SIGTERM`, затем
+  `hung worker did not exit on SIGTERM; sending SIGKILL`, затем `still alive … after
+  SIGKILL`, если и это не освободило слот.
+- `watchdogKills` по пулу в [статистике сервера](admin-stats.ru.md) и
+  `sconcur_pool_watchdog_kills_total` / `sconcur_group_watchdog_kills_total` в
+  Prometheus. Учтите, что давний `workersHung` отвечает на другой вопрос: он означает,
+  что рантайм расширения перестал слать снапшоты, а воркер, убитый watchdog, обычно
+  `hung` вообще не помечался.
+- Ваш собственный обработчик — везде, где мастер запускается из вашего кода. Через
+  CLI, как это делает приложение, встраивающее `sconcur-server`:
+
+```php
+use SConcur\Worker\MasterCli;
+use SConcur\Worker\WatchdogEvent;
+use SConcur\Worker\WatchdogEventEnum;
+
+$onWatchdogEvent = static function (WatchdogEvent $event): void {
+    // $event->event — HeartbeatLost, KillEscalated или KillSurvived; ->group, ->slot,
+    // ->pid, ->ageSeconds и ->watchdogTimeoutMs говорят, какой воркер и почему.
+    // Отправьте это туда, откуда вы наблюдаете.
+    if ($event->event === WatchdogEventEnum::HeartbeatLost) {
+        error_log(sprintf('worker %d of %s hung for %.1fs', $event->pid, $event->group, (float) $event->ageSeconds));
+    }
+};
+
+exit(new MasterCli(onWatchdogEvent: $onWatchdogEvent)->run($argv));
+```
+
+  Либо прямо на мастере, когда конфиг собирается в памяти, а не читается из файла:
+  `MasterConfig::fromFile($path)->toWorkerMaster($onWatchdogEvent)->run()`.
+
+Обработчик выполняется внутри тика супервизии, так что держите его коротким, — а всё,
+что он бросит, попадёт в журнал и будет отброшено: алертинг не должен получать
+возможность остановить супервизор.
+
 Надзор включён по умолчанию, в том числе для конфига, написанного до его появления.
 Если какой-то из ваших обработчиков законно держит PHP-поток дольше 60 с — нативный
 `file_get_contents` с медленного тома, синхронный вызов к медленному апстриму,
