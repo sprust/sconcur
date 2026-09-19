@@ -227,7 +227,7 @@ The next keys are the defaults every group inherits unless it names its own:
 | `shutdownTimeoutMs` | the master's | How long to wait for a worker to finish before `SIGKILL`. |
 | `restartBackoffMs` | the master's | Exponential backoff base in a crash loop. |
 | `maxRestartBackoffMs` | the master's | Backoff ceiling. |
-| `watchdogTimeoutMs` | the master's (`60000`) | How long a worker may stop signalling it is alive before it is killed and replaced — see [stuck worker](#stuck-worker). `0` switches the watch off. |
+| `watchdogTimeoutMs` | the master's (`60000`) | How long a worker may stop signalling it is alive before it is killed and replaced — see [stuck worker](#stuck-worker). `0` switches the watch off; anything else must be at least 5000. |
 
 The `server` block is pure forwarding: each key becomes a `--key=value` flag. A
 scalar travels as it is (booleans → `1`/`0`); a list or an object travels as JSON
@@ -292,13 +292,26 @@ time it passes the top of its serve loop, at most twice a second; the master rea
 that pipe on every supervision tick and times the last byte by its own clock. Stop
 turning the loop and the bytes stop, which is what "stuck" means here. Past
 `watchdogTimeoutMs` (60 s by default) the worker gets `SIGTERM`, then `SIGKILL` if it
-is still there `shutdownTimeoutMs` later, and the restart policy brings up its
-replacement:
+is still there `shutdownTimeoutMs` later, and the slot is refilled the way any other
+death refills it — under `always`, and under `on-failure` too, since a killed worker
+did not exit cleanly. Under `never` the slot stays empty, and a master left with no
+live worker at all exits:
 
 ```
 worker: 4711 http #0 no heartbeat for 61.2s (limit 60000ms); sending SIGTERM
 worker: 4711 http #0 exited signal=15 uptime=94.3s; restarting in 0ms
 ```
+
+The replacement waits out the crash-loop backoff instead of coming up at once. A
+watchdog victim is older than the threshold by definition, so uptime says nothing
+about its health; and when the cause is shared — a wedged upstream every worker calls
+synchronously — the replacement hangs the same way, and without the backoff the pool
+would recycle itself forever.
+
+`watchdogTimeoutMs` is either `0` or at least 5000. A worker marks itself alive at
+most twice a second, so a threshold near that reads the ordinary gap between two
+marks as a hang and kills every worker of the group, replacements included; a smaller
+value is refused when the config is read rather than quietly raised.
 
 Why a mark from PHP and not the telemetry snapshot: snapshots are pushed by a loop
 inside the extension, on a runtime thread of its own, so a worker whose PHP thread is
@@ -311,12 +324,23 @@ What the watch leaves alone:
 - A worker that has never marked itself alive, which is every script that does not
   run a serve loop. The watchdog acts on evidence of a hang, not on its absence, so
   such a worker is supervised exactly as before.
-- A CPU-bound handler under [preemption](coroutine-switching.md): the scheduler parks
-  its coroutine and goes back round the loop, so the marks keep coming. Without
-  preemption armed the same handler is indistinguishable from a hang — and is one,
-  for every other request in that process.
+- A CPU-bound handler under [preemption](coroutine-switching.md), which the servers
+  arm by default: the scheduler parks its coroutine and goes back round the loop, so
+  the marks keep coming while it computes. Everything that waits on I/O keeps them
+  coming too, preemption or not — a suspended coroutine hands control back to the
+  loop, and so does an idle server's poll, which wakes every 250 ms with nothing to
+  do, so a worker that serves no request at all still marks itself twice a second. Only a handler that returns control to
+  nobody stops the marks, which is what the watchdog is for. If you turn preemption
+  off (`preemptionQuantumMs: 0`) and still compute for longer than the threshold in
+  one handler, that worker is unservable for that whole time and will be replaced —
+  raise `watchdogTimeoutMs` past the longest such handler, or set it to `0` for that
+  group.
 - A worker already being unwound by `reload` or `stop`: its `SIGTERM` is sent and its
   drain deadline is running.
+- A worker that hangs before it reaches its serve loop — in a synchronous call made
+  during bootstrap. It has never marked itself alive, and nothing tells that apart
+  from a worker script that has no serve loop at all, so such a slot stays what it
+  was before the watchdog existed: `running`, and not refilled.
 
 Killing one by hand still works as before: `kill -9 <pid>`, and under `always` the
 master brings up a replacement.

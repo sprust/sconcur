@@ -151,9 +151,8 @@ readonly class WorkerGroupConfig
                 $defaults->maxRestartBackoffMs,
                 $name,
             ),
-            watchdogTimeoutMs: MasterConfig::nonNegativeInt(
+            watchdogTimeoutMs: MasterConfig::watchdogTimeoutMs(
                 $data,
-                'watchdogTimeoutMs',
                 $defaults->watchdogTimeoutMs,
                 $name,
             ),

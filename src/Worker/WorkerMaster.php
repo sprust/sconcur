@@ -409,7 +409,7 @@ class WorkerMaster
                 foreach ($this->pools as $pool) {
                     $reloading = $pool->driveReload($now) || $reloading;
 
-                    $pool->driveWatchdog($now);
+                    $pool->driveWatchdog();
 
                     $pool->respawnDue($now);
                 }

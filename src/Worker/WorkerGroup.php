@@ -45,8 +45,8 @@ class WorkerGroup
     /** Set while the group is being retired: its workers are drained and not replaced. */
     protected bool $retiring = false;
 
-    /** @var array<int, float> slot index => unix time at which the watchdog escalates to SIGKILL */
-    protected array $watchdogDeadline = [];
+    /** @var array<int, int> slot index => hrtime at which the watchdog escalates to SIGKILL */
+    protected array $watchdogDeadlineNs = [];
 
     /** @var array<int, bool> slot index => the watchdog's SIGKILL has already been sent */
     protected array $watchdogKillSent = [];
@@ -374,12 +374,8 @@ class WorkerGroup
      * native call is usually freed by the signal itself (it interrupts the system call)
      * and then shuts down in order, while a CPU loop needs the second one.
      */
-    public function driveWatchdog(float $now): void
+    public function driveWatchdog(): void
     {
-        if ($this->config->watchdogTimeoutMs <= 0) {
-            return;
-        }
-
         foreach ($this->slots as $index => $process) {
             if ($process === null) {
                 continue;
@@ -391,24 +387,30 @@ class WorkerGroup
                 continue;
             }
 
-            if (isset($this->watchdogDeadline[$index])) {
+            // An armed slot is carried to its end whatever the config now says. Returning
+            // early on a watchdog switched off by a reload would strand a worker that has
+            // already been terminated, with the SIGKILL that frees its slot never sent.
+            if (isset($this->watchdogDeadlineNs[$index])) {
                 $this->escalateWatchdog(
                     index: $index,
                     process: $process,
-                    now: $now,
                 );
 
                 continue;
             }
 
-            $ageSeconds = $process->heartbeatAgeSeconds($now);
+            if ($this->config->watchdogTimeoutMs <= 0) {
+                continue;
+            }
+
+            $ageSeconds = $process->heartbeatAgeSeconds();
 
             if ($ageSeconds === null || ($ageSeconds * 1000) <= $this->config->watchdogTimeoutMs) {
                 continue;
             }
 
-            $this->watchdogDeadline[$index] = $now + $this->config->shutdownTimeoutMs / 1000;
-            $this->watchdogKillSent[$index] = false;
+            $this->watchdogDeadlineNs[$index] = hrtime(true) + $this->config->shutdownTimeoutMs * 1_000_000;
+            $this->watchdogKillSent[$index]   = false;
 
             $this->logWorker(
                 level: MasterLogger::ERROR,
@@ -426,9 +428,9 @@ class WorkerGroup
     }
 
     /** The second half of driveWatchdog: SIGKILL once the terminated worker overstays. */
-    protected function escalateWatchdog(int $index, WorkerProcess $process, float $now): void
+    protected function escalateWatchdog(int $index, WorkerProcess $process): void
     {
-        if (($this->watchdogKillSent[$index] ?? false) || $now <= $this->watchdogDeadline[$index]) {
+        if (($this->watchdogKillSent[$index] ?? false) || hrtime(true) <= $this->watchdogDeadlineNs[$index]) {
             return;
         }
 
@@ -447,7 +449,7 @@ class WorkerGroup
     /** Drops whatever the watchdog had decided about the worker that held this slot. */
     protected function forgetWatchdog(int $index): void
     {
-        unset($this->watchdogDeadline[$index], $this->watchdogKillSent[$index]);
+        unset($this->watchdogDeadlineNs[$index], $this->watchdogKillSent[$index]);
     }
 
     /** Brings up the slots a grown workerCount added. */
@@ -536,6 +538,10 @@ class WorkerGroup
 
         $this->slots[$index] = null;
 
+        // Read before it is cleared: a death the watchdog caused is not a healthy worker
+        // finishing, however long it had been up.
+        $killedByWatchdog = isset($this->watchdogDeadlineNs[$index]);
+
         $this->forgetWatchdog($index);
 
         if ($stopping || $this->retiring) {
@@ -581,6 +587,7 @@ class WorkerGroup
         $backoffMs = $this->nextBackoffMs(
             index: $index,
             uptimeSeconds: $uptimeSeconds,
+            countAsFastFail: $killedByWatchdog,
         );
 
         $this->respawnAt[$index] = microtime(true) + $backoffMs / 1000;
@@ -597,10 +604,16 @@ class WorkerGroup
      * Computes the next respawn backoff for a slot: 0 when the worker ran long enough to
      * be considered healthy, otherwise an exponential delay that grows with each
      * consecutive fast fail (capped), preventing a crash-loop spin.
+     *
+     * A worker the watchdog killed passes `countAsFastFail`, because uptime says nothing
+     * about it: it is hung by definition older than the threshold, so it would always read
+     * as healthy and respawn instantly. When the cause is shared — a wedged upstream every
+     * worker calls — the replacement hangs the same way, and without the backoff the pool
+     * would recycle itself forever at full speed.
      */
-    protected function nextBackoffMs(int $index, float $uptimeSeconds): int
+    protected function nextBackoffMs(int $index, float $uptimeSeconds, bool $countAsFastFail = false): int
     {
-        if ($uptimeSeconds >= self::HEALTHY_UPTIME_SECONDS) {
+        if (!$countAsFastFail && $uptimeSeconds >= self::HEALTHY_UPTIME_SECONDS) {
             $this->fastFails[$index] = 0;
 
             return 0;

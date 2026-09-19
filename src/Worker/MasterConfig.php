@@ -23,6 +23,15 @@ use SConcur\Exceptions\Worker\InvalidConfigException;
  */
 readonly class MasterConfig
 {
+    /**
+     * The shortest watchdog threshold that can be honoured. A worker marks itself alive at
+     * most twice a second (Heartbeat), so anything near that reads an ordinary gap between
+     * two marks as a hang and kills every worker of the group on sight — including the
+     * replacements, forever. Ten marks' worth leaves room for a GC pause, a descheduled
+     * process and the master's own tick.
+     */
+    public const int MIN_WATCHDOG_TIMEOUT_MS = 5_000;
+
     /** The keys the top level accepts. */
     protected const array KNOWN_KEYS = [
         'runtimeDir',
@@ -142,7 +151,7 @@ readonly class MasterConfig
             shutdownTimeoutMs: self::nonNegativeInt($data, 'shutdownTimeoutMs', 10_000),
             restartBackoffMs: self::nonNegativeInt($data, 'restartBackoffMs', 200),
             maxRestartBackoffMs: self::nonNegativeInt($data, 'maxRestartBackoffMs', 30_000),
-            watchdogTimeoutMs: self::nonNegativeInt($data, 'watchdogTimeoutMs', 60_000),
+            watchdogTimeoutMs: self::watchdogTimeoutMs($data, 60_000),
         );
 
         return new self(
@@ -235,6 +244,36 @@ readonly class MasterConfig
         }
 
         return $value;
+    }
+
+    /**
+     * `watchdogTimeoutMs`, refusing a value that cannot work: 0 switches the watch off, and
+     * anything else has to clear MIN_WATCHDOG_TIMEOUT_MS. Caught here rather than clamped,
+     * because a threshold below the floor is a misunderstanding of what the number means,
+     * and silently serving a different one would hide it.
+     *
+     * @param array<string, mixed> $data
+     */
+    public static function watchdogTimeoutMs(array $data, int $default, string $groupName = ''): int
+    {
+        $value = self::nonNegativeInt($data, 'watchdogTimeoutMs', $default, $groupName);
+
+        if ($value === 0 || $value >= self::MIN_WATCHDOG_TIMEOUT_MS) {
+            return $value;
+        }
+
+        throw new InvalidConfigException(
+            message: $groupName === ''
+                ? sprintf(
+                    'config: "watchdogTimeoutMs" must be 0 (off) or at least %dms',
+                    self::MIN_WATCHDOG_TIMEOUT_MS,
+                )
+                : sprintf(
+                    'config: group "%s": "watchdogTimeoutMs" must be 0 (off) or at least %dms',
+                    $groupName,
+                    self::MIN_WATCHDOG_TIMEOUT_MS,
+                ),
+        );
     }
 
     /**

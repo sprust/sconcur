@@ -69,11 +69,32 @@ class HeartbeatTest extends TestCase
 
     public function testADescriptorThatIsNotOpenYieldsNoHeartbeat(): void
     {
-        // A worker under a master that opened no pipe, or a grandchild that did not
-        // inherit it: the variable is set, the descriptor is not there.
-        putenv(Heartbeat::FD_ENVIRONMENT_NAME . '=61');
+        // A worker under a master that opened no pipe: the variable is set, the descriptor
+        // is not there. The number is past any descriptor limit a process is given, so the
+        // test does not depend on which descriptors this run happens to hold open.
+        putenv(Heartbeat::FD_ENVIRONMENT_NAME . '=1000000');
 
         self::assertNull(Heartbeat::fromEnvironment());
+    }
+
+    public function testANonNumericDescriptorYieldsNoHeartbeat(): void
+    {
+        putenv(Heartbeat::FD_ENVIRONMENT_NAME . '=three');
+
+        self::assertNull(Heartbeat::fromEnvironment());
+    }
+
+    public function testTheThrottleExpires(): void
+    {
+        $heartbeat = new Heartbeat(stream: $this->writeEnd);
+
+        $heartbeat->touch();
+
+        usleep(600_000);
+
+        $heartbeat->touch();
+
+        self::assertSame("\x01\x01", $this->readAvailable(), 'a mark is due again once the interval has passed');
     }
 
     protected function readAvailable(): string

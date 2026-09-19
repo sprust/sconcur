@@ -39,8 +39,8 @@ class WorkerProcess
     /** @var resource|null the liveness pipe, when the group's watchdog is on */
     protected mixed $heartbeatPipe = null;
 
-    /** Unix time of the last byte read from the liveness pipe; null while none has arrived. */
-    protected ?float $lastHeartbeatAt = null;
+    /** hrtime of the last byte read from the liveness pipe; null while none has arrived. */
+    protected ?int $lastHeartbeatNs = null;
 
     protected int $pid;
 
@@ -189,7 +189,7 @@ class WorkerProcess
             return;
         }
 
-        $this->lastHeartbeatAt = microtime(true);
+        $this->lastHeartbeatNs = hrtime(true);
     }
 
     /**
@@ -197,14 +197,19 @@ class WorkerProcess
      * worker script without a serve loop writes nothing, and one that has not reached its
      * loop yet has not written yet. Both read as "nothing to judge" — the watchdog acts
      * on evidence of a hang, never on its absence.
+     *
+     * Monotonic, not wall clock. Both ends of the subtraction are taken in this process,
+     * so nothing is given up by it — and a clock step forward larger than the threshold
+     * would otherwise age every worker of every group past it at once, and the watchdog
+     * would kill the whole fleet on the next tick.
      */
-    public function heartbeatAgeSeconds(float $now): ?float
+    public function heartbeatAgeSeconds(): ?float
     {
-        if ($this->lastHeartbeatAt === null) {
+        if ($this->lastHeartbeatNs === null) {
             return null;
         }
 
-        return max(0.0, $now - $this->lastHeartbeatAt);
+        return (hrtime(true) - $this->lastHeartbeatNs) / 1_000_000_000;
     }
 
     /**

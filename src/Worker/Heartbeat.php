@@ -72,6 +72,12 @@ class Heartbeat
         // here is simply dropped.
         stream_set_blocking($stream, false);
 
+        // Taken out of the environment once it has been claimed. The descriptor is
+        // inherited by anything this worker spawns, and PHP cannot mark it close-on-exec;
+        // a child that is itself a SConcur server would otherwise open the same pipe and
+        // mark its parent alive, which is the one reading that must never be faked.
+        putenv(self::FD_ENVIRONMENT_NAME);
+
         return new self(stream: $stream);
     }
 
