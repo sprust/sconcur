@@ -579,6 +579,12 @@ PHP_MSHUTDOWN_FUNCTION(sconcur)
 
 /*
  * Module description
+ *
+ * The version field is left empty here and filled in below from the core, so
+ * this file is not a fifth place a release has to bump (the four are listed in
+ * .ai/README.md). NO_VERSION_YET is what the engine expects when a module
+ * reports none; anything read before get_module() runs sees that rather than a
+ * stale literal.
  */
 zend_module_entry sconcur_module_entry = {
     STANDARD_MODULE_HEADER,
@@ -589,11 +595,30 @@ zend_module_entry sconcur_module_entry = {
     NULL,  // RINIT
     NULL,  // RSHUTDOWN
     NULL,  // MINFO
-    "0.2.0",
+    NO_VERSION_YET,
     STANDARD_MODULE_PROPERTIES
 };
 
 /*
  * Module entry point
+ *
+ * ZEND_GET_MODULE's own body is just the return; the assignment before it takes
+ * the version the core reports (ext/src/lib.rs) and hands it to phpinfo(),
+ * `php --ri sconcur` and phpversion('sconcur'), which would otherwise disagree
+ * with SConcur\Extension\version() and with the package's
+ * REQUIRED_EXTENSION_VERSION.
+ *
+ * The string is malloc'ed by the core and deliberately never freed: the engine
+ * reads the field for as long as the module is loaded, and this runs once per
+ * process. A failed allocation answers NULL, which is NO_VERSION_YET again.
  */
-ZEND_GET_MODULE(sconcur)
+BEGIN_EXTERN_C()
+ZEND_DLEXPORT zend_module_entry *get_module(void)
+{
+    if (sconcur_module_entry.version == NO_VERSION_YET) {
+        sconcur_module_entry.version = version();
+    }
+
+    return &sconcur_module_entry;
+}
+END_EXTERN_C()

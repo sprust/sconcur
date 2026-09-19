@@ -545,10 +545,15 @@ version without the maintainer's approval**; bump the minor only when warranted,
 otherwise the patch. **Bump at most once per git branch** — the first protocol
 change on a branch bumps it, later commits on the same branch reuse that version.
 
+There is no fifth source. The module entry in `ext/sconcur.c` — what
+`php -m`, `php --ri sconcur` and `phpversion('sconcur')` report — is filled from
+the core in `get_module()` instead of carrying a literal, so it cannot drift;
+keep it that way rather than pasting the number in.
+
 The release CI derives the release tag from the extension version (via
 `bin/sconcur-status`), so a drift between these would ship a mislabeled release.
 `tests/feature/Connection/VersionConsistencyTest.php` enforces the equality
-against the core the run loaded.
+against the core the run loaded, the module entry included.
 
 ## Workflow rules
 
