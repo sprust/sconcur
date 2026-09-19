@@ -84,6 +84,27 @@ class TelemetryRuntime
     }
 
     /**
+     * Whether both listeners bound. A disabled runtime answers nothing and poll() is a
+     * plain sleep, so whoever cares that the plane is actually up — a master reporting
+     * it, a test asserting it — reads it here instead of inferring it from a later
+     * connection failure.
+     */
+    public function isEnabled(): bool
+    {
+        return $this->enabled;
+    }
+
+    /**
+     * The port the panel bound, 0 while disabled. It answers the requested port in the
+     * ordinary case and the kernel's choice when 0 was requested, which is how a caller
+     * that wants any free port learns the one it got.
+     */
+    public function panelPort(): int
+    {
+        return $this->panel->port();
+    }
+
+    /**
      * Services telemetry I/O for up to $timeoutMicros, then returns so the master can
      * run its supervision pass. When disabled this is just the tick sleep, so the
      * master loop cadence is identical to before.

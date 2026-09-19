@@ -42,19 +42,11 @@ class TelemetryRuntimeTest extends TestCase
     public function testPushedSnapshotIsServedByThePanel(): void
     {
         $socketPath = $this->directory . '/t.sock';
-        $port       = $this->freeTcpPort();
 
         $masterStartedAtMs = 1_700_000_000_000;
 
-        $runtime = new TelemetryRuntime(
-            socketPath: $socketPath,
-            panelPort: $port,
-            adminToken: 'secret',
-            name: 'srv',
-            masterStartedAtMs: $masterStartedAtMs,
-        );
-
-        $runtime->start();
+        $runtime = $this->startedRuntime($socketPath, masterStartedAtMs: $masterStartedAtMs);
+        $port    = $runtime->panelPort();
 
         $worker = stream_socket_client('unix://' . $socketPath, $errno, $errstr, 1.0);
 
@@ -119,16 +111,9 @@ class TelemetryRuntimeTest extends TestCase
     public function testPanelClosesEvictWorkerFromAggregate(): void
     {
         $socketPath = $this->directory . '/t.sock';
-        $port       = $this->freeTcpPort();
 
-        $runtime = new TelemetryRuntime(
-            socketPath: $socketPath,
-            panelPort: $port,
-            adminToken: 'secret',
-            name: 'srv',
-        );
-
-        $runtime->start();
+        $runtime = $this->startedRuntime($socketPath);
+        $port    = $runtime->panelPort();
 
         $worker = stream_socket_client('unix://' . $socketPath, $errno, $errstr, 1.0);
 
@@ -168,16 +153,9 @@ class TelemetryRuntimeTest extends TestCase
     public function testNonSnapshotFrameIsIgnored(): void
     {
         $socketPath = $this->directory . '/t.sock';
-        $port       = $this->freeTcpPort();
 
-        $runtime = new TelemetryRuntime(
-            socketPath: $socketPath,
-            panelPort: $port,
-            adminToken: 'secret',
-            name: 'srv',
-        );
-
-        $runtime->start();
+        $runtime = $this->startedRuntime($socketPath);
+        $port    = $runtime->panelPort();
 
         $worker = stream_socket_client('unix://' . $socketPath, $errno, $errstr, 1.0);
 
@@ -214,9 +192,9 @@ class TelemetryRuntimeTest extends TestCase
     public function testQueryTokenAuthorizesStats(): void
     {
         $socketPath = $this->directory . '/t.sock';
-        $port       = $this->freeTcpPort();
 
-        $runtime = $this->startedRuntime($socketPath, $port);
+        $runtime = $this->startedRuntime($socketPath);
+        $port    = $runtime->panelPort();
 
         $worker = $this->connectWorker($socketPath);
 
@@ -250,9 +228,9 @@ class TelemetryRuntimeTest extends TestCase
     public function testHtmlPanelRouteServesPage(): void
     {
         $socketPath = $this->directory . '/t.sock';
-        $port       = $this->freeTcpPort();
 
-        $runtime = $this->startedRuntime($socketPath, $port);
+        $runtime = $this->startedRuntime($socketPath);
+        $port    = $runtime->panelPort();
 
         $worker = $this->connectWorker($socketPath);
 
@@ -278,9 +256,9 @@ class TelemetryRuntimeTest extends TestCase
     public function testSseStreamsAggregateAndPushesPeriodically(): void
     {
         $socketPath = $this->directory . '/t.sock';
-        $port       = $this->freeTcpPort();
 
-        $runtime = $this->startedRuntime($socketPath, $port);
+        $runtime = $this->startedRuntime($socketPath);
+        $port    = $runtime->panelPort();
 
         $worker = $this->connectWorker($socketPath);
 
@@ -343,9 +321,9 @@ class TelemetryRuntimeTest extends TestCase
     public function testOversizeFrameDropsTheConnection(): void
     {
         $socketPath = $this->directory . '/t.sock';
-        $port       = $this->freeTcpPort();
 
-        $runtime = $this->startedRuntime($socketPath, $port);
+        $runtime = $this->startedRuntime($socketPath);
+        $port    = $runtime->panelPort();
 
         $worker = $this->connectWorker($socketPath);
 
@@ -373,9 +351,9 @@ class TelemetryRuntimeTest extends TestCase
     public function testFrameSplitAcrossReadsIsIngested(): void
     {
         $socketPath = $this->directory . '/t.sock';
-        $port       = $this->freeTcpPort();
 
-        $runtime = $this->startedRuntime($socketPath, $port);
+        $runtime = $this->startedRuntime($socketPath);
+        $port    = $runtime->panelPort();
 
         $worker = $this->connectWorker($socketPath);
 
@@ -418,9 +396,9 @@ class TelemetryRuntimeTest extends TestCase
     public function testOversizeRequestHeaderIsDropped(): void
     {
         $socketPath = $this->directory . '/t.sock';
-        $port       = $this->freeTcpPort();
 
-        $runtime = $this->startedRuntime($socketPath, $port);
+        $runtime = $this->startedRuntime($socketPath);
+        $port    = $runtime->panelPort();
 
         $client = $this->connectPanel($port);
 
@@ -474,12 +452,16 @@ class TelemetryRuntimeTest extends TestCase
     public function testBindFailureDisablesRuntime(): void
     {
         $socketPath = $this->directory . '/t.sock';
-        $port       = $this->freeTcpPort();
 
-        // Occupy the panel port so the runtime's panel listener fails to bind.
-        $occupier = stream_socket_server('tcp://0.0.0.0:' . $port, $errno, $errstr);
+        // The occupier takes a port of the kernel's choosing and holds it for the whole
+        // test, so the panel is guaranteed to find it taken. Picking a port with a
+        // probe socket that is then closed would only make the failure likely.
+        $occupier = stream_socket_server('tcp://0.0.0.0:0', $errno, $errstr);
 
         self::assertIsResource($occupier, 'occupier bind failed: ' . $errstr);
+
+        $occupied = (string) stream_socket_get_name($occupier, false);
+        $port     = (int) substr($occupied, (int) strrpos($occupied, ':') + 1);
 
         $runtime = new TelemetryRuntime(
             socketPath: $socketPath,
@@ -502,16 +484,30 @@ class TelemetryRuntimeTest extends TestCase
         fclose($occupier);
     }
 
-    protected function startedRuntime(string $socketPath, int $port, string $token = 'secret', string $name = 'srv'): TelemetryRuntime
+    /**
+     * Starts a runtime on a panel port the kernel picks (panelPort(): int tells which),
+     * never on one this process probed and released first: a probed port is only free
+     * until something else takes it, and the suite has hundreds of listeners competing
+     * for the same ephemeral range.
+     *
+     * The started assertion is what makes a failed bind say so. Without it the runtime
+     * disables itself, unlinks the collector socket it had already bound, and the test
+     * fails several lines later on a worker that cannot connect to a socket that is not
+     * there — which reads like a collector bug and is not one.
+     */
+    protected function startedRuntime(string $socketPath, string $token = 'secret', string $name = 'srv', int $masterStartedAtMs = 0): TelemetryRuntime
     {
         $runtime = new TelemetryRuntime(
             socketPath: $socketPath,
-            panelPort: $port,
+            panelPort: 0,
             adminToken: $token,
             name: $name,
+            masterStartedAtMs: $masterStartedAtMs,
         );
 
         $runtime->start();
+
+        self::assertTrue($runtime->isEnabled(), 'the telemetry runtime failed to bind its listeners');
 
         return $runtime;
     }
@@ -610,20 +606,6 @@ class TelemetryRuntimeTest extends TestCase
         }
 
         self::fail('no SSE data event found');
-    }
-
-    protected function freeTcpPort(): int
-    {
-        $listener = stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
-
-        self::assertIsResource($listener, 'free-port bind failed: ' . $errstr);
-
-        $name = (string) stream_socket_get_name($listener, false);
-        $port = (int) substr($name, (int) strrpos($name, ':') + 1);
-
-        fclose($listener);
-
-        return $port;
     }
 
     /**

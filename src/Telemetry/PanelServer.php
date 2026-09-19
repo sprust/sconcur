@@ -34,6 +34,9 @@ class PanelServer
     /** @var null|resource the TCP listener, or null until start() */
     protected $listener = null;
 
+    /** The port the listener actually bound; 0 until start() succeeds. */
+    protected int $boundPort = 0;
+
     /** @var array<int, resource> client id => stream */
     protected array $clients = [];
 
@@ -91,9 +94,25 @@ class PanelServer
 
         stream_set_blocking($listener, false);
 
-        $this->listener = $listener;
+        $name = (string) stream_socket_get_name($listener, false);
+
+        $this->listener  = $listener;
+        $this->boundPort = (int) substr($name, (int) strrpos($name, ':') + 1);
 
         return true;
+    }
+
+    /**
+     * The port the panel is actually listening on, 0 before a successful start(). It
+     * differs from the requested one when port 0 was asked for: the kernel then picks a
+     * free port, and reading it back here is the only way to learn which — asking for a
+     * specific port instead means guessing one that is free and racing everything else
+     * on the host for it. (The master's own "panelPort 0 turns telemetry off" rule is
+     * WorkerMaster's; it never reaches this class.)
+     */
+    public function port(): int
+    {
+        return $this->boundPort;
     }
 
     /**
@@ -208,6 +227,8 @@ class PanelServer
 
             $this->listener = null;
         }
+
+        $this->boundPort = 0;
     }
 
     protected function accept(): void
