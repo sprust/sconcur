@@ -209,7 +209,7 @@ glob and a `--group` value), and every timeout, count and day retention must be
 
 The next keys are the defaults every group inherits unless it names its own:
 `phpBinary`, `phpArgs`, `env`, `restartPolicy`, `shutdownTimeoutMs`,
-`restartBackoffMs`, `maxRestartBackoffMs`.
+`restartBackoffMs`, `maxRestartBackoffMs`, `watchdogTimeoutMs`.
 
 ### A group
 
@@ -227,6 +227,7 @@ The next keys are the defaults every group inherits unless it names its own:
 | `shutdownTimeoutMs` | the master's | How long to wait for a worker to finish before `SIGKILL`. |
 | `restartBackoffMs` | the master's | Exponential backoff base in a crash loop. |
 | `maxRestartBackoffMs` | the master's | Backoff ceiling. |
+| `watchdogTimeoutMs` | the master's (`60000`) | How long a worker may stop signalling it is alive before it is killed and replaced — see [stuck worker](#stuck-worker). `0` switches the watch off. |
 
 The `server` block is pure forwarding: each key becomes a `--key=value` flag. A
 scalar travels as it is (booleans → `1`/`0`); a list or an object travels as JSON
@@ -285,18 +286,40 @@ itself stays `running` and silently drops out of service. Neither `maxRequests` 
 the orphan check helps: a stuck worker does not *finish* a request, and the master
 is alive.
 
-Such a worker can only be killed:
+The master finds such a worker by itself and replaces it. A worker writes a byte to
+an extra pipe (descriptor 3, opened by `proc_open` beside stdout and stderr) every
+time it passes the top of its serve loop, at most twice a second; the master reads
+that pipe on every supervision tick and times the last byte by its own clock. Stop
+turning the loop and the bytes stop, which is what "stuck" means here. Past
+`watchdogTimeoutMs` (60 s by default) the worker gets `SIGTERM`, then `SIGKILL` if it
+is still there `shutdownTimeoutMs` later, and the restart policy brings up its
+replacement:
 
-- `reload` or `stop` — the master sends `SIGTERM`, waits `shutdownTimeoutMs`, then
-  escalates to `SIGKILL`. A native `sleep` is usually cleared by `SIGTERM` already
-  (the signal interrupts the system call), a CPU loop — only by `SIGKILL`;
-- `kill -9 <pid>` by hand → the master sees the death by signal and under `always`
-  brings up a replacement.
+```
+worker: 4711 http #0 no heartbeat for 61.2s (limit 60000ms); sending SIGTERM
+worker: 4711 http #0 exited signal=15 uptime=94.3s; restarting in 0ms
+```
 
-> Limitation: the master does not detect "alive but stuck" — it sees an ordinary
-> `running` process and does not touch it until `reload`/`stop`/a manual kill.
-> Automatic recovery (a heartbeat watchdog → `SIGKILL` + respawn) is on the
-> roadmap.
+Why a mark from PHP and not the telemetry snapshot: snapshots are pushed by a loop
+inside the extension, on a runtime thread of its own, so a worker whose PHP thread is
+frozen keeps reporting as if nothing had happened. The `workersHung` flag in
+[server statistics](admin-stats.md) says the snapshots stopped arriving — a different
+question, answered by a different thread.
+
+What the watch leaves alone:
+
+- A worker that has never marked itself alive, which is every script that does not
+  run a serve loop. The watchdog acts on evidence of a hang, not on its absence, so
+  such a worker is supervised exactly as before.
+- A CPU-bound handler under [preemption](coroutine-switching.md): the scheduler parks
+  its coroutine and goes back round the loop, so the marks keep coming. Without
+  preemption armed the same handler is indistinguishable from a hang — and is one,
+  for every other request in that process.
+- A worker already being unwound by `reload` or `stop`: its `SIGTERM` is sent and its
+  drain deadline is running.
+
+Killing one by hand still works as before: `kill -9 <pid>`, and under `always` the
+master brings up a replacement.
 
 ## Logging
 

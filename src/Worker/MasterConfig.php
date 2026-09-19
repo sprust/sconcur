@@ -39,6 +39,7 @@ readonly class MasterConfig
         'shutdownTimeoutMs',
         'restartBackoffMs',
         'maxRestartBackoffMs',
+        'watchdogTimeoutMs',
         'groups',
     ];
 
@@ -141,6 +142,7 @@ readonly class MasterConfig
             shutdownTimeoutMs: self::nonNegativeInt($data, 'shutdownTimeoutMs', 10_000),
             restartBackoffMs: self::nonNegativeInt($data, 'restartBackoffMs', 200),
             maxRestartBackoffMs: self::nonNegativeInt($data, 'maxRestartBackoffMs', 30_000),
+            watchdogTimeoutMs: self::nonNegativeInt($data, 'watchdogTimeoutMs', 60_000),
         );
 
         return new self(

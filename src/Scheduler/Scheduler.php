@@ -20,6 +20,7 @@ use SConcur\Exceptions\TaskErrorException;
 use SConcur\Flow\CurrentFlow;
 use SConcur\State;
 use SConcur\WaitGroup;
+use SConcur\Worker\Heartbeat;
 use Throwable;
 
 /**
@@ -716,6 +717,11 @@ class Scheduler
 
         $dispatchedCount = 0;
 
+        // The mark the worker master's watchdog reads. Written here rather than by the
+        // servers: this loop is what all four of them turn, and stopping turning it is
+        // exactly what "the worker hung" means. Null without a master.
+        $heartbeat = Heartbeat::fromEnvironment();
+
         if ($preemptionQuantumMs > 0) {
             $this->enablePreemption(quantumMs: $preemptionQuantumMs);
         }
@@ -725,6 +731,8 @@ class Scheduler
         // it does not leak for the process lifetime.
         try {
             while (true) {
+                $heartbeat?->touch();
+
                 if (!$draining && ($shouldStop() || ($maxRequests > 0 && $dispatchedCount >= $maxRequests))) {
                     // Stop accepting new requests; keep draining in-flight handlers.
                     $draining = true;

@@ -36,6 +36,12 @@ class WorkerProcess
     /** @var resource|null */
     protected mixed $stderrPipe;
 
+    /** @var resource|null the liveness pipe, when the group's watchdog is on */
+    protected mixed $heartbeatPipe = null;
+
+    /** Unix time of the last byte read from the liveness pipe; null while none has arrived. */
+    protected ?float $lastHeartbeatAt = null;
+
     protected int $pid;
 
     protected float $startedAt;
@@ -53,17 +59,24 @@ class WorkerProcess
     protected string $stderrBuffer = '';
 
     /**
-     * @param list<string>          $command full command in array form (no shell)
-     * @param string                $cwd     working directory for the worker
-     * @param array<string, string> $env     full environment for the worker
+     * @param list<string>          $command   full command in array form (no shell)
+     * @param string                $cwd       working directory for the worker
+     * @param array<string, string> $env       full environment for the worker
+     * @param bool                  $heartbeat open the liveness pipe the watchdog reads
      */
-    public function __construct(array $command, string $cwd, array $env)
+    public function __construct(array $command, string $cwd, array $env, bool $heartbeat = false)
     {
         $descriptors = [
             0 => ['pipe', 'r'],
             1 => ['pipe', 'w'],
             2 => ['pipe', 'w'],
-        ] + self::inheritedDescriptorGuard();
+        ];
+
+        if ($heartbeat) {
+            $descriptors[Heartbeat::FD] = ['pipe', 'w'];
+        }
+
+        $descriptors += self::inheritedDescriptorGuard();
 
         $pipes = [];
 
@@ -92,10 +105,11 @@ class WorkerProcess
             fclose($pipes[0]);
         }
 
-        $this->stdoutPipe = $pipes[1] ?? null;
-        $this->stderrPipe = $pipes[2] ?? null;
+        $this->stdoutPipe    = $pipes[1] ?? null;
+        $this->stderrPipe    = $pipes[2] ?? null;
+        $this->heartbeatPipe = $pipes[Heartbeat::FD] ?? null;
 
-        foreach ([$this->stdoutPipe, $this->stderrPipe] as $pipe) {
+        foreach ([$this->stdoutPipe, $this->stderrPipe, $this->heartbeatPipe] as $pipe) {
             if (is_resource($pipe)) {
                 stream_set_blocking($pipe, false);
             }
@@ -161,6 +175,39 @@ class WorkerProcess
     }
 
     /**
+     * Reads the liveness pipe dry and, if anything arrived, records when. The bytes
+     * themselves say nothing — the worker marks itself alive by writing at all, and the
+     * master times it by its own clock, so no timestamp has to cross between processes.
+     */
+    public function drainHeartbeat(): void
+    {
+        if (!is_resource($this->heartbeatPipe)) {
+            return;
+        }
+
+        if ($this->readAvailable($this->heartbeatPipe) === '') {
+            return;
+        }
+
+        $this->lastHeartbeatAt = microtime(true);
+    }
+
+    /**
+     * How long ago the worker last marked itself alive, or null when it never has: a
+     * worker script without a serve loop writes nothing, and one that has not reached its
+     * loop yet has not written yet. Both read as "nothing to judge" — the watchdog acts
+     * on evidence of a hang, never on its absence.
+     */
+    public function heartbeatAgeSeconds(float $now): ?float
+    {
+        if ($this->lastHeartbeatAt === null) {
+            return null;
+        }
+
+        return max(0.0, $now - $this->lastHeartbeatAt);
+    }
+
+    /**
      * Reads whatever is available on stdout/stderr without blocking and returns the
      * complete lines accumulated so far. A partial trailing line is buffered until
      * its newline arrives (or is flushed by drainFinalOutput on exit).
@@ -218,14 +265,15 @@ class WorkerProcess
     {
         $this->refresh();
 
-        foreach ([$this->stdoutPipe, $this->stderrPipe] as $pipe) {
+        foreach ([$this->stdoutPipe, $this->stderrPipe, $this->heartbeatPipe] as $pipe) {
             if (is_resource($pipe)) {
                 fclose($pipe);
             }
         }
 
-        $this->stdoutPipe = null;
-        $this->stderrPipe = null;
+        $this->stdoutPipe    = null;
+        $this->stderrPipe    = null;
+        $this->heartbeatPipe = null;
 
         if (is_resource($this->process)) {
             @proc_close($this->process);
@@ -234,7 +282,8 @@ class WorkerProcess
 
     /**
      * A descriptor spec that points every descriptor above stderr at /dev/null in the
-     * child, so the worker inherits none of the master's own.
+     * child, so the worker inherits none of the master's own. The caller's own entries
+     * win over it, which is how the liveness pipe keeps Heartbeat::FD.
      *
      * proc_open only rewires the descriptors it is given and leaves the rest open in the
      * child. The master holds the telemetry collector's unix listener and one accepted

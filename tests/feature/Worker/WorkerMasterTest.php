@@ -61,6 +61,72 @@ class WorkerMasterTest extends TestCase
         }
     }
 
+    public function testAHungWorkerIsKilledAndReplaced(): void
+    {
+        // One worker, so the request certainly lands on the one being watched, and a
+        // threshold just above the heartbeat's own cadence.
+        $master = TestWorkerMaster::start([
+            'workerCount'       => 1,
+            'watchdogTimeoutMs' => 2_000,
+        ]);
+
+        try {
+            $before = $master->workerPid();
+
+            self::assertGreaterThan(0, $before, 'the worker must answer before it is frozen');
+
+            // Freezes the worker's PHP thread inside a native call: nothing preempts it,
+            // so the serve loop stops turning and the worker's mark goes stale. The
+            // client gives up on the request long before the sleep ends; the worker does
+            // not.
+            $master->get('/native-msleep/20000');
+
+            $replaced = $this->waitFor(
+                static function () use ($master, $before): bool {
+                    $pid = $master->workerPid();
+
+                    return $pid !== 0 && $pid !== $before;
+                },
+                timeoutSeconds: 25.0,
+            );
+
+            self::assertTrue($replaced, 'the master should kill a hung worker and bring up a replacement');
+            self::assertStringContainsString('no heartbeat for', $master->logText());
+        } finally {
+            $master->stop();
+        }
+    }
+
+    public function testWorkersAreLeftAloneWhileTheWatchdogIsOff(): void
+    {
+        // The same freeze with the watchdog disabled: the worker keeps its slot, which is
+        // what every other test in this file relies on while it holds a worker busy.
+        $master = TestWorkerMaster::start([
+            'workerCount'       => 1,
+            'watchdogTimeoutMs' => 0,
+        ]);
+
+        try {
+            $before = $master->workerPid();
+
+            self::assertGreaterThan(0, $before);
+
+            $master->get('/native-msleep/6000');
+
+            self::assertFalse(
+                $this->waitFor(
+                    static fn(): bool => str_contains($master->logText(), 'no heartbeat for'),
+                    timeoutSeconds: 5.0,
+                ),
+                'a zero threshold must switch the watchdog off entirely',
+            );
+
+            self::assertSame($before, $master->workerPid(), 'the frozen worker keeps its slot');
+        } finally {
+            $master->stop();
+        }
+    }
+
     public function testOnFailurePolicyDoesNotRestartCleanExit(): void
     {
         // OnFailure: a clean exit (here via the maxRequests quota) is "done", so the

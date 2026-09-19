@@ -323,10 +323,6 @@ php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello'
 
 In the order it is meant to happen:
 
-- Auto-recovery of stuck workers — a master watchdog by heartbeat: `SIGKILL` and
-  respawn a worker whose PHP thread has hung. Telemetry already flags such a
-  worker (`workersHung` in [server statistics](docs/admin-stats.md)) and does
-  nothing about it.
 - Installation through [PIE](https://php.github.io/pie/) — `pie install` for the
   extension, instead of taking `sconcur.so` from the releases and writing the
   `extension=` line by hand.

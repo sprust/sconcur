@@ -45,6 +45,12 @@ class WorkerGroup
     /** Set while the group is being retired: its workers are drained and not replaced. */
     protected bool $retiring = false;
 
+    /** @var array<int, float> slot index => unix time at which the watchdog escalates to SIGKILL */
+    protected array $watchdogDeadline = [];
+
+    /** @var array<int, bool> slot index => the watchdog's SIGKILL has already been sent */
+    protected array $watchdogKillSent = [];
+
     /**
      * @param string $telemetrySocket the collector socket the master listens on, empty
      *                                when telemetry is off. It reaches the workers through
@@ -159,6 +165,10 @@ class WorkerGroup
                 process: $process,
                 lines: $process->drainOutput(),
             );
+
+            // Emptied every tick like the other two pipes: unread bytes would eventually
+            // fill the pipe and block the worker on its next mark.
+            $process->drainHeartbeat();
 
             if (!$process->isRunning()) {
                 $this->handleExit(
@@ -353,6 +363,93 @@ class WorkerGroup
         return true;
     }
 
+    /**
+     * Kills a worker whose PHP thread stopped turning its serve loop, so its slot can be
+     * refilled by the ordinary restart path. The evidence is the worker's own liveness
+     * pipe (Heartbeat), written by that thread and drained by reapAndLog; a worker that
+     * has never written to it is left alone, because a script without a serve loop never
+     * will.
+     *
+     * SIGTERM first, SIGKILL after the group's shutdownTimeoutMs: a thread stuck in a
+     * native call is usually freed by the signal itself (it interrupts the system call)
+     * and then shuts down in order, while a CPU loop needs the second one.
+     */
+    public function driveWatchdog(float $now): void
+    {
+        if ($this->config->watchdogTimeoutMs <= 0) {
+            return;
+        }
+
+        foreach ($this->slots as $index => $process) {
+            if ($process === null) {
+                continue;
+            }
+
+            // Already being unwound for a reload: its SIGTERM is sent and its deadline
+            // runs in driveReload(). A second opinion here would only double the signals.
+            if ($this->reloading && $index === $this->reloadingIndex) {
+                continue;
+            }
+
+            if (isset($this->watchdogDeadline[$index])) {
+                $this->escalateWatchdog(
+                    index: $index,
+                    process: $process,
+                    now: $now,
+                );
+
+                continue;
+            }
+
+            $ageSeconds = $process->heartbeatAgeSeconds($now);
+
+            if ($ageSeconds === null || ($ageSeconds * 1000) <= $this->config->watchdogTimeoutMs) {
+                continue;
+            }
+
+            $this->watchdogDeadline[$index] = $now + $this->config->shutdownTimeoutMs / 1000;
+            $this->watchdogKillSent[$index] = false;
+
+            $this->logWorker(
+                level: MasterLogger::ERROR,
+                pid: $process->pid(),
+                index: $index,
+                message: sprintf(
+                    'no heartbeat for %.1fs (limit %dms); sending SIGTERM',
+                    $ageSeconds,
+                    $this->config->watchdogTimeoutMs,
+                ),
+            );
+
+            $process->signal(SIGTERM);
+        }
+    }
+
+    /** The second half of driveWatchdog: SIGKILL once the terminated worker overstays. */
+    protected function escalateWatchdog(int $index, WorkerProcess $process, float $now): void
+    {
+        if (($this->watchdogKillSent[$index] ?? false) || $now <= $this->watchdogDeadline[$index]) {
+            return;
+        }
+
+        $this->watchdogKillSent[$index] = true;
+
+        $this->logWorker(
+            level: MasterLogger::ERROR,
+            pid: $process->pid(),
+            index: $index,
+            message: 'hung worker did not exit on SIGTERM; sending SIGKILL',
+        );
+
+        $process->signal(SIGKILL);
+    }
+
+    /** Drops whatever the watchdog had decided about the worker that held this slot. */
+    protected function forgetWatchdog(int $index): void
+    {
+        unset($this->watchdogDeadline[$index], $this->watchdogKillSent[$index]);
+    }
+
     /** Brings up the slots a grown workerCount added. */
     protected function fillMissingSlots(): void
     {
@@ -373,11 +470,16 @@ class WorkerGroup
             return;
         }
 
+        // The slot starts unjudged: the new worker inherits nothing the watchdog decided
+        // about the one before it.
+        $this->forgetWatchdog($index);
+
         try {
             $process = new WorkerProcess(
                 command: $this->buildCommand(),
                 cwd: $this->cwd,
                 env: $this->buildEnv($index),
+                heartbeat: $this->config->watchdogTimeoutMs > 0,
             );
         } catch (WorkerSpawnException $exception) {
             $backoffMs = $this->nextBackoffMs(
@@ -433,6 +535,8 @@ class WorkerGroup
         $process->close();
 
         $this->slots[$index] = null;
+
+        $this->forgetWatchdog($index);
 
         if ($stopping || $this->retiring) {
             $this->logWorker(
@@ -561,6 +665,13 @@ class WorkerGroup
 
         if ($this->telemetrySocket !== '') {
             $env['SCONCUR_TELEMETRY_SOCKET'] = $this->telemetrySocket;
+        }
+
+        // Tells the worker which descriptor its master opened for the liveness pipe. Set
+        // only with the watchdog on, so a worker under a master that does not watch does
+        // not look for a pipe that is not there.
+        if ($this->config->watchdogTimeoutMs > 0) {
+            $env[Heartbeat::FD_ENVIRONMENT_NAME] = (string) Heartbeat::FD;
         }
 
         // The group's own env wins on a collision: it is the more specific setting.

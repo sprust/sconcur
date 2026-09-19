@@ -325,10 +325,6 @@ php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello'
 
 В том порядке, в котором это должно происходить:
 
-- Авто-восстановление зависших воркеров — watchdog мастера по heartbeat:
-  `SIGKILL` и respawn воркера, у которого завис PHP-поток. Телеметрия такого
-  воркера уже помечает (`workersHung` в [статистике сервера](docs/admin-stats.ru.md))
-  и ничего с ним не делает.
 - Установка через [PIE](https://php.github.io/pie/) — `pie install` для
   расширения вместо «скачай `sconcur.so` из релизов и пропиши `extension=`
   руками».

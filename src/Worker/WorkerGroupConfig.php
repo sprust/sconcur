@@ -31,6 +31,7 @@ readonly class WorkerGroupConfig
         'shutdownTimeoutMs',
         'restartBackoffMs',
         'maxRestartBackoffMs',
+        'watchdogTimeoutMs',
         'server',
     ];
 
@@ -52,6 +53,7 @@ readonly class WorkerGroupConfig
         public int $shutdownTimeoutMs,
         public int $restartBackoffMs,
         public int $maxRestartBackoffMs,
+        public int $watchdogTimeoutMs,
         public array $server,
     ) {
     }
@@ -147,6 +149,12 @@ readonly class WorkerGroupConfig
                 $data,
                 'maxRestartBackoffMs',
                 $defaults->maxRestartBackoffMs,
+                $name,
+            ),
+            watchdogTimeoutMs: MasterConfig::nonNegativeInt(
+                $data,
+                'watchdogTimeoutMs',
+                $defaults->watchdogTimeoutMs,
                 $name,
             ),
             server: MasterConfig::serverParams($data['server'] ?? null, $name),

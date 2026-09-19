@@ -123,7 +123,8 @@ zero.
   Mitigations: [automatic preemption](coroutine-switching.md) bounds how long
   such code delays the other requests in the process, the per-core pool spreads
   requests over processes, `handlerTimeoutMs` still answers 504, `maxRequests`
-  recycles workers; a watchdog for hung workers is on the roadmap. What
+  recycles workers, and the master's watchdog kills and replaces a worker whose
+  PHP thread stopped answering ([stuck worker](worker-master.md#stuck-worker)). What
   preemption cannot interrupt is a native blocking call (`sleep`, PDO, `curl`)
   or one long internal call — `preg_match` over a huge subject, `json_decode` of
   a huge blob: the interrupt is serviced at an opcode boundary, and neither of
@@ -147,5 +148,5 @@ zero.
   framework app.
 
 The technology side is proven by the measurements above; what is left is the
-work around it — the hung-worker watchdog and installing the extension through
-PIE (see the [roadmap](../README.md#roadmap)).
+work around it — installing the extension through PIE, and stopping a single
+coroutine rather than a whole flow (see the [roadmap](../README.md#roadmap)).
