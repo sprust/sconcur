@@ -137,12 +137,15 @@ zero.
   operations × result size) — limit how many run at once
   (`WaitGroup::create(maxConcurrency: N)`) when the results are big
   ([payload size](benchmarks.md#payload-size)).
-- The gains apply only to code that goes through the SConcur API. PDO-based ORMs
-  (Eloquent, Doctrine) gain nothing until their queries are ported — which
-  decides where SConcur realistically fits: new services and hand-written query
-  code, not a drop-in migration of an existing framework app.
+- The gains apply only to code that goes through the SConcur API. Raw PDO and
+  Doctrine gain nothing until their queries are ported. Laravel is the exception:
+  [sconcur/laravel](https://github.com/sprust/sconcur-laravel) serves requests
+  from a concurrent worker whose application state is per coroutine, and points
+  Eloquent, `Cache::`, `Redis::` and the queue at the matching features, so the
+  application's own query code stays as it is. Elsewhere the fit is what it was:
+  new services and hand-written query code, not a drop-in migration of a
+  framework app.
 
 The technology side is proven by the measurements above; what is left is the
-work around it — splitting the core and the features into separate packages,
-optimizing the synchronous path, and the hung-worker watchdog (see the
-[roadmap](../README.md#roadmap)).
+work around it — the hung-worker watchdog and installing the extension through
+PIE (see the [roadmap](../README.md#roadmap)).
