@@ -29,6 +29,8 @@ class TelemetryRuntime
 
     protected MasterMetrics $masterMetrics;
 
+    protected WatchdogCounters $watchdogCounters;
+
     protected bool $enabled = false;
 
     protected int $lastSsePushMs = 0;
@@ -46,9 +48,10 @@ class TelemetryRuntime
         int $masterStartedAtMs = 0,
         ?Closure $logError = null,
     ) {
-        $this->store         = new Store();
-        $this->masterMetrics = new MasterMetrics($masterStartedAtMs);
-        $this->collector     = new Collector(
+        $this->store            = new Store();
+        $this->masterMetrics    = new MasterMetrics($masterStartedAtMs);
+        $this->watchdogCounters = new WatchdogCounters();
+        $this->collector        = new Collector(
             socketPath: $socketPath,
             store: $this->store,
             logError: $logError,
@@ -60,8 +63,18 @@ class TelemetryRuntime
             store: $this->store,
             aggregator: new Aggregator(),
             masterMetrics: $this->masterMetrics,
+            watchdogCounters: $this->watchdogCounters,
             logError: $logError,
         );
+    }
+
+    /**
+     * Counts a worker the watchdog killed, for the panel and the Prometheus scrape. Counted
+     * here and not from a snapshot: the worker cannot report its own killing.
+     */
+    public function recordWatchdogKill(string $group): void
+    {
+        $this->watchdogCounters->increment($group);
     }
 
     /**

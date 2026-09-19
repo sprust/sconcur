@@ -185,6 +185,14 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 сама задача рантайма-отправитель), а не зависший обработчик запроса — отправитель
 независим и шлёт снапшоты, пока жив рантайм расширения.
 
+Зависший обработчик — забота другого счётчика. `watchdogKills` — сколько воркеров
+пула убил [watchdog](worker-master.ru.md#зависший-воркер) мастера с момента своего
+запуска, и растёт он ровно там, где `workersHung` не растёт: у воркера с замороженным
+PHP-потоком рантайм продолжает слать снапшоты, поэтому `hung` он не помечается.
+Считает его мастер, а не воркер: свидетельство убийства — это отметка, которую воркер
+перестал слать. Алертить надо на рост, а не на значение: значение говорит только о
+том, как долго живёт этот мастер.
+
 ## Формат ответа
 
 Одни и те же данные в трёх представлениях, выбор по `Accept`. JSON HTTP-пула:
@@ -195,6 +203,7 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
   "name": "sconcur-servers",
   "workersTotal": 8,
   "workersHung": 0,
+  "watchdogKills": 0,
   "master": {
     "pid": 12340,
     "startedAt": "2026-06-24T11:00:00+00:00",
@@ -213,6 +222,7 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
       "name": "http",
       "workersTotal": 3,
       "workersHung": 0,
+      "watchdogKills": 0,
       "totals": {
         "memory": { "rssBytes": 125829120 },
         "cpuPercent": 10.6,
@@ -267,7 +277,7 @@ sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346",group
 | Семейство | Область | Метки |
 | --- | --- | --- |
 | `sconcur_pool_*` | все воркеры мастера вместе — `requests`, `connections` и `deliveries` (нагрузка очередей) | `name` |
-| `sconcur_group_*` | один пул: число воркеров, зависших, CPU, RSS и задачи рантайма | `name`, `group` |
+| `sconcur_group_*` | один пул: число воркеров, зависших, убитых watchdog, CPU, RSS и задачи рантайма | `name`, `group` |
 | `sconcur_master_*` | сам процесс мастера | `name` |
 | `sconcur_worker_*` | один воркер | `name`, `pid`, `group` |
 

@@ -15,6 +15,7 @@
   "shutdownTimeoutMs": 10000,
   "restartBackoffMs": 200,
   "maxRestartBackoffMs": 30000,
+  "watchdogTimeoutMs": 60000,
   "groups": [
     {
       "name": "http",

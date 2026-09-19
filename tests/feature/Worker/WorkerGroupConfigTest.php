@@ -100,6 +100,68 @@ class WorkerGroupConfigTest extends TestCase
         );
     }
 
+    public function testAWatchdogThresholdBelowTheFloorIsRefused(): void
+    {
+        // Below the floor the watchdog reads the ordinary gap between two marks as a hang
+        // and kills every worker it has, replacements included.
+        $this->expectException(InvalidConfigException::class);
+        $this->expectExceptionMessage('must be 0 (off) or at least');
+
+        MasterConfig::fromArray([
+            'groups' => [
+                [
+                    'name'              => 'orders',
+                    'workerScript'      => '/app/consumer.php',
+                    'watchdogTimeoutMs' => 200,
+                ],
+            ],
+        ]);
+    }
+
+    public function testAWatchdogThresholdThatIsNotAWholeNumberIsRefused(): void
+    {
+        // "off" casts to 0, which would read as "switched off" — a typo must not disable
+        // the watch in silence.
+        $this->expectException(InvalidConfigException::class);
+        $this->expectExceptionMessage('must be a whole number of milliseconds');
+
+        MasterConfig::fromArray([
+            'watchdogTimeoutMs' => 'off',
+            'groups'            => [
+                ['name' => 'orders', 'workerScript' => '/app/consumer.php'],
+            ],
+        ]);
+    }
+
+    public function testAMasterWideWatchdogThresholdBelowTheFloorIsRefused(): void
+    {
+        $this->expectException(InvalidConfigException::class);
+        $this->expectExceptionMessage('config: "watchdogTimeoutMs" must be 0 (off) or at least 5000ms');
+
+        MasterConfig::fromArray([
+            'watchdogTimeoutMs' => 100,
+            'groups'            => [
+                ['name' => 'orders', 'workerScript' => '/app/consumer.php'],
+            ],
+        ]);
+    }
+
+    public function testTheWatchdogIsSwitchedOffByZeroAndInheritedOtherwise(): void
+    {
+        $config = MasterConfig::fromArray([
+            'watchdogTimeoutMs' => 30_000,
+            'groups'            => [
+                ['name' => 'http', 'workerScript' => '/app/worker.php'],
+                ['name' => 'orders', 'workerScript' => '/app/consumer.php', 'watchdogTimeoutMs' => 0],
+            ],
+        ]);
+
+        [$http, $orders] = $config->groups();
+
+        self::assertSame(30_000, $http->watchdogTimeoutMs, 'a group inherits the master-wide threshold');
+        self::assertSame(0, $orders->watchdogTimeoutMs, 'zero switches the watch off for one pool');
+    }
+
     public function testAGroupWithoutANameIsRefused(): void
     {
         $this->expectException(InvalidConfigException::class);

@@ -239,6 +239,7 @@ $server->serve(static function (ServerRequestInterface $request) use ($psr17Fact
         str_starts_with($path, '/msleep/') => msleepRoute($psr17Factory, $path),
         str_starts_with($path, '/native-msleep/') => nativeMsleepRoute($psr17Factory, $path),
         str_starts_with($path, '/cpu-switch/') => cpuSwitchRoute($psr17Factory, $path),
+        str_starts_with($path, '/cpu-ms/')     => cpuMsRoute($psr17Factory, $path),
         str_starts_with($path, '/cpu/')    => cpuRoute($psr17Factory, $path),
         str_starts_with($path, '/status/') => statusRoute($psr17Factory, $path),
         default => text($psr17Factory, 'not found', 404),
@@ -1159,6 +1160,32 @@ function slowStreamRoute(Psr17Factory $factory): ResponseInterface
 // CPU-bound route that cooperates: the same sha256 loop as /cpu/{n}, but calling
 // Scheduler::switch() each iteration (1 ms quantum), so concurrent light requests
 // keep progressing while this one crunches — the fairness counterpart of /cpu.
+/**
+ * Burns CPU for a wall-clock duration rather than a count of iterations, so a test that
+ * needs a handler to still be computing after N seconds says N and is not rewritten by
+ * the speed of the machine it runs on.
+ */
+function cpuMsRoute(Psr17Factory $factory, string $path): ResponseInterface
+{
+    $milliseconds = (int) substr($path, strlen('/cpu-ms/'));
+
+    $untilNs = hrtime(true) + $milliseconds * 1_000_000;
+
+    $value = '';
+    $round = 0;
+
+    // The clock is read once per batch: reading it per hash would be most of the work.
+    while (hrtime(true) < $untilNs) {
+        for ($i = 0; $i < 1000; $i++) {
+            $value = hash('sha256', $value . $round . $i);
+        }
+
+        ++$round;
+    }
+
+    return text($factory, $value);
+}
+
 function cpuSwitchRoute(Psr17Factory $factory, string $path): ResponseInterface
 {
     $iterations = (int) substr($path, strlen('/cpu-switch/'));

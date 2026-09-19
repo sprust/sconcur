@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Worker;
 
+use Closure;
 use SConcur\Exceptions\Worker\InvalidConfigException;
 use Throwable;
 
@@ -44,11 +45,21 @@ class MasterCli
     protected mixed $stderr;
 
     /**
-     * @param resource|null $stdout
-     * @param resource|null $stderr
+     * @param resource|null                     $stdout
+     * @param resource|null                     $stderr
+     * @param null|Closure(WatchdogEvent): void $onWatchdogEvent notified whenever the
+     *                                                           watchdog acts on a worker: an application
+     *                                                           embedding this CLI turns that into an alert,
+     *                                                           an error report or a counter of its own. The
+     *                                                           bundled bin/sconcur-server passes none, and
+     *                                                           the master then only journals and counts.
+     *                                                           See docs/worker-master.md
      */
-    public function __construct(mixed $stdout = null, mixed $stderr = null)
-    {
+    public function __construct(
+        mixed $stdout = null,
+        mixed $stderr = null,
+        protected readonly ?Closure $onWatchdogEvent = null,
+    ) {
         $this->stdout = $stdout ?? STDOUT;
         $this->stderr = $stderr ?? STDERR;
     }
@@ -117,7 +128,7 @@ class MasterCli
     protected function start(MasterConfig $config): int
     {
         try {
-            return $config->toWorkerMaster()->run();
+            return $config->toWorkerMaster($this->onWatchdogEvent)->run();
         } catch (Throwable $exception) {
             return $this->fail(
                 message: $exception->getMessage(),

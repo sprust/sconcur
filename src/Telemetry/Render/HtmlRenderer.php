@@ -170,6 +170,7 @@ class HtmlRenderer
 <td>' . $this->escape($group->name) . '</td>
 <td>' . $group->workersTotal . '</td>
 <td>' . $group->workersHung . '</td>
+<td>' . $group->watchdogKills . '</td>
 <td>' . $this->mib($group->totals->memory->rssBytes) . '</td>
 <td>' . $this->f1($group->totals->cpuPercent) . '</td>
 <td>' . $group->totals->runtimeTasks . '</td>
@@ -185,7 +186,7 @@ class HtmlRenderer
 <table>
 <caption>Groups</caption>
 <tr>
-<th>group</th><th>workers</th><th>hung</th><th>RSS, MiB</th><th>CPU %</th><th>ext tasks</th><th>workload</th>
+<th>group</th><th>workers</th><th>hung</th><th>watchdog kills</th><th>RSS, MiB</th><th>CPU %</th><th>ext tasks</th><th>workload</th>
 </tr>' . $rows . '
 </table>';
     }

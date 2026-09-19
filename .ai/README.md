@@ -143,8 +143,7 @@ channel → `Scheduler` retrieves it with `Extension::waitAnyBatch()` (the first
 ready result plus the already-ready tail in one crossing) and resumes the owning
 Fiber → `WaitGroup::iterate()` yields the result. The suspend is the point: a
 coroutine never crosses the boundary for its own task, because N live fibers each
-parked inside a crossing made the fan-out quadratic (see
-`.ai/plans/async-fan-out-optimization.ru.md`). The crossing itself runs on
+parked inside a crossing made the fan-out quadratic. The crossing itself runs on
 whichever stack took control — the main one, or a parent coroutine's when a
 nested group starts a member.
 
@@ -241,7 +240,10 @@ feature's doc. Key PHP classes not covered there:
   (a pool's settings, with `MasterDefaults` for what it inherits) and `WorkerGroup`
   (its live slots, backoff and rolling reload). The groups are generic: everything
   a worker needs rides in the group's `server` block, forwarded to its argv
-  untouched, so the master stays worker-agnostic.
+  untouched, so the master stays worker-agnostic. `Heartbeat` is the one piece of
+  `Worker/` that runs in the worker: a byte per serve-loop pass on the pipe the
+  master's watchdog reads, which is the only signal that says whether the worker's
+  PHP thread — as opposed to the extension's runtime — is still moving.
 - `Telemetry/` — the master-side stats collector and live panel (pure PHP):
   `TelemetryRuntime`, `Collector`, `Store`, `PanelServer`, `FrameCodec`,
   `Aggregator`, `Dto/*`, `Render/*`.
