@@ -44,7 +44,8 @@ class WorkerProcess
 
     protected int $pid;
 
-    protected float $startedAt;
+    /** Monotonic, so a clock step cannot make a worker look younger or older than it is. */
+    protected int $startedAtNs;
 
     protected bool $running = true;
 
@@ -96,9 +97,9 @@ class WorkerProcess
 
         $status = proc_get_status($process);
 
-        $this->process   = $process;
-        $this->pid       = (int) $status['pid'];
-        $this->startedAt = microtime(true);
+        $this->process     = $process;
+        $this->pid         = (int) $status['pid'];
+        $this->startedAtNs = hrtime(true);
 
         // stdin is unused; close it so the worker never blocks waiting on it.
         if (isset($pipes[0]) && is_resource($pipes[0])) {
@@ -121,14 +122,25 @@ class WorkerProcess
         return $this->pid;
     }
 
-    public function startedAt(): float
-    {
-        return $this->startedAt;
-    }
-
     public function uptimeSeconds(): float
     {
-        return microtime(true) - $this->startedAt;
+        return (hrtime(true) - $this->startedAtNs) / 1_000_000_000;
+    }
+
+    /**
+     * How long the worker kept marking itself alive, or null when it never did.
+     *
+     * This is the length of its useful life, which is what says whether a worker the
+     * watchdog killed had been working or hung from the start — uptime cannot, since a
+     * hung worker's uptime keeps growing while it hangs.
+     */
+    public function markedAliveForSeconds(): ?float
+    {
+        if ($this->lastHeartbeatNs === null) {
+            return null;
+        }
+
+        return ($this->lastHeartbeatNs - $this->startedAtNs) / 1_000_000_000;
     }
 
     public function isRunning(): bool

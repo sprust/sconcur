@@ -118,6 +118,34 @@ class WorkerGroupConfigTest extends TestCase
         ]);
     }
 
+    public function testAWatchdogThresholdThatIsNotAWholeNumberIsRefused(): void
+    {
+        // "off" casts to 0, which would read as "switched off" — a typo must not disable
+        // the watch in silence.
+        $this->expectException(InvalidConfigException::class);
+        $this->expectExceptionMessage('must be a whole number of milliseconds');
+
+        MasterConfig::fromArray([
+            'watchdogTimeoutMs' => 'off',
+            'groups'            => [
+                ['name' => 'orders', 'workerScript' => '/app/consumer.php'],
+            ],
+        ]);
+    }
+
+    public function testAMasterWideWatchdogThresholdBelowTheFloorIsRefused(): void
+    {
+        $this->expectException(InvalidConfigException::class);
+        $this->expectExceptionMessage('config: "watchdogTimeoutMs" must be 0 (off) or at least 5000ms');
+
+        MasterConfig::fromArray([
+            'watchdogTimeoutMs' => 100,
+            'groups'            => [
+                ['name' => 'orders', 'workerScript' => '/app/consumer.php'],
+            ],
+        ]);
+    }
+
     public function testTheWatchdogIsSwitchedOffByZeroAndInheritedOtherwise(): void
     {
         $config = MasterConfig::fromArray([

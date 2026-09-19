@@ -19,11 +19,14 @@ class WorkerGroup
 {
     protected const float HEALTHY_UPTIME_SECONDS = 1.0; // shorter run counts as a fast fail
 
+    /** How long past its SIGKILL a worker has to still be there before that is reported. */
+    protected const float SIGKILL_REPORT_AFTER_SECONDS = 2.0;
+
     /** @var array<int, WorkerProcess|null> live worker per slot (null while awaiting respawn) */
     protected array $slots = [];
 
-    /** @var array<int, float> slot index => unix time at which to respawn it */
-    protected array $respawnAt = [];
+    /** @var array<int, int> slot index => hrtime at which to respawn it */
+    protected array $respawnAtNs = [];
 
     /** @var array<int, int> slot index => consecutive fast-fail count (drives backoff) */
     protected array $fastFails = [];
@@ -38,7 +41,7 @@ class WorkerGroup
     /** slot currently draining for reload (SIGTERM sent, awaiting exit), or -1 if none */
     protected int $reloadingIndex = -1;
 
-    protected float $reloadDeadline = 0.0;
+    protected int $reloadDeadlineNs = 0;
 
     protected bool $reloadKillSent = false;
 
@@ -50,6 +53,18 @@ class WorkerGroup
 
     /** @var array<int, bool> slot index => the watchdog's SIGKILL has already been sent */
     protected array $watchdogKillSent = [];
+
+    /** @var array<int, bool> slot index => the journal already carries "survived SIGKILL" */
+    protected array $watchdogKillReported = [];
+
+    /**
+     * @var array<int, float> slot index => how long its worker had been marking itself
+     *                       alive when the watchdog condemned it. Taken then and not at
+     *                       the exit, because a condemned worker goes on turning its loop
+     *                       while it drains and would keep raising the figure that decides
+     *                       whether it had been working or hung from the start.
+     */
+    protected array $watchdogServedSeconds = [];
 
     /**
      * @param string $telemetrySocket the collector socket the master listens on, empty
@@ -106,7 +121,7 @@ class WorkerGroup
 
     public function hasPendingRespawns(): bool
     {
-        return $this->respawnAt !== [];
+        return $this->respawnAtNs !== [];
     }
 
     public function allSlotsEmpty(): bool
@@ -180,11 +195,13 @@ class WorkerGroup
         }
     }
 
-    public function respawnDue(float $now): void
+    public function respawnDue(): void
     {
-        foreach ($this->respawnAt as $index => $dueAt) {
-            if ($dueAt <= $now && ($this->slots[$index] ?? null) === null) {
-                unset($this->respawnAt[$index]);
+        $nowNs = hrtime(true);
+
+        foreach ($this->respawnAtNs as $index => $dueAtNs) {
+            if ($dueAtNs <= $nowNs && ($this->slots[$index] ?? null) === null) {
+                unset($this->respawnAtNs[$index]);
 
                 $this->spawn($index);
             }
@@ -254,8 +271,8 @@ class WorkerGroup
             return;
         }
 
-        $this->retiring  = true;
-        $this->respawnAt = [];
+        $this->retiring    = true;
+        $this->respawnAtNs = [];
 
         $this->logger->master(
             level: MasterLogger::INFO,
@@ -270,7 +287,7 @@ class WorkerGroup
      * shutdownTimeoutMs for it to drain (SIGKILL past that), then spawn a fresh
      * replacement and advance. Answers whether the reload is still running.
      */
-    public function driveReload(float $now): bool
+    public function driveReload(): bool
     {
         if (!$this->reloading) {
             return false;
@@ -282,7 +299,7 @@ class WorkerGroup
             $process = $this->slots[$this->reloadingIndex] ?? null;
 
             if ($process !== null) {
-                if (!$this->reloadKillSent && $now > $this->reloadDeadline) {
+                if (!$this->reloadKillSent && hrtime(true) > $this->reloadDeadlineNs) {
                     $this->logWorker(
                         level: MasterLogger::WARN,
                         pid: $process->pid(),
@@ -303,7 +320,7 @@ class WorkerGroup
             $this->reloadingIndex = -1;
             $this->reloadKillSent = false;
 
-            unset($this->respawnAt[$index]);
+            unset($this->respawnAtNs[$index]);
 
             // A slot past the (possibly shrunk) worker count is retired rather than
             // replaced — that is how a smaller workerCount takes effect on a reload.
@@ -336,7 +353,7 @@ class WorkerGroup
 
         // An already-empty slot (awaiting a crash respawn): just bring up a fresh one.
         if ($process === null) {
-            unset($this->respawnAt[$index]);
+            unset($this->respawnAtNs[$index]);
 
             if ($index < $this->workers) {
                 $this->spawn($index);
@@ -347,9 +364,9 @@ class WorkerGroup
             return true;
         }
 
-        $this->reloadingIndex = $index;
-        $this->reloadKillSent = false;
-        $this->reloadDeadline = $now + $this->config->shutdownTimeoutMs / 1000;
+        $this->reloadingIndex   = $index;
+        $this->reloadKillSent   = false;
+        $this->reloadDeadlineNs = hrtime(true) + $this->config->shutdownTimeoutMs * 1_000_000;
 
         $this->logWorker(
             level: MasterLogger::INFO,
@@ -409,8 +426,9 @@ class WorkerGroup
                 continue;
             }
 
-            $this->watchdogDeadlineNs[$index] = hrtime(true) + $this->config->shutdownTimeoutMs * 1_000_000;
-            $this->watchdogKillSent[$index]   = false;
+            $this->watchdogDeadlineNs[$index]    = hrtime(true) + $this->config->shutdownTimeoutMs * 1_000_000;
+            $this->watchdogKillSent[$index]      = false;
+            $this->watchdogServedSeconds[$index] = $process->markedAliveForSeconds() ?? 0.0;
 
             $this->logWorker(
                 level: MasterLogger::ERROR,
@@ -430,11 +448,26 @@ class WorkerGroup
     /** The second half of driveWatchdog: SIGKILL once the terminated worker overstays. */
     protected function escalateWatchdog(int $index, WorkerProcess $process): void
     {
-        if (($this->watchdogKillSent[$index] ?? false) || hrtime(true) <= $this->watchdogDeadlineNs[$index]) {
+        if (hrtime(true) <= $this->watchdogDeadlineNs[$index]) {
+            return;
+        }
+
+        if ($this->watchdogKillSent[$index] ?? false) {
+            $this->reportSurvivedKill(
+                index: $index,
+                process: $process,
+            );
+
             return;
         }
 
         $this->watchdogKillSent[$index] = true;
+
+        // The same deadline field now times the report below: a process that takes the
+        // kill is reaped within a tick or two, so anything still here after this is not
+        // going anywhere on its own.
+        $this->watchdogDeadlineNs[$index] = hrtime(true)
+            + (int) (self::SIGKILL_REPORT_AFTER_SECONDS * 1_000_000_000);
 
         $this->logWorker(
             level: MasterLogger::ERROR,
@@ -446,10 +479,40 @@ class WorkerGroup
         $process->signal(SIGKILL);
     }
 
+    /**
+     * Says once, and only once, that a worker outlived its SIGKILL. Nothing can be done
+     * about it here — a process in uninterruptible I/O takes no signal at all — but the
+     * slot is then down for as long as that lasts, and a silent watchdog would leave the
+     * journal claiming the kill worked.
+     */
+    protected function reportSurvivedKill(int $index, WorkerProcess $process): void
+    {
+        if ($this->watchdogKillReported[$index] ?? false) {
+            return;
+        }
+
+        $this->watchdogKillReported[$index] = true;
+
+        $this->logWorker(
+            level: MasterLogger::ERROR,
+            pid: $process->pid(),
+            index: $index,
+            message: sprintf(
+                'still alive %.1fs after SIGKILL; the slot stays down until the kernel releases it',
+                self::SIGKILL_REPORT_AFTER_SECONDS,
+            ),
+        );
+    }
+
     /** Drops whatever the watchdog had decided about the worker that held this slot. */
     protected function forgetWatchdog(int $index): void
     {
-        unset($this->watchdogDeadlineNs[$index], $this->watchdogKillSent[$index]);
+        unset(
+            $this->watchdogDeadlineNs[$index],
+            $this->watchdogKillSent[$index],
+            $this->watchdogKillReported[$index],
+            $this->watchdogServedSeconds[$index],
+        );
     }
 
     /** Brings up the slots a grown workerCount added. */
@@ -489,8 +552,8 @@ class WorkerGroup
                 uptimeSeconds: 0.0,
             );
 
-            $this->slots[$index]     = null;
-            $this->respawnAt[$index] = microtime(true) + $backoffMs / 1000;
+            $this->slots[$index]       = null;
+            $this->respawnAtNs[$index] = hrtime(true) + $backoffMs * 1_000_000;
 
             $this->logger->master(
                 level: MasterLogger::ERROR,
@@ -508,7 +571,7 @@ class WorkerGroup
 
         $this->slots[$index] = $process;
 
-        unset($this->respawnAt[$index]);
+        unset($this->respawnAtNs[$index]);
 
         $this->logWorker(
             level: MasterLogger::INFO,
@@ -539,8 +602,9 @@ class WorkerGroup
         $this->slots[$index] = null;
 
         // Read before it is cleared: a death the watchdog caused is not a healthy worker
-        // finishing, however long it had been up.
-        $killedByWatchdog = isset($this->watchdogDeadlineNs[$index]);
+        // finishing, however long it had been up. Null when the watchdog had nothing to do
+        // with this exit.
+        $servedSeconds = $this->watchdogServedSeconds[$index] ?? null;
 
         $this->forgetWatchdog($index);
 
@@ -584,13 +648,26 @@ class WorkerGroup
             return;
         }
 
-        $backoffMs = $this->nextBackoffMs(
-            index: $index,
-            uptimeSeconds: $uptimeSeconds,
-            countAsFastFail: $killedByWatchdog,
-        );
+        // A worker the watchdog killed is judged by how long it kept marking itself alive,
+        // not by how long it existed: one that hung at startup goes on ageing while it
+        // hangs, so its uptime would read as a long and healthy life. And it counts as
+        // healthy only if it worked for longer than it then hung — otherwise a pool with a
+        // shared cause cycles through work-hang-kill-respawn with nothing slowing it down.
+        $backoffMs = $servedSeconds !== null
+            ? $this->nextBackoffMs(
+                index: $index,
+                uptimeSeconds: $servedSeconds,
+                healthyAfterSeconds: max(
+                    self::HEALTHY_UPTIME_SECONDS,
+                    $this->config->watchdogTimeoutMs / 1000,
+                ),
+            )
+            : $this->nextBackoffMs(
+                index: $index,
+                uptimeSeconds: $uptimeSeconds,
+            );
 
-        $this->respawnAt[$index] = microtime(true) + $backoffMs / 1000;
+        $this->respawnAtNs[$index] = hrtime(true) + $backoffMs * 1_000_000;
 
         $this->logWorker(
             level: $exitedCleanly ? MasterLogger::INFO : MasterLogger::ERROR,
@@ -605,15 +682,18 @@ class WorkerGroup
      * be considered healthy, otherwise an exponential delay that grows with each
      * consecutive fast fail (capped), preventing a crash-loop spin.
      *
-     * A worker the watchdog killed passes `countAsFastFail`, because uptime says nothing
-     * about it: it is hung by definition older than the threshold, so it would always read
-     * as healthy and respawn instantly. When the cause is shared — a wedged upstream every
-     * worker calls — the replacement hangs the same way, and without the backoff the pool
-     * would recycle itself forever at full speed.
+     * For a worker the watchdog killed the caller passes the time it spent marking itself
+     * alive rather than its uptime, and raises `healthyAfterSeconds` to the watchdog's own
+     * threshold: a worker that hung at startup is then a fast fail and one that worked for
+     * an hour before hanging is not, so the pool neither spins on a shared cause nor drifts
+     * into the maximum backoff because it hangs once an hour.
      */
-    protected function nextBackoffMs(int $index, float $uptimeSeconds, bool $countAsFastFail = false): int
-    {
-        if (!$countAsFastFail && $uptimeSeconds >= self::HEALTHY_UPTIME_SECONDS) {
+    protected function nextBackoffMs(
+        int $index,
+        float $uptimeSeconds,
+        float $healthyAfterSeconds = self::HEALTHY_UPTIME_SECONDS,
+    ): int {
+        if ($uptimeSeconds >= $healthyAfterSeconds) {
             $this->fastFails[$index] = 0;
 
             return 0;

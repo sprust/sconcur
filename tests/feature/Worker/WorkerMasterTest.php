@@ -151,8 +151,10 @@ class WorkerMasterTest extends TestCase
 
             self::assertGreaterThan(0, $before);
 
-            // ~9 s of hashing, no I/O and no explicit switch() in the handler.
-            $master->get('/cpu/50000000');
+            // 9 s of hashing, no I/O and no explicit switch() in the handler. Stated as a
+            // duration, so the machine's speed cannot turn this into a handler that
+            // finishes before the threshold and proves nothing.
+            $master->get('/cpu-ms/9000');
 
             self::assertFalse(
                 $this->waitFor(
@@ -183,7 +185,7 @@ class WorkerMasterTest extends TestCase
 
             self::assertGreaterThan(0, $before);
 
-            $master->get('/cpu/50000000');
+            $master->get('/cpu-ms/9000');
 
             $replaced = $this->waitFor(
                 static function () use ($master, $before): bool {
@@ -196,6 +198,78 @@ class WorkerMasterTest extends TestCase
 
             self::assertTrue($replaced, 'without preemption the computing worker is replaced');
             self::assertStringContainsString('no heartbeat for', $master->logText());
+        } finally {
+            $master->stop();
+        }
+    }
+
+    public function testAWorkerWithNoServerMarksItselfThroughTheScheduler(): void
+    {
+        // No serve loop at all — an ordinary WaitGroup loop, the shape a pool of periodic
+        // tasks has. It drives the scheduler, so it marks itself alive like a server does.
+        $master = TestWorkerMaster::start(
+            options: [
+                'workerCount'       => 1,
+                'watchdogTimeoutMs' => 5_000,
+                'workerScript'      => dirname(__DIR__, 2) . '/servers/worker/waitgroup-worker.php',
+                'server'            => [],
+            ],
+            waitReachable: false,
+        );
+
+        try {
+            self::assertTrue(
+                $this->waitFor(
+                    static fn(): bool => str_contains($master->logText(), 'waitgroup worker started'),
+                    timeoutSeconds: 10.0,
+                ),
+                'the worker should come up',
+            );
+
+            sleep(11);
+
+            self::assertStringNotContainsString('no heartbeat for', $master->logText());
+            self::assertSame(
+                1,
+                substr_count($master->logText(), 'waitgroup worker started'),
+                'the worker was never replaced',
+            );
+        } finally {
+            $master->stop();
+        }
+    }
+
+    public function testAWorkerWithNoServerIsKilledWhenItsSchedulerStops(): void
+    {
+        // The same worker, frozen in a native call after half a second: it stops driving
+        // the scheduler, so it stops marking itself and the watchdog replaces it.
+        $master = TestWorkerMaster::start(
+            options: [
+                'workerCount'       => 1,
+                'watchdogTimeoutMs' => 5_000,
+                'workerScript'      => dirname(__DIR__, 2) . '/servers/worker/waitgroup-worker.php',
+                'server'            => [],
+            ],
+            workerArgs: ['--hangAfterMs=500'],
+            waitReachable: false,
+        );
+
+        try {
+            self::assertTrue(
+                $this->waitFor(
+                    static fn(): bool => str_contains($master->logText(), 'no heartbeat for'),
+                    timeoutSeconds: 20.0,
+                ),
+                'a worker that stopped driving the scheduler should be caught',
+            );
+
+            self::assertTrue(
+                $this->waitFor(
+                    static fn(): bool => substr_count($master->logText(), 'waitgroup worker started') >= 2,
+                    timeoutSeconds: 20.0,
+                ),
+                'and replaced',
+            );
         } finally {
             $master->stop();
         }

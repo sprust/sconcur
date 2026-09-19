@@ -288,9 +288,15 @@ is alive.
 
 The master finds such a worker by itself and replaces it. A worker writes a byte to
 an extra pipe (descriptor 3, opened by `proc_open` beside stdout and stderr) every
-time it passes the top of its serve loop, at most twice a second; the master reads
-that pipe on every supervision tick and times the last byte by its own clock. Stop
-turning the loop and the bytes stop, which is what "stuck" means here. Past
+time its PHP thread comes back to the scheduler, at most twice a second; the master
+reads that pipe on every supervision tick and times the last byte by its own clock.
+Stop coming back and the bytes stop, which is what "stuck" means here. It costs one
+clock read per pass, and nothing at all in a worker running without a master.
+
+That covers a server's serve loop and equally any loop driving an ordinary
+`WaitGroup` — a pool of periodic jobs, a consumer written by hand. A worker whose
+loop drives neither can mark itself with `Scheduler::get()->markAlive()`, which is a
+no-op outside a supervised worker. Past
 `watchdogTimeoutMs` (60 s by default) the worker gets `SIGTERM`, then `SIGKILL` if it
 is still there `shutdownTimeoutMs` later, and the slot is refilled the way any other
 death refills it — under `always`, and under `on-failure` too, since a killed worker
@@ -299,14 +305,22 @@ live worker at all exits:
 
 ```
 worker: 4711 http #0 no heartbeat for 61.2s (limit 60000ms); sending SIGTERM
-worker: 4711 http #0 exited signal=15 uptime=94.3s; restarting in 0ms
+worker: 4711 http #0 exited code=0 uptime=94.3s; restarting in 200ms
 ```
 
-The replacement waits out the crash-loop backoff instead of coming up at once. A
-watchdog victim is older than the threshold by definition, so uptime says nothing
-about its health; and when the cause is shared — a wedged upstream every worker calls
-synchronously — the replacement hangs the same way, and without the backoff the pool
-would recycle itself forever.
+`SIGTERM` usually interrupts the native call the worker is stuck in, and the worker
+then shuts down in order, which is why the line above says `code=0`. `SIGKILL` is for
+what it does not free: a CPU loop with preemption off, or a process in
+uninterruptible I/O — and the second one takes no signal at all, so if the slot is
+still occupied two seconds after the kill the journal says so and the slot stays down
+until the kernel releases it.
+
+A worker that hung at startup is replaced after a backoff rather than at once: the
+threshold is what it lived through, not work it did, and when the cause is shared — a
+wedged upstream every worker calls synchronously — the replacement hangs the same
+way, so without the backoff the pool would recycle itself forever. A worker that
+served for an hour before hanging is not treated that way: what counts is how long it
+kept marking itself alive, not how long it existed.
 
 `watchdogTimeoutMs` is either `0` or at least 5000. A worker marks itself alive at
 most twice a second, so a threshold near that reads the ordinary gap between two
@@ -321,22 +335,32 @@ question, answered by a different thread.
 
 What the watch leaves alone:
 
-- A worker that has never marked itself alive, which is every script that does not
-  run a serve loop. The watchdog acts on evidence of a hang, not on its absence, so
-  such a worker is supervised exactly as before.
+- A worker that has never marked itself alive — one that neither drives the scheduler
+  nor calls `markAlive()`, so nothing about its PHP thread is known. The watchdog acts
+  on evidence of a hang, not on its absence, so such a worker is supervised exactly as
+  it was before.
 - A CPU-bound handler under [preemption](coroutine-switching.md), which the servers
   arm by default: the scheduler parks its coroutine and goes back round the loop, so
   the marks keep coming while it computes. Everything that waits on I/O keeps them
   coming too, preemption or not — a suspended coroutine hands control back to the
   loop, and so does an idle server's poll, which wakes every 250 ms with nothing to
-  do, so a worker that serves no request at all still marks itself twice a second. Only a handler that returns control to
-  nobody stops the marks, which is what the watchdog is for. If you turn preemption
+  do, so a worker that serves no request at all still marks itself. I/O here means I/O
+  through SConcur — a native `sleep`, a PDO query or a `curl` call blocks the PHP
+  thread and marks nothing, which is the case the watchdog exists for. Only a handler
+  that returns control to nobody stops the marks. If you turn preemption
   off (`preemptionQuantumMs: 0`) and still compute for longer than the threshold in
   one handler, that worker is unservable for that whole time and will be replaced —
   raise `watchdogTimeoutMs` past the longest such handler, or set it to `0` for that
   group.
-- A worker already being unwound by `reload` or `stop`: its `SIGTERM` is sent and its
-  drain deadline is running.
+- The one worker a rolling `reload` is currently unwinding: its `SIGTERM` is sent and
+  its drain deadline is running. The slots still queued behind it are watched as
+  usual. A group being drained out of the config after a reload removed it is watched
+  too, and deliberately: `retire()` has no deadline of its own, so a hung worker would
+  otherwise hold the retiring group open forever.
+- A worker that is draining but never finishes — `maxRequests` reached or `SIGTERM`
+  taken, with one handler waiting on a result that will not arrive. Its serve loop
+  keeps turning, so it keeps marking itself alive while serving nothing. Give such
+  handlers a `handlerTimeoutMs`; the watchdog cannot see this one.
 - A worker that hangs before it reaches its serve loop — in a synchronous call made
   during bootstrap. It has never marked itself alive, and nothing tells that apart
   from a worker script that has no serve loop at all, so such a slot stays what it
@@ -344,6 +368,21 @@ What the watch leaves alone:
 
 Killing one by hand still works as before: `kill -9 <pid>`, and under `always` the
 master brings up a replacement.
+
+The watch is on by default, including for a config written before it existed. If any
+of your handlers legitimately holds the PHP thread longer than 60 s — a native
+`file_get_contents` off a slow volume, a synchronous call to a slow upstream, a long
+native computation — raise `watchdogTimeoutMs` past the longest of them or set it to
+`0` for that group.
+
+Think of it per process rather than per request. One handler blocked in a native call
+for a minute is not one slow request: for that minute the worker answers nobody, the
+requests it had already accepted included. That is why the default treats it as a
+hang. The replacement is not free either — `SIGTERM` is only serviced once the native
+call returns, so if it runs past `shutdownTimeoutMs` the worker is `SIGKILL`ed and the
+requests it was holding die with it. The way out that costs nothing is not to block
+the thread: put such a read behind something that suspends a coroutine instead of the
+process, or move it out of the request path.
 
 ## Logging
 

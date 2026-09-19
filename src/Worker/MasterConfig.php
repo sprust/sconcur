@@ -256,6 +256,23 @@ readonly class MasterConfig
      */
     public static function watchdogTimeoutMs(array $data, int $default, string $groupName = ''): int
     {
+        $written = $data['watchdogTimeoutMs'] ?? null;
+
+        // `(int)` turns "off", "none", true and 0.5 into 0, which reads as "switched off"
+        // — a typo would disable the watch in silence, which is the one outcome this
+        // validator exists to prevent. Only a whole number, or a string spelling one, says
+        // what the operator meant.
+        if ($written !== null && !is_int($written) && !(is_string($written) && ctype_digit($written))) {
+            throw new InvalidConfigException(
+                message: $groupName === ''
+                    ? 'config: "watchdogTimeoutMs" must be a whole number of milliseconds'
+                    : sprintf(
+                        'config: group "%s": "watchdogTimeoutMs" must be a whole number of milliseconds',
+                        $groupName,
+                    ),
+            );
+        }
+
         $value = self::nonNegativeInt($data, 'watchdogTimeoutMs', $default, $groupName);
 
         if ($value === 0 || $value >= self::MIN_WATCHDOG_TIMEOUT_MS) {

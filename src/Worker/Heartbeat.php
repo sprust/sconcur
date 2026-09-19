@@ -6,7 +6,7 @@ namespace SConcur\Worker;
 
 /**
  * The worker's half of the liveness channel its master's watchdog listens on: a byte
- * written to an extra pipe from the top of the serve loop (Scheduler::serve).
+ * written to an extra pipe whenever the PHP thread comes back to the scheduler.
  *
  * It exists because the telemetry snapshot cannot answer this question. Snapshots are
  * pushed by a loop inside the extension, on its own runtime thread, so a worker whose
@@ -42,6 +42,9 @@ class Heartbeat
      */
     protected const int INTERVAL_MS = 500;
 
+    /** The one heartbeat of this process, kept because claiming it consumes the variable. */
+    protected static ?self $claimed = null;
+
     protected int $lastTouchNs = 0;
 
     /** @param resource $stream */
@@ -55,6 +58,13 @@ class Heartbeat
      */
     public static function fromEnvironment(): ?self
     {
+        // Asked for once per scheduler, but a process that rebuilds one asks again, and by
+        // then the variable is gone — it was taken out of the environment below. Without
+        // this the second scheduler would mark nothing and its healthy worker be killed.
+        if (self::$claimed !== null) {
+            return self::$claimed;
+        }
+
         $descriptor = getenv(self::FD_ENVIRONMENT_NAME);
 
         if (!is_string($descriptor) || !ctype_digit($descriptor)) {
@@ -76,13 +86,19 @@ class Heartbeat
         // inherited by anything this worker spawns, and PHP cannot mark it close-on-exec;
         // a child that is itself a SConcur server would otherwise open the same pipe and
         // mark its parent alive, which is the one reading that must never be faked.
+        // All three, because putenv() leaves $_ENV and $_SERVER as they were, and a child
+        // spawned with either of them as its environment would still find the variable.
         putenv(self::FD_ENVIRONMENT_NAME);
 
-        return new self(stream: $stream);
+        unset($_ENV[self::FD_ENVIRONMENT_NAME], $_SERVER[self::FD_ENVIRONMENT_NAME]);
+
+        self::$claimed = new self(stream: $stream);
+
+        return self::$claimed;
     }
 
     /**
-     * Records that the serve loop is still turning. Throttled to INTERVAL_MS, so it is an
+     * Records that the PHP thread is still moving. Throttled to INTERVAL_MS, so it is an
      * hrtime comparison on all but every few hundredth call.
      */
     public function touch(): void

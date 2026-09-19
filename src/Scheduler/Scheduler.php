@@ -167,9 +167,31 @@ class Scheduler
      */
     protected int $spawnCounter = 0;
 
+    /**
+     * The mark this worker leaves for its master's watchdog, or null when it runs without
+     * a master. Taken once here rather than per loop: every loop that drives the scheduler
+     * writes it, so there is no one loop that owns it.
+     */
+    protected ?Heartbeat $heartbeat;
+
     public function __construct()
     {
         $this->fiberPool = new FiberPool();
+        $this->heartbeat = Heartbeat::fromEnvironment();
+    }
+
+    /**
+     * Tells this worker's master that its PHP thread is still moving, for a loop that
+     * drives neither a server nor the scheduler — a supervised worker doing its own
+     * synchronous work between SConcur calls. Every loop that does drive the scheduler
+     * marks itself already, so this is for the ones that do not.
+     *
+     * A no-op outside a worker started by a master with its watchdog on, and throttled, so
+     * calling it often costs a clock read. See docs/worker-master.md, "Stuck worker".
+     */
+    public function markAlive(): void
+    {
+        $this->heartbeat?->touch();
     }
 
     public static function get(): Scheduler
@@ -717,11 +739,6 @@ class Scheduler
 
         $dispatchedCount = 0;
 
-        // The mark the worker master's watchdog reads. Written here rather than by the
-        // servers: this loop is what all four of them turn, and stopping turning it is
-        // exactly what "the worker hung" means. Null without a master.
-        $heartbeat = Heartbeat::fromEnvironment();
-
         if ($preemptionQuantumMs > 0) {
             $this->enablePreemption(quantumMs: $preemptionQuantumMs);
         }
@@ -731,8 +748,6 @@ class Scheduler
         // it does not leak for the process lifetime.
         try {
             while (true) {
-                $heartbeat?->touch();
-
                 if (!$draining && ($shouldStop() || ($maxRequests > 0 && $dispatchedCount >= $maxRequests))) {
                     // Stop accepting new requests; keep draining in-flight handlers.
                     $draining = true;
@@ -1250,6 +1265,11 @@ class Scheduler
      */
     protected function takeReadyResult(?int $timeoutMs): ?TaskResultDto
     {
+        // Every loop that drives the scheduler comes through here — a server's serve(),
+        // and run() under any WaitGroup — so this is where the worker says its PHP thread
+        // is still moving. Throttled inside touch(), so the cost is one clock read.
+        $this->heartbeat?->touch();
+
         if ($this->readyResults !== []) {
             return array_shift($this->readyResults);
         }

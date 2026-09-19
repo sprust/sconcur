@@ -71,9 +71,9 @@ class WorkerMaster
 
     protected bool $killSent = false;
 
-    protected float $stopDeadline = 0.0;
+    protected int $stopDeadlineNs = 0;
 
-    protected float $killDeadline = 0.0;
+    protected int $killDeadlineNs = 0;
 
     protected ?TelemetryRuntime $telemetry = null;
 
@@ -375,7 +375,7 @@ class WorkerMaster
     protected function supervise(): void
     {
         while (true) {
-            $now = microtime(true);
+            $nowNs = hrtime(true);
 
             foreach ($this->pools as $pool) {
                 $pool->reapAndLog($this->stopping);
@@ -384,7 +384,7 @@ class WorkerMaster
             $this->checkStateFileStopSignal();
 
             if ($this->stopping) {
-                $this->driveShutdown($now);
+                $this->driveShutdown($nowNs);
 
                 if ($this->allSlotsEmpty()) {
                     break;
@@ -393,7 +393,7 @@ class WorkerMaster
                 // A worker that survives even SIGKILL (e.g. stuck in uninterruptible
                 // I/O) must not hang the master forever: after a grace period give up
                 // and exit — the kernel reaps the leftover children once we are gone.
-                if ($this->killSent && $now > $this->killDeadline) {
+                if ($this->killSent && $nowNs > $this->killDeadlineNs) {
                     $this->logger->master(
                         level: MasterLogger::ERROR,
                         message: sprintf('%d worker(s) still alive after SIGKILL; exiting anyway', $this->aliveSlotCount()),
@@ -407,11 +407,11 @@ class WorkerMaster
                 $reloading = false;
 
                 foreach ($this->pools as $pool) {
-                    $reloading = $pool->driveReload($now) || $reloading;
+                    $reloading = $pool->driveReload() || $reloading;
 
                     $pool->driveWatchdog();
 
-                    $pool->respawnDue($now);
+                    $pool->respawnDue();
                 }
 
                 $this->retireDrainedPools();
@@ -817,11 +817,11 @@ class WorkerMaster
      * SIGKILL any stragglers once the deadline passes. The deadline is the longest a
      * single group allows, so no group is cut short by a stricter neighbour.
      */
-    protected function driveShutdown(float $now): void
+    protected function driveShutdown(int $nowNs): void
     {
         if (!$this->termSent) {
-            $this->termSent     = true;
-            $this->stopDeadline = $now + $this->maxShutdownTimeoutMs() / 1000;
+            $this->termSent       = true;
+            $this->stopDeadlineNs = $nowNs + $this->maxShutdownTimeoutMs() * 1_000_000;
 
             $this->logger->master(MasterLogger::INFO, 'shutdown requested; forwarding SIGTERM to workers');
 
@@ -830,7 +830,7 @@ class WorkerMaster
             return;
         }
 
-        if (!$this->killSent && $now > $this->stopDeadline) {
+        if (!$this->killSent && $nowNs > $this->stopDeadlineNs) {
             $alive = $this->aliveSlotCount();
 
             if ($alive > 0) {
@@ -842,8 +842,8 @@ class WorkerMaster
                 $this->signalAll(SIGKILL);
             }
 
-            $this->killSent     = true;
-            $this->killDeadline = $now + self::SIGKILL_GRACE_SECONDS;
+            $this->killSent       = true;
+            $this->killDeadlineNs = $nowNs + (int) (self::SIGKILL_GRACE_SECONDS * 1_000_000_000);
         }
     }
 
