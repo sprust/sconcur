@@ -17,6 +17,10 @@ pub mod hash;
 pub mod meta;
 pub mod pattern;
 pub mod payloads;
+pub mod read_state;
+pub mod streams;
+pub mod walk_state;
+pub mod writer;
 
 use std::future::Future;
 use std::time::Duration;
@@ -70,6 +74,12 @@ impl Feature for FilesFeature {
                 "rmd" => dirs::remove_directory(&task, &envelope).await,
                 "ls" => dirs::list(&task, &envelope).await,
                 "hsh" => hash::hash_file(&task, &envelope).await,
+                "rdc" => streams::read_chunks(&task, &envelope).await,
+                "rdl" => streams::read_lines(&task, &envelope).await,
+                "lst" => streams::walk(&task, &envelope).await,
+                "wro" => writer::open(&task, &envelope).await,
+                "wrc" => writer::chunk(&task, &envelope).await,
+                "wrx" => writer::close(&task, &envelope).await,
                 other => {
                     task.add_result(Result::error(
                         message,

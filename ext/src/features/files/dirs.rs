@@ -65,7 +65,7 @@ pub fn encode_entries(entries: &[Entry]) -> Vec<u8> {
     buffer
 }
 
-fn epoch_ms(time: SystemTime) -> i64 {
+pub fn epoch_ms(time: SystemTime) -> i64 {
     match time.duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_millis() as i64,
         Err(error) => -(error.duration().as_millis() as i64),

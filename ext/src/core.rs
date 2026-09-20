@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Once, RwLock};
 
 use crate::features::amqp;
+use crate::features::files;
 use crate::features::httpclient;
 use crate::features::httpserver;
 use crate::features::mongodb;
@@ -59,6 +60,7 @@ pub struct Core {
     wsclient: wsclient::Registries,
     /// The HTTP client's pooled clients and open uploads, for the same reason.
     httpclient: httpclient::Registries,
+    files: files::writer::Registries,
     /// The AMQP connections, channels and supervised delivery streams, for the
     /// same reason: a socket to the broker and the channels multiplexed over it
     /// belong to the process that opened them.
@@ -193,6 +195,7 @@ impl Core {
             socketclient: socketclient::Registries::new(),
             wsclient: wsclient::Registries::new(),
             httpclient: httpclient::Registries::new(),
+            files: files::writer::Registries::new(),
             amqp: amqp::Registries::new(),
             redis: redis::Registries::new(),
         }
@@ -232,6 +235,10 @@ impl Core {
 
     pub fn wsclient(&'static self) -> &'static wsclient::Registries {
         &self.wsclient
+    }
+
+    pub fn files(&'static self) -> &'static files::writer::Registries {
+        &self.files
     }
 
     pub fn httpclient(&'static self) -> &'static httpclient::Registries {

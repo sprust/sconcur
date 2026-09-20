@@ -11,6 +11,7 @@ use SConcur\Exceptions\Files\FilePermissionException;
 use SConcur\Exceptions\Files\FilesException;
 use SConcur\Exceptions\Files\FileTimeoutException;
 use SConcur\Exceptions\Files\FileTooLargeException;
+use SConcur\Exceptions\Files\FileWriterClosedException;
 use SConcur\Exceptions\Files\InvalidFileArgumentException;
 use SConcur\Exceptions\Files\UnexpectedFileTypeException;
 use SConcur\Exceptions\TaskErrorException;
@@ -41,6 +42,7 @@ readonly class FilesFailure
         'big'     => FileTooLargeException::class,
         'timeout' => FileTimeoutException::class,
         'stopped' => FileOperationException::class,
+        'state'   => FileWriterClosedException::class,
         'arg'     => InvalidFileArgumentException::class,
     ];
 

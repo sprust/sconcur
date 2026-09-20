@@ -234,3 +234,78 @@ pub struct HashFileParams {
     #[serde(rename = "a", default)]
     pub algorithm: String,
 }
+
+/// The body of a ReadChunks (`rdc`).
+/// PHP: SConcur\Features\Files\Files::readChunks().
+#[derive(Deserialize, Default)]
+pub struct ReadChunksParams {
+    #[serde(rename = "p", default)]
+    pub path: String,
+    /// 0 — the feature's default.
+    #[serde(rename = "bs", default)]
+    pub buffer_size_bytes: i64,
+}
+
+/// The body of a ReadLines (`rdl`).
+/// PHP: SConcur\Features\Files\Files::readLines().
+#[derive(Deserialize, Default)]
+pub struct ReadLinesParams {
+    #[serde(rename = "p", default)]
+    pub path: String,
+    /// Lines per batch. 0 — the feature's default.
+    #[serde(rename = "b", default)]
+    pub batch_size: i64,
+    #[serde(rename = "bs", default)]
+    pub buffer_size_bytes: i64,
+    /// 0 — the feature's default.
+    #[serde(rename = "ml", default)]
+    pub max_line_bytes: i64,
+}
+
+/// The body of a Walk (`lst`).
+/// PHP: SConcur\Features\Files\Files::walk().
+#[derive(Deserialize, Default)]
+pub struct WalkParams {
+    #[serde(rename = "p", default)]
+    pub path: String,
+    #[serde(rename = "pt", default)]
+    pub pattern: String,
+    #[serde(rename = "wm", default)]
+    pub with_metadata: bool,
+    /// Entries per batch. 0 — the feature's default.
+    #[serde(rename = "b", default)]
+    pub batch_size: i64,
+}
+
+/// The body of a WriteOpen (`wro`).
+/// PHP: SConcur\Features\Files\Files::openWriter().
+#[derive(Deserialize, Default)]
+pub struct WriteOpenParams {
+    /// The id PHP drew for this writer; the name all three commands share.
+    #[serde(rename = "i", default)]
+    pub id: String,
+    #[serde(rename = "p", default)]
+    pub path: String,
+    #[serde(rename = "m", default)]
+    pub mode: String,
+    #[serde(rename = "pm", default)]
+    pub permissions: i64,
+}
+
+/// The body of a WriteChunk (`wrc`).
+/// PHP: SConcur\Features\Files\Dto\FileWriter::write().
+#[derive(Deserialize)]
+pub struct WriteChunkParams {
+    #[serde(rename = "i", default)]
+    pub id: String,
+    #[serde(rename = "c", default = "nil_value")]
+    pub chunk: rmpv::Value,
+}
+
+/// The body of a WriteClose (`wrx`).
+/// PHP: SConcur\Features\Files\Dto\FileWriter::close().
+#[derive(Deserialize, Default)]
+pub struct WriteCloseParams {
+    #[serde(rename = "i", default)]
+    pub id: String,
+}

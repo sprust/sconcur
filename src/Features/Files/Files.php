@@ -10,7 +10,11 @@ use SConcur\Exceptions\TaskExecutionException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\Files\Dto\DirectoryEntry;
 use SConcur\Features\Files\Dto\FileStat;
+use SConcur\Features\Files\Dto\FileWriter;
 use SConcur\Features\Files\Payloads\FilesPayload;
+use SConcur\Features\Files\Results\ChunksResult;
+use SConcur\Features\Files\Results\LinesResult;
+use SConcur\Features\Files\Results\WalkResult;
 use SConcur\Features\Files\Support\FilesFailure;
 use SConcur\Transport\MessagePackTransport;
 
@@ -434,6 +438,129 @@ class Files
         return array_map(
             static fn(array $entry): DirectoryEntry => DirectoryEntry::fromArray($entry),
             $entries,
+        );
+    }
+
+    /**
+     * Reads a file in raw batches.
+     *
+     * Where read() holds the file twice — once in the extension, once here — this holds
+     * one buffer whatever the size. Breaking out early is safe: the flow ends and the
+     * extension closes the file.
+     *
+     * @return ChunksResult<string>
+     */
+    public static function readChunks(
+        string $path,
+        int $bufferSizeBytes = 0,
+        int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
+    ): ChunksResult {
+        return new ChunksResult(
+            command: FilesCommandEnum::ReadChunks,
+            timeoutMs: $timeoutMs,
+            data: [
+                'p'  => $path,
+                'bs' => $bufferSizeBytes,
+            ],
+        );
+    }
+
+    /**
+     * Reads a file line by line, in batches.
+     *
+     * The lines are cut in the extension, so a batch of them costs one crossing where
+     * fgets() in a loop costs one per line. Separators are removed, `\r\n` included, and
+     * a last line without a terminator is still a line.
+     *
+     * $maxLineBytes bounds a single line, so a file with no newline in it cannot be
+     * buffered whole in the name of streaming.
+     *
+     * @return LinesResult<string>
+     */
+    public static function readLines(
+        string $path,
+        int $batchSize = 0,
+        int $bufferSizeBytes = 0,
+        int $maxLineBytes = 0,
+        int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
+    ): LinesResult {
+        return new LinesResult(
+            command: FilesCommandEnum::ReadLines,
+            timeoutMs: $timeoutMs,
+            data: [
+                'p'  => $path,
+                'b'  => $batchSize,
+                'bs' => $bufferSizeBytes,
+                'ml' => $maxLineBytes,
+            ],
+        );
+    }
+
+    /**
+     * Walks a directory tree, a batch of entries at a time.
+     *
+     * The frontier lives in the extension, so breaking out after the first match costs
+     * the first batch and nothing more. $pattern filters the entries that are reported,
+     * not where the walk goes.
+     *
+     * Directory symlinks are listed but never descended into: a tree with a link back
+     * into itself has no end.
+     *
+     * @return WalkResult<DirectoryEntry>
+     */
+    public static function walk(
+        string $path,
+        string $pattern = '',
+        bool $withMetadata = false,
+        int $batchSize = 0,
+        int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
+    ): WalkResult {
+        return new WalkResult(
+            command: FilesCommandEnum::Walk,
+            timeoutMs: $timeoutMs,
+            data: [
+                'p'  => $path,
+                'pt' => $pattern,
+                'wm' => $withMetadata,
+                'b'  => $batchSize,
+            ],
+        );
+    }
+
+    /**
+     * Opens a file to be filled chunk by chunk.
+     *
+     * Each write() waits until the extension has written the chunk, so a coroutine cannot
+     * outrun the disk. close() finishes the file and answers with the total; a writer
+     * dropped without one has its file closed and, unless it was appending, removed.
+     */
+    public static function openWriter(
+        string $path,
+        FileWriteMode $mode = FileWriteMode::Replace,
+        int $permissions = 0644,
+        int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
+    ): FileWriter {
+        // Drawn here, like HttpClient draws the request id of a streamed upload: the
+        // extension needs one name for the three commands of a session, and the side
+        // that opens the session is the side that can hand it to the other two.
+        $id = uniqid('fw_', more_entropy: true);
+
+        $result = static::execute(
+            command: FilesCommandEnum::WriteOpen,
+            timeoutMs: $timeoutMs,
+            data: [
+                'i'  => $id,
+                'p'  => $path,
+                'm'  => $mode->value,
+                'pm' => $permissions,
+            ],
+        );
+
+        return new FileWriter(
+            id: $id,
+            path: $path,
+            taskKey: $result->key,
+            timeoutMs: $timeoutMs,
         );
     }
 

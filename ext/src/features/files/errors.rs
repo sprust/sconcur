@@ -35,6 +35,8 @@ pub enum Kind {
     Timeout,
     /// The flow was stopped under a running task.
     Stopped,
+    /// A writer or a stream that is closed, or a handle that names nothing.
+    State,
     /// A payload this side could not use: a bad argument, an unknown
     /// sub-operation, a malformed body.
     Argument,
@@ -51,6 +53,7 @@ impl Kind {
             Kind::TooLarge => "big",
             Kind::Timeout => "timeout",
             Kind::Stopped => "stopped",
+            Kind::State => "state",
             Kind::Argument => "arg",
         }
     }
@@ -111,6 +114,7 @@ mod tests {
             Kind::TooLarge,
             Kind::Timeout,
             Kind::Stopped,
+            Kind::State,
             Kind::Argument,
         ];
 

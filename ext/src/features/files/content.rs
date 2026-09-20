@@ -38,7 +38,7 @@ pub fn bytes_of(value: &rmpv::Value) -> std::result::Result<Vec<u8>, String> {
 
 /// Answers with the number of bytes the operation moved, as a map so PHP reads
 /// it the way it reads every other structured result.
-fn written(count: u64) -> Vec<u8> {
+pub fn encode_count(count: u64) -> Vec<u8> {
     let mut buffer = Vec::new();
 
     let _ = rmp::encode::write_map_len(&mut buffer, 1);
@@ -238,7 +238,7 @@ pub async fn write(task: &Task, envelope: &payloads::Envelope) {
         Some(Ok(count)) => {
             task.add_result(Result::success(
                 message,
-                written(count),
+                encode_count(count),
                 calc_execution_ms(start_time),
             ))
             .await;
@@ -326,7 +326,7 @@ pub async fn write_atomic(task: &Task, envelope: &payloads::Envelope) {
         Some(Ok(count)) => {
             task.add_result(Result::success(
                 message,
-                written(count),
+                encode_count(count),
                 calc_execution_ms(start_time),
             ))
             .await;
@@ -384,7 +384,7 @@ pub async fn truncate(task: &Task, envelope: &payloads::Envelope) {
         Some(Ok(count)) => {
             task.add_result(Result::success(
                 message,
-                written(count),
+                encode_count(count),
                 calc_execution_ms(start_time),
             ))
             .await;
@@ -466,7 +466,7 @@ pub async fn copy(task: &Task, envelope: &payloads::Envelope) {
         Some(Ok(count)) => {
             task.add_result(Result::success(
                 message,
-                written(count),
+                encode_count(count),
                 calc_execution_ms(start_time),
             ))
             .await;
@@ -521,7 +521,7 @@ pub async fn move_file(task: &Task, envelope: &payloads::Envelope) {
         Some(Ok(count)) => {
             task.add_result(Result::success(
                 message,
-                written(count),
+                encode_count(count),
                 calc_execution_ms(start_time),
             ))
             .await;
@@ -559,7 +559,7 @@ pub async fn delete(task: &Task, envelope: &payloads::Envelope) {
         Some(Ok(count)) => {
             task.add_result(Result::success(
                 message,
-                written(count),
+                encode_count(count),
                 calc_execution_ms(start_time),
             ))
             .await;
