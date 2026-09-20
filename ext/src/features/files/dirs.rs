@@ -65,6 +65,84 @@ pub fn encode_entries(entries: &[Entry]) -> Vec<u8> {
     buffer
 }
 
+/// Reads one directory whole — names, types and, if asked, a stat each — in a
+/// single trip to the blocking pool.
+///
+/// One trip, not one per entry, and that is the whole point of this function.
+/// tokio::fs sends every call to the pool on its own, so the obvious version of
+/// this loop hands 20 000 syscalls across a thread boundary for a directory of
+/// 10 000 files. Measured against scandir() + filesize() + filemtime(), that
+/// version was eleven times slower than the native code it exists to beat; this
+/// one pays for the hand-over once.
+///
+/// The entries come back sorted by name. read_dir gives whatever order the
+/// filesystem keeps, which differs between filesystems and between runs, and a
+/// listing nobody can predict is one no test can check.
+pub async fn read_directory(
+    path: String,
+    pattern_text: String,
+    with_metadata: bool,
+) -> std::result::Result<Vec<Entry>, String> {
+    let outcome = tokio::task::spawn_blocking(move || {
+        let directory = std::fs::read_dir(&path)
+            .map_err(|error| io_message("open directory", &path, &error))?;
+
+        let mut entries = Vec::new();
+
+        for entry in directory {
+            let entry = entry.map_err(|error| io_message("read directory", &path, &error))?;
+
+            let name = entry.file_name().to_string_lossy().to_string();
+
+            if !pattern::matches(&pattern_text, &name) {
+                continue;
+            }
+
+            // Comes from the directory read itself on the filesystems that carry
+            // the type, so it costs nothing there and a stat only where it must.
+            let file_type = entry
+                .file_type()
+                .map_err(|error| io_message("read entry type in", &path, &error))?;
+
+            let (size_bytes, modified_at_ms) = if with_metadata {
+                let metadata = entry
+                    .metadata()
+                    .map_err(|error| io_message("stat entry in", &path, &error))?;
+
+                (
+                    Some(metadata.len()),
+                    Some(metadata.modified().map(epoch_ms).unwrap_or(0)),
+                )
+            } else {
+                (None, None)
+            };
+
+            entries.push(Entry {
+                name,
+                path: entry.path().to_string_lossy().to_string(),
+                is_directory: file_type.is_dir(),
+                is_symlink: file_type.is_symlink(),
+                size_bytes,
+                modified_at_ms,
+            });
+        }
+
+        entries.sort_by(|left, right| left.name.cmp(&right.name));
+
+        Ok(entries)
+    })
+    .await;
+
+    match outcome {
+        Ok(entries) => entries,
+        // The pool dropped the job, which means the runtime is going away.
+        Err(error) => Err(super::errors::message(
+            super::errors::Kind::Io,
+            &format!("read directory: {error}"),
+        )),
+    }
+}
+
 pub fn epoch_ms(time: SystemTime) -> i64 {
     match time.duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_millis() as i64,
@@ -164,66 +242,9 @@ pub async fn list(task: &Task, envelope: &payloads::Envelope) {
     let with_metadata = parameters.with_metadata;
 
     let work = async move {
-        let mut directory = tokio::fs::read_dir(&path)
+        read_directory(path, pattern_text, with_metadata)
             .await
-            .map_err(|error| io_message("open directory", &path, &error))?;
-
-        let mut entries = Vec::new();
-
-        loop {
-            let entry = directory
-                .next_entry()
-                .await
-                .map_err(|error| io_message("read directory", &path, &error))?;
-
-            let Some(entry) = entry else {
-                break;
-            };
-
-            let name = entry.file_name().to_string_lossy().to_string();
-
-            if !pattern::matches(&pattern_text, &name) {
-                continue;
-            }
-
-            // file_type() comes from the directory read itself on the
-            // filesystems that carry it, so the type costs nothing there and a
-            // stat only where it must.
-            let file_type = entry
-                .file_type()
-                .await
-                .map_err(|error| io_message("read entry type in", &path, &error))?;
-
-            let (size_bytes, modified_at_ms) = if with_metadata {
-                let metadata = entry
-                    .metadata()
-                    .await
-                    .map_err(|error| io_message("stat entry in", &path, &error))?;
-
-                (
-                    Some(metadata.len()),
-                    Some(metadata.modified().map(epoch_ms).unwrap_or(0)),
-                )
-            } else {
-                (None, None)
-            };
-
-            entries.push(Entry {
-                name,
-                path: entry.path().to_string_lossy().to_string(),
-                is_directory: file_type.is_dir(),
-                is_symlink: file_type.is_symlink(),
-                size_bytes,
-                modified_at_ms,
-            });
-        }
-
-        // read_dir answers in whatever order the filesystem keeps, which differs
-        // between them and between runs. Sorted here so a listing is
-        // reproducible and a test can say what it expects.
-        entries.sort_by(|left, right| left.name.cmp(&right.name));
-
-        Ok::<Vec<u8>, String>(encode_entries(&entries))
+            .map(|entries| encode_entries(&entries))
     };
 
     publish(task, envelope, start_time, work).await;

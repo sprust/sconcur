@@ -4,10 +4,14 @@
 //! the tree is big enough that holding it whole is the problem. This is the same
 //! walk with the holding taken out: the frontier lives here and PHP pulls a
 //! batch when it wants one, so a break after the first match costs the first
-//! batch and nothing more.
+//! directory and nothing more.
+//!
+//! A directory is read whole, in one trip to the blocking pool — see
+//! dirs::read_directory for why that matters — and then served to PHP in
+//! batches. So the memory this holds is one directory, not one tree.
 //!
 //! Directory symlinks are listed but never descended into. That is not a
-//! limitation to work around later — a tree with a link back into itself has no
+//! limitation to work around later: a tree with a link back into itself has no
 //! end, and following one would make this loop for ever.
 
 use std::sync::Arc;
@@ -19,13 +23,11 @@ use crate::dto::{Message, Result};
 use crate::helpers::calc_execution_ms;
 use crate::states::{StateCloseFuture, StateContract, StateFuture};
 
-use super::dirs::{encode_entries, epoch_ms, Entry};
-use super::errors::io_message;
-use super::pattern;
+use super::dirs::{encode_entries, read_directory, Entry};
 
 struct Frontier {
-    /// The directory being read, if one is open.
-    current: Option<(String, tokio::fs::ReadDir)>,
+    /// The entries of the directory read last, not yet handed to PHP.
+    buffered: std::collections::VecDeque<Entry>,
     /// Directories found and not yet walked. Depth-first, because it keeps the
     /// frontier the depth of the tree rather than its width — a directory of a
     /// hundred thousand subdirectories would otherwise all sit here at once.
@@ -55,98 +57,53 @@ impl WalkState {
             batch_size,
             message,
             frontier: Mutex::new(Frontier {
-                current: None,
+                buffered: std::collections::VecDeque::new(),
                 remaining: vec![root],
             }),
             start_time: Instant::now(),
         }
     }
 
-    /// Collects up to batch_size matching entries, opening directories as the
-    /// walk reaches them.
-    async fn collect(
-        &self,
-        frontier: &mut Frontier,
-    ) -> std::result::Result<Vec<Entry>, String> {
+    /// Collects up to batch_size entries, reading directories as the walk
+    /// reaches them.
+    async fn collect(&self, frontier: &mut Frontier) -> std::result::Result<Vec<Entry>, String> {
         let mut entries = Vec::new();
 
         while entries.len() < self.batch_size {
-            if frontier.current.is_none() {
-                let Some(path) = frontier.remaining.pop() else {
-                    break;
-                };
+            if let Some(entry) = frontier.buffered.pop_front() {
+                entries.push(entry);
 
-                let directory = tokio::fs::read_dir(&path)
-                    .await
-                    .map_err(|error| io_message("open directory", &path, &error))?;
-
-                frontier.current = Some((path, directory));
+                continue;
             }
 
-            let Some((path, directory)) = frontier.current.as_mut() else {
+            let Some(path) = frontier.remaining.pop() else {
                 break;
             };
 
-            let entry = directory
-                .next_entry()
-                .await
-                .map_err(|error| io_message("read directory", path, &error))?;
+            // Read without the pattern: a directory joins the frontier whether
+            // or not its own name matches, because the filter picks what is
+            // reported, not where the walk goes. The filter is applied below.
+            let read = read_directory(path, String::new(), self.with_metadata).await?;
 
-            let Some(entry) = entry else {
-                frontier.current = None;
+            for entry in read {
+                // Only a real directory is descended into, never a symlink to
+                // one — that is what keeps a link back into an ancestor from
+                // making this endless.
+                if entry.is_directory {
+                    frontier.remaining.push(entry.path.clone());
+                }
 
-                continue;
-            };
-
-            let file_type = entry
-                .file_type()
-                .await
-                .map_err(|error| io_message("read entry type in", path, &error))?;
-
-            let entry_path = entry.path().to_string_lossy().to_string();
-
-            // A real directory joins the frontier whether or not its own name
-            // matches the pattern: the filter picks what is reported, not where
-            // the walk goes.
-            if file_type.is_dir() {
-                frontier.remaining.push(entry_path.clone());
+                if super::pattern::matches(&self.pattern, &entry.name) {
+                    frontier.buffered.push_back(entry);
+                }
             }
-
-            let name = entry.file_name().to_string_lossy().to_string();
-
-            if !pattern::matches(&self.pattern, &name) {
-                continue;
-            }
-
-            let (size_bytes, modified_at_ms) = if self.with_metadata {
-                let metadata = entry
-                    .metadata()
-                    .await
-                    .map_err(|error| io_message("stat entry in", path, &error))?;
-
-                (
-                    Some(metadata.len()),
-                    Some(metadata.modified().map(epoch_ms).unwrap_or(0)),
-                )
-            } else {
-                (None, None)
-            };
-
-            entries.push(Entry {
-                name,
-                path: entry_path,
-                is_directory: file_type.is_dir(),
-                is_symlink: file_type.is_symlink(),
-                size_bytes,
-                modified_at_ms,
-            });
         }
 
         Ok(entries)
     }
 
     fn finished(frontier: &Frontier) -> bool {
-        frontier.current.is_none() && frontier.remaining.is_empty()
+        frontier.buffered.is_empty() && frontier.remaining.is_empty()
     }
 }
 
@@ -178,10 +135,9 @@ impl StateContract for WalkState {
         Box::pin(async move {
             let mut frontier = self.frontier.lock().await;
 
-            // The open directory handle goes, and so does the frontier: an
-            // abandoned walk of a deep tree should not keep a list of every
-            // directory it had found.
-            frontier.current = None;
+            // An abandoned walk of a deep tree should keep neither the entries
+            // it had read nor the list of directories it had found.
+            frontier.buffered.clear();
             frontier.remaining.clear();
         })
     }
