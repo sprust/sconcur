@@ -7,10 +7,10 @@ namespace SConcur\Tests\Feature\Features\Files;
 use SConcur\Exceptions\Files\FileAlreadyExistsException;
 use SConcur\Exceptions\Files\FileNotFoundException;
 use SConcur\Exceptions\Files\FilesException;
-use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Exceptions\Files\FileTooLargeException;
 use SConcur\Exceptions\Files\InvalidFileArgumentException;
 use SConcur\Exceptions\Files\UnexpectedFileTypeException;
+use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Features\Files\Files;
 use SConcur\Features\Files\FileWriteMode;
 use SConcur\Tests\Feature\BaseTestCase;
@@ -277,7 +277,12 @@ class FilesContentTest extends BaseTestCase
         self::assertFalse(Files::exists(path: $source));
     }
 
-    public function testCopyTakesItsBufferSizeWithoutChangingTheResult(): void
+    /**
+     * A hostile buffer size is clamped rather than handed to the allocator, which aborts
+     * the process instead of throwing. Remove the clamp in files::bounded_size and this
+     * test does not fail — it kills the PHP worker, which is the point.
+     */
+    public function testCopyClampsAHostileBufferSizeInsteadOfAborting(): void
     {
         $source      = $this->path(name: 'buffered-source.bin');
         $destination = $this->path(name: 'buffered-destination.bin');
@@ -286,9 +291,7 @@ class FilesContentTest extends BaseTestCase
 
         Files::write(path: $source, contents: $contents);
 
-        // A tiny buffer means many turns of the copy loop; a hostile one is clamped
-        // rather than handed to the allocator. Both must move the same bytes.
-        foreach ([64, PHP_INT_MAX] as $bufferSizeBytes) {
+        foreach ([PHP_INT_MAX, 1 << 40, -1] as $bufferSizeBytes) {
             Files::delete(path: $destination, missingOk: true);
 
             $copied = Files::copy(
@@ -300,6 +303,33 @@ class FilesContentTest extends BaseTestCase
             self::assertSame(300_000, $copied);
             self::assertSame($contents, Files::read(path: $destination));
         }
+    }
+
+    /**
+     * The buffer size reaches the extension, which a test that only compares the copied
+     * bytes cannot show: a 64-byte buffer and a megabyte one both copy the file
+     * correctly. What differs is the number of turns the loop takes, and the closest
+     * observable this API has is the streamed read, whose batch count is the buffer.
+     */
+    public function testABufferSizeReachesTheExtension(): void
+    {
+        $path = $this->path(name: 'granularity.bin');
+
+        Files::write(path: $path, contents: str_repeat('x', 4096));
+
+        $batches = static function (int $bufferSizeBytes) use ($path): int {
+            $seen = 0;
+
+            foreach (Files::readChunks(path: $path, bufferSizeBytes: $bufferSizeBytes) as $chunk) {
+                ++$seen;
+            }
+
+            return $seen;
+        };
+
+        self::assertSame(1, $batches(8192));
+        self::assertSame(4, $batches(1024));
+        self::assertSame(16, $batches(256));
     }
 
     public function testCopyCanAppendToItsDestination(): void

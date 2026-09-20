@@ -6,13 +6,13 @@ namespace SConcur\Features\Files;
 
 /**
  * How a write opens its destination file. Human-readable names over the fopen-style
- * flags; the actual open flags are mapped on the extension side (files::write_options).
+ * flags; the actual open flags are mapped on the extension side (files::std_write_options).
  *
  * The wire values are the same three HttpClient's DownloadFileMode uses, and the two
  * enums are deliberately separate rather than one shared: that one is documented as the
  * mode of an HTTP download's sink, and neither feature should depend on the other's.
  *
- * Rust: the values write_options() matches (ext/src/features/files/mod.rs).
+ * Rust: the values std_write_options() matches (ext/src/features/files/mod.rs).
  */
 enum FileWriteMode: string
 {

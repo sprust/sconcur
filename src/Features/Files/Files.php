@@ -15,6 +15,7 @@ use SConcur\Features\Files\Results\ChunksResult;
 use SConcur\Features\Files\Results\LinesResult;
 use SConcur\Features\Files\Results\WalkResult;
 use SConcur\Features\Files\Support\FilesFailure;
+use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Transport\MessagePackTransport;
 
 /**
@@ -189,9 +190,14 @@ class Files
     }
 
     /**
-     * Moves a file, replacing the destination if one is there. A rename within one
-     * filesystem; across filesystems the extension copies and removes the source, which
-     * is what PHP's rename() does too.
+     * Moves a file, replacing the destination if one is there.
+     *
+     * A rename within one filesystem, so the destination ends up with the source's
+     * permissions. Across filesystems the extension copies through a temporary beside
+     * the destination and renames that into place — PHP's rename() falls back too, but
+     * copies straight onto the destination — so a failure before that rename leaves the
+     * destination untouched, and it keeps its own permissions. Setuid and setgid are
+     * dropped on that path.
      *
      * Unlike write() and copy() there is no mode to refuse an existing destination:
      * rename(2) replaces, and the only way to make it not replace — renameat2's
@@ -641,9 +647,7 @@ class Files
      */
     protected static function count(TaskResultDto $result): int
     {
-        $decoded = MessagePackTransport::unpack($result->payload);
-
-        return (int) ($decoded['n'] ?? 0);
+        return (int) static::field(result: $result, key: 'n');
     }
 
     /**
@@ -651,8 +655,29 @@ class Files
      */
     protected static function text(TaskResultDto $result, string $key = 'p'): string
     {
+        return (string) static::field(result: $result, key: $key);
+    }
+
+    /**
+     * One field of a structured result, refusing rather than guessing.
+     *
+     * A missing key used to read as 0 or an empty string, which turns a malformed answer
+     * into a plausible one: delete() would report "nothing was there", hashFile() would
+     * answer an empty digest that silently mismatches, and temporaryFile() would hand
+     * back an empty path for the caller to write to. The rest of this feature refuses to
+     * guess — FilesFailure reads the kind rather than matching it, DirectoryEntry says
+     * null for "not asked for" — and this is the one place that did.
+     */
+    protected static function field(TaskResultDto $result, string $key): mixed
+    {
         $decoded = MessagePackTransport::unpack($result->payload);
 
-        return (string) ($decoded[$key] ?? '');
+        if (!array_key_exists($key, $decoded)) {
+            throw new UnexpectedResponseFormatException(
+                message: "The files result carries no '$key' field.",
+            );
+        }
+
+        return $decoded[$key];
     }
 }

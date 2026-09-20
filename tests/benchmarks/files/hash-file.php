@@ -20,7 +20,7 @@ $benchmarker = new Benchmarker(
     name: 'files-hash-file',
 );
 
-$sizeBytes = benchFilesSizeBytes(default: 10_485_760);
+$sizeBytes = benchFilesSizeBytes(defaultBytes: 10_485_760);
 $directory = benchFilesDirectory(name: 'hash');
 $total     = $benchmarker->getTotal();
 

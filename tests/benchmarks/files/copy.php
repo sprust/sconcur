@@ -18,7 +18,7 @@ $benchmarker = new Benchmarker(
     name: 'files-copy',
 );
 
-$sizeBytes = benchFilesSizeBytes(default: 1_048_576);
+$sizeBytes = benchFilesSizeBytes(defaultBytes: 1_048_576);
 $directory = benchFilesDirectory(name: 'copy');
 $total     = $benchmarker->getTotal();
 

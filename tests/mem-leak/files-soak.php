@@ -273,8 +273,8 @@ while ((microtime(true) - $startTime) < $durationSeconds) {
 
     $heapBytes     = memory_get_usage(true);
     $residentNow   = $residentBytes();
-    $heapGrowth    = $baselineHeap === 0 ? 0 : $heapBytes - $baselineHeap;
-    $residentGrow  = $baselineResident === 0 ? 0 : $residentNow - $baselineResident;
+    $heapGrowthBytes = $baselineHeap === 0 ? 0 : $heapBytes - $baselineHeap;
+    $residentGrowthBytes = $baselineResident === 0 ? 0 : $residentNow - $baselineResident;
     $descriptors   = count(glob('/proc/self/fd/*') ?: []);
     $elapsed       = (int) (microtime(true) - $startTime);
 
@@ -287,9 +287,9 @@ while ((microtime(true) - $startTime) < $durationSeconds) {
         $elapsed,
         $iteration,
         $heapBytes / 1024 / 1024,
-        $heapGrowth / 1024 / 1024,
+        $heapGrowthBytes / 1024 / 1024,
         $residentNow / 1024 / 1024,
-        $residentGrow / 1024 / 1024,
+        $residentGrowthBytes / 1024 / 1024,
         $descriptors,
     );
 }

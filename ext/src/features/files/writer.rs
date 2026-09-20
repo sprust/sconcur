@@ -48,6 +48,62 @@ fn state_key(id: &str) -> String {
     format!("{STATE_KEY_PREFIX}{id}")
 }
 
+/// Holds a writer id claimed for an open that has not finished, and gives it
+/// back however the open ends.
+///
+/// A guard rather than a `release()` on each path: there were five of them, one
+/// was missed, and a claim that is never given back makes that id unusable for
+/// the life of the process. Drop also covers a panic, which no amount of
+/// remembering does.
+struct Claim {
+    id: String,
+    held: bool,
+}
+
+impl Claim {
+    fn keep(mut self) {
+        self.held = false;
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        if self.held {
+            registries().release(&self.id);
+        }
+    }
+}
+
+/// Raises a session's poison flag when it is dropped, unless it was disarmed
+/// first.
+///
+/// This is what lets the flag mean what it says. Raising it before a write and
+/// lowering it after looked equivalent and was not: the flag was then true for
+/// the whole duration of a HEALTHY write, so anything reading it from outside
+/// the file mutex could not tell a chunk in progress from a chunk that broke. A
+/// close that landed during someone else's write read it as "broken", refused,
+/// and let the cleanup delete a file whose every byte had been acknowledged.
+///
+/// A future that is dropped mid-write runs this; one that returns disarms it.
+struct PoisonOnDrop<'a> {
+    flag: &'a AtomicBool,
+    armed: bool,
+}
+
+impl PoisonOnDrop<'_> {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PoisonOnDrop<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.flag.store(true, Ordering::Release);
+        }
+    }
+}
+
 /// A close that did not happen, and whether trying again could change that.
 #[derive(Debug)]
 struct Failure {
@@ -124,19 +180,27 @@ impl Session {
             ));
         };
 
-        self.poisoned.store(true, Ordering::Release);
+        // Armed for the duration of the write and disarmed the moment it
+        // returns, so the flag is raised by an interruption and by nothing else.
+        let mut sentinel = PoisonOnDrop {
+            flag: &self.poisoned,
+            armed: true,
+        };
 
-        // Lowered only on success. write_all can have handed part of the chunk
-        // to the pool before the error surfaces, and the total below is never
-        // advanced for a failed write — so a session that stayed usable after
-        // one would go on to report a total smaller than the file.
         let written = file.write_all(chunk).await;
 
+        sentinel.disarm();
+
         if let Err(error) = written {
+            // Raised deliberately rather than by the sentinel: write_all can
+            // have handed part of the chunk to the pool before the error
+            // surfaced, and the total below is never advanced for a failed
+            // write — so a session that stayed usable would go on to report a
+            // total smaller than the file.
+            self.poisoned.store(true, Ordering::Release);
+
             return Err(io_message("write", &self.path, &error));
         }
-
-        self.poisoned.store(false, Ordering::Release);
 
         Ok(self.written.fetch_add(chunk.len() as u64, Ordering::Relaxed) + chunk.len() as u64)
     }
@@ -149,16 +213,24 @@ impl Session {
     /// them. A writer whose chunk was cut off is, because the file holds bytes
     /// no total accounts for and no further call can make that true again.
     async fn finish(&self) -> std::result::Result<u64, Failure> {
-        // Both of these happen before the lock is asked for, and the order is
-        // load-bearing.
-        //
-        // The poison is checked first because a writer cut off mid-chunk is the
-        // one whose file must still go, so `closing` must not be raised for it.
-        // And `closing` is raised before the await, because waiting for the lock
-        // is an await: a close parked behind another coroutine's write used to
-        // let the flow's cleanup run with the flag still down and delete a file
-        // whose every chunk had been acknowledged.
+        // Raised before the lock is awaited, because waiting for it IS an await:
+        // a close parked behind another coroutine's chunk must already be
+        // visible to the cleanup, or a flow ending in that window deletes a file
+        // whose every chunk was acknowledged.
+        self.closing.store(true, Ordering::Release);
+
+        let mut guard = self.file.lock().await;
+
+        // Read under the lock, never before it. Outside the lock the flag cannot
+        // be told apart from a chunk that is merely in flight — which is what an
+        // earlier version got wrong, refusing every close that overlapped a
+        // healthy write and then letting the cleanup remove its file.
         if self.poisoned.load(Ordering::Acquire) {
+            // Given back so the abandoned-writer rule applies again: a file
+            // holding bytes no total describes is one this writer must not leave
+            // behind if it created it.
+            self.closing.store(false, Ordering::Release);
+
             return Err(Failure::terminal(fail(
                 Kind::State,
                 &format!(
@@ -168,11 +240,9 @@ impl Session {
             )));
         }
 
-        self.closing.store(true, Ordering::Release);
-
-        let mut guard = self.file.lock().await;
-
         let Some(file) = guard.as_mut() else {
+            self.closing.store(false, Ordering::Release);
+
             return Err(Failure::terminal(fail(
                 Kind::State,
                 &format!("the writer for {} is closed", self.path),
@@ -204,21 +274,26 @@ impl Session {
     /// Gives the file up without finishing it. Called when the flow ends under
     /// a writer nobody closed.
     async fn abandon(&self) {
-        let taken = self.file.lock().await.take();
+        let mut guard = self.file.lock().await;
+
+        let taken = guard.take();
+
+        // Decided under the lock: finish() lowers `closing` while holding it, so
+        // a decision made after letting go could rest on a flag that has since
+        // changed.
+        let remove = !self.completed.load(Ordering::Acquire)
+            && !self.closing.load(Ordering::Acquire)
+            && self.created_by_us;
 
         drop(taken);
-
-        if self.completed.load(Ordering::Acquire)
-            || self.closing.load(Ordering::Acquire)
-            || !self.created_by_us
-        {
-            return;
-        }
+        drop(guard);
 
         // What is left is a writer nobody ever tried to close, on a file this
         // call created. Only then is removing it the caller's own intent
         // finished rather than their data taken.
-        let _ = tokio::fs::remove_file(&self.path).await;
+        if remove {
+            let _ = tokio::fs::remove_file(&self.path).await;
+        }
     }
 }
 
@@ -382,6 +457,11 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
         return;
     }
 
+    let claim = Claim {
+        id: parameters.id.clone(),
+        held: true,
+    };
+
     let created_by_us = creates_the_file(&parameters.mode);
 
     // open_bounded owns the deadline path: a file the pool creates after the
@@ -399,17 +479,11 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
     let file = match opened {
         Some(Ok(file)) => file,
         Some(Err(text)) => {
-            registries().release(&parameters.id);
-
             task.add_result(Result::error(message, text)).await;
 
             return;
         }
-        None => {
-            registries().release(&parameters.id);
-
-            return;
-        }
+        None => return,
     };
 
     let session = Arc::new(Session {
@@ -450,7 +524,6 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
         || {},
     ) {
         registries().remove(&parameters.id);
-        registries().release(&parameters.id);
 
         remove_if_created(&parameters.path, created_by_us).await;
 
@@ -466,6 +539,7 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
     // writer that answered "finished" here would be closed and its file removed
     // before the first chunk arrived. PHP releases the flow itself when the
     // writer closes — the same bargain a SQL transaction makes.
+    claim.keep();
     registries().release(&parameters.id);
 
     task.add_result(Result::success_with_next(
@@ -476,9 +550,9 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
     .await;
 }
 
-/// Removes a file this call created and could not hand over. Unlike
-/// drop_partial there is no "did the open succeed" question here: these paths
-/// are reached only once it has.
+/// Removes a file this call created and could not hand over. Whether the open
+/// succeeded is not a question on these paths — they are reached only once it
+/// has, so the mode rule is all that is left.
 async fn remove_if_created(path: &str, created_by_us: bool) {
     if !created_by_us {
         return;
@@ -755,6 +829,77 @@ mod tests {
 
         let _ = tokio::fs::remove_file(&poisoned).await;
         let _ = tokio::fs::remove_file(&closed).await;
+    }
+
+    /// The invariant the whole PoisonOnDrop guard exists for, and the one whose
+    /// absence cost a finished file: a chunk that is merely RUNNING must not
+    /// make the session look broken.
+    ///
+    /// Driven one poll at a time rather than raced, so "in flight" is a moment
+    /// this test owns. Put the flag back to being raised before the write and
+    /// lowered after — which is what it used to do — and the assertion in the
+    /// middle fails.
+    #[tokio::test]
+    async fn a_chunk_in_flight_does_not_look_like_a_broken_one() {
+        let path = fixture_path().await;
+        let session = session(&path, true).await;
+
+        let chunk = vec![b'x'; 8 * 1024 * 1024];
+        let mut writing = Box::pin(session.write(&chunk));
+
+        assert!(
+            futures_util::poll!(&mut writing).is_pending(),
+            "the chunk should still be running after one poll"
+        );
+
+        assert!(
+            !session.poisoned.load(Ordering::Acquire),
+            "a chunk that is merely running must not raise the poison flag"
+        );
+
+        assert!(writing.await.is_ok());
+
+        assert!(
+            !session.poisoned.load(Ordering::Acquire),
+            "a chunk that succeeded must not leave the flag raised"
+        );
+
+        // And the close that follows must be accepted rather than called
+        // terminal, which is the failure the caller actually saw.
+        assert!(session.finish().await.is_ok());
+
+        session.abandon().await;
+
+        assert!(
+            tokio::fs::metadata(&path).await.is_ok(),
+            "the file was removed after an acknowledged close"
+        );
+
+        tokio::fs::remove_file(&path).await.unwrap();
+    }
+
+    /// A poisoned session cannot be closed, and its file still goes if it
+    /// created it — the two halves of the rule, on one session.
+    #[tokio::test]
+    async fn a_poisoned_session_is_terminal_and_loses_its_file() {
+        let path = fixture_path().await;
+        let session = session(&path, true).await;
+
+        session.write(b"good").await.unwrap();
+
+        // What a chunk cut off mid-write leaves behind, without racing one.
+        session.poisoned.store(true, Ordering::Release);
+
+        let failure = session.finish().await.unwrap_err();
+
+        assert!(failure.terminal);
+        assert!(failure.text.starts_with("files[state]:"), "{}", failure.text);
+
+        // The refused close must not have claimed the file: `closing` is given
+        // back so the abandon rule still applies.
+        session.abandon().await;
+
+        assert!(tokio::fs::metadata(&path).await.is_err());
     }
 
     #[test]

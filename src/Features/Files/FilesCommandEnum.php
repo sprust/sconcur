@@ -35,7 +35,10 @@ enum FilesCommandEnum: string
     /** Copies a file inside the extension; the bytes never cross the boundary. Rust: payloads::CopyParams. */
     case Copy = 'cp';
 
-    /** Renames a file, falling back to copy-and-remove across devices. Rust: payloads::MoveParams. */
+    /**
+     * Renames a file; across devices, copies through a temporary beside the destination
+     * and renames that into place. Rust: payloads::MoveParams.
+     */
     case Move = 'mv';
 
     /** Removes a file. Rust: payloads::DeleteParams. */

@@ -22,7 +22,7 @@ $benchmarker = new Benchmarker(
     name: 'files-read',
 );
 
-$sizeBytes = benchFilesSizeBytes(default: 1_048_576);
+$sizeBytes = benchFilesSizeBytes(defaultBytes: 1_048_576);
 $directory = benchFilesDirectory(name: 'read');
 $total     = $benchmarker->getTotal();
 

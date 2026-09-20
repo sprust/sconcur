@@ -22,8 +22,10 @@ use super::{
 };
 use super::payloads;
 
-/// The copy granularity when the caller names none (64 KiB, as HttpClient's
-/// download uses), and the ceiling a caller may raise it to.
+/// The copy granularity when the caller names none, and the ceiling a caller
+/// may raise it to. 64 KiB is the size HttpClient reads a response body in
+/// (HttpClientOptions::$chunkSize), borrowed for want of a better reason to
+/// pick a number.
 const DEFAULT_COPY_BUFFER_BYTES: usize = 65_536;
 const MAX_COPY_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
@@ -32,8 +34,9 @@ const MAX_COPY_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 /// misreported one would otherwise be handed straight to the allocator.
 const READ_PREALLOCATION_CAP_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Distinguishes the temporary files of two atomic writes racing on the same
-/// path from the same process.
+/// Distinguishes the temporary files this feature draws — an atomic write's, a
+/// cross-device move's, and the test fixtures' — when two of them land on the
+/// same path from the same process.
 static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// The bytes of a value PHP packed as a string.
@@ -44,10 +47,11 @@ static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub fn bytes_of(value: rmpv::Value) -> std::result::Result<Vec<u8>, String> {
     match value {
         rmpv::Value::Binary(bytes) => Ok(bytes),
-        rmpv::Value::String(text) => match text.into_str() {
-            Some(text) => Ok(text.into_bytes()),
-            None => Err("contents are not valid text".to_string()),
-        },
+        // into_bytes, not into_str: a msgpack `str` is not required to be valid
+        // UTF-8, and a file's contents least of all. Refusing one is how a
+        // binary write would have failed depending on which form the packer
+        // happened to choose — which is the very thing reading both avoids.
+        rmpv::Value::String(text) => Ok(text.into_bytes()),
         other => Err(format!("contents must be a string, got {other}")),
     }
 }
@@ -287,8 +291,7 @@ pub async fn write(task: &Task, envelope: &mut payloads::Envelope) {
             ))
             .await;
         }
-        // The file is open by now, so the question drop_partial asks about the
-        // open is settled — what is left is the mode rule.
+        // The file is open by now, so the only question left is the mode rule.
         Some(Err(text)) => {
             remove_if_created(&parameters.path, created_by_us).await;
 
@@ -353,41 +356,52 @@ pub async fn write_atomic(task: &Task, envelope: &mut payloads::Envelope) {
         }
     };
 
+    // A rename replaces the destination's inode, so the new file's permissions
+    // are whatever the temporary was created with. Without this, an atomic write
+    // over a 0600 secret would leave it 0644 — the operation would quietly widen
+    // the rights on the file it exists to update safely. The caller's own bits
+    // win when it names any.
+    let inherited = match permissions {
+        0 => mode_of(&path).await.unwrap_or(0o644),
+        chosen => chosen,
+    };
+
+    // 0600 through the open. The real bits are set on the handle below, because
+    // the mode an open carries is narrowed by the process umask — inheriting
+    // 0664 would quietly become 0644 under the usual umask 022.
+    let mut options = std::fs::OpenOptions::new();
+
+    options.write(true).create_new(true);
+
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+
+    // Through open_bounded like every other create: a temporary the blocking
+    // pool finishes after the deadline is removed by its detached cleanup, and
+    // the inline version this used to be left one behind on every timed-out
+    // atomic write.
+    let opened = open_bounded(
+        task,
+        envelope.timeout_ms,
+        options,
+        temporary_path.clone(),
+        true,
+    )
+    .await;
+
+    let mut file = match opened {
+        Some(Ok(file)) => file,
+        Some(Err(text)) => {
+            task.add_result(Result::error(message, text)).await;
+
+            return;
+        }
+        None => return,
+    };
+
     let work = {
         let temporary_path = temporary_path.clone();
 
         async move {
-            // A rename replaces the destination's inode, so the new file's
-            // permissions are whatever the temporary was created with. Without
-            // this, an atomic write over a 0600 secret would leave it 0644 —
-            // the operation would quietly widen the rights on the file it exists
-            // to update safely. The caller's own bits win when it names any.
-            let existing = tokio::fs::metadata(&path).await.ok();
-
-            let permissions = match (permissions, &existing) {
-                (0, Some(metadata)) => {
-                    std::os::unix::fs::PermissionsExt::mode(&metadata.permissions()) & 0o7777
-                }
-                (0, None) => 0o644,
-                (chosen, _) => chosen,
-            };
-
-            let mut options = tokio::fs::OpenOptions::new();
-
-            options.write(true).create_new(true);
-
-            // 0600 through the open, and the real bits set explicitly below:
-            // the mode an open carries is narrowed by the process umask, so
-            // inheriting 0664 from the destination would quietly become 0644
-            // under the usual umask 022 — a group-writable file silently
-            // narrowed on every atomic update.
-            options.mode(0o600);
-
-            let mut file = options
-                .open(&temporary_path)
-                .await
-                .map_err(|error| io_message("open", &temporary_path, &error))?;
-
             file.write_all(&contents)
                 .await
                 .map_err(|error| io_message("write", &temporary_path, &error))?;
@@ -400,11 +414,15 @@ pub async fn write_atomic(task: &Task, envelope: &mut payloads::Envelope) {
                 .await
                 .map_err(|error| io_message("sync", &temporary_path, &error))?;
 
-            drop(file);
-
-            tokio::fs::set_permissions(&temporary_path, std::fs::Permissions::from_mode(permissions))
+            // fchmod through the handle, not chmod by path: the destination's
+            // directory may be one another user can write, and a path-based
+            // chmod after the handle is closed can be redirected by replacing
+            // the name with a symlink.
+            file.set_permissions(std::fs::Permissions::from_mode(inherited))
                 .await
                 .map_err(|error| io_message("set permissions on", &temporary_path, &error))?;
+
+            drop(file);
 
             tokio::fs::rename(&temporary_path, &path)
                 .await
@@ -605,9 +623,11 @@ pub async fn copy(task: &Task, envelope: &mut payloads::Envelope) {
     }
 }
 
-/// Renames a file, falling back to a copy and a delete when the two paths are
-/// on different filesystems — where rename(2) answers EXDEV and PHP's own
-/// rename() does the same fallback.
+/// Renames a file. Across filesystems — where rename(2) answers EXDEV — it
+/// copies through a temporary beside the destination and renames that into
+/// place, so a failure at any point before the rename leaves the destination as
+/// it was. PHP's own rename() falls back too, but copies straight onto the
+/// destination.
 pub async fn move_file(task: &Task, envelope: &mut payloads::Envelope) {
     let message = task.message();
     let start_time = Instant::now();
@@ -722,14 +742,19 @@ pub async fn move_file(task: &Task, envelope: &mut payloads::Envelope) {
             // way write_atomic's rename does; a new one takes the source's.
             // Set explicitly rather than through the open, which the umask
             // narrows.
-            let mode = mode_of(&destination)
-                .await
-                .or(mode_of(&source).await)
-                .unwrap_or(0o644);
+            // Matched rather than `or`, which would await the source's stat
+            // even when the destination answered.
+            let mode = match mode_of(&destination).await {
+                Some(mode) => mode,
+                None => mode_of(&source).await.unwrap_or(0o644),
+            };
 
-            let _ =
-                tokio::fs::set_permissions(&temporary_path, std::fs::Permissions::from_mode(mode))
-                    .await;
+            // fchmod through the handle the copy still owns, for the reason the
+            // O_EXCL above exists: this directory may be one another user can
+            // write, and a chmod by path can be pointed at something else.
+            let _ = writer.get_ref().set_permissions(std::fs::Permissions::from_mode(mode)).await;
+
+            drop(writer);
 
             tokio::fs::rename(&temporary_path, &destination)
                 .await
@@ -767,11 +792,16 @@ pub async fn move_file(task: &Task, envelope: &mut payloads::Envelope) {
 }
 
 /// The permission bits of a path, if it has any.
+///
+/// Masked to 0o777, so setuid and setgid are dropped. A cross-device move
+/// re-creates the file under this process's ownership, and carrying 04755
+/// across would make it setuid to the wrong user — a privilege the original
+/// owner granted and this one did not.
 async fn mode_of(path: &str) -> Option<u32> {
     tokio::fs::metadata(path)
         .await
         .ok()
-        .map(|metadata| metadata.permissions().mode() & 0o7777)
+        .map(|metadata| metadata.permissions().mode() & 0o777)
 }
 
 /// Removes a file. With missing_ok a path that is not there is a success, which
@@ -832,18 +862,32 @@ fn temporary_sibling(path: &str) -> String {
 
     // NAME_MAX is 255 on every filesystem this runs on; the directory part is
     // not the limit, the basename is.
+    // The directory keeps its trailing slash when it is the root, so "/a.json"
+    // gives "/" and not "". Losing that turned an absolute destination into a
+    // RELATIVE temporary in the process's working directory — which is on
+    // another filesystem as often as not, so the rename that follows failed
+    // EXDEV and the atomicity the whole function exists for was gone.
     let (directory, name) = match path.rsplit_once('/') {
+        Some(("", name)) => ("/", name),
         Some((directory, name)) => (directory, name),
         None => ("", path),
     };
 
+    // NAME_MAX counts bytes, not characters, so the truncation does too — and
+    // on a char boundary, or the name stops being a name.
     let room = 255usize.saturating_sub(suffix.len());
-    let kept: String = name.chars().take(room).collect();
+    let mut kept = name.len().min(room);
 
-    if directory.is_empty() {
-        format!("{kept}{suffix}")
-    } else {
-        format!("{directory}/{kept}{suffix}")
+    while kept > 0 && !name.is_char_boundary(kept) {
+        kept -= 1;
+    }
+
+    let kept = &name[..kept];
+
+    match directory {
+        "" => format!("{kept}{suffix}"),
+        "/" => format!("/{kept}{suffix}"),
+        directory => format!("{directory}/{kept}{suffix}"),
     }
 }
 
@@ -884,13 +928,34 @@ mod tests {
 
     #[test]
     fn a_temporary_leaves_room_for_its_suffix() {
-        let long = "/tmp/".to_string() + &"n".repeat(250);
-        let temporary = temporary_sibling(&long);
+        // Bytes, not characters: a Cyrillic name is two bytes a letter, and
+        // counting characters produced a 429-byte name that still failed
+        // ENAMETOOLONG.
+        for name in ["n".repeat(250), "и".repeat(250)] {
+            let temporary = temporary_sibling(&format!("/tmp/{name}"));
+            let basename = temporary.rsplit_once('/').unwrap().1;
 
-        let name = temporary.rsplit_once('/').unwrap().1;
+            assert!(basename.len() <= 255, "{} bytes", basename.len());
+            assert!(basename.ends_with(".sconcur-tmp"));
+        }
+    }
 
-        assert!(name.len() <= 255, "{} characters", name.len());
-        assert!(name.ends_with(".sconcur-tmp"));
+    /// A temporary that is not a sibling is not a temporary: the rename that
+    /// follows it is atomic only within one filesystem. Drop the root case and
+    /// "/data.json" yields a relative name in the working directory.
+    #[test]
+    fn a_temporary_is_a_sibling_even_at_the_root() {
+        for path in ["/data.json", "/tmp/data.json", "/a/b/data.json"] {
+            let temporary = temporary_sibling(path);
+
+            let expected = path.rsplit_once('/').unwrap().0;
+            let expected = if expected.is_empty() { "/" } else { expected };
+
+            let actual = temporary.rsplit_once('/').unwrap().0;
+            let actual = if actual.is_empty() { "/" } else { actual };
+
+            assert_eq!(actual, expected, "{path} -> {temporary}");
+        }
     }
 
     #[test]
@@ -901,10 +966,9 @@ mod tests {
         );
     }
 
-    /// The rule that replaced drop_partial's "did the open succeed" question:
-    /// only a write that CREATED the file may remove it. Undo it and a Replace
-    /// that runs out of disk deletes the file it was replacing — the caller
-    /// loses the old contents as well as the new.
+    /// The rule the whole feature keeps: only a write that CREATED the file may
+    /// remove it. Undo it and a Replace that runs out of disk deletes the file
+    /// it was replacing — the caller loses the old contents as well as the new.
     #[tokio::test]
     async fn a_replace_over_an_existing_file_is_never_removed() {
         let path = fixture_path("drop-replace").await;

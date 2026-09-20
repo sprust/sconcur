@@ -1,10 +1,10 @@
 //! The files feature: PHP's blocking file functions, done on the runtime.
 //!
-//! Every syscall here goes through tokio::fs, which is not a style choice. The
+//! No syscall here runs on a runtime thread, which is not a style choice. The
 //! core builds its runtime with one worker thread by default (core.rs), so a
 //! synchronous read would stand in front of everything else the process is
-//! doing — the HTTP server of the same worker included. tokio::fs hands each
-//! call to the blocking pool instead, which is what leaves the runtime free.
+//! doing — the HTTP server of the same worker included. Everything goes to the
+//! blocking pool instead, which is what leaves the runtime free.
 //!
 //! There must be no blocking filesystem call on a runtime thread here: either
 //! tokio::fs, or the standard library inside a spawn_blocking, and nothing
@@ -426,14 +426,36 @@ mod tests {
         assert!(std_write_options("w", 0o644).is_none());
     }
 
-    #[test]
-    fn a_budget_is_one_deadline_for_a_whole_command() {
-        assert_eq!(Budget::new(0).remaining_ms(), 0);
+    /// A budget that ignored the clock would pass the obvious assertions, so
+    /// this one spends time and watches it come off.
+    #[tokio::test]
+    async fn a_budget_is_spent_as_the_command_runs() {
+        // No deadline stays no deadline however long the command takes.
+        let unbounded = Budget::new(0);
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert_eq!(unbounded.remaining_ms(), 0);
 
         let budget = Budget::new(1_000);
+        let before = budget.remaining_ms();
 
-        assert!(budget.remaining_ms() <= 1_000);
-        assert!(budget.remaining_ms() >= 1);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let after = budget.remaining_ms();
+
+        assert!(
+            after <= before - 40,
+            "the budget did not shrink: {before} then {after}"
+        );
+
+        // A budget that has run out answers 1 rather than 0, because 0 is the
+        // value that means "no deadline" — spending it must not lift the bound.
+        let spent = Budget::new(1);
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert_eq!(spent.remaining_ms(), 1);
     }
 
     /// Undo this and a failed Replace over an existing file deletes it.

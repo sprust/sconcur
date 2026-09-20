@@ -15,7 +15,7 @@ $benchmarker = new Benchmarker(
     name: 'files-write',
 );
 
-$sizeBytes = benchFilesSizeBytes(default: 1_048_576);
+$sizeBytes = benchFilesSizeBytes(defaultBytes: 1_048_576);
 $directory = benchFilesDirectory(name: 'write');
 $contents  = str_repeat('x', $sizeBytes);
 

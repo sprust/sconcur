@@ -13,11 +13,11 @@ use crate::tasks::Task;
 
 use super::errors::{io_message, message as fail, Kind};
 use super::payloads;
-use super::{bounded, bounded_size, params};
+use super::{bounded, bounded_size, params, Budget};
 use super::read_state::{Mode, ReadState};
 use super::walk_state::WalkState;
 
-/// 64 KiB, the same granularity HttpClient's download copies at.
+/// 64 KiB, the size HttpClient reads a response body in.
 const DEFAULT_BUFFER_BYTES: usize = 65_536;
 const MAX_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
@@ -79,9 +79,13 @@ pub async fn read_chunks(task: &Task, envelope: &mut payloads::Envelope) {
         return;
     };
 
+    // One budget for the whole command. Handing the raw deadline to the open,
+    // the fstat and the first batch in turn let a call asking for one second
+    // legitimately take three.
+    let budget = Budget::new(envelope.timeout_ms);
     let timeout_ms = envelope.timeout_ms;
 
-    let Some(file) = open_for_read(task, timeout_ms, &parameters.path).await else {
+    let Some(file) = open_for_read(task, &budget, &parameters.path).await else {
         return;
     };
 
@@ -97,7 +101,7 @@ pub async fn read_chunks(task: &Task, envelope: &mut payloads::Envelope) {
         file,
     );
 
-    start(task, timeout_ms, Arc::new(state)).await;
+    start(task, budget.remaining_ms(), Arc::new(state)).await;
 }
 
 /// Reads a file as batches of lines.
@@ -107,9 +111,10 @@ pub async fn read_lines(task: &Task, envelope: &mut payloads::Envelope) {
         return;
     };
 
+    let budget = Budget::new(envelope.timeout_ms);
     let timeout_ms = envelope.timeout_ms;
 
-    let Some(file) = open_for_read(task, timeout_ms, &parameters.path).await else {
+    let Some(file) = open_for_read(task, &budget, &parameters.path).await else {
         return;
     };
 
@@ -129,7 +134,7 @@ pub async fn read_lines(task: &Task, envelope: &mut payloads::Envelope) {
         file,
     );
 
-    start(task, timeout_ms, Arc::new(state)).await;
+    start(task, budget.remaining_ms(), Arc::new(state)).await;
 }
 
 /// Walks a directory tree in batches of entries.
@@ -140,11 +145,13 @@ pub async fn walk(task: &Task, envelope: &mut payloads::Envelope) {
         return;
     };
 
+    let budget = Budget::new(envelope.timeout_ms);
     let timeout_ms = envelope.timeout_ms;
 
     // Checked before the walk starts rather than surfacing in the first batch:
     // "not a directory" belongs to the call that named the path.
-    let Some(metadata) = bounded(task, timeout_ms, tokio::fs::metadata(&parameters.path)).await
+    let Some(metadata) =
+        bounded(task, budget.remaining_ms(), tokio::fs::metadata(&parameters.path)).await
     else {
         return;
     };
@@ -184,15 +191,15 @@ pub async fn walk(task: &Task, envelope: &mut payloads::Envelope) {
         task.message_arc(),
     ));
 
-    start(task, timeout_ms, state).await;
+    start(task, budget.remaining_ms(), state).await;
 }
 
 /// Opens a file for a stream, refusing a directory by type rather than letting
 /// the first read fail with something less useful.
-async fn open_for_read(task: &Task, timeout_ms: i64, path: &str) -> Option<tokio::fs::File> {
+async fn open_for_read(task: &Task, budget: &Budget, path: &str) -> Option<tokio::fs::File> {
     let message = task.message();
 
-    let opened = bounded(task, timeout_ms, tokio::fs::File::open(path)).await?;
+    let opened = bounded(task, budget.remaining_ms(), tokio::fs::File::open(path)).await?;
 
     let file = match opened {
         Ok(file) => file,
@@ -204,7 +211,7 @@ async fn open_for_read(task: &Task, timeout_ms: i64, path: &str) -> Option<tokio
         }
     };
 
-    let Some(metadata) = bounded(task, timeout_ms, file.metadata()).await else {
+    let Some(metadata) = bounded(task, budget.remaining_ms(), file.metadata()).await else {
         return None;
     };
 

@@ -6,6 +6,7 @@ namespace SConcur\Features\Files;
 
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\Files\FileStreamClosedException;
+use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\TaskExecutionException;
 use SConcur\Features\FeatureExecutor;
@@ -68,6 +69,16 @@ class FileWriter
 
     /**
      * Hands one chunk over and waits until it is written. Answers with the running total.
+     *
+     * A chunk that did not complete leaves the session unusable — see close() — and the
+     * first call to notice that spends the handle: it gives the flow back and raises
+     * FileStreamClosedException, so a caller retrying in a loop stops crossing the
+     * boundary against a session that can never take another byte.
+     *
+     * The failure of the chunk itself arrives as whatever it was, usually
+     * FileTimeoutException or FileOperationException; it is the call after it that is
+     * refused. A write error may also surface at close() rather than here, because the
+     * extension's buffer is flushed there.
      */
     public function write(string $chunk): int
     {
@@ -86,8 +97,7 @@ class FileWriter
         } catch (FileStreamClosedException $exception) {
             // The session cannot take another byte — it was left inconsistent by an
             // interrupted chunk, or it is gone. Spending the handle here is what stops a
-            // caller's retry loop from making a boundary crossing per attempt for ever,
-            // and gives the flow back instead of holding it until the object is collected.
+            // caller's retry loop from making a boundary crossing per attempt for ever.
             $this->release();
 
             throw $exception;
@@ -102,6 +112,8 @@ class FileWriter
      * A close that ran out of time or hit a transient error can be tried again: the
      * extension keeps the session and its open file for exactly that, and the file is
      * not removed — every chunk had been handed over and only the flush was in doubt.
+     * The retry runs under the deadline openWriter() was given, which is the one that
+     * just failed; there is no way to widen it for the second attempt.
      *
      * Anything else is terminal. A writer whose chunk was cut off holds bytes no total
      * accounts for, and one whose session is already gone has nothing left to close; in
@@ -127,11 +139,6 @@ class FileWriter
             throw $exception;
         }
 
-        // The extension has closed the session by the time it answers, so the handle is
-        // spent whatever the decoding below makes of the answer. Releasing after that —
-        // which this used to do — left a failed decode with an open handle and a flow
-        // held for a session that was already gone.
-        //
         // After the close answered, never before: releasing the flow is what tells the
         // extension the session was abandoned, and doing it first would have it clean up
         // the very session that was being finished.
@@ -145,6 +152,10 @@ class FileWriter
     /**
      * Marks the handle spent and gives the synchronous flow back. Idempotent, because
      * the destructor runs it too.
+     *
+     * The flow part only does something outside a coroutine: a coroutine's flow belongs
+     * to its WaitGroup and ends with it, so there is nothing here to give back. Marking
+     * the handle spent matters on both paths.
      */
     protected function release(): void
     {
@@ -188,7 +199,15 @@ class FileWriter
     {
         $decoded = MessagePackTransport::unpack($result->payload);
 
-        return (int) ($decoded['n'] ?? 0);
+        if (!array_key_exists('n', $decoded)) {
+            // Refused rather than read as zero, which would reset a correct running
+            // total — see Files::field() for the rest of the reasoning.
+            throw new UnexpectedResponseFormatException(
+                message: "The writer result carries no 'n' field.",
+            );
+        }
+
+        return (int) $decoded['n'];
     }
 
     /**

@@ -320,12 +320,22 @@ pub async fn temporary_file(task: &Task, envelope: &mut payloads::Envelope) {
         let mut last_error = None;
 
         for _ in 0..TEMPORARY_NAME_ATTEMPTS {
+            // The nanosecond clock goes into the name for the same reason the
+            // atomic write's sibling carries one: O_EXCL stops a neighbour
+            // redirecting the file, but a fully predictable name still lets one
+            // occupy the next ten and make this fail.
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.subsec_nanos())
+                .unwrap_or(0);
+
             let path = format!(
-                "{}/{}{}-{}{}",
+                "{}/{}{}-{}-{:08x}{}",
                 directory.trim_end_matches('/'),
                 prefix,
                 std::process::id(),
                 TEMPORARY_COUNTER.fetch_add(1, Ordering::Relaxed),
+                nanos,
                 suffix,
             );
 
@@ -337,11 +347,11 @@ pub async fn temporary_file(task: &Task, envelope: &mut payloads::Envelope) {
 
             match options.open(&path) {
                 Ok(file) => {
-                    // Set explicitly as well: the mode an open carries is
-                    // narrowed by the process umask, and a temporary file asked
-                    // for at 0600 must be 0600.
-                    let _ =
-                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(permissions));
+                    // Through the handle, not the path: the mode an open carries
+                    // is narrowed by the process umask, and a temporary file
+                    // asked for at 0600 must be 0600 — while a chmod by name in
+                    // a directory anyone can write can be pointed elsewhere.
+                    let _ = file.set_permissions(std::fs::Permissions::from_mode(permissions));
 
                     drop(file);
 

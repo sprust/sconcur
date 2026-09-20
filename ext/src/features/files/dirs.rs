@@ -82,8 +82,9 @@ pub fn encode_entries(entries: &[Entry]) -> Vec<u8> {
 /// One caveat that comes with the single trip: the whole directory is read
 /// inside one blocking task, so a deadline answers the caller while that task
 /// keeps a pool thread until the filesystem is done with it. A handful of huge
-/// `withMetadata` listings on a slow mount can therefore hold several of the 64
-/// threads (`SCONCUR_BLOCKING_THREADS`). The walk splits a tree across batches
+/// `withMetadata` listings on a slow mount can therefore hold several threads of
+/// the process's blocking pool (`SCONCUR_BLOCKING_THREADS`, tokio's 512 by
+/// default). The walk splits a tree across batches
 /// for that reason; a single directory is the unit that is not split.
 pub async fn read_directory(
     path: String,

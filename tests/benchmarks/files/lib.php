@@ -29,6 +29,8 @@ function benchFilesDirectory(string $name): string
 
 /**
  * Writes $count files of $sizeBytes each and answers with their paths.
+ *
+ * @return list<string>
  */
 function benchFilesSeed(string $directory, string $prefix, int $count, int $sizeBytes): array
 {
@@ -73,9 +75,9 @@ function benchFilesRemove(string $path): void
  * than a constant: a kilobyte says the boundary costs more than the work, a hundred
  * megabytes says the opposite.
  */
-function benchFilesSizeBytes(int $default): int
+function benchFilesSizeBytes(int $defaultBytes): int
 {
     $configured = (int) (getenv('SCONCUR_BENCH_FILE_BYTES') ?: 0);
 
-    return $configured > 0 ? $configured : $default;
+    return $configured > 0 ? $configured : $defaultBytes;
 }

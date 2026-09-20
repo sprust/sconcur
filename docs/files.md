@@ -76,8 +76,9 @@ it created (see below); a read or a walk has nothing to remove and simply stops.
 
 That pool is the process's, not the feature's: name resolution and anything else
 that hands over blocking work share it. It is left at tokio's own 512 threads for
-that reason, and `SCONCUR_BLOCKING_THREADS` changes it — lowering it to bound a
-file fan-out bounds DNS in the same breath.
+that reason, and `SCONCUR_BLOCKING_THREADS` changes it — lowering it to cap how
+many file operations run at the same time caps name resolution in the same
+breath.
 
 ## Reading and writing
 
@@ -159,16 +160,23 @@ Files::truncate(path: $path, sizeBytes: 0);
 boundary. It takes the same `mode` and `permissions`, plus a `bufferSizeBytes`
 that tunes the copy granularity — 64 KiB by default, 8 MiB at most.
 
-`move` renames within one filesystem and copies-then-renames across two, which
-is what PHP's `rename()` does as well. It replaces an existing destination and
+`move` renames within one filesystem. It replaces an existing destination and
 has no mode to refuse one: `rename(2)` replaces, the portable alternative does
 not exist, and a check followed by a rename would be a race dressed up as a
-guarantee.
+guarantee. The destination's inode is replaced by the source's, so it ends up
+with the source's permissions.
 
 Across filesystems the copy goes to a temporary beside the destination and is
-renamed into place, so a failure at any point leaves the destination exactly as
-it was — the move either happens or does not. The destination keeps its own
-permissions; a new one takes the source's.
+renamed into place — PHP's `rename()` falls back too, but copies straight onto
+the destination, which this does not. So a failure before that rename leaves the
+destination exactly as it was, and the destination keeps its own permissions
+where PHP's fallback would not. Setuid and setgid are dropped: the copy belongs
+to whoever this process runs as, and a bit granted to the original owner is not
+the new one's to inherit.
+
+One step is not covered by that: the source is removed after the rename has
+landed. A failure there leaves the destination replaced and the source still in
+place, and says so.
 
 `truncate` past the end of the file grows it with zeroes, as `ftruncate()` does.
 
@@ -227,6 +235,13 @@ does not carry one.
 literally: `0` there is `chmod 000`. Every other command takes them optionally
 and reads `0` as "the usual default" — 0644 for a file, 0755 for a directory,
 0600 for a temporary one, and the destination's own bits for `writeAtomic`.
+
+The umask narrows them where the mode rides on the open — `write`, `copy`,
+`openWriter`, `touch`, `makeDirectory` — and does not where the file is chmod'ed
+after it is created: `writeAtomic`, `temporaryFile`, and the temporary a
+cross-device `move` renames into place. Those three exist to produce a file with
+exactly the mode asked for, and a umask narrowing a 0600 secret or an inherited
+0664 would defeat the point.
 
 ```php
 Files::exists(path: $path);
@@ -334,10 +349,11 @@ goes; `batchEntries` (200 by default) is how many entries a crossing carries,
 and `withMetadata` works as it does for `list` — without it an entry costs no
 stat and its size and time are `null`.
 
-A batch also stops after examining ten thousand entries, even if the pattern
-matched none of them, and answers an empty one that says there is more. Without
-that, a pattern matching nothing would walk a whole tree inside a single batch,
-where neither a deadline nor a stop could reach it.
+A batch also stops after examining ten thousand entries, and answers with what
+it has — which is nothing at all when the pattern matched nothing — saying there
+is more. Without that, a pattern matching nothing would walk a whole tree inside
+a single batch, where neither a deadline nor a stop could reach it. So a batch
+can be shorter than `batchEntries` asked for; it is never longer.
 
 Directory symlinks are listed but never descended into. That is deliberate: a
 tree with a link back into an ancestor has no end. A subdirectory that cannot be
@@ -406,7 +422,7 @@ catches.
 | --- | --- |
 | `FileNotFoundException` | the path is not there |
 | `FilePermissionException` | the process may not do this to it |
-| `FileAlreadyExistsException` | the destination is taken and the mode forbids replacing it |
+| `FileAlreadyExistsException` | the path is taken and nothing was allowed to replace it: a write or copy in `Create` mode, or `makeDirectory()` without `recursive` |
 | `UnexpectedFileTypeException` | a directory where a file was wanted, or the other way round, or a directory that still holds entries |
 | `FileTooLargeException` | the read's range is over `maxReadBytes`, or a line is over `maxLineBytes` |
 | `FileTimeoutException` | the deadline ran out |
@@ -416,12 +432,12 @@ catches.
 | `InvalidFileArgumentException` | the call itself is wrong |
 | `FilesException` | the base class, raised directly when the failure carries no kind this package knows — a core newer than the package, or a failure raised before the core saw the call |
 
-Every one of them descends from `FilesException`, which descends from
-`RuntimeException` — a missing file and a full disk are runtime conditions
-whatever the caller does — with one exception on purpose.
-`InvalidFileArgumentException` is a `LogicException` and sits outside that tree:
-a negative length or an unknown algorithm is a bug in the code, and a handler
-written for the filesystem's own failures must not swallow it.
+Apart from `InvalidFileArgumentException`, everything in that table is a
+`FilesException`, which is a `RuntimeException`: a missing file and a full disk
+are runtime conditions whatever the caller does.
+`InvalidFileArgumentException` is a `LogicException` and sits outside that tree
+on purpose — a negative length or an unknown algorithm is a bug in the code, and
+a handler written for the filesystem's own failures must not swallow it.
 
 ## What the feature does not do
 

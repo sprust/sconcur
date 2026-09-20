@@ -6,7 +6,7 @@ namespace SConcur\Tests\Feature\Features\Files;
 
 use ReflectionProperty;
 use SConcur\Exceptions\Files\FileNotFoundException;
-use SConcur\Exceptions\Files\FilesException;
+use SConcur\Exceptions\Files\FileOperationException;
 use SConcur\Exceptions\Files\FileTimeoutException;
 use SConcur\Exceptions\Files\FileTooLargeException;
 use SConcur\Exceptions\Files\FileStreamClosedException;
@@ -597,67 +597,40 @@ class FilesStreamTest extends BaseTestCase
     }
 
     /**
-     * A close that fails because the writer was cut off mid-chunk is terminal: the file
-     * holds bytes no total accounts for, so the handle is spent and the flow given back
-     * rather than held for a retry that cannot help.
+     * A chunk that fails outright leaves the session unusable, and the first call to
+     * find that out spends the handle and gives the flow back — without the caller
+     * having to close anything.
      *
-     * The previous round of this feature claimed the opposite — that every failed close
-     * was retryable — and leaked the flow for as long as the handle lived.
+     * /dev/full answers ENOSPC to every byte, so the failure is the kernel's rather than
+     * a race this test has to win; a chunk this size is past the extension's buffer, so
+     * it fails at the write rather than at the flush.
+     *
+     * Remove the catch in FileWriter::write() and the flow assertion fails: the flow is
+     * held until the handle is collected. The version of this test that came before
+     * raced a 1 ms deadline against a 64 MiB chunk twenty times and passed with the
+     * behaviour it names deleted.
      */
-    public function testACloseAfterACutOffChunkIsTerminalAndGivesTheFlowBack(): void
+    public function testAWriterIsSpentByTheCallThatFindsItsChunkFailed(): void
     {
-        $path = $this->path(name: 'cut-off.bin');
-
         $before = $this->heldSyncFlows();
 
-        // The deadline is taken once, at the open, and bounds every later call — so it
-        // has to be short enough to cut a 64 MiB write and long enough for an open(2),
-        // which are four orders of magnitude apart. One millisecond is both, but the
-        // open can still lose on a busy machine, so the setup is retried rather than
-        // skipped: what is under test is what happens after the chunk is cut.
-        $writer      = null;
-        $interrupted = false;
+        // Append, so nothing is created and nothing has to be cleaned up.
+        $writer = Files::openWriter(path: '/dev/full', mode: FileWriteMode::Append);
 
-        for ($attempt = 0; $attempt < 20 && !$interrupted; ++$attempt) {
-            Files::delete(path: $path, missingOk: true);
+        self::assertSame($before + 1, $this->heldSyncFlows());
 
-            try {
-                $writer = Files::openWriter(
-                    path: $path,
-                    mode: FileWriteMode::Create,
-                    timeoutMs: 1,
-                );
-            } catch (FilesException) {
-                $writer = null;
+        try {
+            $writer->write(chunk: str_repeat('x', 4 * 1024 * 1024));
 
-                continue;
-            }
-
-            self::assertSame($before + 1, $this->heldSyncFlows());
-
-            try {
-                $writer->write(chunk: str_repeat('x', 64 * 1024 * 1024));
-            } catch (FilesException) {
-                $interrupted = true;
-            }
-
-            if (!$interrupted) {
-                // The write landed inside the millisecond. Put the handle back and try
-                // again rather than asserting against a session that is still healthy.
-                $writer->close();
-
-                $writer = null;
-            }
+            self::fail('A four-megabyte write to /dev/full was accepted.');
+        } catch (FileOperationException) {
+            //
         }
 
-        self::assertTrue(
-            $interrupted && $writer !== null,
-            'Could not get a chunk cut off in twenty attempts.',
-        );
+        // The chunk's own failure is not the terminal one: the handle is still open, and
+        // the flow still held, because nothing yet knows the session cannot recover.
+        self::assertSame($before + 1, $this->heldSyncFlows());
 
-        // A further write is refused locally too, so a caller's retry loop does not make
-        // a boundary crossing per attempt against a session that can never take another
-        // byte. Remove the catch in FileWriter::write() and this spins instead.
         try {
             $writer->write(chunk: 'more');
 
@@ -666,21 +639,45 @@ class FilesStreamTest extends BaseTestCase
             //
         }
 
-        try {
-            $writer->close();
-
-            self::fail('A writer cut off mid-chunk was closed as if it were whole.');
-        } catch (FileStreamClosedException) {
-            //
-        }
-
-        // The flow is back even though nobody destroyed the handle, and a second call
-        // refuses locally rather than reaching for a session that is gone.
+        // That call found out, and gave the flow back there — before any close.
         self::assertSame($before, $this->heldSyncFlows());
 
         $this->expectException(FileStreamClosedException::class);
 
         $writer->close();
+    }
+
+    /**
+     * The other half: a close that fails on the flush keeps the session, so it can be
+     * tried again. Nothing tested this before — the docblock promising it rested
+     * entirely on reading the Rust.
+     *
+     * A chunk small enough to sit in the extension's buffer fails at the flush, which is
+     * where close() does its work.
+     */
+    public function testACloseThatFailsOnTheFlushCanBeTriedAgain(): void
+    {
+        $before = $this->heldSyncFlows();
+
+        $writer = Files::openWriter(path: '/dev/full', mode: FileWriteMode::Append);
+
+        $writer->write(chunk: 'small enough to be buffered');
+
+        try {
+            $writer->close();
+
+            self::fail('A close that flushed to /dev/full reported success.');
+        } catch (FileOperationException) {
+            //
+        }
+
+        // Retryable, so the handle is still open and the flow still held for it.
+        self::assertSame($before + 1, $this->heldSyncFlows());
+
+        // And the retry reaches a session that is still there.
+        $writer->close();
+
+        self::assertSame($before, $this->heldSyncFlows());
     }
 
     public function testAWriterCreatesItsFileWithTheGivenPermissions(): void
@@ -690,15 +687,15 @@ class FilesStreamTest extends BaseTestCase
         $writer = Files::openWriter(
             path: $path,
             mode: FileWriteMode::Create,
-            permissions: 0600,
+            permissions: 0640,
         );
 
         $writer->write(chunk: 'x');
         $writer->close();
 
-        clearstatcache(true, $path);
-
-        self::assertSame(0600, Files::stat(path: $path)->permissions);
+        // 0640, not 0600: the usual umask of 022 cannot narrow 0600, so that value
+        // would pass whether or not the permissions reached the extension at all.
+        self::assertSame(0640, Files::stat(path: $path)->permissions);
     }
 
     public function testWalkCanCarryMetadataLikeListDoes(): void
