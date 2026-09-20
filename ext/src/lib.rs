@@ -35,7 +35,7 @@ use types::method::Method;
 /// The extension version the PHP package pins
 /// (Extension::REQUIRED_EXTENSION_VERSION). The spike answers with the same
 /// value so an unmodified package loads it.
-const VERSION: &str = "0.13.1";
+const VERSION: &str = "0.14.0";
 
 // Defined in sconcur.c: atomically requests a VM interrupt on the PHP thread.
 unsafe extern "C" {

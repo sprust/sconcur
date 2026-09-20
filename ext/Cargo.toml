@@ -1,6 +1,6 @@
 [package]
 name    = "sconcur"
-version = "0.13.1"
+version = "0.14.0"
 edition = "2024"
 
 # staticlib, not cdylib: build.sh compiles ext/sconcur.c (the same PHP glue
@@ -22,7 +22,10 @@ libc              = "0.2"
 rmp        = "0.8"
 rmp-serde  = "1.3"
 serde      = { version = "1", features = ["derive"] }
-tokio      = { version = "1", features = ["rt", "rt-multi-thread", "net", "time", "sync", "io-util", "macros"] }
+# "fs" is named here rather than left to feature unification: the files feature
+# is built on tokio::fs, and until it was added this crate compiled against it
+# only because a dependency happened to switch it on.
+tokio      = { version = "1", features = ["rt", "rt-multi-thread", "net", "time", "sync", "io-util", "macros", "fs"] }
 tokio-util = "0.7"
 hyper       = { version = "1", features = ["server", "http1"] }
 hyper-util  = { version = "0.1", features = ["tokio", "server"] }
