@@ -40,7 +40,7 @@ struct Frontier {
 }
 
 pub struct WalkState {
-    pattern: String,
+    pattern: super::pattern::Pattern,
     with_metadata: bool,
     batch_size: usize,
     /// How many entries one batch may examine before answering with what it
@@ -64,7 +64,7 @@ impl WalkState {
         message: Arc<Message>,
     ) -> Self {
         WalkState {
-            pattern,
+            pattern: super::pattern::Pattern::compile(&pattern),
             with_metadata,
             batch_size,
             scan_budget,
@@ -126,7 +126,7 @@ impl WalkState {
                     frontier.remaining.push(entry.path.clone());
                 }
 
-                if super::pattern::matches(&self.pattern, &entry.name) {
+                if self.pattern.matches(&entry.name) {
                     frontier.buffered.push_back(entry);
                 }
             }

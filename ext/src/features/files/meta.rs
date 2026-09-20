@@ -162,7 +162,9 @@ pub async fn chmod(task: &Task, envelope: &mut payloads::Envelope) {
             .await
             .map_err(|error| io_message("chmod", &path, &error))?;
 
-        Ok::<Vec<u8>, String>(encode_text("p", &path))
+        // Nothing to answer with: the caller knows the path it named, and a map
+        // holding it back is a field no reader ever looks at.
+        Ok::<Vec<u8>, String>(Vec::new())
     };
 
     publish(task, envelope, start_time, work).await;
@@ -232,7 +234,7 @@ pub async fn touch(task: &Task, envelope: &mut payloads::Envelope) {
 
         outcome.map_err(|error| io_message("set times on", &path, &error))?;
 
-        Ok::<Vec<u8>, String>(encode_text("p", &path))
+        Ok::<Vec<u8>, String>(Vec::new())
     };
 
     publish(task, envelope, start_time, work).await;

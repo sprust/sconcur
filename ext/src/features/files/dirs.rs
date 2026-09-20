@@ -78,6 +78,13 @@ pub fn encode_entries(entries: &[Entry]) -> Vec<u8> {
 /// The entries come back sorted by name. read_dir gives whatever order the
 /// filesystem keeps, which differs between filesystems and between runs, and a
 /// listing nobody can predict is one no test can check.
+///
+/// One caveat that comes with the single trip: the whole directory is read
+/// inside one blocking task, so a deadline answers the caller while that task
+/// keeps a pool thread until the filesystem is done with it. A handful of huge
+/// `withMetadata` listings on a slow mount can therefore hold several of the 64
+/// threads (`SCONCUR_BLOCKING_THREADS`). The walk splits a tree across batches
+/// for that reason; a single directory is the unit that is not split.
 pub async fn read_directory(
     path: String,
     pattern_text: String,
@@ -87,6 +94,9 @@ pub async fn read_directory(
         let directory = std::fs::read_dir(&path)
             .map_err(|error| io_message("open directory", &path, &error))?;
 
+        // Compiled once for the whole directory rather than per entry.
+        let pattern = pattern::Pattern::compile(&pattern_text);
+
         let mut entries = Vec::new();
 
         for entry in directory {
@@ -94,7 +104,7 @@ pub async fn read_directory(
 
             let name = entry.file_name().to_string_lossy().to_string();
 
-            if !pattern::matches(&pattern_text, &name) {
+            if !pattern.matches(&name) {
                 continue;
             }
 
@@ -197,7 +207,7 @@ pub async fn make_directory(task: &Task, envelope: &mut payloads::Envelope) {
             .await
             .map_err(|error| io_message("create directory", &path, &error))?;
 
-        Ok::<Vec<u8>, String>(super::meta::encode_text("p", &path))
+        Ok::<Vec<u8>, String>(Vec::new())
     };
 
     publish(task, envelope, start_time, work).await;

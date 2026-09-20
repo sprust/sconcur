@@ -6,14 +6,35 @@
 //! filter's whole job is to keep a directory of a hundred thousand entries from
 //! crossing the boundary, not to be a path language.
 
-/// Whether an entry name matches the pattern. An empty pattern matches
-/// everything, which is how "no filter" travels on the wire.
-pub fn matches(pattern: &str, name: &str) -> bool {
-    if pattern.is_empty() {
-        return true;
+/// A pattern parsed once, so a listing of a hundred thousand entries does not
+/// re-parse it a hundred thousand times.
+///
+/// It is not an optimization looking for a problem: the filter runs per entry,
+/// and the per-entry cost is the whole reason this feature beats scandir plus a
+/// stat each.
+pub struct Pattern {
+    characters: Vec<char>,
+}
+
+impl Pattern {
+    pub fn compile(pattern: &str) -> Self {
+        Pattern {
+            characters: pattern.chars().collect(),
+        }
     }
 
-    let pattern: Vec<char> = pattern.chars().collect();
+    /// Whether an entry name matches. An empty pattern matches everything, which
+    /// is how "no filter" travels on the wire.
+    pub fn matches(&self, name: &str) -> bool {
+        if self.characters.is_empty() {
+            return true;
+        }
+
+        matches_chars(&self.characters, name)
+    }
+}
+
+fn matches_chars(pattern: &[char], name: &str) -> bool {
     let name: Vec<char> = name.chars().collect();
 
     let mut pattern_index = 0;
@@ -160,6 +181,13 @@ fn class_matches(body: &[char], character: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tests read better against a pattern and a name than against a
+    /// compiled value, and every caller in the feature compiles once per
+    /// directory — so the convenience lives here rather than in the module.
+    fn matches(pattern: &str, name: &str) -> bool {
+        Pattern::compile(pattern).matches(name)
+    }
 
     #[test]
     fn an_empty_pattern_is_no_filter() {

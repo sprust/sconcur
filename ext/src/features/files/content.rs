@@ -174,21 +174,22 @@ async fn read_file(parameters: &payloads::ReadParams) -> std::result::Result<Vec
         file.read_to_end(&mut contents)
             .await
             .map_err(|error| io_message("read", path, &error))?;
+    }
 
-        // A file whose size the metadata did not know (/proc and friends) is
-        // checked once it is in hand — the limit is about the memory, and the
-        // memory is spent by now, but the next read of the same path is refused
-        // rather than the caller being told nothing.
-        if parameters.max_read_bytes > 0 && contents.len() as i64 > parameters.max_read_bytes {
-            return Err(fail(
-                Kind::TooLarge,
-                &format!(
-                    "read {path}: {} bytes exceed the limit of {} bytes",
-                    contents.len(),
-                    parameters.max_read_bytes
-                ),
-            ));
-        }
+    // Checked again on what is actually in hand, not only on what the stat
+    // promised. Two files answer more than the stat said they would: one under
+    // /proc, which reports zero and reads anyway, and one that grew between the
+    // stat and the read. The memory is spent by the time this fires, but the
+    // caller is told rather than handed more than it asked to be handed.
+    if parameters.max_read_bytes > 0 && contents.len() as i64 > parameters.max_read_bytes {
+        return Err(fail(
+            Kind::TooLarge,
+            &format!(
+                "read {path}: {} bytes exceed the limit of {} bytes",
+                contents.len(),
+                parameters.max_read_bytes
+            ),
+        ));
     }
 
     Ok(contents)
@@ -286,6 +287,11 @@ pub async fn write(task: &Task, envelope: &mut payloads::Envelope) {
 ///
 /// The temporary file is a sibling on purpose: rename is atomic only within one
 /// filesystem, and a path under /tmp would not be one.
+///
+/// The rename replaces the destination's inode, so the result carries the
+/// temporary's identity: its permissions are inherited from the old file below,
+/// but its owner is whoever this process runs as and its ACLs are gone. Writing
+/// atomically over a file owned by someone else changes who owns it.
 pub async fn write_atomic(task: &Task, envelope: &mut payloads::Envelope) {
     let message = task.message();
     let start_time = Instant::now();

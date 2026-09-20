@@ -102,7 +102,7 @@ benchmarks are bounded by the operation's nature: `createIndex` and `bulkWrite` 
 `updateMany` 10. Single runs: `make bench-<name> c=<count>`; the whole DB session
 is `make bench-db-runs`. The scripts live in `tests/benchmarks/`, one directory
 per measured technology (`mongodb/`, `mysql/`, `pgsql/`, `http/`, `socket/`,
-`ws/`), so `make bench-mysql-selectOne` runs
+`ws/`, `amqp/`, `redis/`, `files/`), so `make bench-mysql-selectOne` runs
 `tests/benchmarks/mysql/select-one.php`.
 
 `async vs native` is the signed percent `(native − async) / native`, ✅ when
@@ -404,23 +404,23 @@ Directory listing with a size and a time per entry — `scandir()` followed by
 
 Read in order:
 
-- **`copy` is the clearest win, and only past a megabyte.** The bytes never
+- `copy` is the clearest win, and only past a megabyte. The bytes never
   cross the boundary — the extension streams the file itself — so at 64 MiB the
   synchronous path is already twice as fast as PHP's `copy()` and the concurrent
   one nine times. At a megabyte the crossing still costs more than the copy
   saves.
-- **`list` wins concurrently at any size worth listing.** The per-entry syscalls
+- `list` wins concurrently at any size worth listing. The per-entry syscalls
   stay inside the extension; what crosses is the finished list. The memory column
   is the price: that list exists on both sides at once.
-- **`hashFile` wins concurrently** and loses synchronously, which is the same
+- `hashFile` wins concurrently and loses synchronously, which is the same
   trade every feature here makes. `hash_file()` already reads in a loop without
   holding the file, so the gain is not memory — it is that the loop and its disk
   waits leave the PHP thread.
-- **`read` and `write` lose on time at every size.** The payload crosses the
+- `read` and `write` lose on time at every size. The payload crosses the
   boundary, and nothing in the operation overlaps with anything. At 64 MiB the
   concurrent path holds 644 MB against the native 68, because six files exist in
   the extension and in PHP at the same time.
-- **`readChunks` is the answer to that number, not to the time.** The same
+- `readChunks` is the answer to that number, not to the time. The same
   64 MiB read peaks at 4 MB instead of 132, and the concurrent path lands within
   40% of the native loop. A file larger than the process should never go through
   `read()`.

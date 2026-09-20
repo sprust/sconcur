@@ -83,28 +83,31 @@ class FileWriter
     /**
      * Flushes and closes the file, answering with the total written. Calling it twice is
      * a FileStreamClosedException rather than a second close of someone else's file.
+     *
+     * A close that fails leaves the handle open, so it can be tried again: the extension
+     * keeps the session when a close ran out of time, and the file is not removed either
+     * way — every chunk had already been handed over, and only the final flush was in
+     * doubt. The retry answers FileStreamClosedException if the session did go.
      */
     public function close(): int
     {
         $this->assertOpen();
 
-        try {
-            $this->writtenBytes = $this->count(
-                result: $this->execute(
-                    command: FilesCommandEnum::WriteClose,
-                    data: [
-                        'i' => $this->id,
-                    ],
-                ),
-            );
-        } finally {
-            // After the close, never before: releasing the flow is what tells the
-            // extension the session was abandoned, and doing it first would have it
-            // remove the very file that was being finished.
-            $this->closed = true;
+        $this->writtenBytes = $this->count(
+            result: $this->execute(
+                command: FilesCommandEnum::WriteClose,
+                data: [
+                    'i' => $this->id,
+                ],
+            ),
+        );
 
-            State::releaseSyncTaskFlow($this->taskKey);
-        }
+        // After the close answered, never before: releasing the flow is what tells the
+        // extension the session was abandoned, and doing it first would have it clean up
+        // the very session that was being finished.
+        $this->closed = true;
+
+        State::releaseSyncTaskFlow($this->taskKey);
 
         return $this->writtenBytes;
     }

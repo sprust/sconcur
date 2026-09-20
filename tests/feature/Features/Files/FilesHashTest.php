@@ -125,8 +125,11 @@ class FilesHashTest extends BaseTestCase
         Files::hashFile(path: $this->directory);
     }
 
-    public function testManyFilesAreHashedConcurrentlyInOneGroup(): void
+    public function testEveryFileInOneGroupGetsItsOwnDigest(): void
     {
+        // Named for what it checks: that results do not cross between coroutines. That
+        // they overlap in time is proved by FilesTest, which runs on BaseAsyncTestCase
+        // and asserts the event order only interleaving can produce.
         $paths = [];
 
         for ($index = 0; $index < 8; ++$index) {

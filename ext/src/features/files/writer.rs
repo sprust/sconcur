@@ -32,6 +32,20 @@ use super::errors::{io_message, message as fail, Kind};
 use super::payloads;
 use super::{bounded, creates_the_file, params, permission_bits, write_options};
 
+/// What a writer's state is registered under. The registry is keyed by task key
+/// and shared with every stream in the process, so a writer id — which is a
+/// string the caller chose — is prefixed rather than used raw: a caller cannot
+/// name its writer after somebody's task and take that stream away.
+const STATE_KEY_PREFIX: &str = "files-writer:";
+
+/// Long enough for any id worth drawing, short enough that the registry's keys
+/// stay a fixed cost.
+const MAX_WRITER_ID_LENGTH: usize = 64;
+
+fn state_key(id: &str) -> String {
+    format!("{STATE_KEY_PREFIX}{id}")
+}
+
 /// One open writer.
 pub struct Session {
     /// None once the writer has been closed, or once its flow took it away.
@@ -241,10 +255,13 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
         return;
     };
 
-    if parameters.id.is_empty() {
+    if parameters.id.is_empty() || parameters.id.len() > MAX_WRITER_ID_LENGTH {
         task.add_result(Result::error(
             message,
-            fail(Kind::Argument, "a writer needs an id"),
+            fail(
+                Kind::Argument,
+                "a writer id must be between 1 and 64 characters",
+            ),
         ))
         .await;
 
@@ -329,10 +346,11 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
 
     // Keyed by the writer's id rather than by the task key of this push: the
     // chunks that follow arrive as pushes of their own, each with a task key of
-    // its own, and the id is the only name all three commands share.
+    // its own, and the id is the only name all three commands share. Prefixed,
+    // so a caller-chosen name cannot land on a task key.
     if let Err(error) = states::get().register_with_flow(
         task.context().clone(),
-        parameters.id.clone(),
+        state_key(&parameters.id),
         state,
         || {},
     ) {
@@ -445,7 +463,7 @@ pub async fn close(task: &Task, envelope: &mut payloads::Envelope) {
     // run the cleanup under it; the flow's own hook releases the session
     // instead, and `closing` keeps that cleanup from removing the file.
     if outcome.is_some() {
-        states::get().delete_state(&parameters.id).await;
+        states::get().delete_state(&state_key(&parameters.id)).await;
     }
 
     match outcome {

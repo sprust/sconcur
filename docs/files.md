@@ -143,8 +143,8 @@ Files::truncate(path: $path, sizeBytes: 0);
 ```
 
 `copy` streams the file inside the extension; only a path and a count cross the
-boundary. It takes the same `mode`, `permissions` and a `bufferSizeBytes` that
-tunes the copy granularity.
+boundary. It takes the same `mode` and `permissions`, plus a `bufferSizeBytes`
+that tunes the copy granularity — 64 KiB by default, 8 MiB at most.
 
 `move` renames within one filesystem and copies-then-removes across two, which
 is what PHP's `rename()` does as well. It **replaces** an existing destination
@@ -152,6 +152,8 @@ and has no mode to refuse one: `rename(2)` replaces, the portable alternative
 does not exist, and a check followed by a rename would be a race dressed up as a
 guarantee. A copy that fails part-way across filesystems removes the half it
 wrote rather than leaving it under the destination's name.
+
+`truncate` past the end of the file grows it with zeroes, as `ftruncate()` does.
 
 `delete` with `missingOk` treats an absent path as a success and answers whether
 something was actually removed — the check-then-delete race written once here
@@ -331,18 +333,21 @@ $writtenBytes = $writer->close();
 
 `write()` does not answer until the extension has written the chunk, so a
 coroutine producing faster than the disk accepts waits on its own next call
-instead of piling megabytes into memory.
+instead of piling megabytes into memory. It answers the running total, which
+`writtenBytes()` repeats and `path()` accompanies.
 
-Not closing is safe but lossy: when the coroutine ends, the flow ends with it and
-the extension closes the file. Whether the file goes with it follows the rule
-every write here follows — only a writer that **created** the file removes it, so
-only in `Create` mode. A `Replace` writer leaves the partial file, an `Append`
-writer leaves everything. `close()` is what turns the bytes into a finished file
-and answers with the total.
+Not closing is safe but lossy: when the coroutine ends, so does its flow — the
+group of tasks the extension holds for it, see
+[architecture](architecture.md) — and the extension closes the file. Whether the
+file goes with it follows the rule every write here follows: only a writer that
+created the file removes it, so only in `Create` mode. A `Replace` writer leaves
+the partial file, an `Append` writer leaves everything. `close()` is what turns
+the bytes into a finished file and answers with the total.
 
-A `close()` that fails or runs out of time does **not** remove the file: every
-chunk had already been handed over, and only the final flush is in doubt. The
-handle is spent either way — the total it reports is the last one it counted.
+A `close()` that fails or runs out of time does not remove the file: every chunk
+had already been handed over, and only the final flush is in doubt. The handle
+stays open so the close can be tried again, and answers
+`FileStreamClosedException` if the session did go.
 
 A chunk cut off mid-write — by a deadline or a stop — leaves the writer unusable:
 the file holds bytes no total accounts for, so every later call on that handle
@@ -350,10 +355,11 @@ fails rather than letting a retry double them.
 
 ### Abandoning a stream
 
-Breaking out of any of them early is safe. The flow ends, and the extension
-releases what the stream held — which `make mem-leak-files scenario=abandoned`
-soaks, and which the feature tests assert by counting the process's own open
-descriptors before and after.
+Breaking out of any of them early is safe. The coroutine's flow — the group of
+tasks the extension holds for it, see [architecture](architecture.md) — ends,
+and with it the extension releases what the stream held. That release is what
+`make mem-leak-files scenario=abandoned` soaks, and what the feature tests
+assert by counting the process's own open descriptors before and after.
 
 ## Errors
 

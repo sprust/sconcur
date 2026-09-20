@@ -363,8 +363,11 @@ class FilesMetaTest extends BaseTestCase
         Files::list(path: $path);
     }
 
-    public function testMetadataOperationsRunConcurrentlyInOneGroup(): void
+    public function testEveryStatInOneGroupAnswersItsOwnPath(): void
     {
+        // Named for what it checks: that results do not cross between coroutines. That
+        // they overlap in time is proved by FilesTest, which runs on BaseAsyncTestCase
+        // and asserts the event order only interleaving can produce.
         for ($index = 0; $index < 8; ++$index) {
             Files::write(path: $this->path(name: "stat-$index.txt"), contents: str_repeat('x', $index));
         }

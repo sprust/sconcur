@@ -437,8 +437,11 @@ class FilesStreamTest extends BaseTestCase
         self::assertStringStartsWith('existing', Files::read(path: $path));
     }
 
-    public function testStreamsRunConcurrentlyInOneGroup(): void
+    public function testEveryStreamInOneGroupReadsItsOwnFile(): void
     {
+        // Named for what it checks: that results do not cross between coroutines. That
+        // they overlap in time is proved by FilesTest, which runs on BaseAsyncTestCase
+        // and asserts the event order only interleaving can produce.
         for ($index = 0; $index < 4; ++$index) {
             Files::write(
                 path: $this->path(name: "stream-$index.log"),
@@ -473,8 +476,11 @@ class FilesStreamTest extends BaseTestCase
         }
     }
 
-    public function testAWriterWorksInsideACoroutine(): void
+    public function testEveryWriterInOneGroupFillsItsOwnFile(): void
     {
+        // Named for what it checks: that results do not cross between coroutines. That
+        // they overlap in time is proved by FilesTest, which runs on BaseAsyncTestCase
+        // and asserts the event order only interleaving can produce.
         $waitGroup = WaitGroup::create();
 
         for ($index = 0; $index < 4; ++$index) {
@@ -541,6 +547,44 @@ class FilesStreamTest extends BaseTestCase
             3,
             iterator_to_array(Files::readLines(path: $path, timeoutMs: 0)),
         );
+    }
+
+    public function testAStreamCanBeIteratedAgain(): void
+    {
+        $path = $this->path(name: 're-read.log');
+
+        Files::write(path: $path, contents: "one\ntwo\nthree\n");
+
+        $lines = Files::readLines(path: $path);
+
+        self::assertSame(['one', 'two', 'three'], iterator_to_array($lines));
+
+        // rewind() opens a second stream and releases the first. Pinned here because the
+        // release is what stops the second pass from leaking the first one's state.
+        self::assertSame(['one', 'two', 'three'], iterator_to_array($lines));
+
+        unset($lines);
+
+        self::assertSame(0, $this->awaitDescriptorsFor(path: $path));
+    }
+
+    public function testAClosedWriterCannotBeReopenedByItsHandle(): void
+    {
+        $path = $this->path(name: 'spent.bin');
+
+        $writer = Files::openWriter(path: $path);
+
+        $writer->write(chunk: 'contents');
+
+        self::assertSame(8, $writer->close());
+        self::assertSame(8, $writer->writtenBytes());
+        self::assertSame($path, $writer->path());
+
+        // The session is gone on both sides: the handle refuses locally, so a second
+        // close cannot reach a session somebody else has since opened under the same id.
+        $this->expectException(FileStreamClosedException::class);
+
+        $writer->close();
     }
 
     protected function path(string $name): string

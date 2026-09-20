@@ -7,6 +7,7 @@ namespace SConcur\Tests\Feature\Features\Files;
 use SConcur\Exceptions\Files\FileAlreadyExistsException;
 use SConcur\Exceptions\Files\FileNotFoundException;
 use SConcur\Exceptions\Files\FilesException;
+use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Exceptions\Files\FileTooLargeException;
 use SConcur\Exceptions\Files\InvalidFileArgumentException;
 use SConcur\Exceptions\Files\UnexpectedFileTypeException;
@@ -14,6 +15,7 @@ use SConcur\Features\Files\Files;
 use SConcur\Features\Files\FileWriteMode;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\WaitGroup;
+use Throwable;
 
 /**
  * The single-shot content operations, checked against the native functions they replace
@@ -182,17 +184,32 @@ class FilesContentTest extends BaseTestCase
 
     public function testCopyMovesTheBytesWithoutThemCrossingIntoPhp(): void
     {
+        $sizeBytes = 8 * 1024 * 1024;
+
         $source      = $this->path(name: 'source.bin');
         $destination = $this->path(name: 'destination.bin');
 
-        $contents = random_bytes(512 * 1024);
+        // Written natively, so the write does not colour the measurement below.
+        file_put_contents($source, str_repeat('x', $sizeBytes));
 
-        Files::write(path: $source, contents: $contents);
+        // The claim under test is not "the copy works" — it is that the payload never
+        // enters this process. So the assertion is on the memory: an eight-megabyte file
+        // that crossed the boundary would show up here, and one copied inside the
+        // extension cannot.
+        $before = memory_get_peak_usage(true);
 
         $copied = Files::copy(source: $source, destination: $destination);
 
-        self::assertSame(512 * 1024, $copied);
-        self::assertSame($contents, file_get_contents($destination));
+        $grown = memory_get_peak_usage(true) - $before;
+
+        self::assertSame($sizeBytes, $copied);
+        self::assertSame($sizeBytes, filesize($destination));
+
+        self::assertLessThan(
+            $sizeBytes / 4,
+            $grown,
+            "The copy grew the PHP heap by $grown bytes; the file is $sizeBytes.",
+        );
     }
 
     public function testCopyRefusesAnExistingDestinationInCreateMode(): void
@@ -216,6 +233,99 @@ class FilesContentTest extends BaseTestCase
         }
 
         self::assertSame('destination', Files::read(path: $destination));
+    }
+
+    public function testMoveReplacesAnExistingDestination(): void
+    {
+        $source      = $this->path(name: 'replacing-source.txt');
+        $destination = $this->path(name: 'replacing-destination.txt');
+
+        Files::write(path: $source, contents: 'the new one');
+        Files::write(path: $destination, contents: 'the old one');
+
+        Files::move(source: $source, destination: $destination);
+
+        // rename(2) replaces, and there is no portable way to make it refuse — so this
+        // is the documented behaviour rather than an oversight. The test exists to make
+        // a change to it deliberate.
+        self::assertSame('the new one', Files::read(path: $destination));
+        self::assertFalse(Files::exists(path: $source));
+    }
+
+    public function testCopyCanAppendToItsDestination(): void
+    {
+        $source      = $this->path(name: 'append-source.txt');
+        $destination = $this->path(name: 'append-destination.txt');
+
+        Files::write(path: $source, contents: 'second');
+        Files::write(path: $destination, contents: 'first ');
+
+        Files::copy(
+            source: $source,
+            destination: $destination,
+            mode: FileWriteMode::Append,
+        );
+
+        self::assertSame('first second', Files::read(path: $destination));
+    }
+
+    public function testAReplaceThatFailsLeavesThePartialFileRatherThanNone(): void
+    {
+        $path = $this->path(name: 'replace-failure.txt');
+
+        Files::write(path: $path, contents: 'the previous version');
+
+        // A directory cannot be copied, so the copy fails after opening its destination
+        // — which is the shape of any failure past the open, a full disk included.
+        try {
+            Files::copy(source: $this->directory, destination: $path);
+
+            self::fail('Copying a directory was not refused.');
+        } catch (FilesException) {
+            //
+        }
+
+        // Replace truncated the old contents on open; removing the file on top of that
+        // would destroy an inode this call never created. Undo the rule in
+        // files::creates_the_file and this file is gone.
+        self::assertTrue(Files::exists(path: $path));
+    }
+
+    public function testAStoppedGroupUnwindsAStreamWithTheStopSignal(): void
+    {
+        $path = $this->path(name: 'stopped.log');
+
+        Files::write(path: $path, contents: str_repeat("line\n", 50_000));
+
+        $waitGroup = WaitGroup::create();
+
+        $caught = null;
+
+        $waitGroup->add(
+            callback: function () use ($path, &$caught): void {
+                try {
+                    foreach (Files::readLines(path: $path, batchLines: 1) as $line) {
+                        // Stops itself from the inside, which is what an early break in
+                        // a handler does.
+                        throw new FlowStoppedException(message: 'stop');
+                    }
+                } catch (FlowStoppedException $exception) {
+                    $caught = $exception;
+
+                    throw $exception;
+                }
+            },
+        );
+
+        try {
+            $waitGroup->waitAll();
+        } catch (Throwable) {
+            //
+        }
+
+        // The deliberate unwind signal must reach the coroutine as itself rather than
+        // being translated into a FilesException by the feature's failure mapping.
+        self::assertInstanceOf(FlowStoppedException::class, $caught);
     }
 
     public function testMoveRenamesTheFile(): void
@@ -303,8 +413,11 @@ class FilesContentTest extends BaseTestCase
         Files::read(path: $path, offsetBytes: -1);
     }
 
-    public function testOperationsInOneGroupRunConcurrently(): void
+    public function testEveryOperationInOneGroupAnswersItsOwnResult(): void
     {
+        // Named for what it checks: that results do not cross between coroutines. That
+        // they overlap in time is proved by FilesTest, which runs on BaseAsyncTestCase
+        // and asserts the event order only interleaving can produce.
         $waitGroup = WaitGroup::create();
 
         for ($index = 0; $index < 8; ++$index) {
