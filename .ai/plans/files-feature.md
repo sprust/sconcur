@@ -56,7 +56,7 @@
 ## Отмена и дедлайн: честная семантика
 
 Оба обязательных требования
-[docs/adding-a-feature.md](../../docs/adding-a-feature.md) соблюдаются: каждый payload
+[docs/adding-a-feature.ru.md](../../docs/adding-a-feature.ru.md) соблюдаются: каждый payload
 несёт `timeoutMs`, каждый обработчик слушает `task.context()`. Но для файлов надо
 записать в доку то, чего нет у сетевых фич:
 
@@ -88,7 +88,7 @@
 HTTP-загрузки, и файловая фича не должна зависеть от фичи HTTP-клиента. Значения на
 проводе совпадают, и обе стороны это комментируют.
 
-`writeAtomic` — ровно то, что `src/Worker/MasterStateFile.php:33` делает руками и что
+`writeAtomic` — ровно то, что `src/Worker/MasterStateFile.php` делает руками и что
 нужно файловому кэшу: читатель видит либо старое содержимое, либо новое, никогда
 полузаписанное. При ошибке временный файл удаляется.
 
@@ -115,9 +115,9 @@ HTTP-загрузки, и файловая фича не должна завис
 | --- | --- | --- | --- |
 | Stat | `st` | `Files::stat(path, followSymlinks)` | Один вызов вместо `file_exists`+`is_dir`+`filesize`+`filemtime` |
 | Chmod | `chm` | `Files::chmod(path, permissions)` | Права |
-| Touch | `tch` | `Files::touch(path, modifiedAtMs)` | Создание/обновление времени |
+| Touch | `tch` | `Files::touch(path, modifiedAtMs, permissions)` | Создание/обновление времени |
 | RealPath | `rp` | `Files::realPath(path)` | Канонизация пути |
-| TemporaryFile | `tmp` | `Files::temporaryFile(directory, prefix, suffix)` | Уникальный файл, возвращается путь |
+| TemporaryFile | `tmp` | `Files::temporaryFile(directory, prefix, suffix, permissions)` | Уникальный файл, возвращается путь |
 
 `Files::exists(path)` — обёртка над `Stat` на стороне PHP, не отдельная команда.
 
@@ -136,7 +136,7 @@ HTTP-загрузки, и файловая фича не должна завис
 `list` — второй по силе кейс после `copy`. `scandir` + `filesize`/`filemtime` на каждую
 запись это 1 + N syscall'ов, каждый из которых держит PHP-поток. Здесь все N остаются
 внутри расширения, а через границу едет готовый список `Dto\DirectoryEntry`
-(`name`, `path`, `isDirectory`, `sizeBytes`, `modifiedAtMs`). `withMetadata: false`
+(`name`, `path`, `isDirectory`, `isSymlink`, `sizeBytes`, `modifiedAtMs`). `withMetadata: false`
 пропускает `metadata()` на записях, когда нужны только имена. `pattern` — простой
 шаблон (`*`, `?`, `[...]`), фильтрация в расширении, чтобы каталог на сто тысяч файлов
 не ехал в PHP целиком.
@@ -146,7 +146,7 @@ HTTP-загрузки, и файловая фича не должна завис
 | Команда | Код | API | Что делает |
 | --- | --- | --- | --- |
 | ReadChunks | `rdc` | `Files::readChunks(path, bufferSizeBytes)` | `Iterator<int, string>` — файл батчами |
-| ReadLines | `rdl` | `Files::readLines(path, batchLines)` | `Iterator<int, string>` — строками |
+| ReadLines | `rdl` | `Files::readLines(path, batchLines, bufferSizeBytes, maxLineBytes)` | `Iterator<int, string>` — строками |
 | Walk | `wlk` | `Files::walk(path, pattern, withMetadata, batchEntries)` | `Iterator<int, DirectoryEntry>` — обход дерева батчами |
 | WriteOpen | `wro` | `Files::openWriter(path, mode, permissions)` | Открывает писателя, отдаёт `FileWriter` |
 | WriteChunk | `wrc` | `$writer->write(chunk)` | Чанк; ждёт, пока расширение его заберёт |
@@ -181,7 +181,7 @@ HTTP-загрузки, и файловая фича не должна завис
 ### Дедлайн вызова
 
 Каждый payload обязан нести `timeoutMs` — это требование
-[docs/adding-a-feature.md](../../docs/adding-a-feature.md). У фасада без состояния его
+[docs/adding-a-feature.ru.md](../../docs/adding-a-feature.ru.md). У фасада без состояния его
 неоткуда взять, кроме как с вызова, поэтому `timeoutMs` — последний необязательный
 параметр каждой команды, по умолчанию `Files::DEFAULT_TIMEOUT_MS` (30 000). `0` значит
 «без дедлайна», как везде в проекте, где дедлайн берётся.
@@ -409,9 +409,10 @@ unit-тестом.
 | остальное | `io` | `FileOperationException` |
 
 База — `FilesException extends RuntimeException` (ошибка ввода-вывода это runtime-условие,
-что бы вызывающий ни делал). Ошибки применения — отрицательная длина, `Create` поверх
-существующего с одновременным `offsetBytes`, неизвестный алгоритм хеша — это
-`InvalidFileArgumentException extends LogicException`, отдельная ветка, как у `Redis`.
+что бы вызывающий ни делал). Ошибки применения — отрицательная длина, неизвестный алгоритм хеша, права вне
+диапазона — это `InvalidFileArgumentException extends LogicException`, отдельная ветка,
+как у `Redis`. `Create` поверх существующего — не она, а `FileAlreadyExistsException`:
+занятый путь это состояние файловой системы, а не ошибка в коде.
 Пойманный `Throwable` уходит в `previous`, `@throws` нигде не пишется.
 
 ## Сознательно исключено
@@ -432,7 +433,7 @@ unit-тестом.
 
 ## Бенчмарк-гейт
 
-`tests/benchmarks/files/`, методология [docs/benchmarks.md](../../docs/benchmarks.md):
+`tests/benchmarks/files/`, методология [docs/benchmarks.ru.md](../../docs/benchmarks.ru.md):
 `read-small.php`, `read-large.php`, `write.php`, `copy.php`, `list-dir.php` (каталог на
 10 000 записей), `hash-file.php`, `read-stream.php`. Размеры 1 КиБ / 1 МиБ / 100 МиБ,
 плюс фан-аут 32 операций. Make-цели `bench-files-<operation>`, строки в общем списке
@@ -456,10 +457,11 @@ unit-тестом.
 ## Память
 
 - mem-leak: `make mem-leak-files scenario=<name> seconds=<n>`, сценарии `read-large`,
-  `write-stream`, `list-big-dir`, `copy`, `abandoned-stream` (итератор, брошенный на
-  середине). Печатает RSS рядом с PHP-кучей — то, что держит файловый стрим, это нативная
-  память.
-- Сценарий `abandoned-stream` — главный: он проверяет, что хук состояния действительно
+  `read-stream`, `write-stream`, `copy`, `walk`, `abandoned`. Печатает RSS рядом с
+  PHP-кучей и число открытых дескрипторов процесса — то, что держит файловый стрим, это
+  нативная память, а `Extension::count()` считает выполняющиеся задачи, а не
+  зарегистрированные состояния.
+- Сценарий `abandoned` — главный: он проверяет, что хук состояния действительно
   закрывает файл, когда флоу кончился.
 
 ## Тесты
@@ -504,12 +506,18 @@ unit-тестом.
   «кроме Append», а этого мало — неудавшийся Replace над существующим файлом сносил
   чужие данные.
 - `list` читает каталог одним походом в blocking-пул. Повызовный `tokio::fs` делал
-  листинг на 10 000 записей в одиннадцать раз медленнее `scandir` со stat на запись.
+  листинг на 10 000 записей в девять раз медленнее `scandir` со stat на запись.
 - Выигрыш `copy` — не «при любом размере», как обещал план, а после мегабайта.
   `list` выигрывает конкурентно и проигрывает синхронно, как всякая фича здесь.
 - У батчей стримов есть собственный токен отмены: без него батч при `timeoutMs: 0`
   был бы и неограничен, и неотменяем.
 - `chmod` берёт права буквально, остальные команды читают `0` как «по умолчанию».
+- Писателя отравляет любой не прошедший до конца чанк, а не только оборванный: после
+  него и запись, и закрытие отвергаются.
+- Кросс-девайсный `move` идёт через временный файл рядом с назначением, а не копирует
+  поверх него: иначе сбой оставлял бы назначение обрезанным, а уборка удаляла бы чужой
+  файл.
+- Размер blocking-пула не трогаем: он процесса, а не фичи, и его делит разрешение имён.
 
 ## Этапы
 

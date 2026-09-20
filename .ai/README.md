@@ -294,7 +294,7 @@ The core (`ext/src/`), module by module:
   runtime has one worker thread by default, so a synchronous read would stand in
   front of everything else the process is doing. `dirs::read_directory` reads a
   whole directory in one trip to the blocking pool — per-entry `tokio::fs` calls
-  made a 10 000-entry listing eleven times slower than `scandir` plus a stat
+  made a 10 000-entry listing nine times slower than `scandir` plus a stat
   each. `errors.rs` writes the kind PHP raises the failure as; `read_state`,
   `walk_state` and `writer` are the streams, and the writer's sessions live in a
   Core registry so a fork does not inherit file handles

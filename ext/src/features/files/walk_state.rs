@@ -116,17 +116,21 @@ impl WalkState {
             // the walk: on a real tree one unreadable subdirectory is ordinary,
             // and refusing the whole walk over it would make this useless
             // anywhere but a directory the process owns outright.
+            // Counted before the read is judged, so a directory that is skipped
+            // counts too. Adding it afterwards let a frontier of unreadable
+            // directories — walking /home or /proc as an ordinary worker — be
+            // drained whole inside one next(), which is the uninterruptible walk
+            // the budget exists to prevent. Empty ones were the half that got
+            // fixed last time.
+            examined += 1;
+
             let read = match read_directory(path, String::new(), self.with_metadata).await {
                 Ok(read) => read,
                 Err(text) if skippable(&text) => continue,
                 Err(text) => return Err(text),
             };
 
-            // The visit counts, not only what it found. Counting entries alone
-            // meant a frontier of empty or unreadable directories was drained
-            // whole inside one next() — exactly the uninterruptible walk the
-            // budget was added to prevent.
-            examined += read.len().max(1);
+            examined += read.len();
 
             for entry in read {
                 // Only a real directory is descended into, never a symlink to
@@ -163,16 +167,19 @@ impl StateContract for WalkState {
             let bounded = super::bounded_state(self.timeout_ms, &self.cancel, self.batch()).await;
 
             let Some(result) = bounded else {
+                // The text follows the kind. Reporting "deadline of 0 ms
+                // exceeded" for a stopped walk with no deadline set was a
+                // message that could not be true.
                 return Result::error(
                     &self.message,
-                    super::errors::message(
-                        if self.cancel.is_cancelled() {
-                            super::errors::Kind::Stopped
-                        } else {
-                            super::errors::Kind::Timeout
-                        },
-                        &format!("walk: deadline of {} ms exceeded", self.timeout_ms),
-                    ),
+                    if self.cancel.is_cancelled() {
+                        super::errors::message(super::errors::Kind::Stopped, "walk: closed")
+                    } else {
+                        super::errors::message(
+                            super::errors::Kind::Timeout,
+                            &format!("walk: deadline of {} ms exceeded", self.timeout_ms),
+                        )
+                    },
                 );
             };
 

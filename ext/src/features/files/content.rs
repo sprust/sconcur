@@ -5,8 +5,8 @@
 //! than the process wants to hold is what the streaming states are for; here
 //! max_read_bytes refuses it instead.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::os::unix::fs::PermissionsExt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -16,7 +16,10 @@ use crate::helpers::calc_execution_ms;
 use crate::tasks::Task;
 
 use super::errors::{io_message, message as fail, Kind};
-use super::{bounded, bounded_size, creates_the_file, params, permission_bits, write_options};
+use super::{
+    bounded, bounded_size, creates_the_file, open_bounded, params, permission_bits,
+    std_write_options, Budget,
+};
 use super::payloads;
 
 /// The copy granularity when the caller names none (64 KiB, as HttpClient's
@@ -223,7 +226,7 @@ pub async fn write(task: &Task, envelope: &mut payloads::Envelope) {
         }
     };
 
-    let Some(options) = write_options(&parameters.mode, permissions) else {
+    let Some(options) = std_write_options(&parameters.mode, permissions) else {
         task.add_result(Result::error(
             message,
             fail(
@@ -236,34 +239,46 @@ pub async fn write(task: &Task, envelope: &mut payloads::Envelope) {
         return;
     };
 
-    let path = parameters.path.clone();
     let created_by_us = creates_the_file(&parameters.mode);
-    let opened = Arc::new(AtomicBool::new(false));
+    let budget = Budget::new(envelope.timeout_ms);
 
-    let work = {
-        let opened = Arc::clone(&opened);
+    // The open owns the deadline path: a file the pool creates after the caller
+    // has given up is removed by open_bounded's own detached cleanup, which is
+    // the only place that can wait for the open to land.
+    let opened = open_bounded(
+        task,
+        budget.remaining_ms(),
+        options,
+        parameters.path.clone(),
+        created_by_us,
+    )
+    .await;
 
-        async move {
-            let mut file = options
-                .open(&path)
-                .await
-                .map_err(|error| io_message("open", &path, &error))?;
+    let mut file = match opened {
+        Some(Ok(file)) => file,
+        Some(Err(text)) => {
+            task.add_result(Result::error(message, text)).await;
 
-            opened.store(true, Ordering::Relaxed);
-
-            file.write_all(&contents)
-                .await
-                .map_err(|error| io_message("write", &path, &error))?;
-
-            file.flush()
-                .await
-                .map_err(|error| io_message("flush", &path, &error))?;
-
-            Ok::<u64, String>(contents.len() as u64)
+            return;
         }
+        None => return,
     };
 
-    match bounded(task, envelope.timeout_ms, work).await {
+    let path = parameters.path.clone();
+
+    let work = async move {
+        file.write_all(&contents)
+            .await
+            .map_err(|error| io_message("write", &path, &error))?;
+
+        file.flush()
+            .await
+            .map_err(|error| io_message("flush", &path, &error))?;
+
+        Ok::<u64, String>(contents.len() as u64)
+    };
+
+    match bounded(task, budget.remaining_ms(), work).await {
         Some(Ok(count)) => {
             task.add_result(Result::success(
                 message,
@@ -272,13 +287,27 @@ pub async fn write(task: &Task, envelope: &mut payloads::Envelope) {
             ))
             .await;
         }
+        // The file is open by now, so the question drop_partial asks about the
+        // open is settled — what is left is the mode rule.
         Some(Err(text)) => {
-            drop_partial(&parameters.path, created_by_us, &opened).await;
+            remove_if_created(&parameters.path, created_by_us).await;
 
             task.add_result(Result::error(message, text)).await;
         }
-        None => drop_partial(&parameters.path, created_by_us, &opened).await,
+        None => remove_if_created(&parameters.path, created_by_us).await,
     }
+}
+
+/// Removes a file this call created and could not finish. The open is known to
+/// have succeeded by every path that calls this, so only the mode rule is left:
+/// a Replace over an existing file has truncated it, which is what was asked
+/// for, but the file itself is not this call's to take.
+pub async fn remove_if_created(path: &str, created_by_us: bool) {
+    if !created_by_us {
+        return;
+    }
+
+    let _ = tokio::fs::remove_file(path).await;
 }
 
 /// Writes through a temporary file in the same directory and a rename, so a
@@ -346,7 +375,13 @@ pub async fn write_atomic(task: &Task, envelope: &mut payloads::Envelope) {
             let mut options = tokio::fs::OpenOptions::new();
 
             options.write(true).create_new(true);
-            options.mode(permissions);
+
+            // 0600 through the open, and the real bits set explicitly below:
+            // the mode an open carries is narrowed by the process umask, so
+            // inheriting 0664 from the destination would quietly become 0644
+            // under the usual umask 022 — a group-writable file silently
+            // narrowed on every atomic update.
+            options.mode(0o600);
 
             let mut file = options
                 .open(&temporary_path)
@@ -366,6 +401,10 @@ pub async fn write_atomic(task: &Task, envelope: &mut payloads::Envelope) {
                 .map_err(|error| io_message("sync", &temporary_path, &error))?;
 
             drop(file);
+
+            tokio::fs::set_permissions(&temporary_path, std::fs::Permissions::from_mode(permissions))
+                .await
+                .map_err(|error| io_message("set permissions on", &temporary_path, &error))?;
 
             tokio::fs::rename(&temporary_path, &path)
                 .await
@@ -468,7 +507,7 @@ pub async fn copy(task: &Task, envelope: &mut payloads::Envelope) {
         }
     };
 
-    let Some(options) = write_options(&parameters.mode, permissions) else {
+    let Some(options) = std_write_options(&parameters.mode, permissions) else {
         task.add_result(Result::error(
             message,
             fail(
@@ -481,10 +520,8 @@ pub async fn copy(task: &Task, envelope: &mut payloads::Envelope) {
         return;
     };
 
-    let source = parameters.source.clone();
-    let destination = parameters.destination.clone();
     let created_by_us = creates_the_file(&parameters.mode);
-    let opened = Arc::new(AtomicBool::new(false));
+    let budget = Budget::new(envelope.timeout_ms);
 
     // Clamped, not taken as given: this number becomes two Vec::with_capacity
     // calls below, and an unclamped one reaches the allocator, which aborts the
@@ -495,39 +532,60 @@ pub async fn copy(task: &Task, envelope: &mut payloads::Envelope) {
         MAX_COPY_BUFFER_BYTES,
     );
 
-    let work = {
-        let opened = Arc::clone(&opened);
+    let source = parameters.source.clone();
+    let source_path = parameters.source.clone();
 
-        async move {
-            let source_file = tokio::fs::File::open(&source)
-                .await
-                .map_err(|error| io_message("open", &source, &error))?;
+    let source_opened = bounded(task, budget.remaining_ms(), tokio::fs::File::open(source)).await;
 
-            let mut reader = tokio::io::BufReader::with_capacity(buffer_size, source_file);
+    let source_file = match source_opened {
+        Some(Ok(file)) => file,
+        Some(Err(error)) => {
+            task.add_result(Result::error(message, io_message("open", &source_path, &error)))
+                .await;
 
-            let destination_file = options
-                .open(&destination)
-                .await
-                .map_err(|error| io_message("open", &destination, &error))?;
-
-            opened.store(true, Ordering::Relaxed);
-
-            let mut writer = tokio::io::BufWriter::with_capacity(buffer_size, destination_file);
-
-            let count = tokio::io::copy(&mut reader, &mut writer)
-                .await
-                .map_err(|error| io_message("copy to", &destination, &error))?;
-
-            writer
-                .flush()
-                .await
-                .map_err(|error| io_message("flush", &destination, &error))?;
-
-            Ok::<u64, String>(count)
+            return;
         }
+        None => return,
     };
 
-    match bounded(task, envelope.timeout_ms, work).await {
+    let opened = open_bounded(
+        task,
+        budget.remaining_ms(),
+        options,
+        parameters.destination.clone(),
+        created_by_us,
+    )
+    .await;
+
+    let destination_file = match opened {
+        Some(Ok(file)) => file,
+        Some(Err(text)) => {
+            task.add_result(Result::error(message, text)).await;
+
+            return;
+        }
+        None => return,
+    };
+
+    let destination = parameters.destination.clone();
+
+    let work = async move {
+        let mut reader = tokio::io::BufReader::with_capacity(buffer_size, source_file);
+        let mut writer = tokio::io::BufWriter::with_capacity(buffer_size, destination_file);
+
+        let count = tokio::io::copy(&mut reader, &mut writer)
+            .await
+            .map_err(|error| io_message("copy to", &destination, &error))?;
+
+        writer
+            .flush()
+            .await
+            .map_err(|error| io_message("flush", &destination, &error))?;
+
+        Ok::<u64, String>(count)
+    };
+
+    match bounded(task, budget.remaining_ms(), work).await {
         Some(Ok(count)) => {
             task.add_result(Result::success(
                 message,
@@ -537,13 +595,13 @@ pub async fn copy(task: &Task, envelope: &mut payloads::Envelope) {
             .await;
         }
         Some(Err(text)) => {
-            drop_partial(&parameters.destination, created_by_us, &opened).await;
+            remove_if_created(&parameters.destination, created_by_us).await;
 
             task.add_result(Result::error(message, text)).await;
         }
         // Cancelled or out of time: the future is dropped by now, so the
         // half-written destination is cleaned up here rather than inside it.
-        None => drop_partial(&parameters.destination, created_by_us, &opened).await,
+        None => remove_if_created(&parameters.destination, created_by_us).await,
     }
 }
 
@@ -558,56 +616,142 @@ pub async fn move_file(task: &Task, envelope: &mut payloads::Envelope) {
         return;
     };
 
-    let source = parameters.source.clone();
-    let destination = parameters.destination.clone();
-
     // A cross-device move copies through a sibling of the destination and
     // renames it into place, rather than copying onto the destination itself.
     //
     // Copying onto it would truncate a file the move has not yet earned the
     // right to replace, and cleaning up afterwards would unlink a file this
-    // call never created — the rule creates_the_file exists to enforce. Through
-    // a temporary, a failure at any point leaves the destination exactly as it
-    // was, and the final rename is the same atomic swap a same-device move is.
-    let temporary_path = temporary_sibling(&destination);
+    // call never created. Through a temporary, a failure at any point leaves
+    // the destination exactly as it was, and the final rename is the same
+    // atomic swap a same-device move is.
+    let temporary_path = temporary_sibling(&parameters.destination);
+    let budget = Budget::new(envelope.timeout_ms);
+
+    let renamed = bounded(
+        task,
+        budget.remaining_ms(),
+        tokio::fs::rename(parameters.source.clone(), parameters.destination.clone()),
+    )
+    .await;
+
+    match renamed {
+        Some(Ok(())) => {
+            task.add_result(Result::success(
+                message,
+                Vec::new(),
+                calc_execution_ms(start_time),
+            ))
+            .await;
+
+            return;
+        }
+        // Matched on the raw code rather than ErrorKind::CrossesDevices: the
+        // mapping of that kind is the standard library's business and this is
+        // the one case the fallback exists for.
+        Some(Err(error)) if error.raw_os_error() == Some(libc::EXDEV) => {}
+        Some(Err(error)) => {
+            task.add_result(Result::error(
+                message,
+                io_message("rename", &parameters.source, &error),
+            ))
+            .await;
+
+            return;
+        }
+        None => return,
+    }
+
+    // create_new, never a plain copy onto the name: the temporary sits in the
+    // destination's directory, which may be one another user can write, and a
+    // name without O_EXCL can be pre-created as a symlink to have this process
+    // write the moved file through it.
+    //
+    // Opened before the copy rather than inside it, so the cleanup below always
+    // knows the file exists — a create left running in the blocking pool after
+    // the deadline is open_bounded's problem, and it owns it.
+    let mut options = std::fs::OpenOptions::new();
+
+    options.write(true).create_new(true);
+
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+
+    let opened = open_bounded(
+        task,
+        budget.remaining_ms(),
+        options,
+        temporary_path.clone(),
+        true,
+    )
+    .await;
+
+    let temporary_file = match opened {
+        Some(Ok(file)) => file,
+        Some(Err(text)) => {
+            task.add_result(Result::error(message, text)).await;
+
+            return;
+        }
+        None => return,
+    };
 
     let work = {
+        let source = parameters.source.clone();
+        let destination = parameters.destination.clone();
         let temporary_path = temporary_path.clone();
 
         async move {
-            match tokio::fs::rename(&source, &destination).await {
-                Ok(()) => Ok::<u64, String>(0),
-                // Matched on the raw code rather than ErrorKind::CrossesDevices:
-                // the mapping of that kind is the standard library's business
-                // and this is the one case the fallback exists for.
-                Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
-                    let count = tokio::fs::copy(&source, &temporary_path)
-                        .await
-                        .map_err(|error| io_message("copy to", &temporary_path, &error))?;
+            let source_file = tokio::fs::File::open(&source)
+                .await
+                .map_err(|error| io_message("open", &source, &error))?;
 
-                    tokio::fs::rename(&temporary_path, &destination)
-                        .await
-                        .map_err(|error| io_message("rename", &destination, &error))?;
+            let mut reader =
+                tokio::io::BufReader::with_capacity(DEFAULT_COPY_BUFFER_BYTES, source_file);
+            let mut writer =
+                tokio::io::BufWriter::with_capacity(DEFAULT_COPY_BUFFER_BYTES, temporary_file);
 
-                    tokio::fs::remove_file(&source)
-                        .await
-                        .map_err(|error| io_message("remove", &source, &error))?;
+            tokio::io::copy(&mut reader, &mut writer)
+                .await
+                .map_err(|error| io_message("copy to", &destination, &error))?;
 
-                    Ok(count)
-                }
-                Err(error) => Err(io_message("rename", &source, &error)),
-            }
+            writer
+                .flush()
+                .await
+                .map_err(|error| io_message("flush", &destination, &error))?;
+
+            // The destination keeps its own permissions when it is there, the
+            // way write_atomic's rename does; a new one takes the source's.
+            // Set explicitly rather than through the open, which the umask
+            // narrows.
+            let mode = mode_of(&destination)
+                .await
+                .or(mode_of(&source).await)
+                .unwrap_or(0o644);
+
+            let _ =
+                tokio::fs::set_permissions(&temporary_path, std::fs::Permissions::from_mode(mode))
+                    .await;
+
+            tokio::fs::rename(&temporary_path, &destination)
+                .await
+                .map_err(|error| io_message("rename", &destination, &error))?;
+
+            tokio::fs::remove_file(&source)
+                .await
+                .map_err(|error| io_message("remove", &source, &error))?;
+
+            Ok::<(), String>(())
         }
     };
 
-    let outcome = bounded(task, envelope.timeout_ms, work).await;
+    let outcome = bounded(task, budget.remaining_ms(), work).await;
 
-    // The temporary is this call's own, so it goes whatever happened — on the
-    // success path it has already been renamed away and this is a no-op.
+    // The temporary is this call's own and is known to exist by now, so it goes
+    // whatever happened — on the success path the rename has taken it away and
+    // this is a no-op.
     let _ = tokio::fs::remove_file(&temporary_path).await;
 
     match outcome {
-        Some(Ok(_)) => {
+        Some(Ok(())) => {
             task.add_result(Result::success(
                 message,
                 Vec::new(),
@@ -620,6 +764,14 @@ pub async fn move_file(task: &Task, envelope: &mut payloads::Envelope) {
         }
         None => {}
     }
+}
+
+/// The permission bits of a path, if it has any.
+async fn mode_of(path: &str) -> Option<u32> {
+    tokio::fs::metadata(path)
+        .await
+        .ok()
+        .map(|metadata| metadata.permissions().mode() & 0o7777)
 }
 
 /// Removes a file. With missing_ok a path that is not there is a success, which
@@ -660,34 +812,39 @@ pub async fn delete(task: &Task, envelope: &mut payloads::Envelope) {
     }
 }
 
-/// Removes a file a failed or cancelled write left half-finished — and only
-/// ever a file this call brought into existence.
+/// A temporary name beside the destination: same directory, because rename is
+/// atomic only within one filesystem.
 ///
-/// Two conditions, and both of them guard data the call had no right to take.
-/// The write must have got as far as opening its destination, or a Create
-/// refused because the path was taken would delete the very file whose
-/// existence caused the refusal. And the mode must be the one that creates
-/// (see mod.rs, creates_the_file): a Replace over an existing file has
-/// truncated it, which is what was asked for, but removing it on top of that
-/// destroys the inode, its permissions and its ownership — and, when the path
-/// is a symlink, unlinks the link while leaving its target at length zero.
-///
-/// So a failed Replace leaves a partial file where a whole one used to be. That
-/// is the lesser evil, and it is the caller's own file either way.
-pub async fn drop_partial(path: &str, created_by_us: bool, opened: &AtomicBool) {
-    if !created_by_us || !opened.load(Ordering::Relaxed) {
-        return;
-    }
-
-    let _ = tokio::fs::remove_file(path).await;
-}
-
-/// A temporary name beside the destination, unique within the process and
-/// unlikely to collide outside it.
+/// Two properties beyond uniqueness. It is unguessable — the nanosecond clock
+/// goes into it — because the directory may be one another user can write, and
+/// a name that can be predicted can be pre-created as a symlink. And the
+/// basename is truncated to leave room for the suffix, so a move of a file with
+/// a 250-character name does not fail ENAMETOOLONG where it used to work.
 fn temporary_sibling(path: &str) -> String {
     let sequence = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    format!("{path}.{}-{sequence}.sconcur-tmp", std::process::id())
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.subsec_nanos())
+        .unwrap_or(0);
+
+    let suffix = format!(".{}-{sequence}-{nanos:08x}.sconcur-tmp", std::process::id());
+
+    // NAME_MAX is 255 on every filesystem this runs on; the directory part is
+    // not the limit, the basename is.
+    let (directory, name) = match path.rsplit_once('/') {
+        Some((directory, name)) => (directory, name),
+        None => ("", path),
+    };
+
+    let room = 255usize.saturating_sub(suffix.len());
+    let kept: String = name.chars().take(room).collect();
+
+    if directory.is_empty() {
+        format!("{kept}{suffix}")
+    } else {
+        format!("{directory}/{kept}{suffix}")
+    }
 }
 
 #[cfg(test)]
@@ -726,6 +883,17 @@ mod tests {
     }
 
     #[test]
+    fn a_temporary_leaves_room_for_its_suffix() {
+        let long = "/tmp/".to_string() + &"n".repeat(250);
+        let temporary = temporary_sibling(&long);
+
+        let name = temporary.rsplit_once('/').unwrap().1;
+
+        assert!(name.len() <= 255, "{} characters", name.len());
+        assert!(name.ends_with(".sconcur-tmp"));
+    }
+
+    #[test]
     fn two_atomic_writes_to_one_path_get_different_temporaries() {
         assert_ne!(
             temporary_sibling("/var/app/state.json"),
@@ -733,56 +901,33 @@ mod tests {
         );
     }
 
-    /// Undo the `!opened` guard in drop_partial and this one fails: a Create
-    /// refused because the path was taken would delete the file that caused the
-    /// refusal.
-    #[tokio::test]
-    async fn a_write_that_never_opened_its_destination_leaves_it_alone() {
-        let path = fixture_path("drop-partial").await;
-
-        tokio::fs::write(&path, b"already here").await.unwrap();
-
-        let never_opened = AtomicBool::new(false);
-
-        drop_partial(&path, true, &never_opened).await;
-
-        assert_eq!(
-            tokio::fs::read(&path).await.unwrap(),
-            b"already here".to_vec()
-        );
-
-        // What the guard does let through: a destination this write created and
-        // did open.
-        drop_partial(&path, true, &AtomicBool::new(true)).await;
-
-        assert!(tokio::fs::metadata(&path).await.is_err());
-    }
-
-    /// The bug this rule was rewritten for. Undo `created_by_us` and a Replace
-    /// write that runs out of disk deletes the file it was replacing — the
-    /// caller loses the old contents as well as the new.
+    /// The rule that replaced drop_partial's "did the open succeed" question:
+    /// only a write that CREATED the file may remove it. Undo it and a Replace
+    /// that runs out of disk deletes the file it was replacing — the caller
+    /// loses the old contents as well as the new.
     #[tokio::test]
     async fn a_replace_over_an_existing_file_is_never_removed() {
         let path = fixture_path("drop-replace").await;
 
         tokio::fs::write(&path, b"the previous version").await.unwrap();
 
-        // Replace opened it, so `opened` is true — and the file still must stay,
-        // because this call did not create it.
-        drop_partial(&path, creates_the_file("rpl"), &AtomicBool::new(true)).await;
+        remove_if_created(&path, creates_the_file("rpl")).await;
 
         assert!(tokio::fs::metadata(&path).await.is_ok());
 
-        tokio::fs::remove_file(&path).await.unwrap();
+        // And the mode that did create it is removed.
+        remove_if_created(&path, creates_the_file("crt")).await;
+
+        assert!(tokio::fs::metadata(&path).await.is_err());
     }
 
     #[tokio::test]
-    async fn an_append_is_never_dropped_even_when_it_opened_the_file() {
+    async fn an_append_is_never_removed() {
         let path = fixture_path("drop-append").await;
 
         tokio::fs::write(&path, b"log line").await.unwrap();
 
-        drop_partial(&path, creates_the_file("app"), &AtomicBool::new(true)).await;
+        remove_if_created(&path, creates_the_file("app")).await;
 
         assert_eq!(tokio::fs::read(&path).await.unwrap(), b"log line".to_vec());
 

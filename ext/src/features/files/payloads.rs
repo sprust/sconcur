@@ -51,7 +51,7 @@ pub struct WriteParams {
     #[serde(rename = "p", default)]
     pub path: String,
     /// Untyped on purpose: whether PHP's packer emits a msgpack `str` or a
-    /// `bin` for a string is its business, and contents::bytes_of reads both.
+    /// `bin` for a string is its business, and content::bytes_of reads both.
     /// Declaring Vec<u8> here would rest the wire format on how serde maps one
     /// of them onto a byte sequence.
     #[serde(rename = "c", default = "nil_value")]
@@ -71,7 +71,7 @@ pub struct WriteAtomicParams {
     #[serde(rename = "p", default)]
     pub path: String,
     /// Untyped on purpose: whether PHP's packer emits a msgpack `str` or a
-    /// `bin` for a string is its business, and contents::bytes_of reads both.
+    /// `bin` for a string is its business, and content::bytes_of reads both.
     /// Declaring Vec<u8> here would rest the wire format on how serde maps one
     /// of them onto a byte sequence.
     #[serde(rename = "c", default = "nil_value")]

@@ -435,7 +435,7 @@ throughput number, and it does not show up in a loop that runs one call at a tim
 One number here was itself found by this gate. `list` first dispatched every
 `file_type()` and `metadata()` to the blocking pool on its own, so a 10 000-entry
 listing handed 20 000 syscalls across a thread boundary and took 6723 ms
-synchronously — eleven times slower than the native code it exists to beat. A
+synchronously — nine times slower than the native code it exists to beat. A
 directory is now read whole in one trip.
 
 ## Clients (HTTP / Socket / WebSocket)

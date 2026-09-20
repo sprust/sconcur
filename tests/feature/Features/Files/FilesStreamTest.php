@@ -293,7 +293,7 @@ class FilesStreamTest extends BaseTestCase
             Files::write(path: $this->path(name: "deep/deeper/file-$index.txt"), contents: 'x');
         }
 
-        self::assertSame(0, $this->heldSyncFlows());
+        $before = $this->heldSyncFlows();
 
         $walk = Files::walk(path: $this->directory, batchEntries: 2);
         $seen = 0;
@@ -311,11 +311,11 @@ class FilesStreamTest extends BaseTestCase
         // flow the state hangs on, so that is what is watched: one while the abandoned
         // walk is alive, none once it is dropped. Delete BatchIterator::releaseTask()
         // and the second assertion fails.
-        self::assertSame(1, $this->heldSyncFlows());
+        self::assertSame($before + 1, $this->heldSyncFlows());
 
         unset($walk);
 
-        self::assertSame(0, $this->heldSyncFlows());
+        self::assertSame($before, $this->heldSyncFlows());
     }
 
     public function testTheWriterFillsAFileChunkByChunk(): void
@@ -610,18 +610,59 @@ class FilesStreamTest extends BaseTestCase
 
         $before = $this->heldSyncFlows();
 
-        // One millisecond against a chunk far larger than the disk answers in it.
-        $writer = Files::openWriter(
-            path: $path,
-            mode: FileWriteMode::Create,
-            timeoutMs: 1,
+        // The deadline is taken once, at the open, and bounds every later call — so it
+        // has to be short enough to cut a 64 MiB write and long enough for an open(2),
+        // which are four orders of magnitude apart. One millisecond is both, but the
+        // open can still lose on a busy machine, so the setup is retried rather than
+        // skipped: what is under test is what happens after the chunk is cut.
+        $writer      = null;
+        $interrupted = false;
+
+        for ($attempt = 0; $attempt < 20 && !$interrupted; ++$attempt) {
+            Files::delete(path: $path, missingOk: true);
+
+            try {
+                $writer = Files::openWriter(
+                    path: $path,
+                    mode: FileWriteMode::Create,
+                    timeoutMs: 1,
+                );
+            } catch (FilesException) {
+                $writer = null;
+
+                continue;
+            }
+
+            self::assertSame($before + 1, $this->heldSyncFlows());
+
+            try {
+                $writer->write(chunk: str_repeat('x', 64 * 1024 * 1024));
+            } catch (FilesException) {
+                $interrupted = true;
+            }
+
+            if (!$interrupted) {
+                // The write landed inside the millisecond. Put the handle back and try
+                // again rather than asserting against a session that is still healthy.
+                $writer->close();
+
+                $writer = null;
+            }
+        }
+
+        self::assertTrue(
+            $interrupted && $writer !== null,
+            'Could not get a chunk cut off in twenty attempts.',
         );
 
-        self::assertSame($before + 1, $this->heldSyncFlows());
-
+        // A further write is refused locally too, so a caller's retry loop does not make
+        // a boundary crossing per attempt against a session that can never take another
+        // byte. Remove the catch in FileWriter::write() and this spins instead.
         try {
-            $writer->write(chunk: str_repeat('x', 48 * 1024 * 1024));
-        } catch (FilesException) {
+            $writer->write(chunk: 'more');
+
+            self::fail('A writer left inconsistent by a chunk accepted another one.');
+        } catch (FileStreamClosedException) {
             //
         }
 
@@ -640,6 +681,45 @@ class FilesStreamTest extends BaseTestCase
         $this->expectException(FileStreamClosedException::class);
 
         $writer->close();
+    }
+
+    public function testAWriterCreatesItsFileWithTheGivenPermissions(): void
+    {
+        $path = $this->path(name: 'writer-perms.bin');
+
+        $writer = Files::openWriter(
+            path: $path,
+            mode: FileWriteMode::Create,
+            permissions: 0600,
+        );
+
+        $writer->write(chunk: 'x');
+        $writer->close();
+
+        clearstatcache(true, $path);
+
+        self::assertSame(0600, Files::stat(path: $path)->permissions);
+    }
+
+    public function testWalkCanCarryMetadataLikeListDoes(): void
+    {
+        Files::makeDirectory(path: $this->path(name: 'sized'));
+        Files::write(path: $this->path(name: 'sized/file.txt'), contents: 'abcde');
+
+        $bare = iterator_to_array(
+            Files::walk(path: $this->directory, pattern: 'file.txt'),
+        );
+
+        self::assertCount(1, $bare);
+        self::assertNull($bare[0]->sizeBytes);
+
+        $detailed = iterator_to_array(
+            Files::walk(path: $this->directory, pattern: 'file.txt', withMetadata: true),
+        );
+
+        self::assertCount(1, $detailed);
+        self::assertSame(5, $detailed[0]->sizeBytes);
+        self::assertNotNull($detailed[0]->modifiedAtMs);
     }
 
     protected function path(string $name): string

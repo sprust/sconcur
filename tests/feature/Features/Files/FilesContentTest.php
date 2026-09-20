@@ -211,8 +211,10 @@ class FilesContentTest extends BaseTestCase
         self::assertSame($sizeBytes, $copied);
         self::assertSame($sizeBytes, filesize($destination));
 
+        // A quarter of the file would be 2 MiB, which is exactly PHP's allocator chunk
+        // — a single new chunk would land on the boundary. Half leaves room for one.
         self::assertLessThan(
-            $sizeBytes / 4,
+            $sizeBytes / 2,
             $grown,
             "The copy grew the PHP heap by $grown bytes; the file is $sizeBytes.",
         );
@@ -273,6 +275,31 @@ class FilesContentTest extends BaseTestCase
         // a change to it deliberate.
         self::assertSame('the new one', Files::read(path: $destination));
         self::assertFalse(Files::exists(path: $source));
+    }
+
+    public function testCopyTakesItsBufferSizeWithoutChangingTheResult(): void
+    {
+        $source      = $this->path(name: 'buffered-source.bin');
+        $destination = $this->path(name: 'buffered-destination.bin');
+
+        $contents = random_bytes(300_000);
+
+        Files::write(path: $source, contents: $contents);
+
+        // A tiny buffer means many turns of the copy loop; a hostile one is clamped
+        // rather than handed to the allocator. Both must move the same bytes.
+        foreach ([64, PHP_INT_MAX] as $bufferSizeBytes) {
+            Files::delete(path: $destination, missingOk: true);
+
+            $copied = Files::copy(
+                source: $source,
+                destination: $destination,
+                bufferSizeBytes: $bufferSizeBytes,
+            );
+
+            self::assertSame(300_000, $copied);
+            self::assertSame($contents, Files::read(path: $destination));
+        }
     }
 
     public function testCopyCanAppendToItsDestination(): void
@@ -343,6 +370,11 @@ class FilesContentTest extends BaseTestCase
                     }
                 } catch (Throwable $exception) {
                     $caught = $exception;
+
+                    // Re-thrown, the way a handler must let the unwind signal through:
+                    // swallowing it would leave the group thinking the coroutine ended
+                    // of its own accord.
+                    throw $exception;
                 }
             },
         );

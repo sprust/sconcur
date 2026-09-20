@@ -23,7 +23,7 @@ pub mod walk_state;
 pub mod writer;
 
 use std::future::Future;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::dto::Result;
 use crate::features::{BoxFuture, Feature};
@@ -113,8 +113,11 @@ pub fn bounded_size(value: i64, default: usize, maximum: usize) -> usize {
 /// Refused rather than masked when they are outside the range: a value that
 /// does not fit was meant as something else, and silently turning
 /// `0x1_0000_0180` into `0600` is how a file ends up with rights nobody asked
-/// for. Every command that takes `pm` goes through here, which is what chmod
-/// used to be alone in doing.
+/// for.
+///
+/// Every command whose `pm` is optional goes through here. chmod does not: its
+/// permissions are a required argument, so `0` there is a caller asking for
+/// 0000 rather than declining to choose, and it takes exact_permission_bits.
 pub fn permission_bits(value: i64, default: u32) -> std::result::Result<u32, String> {
     if value == 0 {
         return Ok(default);
@@ -212,6 +215,91 @@ where
     }
 }
 
+/// Opens a file under the deadline, and takes responsibility for a file this
+/// call creates but never gets to hand over.
+///
+/// The obvious version — race `tokio::fs::OpenOptions::open` against the
+/// deadline, and clean up in the losing branch — cannot work, and the way it
+/// fails is worth spelling out because it looked right twice.
+///
+/// A blocking task is never cancelled: when the deadline wins, `open(2)` runs
+/// to completion in the pool anyway and the file appears on disk afterwards.
+/// Any flag the racing future sets is therefore still unset at the moment the
+/// losing branch reads it — the flag is true exactly when the branch is not
+/// taken — so the cleanup there is dead code, and the file is orphaned.
+///
+/// So the open is spawned rather than awaited inline, and on the deadline path
+/// the handle is handed to a detached task that waits for the open to land and
+/// cleans up after it. Nothing waits on the caller's side; the coroutine gets
+/// its timeout immediately.
+pub async fn open_bounded(
+    task: &Task,
+    timeout_ms: i64,
+    options: std::fs::OpenOptions,
+    path: String,
+    created_by_us: bool,
+) -> Option<std::result::Result<tokio::fs::File, String>> {
+    let opening = path.clone();
+
+    let mut handle = tokio::task::spawn_blocking(move || options.open(&opening));
+
+    let outcome = bounded(task, timeout_ms, &mut handle).await;
+
+    match outcome {
+        Some(Ok(Ok(file))) => Some(Ok(tokio::fs::File::from_std(file))),
+        Some(Ok(Err(error))) => Some(Err(errors::io_message("open", &path, &error))),
+        // The pool dropped the job, which means the runtime is going away.
+        Some(Err(error)) => Some(Err(fail(Kind::Io, &format!("open {path}: {error}")))),
+        None => {
+            tokio::spawn(async move {
+                let Ok(Ok(file)) = handle.await else {
+                    return;
+                };
+
+                drop(file);
+
+                if created_by_us {
+                    let _ = tokio::fs::remove_file(&path).await;
+                }
+            });
+
+            None
+        }
+    }
+}
+
+/// One deadline for a whole command, rather than a fresh one per syscall.
+///
+/// A stream's open used to spend `timeoutMs` on the open, `timeoutMs` again on
+/// the fstat and `timeoutMs` a third time on the first batch, so a call asking
+/// for one second could legitimately take three.
+pub struct Budget {
+    start: Instant,
+    timeout_ms: i64,
+}
+
+impl Budget {
+    pub fn new(timeout_ms: i64) -> Self {
+        Budget {
+            start: Instant::now(),
+            timeout_ms,
+        }
+    }
+
+    /// What is left of it. `0` keeps meaning "no deadline"; a budget that is
+    /// spent answers 1 ms rather than 0, because 0 would silently turn the rest
+    /// of the command into an unbounded one.
+    pub fn remaining_ms(&self) -> i64 {
+        if self.timeout_ms <= 0 {
+            return 0;
+        }
+
+        let spent = self.start.elapsed().as_millis() as i64;
+
+        (self.timeout_ms - spent).max(1)
+    }
+}
+
 /// Runs an operation under the flow's cancellation token and the payload's
 /// deadline, which every feature is required to honour.
 ///
@@ -286,8 +374,10 @@ where
 ///
 /// The permission bits apply only when the file is created, which is what
 /// open(2) does with them.
-pub fn write_options(mode: &str, permissions: u32) -> Option<tokio::fs::OpenOptions> {
-    let mut options = tokio::fs::OpenOptions::new();
+pub fn std_write_options(mode: &str, permissions: u32) -> Option<std::fs::OpenOptions> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut options = std::fs::OpenOptions::new();
 
     options.write(true);
 
@@ -329,11 +419,21 @@ mod tests {
 
     #[test]
     fn an_unknown_write_mode_is_refused() {
-        assert!(write_options("rpl", 0o644).is_some());
-        assert!(write_options("crt", 0o644).is_some());
-        assert!(write_options("app", 0o644).is_some());
-        assert!(write_options("", 0o644).is_none());
-        assert!(write_options("w", 0o644).is_none());
+        assert!(std_write_options("rpl", 0o644).is_some());
+        assert!(std_write_options("crt", 0o644).is_some());
+        assert!(std_write_options("app", 0o644).is_some());
+        assert!(std_write_options("", 0o644).is_none());
+        assert!(std_write_options("w", 0o644).is_none());
+    }
+
+    #[test]
+    fn a_budget_is_one_deadline_for_a_whole_command() {
+        assert_eq!(Budget::new(0).remaining_ms(), 0);
+
+        let budget = Budget::new(1_000);
+
+        assert!(budget.remaining_ms() <= 1_000);
+        assert!(budget.remaining_ms() >= 1);
     }
 
     /// Undo this and a failed Replace over an existing file deletes it.

@@ -5,10 +5,14 @@ declare(strict_types=1);
 namespace SConcur\Exceptions\Files;
 
 /**
- * The file is bigger than the read limit the call carried, so the extension refused to
- * read it instead of spending the memory twice — once in the extension, once in PHP.
+ * More was asked for than the call's limit allows, so the extension refused rather than
+ * spending the memory.
  *
- * Raise the limit on the call, or read the file in batches with Files::readChunks().
+ * Two cases. A read whose requested range is over $maxReadBytes — the range, not the
+ * file, so a small range out of a huge file is fine; raise the limit or use
+ * Files::readChunks(), which holds one buffer whatever the size. And a line over
+ * $maxLineBytes in Files::readLines(), where the remedy is the limit itself: a file with
+ * no newline in it cannot be read line by line.
  */
 class FileTooLargeException extends FilesException
 {

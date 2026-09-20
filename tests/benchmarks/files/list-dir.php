@@ -35,12 +35,13 @@ foreach (['native', 'sync', 'async'] as $mode) {
     $directory = $root . '/' . $mode;
 
     mkdir($directory, 0777, true);
+
     benchFilesSeed(
-    directory: $directory,
-    prefix: 'entry',
-    count: $entries,
-    sizeBytes: 64,
-);
+        directory: $directory,
+        prefix: 'entry',
+        count: $entries,
+        sizeBytes: 64,
+    );
 
     $directories[$mode] = $directory;
 }

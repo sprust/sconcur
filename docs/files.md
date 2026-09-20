@@ -41,7 +41,7 @@ Inside `WaitGroup::add(...)` the same calls run concurrently.
 | Operation | Against | Verdict |
 | --- | --- | --- |
 | `copy` of 64 MiB | PHP's `copy()` | 2x faster synchronously, 9x concurrently — the bytes stay inside the extension |
-| `list` of 10 000 entries with metadata | `scandir()` + `filesize()` + `filemtime()` per entry | 1.8x faster concurrently; the per-entry syscalls never reach PHP |
+| `list` of 10 000 entries with metadata | `scandir()` + `filesize()` + `filemtime()` per entry | 2.2x faster concurrently; the per-entry syscalls never reach PHP |
 | `hashFile` of 64 MiB | `hash_file()` | 1.3x faster concurrently; the read loop leaves the PHP thread free |
 | `readChunks` of 64 MiB | `Files::read()` of the same file | same bytes at a 4 MB peak instead of 132 MB |
 | `read`/`write` of 64 MiB | `file_get_contents()` / `file_put_contents()` | slower — the payload crosses the boundary; what is bought is a free thread, not throughput |
@@ -74,8 +74,10 @@ the chunks of a writer — the deadline and a `WaitGroup::stop()` land between t
 pieces rather than at the end. A write or a copy that ends that way removes what
 it created (see below); a read or a walk has nothing to remove and simply stops.
 
-The size of that pool is what bounds how many file operations a process runs at
-once: 64 by default, set by `SCONCUR_BLOCKING_THREADS`.
+That pool is the process's, not the feature's: name resolution and anything else
+that hands over blocking work share it. It is left at tokio's own 512 threads for
+that reason, and `SCONCUR_BLOCKING_THREADS` changes it — lowering it to bound a
+file fan-out bounds DNS in the same breath.
 
 ## Reading and writing
 
@@ -157,12 +159,16 @@ Files::truncate(path: $path, sizeBytes: 0);
 boundary. It takes the same `mode` and `permissions`, plus a `bufferSizeBytes`
 that tunes the copy granularity — 64 KiB by default, 8 MiB at most.
 
-`move` renames within one filesystem and copies-then-removes across two, which
-is what PHP's `rename()` does as well. It **replaces** an existing destination
-and has no mode to refuse one: `rename(2)` replaces, the portable alternative
-does not exist, and a check followed by a rename would be a race dressed up as a
-guarantee. A copy that fails part-way across filesystems removes the half it
-wrote rather than leaving it under the destination's name.
+`move` renames within one filesystem and copies-then-renames across two, which
+is what PHP's `rename()` does as well. It replaces an existing destination and
+has no mode to refuse one: `rename(2)` replaces, the portable alternative does
+not exist, and a check followed by a rename would be a race dressed up as a
+guarantee.
+
+Across filesystems the copy goes to a temporary beside the destination and is
+renamed into place, so a failure at any point leaves the destination exactly as
+it was — the move either happens or does not. The destination keeps its own
+permissions; a new one takes the source's.
 
 `truncate` past the end of the file grows it with zeroes, as `ftruncate()` does.
 
@@ -216,6 +222,11 @@ it points at — the `lstat` half of the same command.
 them, so it compares against `0644` with no masking. The times are milliseconds
 since the epoch, negative for a stamp before it, and `0` where the filesystem
 does not carry one.
+
+`chmod` is the one command whose `permissions` are required, and it takes them
+literally: `0` there is `chmod 000`. Every other command takes them optionally
+and reads `0` as "the usual default" — 0644 for a file, 0755 for a directory,
+0600 for a temporary one, and the destination's own bits for `writeAtomic`.
 
 ```php
 Files::exists(path: $path);
@@ -299,9 +310,13 @@ streaming. A line over it raises `FileTooLargeException`, the same exception a
 one-shot read over `maxReadBytes` raises.
 
 `0` means the default for every size here, and every one of them is capped:
-buffers and `maxLineBytes` at 8 MiB, batches at 100 000. A size chosen by
+buffers and `maxLineBytes` at 8 MiB, batches at 100 000 lines. A size chosen by
 mistake is clamped rather than handed to the allocator — `bufferSizeBytes:
 PHP_INT_MAX` is a clamp, not a crash.
+
+A batch also stops at 64 MiB of lines however many it has collected, because
+100 000 lines of 8 MiB is not a batch anyone can hold. So a batch can be shorter
+than `batchLines` asked for; it is never longer.
 
 ### Walking a tree
 
@@ -364,12 +379,13 @@ the extension keeps the session and its open file for exactly that, and the file
 is not removed — every chunk had been handed over and only the flush was in
 doubt.
 
-Anything else ends the handle. A chunk cut off mid-write — by a deadline or a
-stop — leaves the file holding bytes no total accounts for, so the writer is
-unusable and its close is refused; the handle is spent, its flow given back, and
-a further call raises `FileStreamClosedException`. `writtenBytes()` reports the
-last total the extension acknowledged, which after a cut-off chunk is less than
-the file holds.
+Anything else ends the handle. A chunk that did not complete — cut off by a
+deadline or a stop, or failed part-way with an error — leaves the file holding
+bytes no total accounts for, so the writer is unusable: its `write()` and its
+`close()` are both refused, the handle is spent, its flow is given back, and a
+further call raises `FileStreamClosedException`. `writtenBytes()` reports the
+last total the extension acknowledged, which after such a chunk is less than the
+file holds.
 
 ### Abandoning a stream
 
@@ -381,9 +397,10 @@ assert by counting the process's own open descriptors before and after.
 
 ## Errors
 
-Every failure is named for its case. The kind is decided in the extension and
-read from the message, never matched out of it — a file named "permission
-denied" must not pick the exception an application catches.
+Every failure is named for its case. The kind is decided in the extension, which
+writes it as a prefix; PHP reads that prefix and never matches the message text —
+a file named "permission denied" must not pick the exception an application
+catches.
 
 | Exception | Case |
 | --- | --- |
@@ -399,12 +416,12 @@ denied" must not pick the exception an application catches.
 | `InvalidFileArgumentException` | the call itself is wrong |
 | `FilesException` | the base class, raised directly when the failure carries no kind this package knows — a core newer than the package, or a failure raised before the core saw the call |
 
-All of them but the last descend from `FilesException`, which descends from
-`RuntimeException`: a missing file and a full disk are runtime conditions
-whatever the caller does. `InvalidFileArgumentException` is a `LogicException`
-and deliberately outside that tree — a negative length or an unknown algorithm
-is a bug in the code, and a handler written for the filesystem's own failures
-must not swallow it.
+Every one of them descends from `FilesException`, which descends from
+`RuntimeException` — a missing file and a full disk are runtime conditions
+whatever the caller does — with one exception on purpose.
+`InvalidFileArgumentException` is a `LogicException` and sits outside that tree:
+a negative length or an unknown algorithm is a bug in the code, and a handler
+written for the filesystem's own failures must not swallow it.
 
 ## What the feature does not do
 

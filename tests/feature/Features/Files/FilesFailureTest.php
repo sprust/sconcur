@@ -139,6 +139,24 @@ class FilesFailureTest extends TestCase
         );
     }
 
+    /**
+     * The kind pattern takes digits and underscores as well as letters, so a kind a later
+     * core adds is still recognised as a kind — its text is stripped of the prefix and it
+     * lands on the unknown-kind path rather than being passed through whole, prefix and
+     * all. Narrow the pattern back to [a-z]+ and this fails.
+     */
+    public function testAKindShapedLikeALaterCoresIsStillReadAsAKind(): void
+    {
+        foreach (['io2', 'no_space', 'x9'] as $kind) {
+            $exception = FilesFailure::from(
+                new TaskErrorException(message: "files[$kind]: the text"),
+            );
+
+            self::assertSame(FilesException::class, $exception::class, $kind);
+            self::assertSame('the text', $exception->getMessage(), $kind);
+        }
+    }
+
     public function testAMultilineMessageKeepsItsTail(): void
     {
         $exception = FilesFailure::from(

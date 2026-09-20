@@ -3,9 +3,9 @@
 declare(strict_types=1);
 
 // Soak test for the Files feature: runs one scenario in a loop and prints, every five
-// seconds, what is held on both sides — the PHP heap and its dangling tasks, plus the
-// process RSS, because what a file stream holds is native memory and the PHP heap would
-// not show it moving.
+// seconds, what is held on both sides — the PHP heap, the process RSS (what a file
+// stream holds is native memory, which the heap does not show) and this process's open
+// descriptors, which is where a stream or a writer nobody released shows up.
 //
 // Everything a cycle creates is released inside that cycle, so any value that only grows
 // is a leak. The scenario worth the most attention is `abandoned`: an iterator broken out
@@ -199,8 +199,14 @@ $cycle = static function (int $iteration) use ($scenario, $directory, $sourcePat
                         break;
                     }
 
+                    // A name per cycle. Reusing one raced the extension's own removal:
+                    // waitAll() returns when the coroutine ends, the removal is a runtime
+                    // task that runs after the flow teardown, and the next cycle's Create
+                    // could land first and die of FileAlreadyExistsException — killing the
+                    // one scenario this soak exists for, and looking like the leak it was
+                    // watching for.
                     $writer = Files::openWriter(
-                        path: $directory . '/abandoned.bin',
+                        path: $directory . '/abandoned-' . $iteration . '.bin',
                         mode: FileWriteMode::Create,
                     );
 
@@ -214,12 +220,12 @@ $cycle = static function (int $iteration) use ($scenario, $directory, $sourcePat
 
             $waitGroup->waitAll();
 
-            // The writer above is dropped without a close, so the extension removes the
-            // file — but a scenario that leaked would leave it, and the next cycle's
-            // Create would fail loudly rather than quietly reusing it.
             break;
 
         default:
+            // A soak script, not library code: the project's "never throw a built-in"
+            // rule is about what the package hands to its callers, and the other three
+            // soaks do the same here.
             throw new RuntimeException("unknown scenario $scenario");
     }
 };

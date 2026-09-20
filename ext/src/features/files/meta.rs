@@ -8,7 +8,6 @@
 
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::dto::Result;
@@ -314,14 +313,10 @@ pub async fn temporary_file(task: &Task, envelope: &mut payloads::Envelope) {
         }
     };
 
-    // Where the work records the name it drew, so the deadline path below can
-    // remove a file the caller will never be told the name of.
-    let created: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
-
-    let work = {
-        let created = Arc::clone(&created);
-
-        async move {
+    // Spawned rather than awaited inline, for the reason open_bounded spells
+    // out: a blocking task is never cancelled, so a file created after the
+    // deadline has to be cleaned up by something that can still wait for it.
+    let mut handle = tokio::task::spawn_blocking(move || {
         let mut last_error = None;
 
         for _ in 0..TEMPORARY_NAME_ATTEMPTS {
@@ -334,16 +329,23 @@ pub async fn temporary_file(task: &Task, envelope: &mut payloads::Envelope) {
                 suffix,
             );
 
-            let mut options = tokio::fs::OpenOptions::new();
+            let mut options = std::fs::OpenOptions::new();
 
             options.write(true).create_new(true);
-            options.mode(permissions);
 
-            match options.open(&path).await {
-                Ok(_) => {
-                    created.lock().unwrap().replace(path.clone());
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, permissions);
 
-                    return Ok::<Vec<u8>, String>(encode_text("p", &path));
+            match options.open(&path) {
+                Ok(file) => {
+                    // Set explicitly as well: the mode an open carries is
+                    // narrowed by the process umask, and a temporary file asked
+                    // for at 0600 must be 0600.
+                    let _ =
+                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(permissions));
+
+                    drop(file);
+
+                    return Ok(path);
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     last_error = Some(error);
@@ -362,33 +364,37 @@ pub async fn temporary_file(task: &Task, envelope: &mut payloads::Envelope) {
                     .unwrap_or_else(|| "no reason recorded".to_string()),
             ),
         ))
-        }
-    };
+    });
 
-    let outcome = bounded(task, envelope.timeout_ms, work).await;
-
-    // Nobody learned the name, so nobody can clean it up but this.
-    if outcome.is_none() {
-        let created = created.lock().unwrap().take();
-
-        if let Some(path) = created {
-            let _ = tokio::fs::remove_file(&path).await;
-        }
-    }
+    let outcome = bounded(task, envelope.timeout_ms, &mut handle).await;
 
     match outcome {
-        Some(Ok(body)) => {
+        Some(Ok(Ok(path))) => {
             task.add_result(Result::success(
                 task.message(),
-                body,
+                encode_text("p", &path),
                 calc_execution_ms(start_time),
             ))
             .await;
         }
-        Some(Err(text)) => {
+        Some(Ok(Err(text))) => {
             task.add_result(Result::error(task.message(), text)).await;
         }
-        None => {}
+        Some(Err(error)) => {
+            task.add_result(Result::error(
+                task.message(),
+                fail(Kind::Io, &format!("create a temporary file: {error}")),
+            ))
+            .await;
+        }
+        // Nobody will ever learn the name, so nobody else can remove it.
+        None => {
+            tokio::spawn(async move {
+                if let Ok(Ok(path)) = handle.await {
+                    let _ = tokio::fs::remove_file(&path).await;
+                }
+            });
+        }
     }
 }
 

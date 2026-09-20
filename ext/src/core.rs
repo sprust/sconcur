@@ -160,20 +160,20 @@ impl Core {
         // about it here, and nothing worth failing the whole runtime over.
         let _ = rustls::crypto::ring::default_provider().install_default();
 
-        // Where every file syscall lands. tokio::fs hands each one to this pool
-        // rather than to a worker thread, which is what keeps a read from a cold
-        // disk from standing in front of the whole runtime — with one worker
-        // thread by default, it otherwise would.
+        // The runtime's blocking pool. Every file syscall lands here, because
+        // tokio::fs hands each one to it rather than to a worker thread — which
+        // is what keeps a read from a cold disk from standing in front of the
+        // whole runtime, with one worker thread by default.
         //
-        // Named here rather than left at tokio's own default of 512, because
-        // that number is the real ceiling on how many file operations a worker
-        // runs at once, and it should not be a library's private decision. 64 is
-        // well past what a disk answers in parallel and far below what 512
-        // threads' stacks cost a process that fans out wide.
+        // It is the process's pool, not the file feature's: hyper resolves names
+        // on it, and so does anything else that hands over blocking work. Left
+        // at tokio's own 512 for that reason. Lowering it to bound file fan-out
+        // — which an earlier version did, at 64 — bounds name resolution for
+        // every other feature in the same breath.
         let blocking_threads = std::env::var("SCONCUR_BLOCKING_THREADS")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(64)
+            .unwrap_or(512)
             .max(1);
 
         let runtime = tokio::runtime::Builder::new_multi_thread()

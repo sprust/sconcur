@@ -29,10 +29,10 @@ use crate::helpers::calc_execution_ms;
 use crate::states::{self, StateCloseFuture, StateContract, StateFuture};
 use crate::tasks::Task;
 
-use super::content::{bytes_of, drop_partial};
+use super::content::bytes_of;
 use super::errors::{io_message, message as fail, Kind};
 use super::payloads;
-use super::{bounded, creates_the_file, params, permission_bits, write_options};
+use super::{bounded, creates_the_file, params, permission_bits, std_write_options};
 
 /// What a writer's state is registered under. The registry is keyed by task key
 /// and shared with every stream in the process, so a writer id — which is a
@@ -49,6 +49,7 @@ fn state_key(id: &str) -> String {
 }
 
 /// A close that did not happen, and whether trying again could change that.
+#[derive(Debug)]
 struct Failure {
     text: String,
     terminal: bool,
@@ -88,9 +89,11 @@ pub struct Session {
     /// of time still handed every chunk over, so its file is not the half-thing
     /// an abandoned writer leaves and must not be removed.
     closing: AtomicBool,
-    /// Whether a chunk was cut off mid-write. The file then holds a partial
-    /// chunk nobody counted, so every later call fails rather than letting a
-    /// retry double the bytes or a close report a total the file does not have.
+    /// Whether a chunk left the file in a state no total describes — cut off by
+    /// a deadline or a stop, or failed part-way through with an error. Either
+    /// way the file holds bytes nobody counted, so every later call fails rather
+    /// than letting a retry double them or a close report a total the file does
+    /// not have.
     poisoned: AtomicBool,
 }
 
@@ -108,7 +111,7 @@ impl Session {
             return Err(fail(
                 Kind::State,
                 &format!(
-                    "the writer for {} was cut off mid-chunk and cannot be used further",
+                    "the writer for {} was left inconsistent by a failed or interrupted chunk",
                     self.path
                 ),
             ));
@@ -146,20 +149,28 @@ impl Session {
     /// them. A writer whose chunk was cut off is, because the file holds bytes
     /// no total accounts for and no further call can make that true again.
     async fn finish(&self) -> std::result::Result<u64, Failure> {
-        let mut guard = self.file.lock().await;
-
-        // Checked before `closing` is raised, not after. Raising it first would
-        // tell the cleanup that this file was meant to be kept — and a writer
-        // cut off mid-chunk is exactly the one whose file must still go.
+        // Both of these happen before the lock is asked for, and the order is
+        // load-bearing.
+        //
+        // The poison is checked first because a writer cut off mid-chunk is the
+        // one whose file must still go, so `closing` must not be raised for it.
+        // And `closing` is raised before the await, because waiting for the lock
+        // is an await: a close parked behind another coroutine's write used to
+        // let the flow's cleanup run with the flag still down and delete a file
+        // whose every chunk had been acknowledged.
         if self.poisoned.load(Ordering::Acquire) {
             return Err(Failure::terminal(fail(
                 Kind::State,
                 &format!(
-                    "the writer for {} was cut off mid-chunk and cannot be closed cleanly",
+                    "the writer for {} was left inconsistent by a failed or interrupted chunk",
                     self.path
                 ),
             )));
         }
+
+        self.closing.store(true, Ordering::Release);
+
+        let mut guard = self.file.lock().await;
 
         let Some(file) = guard.as_mut() else {
             return Err(Failure::terminal(fail(
@@ -167,10 +178,6 @@ impl Session {
                 &format!("the writer for {} is closed", self.path),
             )));
         };
-
-        // From here on every chunk has been handed over and only the flush is in
-        // doubt, so the file is one the caller meant to keep whatever happens.
-        self.closing.store(true, Ordering::Release);
 
         // The handle is given up only once the flush has succeeded. Taking it
         // first — which this used to do — meant a flush that ran out of time
@@ -219,12 +226,16 @@ impl Session {
 /// inherit file handles it has no business holding.
 pub struct Registries {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
+    /// Ids claimed by an open that is still in flight. Separate from the
+    /// sessions, because the claim has to exist before there is a session.
+    opening: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Registries {
     pub fn new() -> Self {
         Registries {
             sessions: Mutex::new(HashMap::new()),
+            opening: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -244,8 +255,23 @@ impl Registries {
         self.sessions.lock().unwrap().get(id).cloned()
     }
 
-    fn contains(&self, id: &str) -> bool {
-        self.sessions.lock().unwrap().contains_key(id)
+    /// Claims an id for an open that has not finished yet. False when it is
+    /// already claimed or already open.
+    fn reserve(&self, id: String) -> bool {
+        let mut opening = self.opening.lock().unwrap();
+
+        if self.sessions.lock().unwrap().contains_key(&id) || opening.contains(&id) {
+            return false;
+        }
+
+        opening.insert(id);
+
+        true
+    }
+
+    /// Gives a claim back, whether or not the open got as far as a session.
+    fn release(&self, id: &str) {
+        self.opening.lock().unwrap().remove(id);
     }
 
     fn remove(&self, id: &str) -> Option<Arc<Session>> {
@@ -327,7 +353,7 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
         }
     };
 
-    let Some(options) = write_options(&parameters.mode, permissions) else {
+    let Some(options) = std_write_options(&parameters.mode, permissions) else {
         task.add_result(Result::error(
             message,
             fail(
@@ -340,10 +366,10 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
         return;
     };
 
-    // Reserved before the file is touched. Opening first and checking the id
-    // afterwards meant a Replace open under an id already in use truncated the
-    // live writer's file and only then reported the collision.
-    if registries().contains(&parameters.id) {
+    // Reserved before the file is touched, and atomically — a check followed by
+    // an open lets two opens with the same id both reach open(2), and in Replace
+    // mode the loser truncates the winner's file before reporting the collision.
+    if !registries().reserve(parameters.id.clone()) {
         task.add_result(Result::error(
             message,
             fail(
@@ -356,44 +382,31 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
         return;
     }
 
-    let path = parameters.path.clone();
-    let opened_flag = Arc::new(AtomicBool::new(false));
-
-    let opened = bounded(task, envelope.timeout_ms, {
-        let opened_flag = Arc::clone(&opened_flag);
-
-        async move {
-            let file = options
-                .open(&path)
-                .await
-                .map_err(|error| io_message("open", &path, &error))?;
-
-            opened_flag.store(true, Ordering::Release);
-
-            Ok::<tokio::fs::File, String>(file)
-        }
-    })
-    .await;
-
     let created_by_us = creates_the_file(&parameters.mode);
+
+    // open_bounded owns the deadline path: a file the pool creates after the
+    // caller has given up is removed by a detached task that waits for the open
+    // to land. Doing it here is what cannot work — see its docblock.
+    let opened = super::open_bounded(
+        task,
+        envelope.timeout_ms,
+        options,
+        parameters.path.clone(),
+        created_by_us,
+    )
+    .await;
 
     let file = match opened {
         Some(Ok(file)) => file,
         Some(Err(text)) => {
+            registries().release(&parameters.id);
+
             task.add_result(Result::error(message, text)).await;
 
             return;
         }
-        // Cancelled or out of time. The open may still have completed in the
-        // blocking pool, leaving a file nothing will ever close — so the same
-        // cleanup the single-shot writes do runs here too, under the same rule.
-        //
-        // `opened` is not optional. Without it this removes a file the call
-        // never created: a Create open on a path that is already taken can only
-        // fail, but if the deadline wins that race the branch runs anyway and
-        // unlinks the file whose existence was the refusal.
         None => {
-            drop_partial(&parameters.path, created_by_us, &opened_flag).await;
+            registries().release(&parameters.id);
 
             return;
         }
@@ -412,7 +425,7 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
     if let Err(error) = registries().insert(parameters.id.clone(), session.clone()) {
         drop(session);
 
-        drop_partial(&parameters.path, created_by_us, &opened_flag).await;
+        remove_if_created(&parameters.path, created_by_us).await;
 
         task.add_result(Result::error(message, fail(Kind::State, &error)))
             .await;
@@ -437,8 +450,9 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
         || {},
     ) {
         registries().remove(&parameters.id);
+        registries().release(&parameters.id);
 
-        drop_partial(&parameters.path, created_by_us, &opened_flag).await;
+        remove_if_created(&parameters.path, created_by_us).await;
 
         task.add_result(Result::error(message, fail(Kind::State, &error)))
             .await;
@@ -452,12 +466,25 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
     // writer that answered "finished" here would be closed and its file removed
     // before the first chunk arrived. PHP releases the flow itself when the
     // writer closes — the same bargain a SQL transaction makes.
+    registries().release(&parameters.id);
+
     task.add_result(Result::success_with_next(
         message,
         Vec::new(),
         calc_execution_ms(start_time),
     ))
     .await;
+}
+
+/// Removes a file this call created and could not hand over. Unlike
+/// drop_partial there is no "did the open succeed" question here: these paths
+/// are reached only once it has.
+async fn remove_if_created(path: &str, created_by_us: bool) {
+    if !created_by_us {
+        return;
+    }
+
+    let _ = tokio::fs::remove_file(path).await;
 }
 
 /// Writes one chunk. The answer waits for the write, which is what stops a fast
@@ -574,5 +601,178 @@ pub async fn close(task: &Task, envelope: &mut payloads::Envelope) {
             task.add_result(Result::error(message, failure.text)).await;
         }
         None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    async fn session(path: &str, created_by_us: bool) -> Arc<Session> {
+        let file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .await
+            .unwrap();
+
+        Arc::new(Session {
+            file: tokio::sync::Mutex::new(Some(file)),
+            path: path.to_string(),
+            created_by_us,
+            written: AtomicU64::new(0),
+            completed: AtomicBool::new(false),
+            closing: AtomicBool::new(false),
+            poisoned: AtomicBool::new(false),
+        })
+    }
+
+    async fn fixture_path() -> String {
+        let path = std::env::temp_dir().join(format!(
+            "sconcur-writer-{}-{}",
+            std::process::id(),
+            FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+
+        path.to_string_lossy().to_string()
+    }
+
+    #[tokio::test]
+    async fn a_finished_writer_keeps_its_file_and_counts_what_it_wrote() {
+        let path = fixture_path().await;
+        let session = session(&path, true).await;
+
+        assert_eq!(session.write(b"one").await.unwrap(), 3);
+        assert_eq!(session.write(b"two").await.unwrap(), 6);
+        assert_eq!(session.finish().await.unwrap(), 6);
+
+        // A close that succeeded must survive the cleanup the flow runs after it.
+        session.abandon().await;
+
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), b"onetwo".to_vec());
+
+        tokio::fs::remove_file(&path).await.unwrap();
+    }
+
+    /// The rule the whole feature keeps: only a writer that created the file may
+    /// remove it. Undo `created_by_us` and a Replace writer's abandon deletes a
+    /// file it only truncated.
+    #[tokio::test]
+    async fn only_a_writer_that_created_the_file_removes_it_when_abandoned() {
+        let created = fixture_path().await;
+        let taken = fixture_path().await;
+
+        let mine = session(&created, true).await;
+        let theirs = session(&taken, false).await;
+
+        mine.write(b"half").await.unwrap();
+        theirs.write(b"half").await.unwrap();
+
+        mine.abandon().await;
+        theirs.abandon().await;
+
+        assert!(tokio::fs::metadata(&created).await.is_err());
+        assert!(tokio::fs::metadata(&taken).await.is_ok());
+
+        tokio::fs::remove_file(&taken).await.unwrap();
+    }
+
+    /// Undo the poison latch and this passes: a writer whose chunk was
+    /// interrupted would go on accepting bytes and close reporting a total the
+    /// file does not have.
+    #[tokio::test]
+    async fn an_interrupted_chunk_makes_every_later_call_fail() {
+        let path = fixture_path().await;
+        let session = session(&path, true).await;
+
+        session.write(b"good").await.unwrap();
+
+        // What a dropped write leaves behind, without needing to race one.
+        session.poisoned.store(true, Ordering::Release);
+
+        let write = session.write(b"more").await.unwrap_err();
+
+        assert!(write.contains("files[state]"), "{write}");
+
+        let close = session.finish().await.unwrap_err();
+
+        assert!(close.terminal, "a poisoned writer cannot be closed later");
+        assert!(close.text.contains("files[state]"), "{}", close.text);
+
+        // And its file is still the one the abandon rule removes: the close must
+        // not have raised `closing`.
+        session.abandon().await;
+
+        assert!(tokio::fs::metadata(&path).await.is_err());
+    }
+
+    /// A close that was started must keep the file even though it never
+    /// completed — every chunk had been acknowledged, and only the flush was in
+    /// doubt.
+    #[tokio::test]
+    async fn a_started_close_keeps_the_file_even_when_it_does_not_finish() {
+        let path = fixture_path().await;
+        let session = session(&path, true).await;
+
+        session.write(b"contents").await.unwrap();
+
+        // What a close that lost to its deadline leaves behind.
+        session.closing.store(true, Ordering::Release);
+
+        session.abandon().await;
+
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), b"contents".to_vec());
+
+        tokio::fs::remove_file(&path).await.unwrap();
+    }
+
+    /// PHP reads terminality off the exception class, which is chosen by the
+    /// kind — so every terminal failure has to carry Kind::State or the two
+    /// sides silently disagree about whether a retry is worth trying.
+    #[tokio::test]
+    async fn every_terminal_close_failure_carries_the_state_kind() {
+        let poisoned = fixture_path().await;
+        let closed = fixture_path().await;
+
+        let poisoned_session = session(&poisoned, true).await;
+
+        poisoned_session.poisoned.store(true, Ordering::Release);
+
+        let closed_session = session(&closed, true).await;
+
+        closed_session.finish().await.unwrap();
+
+        for failure in [
+            poisoned_session.finish().await.unwrap_err(),
+            closed_session.finish().await.unwrap_err(),
+        ] {
+            assert!(failure.terminal);
+            assert!(failure.text.starts_with("files[state]:"), "{}", failure.text);
+        }
+
+        let _ = tokio::fs::remove_file(&poisoned).await;
+        let _ = tokio::fs::remove_file(&closed).await;
+    }
+
+    #[test]
+    fn a_writers_state_key_cannot_be_mistaken_for_a_task_key() {
+        // Task keys are "<flow>:<n>"; a writer's id is a string the caller chose.
+        assert_eq!(state_key("fw_abc"), "files-writer:fw_abc");
+        assert_ne!(state_key("flow:1"), "flow:1");
+    }
+
+    #[test]
+    fn an_id_is_claimed_once() {
+        let registries = Registries::new();
+
+        assert!(registries.reserve("one".to_string()));
+        assert!(!registries.reserve("one".to_string()));
+
+        registries.release("one");
+
+        assert!(registries.reserve("one".to_string()));
     }
 }

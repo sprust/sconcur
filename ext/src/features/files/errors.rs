@@ -27,9 +27,9 @@ pub enum Kind {
     FileType,
     /// Any other input-output failure.
     Io,
-    /// The file is bigger than the read limit the payload carried. A refusal,
-    /// not a failure of the filesystem: the alternative was to spend the
-    /// memory.
+    /// More was asked for than the payload's limit allows — a read whose range
+    /// is over maxReadBytes, or a line over maxLineBytes. A refusal, not a
+    /// failure of the filesystem: the alternative was to spend the memory.
     TooLarge,
     /// The payload's deadline ran out.
     Timeout,

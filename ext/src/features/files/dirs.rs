@@ -72,7 +72,7 @@ pub fn encode_entries(entries: &[Entry]) -> Vec<u8> {
 /// tokio::fs sends every call to the pool on its own, so the obvious version of
 /// this loop hands 20 000 syscalls across a thread boundary for a directory of
 /// 10 000 files. Measured against scandir() + filesize() + filemtime(), that
-/// version was eleven times slower than the native code it exists to beat; this
+/// version was nine times slower than the native code it exists to beat; this
 /// one pays for the hand-over once.
 ///
 /// The entries come back sorted by name. read_dir gives whatever order the

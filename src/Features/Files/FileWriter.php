@@ -22,9 +22,10 @@ use SConcur\Transport\MessagePackTransport;
  * megabytes into memory.
  *
  * Not closing is safe but lossy: when the coroutine ends, the flow ends with it and the
- * extension closes the file — removing it if the write never finished, unless the writer
- * was appending. close() is what turns the bytes into a finished file and answers with
- * the total written.
+ * extension closes the file. Whether the file goes with it follows the rule every write
+ * in this feature follows — only a writer that created the file removes it, so only in
+ * FileWriteMode::Create. close() is what turns the bytes into a finished file and answers
+ * with the total written.
  */
 class FileWriter
 {
@@ -72,15 +73,25 @@ class FileWriter
     {
         $this->assertOpen();
 
-        $this->writtenBytes = $this->count(
-            result: $this->execute(
-                command: FilesCommandEnum::WriteChunk,
-                data: [
-                    'i' => $this->id,
-                    'c' => $chunk,
-                ],
-            ),
-        );
+        try {
+            $this->writtenBytes = $this->count(
+                result: $this->execute(
+                    command: FilesCommandEnum::WriteChunk,
+                    data: [
+                        'i' => $this->id,
+                        'c' => $chunk,
+                    ],
+                ),
+            );
+        } catch (FileStreamClosedException $exception) {
+            // The session cannot take another byte — it was left inconsistent by an
+            // interrupted chunk, or it is gone. Spending the handle here is what stops a
+            // caller's retry loop from making a boundary crossing per attempt for ever,
+            // and gives the flow back instead of holding it until the object is collected.
+            $this->release();
+
+            throw $exception;
+        }
 
         return $this->writtenBytes;
     }
@@ -102,13 +113,11 @@ class FileWriter
         $this->assertOpen();
 
         try {
-            $this->writtenBytes = $this->count(
-                result: $this->execute(
-                    command: FilesCommandEnum::WriteClose,
-                    data: [
-                        'i' => $this->id,
-                    ],
-                ),
+            $result = $this->execute(
+                command: FilesCommandEnum::WriteClose,
+                data: [
+                    'i' => $this->id,
+                ],
             );
         } catch (FileStreamClosedException $exception) {
             // Terminal, and the extension has already let the session go — so holding
@@ -118,10 +127,17 @@ class FileWriter
             throw $exception;
         }
 
+        // The extension has closed the session by the time it answers, so the handle is
+        // spent whatever the decoding below makes of the answer. Releasing after that —
+        // which this used to do — left a failed decode with an open handle and a flow
+        // held for a session that was already gone.
+        //
         // After the close answered, never before: releasing the flow is what tells the
         // extension the session was abandoned, and doing it first would have it clean up
         // the very session that was being finished.
         $this->release();
+
+        $this->writtenBytes = $this->count(result: $result);
 
         return $this->writtenBytes;
     }

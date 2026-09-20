@@ -23,11 +23,16 @@ use Throwable;
  * on. On the synchronous path the flow is this object's to release, which is what
  * releaseTask() and the destructor are for.
  *
- * Re-iterating is allowed and opens the stream again from the start, because rewind()
- * releases the previous one first. What that also means is that two foreach loops over
- * the SAME object cannot be nested: the inner one rewinds out from under the outer,
- * which then ends early. That is how every non-Generator Iterator in PHP behaves; call
- * the factory twice for two independent passes.
+ * Re-iterating opens the stream again from the start. Outside a coroutine the previous
+ * one is released first; inside a coroutine it is not — releaseTask() gives back a
+ * synchronous flow, and a coroutine's flow belongs to its WaitGroup — so each extra pass
+ * leaves the previous stream open until that coroutine ends. One re-read costs one
+ * descriptor; a loop that re-reads costs one per pass. Prefer calling the factory again,
+ * which is a fresh stream either way.
+ *
+ * It also means two foreach loops over the SAME object cannot be nested: the inner one
+ * rewinds out from under the outer, which then ends early. That is how every
+ * non-Generator Iterator in PHP behaves.
  *
  * @template TValue
  *
@@ -173,13 +178,20 @@ abstract class BatchIterator implements Iterator
 
         try {
             $result = FeatureExecutor::next(taskKey: $this->taskKey);
+
+            // Inside the try with the pull, for the same reason rewind() decodes inside
+            // its own: a batch this package cannot read would otherwise propagate with
+            // the iterator still valid() and holding the previous batch's value.
+            $this->setResult(result: $result);
         } catch (TaskErrorException | TaskExecutionException $exception) {
             $this->isFinished = true;
 
             throw FilesFailure::from($exception);
-        }
+        } catch (Throwable $exception) {
+            $this->isFinished = true;
 
-        $this->setResult(result: $result);
+            throw $exception;
+        }
     }
 
     protected function setResult(TaskResultDto $result): void
