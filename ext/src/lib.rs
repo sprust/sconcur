@@ -512,6 +512,21 @@ pub extern "C" fn amqpStopConsuming(flow_key: *const c_char) {
     })
 }
 
+/// Cancels the consumer a supervised worker can no longer settle on, so its
+/// slot opens a fresh one on a fresh channel. The counterpart of
+/// `amqpStopConsuming`: the worker sees a lost acknowledgement before the broker
+/// does, and without this the queue stands still until the broker's own consumer
+/// timeout.
+#[unsafe(no_mangle)]
+pub extern "C" fn amqpReopenConsumer(flow_key: *const c_char, channel_id: *const c_char) {
+    guarded(|| (), || {
+        features::amqp::consume_serve::reopen_consumer(
+            &unsafe { owned_string_nul(flow_key) },
+            &unsafe { owned_string_nul(channel_id) },
+        );
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn preemptionArm(quantum_ms: c_int) {
     guarded(|| (), || {

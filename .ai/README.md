@@ -211,7 +211,11 @@ feature's doc. Key PHP classes not covered there:
   A stop cancels the consumers and leaves their channels open so the
   acknowledgements in flight land; a consumer the broker takes away is reopened on
   the extension a second later, and only the connection going away ends one for good
-  — see [docs/amqp.md](../docs/amqp.md). `PublishChannelPool` is what keeps a
+  — see [docs/amqp.md](../docs/amqp.md). The same reopening is what a delivery that
+  could not be settled asks for through `amqpReopenConsumer`: the broker hears nothing
+  about a lost acknowledgement and keeps the message against that consumer's prefetch,
+  so without it a prefetch of one stands the queue still until the broker's own
+  consumer timeout — half an hour. `PublishChannelPool` is what keeps a
   prefetch above one from being a trap: a consumer's channel carries the messages of
   every handler running on it, and a publisher confirm is counted per channel, so
   `Delivery::channel()` hands out a channel lent to one handler instead. The pool
@@ -274,7 +278,7 @@ The core (`ext/src/`), module by module:
   `waitAny`, `waitAnyTimeout`, `waitAnyBatch`, `waitAnyTimeoutBatch`,
   `tasksCount`, `stopFlow`, `httpStopAccepting`, `socketStopAccepting`,
   `wsStopAccepting`, `preemptionArm`, `preemptionDisarm`, `amqpStopConsuming`,
-  `destroy`, `version`)
+  `amqpReopenConsumer`, `destroy`, `version`)
 - `core.rs` — the process-wide state and what it takes to survive a `fork`:
   nothing starts until the first push, and a `pthread_atfork` handler flags the
   inherited runtime so the next call rebuilds it

@@ -59,6 +59,7 @@ extern void httpStopAccepting(char *flowKey);
 extern void socketStopAccepting(char *flowKey);
 extern void wsStopAccepting(char *flowKey);
 extern void amqpStopConsuming(char *flowKey);
+extern void amqpReopenConsumer(char *flowKey, char *channelId);
 
 extern void preemptionArm(int quantumMs);
 extern void preemptionDisarm(void);

@@ -20,6 +20,7 @@ use Throwable;
 use function SConcur\Extension\armPreemption;
 use function SConcur\Extension\destroy;
 use function SConcur\Extension\disarmPreemption;
+use function SConcur\Extension\amqpReopenConsumer;
 use function SConcur\Extension\amqpStopConsuming;
 use function SConcur\Extension\httpStopAccepting;
 use function SConcur\Extension\next;
@@ -242,6 +243,22 @@ class Extension
     public function amqpStopConsuming(string $flowKey): void
     {
         amqpStopConsuming($flowKey);
+    }
+
+    /**
+     * Cancels the consumer an AMQP consumer flow is reading one channel through, so that
+     * queue is opened again on a fresh channel a second later — the same recovery a
+     * consumer the broker takes away already gets.
+     *
+     * The counterpart of amqpStopConsuming, for the failure only this side can see: a
+     * delivery that could not be settled is still owed to the broker, which has heard
+     * nothing about it, so the consumer holding it would be sent nothing further until
+     * the broker's own consumer timeout. Giving the channel up hands the message back
+     * for another attempt. A flow that is already draining is left alone.
+     */
+    public function amqpReopenConsumer(string $flowKey, string $channelId): void
+    {
+        amqpReopenConsumer($flowKey, $channelId);
     }
 
     /**
