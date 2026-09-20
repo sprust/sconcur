@@ -30,25 +30,51 @@ use crate::tasks::Task;
 use super::content::bytes_of;
 use super::errors::{io_message, message as fail, Kind};
 use super::payloads;
-use super::{bounded, params, write_options};
+use super::{bounded, creates_the_file, params, permission_bits, write_options};
 
 /// One open writer.
 pub struct Session {
     /// None once the writer has been closed, or once its flow took it away.
     file: tokio::sync::Mutex<Option<tokio::fs::File>>,
     path: String,
-    append: bool,
+    /// Whether this writer is the thing that brought the file into existence,
+    /// and so the only case in which giving up may remove it. Same rule as the
+    /// single-shot writes keep — see mod.rs, creates_the_file.
+    created_by_us: bool,
     written: AtomicU64,
     /// Whether close() ran and the bytes are on their way to the disk. What
     /// tells an abandoned writer — whose partial file goes — from a finished
     /// one, whose file stays.
     completed: AtomicBool,
+    /// Whether a close was started, whatever became of it. A close that ran out
+    /// of time still handed every chunk over, so its file is not the half-thing
+    /// an abandoned writer leaves and must not be removed.
+    closing: AtomicBool,
+    /// Whether a chunk was cut off mid-write. The file then holds a partial
+    /// chunk nobody counted, so every later call fails rather than letting a
+    /// retry double the bytes or a close report a total the file does not have.
+    poisoned: AtomicBool,
 }
 
 impl Session {
     /// Writes one chunk, answering only once it is written.
+    ///
+    /// The poison flag is raised before the write and lowered after it, so a
+    /// chunk cut off half-way leaves it raised: the future is dropped mid-write
+    /// and nothing runs to lower it. Every later call then fails, because the
+    /// file holds bytes no total accounts for.
     async fn write(&self, chunk: &[u8]) -> std::result::Result<u64, String> {
         let mut guard = self.file.lock().await;
+
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(fail(
+                Kind::State,
+                &format!(
+                    "the writer for {} was cut off mid-chunk and cannot be used further",
+                    self.path
+                ),
+            ));
+        }
 
         let Some(file) = guard.as_mut() else {
             return Err(fail(
@@ -57,16 +83,37 @@ impl Session {
             ));
         };
 
-        file.write_all(chunk)
-            .await
-            .map_err(|error| io_message("write", &self.path, &error))?;
+        self.poisoned.store(true, Ordering::Release);
+
+        let written = file.write_all(chunk).await;
+
+        self.poisoned.store(false, Ordering::Release);
+
+        written.map_err(|error| io_message("write", &self.path, &error))?;
 
         Ok(self.written.fetch_add(chunk.len() as u64, Ordering::Relaxed) + chunk.len() as u64)
     }
 
     /// Flushes and closes, answering with the total written.
     async fn finish(&self) -> std::result::Result<u64, String> {
+        // Raised before anything can go wrong, and never lowered: from here on
+        // the file is a file the caller meant to keep, whether or not this call
+        // gets to finish. A close that misses its deadline used to leave this
+        // unset, and the cleanup then deleted every byte the caller had
+        // streamed.
+        self.closing.store(true, Ordering::Release);
+
         let mut guard = self.file.lock().await;
+
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(fail(
+                Kind::State,
+                &format!(
+                    "the writer for {} was cut off mid-chunk and cannot be closed cleanly",
+                    self.path
+                ),
+            ));
+        }
 
         let Some(mut file) = guard.take() else {
             return Err(fail(
@@ -94,12 +141,16 @@ impl Session {
 
         drop(taken);
 
-        if self.completed.load(Ordering::Acquire) || self.append {
+        if self.completed.load(Ordering::Acquire)
+            || self.closing.load(Ordering::Acquire)
+            || !self.created_by_us
+        {
             return;
         }
 
-        // The same rule the single-shot writes keep: what this call created and
-        // did not finish goes, what it only appended to stays.
+        // What is left is a writer nobody ever tried to close, on a file this
+        // call created. Only then is removing it the caller's own intent
+        // finished rather than their data taken.
         let _ = tokio::fs::remove_file(&self.path).await;
     }
 }
@@ -181,7 +232,7 @@ impl StateContract for WriterState {
 }
 
 /// Opens a writer and registers it under the id PHP drew.
-pub async fn open(task: &Task, envelope: &payloads::Envelope) {
+pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -200,7 +251,16 @@ pub async fn open(task: &Task, envelope: &payloads::Envelope) {
         return;
     }
 
-    let Some(options) = write_options(&parameters.mode, parameters.permissions) else {
+    let permissions = match permission_bits(parameters.permissions, 0o644) {
+        Ok(permissions) => permissions,
+        Err(text) => {
+            task.add_result(Result::error(message, text)).await;
+
+            return;
+        }
+    };
+
+    let Some(options) = write_options(&parameters.mode, permissions) else {
         task.add_result(Result::error(
             message,
             fail(
@@ -223,6 +283,8 @@ pub async fn open(task: &Task, envelope: &payloads::Envelope) {
     })
     .await;
 
+    let created_by_us = creates_the_file(&parameters.mode);
+
     let file = match opened {
         Some(Ok(file)) => file,
         Some(Err(text)) => {
@@ -230,15 +292,26 @@ pub async fn open(task: &Task, envelope: &payloads::Envelope) {
 
             return;
         }
-        None => return,
+        // Cancelled or out of time. The open may still have completed in the
+        // blocking pool, leaving a file nothing will ever close — so the same
+        // cleanup the single-shot writes do runs here too.
+        None => {
+            if created_by_us {
+                let _ = tokio::fs::remove_file(&parameters.path).await;
+            }
+
+            return;
+        }
     };
 
     let session = Arc::new(Session {
         file: tokio::sync::Mutex::new(Some(file)),
         path: parameters.path.clone(),
-        append: parameters.mode == "app",
+        created_by_us,
         written: AtomicU64::new(0),
         completed: AtomicBool::new(false),
+        closing: AtomicBool::new(false),
+        poisoned: AtomicBool::new(false),
     });
 
     if let Err(error) = registries().insert(parameters.id.clone(), session.clone()) {
@@ -287,7 +360,7 @@ pub async fn open(task: &Task, envelope: &payloads::Envelope) {
 
 /// Writes one chunk. The answer waits for the write, which is what stops a fast
 /// producer from running ahead of the disk.
-pub async fn chunk(task: &Task, envelope: &payloads::Envelope) {
+pub async fn chunk(task: &Task, envelope: &mut payloads::Envelope) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -309,7 +382,7 @@ pub async fn chunk(task: &Task, envelope: &payloads::Envelope) {
         return;
     };
 
-    let chunk = match bytes_of(&parameters.chunk) {
+    let chunk = match bytes_of(parameters.chunk) {
         Ok(chunk) => chunk,
         Err(error) => {
             task.add_result(Result::error(message, fail(Kind::Argument, &error)))
@@ -338,7 +411,7 @@ pub async fn chunk(task: &Task, envelope: &payloads::Envelope) {
 }
 
 /// Flushes, closes and answers with the total written.
-pub async fn close(task: &Task, envelope: &payloads::Envelope) {
+pub async fn close(task: &Task, envelope: &mut payloads::Envelope) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -367,10 +440,13 @@ pub async fn close(task: &Task, envelope: &payloads::Envelope) {
     })
     .await;
 
-    // The state goes either way: a close that failed leaves nothing worth
-    // keeping open, and delete_state is what runs the cleanup and retires the
-    // flow hook.
-    states::get().delete_state(&parameters.id).await;
+    // Deleted only once the close has answered. On a deadline the flush may
+    // still be running in the blocking pool, and deleting the state here would
+    // run the cleanup under it; the flow's own hook releases the session
+    // instead, and `closing` keeps that cleanup from removing the file.
+    if outcome.is_some() {
+        states::get().delete_state(&parameters.id).await;
+    }
 
     match outcome {
         Some(Ok(total)) => {

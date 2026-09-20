@@ -108,7 +108,7 @@ pub fn encode_text(key: &str, value: &str) -> Vec<u8> {
 /// Describes a path. A path that is not there is not a failure — it answers
 /// exists: false, which is what makes one command serve both stat() and
 /// exists().
-pub async fn stat(task: &Task, envelope: &payloads::Envelope) {
+pub async fn stat(task: &Task, envelope: &mut payloads::Envelope) {
     let start_time = Instant::now();
 
     let Some(parameters) = params::<payloads::StatParams>(task, envelope, "stat").await else {
@@ -138,7 +138,7 @@ pub async fn stat(task: &Task, envelope: &payloads::Envelope) {
 }
 
 /// Changes a path's permission bits.
-pub async fn chmod(task: &Task, envelope: &payloads::Envelope) {
+pub async fn chmod(task: &Task, envelope: &mut payloads::Envelope) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -146,21 +146,16 @@ pub async fn chmod(task: &Task, envelope: &payloads::Envelope) {
         return;
     };
 
-    if !(0..=0o7777).contains(&parameters.permissions) {
-        task.add_result(Result::error(
-            message,
-            fail(
-                Kind::Argument,
-                &format!("permissions {} are outside 0..0o7777", parameters.permissions),
-            ),
-        ))
-        .await;
+    let permissions = match super::permission_bits(parameters.permissions, 0o644) {
+        Ok(permissions) => permissions,
+        Err(text) => {
+            task.add_result(Result::error(message, text)).await;
 
-        return;
-    }
+            return;
+        }
+    };
 
     let path = parameters.path.clone();
-    let permissions = parameters.permissions as u32;
 
     let work = async move {
         tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(permissions))
@@ -175,7 +170,7 @@ pub async fn chmod(task: &Task, envelope: &payloads::Envelope) {
 
 /// Creates a file, or moves the modification time of one that is already there
 /// — the two halves of touch(1), in the order it does them.
-pub async fn touch(task: &Task, envelope: &payloads::Envelope) {
+pub async fn touch(task: &Task, envelope: &mut payloads::Envelope) {
     let start_time = Instant::now();
 
     let Some(parameters) = params::<payloads::TouchParams>(task, envelope, "touch").await else {
@@ -184,10 +179,14 @@ pub async fn touch(task: &Task, envelope: &payloads::Envelope) {
 
     let path = parameters.path.clone();
     let modified_at_ms = parameters.modified_at_ms;
-    let permissions = if parameters.permissions > 0 {
-        parameters.permissions as u32
-    } else {
-        0o644
+
+    let permissions = match super::permission_bits(parameters.permissions, 0o644) {
+        Ok(permissions) => permissions,
+        Err(text) => {
+            task.add_result(Result::error(task.message(), text)).await;
+
+            return;
+        }
     };
 
     let work = async move {
@@ -201,10 +200,19 @@ pub async fn touch(task: &Task, envelope: &payloads::Envelope) {
             .await
             .map_err(|error| io_message("open", &path, &error))?;
 
-        let time = if modified_at_ms > 0 {
-            SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(modified_at_ms as u64)
-        } else {
-            SystemTime::now()
+        // Negative stamps are kept rather than refused: stat goes out of its way
+        // to report a pre-1970 mtime as a negative number, so touch has to be
+        // able to take one back or the two disagree about the same field. Only
+        // exactly 0 means "now" — which costs the epoch second itself, and that
+        // is the trade the parameter's documentation names.
+        let time = match modified_at_ms {
+            0 => SystemTime::now(),
+            positive if positive > 0 => {
+                SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(positive as u64)
+            }
+            negative => {
+                SystemTime::UNIX_EPOCH - std::time::Duration::from_millis(negative.unsigned_abs())
+            }
         };
 
         // Only the modification time is set. The access time is the filesystem's
@@ -232,7 +240,7 @@ pub async fn touch(task: &Task, envelope: &payloads::Envelope) {
 
 /// Canonicalizes a path: symlinks resolved, `.` and `..` removed. The path must
 /// exist, as it must for PHP's realpath().
-pub async fn real_path(task: &Task, envelope: &payloads::Envelope) {
+pub async fn real_path(task: &Task, envelope: &mut payloads::Envelope) {
     let start_time = Instant::now();
 
     let Some(parameters) = params::<payloads::RealPathParams>(task, envelope, "realPath").await
@@ -259,7 +267,7 @@ pub async fn real_path(task: &Task, envelope: &payloads::Envelope) {
 /// and then created: the check-then-create version has a window in which another
 /// process takes the name, and a temporary file whose whole purpose is to be
 /// exclusively yours cannot have one.
-pub async fn temporary_file(task: &Task, envelope: &payloads::Envelope) {
+pub async fn temporary_file(task: &Task, envelope: &mut payloads::Envelope) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -290,10 +298,13 @@ pub async fn temporary_file(task: &Task, envelope: &payloads::Envelope) {
 
     let prefix = parameters.prefix.clone();
     let suffix = parameters.suffix.clone();
-    let permissions = if parameters.permissions > 0 {
-        parameters.permissions as u32
-    } else {
-        0o600
+    let permissions = match super::permission_bits(parameters.permissions, 0o600) {
+        Ok(permissions) => permissions,
+        Err(text) => {
+            task.add_result(Result::error(task.message(), text)).await;
+
+            return;
+        }
     };
 
     let work = async move {

@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Features\Files\Dto;
 
 use SConcur\Dto\TaskResultDto;
-use SConcur\Exceptions\Files\FileWriterClosedException;
+use SConcur\Exceptions\Files\FileStreamClosedException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\TaskExecutionException;
 use SConcur\Features\FeatureExecutor;
@@ -82,7 +82,7 @@ class FileWriter
 
     /**
      * Flushes and closes the file, answering with the total written. Calling it twice is
-     * a FileWriterClosedException rather than a second close of someone else's file.
+     * a FileStreamClosedException rather than a second close of someone else's file.
      */
     public function close(): int
     {
@@ -112,7 +112,7 @@ class FileWriter
     protected function assertOpen(): void
     {
         if ($this->closed) {
-            throw new FileWriterClosedException(
+            throw new FileStreamClosedException(
                 message: "The writer for $this->path is closed.",
             );
         }

@@ -16,22 +16,35 @@ use crate::helpers::calc_execution_ms;
 use crate::tasks::Task;
 
 use super::errors::{io_message, message as fail, Kind};
-use super::{bounded, params, write_options};
+use super::{bounded, bounded_size, creates_the_file, params, permission_bits, write_options};
 use super::payloads;
 
 /// The copy granularity when the caller names none (64 KiB, as HttpClient's
-/// download uses).
+/// download uses), and the ceiling a caller may raise it to.
 const DEFAULT_COPY_BUFFER_BYTES: usize = 65_536;
+const MAX_COPY_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+
+/// How much a one-shot read reserves up front before it starts growing as it
+/// goes. A file's reported size is not this process's decision, and a sparse or
+/// misreported one would otherwise be handed straight to the allocator.
+const READ_PREALLOCATION_CAP_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Distinguishes the temporary files of two atomic writes racing on the same
 /// path from the same process.
 static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// The bytes of a value PHP packed as a string.
-pub fn bytes_of(value: &rmpv::Value) -> std::result::Result<Vec<u8>, String> {
+///
+/// Takes the value by move and unwraps the Vec out of it rather than cloning:
+/// for a write these bytes are the file's whole contents, and a clone here is
+/// the difference between holding a 100 MiB payload twice and holding it once.
+pub fn bytes_of(value: rmpv::Value) -> std::result::Result<Vec<u8>, String> {
     match value {
-        rmpv::Value::Binary(bytes) => Ok(bytes.clone()),
-        rmpv::Value::String(text) => Ok(text.as_bytes().to_vec()),
+        rmpv::Value::Binary(bytes) => Ok(bytes),
+        rmpv::Value::String(text) => match text.into_str() {
+            Some(text) => Ok(text.into_bytes()),
+            None => Err("contents are not valid text".to_string()),
+        },
         other => Err(format!("contents must be a string, got {other}")),
     }
 }
@@ -53,7 +66,7 @@ pub fn encode_count(count: u64) -> Vec<u8> {
 /// The bytes go back raw, not wrapped in MessagePack: a 100 MiB file would
 /// otherwise be copied once more just to be unwrapped on the other side, and
 /// the result frame already carries its own length.
-pub async fn read(task: &Task, envelope: &payloads::Envelope) {
+pub async fn read(task: &Task, envelope: &mut payloads::Envelope) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -61,10 +74,13 @@ pub async fn read(task: &Task, envelope: &payloads::Envelope) {
         return;
     };
 
-    if parameters.offset_bytes < 0 || parameters.length_bytes < 0 {
+    if parameters.offset_bytes < 0 || parameters.length_bytes < 0 || parameters.max_read_bytes < 0 {
         task.add_result(Result::error(
             message,
-            fail(Kind::Argument, "offsetBytes and lengthBytes must not be negative"),
+            fail(
+                Kind::Argument,
+                "offsetBytes, lengthBytes and maxReadBytes must not be negative",
+            ),
         ))
         .await;
 
@@ -141,8 +157,11 @@ async fn read_file(parameters: &payloads::ReadParams) -> std::result::Result<Vec
     }
 
     // with_capacity on the known size, so a large file is one allocation rather
-    // than a doubling ladder. An unknown size (0) starts empty and grows.
-    let mut contents = Vec::with_capacity(wanted.min(u32::MAX as u64) as usize);
+    // than a doubling ladder — but capped, because reserving what a stat
+    // reported is still reserving a number this process did not choose. Past the
+    // cap the Vec grows as it reads, which costs a few reallocations and cannot
+    // abort the process on a sparse or lying size.
+    let mut contents = Vec::with_capacity(wanted.min(READ_PREALLOCATION_CAP_BYTES) as usize);
 
     if parameters.length_bytes > 0 {
         let mut limited = file.take(parameters.length_bytes as u64);
@@ -176,7 +195,7 @@ async fn read_file(parameters: &payloads::ReadParams) -> std::result::Result<Vec
 }
 
 /// Writes, appends or creates a file in one shot.
-pub async fn write(task: &Task, envelope: &payloads::Envelope) {
+pub async fn write(task: &Task, envelope: &mut payloads::Envelope) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -184,7 +203,7 @@ pub async fn write(task: &Task, envelope: &payloads::Envelope) {
         return;
     };
 
-    let contents = match bytes_of(&parameters.contents) {
+    let contents = match bytes_of(parameters.contents) {
         Ok(contents) => contents,
         Err(error) => {
             task.add_result(Result::error(message, fail(Kind::Argument, &error)))
@@ -194,7 +213,16 @@ pub async fn write(task: &Task, envelope: &payloads::Envelope) {
         }
     };
 
-    let Some(options) = write_options(&parameters.mode, parameters.permissions) else {
+    let permissions = match permission_bits(parameters.permissions, 0o644) {
+        Ok(permissions) => permissions,
+        Err(text) => {
+            task.add_result(Result::error(message, text)).await;
+
+            return;
+        }
+    };
+
+    let Some(options) = write_options(&parameters.mode, permissions) else {
         task.add_result(Result::error(
             message,
             fail(
@@ -208,7 +236,7 @@ pub async fn write(task: &Task, envelope: &payloads::Envelope) {
     };
 
     let path = parameters.path.clone();
-    let append = parameters.mode == "app";
+    let created_by_us = creates_the_file(&parameters.mode);
     let opened = Arc::new(AtomicBool::new(false));
 
     let work = {
@@ -244,11 +272,11 @@ pub async fn write(task: &Task, envelope: &payloads::Envelope) {
             .await;
         }
         Some(Err(text)) => {
-            drop_partial(&parameters.path, append, &opened).await;
+            drop_partial(&parameters.path, created_by_us, &opened).await;
 
             task.add_result(Result::error(message, text)).await;
         }
-        None => drop_partial(&parameters.path, append, &opened).await,
+        None => drop_partial(&parameters.path, created_by_us, &opened).await,
     }
 }
 
@@ -258,7 +286,7 @@ pub async fn write(task: &Task, envelope: &payloads::Envelope) {
 ///
 /// The temporary file is a sibling on purpose: rename is atomic only within one
 /// filesystem, and a path under /tmp would not be one.
-pub async fn write_atomic(task: &Task, envelope: &payloads::Envelope) {
+pub async fn write_atomic(task: &Task, envelope: &mut payloads::Envelope) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -268,7 +296,7 @@ pub async fn write_atomic(task: &Task, envelope: &payloads::Envelope) {
         return;
     };
 
-    let contents = match bytes_of(&parameters.contents) {
+    let contents = match bytes_of(parameters.contents) {
         Ok(contents) => contents,
         Err(error) => {
             task.add_result(Result::error(message, fail(Kind::Argument, &error)))
@@ -280,20 +308,39 @@ pub async fn write_atomic(task: &Task, envelope: &payloads::Envelope) {
 
     let path = parameters.path.clone();
     let temporary_path = temporary_sibling(&path);
-    let permissions = parameters.permissions;
+
+    let permissions = match permission_bits(parameters.permissions, 0) {
+        Ok(permissions) => permissions,
+        Err(text) => {
+            task.add_result(Result::error(message, text)).await;
+
+            return;
+        }
+    };
 
     let work = {
         let temporary_path = temporary_path.clone();
 
         async move {
+            // A rename replaces the destination's inode, so the new file's
+            // permissions are whatever the temporary was created with. Without
+            // this, an atomic write over a 0600 secret would leave it 0644 —
+            // the operation would quietly widen the rights on the file it exists
+            // to update safely. The caller's own bits win when it names any.
+            let existing = tokio::fs::metadata(&path).await.ok();
+
+            let permissions = match (permissions, &existing) {
+                (0, Some(metadata)) => {
+                    std::os::unix::fs::PermissionsExt::mode(&metadata.permissions()) & 0o7777
+                }
+                (0, None) => 0o644,
+                (chosen, _) => chosen,
+            };
+
             let mut options = tokio::fs::OpenOptions::new();
 
             options.write(true).create_new(true);
-            options.mode(if permissions > 0 {
-                permissions as u32
-            } else {
-                0o644
-            });
+            options.mode(permissions);
 
             let mut file = options
                 .open(&temporary_path)
@@ -344,7 +391,7 @@ pub async fn write_atomic(task: &Task, envelope: &payloads::Envelope) {
 
 /// Cuts a file to the given length, growing it with zeroes when the length is
 /// past its end — the same behaviour as ftruncate().
-pub async fn truncate(task: &Task, envelope: &payloads::Envelope) {
+pub async fn truncate(task: &Task, envelope: &mut payloads::Envelope) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -398,7 +445,7 @@ pub async fn truncate(task: &Task, envelope: &payloads::Envelope) {
 
 /// Copies a file. The bytes are streamed inside the extension and never cross
 /// into PHP, which is what makes this the clearest win the feature has.
-pub async fn copy(task: &Task, envelope: &payloads::Envelope) {
+pub async fn copy(task: &Task, envelope: &mut payloads::Envelope) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -406,7 +453,16 @@ pub async fn copy(task: &Task, envelope: &payloads::Envelope) {
         return;
     };
 
-    let Some(options) = write_options(&parameters.mode, parameters.permissions) else {
+    let permissions = match permission_bits(parameters.permissions, 0o644) {
+        Ok(permissions) => permissions,
+        Err(text) => {
+            task.add_result(Result::error(message, text)).await;
+
+            return;
+        }
+    };
+
+    let Some(options) = write_options(&parameters.mode, permissions) else {
         task.add_result(Result::error(
             message,
             fail(
@@ -421,14 +477,17 @@ pub async fn copy(task: &Task, envelope: &payloads::Envelope) {
 
     let source = parameters.source.clone();
     let destination = parameters.destination.clone();
-    let append = parameters.mode == "app";
+    let created_by_us = creates_the_file(&parameters.mode);
     let opened = Arc::new(AtomicBool::new(false));
 
-    let buffer_size = if parameters.buffer_size_bytes > 0 {
-        parameters.buffer_size_bytes as usize
-    } else {
-        DEFAULT_COPY_BUFFER_BYTES
-    };
+    // Clamped, not taken as given: this number becomes two Vec::with_capacity
+    // calls below, and an unclamped one reaches the allocator, which aborts the
+    // process instead of panicking.
+    let buffer_size = bounded_size(
+        parameters.buffer_size_bytes,
+        DEFAULT_COPY_BUFFER_BYTES,
+        MAX_COPY_BUFFER_BYTES,
+    );
 
     let work = {
         let opened = Arc::clone(&opened);
@@ -472,20 +531,20 @@ pub async fn copy(task: &Task, envelope: &payloads::Envelope) {
             .await;
         }
         Some(Err(text)) => {
-            drop_partial(&parameters.destination, append, &opened).await;
+            drop_partial(&parameters.destination, created_by_us, &opened).await;
 
             task.add_result(Result::error(message, text)).await;
         }
         // Cancelled or out of time: the future is dropped by now, so the
         // half-written destination is cleaned up here rather than inside it.
-        None => drop_partial(&parameters.destination, append, &opened).await,
+        None => drop_partial(&parameters.destination, created_by_us, &opened).await,
     }
 }
 
 /// Renames a file, falling back to a copy and a delete when the two paths are
 /// on different filesystems — where rename(2) answers EXDEV and PHP's own
 /// rename() does the same fallback.
-pub async fn move_file(task: &Task, envelope: &payloads::Envelope) {
+pub async fn move_file(task: &Task, envelope: &mut payloads::Envelope) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -503,9 +562,17 @@ pub async fn move_file(task: &Task, envelope: &payloads::Envelope) {
             // the mapping of that kind is the standard library's business and
             // this is the one case the fallback exists for.
             Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
-                let count = tokio::fs::copy(&source, &destination)
-                    .await
-                    .map_err(|error| io_message("copy to", &destination, &error))?;
+                let count = match tokio::fs::copy(&source, &destination).await {
+                    Ok(count) => count,
+                    Err(error) => {
+                        // Half a file under the destination's name is worse than
+                        // no file: the move did not happen, and the name must not
+                        // suggest it did.
+                        let _ = tokio::fs::remove_file(&destination).await;
+
+                        return Err(io_message("copy to", &destination, &error));
+                    }
+                };
 
                 tokio::fs::remove_file(&source)
                     .await
@@ -536,7 +603,7 @@ pub async fn move_file(task: &Task, envelope: &payloads::Envelope) {
 /// Removes a file. With missing_ok a path that is not there is a success, which
 /// is the check-then-delete race written once here instead of at every call
 /// site.
-pub async fn delete(task: &Task, envelope: &payloads::Envelope) {
+pub async fn delete(task: &Task, envelope: &mut payloads::Envelope) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -571,16 +638,22 @@ pub async fn delete(task: &Task, envelope: &payloads::Envelope) {
     }
 }
 
-/// Removes a file a failed or cancelled write left half-finished.
+/// Removes a file a failed or cancelled write left half-finished — and only
+/// ever a file this call brought into existence.
 ///
-/// Two things are left alone, and both of them are data the call never touched.
-/// Append, for the same reason HttpClient's download leaves it alone: the file
-/// held something before the call. And a destination the write never managed to
-/// open — a Create refused because the path was already taken is the case that
-/// matters, where removing it would delete the very file whose existence caused
-/// the refusal.
-async fn drop_partial(path: &str, append: bool, opened: &AtomicBool) {
-    if append || !opened.load(Ordering::Relaxed) {
+/// Two conditions, and both of them guard data the call had no right to take.
+/// The write must have got as far as opening its destination, or a Create
+/// refused because the path was taken would delete the very file whose
+/// existence caused the refusal. And the mode must be the one that creates
+/// (see mod.rs, creates_the_file): a Replace over an existing file has
+/// truncated it, which is what was asked for, but removing it on top of that
+/// destroys the inode, its permissions and its ownership — and, when the path
+/// is a symlink, unlinks the link while leaving its target at length zero.
+///
+/// So a failed Replace leaves a partial file where a whole one used to be. That
+/// is the lesser evil, and it is the caller's own file either way.
+async fn drop_partial(path: &str, created_by_us: bool, opened: &AtomicBool) {
+    if !created_by_us || !opened.load(Ordering::Relaxed) {
         return;
     }
 
@@ -599,21 +672,33 @@ fn temporary_sibling(path: &str) -> String {
 mod tests {
     use super::*;
 
+    /// A path of this test's own. The tests run in parallel, so a name shared
+    /// between two of them makes them clobber each other.
+    async fn fixture_path(name: &str) -> String {
+        let path = std::env::temp_dir().join(format!(
+            "sconcur-{name}-{}-{}",
+            std::process::id(),
+            ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+
+        path.to_string_lossy().to_string()
+    }
+
     #[test]
     fn contents_are_read_from_either_msgpack_string_form() {
         assert_eq!(
-            bytes_of(&rmpv::Value::Binary(vec![1, 2, 3])).unwrap(),
+            bytes_of(rmpv::Value::Binary(vec![1, 2, 3])).unwrap(),
             vec![1, 2, 3]
         );
         assert_eq!(
-            bytes_of(&rmpv::Value::from("text")).unwrap(),
+            bytes_of(rmpv::Value::from("text")).unwrap(),
             b"text".to_vec()
         );
     }
 
     #[test]
     fn contents_that_are_not_a_string_are_refused() {
-        let error = bytes_of(&rmpv::Value::from(7)).unwrap_err();
+        let error = bytes_of(rmpv::Value::from(7)).unwrap_err();
 
         assert!(error.contains("must be a string"), "{error}");
     }
@@ -631,44 +716,51 @@ mod tests {
     /// refusal.
     #[tokio::test]
     async fn a_write_that_never_opened_its_destination_leaves_it_alone() {
-        let path = std::env::temp_dir().join(format!(
-            "sconcur-drop-partial-{}-{}",
-            std::process::id(),
-            ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        let path = path.to_string_lossy().to_string();
+        let path = fixture_path("drop-partial").await;
 
         tokio::fs::write(&path, b"already here").await.unwrap();
 
         let never_opened = AtomicBool::new(false);
 
-        drop_partial(&path, false, &never_opened).await;
+        drop_partial(&path, true, &never_opened).await;
 
         assert_eq!(
             tokio::fs::read(&path).await.unwrap(),
             b"already here".to_vec()
         );
 
-        // What the guard does let through: a destination this write did open.
-        let opened = AtomicBool::new(true);
-
-        drop_partial(&path, false, &opened).await;
+        // What the guard does let through: a destination this write created and
+        // did open.
+        drop_partial(&path, true, &AtomicBool::new(true)).await;
 
         assert!(tokio::fs::metadata(&path).await.is_err());
     }
 
+    /// The bug this rule was rewritten for. Undo `created_by_us` and a Replace
+    /// write that runs out of disk deletes the file it was replacing — the
+    /// caller loses the old contents as well as the new.
+    #[tokio::test]
+    async fn a_replace_over_an_existing_file_is_never_removed() {
+        let path = fixture_path("drop-replace").await;
+
+        tokio::fs::write(&path, b"the previous version").await.unwrap();
+
+        // Replace opened it, so `opened` is true — and the file still must stay,
+        // because this call did not create it.
+        drop_partial(&path, creates_the_file("rpl"), &AtomicBool::new(true)).await;
+
+        assert!(tokio::fs::metadata(&path).await.is_ok());
+
+        tokio::fs::remove_file(&path).await.unwrap();
+    }
+
     #[tokio::test]
     async fn an_append_is_never_dropped_even_when_it_opened_the_file() {
-        let path = std::env::temp_dir().join(format!(
-            "sconcur-drop-append-{}-{}",
-            std::process::id(),
-            ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        let path = path.to_string_lossy().to_string();
+        let path = fixture_path("drop-append").await;
 
         tokio::fs::write(&path, b"log line").await.unwrap();
 
-        drop_partial(&path, true, &AtomicBool::new(true)).await;
+        drop_partial(&path, creates_the_file("app"), &AtomicBool::new(true)).await;
 
         assert_eq!(tokio::fs::read(&path).await.unwrap(), b"log line".to_vec());
 

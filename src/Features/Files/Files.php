@@ -38,17 +38,21 @@ class Files
     public const int DEFAULT_TIMEOUT_MS = 30_000;
 
     /**
-     * How much read() will pull across the boundary before refusing (64 MiB). The limit
-     * exists because a one-shot read holds the file twice — once in the extension, once
-     * in PHP; readChunks() has no such peak. 0 lifts it.
+     * How much read() will pull across the boundary before refusing (64 MiB).
+     *
+     * It bounds what the call asks for, not the file: reading a 1 KiB range out of a
+     * gigabyte file is allowed, and refusing happens only when the range itself is over
+     * the limit. The limit exists because a one-shot read holds the range twice — once in
+     * the extension, once in PHP; readChunks() has no such peak. 0 lifts it.
      */
     public const int DEFAULT_MAX_READ_BYTES = 67_108_864;
 
     /**
      * Reads a file whole, or the byte range asked for.
      *
-     * $lengthBytes of 0 reads to the end of the file. $maxReadBytes refuses a file bigger
-     * than the limit with a FileTooLargeException instead of spending the memory.
+     * $lengthBytes of 0 reads to the end of the file. $maxReadBytes refuses a read whose
+     * range is bigger than the limit with a FileTooLargeException instead of spending the
+     * memory — so it bounds the range, not the file.
      */
     public static function read(
         string $path,
@@ -124,10 +128,14 @@ class Files
     /**
      * Cuts a file to $sizeBytes. A size past the end of the file grows it with zeroes,
      * as ftruncate() does.
+     *
+     * $sizeBytes is required and deliberately has no default: `truncate($path)` would
+     * read as "tidy this file" and empty it, which is the one call in this class that
+     * destroys data by being written carelessly. ftruncate() requires it too.
      */
     public static function truncate(
         string $path,
-        int $sizeBytes = 0,
+        int $sizeBytes,
         int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
     ): void {
         static::execute(
@@ -168,8 +176,15 @@ class Files
     }
 
     /**
-     * Moves a file. A rename within one filesystem; across filesystems the extension
-     * copies and removes the source, which is what PHP's rename() does too.
+     * Moves a file, replacing the destination if one is there. A rename within one
+     * filesystem; across filesystems the extension copies and removes the source, which
+     * is what PHP's rename() does too.
+     *
+     * Unlike write() and copy() there is no mode to refuse an existing destination:
+     * rename(2) replaces, and the only way to make it not replace — renameat2's
+     * RENAME_NOREPLACE — is not portable, while a check followed by a rename would be a
+     * race dressed up as a guarantee. Check with exists() if it matters, knowing what
+     * that check is worth.
      */
     public static function move(
         string $source,
@@ -221,7 +236,7 @@ class Files
         int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
     ): string {
         return static::text(
-            static::execute(
+            result: static::execute(
                 command: FilesCommandEnum::HashFile,
                 timeoutMs: $timeoutMs,
                 data: [
@@ -229,6 +244,7 @@ class Files
                     'a' => $algorithm->value,
                 ],
             ),
+            key: 'h',
         );
     }
 
@@ -259,6 +275,11 @@ class Files
     /**
      * Whether the path is there. A reading of stat(), not a command of its own, so it
      * costs exactly one crossing like every other question about a path.
+     *
+     * Not total, unlike file_exists(): a path whose parent directory the process may not
+     * search raises FilePermissionException rather than answering false. That is the
+     * honest answer — "there is no such file" and "I am not allowed to look" are
+     * different facts, and file_exists() conflating them is what makes it hard to debug.
      */
     public static function exists(
         string $path,
@@ -384,22 +405,27 @@ class Files
     /**
      * Removes a directory: empty by default, with everything under it when $recursive.
      * The whole walk happens inside the extension, so a deep tree is one crossing.
+     *
+     * With $missingOk an absent path is a success; the answer says whether something was
+     * actually removed, the way delete() does.
      */
     public static function removeDirectory(
         string $path,
         bool $recursive = false,
         bool $missingOk = false,
         int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
-    ): void {
-        static::execute(
-            command: FilesCommandEnum::RemoveDirectory,
-            timeoutMs: $timeoutMs,
-            data: [
-                'p'  => $path,
-                'rc' => $recursive,
-                'mo' => $missingOk,
-            ],
-        );
+    ): bool {
+        return static::count(
+            static::execute(
+                command: FilesCommandEnum::RemoveDirectory,
+                timeoutMs: $timeoutMs,
+                data: [
+                    'p'  => $path,
+                    'rc' => $recursive,
+                    'mo' => $missingOk,
+                ],
+            ),
+        ) > 0;
     }
 
     /**
@@ -479,7 +505,7 @@ class Files
      */
     public static function readLines(
         string $path,
-        int $batchSize = 0,
+        int $batchLines = 0,
         int $bufferSizeBytes = 0,
         int $maxLineBytes = 0,
         int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
@@ -489,7 +515,7 @@ class Files
             timeoutMs: $timeoutMs,
             data: [
                 'p'  => $path,
-                'b'  => $batchSize,
+                'b'  => $batchLines,
                 'bs' => $bufferSizeBytes,
                 'ml' => $maxLineBytes,
             ],
@@ -512,7 +538,7 @@ class Files
         string $path,
         string $pattern = '',
         bool $withMetadata = false,
-        int $batchSize = 0,
+        int $batchEntries = 0,
         int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
     ): WalkResult {
         return new WalkResult(
@@ -522,7 +548,7 @@ class Files
                 'p'  => $path,
                 'pt' => $pattern,
                 'wm' => $withMetadata,
-                'b'  => $batchSize,
+                'b'  => $batchEntries,
             ],
         );
     }
@@ -601,12 +627,12 @@ class Files
     }
 
     /**
-     * The single path a result carries.
+     * The single string a result carries — a path under `p`, a digest under `h`.
      */
-    protected static function text(TaskResultDto $result): string
+    protected static function text(TaskResultDto $result, string $key = 'p'): string
     {
         $decoded = MessagePackTransport::unpack($result->payload);
 
-        return (string) ($decoded['p'] ?? '');
+        return (string) ($decoded[$key] ?? '');
     }
 }

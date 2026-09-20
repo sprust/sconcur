@@ -262,7 +262,7 @@ pub struct ReadLinesParams {
     pub max_line_bytes: i64,
 }
 
-/// The body of a Walk (`lst`).
+/// The body of a Walk (`wlk`).
 /// PHP: SConcur\Features\Files\Files::walk().
 #[derive(Deserialize, Default)]
 pub struct WalkParams {

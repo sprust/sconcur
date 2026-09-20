@@ -48,6 +48,11 @@ pub struct ReadState {
     /// otherwise grow `pending` to the size of the file, which is the memory
     /// this whole state exists to not spend.
     max_line_bytes: usize,
+    /// The deadline one batch may take, carried from the payload. Every batch
+    /// needs its own: the state registry's next() bounds nothing, so without it
+    /// a read from a hung mount would never answer and no deadline or stop
+    /// could end it.
+    timeout_ms: i64,
     message: Arc<Message>,
     reader: Mutex<Option<Reader>>,
     start_time: Instant,
@@ -60,6 +65,7 @@ impl ReadState {
         buffer_size_bytes: usize,
         batch_size: usize,
         max_line_bytes: usize,
+        timeout_ms: i64,
         message: Arc<Message>,
         file: tokio::fs::File,
     ) -> Self {
@@ -69,6 +75,7 @@ impl ReadState {
             buffer_size_bytes,
             batch_size,
             max_line_bytes,
+            timeout_ms,
             message,
             reader: Mutex::new(Some(Reader {
                 file,
@@ -156,7 +163,17 @@ impl ReadState {
 
             reader.pending.extend_from_slice(&buffer[..read]);
 
-            if reader.pending.len() > self.max_line_bytes {
+            // Measured from the last newline, not over the whole buffer. The
+            // buffer holds complete lines waiting to be cut as well as the
+            // partial one, so measuring all of it refused any file read with a
+            // maxLineBytes below the buffer size — an ordinary log of 80-byte
+            // lines failed at maxLineBytes 4096 with a 64 KiB buffer.
+            let unterminated = match reader.pending.iter().rposition(|byte| *byte == b'\n') {
+                Some(index) => reader.pending.len() - index - 1,
+                None => reader.pending.len(),
+            };
+
+            if unterminated > self.max_line_bytes {
                 return Err(fail(
                     Kind::TooLarge,
                     &format!(
@@ -189,6 +206,43 @@ fn encode_lines(lines: &[Vec<u8>]) -> Vec<u8> {
 impl StateContract for ReadState {
     fn next(&self) -> StateFuture<'_> {
         Box::pin(async move {
+            // The deadline bounds one batch, not the whole stream: a stream is
+            // as long as the caller keeps pulling, and what must not hang is a
+            // single pull.
+            let batch = self.batch();
+
+            let Some(result) = super::bounded_state(self.timeout_ms, batch).await else {
+                return Result::error(
+                    &self.message,
+                    fail(
+                        Kind::Timeout,
+                        &format!(
+                            "read {}: deadline of {} ms exceeded",
+                            self.path, self.timeout_ms
+                        ),
+                    ),
+                );
+            };
+
+            result
+        })
+    }
+
+    fn close(&self) -> StateCloseFuture<'_> {
+        Box::pin(async move {
+            // Dropping the handle is the whole of it; a read holds nothing on
+            // the other side of it to release.
+            let taken = self.reader.lock().await.take();
+
+            drop(taken);
+        })
+    }
+}
+
+impl ReadState {
+    /// One batch, in whichever mode the stream was opened.
+    async fn batch(&self) -> Result {
+        {
             let mut guard = self.reader.lock().await;
 
             let Some(reader) = guard.as_mut() else {
@@ -233,17 +287,7 @@ impl StateContract for ReadState {
                     Err(text) => Result::error(&self.message, text),
                 },
             }
-        })
-    }
-
-    fn close(&self) -> StateCloseFuture<'_> {
-        Box::pin(async move {
-            // Dropping the handle is the whole of it; a read holds nothing on
-            // the other side of it to release.
-            let taken = self.reader.lock().await.take();
-
-            drop(taken);
-        })
+        }
     }
 }
 
@@ -256,13 +300,29 @@ mod tests {
     /// the same length, and sharing a path made them clobber each other.
     static FIXTURE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-    async fn state(contents: &[u8], mode: Mode, buffer_size_bytes: usize, batch_size: usize) -> ReadState {
+    async fn fixture_path() -> String {
         let path = std::env::temp_dir().join(format!(
             "sconcur-read-state-{}-{}",
             std::process::id(),
             FIXTURE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
-        let path = path.to_string_lossy().to_string();
+
+        path.to_string_lossy().to_string()
+    }
+
+    fn test_message() -> Arc<Message> {
+        Arc::new(Message {
+            flow_key: "flow".to_string(),
+            method: crate::types::method::Method::Files,
+            task_key: "flow:1".to_string(),
+            payload: Vec::new(),
+            is_next: false,
+            owner_id: 1,
+        })
+    }
+
+    async fn state(contents: &[u8], mode: Mode, buffer_size_bytes: usize, batch_size: usize) -> ReadState {
+        let path = fixture_path().await;
 
         tokio::fs::write(&path, contents).await.unwrap();
 
@@ -274,14 +334,8 @@ mod tests {
             buffer_size_bytes,
             batch_size,
             1_048_576,
-            Arc::new(Message {
-                flow_key: "flow".to_string(),
-                method: crate::types::method::Method::Files,
-                task_key: "flow:1".to_string(),
-                payload: Vec::new(),
-                is_next: false,
-                owner_id: 1,
-            }),
+            0,
+            test_message(),
             file,
         )
     }
@@ -389,6 +443,63 @@ mod tests {
         drop(guard);
 
         let _ = tokio::fs::remove_file(&state.path).await;
+    }
+
+    /// The bug the `rposition` in the guard exists for. Measured over the whole
+    /// pending buffer instead of the unterminated tail, an ordinary log of short
+    /// lines was refused whenever maxLineBytes fell below bufferSizeBytes.
+    #[tokio::test]
+    async fn short_lines_are_not_refused_by_a_small_line_limit() {
+        let path = fixture_path().await;
+
+        // 200 lines of 80 bytes, read through a 4 KiB buffer with a 1 KiB line
+        // limit: every line fits, every refill does not.
+        let contents = "x".repeat(79) + "\n";
+        let contents = contents.repeat(200);
+
+        tokio::fs::write(&path, contents.as_bytes()).await.unwrap();
+
+        let file = tokio::fs::File::open(&path).await.unwrap();
+
+        let state = ReadState::new(
+            path.clone(),
+            Mode::Lines,
+            4096,
+            50,
+            1024,
+            0,
+            test_message(),
+            file,
+        );
+
+        assert_eq!(all_lines(&state).await.len(), 200);
+
+        tokio::fs::remove_file(&path).await.unwrap();
+    }
+
+    /// And the limit still bites on the line it is meant for.
+    #[tokio::test]
+    async fn one_long_line_is_still_refused() {
+        let path = fixture_path().await;
+
+        tokio::fs::write(&path, "y".repeat(20_000).as_bytes())
+            .await
+            .unwrap();
+
+        let file = tokio::fs::File::open(&path).await.unwrap();
+
+        let state = ReadState::new(path.clone(), Mode::Lines, 4096, 50, 1024, 0, test_message(), file);
+
+        let mut guard = state.reader.lock().await;
+        let reader = guard.as_mut().unwrap();
+
+        let error = state.next_lines(reader).await.unwrap_err();
+
+        assert!(error.contains("files[big]"), "{error}");
+
+        drop(guard);
+
+        tokio::fs::remove_file(&path).await.unwrap();
     }
 
     #[test]

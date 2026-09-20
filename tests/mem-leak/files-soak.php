@@ -165,7 +165,7 @@ $cycle = static function (int $iteration) use ($scenario, $directory, $sourcePat
                 callback: static function () use ($directory): int {
                     $seen = 0;
 
-                    foreach (Files::walk(path: $directory . '/tree', batchSize: 16, timeoutMs: 0) as $ignored) {
+                    foreach (Files::walk(path: $directory . '/tree', batchEntries: 16, timeoutMs: 0) as $ignored) {
                         ++$seen;
                     }
 
@@ -192,7 +192,7 @@ $cycle = static function (int $iteration) use ($scenario, $directory, $sourcePat
                         break;
                     }
 
-                    foreach (Files::walk(path: $directory . '/tree', batchSize: 4, timeoutMs: 0) as $entry) {
+                    foreach (Files::walk(path: $directory . '/tree', batchEntries: 4, timeoutMs: 0) as $entry) {
                         break;
                     }
 

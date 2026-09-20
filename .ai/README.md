@@ -231,16 +231,25 @@ feature's doc. Key PHP classes not covered there:
   own for the call, and a subscription owns one outright — see
   [docs/redis.md](../docs/redis.md).
 - `Features/Files/` — the file feature. `Files` is the whole public surface, a
-  static facade like the old `Sleeper`: every method builds a `FilesPayload`
-  envelope and goes through `execute()`, and a task failure becomes the exception
-  named for its case in `Support/FilesFailure` — read from the `files[<kind>]`
-  prefix the core writes, never matched out of the message, which holds a path
-  the caller chose. `Support/BatchIterator` is the shape the three streams share
-  (`Results/ChunksResult`, `LinesResult`, `WalkResult`); `Dto/FileWriter` is the
-  chunked writer, whose `write()` answers only once the chunk is written — that
-  wait is the whole of the backpressure. The writer's open answers as an
-  unfinished stream on purpose: the synchronous path stops a flow the moment a
-  result says it is the last one, and the flow is what the session hangs on.
+  static facade like the old `Sleeper`. Its one-shot methods build a
+  `FilesPayload` envelope and go through its own `execute()`; the three stream
+  factories hand the envelope to a `Support/BatchIterator` subclass
+  (`Results/ChunksResult`, `LinesResult`, `WalkResult`) that pushes it itself and
+  pulls the later batches with `FeatureExecutor::next`, and `Dto/FileWriter`
+  pushes its chunks through an `execute()` of its own. All four routes end at
+  `Support/FilesFailure`, which turns a task failure into the exception named for
+  its case — read from the `files[<kind>]` prefix the core writes, never matched
+  out of the message, which holds a path the caller chose.
+  `Dto/FileWriter`'s `write()` answers only once the chunk is written; that wait
+  is the whole of the backpressure. The writer's open answers as an unfinished
+  stream on purpose: the synchronous path stops a flow the moment a result says
+  it is the last one, and the flow is what the session hangs on.
+  One rule runs through the whole feature and is worth keeping in mind before
+  changing any of it: a failed or cancelled write removes the file **only when
+  that write created it** (`mode: Create`). A Replace over an existing file
+  leaves a partial one, because removing it would destroy an inode, permissions
+  and ownership the call never made — and, on a symlink, unlink the link while
+  leaving its target empty.
 - `Features/Socket/Dto/AbstractConnection` — shared base for the socket and
   WebSocket `Connection` DTOs (server accept-side and client dial-side); keeps the
   features decoupled, since all depend on the neutral base rather than each other.
@@ -314,7 +323,7 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
 - `MethodEnum`: Sleep (`sl`), Mongodb (`mng`), HttpServe (`hs`), HttpRespond
   (`hr`), HttpClient (`hc`), Mysql (`my`), Pgsql (`pg`), SocketServe (`ss`),
   SocketRespond (`sr`), SocketClient (`sc`), WsServe (`wss`), WsRespond (`wsr`),
-  WsClient (`wsc`), Amqp (`amq`), Redis (`rds`)
+  WsClient (`wsc`), Amqp (`amq`), Redis (`rds`), Files (`fls`)
 - Sub-operations selected via the payload envelope's `cm`:
   `SocketClientCommand`/`WsClientCommand` (Connect `con`, Send `snd`, Close
   `cls`), `SqlCommandEnum` (Query `qry`, Exec `exe`, Begin `beg`, Commit `cmt`,
@@ -325,7 +334,10 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
   `ino`, BulkWrite `bw`, Aggregate `agg`, … — see
   `src/Features/Mongodb/CommandEnum.php`), `RedisCommandEnum` (Command `cmd`,
   Pipeline `pip`, Scan `scn`, Subscribe `sub`, SubscriptionUpdate `sup`,
-  SubscriptionClose `suc`)
+  SubscriptionClose `suc`), `FilesCommandEnum` (Read `rd`, Write `wr`,
+  WriteAtomic `wra`, Copy `cp`, Stat `st`, List `ls`, Walk `wlk`, ReadChunks
+  `rdc`, WriteOpen `wro`, … — 22 in all, see
+  `src/Features/Files/FilesCommandEnum.php`)
 - `DownloadFileMode` (HttpClient download sink, the `sm` field): Replace (`rpl`),
   Create (`crt`), Append (`app`)
 - `FileWriteMode` (how a Files write opens its destination): the same three wire
@@ -350,7 +362,7 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
 - `tests/impl/` — test helpers (MongoDB resolver, app bootstrap, server harnesses)
 - `tests/benchmarks/` — performance benchmarks comparing async vs native, grouped
   by the technology they measure: `mongodb/`, `mysql/`, `pgsql/`, `http/`,
-  `socket/`, `ws/`, `amqp/`, `redis/` (each holds its per-operation benches plus, for the protocols,
+  `socket/`, `ws/`, `amqp/`, `redis/`, `files/` (each holds its per-operation benches plus, for the protocols,
   the server benches and the load scripts), `db/` (a whole DB session: repeated
   runs and their aggregation into the markdown rows of `docs/benchmarks.md`),
   `runtime/` (scheduler and the boundary, no backend involved) and `lib/`
@@ -363,7 +375,7 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
   scenario=<name> seconds=<n>` covers what no single feature owns: streams opened by
   one coroutine that never ends (mongodb, sql-query, sql-transaction, redis-scan,
   redis-subscribe), whose flow is never stopped between them. It prints RSS beside
-  the PHP heap, because what such a flow keeps is native memory. Two features have
+  the PHP heap, because what such a flow keeps is native memory. Three features have
   a soak of their own. `make mem-leak-redis scenario=<name> seconds=<n>` runs one of five
   scenarios (command, pipeline, blocking, cursor, subscribe) and reports the PHP
   heap beside the server's own client count — the three things that feature opens
@@ -379,7 +391,11 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
   away — the publish connection closed from the broker, the queue deleted under a
   running consumer. A second publish socket appearing and being reaped again is that
   pool recovering, not a leak: it carries no channels and the extension closes it after
-  five idle minutes
+  five idle minutes. The Files soak is `make mem-leak-files scenario=<name> seconds=<n>`
+  (read-large, read-stream, write-stream, copy, walk, abandoned), and it reports the
+  process RSS beside the PHP heap because what a file stream holds is native memory.
+  `abandoned` is the one that earns its keep: streams broken out of halfway and a writer
+  dropped without a close are released by nothing but the flow ending
 
 Tests use PHPUnit 11. Add feature tests in `tests/feature/...` with `*Test.php`
 suffixes; async flow tests commonly extend `BaseAsyncTestCase`,

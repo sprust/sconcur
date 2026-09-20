@@ -47,7 +47,7 @@ impl Algorithm {
 
 /// The digest of a file, lowercase hex — the same spelling hash_file() answers
 /// in, so a value from either side compares against a value from the other.
-pub async fn hash_file(task: &Task, envelope: &payloads::Envelope) {
+pub async fn hash_file(task: &Task, envelope: &mut payloads::Envelope) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -79,7 +79,7 @@ pub async fn hash_file(task: &Task, envelope: &payloads::Envelope) {
             Algorithm::Md5 => digest_of::<Md5>(&path).await?,
         };
 
-        Ok::<Vec<u8>, String>(encode_text("p", &digest))
+        Ok::<Vec<u8>, String>(encode_text("h", &digest))
     };
 
     publish(task, envelope, start_time, work).await;

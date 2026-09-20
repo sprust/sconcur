@@ -7,11 +7,12 @@ namespace SConcur\Features\Files\Support;
 use SConcur\Exceptions\Files\FileAlreadyExistsException;
 use SConcur\Exceptions\Files\FileNotFoundException;
 use SConcur\Exceptions\Files\FileOperationException;
+use SConcur\Exceptions\Files\FileStoppedException;
 use SConcur\Exceptions\Files\FilePermissionException;
 use SConcur\Exceptions\Files\FilesException;
 use SConcur\Exceptions\Files\FileTimeoutException;
 use SConcur\Exceptions\Files\FileTooLargeException;
-use SConcur\Exceptions\Files\FileWriterClosedException;
+use SConcur\Exceptions\Files\FileStreamClosedException;
 use SConcur\Exceptions\Files\InvalidFileArgumentException;
 use SConcur\Exceptions\Files\UnexpectedFileTypeException;
 use SConcur\Exceptions\TaskErrorException;
@@ -41,8 +42,8 @@ readonly class FilesFailure
         'io'      => FileOperationException::class,
         'big'     => FileTooLargeException::class,
         'timeout' => FileTimeoutException::class,
-        'stopped' => FileOperationException::class,
-        'state'   => FileWriterClosedException::class,
+        'stopped' => FileStoppedException::class,
+        'state'   => FileStreamClosedException::class,
         'arg'     => InvalidFileArgumentException::class,
     ];
 

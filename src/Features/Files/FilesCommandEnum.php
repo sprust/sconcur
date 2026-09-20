@@ -23,7 +23,10 @@ enum FilesCommandEnum: string
     /** Writes, appends or creates a file in one shot. Rust: payloads::WriteParams. */
     case Write = 'wr';
 
-    /** Writes through a temporary file and a rename, so a reader never sees a half-write. Rust: payloads::WriteAtomicParams. */
+    /**
+     * Writes through a temporary file and a rename, so a reader never sees a half-write.
+     * Rust: payloads::WriteAtomicParams.
+     */
     case WriteAtomic = 'wra';
 
     /** Cuts a file to a given length. Rust: payloads::TruncateParams. */
@@ -71,8 +74,14 @@ enum FilesCommandEnum: string
     /** Reads a file line by line, streamed in batches through next(). Rust: payloads::ReadLinesParams. */
     case ReadLines = 'rdl';
 
-    /** Walks a directory tree, streamed batch by batch. Rust: payloads::WalkParams. */
-    case Walk = 'lst';
+    /**
+     * Walks a directory tree, streamed batch by batch. Rust: payloads::WalkParams.
+     *
+     * `wlk`, not the `lst` it used to be: that reads as an abbreviation of List, and the
+     * two answer the same shape, so confusing them would not fail on decode — it would
+     * quietly return a whole tree where one directory was meant.
+     */
+    case Walk = 'wlk';
 
     /** Opens a streamed writer and registers it by id. Rust: payloads::WriteOpenParams. */
     case WriteOpen = 'wro';

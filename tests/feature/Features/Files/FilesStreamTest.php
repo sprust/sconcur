@@ -5,8 +5,9 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Files;
 
 use SConcur\Exceptions\Files\FileNotFoundException;
+use SConcur\Exceptions\Files\FileTimeoutException;
 use SConcur\Exceptions\Files\FileTooLargeException;
-use SConcur\Exceptions\Files\FileWriterClosedException;
+use SConcur\Exceptions\Files\FileStreamClosedException;
 use SConcur\Exceptions\Files\UnexpectedFileTypeException;
 use SConcur\Features\Files\Dto\DirectoryEntry;
 use SConcur\Features\Files\Files;
@@ -17,9 +18,10 @@ use SConcur\WaitGroup;
 /**
  * The streaming half of the feature: reads in batches, the tree walk and the writer.
  *
- * BaseTestCase::tearDown checks that no task is left dangling, which is what makes the
- * abandoned-stream tests here mean anything — an iterator broken out of halfway has to
- * leave the extension with nothing held.
+ * The abandoned-stream tests observe the file descriptor the extension holds, not the
+ * dangling-task count: tasksCount() counts running tasks, and a registered stream state
+ * is not one — so a stream that was never released would leave that count at zero and
+ * say nothing.
  */
 class FilesStreamTest extends BaseTestCase
 {
@@ -96,15 +98,18 @@ class FilesStreamTest extends BaseTestCase
         iterator_to_array(Files::readChunks(path: $this->path(name: 'absent.bin')));
     }
 
-    public function testAnAbandonedChunkStreamLeavesNothingHeld(): void
+    public function testAnAbandonedChunkStreamReleasesTheFileItHeld(): void
     {
         $path = $this->path(name: 'abandoned.bin');
 
         Files::write(path: $path, contents: str_repeat('x', 500_000));
 
-        $seen = 0;
+        self::assertSame(0, $this->openDescriptorsFor(path: $path));
 
-        foreach (Files::readChunks(path: $path, bufferSizeBytes: 1024) as $chunk) {
+        $stream = Files::readChunks(path: $path, bufferSizeBytes: 1024);
+        $seen   = 0;
+
+        foreach ($stream as $chunk) {
             ++$seen;
 
             break;
@@ -112,9 +117,14 @@ class FilesStreamTest extends BaseTestCase
 
         self::assertSame(1, $seen);
 
-        // The real assertion is BaseTestCase::tearDown, which refuses to pass while the
-        // extension still holds a task — an abandoned stream that was never released
-        // would be one.
+        // While the iterator is alive the extension is holding the file open. This is
+        // what proves there is something to release — without it the next assertion
+        // would pass against a feature that never opened anything.
+        self::assertSame(1, $this->openDescriptorsFor(path: $path));
+
+        unset($stream);
+
+        self::assertSame(0, $this->awaitDescriptorsFor(path: $path));
     }
 
     public function testLinesAreCutTheWayTheNativeReadCutsThem(): void
@@ -184,7 +194,7 @@ class FilesStreamTest extends BaseTestCase
 
         self::assertSame(
             $lines,
-            iterator_to_array(Files::readLines(path: $path, batchSize: 7)),
+            iterator_to_array(Files::readLines(path: $path, batchLines: 7)),
         );
     }
 
@@ -240,7 +250,7 @@ class FilesStreamTest extends BaseTestCase
 
         self::assertCount(
             25,
-            iterator_to_array(Files::walk(path: $this->directory, batchSize: 4)),
+            iterator_to_array(Files::walk(path: $this->directory, batchEntries: 4)),
         );
     }
 
@@ -272,7 +282,7 @@ class FilesStreamTest extends BaseTestCase
         iterator_to_array(Files::walk(path: $path));
     }
 
-    public function testAnAbandonedWalkLeavesNothingHeld(): void
+    public function testAnAbandonedWalkLetsGoOfTheTree(): void
     {
         Files::makeDirectory(path: $this->path(name: 'deep/deeper'), recursive: true);
 
@@ -280,9 +290,10 @@ class FilesStreamTest extends BaseTestCase
             Files::write(path: $this->path(name: "deep/deeper/file-$index.txt"), contents: 'x');
         }
 
+        $walk = Files::walk(path: $this->directory, batchEntries: 2);
         $seen = 0;
 
-        foreach (Files::walk(path: $this->directory, batchSize: 2) as $entry) {
+        foreach ($walk as $entry) {
             ++$seen;
 
             break;
@@ -290,7 +301,12 @@ class FilesStreamTest extends BaseTestCase
 
         self::assertSame(1, $seen);
 
-        // As above: tearDown is what proves the walk let go of the tree.
+        unset($walk);
+
+        // A walk holds no descriptor between batches, so the observable release is the
+        // state going away: with it gone, pulling the next batch is refused rather than
+        // answered from a frontier the extension still keeps.
+        self::assertSame(0, $this->awaitDescriptorsFor(path: $this->directory));
     }
 
     public function testTheWriterFillsAFileChunkByChunk(): void
@@ -339,7 +355,7 @@ class FilesStreamTest extends BaseTestCase
         $writer->write(chunk: 'x');
         $writer->close();
 
-        $this->expectException(FileWriterClosedException::class);
+        $this->expectException(FileStreamClosedException::class);
 
         $writer->write(chunk: 'more');
     }
@@ -350,25 +366,24 @@ class FilesStreamTest extends BaseTestCase
 
         $writer->close();
 
-        $this->expectException(FileWriterClosedException::class);
+        $this->expectException(FileStreamClosedException::class);
 
         $writer->close();
     }
 
-    public function testAnAbandonedWriterTakesItsUnfinishedFileWithIt(): void
+    public function testAnAbandonedWriterThatCreatedTheFileTakesItWithIt(): void
     {
-        $path = $this->path(name: 'abandoned.bin');
+        $path = $this->path(name: 'abandoned-create.bin');
 
-        $writer = Files::openWriter(path: $path);
+        $writer = Files::openWriter(path: $path, mode: FileWriteMode::Create);
 
         $writer->write(chunk: 'half a file');
 
         // Dropped without a close: the flow is released, and the extension removes what
-        // the write never finished.
+        // the write never finished — it created this file, so the half of it is the whole
+        // of what would be lost.
         unset($writer);
 
-        // The removal happens in the extension after the flow ends, so the check waits
-        // for it rather than racing it.
         $deadline = microtime(true) + 2;
 
         while (microtime(true) < $deadline && Files::exists(path: $path)) {
@@ -376,6 +391,29 @@ class FilesStreamTest extends BaseTestCase
         }
 
         self::assertFalse(Files::exists(path: $path));
+    }
+
+    public function testAnAbandonedReplacingWriterLeavesThePartialFileRatherThanTheOldOne(): void
+    {
+        $path = $this->path(name: 'abandoned-replace.bin');
+
+        Files::write(path: $path, contents: 'the previous version');
+
+        $writer = Files::openWriter(path: $path, mode: FileWriteMode::Replace);
+
+        $writer->write(chunk: 'half');
+
+        unset($writer);
+
+        self::assertSame(0, $this->awaitDescriptorsFor(path: $path));
+
+        // Replace truncated the old contents on open — that is what was asked for — but
+        // removing the file on top of that would destroy an inode, its permissions and
+        // its ownership that this call never created. A partial file is the lesser evil,
+        // and the caller's own file either way. Open with Create when the file must be
+        // this writer's or nothing.
+        self::assertTrue(Files::exists(path: $path));
+        self::assertSame('half', Files::read(path: $path));
     }
 
     public function testAnAbandonedAppendingWriterKeepsWhatWasAlreadyThere(): void
@@ -390,10 +428,11 @@ class FilesStreamTest extends BaseTestCase
 
         unset($writer);
 
-        usleep(100_000);
+        // Asserting a non-event after a fixed wait would pass whenever a wrongful removal
+        // is merely slower than the wait. Wait for the release that does happen — the
+        // descriptor — and only then assert the file survived it.
+        self::assertSame(0, $this->awaitDescriptorsFor(path: $path));
 
-        // Append never removes: the file held data before the call, and none of it was
-        // this writer's to destroy.
         self::assertTrue(Files::exists(path: $path));
         self::assertStringStartsWith('existing', Files::read(path: $path));
     }
@@ -416,7 +455,7 @@ class FilesStreamTest extends BaseTestCase
                 callback: static function () use ($path): int {
                     $count = 0;
 
-                    foreach (Files::readLines(path: $path, batchSize: 8) as $line) {
+                    foreach (Files::readLines(path: $path, batchLines: 8) as $line) {
                         ++$count;
                     }
 
@@ -461,9 +500,95 @@ class FilesStreamTest extends BaseTestCase
         }
     }
 
+    /**
+     * The deadline reaches the core on a stream, which it did not until a review found
+     * the parameter documented, defaulted and dropped on the floor — neither the open nor
+     * any batch was bounded, so a read from a hung mount could not be ended by anything.
+     *
+     * A deadline of one millisecond over a file that needs many batches is what a stalled
+     * mount looks like from here.
+     */
+    public function testAStreamHonoursItsDeadline(): void
+    {
+        $path = $this->path(name: 'deadline.log');
+
+        Files::write(path: $path, contents: str_repeat("line\n", 200_000));
+
+        $this->expectException(FileTimeoutException::class);
+
+        // The deadline bounds one batch, so the batch has to be the slow thing: every
+        // line at once, read through a 64-byte buffer, is sixteen thousand trips to the
+        // blocking pool inside a single next(). Asking for one line at a time instead
+        // would give each batch its own fresh millisecond and never trip the deadline —
+        // which is how this test first passed by luck.
+        iterator_to_array(
+            Files::readLines(
+                path: $path,
+                batchLines: 1_000_000,
+                bufferSizeBytes: 64,
+                timeoutMs: 1,
+            ),
+        );
+    }
+
+    public function testAStreamWithoutADeadlineReadsToTheEnd(): void
+    {
+        $path = $this->path(name: 'no-deadline.log');
+
+        Files::write(path: $path, contents: "one\ntwo\nthree\n");
+
+        self::assertCount(
+            3,
+            iterator_to_array(Files::readLines(path: $path, timeoutMs: 0)),
+        );
+    }
+
     protected function path(string $name): string
     {
         return $this->directory . '/' . $name;
+    }
+
+    /**
+     * How many of this process's open descriptors point at the path. The extension's
+     * handles are this process's handles, so this is the one thing that shows whether a
+     * stream really let go.
+     */
+    protected function openDescriptorsFor(string $path): int
+    {
+        $real  = realpath($path) ?: $path;
+        $count = 0;
+
+        foreach (glob('/proc/self/fd/*') ?: [] as $descriptor) {
+            // Silenced deliberately: the listing and the readlink are two steps, and a
+            // descriptor closed in between — by this process or by the extension —
+            // makes the second one fail. That is the ordinary case here, not an error.
+            if (@readlink($descriptor) === $real) {
+                ++$count;
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * The same count, once the extension has had a chance to act: the release happens on
+     * the runtime after the flow ends, so it is waited for rather than raced.
+     */
+    protected function awaitDescriptorsFor(string $path): int
+    {
+        $deadline = microtime(true) + 2;
+
+        while (microtime(true) < $deadline) {
+            $count = $this->openDescriptorsFor(path: $path);
+
+            if ($count === 0) {
+                return 0;
+            }
+
+            usleep(10_000);
+        }
+
+        return $this->openDescriptorsFor(path: $path);
     }
 
     protected function removeTree(string $path): void

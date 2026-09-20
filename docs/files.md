@@ -57,12 +57,17 @@ process is serving.
 Every call takes `timeoutMs`, defaulting to `Files::DEFAULT_TIMEOUT_MS`
 (30 000). `0` means no deadline.
 
+On a stream the deadline bounds one batch, not the whole read: a stream lasts as
+long as the caller keeps pulling, and what must not hang is a single pull.
+
 A deadline here means the caller stops waiting — not that the syscall is
 interrupted. File work runs on the runtime's blocking pool, and a thread already
-inside `read(2)` stays there until the kernel returns. For an operation that
-proceeds in pieces — a streamed read, a copy, a tree walk, the chunks of a
-writer — cancellation is real: it is checked between pieces, and an unfinished
-file is removed.
+inside `read(2)` stays there until the kernel returns.
+
+For an operation that proceeds in pieces — a streamed read, a copy, a tree walk,
+the chunks of a writer — the deadline and a `WaitGroup::stop()` land between the
+pieces rather than at the end. A write or a copy that ends that way removes what
+it created (see below); a read or a walk has nothing to remove and simply stops.
 
 The size of that pool is what bounds how many file operations a process runs at
 once: 64 by default, set by `SCONCUR_BLOCKING_THREADS`.
@@ -82,10 +87,12 @@ Files::read(
 | --- | --- |
 | `offsetBytes` | where the read starts; with `lengthBytes` it replaces `fopen` + `fseek` + `fread` |
 | `lengthBytes` | how much to read; `0` reads to the end of the file |
-| `maxReadBytes` | refuses a file bigger than this with `FileTooLargeException`; 64 MiB by default, `0` lifts it |
+| `maxReadBytes` | refuses a read whose range is bigger than this with `FileTooLargeException`; 64 MiB by default, `0` lifts it |
 
-The limit exists because a one-shot read holds the file twice — once in the
-extension and once in PHP. `readChunks()` has no such peak and no such limit.
+The limit bounds what the call asks for, not the file: reading a 1 KiB range out
+of a gigabyte file is allowed. It exists because a one-shot read holds that range
+twice — once in the extension and once in PHP. `readChunks()` has no such peak
+and no such limit.
 
 ```php
 Files::write(
@@ -101,9 +108,17 @@ failing if the path is taken, like `x`) and `Append` (create or append, like
 `a`). `permissions` apply only when the file is created, as they do for
 `open(2)`.
 
-A write that fails removes what it created and leaves alone what it did not: a
-`Create` refused because the path was taken does not delete the file that caused
-the refusal, and an append never removes anything.
+A write that fails, or that runs out of time, removes the file **only if it was
+the thing that created it** — which means only in `Create` mode, the one mode
+that fails when the path is already taken.
+
+A failed `Replace` therefore leaves a partial file where a whole one used to be.
+That is deliberate. `Replace` truncated the old contents on open, which is what
+was asked for; removing the file on top of that would destroy an inode, its
+permissions and its ownership that the call never created, and when the path is a
+symlink it would unlink the link and leave its target empty. A partial file is
+the lesser loss, and it is the caller's own file either way. Open with `Create`
+when the file must be this call's or nothing.
 
 ### Atomic writes
 
@@ -132,11 +147,19 @@ boundary. It takes the same `mode`, `permissions` and a `bufferSizeBytes` that
 tunes the copy granularity.
 
 `move` renames within one filesystem and copies-then-removes across two, which
-is what PHP's `rename()` does as well.
+is what PHP's `rename()` does as well. It **replaces** an existing destination
+and has no mode to refuse one: `rename(2)` replaces, the portable alternative
+does not exist, and a check followed by a rename would be a race dressed up as a
+guarantee. A copy that fails part-way across filesystems removes the half it
+wrote rather than leaving it under the destination's name.
 
 `delete` with `missingOk` treats an absent path as a success and answers whether
 something was actually removed — the check-then-delete race written once here
-instead of at every call site.
+instead of at every call site. `removeDirectory` answers the same way.
+
+`truncate` takes its size as a required argument. A default would make
+`truncate($path)` read as "tidy this file" and empty it, which is the one call
+here that destroys data by being written carelessly.
 
 ## Checksums
 
@@ -168,6 +191,14 @@ A path that is not there is not a failure — `exists` is false and the rest hol
 their zero values. That is what lets `Files::exists()` be a reading of this
 rather than a command of its own.
 
+`exists()` is not total, unlike `file_exists()`: a path whose parent directory
+the process may not search raises `FilePermissionException` rather than answering
+false. "There is no such file" and "I am not allowed to look" are different
+facts, and conflating them is what makes `file_exists()` hard to debug.
+
+With `followSymlinks: false` the call describes the link itself rather than what
+it points at — the `lstat` half of the same command.
+
 `permissions` carries the permission bits alone, without the type bits above
 them, so it compares against `0644` with no masking. The times are milliseconds
 since the epoch, negative for a stamp before it, and `0` where the filesystem
@@ -182,6 +213,11 @@ Files::temporaryFile(directory: '/var/app/tmp', prefix: 'upload-', suffix: '.bin
 ```
 
 `touch` creates the file if it is missing and never changes its contents.
+`modifiedAtMs` of `0` means now; a negative value is a stamp before 1970, which
+`stat` reports the same way, so a time read from one can be given back to the
+other. The epoch second itself is the one value that cannot be set, because `0`
+is spoken for.
+
 `realPath` refuses a missing path with `FileNotFoundException` rather than
 answering the `false` that is so easy to forget to check.
 
@@ -207,14 +243,19 @@ process umask, as they are for `mkdir(2)`.
 
 `list` answers a list of `Dto\DirectoryEntry` (`name`, `path`, `isDirectory`,
 `isSymlink`, `sizeBytes`, `modifiedAtMs`), sorted by name. Without
-`withMetadata` an entry costs no stat and its `sizeBytes` and `modifiedAtMs` are
-`null` — "not asked for" rather than "empty".
+`withMetadata` the size and the time are `null` — "not asked for" rather than
+"empty" — and no `stat` is paid for them; the entry's type still comes from the
+directory read itself, which is free on the filesystems that carry it.
+
+An entry removed between the directory read and its `stat` is skipped rather
+than reported: a directory being written to is the ordinary case, and failing a
+whole listing over one vanished file would make this unusable anywhere real.
 
 `pattern` filters inside the extension, so a directory of a hundred thousand
 files does not cross the boundary to be filtered in PHP. It understands `*`, `?`
-and `[...]` against the entry name; it is not `glob(3)` — there is no `**`, no
-brace expansion and no escaping, and a pattern never spans a directory
-separator.
+and `[...]`, and it is matched against the entry name alone — never against a
+path, so there is nothing for a separator to mean. It is not `glob(3)`: no `**`,
+no brace expansion, no escaping.
 
 `list` reads one directory. A tree is `walk()`.
 
@@ -238,9 +279,15 @@ batch of them cost one crossing where `fgets()` in a loop costs one per line;
 separators are removed, `\r\n` included, and a last line without a terminator is
 still a line.
 
-`readLines` takes `batchSize` (lines per crossing), `bufferSizeBytes` and
-`maxLineBytes` — the last bounds a single line, so a file with no newline in it
-cannot be buffered whole in the name of streaming.
+`readLines` takes `batchLines` (lines per crossing, 200 by default),
+`bufferSizeBytes` (64 KiB) and `maxLineBytes` (1 MiB) — the last bounds a single
+line, so a file with no newline in it cannot be buffered whole in the name of
+streaming. A line over it raises `FileTooLargeException`, the same exception a
+one-shot read over `maxReadBytes` raises.
+
+`0` means the default for all three, and each is capped — buffers at 8 MiB,
+batches at 100 000 — so a size chosen by mistake is clamped rather than handed to
+the allocator.
 
 ### Walking a tree
 
@@ -252,15 +299,26 @@ foreach (Files::walk(path: $directory, pattern: '*.tmp') as $entry) {
 
 The frontier lives in the extension, so breaking out after the first match costs
 the first directory and nothing more. The pattern picks what is reported, not
-where the walk goes.
+where the walk goes, and `batchEntries` (200 by default) is how many entries a
+crossing carries.
+
+A batch also stops after examining ten thousand entries, even if the pattern
+matched none of them, and answers an empty one that says there is more. Without
+that, a pattern matching nothing would walk a whole tree inside a single batch,
+where neither a deadline nor a stop could reach it.
 
 Directory symlinks are listed but never descended into. That is deliberate: a
-tree with a link back into an ancestor has no end.
+tree with a link back into an ancestor has no end. A subdirectory that cannot be
+read — no permission, or gone since it was listed — is stepped over rather than
+ending the walk.
 
 ### Writing in chunks
 
 ```php
-$writer = Files::openWriter(path: '/var/app/storage/export.csv');
+$writer = Files::openWriter(
+    path: '/var/app/storage/export.csv',
+    mode: FileWriteMode::Create,
+);
 
 foreach ($rows as $row) {
     $writer->write(chunk: implode(',', $row) . "\n");
@@ -269,20 +327,33 @@ foreach ($rows as $row) {
 $writtenBytes = $writer->close();
 ```
 
+`openWriter` takes the same `mode` and `permissions` as `write()`.
+
 `write()` does not answer until the extension has written the chunk, so a
 coroutine producing faster than the disk accepts waits on its own next call
 instead of piling megabytes into memory.
 
-Not closing is safe but lossy: when the coroutine ends, the flow ends with it
-and the extension closes the file — removing it if the write never finished,
-unless the writer was appending. `close()` is what turns the bytes into a
-finished file and answers with the total.
+Not closing is safe but lossy: when the coroutine ends, the flow ends with it and
+the extension closes the file. Whether the file goes with it follows the rule
+every write here follows — only a writer that **created** the file removes it, so
+only in `Create` mode. A `Replace` writer leaves the partial file, an `Append`
+writer leaves everything. `close()` is what turns the bytes into a finished file
+and answers with the total.
+
+A `close()` that fails or runs out of time does **not** remove the file: every
+chunk had already been handed over, and only the final flush is in doubt. The
+handle is spent either way — the total it reports is the last one it counted.
+
+A chunk cut off mid-write — by a deadline or a stop — leaves the writer unusable:
+the file holds bytes no total accounts for, so every later call on that handle
+fails rather than letting a retry double them.
 
 ### Abandoning a stream
 
 Breaking out of any of them early is safe. The flow ends, and the extension
-releases what the stream held. A soak of a hundred thousand cycles of abandoned
-readers, walks and writers holds flat.
+releases what the stream held — which `make mem-leak-files scenario=abandoned`
+soaks, and which the feature tests assert by counting the process's own open
+descriptors before and after.
 
 ## Errors
 
@@ -296,9 +367,10 @@ denied" must not pick the exception an application catches.
 | `FilePermissionException` | the process may not do this to it |
 | `FileAlreadyExistsException` | the destination is taken and the mode forbids replacing it |
 | `UnexpectedFileTypeException` | a directory where a file was wanted, or the other way round, or a directory that still holds entries |
-| `FileTooLargeException` | the file is over the read limit the call carried |
+| `FileTooLargeException` | the read's range is over `maxReadBytes`, or a line is over `maxLineBytes` |
 | `FileTimeoutException` | the deadline ran out |
-| `FileWriterClosedException` | the writer or stream this handle names is gone |
+| `FileStoppedException` | the flow was stopped under the operation — `WaitGroup::stop()`, an early break, shutdown |
+| `FileStreamClosedException` | the stream this handle names is gone: closed, cut off mid-chunk, or released with its coroutine |
 | `FileOperationException` | any other input-output failure |
 | `InvalidFileArgumentException` | the call itself is wrong |
 

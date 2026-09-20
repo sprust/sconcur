@@ -98,16 +98,25 @@ pub async fn read_directory(
                 continue;
             }
 
+            // An entry unlinked between the readdir and the stat is skipped, not
+            // reported: a directory being written to is the ordinary case, and
+            // failing the whole listing because one file went away would make
+            // this unusable anywhere real. Every other failure still ends it.
+            //
             // Comes from the directory read itself on the filesystems that carry
             // the type, so it costs nothing there and a stat only where it must.
-            let file_type = entry
-                .file_type()
-                .map_err(|error| io_message("read entry type in", &path, &error))?;
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(io_message("read entry type in", &path, &error)),
+            };
 
             let (size_bytes, modified_at_ms) = if with_metadata {
-                let metadata = entry
-                    .metadata()
-                    .map_err(|error| io_message("stat entry in", &path, &error))?;
+                let metadata = match entry.metadata() {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(io_message("stat entry in", &path, &error)),
+                };
 
                 (
                     Some(metadata.len()),
@@ -153,7 +162,7 @@ pub fn epoch_ms(time: SystemTime) -> i64 {
 /// Creates a directory. Recursive creates the parents too, and then an existing
 /// directory is a success rather than a failure — which is the mkdir -p
 /// behaviour every caller of the recursive form is actually after.
-pub async fn make_directory(task: &Task, envelope: &payloads::Envelope) {
+pub async fn make_directory(task: &Task, envelope: &mut payloads::Envelope) {
     let start_time = Instant::now();
 
     let Some(parameters) =
@@ -164,10 +173,14 @@ pub async fn make_directory(task: &Task, envelope: &payloads::Envelope) {
 
     let path = parameters.path.clone();
     let recursive = parameters.recursive;
-    let permissions = if parameters.permissions > 0 {
-        parameters.permissions as u32
-    } else {
-        0o755
+
+    let permissions = match super::permission_bits(parameters.permissions, 0o755) {
+        Ok(permissions) => permissions,
+        Err(text) => {
+            task.add_result(crate::dto::Result::error(task.message(), text)).await;
+
+            return;
+        }
     };
 
     let work = async move {
@@ -192,7 +205,7 @@ pub async fn make_directory(task: &Task, envelope: &payloads::Envelope) {
 
 /// Removes a directory: empty by default, with everything under it when
 /// recursive.
-pub async fn remove_directory(task: &Task, envelope: &payloads::Envelope) {
+pub async fn remove_directory(task: &Task, envelope: &mut payloads::Envelope) {
     let start_time = Instant::now();
 
     let Some(parameters) =
@@ -213,9 +226,11 @@ pub async fn remove_directory(task: &Task, envelope: &payloads::Envelope) {
         };
 
         match removed {
-            Ok(()) => Ok::<Vec<u8>, String>(super::meta::encode_text("p", &path)),
+            Ok(()) => Ok::<Vec<u8>, String>(super::content::encode_count(1)),
+            // Answered as a count, the way delete answers, so a caller can tell
+            // "removed it" from "there was nothing to remove".
             Err(error) if missing_ok && error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(super::meta::encode_text("p", ""))
+                Ok(super::content::encode_count(0))
             }
             Err(error) => Err(io_message("remove directory", &path, &error)),
         }
@@ -230,7 +245,7 @@ pub async fn remove_directory(task: &Task, envelope: &payloads::Envelope) {
 /// Not recursive: a tree is walk(), which streams, because a listing that has
 /// to be held whole before it can be answered is exactly the shape this feature
 /// exists to avoid.
-pub async fn list(task: &Task, envelope: &payloads::Envelope) {
+pub async fn list(task: &Task, envelope: &mut payloads::Envelope) {
     let start_time = Instant::now();
 
     let Some(parameters) = params::<payloads::ListParams>(task, envelope, "list").await else {

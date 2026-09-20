@@ -362,13 +362,20 @@ localhost.
 
 ## Files
 
+The Files tables were taken separately, on 2026-09-20, on the same machine and
+through the same harness. Their files live in the container's own filesystem
+(`sys_get_temp_dir()` inside the `php` service), not on the disk-backed volumes
+the database rows use — which for a file benchmark is the decisive fact about
+the environment, and the reason the page gives every size from a kilobyte to
+64 MiB rather than one.
+
 The only feature here whose verdict turns on a number the caller picks: the size
 of the file. On a kilobyte with a warm page cache the boundary crossing is the
 whole measurement; on sixty-four megabytes it is a rounding error next to the
 disk. So every row below is given at both ends rather than at one.
 
-Single run each, `c="20 0"` at 1 KiB, `c="30 0"` at 1 MiB and `c="6 0"` at
-64 MiB. Each mode works on files of its own, so the page cache is not handed
+Single run each: `c="20 0"` at 1 KiB, `c="30 0"` at 1 MiB and 10 MiB, `c="6 0"`
+at 64 MiB. Each mode works on files of its own, so the page cache is not handed
 from the column that ran first to the ones after it.
 
 | Operation | Size | native / sync / async, ms | Memory n/s/a, MB |
