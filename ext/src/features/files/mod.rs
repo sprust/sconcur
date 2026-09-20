@@ -6,10 +6,15 @@
 //! doing — the HTTP server of the same worker included. tokio::fs hands each
 //! call to the blocking pool instead, which is what leaves the runtime free.
 //!
-//! There must be no std::fs call in this module.
+//! There must be no blocking filesystem call on a runtime thread here: either
+//! tokio::fs, or the standard library inside a spawn_blocking, and nothing
+//! else.
 
 pub mod content;
+pub mod dirs;
 pub mod errors;
+pub mod meta;
+pub mod pattern;
 pub mod payloads;
 
 use std::future::Future;
@@ -55,6 +60,14 @@ impl Feature for FilesFeature {
                 "cp" => content::copy(&task, &envelope).await,
                 "mv" => content::move_file(&task, &envelope).await,
                 "dl" => content::delete(&task, &envelope).await,
+                "st" => meta::stat(&task, &envelope).await,
+                "chm" => meta::chmod(&task, &envelope).await,
+                "tch" => meta::touch(&task, &envelope).await,
+                "rp" => meta::real_path(&task, &envelope).await,
+                "tmp" => meta::temporary_file(&task, &envelope).await,
+                "mkd" => dirs::make_directory(&task, &envelope).await,
+                "rmd" => dirs::remove_directory(&task, &envelope).await,
+                "ls" => dirs::list(&task, &envelope).await,
                 other => {
                     task.add_result(Result::error(
                         message,

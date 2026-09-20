@@ -126,3 +126,100 @@ pub struct DeleteParams {
     #[serde(rename = "mo", default)]
     pub missing_ok: bool,
 }
+
+/// The body of a Stat (`st`).
+/// PHP: SConcur\Features\Files\Files::stat().
+#[derive(Deserialize, Default)]
+pub struct StatParams {
+    #[serde(rename = "p", default)]
+    pub path: String,
+    /// Whether a symlink is followed to what it points at (stat) or described
+    /// as itself (lstat).
+    #[serde(rename = "fs", default)]
+    pub follow_symlinks: bool,
+}
+
+/// The body of a Chmod (`chm`).
+/// PHP: SConcur\Features\Files\Files::chmod().
+#[derive(Deserialize, Default)]
+pub struct ChmodParams {
+    #[serde(rename = "p", default)]
+    pub path: String,
+    #[serde(rename = "pm", default)]
+    pub permissions: i64,
+}
+
+/// The body of a Touch (`tch`).
+/// PHP: SConcur\Features\Files\Files::touch().
+#[derive(Deserialize, Default)]
+pub struct TouchParams {
+    #[serde(rename = "p", default)]
+    pub path: String,
+    /// 0 — now.
+    #[serde(rename = "mt", default)]
+    pub modified_at_ms: i64,
+    #[serde(rename = "pm", default)]
+    pub permissions: i64,
+}
+
+/// The body of a RealPath (`rp`).
+/// PHP: SConcur\Features\Files\Files::realPath().
+#[derive(Deserialize, Default)]
+pub struct RealPathParams {
+    #[serde(rename = "p", default)]
+    pub path: String,
+}
+
+/// The body of a TemporaryFile (`tmp`).
+/// PHP: SConcur\Features\Files\Files::temporaryFile().
+#[derive(Deserialize, Default)]
+pub struct TemporaryFileParams {
+    /// Empty — the system temporary directory.
+    #[serde(rename = "d", default)]
+    pub directory: String,
+    #[serde(rename = "pf", default)]
+    pub prefix: String,
+    #[serde(rename = "sf", default)]
+    pub suffix: String,
+    #[serde(rename = "pm", default)]
+    pub permissions: i64,
+}
+
+/// The body of a MakeDirectory (`mkd`).
+/// PHP: SConcur\Features\Files\Files::makeDirectory().
+#[derive(Deserialize, Default)]
+pub struct MakeDirectoryParams {
+    #[serde(rename = "p", default)]
+    pub path: String,
+    #[serde(rename = "pm", default)]
+    pub permissions: i64,
+    #[serde(rename = "rc", default)]
+    pub recursive: bool,
+}
+
+/// The body of a RemoveDirectory (`rmd`).
+/// PHP: SConcur\Features\Files\Files::removeDirectory().
+#[derive(Deserialize, Default)]
+pub struct RemoveDirectoryParams {
+    #[serde(rename = "p", default)]
+    pub path: String,
+    #[serde(rename = "rc", default)]
+    pub recursive: bool,
+    #[serde(rename = "mo", default)]
+    pub missing_ok: bool,
+}
+
+/// The body of a List (`ls`).
+/// PHP: SConcur\Features\Files\Files::list().
+#[derive(Deserialize, Default)]
+pub struct ListParams {
+    #[serde(rename = "p", default)]
+    pub path: String,
+    /// Empty — everything.
+    #[serde(rename = "pt", default)]
+    pub pattern: String,
+    /// Whether each entry is stat'ed. Off, the listing is names and types only,
+    /// which is one syscall instead of one per entry.
+    #[serde(rename = "wm", default)]
+    pub with_metadata: bool,
+}
