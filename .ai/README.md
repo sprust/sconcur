@@ -40,7 +40,7 @@ User-facing documentation (each doc also exists in Russian as `*.ru.md`):
   [socket-client](../docs/socket-client.md),
   [websocket-server](../docs/websocket-server.md),
   [websocket-client](../docs/websocket-client.md), [amqp](../docs/amqp.md),
-  [redis](../docs/redis.md)
+  [redis](../docs/redis.md), [files](../docs/files.md)
 - Operations: [worker-master](../docs/worker-master.md),
   [admin-stats](../docs/admin-stats.md)
 - Guides: [adding-a-feature](../docs/adding-a-feature.md),
@@ -230,6 +230,17 @@ feature's doc. Key PHP classes not covered there:
   connection other coroutines are using, a blocking one takes a connection of its
   own for the call, and a subscription owns one outright — see
   [docs/redis.md](../docs/redis.md).
+- `Features/Files/` — the file feature. `Files` is the whole public surface, a
+  static facade like the old `Sleeper`: every method builds a `FilesPayload`
+  envelope and goes through `execute()`, and a task failure becomes the exception
+  named for its case in `Support/FilesFailure` — read from the `files[<kind>]`
+  prefix the core writes, never matched out of the message, which holds a path
+  the caller chose. `Support/BatchIterator` is the shape the three streams share
+  (`Results/ChunksResult`, `LinesResult`, `WalkResult`); `Dto/FileWriter` is the
+  chunked writer, whose `write()` answers only once the chunk is written — that
+  wait is the whole of the backpressure. The writer's open answers as an
+  unfinished stream on purpose: the synchronous path stops a flow the moment a
+  result says it is the last one, and the flow is what the session hangs on.
 - `Features/Socket/Dto/AbstractConnection` — shared base for the socket and
   WebSocket `Connection` DTOs (server accept-side and client dial-side); keeps the
   features decoupled, since all depend on the neutral base rather than each other.
@@ -269,6 +280,15 @@ The core (`ext/src/`), module by module:
 - `logger/` — fire-and-forget async log sink: a background task writes
   pre-formatted lines to stdout (buffered, timer-flushed, drops on overflow), so
   the loop never blocks on log I/O
+- `features/files/` — the file feature. Every syscall goes through `tokio::fs` or
+  a `spawn_blocking`, and that is a correctness rule rather than a style one: the
+  runtime has one worker thread by default, so a synchronous read would stand in
+  front of everything else the process is doing. `dirs::read_directory` reads a
+  whole directory in one trip to the blocking pool — per-entry `tokio::fs` calls
+  made a 10 000-entry listing eleven times slower than `scandir` plus a stat
+  each. `errors.rs` writes the kind PHP raises the failure as; `read_state`,
+  `walk_state` and `writer` are the streams, and the writer's sessions live in a
+  Core registry so a fork does not inherit file handles
 - `features/*` — sleeper, mongodb, sql (one handler dispatching
   Query/Exec/Begin/Commit/Rollback; the driver is selected per `Method`),
   httpserver, httpclient, socketserver, socketclient, wsserver, wsclient, amqp
@@ -308,6 +328,12 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
   SubscriptionClose `suc`)
 - `DownloadFileMode` (HttpClient download sink, the `sm` field): Replace (`rpl`),
   Create (`crt`), Append (`app`)
+- `FileWriteMode` (how a Files write opens its destination): the same three wire
+  values, and a separate enum on purpose — neither feature should depend on the
+  other's
+- `FileHashAlgorithm` (Files checksums): sha256, sha512, sha1, md5 — the names
+  `hash_file()` knows them by, so a digest from either side compares against the
+  other's
 
 ## Tests
 
