@@ -103,6 +103,31 @@ class TelemetryCoreTest extends TestCase
         self::assertSame(20_000, $aggregate->workers[0]->snapshotAgeMs);
     }
 
+    public function testWatchdogKillsAreCountedPerGroupAndScrapedAsACounter(): void
+    {
+        $now = 1_750_000_000_000;
+
+        // Counted by the master, not by the workers: the worker a watchdog killed is the
+        // one that stopped sending snapshots, so it cannot report its own killing.
+        $aggregate = $this->aggregateOf(
+            [$this->stored($this->requestsSnapshot(pid: 11, updatedAtMs: $now, completed: 1, avgMs: 1.0), $now)],
+            'srv',
+            $now,
+            null,
+            ['srv' => 2],
+        );
+
+        self::assertSame(2, $aggregate->watchdogKills);
+        self::assertSame(2, $aggregate->groups[0]->watchdogKills);
+        self::assertSame(2, $aggregate->toArray()['watchdogKills']);
+
+        $prometheus = (new PrometheusRenderer())->render($aggregate);
+
+        self::assertStringContainsString('# TYPE sconcur_pool_watchdog_kills_total counter', $prometheus);
+        self::assertStringContainsString('sconcur_pool_watchdog_kills_total{name="srv"} 2', $prometheus);
+        self::assertStringContainsString('sconcur_group_watchdog_kills_total', $prometheus);
+    }
+
     public function testMasterSectionAndStartTimesRender(): void
     {
         $now         = 1_750_000_000_000;

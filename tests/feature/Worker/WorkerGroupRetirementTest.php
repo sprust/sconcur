@@ -120,6 +120,7 @@ class WorkerGroupRetirementTest extends BaseTestCase
             shutdownTimeoutMs: 1_000,
             restartBackoffMs: 10,
             maxRestartBackoffMs: 10,
+            watchdogTimeoutMs: 0,
             server: [],
         );
     }

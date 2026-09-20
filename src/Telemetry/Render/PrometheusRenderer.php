@@ -33,6 +33,7 @@ class PrometheusRenderer
 
         $output .= $this->family('sconcur_pool_workers', 'Live workers in the pool.', 'gauge', $poolLabels, (string) $aggregate->workersTotal);
         $output .= $this->family('sconcur_pool_workers_hung', 'Workers flagged hung (alive but stale snapshot).', 'gauge', $poolLabels, (string) $aggregate->workersHung);
+        $output .= $this->family('sconcur_pool_watchdog_kills_total', 'Workers the watchdog killed for not answering, since the master started.', 'counter', $poolLabels, (string) $aggregate->watchdogKills);
         $output .= $this->family('sconcur_pool_memory_rss_bytes', 'Pool resident set size (with the extension).', 'gauge', $poolLabels, (string) $totals->memory->rssBytes);
         $output .= $this->family('sconcur_pool_cpu_percent', 'Pool CPU usage (sum of per-process percentages).', 'gauge', $poolLabels, $this->float($totals->cpuPercent));
         $output .= $this->family('sconcur_pool_runtime_tasks', 'Live tasks in the extension runtime, summed over the pool.', 'gauge', $poolLabels, (string) $totals->runtimeTasks);
@@ -135,6 +136,7 @@ class PrometheusRenderer
         $metrics = [
             ['sconcur_group_workers', 'Live workers in the group.', fn(GroupAggregate $group): string => (string) $group->workersTotal],
             ['sconcur_group_workers_hung', 'Workers of the group flagged hung.', fn(GroupAggregate $group): string => (string) $group->workersHung],
+            ['sconcur_group_watchdog_kills_total', 'Workers of the group the watchdog killed, since the master started.', fn(GroupAggregate $group): string => (string) $group->watchdogKills],
             ['sconcur_group_cpu_percent', 'CPU usage summed over the group.', fn(GroupAggregate $group): string => $this->float($group->totals->cpuPercent)],
             ['sconcur_group_memory_rss_bytes', 'Resident set size summed over the group.', fn(GroupAggregate $group): string => (string) $group->totals->memory->rssBytes],
             ['sconcur_group_runtime_tasks', 'Live tasks in the extension runtime, summed over the group.', fn(GroupAggregate $group): string => (string) $group->totals->runtimeTasks],

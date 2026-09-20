@@ -71,6 +71,7 @@ class PanelServer
         protected readonly Store $store,
         protected readonly Aggregator $aggregator,
         protected readonly MasterMetrics $masterMetrics,
+        protected readonly WatchdogCounters $watchdogCounters,
         protected readonly ?Closure $logError = null,
     ) {
         $this->jsonRenderer       = new JsonRenderer();
@@ -479,6 +480,7 @@ class PanelServer
             nowMs: $nowMs,
             generatedAt: gmdate('c', intdiv($nowMs, 1000)),
             master: $this->masterMetrics->snapshot($nowMs),
+            watchdogKills: $this->watchdogCounters->all(),
         );
     }
 

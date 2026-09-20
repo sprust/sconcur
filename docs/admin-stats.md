@@ -189,6 +189,14 @@ runtime (the pusher task itself stalled), not a stuck request handler — the
 pusher is independent and keeps sending snapshots as long as the extension's runtime is
 alive.
 
+A stuck handler is the other counter's business. `watchdogKills` is how many workers
+of a pool the master's [watchdog](worker-master.md#stuck-worker) has killed since it
+started, and it rises exactly where `workersHung` does not: a worker whose PHP thread
+froze keeps its runtime pushing snapshots, so it never looks `hung`. It is counted by
+the master, not reported by a worker — the evidence a worker was killed is the
+heartbeat it stopped sending. Alert on it rising, not on its value, which only says
+how long this master has been up.
+
 ## Response format
 
 The same data in three representations, chosen by `Accept`. The HTTP pool's JSON:
@@ -199,6 +207,7 @@ The same data in three representations, chosen by `Accept`. The HTTP pool's JSON
   "name": "sconcur-servers",
   "workersTotal": 8,
   "workersHung": 0,
+  "watchdogKills": 0,
   "master": {
     "pid": 12340,
     "startedAt": "2026-06-24T11:00:00+00:00",
@@ -217,6 +226,7 @@ The same data in three representations, chosen by `Accept`. The HTTP pool's JSON
       "name": "http",
       "workersTotal": 3,
       "workersHung": 0,
+      "watchdogKills": 0,
       "totals": {
         "memory": { "rssBytes": 125829120 },
         "cpuPercent": 10.6,
@@ -272,7 +282,7 @@ Four scopes, told apart by their prefix and their labels:
 | Family | Scope | Labels |
 | --- | --- | --- |
 | `sconcur_pool_*` | every worker of the master together — `requests`, `connections` and `deliveries` (the queue workload) | `name` |
-| `sconcur_group_*` | one pool: its worker count, hung count, CPU, RSS and runtime tasks | `name`, `group` |
+| `sconcur_group_*` | one pool: its worker count, hung count, watchdog kills, CPU, RSS and runtime tasks | `name`, `group` |
 | `sconcur_master_*` | the master process itself | `name` |
 | `sconcur_worker_*` | one worker | `name`, `pid`, `group` |
 

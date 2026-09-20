@@ -18,6 +18,7 @@ readonly class GroupAggregate
         public string $name,
         public int $workersTotal,
         public int $workersHung,
+        public int $watchdogKills,
         public Totals $totals,
     ) {
     }
@@ -28,10 +29,11 @@ readonly class GroupAggregate
     public function toArray(): array
     {
         return [
-            'name'         => $this->name,
-            'workersTotal' => $this->workersTotal,
-            'workersHung'  => $this->workersHung,
-            'totals'       => $this->totals->toArray(),
+            'name'          => $this->name,
+            'workersTotal'  => $this->workersTotal,
+            'workersHung'   => $this->workersHung,
+            'watchdogKills' => $this->watchdogKills,
+            'totals'        => $this->totals->toArray(),
         ];
     }
 }

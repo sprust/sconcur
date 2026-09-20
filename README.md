@@ -303,6 +303,9 @@ The crates the core is built on:
 - [Positioning](docs/positioning.md) — SConcur vs php-fpm, RoadRunner and Swoole.
 - [The move to Rust](docs/rust-core.md) — why the core was ported from Go, the
   gate it had to pass and what it measured.
+- [SConcur for Laravel](https://github.com/sprust/sconcur-laravel) — a separate
+  package: a concurrent HTTP worker, an application whose state is per coroutine,
+  and Eloquent, cache, queues and WebSocket on top of SConcur's features.
 
 ## Build
 
@@ -318,16 +321,22 @@ php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello'
 ```
 ## Roadmap
 
-- The `Std` feature — SConcur equivalents of standard PHP functions that block
-  the worker or are CPU-bound non-preemptible monoliths (sleep, json, hash, gzip,
-  password hashing, file I/O), executed in the extension; absorbs `Sleeper`.
-- Auto-recovery of stuck workers — a master watchdog by heartbeat: `SIGKILL` and
-  respawn a worker whose PHP thread has hung.
-- Split the core and the features into separate packages.
+In the order it is meant to happen:
+
+- Installation through [PIE](https://php.github.io/pie/) — `pie install` for the
+  extension, instead of taking `sconcur.so` from the releases and writing the
+  `extension=` line by hand.
 - Stopping a single coroutine from anywhere, not just the whole flow. The other
   half of this — a deadline on one — is done, see
   [coroutine timeout](docs/coroutine-timeout.md).
-- Optimize the synchronous path — a call outside a coroutine goes to the
-  extension directly, bypassing the scheduler and the Fiber machinery.
-- Explore a cross-process concurrency mode, so concurrent operations can use
-  several processes (and cores) instead of the runtime tasks of one process.
+- The `Std` feature — SConcur equivalents of the standard PHP functions that
+  block the worker: file I/O and password hashing, plus sleep, which absorbs
+  `Sleeper`. json, gzip and hash are candidates behind a benchmark gate, not a
+  promise: their native implementations are C already, and what the extension
+  buys there is a free PHP thread, not speed.
+
+Deferred on purpose: splitting the core and the features into separate packages,
+and optimizing the synchronous path (a call outside a coroutine going to the
+extension directly, bypassing the scheduler and the Fiber machinery). Both are
+worth doing; neither moves a single verdict in
+[positioning](docs/positioning.md#is-sconcur-for-you).

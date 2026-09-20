@@ -32,6 +32,8 @@ class Aggregator
 
     /**
      * @param list<StoredSnapshot> $storedSnapshots
+     * @param array<string, int>   $watchdogKills   group name => workers the watchdog has
+     *                                              killed, counted by the master itself
      */
     public function aggregate(
         array $storedSnapshots,
@@ -39,6 +41,7 @@ class Aggregator
         int $nowMs,
         string $generatedAt,
         ?MasterInfo $master = null,
+        array $watchdogKills = [],
     ): Aggregate {
         $workers = [];
 
@@ -98,6 +101,7 @@ class Aggregator
                 name: (string) $groupName,
                 workersTotal: count($groupSnapshots),
                 workersHung: $hungByGroup[(string) $groupName] ?? 0,
+                watchdogKills: $watchdogKills[(string) $groupName] ?? 0,
                 totals: $this->sum($groupSnapshots),
             );
         }
@@ -107,6 +111,7 @@ class Aggregator
             name: $name,
             workersTotal: count($workers),
             workersHung: array_sum($hungByGroup),
+            watchdogKills: array_sum($watchdogKills),
             totals: $this->sum($storedSnapshots),
             workers: $workers,
             master: $master,

@@ -26,6 +26,7 @@ readonly class MasterDefaults
         public int $shutdownTimeoutMs,
         public int $restartBackoffMs,
         public int $maxRestartBackoffMs,
+        public int $watchdogTimeoutMs,
     ) {
     }
 }

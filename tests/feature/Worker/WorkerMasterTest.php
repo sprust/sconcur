@@ -61,6 +61,250 @@ class WorkerMasterTest extends TestCase
         }
     }
 
+    public function testAHungWorkerIsKilledAndReplaced(): void
+    {
+        // One worker, so the request certainly lands on the one being watched, at the
+        // lowest threshold the config accepts.
+        $master = TestWorkerMaster::start([
+            'workerCount'       => 1,
+            'watchdogTimeoutMs' => 5_000,
+        ]);
+
+        try {
+            $before = $master->workerPid();
+
+            self::assertGreaterThan(0, $before, 'the worker must answer before it is frozen');
+
+            // Freezes the worker's PHP thread inside a native call: nothing preempts it,
+            // so the serve loop stops turning and the worker's mark goes stale. The
+            // client gives up on the request long before the sleep ends; the worker does
+            // not.
+            $master->get('/native-msleep/20000');
+
+            $replaced = $this->waitFor(
+                static function () use ($master, $before): bool {
+                    $pid = $master->workerPid();
+
+                    return $pid !== 0 && $pid !== $before;
+                },
+                timeoutSeconds: 25.0,
+            );
+
+            self::assertTrue($replaced, 'the master should kill a hung worker and bring up a replacement');
+
+            $log = $master->logText();
+
+            self::assertStringContainsString('no heartbeat for', $log);
+            self::assertStringContainsString('sending SIGTERM', $log);
+
+            // A watchdog kill does not count as a healthy worker finishing, however long it
+            // had been up, so the replacement waits out a backoff instead of coming up at
+            // once — a pool hung by a shared cause would otherwise recycle itself forever.
+            self::assertMatchesRegularExpression('/restarting in [1-9]\d*ms/', $log);
+        } finally {
+            $master->stop();
+        }
+    }
+
+    public function testAnIdleWorkerIsNotMistakenForAHungOne(): void
+    {
+        // The common case at night: nothing is requested for longer than the threshold.
+        // The serve loop still passes its top every SERVE_POLL_INTERVAL_MS, so the marks
+        // keep coming with no traffic at all.
+        $master = TestWorkerMaster::start([
+            'workerCount'       => 1,
+            'watchdogTimeoutMs' => 5_000,
+        ]);
+
+        try {
+            $before = $master->workerPid();
+
+            self::assertGreaterThan(0, $before);
+
+            // Twice the threshold, and not one request in it.
+            sleep(11);
+
+            self::assertStringNotContainsString(
+                'no heartbeat for',
+                $master->logText(),
+                'an idle worker marks itself alive without serving anything',
+            );
+            self::assertSame($before, $master->workerPid(), 'the idle worker kept its slot');
+        } finally {
+            $master->stop();
+        }
+    }
+
+    public function testAPreemptedCpuBoundHandlerKeepsItsSlot(): void
+    {
+        // Preemption is on by default (a 5 ms quantum). A handler that computes for
+        // longer than the whole watchdog threshold must not be mistaken for a hang: the
+        // scheduler parks its coroutine and goes back round the serve loop, so the marks
+        // keep coming while it works.
+        $master = TestWorkerMaster::start([
+            'workerCount'       => 1,
+            'watchdogTimeoutMs' => 5_000,
+        ]);
+
+        try {
+            $before = $master->workerPid();
+
+            self::assertGreaterThan(0, $before);
+
+            // 9 s of hashing, no I/O and no explicit switch() in the handler. Stated as a
+            // duration, so the machine's speed cannot turn this into a handler that
+            // finishes before the threshold and proves nothing.
+            $master->get('/cpu-ms/9000');
+
+            self::assertFalse(
+                $this->waitFor(
+                    static fn(): bool => str_contains($master->logText(), 'no heartbeat for'),
+                    timeoutSeconds: 8.0,
+                ),
+                'a preempted handler keeps marking its worker alive',
+            );
+
+            self::assertSame($before, $master->workerPid(), 'the worker kept its slot');
+        } finally {
+            $master->stop();
+        }
+    }
+
+    public function testACpuBoundHandlerWithoutPreemptionIsTreatedAsAHang(): void
+    {
+        // The other side of the same coin: with preemption off the handler never gives
+        // control back, so nothing in the process is served while it computes and the
+        // worker is indistinguishable from a hung one — the watchdog treats it as one.
+        $master = TestWorkerMaster::start(
+            options: ['workerCount' => 1, 'watchdogTimeoutMs' => 5_000],
+            workerArgs: ['--preemptionQuantumMs=0'],
+        );
+
+        try {
+            $before = $master->workerPid();
+
+            self::assertGreaterThan(0, $before);
+
+            $master->get('/cpu-ms/9000');
+
+            $replaced = $this->waitFor(
+                static function () use ($master, $before): bool {
+                    $pid = $master->workerPid();
+
+                    return $pid !== 0 && $pid !== $before;
+                },
+                timeoutSeconds: 25.0,
+            );
+
+            self::assertTrue($replaced, 'without preemption the computing worker is replaced');
+            self::assertStringContainsString('no heartbeat for', $master->logText());
+        } finally {
+            $master->stop();
+        }
+    }
+
+    public function testAWorkerWithNoServerMarksItselfThroughTheScheduler(): void
+    {
+        // No serve loop at all — an ordinary WaitGroup loop, the shape a pool of periodic
+        // tasks has. It drives the scheduler, so it marks itself alive like a server does.
+        $master = TestWorkerMaster::start(
+            options: [
+                'workerCount'       => 1,
+                'watchdogTimeoutMs' => 5_000,
+                'workerScript'      => dirname(__DIR__, 2) . '/servers/worker/waitgroup-worker.php',
+                'server'            => [],
+            ],
+            waitReachable: false,
+        );
+
+        try {
+            self::assertTrue(
+                $this->waitFor(
+                    static fn(): bool => str_contains($master->logText(), 'waitgroup worker started'),
+                    timeoutSeconds: 10.0,
+                ),
+                'the worker should come up',
+            );
+
+            sleep(11);
+
+            self::assertStringNotContainsString('no heartbeat for', $master->logText());
+            self::assertSame(
+                1,
+                substr_count($master->logText(), 'waitgroup worker started'),
+                'the worker was never replaced',
+            );
+        } finally {
+            $master->stop();
+        }
+    }
+
+    public function testAWorkerWithNoServerIsKilledWhenItsSchedulerStops(): void
+    {
+        // The same worker, frozen in a native call after half a second: it stops driving
+        // the scheduler, so it stops marking itself and the watchdog replaces it.
+        $master = TestWorkerMaster::start(
+            options: [
+                'workerCount'       => 1,
+                'watchdogTimeoutMs' => 5_000,
+                'workerScript'      => dirname(__DIR__, 2) . '/servers/worker/waitgroup-worker.php',
+                'server'            => [],
+            ],
+            workerArgs: ['--hangAfterMs=500'],
+            waitReachable: false,
+        );
+
+        try {
+            self::assertTrue(
+                $this->waitFor(
+                    static fn(): bool => str_contains($master->logText(), 'no heartbeat for'),
+                    timeoutSeconds: 20.0,
+                ),
+                'a worker that stopped driving the scheduler should be caught',
+            );
+
+            self::assertTrue(
+                $this->waitFor(
+                    static fn(): bool => substr_count($master->logText(), 'waitgroup worker started') >= 2,
+                    timeoutSeconds: 20.0,
+                ),
+                'and replaced',
+            );
+        } finally {
+            $master->stop();
+        }
+    }
+
+    public function testWorkersAreLeftAloneWhileTheWatchdogIsOff(): void
+    {
+        // The same freeze with the watchdog disabled: the worker keeps its slot, which is
+        // what every other test in this file relies on while it holds a worker busy.
+        $master = TestWorkerMaster::start([
+            'workerCount'       => 1,
+            'watchdogTimeoutMs' => 0,
+        ]);
+
+        try {
+            $before = $master->workerPid();
+
+            self::assertGreaterThan(0, $before);
+
+            $master->get('/native-msleep/6000');
+
+            self::assertFalse(
+                $this->waitFor(
+                    static fn(): bool => str_contains($master->logText(), 'no heartbeat for'),
+                    timeoutSeconds: 3.0,
+                ),
+                'a zero threshold must switch the watchdog off entirely',
+            );
+
+            self::assertSame($before, $master->workerPid(), 'the frozen worker keeps its slot');
+        } finally {
+            $master->stop();
+        }
+    }
+
     public function testOnFailurePolicyDoesNotRestartCleanExit(): void
     {
         // OnFailure: a clean exit (here via the maxRequests quota) is "done", so the

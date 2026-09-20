@@ -4,12 +4,11 @@
 #
 # The reason it exists: the PHP binary in `php:8.4-cli` is stripped and built
 # without frame pointers, so a sampling profiler sees the C stack of the engine
-# as a flat wall of unnamed addresses. Two separate plans reached the same halt
-# because of it — `.ai/plans/hot-path-optimization.md` item 3, where the ~30 us
-# of PSR-7 construction is the largest remaining line and cannot be attributed,
-# and `.ai/plans/rust-core-hot-path.md`, where ~6.3 us of the coordination cycle
-# no longer divides by differential measurement. Both need one image, so it is
-# built once here rather than twice there.
+# as a flat wall of unnamed addresses. Two separate rounds of optimization work
+# halted on it — the ~30 us of PSR-7 construction could not be attributed to
+# anything, and the ~6.3 us of the coordination cycle no longer divided by
+# differential measurement. Both needed one image, so it is built once here
+# rather than twice there.
 #
 # It rebuilds PHP from the sources the base image already carries, with the same
 # configure line and two additions: frame pointers, and symbols left in. The
