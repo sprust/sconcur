@@ -223,3 +223,14 @@ pub struct ListParams {
     #[serde(rename = "wm", default)]
     pub with_metadata: bool,
 }
+
+/// The body of a HashFile (`hsh`).
+/// PHP: SConcur\Features\Files\Files::hashFile().
+#[derive(Deserialize, Default)]
+pub struct HashFileParams {
+    #[serde(rename = "p", default)]
+    pub path: String,
+    /// A FileHashAlgorithm wire value: sha256, sha512, sha1 or md5.
+    #[serde(rename = "a", default)]
+    pub algorithm: String,
+}

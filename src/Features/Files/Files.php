@@ -204,6 +204,31 @@ class Files
     }
 
     /**
+     * The checksum of a file, as lowercase hex — the same spelling hash_file() answers in.
+     *
+     * The bytes are read inside the extension and never cross into PHP, so the file's size
+     * costs nothing here. Unlike hash_file(), the read loop and every disk wait in it
+     * happen on the runtime: checksumming a multi-gigabyte file stops being a stall of the
+     * whole worker.
+     */
+    public static function hashFile(
+        string $path,
+        FileHashAlgorithm $algorithm = FileHashAlgorithm::Sha256,
+        int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
+    ): string {
+        return static::text(
+            static::execute(
+                command: FilesCommandEnum::HashFile,
+                timeoutMs: $timeoutMs,
+                data: [
+                    'p' => $path,
+                    'a' => $algorithm->value,
+                ],
+            ),
+        );
+    }
+
+    /**
      * Everything one stat(2) knows about a path, in a single crossing.
      *
      * A path that is not there is not a failure: the answer carries exists = false. With

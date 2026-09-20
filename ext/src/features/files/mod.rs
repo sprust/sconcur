@@ -13,6 +13,7 @@
 pub mod content;
 pub mod dirs;
 pub mod errors;
+pub mod hash;
 pub mod meta;
 pub mod pattern;
 pub mod payloads;
@@ -68,6 +69,7 @@ impl Feature for FilesFeature {
                 "mkd" => dirs::make_directory(&task, &envelope).await,
                 "rmd" => dirs::remove_directory(&task, &envelope).await,
                 "ls" => dirs::list(&task, &envelope).await,
+                "hsh" => hash::hash_file(&task, &envelope).await,
                 other => {
                     task.add_result(Result::error(
                         message,

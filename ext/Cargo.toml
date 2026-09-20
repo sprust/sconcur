@@ -138,6 +138,18 @@ redis = { version = "1.7", default-features = false, features = [
     "tls-rustls-webpki-roots",
 ] }
 
+# The hash algorithms hashFile offers. All three are already in the lock file,
+# pulled in by lapin, the MongoDB driver and redis-rs; naming them directly
+# turns a transitive presence into a dependency this crate is allowed to use.
+#
+# Which three: the ones a checksum is actually written in. sha256 is the default
+# a caller should reach for, sha512 is there for the caller whose policy says
+# so, sha1 and md5 because an ETag, a package index and a decade of existing
+# manifests are written in them — not because either is a security choice.
+sha2  = { version = "0.10", default-features = false }
+sha1  = { version = "0.10", default-features = false }
+md-5  = { version = "0.10", default-features = false }
+
 [profile.release]
 opt-level      = 3
 lto            = true
