@@ -120,6 +120,12 @@ pub fn permission_bits(value: i64, default: u32) -> std::result::Result<u32, Str
         return Ok(default);
     }
 
+    exact_permission_bits(value)
+}
+
+/// The same range check without the "0 means the default" reading, for the one
+/// command whose permissions the caller must name: chmod.
+pub fn exact_permission_bits(value: i64) -> std::result::Result<u32, String> {
     if !(0..=0o7777).contains(&value) {
         return Err(fail(
             Kind::Argument,
@@ -159,27 +165,51 @@ where
     }
 }
 
-/// Bounds one batch of a stream by the deadline its payload carried.
+/// Bounds one batch of a stream by the deadline its payload carried and by the
+/// state's own cancellation token.
 ///
 /// A state's next() is not routed through `bounded`: the registry
 /// (`states::next`) calls it directly, and a task there has no `Task` to publish
-/// an error on. So the deadline is applied here and the caller turns a None into
-/// its own timeout result.
+/// an error on. So both bounds are applied here and the caller turns a None into
+/// its own result.
 ///
-/// The flow's token is deliberately not raced against: a cancelled flow deletes
-/// the state, whose close() releases what it held, and answering a batch from
-/// under that would be reporting on a stream that no longer exists.
-pub async fn bounded_state<F, T>(timeout_ms: i64, work: F) -> Option<T>
+/// The token is not optional, and `timeoutMs: 0` is why. A stream may legally
+/// carry no deadline, and without a token a batch on a hung mount would be
+/// unbounded AND uncancellable: the PHP coroutine would never get a result, and
+/// the flow's cleanup hook would park for ever on the mutex the batch holds.
+/// The state's close() cancels this first and only then reaches for that mutex —
+/// the same order redis::scan_state keeps, and for the same reason.
+pub async fn bounded_state<F, T>(
+    timeout_ms: i64,
+    cancel: &tokio_util::sync::CancellationToken,
+    work: F,
+) -> Option<T>
 where
     F: std::future::Future<Output = T>,
 {
+    tokio::pin!(work);
+
     if timeout_ms <= 0 {
-        return Some(work.await);
+        return tokio::select! {
+            // Biased towards the work: when a batch and a cancellation land in
+            // the same poll, the batch that is already finished is the better
+            // answer than throwing it away.
+            biased;
+            value = &mut work => Some(value),
+            _ = cancel.cancelled() => None,
+        };
     }
 
-    tokio::time::timeout(Duration::from_millis(timeout_ms as u64), work)
-        .await
-        .ok()
+    let deadline = tokio::time::sleep(Duration::from_millis(timeout_ms as u64));
+
+    tokio::pin!(deadline);
+
+    tokio::select! {
+        biased;
+        value = &mut work => Some(value),
+        _ = cancel.cancelled() => None,
+        _ = &mut deadline => None,
+    }
 }
 
 /// Runs an operation under the flow's cancellation token and the payload's
@@ -203,6 +233,12 @@ where
 
     if timeout_ms <= 0 {
         return tokio::select! {
+            // Biased towards the work. select! picks at random among branches
+            // ready in the same poll, so an unbiased version reported a write
+            // that had finished as a timeout — and then removed the file it had
+            // just written.
+            biased;
+            value = &mut work => Some(value),
             _ = task.context().cancelled() => {
                 task.add_result(Result::error(
                     message,
@@ -212,7 +248,6 @@ where
 
                 None
             }
-            value = &mut work => Some(value),
         };
     }
 
@@ -221,6 +256,8 @@ where
     tokio::pin!(deadline);
 
     tokio::select! {
+        biased;
+        value = &mut work => Some(value),
         _ = task.context().cancelled() => {
             task.add_result(Result::error(
                 message,
@@ -239,7 +276,6 @@ where
 
             None
         }
-        value = &mut work => Some(value),
     }
 }
 

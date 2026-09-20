@@ -293,7 +293,7 @@ pub struct WriteOpenParams {
 }
 
 /// The body of a WriteChunk (`wrc`).
-/// PHP: SConcur\Features\Files\Dto\FileWriter::write().
+/// PHP: SConcur\Features\Files\FileWriter::write().
 #[derive(Deserialize)]
 pub struct WriteChunkParams {
     #[serde(rename = "i", default)]
@@ -303,7 +303,7 @@ pub struct WriteChunkParams {
 }
 
 /// The body of a WriteClose (`wrx`).
-/// PHP: SConcur\Features\Files\Dto\FileWriter::close().
+/// PHP: SConcur\Features\Files\FileWriter::close().
 #[derive(Deserialize, Default)]
 pub struct WriteCloseParams {
     #[serde(rename = "i", default)]

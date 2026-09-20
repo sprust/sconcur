@@ -378,29 +378,29 @@ Single run each: `c="20 0"` at 1 KiB, `c="30 0"` at 1 MiB and 10 MiB, `c="6 0"`
 at 64 MiB. Each mode works on files of its own, so the page cache is not handed
 from the column that ran first to the ones after it.
 
-| Operation | Size | native / sync / async, ms | Memory n/s/a, MB |
-| --- | --- | ---: | --- |
-| read | 1 KiB | 0.18 / 2.11 / 0.57 | 4 / 6 / 6 |
-| read | 1 MiB | 3.8 / 17.7 / 34.3 | 4 / 6 / 50 |
-| read | 64 MiB | 161 / 819 / 752 | 68 / 132 / 644 |
-| write | 1 KiB | 0.34 / 1.99 / 0.55 | 6 / 6 / 6 |
-| write | 1 MiB | 14.9 / 32.2 / 49.5 | 6 / 6 / 6 |
-| write | 64 MiB | 634 / 1104 / 794 | 68 / 132 / 132 |
-| copy | 1 KiB | 0.49 / 1.36 / 0.74 | 4 / 4 / 4 |
-| copy | 1 MiB | 13.0 / 29.7 / 14.3 | 4 / 4 / 4 |
-| copy | 64 MiB | 800 / 386 / 89 (+89% ✅) | 4 / 4 / 4 |
-| hashFile (sha256) | 10 MiB | 228 / 302 / 200 (+12% ✅) | 4 / 4 / 4 |
-| hashFile (sha256) | 64 MiB | 319 / 457 / 245 (+23% ✅) | 4 / 4 / 4 |
-| readChunks (64 KiB buffer) | 10 MiB | 45.8 / 227 / 123 | 4 / 4 / 10 |
-| readChunks (64 KiB buffer) | 64 MiB | 65.2 / 783 / 90.2 | 4 / 4 / 4 |
+| Operation | Size | count | native / sync / async, ms | Memory n/s/a, MB |
+| --- | --- | ---: | ---: | --- |
+| read | 1 KiB | 20 | 0.18 / 2.11 / 0.57 (−217% ❌) | 4 / 6 / 6 |
+| read | 1 MiB | 30 | 3.8 / 17.7 / 34.3 (−803% ❌) | 4 / 6 / 50 |
+| read | 64 MiB | 6 | 161 / 819 / 752 (−367% ❌) | 68 / 132 / 644 |
+| write | 1 KiB | 20 | 0.34 / 1.99 / 0.55 (−62% ❌) | 6 / 6 / 6 |
+| write | 1 MiB | 30 | 14.9 / 32.2 / 49.5 (−232% ❌) | 6 / 6 / 6 |
+| write | 64 MiB | 6 | 634 / 1104 / 794 (−25% ❌) | 68 / 132 / 132 |
+| copy | 1 KiB | 20 | 0.49 / 1.36 / 0.74 (−51% ❌) | 4 / 4 / 4 |
+| copy | 1 MiB | 30 | 13.0 / 29.7 / 14.3 (−10% ❌) | 4 / 4 / 4 |
+| copy | 64 MiB | 6 | 800 / 386 / 89 (+89% ✅) | 4 / 4 / 4 |
+| hashFile (sha256) | 10 MiB | 30 | 228 / 302 / 200 (+12% ✅) | 4 / 4 / 4 |
+| hashFile (sha256) | 64 MiB | 6 | 319 / 457 / 245 (+23% ✅) | 4 / 4 / 4 |
+| readChunks (64 KiB buffer) | 10 MiB | 30 | 45.8 / 227 / 123 (−169% ❌) | 4 / 4 / 10 |
+| readChunks (64 KiB buffer) | 64 MiB | 6 | 65.2 / 783 / 90.2 (−38% ❌) | 4 / 4 / 4 |
 
 Directory listing with a size and a time per entry — `scandir()` followed by
 `filesize()` and `filemtime()` on every entry against one crossing:
 
 | Entries | count | native / sync / async, ms | Memory n/s/a, MB |
 | --- | ---: | ---: | --- |
-| 10 000 | 30 | 591 / 1053 / 328 (+45% ✅) | 14 / 14 / 45 |
-| 100 000 | 5 | 1038 / 1573 / 776 (+25% ✅) | 14 / 14 / 92 |
+| 10 000 | 30 | 705 / 1043 / 315 (+55% ✅) | 14 / 14 / 45 |
+| 100 000 | 5 | 1325 / 1813 / 806 (+39% ✅) | 14 / 14 / 92 |
 
 Read in order:
 

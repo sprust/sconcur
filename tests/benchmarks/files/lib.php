@@ -12,7 +12,7 @@ declare(strict_types=1);
 /**
  * The directory this run works in. Named after the process so parallel runs do not meet.
  */
-function bench_files_directory(string $name): string
+function benchFilesDirectory(string $name): string
 {
     $directory = sys_get_temp_dir() . '/sconcur-bench-files-' . $name . '-' . getmypid();
 
@@ -21,7 +21,7 @@ function bench_files_directory(string $name): string
     }
 
     register_shutdown_function(static function () use ($directory): void {
-        bench_files_remove($directory);
+        benchFilesRemove($directory);
     });
 
     return $directory;
@@ -30,7 +30,7 @@ function bench_files_directory(string $name): string
 /**
  * Writes $count files of $sizeBytes each and answers with their paths.
  */
-function bench_files_seed(string $directory, string $prefix, int $count, int $sizeBytes): array
+function benchFilesSeed(string $directory, string $prefix, int $count, int $sizeBytes): array
 {
     $contents = str_repeat('x', $sizeBytes);
     $paths    = [];
@@ -46,7 +46,7 @@ function bench_files_seed(string $directory, string $prefix, int $count, int $si
     return $paths;
 }
 
-function bench_files_remove(string $path): void
+function benchFilesRemove(string $path): void
 {
     if (!is_dir($path)) {
         if (is_file($path)) {
@@ -61,7 +61,7 @@ function bench_files_remove(string $path): void
             continue;
         }
 
-        bench_files_remove($path . '/' . $name);
+        benchFilesRemove($path . '/' . $name);
     }
 
     @rmdir($path);
@@ -73,7 +73,7 @@ function bench_files_remove(string $path): void
  * than a constant: a kilobyte says the boundary costs more than the work, a hundred
  * megabytes says the opposite.
  */
-function bench_files_size_bytes(int $default): int
+function benchFilesSizeBytes(int $default): int
 {
     $configured = (int) (getenv('SCONCUR_BENCH_FILE_BYTES') ?: 0);
 

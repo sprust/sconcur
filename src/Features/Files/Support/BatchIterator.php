@@ -12,6 +12,7 @@ use SConcur\Features\FeatureExecutor;
 use SConcur\Features\Files\FilesCommandEnum;
 use SConcur\Features\Files\Payloads\FilesPayload;
 use SConcur\State;
+use Throwable;
 
 /**
  * The shape the feature's three streams share: the extension holds the position, PHP
@@ -21,6 +22,12 @@ use SConcur\State;
  * what the stream held — the same guarantee Redis's ScanResult and SQL's RowsResult rest
  * on. On the synchronous path the flow is this object's to release, which is what
  * releaseTask() and the destructor are for.
+ *
+ * Re-iterating is allowed and opens the stream again from the start, because rewind()
+ * releases the previous one first. What that also means is that two foreach loops over
+ * the SAME object cannot be nested: the inner one rewinds out from under the outer,
+ * which then ends early. That is how every non-Generator Iterator in PHP behaves; call
+ * the factory twice for two independent passes.
  *
  * @template TValue
  *
@@ -75,7 +82,7 @@ abstract class BatchIterator implements Iterator
         return $this->currentValue;
     }
 
-    public function key(): mixed
+    public function key(): int
     {
         return $this->currentKey;
     }
@@ -100,15 +107,24 @@ abstract class BatchIterator implements Iterator
                     data: $this->data,
                 ),
             );
+
+            $this->taskKey = $result->key;
+
+            // Inside the try with the push: decoding a batch can throw too — a payload
+            // this package cannot read, or an entry that is not the shape the decoder
+            // expects — and leaving that outside left the object valid() with a null
+            // current(), which is worse than the failure itself.
+            $this->setResult(result: $result);
         } catch (TaskErrorException | TaskExecutionException $exception) {
             $this->isFinished = true;
 
             throw FilesFailure::from($exception);
+        } catch (Throwable $exception) {
+            $this->isFinished = true;
+
+            throw $exception;
         }
 
-        $this->taskKey = $result->key;
-
-        $this->setResult(result: $result);
         $this->advance();
     }
 

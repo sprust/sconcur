@@ -11,7 +11,9 @@
 ///
 /// It is not an optimization looking for a problem: the filter runs per entry,
 /// and the per-entry cost is the whole reason this feature beats scandir plus a
-/// stat each.
+/// stat each. What it does not remove is the per-entry cost of the name — that
+/// is still collected into a Vec<char> per call, because a match needs random
+/// access to it and a name is short.
 pub struct Pattern {
     characters: Vec<char>,
 }

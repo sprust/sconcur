@@ -17,7 +17,6 @@ declare(strict_types=1);
 //   php -d extension=./ext/build/sconcur.so \
 //       tests/mem-leak/files-soak.php <scenario> <seconds>
 
-use SConcur\Connection\Extension;
 use SConcur\Features\Files\Files;
 use SConcur\Features\Files\FileWriteMode;
 use SConcur\Tests\Impl\TestApplication;
@@ -200,17 +199,24 @@ $cycle = static function (int $iteration) use ($scenario, $directory, $sourcePat
                         break;
                     }
 
-                    $writer = Files::openWriter(path: $directory . '/abandoned.bin');
+                    $writer = Files::openWriter(
+                        path: $directory . '/abandoned.bin',
+                        mode: FileWriteMode::Create,
+                    );
 
                     $writer->write(chunk: substr($contents, 0, 65_536));
 
-                    // Dropped without a close. The flow ends with this coroutine, and the
-                    // extension is what has to close the file and remove it.
+                    // Dropped without a close, in Create mode — the one mode whose
+                    // abandoned writer the extension removes, so the cycle leaves
+                    // nothing behind and the next one can create the name again.
                 },
             );
 
             $waitGroup->waitAll();
 
+            // The writer above is dropped without a close, so the extension removes the
+            // file — but a scenario that leaked would leave it, and the next cycle's
+            // Create would fail loudly rather than quietly reusing it.
             break;
 
         default:
@@ -263,18 +269,22 @@ while ((microtime(true) - $startTime) < $durationSeconds) {
     $residentNow   = $residentBytes();
     $heapGrowth    = $baselineHeap === 0 ? 0 : $heapBytes - $baselineHeap;
     $residentGrow  = $baselineResident === 0 ? 0 : $residentNow - $baselineResident;
-    $tasks         = Extension::get()->count();
+    $descriptors   = count(glob('/proc/self/fd/*') ?: []);
     $elapsed       = (int) (microtime(true) - $startTime);
 
+    // Descriptors, not Extension::count(). That counts tasks the runtime is running,
+    // and a registered stream state is not one — so for the `abandoned` scenario, the
+    // one this soak exists for, it would read zero whether or not anything was held.
+    // An open file is a descriptor of this process, and a leak shows here.
     printf(
-        "%4ds  cycles %-8d heap %6.1f MB (%+6.1f)  rss %7.1f MB (%+7.1f)  tasks %d\n",
+        "%4ds  cycles %-8d heap %6.1f MB (%+6.1f)  rss %7.1f MB (%+7.1f)  fds %d\n",
         $elapsed,
         $iteration,
         $heapBytes / 1024 / 1024,
         $heapGrowth / 1024 / 1024,
         $residentNow / 1024 / 1024,
         $residentGrow / 1024 / 1024,
-        $tasks,
+        $descriptors,
     );
 }
 

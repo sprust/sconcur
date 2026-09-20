@@ -129,6 +129,57 @@ class FilesMetaTest extends BaseTestCase
         Files::chmod(path: $path, permissions: 0o10000);
     }
 
+    public function testChmodTakesZeroLiterally(): void
+    {
+        $path = $this->path(name: 'chmod-zero.txt');
+
+        Files::write(path: $path, contents: 'x');
+
+        // chmod's permissions are a required argument, so 0 is the caller asking for
+        // 0000 — not declining to choose. Routed through the "0 means the default"
+        // reading the optional parameters use, this silently set 0644.
+        Files::chmod(path: $path, permissions: 0);
+
+        clearstatcache(true, $path);
+
+        self::assertSame(0, Files::stat(path: $path)->permissions);
+
+        // Put it back, or tearDown cannot remove the file.
+        Files::chmod(path: $path, permissions: 0600);
+    }
+
+    public function testAtomicWriteKeepsTheDestinationsPermissions(): void
+    {
+        $path = $this->path(name: 'atomic-perms.json');
+
+        Files::write(path: $path, contents: '{"old":true}', permissions: 0600);
+
+        clearstatcache(true, $path);
+
+        self::assertSame(0600, Files::stat(path: $path)->permissions);
+
+        Files::writeAtomic(path: $path, contents: '{"new":true}');
+
+        clearstatcache(true, $path);
+
+        // A rename replaces the inode, so the new file's bits are whatever the temporary
+        // was created with. Defaulting that to 0644 — which the PHP side used to do —
+        // widened a secret every time this method updated it.
+        self::assertSame(0600, Files::stat(path: $path)->permissions);
+        self::assertSame('{"new":true}', Files::read(path: $path));
+    }
+
+    public function testAtomicWriteOfANewFileUsesTheUsualDefault(): void
+    {
+        $path = $this->path(name: 'atomic-new-perms.json');
+
+        Files::writeAtomic(path: $path, contents: 'fresh');
+
+        clearstatcache(true, $path);
+
+        self::assertSame(0644, Files::stat(path: $path)->permissions);
+    }
+
     public function testTouchCreatesAMissingFileAndLeavesContentsAlone(): void
     {
         $path = $this->path(name: 'touched.txt');
@@ -266,8 +317,7 @@ class FilesMetaTest extends BaseTestCase
             //
         }
 
-        Files::removeDirectory(path: $path, recursive: true);
-
+        self::assertTrue(Files::removeDirectory(path: $path, recursive: true));
         self::assertFalse(Files::exists(path: $path));
     }
 
@@ -275,7 +325,13 @@ class FilesMetaTest extends BaseTestCase
     {
         $path = $this->path(name: 'never-made');
 
-        Files::removeDirectory(path: $path, missingOk: true);
+        // The answer is the whole point of the flag: it says whether anything was there
+        // to remove, the way delete() does.
+        self::assertFalse(Files::removeDirectory(path: $path, missingOk: true));
+
+        Files::makeDirectory(path: $path);
+
+        self::assertTrue(Files::removeDirectory(path: $path, missingOk: true));
 
         $this->expectException(FileNotFoundException::class);
 

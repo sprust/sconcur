@@ -434,10 +434,10 @@ pub async fn truncate(task: &Task, envelope: &mut payloads::Envelope) {
     };
 
     match bounded(task, envelope.timeout_ms, work).await {
-        Some(Ok(count)) => {
+        Some(Ok(_)) => {
             task.add_result(Result::success(
                 message,
-                encode_count(count),
+                Vec::new(),
                 calc_execution_ms(start_time),
             ))
             .await;
@@ -561,40 +561,56 @@ pub async fn move_file(task: &Task, envelope: &mut payloads::Envelope) {
     let source = parameters.source.clone();
     let destination = parameters.destination.clone();
 
-    let work = async move {
-        match tokio::fs::rename(&source, &destination).await {
-            Ok(()) => Ok::<u64, String>(0),
-            // Matched on the raw code rather than ErrorKind::CrossesDevices:
-            // the mapping of that kind is the standard library's business and
-            // this is the one case the fallback exists for.
-            Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
-                let count = match tokio::fs::copy(&source, &destination).await {
-                    Ok(count) => count,
-                    Err(error) => {
-                        // Half a file under the destination's name is worse than
-                        // no file: the move did not happen, and the name must not
-                        // suggest it did.
-                        let _ = tokio::fs::remove_file(&destination).await;
+    // A cross-device move copies through a sibling of the destination and
+    // renames it into place, rather than copying onto the destination itself.
+    //
+    // Copying onto it would truncate a file the move has not yet earned the
+    // right to replace, and cleaning up afterwards would unlink a file this
+    // call never created — the rule creates_the_file exists to enforce. Through
+    // a temporary, a failure at any point leaves the destination exactly as it
+    // was, and the final rename is the same atomic swap a same-device move is.
+    let temporary_path = temporary_sibling(&destination);
 
-                        return Err(io_message("copy to", &destination, &error));
-                    }
-                };
+    let work = {
+        let temporary_path = temporary_path.clone();
 
-                tokio::fs::remove_file(&source)
-                    .await
-                    .map_err(|error| io_message("remove", &source, &error))?;
+        async move {
+            match tokio::fs::rename(&source, &destination).await {
+                Ok(()) => Ok::<u64, String>(0),
+                // Matched on the raw code rather than ErrorKind::CrossesDevices:
+                // the mapping of that kind is the standard library's business
+                // and this is the one case the fallback exists for.
+                Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
+                    let count = tokio::fs::copy(&source, &temporary_path)
+                        .await
+                        .map_err(|error| io_message("copy to", &temporary_path, &error))?;
 
-                Ok(count)
+                    tokio::fs::rename(&temporary_path, &destination)
+                        .await
+                        .map_err(|error| io_message("rename", &destination, &error))?;
+
+                    tokio::fs::remove_file(&source)
+                        .await
+                        .map_err(|error| io_message("remove", &source, &error))?;
+
+                    Ok(count)
+                }
+                Err(error) => Err(io_message("rename", &source, &error)),
             }
-            Err(error) => Err(io_message("rename", &source, &error)),
         }
     };
 
-    match bounded(task, envelope.timeout_ms, work).await {
-        Some(Ok(count)) => {
+    let outcome = bounded(task, envelope.timeout_ms, work).await;
+
+    // The temporary is this call's own, so it goes whatever happened — on the
+    // success path it has already been renamed away and this is a no-op.
+    let _ = tokio::fs::remove_file(&temporary_path).await;
+
+    match outcome {
+        Some(Ok(_)) => {
             task.add_result(Result::success(
                 message,
-                encode_count(count),
+                Vec::new(),
                 calc_execution_ms(start_time),
             ))
             .await;
@@ -658,7 +674,7 @@ pub async fn delete(task: &Task, envelope: &mut payloads::Envelope) {
 ///
 /// So a failed Replace leaves a partial file where a whole one used to be. That
 /// is the lesser evil, and it is the caller's own file either way.
-async fn drop_partial(path: &str, created_by_us: bool, opened: &AtomicBool) {
+pub async fn drop_partial(path: &str, created_by_us: bool, opened: &AtomicBool) {
     if !created_by_us || !opened.load(Ordering::Relaxed) {
         return;
     }

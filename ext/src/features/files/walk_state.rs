@@ -4,7 +4,8 @@
 //! the tree is big enough that holding it whole is the problem. This is the same
 //! walk with the holding taken out: the frontier lives here and PHP pulls a
 //! batch when it wants one, so a break after the first match costs the first
-//! directory and nothing more.
+//! batch and nothing more — a batch being as many directories as it takes to
+//! fill it, or as many as the scan budget allows.
 //!
 //! A directory is read whole, in one trip to the blocking pool — see
 //! dirs::read_directory for why that matters — and then served to PHP in
@@ -18,6 +19,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::dto::{Message, Result};
 use crate::helpers::calc_execution_ms;
@@ -50,6 +52,9 @@ pub struct WalkState {
     timeout_ms: i64,
     message: Arc<Message>,
     frontier: Mutex<Frontier>,
+    /// Ends a batch mid-walk; cancelled by close() before it takes the mutex.
+    /// See ReadState for why the order matters.
+    cancel: CancellationToken,
     start_time: Instant,
 }
 
@@ -74,6 +79,7 @@ impl WalkState {
                 buffered: std::collections::VecDeque::new(),
                 remaining: vec![root],
             }),
+            cancel: CancellationToken::new(),
             start_time: Instant::now(),
         }
     }
@@ -116,7 +122,11 @@ impl WalkState {
                 Err(text) => return Err(text),
             };
 
-            examined += read.len();
+            // The visit counts, not only what it found. Counting entries alone
+            // meant a frontier of empty or unreadable directories was drained
+            // whole inside one next() — exactly the uninterruptible walk the
+            // budget was added to prevent.
+            examined += read.len().max(1);
 
             for entry in read {
                 // Only a real directory is descended into, never a symlink to
@@ -150,11 +160,17 @@ fn skippable(text: &str) -> bool {
 impl StateContract for WalkState {
     fn next(&self) -> StateFuture<'_> {
         Box::pin(async move {
-            let Some(result) = super::bounded_state(self.timeout_ms, self.batch()).await else {
+            let bounded = super::bounded_state(self.timeout_ms, &self.cancel, self.batch()).await;
+
+            let Some(result) = bounded else {
                 return Result::error(
                     &self.message,
                     super::errors::message(
-                        super::errors::Kind::Timeout,
+                        if self.cancel.is_cancelled() {
+                            super::errors::Kind::Stopped
+                        } else {
+                            super::errors::Kind::Timeout
+                        },
                         &format!("walk: deadline of {} ms exceeded", self.timeout_ms),
                     ),
                 );
@@ -166,6 +182,8 @@ impl StateContract for WalkState {
 
     fn close(&self) -> StateCloseFuture<'_> {
         Box::pin(async move {
+            self.cancel.cancel();
+
             let mut frontier = self.frontier.lock().await;
 
             // An abandoned walk of a deep tree should keep neither the entries

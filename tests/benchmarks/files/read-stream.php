@@ -19,17 +19,32 @@ $benchmarker = new Benchmarker(
     name: 'files-read-stream',
 );
 
-$sizeBytes  = bench_files_size_bytes(default: 10_485_760);
+$sizeBytes  = benchFilesSizeBytes(default: 10_485_760);
 $bufferSize = 65_536;
-$directory  = bench_files_directory(name: 'read-stream');
+$directory  = benchFilesDirectory(name: 'read-stream');
 $total      = $benchmarker->getTotal();
 
 echo "File size:\t$sizeBytes bytes\n";
 echo "Buffer:\t\t$bufferSize bytes\n";
 
-$nativePaths = bench_files_seed($directory, 'native', $total, $sizeBytes);
-$syncPaths   = bench_files_seed($directory, 'sync', $total, $sizeBytes);
-$asyncPaths  = bench_files_seed($directory, 'async', $total, $sizeBytes);
+$nativePaths = benchFilesSeed(
+    directory: $directory,
+    prefix: 'native',
+    count: $total,
+    sizeBytes: $sizeBytes,
+);
+$syncPaths   = benchFilesSeed(
+    directory: $directory,
+    prefix: 'sync',
+    count: $total,
+    sizeBytes: $sizeBytes,
+);
+$asyncPaths  = benchFilesSeed(
+    directory: $directory,
+    prefix: 'async',
+    count: $total,
+    sizeBytes: $sizeBytes,
+);
 
 $nativeIndex = 0;
 $syncIndex   = 0;

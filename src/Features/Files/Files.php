@@ -10,7 +10,6 @@ use SConcur\Exceptions\TaskExecutionException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\Files\Dto\DirectoryEntry;
 use SConcur\Features\Files\Dto\FileStat;
-use SConcur\Features\Files\Dto\FileWriter;
 use SConcur\Features\Files\Payloads\FilesPayload;
 use SConcur\Features\Files\Results\ChunksResult;
 use SConcur\Features\Files\Results\LinesResult;
@@ -88,7 +87,7 @@ class Files
         int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
     ): int {
         return static::count(
-            static::execute(
+            result: static::execute(
                 command: FilesCommandEnum::Write,
                 timeoutMs: $timeoutMs,
                 data: [
@@ -105,15 +104,24 @@ class Files
      * Writes through a temporary file beside the destination and a rename, so a
      * concurrent reader sees either the old contents or the new ones — never a half-write.
      * Answers with the number of bytes written.
+     *
+     * $permissions of 0 — the default — keeps the bits the destination already has, and
+     * uses 0644 for a file that was not there. Naming any other value sets it. The
+     * default is 0 rather than 0644 on purpose: a rename replaces the destination's
+     * inode, so an atomic write that always named 0644 would widen a 0600 secret every
+     * time it updated it, which is the opposite of what this method is for.
+     *
+     * Ownership is not carried over — the new inode belongs to whoever this process runs
+     * as — so an atomic write over a file owned by somebody else changes its owner.
      */
     public static function writeAtomic(
         string $path,
         string $contents,
-        int $permissions = 0644,
+        int $permissions = 0,
         int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
     ): int {
         return static::count(
-            static::execute(
+            result: static::execute(
                 command: FilesCommandEnum::WriteAtomic,
                 timeoutMs: $timeoutMs,
                 data: [
@@ -151,6 +159,11 @@ class Files
     /**
      * Copies a file inside the extension and answers with the number of bytes copied. The
      * bytes never cross into PHP, so memory stays flat whatever the size.
+     *
+     * $mode and $permissions open the destination exactly as write() opens its file, so a
+     * copy can refuse an existing destination (FileWriteMode::Create) or add to one
+     * (Append). $bufferSizeBytes tunes the copy granularity — 0 means 64 KiB, and
+     * anything above 8 MiB is clamped to it.
      */
     public static function copy(
         string $source,
@@ -161,7 +174,7 @@ class Files
         int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
     ): int {
         return static::count(
-            static::execute(
+            result: static::execute(
                 command: FilesCommandEnum::Copy,
                 timeoutMs: $timeoutMs,
                 data: [
@@ -211,7 +224,7 @@ class Files
         int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
     ): bool {
         return static::count(
-            static::execute(
+            result: static::execute(
                 command: FilesCommandEnum::Delete,
                 timeoutMs: $timeoutMs,
                 data: [
@@ -342,7 +355,7 @@ class Files
         int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
     ): string {
         return static::text(
-            static::execute(
+            result: static::execute(
                 command: FilesCommandEnum::RealPath,
                 timeoutMs: $timeoutMs,
                 data: [
@@ -367,7 +380,7 @@ class Files
         int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
     ): string {
         return static::text(
-            static::execute(
+            result: static::execute(
                 command: FilesCommandEnum::TemporaryFile,
                 timeoutMs: $timeoutMs,
                 data: [
@@ -416,7 +429,7 @@ class Files
         int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
     ): bool {
         return static::count(
-            static::execute(
+            result: static::execute(
                 command: FilesCommandEnum::RemoveDirectory,
                 timeoutMs: $timeoutMs,
                 data: [
@@ -557,8 +570,15 @@ class Files
      * Opens a file to be filled chunk by chunk.
      *
      * Each write() waits until the extension has written the chunk, so a coroutine cannot
-     * outrun the disk. close() finishes the file and answers with the total; a writer
-     * dropped without one has its file closed and, unless it was appending, removed.
+     * outrun the disk. close() finishes the file and answers with the total.
+     *
+     * A writer dropped without a close has its file closed — and removed only if this
+     * writer created it, which means only in FileWriteMode::Create. A Replace writer
+     * leaves the partial file and an Append writer leaves everything, for the same reason
+     * a failed write() does: what the call did not create is not the call's to take.
+     *
+     * $timeoutMs is taken once and bounds every later write() and the close(): a session
+     * is one operation spread over many calls.
      */
     public static function openWriter(
         string $path,

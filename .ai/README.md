@@ -235,12 +235,12 @@ feature's doc. Key PHP classes not covered there:
   `FilesPayload` envelope and go through its own `execute()`; the three stream
   factories hand the envelope to a `Support/BatchIterator` subclass
   (`Results/ChunksResult`, `LinesResult`, `WalkResult`) that pushes it itself and
-  pulls the later batches with `FeatureExecutor::next`, and `Dto/FileWriter`
+  pulls the later batches with `FeatureExecutor::next`, and `FileWriter`
   pushes its chunks through an `execute()` of its own. All four routes end at
   `Support/FilesFailure`, which turns a task failure into the exception named for
   its case — read from the `files[<kind>]` prefix the core writes, never matched
   out of the message, which holds a path the caller chose.
-  `Dto/FileWriter`'s `write()` answers only once the chunk is written; that wait
+  `FileWriter`'s `write()` answers only once the chunk is written; that wait
   is the whole of the backpressure. The writer's open answers as an unfinished
   stream on purpose: the synchronous path stops a flow the moment a result says
   it is the last one, and the flow is what the session hangs on.

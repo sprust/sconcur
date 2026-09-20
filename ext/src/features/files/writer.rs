@@ -12,8 +12,10 @@
 //! stream — nothing here needs the writing to happen somewhere else.
 //!
 //! A session nobody closes is not a leak: the state registry hooks its cleanup
-//! to the flow, so a coroutine that dies mid-write has its file closed and, if
-//! the write never finished, removed.
+//! to the flow, so a coroutine that dies mid-write has its file closed — and
+//! removed only when this writer is the thing that created it, which means only
+//! in Create mode. The rule is the one every write in this feature keeps; see
+//! mod.rs, creates_the_file.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -27,7 +29,7 @@ use crate::helpers::calc_execution_ms;
 use crate::states::{self, StateCloseFuture, StateContract, StateFuture};
 use crate::tasks::Task;
 
-use super::content::bytes_of;
+use super::content::{bytes_of, drop_partial};
 use super::errors::{io_message, message as fail, Kind};
 use super::payloads;
 use super::{bounded, creates_the_file, params, permission_bits, write_options};
@@ -44,6 +46,28 @@ const MAX_WRITER_ID_LENGTH: usize = 64;
 
 fn state_key(id: &str) -> String {
     format!("{STATE_KEY_PREFIX}{id}")
+}
+
+/// A close that did not happen, and whether trying again could change that.
+struct Failure {
+    text: String,
+    terminal: bool,
+}
+
+impl Failure {
+    fn terminal(text: String) -> Self {
+        Failure {
+            text,
+            terminal: true,
+        }
+    }
+
+    fn retryable(text: String) -> Self {
+        Failure {
+            text,
+            terminal: false,
+        }
+    }
 }
 
 /// One open writer.
@@ -99,46 +123,68 @@ impl Session {
 
         self.poisoned.store(true, Ordering::Release);
 
+        // Lowered only on success. write_all can have handed part of the chunk
+        // to the pool before the error surfaces, and the total below is never
+        // advanced for a failed write — so a session that stayed usable after
+        // one would go on to report a total smaller than the file.
         let written = file.write_all(chunk).await;
 
-        self.poisoned.store(false, Ordering::Release);
+        if let Err(error) = written {
+            return Err(io_message("write", &self.path, &error));
+        }
 
-        written.map_err(|error| io_message("write", &self.path, &error))?;
+        self.poisoned.store(false, Ordering::Release);
 
         Ok(self.written.fetch_add(chunk.len() as u64, Ordering::Relaxed) + chunk.len() as u64)
     }
 
     /// Flushes and closes, answering with the total written.
-    async fn finish(&self) -> std::result::Result<u64, String> {
-        // Raised before anything can go wrong, and never lowered: from here on
-        // the file is a file the caller meant to keep, whether or not this call
-        // gets to finish. A close that misses its deadline used to leave this
-        // unset, and the cleanup then deleted every byte the caller had
-        // streamed.
-        self.closing.store(true, Ordering::Release);
-
+    ///
+    /// The error says whether the failure is terminal — whether there is any
+    /// point in the caller trying again. A flush that ran out of time is not:
+    /// the file and the session are still here and a second close can finish
+    /// them. A writer whose chunk was cut off is, because the file holds bytes
+    /// no total accounts for and no further call can make that true again.
+    async fn finish(&self) -> std::result::Result<u64, Failure> {
         let mut guard = self.file.lock().await;
 
+        // Checked before `closing` is raised, not after. Raising it first would
+        // tell the cleanup that this file was meant to be kept — and a writer
+        // cut off mid-chunk is exactly the one whose file must still go.
         if self.poisoned.load(Ordering::Acquire) {
-            return Err(fail(
+            return Err(Failure::terminal(fail(
                 Kind::State,
                 &format!(
                     "the writer for {} was cut off mid-chunk and cannot be closed cleanly",
                     self.path
                 ),
-            ));
+            )));
         }
 
-        let Some(mut file) = guard.take() else {
-            return Err(fail(
+        let Some(file) = guard.as_mut() else {
+            return Err(Failure::terminal(fail(
                 Kind::State,
                 &format!("the writer for {} is closed", self.path),
-            ));
+            )));
         };
 
-        file.flush()
-            .await
-            .map_err(|error| io_message("flush", &self.path, &error))?;
+        // From here on every chunk has been handed over and only the flush is in
+        // doubt, so the file is one the caller meant to keep whatever happens.
+        self.closing.store(true, Ordering::Release);
+
+        // The handle is given up only once the flush has succeeded. Taking it
+        // first — which this used to do — meant a flush that ran out of time
+        // left the session alive but empty, so the retry it was supposed to
+        // allow answered "is closed" instead.
+        if let Err(error) = file.flush().await {
+            return Err(Failure::retryable(io_message(
+                "flush",
+                &self.path,
+                &error,
+            )));
+        }
+
+        let _ = guard.take();
 
         // Marked before the answer, so a flow ending in the same breath as the
         // close does not read this as an abandoned writer and remove the file
@@ -196,6 +242,10 @@ impl Registries {
 
     fn get(&self, id: &str) -> Option<Arc<Session>> {
         self.sessions.lock().unwrap().get(id).cloned()
+    }
+
+    fn contains(&self, id: &str) -> bool {
+        self.sessions.lock().unwrap().contains_key(id)
     }
 
     fn remove(&self, id: &str) -> Option<Arc<Session>> {
@@ -290,13 +340,38 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
         return;
     };
 
-    let path = parameters.path.clone();
+    // Reserved before the file is touched. Opening first and checking the id
+    // afterwards meant a Replace open under an id already in use truncated the
+    // live writer's file and only then reported the collision.
+    if registries().contains(&parameters.id) {
+        task.add_result(Result::error(
+            message,
+            fail(
+                Kind::State,
+                &format!("a writer with the id {} is already open", parameters.id),
+            ),
+        ))
+        .await;
 
-    let opened = bounded(task, envelope.timeout_ms, async move {
-        options
-            .open(&path)
-            .await
-            .map_err(|error| io_message("open", &path, &error))
+        return;
+    }
+
+    let path = parameters.path.clone();
+    let opened_flag = Arc::new(AtomicBool::new(false));
+
+    let opened = bounded(task, envelope.timeout_ms, {
+        let opened_flag = Arc::clone(&opened_flag);
+
+        async move {
+            let file = options
+                .open(&path)
+                .await
+                .map_err(|error| io_message("open", &path, &error))?;
+
+            opened_flag.store(true, Ordering::Release);
+
+            Ok::<tokio::fs::File, String>(file)
+        }
     })
     .await;
 
@@ -311,11 +386,14 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
         }
         // Cancelled or out of time. The open may still have completed in the
         // blocking pool, leaving a file nothing will ever close — so the same
-        // cleanup the single-shot writes do runs here too.
+        // cleanup the single-shot writes do runs here too, under the same rule.
+        //
+        // `opened` is not optional. Without it this removes a file the call
+        // never created: a Create open on a path that is already taken can only
+        // fail, but if the deadline wins that race the branch runs anyway and
+        // unlinks the file whose existence was the refusal.
         None => {
-            if created_by_us {
-                let _ = tokio::fs::remove_file(&parameters.path).await;
-            }
+            drop_partial(&parameters.path, created_by_us, &opened_flag).await;
 
             return;
         }
@@ -332,6 +410,10 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
     });
 
     if let Err(error) = registries().insert(parameters.id.clone(), session.clone()) {
+        drop(session);
+
+        drop_partial(&parameters.path, created_by_us, &opened_flag).await;
+
         task.add_result(Result::error(message, fail(Kind::State, &error)))
             .await;
 
@@ -356,6 +438,8 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
     ) {
         registries().remove(&parameters.id);
 
+        drop_partial(&parameters.path, created_by_us, &opened_flag).await;
+
         task.add_result(Result::error(message, fail(Kind::State, &error)))
             .await;
 
@@ -370,7 +454,7 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
     // writer closes — the same bargain a SQL transaction makes.
     task.add_result(Result::success_with_next(
         message,
-        super::meta::encode_text("p", &parameters.path),
+        Vec::new(),
         calc_execution_ms(start_time),
     ))
     .await;
@@ -458,11 +542,22 @@ pub async fn close(task: &Task, envelope: &mut payloads::Envelope) {
     })
     .await;
 
-    // Deleted only once the close has answered. On a deadline the flush may
-    // still be running in the blocking pool, and deleting the state here would
-    // run the cleanup under it; the flow's own hook releases the session
-    // instead, and `closing` keeps that cleanup from removing the file.
-    if outcome.is_some() {
+    // The session is taken away only when nothing more can be done with it: a
+    // close that succeeded, or one that failed in a way a second attempt cannot
+    // mend. A flush that ran out of time or hit a transient error leaves the
+    // session and its file handle in place, which is the whole of what makes
+    // the retry the PHP side offers real rather than a promise.
+    //
+    // A deadline (None) never deletes either: the flush may still be running in
+    // the blocking pool, and running the cleanup under it is the one ordering
+    // that could take a file out from beneath a write.
+    let terminal = match &outcome {
+        Some(Ok(_)) => true,
+        Some(Err(failure)) => failure.terminal,
+        None => false,
+    };
+
+    if terminal {
         states::get().delete_state(&state_key(&parameters.id)).await;
     }
 
@@ -475,8 +570,8 @@ pub async fn close(task: &Task, envelope: &mut payloads::Envelope) {
             ))
             .await;
         }
-        Some(Err(text)) => {
-            task.add_result(Result::error(message, text)).await;
+        Some(Err(failure)) => {
+            task.add_result(Result::error(message, failure.text)).await;
         }
         None => {}
     }

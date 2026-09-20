@@ -8,6 +8,7 @@
 
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::dto::Result;
@@ -146,7 +147,11 @@ pub async fn chmod(task: &Task, envelope: &mut payloads::Envelope) {
         return;
     };
 
-    let permissions = match super::permission_bits(parameters.permissions, 0o644) {
+    // Exact, not defaulted: chmod's permissions are a required argument on the
+    // PHP side, so 0 there is a caller asking for 0000 rather than declining to
+    // choose. Routing it through the "0 means the default" helper made chmod 000
+    // silently mean chmod 644.
+    let permissions = match super::exact_permission_bits(parameters.permissions) {
         Ok(permissions) => permissions,
         Err(text) => {
             task.add_result(Result::error(message, text)).await;
@@ -309,7 +314,14 @@ pub async fn temporary_file(task: &Task, envelope: &mut payloads::Envelope) {
         }
     };
 
-    let work = async move {
+    // Where the work records the name it drew, so the deadline path below can
+    // remove a file the caller will never be told the name of.
+    let created: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+
+    let work = {
+        let created = Arc::clone(&created);
+
+        async move {
         let mut last_error = None;
 
         for _ in 0..TEMPORARY_NAME_ATTEMPTS {
@@ -328,7 +340,11 @@ pub async fn temporary_file(task: &Task, envelope: &mut payloads::Envelope) {
             options.mode(permissions);
 
             match options.open(&path).await {
-                Ok(_) => return Ok::<Vec<u8>, String>(encode_text("p", &path)),
+                Ok(_) => {
+                    created.lock().unwrap().replace(path.clone());
+
+                    return Ok::<Vec<u8>, String>(encode_text("p", &path));
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     last_error = Some(error);
                 }
@@ -346,9 +362,34 @@ pub async fn temporary_file(task: &Task, envelope: &mut payloads::Envelope) {
                     .unwrap_or_else(|| "no reason recorded".to_string()),
             ),
         ))
+        }
     };
 
-    publish(task, envelope, start_time, work).await;
+    let outcome = bounded(task, envelope.timeout_ms, work).await;
+
+    // Nobody learned the name, so nobody can clean it up but this.
+    if outcome.is_none() {
+        let created = created.lock().unwrap().take();
+
+        if let Some(path) = created {
+            let _ = tokio::fs::remove_file(&path).await;
+        }
+    }
+
+    match outcome {
+        Some(Ok(body)) => {
+            task.add_result(Result::success(
+                task.message(),
+                body,
+                calc_execution_ms(start_time),
+            ))
+            .await;
+        }
+        Some(Err(text)) => {
+            task.add_result(Result::error(task.message(), text)).await;
+        }
+        None => {}
+    }
 }
 
 /// Runs the work under the deadline and answers with whatever it built. The

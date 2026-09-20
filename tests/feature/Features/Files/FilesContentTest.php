@@ -196,6 +196,12 @@ class FilesContentTest extends BaseTestCase
         // enters this process. So the assertion is on the memory: an eight-megabyte file
         // that crossed the boundary would show up here, and one copied inside the
         // extension cannot.
+        // Reset first. The peak is a process-lifetime high-water mark, so without this
+        // the delta measures nothing once anything earlier in the suite has peaked above
+        // the file's size — and the assertion below would pass by going blind rather
+        // than by the bytes staying out of PHP.
+        memory_reset_peak_usage();
+
         $before = memory_get_peak_usage(true);
 
         $copied = Files::copy(source: $source, destination: $destination);
@@ -209,6 +215,23 @@ class FilesContentTest extends BaseTestCase
             $sizeBytes / 4,
             $grown,
             "The copy grew the PHP heap by $grown bytes; the file is $sizeBytes.",
+        );
+
+        // And the instrument has bite: the same file read through the boundary does move
+        // the peak. Without this the assertion above could pass because nothing is being
+        // measured at all.
+        memory_reset_peak_usage();
+
+        $beforeRead = memory_get_peak_usage(true);
+
+        $contents = Files::read(path: $source, maxReadBytes: 0);
+
+        self::assertSame($sizeBytes, strlen($contents));
+
+        self::assertGreaterThan(
+            $sizeBytes / 2,
+            memory_get_peak_usage(true) - $beforeRead,
+            'Reading the file did not move the peak, so the measurement proves nothing.',
         );
     }
 
@@ -291,29 +314,44 @@ class FilesContentTest extends BaseTestCase
         self::assertTrue(Files::exists(path: $path));
     }
 
+    /**
+     * A stopped group must unwind a coroutine that is inside a file stream with the
+     * deliberate signal, not with a translated FilesException — Files::execute() and
+     * BatchIterator catch only the task exceptions for exactly this reason.
+     *
+     * The previous version of this test threw FlowStoppedException itself and caught it
+     * one line later, so no feature code sat between the two and the assertion was
+     * guaranteed by the catch clause.
+     */
     public function testAStoppedGroupUnwindsAStreamWithTheStopSignal(): void
     {
         $path = $this->path(name: 'stopped.log');
 
-        Files::write(path: $path, contents: str_repeat("line\n", 50_000));
+        Files::write(path: $path, contents: str_repeat("line\n", 200_000));
 
         $waitGroup = WaitGroup::create();
 
         $caught = null;
 
         $waitGroup->add(
-            callback: function () use ($path, &$caught): void {
+            callback: static function () use ($path, &$caught): void {
                 try {
-                    foreach (Files::readLines(path: $path, batchLines: 1) as $line) {
-                        // Stops itself from the inside, which is what an early break in
-                        // a handler does.
-                        throw new FlowStoppedException(message: 'stop');
+                    // One line per crossing over two hundred thousand of them: the
+                    // coroutine is inside a batch when the stop lands.
+                    foreach (Files::readLines(path: $path, batchLines: 1, bufferSizeBytes: 64) as $line) {
+                        // Read until somebody stops us.
                     }
-                } catch (FlowStoppedException $exception) {
+                } catch (Throwable $exception) {
                     $caught = $exception;
-
-                    throw $exception;
                 }
+            },
+        );
+
+        $waitGroup->add(
+            callback: static function () use ($waitGroup): void {
+                Files::exists(path: '/');
+
+                $waitGroup->stop();
             },
         );
 
@@ -323,8 +361,6 @@ class FilesContentTest extends BaseTestCase
             //
         }
 
-        // The deliberate unwind signal must reach the coroutine as itself rather than
-        // being translated into a FilesException by the feature's failure mapping.
         self::assertInstanceOf(FlowStoppedException::class, $caught);
     }
 

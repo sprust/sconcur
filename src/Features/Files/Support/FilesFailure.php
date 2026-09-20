@@ -75,7 +75,10 @@ readonly class FilesFailure
      */
     protected static function split(string $message): array
     {
-        if (preg_match('/^files\[([a-z]+)]: (.*)$/s', $message, $matches) !== 1) {
+        // Digits and underscores too: a kind this package does not know must still be
+        // recognised as a kind, so its text is stripped of the prefix and it lands on
+        // the documented unknown-kind path rather than on the no-prefix one.
+        if (preg_match('/^files\[([a-z0-9_]+)]: (.*)$/s', $message, $matches) !== 1) {
             return ['', $message];
         }
 

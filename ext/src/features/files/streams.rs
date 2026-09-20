@@ -29,6 +29,12 @@ const MAX_BATCH_SIZE: usize = 100_000;
 /// whole in the name of streaming.
 const DEFAULT_MAX_LINE_BYTES: usize = 1024 * 1024;
 
+/// The cap on a whole batch of lines. batchLines and maxLineBytes are each
+/// capped, but their product is 800 GiB — so the batch needs a bound of its own
+/// or a big enough file reaches the allocator the same way an unclamped buffer
+/// size would.
+const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
+
 /// How many directory entries one walk batch may examine before answering with
 /// what it has, even if the pattern matched none of them.
 ///
@@ -85,6 +91,7 @@ pub async fn read_chunks(task: &Task, envelope: &mut payloads::Envelope) {
         bounded_size(parameters.buffer_size_bytes, DEFAULT_BUFFER_BYTES, MAX_BUFFER_BYTES),
         1,
         DEFAULT_MAX_LINE_BYTES,
+        MAX_BATCH_BYTES,
         timeout_ms,
         task.message_arc(),
         file,
@@ -116,6 +123,7 @@ pub async fn read_lines(task: &Task, envelope: &mut payloads::Envelope) {
             DEFAULT_MAX_LINE_BYTES,
             MAX_BUFFER_BYTES,
         ),
+        MAX_BATCH_BYTES,
         timeout_ms,
         task.message_arc(),
         file,
@@ -196,7 +204,11 @@ async fn open_for_read(task: &Task, timeout_ms: i64, path: &str) -> Option<tokio
         }
     };
 
-    match file.metadata().await {
+    let Some(metadata) = bounded(task, timeout_ms, file.metadata()).await else {
+        return None;
+    };
+
+    match metadata {
         Ok(metadata) if metadata.is_dir() => {
             task.add_result(Result::error(
                 message,

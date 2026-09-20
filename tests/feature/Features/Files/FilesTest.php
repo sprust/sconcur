@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Files;
 
+use SConcur\Exceptions\Files\FileAlreadyExistsException;
 use SConcur\Exceptions\Files\FileNotFoundException;
 use SConcur\Features\Files\Files;
 use SConcur\Features\Files\FileWriteMode;
@@ -131,7 +132,8 @@ class FilesTest extends BaseAsyncTestCase
             Files::read(path: $this->path(name: 'iterate.txt')),
         );
 
-        // The mode reached the extension: a second Create on the same path is refused.
+        // The mode reached the extension: a Create writes, and a second Create on the
+        // same path is refused rather than replacing it.
         $written = Files::write(
             path: $this->path(name: 'created.txt'),
             contents: 'once',
@@ -139,6 +141,20 @@ class FilesTest extends BaseAsyncTestCase
         );
 
         self::assertSame(4, $written);
+
+        try {
+            Files::write(
+                path: $this->path(name: 'created.txt'),
+                contents: 'twice',
+                mode: FileWriteMode::Create,
+            );
+
+            self::fail('A second Create on the same path was not refused.');
+        } catch (FileAlreadyExistsException) {
+            //
+        }
+
+        self::assertSame('once', Files::read(path: $this->path(name: 'created.txt')));
     }
 
     protected function path(string $name): string

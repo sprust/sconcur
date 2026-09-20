@@ -14,6 +14,7 @@ use std::time::Instant;
 
 use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::dto::{Message, Result};
 use crate::helpers::calc_execution_ms;
@@ -48,6 +49,10 @@ pub struct ReadState {
     /// otherwise grow `pending` to the size of the file, which is the memory
     /// this whole state exists to not spend.
     max_line_bytes: usize,
+    /// The cap on a whole batch of lines. Each line is bounded and so is their
+    /// count, but their product is not — so without this a batch of a hundred
+    /// thousand eight-megabyte lines would be assembled before it was answered.
+    max_batch_bytes: usize,
     /// The deadline one batch may take, carried from the payload. Every batch
     /// needs its own: the state registry's next() bounds nothing, so without it
     /// a read from a hung mount would never answer and no deadline or stop
@@ -55,6 +60,11 @@ pub struct ReadState {
     timeout_ms: i64,
     message: Arc<Message>,
     reader: Mutex<Option<Reader>>,
+    /// Ends a batch that is in the middle of a read. Cancelled by close() before
+    /// it reaches for the mutex, so a flow being stopped does not have to wait
+    /// for a read on a hung mount to come back — which, with no deadline set,
+    /// it never would.
+    cancel: CancellationToken,
     start_time: Instant,
 }
 
@@ -65,6 +75,7 @@ impl ReadState {
         buffer_size_bytes: usize,
         batch_size: usize,
         max_line_bytes: usize,
+        max_batch_bytes: usize,
         timeout_ms: i64,
         message: Arc<Message>,
         file: tokio::fs::File,
@@ -75,6 +86,7 @@ impl ReadState {
             buffer_size_bytes,
             batch_size,
             max_line_bytes,
+            max_batch_bytes,
             timeout_ms,
             message,
             reader: Mutex::new(Some(Reader {
@@ -82,6 +94,7 @@ impl ReadState {
                 pending: Vec::new(),
                 drained: false,
             })),
+            cancel: CancellationToken::new(),
             start_time: Instant::now(),
         }
     }
@@ -111,9 +124,10 @@ impl ReadState {
     /// the file ends.
     async fn next_lines(&self, reader: &mut Reader) -> std::result::Result<Vec<Vec<u8>>, String> {
         let mut lines = Vec::new();
+        let mut batch_bytes = 0_usize;
         let mut buffer = vec![0_u8; self.buffer_size_bytes];
 
-        while lines.len() < self.batch_size {
+        while lines.len() < self.batch_size && batch_bytes < self.max_batch_bytes {
             // Everything already buffered, before asking the file for more.
             while lines.len() < self.batch_size {
                 let Some(index) = reader.pending.iter().position(|byte| *byte == b'\n') else {
@@ -130,10 +144,16 @@ impl ReadState {
                     line.pop();
                 }
 
+                batch_bytes += line.len();
+
                 lines.push(line);
+
+                if batch_bytes >= self.max_batch_bytes {
+                    break;
+                }
             }
 
-            if lines.len() >= self.batch_size || reader.drained {
+            if lines.len() >= self.batch_size || batch_bytes >= self.max_batch_bytes || reader.drained {
                 break;
             }
 
@@ -211,16 +231,22 @@ impl StateContract for ReadState {
             // single pull.
             let batch = self.batch();
 
-            let Some(result) = super::bounded_state(self.timeout_ms, batch).await else {
+            let bounded = super::bounded_state(self.timeout_ms, &self.cancel, batch).await;
+
+            let Some(result) = bounded else {
                 return Result::error(
                     &self.message,
-                    fail(
-                        Kind::Timeout,
-                        &format!(
-                            "read {}: deadline of {} ms exceeded",
-                            self.path, self.timeout_ms
-                        ),
-                    ),
+                    if self.cancel.is_cancelled() {
+                        fail(Kind::Stopped, &format!("read {}: closed", self.path))
+                    } else {
+                        fail(
+                            Kind::Timeout,
+                            &format!(
+                                "read {}: deadline of {} ms exceeded",
+                                self.path, self.timeout_ms
+                            ),
+                        )
+                    },
                 );
             };
 
@@ -230,7 +256,12 @@ impl StateContract for ReadState {
 
     fn close(&self) -> StateCloseFuture<'_> {
         Box::pin(async move {
-            // Dropping the handle is the whole of it; a read holds nothing on
+            // Cancelled before the lock is asked for, never after: a batch in
+            // flight holds that lock, and waiting for it is exactly what a flow
+            // being stopped must not do.
+            self.cancel.cancel();
+
+            // Dropping the handle is the rest of it; a read holds nothing on
             // the other side of it to release.
             let taken = self.reader.lock().await.take();
 
@@ -334,6 +365,7 @@ mod tests {
             buffer_size_bytes,
             batch_size,
             1_048_576,
+            64 * 1024 * 1024,
             0,
             test_message(),
             file,
@@ -467,6 +499,7 @@ mod tests {
             4096,
             50,
             1024,
+            64 * 1024 * 1024,
             0,
             test_message(),
             file,
@@ -488,7 +521,17 @@ mod tests {
 
         let file = tokio::fs::File::open(&path).await.unwrap();
 
-        let state = ReadState::new(path.clone(), Mode::Lines, 4096, 50, 1024, 0, test_message(), file);
+        let state = ReadState::new(
+            path.clone(),
+            Mode::Lines,
+            4096,
+            50,
+            1024,
+            64 * 1024 * 1024,
+            0,
+            test_message(),
+            file,
+        );
 
         let mut guard = state.reader.lock().await;
         let reader = guard.as_mut().unwrap();

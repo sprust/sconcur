@@ -57,6 +57,11 @@ process is serving.
 Every call takes `timeoutMs`, defaulting to `Files::DEFAULT_TIMEOUT_MS`
 (30 000). `0` means no deadline.
 
+A writer is the exception, and deliberately so: `openWriter()` takes the
+deadline once and every `write()` and the `close()` are bounded by it. A session
+is one operation spread over many calls, and giving each call its own budget
+would mean a writer with no bound at all.
+
 On a stream the deadline bounds one batch, not the whole read: a stream lasts as
 long as the caller keeps pulling, and what must not hang is a single pull.
 
@@ -130,6 +135,12 @@ Writes a temporary file beside the destination, flushes it to the disk and
 renames it over the target. A concurrent reader sees either the old contents or
 the new ones, never a half-write. The temporary file is a sibling because rename
 is atomic only within one filesystem.
+
+`permissions` defaults to `0` here, which means "keep what the destination
+already has" — 0644 only for a file that was not there. The rename replaces the
+destination's inode, so a default of 0644 would widen a 0600 secret every time
+this method updated it. Ownership is not carried over either: the new inode
+belongs to whoever the process runs as.
 
 ## Copying, moving, removing
 
@@ -287,9 +298,10 @@ line, so a file with no newline in it cannot be buffered whole in the name of
 streaming. A line over it raises `FileTooLargeException`, the same exception a
 one-shot read over `maxReadBytes` raises.
 
-`0` means the default for all three, and each is capped — buffers at 8 MiB,
-batches at 100 000 — so a size chosen by mistake is clamped rather than handed to
-the allocator.
+`0` means the default for every size here, and every one of them is capped:
+buffers and `maxLineBytes` at 8 MiB, batches at 100 000. A size chosen by
+mistake is clamped rather than handed to the allocator — `bufferSizeBytes:
+PHP_INT_MAX` is a clamp, not a crash.
 
 ### Walking a tree
 
@@ -299,10 +311,13 @@ foreach (Files::walk(path: $directory, pattern: '*.tmp') as $entry) {
 }
 ```
 
-The frontier lives in the extension, so breaking out after the first match costs
-the first directory and nothing more. The pattern picks what is reported, not
-where the walk goes, and `batchEntries` (200 by default) is how many entries a
-crossing carries.
+The list of directories still to visit lives in the extension, so breaking out
+after the first match costs the first batch and nothing more — not the whole
+tree, and not one directory either: a batch reads as many directories as it
+needs to fill itself. The pattern picks what is reported, not where the walk
+goes; `batchEntries` (200 by default) is how many entries a crossing carries,
+and `withMetadata` works as it does for `list` — without it an entry costs no
+stat and its size and time are `null`.
 
 A batch also stops after examining ten thousand entries, even if the pattern
 matched none of them, and answers an empty one that says there is more. Without
@@ -344,14 +359,17 @@ created the file removes it, so only in `Create` mode. A `Replace` writer leaves
 the partial file, an `Append` writer leaves everything. `close()` is what turns
 the bytes into a finished file and answers with the total.
 
-A `close()` that fails or runs out of time does not remove the file: every chunk
-had already been handed over, and only the final flush is in doubt. The handle
-stays open so the close can be tried again, and answers
-`FileStreamClosedException` if the session did go.
+A `close()` that runs out of time or hits a transient error can be tried again:
+the extension keeps the session and its open file for exactly that, and the file
+is not removed — every chunk had been handed over and only the flush was in
+doubt.
 
-A chunk cut off mid-write — by a deadline or a stop — leaves the writer unusable:
-the file holds bytes no total accounts for, so every later call on that handle
-fails rather than letting a retry double them.
+Anything else ends the handle. A chunk cut off mid-write — by a deadline or a
+stop — leaves the file holding bytes no total accounts for, so the writer is
+unusable and its close is refused; the handle is spent, its flow given back, and
+a further call raises `FileStreamClosedException`. `writtenBytes()` reports the
+last total the extension acknowledged, which after a cut-off chunk is less than
+the file holds.
 
 ### Abandoning a stream
 
@@ -379,6 +397,7 @@ denied" must not pick the exception an application catches.
 | `FileStreamClosedException` | the stream this handle names is gone: closed, cut off mid-chunk, or released with its coroutine |
 | `FileOperationException` | any other input-output failure |
 | `InvalidFileArgumentException` | the call itself is wrong |
+| `FilesException` | the base class, raised directly when the failure carries no kind this package knows — a core newer than the package, or a failure raised before the core saw the call |
 
 All of them but the last descend from `FilesException`, which descends from
 `RuntimeException`: a missing file and a full disk are runtime conditions

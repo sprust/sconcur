@@ -20,15 +20,34 @@ $benchmarker = new Benchmarker(
     name: 'files-list-dir',
 );
 
-$entries   = (int) (getenv('SCONCUR_BENCH_DIR_ENTRIES') ?: 10_000);
-$directory = bench_files_directory(name: 'list');
+$entries = (int) (getenv('SCONCUR_BENCH_DIR_ENTRIES') ?: 10_000);
+$root    = benchFilesDirectory(name: 'list');
 
 echo "Entries:\t$entries\n";
 
-bench_files_seed($directory, 'entry', $entries, 64);
+// A directory per mode, not one shared. Listing the same directory three times would
+// hand the kernel's dentry and inode caches to whichever mode ran second and third,
+// and the native column runs first — so the feature would win by a margin the cache
+// paid for. Same reason the copy benchmark seeds its sources per mode.
+$directories = [];
+
+foreach (['native', 'sync', 'async'] as $mode) {
+    $directory = $root . '/' . $mode;
+
+    mkdir($directory, 0777, true);
+    benchFilesSeed(
+    directory: $directory,
+    prefix: 'entry',
+    count: $entries,
+    sizeBytes: 64,
+);
+
+    $directories[$mode] = $directory;
+}
 
 $benchmarker->run(
-    nativeCallback: static function () use ($directory): int {
+    nativeCallback: static function () use ($directories): int {
+        $directory = $directories['native'];
         $collected = [];
 
         foreach (scandir($directory) ?: [] as $name) {
@@ -43,10 +62,10 @@ $benchmarker->run(
 
         return count($collected);
     },
-    syncCallback: static function () use ($directory): int {
-        return count(Files::list(path: $directory, withMetadata: true, timeoutMs: 0));
+    syncCallback: static function () use ($directories): int {
+        return count(Files::list(path: $directories['sync'], withMetadata: true, timeoutMs: 0));
     },
-    asyncCallback: static function () use ($directory): int {
-        return count(Files::list(path: $directory, withMetadata: true, timeoutMs: 0));
+    asyncCallback: static function () use ($directories): int {
+        return count(Files::list(path: $directories['async'], withMetadata: true, timeoutMs: 0));
     },
 );

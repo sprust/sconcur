@@ -18,8 +18,8 @@ $benchmarker = new Benchmarker(
     name: 'files-copy',
 );
 
-$sizeBytes = bench_files_size_bytes(default: 1_048_576);
-$directory = bench_files_directory(name: 'copy');
+$sizeBytes = benchFilesSizeBytes(default: 1_048_576);
+$directory = benchFilesDirectory(name: 'copy');
 $total     = $benchmarker->getTotal();
 
 echo "File size:\t$sizeBytes bytes\n";
@@ -28,9 +28,24 @@ echo "File size:\t$sizeBytes bytes\n";
 // whichever mode ran second and third: the native column runs first and would pay for
 // every cold read, which on a 64 MiB file is most of the measurement and would show the
 // feature winning by a factor it has not earned.
-$nativeSources = bench_files_seed($directory, 'native-source', max($total, 1), $sizeBytes);
-$syncSources   = bench_files_seed($directory, 'sync-source', max($total, 1), $sizeBytes);
-$asyncSources  = bench_files_seed($directory, 'async-source', max($total, 1), $sizeBytes);
+$nativeSources = benchFilesSeed(
+    directory: $directory,
+    prefix: 'native-source',
+    count: max($total, 1),
+    sizeBytes: $sizeBytes,
+);
+$syncSources   = benchFilesSeed(
+    directory: $directory,
+    prefix: 'sync-source',
+    count: max($total, 1),
+    sizeBytes: $sizeBytes,
+);
+$asyncSources  = benchFilesSeed(
+    directory: $directory,
+    prefix: 'async-source',
+    count: max($total, 1),
+    sizeBytes: $sizeBytes,
+);
 
 $nativeIndex = 0;
 $syncIndex   = 0;

@@ -20,15 +20,30 @@ $benchmarker = new Benchmarker(
     name: 'files-hash-file',
 );
 
-$sizeBytes = bench_files_size_bytes(default: 10_485_760);
-$directory = bench_files_directory(name: 'hash');
+$sizeBytes = benchFilesSizeBytes(default: 10_485_760);
+$directory = benchFilesDirectory(name: 'hash');
 $total     = $benchmarker->getTotal();
 
 echo "File size:\t$sizeBytes bytes\n";
 
-$nativePaths = bench_files_seed($directory, 'native', $total, $sizeBytes);
-$syncPaths   = bench_files_seed($directory, 'sync', $total, $sizeBytes);
-$asyncPaths  = bench_files_seed($directory, 'async', $total, $sizeBytes);
+$nativePaths = benchFilesSeed(
+    directory: $directory,
+    prefix: 'native',
+    count: $total,
+    sizeBytes: $sizeBytes,
+);
+$syncPaths   = benchFilesSeed(
+    directory: $directory,
+    prefix: 'sync',
+    count: $total,
+    sizeBytes: $sizeBytes,
+);
+$asyncPaths  = benchFilesSeed(
+    directory: $directory,
+    prefix: 'async',
+    count: $total,
+    sizeBytes: $sizeBytes,
+);
 
 $nativeIndex = 0;
 $syncIndex   = 0;

@@ -2,14 +2,13 @@
 
 declare(strict_types=1);
 
-namespace SConcur\Features\Files\Dto;
+namespace SConcur\Features\Files;
 
 use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\Files\FileStreamClosedException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\TaskExecutionException;
 use SConcur\Features\FeatureExecutor;
-use SConcur\Features\Files\FilesCommandEnum;
 use SConcur\Features\Files\Payloads\FilesPayload;
 use SConcur\Features\Files\Support\FilesFailure;
 use SConcur\State;
@@ -53,7 +52,13 @@ class FileWriter
     }
 
     /**
-     * The bytes written so far, as the extension has counted them.
+     * The bytes this writer has been told were written — the total the last
+     * acknowledged write() or close() answered.
+     *
+     * A write that failed or was cut off is not in it, and cannot be: the extension
+     * does not count a chunk it did not finish, so after a failure the file may hold
+     * more bytes than this reports. That is the same fact the poisoned-writer rule
+     * states from the other side.
      */
     public function writtenBytes(): int
     {
@@ -81,35 +86,59 @@ class FileWriter
     }
 
     /**
-     * Flushes and closes the file, answering with the total written. Calling it twice is
-     * a FileStreamClosedException rather than a second close of someone else's file.
+     * Flushes and closes the file, answering with the total written.
      *
-     * A close that fails leaves the handle open, so it can be tried again: the extension
-     * keeps the session when a close ran out of time, and the file is not removed either
-     * way — every chunk had already been handed over, and only the final flush was in
-     * doubt. The retry answers FileStreamClosedException if the session did go.
+     * A close that ran out of time or hit a transient error can be tried again: the
+     * extension keeps the session and its open file for exactly that, and the file is
+     * not removed — every chunk had been handed over and only the flush was in doubt.
+     *
+     * Anything else is terminal. A writer whose chunk was cut off holds bytes no total
+     * accounts for, and one whose session is already gone has nothing left to close; in
+     * both cases the handle is spent, its flow released, and a further call raises
+     * FileStreamClosedException rather than reaching for somebody else's session.
      */
     public function close(): int
     {
         $this->assertOpen();
 
-        $this->writtenBytes = $this->count(
-            result: $this->execute(
-                command: FilesCommandEnum::WriteClose,
-                data: [
-                    'i' => $this->id,
-                ],
-            ),
-        );
+        try {
+            $this->writtenBytes = $this->count(
+                result: $this->execute(
+                    command: FilesCommandEnum::WriteClose,
+                    data: [
+                        'i' => $this->id,
+                    ],
+                ),
+            );
+        } catch (FileStreamClosedException $exception) {
+            // Terminal, and the extension has already let the session go — so holding
+            // the flow would hold it for a session that no longer exists.
+            $this->release();
+
+            throw $exception;
+        }
 
         // After the close answered, never before: releasing the flow is what tells the
         // extension the session was abandoned, and doing it first would have it clean up
         // the very session that was being finished.
+        $this->release();
+
+        return $this->writtenBytes;
+    }
+
+    /**
+     * Marks the handle spent and gives the synchronous flow back. Idempotent, because
+     * the destructor runs it too.
+     */
+    protected function release(): void
+    {
+        if ($this->closed) {
+            return;
+        }
+
         $this->closed = true;
 
         State::releaseSyncTaskFlow($this->taskKey);
-
-        return $this->writtenBytes;
     }
 
     protected function assertOpen(): void
@@ -148,15 +177,15 @@ class FileWriter
 
     /**
      * Releases the synchronous flow the session hangs on when the writer is dropped
-     * without a close. The extension's own cleanup follows from that: the file is closed
-     * and, unless it was being appended to, the unfinished one is removed.
+     * without a close — including one dropped after a retryable close failed, which is
+     * the caller deciding not to retry.
+     *
+     * The extension's own cleanup follows from that: the file is closed, and removed
+     * only if this writer created it (FileWriteMode::Create) and never got as far as a
+     * close.
      */
     public function __destruct()
     {
-        if ($this->closed) {
-            return;
-        }
-
-        State::releaseSyncTaskFlow($this->taskKey);
+        $this->release();
     }
 }

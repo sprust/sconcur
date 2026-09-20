@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Files;
 
+use ReflectionProperty;
 use SConcur\Exceptions\Files\FileNotFoundException;
+use SConcur\Exceptions\Files\FilesException;
 use SConcur\Exceptions\Files\FileTimeoutException;
 use SConcur\Exceptions\Files\FileTooLargeException;
 use SConcur\Exceptions\Files\FileStreamClosedException;
@@ -13,6 +15,7 @@ use SConcur\Features\Files\Dto\DirectoryEntry;
 use SConcur\Features\Files\Files;
 use SConcur\Features\Files\FileWriteMode;
 use SConcur\Tests\Feature\BaseTestCase;
+use SConcur\State;
 use SConcur\WaitGroup;
 
 /**
@@ -290,6 +293,8 @@ class FilesStreamTest extends BaseTestCase
             Files::write(path: $this->path(name: "deep/deeper/file-$index.txt"), contents: 'x');
         }
 
+        self::assertSame(0, $this->heldSyncFlows());
+
         $walk = Files::walk(path: $this->directory, batchEntries: 2);
         $seen = 0;
 
@@ -301,12 +306,16 @@ class FilesStreamTest extends BaseTestCase
 
         self::assertSame(1, $seen);
 
+        // A walk holds no descriptor between batches — counting those would assert zero
+        // whether or not anything was ever held. What it does hold is the synchronous
+        // flow the state hangs on, so that is what is watched: one while the abandoned
+        // walk is alive, none once it is dropped. Delete BatchIterator::releaseTask()
+        // and the second assertion fails.
+        self::assertSame(1, $this->heldSyncFlows());
+
         unset($walk);
 
-        // A walk holds no descriptor between batches, so the observable release is the
-        // state going away: with it gone, pulling the next batch is refused rather than
-        // answered from a frontier the extension still keeps.
-        self::assertSame(0, $this->awaitDescriptorsFor(path: $this->directory));
+        self::assertSame(0, $this->heldSyncFlows());
     }
 
     public function testTheWriterFillsAFileChunkByChunk(): void
@@ -587,9 +596,72 @@ class FilesStreamTest extends BaseTestCase
         $writer->close();
     }
 
+    /**
+     * A close that fails because the writer was cut off mid-chunk is terminal: the file
+     * holds bytes no total accounts for, so the handle is spent and the flow given back
+     * rather than held for a retry that cannot help.
+     *
+     * The previous round of this feature claimed the opposite — that every failed close
+     * was retryable — and leaked the flow for as long as the handle lived.
+     */
+    public function testACloseAfterACutOffChunkIsTerminalAndGivesTheFlowBack(): void
+    {
+        $path = $this->path(name: 'cut-off.bin');
+
+        $before = $this->heldSyncFlows();
+
+        // One millisecond against a chunk far larger than the disk answers in it.
+        $writer = Files::openWriter(
+            path: $path,
+            mode: FileWriteMode::Create,
+            timeoutMs: 1,
+        );
+
+        self::assertSame($before + 1, $this->heldSyncFlows());
+
+        try {
+            $writer->write(chunk: str_repeat('x', 48 * 1024 * 1024));
+        } catch (FilesException) {
+            //
+        }
+
+        try {
+            $writer->close();
+
+            self::fail('A writer cut off mid-chunk was closed as if it were whole.');
+        } catch (FileStreamClosedException) {
+            //
+        }
+
+        // The flow is back even though nobody destroyed the handle, and a second call
+        // refuses locally rather than reaching for a session that is gone.
+        self::assertSame($before, $this->heldSyncFlows());
+
+        $this->expectException(FileStreamClosedException::class);
+
+        $writer->close();
+    }
+
     protected function path(string $name): string
     {
         return $this->directory . '/' . $name;
+    }
+
+    /**
+     * How many synchronous flows the package is still holding for a stream or a writer.
+     *
+     * Read by reflection because it is internal bookkeeping with no public reader — and
+     * it is the only observable that distinguishes a released walk from one the
+     * extension still keeps, since a walk holds no file descriptor between batches.
+     */
+    protected function heldSyncFlows(): int
+    {
+        $property = new ReflectionProperty(State::class, 'syncTaskFlows');
+
+        /** @var array<string, string> $flows */
+        $flows = $property->getValue();
+
+        return count($flows);
     }
 
     /**
