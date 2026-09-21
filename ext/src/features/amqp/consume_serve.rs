@@ -115,6 +115,29 @@ pub fn stop_consuming(flow_key: &str) {
     });
 }
 
+/// Gives up the consumer running on one channel of a worker's stream, so its
+/// slot opens a fresh one.
+///
+/// PHP asks for this when it could not settle a delivery that arrived on that
+/// channel. The message stays owed to the broker, which has heard nothing about
+/// it: with a prefetch of one that consumer is sent nothing further until the
+/// broker's own consumer timeout runs out — half an hour of a queue standing
+/// still. Cancelling the consumer takes the slot down the path a consumer the
+/// broker took away already takes: the channel is given back, every delivery on
+/// it that was never settled goes back to the queue, and a fresh consumer opens
+/// a second later.
+pub fn reopen_consumer(flow_key: &str, channel_id: &str) {
+    let Some(stream) = super::registries().consume_serve.find(flow_key) else {
+        return;
+    };
+
+    let channel_id = channel_id.to_string();
+
+    crate::core::get().runtime().spawn(async move {
+        stream.reopen_consumer(&channel_id).await;
+    });
+}
+
 /// Opens the consumers of one supervised worker and streams their deliveries
 /// under a single task.
 pub async fn handle_consume_serve(task: &Task, raw: &rmpv::Value) {
@@ -222,6 +245,42 @@ impl ServeStream {
                 .map(|consumer| consumer.entry.cancel_consumer(&consumer.consumer_tag)),
         )
         .await;
+    }
+
+    /// Cancels the consumer running on one of this stream's channels. Its slot
+    /// then sees the deliveries stop, gives the channel back and opens a fresh
+    /// consumer — the same path a consumer the broker took away follows, and
+    /// the same one-second pause before the new one.
+    ///
+    /// A stream that is stopping is left alone: its consumers are being
+    /// cancelled for good, and reopening one would undo the drain. So is a
+    /// channel no consumer of this stream is on any more, which is what a
+    /// second handler asking for the same channel finds.
+    async fn reopen_consumer(&self, channel_id: &str) {
+        let consumer = {
+            let state = self.state.lock().unwrap();
+
+            if state.stopping {
+                return;
+            }
+
+            state
+                .live
+                .values()
+                .find(|consumer| consumer.entry.id == channel_id)
+                .cloned()
+        };
+
+        let Some(consumer) = consumer else {
+            return;
+        };
+
+        crate::logger::write(format!(
+            "amqp: consumer {} could not settle a delivery; reopening\n",
+            consumer.consumer_tag
+        ));
+
+        consumer.entry.cancel_consumer(&consumer.consumer_tag).await;
     }
 
     /// Releases everything the stream owns. It runs when the flow ends — the

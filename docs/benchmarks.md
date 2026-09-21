@@ -25,6 +25,7 @@ hardware, DB settings and load. The workload-matching verdict table is in
 - [Payload size](#payload-size)
 - [AMQP (RabbitMQ)](#amqp-rabbitmq)
 - [Redis](#redis)
+- [Files](#files)
 - [Clients (HTTP / Socket / WebSocket)](#clients-http--socket--websocket)
 - [Servers (HTTP / Socket / WebSocket)](#servers-http--socket--websocket)
   - [HTTP throughput: the empty endpoint](#http-throughput-the-empty-endpoint)
@@ -101,7 +102,7 @@ benchmarks are bounded by the operation's nature: `createIndex` and `bulkWrite` 
 `updateMany` 10. Single runs: `make bench-<name> c=<count>`; the whole DB session
 is `make bench-db-runs`. The scripts live in `tests/benchmarks/`, one directory
 per measured technology (`mongodb/`, `mysql/`, `pgsql/`, `http/`, `socket/`,
-`ws/`), so `make bench-mysql-selectOne` runs
+`ws/`, `amqp/`, `redis/`, `files/`), so `make bench-mysql-selectOne` runs
 `tests/benchmarks/mysql/select-one.php`.
 
 `async vs native` is the signed percent `(native − async) / native`, ✅ when
@@ -358,6 +359,84 @@ across a network, where a round trip is a millisecond rather than eleven
 microseconds, it is the round trips that overlap rather than the crossings that
 accumulate. Neither shows up in a benchmark that runs one call at a time on
 localhost.
+
+## Files
+
+The Files tables were taken separately, on 2026-09-20, on the same machine and
+through the same harness. Their files live in the container's own filesystem
+(`sys_get_temp_dir()` inside the `php` service), not on the disk-backed volumes
+the database rows use — which for a file benchmark is the decisive fact about
+the environment, and the reason the page gives every size from a kilobyte to
+64 MiB rather than one.
+
+The only feature here whose verdict turns on a number the caller picks: the size
+of the file. On a kilobyte with a warm page cache the boundary crossing is the
+whole measurement; on sixty-four megabytes it is a rounding error next to the
+disk. So every row below is given at both ends rather than at one.
+
+Single run each: `c="20 0"` at 1 KiB, `c="30 0"` at 1 MiB and 10 MiB, `c="6 0"`
+at 64 MiB. Each mode works on files of its own, so the page cache is not handed
+from the column that ran first to the ones after it.
+
+| Operation | Size | count | native / sync / async, ms | Memory n/s/a, MB |
+| --- | --- | ---: | ---: | --- |
+| read | 1 KiB | 20 | 0.18 / 2.11 / 0.57 (−217% ❌) | 4 / 6 / 6 |
+| read | 1 MiB | 30 | 3.8 / 17.7 / 34.3 (−803% ❌) | 4 / 6 / 50 |
+| read | 64 MiB | 6 | 161 / 819 / 752 (−367% ❌) | 68 / 132 / 644 |
+| write | 1 KiB | 20 | 0.34 / 1.99 / 0.55 (−62% ❌) | 6 / 6 / 6 |
+| write | 1 MiB | 30 | 14.9 / 32.2 / 49.5 (−232% ❌) | 6 / 6 / 6 |
+| write | 64 MiB | 6 | 634 / 1104 / 794 (−25% ❌) | 68 / 132 / 132 |
+| copy | 1 KiB | 20 | 0.49 / 1.36 / 0.74 (−51% ❌) | 4 / 4 / 4 |
+| copy | 1 MiB | 30 | 13.0 / 29.7 / 14.3 (−10% ❌) | 4 / 4 / 4 |
+| copy | 64 MiB | 6 | 800 / 386 / 89 (+89% ✅) | 4 / 4 / 4 |
+| hashFile (sha256) | 10 MiB | 30 | 228 / 302 / 200 (+12% ✅) | 4 / 4 / 4 |
+| hashFile (sha256) | 64 MiB | 6 | 319 / 457 / 245 (+23% ✅) | 4 / 4 / 4 |
+| readChunks (64 KiB buffer) | 10 MiB | 30 | 45.8 / 227 / 123 (−169% ❌) | 4 / 4 / 10 |
+| readChunks (64 KiB buffer) | 64 MiB | 6 | 65.2 / 783 / 90.2 (−38% ❌) | 4 / 4 / 4 |
+
+Directory listing with a size and a time per entry — `scandir()` followed by
+`filesize()` and `filemtime()` on every entry against one crossing:
+
+| Entries | count | native / sync / async, ms | Memory n/s/a, MB |
+| --- | ---: | ---: | --- |
+| 10 000 | 30 | 705 / 1043 / 315 (+55% ✅) | 14 / 14 / 45 |
+| 100 000 | 5 | 1325 / 1813 / 806 (+39% ✅) | 14 / 14 / 92 |
+
+Read in order:
+
+- `copy` is the clearest win, and only past a megabyte. The bytes never
+  cross the boundary — the extension streams the file itself — so at 64 MiB the
+  synchronous path is already twice as fast as PHP's `copy()` and the concurrent
+  one nine times. At a megabyte the crossing still costs more than the copy
+  saves.
+- `list` wins concurrently at any size worth listing. The per-entry syscalls
+  stay inside the extension; what crosses is the finished list. The memory column
+  is the price: that list exists on both sides at once.
+- `hashFile` wins concurrently and loses synchronously, which is the same
+  trade every feature here makes. `hash_file()` already reads in a loop without
+  holding the file, so the gain is not memory — it is that the loop and its disk
+  waits leave the PHP thread.
+- `read` and `write` lose on time at every size. The payload crosses the
+  boundary, and nothing in the operation overlaps with anything. At 64 MiB the
+  concurrent path holds 644 MB against the native 68, because six files exist in
+  the extension and in PHP at the same time.
+- `readChunks` is the answer to that number, not to the time. The same
+  64 MiB read peaks at 4 MB instead of 132, and the concurrent path lands within
+  40% of the native loop. A file larger than the process should never go through
+  `read()`.
+
+**What the tables do not measure is the reason the feature exists.** They time a
+process whose only job is files. In a request handler the native call holds the
+whole worker for however long the disk takes — microseconds on a warm cache,
+milliseconds on a cold one, tens of milliseconds on NFS — while this one suspends
+one coroutine and the worker serves other requests. That is a latency tail, not a
+throughput number, and it does not show up in a loop that runs one call at a time.
+
+One number here was itself found by this gate. `list` first dispatched every
+`file_type()` and `metadata()` to the blocking pool on its own, so a 10 000-entry
+listing handed 20 000 syscalls across a thread boundary and took 6723 ms
+synchronously — nine times slower than the native code it exists to beat. A
+directory is now read whole in one trip.
 
 ## Clients (HTTP / Socket / WebSocket)
 

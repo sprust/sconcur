@@ -68,6 +68,13 @@ class QueueConsumer
     protected ?array $specs = null;
 
     /**
+     * The flow the delivery stream runs under, for as long as a run lasts. It is what a
+     * message about one of this worker's consumers is addressed to — a stop, and the
+     * reopening a lost acknowledgement asks for.
+     */
+    protected string $flowKey = '';
+
+    /**
      * The handles over the channels the delivery stream opened, by their extension-side id. A
      * message is settled on the channel it arrived on, and this is how the runtime reaches
      * it — a handler never sees these, see the class docblock.
@@ -189,6 +196,8 @@ class QueueConsumer
         $startedAt = microtime(true);
         $handled   = 0;
 
+        $this->flowKey = $flowKey;
+
         // Opened here rather than lazily inside the handler path, so its whole lifetime is
         // this run: a handler asks it for a channel, and the finally below gives back
         // everything it opened, however the run ends.
@@ -286,6 +295,7 @@ class QueueConsumer
 
             $publishChannels->close();
 
+            $this->flowKey  = '';
             $this->channels = [];
             $this->inFlight = [];
         }
@@ -316,14 +326,22 @@ class QueueConsumer
 
         $channelId = isset($event['chid']) ? (string) $event['chid'] : '';
 
+        // Held in a variable of its own for the whole of this method, and that is the
+        // point of it. The registry is the only other strong reference, and
+        // forgetIdleChannels() empties it of everything with no in-flight mark — which
+        // this delivery does not have yet. Automatic preemption switches coroutines
+        // between opcodes, so a delivery arriving on another queue can sweep in the gap
+        // between the two statements below, and the handle would go with a handler about
+        // to start on it. This variable dies with the method, which is exactly as long as
+        // the handler and its acknowledgement take.
+        $channel = $this->channelFor(
+            connection: $connection,
+            channelId: $channelId,
+        );
+
         $delivery = DeliveryCodec::delivery(
             delivery: $event,
-            channel: WeakReference::create(
-                $this->channelFor(
-                    connection: $connection,
-                    channelId: $channelId,
-                ),
-            ),
+            channel: WeakReference::create($channel),
             autoAck: false,
             // Asked for at most once, and only by a handler that publishes: a worker whose
             // handlers only read opens no channel of its own at all.
@@ -337,6 +355,7 @@ class QueueConsumer
         try {
             $this->runAndSettle(
                 delivery: $delivery,
+                channelId: $channelId,
                 handler: $handler,
                 onError: $onError,
                 handled: $handled,
@@ -363,11 +382,15 @@ class QueueConsumer
      * Runs the handler for one delivery, reports what it threw, and answers the broker for a
      * message it left open.
      *
+     * @param string                                  $channelId the channel the delivery arrived
+     *                                                           on, so a lost acknowledgement can
+     *                                                           name the consumer to reopen
      * @param Closure(Delivery): void                 $handler
      * @param null|Closure(Throwable, Delivery): void $onError
      */
     protected function runAndSettle(
         Delivery $delivery,
+        string $channelId,
         Closure $handler,
         null|Closure $onError,
         int &$handled,
@@ -421,6 +444,7 @@ class QueueConsumer
 
         $this->settle(
             delivery: $delivery,
+            channelId: $channelId,
             failed: $failed,
             requeue: $requeue,
         );
@@ -562,14 +586,16 @@ class QueueConsumer
      * alone, which is what lets the runtime take the acknowledgement over at all.
      *
      * A failed settle is logged rather than thrown: the message is the broker's problem
-     * again either way, and letting it escape would end the coroutine over a dead channel —
-     * which the stream reopens on its own.
+     * again either way, and letting it escape would end the coroutine over a dead channel.
+     * It is not only logged, though — the consumer that delivered it is reopened, see
+     * reopenConsumer().
      *
-     * @param bool $requeue where a refused message goes. Normally the worker's
-     *                      `requeueOnFailure`, and always true for a message whose handler
-     *                      was never given a channel to start on
+     * @param string $channelId the channel the delivery arrived on
+     * @param bool   $requeue   where a refused message goes. Normally the worker's
+     *                          `requeueOnFailure`, and always true for a message whose
+     *                          handler was never given a channel to start on
      */
-    protected function settle(Delivery $delivery, bool $failed, bool $requeue): void
+    protected function settle(Delivery $delivery, string $channelId, bool $failed, bool $requeue): void
     {
         if ($delivery->isSettled()) {
             return;
@@ -593,7 +619,40 @@ class QueueConsumer
                 $exception::class,
                 $exception->getMessage(),
             ));
+
+            $this->reopenConsumer($channelId);
         }
+    }
+
+    /**
+     * Asks the delivery stream to open the consumer of one channel again.
+     *
+     * A delivery that could not be settled is still owed to the broker, and the broker has
+     * heard nothing about it: it goes on counting the message against that consumer's
+     * prefetch and sends it nothing further, which at a prefetch of one is the queue
+     * standing still until the broker's own consumer timeout — half an hour, by default,
+     * of a worker at rest with a full queue in front of it. This side is the only one that
+     * knows, and this is how it says so. The channel is given up, the message goes back
+     * for another attempt, and a fresh consumer takes the queue a second later — the same
+     * recovery a consumer the broker takes away already gets.
+     *
+     * Asked for whatever the settle failed with, not only for a channel that had gone.
+     * Every one of them leaves the message owed, so every one of them costs the same
+     * wait; being wrong costs a second of that queue and one redelivery, and the log line
+     * above says which failure it was.
+     */
+    protected function reopenConsumer(string $channelId): void
+    {
+        // Nothing to name: a delivery that carried no channel id, or a settle running
+        // after the run has already let go of its flow.
+        if ($this->flowKey === '' || $channelId === '') {
+            return;
+        }
+
+        Extension::get()->amqpReopenConsumer(
+            flowKey: $this->flowKey,
+            channelId: $channelId,
+        );
     }
 
     /** Whether a life limit says this worker has done its shift. */

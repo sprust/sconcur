@@ -40,7 +40,7 @@ User-facing documentation (each doc also exists in Russian as `*.ru.md`):
   [socket-client](../docs/socket-client.md),
   [websocket-server](../docs/websocket-server.md),
   [websocket-client](../docs/websocket-client.md), [amqp](../docs/amqp.md),
-  [redis](../docs/redis.md)
+  [redis](../docs/redis.md), [files](../docs/files.md)
 - Operations: [worker-master](../docs/worker-master.md),
   [admin-stats](../docs/admin-stats.md)
 - Guides: [adding-a-feature](../docs/adding-a-feature.md),
@@ -211,7 +211,11 @@ feature's doc. Key PHP classes not covered there:
   A stop cancels the consumers and leaves their channels open so the
   acknowledgements in flight land; a consumer the broker takes away is reopened on
   the extension a second later, and only the connection going away ends one for good
-  — see [docs/amqp.md](../docs/amqp.md). `PublishChannelPool` is what keeps a
+  — see [docs/amqp.md](../docs/amqp.md). The same reopening is what a delivery that
+  could not be settled asks for through `amqpReopenConsumer`: the broker hears nothing
+  about a lost acknowledgement and keeps the message against that consumer's prefetch,
+  so without it a prefetch of one stands the queue still until the broker's own
+  consumer timeout — half an hour. `PublishChannelPool` is what keeps a
   prefetch above one from being a trap: a consumer's channel carries the messages of
   every handler running on it, and a publisher confirm is counted per channel, so
   `Delivery::channel()` hands out a channel lent to one handler instead. The pool
@@ -230,6 +234,26 @@ feature's doc. Key PHP classes not covered there:
   connection other coroutines are using, a blocking one takes a connection of its
   own for the call, and a subscription owns one outright — see
   [docs/redis.md](../docs/redis.md).
+- `Features/Files/` — the file feature. `Files` is the whole public surface, a
+  static facade like the old `Sleeper`. Its one-shot methods build a
+  `FilesPayload` envelope and go through its own `execute()`; the three stream
+  factories hand the envelope to a `Support/BatchIterator` subclass
+  (`Results/ChunksResult`, `LinesResult`, `WalkResult`) that pushes it itself and
+  pulls the later batches with `FeatureExecutor::next`, and `FileWriter`
+  pushes its chunks through an `execute()` of its own. All four routes end at
+  `Support/FilesFailure`, which turns a task failure into the exception named for
+  its case — read from the `files[<kind>]` prefix the core writes, never matched
+  out of the message, which holds a path the caller chose.
+  `FileWriter`'s `write()` answers only once the chunk is written; that wait
+  is the whole of the backpressure. The writer's open answers as an unfinished
+  stream on purpose: the synchronous path stops a flow the moment a result says
+  it is the last one, and the flow is what the session hangs on.
+  One rule runs through the whole feature and is worth keeping in mind before
+  changing any of it: a failed or cancelled write removes the file **only when
+  that write created it** (`mode: Create`). A Replace over an existing file
+  leaves a partial one, because removing it would destroy an inode, permissions
+  and ownership the call never made — and, on a symlink, unlink the link while
+  leaving its target empty.
 - `Features/Socket/Dto/AbstractConnection` — shared base for the socket and
   WebSocket `Connection` DTOs (server accept-side and client dial-side); keeps the
   features decoupled, since all depend on the neutral base rather than each other.
@@ -254,7 +278,7 @@ The core (`ext/src/`), module by module:
   `waitAny`, `waitAnyTimeout`, `waitAnyBatch`, `waitAnyTimeoutBatch`,
   `tasksCount`, `stopFlow`, `httpStopAccepting`, `socketStopAccepting`,
   `wsStopAccepting`, `preemptionArm`, `preemptionDisarm`, `amqpStopConsuming`,
-  `destroy`, `version`)
+  `amqpReopenConsumer`, `destroy`, `version`)
 - `core.rs` — the process-wide state and what it takes to survive a `fork`:
   nothing starts until the first push, and a `pthread_atfork` handler flags the
   inherited runtime so the next call rebuilds it
@@ -269,6 +293,15 @@ The core (`ext/src/`), module by module:
 - `logger/` — fire-and-forget async log sink: a background task writes
   pre-formatted lines to stdout (buffered, timer-flushed, drops on overflow), so
   the loop never blocks on log I/O
+- `features/files/` — the file feature. Every syscall goes through `tokio::fs` or
+  a `spawn_blocking`, and that is a correctness rule rather than a style one: the
+  runtime has one worker thread by default, so a synchronous read would stand in
+  front of everything else the process is doing. `dirs::read_directory` reads a
+  whole directory in one trip to the blocking pool — per-entry `tokio::fs` calls
+  made a 10 000-entry listing nine times slower than `scandir` plus a stat
+  each. `errors.rs` writes the kind PHP raises the failure as; `read_state`,
+  `walk_state` and `writer` are the streams, and the writer's sessions live in a
+  Core registry so a fork does not inherit file handles
 - `features/*` — sleeper, mongodb, sql (one handler dispatching
   Query/Exec/Begin/Commit/Rollback; the driver is selected per `Method`),
   httpserver, httpclient, socketserver, socketclient, wsserver, wsclient, amqp
@@ -294,7 +327,7 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
 - `MethodEnum`: Sleep (`sl`), Mongodb (`mng`), HttpServe (`hs`), HttpRespond
   (`hr`), HttpClient (`hc`), Mysql (`my`), Pgsql (`pg`), SocketServe (`ss`),
   SocketRespond (`sr`), SocketClient (`sc`), WsServe (`wss`), WsRespond (`wsr`),
-  WsClient (`wsc`), Amqp (`amq`), Redis (`rds`)
+  WsClient (`wsc`), Amqp (`amq`), Redis (`rds`), Files (`fls`)
 - Sub-operations selected via the payload envelope's `cm`:
   `SocketClientCommand`/`WsClientCommand` (Connect `con`, Send `snd`, Close
   `cls`), `SqlCommandEnum` (Query `qry`, Exec `exe`, Begin `beg`, Commit `cmt`,
@@ -305,9 +338,18 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
   `ino`, BulkWrite `bw`, Aggregate `agg`, … — see
   `src/Features/Mongodb/CommandEnum.php`), `RedisCommandEnum` (Command `cmd`,
   Pipeline `pip`, Scan `scn`, Subscribe `sub`, SubscriptionUpdate `sup`,
-  SubscriptionClose `suc`)
+  SubscriptionClose `suc`), `FilesCommandEnum` (Read `rd`, Write `wr`,
+  WriteAtomic `wra`, Copy `cp`, Stat `st`, List `ls`, Walk `wlk`, ReadChunks
+  `rdc`, WriteOpen `wro`, … — 22 in all, see
+  `src/Features/Files/FilesCommandEnum.php`)
 - `DownloadFileMode` (HttpClient download sink, the `sm` field): Replace (`rpl`),
   Create (`crt`), Append (`app`)
+- `FileWriteMode` (how a Files write opens its destination): the same three wire
+  values, and a separate enum on purpose — neither feature should depend on the
+  other's
+- `FileHashAlgorithm` (Files checksums): sha256, sha512, sha1, md5 — the names
+  `hash_file()` knows them by, so a digest from either side compares against the
+  other's
 
 ## Tests
 
@@ -324,7 +366,7 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
 - `tests/impl/` — test helpers (MongoDB resolver, app bootstrap, server harnesses)
 - `tests/benchmarks/` — performance benchmarks comparing async vs native, grouped
   by the technology they measure: `mongodb/`, `mysql/`, `pgsql/`, `http/`,
-  `socket/`, `ws/`, `amqp/`, `redis/` (each holds its per-operation benches plus, for the protocols,
+  `socket/`, `ws/`, `amqp/`, `redis/`, `files/` (each holds its per-operation benches plus, for the protocols,
   the server benches and the load scripts), `db/` (a whole DB session: repeated
   runs and their aggregation into the markdown rows of `docs/benchmarks.md`),
   `runtime/` (scheduler and the boundary, no backend involved) and `lib/`
@@ -337,7 +379,7 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
   scenario=<name> seconds=<n>` covers what no single feature owns: streams opened by
   one coroutine that never ends (mongodb, sql-query, sql-transaction, redis-scan,
   redis-subscribe), whose flow is never stopped between them. It prints RSS beside
-  the PHP heap, because what such a flow keeps is native memory. Two features have
+  the PHP heap, because what such a flow keeps is native memory. Three features have
   a soak of their own. `make mem-leak-redis scenario=<name> seconds=<n>` runs one of five
   scenarios (command, pipeline, blocking, cursor, subscribe) and reports the PHP
   heap beside the server's own client count — the three things that feature opens
@@ -353,7 +395,11 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
   away — the publish connection closed from the broker, the queue deleted under a
   running consumer. A second publish socket appearing and being reaped again is that
   pool recovering, not a leak: it carries no channels and the extension closes it after
-  five idle minutes
+  five idle minutes. The Files soak is `make mem-leak-files scenario=<name> seconds=<n>`
+  (read-large, read-stream, write-stream, copy, walk, abandoned), and it reports the
+  process RSS beside the PHP heap because what a file stream holds is native memory.
+  `abandoned` is the one that earns its keep: streams broken out of halfway and a writer
+  dropped without a close are released by nothing but the flow ending
 
 Tests use PHPUnit 11. Add feature tests in `tests/feature/...` with `*Test.php`
 suffixes; async flow tests commonly extend `BaseAsyncTestCase`,

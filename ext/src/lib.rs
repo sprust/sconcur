@@ -35,7 +35,7 @@ use types::method::Method;
 /// The extension version the PHP package pins
 /// (Extension::REQUIRED_EXTENSION_VERSION). The spike answers with the same
 /// value so an unmodified package loads it.
-const VERSION: &str = "0.13.1";
+const VERSION: &str = "0.14.0";
 
 // Defined in sconcur.c: atomically requests a VM interrupt on the PHP thread.
 unsafe extern "C" {
@@ -509,6 +509,21 @@ pub extern "C" fn wsStopAccepting(flow_key: *const c_char) {
 pub extern "C" fn amqpStopConsuming(flow_key: *const c_char) {
     guarded(|| (), || {
         features::amqp::consume_serve::stop_consuming(&unsafe { owned_string_nul(flow_key) });
+    })
+}
+
+/// Cancels the consumer a supervised worker can no longer settle on, so its
+/// slot opens a fresh one on a fresh channel. The counterpart of
+/// `amqpStopConsuming`: the worker sees a lost acknowledgement before the broker
+/// does, and without this the queue stands still until the broker's own consumer
+/// timeout.
+#[unsafe(no_mangle)]
+pub extern "C" fn amqpReopenConsumer(flow_key: *const c_char, channel_id: *const c_char) {
+    guarded(|| (), || {
+        features::amqp::consume_serve::reopen_consumer(
+            &unsafe { owned_string_nul(flow_key) },
+            &unsafe { owned_string_nul(channel_id) },
+        );
     })
 }
 

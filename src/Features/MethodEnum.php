@@ -20,4 +20,5 @@ enum MethodEnum: string
     case WsClient      = 'wsc';
     case Amqp          = 'amq';
     case Redis         = 'rds';
+    case Files         = 'fls';
 }

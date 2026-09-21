@@ -1166,6 +1166,31 @@ every consumer of the worker, so it is not reopened: the stream ends with the fa
 The message that was in flight is not resettled — it was never acknowledged, so the broker
 hands it out again on its own.
 
+### An acknowledgement that could not be sent
+
+The same reopening covers the failure the broker cannot see. A delivery whose
+acknowledgement does not go out — the channel it arrived on has gone from under the
+handler, the command was refused — is still owed to the broker, and the broker has heard
+nothing: it goes on counting the message against that consumer's prefetch. At
+`prefetchCount: 1` that consumer is sent nothing further, so the queue stands still until
+the broker's own `consumer_timeout` runs out, half an hour by default.
+
+The worker is the only side that knows, and it says so at once. The failure is logged,
+the consumer is cancelled, its channel given up — which hands the message back — and a
+fresh consumer takes the queue a second later:
+
+```
+consumer: could not settle delivery 837: SConcur\Exceptions\Amqp\ChannelException: Could not settle delivery 837. The channel it arrived on is gone.
+amqp: consumer sconcur-ctag-6 could not settle a delivery; reopening
+amqp: consumer trace-tree (sconcur-ctag-6) was taken away; reopening
+```
+
+The message is redelivered and done again, which is the at-least-once AMQP offers
+anyway. Every settle failure is treated this way, not only a channel that had gone: each
+of them leaves the message owed and costs the same wait, and the logged exception says
+which one it was. A worker that is draining is left alone — its consumers are being
+cancelled for good.
+
 ## Values a field table can carry
 
 Queue and exchange arguments and message headers are AMQP field tables. Scalars, lists

@@ -2,6 +2,7 @@
 //! method to its feature handler.
 
 pub mod amqp;
+pub mod files;
 pub mod httpclient;
 pub mod httpserver;
 pub mod mongodb;
@@ -71,6 +72,7 @@ pub fn detect_message_handler(method: Method) -> std::result::Result<&'static dy
         Method::WsClient => Ok(wsclient::get()),
         Method::Amqp => Ok(amqp::get()),
         Method::Redis => Ok(redis::get()),
+        Method::Files => Ok(files::get()),
         _ => Err(format!("unknown method: {}", method.as_wire())),
     }
 }

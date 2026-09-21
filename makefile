@@ -318,6 +318,47 @@ bench-all:
 	make bench-redis-get
 	make bench-redis-set
 	make bench-redis-pipeline
+	make bench-files-read
+	make bench-files-write
+	make bench-files-copy
+	make bench-files-hash-file
+	make bench-files-list-dir
+	make bench-files-read-stream
+
+# The file benchmarks take their size from the environment, and `docker compose exec`
+# forwards nothing of the host's, so the two knobs are named here rather than left to be
+# exported and silently ignored. Empty means the script's own default.
+PHP_EXT_FILES = $(DOCKER_COMPOSE) exec \
+	-e SCONCUR_EXT=$(SCONCUR_EXT) \
+	-e SCONCUR_BENCH_FILE_BYTES=$(bytes) \
+	-e SCONCUR_BENCH_DIR_ENTRIES=$(entries) \
+	php php -d extension=$(SCONCUR_EXT)
+
+# Every file benchmark turns on the size, so it is a knob:
+# `make bench-files-read c="5 0" bytes=104857600`. A kilobyte says the boundary costs
+# more than the work; a hundred megabytes says the opposite, and the verdict in
+# docs/benchmarks.md is written from both ends rather than from one.
+bench-files-read:
+	$(PHP_EXT_FILES) tests/benchmarks/files/read.php ${c}
+
+bench-files-write:
+	$(PHP_EXT_FILES) tests/benchmarks/files/write.php ${c}
+
+# The one whose verdict does not depend on the size: the bytes never cross the boundary.
+bench-files-copy:
+	$(PHP_EXT_FILES) tests/benchmarks/files/copy.php ${c}
+
+bench-files-hash-file:
+	$(PHP_EXT_FILES) tests/benchmarks/files/hash-file.php ${c}
+
+# scandir + filesize + filemtime per entry against one crossing.
+# `make bench-files-list-dir entries=100000`
+bench-files-list-dir:
+	$(PHP_EXT_FILES) tests/benchmarks/files/list-dir.php ${c}
+
+# Batched reading against fopen/fread in a loop; prints the peak memory beside the time.
+bench-files-read-stream:
+	$(PHP_EXT_FILES) tests/benchmarks/files/read-stream.php ${c}
 
 bench-amqp-publish:
 	$(PHP_EXT) tests/benchmarks/amqp/publish.php ${c}
@@ -370,6 +411,17 @@ mem-leak-long-flow:
 	$(DOCKER_COMPOSE) exec php \
 		php -d extension=$(SCONCUR_EXT) \
 		tests/mem-leak/long-flow-soak.php $(or $(scenario),mongodb) $(or $(seconds),120)
+
+# Soak test for the Files feature: one scenario in a loop, reporting the PHP heap beside
+# the process RSS — what a file stream holds is native memory, which the heap does not
+# show. Scenarios: read-large, read-stream, write-stream, copy, walk, abandoned.
+# `abandoned` is the one that matters: streams broken out of halfway and a writer dropped
+# without a close are released by nothing but the flow ending.
+# e.g.: make mem-leak-files scenario=abandoned seconds=600
+mem-leak-files:
+	$(DOCKER_COMPOSE) exec php \
+		php -d extension=$(SCONCUR_EXT) \
+		tests/mem-leak/files-soak.php $(or $(scenario),read-large) $(or $(seconds),120)
 
 bench-redis-get:
 	$(PHP_EXT) tests/benchmarks/redis/get.php ${c}

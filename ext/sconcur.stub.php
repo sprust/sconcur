@@ -50,6 +50,10 @@ function amqpStopConsuming(string $fk): void
 {
 }
 
+function amqpReopenConsumer(string $fk, string $chid): void
+{
+}
+
 function destroy(): void
 {
 }

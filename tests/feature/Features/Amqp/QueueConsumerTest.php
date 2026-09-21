@@ -11,6 +11,8 @@ use SConcur\Features\Amqp\Consumer\QueueConsumer;
 use SConcur\Features\Amqp\Delivery;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Impl\InspectableQueueConsumer;
+use SConcur\Tests\Impl\LosingChannelQueueConsumer;
+use SConcur\Tests\Impl\SweepingQueueConsumer;
 use Throwable;
 
 /**
@@ -664,6 +666,104 @@ class QueueConsumerTest extends AmqpTestCase
 
         self::assertSame(2, $count, 'the consumer must come back and take the next message');
         self::assertSame(['first', 'second'], $handled);
+    }
+
+    /**
+     * A lost acknowledgement used to cost the queue the broker's whole consumer timeout.
+     *
+     * The channel a delivery arrived on goes while its handler is still on the message, so
+     * the acknowledgement has nowhere to land. The broker hears nothing — its own channel
+     * is fine — and goes on counting the message against that consumer's prefetch, which
+     * at a prefetch of one means it sends nothing more. The consumer used to sit there
+     * until the broker timed it out half an hour later. It reopens instead: the channel is
+     * given up, the message comes back, and the same queue is being read again seconds
+     * later.
+     */
+    public function testALostAcknowledgementReopensItsConsumerInsteadOfWaitingForTheBroker(): void
+    {
+        $channel = $this->channel();
+
+        $queue = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
+
+        $this->publishToQueue($channel, $queue->name(), 'orphan');
+
+        $handled     = [];
+        $redelivered = [];
+
+        $queueConsumer = new LosingChannelQueueConsumer(
+            queues: $this->queuesJson([$queue->name() => 1]),
+            maxMessages: 2,
+            // Bounds a run the reopening never reached; the broker's own timeout is
+            // half an hour away and would hang the suite instead of failing it.
+            maxRuntimeSeconds: 30,
+        );
+
+        $startedAt = microtime(true);
+
+        $count = $queueConsumer->consume(
+            connection: $this->connection(),
+            handler: static function (Delivery $delivery) use (&$handled, &$redelivered): void {
+                $handled[]     = $delivery->body;
+                $redelivered[] = $delivery->redelivered;
+            },
+        );
+
+        $elapsedSeconds = microtime(true) - $startedAt;
+
+        self::assertSame(2, $count);
+        self::assertSame(['orphan', 'orphan'], $handled, 'the message the broker still owns must come back');
+        self::assertSame([false, true], $redelivered, 'the second time round is a redelivery');
+        self::assertLessThan(
+            15.0,
+            $elapsedSeconds,
+            'the consumer must reopen on its own rather than wait out the broker',
+        );
+    }
+
+    /**
+     * The sweep that lets go of idle channel handles must not take one from under a
+     * delivery on its way into a handler.
+     *
+     * A handle is kept alive by the registry and by the in-flight mark that follows it,
+     * and between the two there used to be nothing: the handle travelled as a temporary
+     * that a sweep in that gap left without a single strong reference. The delivery holds
+     * its channel weakly, so the handler ran on and the acknowledgement found nothing.
+     */
+    public function testASweepDoesNotTakeTheChannelOfADeliveryOnItsWayIntoAHandler(): void
+    {
+        $channel = $this->channel();
+
+        $queue = $this->declareQueue(
+            channel: $channel,
+            durable: true,
+        );
+
+        $this->publishToQueue($channel, $queue->name(), 'swept');
+
+        $handled = [];
+
+        $queueConsumer = new SweepingQueueConsumer(
+            queues: $this->queuesJson([$queue->name() => 1]),
+            maxMessages: 1,
+            maxRuntimeSeconds: 30,
+        );
+
+        $count = $queueConsumer->consume(
+            connection: $this->connection(),
+            handler: static function (Delivery $delivery) use (&$handled): void {
+                $handled[] = $delivery->body;
+            },
+        );
+
+        self::assertSame(1, $count);
+        self::assertSame(['swept'], $handled, 'the message must be handled once, not handed back and redone');
+
+        // Acknowledged means gone. A settle that found nothing would have given the
+        // message back instead, and the reopened consumer would deliver it again.
+        self::assertNull($this->waitForMessage($queue, timeoutSeconds: 3.0));
     }
 
     /**

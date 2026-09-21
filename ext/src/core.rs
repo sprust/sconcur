@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Once, RwLock};
 
 use crate::features::amqp;
+use crate::features::files;
 use crate::features::httpclient;
 use crate::features::httpserver;
 use crate::features::mongodb;
@@ -59,6 +60,7 @@ pub struct Core {
     wsclient: wsclient::Registries,
     /// The HTTP client's pooled clients and open uploads, for the same reason.
     httpclient: httpclient::Registries,
+    files: files::writer::Registries,
     /// The AMQP connections, channels and supervised delivery streams, for the
     /// same reason: a socket to the broker and the channels multiplexed over it
     /// belong to the process that opened them.
@@ -158,8 +160,25 @@ impl Core {
         // about it here, and nothing worth failing the whole runtime over.
         let _ = rustls::crypto::ring::default_provider().install_default();
 
+        // The runtime's blocking pool. Every file syscall lands here, because
+        // tokio::fs hands each one to it rather than to a worker thread — which
+        // is what keeps a read from a cold disk from standing in front of the
+        // whole runtime, with one worker thread by default.
+        //
+        // It is the process's pool, not the file feature's: hyper resolves names
+        // on it, and so does anything else that hands over blocking work. Left
+        // at tokio's own 512 for that reason. Lowering it to bound file fan-out
+        // — which an earlier version did, at 64 — bounds name resolution for
+        // every other feature in the same breath.
+        let blocking_threads = std::env::var("SCONCUR_BLOCKING_THREADS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(512)
+            .max(1);
+
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(worker_threads)
+            .max_blocking_threads(blocking_threads)
             .enable_all()
             .thread_name("sconcur")
             .build()
@@ -176,6 +195,7 @@ impl Core {
             socketclient: socketclient::Registries::new(),
             wsclient: wsclient::Registries::new(),
             httpclient: httpclient::Registries::new(),
+            files: files::writer::Registries::new(),
             amqp: amqp::Registries::new(),
             redis: redis::Registries::new(),
         }
@@ -215,6 +235,10 @@ impl Core {
 
     pub fn wsclient(&'static self) -> &'static wsclient::Registries {
         &self.wsclient
+    }
+
+    pub fn files(&'static self) -> &'static files::writer::Registries {
+        &self.files
     }
 
     pub fn httpclient(&'static self) -> &'static httpclient::Registries {

@@ -115,6 +115,7 @@ Operations and clients — wrapped in a coroutine (`$waitGroup->add()` +
 | a WS client library | `Features\WsClient\WsClient` | text/binary messages |
 | `ext-amqp`, `php-amqplib` (RabbitMQ) | `Features\Amqp\*` | a consumer suspends its coroutine, not the worker; settling belongs to the delivery |
 | `ext-redis` (phpredis), predis | `Features\Redis\Connection` | commands of many coroutines share one socket as a pipeline; pub/sub and cursors stream |
+| `file_get_contents`, `fwrite`, `copy`, `scandir`, `hash_file` | `Features\Files\Files` | file operations on the runtime instead of the PHP thread; copy, hashing and listing never move their bytes across |
 
 Long-lived servers:
 
@@ -286,6 +287,8 @@ The crates the core is built on:
   suspend a coroutine instead of the worker.
 - [Redis](docs/redis.md) — commands, pipelines and transactions, blocking
   commands, cursors, pub/sub.
+- [Files](docs/files.md) — file operations off the PHP thread: reads and writes,
+  metadata, directories, streams and a chunked writer.
 - [Worker master](docs/worker-master.md) — a supervisor for a pool of workers
   (`bin/sconcur-server`).
 - [Server statistics](docs/admin-stats.md) — `GET /api/stats`, live panel, SSE,
@@ -329,11 +332,12 @@ In the order it is meant to happen:
 - Stopping a single coroutine from anywhere, not just the whole flow. The other
   half of this — a deadline on one — is done, see
   [coroutine timeout](docs/coroutine-timeout.md).
-- The `Std` feature — SConcur equivalents of the standard PHP functions that
-  block the worker: file I/O and password hashing, plus sleep, which absorbs
-  `Sleeper`. json, gzip and hash are candidates behind a benchmark gate, not a
-  promise: their native implementations are C already, and what the extension
-  buys there is a free PHP thread, not speed.
+- The `Std` feature — SConcur equivalents of the remaining standard PHP
+  functions that block the worker: password hashing, plus sleep, which absorbs
+  `Sleeper`. File I/O is done and shipped as [Files](docs/files.md). json, gzip
+  and hash are candidates behind a benchmark gate, not a promise: their native
+  implementations are C already, and what the extension buys there is a free PHP
+  thread, not speed.
 
 Deferred on purpose: splitting the core and the features into separate packages,
 and optimizing the synchronous path (a call outside a coroutine going to the

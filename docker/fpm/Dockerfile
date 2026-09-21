@@ -1,5 +1,6 @@
-# PHP-FPM image for the fork/FPM half of the Rust core spike
-# (.ai/plans/rust-core-spike.md).
+# PHP-FPM image for the fork/FPM half of the extension: it exists to prove the
+# core survives the master forking a worker, and that a request can run several
+# operations at once inside one FPM process. Driven by ext/check/fpm-check.sh.
 #
 # Same php:8.4.15 tag as every other image here, so the extension built in the
 # `php` container loads unchanged — only the SAPI differs. Carries ext-msgpack
