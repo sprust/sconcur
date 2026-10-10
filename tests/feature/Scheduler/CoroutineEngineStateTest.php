@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Scheduler;
 
 use ArrayObject;
+use DOMDocument;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Scheduler\Scheduler;
 use SConcur\Tests\Feature\BaseTestCase;
@@ -15,7 +16,8 @@ use SConcur\WaitGroup;
 
 /**
  * The engine state the extension keeps per coroutine: json_last_error(),
- * preg_last_error(), error_get_last() and the serialize() object table. PHP
+ * preg_last_error(), error_get_last(), the libxml error list and the serialize()
+ * object table. PHP
  * holds each once per process; the extension moves them in and out of a block
  * attached to the fiber on every switch, so a neighbour that runs between a
  * call and the check that reads its outcome leaves no trace.
@@ -137,6 +139,102 @@ class CoroutineEngineStateTest extends BaseTestCase
             ],
             $this->resultsInAddOrder($waitGroup, $keys),
         );
+    }
+
+    public function testLibxmlErrorsArePerCoroutineAcrossAWait(): void
+    {
+        $keys      = [];
+        $waitGroup = WaitGroup::create();
+
+        $keys[] = $waitGroup->add(
+            callback: static function (): array {
+                libxml_use_internal_errors(true);
+
+                try {
+                    (new DOMDocument())->loadXML('<a>');
+
+                    Sleeper::usleep(microseconds: 3_000);
+
+                    return self::libxmlErrorMessages();
+                } finally {
+                    libxml_use_internal_errors(false);
+                }
+            },
+        );
+
+        $keys[] = $waitGroup->add(
+            callback: static function (): array {
+                Sleeper::usleep(microseconds: 1_000);
+
+                libxml_use_internal_errors(true);
+
+                try {
+                    (new DOMDocument())->loadXML('<b><c>');
+
+                    return self::libxmlErrorMessages();
+                } finally {
+                    libxml_use_internal_errors(false);
+                }
+            },
+        );
+
+        self::assertSame(
+            [
+                ['Premature end of data in tag a line 1'],
+                ['Premature end of data in tag c line 1'],
+            ],
+            $this->resultsInAddOrder($waitGroup, $keys),
+            'Each coroutine must see the errors of its own parse and nothing of the neighbour\'s.',
+        );
+    }
+
+    public function testLibxmlInternalErrorsEnabledOutsideAreInheritedByACoroutine(): void
+    {
+        libxml_use_internal_errors(true);
+
+        try {
+            $keys      = [];
+            $waitGroup = WaitGroup::create();
+
+            $keys[] = $waitGroup->add(
+                callback: static function (): array {
+                    $warnings = 0;
+
+                    // Internal errors were enabled by whoever started this coroutine,
+                    // so the parse must collect its error rather than warn.
+                    set_error_handler(static function () use (&$warnings): bool {
+                        ++$warnings;
+
+                        return true;
+                    });
+
+                    try {
+                        (new DOMDocument())->loadXML('<a>');
+                    } finally {
+                        restore_error_handler();
+                    }
+
+                    return [
+                        $warnings,
+                        self::libxmlErrorMessages(),
+                    ];
+                },
+            );
+
+            self::assertSame(
+                [
+                    [
+                        0,
+                        ['Premature end of data in tag a line 1'],
+                    ],
+                ],
+                $this->resultsInAddOrder($waitGroup, $keys),
+            );
+
+            self::assertSame([], libxml_get_errors(), 'The coroutine\'s error must not land in the list of the context that started it.');
+        } finally {
+            libxml_use_internal_errors(false);
+        }
     }
 
     public function testSerializeObjectTableIsPerCoroutineAcrossAWait(): void
@@ -321,6 +419,22 @@ class CoroutineEngineStateTest extends BaseTestCase
         self::assertStringContainsString('r:', self::$sequentialProbe, 'The probe must contain a back-reference for the test to mean anything.');
 
         return self::$sequentialProbe;
+    }
+
+    /**
+     * @return list<string>
+     */
+    protected static function libxmlErrorMessages(): array
+    {
+        $messages = [];
+
+        foreach (libxml_get_errors() as $error) {
+            $messages[] = trim($error->message);
+        }
+
+        libxml_clear_errors();
+
+        return $messages;
     }
 
     /**

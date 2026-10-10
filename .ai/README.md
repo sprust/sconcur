@@ -275,12 +275,14 @@ feature's doc. Key PHP classes not covered there:
 The C glue, `ext/sconcur.c`, is the one file between PHP and the core: the
 `SConcur\Extension\*` functions bound to the core's exports, the
 `zend_interrupt_function` hook preemption rides on, and the fiber observers that keep
-`json_last_error()`, `preg_last_error()`, `error_get_last()` and the `serialize()`
-object table per coroutine — captured into a block in the fiber context's reserved
-slot on every switch, applied back on resume. Output buffers and the error handler
-stack are deliberately not among them; `DateTime::getLastErrors()` and libxml's
-errors cannot be, because `php` does not export their globals. What is and is not
-isolated is in [docs/coroutine-switching.md](../docs/coroutine-switching.md).
+`json_last_error()`, `preg_last_error()`, `error_get_last()`, the libxml error list
+and the `serialize()` object table per coroutine — captured into a block in the fiber
+context's reserved slot on every switch, applied back on resume. libxml's globals are
+reached through `module_registry`, since `php` exports neither them nor the header's
+libxml2 dependencies; `DateTime::getLastErrors()` and the OpenSSL error queue are
+reachable the same way and left shared on purpose. Output buffers and the error
+handler stack are deliberately not among them either. What is and is not isolated is
+in [docs/coroutine-switching.md](../docs/coroutine-switching.md).
 
 The core (`ext/src/`), module by module:
 

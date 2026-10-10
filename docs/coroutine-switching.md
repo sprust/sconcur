@@ -217,17 +217,18 @@ with two coroutines, one call failing and the other succeeding: with a 1 ms quan
 `json_last_error()` returned the neighbour's result in about 60% of the checks
 (`json_decode` of about 50 KB), with 5 ms in about 14%.
 
-For that reason the extension keeps four pieces of this state per coroutine. On every
+For that reason the extension keeps five pieces of this state per coroutine. On every
 fiber switch it moves them out of the engine into a block attached to the fiber being
 left, and back in from the block of the fiber being entered. A coroutine therefore
 reads what its own last call left, whatever ran in between — a feature wait,
-`switch()` or preemption — and a new coroutine starts with all four clean:
+`switch()` or preemption — and a new coroutine starts with all five clean:
 
 | Per coroutine | What reads it |
 | --- | --- |
 | JSON error | `json_last_error()`, `json_last_error_msg()` |
 | PCRE error | `preg_last_error()`, `preg_last_error_msg()` |
 | last PHP error | `error_get_last()`, `error_clear_last()` |
+| libxml errors | `libxml_get_errors()`, `libxml_get_last_error()`, `libxml_clear_errors()` — a coroutine started where `libxml_use_internal_errors(true)` is in effect has it in effect too, with an empty list of its own |
 | the serialize object table | `serialize()`, `unserialize()` — nested calls share one table of the objects already written, and a neighbour joining it writes its back-references against the wrong one |
 
 The rest stays one per process. Code that reads its outcome from it is correct only
@@ -236,7 +237,6 @@ in the safe form:
 | Shared by the process | What reads it | Safe form |
 | --- | --- | --- |
 | date parse errors | `DateTime::getLastErrors()`, `date_get_last_errors()` | check `createFromFormat()` for `false`, or construct and catch `DateMalformedStringException` |
-| libxml errors | `libxml_get_errors()`, `libxml_get_last_error()`, `libxml_use_internal_errors()` | none |
 | OpenSSL error queue | `openssl_error_string()` | none |
 | output buffers | `ob_start()` … `ob_get_clean()` | none |
 | error and exception handlers | `set_error_handler()`/`restore_error_handler()`, `set_exception_handler()`/`restore_exception_handler()` | none |

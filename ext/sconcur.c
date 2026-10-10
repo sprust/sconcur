@@ -4,6 +4,7 @@
 #include <zend_extensions.h>
 #include <zend_fibers.h>
 #include <zend_observer.h>
+#include <zend_smart_str.h>
 #include <ext/json/php_json.h>
 #include <ext/pcre/php_pcre.h>
 #include <ext/standard/basic_functions.h>
@@ -95,8 +96,11 @@ static void sconcur_interrupt_function(zend_execute_data *execute_data)
  * run starts from a zeroed block, which is the clean state of each of them.
  *
  * Output buffers and the error handler stack are deliberately not here, see
- * docs/coroutine-switching.md. DateTime::getLastErrors() and libxml's error
- * list cannot be: php does not export their globals.
+ * docs/coroutine-switching.md. DateTime::getLastErrors() and the OpenSSL error
+ * queue are not either: php does not export their globals, and reaching them
+ * through the module registry the way libxml's are would mean freeing a
+ * timelib container by hand for the one and chasing a ring buffer for the
+ * other, for state nothing decides an outcome by.
  */
 
 typedef struct {
@@ -111,18 +115,24 @@ typedef struct {
     unsigned                     serialize_level;
     struct php_unserialize_data *unserialize_data;
     unsigned                     unserialize_level;
+    smart_str                    libxml_error_buffer;
+    zend_llist                  *libxml_error_list;
 } sconcur_engine_state;
 
 /*
  * One piece of state. capture moves the globals into the block and leaves them
  * reset; apply moves them back and leaves the block reset. A pointer is owned
  * by exactly one side at any moment, so nothing is refcounted on the way.
- * release drops what a block still owns when its fiber is destroyed.
+ * release drops what a block still owns when its fiber is destroyed. inherit
+ * runs once, when a fiber is entered for the first time, with the block of the
+ * context entering it: for state that is a setting as much as a result, the
+ * new coroutine takes the setting over and starts with an empty result.
  */
 typedef struct {
     void (*capture)(sconcur_engine_state *state);
     void (*apply)(sconcur_engine_state *state);
     void (*release)(sconcur_engine_state *state);
+    void (*inherit)(sconcur_engine_state *state, const sconcur_engine_state *parent);
 } sconcur_state_provider;
 
 static void sconcur_json_capture(sconcur_engine_state *state)
@@ -225,11 +235,92 @@ static void sconcur_serialize_apply(sconcur_engine_state *state)
     state->unserialize_level = 0;
 }
 
+/*
+ * libxml's error list is what libxml_use_internal_errors(true) turns on and
+ * libxml_get_errors() reads; the buffer collects the pieces libxml hands over
+ * before a line is complete. The list doubles as the switch: NULL means the
+ * errors go out as warnings. php_libxml.h cannot be included without libxml2's
+ * own headers, which the build images do not carry, so this is the prefix of
+ * zend_libxml_globals as that header declares it — the three fields have led
+ * the struct since PHP 5 — and the address comes from the module registry,
+ * which is how the engine itself reaches a module's globals.
+ */
+typedef struct {
+    zval        stream_context;
+    smart_str   error_buffer;
+    zend_llist *error_list;
+} sconcur_libxml_globals_prefix;
+
+static sconcur_libxml_globals_prefix *sconcur_libxml_globals = NULL;
+
+static void sconcur_libxml_capture(sconcur_engine_state *state)
+{
+    if (sconcur_libxml_globals == NULL) {
+        return;
+    }
+
+    state->libxml_error_buffer = sconcur_libxml_globals->error_buffer;
+    state->libxml_error_list   = sconcur_libxml_globals->error_list;
+
+    sconcur_libxml_globals->error_buffer.s = NULL;
+    sconcur_libxml_globals->error_buffer.a = 0;
+    sconcur_libxml_globals->error_list     = NULL;
+}
+
+static void sconcur_libxml_apply(sconcur_engine_state *state)
+{
+    if (sconcur_libxml_globals == NULL) {
+        return;
+    }
+
+    sconcur_libxml_globals->error_buffer = state->libxml_error_buffer;
+    sconcur_libxml_globals->error_list   = state->libxml_error_list;
+
+    state->libxml_error_buffer.s = NULL;
+    state->libxml_error_buffer.a = 0;
+    state->libxml_error_list     = NULL;
+}
+
+static void sconcur_libxml_release(sconcur_engine_state *state)
+{
+    smart_str_free(&state->libxml_error_buffer);
+
+    if (state->libxml_error_list != NULL) {
+        zend_llist_destroy(state->libxml_error_list);
+        efree(state->libxml_error_list);
+
+        state->libxml_error_list = NULL;
+    }
+}
+
+/*
+ * A coroutine started where internal errors are on gets them on too, with a
+ * list of its own: an application that enabled them at bootstrap would
+ * otherwise see its parses warn again inside coroutines. The element dtor is
+ * libxml's own, private to it, so it is taken from the parent's list.
+ */
+static void sconcur_libxml_inherit(sconcur_engine_state *state, const sconcur_engine_state *parent)
+{
+    if (parent->libxml_error_list == NULL || state->libxml_error_list != NULL) {
+        return;
+    }
+
+    state->libxml_error_list = emalloc(sizeof(zend_llist));
+
+    zend_llist_init(
+        state->libxml_error_list,
+        parent->libxml_error_list->size,
+        parent->libxml_error_list->dtor,
+        parent->libxml_error_list->persistent
+    );
+}
+
 static const sconcur_state_provider sconcur_state_providers[] = {
-    { sconcur_json_capture,       sconcur_json_apply,       NULL                       },
-    { sconcur_pcre_capture,       sconcur_pcre_apply,       NULL                       },
-    { sconcur_last_error_capture, sconcur_last_error_apply, sconcur_last_error_release },
-    { sconcur_serialize_capture,  sconcur_serialize_apply,  NULL                       },
+    { sconcur_json_capture,       sconcur_json_apply,       NULL,                       NULL                   },
+    { sconcur_pcre_capture,       sconcur_pcre_apply,       NULL,                       NULL                   },
+    { sconcur_last_error_capture, sconcur_last_error_apply, sconcur_last_error_release, NULL                   },
+    { sconcur_serialize_capture,  sconcur_serialize_apply,  NULL,                       NULL                   },
+    { sconcur_libxml_capture,     sconcur_libxml_apply,     sconcur_libxml_release,     sconcur_libxml_inherit },
 };
 
 #define SCONCUR_STATE_PROVIDERS_COUNT (sizeof(sconcur_state_providers) / sizeof(sconcur_state_providers[0]))
@@ -286,11 +377,20 @@ static void sconcur_engine_state_free(zend_fiber_context *context)
  */
 static void sconcur_fiber_switch(zend_fiber_context *from, zend_fiber_context *to)
 {
-    sconcur_engine_state *from_state = sconcur_engine_state_of(from);
-    sconcur_engine_state *to_state   = sconcur_engine_state_of(to);
+    bool                  first_entry = to->reserved[sconcur_engine_state_handle] == NULL;
+    sconcur_engine_state *from_state  = sconcur_engine_state_of(from);
+    sconcur_engine_state *to_state    = sconcur_engine_state_of(to);
 
     for (size_t index = 0; index < SCONCUR_STATE_PROVIDERS_COUNT; index++) {
         sconcur_state_providers[index].capture(from_state);
+    }
+
+    if (first_entry) {
+        for (size_t index = 0; index < SCONCUR_STATE_PROVIDERS_COUNT; index++) {
+            if (sconcur_state_providers[index].inherit != NULL) {
+                sconcur_state_providers[index].inherit(to_state, from_state);
+            }
+        }
     }
 
     for (size_t index = 0; index < SCONCUR_STATE_PROVIDERS_COUNT; index++) {
@@ -828,10 +928,20 @@ PHP_MINIT_FUNCTION(sconcur)
     sconcur_engine_state_handle = zend_get_resource_handle("sconcur");
 
     if (sconcur_engine_state_handle >= 0) {
+        /*
+         * libxml is built in or loaded before this extension; absent, its
+         * provider stays a no-op and the rest is unaffected.
+         */
+        zend_module_entry *libxml_module = zend_hash_str_find_ptr(&module_registry, "libxml", sizeof("libxml") - 1);
+
+        if (libxml_module != NULL && libxml_module->globals_ptr != NULL) {
+            sconcur_libxml_globals = libxml_module->globals_ptr;
+        }
+
         zend_observer_fiber_switch_register(sconcur_fiber_switch);
         zend_observer_fiber_destroy_register(sconcur_fiber_destroy);
     } else {
-        zend_error(E_CORE_WARNING, "sconcur: no fiber slot left for per-coroutine engine state; json_last_error(), preg_last_error(), error_get_last() and serialize() stay process-wide");
+        zend_error(E_CORE_WARNING, "sconcur: no fiber slot left for per-coroutine engine state; json_last_error(), preg_last_error(), error_get_last(), libxml errors and serialize() stay process-wide");
     }
 
     return SUCCESS;
