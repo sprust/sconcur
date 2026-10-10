@@ -1,6 +1,12 @@
 #include <php.h>
 #include <stdlib.h>
 #include <zend_atomic.h>
+#include <zend_extensions.h>
+#include <zend_fibers.h>
+#include <zend_observer.h>
+#include <ext/json/php_json.h>
+#include <ext/pcre/php_pcre.h>
+#include <ext/standard/basic_functions.h>
 #include "sconcur_core.h"
 
 /*
@@ -71,6 +77,230 @@ static void sconcur_interrupt_function(zend_execute_data *execute_data)
     if (sconcur_original_interrupt_function != NULL) {
         sconcur_original_interrupt_function(execute_data);
     }
+}
+
+/*
+ * Per-coroutine engine state: what a neighbour must not see.
+ *
+ * PHP keeps the outcome of some calls in process-wide globals rather than in
+ * the return value — json_last_error(), preg_last_error(), error_get_last() —
+ * and serialize() keeps the object table its nested calls share there too. A
+ * coroutine reads them the statement after the call and takes them for its
+ * own, but a neighbour may have run in between: at any feature wait, and with
+ * preemption armed between any two opcodes, where right after the call
+ * returned is the likely spot. Nothing in PHP can set them back, so the
+ * extension moves them. On every fiber switch the values of the fiber being
+ * left are captured into a block hung on its context, and the values of the
+ * fiber being entered are applied from its own block. A fiber that has never
+ * run starts from a zeroed block, which is the clean state of each of them.
+ *
+ * Output buffers and the error handler stack are deliberately not here, see
+ * docs/coroutine-switching.md. DateTime::getLastErrors() and libxml's error
+ * list cannot be: php does not export their globals.
+ */
+
+typedef struct {
+    php_json_error_code          json_error_code;
+    php_pcre_error_code          pcre_error_code;
+    int                          last_error_type;
+    int                          last_error_lineno;
+    zend_string                 *last_error_message;
+    zend_string                 *last_error_file;
+    unsigned                     serialize_lock;
+    struct php_serialize_data   *serialize_data;
+    unsigned                     serialize_level;
+    struct php_unserialize_data *unserialize_data;
+    unsigned                     unserialize_level;
+} sconcur_engine_state;
+
+/*
+ * One piece of state. capture moves the globals into the block and leaves them
+ * reset; apply moves them back and leaves the block reset. A pointer is owned
+ * by exactly one side at any moment, so nothing is refcounted on the way.
+ * release drops what a block still owns when its fiber is destroyed.
+ */
+typedef struct {
+    void (*capture)(sconcur_engine_state *state);
+    void (*apply)(sconcur_engine_state *state);
+    void (*release)(sconcur_engine_state *state);
+} sconcur_state_provider;
+
+static void sconcur_json_capture(sconcur_engine_state *state)
+{
+    state->json_error_code = JSON_G(error_code);
+    JSON_G(error_code)     = PHP_JSON_ERROR_NONE;
+}
+
+static void sconcur_json_apply(sconcur_engine_state *state)
+{
+    JSON_G(error_code)     = state->json_error_code;
+    state->json_error_code = PHP_JSON_ERROR_NONE;
+}
+
+static void sconcur_pcre_capture(sconcur_engine_state *state)
+{
+    state->pcre_error_code = PCRE_G(error_code);
+    PCRE_G(error_code)     = PHP_PCRE_NO_ERROR;
+}
+
+static void sconcur_pcre_apply(sconcur_engine_state *state)
+{
+    PCRE_G(error_code)     = state->pcre_error_code;
+    state->pcre_error_code = PHP_PCRE_NO_ERROR;
+}
+
+static void sconcur_last_error_capture(sconcur_engine_state *state)
+{
+    state->last_error_type    = PG(last_error_type);
+    state->last_error_lineno  = PG(last_error_lineno);
+    state->last_error_message = PG(last_error_message);
+    state->last_error_file    = PG(last_error_file);
+
+    PG(last_error_type)    = 0;
+    PG(last_error_lineno)  = 0;
+    PG(last_error_message) = NULL;
+    PG(last_error_file)    = NULL;
+}
+
+static void sconcur_last_error_apply(sconcur_engine_state *state)
+{
+    PG(last_error_type)    = state->last_error_type;
+    PG(last_error_lineno)  = state->last_error_lineno;
+    PG(last_error_message) = state->last_error_message;
+    PG(last_error_file)    = state->last_error_file;
+
+    state->last_error_type    = 0;
+    state->last_error_lineno  = 0;
+    state->last_error_message = NULL;
+    state->last_error_file    = NULL;
+}
+
+static void sconcur_last_error_release(sconcur_engine_state *state)
+{
+    if (state->last_error_message != NULL) {
+        zend_string_release(state->last_error_message);
+        state->last_error_message = NULL;
+    }
+
+    if (state->last_error_file != NULL) {
+        zend_string_release(state->last_error_file);
+        state->last_error_file = NULL;
+    }
+}
+
+/*
+ * The table is created and freed by serialize()/unserialize() themselves; the
+ * block only parks the pointer while the coroutine is suspended inside one of
+ * them, so there is nothing to release. serialize_lock is the counter the
+ * magic methods hold while they run, and a neighbour's count must not decide
+ * whether this coroutine's call allocates a table or borrows one.
+ */
+static void sconcur_serialize_capture(sconcur_engine_state *state)
+{
+    state->serialize_lock    = BG(serialize_lock);
+    state->serialize_data    = BG(serialize).data;
+    state->serialize_level   = BG(serialize).level;
+    state->unserialize_data  = BG(unserialize).data;
+    state->unserialize_level = BG(unserialize).level;
+
+    BG(serialize_lock)    = 0;
+    BG(serialize).data    = NULL;
+    BG(serialize).level   = 0;
+    BG(unserialize).data  = NULL;
+    BG(unserialize).level = 0;
+}
+
+static void sconcur_serialize_apply(sconcur_engine_state *state)
+{
+    BG(serialize_lock)    = state->serialize_lock;
+    BG(serialize).data    = state->serialize_data;
+    BG(serialize).level   = state->serialize_level;
+    BG(unserialize).data  = state->unserialize_data;
+    BG(unserialize).level = state->unserialize_level;
+
+    state->serialize_lock    = 0;
+    state->serialize_data    = NULL;
+    state->serialize_level   = 0;
+    state->unserialize_data  = NULL;
+    state->unserialize_level = 0;
+}
+
+static const sconcur_state_provider sconcur_state_providers[] = {
+    { sconcur_json_capture,       sconcur_json_apply,       NULL                       },
+    { sconcur_pcre_capture,       sconcur_pcre_apply,       NULL                       },
+    { sconcur_last_error_capture, sconcur_last_error_apply, sconcur_last_error_release },
+    { sconcur_serialize_capture,  sconcur_serialize_apply,  NULL                       },
+};
+
+#define SCONCUR_STATE_PROVIDERS_COUNT (sizeof(sconcur_state_providers) / sizeof(sconcur_state_providers[0]))
+
+/*
+ * The index of this extension's slot in zend_fiber_context.reserved[], taken
+ * once in MINIT; -1 when the engine had none left, in which case the state
+ * stays process-wide and MINIT says so.
+ */
+static int sconcur_engine_state_handle = -1;
+
+/*
+ * The block of a fiber context, allocated on first sight. Fibers are created
+ * zeroed, so a fresh one has no block yet and gets a zeroed one here; the main
+ * context is created by the engine without any observer notification and gets
+ * its block the same way, on the first switch it takes part in.
+ */
+static sconcur_engine_state *sconcur_engine_state_of(zend_fiber_context *context)
+{
+    sconcur_engine_state *state = context->reserved[sconcur_engine_state_handle];
+
+    if (state == NULL) {
+        state = ecalloc(1, sizeof(sconcur_engine_state));
+
+        context->reserved[sconcur_engine_state_handle] = state;
+    }
+
+    return state;
+}
+
+static void sconcur_engine_state_free(zend_fiber_context *context)
+{
+    sconcur_engine_state *state = context->reserved[sconcur_engine_state_handle];
+
+    if (state == NULL) {
+        return;
+    }
+
+    for (size_t index = 0; index < SCONCUR_STATE_PROVIDERS_COUNT; index++) {
+        if (sconcur_state_providers[index].release != NULL) {
+            sconcur_state_providers[index].release(state);
+        }
+    }
+
+    efree(state);
+
+    context->reserved[sconcur_engine_state_handle] = NULL;
+}
+
+/*
+ * Runs on the PHP thread for every fiber switch the engine makes — a feature
+ * wait, Scheduler::switch(), preemption, a nested group, a Fiber the scheduler
+ * never heard of — before the stacks are exchanged.
+ */
+static void sconcur_fiber_switch(zend_fiber_context *from, zend_fiber_context *to)
+{
+    sconcur_engine_state *from_state = sconcur_engine_state_of(from);
+    sconcur_engine_state *to_state   = sconcur_engine_state_of(to);
+
+    for (size_t index = 0; index < SCONCUR_STATE_PROVIDERS_COUNT; index++) {
+        sconcur_state_providers[index].capture(from_state);
+    }
+
+    for (size_t index = 0; index < SCONCUR_STATE_PROVIDERS_COUNT; index++) {
+        sconcur_state_providers[index].apply(to_state);
+    }
+}
+
+static void sconcur_fiber_destroy(zend_fiber_context *context)
+{
+    sconcur_engine_state_free(context);
 }
 
 /*
@@ -589,6 +819,36 @@ PHP_MINIT_FUNCTION(sconcur)
     sconcur_original_interrupt_function = zend_interrupt_function;
     zend_interrupt_function             = sconcur_interrupt_function;
 
+    /*
+     * The fiber observers cannot be unregistered, so they are registered once
+     * for the process and the slot index is what tells them where their block
+     * is. The engine hands out six slots; running out of them is a warning, not
+     * a refusal, since everything else here works without the isolation.
+     */
+    sconcur_engine_state_handle = zend_get_resource_handle("sconcur");
+
+    if (sconcur_engine_state_handle >= 0) {
+        zend_observer_fiber_switch_register(sconcur_fiber_switch);
+        zend_observer_fiber_destroy_register(sconcur_fiber_destroy);
+    } else {
+        zend_error(E_CORE_WARNING, "sconcur: no fiber slot left for per-coroutine engine state; json_last_error(), preg_last_error(), error_get_last() and serialize() stay process-wide");
+    }
+
+    return SUCCESS;
+}
+
+/*
+ * The main context is freed by the engine without a destroy notification, and
+ * it is still alive here — shutdown_executor frees it after the modules have
+ * shut their requests down. Its block holds nothing at this point (the main
+ * context is the one running), so this is the memory alone.
+ */
+PHP_RSHUTDOWN_FUNCTION(sconcur)
+{
+    if (sconcur_engine_state_handle >= 0 && EG(main_fiber_context) != NULL) {
+        sconcur_engine_state_free(EG(main_fiber_context));
+    }
+
     return SUCCESS;
 }
 
@@ -621,7 +881,7 @@ zend_module_entry sconcur_module_entry = {
     PHP_MINIT(sconcur),
     PHP_MSHUTDOWN(sconcur),
     NULL,  // RINIT
-    NULL,  // RSHUTDOWN
+    PHP_RSHUTDOWN(sconcur),
     NULL,  // MINFO
     NO_VERSION_YET,
     STANDARD_MODULE_PROPERTIES

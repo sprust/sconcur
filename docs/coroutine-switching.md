@@ -215,14 +215,26 @@ and a long call is exactly where the timer fires. So a preemption between
 `json_decode()` and `json_last_error()` is the likely case, not a rare one. Measured
 with two coroutines, one call failing and the other succeeding: with a 1 ms quantum
 `json_last_error()` returned the neighbour's result in about 60% of the checks
-(`json_decode` of about 50 KB), with 5 ms in about 14%. A single coroutine with
-preemption armed was never affected: the scheduler itself does not touch this state.
+(`json_decode` of about 50 KB), with 5 ms in about 14%.
 
-| State | What reads it | Safe form |
+For that reason the extension keeps four pieces of this state per coroutine. On every
+fiber switch it moves them out of the engine into a block attached to the fiber being
+left, and back in from the block of the fiber being entered. A coroutine therefore
+reads what its own last call left, whatever ran in between — a feature wait,
+`switch()` or preemption — and a new coroutine starts with all four clean:
+
+| Per coroutine | What reads it |
+| --- | --- |
+| JSON error | `json_last_error()`, `json_last_error_msg()` |
+| PCRE error | `preg_last_error()`, `preg_last_error_msg()` |
+| last PHP error | `error_get_last()`, `error_clear_last()` |
+| the serialize object table | `serialize()`, `unserialize()` — nested calls share one table of the objects already written, and a neighbour joining it writes its back-references against the wrong one |
+
+The rest stays one per process. Code that reads its outcome from it is correct only
+in the safe form:
+
+| Shared by the process | What reads it | Safe form |
 | --- | --- | --- |
-| JSON error | `json_last_error()`, `json_last_error_msg()` | `JSON_THROW_ON_ERROR` |
-| PCRE error | `preg_last_error()`, `preg_last_error_msg()` | check the return value of the `preg_*` call (`false`/`null` on error) |
-| last PHP error | `error_get_last()`, `error_clear_last()` | check the return value; the message is not reliable |
 | date parse errors | `DateTime::getLastErrors()`, `date_get_last_errors()` | check `createFromFormat()` for `false`, or construct and catch `DateMalformedStringException` |
 | libxml errors | `libxml_get_errors()`, `libxml_get_last_error()`, `libxml_use_internal_errors()` | none |
 | OpenSSL error queue | `openssl_error_string()` | none |
@@ -243,7 +255,7 @@ None of this is new: the same interleaving already happens across any feature
 call. Preemption makes the switch points invisible, so code that never makes a
 feature call between the two lines — including third-party libraries — is exposed
 too. That is why preemption is off by default. Turn it on for a worker whose
-handlers and their libraries do not rely on the state above.
+handlers and their libraries do not rely on the state in the second table.
 
 ## See also
 
