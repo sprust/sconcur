@@ -6,6 +6,7 @@ namespace SConcur\Scheduler;
 
 use Closure;
 use Fiber;
+use SConcur\Connection\Extension;
 use SConcur\State;
 use Throwable;
 
@@ -103,6 +104,11 @@ class FiberPool
                 if (!$job instanceof Closure) {
                     return;
                 }
+
+                // The engine state the extension keeps per fiber (json_last_error(),
+                // error_get_last(), libxml errors, ...) is still the previous job's:
+                // a fresh fiber would start clean, so this one is made to.
+                Extension::get()->resetEngineState();
 
                 try {
                     $job();

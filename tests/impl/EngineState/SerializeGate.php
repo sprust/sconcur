@@ -16,7 +16,12 @@ use Closure;
  */
 class SerializeGate
 {
-    public static ?Closure $onDestruct = null;
+    protected static ?Closure $onDestruct = null;
+
+    public static function onDestruct(?Closure $hook): void
+    {
+        static::$onDestruct = $hook;
+    }
 
     public function __destruct()
     {

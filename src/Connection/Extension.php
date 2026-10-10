@@ -25,6 +25,7 @@ use function SConcur\Extension\amqpStopConsuming;
 use function SConcur\Extension\httpStopAccepting;
 use function SConcur\Extension\next;
 use function SConcur\Extension\push;
+use function SConcur\Extension\resetEngineState;
 use function SConcur\Extension\socketStopAccepting;
 use function SConcur\Extension\stopFlow;
 use function SConcur\Extension\tasksCount;
@@ -295,6 +296,17 @@ class Extension
     public function disarmPreemption(): void
     {
         disarmPreemption();
+    }
+
+    /**
+     * Clears the engine state the extension keeps per coroutine — json_last_error(),
+     * preg_last_error(), error_get_last(), the collected libxml errors — for the
+     * running fiber. A fresh fiber starts with it clean; a pooled one carries what
+     * its previous coroutine left, so FiberPool calls this before each job.
+     */
+    public function resetEngineState(): void
+    {
+        resetEngineState();
     }
 
     protected static function parseWaitResponse(string $response, string $errorContext, float $start): TaskResultDto

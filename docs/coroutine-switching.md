@@ -203,33 +203,39 @@ function that reports the outcome of the previous call through such state is
 correct only if nothing runs between the two calls:
 
 ```php
-$data = json_decode($body);
+$date = DateTime::createFromFormat('Y-m-d', $input);
 
-if (json_last_error() !== JSON_ERROR_NONE) {   // may be a neighbour's result
+if (DateTime::getLastErrors() !== false) {   // may be a neighbour's result
     // ...
 }
 ```
 
 The engine checks for a pending interrupt right after an internal function returns,
-and a long call is exactly where the timer fires. So a preemption between
-`json_decode()` and `json_last_error()` is the likely case, not a rare one. Measured
-with two coroutines, one call failing and the other succeeding: with a 1 ms quantum
-`json_last_error()` returned the neighbour's result in about 60% of the checks
-(`json_decode` of about 50 KB), with 5 ms in about 14%.
+and a long call is exactly where the timer fires. So a preemption between a call and
+the check that reads its outcome is the likely case, not a rare one. Measured with
+`json_decode()` and `json_last_error()` before the extension started keeping that
+state per coroutine, two coroutines, one call failing and the other succeeding: with
+a 1 ms quantum `json_last_error()` returned the neighbour's result in about 60% of
+the checks (`json_decode` of about 50 KB), with 5 ms in about 14%.
 
 For that reason the extension keeps five pieces of this state per coroutine. On every
 fiber switch it moves them out of the engine into a block attached to the fiber being
 left, and back in from the block of the fiber being entered. A coroutine therefore
 reads what its own last call left, whatever ran in between — a feature wait,
-`switch()` or preemption — and a new coroutine starts with all five clean:
+`switch()` or preemption — and a new coroutine starts with all five clean, on a fresh
+fiber and on one the scheduler reuses alike:
 
 | Per coroutine | What reads it |
 | --- | --- |
 | JSON error | `json_last_error()`, `json_last_error_msg()` |
 | PCRE error | `preg_last_error()`, `preg_last_error_msg()` |
 | last PHP error | `error_get_last()`, `error_clear_last()` |
-| libxml errors | `libxml_get_errors()`, `libxml_get_last_error()`, `libxml_clear_errors()` — a coroutine started where `libxml_use_internal_errors(true)` is in effect has it in effect too, with an empty list of its own |
+| libxml errors | `libxml_get_errors()`, `libxml_get_last_error()`, `libxml_clear_errors()` — the collected errors; `libxml_use_internal_errors()` itself stays the process-wide switch it always was, so turning it on in one coroutine makes every coroutine collect, each into a list of its own |
 | the serialize object table | `serialize()`, `unserialize()` — nested calls share one table of the objects already written, and a neighbour joining it writes its back-references against the wrong one |
+
+One exception on purpose: a fatal error inside a coroutine stays visible to
+`error_get_last()` in the shutdown functions, the way an application learns about a
+fatal at all.
 
 The rest stays one per process. Code that reads its outcome from it is correct only
 in the safe form:
