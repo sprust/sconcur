@@ -46,7 +46,7 @@ class Extension
      * rejected instead of silently misbehaving. Public so tooling (bin/sconcur-status)
      * can report the version the package expects.
      */
-    public const string REQUIRED_EXTENSION_VERSION = '0.14.0';
+    public const string REQUIRED_EXTENSION_VERSION = '0.15.0';
 
     /**
      * Result frame layout (extension -> PHP), see ext/src/lib.rs. The envelope is
