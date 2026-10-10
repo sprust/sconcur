@@ -264,7 +264,7 @@ $collection->insertOne(['name' => 'example']);
 - [Архитектура](docs/architecture.ru.md) — Fiber ↔ задача рантайма, планировщик, слои,
   жизненный цикл задачи.
 - [Переключение корутин](docs/coroutine-switching.ru.md) — `Scheduler::switch()`
-  и автоматическая преемпция серверов для CPU-bound кода.
+  и автоматическая преемпция серверов для CPU-bound кода (включается опцией).
 - [Таймаут корутины](docs/coroutine-timeout.ru.md) — `Deadline::run()` и
   `add(timeoutMs: …)`: работа, которую разматывают, когда она затянулась.
 - [Контекст корутины](docs/coroutine-context.ru.md) — key-value хранилище на

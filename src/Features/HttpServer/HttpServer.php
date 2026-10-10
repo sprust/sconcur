@@ -57,8 +57,8 @@ readonly class HttpServer
      *                                                                                                  0 disables). If nothing was written yet the client gets a 504;
      *                                                                                                  mid-stream the response is aborted (status is already on the wire).
      *                                                                                                  The PHP handler is unwound at the same deadline rather than left
-     *                                                                                                  to finish work nobody will read — with preemption armed (the
-     *                                                                                                  default) that reaches a CPU-bound handler too.
+     *                                                                                                  to finish work nobody will read — with preemption armed
+     *                                                                                                  (preemptionQuantumMs above 0) that reaches a CPU-bound handler too.
      * @param int                                                                 $maxRequests          stop the server after it has handled this many requests
      *                                                                                                  (0 = unlimited). Meant against handler memory leaks: once the
      *                                                                                                  count is reached the server shuts down gracefully (closes the
@@ -90,8 +90,11 @@ readonly class HttpServer
      * @param int                                                                 $preemptionQuantumMs  automatic-preemption quantum: while serving, the extension
      *                                                                                                  interrupts the VM every quantum and parks the running handler
      *                                                                                                  coroutine, so a CPU-bound handler cannot starve the other
-     *                                                                                                  in-flight requests (see docs/http-server.md). Enabled by
-     *                                                                                                  default (5 ms); 0 disables.
+     *                                                                                                  in-flight requests (see docs/http-server.md). Off by default
+     *                                                                                                  (0): with it on, a neighbour can run between any two statements
+     *                                                                                                  of a handler, and the json_last_error()/error_get_last()/ob_*
+     *                                                                                                  kind of process-wide state stops being the handler's own
+     *                                                                                                  (see docs/coroutine-switching.md).
      *
      * Defaults mirror the extension's defaults.
      */
@@ -114,7 +117,7 @@ readonly class HttpServer
         protected string $telemetrySocket = '',
         protected string $serverName = 'sconcur-server',
         protected int $telemetryIntervalMs = 0,
-        protected int $preemptionQuantumMs = 5,
+        protected int $preemptionQuantumMs = 0,
     ) {
     }
 

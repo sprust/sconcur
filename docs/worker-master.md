@@ -339,17 +339,17 @@ What the watch leaves alone:
   nor calls `markAlive()`, so nothing about its PHP thread is known. The watchdog acts
   on evidence of a hang, not on its absence, so such a worker is supervised exactly as
   it was before.
-- A CPU-bound handler under [preemption](coroutine-switching.md), which the servers
-  arm by default: the scheduler parks its coroutine and goes back round the loop, so
+- A CPU-bound handler under [preemption](coroutine-switching.md), when the worker
+  arms it (`preemptionQuantumMs` above `0`): the scheduler parks its coroutine and goes back round the loop, so
   the marks keep coming while it computes. Everything that waits on I/O keeps them
   coming too, preemption or not — a suspended coroutine hands control back to the
   loop, and so does an idle server's poll, which wakes every 250 ms with nothing to
   do, so a worker that serves no request at all still marks itself. I/O here means I/O
   through SConcur — a native `sleep`, a PDO query or a `curl` call blocks the PHP
   thread and marks nothing, which is the case the watchdog exists for. Only a handler
-  that returns control to nobody stops the marks. If you turn preemption
-  off (`preemptionQuantumMs: 0`) and still compute for longer than the threshold in
-  one handler, that worker is unservable for that whole time and will be replaced —
+  that returns control to nobody stops the marks. With preemption off (the default,
+  `preemptionQuantumMs: 0`), a handler that computes for longer than the threshold
+  leaves its worker unservable for that whole time, and the worker will be replaced —
   raise `watchdogTimeoutMs` past the longest such handler, or set it to `0` for that
   group.
 - The one worker a rolling `reload` is currently unwinding: its `SIGTERM` is sent and

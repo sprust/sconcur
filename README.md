@@ -264,7 +264,7 @@ The crates the core is built on:
 - [Architecture](docs/architecture.md) — Fiber ↔ runtime task, the scheduler, the
   layers, the task lifecycle.
 - [Coroutine switching](docs/coroutine-switching.md) — `Scheduler::switch()` and
-  the servers' automatic preemption for CPU-bound code.
+  the servers' opt-in automatic preemption for CPU-bound code.
 - [Coroutine timeout](docs/coroutine-timeout.md) — `Deadline::run()` and
   `add(timeoutMs: …)`: work that is unwound when it runs too long.
 - [Coroutine context](docs/coroutine-context.md) — per-coroutine key-value store.

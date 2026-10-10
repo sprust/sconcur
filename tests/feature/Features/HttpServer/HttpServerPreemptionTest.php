@@ -13,8 +13,8 @@ class HttpServerPreemptionTest extends BaseHttpServerTestCase
     {
         // /cpu/{n} does NOT call Scheduler::switch() — without preemption it
         // freezes the whole single-threaded process (see the ...PreemptionOffTest
-        // counterpart). Preemption is on by default, so the light request must
-        // complete while the heavy loop is still crunching.
+        // counterpart). With preemption armed the light request must complete
+        // while the heavy loop is still crunching.
         $heavyHandle = $this->startBackgroundGet('/cpu/6000000');
 
         try {
@@ -38,6 +38,13 @@ class HttpServerPreemptionTest extends BaseHttpServerTestCase
         }
 
         self::assertSame(200, $heavyStatus);
+    }
+
+    protected static function serverOptions(): array
+    {
+        return [
+            'preemptionQuantumMs' => 5,
+        ];
     }
 
     /**

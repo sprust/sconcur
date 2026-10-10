@@ -137,14 +137,14 @@ class WorkerMasterTest extends TestCase
 
     public function testAPreemptedCpuBoundHandlerKeepsItsSlot(): void
     {
-        // Preemption is on by default (a 5 ms quantum). A handler that computes for
-        // longer than the whole watchdog threshold must not be mistaken for a hang: the
-        // scheduler parks its coroutine and goes back round the serve loop, so the marks
-        // keep coming while it works.
-        $master = TestWorkerMaster::start([
-            'workerCount'       => 1,
-            'watchdogTimeoutMs' => 5_000,
-        ]);
+        // With preemption armed, a handler that computes for longer than the whole
+        // watchdog threshold must not be mistaken for a hang: the scheduler parks its
+        // coroutine and goes back round the serve loop, so the marks keep coming while
+        // it works.
+        $master = TestWorkerMaster::start(
+            options: ['workerCount' => 1, 'watchdogTimeoutMs' => 5_000],
+            workerArgs: ['--preemptionQuantumMs=5'],
+        );
 
         try {
             $before = $master->workerPid();

@@ -146,10 +146,10 @@ The scheduler enforces it at the points where it already takes control:
 
 The last two rows are the honest limits.
 
-**Without preemption** the deadline is cooperative. The servers and the AMQP queue
-consumer arm preemption while they run (the `preemptionQuantumMs` option), so handler
-code is interruptible there; a CLI script or library code has to ask — `Scheduler::get()->enablePreemption()`,
-see [coroutine switching](coroutine-switching.md). Without it a loop that computes
+**Without preemption** the deadline is cooperative. Preemption is off by default
+everywhere. The servers and the AMQP queue consumer arm it while they run when the
+`preemptionQuantumMs` option is above `0`; a CLI script or library code has to ask —
+`Scheduler::get()->enablePreemption()`, see [coroutine switching](coroutine-switching.md). Without it a loop that computes
 and never waits runs to its end, and the timeout is delivered afterwards.
 
 **Inside a boundary call** no PHP runs at all, so nothing can be delivered. A query, a

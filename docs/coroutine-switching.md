@@ -8,7 +8,8 @@ points: a handler busy with computation blocks every other coroutine of its
 process until it finishes. Switching addresses that in two forms:
 `Scheduler::switch()` — an explicit switch point you put into your own hot loops
 — and automatic preemption, where the extension interrupts the VM on a timer and
-performs the same switch for you (on by default in the long-lived workers).
+performs the same switch for you (off by default; the long-lived workers turn it on
+with one option).
 
 Switching is a latency tool, not a throughput tool. The total CPU work does not
 change and the PHP thread stays single: a heavy handler still takes its
@@ -55,9 +56,12 @@ parked crunchers.
 ## Automatic preemption
 
 The long-lived workers — the three servers (`HttpServer`, `SocketServer`, `WsServer`)
-and the [AMQP queue consumer](amqp.md#a-supervised-consumer) — arm automatic preemption
-while they run, so even code that never calls `switch()`, third-party libraries
-included, cannot freeze the process:
+and the [AMQP queue consumer](amqp.md#a-supervised-consumer) — can arm automatic
+preemption while they run, so even code that never calls `switch()`, third-party
+libraries included, cannot freeze the process. It is off by default: with it on, a
+neighbour can run between any two statements of a handler, and some PHP state that
+handlers read as their own is shared by the whole process — see
+[process-wide state](#process-wide-state). How it works:
 
 1. On startup the extension hooks the engine's interrupt entry point
    (`zend_interrupt_function`), chaining the previous handler, so pcntl signal
@@ -82,19 +86,19 @@ flowchart TB
     Scheduler["Scheduler loop (results first, then the queue)"] -->|"resume"| Queue
 ```
 
-Configuration is the `preemptionQuantumMs` option (default `5`, `0` disables), carried
-by all four and overridable like any other launch option:
+Configuration is the `preemptionQuantumMs` option (default `0`, which leaves preemption
+off), carried by all four and overridable like any other launch option:
 
 ```php
 $server = new HttpServer(
     serverRequestFactory: $requestFactory,
     responseFactory: $responseFactory,
-    preemptionQuantumMs: 10,
+    preemptionQuantumMs: 5,
 );
 ```
 
 ```console
-php server.php --preemptionQuantumMs=0   # disable preemption for this worker
+php server.php --preemptionQuantumMs=5   # enable preemption for this worker
 ```
 
 CLI scripts and library code outside those workers never arm the timer, so there
@@ -132,20 +136,20 @@ endpoint and 10% a handler worth ~49 ms of CPU:
 
 | `preemptionQuantumMs` | p50 | p90 | p99 |
 | ---: | ---: | ---: | ---: |
-| 5 (default) | 29.8 ms | 2.02 s | 2.86 s |
+| 5 | 29.8 ms | 2.02 s | 2.86 s |
 | 20 | 79.1 ms | 1.82 s | 2.91 s |
 | 50 | 147.5 ms | 1.56 s | 2.85 s |
 | 100 | 180.2 ms | 1.66 s | 4.33 s |
-| 0 (off) | 227.9 ms | 381.0 ms | 539.0 ms |
+| 0 (off, default) | 227.9 ms | 381.0 ms | 539.0 ms |
 
 Nothing but switching preemption off moves the tail: with any quantum the
 coroutines interleave and all of them stretch at once, without it they run to
 completion in turn. An intermediate quantum only costs p50 and buys no p99, so
-there is usually no reason to change the 5 ms default.
+once preemption is on there is usually no reason to pick anything but 5 ms.
 
 The other setting is the HTTP server's `maxConcurrency`, which bounds not the
 quantum but the number of handlers served at once — that is, how many of them
-share the thread.
+share the thread. Measured with a 5 ms quantum:
 
 | `maxConcurrency` | p50 | p90 | p99 |
 | ---: | ---: | ---: | ---: |
@@ -156,7 +160,8 @@ share the thread.
 
 Both settings move along one curve: a low p50 for the cheap requests and a short
 tail for the heavy ones are not available together. Pick the end that matches
-your workload — the defaults are tuned for the cheap requests.
+your workload. The defaults sit at the far end of the first table: the heavy
+handlers run to completion in turn, and the cheap requests wait behind them.
 
 Two things move the curve itself rather than the point on it: more processes in
 the pool, and keeping heavy computation out of the handler.
@@ -190,6 +195,55 @@ Single monolithic internal calls stay non-preemptible either way — a `preg_mat
 on a huge subject, a `json_decode` of a huge blob — because they run between opcode
 boundaries. The quantum bounds the delay between opcodes, not inside one internal
 call.
+
+### Process-wide state
+
+The same applies to state PHP keeps per process rather than per coroutine. A
+function that reports the outcome of the previous call through such state is
+correct only if nothing runs between the two calls:
+
+```php
+$data = json_decode($body);
+
+if (json_last_error() !== JSON_ERROR_NONE) {   // may be a neighbour's result
+    // ...
+}
+```
+
+The engine checks for a pending interrupt right after an internal function returns,
+and a long call is exactly where the timer fires. So a preemption between
+`json_decode()` and `json_last_error()` is the likely case, not a rare one. Measured
+with two coroutines, one call failing and the other succeeding: with a 1 ms quantum
+`json_last_error()` returned the neighbour's result in about 60% of the checks
+(`json_decode` of about 50 KB), with 5 ms in about 14%. A single coroutine with
+preemption armed was never affected: the scheduler itself does not touch this state.
+
+| State | What reads it | Safe form |
+| --- | --- | --- |
+| JSON error | `json_last_error()`, `json_last_error_msg()` | `JSON_THROW_ON_ERROR` |
+| PCRE error | `preg_last_error()`, `preg_last_error_msg()` | check the return value of the `preg_*` call (`false`/`null` on error) |
+| last PHP error | `error_get_last()`, `error_clear_last()` | check the return value; the message is not reliable |
+| date parse errors | `DateTime::getLastErrors()`, `date_get_last_errors()` | check `createFromFormat()` for `false`, or construct and catch `DateMalformedStringException` |
+| libxml errors | `libxml_get_errors()`, `libxml_get_last_error()`, `libxml_use_internal_errors()` | none |
+| OpenSSL error queue | `openssl_error_string()` | none |
+| output buffers | `ob_start()` … `ob_get_clean()` | none |
+| error and exception handlers | `set_error_handler()`/`restore_error_handler()`, `set_exception_handler()`/`restore_exception_handler()` | none |
+
+The last two do the most damage. Output buffers are one stack for the process: a
+neighbour's `echo` lands in whatever buffer is on top, so a template rendered
+through `ob_start()` (plain PHP templates, Blade, Twig) can end up with the output
+of another request in it. Handlers are one stack too: a warning raised by a
+neighbour goes to a handler set by someone else, and two interleaved
+`set`/`restore` pairs pop each other's handler.
+
+The `@` operator did not leak in the same measurement: a neighbour running while a
+coroutine is inside `@call()` still saw its own `error_reporting()`.
+
+None of this is new: the same interleaving already happens across any feature
+call. Preemption makes the switch points invisible, so code that never makes a
+feature call between the two lines — including third-party libraries — is exposed
+too. That is why preemption is off by default. Turn it on for a worker whose
+handlers and their libraries do not rely on the state above.
 
 ## See also
 

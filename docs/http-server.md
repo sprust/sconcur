@@ -131,7 +131,7 @@ timeouts are in milliseconds.
 | `telemetrySocket` | `''` (off) | Unix socket for stats snapshots, injected by the master ([stats](admin-stats.md)). |
 | `serverName` | `'sconcur-server'` | Worker name in the stats snapshots. |
 | `telemetryIntervalMs` | `0` | Snapshot cadence; `0` — the default of the component that sends them (1000 ms). |
-| `preemptionQuantumMs` | `5` | Automatic-preemption quantum while serving; `0` — off. See [coroutine switching](coroutine-switching.md). |
+| `preemptionQuantumMs` | `0` | Automatic-preemption quantum while serving; `0` — off. Read [process-wide state](coroutine-switching.md#process-wide-state) before turning it on. |
 
 `0` means "off" for `maxConcurrency`/`handlerTimeoutMs`/`maxRequests`.
 
@@ -366,10 +366,11 @@ current one suspends on an SConcur feature (`Fiber::suspend()`).
 
 > **Handlers must be I/O-bound through SConcur features.** A native blocking call
 > (`sleep()`, synchronous PDO/`curl`, reading a file) freezes the whole server.
-> CPU-heavy PHP code is the exception: the server preempts it every
-> `preemptionQuantumMs` (see [coroutine switching](coroutine-switching.md)), so it
-> delays neighbours by at most the quantum — but a single monolithic internal call
-> (a huge `preg_match`, `json_decode`) is still not interruptible.
+> CPU-heavy PHP code freezes it too, unless preemption is on: then the server
+> preempts it every `preemptionQuantumMs` (see
+> [coroutine switching](coroutine-switching.md)), so it delays neighbours by at most
+> the quantum — but a single monolithic internal call (a huge `preg_match`,
+> `json_decode`) is still not interruptible.
 
 `maxConcurrency` limits requests handled at once. It is a semaphore in the extension
 acquired before the body is read, so it bounds runtime tasks, memory (bodies are
@@ -397,8 +398,8 @@ The PHP handler is unwound at the same deadline — the request coroutine is giv
 and past it a [coroutine timeout](coroutine-timeout.md) is thrown into the handler
 where it stands. Its `finally` blocks run, its transaction rolls back, its
 connections go back to their pools, and it stops producing a response nobody will
-read. With preemption armed — the default — that reaches a handler busy with pure
-computation as well.
+read. With preemption armed (`preemptionQuantumMs` above `0`) that reaches a handler
+busy with pure computation as well.
 
 What neither of them reaches is a handler already inside a native call: no PHP runs
 there, so nothing can be delivered until it returns. Those are bounded by the

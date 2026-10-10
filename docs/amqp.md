@@ -738,8 +738,8 @@ One limit comes with it, from the mechanism underneath — see
 [coroutine timeout](coroutine-timeout.md). A handler already inside a broker call is not
 cut until that call returns: that one is bounded by the connection's own
 `rpcTimeoutSeconds` and `writeTimeoutSeconds`, which is a different setting and worth
-having as well. A handler busy with pure computation *is* cut, because the pool arms
-preemption while it consumes (`preemptionQuantumMs`, on by default).
+having as well. A handler busy with pure computation is cut only when the pool arms
+preemption while it consumes (`preemptionQuantumMs` above `0`; off by default).
 
 The same deadline is available inside a handler for a part of the work, without
 configuring the pool at all:
@@ -1045,7 +1045,7 @@ The group that runs it:
 | `maxMessages` | `0` (no limit) | Drain and exit after this many messages. |
 | `maxRuntimeSeconds` | `0` (no limit) | Drain and exit after this long. |
 | `maxMemoryBytes` | `0` (no limit) | Drain and exit once the PHP heap passes this. A guard against creep, not against a spike — see [when the worker itself dies](#when-the-worker-itself-dies). |
-| `preemptionQuantumMs` | `5` (`0` off) | Automatic-preemption quantum while consuming. It is what lets `handlerTimeoutMs` reach a handler busy with computation, and keeps such a handler from holding off the loop — see [coroutine switching](coroutine-switching.md). |
+| `preemptionQuantumMs` | `0` (off) | Automatic-preemption quantum while consuming. It is what lets `handlerTimeoutMs` reach a handler busy with computation, and keeps such a handler from holding off the loop. Read [process-wide state](coroutine-switching.md#process-wide-state) before turning it on. |
 | `masterPid` | none | Injected by the master; the worker drains as soon as it is orphaned. |
 
 `coroutineCount` is a queue's weight: how many consumers it gets, each on a channel

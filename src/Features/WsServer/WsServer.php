@@ -44,8 +44,8 @@ readonly class WsServer
      *                                                                       where it stands (0 = unlimited). A handler cut this way ends
      *                                                                       quietly: its finally blocks run, onError is not told, and the
      *                                                                       connection is closed on the way out by the handler wrapper's
-     *                                                                       own finally. With preemption armed (the default) it reaches a
-     *                                                                       handler busy with computation too — see
+     *                                                                       own finally. With preemption armed (preemptionQuantumMs above 0)
+     *                                                                       it reaches a handler busy with computation too — see
      *                                                                       docs/coroutine-timeout.md.
      * @param int                                       $maxConnections      stop the server after it has handled this many connections
      *                                                                       (0 = unlimited). Meant against handler memory leaks: once reached
@@ -76,8 +76,10 @@ readonly class WsServer
      * @param int                                       $preemptionQuantumMs automatic-preemption quantum: while serving, the
      *                                                                       extension interrupts the VM every quantum and parks the
      *                                                                       running handler coroutine, so a CPU-bound handler cannot
-     *                                                                       starve the other in-flight connections. Enabled by default
-     *                                                                       (5 ms); 0 disables.
+     *                                                                       starve the other in-flight connections. Off by default (0):
+     *                                                                       with it on, the json_last_error()/error_get_last()/ob_* kind
+     *                                                                       of process-wide state stops being the handler's own (see
+     *                                                                       docs/coroutine-switching.md).
      *
      * Defaults mirror the extension's defaults.
      */
@@ -101,7 +103,7 @@ readonly class WsServer
         protected string $telemetrySocket = '',
         protected string $serverName = 'sconcur-server',
         protected int $telemetryIntervalMs = 0,
-        protected int $preemptionQuantumMs = 5,
+        protected int $preemptionQuantumMs = 0,
     ) {
     }
 

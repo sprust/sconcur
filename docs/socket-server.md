@@ -98,7 +98,7 @@ The `SocketServer` constructor; the PHP defaults mirror the extension's.
 | `telemetrySocket` | `''` (off) | unix socket for stats snapshots, injected by the master ([stats](admin-stats.md)) |
 | `serverName` | `'sconcur-server'` | worker name in the stats snapshots |
 | `telemetryIntervalMs` | `0` | stats cadence (`0` — pusher default, 1000 ms) |
-| `preemptionQuantumMs` | `5` | automatic-preemption quantum (`0` — off), see [coroutine switching](coroutine-switching.md) |
+| `preemptionQuantumMs` | `0` | automatic-preemption quantum (`0` — off); read [process-wide state](coroutine-switching.md#process-wide-state) before turning it on |
 
 ## Concurrency
 
@@ -110,8 +110,8 @@ but not handled until a slot frees up.
 
 > A handler stuck in a native call (`sleep`, synchronous PDO/`curl`) freezes the
 > single PHP thread — nothing preempts a native call. A userland CPU loop is
-> preempted by default ([automatic preemption](coroutine-switching.md)), so it only
-> delays the neighbours by the quantum. The push model has no per-message timeout
+> preempted only with [automatic preemption](coroutine-switching.md) on, and then
+> it delays the neighbours by the quantum. The push model has no per-message timeout
 > (there is no notion of a "request"); the boundaries are the idle `readTimeoutMs`,
 > `writeTimeoutMs` and graceful shutdown.
 

@@ -120,8 +120,8 @@ zero.
 
 - CPU-bound PHP loads the whole process together with every request it is
   currently serving — worse than the per-worker isolation of fpm/RoadRunner.
-  Mitigations: [automatic preemption](coroutine-switching.md) bounds how long
-  such code delays the other requests in the process, the per-core pool spreads
+  Mitigations: [automatic preemption](coroutine-switching.md), when turned on,
+  bounds how long such code delays the other requests in the process, the per-core pool spreads
   requests over processes, `handlerTimeoutMs` still answers 504, `maxRequests`
   recycles workers, and the master's watchdog kills and replaces a worker whose
   PHP thread stopped answering ([stuck worker](worker-master.md#stuck-worker)). What

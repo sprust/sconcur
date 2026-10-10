@@ -125,7 +125,7 @@ The `WsServer` constructor; the PHP defaults mirror the extension's.
 | `telemetrySocket` | `''` (off) | unix socket for stats snapshots, injected by the master ([stats](admin-stats.md)) |
 | `serverName` | `'sconcur-server'` | worker name in the stats snapshots |
 | `telemetryIntervalMs` | `0` | stats cadence (`0` — pusher default, 1000 ms) |
-| `preemptionQuantumMs` | `5` | automatic-preemption quantum (`0` — off), see [coroutine switching](coroutine-switching.md) |
+| `preemptionQuantumMs` | `0` | automatic-preemption quantum (`0` — off); read [process-wide state](coroutine-switching.md#process-wide-state) before turning it on |
 
 `allowedOrigins`/`subprotocols` are arrays, so they are not expanded from the
 master's argv; set them in the worker script if needed.
@@ -136,8 +136,8 @@ Concurrency is between connections: each lives in its own coroutine.
 `maxConcurrency` limits how many are served at once (a slot is held for the whole
 lifetime of a connection); excess upgrades wait for a free slot. The same CPU-bound
 caveat as everywhere applies: a native blocking call freezes the single PHP thread,
-while a userland CPU loop is preempted every
-[quantum](coroutine-switching.md).
+and so does a userland CPU loop, unless preemption is on — then it is preempted
+every [quantum](coroutine-switching.md).
 
 The server pings the client every `pingIntervalMs`; with no pong within
 `writeTimeoutMs` it considers the peer dead and closes the connection — this keeps

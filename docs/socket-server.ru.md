@@ -97,7 +97,7 @@ $server->serve(static function (Connection $connection): void {
 | `telemetrySocket` | `''` (выкл.) | unix-сокет для снапшотов статистики, инжектируется мастером ([статистика](admin-stats.ru.md)) |
 | `serverName` | `'sconcur-server'` | имя воркера в снапшотах статистики |
 | `telemetryIntervalMs` | `0` | период снапшотов (`0` — значение по умолчанию у отправителя, 1000 мс) |
-| `preemptionQuantumMs` | `5` | квант автоматической преемпции (`0` — выкл.), см. [переключение корутин](coroutine-switching.ru.md) |
+| `preemptionQuantumMs` | `0` | квант автоматической преемпции (`0` — выкл.); перед включением прочитайте про [состояние процесса](coroutine-switching.ru.md#состояние-процесса) |
 
 ## Конкурентность
 
@@ -109,8 +109,8 @@ $server->serve(static function (Connection $connection): void {
 
 > Обработчик, застрявший в нативном вызове (`sleep`, синхронный PDO/`curl`),
 > замораживает единственный PHP-поток — нативный вызов вытеснить нечем. Userland
-> CPU-цикл вытесняется по умолчанию
-> ([автоматическая преемпция](coroutine-switching.ru.md)), поэтому задерживает
+> CPU-цикл вытесняется, только если включена
+> [автоматическая преемпция](coroutine-switching.ru.md), и тогда задерживает
 > соседей только на квант. Per-message таймаута в push-модели нет (нет понятия
 > «запрос»); границы задают idle `readTimeoutMs`, `writeTimeoutMs` и graceful
 > shutdown.

@@ -130,7 +130,10 @@ class HttpServerHandlerTimeoutTest extends BaseHttpServerTestCase
      */
     protected static function serverOptions(): array
     {
-        return ['handlerTimeoutMs' => 250];
+        return [
+            'handlerTimeoutMs'    => 250,
+            'preemptionQuantumMs' => 5,
+        ];
     }
 
     /**

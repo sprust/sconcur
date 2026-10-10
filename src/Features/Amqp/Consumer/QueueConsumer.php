@@ -32,7 +32,7 @@ use WeakReference;
  * socket: the extension side opens the consumers and publishes every delivery of all of them as
  * one stream, `Scheduler::serve()` drives that stream, and each message is handled in a
  * coroutine of its own — the same loop, the same graceful shutdown and the same automatic
- * preemption the HTTP, socket and WebSocket servers run on.
+ * preemption, off unless asked for, the HTTP, socket and WebSocket servers run on.
  *
  * The channels behind the consumers belong to the extension side. That is what keeps this class
  * free of questions about the runtime: a stop cancels the consumers and leaves the channels
@@ -54,9 +54,6 @@ use WeakReference;
 class QueueConsumer
 {
     use ServerRuntimeSupportTrait;
-
-    /** The same default the servers use. */
-    protected const int DEFAULT_PREEMPTION_QUANTUM_MS = 5;
 
     /** How far down a `previous` chain a failure is read; deep enough for the runtime's wrappers. */
     protected const int MAX_CAUSE_DEPTH = 8;
@@ -122,7 +119,11 @@ class QueueConsumer
      * @param int    $maxMemoryBytes      drain and stop once the PHP heap passes this
      * @param int    $preemptionQuantumMs what lets $handlerTimeoutMs and a stop reach a
      *                                    handler busy with computation — and keeps such a
-     *                                    handler from holding off the serve loop
+     *                                    handler from holding off the serve loop. Off by
+     *                                    default (0): with it on, the json_last_error()/
+     *                                    error_get_last()/ob_* kind of process-wide state
+     *                                    stops being the handler's own (see
+     *                                    docs/coroutine-switching.md)
      * @param ?int   $masterPid           when set, the worker drains as soon as it is
      *                                    orphaned; the master injects it as --masterPid
      */
@@ -134,7 +135,7 @@ class QueueConsumer
         protected int $maxMessages = 0,
         protected int $maxRuntimeSeconds = 0,
         protected int $maxMemoryBytes = 0,
-        protected int $preemptionQuantumMs = self::DEFAULT_PREEMPTION_QUANTUM_MS,
+        protected int $preemptionQuantumMs = 0,
         protected ?int $masterPid = null,
     ) {
     }
