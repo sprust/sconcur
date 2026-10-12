@@ -106,7 +106,7 @@ class FiberPool
                 }
 
                 // The engine state the extension keeps per fiber (json_last_error(),
-                // error_get_last(), libxml errors, ...) is still the previous job's:
+                // error_get_last()) is still the previous job's:
                 // a fresh fiber would start clean, so this one is made to.
                 Extension::get()->resetEngineState();
 

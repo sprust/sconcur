@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Scheduler;
 
 use ArrayObject;
-use DOMDocument;
 use Fiber;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Scheduler\Scheduler;
@@ -17,8 +16,8 @@ use SConcur\WaitGroup;
 
 /**
  * The engine state the extension keeps per coroutine: json_last_error(),
- * preg_last_error(), error_get_last(), the libxml error list and the
- * serialize() object table. PHP holds each once per process; the extension
+ * preg_last_error(), error_get_last() and the serialize() object table. PHP
+ * holds each once per process; the extension
  * moves them in and out of a block attached to the fiber on every switch, so a
  * neighbour that runs between a call and the check that reads its outcome
  * leaves no trace.
@@ -27,16 +26,11 @@ use SConcur\WaitGroup;
  * parked on a feature wait — and the two most exposed ones are also hammered
  * under a 1 ms preemption quantum, where the switch lands right after the
  * internal call returns. The rest covers the edges the isolation has: a fatal
- * error must still reach the shutdown functions, a pooled fiber must start its
- * next coroutine clean, and libxml_use_internal_errors() stays the process-wide
- * switch it always was while the collected errors are per coroutine.
+ * error must still reach the shutdown functions, and a pooled fiber must start
+ * its next coroutine clean.
  */
 class CoroutineEngineStateTest extends BaseTestCase
 {
-    protected const string LIBXML_ERROR_A = 'Premature end of data in tag a line 1';
-    protected const string LIBXML_ERROR_B = 'Premature end of data in tag b line 1';
-    protected const string LIBXML_ERROR_M = 'Premature end of data in tag m line 1';
-
     protected static string $sequentialProbe = '';
 
     public function testJsonErrorIsPerCoroutineAcrossAWait(): void
@@ -148,202 +142,6 @@ class CoroutineEngineStateTest extends BaseTestCase
                 keys: $keys,
             ),
         );
-    }
-
-    public function testLibxmlErrorsArePerCoroutineAcrossAWait(): void
-    {
-        $keys      = [];
-        $waitGroup = WaitGroup::create();
-
-        $keys[] = $waitGroup->add(
-            callback: static function (): array {
-                libxml_use_internal_errors(true);
-
-                try {
-                    (new DOMDocument())->loadXML('<a>');
-
-                    Sleeper::usleep(microseconds: 3_000);
-
-                    return self::libxmlErrorMessages();
-                } finally {
-                    libxml_use_internal_errors(false);
-                }
-            },
-        );
-
-        // Reads its own list while the first coroutine's is still live, and only
-        // then turns the process-wide switch off — which, as always, ends the
-        // collecting for everyone.
-        $keys[] = $waitGroup->add(
-            callback: static function (): array {
-                Sleeper::usleep(microseconds: 1_000);
-
-                libxml_use_internal_errors(true);
-
-                try {
-                    (new DOMDocument())->loadXML('<b>');
-
-                    $messages = self::libxmlErrorMessages();
-
-                    Sleeper::usleep(microseconds: 3_000);
-
-                    return $messages;
-                } finally {
-                    libxml_use_internal_errors(false);
-                }
-            },
-        );
-
-        self::assertSame(
-            [
-                [self::LIBXML_ERROR_A],
-                [self::LIBXML_ERROR_B],
-            ],
-            $this->resultsInAddOrder(
-                waitGroup: $waitGroup,
-                keys: $keys,
-            ),
-            'Each coroutine must see the errors of its own parse and nothing of the neighbour\'s.',
-        );
-    }
-
-    /**
-     * libxml_use_internal_errors() installs one error handler for the whole
-     * process, and that handler appends to the list of whatever context is
-     * running. A coroutine that never called it still parses while the switch is
-     * on, so it must collect into a list of its own rather than crash on a
-     * missing one or warn.
-     */
-    public function testLibxmlSwitchOnInOneCoroutineGivesTheNeighbourAListOfItsOwn(): void
-    {
-        $keys      = [];
-        $waitGroup = WaitGroup::create();
-
-        $keys[] = $waitGroup->add(
-            callback: static function (): array {
-                libxml_use_internal_errors(true);
-
-                try {
-                    (new DOMDocument())->loadXML('<a>');
-
-                    Sleeper::usleep(microseconds: 3_000);
-
-                    return self::libxmlErrorMessages();
-                } finally {
-                    libxml_use_internal_errors(false);
-                }
-            },
-        );
-
-        $keys[] = $waitGroup->add(
-            callback: static function (): array {
-                Sleeper::usleep(microseconds: 1_000);
-
-                $warnings = self::countWarnings(static function (): void {
-                    (new DOMDocument())->loadXML('<b>');
-                });
-
-                return [
-                    $warnings,
-                    self::libxmlErrorMessages(),
-                ];
-            },
-        );
-
-        self::assertSame(
-            [
-                [self::LIBXML_ERROR_A],
-                [
-                    0,
-                    [self::LIBXML_ERROR_B],
-                ],
-            ],
-            $this->resultsInAddOrder(
-                waitGroup: $waitGroup,
-                keys: $keys,
-            ),
-        );
-    }
-
-    public function testLibxmlSwitchLeftOnByAFinishedCoroutineStillCollectsOutside(): void
-    {
-        try {
-            $keys      = [];
-            $waitGroup = WaitGroup::create();
-
-            // Turns the switch on and returns without turning it off: the list it
-            // collected into dies with the fiber, the switch stays.
-            $keys[] = $waitGroup->add(
-                callback: static function (): array {
-                    libxml_use_internal_errors(true);
-
-                    (new DOMDocument())->loadXML('<a>');
-
-                    return self::libxmlErrorMessages();
-                },
-            );
-
-            self::assertSame(
-                [
-                    [self::LIBXML_ERROR_A],
-                ],
-                $this->resultsInAddOrder(
-                    waitGroup: $waitGroup,
-                    keys: $keys,
-                ),
-            );
-
-            self::assertTrue(libxml_use_internal_errors(), 'The switch is process-wide and was left on.');
-
-            $warnings = self::countWarnings(static function (): void {
-                (new DOMDocument())->loadXML('<m>');
-            });
-
-            self::assertSame(0, $warnings);
-            self::assertSame([self::LIBXML_ERROR_M], self::libxmlErrorMessages());
-        } finally {
-            libxml_use_internal_errors(false);
-        }
-    }
-
-    public function testLibxmlSwitchOnOutsideAppliesInsideACoroutine(): void
-    {
-        libxml_use_internal_errors(true);
-
-        try {
-            $keys      = [];
-            $waitGroup = WaitGroup::create();
-
-            $keys[] = $waitGroup->add(
-                callback: static function (): array {
-                    $warnings = self::countWarnings(static function (): void {
-                        (new DOMDocument())->loadXML('<a>');
-                    });
-
-                    return [
-                        $warnings,
-                        self::libxmlErrorMessages(),
-                    ];
-                },
-            );
-
-            self::assertSame(
-                [
-                    [
-                        0,
-                        [self::LIBXML_ERROR_A],
-                    ],
-                ],
-                $this->resultsInAddOrder(
-                    waitGroup: $waitGroup,
-                    keys: $keys,
-                ),
-            );
-
-            self::assertSame([], libxml_get_errors(), 'The coroutine\'s error must not land in the list outside.');
-        } finally {
-            libxml_use_internal_errors(false);
-        }
     }
 
     public function testSerializeObjectTableIsPerCoroutineAcrossAWait(): void
@@ -603,10 +401,6 @@ class CoroutineEngineStateTest extends BaseTestCase
                 json_decode('{broken');
                 preg_match('/\d/u', "\xff");
                 self::raiseWarning('first spawn warning');
-
-                libxml_use_internal_errors(true);
-
-                (new DOMDocument())->loadXML('<a>');
             });
 
             $scheduler->spawn(static function () use ($observed): void {
@@ -616,12 +410,10 @@ class CoroutineEngineStateTest extends BaseTestCase
                     json_last_error(),
                     preg_last_error(),
                     error_get_last()['message'] ?? null,
-                    libxml_use_internal_errors(),
-                    self::libxmlErrorMessages(),
                 ];
             });
         } finally {
-            libxml_use_internal_errors(false);
+            // Nothing to restore: the first coroutine's state died with its job.
         }
 
         self::assertNotSame(0, $observed['firstFiberId']);
@@ -635,11 +427,9 @@ class CoroutineEngineStateTest extends BaseTestCase
                 JSON_ERROR_NONE,
                 PREG_NO_ERROR,
                 null,
-                true,
-                [],
             ],
             $observed['second'],
-            'The second coroutine read the first one\'s state; only the process-wide libxml switch may carry over.',
+            'The second coroutine read the first one\'s state.',
         );
     }
 
@@ -673,45 +463,6 @@ class CoroutineEngineStateTest extends BaseTestCase
         } finally {
             restore_error_handler();
         }
-    }
-
-    /**
-     * Runs the callback with a handler that swallows warnings and answers how
-     * many it swallowed.
-     */
-    protected static function countWarnings(callable $callback): int
-    {
-        $warnings = 0;
-
-        set_error_handler(static function () use (&$warnings): bool {
-            ++$warnings;
-
-            return true;
-        });
-
-        try {
-            $callback();
-        } finally {
-            restore_error_handler();
-        }
-
-        return $warnings;
-    }
-
-    /**
-     * The messages libxml collected so far, leaving the list as it is.
-     *
-     * @return list<string>
-     */
-    protected static function libxmlErrorMessages(): array
-    {
-        $messages = [];
-
-        foreach (libxml_get_errors() as $error) {
-            $messages[] = trim($error->message);
-        }
-
-        return $messages;
     }
 
     /**

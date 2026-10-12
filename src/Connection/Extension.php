@@ -300,8 +300,7 @@ class Extension
 
     /**
      * Clears the engine state the extension keeps per coroutine — json_last_error(),
-     * preg_last_error(), error_get_last(), the collected libxml errors — for the
-     * running fiber. A fresh fiber starts with it clean; a pooled one carries what
+     * preg_last_error(), error_get_last() — for the running fiber. A fresh fiber starts with it clean; a pooled one carries what
      * its previous coroutine left, so FiberPool calls this before each job.
      */
     public function resetEngineState(): void
