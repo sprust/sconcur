@@ -11,12 +11,8 @@ use SConcur\Exceptions\ExtensionCallException;
 use SConcur\Exceptions\ExtensionNotLoadedException;
 use SConcur\Exceptions\IncompatibleExtensionVersionException;
 use SConcur\Exceptions\MsgpackObjectSupportDisabledException;
-use SConcur\Exceptions\TaskErrorException;
-use SConcur\Exceptions\UnexpectedResponseFormatException;
-use SConcur\Features\MethodEnum;
 use SConcur\Transport\MessagePackTransport;
 use SConcur\Transport\PayloadInterface;
-use Throwable;
 use function SConcur\Extension\armPreemption;
 use function SConcur\Extension\destroy;
 use function SConcur\Extension\disarmPreemption;
@@ -46,19 +42,16 @@ class Extension
      * rejected instead of silently misbehaving. Public so tooling (bin/sconcur-status)
      * can report the version the package expects.
      */
-    public const string REQUIRED_EXTENSION_VERSION = '0.15.0';
+    public const string REQUIRED_EXTENSION_VERSION = '0.16.0';
 
-    /**
-     * Result frame layout (extension -> PHP), see ext/src/lib.rs. The envelope is
-     * a fixed binary header, not MessagePack; only the feature payload stays
-     * MessagePack and is decoded once by the feature. Header: flags(1) +
-     * methodLen(1) + execMs(uint32) + flowKeyLen(uint16) + taskKeyLen(uint16) +
-     * ownerFiberId(uint64 — the coroutine awaiting this result, 0 = none), then
-     * method, flowKey, taskKey and the raw payload (the rest).
+    /*
+     * Every wait answers with ready TaskResultDto objects. The core instantiates
+     * them on this thread, inside the wait call, by writing the declared
+     * properties of src/Dto/TaskResultDto.php in place (the result builder in
+     * ext/sconcur.c); only the feature payload inside is still MessagePack,
+     * decoded once by the feature. A wait that fails throws TaskErrorException
+     * from the core itself, and a timed wait that saw nothing answers null.
      */
-    private const int FRAME_HEADER_SIZE   = 18;
-    private const int FRAME_FLAG_ERROR    = 1 << 0;
-    private const int FRAME_FLAG_HAS_NEXT = 1 << 1;
 
     protected static ?Extension $instance = null;
 
@@ -103,15 +96,7 @@ class Extension
 
     public function wait(string $flowKey): TaskResultDto
     {
-        $start = microtime(true);
-
-        $response = wait($flowKey);
-
-        return static::parseWaitResponse(
-            response: $response,
-            errorContext: sprintf('flow %s', $flowKey),
-            start: $start,
-        );
+        return wait($flowKey);
     }
 
     /**
@@ -121,15 +106,7 @@ class Extension
      */
     public function waitAny(): TaskResultDto
     {
-        $start = microtime(true);
-
-        $response = waitAny();
-
-        return static::parseWaitResponse(
-            response: $response,
-            errorContext: 'waitAny',
-            start: $start,
-        );
+        return waitAny();
     }
 
     /**
@@ -139,22 +116,7 @@ class Extension
      */
     public function waitAnyTimeout(int $timeoutMs): ?TaskResultDto
     {
-        $start = microtime(true);
-
-        $response = waitAnyTimeout($timeoutMs);
-
-        // Distinct, non-"error:" sentinel the extension side returns on timeout. A real
-        // result is msgpack (binary) and an error starts with "error:", so this
-        // never collides.
-        if ($response === 'timeout') {
-            return null;
-        }
-
-        return static::parseWaitResponse(
-            response: $response,
-            errorContext: 'waitAny',
-            start: $start,
-        );
+        return waitAnyTimeout($timeoutMs);
     }
 
     /**
@@ -163,19 +125,14 @@ class Extension
      * already ready — up to $maxResults — all in one crossing. The batch
      * never waits to fill up, so the first result's latency is unchanged.
      *
+     * Only the first result's totalExecutionMs carries the wait: the tail was
+     * already ready when the crossing returned and waited for nothing.
+     *
      * @return non-empty-list<TaskResultDto>
      */
     public function waitAnyBatch(int $maxResults): array
     {
-        $start = microtime(true);
-
-        $response = waitAnyBatch($maxResults);
-
-        return static::parseWaitBatchResponse(
-            response: $response,
-            errorContext: 'waitAnyBatch',
-            start: $start,
-        );
+        return waitAnyBatch($maxResults);
     }
 
     /**
@@ -187,22 +144,7 @@ class Extension
      */
     public function waitAnyTimeoutBatch(int $timeoutMs, int $maxResults): ?array
     {
-        $start = microtime(true);
-
-        $response = waitAnyTimeoutBatch($timeoutMs, $maxResults);
-
-        // Distinct, non-"error:" sentinel the extension side returns on timeout. A real
-        // batch is binary and an error starts with "error:", so this never
-        // collides.
-        if ($response === 'timeout') {
-            return null;
-        }
-
-        return static::parseWaitBatchResponse(
-            response: $response,
-            errorContext: 'waitAnyTimeoutBatch',
-            start: $start,
-        );
+        return waitAnyTimeoutBatch($timeoutMs, $maxResults);
     }
 
     public function count(): int
@@ -295,183 +237,6 @@ class Extension
     public function disarmPreemption(): void
     {
         disarmPreemption();
-    }
-
-    protected static function parseWaitResponse(string $response, string $errorContext, float $start): TaskResultDto
-    {
-        if (str_starts_with($response, 'error:')) {
-            throw new TaskErrorException(
-                message: sprintf(
-                    '%s: %s',
-                    $errorContext,
-                    $response,
-                ),
-            );
-        }
-
-        return static::parseResultFrame(
-            response: $response,
-            offset: 0,
-            frameLength: strlen($response),
-            start: $start,
-        );
-    }
-
-    /**
-     * Decodes one result frame at $offset without copying the frame out of
-     * $response, so a batch multiframe decodes each frame in place.
-     */
-    protected static function parseResultFrame(string $response, int $offset, int $frameLength, float $start): TaskResultDto
-    {
-        try {
-            // The envelope is a fixed binary header; the payload (the rest of the
-            // frame) is the feature's MessagePack bytes, decoded later by the
-            // feature itself.
-            $header = unpack('Cflags/CmethodLen/NexecutionMs/nflowKeyLen/ntaskKeyLen/JownerFiberId', $response, $offset);
-
-            if ($header === false) {
-                throw new UnexpectedResponseFormatException(
-                    message: 'Could not unpack result frame header.',
-                );
-            }
-
-            // The declared lengths must fit the frame: on a corrupt frame a
-            // blind substr chain would silently slice bytes of the NEIGHBOUR
-            // frames into this result's payload instead of failing loudly.
-            $declaredLength = self::FRAME_HEADER_SIZE
-                + $header['methodLen']
-                + $header['flowKeyLen']
-                + $header['taskKeyLen'];
-
-            if ($declaredLength > $frameLength || ($offset + $frameLength) > strlen($response)) {
-                throw new UnexpectedResponseFormatException(
-                    message: 'Result frame lengths exceed the frame boundary.',
-                );
-            }
-
-            $cursor = $offset + self::FRAME_HEADER_SIZE;
-            $method = substr($response, $cursor, $header['methodLen']);
-            $cursor += $header['methodLen'];
-            $flowKey = substr($response, $cursor, $header['flowKeyLen']);
-            $cursor += $header['flowKeyLen'];
-            $taskKey = substr($response, $cursor, $header['taskKeyLen']);
-            $cursor += $header['taskKeyLen'];
-            $payload = substr($response, $cursor, ($offset + $frameLength) - $cursor);
-
-            $methodEnum = MethodEnum::tryFrom($method);
-
-            if ($methodEnum === null) {
-                // Reported rather than folded into MethodEnum::Unknown. A method this
-                // package does not know is the version skew REQUIRED_EXTENSION_VERSION
-                // exists to catch, and decoding it as a valid result is how that signal
-                // would be lost at the one point it could be seen. The core's own
-                // unknown method is not this case: it travels as 'unk' and resolves
-                // here like any other, so the failure it carries still reaches the
-                // caller as the failure it is.
-                throw new UnexpectedResponseFormatException(
-                    message: "Result frame carries the method '$method', which this package does not know: "
-                        . 'the loaded core is newer than the package.',
-                );
-            }
-
-            return new TaskResultDto(
-                flowKey: $flowKey,
-                method: $methodEnum,
-                key: $taskKey,
-                isError: ($header['flags'] & self::FRAME_FLAG_ERROR) !== 0,
-                payload: $payload,
-                hasNext: ($header['flags'] & self::FRAME_FLAG_HAS_NEXT) !== 0,
-                executionMs: $header['executionMs'],
-                totalExecutionMs: (int) ((microtime(true) - $start) * 1000),
-                ownerFiberId: $header['ownerFiberId'],
-            );
-        } catch (UnexpectedResponseFormatException $exception) {
-            throw $exception;
-        } catch (Throwable $exception) {
-            throw new UnexpectedResponseFormatException(
-                message: $exception->getMessage(),
-                previous: $exception,
-            );
-        }
-    }
-
-    /**
-     * Parses the result multiframe of waitAnyBatch/waitAnyTimeoutBatch (see
-     * the batch frame builder in ext/src/lib.rs): [count uint16][frameLen uint32][frame]...
-     * — each inner frame in the exact single-result format of parseWaitResponse.
-     *
-     * @return non-empty-list<TaskResultDto>
-     */
-    protected static function parseWaitBatchResponse(string $response, string $errorContext, float $start): array
-    {
-        // The tail results of a batch were already ready when the crossing
-        // returned: only the first frame waited from $start, the rest waited
-        // for nothing — mirroring the per-call semantics of the singular
-        // waitAny, where a ready result's own wait returns immediately.
-        $crossingEnd = microtime(true);
-
-        if (str_starts_with($response, 'error:')) {
-            throw new TaskErrorException(
-                message: sprintf(
-                    '%s: %s',
-                    $errorContext,
-                    $response,
-                ),
-            );
-        }
-
-        // A structurally corrupt frame fails the whole batch loudly (the
-        // already-parsed prefix included): the frames are machine-built by the
-        // version-locked extension, so a mismatch is a protocol bug — partial
-        // delivery would only hide it behind a few silently hung coroutines.
-        try {
-            $header = unpack('ncount', $response);
-
-            if ($header === false || $header['count'] < 1) {
-                throw new UnexpectedResponseFormatException(
-                    message: 'Could not unpack result batch header.',
-                );
-            }
-
-            $results = [];
-            $offset  = 2;
-
-            for ($frameIndex = 0; $frameIndex < $header['count']; $frameIndex++) {
-                $frameHeader = unpack('NframeLength', $response, $offset);
-
-                if ($frameHeader === false) {
-                    throw new UnexpectedResponseFormatException(
-                        message: 'Could not unpack result batch frame length.',
-                    );
-                }
-
-                $offset += 4;
-
-                $results[] = static::parseResultFrame(
-                    response: $response,
-                    offset: $offset,
-                    frameLength: $frameHeader['frameLength'],
-                    start: ($frameIndex === 0) ? $start : $crossingEnd,
-                );
-
-                $offset += $frameHeader['frameLength'];
-            }
-
-            if ($offset !== strlen($response)) {
-                throw new UnexpectedResponseFormatException(
-                    message: 'Result batch has trailing bytes past the last frame.',
-                );
-            }
-
-            return $results;
-        } catch (UnexpectedResponseFormatException|TaskErrorException $exception) {
-            throw $exception;
-        } catch (Throwable $exception) {
-            throw new UnexpectedResponseFormatException(
-                message: $exception->getMessage(),
-                previous: $exception,
-            );
-        }
     }
 
     protected static function checkCallResponse(string $flowKey, string $response): void

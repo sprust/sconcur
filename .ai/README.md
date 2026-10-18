@@ -8,8 +8,12 @@ here.
 
 SConcur is a PHP concurrency library backed by a custom PHP extension written in
 Rust. PHP Fibers suspend while the extension executes tasks concurrently on an
-async runtime; the two sides exchange msgpack-tagged DTOs
-(`Transport/MessagePackTransport`).
+async runtime. PHP sends a task as a msgpack-packed payload DTO
+(`Transport/MessagePackTransport`); the core hands the result back as a ready
+`TaskResultDto`, built on the PHP thread by the glue's result builder in
+`ext/sconcur.c` from the fields the core gives it, with the feature payload still
+msgpack inside it. The plan that removes the rest of msgpack is
+[.ai/plans/direct-zval-transport.md](plans/direct-zval-transport.md).
 
 Core PHP code lives in `src/` under the `SConcur\` namespace — main entry points
 are `WaitGroup`, `Scheduler`, `State`, `Connection/Extension` and the feature
@@ -178,7 +182,7 @@ feature's doc. Key PHP classes not covered there:
   served, so `spl_object_id` alone identifies nothing.
 - `State` — the static registry mapping Fibers ↔ flows, plus the per-coroutine
   context store (released in `unRegisterFiber`). Results route by the owner id
-  carried in the frame, so there is no task → fiber map.
+  carried in the result, so there is no task → fiber map.
 - `Context/Context`, `Context/CoroutineContext` — the framework-neutral
   `find`/`has`/`set`/`forget` contract; parent links are recorded in
   `Scheduler::spawn` / `WaitGroup::add`.

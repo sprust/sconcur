@@ -28,7 +28,7 @@ coroutines. Every task pushes its result into one shared bounded channel inside
 the extension; `Extension::waitAnyBatch()` blocks until the first result of any
 flow is ready and reads every other already-ready result in the same
 crossing (up to 64). The scheduler consumes the batch one result per step: the
-result frame names the coroutine that awaits it, and the scheduler resumes that
+result names the coroutine that awaits it, and the scheduler resumes that
 one.
 
 Because every resumption comes from the scheduler, coroutines do not nest on each
@@ -106,7 +106,7 @@ flowchart TB
         SCH -.->|"releases the Fiber's flow on completion"| ST
     end
 
-    EXT <-->|"boundary + msgpack: push / waitAnyBatch / next ↔ result"| LIB
+    EXT <-->|"boundary: push (msgpack payload) / waitAnyBatch (TaskResultDto) / next"| LIB
 
     subgraph EXTENSION["Extension (ext/)"]
         direction TB
@@ -138,7 +138,7 @@ Key entities:
   worker loop that parks on `Fiber::suspend()` between jobs instead of
   terminating, so the fiber stack is mapped once, not per request.
 - `State` (`src/State.php`) — the static registry of `Fiber ↔ flow` links (result
-  routing needs no task map: the owner travels in the frame).
+  routing needs no task map: the owner travels in the result).
 - `FeatureExecutor` — the features' entry point: detects the async context via
   `State::getCurrentFlow()` and suspends the coroutine, handing the deferred
   task to the side that will send it across. On the async path it never crosses
@@ -174,7 +174,7 @@ Key entities:
 5. `WaitGroup::iterate()` hands out ready results and delegates waiting: at the
    top level it spins `Scheduler::run()` (the `waitAnyBatch` loop), while a
    nested `iterate()` cooperatively suspends via `Scheduler::awaitGroup()`.
-6. The result frame carries the owner id back; the scheduler checks the
+6. The result carries the owner id back; the scheduler checks the
    coroutine still awaits exactly this flow/task (ids are reused once a fiber is
    freed) and `resume($taskResult)` returns `TaskResultDto` out of
    `Fiber::suspend()` inside `FeatureExecutor`.

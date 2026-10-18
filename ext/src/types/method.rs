@@ -5,6 +5,8 @@
 //! with no allocation and no lookup, so a message holds the method itself and
 //! there is nothing to intern.
 
+use std::ffi::CStr;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Method {
     Sleep,
@@ -78,6 +80,33 @@ impl Method {
             // all — and the frame of an unknown-method failure is exactly the one that
             // has to arrive intact, since it is carrying the report of what went wrong.
             Method::Unknown => "unk",
+        }
+    }
+
+    /// The name of the SConcur\Features\MethodEnum case this method is, which
+    /// is how a result names its method to the glue's result builder: the
+    /// builder fetches the enum case by name, so the PHP side receives the case
+    /// object itself and never parses the wire value. NUL-terminated because the
+    /// builder is C.
+    pub fn as_php_case(&self) -> &'static CStr {
+        match self {
+            Method::Sleep => c"Sleep",
+            Method::Mongodb => c"Mongodb",
+            Method::HttpServe => c"HttpServe",
+            Method::HttpRespond => c"HttpRespond",
+            Method::HttpClient => c"HttpClient",
+            Method::Mysql => c"Mysql",
+            Method::Pgsql => c"Pgsql",
+            Method::SocketServe => c"SocketServe",
+            Method::SocketRespond => c"SocketRespond",
+            Method::SocketClient => c"SocketClient",
+            Method::WsServe => c"WsServe",
+            Method::WsRespond => c"WsRespond",
+            Method::WsClient => c"WsClient",
+            Method::Amqp => c"Amqp",
+            Method::Redis => c"Redis",
+            Method::Files => c"Files",
+            Method::Unknown => c"Unknown",
         }
     }
 }

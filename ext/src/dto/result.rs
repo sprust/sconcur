@@ -1,4 +1,4 @@
-//! The result a task hands back, encoded into the boundary frame.
+//! The result a task hands back, handed to the glue's result builder field by field (lib.rs).
 
 use crate::dto::Message;
 use crate::types::method::Method;
@@ -9,12 +9,13 @@ pub struct Result {
     pub task_key: String,
     pub is_error: bool,
     /// The feature payload, already encoded. Bytes rather than a string: the
-    /// frame writes it verbatim and nothing here treats it as text.
+    /// builder copies it verbatim into a PHP string and nothing here treats it
+    /// as text.
     pub payload: Vec<u8>,
     pub has_next: bool,
     pub execution_ms: u32,
     /// Mirrors Message::owner_id: the PHP coroutine awaiting this result
-    /// (0 = none), carried in the binary result frame.
+    /// (0 = none), carried into the TaskResultDto.
     pub owner_id: i64,
 }
 

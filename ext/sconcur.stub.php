@@ -14,15 +14,15 @@ function next(string $fk, string $tk): string
 {
 }
 
-function wait(string $fk): string
+function wait(string $fk): \SConcur\Dto\TaskResultDto
 {
 }
 
-function waitAny(): string
+function waitAny(): \SConcur\Dto\TaskResultDto
 {
 }
 
-function waitAnyTimeout(int $timeoutMs): string
+function waitAnyTimeout(int $timeoutMs): ?\SConcur\Dto\TaskResultDto
 {
 }
 
@@ -62,11 +62,11 @@ function version(): string
 {
 }
 
-function waitAnyBatch(int $maxResults): string
+function waitAnyBatch(int $maxResults): array
 {
 }
 
-function waitAnyTimeoutBatch(int $timeoutMs, int $maxResults): string
+function waitAnyTimeoutBatch(int $timeoutMs, int $maxResults): ?array
 {
 }
 

@@ -6,9 +6,9 @@ declare(strict_types=1);
  * Attribution of what one result taken through waitAny costs, on the PHP side of
  * the boundary.
  *
- * It splits the per-result price into: a bare boundary crossing, the frame the
- * extension builds plus its copies, the PHP frame parsing into a TaskResultDto,
- * and — separately —
+ * It splits the per-result price into: a bare boundary crossing, the
+ * TaskResultDto the core builds on this thread inside the wait, the PHP wrapper
+ * around that call, and — separately —
  * the scheduler's coroutine coordination (suspend -> waitAny -> resume).
  *
  * Both wall and CPU time are reported: the sleeper's own timer shows up in
@@ -18,7 +18,6 @@ declare(strict_types=1);
  * Run: php -d extension=./ext/build/sconcur.so tests/benchmarks/runtime/boundary-profile.php
  */
 
-use RuntimeException;
 use SConcur\Connection\Extension;
 use SConcur\Features\Sleeper\Payloads\SleeperPayload;
 use SConcur\Features\Sleeper\Sleeper;
@@ -142,9 +141,9 @@ $report['boundary crossing (tasksCount)'] = $measure(
     operations: RESULTS,
 );
 
-// 2. Raw waitAny: the crossing, the frame the extension builds and the copies it
-//    takes, without any PHP-side parsing.
-$report['raw waitAny (crossing + frame + copies)'] = $measure(
+// 2. Raw waitAny: the crossing and the TaskResultDto the core builds on this
+//    thread, with no PHP wrapper around the call.
+$report['raw waitAny (crossing + TaskResultDto)'] = $measure(
     case: static function (): void {
         for ($i = 0; $i < RESULTS; $i++) {
             rawWaitAny();
@@ -154,8 +153,8 @@ $report['raw waitAny (crossing + frame + copies)'] = $measure(
     setUp: $seedResults,
 );
 
-// 3. Full single-result path: the same plus parseWaitResponse + TaskResultDto.
-$report['waitAny (full path -> TaskResultDto)'] = $measure(
+// 3. The same through Extension::waitAny(), which is what the scheduler calls.
+$report['Extension::waitAny() (full path)'] = $measure(
     case: static function () use ($extension): void {
         for ($i = 0; $i < RESULTS; $i++) {
             $extension->waitAny();
@@ -178,51 +177,7 @@ $report['waitAnyBatch(64) (per result)'] = $measure(
     setUp: $seedResults,
 );
 
-// 5. The two halves in one loop, on fresh frames, which is the only row that
-//    describes the real path. The isolated rows below do NOT sum to it, and the
-//    difference is not a missing component: parsing one frame over and over with
-//    the extension idle costs ~2 us, while parsing the frames of a run that is
-//    actually taking results costs ~9 us. The extra is allocator and refcount
-//    work on the objects each result becomes, which only exists when results are
-//    really flowing.
-//
-//    Reading the isolated rows as an attribution is what produced the "~6 us
-//    unattributed" of an earlier round. There was nothing unattributed; the
-//    parts were measured in a state the whole never has.
-$parseFrame = Closure::bind(
-    static fn (string $response): object => Extension::parseWaitResponse($response, 'profile', microtime(true)),
-    null,
-    Extension::class,
-);
-
-$report['raw waitAny + parse (composed, fresh frames)'] = $measure(
-    case: static function () use ($parseFrame): void {
-        for ($i = 0; $i < RESULTS; $i++) {
-            $parseFrame(rawWaitAny());
-        }
-    },
-    operations: RESULTS,
-    setUp: $seedResults,
-);
-
-// 6. PHP-side frame parsing in isolation, on one captured frame.
-$seedResults();
-$frame = rawWaitAny();
-
-while (tasksCount() > 0) {
-    rawWaitAny();
-}
-
-$report['parseWaitResponse (PHP only)'] = $measure(
-    case: static function () use ($parseFrame, $frame): void {
-        for ($i = 0; $i < RESULTS; $i++) {
-            $parseFrame($frame);
-        }
-    },
-    operations: RESULTS,
-);
-
-// 7. Scheduler coordination: a fan-out of coroutines that never suspend versus
+// 5. Scheduler coordination: a fan-out of coroutines that never suspend versus
 //    one where every coroutine suspends on the cheapest possible feature call.
 //    Read the CPU column — the sleeper's timer inflates wall, not CPU.
 //
@@ -261,7 +216,7 @@ $report['coroutine, suspends on usleep(1)'] = $measure(
     operations: COROUTINES,
 );
 
-// 7. Synchronous path: push + wait + stopFlow per call (phase 2's target).
+// 6. Synchronous path: push + wait + stopFlow per call (phase 2's target).
 $report['sync feature call (push+wait+stopFlow)'] = $measure(
     case: static function (): void {
         for ($i = 0; $i < RESULTS; $i++) {
