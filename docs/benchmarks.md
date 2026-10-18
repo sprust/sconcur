@@ -57,8 +57,8 @@ worker log stays empty: it reports a failed feature in the response body, not to
 stderr. The run still prints a plausible requests/sec. Always check
 `Non-2xx or 3xx responses` in the wrk output before trusting a long run.
 
-Every number on this page was taken on 2026-10-18, on an idle machine, on
-disk-backed volumes, on the Rust core after the boundary stopped carrying
+Every number on this page was taken on 2026-10-18, on an idle machine with the
+Ubuntu power profile set to Performance, on disk-backed volumes, on the Rust core after the boundary stopped carrying
 MessagePack: the feature tables through their harnesses, the HTTP-server tables
 with all three stacks in one session and the placement equalised (see
 [Methodology](#methodology)).
@@ -128,6 +128,11 @@ truncated before every single run.
 Re-measure all three stacks in one session: cross-session drift alone reaches
 ±20%, and a reference row carried over from an older session is what made the
 previous version of these tables incomparable.
+
+Check the power profile before a session (`powerprofilesctl get`) and keep it
+the same throughout. It moves the absolute numbers on its own: the empty
+endpoint, 12 workers, gave 11.5% more rps under Performance than under
+Balanced, runs interleaved on one build.
 
 ## MongoDB
 

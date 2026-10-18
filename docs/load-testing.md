@@ -146,8 +146,8 @@ same `PIN_SERVERS`.
 
 ## Baseline run (empty endpoint)
 
-An Intel i7-13620H laptop (16 threads), services in Docker on disk-backed
-volumes, 12 servers / 4 wrk cores, 256 connections, 20 s, `PIN_SERVERS=group`.
+An Intel i7-13620H laptop (16 threads) on the Performance power profile,
+services in Docker on disk-backed volumes, 12 servers / 4 wrk cores, 256 connections, 20 s, `PIN_SERVERS=group`.
 `/` responds `ok` with no I/O and no noticeable
 CPU — the ceiling of the HTTP-server + framework pairing, and the floor on top
 of which the cost of the `/all` feature calls is added.
