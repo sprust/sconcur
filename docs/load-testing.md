@@ -92,13 +92,13 @@ The empty endpoint, 12 workers, the same `cpu0-11` budget in every arm, `wrk` on
 
 | placement | rps | p50 | p90 | p99 |
 |---|---:|---:|---:|---:|
-| `1` — one logical CPU each | 154 432 | 0.62 ms | 202 ms | 334 ms |
-| `group` — the scheduler places them | **194 338** | 0.94 ms | 73 ms | 263 ms |
+| `1` — one logical CPU each | 232 864 | 1.01 ms | 1.60 ms | 3.86 ms |
+| `group` — the scheduler places them | **248 002** | 0.86 ms | 2.09 ms | 4.19 ms |
 
-`group` is 26% ahead, and the tail moves with it: pinning costs nearly three
-times the p90. `physical` lands on `1` rather than between the two — in an arm
-of its own it holds 120 984 rps against 123 185 for `1`, the two ranges
-overlapping.
+`group` is 6.5% ahead on throughput and median; the pinned arm has the slightly
+shorter tail (p90 1.6 against 2.1 ms, p99 within 0.3 ms). `physical` lands on
+`1` rather than between the two — in an arm of its own it holds 228 720 rps
+against 229 267 for `1`.
 
 The gap is not a detail of naive pinning that a smarter placement would fix; it
 comes from pinning as such. The explanation that fits every measurement: each
@@ -108,7 +108,7 @@ rebalance uneven load, and the scheduler can: a pinned idle worker has no way to
 lend its core to a busy neighbour.
 
 That is why there is no `cpuAffinity` setting. Shipping a knob that, on an equal
-core budget, enables something a quarter slower is not a choice. The current
+core budget, enables something 6–7% slower is not a choice. The current
 behaviour — `WorkerMaster` pins nothing — is the measured optimum.
 
 Confining a pool to part of a machine does not need one either. `group` is what a
@@ -146,19 +146,20 @@ same `PIN_SERVERS`.
 
 ## Baseline run (empty endpoint)
 
-An Intel i7-13620H laptop (16 threads), services in Docker, 12 servers / 4 wrk
-cores, 256 connections, 20 s. `/` responds `ok` with no I/O and no noticeable
+An Intel i7-13620H laptop (16 threads), services in Docker on disk-backed
+volumes, 12 servers / 4 wrk cores, 256 connections, 20 s, `PIN_SERVERS=group`.
+`/` responds `ok` with no I/O and no noticeable
 CPU — the ceiling of the HTTP-server + framework pairing, and the floor on top
 of which the cost of the `/all` feature calls is added.
 
 | Metric | `/` (empty) | `/all` (all features) |
 |---|---|---|
-| Throughput | ≈194 300 req/sec | ≈1 371 req/sec |
-| Latency | p50 0.9 · p90 73 · p99 263 ms | p50 183 · p90 258 · p99 364 ms |
-| Servers CPU (`php`) | avg ~1149 % | avg ~383 % |
-| Worker RSS (sum of 12) | ~441 MiB (flat) | ~535 MiB |
+| Throughput | ≈252 800 req/sec | ≈2 950 req/sec |
+| Latency | p50 0.83 · p90 2.1 · p99 4.2 ms | p50 83 · p90 120 · p99 190 ms |
+| Servers CPU (`php`) | avg ~1184 % | avg ~205 % |
+| Worker RSS (sum of 12) | ~450 MiB (flat) | ~549 MiB |
 
-Three runs held ~194k req/sec with 0 errors. The ~140× gap is the price of the
+The runs held ~250k req/sec with 0 errors. The ~85× gap is the price of the
 feature calls: `/all` crosses the PHP↔extension boundary for three feature blocks
 at once and pays the fsync of 3 disk writes per request. Throughput hits exactly
 that, not the cheap DB read. The empty endpoint has none of it and is CPU-bound
@@ -171,30 +172,30 @@ the same time in three feature blocks, 3 of them disk writes.
 
 | Metric | Value |
 |---|---|
-| Throughput | ≈1 371 req/sec (0 errors — all 3 features `ok`) |
-| Latency | p50 183 · p90 258 · p99 364 ms |
-| Worker RSS (sum of 12) | ~535 MiB |
-| Servers CPU (`php`) | avg 383 % / peak 453 % (≈ 4–5 of 12 cores) |
-| Backends CPU | MongoDB ~146 % · MySQL ~126 % · PostgreSQL ~101 % |
-| MEM (containers) | php 237 MiB |
+| Throughput | ≈2 950 req/sec (0 errors — all 3 features `ok`) |
+| Latency | p50 83 · p90 120 · p99 190 ms |
+| Worker RSS (sum of 12) | ~549 MiB |
+| Servers CPU (`php`) | avg 205 % / peak 292 % (≈ 2–3 of 12 cores) |
+| Backends CPU | MongoDB ~78 % · MySQL ~67 % · PostgreSQL ~61 % |
+| MEM (containers) | php 244 MiB |
 
 The RSS drift over 20 s is warm-up noise; the authoritative leak verdict comes from
 the soak below.
 
 ## Soak run (10 minutes)
 
-The same environment, a sustained load of 128 connections for 600 s — 1 738 813
-requests (~5.2M feature operations).
+The same environment, a sustained load of 128 connections for 600 s — 1 431 343
+requests (~4.3M feature operations).
 
 | Metric | Value |
 |---|---|
-| Throughput | 2 897 req/sec · p50 40 · p90 72 · p99 127 ms |
-| Worker RSS (trend over 10 min) | first 618.5 / peak 621.8 / last 620.6 MiB |
-| Drift / slope | +2.1 MiB / +0.11 MiB/min → verdict stable |
-| Servers CPU (`php`) | avg 741 % / peak 768 % |
+| Throughput | 2 385 req/sec · p50 52 · p90 88 · p99 149 ms |
+| Worker RSS (trend over 10 min) | first 532.0 / peak 533.7 / last 533.6 MiB |
+| Drift / slope | +1.6 MiB / +0.06 MiB/min → verdict stable |
+| Servers CPU (`php`) | avg 157 % / peak 239 % |
 
-RSS stayed flat (618–622 MiB) for the whole distance — the slope is within noise,
-there is no slow leak. The `mongodb` container's MEM meanwhile grew to ~372 MiB
+RSS stayed flat (532–534 MiB) for the whole distance — the slope is within noise,
+there is no slow leak. The `mongodb` container's MEM meanwhile grew to ~234 MiB
 because of the unbounded inserts of `/all` into the `load_all` collection, while
 the worker RSS did not budge: the data is accumulated by the DB, not by SConcur.
 
@@ -212,46 +213,47 @@ Same machine and parameters, disk-backed backends, state reset
 
 | Metric | `/all` (concurrent) | `/all-nowg` (sequential) |
 |---|---|---|
-| Throughput | 2 620 req/sec | 2 570 req/sec (−2 %) |
-| Latency | p50 87.6 · p90 174.8 · p99 294.8 ms | p50 90.8 · p90 164.5 · p99 261.2 ms |
-| Servers CPU (`php`) | avg 717 % | avg 503 % (−30 %) |
-| Worker RSS drift (20 s) | +3.3 MiB | +0.0 MiB |
+| Throughput | 2 950 req/sec | 2 768 req/sec (−6 %) |
+| Latency | p50 83.1 · p90 120.0 · p99 189.7 ms | p50 91.8 · p90 123.5 · p99 161.6 ms |
+| Servers CPU (`php`) | avg 205 % | avg 136 % (−34 %) |
+| Worker RSS drift (20 s) | +1.6 MiB | +1.4 MiB |
 
 Single connection (1 server / 1 wrk thread / 1 connection / 5 s):
 
 | Metric | `/all` (concurrent) | `/all-nowg` (sequential) |
 |---|---|---|
-| Latency avg | 9.9 ms | 12.2 ms (+23 %) |
-| Throughput | 101 req/sec | 82 req/sec |
+| Latency avg | 6.3 ms | 7.6 ms (+20 %) |
+| Throughput | 158 req/sec | 132 req/sec |
 
-1. Under saturation the throughput is the same: the ceiling is the backends'
-   disk commits, and the 256 request coroutines being served keep them busy even
+1. Under saturation the throughput is nearly the same: the ceiling is the
+   backends' disk commits, and the 256 request coroutines being served keep them busy even
    without running the calls of a single request concurrently — a feature called
    outside a `WaitGroup` still suspends its coroutine, and the process serves
    other requests in the meantime.
-2. What running them concurrently improves is per-request latency — 9.9 vs
-   12.2 ms at a single connection, where the three feature blocks wait for their disk
+2. What running them concurrently improves is per-request latency — 6.3 vs
+   7.6 ms at a single connection, where the three feature blocks wait for their disk
    commits at the same time.
-3. Sequential calls are cheaper in CPU: avg 503 % against 717 % for the same
-   rps, roughly two cores of headroom (no `WaitGroup`, no 3 extra coroutines per
-   request).
-4. On tmpfs backends the picture flips: with sub-millisecond operations the
-   coordination costs more than the parallelism returns, and the sequential
-   endpoint wins outright (6 200 vs 3 860 req/sec, 0.9 vs 1.5 ms at a single
-   connection). Run the calls of one request concurrently when it has genuinely
-   slow I/O to wait for.
+3. Sequential calls are cheaper in CPU: avg 136 % against 205 % for about the
+   same rps, roughly two thirds of a core of headroom (no `WaitGroup`, no 3 extra
+   coroutines per request).
+4. On tmpfs backends the saturation picture flips: with sub-millisecond
+   operations the coordination costs more than the parallelism returns, and the
+   sequential endpoint serves more (7 920 vs 7 090 req/sec, +12 %). A single
+   connection still answers faster with the calls running at the same time
+   (0.46 vs 0.66 ms). Run the calls of one request concurrently when it has
+   genuinely slow I/O to wait for.
 
 ## Conclusions
 
-1. Memory is stable — the main result. ~50 MiB RSS per worker, and a 10-minute
-   soak (1.74M requests) held RSS flat at +0.11 MiB/min (= noise). For a
+1. Memory is stable — the main result. ~45 MiB RSS per worker, and a 10-minute
+   soak (1.43M requests) held RSS flat at +0.06 MiB/min (= noise). For a
    long-lived server this is the key signal: the extension's runtime + PHP fibers +
    connection pools + PHP↔extension boundary pairing accumulates nothing. Consistent
    with `MemLeakTest`.
 2. Robustness: saturation with three concurrent feature blocks per request → 0
-   errors, p99 ≈ 130 ms under sustained soak load.
-3. On disk backends the bottleneck is fsync, not CPU. The servers draw ~7–8 of 12
-   cores versus ~0.5–1.5 on each DB — the ~2.7k rps ceiling is set by the 3 disk
+   errors, p99 ≈ 150 ms under sustained soak load.
+3. On disk backends the bottleneck is fsync, not CPU. The servers draw ~2 of 12
+   cores and each DB under one — the ~2.9k rps ceiling is set by the 3 disk
    commits per request plus the framework overhead (fiber spawn/scheduling,
    3× boundary crossing with its value conversion), not by the `SELECT 1`/`findOne` reads.
 

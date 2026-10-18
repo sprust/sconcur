@@ -33,7 +33,7 @@
 #   them unpinned, which is what the worker master actually does in production.
 #   NOTE: rr-load-stats.sh and swoole-load-stats.sh pin their stack the way
 #   `group` does, so a comparison against them wants PIN_SERVERS=group here —
-#   the default (1) measures this stack ~20% below the others' placement
+#   the default (1) measures this stack ~7% below the others' placement
 #   and is therefore the only way to see what the extension runtime makes of a
 #   machine it thinks it owns.
 #   All four modes draw from the same budget, cpu 0..SERVERS-1, so only the

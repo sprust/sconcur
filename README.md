@@ -37,9 +37,9 @@ generator does not yet share cores with the servers):
 
 | Request | SConcur | RoadRunner | Swoole |
 | --- | ---: | ---: | ---: |
-| empty response (12 workers) | ≈194 300 rps, p50 0.9 ms | ≈45 100 rps, p50 5.4 ms | ≈365 600 rps, p50 0.35 ms |
-| point SELECT by id, `/db` (8 workers) | 44 200 rps, p50 5.4 ms | 22 887 rps, p50 10.7 ms | 117 693 rps, p50 2.0 ms |
-| INSERT + COUNT(*) + SELECT, `/db-rw` (8 workers) | 2 366 rps, p50 95.8 ms | 289 rps, p50 877 ms | 2 467 rps, p50 89.8 ms |
+| empty response (12 workers) | ≈248 300 rps, p50 0.84 ms | ≈52 000 rps, p50 4.7 ms | ≈490 500 rps, p50 0.25 ms |
+| point SELECT by id, `/db` (8 workers) | 51 656 rps, p50 4.6 ms | 27 452 rps, p50 8.9 ms | 136 151 rps, p50 1.6 ms |
+| INSERT + COUNT(*) + SELECT, `/db-rw` (8 workers) | 2 738 rps, p50 82.9 ms | 581 rps, p50 438 ms | 2 872 rps, p50 77.6 ms |
 
 Swoole is faster on the cheap paths, but its concurrency rests on hooks into the
 existing PHP drivers: whatever the hooks do not cover blocks the whole worker (as
