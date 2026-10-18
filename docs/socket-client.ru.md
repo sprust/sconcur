@@ -119,9 +119,9 @@ PHP (`src/Features/SocketClient/`): `SocketClient::connect()` собирает
 `Payloads/` — конверт `Connect`/`Send`/`Close`, зеркало структур расширения.
 
 Rust (`ext/src/features/socketclient/`): путь подключения дозванивается с
-`connectTimeout` (отменяем контекстом флоу) и регистрирует стриминговый
-`connectionState` — первый `Next` даёт метаданные, дальше идут входящие кадры —
-плюс цикл записи, очищаемый при остановке флоу; `mod.rs` диспетчеризует
+`connect_timeout_ms` (отменяем контекстом флоу) и регистрирует стриминговый
+`ConnectionState` — первый `next()` даёт метаданные, дальше идут входящие кадры
+— плюс цикл записи, очищаемый при остановке флоу; `mod.rs` диспетчеризует
 команды, маршрутизируя `Send`/`Close` по `cid` в этот цикл. Кодек кадров,
 `MessageState` и цикл записи, ждущий сброса каждого кадра, живут в нейтральном
 `ext/src/socket/`, общем с сокет-сервером.
@@ -140,8 +140,8 @@ TLS (позже, опцией), unix-сокеты (только TCP), пул с�
 
 PHP feature-тесты лежат в `tests/feature/Features/SocketClient/` — edge- и
 error-случаи плюс контракт конкурентности на `BaseAsyncTestCase`, против
-реального `SocketServer` SConcur, поднятого через `TestSocketServer`. Тесты ядра
-покрывают общий пакет `ext/src/socket/` и the core's own unit tests. Бенчмарк
+реального `SocketServer` SConcur, поднятого через `TestSocketServer`.
+Собственные unit-тесты ядра покрывают общий модуль `ext/src/socket/`. Бенчмарк
 (`make bench-socket-client c=20`) гоняет N round-trip'ов к эндпоинту `msleep`
 демо-сервера: одновременный async против последовательных native (сырые сокеты
 PHP) и sync.

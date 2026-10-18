@@ -7,10 +7,8 @@ use crate::dto::{Map, Value};
 /// The payload of a socketServe command — the listener address and the server
 /// tuning (timeouts in milliseconds, sizes in bytes).
 ///
-/// As with the HTTP server, every field is decoded but not all are acted on:
-/// `max_concurrency`, `shutdown_timeout_ms` and the telemetry block are accepted
-/// and ignored. A scope limit worth knowing before reading anything but
-/// throughput into a comparison.
+/// Every field is decoded but not all are acted on: `shutdown_timeout_ms` is
+/// accepted and not applied.
 /// PHP: SConcur\Features\SocketServer\Payloads\ServePayload.
 #[allow(dead_code)]
 #[derive(Deserialize, Default)]

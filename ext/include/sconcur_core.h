@@ -121,6 +121,7 @@ extern unsigned int sconcur_array_count(const zval *array);
 extern int sconcur_array_is_list(const zval *array);
 extern const char *sconcur_object_class(const zval *object, size_t *length);
 extern int sconcur_object_is_plain(const zval *object);
+extern int sconcur_object_refused(const zval *object);
 
 /*
  * Visits every entry of an array, or every public property of an object, in

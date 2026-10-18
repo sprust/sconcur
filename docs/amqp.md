@@ -288,13 +288,15 @@ A retried confirm timeout can duplicate the message — the first attempt may ha
 been stored and only the answer lost. That is the at-least-once AMQP offers anyway,
 and the same reason a handler has to be idempotent.
 
-The wait between attempts is the worker's, not the broker's: `retryDelaysSeconds`
-suspends the coroutine, and a worker that restarts during it takes the message with
-it. There is nothing on the broker to come back to — the message was never accepted,
-which is the whole reason it is being retried. A graceful drain cuts the wait the
-same way. So keep this schedule short, and where the work has to outlive the worker,
-put it on the broker instead: a message already in a [wait queue](#a-delayed-publish)
-is the broker's, and its publisher can go away entirely.
+The wait between attempts is the worker's, not the broker's:
+`retryDelaysSeconds` suspends the coroutine, and a worker that restarts during
+it takes the message with it. There is nothing on the broker to come back to —
+the message was never accepted, which is the whole reason it is being retried. A
+graceful stop, which finishes the handlers already running, cuts the wait the
+same way. So keep this schedule short, and where the work has to outlive the
+worker, put it on the broker instead: a message already in a [wait
+queue](#a-delayed-publish) is the broker's, and its publisher can go away
+entirely.
 
 There is nothing to retry on a plain `publish()`, which is why it takes no such
 argument: `basic.publish` expects no reply, so a publish that returns has said
@@ -323,9 +325,9 @@ foreach ($messages as $message) {
 $waitGroup->waitAll();
 ```
 
-`waitForConfirms(timeoutSeconds)` is the other shape: publish a run of messages on one
-channel, then drain their confirms in one wait. It fails on the first message the
-broker did not take.
+`waitForConfirms(timeoutSeconds)` is the other shape: publish a run of messages
+on one channel, then collect their confirms in one wait. It fails on the first
+message the broker did not take.
 
 ## Consuming
 
@@ -693,12 +695,12 @@ run — and the delivery is refused exactly like one whose handler threw, so
 `CoroutineTimeoutException`. The worker carries on and takes the next message; one
 slow job costs one message and not a consumer.
 
-**Where the message goes is worth being sure about**, because the default is the
+Where the message goes is worth being sure about, because the default is the
 harshest of the three and it is easy to reach by accident:
 
 | The queue and the setting | What happens to the message |
 | --- | --- |
-| the default, no dead-letter exchange | **dropped** — refused without requeue, and nothing catches it |
+| the default, no dead-letter exchange | dropped — refused without requeue, and nothing catches it |
 | the default, with a dead-letter exchange | sent there, to be looked at later |
 | `requeueOnFailure: true` | put back into the queue |
 
@@ -780,7 +782,7 @@ after the crash: ready=3 consumers=0
 first back: body=boom redelivered=true
 ```
 
-Two things worth reading twice. Nothing was lost. And **all three** came back, not
+Two things worth reading twice. Nothing was lost. And all three came back, not
 just the one being handled: the broker had handed out three, none were
 acknowledged, so all three are owed again. A worker holding a prefetch of fifty
 returns fifty. That is the other reason a pool of coroutines wants
@@ -792,11 +794,11 @@ both cases is the socket closing, not anything this library does.
 
 What the crash does cost:
 
-- **The side effects already happened.** AMQP gives at-least-once and nothing more.
+- The side effects already happened. AMQP gives at-least-once and nothing more.
   A job that charged a card and then died charged it, and will charge it again when
   the message comes back. Handlers that touch the outside world have to be
   idempotent; no runtime can decide that for you.
-- **`x-death` does not count this.** The attempt counter above grows on a
+- `x-death` does not count this. The attempt counter above grows on a
   *deliberate* refusal — a `nack`, a `reject`, an expired TTL. A message returned
   because the connection died was never refused by anybody, so the counter stays
   where it was and a dead-letter policy built on it never fires. A message that
@@ -828,11 +830,11 @@ support from this library — those are ordinary queue arguments.
 
 `QueueConsumer`'s `maxMemoryBytes` is worth having but answers a different
 question. It is checked on every turn of the serve loop against
-`memory_get_usage()`, so it catches a worker that grew over a thousand messages and
-sends it into a clean drain. It does not catch a single job that allocates a
-gigabyte without pausing: nothing else runs while that loop runs, so the loop never
-gets to look. Set it well under `memory_limit` and treat it as a guard against
-creep, not against a spike.
+`memory_get_usage()`, so it catches a worker that grew over a thousand messages
+and sends it into a clean stop that finishes the messages already taken. It does
+not catch a single job that allocates a gigabyte without pausing: nothing else
+runs while that loop runs, so the loop never gets to look. Set it well under
+`memory_limit` and treat it as a guard against creep, not against a spike.
 
 ### What the supervised consumer does
 
@@ -976,8 +978,8 @@ a queue of ten.
 
 `Features\Amqp\Consumer\QueueConsumer` is the worker shape of the section above:
 several queues pulled at once by one process, each queue weighted by how many
-consumers pull it, and a stop that drains rather than cuts. It is what a
-[worker master](worker-master.md) group runs.
+consumers pull it, and a stop that finishes the handlers already running rather
+than cutting them. It is what a [worker master](worker-master.md) group runs.
 
 It is a server in everything but the socket. The extension opens the consumers and
 publishes every delivery of all of them as one stream; the same loop that runs the
@@ -1042,11 +1044,11 @@ The group that runs it:
 | `prefetchCount` | `1` | Unacknowledged messages one consumer may hold, unless its queue names its own. It is also what bounds how many handlers run at once: a message stays unacknowledged for as long as its handler runs. |
 | `handlerTimeoutMs` | `0` (no limit) | How long one message may spend in the handler. A job that runs past it is cut and refused like any other failure; the worker takes the next message — see [bounding one job](#bounding-one-job). |
 | `requeueOnFailure` | `false` | What happens to a message whose handler threw: dead-lettered or dropped by default, put back when true. A policy with attempts and a backoff belongs to the handler — see [retries and delays](#retries-and-delays). |
-| `maxMessages` | `0` (no limit) | Drain and exit after this many messages. |
-| `maxRuntimeSeconds` | `0` (no limit) | Drain and exit after this long. |
-| `maxMemoryBytes` | `0` (no limit) | Drain and exit once the PHP heap passes this. A guard against creep, not against a spike — see [when the worker itself dies](#when-the-worker-itself-dies). |
+| `maxMessages` | `0` (no limit) | Finish the running handlers and exit after this many messages. |
+| `maxRuntimeSeconds` | `0` (no limit) | Finish the running handlers and exit after this long. |
+| `maxMemoryBytes` | `0` (no limit) | Finish the running handlers and exit once the PHP heap passes this. A guard against creep, not against a spike — see [when the worker itself dies](#when-the-worker-itself-dies). |
 | `preemptionQuantumMs` | `0` (off) | Automatic-preemption quantum while consuming. It is what lets `handlerTimeoutMs` reach a handler busy with computation, and keeps such a handler from holding off the loop. Read [process-wide state](coroutine-switching.md#process-wide-state) before turning it on. |
-| `masterPid` | none | Injected by the master; the worker drains as soon as it is orphaned. |
+| `masterPid` | none | Injected by the master; the worker stops, finishing the running handlers, as soon as it is orphaned. |
 
 `coroutineCount` is a queue's weight: how many consumers it gets, each on a channel
 of its own. The name is what the flag has always been called and the master's
@@ -1097,9 +1099,9 @@ published mandatory and never looked, hands back a channel the pool gives up ins
 of lending on; the next handler opens a fresh one.
 
 The delivery belongs to one coroutine. Asking it for a channel from two at once
-raises `ConcurrentDeliveryUseException` rather than lending two, only one of which
-could ever be given back. Where a handler fans work out, take a channel per
-coroutine from the connection.
+raises `ConcurrentDeliveryUseException` rather than lending two, only one of
+which could ever be given back. Where a handler runs work in several coroutines
+at once, take a channel per coroutine from the connection.
 
 ### What the lent channels cost
 
@@ -1108,32 +1110,34 @@ publishing at the same time. A channel nothing has needed for ten minutes is giv
 up again, one per message settled, so a worker that was busy once does not hold
 that burst's channels — and the sockets under them — for the rest of its life.
 
-They live on connections of the pool's own — one more socket per 255 channels — so
-they never compete with the consumers for the delivery connection's channel
-numbers, and no combination of weight and prefetch is refused for wanting too many:
-`prefetchCount: 50` over eight consumers can put 400 handlers in flight, and the
-pool answers with two extra sockets instead of a `504 channel id space exhausted`.
+They live on connections of the pool's own — one more socket per 255 channels —
+so they never compete with the consumers for the delivery connection's channel
+numbers, and no combination of weight and prefetch is refused for wanting too
+many: `prefetchCount: 50` over eight consumers can put 400 handlers to work at
+once, and the pool answers with two extra sockets instead of a
+`504 channel id space exhausted`.
 
 The price is those channels and sockets, not throughput. Measured against the
-shared channel it replaced — one queue, a prefetch of 10, every handler publishing
-with confirms, broker on the same machine — the lent channel is not slower: it is
-reused, so a message pays no extra round trip, and a `waitForConfirms()` on a
-channel of one's own waits for one message instead of for every publish in flight
-on the channel. The difference between the two ran inside the spread of the runs
-themselves.
+shared channel it replaced — one queue, a prefetch of 10, every handler
+publishing with confirms, broker on the same machine — the lent channel is not
+slower: it is reused, so a message pays no extra round trip, and a
+`waitForConfirms()` on a channel of one's own waits for one message instead of
+for every publish still unconfirmed on the channel. The difference between the
+two ran inside the spread of the runs themselves.
 
 ### Stopping
 
 `SIGTERM` (or one of the limits above) cancels every consumer and then waits for
 the handlers already running. Nothing is cut: a message in a handler is finished
 and settled, and the loop returns once the last one has. The channels stay open
-until then, so an acknowledgement in flight is not lost — closing them with the
-cancel would hand a finished message back for another worker to do again.
+until then, so an acknowledgement on its way to the broker is not lost — closing
+them with the cancel would hand a finished message back for another worker to do
+again.
 
-There is no drain deadline of its own. A handler that never ends is what the
-master's `shutdownTimeoutMs` is for — past it the worker is killed, and the
-messages it was holding go back to the broker unacknowledged, exactly as with the
-servers.
+Finishing the running handlers has no deadline of its own. A handler that never
+ends is what the master's `shutdownTimeoutMs` is for — past it the worker is
+killed, and the messages it was holding go back to the broker unacknowledged,
+exactly as with the servers.
 
 A handler that throws is reported through the optional `onError` callback and costs
 one message, not the worker: the runtime refuses the delivery and the next message
@@ -1154,17 +1158,17 @@ long as the worker runs, one line a second per consumer on it — which is delib
 queue that comes back is picked up without anyone intervening, and a queue that does not
 is visible in the journal rather than silently unread.
 
-The one failure that is not retried is the **first** open. A queue that is not there when
+The one failure that is not retried is the first open. A queue that is not there when
 the worker starts, or credentials that cannot consume it, end the run at once: that is a
 configuration error, and a worker would otherwise retry it silently for ever.
 
-What ends a consumer for good is the **connection** going away. That one is shared by
+What ends a consumer for good is the connection going away. That one is shared by
 every consumer of the worker, so it is not reopened: the stream ends with the failure,
 `consume()` raises it, the worker exits non-zero, and the
 [master](worker-master.md) starts a fresh process with a fresh connection.
 
-The message that was in flight is not resettled — it was never acknowledged, so the broker
-hands it out again on its own.
+The message that was being handled is not resettled — it was never acknowledged,
+so the broker hands it out again on its own.
 
 ### An acknowledgement that could not be sent
 
@@ -1185,11 +1189,11 @@ amqp: consumer sconcur-ctag-6 could not settle a delivery; reopening
 amqp: consumer trace-tree (sconcur-ctag-6) was taken away; reopening
 ```
 
-The message is redelivered and done again, which is the at-least-once AMQP offers
-anyway. Every settle failure is treated this way, not only a channel that had gone: each
-of them leaves the message owed and costs the same wait, and the logged exception says
-which one it was. A worker that is draining is left alone — its consumers are being
-cancelled for good.
+The message is redelivered and done again, which is the at-least-once AMQP
+offers anyway. Every settle failure is treated this way, not only a channel that
+had gone: each of them leaves the message owed and costs the same wait, and the
+logged exception says which one it was. A worker that is stopping is left alone
+— its consumers are being cancelled for good.
 
 ## Values a field table can carry
 
@@ -1315,19 +1319,19 @@ Two behaviours differ from both libraries on purpose:
 
 ## Limits
 
-The general limits — CLI only, Linux only, NTS only, no `pcntl_fork` — are in the
-[README](../README.md).
+The general limits of the library are in the
+[README](../README.md#use-and-limitations).
 
 - TLS and SASL EXTERNAL are implemented but not covered by tests, because the
   compose broker listens without TLS — see
   [TLS and SASL EXTERNAL](#tls-and-sasl-external).
 - `basic.publish`'s `immediate` flag is never sent: RabbitMQ has not implemented
   it since 3.0 and closes the channel on one that sets it.
-- A prefetch **size** is refused rather than sent. `basic.qos` carries the field,
+- A prefetch size is refused rather than sent. `basic.qos` carries the field,
   but RabbitMQ has never implemented it and the extension's AMQP driver leaves it
   out of the frame altogether, so a size asked for could only be dropped in
   silence. `prefetch(sizeBytes:)` and `channel(prefetchSizeBytes:)` therefore
-  raise instead. The prefetch **count** is the limit that works.
+  raise instead. The prefetch count is the limit that works.
 - AMQP transactions are not implemented. Publisher confirms replaced them, and the
   broker's own documentation recommends against them.
 - A consume is bounded by the connection's `readTimeoutSeconds`, not by a per-call one.

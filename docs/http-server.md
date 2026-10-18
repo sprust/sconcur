@@ -140,10 +140,10 @@ timeouts are in milliseconds.
 The four connection deadlines and `shutdownTimeoutMs` cross the boundary and are
 not acted on: the extension bounds a request by `handlerTimeoutMs` and nothing
 else. A slow client therefore holds its connection for as long as it likes, and
-the shutdown drain waits for the handlers rather than for a clock — bounded in
-practice by `handlerTimeoutMs`, which is why leaving it at `0` on a public
-listener is what actually costs you. Terminate slow clients in the reverse proxy
-in front.
+a shutdown waits for the handlers already accepted to finish rather than for a
+clock — bounded in practice by `handlerTimeoutMs`, which is why leaving it at
+`0` on a public listener is what actually costs you. Terminate slow clients in
+the reverse proxy in front.
 
 `HttpServer::fromArgs()` assembles the server from `argv`: every `--name=value` is
 matched to the constructor's scalar parameter of the same name (type-checked), an
@@ -203,32 +203,31 @@ interface:
 A handler that reads one header pays 0.36 us more than it used to. That is the
 trade: the deferral is worth it unless more than 91% of requests read a header.
 
-The body is `Dto/RequestBodyStream` over the streaming `Dto/RequestBody` and is
-never buffered whole in the extension: the first chunk arrives with the request,
-the rest is pulled on demand. The stream is one-shot and not rewindable
-(`isSeekable()` → `false`; `seek`/`rewind`/`write` throw), so read it one way per
-request:
+The body is `Dto/RequestBodyStream` over `Dto/RequestBody`. The extension reads
+the whole body before the handler runs and hands it over with the request, so
+the body is held in memory in full, up to `maxRequestBody`. The stream is
+one-shot and not rewindable (`isSeekable()` → `false`; `seek`/`rewind`/`write`
+throw), so read it one way per request:
 
 ```php
 // 1) Fully (small bodies — JSON, a form). Memoized.
 $data = json_decode($request->getBody()->getContents(), true);
 
-// 2) Streaming (large uploads — do not hold the body in memory):
+// 2) In pieces (the body is already in memory; this only avoids a second copy):
 $body = $request->getBody();
 while (($chunk = $body->read(8192)) !== '') { // '' at end of stream (PSR-7)
     hash_update($hash, $chunk);
 }
 ```
 
-- Transport granularity is fixed at 64 KiB: a body up to that size arrives whole
-  with the request; a larger one is pulled 64 KiB per round-trip, and
-  `read($length)` slices it down.
-- `read()` suspends the coroutine until data arrives — a slow uploader does not
-  block other requests.
-- `getSize()` → `null` (the body is streamed).
-- Exceeding `maxRequestBody` throws `RequestBodyTooLargeException` out of
-  `read()`/`getContents()` (checked via `MaxBytesReader`, no silent truncation);
-  let it bubble up and the framework answers `413`.
+- While the body is still arriving, the request has not reached PHP yet, so a
+  slow uploader does not block other requests.
+- `read($length)` slices the body that already arrived and never suspends.
+- `getSize()` → `null`.
+- A body over `maxRequestBody` never reaches the handler: the extension answers
+  `413 Payload Too Large` itself, first on the declared `Content-Length` and
+  again on the bytes that actually arrived, since a chunked body declares
+  nothing.
 
 The handler returns any `ResponseInterface`:
 
@@ -278,12 +277,13 @@ return $factory->createResponse(200)
 
 ## Files
 
-An upload is written to disk in pieces; a file response is built from
-`createStreamFromFile()`, where the size is known, so the response goes out in a
-single write and an explicit `Content-Length` avoids needless chunked encoding.
+An upload is written to disk in pieces from the body already in memory; a file
+response is built from `createStreamFromFile()`, where the size is known, so the
+response goes out in a single write and an explicit `Content-Length` avoids
+needless chunked encoding.
 
 ```php
-// Upload: stream the request body into a file.
+// Upload: write the request body into a file.
 $handle = fopen($target, 'wb');
 $body   = $request->getBody();
 
@@ -348,7 +348,7 @@ Lifecycle lines are written by the PHP side and flushed immediately — one at
 startup, one per shutdown step:
 
 ```
-2026-06-28T12:00:00.000000 sconcur http server listening on 0.0.0.0:8080 pid=12345 version=0.12.0 maxConcurrency=0 maxRequests=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur http server listening on 0.0.0.0:8080 pid=12345 version=X.Y.Z maxConcurrency=0 maxRequests=0 reusePort=0
 2026-06-28T12:00:01.000000 sconcur http server shutdown: stop accepting (reason=signal), draining 2 in-flight
 2026-06-28T12:00:01.050000 sconcur http server shutdown: drained all in-flight
 2026-06-28T12:00:01.060000 sconcur http server shutdown: stopped
@@ -433,7 +433,7 @@ Pass `reusePort: true` to every process on the shared port (inside the extension
 it sets `SO_REUSEPORT` on the socket before the bind,
 `ext/src/features/httpserver/listen.rs`). Run them as separate processes — a
 supervisor (systemd, supervisord, docker `--scale`), the
-[worker master](worker-master.md), or a plain loop — never via `pcntl_fork`.
+[worker master](worker-master.md), or a plain loop.
 
 ```bash
 # one process per core
@@ -572,7 +572,7 @@ sequenceDiagram
     participant EXT as Extension (httpserver)
     participant Client as client
 
-    PHP->>EXT: push(ServePayload, MethodHttpServe)
+    PHP->>EXT: push(ServePayload, HttpServe)
     Note over EXT: handle_serve — bind the listener + serve it with hyper
     Note over EXT: the server state is the request handler (self-pumping request stream)
     Note over PHP: Scheduler::serve() — waitAnyTimeoutBatch(250ms) loop
@@ -580,7 +580,7 @@ sequenceDiagram
     Note over EXT: serve — acquire slot, read body, request event into the requests channel
     EXT-->>PHP: request event (batch, HasNext=true; the stream pumps itself)
     Note over PHP: spawn(coroutine) — handle($handler)
-    PHP->>EXT: execNoResult(RespondPayload::full, MethodHttpRespond)
+    PHP->>EXT: execNoResult(RespondPayload::full, HttpRespond)
     Note over EXT: handle_respond — dispatch the write command, the connection writes status+headers+body
     EXT->>Client: response
     Note over PHP: coroutine finished right after the push, the flow is cleaned up
@@ -595,12 +595,12 @@ completion of the server flow, plus finishing the requests already accepted and
 its own errors, which is what `HttpServer::handle` does by turning them into a
 `500`.
 
-Rust (`ext/src/features/httpserver/`): `mod.rs` serves both methods and
-holds the registries `pendingRequests`
-(`requestId → {command channel, abandoned signal}`) and `serverStates`
-(`flowKey → serverState`, for `StopAccepting`); `server.rs` is the accept loop and
-the per-request service over `hyper`, handling the concurrency semaphore, the
-handler timeout, 503/504 and the graceful stop; `listen.rs` is the TCP listener
+Rust (`ext/src/features/httpserver/`): `mod.rs` serves both methods. `server.rs`
+holds the registries `pending_requests` (`requestId →` the channel the
+connection reads the handler's writes from) and `server_states` (`flowKey →`
+server state, for `StopAccepting`). It is also the accept loop and the
+per-request service over `hyper`, handling the concurrency semaphore, the
+handler timeout, 503/504 and the graceful stop. `listen.rs` is the TCP listener
 and `SO_REUSEPORT`.
 
 The listener is a self-pumping stream: an extension-side runtime task publishes every
@@ -612,7 +612,7 @@ request is handled in its own flow (the group of that request's tasks), so a
 handler's sub-tasks are isolated and stopping one request does not take down the
 server.
 
-The response is a sequence of write commands over `MethodHttpRespond`: `full` (a
+The response is a sequence of write commands over `HttpRespond`: `full` (a
 one-shot response), or `head` → `chunk`* → `end` for a stream. Streaming
 commands are acknowledged only after they are applied — that is what keeps a
 handler from outrunning the client. The one-shot `full` write is
@@ -624,11 +624,13 @@ an `abandoned` error and unwinds cleanly instead of hanging.
 
 ## What's missing compared to typical servers
 
+The general limits of the library (FPM, `pcntl_fork`, NTS only) are in the
+[README](../README.md#use-and-limitations); the table holds what is specific to
+the server.
+
 | What | Status | Comment |
 |---|---|---|
-| PHP-FPM | ⚠️ not for this | The library runs there ([README](../README.md#use-and-limitations)), but a server listening on a port needs a long-lived process. |
-| `pcntl_fork` after loading the extension | ✅ yes | The child rebuilds the runtime on its next call; the parent is unaffected. |
-| A ZTS build of PHP | ❌ no | NTS only. |
+| PHP-FPM | ⚠️ not for this | The library runs there, but a server listening on a port needs a long-lived process. |
 | TLS / HTTPS | ❌ no | Plain TCP; terminate TLS in front (nginx/HAProxy). |
 | HTTP/2, WebSocket | ❌ no | The server is built on HTTP/1.1 only. WebSocket is a [separate server](websocket-server.md). |
 | Multi-core parallelism in one process | ❌ no | One process = one PHP thread; scale with [`SO_REUSEPORT`](#scaling-across-cores-so_reuseport). |
@@ -636,7 +638,7 @@ an `abandoned` error and unwinds cleanly instead of hanging.
 | Synchronous I/O in a handler | ⚠️ dangerous | Native `sleep`/PDO/`curl`/files freeze the loop. |
 | Router / middleware | ❌ no | A low-level PSR-7 contract; layer a PSR-15 stack on top yourself. |
 | `exit()`/`die()` with active tasks | ❌ no | Finish or stop the tasks first. |
-| Streaming the request body | ✅ yes | `$request->getBody()->read()`; the body is not buffered whole. |
+| Streaming the request body | ❌ no | The extension reads the whole body, up to `maxRequestBody`, before the handler runs. |
 
 What does work: keep-alive, the timeout pipeline, chunked/SSE streaming, multiple
 values of one header, binary bodies, the concurrency limit, `413`/`503`/`504`,

@@ -64,6 +64,7 @@ unsafe extern "C" {
     fn sconcur_array_is_list(array: *const c_void) -> c_int;
     fn sconcur_object_class(object: *const c_void, length: *mut usize) -> *const c_char;
     fn sconcur_object_is_plain(object: *const c_void) -> c_int;
+    fn sconcur_object_refused(object: *const c_void) -> c_int;
     fn sconcur_array_iterate(array: *const c_void, context: *mut c_void, visit: VisitFn) -> c_int;
     fn sconcur_object_iterate(object: *const c_void, context: *mut c_void, visit: VisitFn) -> c_int;
     fn sconcur_exception_pending() -> c_int;
@@ -203,6 +204,12 @@ fn read_value(value: *const c_void, depth: usize) -> std::result::Result<Value, 
             }
         }
         KIND_OBJECT => {
+            match unsafe { sconcur_object_refused(value) } {
+                1 => return Err("the payload holds a Closure, which cannot cross into the extension".to_string()),
+                2 => return Err("the payload holds an enum case; pass its value or name instead".to_string()),
+                _ => {}
+            }
+
             let entries = read_entries(value, depth, 4, true)?;
 
             if unsafe { sconcur_object_is_plain(value) } != 0 {
@@ -221,7 +228,9 @@ fn read_value(value: *const c_void, depth: usize) -> std::result::Result<Value, 
                     .collect(),
             }))
         }
-        _ => Err("the payload holds a value that is neither a scalar, an array nor an object".to_string()),
+        // Whatever is left after the kinds above is a resource: a reference is
+        // read through and an undefined slot reads as null.
+        _ => Err("the payload holds a resource, which cannot cross into the extension".to_string()),
     }
 }
 
@@ -526,6 +535,11 @@ mod glue_stubs {
     #[unsafe(no_mangle)]
     pub extern "C" fn sconcur_object_is_plain(_object: *const c_void) -> c_int {
         1
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_object_refused(_object: *const c_void) -> c_int {
+        0
     }
 
     #[unsafe(no_mangle)]

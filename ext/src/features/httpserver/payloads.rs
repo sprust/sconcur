@@ -11,11 +11,10 @@ use crate::dto::{Map, Value};
 /// tuning parameters (all timeouts in milliseconds, body limit in bytes).
 /// PHP: SConcur\Features\HttpServer\Payloads\ServePayload.
 ///
-/// Every field of the wire payload is decoded, but the spike only acts on
-/// `address`, `reuse_port` and `handler_timeout_ms`. The read/write/idle
-/// timeouts, the body limit, `max_concurrency` and the telemetry block are
-/// accepted and ignored — a scope limit worth knowing before reading anything
-/// but the ladder into a comparison.
+/// Every field of the wire payload is decoded. The core acts on `address`,
+/// `reuse_port`, `handler_timeout_ms`, the body limit, `max_concurrency` and the
+/// telemetry block; the read-header/read/write/idle/shutdown timeouts are
+/// accepted and not applied.
 #[allow(dead_code)]
 #[derive(Deserialize, Default)]
 pub struct ServePayload {
@@ -111,8 +110,8 @@ pub struct RequestEvent {
     pub path: String,
     pub query: String,
     pub headers: Vec<(String, Vec<String>)>,
-    /// The inline first chunk of the request body. `body_key` is the streaming
-    /// state key for the remainder, or "" when the whole body fits in `body`.
+    /// The whole request body, read before the event is sent. `body_key` stays
+    /// "": the PHP side still accepts a streaming key, the core never sets one.
     pub body: Vec<u8>,
     pub body_key: String,
     pub remote_addr: String,

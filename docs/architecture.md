@@ -147,8 +147,9 @@ Key entities:
   (`push`, `waitAnyBatch`, `wait`, `next`, `stopFlow`, `destroy`, …).
 - Extension: `Handler → Flows → Flow → Task`. Each task runs on the runtime;
   results of all flows go into one shared bounded channel, from which
-  `Handler::wait_any()` hands out the first ready one (`wait(flow_key)` remains
-  for the synchronous path). A stopped flow's result still in the buffer is
+  `Handler::wait_any_batch()` hands out up to a batch of the ready ones; the
+  scheduler takes them that way (`wait(flow_key)` remains for the synchronous
+  path). A stopped flow's result still in the buffer is
   dropped on receipt.
 
 ## Lifecycle of a single task

@@ -56,8 +56,8 @@ make swoole-serve SWOOLE_HTTP_PORT=18083 SWOOLE_NUM_WORKERS=8
 Check with `curl http://<container-ip>:18082/all` (and `/all-coro`).
 
 The default port is 18082: 18080 is taken by the SConcur pool in
-`http-load-stats.sh` and 18081 by RoadRunner, so all three stacks can stay up at
-once.
+`tests/benchmarks/http/load-stats.sh` and 18081 by RoadRunner, so all three
+stacks can stay up at once.
 
 ## Measurements
 

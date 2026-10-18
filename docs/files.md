@@ -40,10 +40,10 @@ Inside `WaitGroup::add(...)` the same calls run concurrently.
 
 | Operation | Against | Verdict |
 | --- | --- | --- |
-| `copy` of 64 MiB | PHP's `copy()` | 2x faster synchronously, 9x concurrently — the bytes stay inside the extension |
-| `list` of 10 000 entries with metadata | `scandir()` + `filesize()` + `filemtime()` per entry | 2.2x faster concurrently; the per-entry syscalls never reach PHP |
-| `hashFile` of 64 MiB | `hash_file()` | 1.3x faster concurrently; the read loop leaves the PHP thread free |
-| `readChunks` of 64 MiB | `Files::read()` of the same file | same bytes at a 4 MB peak instead of 132 MB |
+| `copy` of 64 MiB | PHP's `copy()` | 1.1x faster synchronously, 2.2x concurrently — the bytes stay inside the extension |
+| `list` of 10 000 entries with metadata | `scandir()` + `filesize()` + `filemtime()` per entry | 1.3x faster concurrently; the per-entry syscalls never reach PHP |
+| `hashFile` of 64 MiB | `hash_file()` | 1.2x faster concurrently; the read loop leaves the PHP thread free |
+| `readChunks` of 64 MiB | `Files::read()` of the same file | same bytes at a 4 MB peak instead of 68 MB |
 | `read`/`write` of 64 MiB | `file_get_contents()` / `file_put_contents()` | slower — the payload crosses the boundary; what is bought is a free thread, not throughput |
 | anything on a 1 KiB file with a warm cache | the native function | slower, and there is no reason to use the feature for it |
 

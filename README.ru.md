@@ -109,7 +109,7 @@ echo "готово за {$seconds} c" . PHP_EOL;
 | --- | --- | --- |
 | `sleep()`, `usleep()` | `Sleeper::sleep()`, `Sleeper::usleep()` | пауза на секунды или микросекунды |
 | `PDO` / `mysqli` (MySQL) | `Features\Mysql\Connection` | запросы, транзакции, стриминг SELECT; пул соединений в расширении |
-| `PDO` (PostgreSQL) | `Features\Pgsql\Connection` | та же SQL-фича на драйвере pgx |
+| `PDO` (PostgreSQL) | `Features\Pgsql\Connection` | та же SQL-фича на драйвере sqlx `postgres` |
 | `mongodb/mongodb`, `ext-mongodb` | `Features\Mongodb\Connection\*` | CRUD, агрегации, курсоры; BSON-значения — `SConcur\Bson\*` |
 | `curl`, `file_get_contents`, Guzzle | `Features\HttpClient\HttpClient` (PSR-18) | стриминг ответа, скачивание в файл внутри расширения |
 | `fsockopen`, `stream_socket_client` | `Features\SocketClient\SocketClient` | TCP с length-prefix кадрами |
@@ -165,15 +165,18 @@ echo "готово за {$seconds} c" . PHP_EOL;
 - Зрелые драйверы берутся как есть — драйвер MongoDB, sqlx, hyper, reqwest,
   lapin, fastwebsockets — и сразу работают конкурентно. Не нужно ждать
   асинхронных PHP-драйверов и расширений.
-- C-клей заморожен: `push`, `wait`, `waitAny`/`waitAnyBatch`, `next`, `stopFlow`
-  плюс жизненный цикл `version`/`destroy`. Новая фича — это данные (значение
-  `MethodEnum`, payload-DTO, обработчик на Rust), а не новый C-символ,
-  поэтому набор экспортов не разрастается. Отдельный долгоживущий сервер
-  добавляет максимум одну control-функцию вроде `httpStopAccepting`: она
-  прекращает приём новых соединений, пока уже начатые доводятся до конца.
+- C-клей не растёт с каждой фичей. Он экспортирует вызовы задач (`push`,
+  `next`, `wait` и его варианты `waitAny*`, `tasksCount`, `stopFlow`), жизненный
+  цикл (`ping`, `version`, `destroy`) и переключатель преемпции
+  (`armPreemption`/`disarmPreemption`). Новая фича — это данные (значение
+  `MethodEnum`, payload-DTO, обработчик на Rust), а не новый C-символ.
+  Долгоживущий сервер или консьюмер добавляет одну-две control-функции вроде
+  `httpStopAccepting`: она прекращает приём новых соединений, пока уже начатые
+  доводятся до конца.
 - Один транспорт и одна модель стриминга на всё: payload-DTO плюс потоковые
-  состояния за `next()` — курсоры MongoDB, тела HTTP, кадры сокета, сообщения WS
-  едут по одному механизму, и отправитель ждёт, если читатель не успевает.
+  состояния за `next()` — курсоры MongoDB, тела ответов HTTP-клиента, кадры
+  сокета, сообщения WS едут по одному механизму, и отправитель ждёт, если
+  читатель не успевает.
 - Единый интерфейс для sync и async: нет отдельных «асинхронного» и
   «синхронного» вариантов одной функции. Один и тот же вызов работает внутри
   `WaitGroup` (конкурентно) и вне его (обычный блокирующий); конкурентность

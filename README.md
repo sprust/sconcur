@@ -109,7 +109,7 @@ Operations and clients — wrapped in a coroutine (`$waitGroup->add()` +
 | --- | --- | --- |
 | `sleep()`, `usleep()` | `Sleeper::sleep()`, `Sleeper::usleep()` | pause for seconds or microseconds |
 | `PDO` / `mysqli` (MySQL) | `Features\Mysql\Connection` | queries, transactions, SELECT streaming; a connection pool in the extension |
-| `PDO` (PostgreSQL) | `Features\Pgsql\Connection` | the same SQL feature on the pgx driver |
+| `PDO` (PostgreSQL) | `Features\Pgsql\Connection` | the same SQL feature on the sqlx `postgres` driver |
 | `mongodb/mongodb`, `ext-mongodb` | `Features\Mongodb\Connection\*` | CRUD, aggregation, cursors; BSON values are `SConcur\Bson\*` |
 | `curl`, `file_get_contents`, Guzzle | `Features\HttpClient\HttpClient` (PSR-18) | response streaming, download straight to a file inside the extension |
 | `fsockopen`, `stream_socket_client` | `Features\SocketClient\SocketClient` | TCP with length-prefix framing |
@@ -164,14 +164,16 @@ Everything else follows from that:
 - Mature drivers are reused as-is — the MongoDB driver, sqlx, hyper, reqwest,
   lapin, fastwebsockets — and run concurrently right away. No waiting for async
   PHP drivers or extensions.
-- The C glue is frozen: `push`, `wait`, `waitAny`/`waitAnyBatch`, `next`,
-  `stopFlow` plus the `version`/`destroy` lifecycle. A new feature is data (a
-  `MethodEnum` value, a payload DTO, a Rust handler), not a new C
-  symbol, so the export set never grows. A new long-lived server adds at most
-  one control function, like `httpStopAccepting`, which stops accepting new
-  connections while the ones in progress are finished.
-- One transport and one streaming model for everything: payload DTOs plus
-  the streaming states behind `next()` — MongoDB cursors, HTTP bodies, socket
+- The C glue does not grow per feature. It exports the task calls (`push`,
+  `next`, `wait` and its `waitAny*` variants, `tasksCount`, `stopFlow`), the
+  lifecycle (`ping`, `version`, `destroy`) and the preemption switch
+  (`armPreemption`/`disarmPreemption`). A new feature is data (a `MethodEnum`
+  value, a payload DTO, a Rust handler), not a new C symbol. A long-lived
+  server or consumer adds a control function or two, like `httpStopAccepting`,
+  which stops accepting new connections while the ones in progress are
+  finished.
+- One transport and one streaming model for everything: payload DTOs plus the
+  streaming states behind `next()` — MongoDB cursors, HTTP client bodies, socket
   frames, WS messages all travel the same mechanism, and the sender waits when
   the reader falls behind.
 - One API for sync and async: no separate "async" and "sync" variants of the

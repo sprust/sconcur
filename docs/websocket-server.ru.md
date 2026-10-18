@@ -139,12 +139,14 @@ Broadcast в другие соединения не встроен — прил�
 CPU-цикл тоже, если не включена преемпция, — тогда он вытесняется каждый
 [квант](coroutine-switching.ru.md).
 
-Сервер пингует клиента каждые `pingIntervalMs`; не получив pong за
-`writeTimeoutMs`, считает пира мёртвым и закрывает соединение — это держит живым
-push-соединение, в которое клиент ничего не шлёт. `idleTimeoutMs` (если задан)
-завершает вход соединения, когда между входящими сообщениями проходит слишком
-много времени. Сообщение больше `maxMessageBytes` закрывает соединение с кодом
-1009, а на стороне обработчика `read()` возвращает `null`.
+Сервер пингует клиента каждые `pingIntervalMs`, и это держит живым
+push-соединение, в которое клиент ничего не шлёт. Ответного pong сервер не ждёт:
+соединение завершается, если ping не удалось записать за `writeTimeoutMs`, а
+пропавшего пира, который всё ещё принимает байты, ловит только `idleTimeoutMs`.
+`idleTimeoutMs` (если задан) завершает вход соединения, когда между входящими
+сообщениями проходит слишком много времени. Сообщение больше `maxMessageBytes`
+закрывает соединение с кодом 1009, а на стороне обработчика `read()` возвращает
+`null`.
 
 Если обработчик бросил исключение, оно перехватывается, соединение закрывается, а
 хук `onError: Closure(Throwable, Connection): void` может его увидеть и отправить
@@ -165,7 +167,7 @@ push-соединение, в которое клиент ничего не шл
 который пишет расширение:
 
 ```
-2026-06-28T12:00:00.000000 sconcur ws server listening on 0.0.0.0:9200 pid=12345 version=0.12.0 maxConcurrency=0 maxConnections=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur ws server listening on 0.0.0.0:9200 pid=12345 version=X.Y.Z maxConcurrency=0 maxConnections=0 reusePort=0
 2026-06-28T12:00:01.000000 sconcur ws server shutdown: stop accepting (reason=signal), draining 2 in-flight
 2026-06-28T12:00:01.050000 sconcur ws server shutdown: drained all in-flight
 2026-06-28T12:00:01.060000 sconcur ws server shutdown: stopped
@@ -201,5 +203,5 @@ $server->serve(static function (Connection $connection): void {
 - Нет per-message таймаута: границы задают idle-таймаут, `writeTimeoutMs`,
   keepalive-ping и graceful-остановка.
 - `permessage-deflate` (сжатие) и TLS пока не включены.
-- Общие ограничения библиотеки (только CLI, только Linux, только NTS, нельзя
-  `pcntl_fork` после загрузки расширения) — см. [README](../README.ru.md).
+- Общие ограничения библиотеки — в
+  [README](../README.ru.md#применение-и-ограничения).

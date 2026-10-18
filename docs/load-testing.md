@@ -49,9 +49,10 @@ DURATION=3600 make bench-http-load-soak # hour-long soak
 slope in MiB/min with a verdict: `stable` / `growth — possible leak` /
 `declining (GC/memory return)`.
 
-The methodology matches `http-throughput.sh`: the servers and the load generator
-are pinned to non-overlapping cores (`taskset`), and `wrk` hits the container's
-bridge IP directly, bypassing docker-proxy (NAT caps throughput).
+The methodology matches `tests/benchmarks/http/throughput.sh`: the servers and
+the load generator are pinned to non-overlapping cores (`taskset`), and `wrk`
+hits the container's bridge IP directly, bypassing docker-proxy (NAT caps
+throughput).
 
 ## CPU pinning
 
@@ -69,7 +70,7 @@ below says why: `rr-load-stats.sh` and `swoole-load-stats.sh` give the whole
 server `taskset -c 0-$((WORKERS-1))` and let the scheduler place the workers
 inside it, which is the `group` placement, while this harness defaults to `1`.
 The core budget is the same in both, the placement is not, and the placement is
-worth about twenty percent.
+worth about 6.5% on the empty endpoint.
 
 `PIN_SERVERS` selects the placement. Every mode draws from the same budget
 (`cpu 0..SERVERS-1`), so the modes differ only in where inside it the workers sit:
@@ -88,7 +89,7 @@ PIN_SERVERS=group ROUTE=/ tests/benchmarks/http/load-stats.sh
 ### What was measured, and why the library has no pinning option
 
 The empty endpoint, 12 workers, the same `cpu0-11` budget in every arm, `wrk` on
-12-19, median of three interleaved rounds of 20 s:
+12–15, median of three interleaved rounds of 20 s:
 
 | placement | rps | p50 | p90 | p99 |
 |---|---:|---:|---:|---:|
@@ -279,10 +280,10 @@ largest allocation in the generator, and a percentile does not need it.
 The `all` command of the demo server (`tests/servers/ws/ws-server.php`) runs the
 same backend features concurrently for every message, with `Sleeper` added to
 the mix. `tests/benchmarks/ws/load-stats.sh` (`make bench-ws-load-stats`) brings
-up the pool and samples the same metrics as `http-load-stats.sh`. The difference
-from the HTTP variant: both the pool and the generator live in the `php`
-container, pinned to non-overlapping cores, and the generator hits the pool over
-loopback.
+up the pool and samples the same metrics as
+`tests/benchmarks/http/load-stats.sh`. The difference from the HTTP variant:
+both the pool and the generator live in the `php` container, pinned to
+non-overlapping cores, and the generator hits the pool over loopback.
 
 ```sh
 make bench-ws-load-stats

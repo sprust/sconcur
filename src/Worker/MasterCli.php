@@ -10,9 +10,10 @@ use Throwable;
 
 /**
  * The universal master CLI behind bin/sconcur-server. Every command takes a
- * single --configPath pointing to a JSON master config (see MasterConfig); there are
- * no other flags. Commands: start (run the supervisor in the foreground), status
- * (report whether a master is running, via the lock), stop (remove the state file —
+ * --configPath pointing to a JSON master config (see MasterConfig); status and
+ * reload also take --group=NAME to narrow them to one group. Commands: start (run
+ * the supervisor in the foreground), status (report whether a master is running,
+ * via the lock), stop (remove the state file —
  * the master watches it and shuts the pool down gracefully) or reload (touch the
  * reload trigger file — the master rolls its workers one by one, zero-downtime with
  * SO_REUSEPORT).

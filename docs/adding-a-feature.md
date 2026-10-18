@@ -57,22 +57,23 @@ pub struct SleeperPayload {
 ```
 
 Multi-command features (the reference is `Mongodb`) use a two-level payload: a
-shared envelope with a command field and `dt` (the serialized body) — one `Payload`
-type in Rust, built by `Base\BaseMongodbPayload` on PHP — plus one struct per
-command for the contents of `dt`. There the PHP `*PayloadParameters` classes are a
-PHP-only convenience for assembling `dt` and are not carried over: their fields are
-expanded directly into the corresponding Rust struct. If a command's `dt` is an
-arbitrary user document (insert, count, runCommand, …) or empty (drop, list…), it
-has no struct — `dt` is read as an untyped value in the handler, and that case is
-marked with a comment, so every PHP `*Payload` corresponds to either a struct or an
-explicit note.
+shared envelope with a command field and `dt` (the command's parameters as a
+plain array) — one `Payload` type in Rust, built by `Base\BaseMongodbPayload` on
+PHP — plus one struct per command for the contents of `dt`. There the PHP
+`*PayloadParameters` classes are a PHP-only convenience for assembling `dt` and
+are not carried over: their fields are expanded directly into the corresponding
+Rust struct. If a command's `dt` is an arbitrary user document (insert, count,
+runCommand, …) or empty (drop, list…), it has no struct — `dt` is read as an
+untyped value in the handler, and that case is marked with a comment, so every
+PHP `*Payload` corresponds to either a struct or an explicit note.
 
-A feature with many commands whose parameters are flat maps of short keys can skip the
-class-per-command entirely: `Amqp` has one `AmqpPayload(AmqpCommandEnum $command, array
-$data)`, the callers write the keys where the values are, and each enum case names the
-struct its `dt` is decoded into. Two dozen near-identical classes buy nothing a named
-argument at the call site does not already give. Prefer that shape when the parameters
-carry no logic, and the Mongodb one when they do.
+A feature with many commands whose parameters are flat maps of short keys can
+skip the class-per-command entirely: `Amqp` has one
+`AmqpPayload(AmqpCommandEnum $command, array $data)`, the callers write the keys
+where the values are, and each enum case names the struct its `p` is decoded
+into. Two dozen near-identical classes buy nothing a named argument at the call
+site does not already give. Prefer that shape when the parameters carry no
+logic, and the Mongodb one when they do.
 
 The PHP payload is `readonly`, its fields are typed, and the names are not
 abbreviated.
@@ -217,8 +218,9 @@ public function doFoo(int $someParam): Iterator
 ```
 
 Rust: the constant as in A, plus a state module in the feature (`rows_state.rs`
-in `sql`, `message_state.rs` in `wsserver`; mongodb keeps them under `states.rs`)
-implementing `StateContract` (`next()`, `close()`, both async):
+in `sql`, `ext/src/ws/message_state.rs` for the WebSocket server; mongodb keeps
+them under `states.rs`) implementing `StateContract` (`next()`, `close()`, both
+async):
 
 ```rust
 pub struct FooState {

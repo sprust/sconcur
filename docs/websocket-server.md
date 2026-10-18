@@ -115,7 +115,7 @@ The `WsServer` constructor; the PHP defaults mirror the extension's.
 | `maxConcurrency` | `0` (no limit) | max connections served at once; excess ones wait for a free slot |
 | `handlerTimeoutMs` | `0` (no limit) | how long one connection handler may run before it is unwound where it stands — see [coroutine timeout](coroutine-timeout.md) |
 | `maxConnections` | `0` (no limit) | stop the server after N served connections (a leak guard) |
-| `shutdownTimeoutMs` | `10000` | accepted and not applied: the drain is bounded by the grace period below, not by a clock of its own |
+| `shutdownTimeoutMs` | `10000` | accepted and not applied: finishing the connections already accepted is bounded by the grace period below, not by a clock of its own |
 | `reusePort` | `false` | `SO_REUSEPORT` — a pool of processes on one port (Linux) |
 | `path` | `/` | the path on which the upgrade is accepted (empty string — any path); another path → `404` |
 | `allowedOrigins` | `[]` | host patterns for the origin check (empty — the check is skipped) |
@@ -139,12 +139,13 @@ caveat as everywhere applies: a native blocking call freezes the single PHP thre
 and so does a userland CPU loop, unless preemption is on — then it is preempted
 every [quantum](coroutine-switching.md).
 
-The server pings the client every `pingIntervalMs`; with no pong within
-`writeTimeoutMs` it considers the peer dead and closes the connection — this keeps
-a push-only connection alive when the client sends nothing. `idleTimeoutMs` (if
-set) ends a connection's input when too much time passes between inbound messages.
-A message larger than `maxMessageBytes` closes the connection with code 1009, and
-on the handler side `read()` returns `null`.
+The server pings the client every `pingIntervalMs`, which keeps a push-only
+connection alive when the client sends nothing. It does not wait for the pong: a
+ping that cannot be written within `writeTimeoutMs` ends the connection, and a
+peer that is gone but still accepts bytes is caught only by `idleTimeoutMs`.
+`idleTimeoutMs` (if set) ends a connection's input when too much time passes
+between inbound messages. A message larger than `maxMessageBytes` closes the
+connection with code 1009, and on the handler side `read()` returns `null`.
 
 If the handler throws, the exception is caught, the connection is closed, and the
 `onError: Closure(Throwable, Connection): void` hook can observe it and send a
@@ -165,7 +166,7 @@ Lifecycle lines go to `STDOUT` alongside the per-connection access log written b
 the extension:
 
 ```
-2026-06-28T12:00:00.000000 sconcur ws server listening on 0.0.0.0:9200 pid=12345 version=0.12.0 maxConcurrency=0 maxConnections=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur ws server listening on 0.0.0.0:9200 pid=12345 version=X.Y.Z maxConcurrency=0 maxConnections=0 reusePort=0
 2026-06-28T12:00:01.000000 sconcur ws server shutdown: stop accepting (reason=signal), draining 2 in-flight
 2026-06-28T12:00:01.050000 sconcur ws server shutdown: drained all in-flight
 2026-06-28T12:00:01.060000 sconcur ws server shutdown: stopped
@@ -201,5 +202,5 @@ reports statistics through the master panel (`GET /api/stats`) via the
 - No per-message timeout: the bounds are the idle timeout, `writeTimeoutMs`, the
   keepalive ping and the graceful stop.
 - `permessage-deflate` (compression) and TLS are not yet enabled.
-- The library's general limits (CLI only, Linux only, NTS only, no `pcntl_fork`
-  after the extension is loaded) — see the [README](../README.md).
+- The library's general limits are in the
+  [README](../README.md#use-and-limitations).

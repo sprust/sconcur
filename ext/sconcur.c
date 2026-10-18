@@ -1,6 +1,7 @@
 #include <php.h>
 #include <stdlib.h>
 #include <zend_atomic.h>
+#include <zend_closures.h>
 #include <zend_enum.h>
 #include <zend_exceptions.h>
 #include "sconcur_core.h"
@@ -621,6 +622,26 @@ int sconcur_object_is_plain(const zval *object)
     ZVAL_DEREF(object);
 
     return Z_OBJCE_P(object) == zend_standard_class_def;
+}
+
+/* 1 for a Closure, 2 for an enum case, 0 for any other object. Neither of the
+ * two carries state a feature could read as properties, so a push refuses
+ * them instead of sending an object that means nothing on the other side. */
+int sconcur_object_refused(const zval *object)
+{
+    ZVAL_DEREF(object);
+
+    zend_class_entry *ce = Z_OBJCE_P(object);
+
+    if (ce == zend_ce_closure) {
+        return 1;
+    }
+
+    if (ce->ce_flags & ZEND_ACC_ENUM) {
+        return 2;
+    }
+
+    return 0;
 }
 
 static int sconcur_table_iterate(HashTable *table, void *context, sconcur_visit_t visit, int public_only)

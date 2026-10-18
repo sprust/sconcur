@@ -120,12 +120,12 @@ in `SendPayload`/`ClosePayload` and the matching exception;
 envelope, a mirror of the extension's structs.
 
 Rust (`ext/src/features/socketclient/`): the connect path dials with
-`connectTimeout` (cancellable by the flow context) and registers the streaming
-`connectionState` — the first `Next` is the metadata, then the inbound frames —
-plus the write loop, cleaned up on flow stop; `mod.rs` dispatches the
-commands, routing `Send`/`Close` by `cid` into that write loop. The frame codec,
-`MessageState` and the write loop that waits for each flush live in the neutral
-`ext/src/socket/`, shared with the socket server.
+`connect_timeout_ms` (cancellable by the flow context) and registers the
+streaming `ConnectionState` — the first `next()` is the metadata, then the
+inbound frames — plus the write loop, cleaned up on flow stop; `mod.rs`
+dispatches the commands, routing `Send`/`Close` by `cid` into that write loop.
+The frame codec, `MessageState` and the write loop that waits for each flush
+live in the neutral `ext/src/socket/`, shared with the socket server.
 
 So reading inbound frames is `next()` over the connect streaming state (like
 `HttpClient`'s response body), and write/close is `exec(Send/Close)` routed by
@@ -141,8 +141,8 @@ library's general limits — see the [README](../README.md).
 
 PHP feature tests are in `tests/feature/Features/SocketClient/` — edge and error
 cases plus the concurrency contract on `BaseAsyncTestCase`, run against a real
-SConcur `SocketServer` brought up via `TestSocketServer`. The core's own tests cover the
-shared `ext/src/socket/` package and the core's own unit tests. The benchmark
+SConcur `SocketServer` brought up via `TestSocketServer`. The core's own unit
+tests cover the shared `ext/src/socket/` module. The benchmark
 (`make bench-socket-client c=20`) runs N round-trips to the demo server's
 `msleep` endpoint, concurrent async against sequential native (raw PHP sockets)
 and sync.

@@ -75,8 +75,8 @@ $server->serve(static function (Connection $connection): void {
 
 Push to other connections (broadcast, chat, pub-sub) is not built in — the
 application can keep references to `Connection` and write to them itself
-(`write` is routed by `id` inside the extension through the global `pendingConnections`
-map).
+(`write` is routed by `id` inside the extension through the process-wide
+connection registry in `ext/src/features/socketserver/mod.rs`).
 
 ## Parameters
 
@@ -91,7 +91,7 @@ The `SocketServer` constructor; the PHP defaults mirror the extension's.
 | `maxConcurrency` | `0` (unlimited) | max connections served at once; excess ones wait for a free slot |
 | `handlerTimeoutMs` | `0` (unlimited) | how long one connection handler may run before it is unwound where it stands — see [coroutine timeout](coroutine-timeout.md) |
 | `maxConnections` | `0` (unlimited) | stop the server after N served connections (a guard against leaks) |
-| `shutdownTimeoutMs` | `10000` | accepted and not applied: the drain is bounded by the grace period below, not by a clock of its own |
+| `shutdownTimeoutMs` | `10000` | accepted and not applied: finishing the connections already accepted is bounded by the grace period below, not by a clock of its own |
 | `reusePort` | `false` | `SO_REUSEPORT` — a process pool on one port (Linux) |
 | `onError` | `null` | handler-error hook |
 | `masterPid` | `null` | orphan check under the master |
@@ -139,20 +139,21 @@ $server = new SocketServer(
 ## Graceful shutdown and SO_REUSEPORT
 
 On a signal (SIGTERM/SIGINT), on reaching `maxConnections`, or on being orphaned
-(`masterPid`), the server closes the listener and half-closes the active
-connections for reading (`CloseRead`): a handler reading in a loop gets EOF (its
-current write still goes through) and returns. A push-only handler that never
-reads does not notice the EOF and is finished off by a forced close after the
-grace period (2 s). In a `SO_REUSEPORT` pool the kernel immediately hands new
-connections to siblings, and the process exits on its own. `reusePort: true` —
-several processes on one port, one per core — is the basis for scaling under the
-worker master.
+(`masterPid`), the server closes the listener and stops reading on the active
+connections (`close_read`: the pending read is cancelled, and the peer gets no
+FIN until the connection closes for good): a handler reading in a loop gets EOF
+(its current write still goes through) and returns. A push-only handler that
+never reads does not notice the EOF and is finished off by a forced close after
+the grace period (2 s). In a `SO_REUSEPORT` pool the kernel immediately hands
+new connections to siblings, and the process exits on its own. `reusePort: true`
+— several processes on one port, one per core — is the basis for scaling under
+the worker master.
 
 Lifecycle lines go to `STDOUT`, alongside the per-connection access log that the extension
 side writes when each connection closes:
 
 ```
-2026-06-28T12:00:00.000000 sconcur socket server listening on 0.0.0.0:9100 pid=12345 version=0.12.0 maxConcurrency=0 maxConnections=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur socket server listening on 0.0.0.0:9100 pid=12345 version=X.Y.Z maxConcurrency=0 maxConnections=0 reusePort=0
 2026-06-28T12:00:01.000000 sconcur socket server shutdown: stop accepting (reason=signal), draining 2 in-flight
 2026-06-28T12:00:01.050000 sconcur socket server shutdown: drained all in-flight
 2026-06-28T12:00:01.060000 sconcur socket server shutdown: stopped
@@ -186,5 +187,5 @@ $server->serve(static function (Connection $connection): void {
   `AF_UNIX`; multi-worker for unix requires fd inheritance).
 - Broadcast is not built in — push to other connections is up to the application.
 - No per-message timeout: the push model is connection-oriented.
-- The library's general limits (CLI only, Linux only, NTS only, no `pcntl_fork`
-  after the extension is loaded) — see the [README](../README.md).
+- The library's general limits are in the
+  [README](../README.md#use-and-limitations).

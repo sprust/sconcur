@@ -53,10 +53,8 @@ flowchart TB
     worker2["Воркер #2 (pusher расширения)"]
     client["Браузер / Prometheus / curl (Bearer)"]
 
-    master -->|"запуск и супервизия"| worker1
-    master -->|"запуск и супервизия"| worker2
-    worker1 -->|"push снапшота раз в 1 c (unix-сокет)"| master
-    worker2 -->|"push снапшота"| master
+    master <-->|"запуск и супервизия / push снапшота раз в 1 c (unix-сокет)"| worker1
+    master <-->|"запуск и супервизия / push снапшота"| worker2
     master <-->|"метрики / JSON / HTML / SSE"| client
 ```
 
@@ -155,8 +153,8 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 | `startedAt` / `uptimeSeconds` | когда стартовал serve-цикл воркера (UTC) и сколько живёт | старт serve-цикла |
 | `requests.completed` | обслужено запросов (HTTP) | счётчик |
 | `requests.avgMs` | средняя длительность запроса | сумма / количество |
-| `requests.inFlight` | в обработке прямо сейчас | реестр in-flight |
-| `requests.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | из них по возрасту [1c,5c) / [5c,15c) / ≥15c | возраст in-flight |
+| `requests.inFlight` | в обработке прямо сейчас | реестр запросов в обработке |
+| `requests.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | из них по возрасту [1c,5c) / [5c,15c) / ≥15c | возраст запросов в обработке |
 | `connections.active` / `totalAccepted` | открыто сейчас / принято за всё время | счётчик |
 | `consumers.coroutines` | открытых консьюмеров — по одному на корутину, то есть текущая ёмкость | реестр консьюмеров |
 | `consumers.delivered` | доставок отдано в PHP (консьюмер очереди) | счётчик |
@@ -220,13 +218,13 @@ PHP-потоком рантайм продолжает слать снапшот
   "groups": [
     {
       "name": "http",
-      "workersTotal": 3,
+      "workersTotal": 8,
       "workersHung": 0,
       "watchdogKills": 0,
       "totals": {
-        "memory": { "rssBytes": 125829120 },
-        "cpuPercent": 10.6,
-        "runtimeTasks": 72,
+        "memory": { "rssBytes": 335544320 },
+        "cpuPercent": 28.4,
+        "runtimeTasks": 192,
         "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
       }
     }

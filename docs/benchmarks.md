@@ -120,7 +120,7 @@ Two things have to be equal before the stacks can be compared, and neither is
 by default. **Placement**: `load-stats.sh` defaults to `PIN_SERVERS=1`, one
 worker per logical CPU, while `rr-load-stats.sh` and `swoole-load-stats.sh` can
 only `taskset` the master and let it fork — the `group` placement. The core
-budget is the same either way, the placement is not, and it is worth 26% on the
+budget is the same either way, the placement is not, and it is worth 6.5% on the
 empty endpoint. Every server row below runs `group`; what `pin=1` costs is
 measured separately in [CPU pinning](load-testing.md#cpu-pinning). **Table
 state**: the three stacks share `load_all` and `bench_rw`, and only
@@ -164,7 +164,7 @@ async wins biggest where a call makes the server chew through the dataset —
 every `count` scans all 100k documents, every `updateMany` rewrites them, the
 unindexed `bulkWrite` filters scan the collection several times per call.
 
-Single-document operations gain as well: `findOne` +44%, `updateOne` +56%,
+Single-document operations gain as well: `findOne` +43%, `updateOne` +57%,
 `deleteOne` +68%, `insertOne` +36%. MongoDB pays no per-operation fsync on the
 default write concern, so there is no I/O wait to hide other work behind; what
 the concurrent mode overlaps here is the round-trip to the server, and that is
@@ -217,9 +217,10 @@ Up to ~64 KB per operation the boundary cost is negligible; megabyte blobs
 belong to the native driver, and many large results at once cost RSS ≈ number of
 concurrent operations × payload.
 
-On the async path the payload crosses the boundary twice — packed bindings (or a
-BSON document) in, the result buffer out — so the boundary cost grows with the
-payload while the gain from concurrency does not. Six dedicated benches
+On the async path the payload crosses the boundary twice — the parameters read
+off the PHP array on the way in, the result built as PHP values on the way out —
+so the boundary cost grows with the payload while the gain from concurrency does
+not. Six dedicated benches
 (`tests/benchmarks/{mongodb,mysql,pgsql}/payload-{write,read}.php`) move an
 incompressible base64 payload of `SCONCUR_BENCH_PAYLOAD_BYTES` bytes per call;
 read re-reads one hot row per mode, so the measured path is transfer + decode,
@@ -306,7 +307,7 @@ mode comes out ahead of native and takes well under half of the synchronous time
 The three consuming numbers move more between runs than any other table here —
 read them as orders of magnitude, not as figures to compare percentages on.
 
-**What the tables do not measure is the reason the feature exists.** They pit one
+What the tables do not measure is the reason the feature exists. They pit one
 call against one call on a queue that already has its messages. The gain is a
 worker that waits on several queues at once: consuming holds the PHP thread in
 both `ext-amqp` and `php-amqplib`, so a process is pinned to one queue, while
@@ -346,7 +347,7 @@ Value size, 500 `GET` calls of one value, single run:
 | 1 MB | 438 / 159 / 457 | 16 / 14 / 140 |
 
 A megabyte value is where the concurrent path turns from slower into wrong for
-the job: 500 of them in flight at once hold 140 MB against the native driver's
+the job: 500 of them running at once hold 140 MB against the native driver's
 16, because every result exists in the extension and in PHP at the same time.
 Read blobs one at a time, or through a path that never crosses the boundary.
 
@@ -356,7 +357,7 @@ concurrent command; a second one buys the last 11%, and past two the line is
 flat. The default is 4, which is that flat part with room for a large value in
 flight not to hold up what is behind it.
 
-**What the tables do not measure is the reason the feature exists.** They time a
+What the tables do not measure is the reason the feature exists. They time a
 process whose only job is Redis. In a request handler the phpredis call blocks
 the whole worker for its 11 µs plus whatever the network adds, while this one
 suspends one coroutine and the worker serves other requests; and against a Redis
@@ -430,18 +431,12 @@ Read in order:
   with the native loop. A file larger than the process should never go through
   `read()`.
 
-**What the tables do not measure is the reason the feature exists.** They time a
+What the tables do not measure is the reason the feature exists. They time a
 process whose only job is files. In a request handler the native call holds the
 whole worker for however long the disk takes — microseconds on a warm cache,
 milliseconds on a cold one, tens of milliseconds on NFS — while this one suspends
 one coroutine and the worker serves other requests. That is a latency tail, not a
 throughput number, and it does not show up in a loop that runs one call at a time.
-
-One number here was itself found by this gate. `list` first dispatched every
-`file_type()` and `metadata()` to the blocking pool on its own, so a 10 000-entry
-listing handed 20 000 syscalls across a thread boundary and took 6723 ms
-synchronously — nine times slower than the native code it exists to beat. A
-directory is now read whole in one trip.
 
 ## Clients (HTTP / Socket / WebSocket)
 
@@ -495,11 +490,12 @@ across the two workers per group of `config/sconcur.servers.config.json`.
 
 ### HTTP throughput: the empty endpoint
 
-Sustained throughput under `wrk` (the `http-load-stats.sh` script, methodology
-in [load testing](load-testing.md)): 12 processes in the `php` container, `wrk`
-4 threads / 256 connections / 20 s hitting the bridge IP directly, 3 runs per
-endpoint, all responses `200`. `/` returns `200 "ok"` and does no I/O, so it
-measures the ceiling of the server and the framework and nothing else.
+Sustained throughput under `wrk` (the `tests/benchmarks/http/load-stats.sh`
+script, methodology in [load testing](load-testing.md)): 12 processes in the
+`php` container, `wrk` 4 threads / 256 connections / 20 s hitting the bridge IP
+directly, 3 runs per endpoint, all responses `200`. `/` returns `200 "ok"` and
+does no I/O, so it measures the ceiling of the server and the framework and
+nothing else.
 
 | Endpoint | Requests/sec | Latency p50 / p90 / p99 | CPU `php` avg / peak | MEM peak |
 | --- | ---: | --- | --- | ---: |
@@ -519,7 +515,7 @@ the price of each transport, and Swoole's C event loop is ahead of everything.
 
 Two reference stacks are measured next to SConcur, both on native drivers and
 both committed (`tests/servers/roadrunner/`, `tests/servers/swoole/`) with load
-scripts that are copies of `http-load-stats.sh`:
+scripts that are copies of `tests/benchmarks/http/load-stats.sh`:
 [RoadRunner](https://roadrunner.dev) 2025.1.15 (a request occupies a worker for
 its whole duration) and [Swoole](https://swoole.com) 6.2.2 (a coroutine worker
 serves many requests at once, blocking drivers become non-blocking via
