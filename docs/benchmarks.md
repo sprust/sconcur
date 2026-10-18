@@ -37,10 +37,13 @@ hardware, DB settings and load. The workload-matching verdict table is in
 
 ## Environment
 
-Intel Core i7-13620H (16 threads), 15 GiB RAM, Linux, everything in Docker: the
-benchmarks from the `php` container (`make bench-*`), the server pools from the
-`servers` container (2 workers per group, `SO_REUSEPORT`). Component versions — see
-[Tested versions](../README.md#tested-versions).
+Intel Core i7-13620H: 6 performance cores with two threads each (CPU 0–11) and 4
+efficiency cores (CPU 12–15). At 12 workers the HTTP harnesses put the servers
+on 0–11 and `wrk` on 12–15. 15 GiB RAM, NVMe SSD (Samsung, 1 TB), Ubuntu 26.04
+with kernel 7.0, Docker 29.1, power profile Performance. Everything runs in
+Docker: the benchmarks from the `php` container (`make bench-*`), the server
+pools from the `servers` container (2 workers per group, `SO_REUSEPORT`).
+Component versions — see [Tested versions](../README.md#tested-versions).
 
 DB data lives on the host disk (SSD), as in a real deployment: writes pay a real
 fsync, hot reads come from the DB cache. By default `docker-compose.yml` keeps the
