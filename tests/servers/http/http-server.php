@@ -23,7 +23,6 @@ use SConcur\Features\Amqp\ConnectionOptions as AmqpConnectionOptions;
 use SConcur\Features\Amqp\Queue as AmqpQueue;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Scheduler\Scheduler;
-use SConcur\Transport\MessagePackTransport;
 use SConcur\Tests\Impl\HttpServer\GeneratorStream;
 use SConcur\WaitGroup;
 
@@ -1341,8 +1340,8 @@ function runLadderServer(string $mode, array $argv): void
     // whose no-result completion never unregisters it, growing the flow's task
     // map by one entry per request and skewing the very numbers the ladder
     // measures (GC scan time over millions of dead entries).
-    $respond = static function (string $requestPayload) use ($extension): void {
-        $requestId = (string) (MessagePackTransport::unpack($requestPayload)['rid'] ?? '');
+    $respond = static function (array $requestPayload) use ($extension): void {
+        $requestId = (string) ($requestPayload['rid'] ?? '');
 
         $extension->push(
             flowKey: '',
@@ -1415,8 +1414,8 @@ function runLadderServer(string $mode, array $argv): void
                 // pending respond payload, the loop performs the push off
                 // the fiber stack (like Scheduler::dispatchPendingTask) and
                 // resumes the fiber to completion.
-                $fiber = new Fiber(static function (string $requestPayload): void {
-                    $requestId = (string) (MessagePackTransport::unpack($requestPayload)['rid'] ?? '');
+                $fiber = new Fiber(static function (array $requestPayload): void {
+                    $requestId = (string) ($requestPayload['rid'] ?? '');
 
                     Fiber::suspend(RespondPayload::full(
                         requestId: $requestId,

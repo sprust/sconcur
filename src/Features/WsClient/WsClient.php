@@ -9,7 +9,6 @@ use SConcur\Features\FeatureExecutor;
 use SConcur\Features\WsClient\Dto\Connection;
 use SConcur\Features\WsClient\Payloads\ConnectPayload;
 use SConcur\Features\WsClient\Payloads\ConnectPayloadParameters;
-use SConcur\Transport\MessagePackTransport;
 use Throwable;
 
 /**
@@ -57,7 +56,7 @@ readonly class WsClient
         }
 
         /** @var array<string, mixed> $meta */
-        $meta = MessagePackTransport::unpack($result->payload);
+        $meta = $result->payload;
 
         return new Connection(
             id: (string) ($meta['cid'] ?? ''),

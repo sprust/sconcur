@@ -2,10 +2,16 @@ English | [Русский](msgpack-objects.ru.md)
 
 # Objects over MessagePack
 
-PHP and the extension exchange every payload and every result as MessagePack.
-Scalars, arrays and maps have a MessagePack type of their own and cross unchanged.
-A value that has none — an id, a date, a decimal — crosses as a PHP object, in the
-encoding `ext-msgpack` already uses for objects.
+PHP sends every task's parameters to the extension as MessagePack. Scalars, arrays
+and maps have a MessagePack type of their own and cross unchanged. A value that has
+none — an id, a date, a decimal — crosses as a PHP object, in the encoding
+`ext-msgpack` already uses for objects.
+
+The way back is different: a result does not cross as bytes at all. The extension
+builds the PHP value of the result itself, inside the wait call, and a value that is
+an object is created directly as an instance of its class (`ext/sconcur.c`, the value
+builder). This document is about the direction that still uses MessagePack, and about
+the classes both directions share.
 
 This document is the reference for that mechanism: the format, the constraints it
 puts on both sides, how to add a type and how to test one.
@@ -21,14 +27,10 @@ On the PHP side:
 | Direction | Entry point |
 |---|---|
 | PHP → extension, a payload | `Transport\MessagePackTransport::pack` — packs `PayloadInterface::getData()` |
-| extension → PHP, a task result | `Transport\MessagePackTransport::unpack` |
 | PHP → extension, a MongoDB document | `Features\Mongodb\Serialization\DocumentSerializer::serialize` |
-| extension → PHP, a document or a cursor batch | `DocumentSerializer::unserialize` / `::unserializeBatch` |
 
-Each is one call to `msgpack_pack()` or `msgpack_unpack()`. PHP never walks the
-decoded structure: `ext-msgpack` builds the objects in C while parsing, and a
-second pass over every document in userland would cost more than the decoding
-itself.
+Each is one call to `msgpack_pack()`. A result needs no call: it arrives as the
+array, string or object the extension built, and PHP never walks it.
 
 Inside the extension (MongoDB's, as the worked example):
 
@@ -36,8 +38,8 @@ Inside the extension (MongoDB's, as the worked example):
 |---|---|
 | PHP → extension, `dt` is a parameter struct | `payloads::decode_params` |
 | PHP → extension, `dt` is the document itself | `serializer::document_from_msgpack` / `documents_from_msgpack` |
-| extension → PHP, one document | `serializer::document_to_msgpack` |
-| extension → PHP, a cursor batch | `serializer::documents_to_msgpack` |
+| extension → PHP, one document | `serializer::document_value` — a `Value` tree, not bytes |
+| extension → PHP, a cursor batch | `serializer::documents_value` |
 
 Each converts once, at the outer edge of the message. Everything inside is BSON
 from there on, so the bulkWrite walk, the option parsers and the per-command code
@@ -69,10 +71,10 @@ The `nil` key is unambiguous: a PHP array cannot hold a `null` key — it coerce
 `''` — so no ordinary map can start with one. The C unpacker recognises the shape
 while parsing and constructs the object at that point.
 
-The extension writes the same shape with `write_object_header`
-(`serializer/to_msgpack.rs`), so a value coming back from the driver arrives in
-PHP as an object with nothing for PHP to
-do.
+The extension never writes this shape. A value coming back from the driver is built
+as a `Value::Object` naming the class and its properties (`serializer/to_value.rs`),
+and the glue instantiates that class on the PHP thread, so it arrives in PHP as an
+object with nothing for PHP to do.
 
 ## The extension flag
 
@@ -167,16 +169,13 @@ Beyond that: give the class a marker interface (`SConcur\Bson\Type` for the BSON
 set) so a document walk can recognise it, and keep the class name short — it travels
 on the wire with every value.
 
-## The encoder
+## The way back
 
-`write_value` in `serializer/to_msgpack.rs` has an arm per source type: a
-`write_object_header(buffer, class, properties)` followed by the property
-name/value pairs, in the order the PHP class declares them.
-
-`write_object_header` writes a map of `properties + 1` pairs whose first pair is
-`nil` → the class name. A property count that does not match the pairs actually
-written corrupts the stream — the decoder on either side reads the next value as a
-key.
+`value_of` in `serializer/to_value.rs` has an arm per BSON type that becomes an
+object: `Value::object(class, properties)` with the property name/value pairs in the
+order the PHP class declares them. The glue creates the instance without calling
+its constructor and writes each named declared property in place; a property the
+class does not declare is an error at that point, not a dynamic property.
 
 ## The decoder
 
@@ -207,9 +206,8 @@ Four places, in this order:
    [What a PHP class must look like](#what-a-php-class-must-look-like). If the class
    mirrors one from another library, mirror it exactly: same constructor, same
    getters, same `__toString()` and `jsonSerialize()`.
-2. The encoder, `write_value` in `serializer/to_msgpack.rs`: an arm for the source
-   type writing `write_object_header(buffer, class, properties)` and the property
-   pairs.
+2. The way back, `value_of` in `serializer/to_value.rs`: an arm for the source type
+   building `Value::object(class, properties)` with the property pairs.
 3. The decoder, `bson_from_envelope` in `serializer/from_msgpack.rs`: an arm for
    the class name that reads the properties with the `property_*` helpers and
    builds the value.

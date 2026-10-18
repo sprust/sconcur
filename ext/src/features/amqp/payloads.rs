@@ -11,8 +11,9 @@
 //! field through an intermediate value on a hot path, for no gain the wire can
 //! see.
 
-use rmp::encode;
 use serde::Deserialize;
+
+use crate::dto::{Map, Value};
 
 use super::values;
 
@@ -562,97 +563,61 @@ channel_command!(ConfirmSelectParams);
 
 // --- results -----------------------------------------------------------------
 //
-// Written with rmp directly rather than through serde, so an omitted property
-// is omitted rather than sent as an empty string, which is what PropertiesCodec
-// reads back as "nobody set this".
+// Built as PHP values directly rather than through serde, so an omitted
+// property is omitted rather than sent as an empty string, which is what
+// PropertiesCodec reads back as "nobody set this".
 
 /// What a Connect answers with: the handle the later commands address, plus the
 /// values the handshake settled on.
-pub fn encode_connect_result(
+pub fn connect_result_value(
     connection_id: &str,
     max_channels: u16,
     max_frame_size: u32,
     heartbeat: u16,
-) -> Vec<u8> {
-    let mut buffer = Vec::new();
-
-    encode::write_map_len(&mut buffer, 4).ok();
-    write_str(&mut buffer, "cid");
-    write_str(&mut buffer, connection_id);
-    write_str(&mut buffer, "mc");
-    write_int(&mut buffer, max_channels as i64);
-    write_str(&mut buffer, "mf");
-    write_int(&mut buffer, max_frame_size as i64);
-    write_str(&mut buffer, "hb");
-    write_int(&mut buffer, heartbeat as i64);
-
-    buffer
+) -> Value {
+    Map::with_capacity(4)
+        .set("cid", connection_id)
+        .set("mc", max_channels)
+        .set("mf", max_frame_size)
+        .set("hb", heartbeat)
+        .into()
 }
 
-pub fn encode_used_channels_result(used: i64) -> Vec<u8> {
-    let mut buffer = Vec::new();
-
-    encode::write_map_len(&mut buffer, 1).ok();
-    write_str(&mut buffer, "uc");
-    write_int(&mut buffer, used);
-
-    buffer
+pub fn used_channels_result_value(used: i64) -> Value {
+    Map::with_capacity(1).set("uc", used).into()
 }
 
 /// The handle plus the number this feature gave the channel on its connection,
 /// which PHP hands back through `Channel::id()`. It is a counter per connection
 /// handle, not the channel number AMQP puts on the wire — the driver owns that
 /// one and does not report it.
-pub fn encode_channel_open_result(channel_id: &str, channel_number: i64) -> Vec<u8> {
-    let mut buffer = Vec::new();
-
-    encode::write_map_len(&mut buffer, 2).ok();
-    write_str(&mut buffer, "chid");
-    write_str(&mut buffer, channel_id);
-    write_str(&mut buffer, "no");
-    write_int(&mut buffer, channel_number);
-
-    buffer
+pub fn channel_open_result_value(channel_id: &str, channel_number: i64) -> Value {
+    Map::with_capacity(2)
+        .set("chid", channel_id)
+        .set("no", channel_number)
+        .into()
 }
 
 /// The name (the generated one when the request carried none) and how many
 /// messages and consumers the queue has.
-pub fn encode_queue_declare_result(name: &str, message_count: u32, consumer_count: u32) -> Vec<u8> {
-    let mut buffer = Vec::new();
-
-    encode::write_map_len(&mut buffer, 3).ok();
-    write_str(&mut buffer, "na");
-    write_str(&mut buffer, name);
-    write_str(&mut buffer, "mc");
-    write_int(&mut buffer, message_count as i64);
-    write_str(&mut buffer, "cc");
-    write_int(&mut buffer, consumer_count as i64);
-
-    buffer
+pub fn queue_declare_result_value(name: &str, message_count: u32, consumer_count: u32) -> Value {
+    Map::with_capacity(3)
+        .set("na", name)
+        .set("mc", message_count)
+        .set("cc", consumer_count)
+        .into()
 }
 
 /// Answers the commands that report how many messages they moved (QueueDelete,
 /// QueuePurge).
-pub fn encode_message_count_result(message_count: u32) -> Vec<u8> {
-    let mut buffer = Vec::new();
-
-    encode::write_map_len(&mut buffer, 1).ok();
-    write_str(&mut buffer, "mc");
-    write_int(&mut buffer, message_count as i64);
-
-    buffer
+pub fn message_count_result_value(message_count: u32) -> Value {
+    Map::with_capacity(1).set("mc", message_count).into()
 }
 
 /// The first result of a Consume: the tag the broker assigned, which PHP keys
 /// its consumer registry by.
-pub fn encode_consumer_meta(consumer_tag: &str) -> Vec<u8> {
-    let mut buffer = Vec::new();
-
-    encode::write_map_len(&mut buffer, 1).ok();
-    write_str(&mut buffer, "tg");
-    write_str(&mut buffer, consumer_tag);
-
-    buffer
+pub fn consumer_meta_value(consumer_tag: &str) -> Value {
+    Map::with_capacity(1).set("tg", consumer_tag).into()
 }
 
 /// One message handed to PHP, by a Get or through a consumer's stream. It
@@ -669,28 +634,20 @@ pub struct DeliveryOut<'a> {
     pub properties: &'a lapin::protocol::basic::AMQPProperties,
 }
 
-pub fn encode_delivery(delivery: &DeliveryOut<'_>) -> Vec<u8> {
-    let mut buffer = Vec::new();
-
-    encode::write_map_len(&mut buffer, 8).ok();
-    write_str(&mut buffer, "chid");
-    write_str(&mut buffer, delivery.channel_id);
-    write_str(&mut buffer, "tg");
-    write_str(&mut buffer, delivery.consumer_tag);
-    write_str(&mut buffer, "dt");
-    write_uint(&mut buffer, delivery.delivery_tag);
-    write_str(&mut buffer, "rd");
-    encode::write_bool(&mut buffer, delivery.redelivered).ok();
-    write_str(&mut buffer, "en");
-    write_str(&mut buffer, delivery.exchange_name);
-    write_str(&mut buffer, "rk");
-    write_str(&mut buffer, delivery.routing_key);
-    write_str(&mut buffer, "bd");
-    write_bytes_as_str(&mut buffer, delivery.body);
-    write_str(&mut buffer, "ps");
-    encode_properties(&mut buffer, delivery.properties);
-
-    buffer
+impl DeliveryOut<'_> {
+    pub fn value(&self) -> Value {
+        Map::with_capacity(8)
+            .set("chid", self.channel_id)
+            .set("tg", self.consumer_tag)
+            .set("dt", self.delivery_tag)
+            .set("rd", self.redelivered)
+            .set("en", self.exchange_name)
+            .set("rk", self.routing_key)
+            // A PHP string whatever bytes the body holds.
+            .set("bd", self.body)
+            .set("ps", properties_value(self.properties))
+            .into()
+    }
 }
 
 /// One message the broker could not route and sent back.
@@ -703,61 +660,54 @@ pub struct ReturnOut<'a> {
     pub properties: &'a lapin::protocol::basic::AMQPProperties,
 }
 
+impl ReturnOut<'_> {
+    fn value(&self) -> Value {
+        Map::with_capacity(6)
+            .set("rc", self.reply_code)
+            .set("rx", self.reply_text)
+            .set("en", self.exchange_name)
+            .set("rk", self.routing_key)
+            .set("bd", self.body)
+            .set("ps", properties_value(self.properties))
+            .into()
+    }
+}
+
 /// Answers ConfirmWait: every confirmation and every returned message that
 /// arrived before the deadline. The two travel together on purpose — a
 /// mandatory message the broker could not route is returned *and* acknowledged,
 /// so reading the confirmations without the returns would report a success for
 /// a message that reached no queue.
-pub fn encode_wait_result(confirmations: &[(u64, bool)], returns: &[ReturnOut<'_>]) -> Vec<u8> {
-    let mut buffer = Vec::new();
+pub fn wait_result_value(confirmations: &[(u64, bool)], returns: &[ReturnOut<'_>]) -> Value {
+    let confirmations: Vec<Value> = confirmations
+        .iter()
+        .map(|(delivery_tag, acked)| {
+            Map::with_capacity(2)
+                .set("dt", *delivery_tag)
+                .set("ak", *acked)
+                .into()
+        })
+        .collect();
 
-    encode::write_map_len(&mut buffer, 2).ok();
+    let returns: Vec<Value> = returns.iter().map(ReturnOut::value).collect();
 
-    write_str(&mut buffer, "cf");
-    encode::write_array_len(&mut buffer, confirmations.len() as u32).ok();
-
-    for (delivery_tag, acked) in confirmations {
-        encode::write_map_len(&mut buffer, 2).ok();
-        write_str(&mut buffer, "dt");
-        write_uint(&mut buffer, *delivery_tag);
-        write_str(&mut buffer, "ak");
-        encode::write_bool(&mut buffer, *acked).ok();
-    }
-
-    write_str(&mut buffer, "rt");
-    encode::write_array_len(&mut buffer, returns.len() as u32).ok();
-
-    for returned in returns {
-        encode::write_map_len(&mut buffer, 6).ok();
-        write_str(&mut buffer, "rc");
-        write_int(&mut buffer, returned.reply_code);
-        write_str(&mut buffer, "rx");
-        write_str(&mut buffer, returned.reply_text);
-        write_str(&mut buffer, "en");
-        write_str(&mut buffer, returned.exchange_name);
-        write_str(&mut buffer, "rk");
-        write_str(&mut buffer, returned.routing_key);
-        write_str(&mut buffer, "bd");
-        write_bytes_as_str(&mut buffer, returned.body);
-        write_str(&mut buffer, "ps");
-        encode_properties(&mut buffer, returned.properties);
-    }
-
-    buffer
+    Map::with_capacity(2)
+        .set("cf", confirmations)
+        .set("rt", returns)
+        .into()
 }
 
-/// Writes the properties a message actually carries and nothing else; an
-/// omitted one is what `PropertiesCodec::decode` reads as "this one was never
-/// set".
-pub fn encode_properties(buffer: &mut Vec<u8>, properties: &lapin::protocol::basic::AMQPProperties) {
-    let mut fields: Vec<(&str, PropertyValue<'_>)> = Vec::with_capacity(13);
+/// The properties a message actually carries and nothing else; an omitted one
+/// is what `PropertiesCodec::decode` reads as "this one was never set".
+pub fn properties_value(properties: &lapin::protocol::basic::AMQPProperties) -> Value {
+    let mut fields = Map::with_capacity(13);
 
     push_text(&mut fields, "ct", properties.content_type());
     push_text(&mut fields, "ce", properties.content_encoding());
 
     if let Some(headers) = properties.headers() {
         if !headers.inner().is_empty() {
-            fields.push(("hd", PropertyValue::Table(headers)));
+            fields.push("hd", values::table_value(headers));
         }
     }
 
@@ -776,47 +726,23 @@ pub fn encode_properties(buffer: &mut Vec<u8>, properties: &lapin::protocol::bas
     push_text(&mut fields, "ui", properties.user_id());
     push_text(&mut fields, "ai", properties.app_id());
 
-    encode::write_map_len(buffer, fields.len() as u32).ok();
-
-    for (key, value) in fields {
-        write_str(buffer, key);
-
-        match value {
-            PropertyValue::Text(text) => write_str(buffer, text),
-            PropertyValue::Number(number) => write_int(buffer, number),
-            PropertyValue::Table(table) => values::encode_table(buffer, table),
-        }
-    }
+    fields.into()
 }
 
-enum PropertyValue<'a> {
-    Text(&'a str),
-    Number(i64),
-    Table(&'a lapin::types::FieldTable),
-}
-
-fn push_text<'a>(
-    fields: &mut Vec<(&'static str, PropertyValue<'a>)>,
-    key: &'static str,
-    value: &'a Option<lapin::types::ShortString>,
-) {
+fn push_text(fields: &mut Map, key: &'static str, value: &Option<lapin::types::ShortString>) {
     if let Some(text) = value {
         if !text.as_str().is_empty() {
-            fields.push((key, PropertyValue::Text(text.as_str())));
+            fields.push(key, text.as_str());
         }
     }
 }
 
-fn push_number(
-    fields: &mut Vec<(&'static str, PropertyValue<'_>)>,
-    key: &'static str,
-    value: Option<i64>,
-) {
+fn push_number(fields: &mut Map, key: &'static str, value: Option<i64>) {
     // Zero is "not set" for these two: a delivery mode of 0 is not a mode, and
     // a priority of 0 is the default the broker assumes anyway.
     if let Some(number) = value {
         if number != 0 {
-            fields.push((key, PropertyValue::Number(number)));
+            fields.push(key, number);
         }
     }
 }
@@ -830,23 +756,4 @@ pub fn bytes_of(value: &rmpv::Value) -> &[u8] {
         rmpv::Value::Binary(bytes) => bytes.as_slice(),
         _ => &[],
     }
-}
-
-fn write_int(buffer: &mut Vec<u8>, number: i64) {
-    encode::write_sint(buffer, number).ok();
-}
-
-fn write_uint(buffer: &mut Vec<u8>, number: u64) {
-    encode::write_uint(buffer, number).ok();
-}
-
-fn write_str(buffer: &mut Vec<u8>, text: &str) {
-    encode::write_str(buffer, text).ok();
-}
-
-/// A MessagePack *str*, not *bin*: a message body is a PHP string whatever
-/// bytes it holds.
-fn write_bytes_as_str(buffer: &mut Vec<u8>, bytes: &[u8]) {
-    encode::write_str_len(buffer, bytes.len() as u32).ok();
-    buffer.extend_from_slice(bytes);
 }

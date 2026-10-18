@@ -6,6 +6,8 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
+use crate::dto::{Map, Value};
+
 #[derive(Deserialize)]
 pub struct Envelope {
     #[serde(rename = "cm", default)]
@@ -130,27 +132,15 @@ pub struct ResponseMeta {
 }
 
 impl ResponseMeta {
-    pub fn encode(&self) -> Vec<u8> {
-        use rmp::encode;
-
-        let mut buffer = Vec::with_capacity(256 + self.body.len());
-
-        let _ = encode::write_map_len(&mut buffer, 4);
-
-        let _ = encode::write_str(&mut buffer, "st");
-        let _ = encode::write_sint(&mut buffer, self.status as i64);
-
-        let _ = encode::write_str(&mut buffer, "hd");
-        write_headers(&mut buffer, &self.headers);
-
-        let _ = encode::write_str(&mut buffer, "b");
-        let _ = encode::write_str_len(&mut buffer, self.body.len() as u32);
-        buffer.extend_from_slice(&self.body);
-
-        let _ = encode::write_str(&mut buffer, "cl");
-        let _ = encode::write_sint(&mut buffer, self.content_length);
-
-        buffer
+    pub fn into_value(self) -> Value {
+        Map::with_capacity(4)
+            .set("st", self.status)
+            .set("hd", headers_value(self.headers))
+            // The body is bytes, but PHP reads it as a string: one string type
+            // on that side, so the raw bytes travel as-is.
+            .set("b", self.body)
+            .set("cl", self.content_length)
+            .into()
     }
 }
 
@@ -164,39 +154,24 @@ pub struct DownloadMeta {
 }
 
 impl DownloadMeta {
-    pub fn encode(&self) -> Vec<u8> {
-        use rmp::encode;
-
-        let mut buffer = Vec::with_capacity(256);
-
-        let _ = encode::write_map_len(&mut buffer, 3);
-
-        let _ = encode::write_str(&mut buffer, "st");
-        let _ = encode::write_sint(&mut buffer, self.status as i64);
-
-        let _ = encode::write_str(&mut buffer, "hd");
-        write_headers(&mut buffer, &self.headers);
-
-        let _ = encode::write_str(&mut buffer, "n");
-        let _ = encode::write_sint(&mut buffer, self.written);
-
-        buffer
+    pub fn into_value(self) -> Value {
+        Map::with_capacity(3)
+            .set("st", self.status)
+            .set("hd", headers_value(self.headers))
+            .set("n", self.written)
+            .into()
     }
 }
 
-fn write_headers(buffer: &mut Vec<u8>, headers: &[(String, Vec<String>)]) {
-    use rmp::encode;
-
-    let _ = encode::write_map_len(buffer, headers.len() as u32);
+/// The headers as PHP reads them: a map of name to the list of its values.
+fn headers_value(headers: Vec<(String, Vec<String>)>) -> Value {
+    let mut map = Map::with_capacity(headers.len());
 
     for (name, values) in headers {
-        let _ = encode::write_str(buffer, name);
-        let _ = encode::write_array_len(buffer, values.len() as u32);
-
-        for value in values {
-            let _ = encode::write_str(buffer, value);
-        }
+        map.push(name, values.into_iter().map(Value::from).collect::<Vec<Value>>());
     }
+
+    map.into()
 }
 
 /// Collects a response's headers, grouping repeated names the way net/http

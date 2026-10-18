@@ -2,6 +2,8 @@
 
 use serde::Deserialize;
 
+use crate::dto::{Map, Value};
+
 /// The payload of a wsServe command. The listener is an HTTP server: a request
 /// carrying a valid WebSocket upgrade becomes a streamed connection, anything
 /// else is answered 426 Upgrade Required.
@@ -100,24 +102,14 @@ pub struct ConnectionEvent {
 }
 
 impl ConnectionEvent {
-    pub fn encode(&self) -> Vec<u8> {
-        use rmp::encode;
-
-        let mut buffer = Vec::with_capacity(128);
-
-        let _ = encode::write_map_len(&mut buffer, 5);
-
-        for (key, value) in [
-            ("cid", &self.connection_id),
-            ("ra", &self.remote_addr),
-            ("la", &self.local_addr),
-            ("pa", &self.path),
-            ("su", &self.subprotocol),
-        ] {
-            let _ = encode::write_str(&mut buffer, key);
-            let _ = encode::write_str(&mut buffer, value);
-        }
-
-        buffer
+    /// The array PHP receives: `cid`, `ra`, `la`, `pa`, `su`, all strings.
+    pub fn value(&self) -> Value {
+        Map::with_capacity(5)
+            .set("cid", &self.connection_id)
+            .set("ra", &self.remote_addr)
+            .set("la", &self.local_addr)
+            .set("pa", &self.path)
+            .set("su", &self.subprotocol)
+            .into()
     }
 }

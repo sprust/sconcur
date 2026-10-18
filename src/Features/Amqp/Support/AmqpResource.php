@@ -16,7 +16,6 @@ use SConcur\Features\Amqp\Channel;
 use SConcur\Features\Amqp\Connection;
 use SConcur\Features\Amqp\Payloads\AmqpPayload;
 use SConcur\Features\FeatureExecutor;
-use SConcur\Transport\MessagePackTransport;
 use Throwable;
 use WeakReference;
 
@@ -112,11 +111,7 @@ abstract class AmqpResource
      */
     protected static function decode(TaskResultDto $result): array
     {
-        if ($result->payload === '') {
-            return [];
-        }
-
-        return MessagePackTransport::unpack($result->payload);
+        return is_array($result->payload) ? $result->payload : [];
     }
 
     /**

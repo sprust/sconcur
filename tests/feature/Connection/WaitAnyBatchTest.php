@@ -75,7 +75,7 @@ class WaitAnyBatchTest extends BaseTestCase
         self::assertSame(MethodEnum::Sleep, $result->method);
         self::assertStringStartsWith('batch-typed:', $result->key);
         self::assertFalse($result->isError);
-        self::assertSame('', $result->payload);
+        self::assertNull($result->payload);
         self::assertFalse($result->hasNext);
         self::assertGreaterThanOrEqual(0, $result->executionMs);
         self::assertSame(0, $result->ownerFiberId);

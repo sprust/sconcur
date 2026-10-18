@@ -2,7 +2,7 @@
 //! directions.
 //!
 //! An AMQP field table — queue and exchange arguments, message headers —
-//! carries kinds MessagePack has no equivalent for. Two of them matter, and
+//! carries kinds a PHP array has no equivalent for. Two of them matter, and
 //! both are tagged rather than flattened: a decimal written as a float and a
 //! timestamp written as an integer would change the type of a header for every
 //! other client reading the same queue, and would not come back to PHP as the
@@ -11,7 +11,8 @@
 //! PHP: SConcur\Features\Amqp\Support\TableCodec.
 
 use lapin::types::{AMQPValue, DecimalValue, FieldArray, FieldTable, LongString, ShortString};
-use rmp::encode;
+
+use crate::dto::{Map, Value};
 
 /// Names the kind of a tagged value. It starts with a NUL byte, which no AMQP
 /// field name may contain, so an application's own header can never be mistaken
@@ -168,89 +169,54 @@ fn int_from_value(value: Option<&rmpv::Value>) -> i64 {
     }
 }
 
-/// Writes an AMQP field table as the MessagePack map PHP reads back. A decimal
-/// and a timestamp keep their kind, in the tagged shape `TableCodec` turns back
-/// into a `Decimal` and a `Timestamp`.
-pub fn encode_table(buffer: &mut Vec<u8>, table: &FieldTable) {
+/// Turns an AMQP field table into the associative array PHP reads back. A
+/// decimal and a timestamp keep their kind, in the tagged shape `TableCodec`
+/// turns back into a `Decimal` and a `Timestamp`.
+pub fn table_value(table: &FieldTable) -> Value {
     let entries = table.inner();
-
-    encode::write_map_len(buffer, entries.len() as u32).ok();
+    let mut map = Map::with_capacity(entries.len());
 
     for (name, value) in entries {
-        write_str(buffer, name.as_str());
-        encode_value(buffer, value);
+        map.push(name.as_str(), field_value(value));
     }
+
+    map.into()
 }
 
-fn encode_value(buffer: &mut Vec<u8>, value: &AMQPValue) {
+fn field_value(value: &AMQPValue) -> Value {
     match value {
-        AMQPValue::Boolean(flag) => {
-            encode::write_bool(buffer, *flag).ok();
-        }
-        AMQPValue::ShortShortInt(number) => write_int(buffer, *number as i64),
-        AMQPValue::ShortShortUInt(number) => write_int(buffer, *number as i64),
-        AMQPValue::ShortInt(number) => write_int(buffer, *number as i64),
-        AMQPValue::ShortUInt(number) => write_int(buffer, *number as i64),
-        AMQPValue::LongInt(number) => write_int(buffer, *number as i64),
-        AMQPValue::LongUInt(number) => write_int(buffer, *number as i64),
-        AMQPValue::LongLongInt(number) => write_int(buffer, *number),
-        AMQPValue::Float(number) => {
-            encode::write_f64(buffer, *number as f64).ok();
-        }
-        AMQPValue::Double(number) => {
-            encode::write_f64(buffer, *number).ok();
-        }
-        AMQPValue::DecimalValue(decimal) => {
-            encode::write_map_len(buffer, 3).ok();
-            write_str(buffer, TAGGED_KIND);
-            write_str(buffer, TAGGED_DECIMAL);
-            write_str(buffer, TAGGED_EXPONENT);
-            write_int(buffer, decimal.scale as i64);
-            write_str(buffer, TAGGED_SIGNIFICAND);
+        AMQPValue::Boolean(flag) => Value::Bool(*flag),
+        AMQPValue::ShortShortInt(number) => Value::Int(*number as i64),
+        AMQPValue::ShortShortUInt(number) => Value::Int(*number as i64),
+        AMQPValue::ShortInt(number) => Value::Int(*number as i64),
+        AMQPValue::ShortUInt(number) => Value::Int(*number as i64),
+        AMQPValue::LongInt(number) => Value::Int(*number as i64),
+        AMQPValue::LongUInt(number) => Value::Int(*number as i64),
+        AMQPValue::LongLongInt(number) => Value::Int(*number),
+        AMQPValue::Float(number) => Value::Float(*number as f64),
+        AMQPValue::Double(number) => Value::Float(*number),
+        AMQPValue::DecimalValue(decimal) => Map::with_capacity(3)
+            .set(TAGGED_KIND, TAGGED_DECIMAL)
+            .set(TAGGED_EXPONENT, decimal.scale as i64)
             // Widened through u32, which is the type the field actually
             // carries: an AMQP decimal's significand is unsigned, and anything
             // at or above 2^31 must not arrive at PHP as a negative number it
             // refuses to build a Decimal from.
-            write_int(buffer, decimal.value as i64);
-        }
-        AMQPValue::Timestamp(seconds) => {
-            encode::write_map_len(buffer, 2).ok();
-            write_str(buffer, TAGGED_KIND);
-            write_str(buffer, TAGGED_TIMESTAMP);
-            write_str(buffer, TAGGED_VALUE);
-            write_int(buffer, *seconds as i64);
-        }
-        AMQPValue::ShortString(text) => write_str(buffer, text.as_str()),
-        AMQPValue::LongString(text) => write_bytes_as_str(buffer, text.as_bytes()),
+            .set(TAGGED_SIGNIFICAND, decimal.value as i64)
+            .into(),
+        AMQPValue::Timestamp(seconds) => Map::with_capacity(2)
+            .set(TAGGED_KIND, TAGGED_TIMESTAMP)
+            .set(TAGGED_VALUE, *seconds as i64)
+            .into(),
+        AMQPValue::ShortString(text) => Value::str(text.as_str()),
+        // A PHP string whatever bytes it holds: PHP reads a header value as a
+        // plain string, including one that is not valid UTF-8.
+        AMQPValue::LongString(text) => Value::str(text.as_bytes()),
         AMQPValue::FieldArray(items) => {
-            let items = items.as_slice();
-
-            encode::write_array_len(buffer, items.len() as u32).ok();
-
-            for item in items {
-                encode_value(buffer, item);
-            }
+            Value::List(items.as_slice().iter().map(field_value).collect())
         }
-        AMQPValue::FieldTable(table) => encode_table(buffer, table),
-        AMQPValue::ByteArray(bytes) => write_bytes_as_str(buffer, bytes.as_slice()),
-        AMQPValue::Void => {
-            encode::write_nil(buffer).ok();
-        }
+        AMQPValue::FieldTable(table) => table_value(table),
+        AMQPValue::ByteArray(bytes) => Value::str(bytes.as_slice()),
+        AMQPValue::Void => Value::Nil,
     }
-}
-
-fn write_int(buffer: &mut Vec<u8>, number: i64) {
-    encode::write_sint(buffer, number).ok();
-}
-
-fn write_str(buffer: &mut Vec<u8>, text: &str) {
-    encode::write_str(buffer, text).ok();
-}
-
-/// A MessagePack *str*, not *bin*: PHP reads a header value as a plain string,
-/// so it stays a string on the wire — including for bytes that are not valid
-/// UTF-8.
-fn write_bytes_as_str(buffer: &mut Vec<u8>, bytes: &[u8]) {
-    encode::write_str_len(buffer, bytes.len() as u32).ok();
-    buffer.extend_from_slice(bytes);
 }

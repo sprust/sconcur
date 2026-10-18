@@ -16,7 +16,7 @@ pub mod values;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::dto::Result;
+use crate::dto::{Result, Value};
 use crate::errs::Factory;
 use crate::features::{BoxFuture, Feature};
 use crate::helpers::calc_execution_ms;
@@ -179,8 +179,8 @@ pub fn shutdown() {
 
 // --- answering a task ---------------------------------------------------------
 
-/// Answers the task with an already encoded payload.
-pub async fn respond(task: &Task, payload: Vec<u8>, start_time: Instant) {
+/// Answers the task with the value PHP receives as the result.
+pub async fn respond(task: &Task, payload: Value, start_time: Instant) {
     task.add_result(Result::success(
         task.message(),
         payload,
@@ -193,7 +193,7 @@ pub async fn respond(task: &Task, payload: Vec<u8>, start_time: Instant) {
 pub async fn respond_done(task: &Task, start_time: Instant) {
     task.add_result(Result::success(
         task.message(),
-        Vec::new(),
+        Value::Nil,
         calc_execution_ms(start_time),
     ))
     .await;

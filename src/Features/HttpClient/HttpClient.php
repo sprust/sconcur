@@ -22,7 +22,6 @@ use SConcur\Features\HttpClient\Payloads\RequestPayloadParameters;
 use SConcur\Features\HttpClient\Payloads\UploadChunkPayload;
 use SConcur\Features\HttpClient\Payloads\UploadEndPayload;
 use SConcur\State;
-use SConcur\Transport\MessagePackTransport;
 use Throwable;
 
 /**
@@ -114,7 +113,7 @@ readonly class HttpClient implements ClientInterface
         }
 
         /** @var array<string, mixed> $meta */
-        $meta = MessagePackTransport::unpack($result->payload);
+        $meta = $result->payload;
 
         $statusCode = (int) ($meta['st'] ?? 0);
 
@@ -195,7 +194,7 @@ readonly class HttpClient implements ClientInterface
     protected function buildResponse(TaskResultDto $result): ResponseInterface
     {
         /** @var array<string, mixed> $meta */
-        $meta = MessagePackTransport::unpack($result->payload);
+        $meta = $result->payload;
 
         $response = $this->responseFactory->createResponse((int) ($meta['st'] ?? 200));
 

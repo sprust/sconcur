@@ -8,7 +8,6 @@ use Iterator;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Features\FeatureExecutor;
 use SConcur\State;
-use SConcur\Transport\MessagePackTransport;
 use SConcur\Transport\PayloadInterface;
 
 /**
@@ -16,8 +15,8 @@ use SConcur\Transport\PayloadInterface;
  * on demand (FeatureExecutor::next), so a large result set is never buffered
  * whole in the extension. Each row is an associative array (column => value).
  *
- * Mirrors Mongodb\Results\IteratorResult, but decodes plain MessagePack batches
- * instead of BSON documents.
+ * Mirrors Mongodb\Results\IteratorResult; a batch arrives as the list of row
+ * arrays the core built.
  *
  * @implements Iterator<int, array<string, mixed>>
  */
@@ -101,10 +100,8 @@ class RowsResult implements Iterator
     protected function setTaskResult(TaskResultDto $taskResult): void
     {
         $this->isLastBatch = !$taskResult->hasNext;
-        $this->items       = $taskResult->payload === ''
-            ? []
-            : MessagePackTransport::unpack($taskResult->payload);
-        $this->itemIndex = 0;
+        $this->items       = is_array($taskResult->payload) ? $taskResult->payload : [];
+        $this->itemIndex   = 0;
     }
 
     protected function nextItem(): void

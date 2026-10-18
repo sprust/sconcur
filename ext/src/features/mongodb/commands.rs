@@ -18,16 +18,16 @@ pub type Error = String;
 /// What a command answers with. `Cursor` is separate because it becomes a
 /// streaming state rather than a single result.
 pub enum Outcome {
-    /// A document, encoded as MessagePack for PHP.
+    /// A document, handed to PHP as an associative array.
     Document(Document),
     /// A bare string: the counts and index names PHP reads straight off the
-    /// task payload without decoding.
+    /// task payload.
     Text(String),
     /// Nothing — `findOne` that matched nothing, a `drop`.
     Empty,
     /// A cursor to be registered as a streaming state.
     Cursor(mongodb::Cursor<Document>, i64),
-    /// A finished list of documents, encoded as one batch (listIndexes).
+    /// A finished list of documents, handed over as one batch (listIndexes).
     Batch(Vec<Document>),
 }
 

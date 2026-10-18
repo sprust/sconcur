@@ -24,7 +24,7 @@ use std::time::Instant;
 
 use tokio::io::AsyncWriteExt;
 
-use crate::dto::Result;
+use crate::dto::{Result, Value};
 use crate::helpers::calc_execution_ms;
 use crate::states::{self, StateCloseFuture, StateContract, StateFuture};
 use crate::tasks::Task;
@@ -544,7 +544,7 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
 
     task.add_result(Result::success_with_next(
         message,
-        Vec::new(),
+        Value::Nil,
         calc_execution_ms(start_time),
     ))
     .await;
@@ -601,7 +601,7 @@ pub async fn chunk(task: &Task, envelope: &mut payloads::Envelope) {
         Some(Ok(total)) => {
             task.add_result(Result::success(
                 message,
-                super::content::encode_count(total),
+                super::content::count_value(total),
                 calc_execution_ms(start_time),
             ))
             .await;
@@ -666,7 +666,7 @@ pub async fn close(task: &Task, envelope: &mut payloads::Envelope) {
         Some(Ok(total)) => {
             task.add_result(Result::success(
                 message,
-                super::content::encode_count(total),
+                super::content::count_value(total),
                 calc_execution_ms(start_time),
             ))
             .await;

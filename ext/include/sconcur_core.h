@@ -34,7 +34,9 @@ enum {
  * builder on the PHP thread. Mirrors ResultFields in src/lib.rs field for
  * field. The byte pointers are views into the core's own memory and are read
  * only for the duration of the builder call; method_case is the NUL-terminated
- * name of the SConcur\Features\MethodEnum case.
+ * name of the SConcur\Features\MethodEnum case. The payload is not among the
+ * fields: the builder answers with the payload slot, and the core fills it
+ * through the value builder below.
  */
 typedef struct {
 	const char *flow_key;
@@ -42,8 +44,6 @@ typedef struct {
 	const char *method_case;
 	const char *task_key;
 	size_t task_key_len;
-	const char *payload;
-	size_t payload_len;
 	int is_error;
 	int has_next;
 	unsigned int execution_ms;
@@ -54,12 +54,31 @@ typedef struct {
 /*
  * Defined in sconcur.c, called by the core on the PHP thread, inside a wait
  * export: the builders that turn result fields into the PHP package's
- * TaskResultDto. The int ones answer 0 when they could not, with a PHP exception
- * already pending.
+ * TaskResultDto. Both answer the zval of the new object's payload property, to
+ * be filled through the value builder, or NULL with a PHP exception pending.
  */
-extern void sconcur_list_init(zval *list, unsigned int size);
-extern int sconcur_result_into(zval *destination, const sconcur_result_t *result);
-extern int sconcur_result_append(zval *list, const sconcur_result_t *result);
+extern zval *sconcur_result_into(zval *destination, const sconcur_result_t *result);
+extern zval *sconcur_result_append(zval *list, const sconcur_result_t *result);
+
+/*
+ * The value builder: one call per node of the value tree a result carries
+ * (src/dto/value.rs), each writing into the zval it is given. The container
+ * calls answer the zval of the new element, to be written in turn, or NULL with
+ * a PHP exception pending; the slot is valid until the next element is added to
+ * the same container, which is why a child is filled before its sibling is
+ * asked for.
+ */
+extern void sconcur_value_null(zval *destination);
+extern void sconcur_value_bool(zval *destination, int flag);
+extern void sconcur_value_long(zval *destination, long long number);
+extern void sconcur_value_double(zval *destination, double number);
+extern void sconcur_value_stringl(zval *destination, const char *bytes, size_t length);
+extern void sconcur_value_array(zval *destination, unsigned int size);
+extern zval *sconcur_array_next_slot(zval *array);
+extern zval *sconcur_array_index_slot(zval *array, long long index);
+extern zval *sconcur_array_key_slot(zval *array, const char *key, size_t length);
+extern int sconcur_value_object(zval *destination, const char *className, size_t length);
+extern zval *sconcur_object_property_slot(zval *object, const char *name, size_t length);
 
 /*
  * Throws the exception class the PHP package owns, looked up by its name; a

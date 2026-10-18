@@ -1,8 +1,10 @@
 //! The Rust counterparts of
 //! the PHP HTTP-server payload objects and the request event the server streams
-//! back to PHP. The renames are the short keys exchanged via MessagePack.
+//! back to PHP. The renames are the short keys exchanged with the PHP side.
 
 use serde::Deserialize;
+
+use crate::dto::{Map, Value};
 
 /// A missing body decodes to nil, which reads back as no bytes.
 fn nil_value() -> rmpv::Value {
@@ -132,53 +134,35 @@ pub struct RequestEvent {
 }
 
 impl RequestEvent {
-    /// Writes the event by hand instead of through a derived serializer: one
-    /// event is marshaled per accepted request, and it is on the hot path. The wire
-    /// bytes are a plain MessagePack map with the struct's short keys, so the
-    /// PHP side is unaffected.
-    pub fn encode(&self) -> Vec<u8> {
-        use rmp::encode;
+    /// Builds the event by hand instead of through a derived serializer: one
+    /// event is marshaled per accepted request, and it is on the hot path. PHP
+    /// receives a plain associative array with the struct's short keys, so the
+    /// PHP side is unaffected by how it is built here.
+    pub fn into_value(self) -> Value {
+        let mut event = Map::with_capacity(10);
 
-        // Roughly one small write per field plus the headers; sized to cover a
-        // typical request without a growth reallocation.
-        let mut buffer: Vec<u8> = Vec::with_capacity(256 + self.body.len());
+        event.push("rid", self.request_id);
+        event.push("mt", self.method);
+        event.push("pt", self.path);
+        event.push("qr", self.query);
+        event.push("bk", self.body_key);
+        event.push("ra", self.remote_addr);
+        event.push("ho", self.host);
+        event.push("pr", self.proto);
 
-        let _ = encode::write_map_len(&mut buffer, 10);
+        // The body is bytes, but PHP reads it as a string: there is one string
+        // type on that side, so the raw bytes travel as-is and the handler gets
+        // the same value it always did.
+        event.push("bd", self.body);
 
-        let fields: [(&str, &str); 8] = [
-            ("rid", &self.request_id),
-            ("mt", &self.method),
-            ("pt", &self.path),
-            ("qr", &self.query),
-            ("bk", &self.body_key),
-            ("ra", &self.remote_addr),
-            ("ho", &self.host),
-            ("pr", &self.proto),
-        ];
+        let mut headers = Map::with_capacity(self.headers.len());
 
-        for (key, value) in fields {
-            let _ = encode::write_str(&mut buffer, key);
-            let _ = encode::write_str(&mut buffer, value);
+        for (name, values) in self.headers {
+            headers.push(name, values.into_iter().map(Value::from).collect::<Vec<Value>>());
         }
 
-        // The body is bytes, but PHP reads it as a string — it has to stay a
-        // msgpack string, or ext-msgpack hands the handler a different value.
-        let _ = encode::write_str(&mut buffer, "bd");
-        let _ = encode::write_str_len(&mut buffer, self.body.len() as u32);
-        buffer.extend_from_slice(&self.body);
+        event.push("hd", headers);
 
-        let _ = encode::write_str(&mut buffer, "hd");
-        let _ = encode::write_map_len(&mut buffer, self.headers.len() as u32);
-
-        for (name, values) in &self.headers {
-            let _ = encode::write_str(&mut buffer, name);
-            let _ = encode::write_array_len(&mut buffer, values.len() as u32);
-
-            for value in values {
-                let _ = encode::write_str(&mut buffer, value);
-            }
-        }
-
-        buffer
+        event.into()
     }
 }

@@ -26,6 +26,6 @@ class ChunksResult extends BatchIterator
     {
         // The stream ends with an empty batch, so there is no special case in the loop:
         // every batch but the last carries data.
-        return $result->payload === '' ? [] : [$result->payload];
+        return (is_string($result->payload) && $result->payload !== '') ? [$result->payload] : [];
     }
 }

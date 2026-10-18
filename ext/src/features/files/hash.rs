@@ -13,11 +13,11 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};
 use tokio::io::AsyncReadExt;
 
-use crate::dto::Result;
+use crate::dto::{Result, Value};
 use crate::tasks::Task;
 
 use super::errors::{io_message, message as fail, Kind};
-use super::meta::{encode_text, publish};
+use super::meta::{publish, text_value};
 use super::params;
 use super::payloads;
 
@@ -79,7 +79,7 @@ pub async fn hash_file(task: &Task, envelope: &mut payloads::Envelope) {
             Algorithm::Md5 => digest_of::<Md5>(&path).await?,
         };
 
-        Ok::<Vec<u8>, String>(encode_text("h", &digest))
+        Ok::<Value, String>(text_value("h", &digest))
     };
 
     publish(task, envelope, start_time, work).await;

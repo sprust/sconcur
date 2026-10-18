@@ -15,7 +15,7 @@ use lapin::options::*;
 use lapin::protocol::basic::AMQPProperties;
 use lapin::types::{FieldTable, ShortString};
 
-use crate::dto::Result;
+use crate::dto::{Result, Value};
 use crate::tasks::Task;
 
 use super::channels::{ChannelEntry, CommandError};
@@ -131,7 +131,7 @@ async fn handle_connect(task: &Task, raw: &rmpv::Value) {
         Ok(handle) => {
             respond(
                 task,
-                payloads::encode_connect_result(
+                payloads::connect_result_value(
                     &handle.id,
                     handle.pooled.max_channels,
                     handle.pooled.max_frame_size,
@@ -180,7 +180,7 @@ async fn handle_used_channels(task: &Task, raw: &rmpv::Value) {
         None => 0,
     };
 
-    respond(task, payloads::encode_used_channels_result(used), start_time).await;
+    respond(task, payloads::used_channels_result_value(used), start_time).await;
 }
 
 async fn handle_channel_open(task: &Task, raw: &rmpv::Value) {
@@ -241,7 +241,7 @@ async fn handle_channel_open(task: &Task, raw: &rmpv::Value) {
         Ok(entry) => {
             respond(
                 task,
-                payloads::encode_channel_open_result(&entry.id, entry.number),
+                payloads::channel_open_result_value(&entry.id, entry.number),
                 start_time,
             )
             .await
@@ -426,7 +426,7 @@ async fn handle_queue_declare(task: &Task, raw: &rmpv::Value) {
         )
         .await
         .map(|queue| {
-            Some(payloads::encode_queue_declare_result(
+            Some(payloads::queue_declare_result_value(
                 queue.name().as_str(),
                 queue.message_count(),
                 queue.consumer_count(),
@@ -458,7 +458,7 @@ async fn handle_queue_delete(task: &Task, raw: &rmpv::Value) {
             ),
         )
         .await
-        .map(|deleted| Some(payloads::encode_message_count_result(deleted)));
+        .map(|deleted| Some(payloads::message_count_result_value(deleted)));
 
     finish(task, &entry, "queue delete", start_time, outcome).await;
 }
@@ -526,7 +526,7 @@ async fn handle_queue_purge(task: &Task, raw: &rmpv::Value) {
             ),
         )
         .await
-        .map(|purged| Some(payloads::encode_message_count_result(purged)));
+        .map(|purged| Some(payloads::message_count_result_value(purged)));
 
     finish(task, &entry, "queue purge", start_time, outcome).await;
 }
@@ -671,7 +671,7 @@ async fn handle_confirm_wait(task: &Task, raw: &rmpv::Value) {
 
             respond(
                 task,
-                payloads::encode_wait_result(&confirmations, &rendered),
+                payloads::wait_result_value(&confirmations, &rendered),
                 start_time,
             )
             .await;
@@ -706,16 +706,15 @@ async fn handle_get(task: &Task, raw: &rmpv::Value) {
         .await;
 
     match outcome {
-        // An empty payload, not a msgpack nil: several commands answer with
-        // nothing at all, and the PHP side reads an empty payload as an empty
-        // answer rather than decoding it.
+        // A null, like every command that reports nothing but its success:
+        // the PHP side reads it as an empty answer and hands back no message.
         Ok(None) => respond_done(task, start_time).await,
         Ok(Some(message)) => {
             let delivery = &message.delivery;
 
             respond(
                 task,
-                payloads::encode_delivery(&payloads::DeliveryOut {
+                payloads::DeliveryOut {
                     channel_id: &entry.id,
                     consumer_tag: "",
                     delivery_tag: delivery.delivery_tag,
@@ -724,7 +723,8 @@ async fn handle_get(task: &Task, raw: &rmpv::Value) {
                     routing_key: delivery.routing_key.as_str(),
                     body: &delivery.data,
                     properties: &delivery.properties,
-                }),
+                }
+                .value(),
                 start_time,
             )
             .await;
@@ -883,7 +883,7 @@ async fn finish(
     entry: &Arc<ChannelEntry>,
     what: &str,
     start_time: Instant,
-    outcome: std::result::Result<Option<Vec<u8>>, CommandError>,
+    outcome: std::result::Result<Option<Value>, CommandError>,
 ) {
     match outcome {
         Ok(Some(payload)) => respond(task, payload, start_time).await,

@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::dto::{Message, Result};
+use crate::dto::{Message, Result, Value};
 use crate::errs::Factory;
 use crate::features::{BoxFuture, Feature};
 use crate::helpers::calc_execution_ms;
@@ -216,7 +216,7 @@ async fn handle_serve(task: Task) {
             Some(event) => {
                 task.add_result(Result::success_with_next(
                     message,
-                    event.encode(),
+                    event.value(),
                     calc_execution_ms(start_time),
                 ))
                 .await;
@@ -226,7 +226,7 @@ async fn handle_serve(task: Task) {
 
                 task.add_result(Result::success(
                     message,
-                    Vec::new(),
+                    Value::Nil,
                     calc_execution_ms(start_time),
                 ))
                 .await;
@@ -787,7 +787,7 @@ async fn handle_respond(task: Task) {
         Ok(()) => {
             task.add_result(Result::success(
                 message,
-                Vec::new(),
+                Value::Nil,
                 calc_execution_ms(start_time),
             ))
             .await;

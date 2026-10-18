@@ -171,13 +171,13 @@ impl ResponseState {
         if has_next {
             Result::success_with_next(
                 &self.message,
-                meta.encode(),
+                meta.into_value(),
                 calc_execution_ms(self.start_time),
             )
         } else {
             Result::success(
                 &self.message,
-                meta.encode(),
+                meta.into_value(),
                 calc_execution_ms(self.start_time),
             )
         }

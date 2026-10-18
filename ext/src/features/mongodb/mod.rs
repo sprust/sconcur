@@ -1,7 +1,7 @@
 //! The MongoDB feature: the command dispatch over one pooled client.
 //!
 //! One feature handling every MongoDB command. The dispatch, the client pool,
-//! the cursors and the msgpack<->BSON serializer are each their own module.
+//! the cursors and the PHP<->BSON serializer are each their own module.
 
 pub mod bulk;
 pub mod clients;
@@ -13,7 +13,7 @@ pub mod states;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::dto::Result;
+use crate::dto::{Result, Value};
 use crate::errs::Factory;
 use crate::features::{BoxFuture, Feature};
 use crate::helpers::calc_execution_ms;
@@ -21,7 +21,7 @@ use crate::states as core_states;
 use crate::tasks::Task;
 
 use commands::Outcome;
-use serializer::{document_to_msgpack, documents_to_msgpack};
+use serializer::{document_value, documents_value};
 
 static ERRORS: Factory = Factory::new("mongodb");
 
@@ -127,40 +127,30 @@ impl Feature for MongodbFeature {
             let execution_ms = calc_execution_ms(start_time);
 
             match outcome {
-                Outcome::Document(document) => match document_to_msgpack(&document) {
-                    Ok(payload) => {
-                        task.add_result(Result::success(message, payload, execution_ms))
-                            .await;
-                    }
-                    Err(error) => {
-                        task.add_result(Result::error(
-                            message,
-                            ERRORS.by_text(&format!("marshal result: {error}")),
-                        ))
-                        .await;
-                    }
-                },
-                Outcome::Batch(documents) => match documents_to_msgpack(&documents) {
-                    Ok(payload) => {
-                        task.add_result(Result::success(message, payload, execution_ms))
-                            .await;
-                    }
-                    Err(error) => {
-                        task.add_result(Result::error(
-                            message,
-                            ERRORS.by_text(&format!("marshal batch: {error}")),
-                        ))
-                        .await;
-                    }
-                },
+                Outcome::Document(document) => {
+                    task.add_result(Result::success(
+                        message,
+                        document_value(&document),
+                        execution_ms,
+                    ))
+                    .await;
+                }
+                Outcome::Batch(documents) => {
+                    task.add_result(Result::success(
+                        message,
+                        documents_value(&documents),
+                        execution_ms,
+                    ))
+                    .await;
+                }
                 // A count or an index name: PHP reads it straight off the task
-                // payload without decoding, so it goes over as bare text.
+                // payload, so it goes over as bare text.
                 Outcome::Text(text) => {
                     task.add_result(Result::success(message, text.into_bytes(), execution_ms))
                         .await;
                 }
                 Outcome::Empty => {
-                    task.add_result(Result::success(message, Vec::new(), execution_ms))
+                    task.add_result(Result::success(message, Value::Nil, execution_ms))
                         .await;
                 }
                 Outcome::Cursor(cursor, batch_size) => {

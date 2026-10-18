@@ -1,8 +1,10 @@
-//! The message a push carries in, and the result a
-//! task publishes back into the shared channel.
+//! The message a push carries in, the result a task publishes back into the
+//! shared channel, and the value that result carries to PHP.
 
 pub mod message;
 pub mod result;
+pub mod value;
 
 pub use message::Message;
 pub use result::Result;
+pub use value::{Key, Map, Value};

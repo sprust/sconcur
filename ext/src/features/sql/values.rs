@@ -1,5 +1,5 @@
 //! Turning MessagePack bindings
-//! into driver arguments, and driver rows back into MessagePack.
+//! into driver arguments, and driver rows into the PHP values a result carries.
 //!
 //! The shapes here are a wire contract, not a preference. `tests/feature/
 //! Features/Mysql/MysqlTypesTest.php` pins them: integers arrive as integers,
@@ -8,8 +8,9 @@
 //! `\x00`..`\xff` byte for byte, NULL as null. Each of those is an explicit
 //! decision here, made once and pinned by the test.
 
-use rmp::encode;
 use sqlx::{Column, Row, TypeInfo, ValueRef};
+
+use crate::dto::{Map, Value};
 
 /// One binding, normalized out of MessagePack into something a driver accepts.
 /// msgpack's int8/int16/uint64/… all collapse into int64/float64, for one
@@ -57,16 +58,13 @@ pub enum ColumnValue {
     Bool(bool),
     Int(i64),
     Float(f64),
-    /// Text or bytes. Written as a MessagePack *str* either way, because that is
-    /// what a PHP string is on the wire, and what the PHP side
-    /// expects to read back as a plain string — including for a BLOB whose
-    /// bytes are not valid UTF-8.
+    /// Text or bytes. Handed to PHP as one string either way, because PHP has
+    /// one string type and the PHP side expects a plain string — including for
+    /// a BLOB whose bytes are not valid UTF-8.
     Text(Vec<u8>),
 }
 
-/// Encodes a batch of rows as a MessagePack array of maps. An empty batch
-/// encodes as an empty array, never null, so the PHP side always decodes a list.
-/// A DATE in the shape the PHP side expects (see the DATE arms above).
+/// A DATETIME in the shape the PHP side expects (see the DATETIME arms below):
 /// RFC3339 with the fractional second trimmed of its trailing zeroes, which is
 /// the shape PHP has always been handed:
 /// `.5`, not `.500`. chrono's own AutoSi pads to three, six or nine places
@@ -88,6 +86,7 @@ fn render_rfc3339(stamp: chrono::DateTime<chrono::Utc>) -> Vec<u8> {
     rendered.into_bytes()
 }
 
+/// A DATE in the shape the PHP side expects (see the DATE arms below).
 fn render_date(date: chrono::NaiveDate) -> Vec<u8> {
     date.and_hms_opt(0, 0, 0)
         .map(|stamp| {
@@ -99,53 +98,37 @@ fn render_date(date: chrono::NaiveDate) -> Vec<u8> {
         .unwrap_or_else(|| date.to_string().into_bytes())
 }
 
-pub fn encode_batch(columns: &[String], rows: &[Vec<ColumnValue>]) -> Vec<u8> {
-    let mut buffer = Vec::with_capacity(64 + rows.len() * columns.len() * 16);
-
-    let _ = encode::write_array_len(&mut buffer, rows.len() as u32);
+/// A batch of rows as a list of maps, one map per row keyed by column name.
+/// An empty batch is an empty list, never null, so the PHP side always gets a
+/// list.
+pub fn batch_value(columns: &[String], rows: &[Vec<ColumnValue>]) -> Value {
+    let mut batch = Vec::with_capacity(rows.len());
 
     for row in rows {
-        let _ = encode::write_map_len(&mut buffer, columns.len() as u32);
+        let mut row_map = Map::with_capacity(columns.len());
 
         for (index, column) in columns.iter().enumerate() {
-            let _ = encode::write_str(&mut buffer, column);
+            let value = match row.get(index) {
+                Some(ColumnValue::Null) | None => Value::Nil,
+                Some(ColumnValue::Bool(flag)) => Value::Bool(*flag),
+                Some(ColumnValue::Int(number)) => Value::Int(*number),
+                Some(ColumnValue::Float(number)) => Value::Float(*number),
+                Some(ColumnValue::Text(bytes)) => Value::Str(bytes.clone()),
+            };
 
-            match row.get(index) {
-                Some(ColumnValue::Null) | None => {
-                    let _ = encode::write_nil(&mut buffer);
-                }
-                Some(ColumnValue::Bool(flag)) => {
-                    let _ = encode::write_bool(&mut buffer, *flag);
-                }
-                Some(ColumnValue::Int(number)) => {
-                    let _ = encode::write_sint(&mut buffer, *number);
-                }
-                Some(ColumnValue::Float(number)) => {
-                    let _ = encode::write_f64(&mut buffer, *number);
-                }
-                Some(ColumnValue::Text(bytes)) => {
-                    let _ = encode::write_str_len(&mut buffer, bytes.len() as u32);
-                    buffer.extend_from_slice(bytes);
-                }
-            }
+            row_map.push(column.as_str(), value);
         }
+
+        batch.push(Value::from(row_map));
     }
 
-    buffer
+    Value::List(batch)
 }
 
-/// Encodes the answer to an Exec: affected rows and last insert id, under the
-/// same two keys the PHP side reads.
-pub fn encode_exec_result(affected_rows: i64, last_insert_id: i64) -> Vec<u8> {
-    let mut buffer = Vec::with_capacity(16);
-
-    let _ = encode::write_map_len(&mut buffer, 2);
-    let _ = encode::write_str(&mut buffer, "ar");
-    let _ = encode::write_sint(&mut buffer, affected_rows);
-    let _ = encode::write_str(&mut buffer, "li");
-    let _ = encode::write_sint(&mut buffer, last_insert_id);
-
-    buffer
+/// The answer to an Exec: affected rows and last insert id, under the same two
+/// keys the PHP side reads.
+pub fn exec_result_value(affected_rows: i64, last_insert_id: i64) -> Value {
+    Map::new().set("ar", affected_rows).set("li", last_insert_id).into()
 }
 
 /// Reads one MySQL row into the wire shapes above, dispatching on the column's

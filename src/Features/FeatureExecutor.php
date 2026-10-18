@@ -244,7 +244,7 @@ readonly class FeatureExecutor
     {
         if ($result->isError) {
             throw new TaskErrorException(
-                message: $result->payload ?: 'Unknown error',
+                message: (is_string($result->payload) && $result->payload !== '') ? $result->payload : 'Unknown error',
             );
         }
 

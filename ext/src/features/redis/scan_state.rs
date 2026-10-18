@@ -129,7 +129,7 @@ impl ScanState {
         let taken = cursor.buffered.len().min(self.batch_size);
         let batch: Vec<Value> = cursor.buffered.drain(..taken).collect();
 
-        let payload = values::encode_values(&batch).map_err(|error| (Kind::Command, error))?;
+        let payload = values::replies_value(&batch).map_err(|error| (Kind::Command, error))?;
         let has_next = !cursor.buffered.is_empty() || !cursor.finished;
 
         Ok(if has_next {

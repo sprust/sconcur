@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use crate::dto::{Message, Result};
+use crate::dto::{Message, Result, Value};
 use crate::helpers::calc_execution_ms;
 use crate::states::{StateCloseFuture, StateContract, StateFuture};
 
@@ -120,7 +120,7 @@ pub struct TransactionHolderState {
 impl StateContract for TransactionHolderState {
     fn next(&self) -> StateFuture<'_> {
         Box::pin(async move {
-            Result::success(&self.message, Vec::new(), calc_execution_ms(self.start_time))
+            Result::success(&self.message, Value::Nil, calc_execution_ms(self.start_time))
         })
     }
 

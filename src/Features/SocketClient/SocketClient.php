@@ -9,7 +9,6 @@ use SConcur\Features\FeatureExecutor;
 use SConcur\Features\SocketClient\Dto\Connection;
 use SConcur\Features\SocketClient\Payloads\ConnectPayload;
 use SConcur\Features\SocketClient\Payloads\ConnectPayloadParameters;
-use SConcur\Transport\MessagePackTransport;
 use Throwable;
 
 /**
@@ -56,7 +55,7 @@ readonly class SocketClient
         }
 
         /** @var array<string, mixed> $meta */
-        $meta = MessagePackTransport::unpack($result->payload);
+        $meta = $result->payload;
 
         return new Connection(
             id: (string) ($meta['cid'] ?? ''),

@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Sql\Results;
 
-use SConcur\Transport\MessagePackTransport;
-
 /**
  * Result of an Exec command: rows affected and the last auto-increment id.
  *
@@ -20,9 +18,9 @@ readonly class ExecResult
     ) {
     }
 
-    public static function fromPayload(string $payload): self
+    public static function fromPayload(mixed $payload): self
     {
-        $decoded = $payload === '' ? [] : MessagePackTransport::unpack($payload);
+        $decoded = is_array($payload) ? $payload : [];
 
         return new self(
             affectedRows: (int) ($decoded['ar'] ?? 0),

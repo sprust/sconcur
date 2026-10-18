@@ -23,7 +23,6 @@ use SConcur\Features\Amqp\Support\AmqpFailure;
 use SConcur\Features\Amqp\Support\DeliveryCodec;
 use SConcur\Features\Server\ServerRuntimeSupportTrait;
 use SConcur\Scheduler\Scheduler;
-use SConcur\Transport\MessagePackTransport;
 use Throwable;
 use WeakReference;
 
@@ -252,7 +251,7 @@ class QueueConsumer
                     serverFlowKey: $flowKey,
                     serverTaskKey: $runningTask->key,
                     maxRequests: $this->maxMessages,
-                    onRequest: function (string $payload) use (
+                    onRequest: function (array $payload) use (
                         $connection,
                         $publishChannels,
                         $handler,
@@ -311,19 +310,19 @@ class QueueConsumer
      * The handler never learns about the drain, so the same one works supervised and
      * standalone.
      *
+     * @param array<string, mixed>                    $payload the delivery event the core built
      * @param Closure(Delivery): void                 $handler
      * @param null|Closure(Throwable, Delivery): void $onError
      */
     protected function handleDelivery(
         Connection $connection,
         PublishChannelPool $publishChannels,
-        string $payload,
+        array $payload,
         Closure $handler,
         null|Closure $onError,
         int &$handled,
     ): void {
-        /** @var array<mixed> $event */
-        $event = MessagePackTransport::unpack($payload);
+        $event = $payload;
 
         $channelId = isset($event['chid']) ? (string) $event['chid'] : '';
 

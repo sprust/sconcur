@@ -1,22 +1,24 @@
-//! Converting between BSON and MessagePack in both directions.
+//! Converting between BSON and PHP in both directions.
 //!
-//! PHP and the extension exchange documents as MessagePack. Values BSON has and
-//! MessagePack does not — an id, a date, a decimal — ride in the object envelope
-//! `ext-msgpack` uses for PHP objects, and become `SConcur\Bson\*` instances on
-//! the way back. `docs/msgpack-objects.md` is the contract; this module is its
-//! Rust half.
+//! Inbound, PHP sends a document as MessagePack: values BSON has and MessagePack
+//! does not — an id, a date, a decimal — ride in the object envelope
+//! `ext-msgpack` uses for PHP objects, and `docs/msgpack-objects.md` is that
+//! contract. Outbound, a document is built as the PHP value the result carries
+//! (`crate::dto::Value`): an associative array whose BSON-only values are
+//! `SConcur\Bson\*` objects with their declared properties, so nothing decodes
+//! on the PHP side.
 
 pub mod from_msgpack;
-pub mod to_msgpack;
+pub mod to_value;
 
 pub use from_msgpack::{
     PayloadConverter, document_from_msgpack, documents_from_msgpack, read_payload_value,
 };
-pub use to_msgpack::{document_to_msgpack, documents_to_msgpack};
+pub use to_value::{document_value, documents_value};
 
-/// The classes an envelope may name. Kept together because both directions have
-/// to agree on them exactly, and a typo would surface as a silently mistyped
-/// value rather than an error.
+/// The classes an inbound envelope may name and an outbound object is created
+/// as. Kept together because both directions have to agree on them exactly, and
+/// a typo would surface as a silently mistyped value rather than an error.
 pub mod classes {
     pub const OBJECT_ID: &str = r"SConcur\Bson\ObjectId";
     pub const UTC_DATE_TIME: &str = r"SConcur\Bson\UTCDateTime";

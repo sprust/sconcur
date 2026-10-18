@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::dto::{Message, Result};
+use crate::dto::{Message, Result, Value};
 use crate::errs::Factory;
 use crate::features::{BoxFuture, Feature};
 use crate::helpers::calc_execution_ms;
@@ -110,7 +110,7 @@ impl StateContract for ConnectionState {
             if !self.meta_sent.swap(true, Ordering::SeqCst) {
                 return Result::success_with_next(
                     &self.message,
-                    self.meta.encode(),
+                    self.meta.value(),
                     calc_execution_ms(self.start_time),
                 );
             }
@@ -394,7 +394,7 @@ async fn route(task: &Task, connection_id: &str, kind: WriteKind, data: Vec<u8>)
         Ok(()) => {
             task.add_result(Result::success(
                 message,
-                Vec::new(),
+                Value::Nil,
                 calc_execution_ms(start_time),
             ))
             .await;

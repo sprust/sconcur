@@ -25,7 +25,6 @@ use Nyholm\Psr7\ServerRequest;
 use SConcur\Features\HttpServer\HttpServer;
 use SConcur\Features\HttpServer\Dto\RequestBody;
 use SConcur\Features\HttpServer\Dto\RequestBodyStream;
-use SConcur\Transport\MessagePackTransport;
 
 error_reporting(E_ALL);
 ini_set('memory_limit', '512M');
@@ -44,15 +43,19 @@ const WARMUP     = 2_000;
 const ROUNDS = 5;
 
 /**
- * A request in the shape the core actually emits (payloads.rs, RequestEvent::encode):
- * the ten short keys, headers as name => list of values.
+ * A request in the shape the core actually emits (payloads.rs, RequestEvent::into_value):
+ * the ten short keys, headers as name => list of values, as the PHP array the
+ * handler receives.
  *
  * The header set is what a browser or wrk sends, because the withHeader loop is
  * the stage most likely to dominate and its cost is per header.
  */
-function requestPayload(string $query = ''): string
+/**
+ * @return array<string, mixed>
+ */
+function requestPayload(string $query = ''): array
 {
-    return msgpack_pack([
+    return [
         'rid' => 'r-0000000000000001',
         'mt'  => 'GET',
         'pt'  => '/users/42/orders',
@@ -71,7 +74,7 @@ function requestPayload(string $query = ''): string
             'Connection'      => ['keep-alive'],
             'Cache-Control'   => ['max-age=0'],
         ],
-    ]);
+    ];
 }
 
 /**
@@ -107,7 +110,7 @@ function median(array $values): float
 // Bound rather than reflected per call: ReflectionMethod::invoke costs about as
 // much as a stage, which would land inside the number it is measuring.
 $decodeRequest = Closure::bind(
-    static fn (Psr17Factory $factory, string $payload): array => HttpServer::decodeRequest($factory, $payload),
+    static fn (Psr17Factory $factory, array $payload): array => HttpServer::decodeRequest($factory, $payload),
     null,
     HttpServer::class,
 );
@@ -117,10 +120,8 @@ $factory = new Psr17Factory();
 $plain   = requestPayload();
 $queried = requestPayload('page=3&per_page=50&sort=-created_at&filter%5Bstatus%5D=paid');
 
-/** @var array<string, mixed> $data */
-$data    = MessagePackTransport::unpack($plain);
-$headers = (array) $data['hd'];
-$uri     = 'http://' . $data['ho'] . $data['pt'];
+$headers = (array) $plain['hd'];
+$uri     = 'http://' . $plain['ho'] . $plain['pt'];
 
 $stages = [
     // The whole thing, exactly as a request pays for it.
@@ -129,18 +130,13 @@ $stages = [
     // The same with a query string, which adds parse_str and one more wither.
     'decodeRequest (+query)' => static fn (): array => $decodeRequest($factory, $queried),
 
-    // The stages, cumulative: each shape is the previous one plus a step.
-    'unpack only' => static fn (): array => (array) MessagePackTransport::unpack($plain),
-
-    'unpack + createServerRequest' => static function () use ($factory, $plain, $uri) {
-        MessagePackTransport::unpack($plain);
-
+    // The stages, cumulative: each shape is the previous one plus a step. The
+    // event arrives as a ready PHP array, so there is no decode stage to price.
+    'createServerRequest' => static function () use ($factory, $uri) {
         return $factory->createServerRequest('GET', $uri, []);
     },
 
-    'unpack + create + headers' => static function () use ($factory, $plain, $uri, $headers) {
-        MessagePackTransport::unpack($plain);
-
+    'create + headers' => static function () use ($factory, $uri, $headers) {
         $request = $factory->createServerRequest('GET', $uri, []);
 
         foreach ($headers as $name => $values) {
@@ -150,9 +146,7 @@ $stages = [
         return $request;
     },
 
-    'unpack + create + headers + body' => static function () use ($factory, $plain, $uri, $headers) {
-        MessagePackTransport::unpack($plain);
-
+    'create + headers + body' => static function () use ($factory, $uri, $headers) {
         $request = $factory->createServerRequest('GET', $uri, []);
 
         foreach ($headers as $name => $values) {
@@ -167,9 +161,7 @@ $stages = [
     // immutable request. Not reachable through PSR-17 — createServerRequest takes
     // no headers — so this prices what a lazy or implementation-aware request
     // could save, not something the current code could just switch to.
-    'unpack + construct with headers' => static function () use ($plain, $uri, $headers) {
-        MessagePackTransport::unpack($plain);
-
+    'construct with headers' => static function () use ($uri, $headers) {
         return new ServerRequest('GET', $uri, array_map(
             static fn (mixed $values): array => array_values((array) $values),
             $headers,

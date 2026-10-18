@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use redis::aio::ConnectionLike;
 use redis::Value;
 
-use crate::dto::Result;
+use crate::dto::{Map, Result, Value as PhpValue};
 use crate::features::{BoxFuture, Feature};
 use crate::helpers::calc_execution_ms;
 use crate::states;
@@ -221,7 +221,7 @@ impl RedisFeature {
         };
 
         match outcome.and_then(|value| {
-            values::encode_value(&value).map_err(|error| (Kind::Command, error))
+            values::reply_value(&value).map_err(|error| (Kind::Command, error))
         }) {
             Ok(payload) => {
                 task.add_result(Result::success(message, payload, calc_execution_ms(start_time)))
@@ -356,12 +356,12 @@ impl RedisFeature {
             }
         };
 
-        let encoded = if atomic {
+        let answer = if atomic {
             match values.into_iter().next() {
                 // The transaction was not run: a watched key changed under it.
                 // PHP sees null, which is what EXEC answered.
-                Some(Value::Nil) => values::encode_value(&Value::Nil),
-                Some(Value::Array(replies)) => values::encode_pipeline(&replies),
+                Some(Value::Nil) => values::reply_value(&Value::Nil),
+                Some(Value::Array(replies)) => values::pipeline_value(&replies),
                 // EXEC itself failed — a command was refused while it was being
                 // queued, so the server ran none of them.
                 Some(Value::ServerError(error)) => Err(format!(
@@ -369,14 +369,14 @@ impl RedisFeature {
                     error.code(),
                     error.details().unwrap_or("")
                 )),
-                Some(other) => values::encode_value(&other),
-                None => values::encode_pipeline(&[]),
+                Some(other) => values::reply_value(&other),
+                None => values::pipeline_value(&[]),
             }
         } else {
-            values::encode_pipeline(&values)
+            values::pipeline_value(&values)
         };
 
-        let payload = match encoded {
+        let payload = match answer {
             Ok(payload) => payload,
             Err(error) => {
                 task.add_result(Result::error(message, fail(Kind::Command, &error)))
@@ -612,7 +612,7 @@ impl RedisFeature {
         // it to add channels or close, and the messages start at the next pull.
         task.add_result(Result::success_with_next(
             message,
-            encode_subscription_id(&subscription_id),
+            subscription_id_value(&subscription_id),
             calc_execution_ms(start_time),
         ))
         .await;
@@ -693,7 +693,7 @@ impl RedisFeature {
             Ok(()) => {
                 task.add_result(Result::success(
                     message,
-                    Vec::new(),
+                    PhpValue::Nil,
                     calc_execution_ms(start_time),
                 ))
                 .await
@@ -738,7 +738,7 @@ impl RedisFeature {
 
         task.add_result(Result::success(
             message,
-            Vec::new(),
+            PhpValue::Nil,
             calc_execution_ms(start_time),
         ))
         .await;
@@ -774,14 +774,9 @@ where
         .map_err(|error| values::classify_error(&error))
 }
 
-fn encode_subscription_id(subscription_id: &str) -> Vec<u8> {
-    let mut buffer = Vec::new();
-
-    let _ = rmp::encode::write_map_len(&mut buffer, 1);
-    let _ = rmp::encode::write_str(&mut buffer, "sid");
-    let _ = rmp::encode::write_str(&mut buffer, subscription_id);
-
-    buffer
+/// The first answer of a subscription: the id PHP addresses it by, under `sid`.
+fn subscription_id_value(subscription_id: &str) -> PhpValue {
+    Map::new().set("sid", subscription_id).into()
 }
 
 fn normalize_batch_size(batch_size: i64) -> usize {

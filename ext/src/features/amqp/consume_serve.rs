@@ -544,7 +544,7 @@ impl ServeStream {
         self.task
             .add_result(Result::success_with_next(
                 &self.message,
-                payloads::encode_delivery(&payloads::DeliveryOut {
+                payloads::DeliveryOut {
                     channel_id: &entry.id,
                     consumer_tag,
                     delivery_tag: delivery.delivery_tag,
@@ -553,7 +553,8 @@ impl ServeStream {
                     routing_key: delivery.routing_key.as_str(),
                     body: &delivery.data,
                     properties: &delivery.properties,
-                }),
+                }
+                .value(),
                 calc_execution_ms(self.start_time),
             ))
             .await;

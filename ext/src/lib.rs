@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use dto::{Message, Result};
+use dto::{Key, Message, Result, Value};
 use handler::{Handler, WaitError};
 use types::method::Method;
 
@@ -37,14 +37,25 @@ use types::method::Method;
 /// value so an unmodified package loads it.
 const VERSION: &str = "0.16.0";
 
-// Defined in sconcur.c: the VM interrupt request of the preemption ticker, and
-// the result builder the wait exports hand their results to.
+// Defined in sconcur.c: the VM interrupt request of the preemption ticker, the
+// result builder the wait exports hand their results to, and the value builder
+// that turns a result's value tree into zvals.
 unsafe extern "C" {
     fn sconcur_request_vm_interrupt();
-    fn sconcur_list_init(list: *mut c_void, size: c_uint);
-    fn sconcur_result_into(destination: *mut c_void, result: *const ResultFields) -> c_int;
-    fn sconcur_result_append(list: *mut c_void, result: *const ResultFields) -> c_int;
+    fn sconcur_result_into(destination: *mut c_void, result: *const ResultFields) -> *mut c_void;
+    fn sconcur_result_append(list: *mut c_void, result: *const ResultFields) -> *mut c_void;
     fn sconcur_throw(class_name: *const c_char, message: *const c_char);
+    fn sconcur_value_null(destination: *mut c_void);
+    fn sconcur_value_bool(destination: *mut c_void, flag: c_int);
+    fn sconcur_value_long(destination: *mut c_void, number: c_longlong);
+    fn sconcur_value_double(destination: *mut c_void, number: f64);
+    fn sconcur_value_stringl(destination: *mut c_void, bytes: *const c_char, length: usize);
+    fn sconcur_value_array(destination: *mut c_void, size: c_uint);
+    fn sconcur_array_next_slot(array: *mut c_void) -> *mut c_void;
+    fn sconcur_array_index_slot(array: *mut c_void, index: c_longlong) -> *mut c_void;
+    fn sconcur_array_key_slot(array: *mut c_void, key: *const c_char, length: usize) -> *mut c_void;
+    fn sconcur_value_object(destination: *mut c_void, class_name: *const c_char, length: usize) -> c_int;
+    fn sconcur_object_property_slot(object: *mut c_void, name: *const c_char, length: usize) -> *mut c_void;
 }
 
 // ---------------------------------------------------------------------------
@@ -52,9 +63,11 @@ unsafe extern "C" {
 //
 // A result is not framed into bytes: the core hands the fields of each one to
 // the glue's result builder (sconcur.c), which instantiates the PHP package's
-// TaskResultDto on the PHP thread, inside the wait export PHP is parked in.
-// Nothing here touches a zval — the builder is C, the destination is an opaque
-// pointer, and an export only reports how the wait ended.
+// TaskResultDto on the PHP thread, inside the wait export PHP is parked in,
+// and the result's value tree is walked here into the payload slot through the
+// glue's value builder. Nothing here touches a zval — the builders are C, every
+// destination is an opaque pointer, and an export only reports how the wait
+// ended.
 // ---------------------------------------------------------------------------
 
 /// Mirrors sconcur_result_t of sconcur_core.h, field for field. The pointers
@@ -67,8 +80,6 @@ struct ResultFields {
     method_case: *const c_char,
     task_key: *const c_char,
     task_key_len: usize,
-    payload: *const c_char,
-    payload_len: usize,
     is_error: c_int,
     has_next: c_int,
     execution_ms: c_uint,
@@ -84,8 +95,6 @@ impl ResultFields {
             method_case: result.method.as_php_case().as_ptr(),
             task_key: result.task_key.as_ptr() as *const c_char,
             task_key_len: result.task_key.len(),
-            payload: result.payload.as_ptr() as *const c_char,
-            payload_len: result.payload.len(),
             is_error: c_int::from(result.is_error),
             has_next: c_int::from(result.has_next),
             execution_ms: result.execution_ms,
@@ -93,6 +102,71 @@ impl ResultFields {
             owner_id: result.owner_id,
         }
     }
+}
+
+/// Writes one value tree into `destination`, node by node, through the glue's
+/// value builder. A child is written before the next sibling's slot is asked
+/// for, because adding to a PHP array may move what the array holds. False
+/// means the builder threw; the partial value is released with the whole
+/// result by the glue.
+fn write_value(destination: *mut c_void, value: &Value) -> bool {
+    match value {
+        Value::Nil => unsafe { sconcur_value_null(destination) },
+        Value::Bool(flag) => unsafe { sconcur_value_bool(destination, c_int::from(*flag)) },
+        Value::Int(number) => unsafe { sconcur_value_long(destination, *number as c_longlong) },
+        Value::Float(number) => unsafe { sconcur_value_double(destination, *number) },
+        Value::Str(bytes) => unsafe {
+            sconcur_value_stringl(destination, bytes.as_ptr() as *const c_char, bytes.len())
+        },
+        Value::List(items) => {
+            unsafe { sconcur_value_array(destination, items.len() as c_uint) };
+
+            for item in items {
+                let slot = unsafe { sconcur_array_next_slot(destination) };
+
+                if slot.is_null() || !write_value(slot, item) {
+                    return false;
+                }
+            }
+        }
+        Value::Map(entries) => {
+            unsafe { sconcur_value_array(destination, entries.len() as c_uint) };
+
+            for (key, item) in entries {
+                let slot = match key {
+                    Key::Int(index) => unsafe { sconcur_array_index_slot(destination, *index as c_longlong) },
+                    Key::Str(bytes) => unsafe {
+                        sconcur_array_key_slot(destination, bytes.as_ptr() as *const c_char, bytes.len())
+                    },
+                };
+
+                if slot.is_null() || !write_value(slot, item) {
+                    return false;
+                }
+            }
+        }
+        Value::Object(object) => {
+            let created = unsafe {
+                sconcur_value_object(destination, object.class.as_ptr() as *const c_char, object.class.len())
+            };
+
+            if created == 0 {
+                return false;
+            }
+
+            for (name, item) in &object.properties {
+                let slot = unsafe {
+                    sconcur_object_property_slot(destination, name.as_ptr() as *const c_char, name.len())
+                };
+
+                if slot.is_null() || !write_value(slot, item) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    true
 }
 
 /// Copies a message into a NUL-terminated libc::malloc block, the shape every
@@ -128,8 +202,9 @@ const TASK_ERROR_EXCEPTION: &CStr = c"SConcur\\Exceptions\\TaskErrorException";
 /// no longer sees the crossing's edges.
 fn write_result(destination: *mut c_void, result: &Result, total_execution_ms: u64) -> c_int {
     let fields = ResultFields::of(result, total_execution_ms);
+    let payload = unsafe { sconcur_result_into(destination, &fields) };
 
-    if unsafe { sconcur_result_into(destination, &fields) } == 0 {
+    if payload.is_null() || !write_value(payload, &result.payload) {
         return WAIT_FAILED;
     }
 
@@ -141,13 +216,14 @@ fn write_result(destination: *mut c_void, result: &Result, total_execution_ms: u
 /// the per-call semantics of the singular wait, where a ready result's own wait
 /// returns at once.
 fn write_result_batch(destination: *mut c_void, results: &[Result], first_total_execution_ms: u64) -> c_int {
-    unsafe { sconcur_list_init(destination, results.len() as c_uint) };
+    unsafe { sconcur_value_array(destination, results.len() as c_uint) };
 
     for (index, result) in results.iter().enumerate() {
         let total_execution_ms = if index == 0 { first_total_execution_ms } else { 0 };
         let fields = ResultFields::of(result, total_execution_ms);
+        let payload = unsafe { sconcur_result_append(destination, &fields) };
 
-        if unsafe { sconcur_result_append(destination, &fields) } == 0 {
+        if payload.is_null() || !write_value(payload, &result.payload) {
             return WAIT_FAILED;
         }
     }
@@ -173,26 +249,66 @@ fn throw_wait_error(context: &str, error: &str) -> c_int {
 /// they exist so the symbols resolve.
 #[cfg(test)]
 mod glue_stubs {
-    use std::ffi::{c_char, c_int, c_uint, c_void};
+    use std::ffi::{c_char, c_int, c_longlong, c_uint, c_void};
 
     #[unsafe(no_mangle)]
     pub extern "C" fn sconcur_request_vm_interrupt() {}
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn sconcur_list_init(_list: *mut c_void, _size: c_uint) {}
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn sconcur_result_into(_destination: *mut c_void, _result: *const super::ResultFields) -> c_int {
-        0
+    pub extern "C" fn sconcur_result_into(_destination: *mut c_void, _result: *const super::ResultFields) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn sconcur_result_append(_list: *mut c_void, _result: *const super::ResultFields) -> c_int {
-        0
+    pub extern "C" fn sconcur_result_append(_list: *mut c_void, _result: *const super::ResultFields) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
     #[unsafe(no_mangle)]
     pub extern "C" fn sconcur_throw(_class_name: *const c_char, _message: *const c_char) {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_value_null(_destination: *mut c_void) {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_value_bool(_destination: *mut c_void, _flag: c_int) {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_value_long(_destination: *mut c_void, _number: c_longlong) {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_value_double(_destination: *mut c_void, _number: f64) {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_value_stringl(_destination: *mut c_void, _bytes: *const c_char, _length: usize) {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_value_array(_destination: *mut c_void, _size: c_uint) {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_array_next_slot(_array: *mut c_void) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_array_index_slot(_array: *mut c_void, _index: c_longlong) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_array_key_slot(_array: *mut c_void, _key: *const c_char, _length: usize) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_value_object(_destination: *mut c_void, _class_name: *const c_char, _length: usize) -> c_int {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_object_property_slot(_object: *mut c_void, _name: *const c_char, _length: usize) -> *mut c_void {
+        std::ptr::null_mut()
+    }
 }
 
 // ---------------------------------------------------------------------------

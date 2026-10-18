@@ -21,7 +21,6 @@ use SConcur\Features\HttpServer\Payloads\RespondPayload;
 use SConcur\Features\HttpServer\Payloads\ServePayload;
 use SConcur\Features\Server\ServerRuntimeSupportTrait;
 use SConcur\Scheduler\Scheduler;
-use SConcur\Transport\MessagePackTransport;
 use Throwable;
 
 /**
@@ -207,7 +206,7 @@ readonly class HttpServer
                 serverFlowKey: $flowKey,
                 serverTaskKey: $runningTask->key,
                 maxRequests: $this->maxRequests,
-                onRequest: static function (string $payload) use (
+                onRequest: static function (array $payload) use (
                     $handler,
                     $onError,
                     $serverRequestFactory,
@@ -252,13 +251,14 @@ readonly class HttpServer
      *
      * @param Closure(ServerRequestInterface): ResponseInterface                  $handler
      * @param null|Closure(Throwable, ServerRequestInterface): ?ResponseInterface $onError
+     * @param array<string, mixed>                                                $payload the request event the core built
      */
     private static function handle(
         Closure $handler,
         ?Closure $onError,
         ServerRequestFactoryInterface $serverRequestFactory,
         ResponseFactoryInterface $responseFactory,
-        string $payload,
+        array $payload,
     ): void {
         [$requestId, $request] = self::decodeRequest(
             serverRequestFactory: $serverRequestFactory,
@@ -356,19 +356,20 @@ readonly class HttpServer
     }
 
     /**
-     * Decodes the streaming payload the extension's server emits (payloads.RequestEvent) into
+     * Turns the request event the extension's server emits (payloads.RequestEvent) into
      * a PSR-7 ServerRequestInterface, returning it together with the request id used
      * to address the response. The body is wrapped in a lazy RequestBodyStream so it
      * is never buffered whole.
+     *
+     * @param array<string, mixed> $payload the request event the core built
      *
      * @return array{0: string, 1: ServerRequestInterface}
      */
     private static function decodeRequest(
         ServerRequestFactoryInterface $serverRequestFactory,
-        string $payload,
+        array $payload,
     ): array {
-        /** @var array<string, mixed> $data */
-        $data = MessagePackTransport::unpack($payload);
+        $data = $payload;
 
         $requestId  = (string) ($data['rid'] ?? '');
         $method     = (string) ($data['mt'] ?? '');

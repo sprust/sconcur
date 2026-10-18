@@ -144,6 +144,7 @@ impl Task {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dto::Value;
 
     use crate::types::method::Method;
     use std::time::Duration;
@@ -169,7 +170,7 @@ mod tests {
     }
 
     fn result() -> Result {
-        Result::success(&message(), Vec::new(), 0)
+        Result::success(&message(), Value::Nil, 0)
     }
 
     /// The invariant the permits exist for. Both ways of getting it wrong are

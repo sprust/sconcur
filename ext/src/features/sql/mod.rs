@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::dto::Result;
+use crate::dto::{Result, Value};
 use crate::errs::Factory;
 use crate::features::{BoxFuture, Feature};
 use crate::helpers::calc_execution_ms;
@@ -299,7 +299,7 @@ impl SqlFeature {
         match outcome {
             Ok((affected_rows, last_insert_id)) => task.add_result(Result::success(
                 message,
-                values::encode_exec_result(affected_rows, last_insert_id),
+                values::exec_result_value(affected_rows, last_insert_id),
                 calc_execution_ms(start_time),
             )).await,
             Err(error) => task.add_result(Result::error(
@@ -396,7 +396,7 @@ impl SqlFeature {
 
         task.add_result(Result::success_with_next(
             message,
-            Vec::new(),
+            Value::Nil,
             calc_execution_ms(start_time),
         )).await;
     }
@@ -441,7 +441,7 @@ impl SqlFeature {
         match outcome {
             Ok(()) => task.add_result(Result::success(
                 message,
-                Vec::new(),
+                Value::Nil,
                 calc_execution_ms(start_time),
             )).await,
             Err(error) => task.add_result(Result::error(

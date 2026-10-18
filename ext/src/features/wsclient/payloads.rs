@@ -4,6 +4,8 @@
 
 use serde::Deserialize;
 
+use crate::dto::{Map, Value};
+
 #[derive(Deserialize)]
 pub struct Envelope {
     #[serde(rename = "cm", default)]
@@ -77,24 +79,14 @@ pub struct ConnectionMeta {
 }
 
 impl ConnectionMeta {
-    pub fn encode(&self) -> Vec<u8> {
-        use rmp::encode;
-
-        let mut buffer = Vec::with_capacity(128);
-
-        let _ = encode::write_map_len(&mut buffer, 4);
-
-        for (key, value) in [
-            ("cid", &self.connection_id),
-            ("ra", &self.remote_addr),
-            ("la", &self.local_addr),
-            ("su", &self.subprotocol),
-        ] {
-            let _ = encode::write_str(&mut buffer, key);
-            let _ = encode::write_str(&mut buffer, value);
-        }
-
-        buffer
+    /// The array PHP receives: `cid`, `ra`, `la`, `su`, all strings.
+    pub fn value(&self) -> Value {
+        Map::with_capacity(4)
+            .set("cid", &self.connection_id)
+            .set("ra", &self.remote_addr)
+            .set("la", &self.local_addr)
+            .set("su", &self.subprotocol)
+            .into()
     }
 }
 

@@ -71,9 +71,9 @@ needed does not apply to it.
 ## Conversion overhead (the PHP↔extension boundary)
 
 Every call crosses the boundary and converts its data: arguments are packed into
-MessagePack (`Transport/MessagePackTransport`), the result is unpacked back; Mongo
-documents ride in the same format, with the BSON values that MessagePack cannot
-express carried as objects. This is a fixed CPU price
+MessagePack (`Transport/MessagePackTransport`), the result is built as PHP values by
+the core inside the wait call; Mongo documents go out in the same format, with the
+BSON values that MessagePack cannot express carried as objects. This is a fixed CPU price
 per operation, on top of the boundary call and runtime task dispatch. On cheap cached reads
 it shows up as the `native` → `sync` gap (both sequential, but `sync` goes through
 the extension): `pgsql-selectOne` 4.2 → 22.7 ms over 100 calls, `mysql-selectOne`

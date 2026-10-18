@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use tokio::net::tcp::OwnedReadHalf;
 use tokio_util::sync::CancellationToken;
 
-use crate::dto::{Message, Result};
+use crate::dto::{Message, Result, Value};
 use crate::errs::Factory;
 use crate::helpers::calc_execution_ms;
 use crate::socket::frame::{FrameError, read_frame};
@@ -78,7 +78,7 @@ impl MessageState {
     /// A clean connection end: the stream finishes so the PHP loop exits and the
     /// connection coroutine completes without an error reaching the handler.
     fn finished(&self) -> Result {
-        Result::success(&self.message, Vec::new(), calc_execution_ms(self.start_time))
+        Result::success(&self.message, Value::Nil, calc_execution_ms(self.start_time))
     }
 
     fn delivered(&self, frame: Vec<u8>) -> Result {
@@ -258,7 +258,7 @@ mod tests {
             let result = state.next().await;
 
             assert!(result.has_next, "attempt {attempt}: the drain swallowed a buffered frame");
-            assert_eq!(result.payload, b"second");
+            assert_eq!(result.payload.as_bytes(), Some(&b"second"[..]));
         }
     }
 
@@ -280,7 +280,7 @@ mod tests {
             let result = state.next().await;
 
             assert!(result.has_next, "attempt {attempt}: the drain swallowed a buffered frame");
-            assert_eq!(result.payload, b"ping");
+            assert_eq!(result.payload.as_bytes(), Some(&b"ping"[..]));
         }
     }
 
@@ -309,7 +309,7 @@ mod tests {
         let result = state.next().await;
 
         assert!(result.has_next, "the first frame was dropped inside its own window");
-        assert_eq!(result.payload, b"late");
+        assert_eq!(result.payload.as_bytes(), Some(&b"late"[..]));
     }
 
     /// The window is for the FIRST frame only: a connection that has already

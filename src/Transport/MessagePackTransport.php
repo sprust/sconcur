@@ -4,30 +4,16 @@ declare(strict_types=1);
 
 namespace SConcur\Transport;
 
-use SConcur\Exceptions\ResponseIsNotMessagePackException;
 use function msgpack_pack;
-use function msgpack_unpack;
 
+/**
+ * The one direction MessagePack is still used in: a task's parameters on their
+ * way to the extension. A result comes back as the PHP value the core built.
+ */
 readonly class MessagePackTransport
 {
     public static function pack(PayloadInterface $payload): string
     {
         return msgpack_pack($payload->getData());
-    }
-
-    /**
-     * @return array<mixed>
-     */
-    public static function unpack(string $payload): array
-    {
-        $decoded = msgpack_unpack($payload);
-
-        if (!is_array($decoded)) {
-            throw new ResponseIsNotMessagePackException(
-                message: 'Decoded MessagePack response is not an array.',
-            );
-        }
-
-        return $decoded;
     }
 }

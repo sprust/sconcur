@@ -7,7 +7,6 @@ namespace SConcur\Features\Files\Results;
 use SConcur\Dto\TaskResultDto;
 use SConcur\Features\Files\Dto\DirectoryEntry;
 use SConcur\Features\Files\Support\BatchIterator;
-use SConcur\Transport\MessagePackTransport;
 
 /**
  * A directory tree walked batch by batch. The frontier lives in the extension, so
@@ -25,7 +24,7 @@ class WalkResult extends BatchIterator
      */
     protected function decode(TaskResultDto $result): array
     {
-        $decoded = MessagePackTransport::unpack($result->payload);
+        $decoded = is_array($result->payload) ? $result->payload : [];
 
         /** @var list<array<string, mixed>> $entries */
         $entries = $decoded['e'] ?? [];

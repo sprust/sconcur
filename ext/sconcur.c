@@ -249,18 +249,13 @@ static void sconcur_slot_long(zend_object *object, uint32_t offset, zend_long nu
     ZVAL_LONG(sconcur_slot(object, offset), number);
 }
 
-void sconcur_list_init(zval *list, unsigned int size)
-{
-    array_init_size(list, size);
-}
-
-int sconcur_result_into(zval *destination, const sconcur_result_t *result)
+zval *sconcur_result_into(zval *destination, const sconcur_result_t *result)
 {
     zend_object *method_case;
     zend_object *object;
 
     if (!sconcur_result_classes_ready()) {
-        return 0;
+        return NULL;
     }
 
     method_case = zend_enum_get_case_cstr(sconcur_method_ce, result->method_case);
@@ -284,11 +279,11 @@ int sconcur_result_into(zval *destination, const sconcur_result_t *result)
         );
         sconcur_throw(SCONCUR_FORMAT_EXCEPTION, message);
 
-        return 0;
+        return NULL;
     }
 
     if (object_init_ex(destination, sconcur_result_ce) == FAILURE) {
-        return 0;
+        return NULL;
     }
 
     object = Z_OBJ_P(destination);
@@ -298,34 +293,222 @@ int sconcur_result_into(zval *destination, const sconcur_result_t *result)
     ZVAL_OBJ_COPY(sconcur_slot(object, sconcur_result_slots[SCONCUR_SLOT_METHOD]), method_case);
     sconcur_slot_stringl(object, sconcur_result_slots[SCONCUR_SLOT_KEY], result->task_key, result->task_key_len);
     sconcur_slot_bool(object, sconcur_result_slots[SCONCUR_SLOT_IS_ERROR], result->is_error);
-    sconcur_slot_stringl(object, sconcur_result_slots[SCONCUR_SLOT_PAYLOAD], result->payload, result->payload_len);
     sconcur_slot_bool(object, sconcur_result_slots[SCONCUR_SLOT_HAS_NEXT], result->has_next);
     sconcur_slot_long(object, sconcur_result_slots[SCONCUR_SLOT_EXECUTION_MS], (zend_long)result->execution_ms);
     sconcur_slot_long(object, sconcur_result_slots[SCONCUR_SLOT_TOTAL_EXECUTION_MS], (zend_long)result->total_execution_ms);
     sconcur_slot_long(object, sconcur_result_slots[SCONCUR_SLOT_OWNER_FIBER_ID], (zend_long)result->owner_id);
 
-    return 1;
+    /* Null until the core fills it, so a failure halfway leaves a whole object. */
+    zval *payload = sconcur_slot(object, sconcur_result_slots[SCONCUR_SLOT_PAYLOAD]);
+
+    ZVAL_NULL(payload);
+
+    return payload;
 }
 
-int sconcur_result_append(zval *list, const sconcur_result_t *result)
+zval *sconcur_result_append(zval *list, const sconcur_result_t *result)
 {
     zval element;
+    zval *payload;
+    zval *stored;
 
     ZVAL_UNDEF(&element);
 
-    if (!sconcur_result_into(&element, result)) {
+    payload = sconcur_result_into(&element, result);
+
+    if (payload == NULL) {
         zval_ptr_dtor(&element);
-        return 0;
+        return NULL;
     }
 
-    /* The list takes over the element's reference. */
-    if (zend_hash_next_index_insert(Z_ARRVAL_P(list), &element) == NULL) {
+    /* The list takes over the element's reference; the payload slot lives in the
+     * object, which does not move, so the pointer stays valid. */
+    stored = zend_hash_next_index_insert(Z_ARRVAL_P(list), &element);
+
+    if (stored == NULL) {
         zval_ptr_dtor(&element);
         zend_throw_error(NULL, "A task result could not be appended to the batch");
+        return NULL;
+    }
+
+    return payload;
+}
+
+/*
+ * Value builder: the zval of each node of a result's value tree, written where
+ * the core says. A container is initialized to its final size, then each child
+ * gets a slot: a null placeholder inserted into the array (or the declared
+ * property of the object) that the core overwrites in place. The slot of one
+ * child is handed out only after the previous one is complete, so a growing
+ * table never moves a slot the core still holds.
+ */
+
+void sconcur_value_null(zval *destination)
+{
+    ZVAL_NULL(destination);
+}
+
+void sconcur_value_bool(zval *destination, int flag)
+{
+    ZVAL_BOOL(destination, flag != 0);
+}
+
+void sconcur_value_long(zval *destination, long long number)
+{
+    ZVAL_LONG(destination, (zend_long)number);
+}
+
+void sconcur_value_double(zval *destination, double number)
+{
+    ZVAL_DOUBLE(destination, number);
+}
+
+void sconcur_value_stringl(zval *destination, const char *bytes, size_t length)
+{
+    ZVAL_STRINGL_FAST(destination, bytes, length);
+}
+
+void sconcur_value_array(zval *destination, unsigned int size)
+{
+    array_init_size(destination, size);
+}
+
+zval *sconcur_array_next_slot(zval *array)
+{
+    zval placeholder;
+    zval *slot;
+
+    ZVAL_NULL(&placeholder);
+
+    slot = zend_hash_next_index_insert(Z_ARRVAL_P(array), &placeholder);
+
+    if (slot == NULL) {
+        zend_throw_error(NULL, "A list element could not be appended: the array is full");
+    }
+
+    return slot;
+}
+
+zval *sconcur_array_index_slot(zval *array, long long index)
+{
+    zval placeholder;
+
+    ZVAL_NULL(&placeholder);
+
+    return zend_hash_index_update(Z_ARRVAL_P(array), (zend_ulong)index, &placeholder);
+}
+
+zval *sconcur_array_key_slot(zval *array, const char *key, size_t length)
+{
+    zval placeholder;
+
+    ZVAL_NULL(&placeholder);
+
+    /* symtable: a numeric-string key becomes the integer key PHP would make
+     * of it in an array literal. */
+    return zend_symtable_str_update(Z_ARRVAL_P(array), key, length, &placeholder);
+}
+
+/*
+ * The classes a value tree names, cached per request like the result class:
+ * a handful of value classes (the BSON ones), looked up through the
+ * autoloader once and reused for the rest of the request.
+ */
+#define SCONCUR_VALUE_CLASS_CACHE_SIZE 16
+
+typedef struct {
+    char *name;
+    size_t length;
+    zend_class_entry *ce;
+} sconcur_value_class_t;
+
+static sconcur_value_class_t sconcur_value_classes[SCONCUR_VALUE_CLASS_CACHE_SIZE];
+static int sconcur_value_class_count = 0;
+
+static void sconcur_value_class_cache_reset(void)
+{
+    for (int index = 0; index < sconcur_value_class_count; index++) {
+        free(sconcur_value_classes[index].name);
+    }
+
+    sconcur_value_class_count = 0;
+}
+
+static zend_class_entry *sconcur_value_class(const char *name, size_t length)
+{
+    zend_string *class_name;
+    zend_class_entry *ce;
+
+    for (int index = 0; index < sconcur_value_class_count; index++) {
+        sconcur_value_class_t *cached = &sconcur_value_classes[index];
+
+        if (cached->length == length && memcmp(cached->name, name, length) == 0) {
+            return cached->ce;
+        }
+    }
+
+    class_name = zend_string_init(name, length, 0);
+    ce = zend_lookup_class(class_name);
+    zend_string_release(class_name);
+
+    if (ce == NULL) {
+        if (EG(exception) == NULL) {
+            zend_throw_error(NULL, "The class %.*s a task result carries cannot be loaded", (int)length, name);
+        }
+
+        return NULL;
+    }
+
+    if (sconcur_value_class_count < SCONCUR_VALUE_CLASS_CACHE_SIZE) {
+        sconcur_value_class_t *cached = &sconcur_value_classes[sconcur_value_class_count];
+
+        cached->name = malloc(length);
+
+        if (cached->name != NULL) {
+            memcpy(cached->name, name, length);
+            cached->length = length;
+            cached->ce = ce;
+            sconcur_value_class_count++;
+        }
+    }
+
+    return ce;
+}
+
+int sconcur_value_object(zval *destination, const char *class_name, size_t length)
+{
+    zend_class_entry *ce = sconcur_value_class(class_name, length);
+
+    if (ce == NULL) {
         return 0;
     }
 
-    return 1;
+    return object_init_ex(destination, ce) == SUCCESS;
+}
+
+zval *sconcur_object_property_slot(zval *object, const char *name, size_t length)
+{
+    zend_object *instance = Z_OBJ_P(object);
+    zend_property_info *info = zend_hash_str_find_ptr(&instance->ce->properties_info, name, length);
+    zval *slot;
+
+    if (info == NULL || (info->flags & ZEND_ACC_STATIC) != 0) {
+        zend_throw_error(
+            NULL,
+            "%s declares no property %.*s, which a task result writes",
+            ZSTR_VAL(instance->ce->name),
+            (int)length,
+            name
+        );
+
+        return NULL;
+    }
+
+    slot = sconcur_slot(instance, info->offset);
+
+    ZVAL_NULL(slot);
+
+    return slot;
 }
 
 /*
@@ -830,6 +1013,7 @@ PHP_MINIT_FUNCTION(sconcur)
 PHP_RSHUTDOWN_FUNCTION(sconcur)
 {
     sconcur_result_cache_reset();
+    sconcur_value_class_cache_reset();
 
     return SUCCESS;
 }

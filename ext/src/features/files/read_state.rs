@@ -16,7 +16,7 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::dto::{Message, Result};
+use crate::dto::{Message, Result, Value};
 use crate::helpers::calc_execution_ms;
 use crate::states::{StateCloseFuture, StateContract, StateFuture};
 
@@ -208,19 +208,10 @@ impl ReadState {
     }
 }
 
-/// A batch of lines, as a MessagePack array of binary strings. Binary, not text:
-/// a log file is bytes, and declaring them UTF-8 breaks on the first line that
-/// is not.
-fn encode_lines(lines: &[Vec<u8>]) -> Vec<u8> {
-    let mut buffer = Vec::new();
-
-    let _ = rmp::encode::write_array_len(&mut buffer, lines.len() as u32);
-
-    for line in lines {
-        let _ = rmp::encode::write_bin(&mut buffer, line);
-    }
-
-    buffer
+/// A batch of lines, as a PHP list of strings. Bytes, not text: a log file is
+/// bytes, and declaring them UTF-8 breaks on the first line that is not.
+fn lines_value(lines: Vec<Vec<u8>>) -> Value {
+    Value::List(lines.into_iter().map(Value::Str).collect())
 }
 
 impl StateContract for ReadState {
@@ -295,7 +286,7 @@ impl ReadState {
                     // it: every batch but the last carries data.
                     Ok(None) => Result::success(
                         &self.message,
-                        Vec::new(),
+                        Value::Nil,
                         calc_execution_ms(self.start_time),
                     ),
                     Err(text) => Result::error(&self.message, text),
@@ -303,7 +294,7 @@ impl ReadState {
                 Mode::Lines => match self.next_lines(reader).await {
                     Ok(lines) => {
                         let drained = reader.drained && reader.pending.is_empty();
-                        let body = encode_lines(&lines);
+                        let body = lines_value(lines);
 
                         if drained {
                             Result::success(&self.message, body, calc_execution_ms(self.start_time))
@@ -546,14 +537,13 @@ mod tests {
     }
 
     #[test]
-    fn lines_encode_as_an_array_of_binaries() {
-        let encoded = encode_lines(&[b"one".to_vec(), vec![0xff, 0x00]]);
-        let decoded: rmpv::Value = rmp_serde::from_slice(&encoded).unwrap();
+    fn lines_answer_as_a_list_of_byte_strings() {
+        let value = lines_value(vec![b"one".to_vec(), vec![0xff, 0x00]]);
 
-        let array = decoded.as_array().unwrap();
+        let list = value.as_list().unwrap();
 
-        assert_eq!(array.len(), 2);
-        assert_eq!(array[0].as_slice().unwrap(), b"one");
-        assert_eq!(array[1].as_slice().unwrap(), &[0xff, 0x00]);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].as_bytes().unwrap(), b"one");
+        assert_eq!(list[1].as_bytes().unwrap(), &[0xff, 0x00]);
     }
 }

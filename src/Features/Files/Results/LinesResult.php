@@ -6,7 +6,6 @@ namespace SConcur\Features\Files\Results;
 
 use SConcur\Dto\TaskResultDto;
 use SConcur\Features\Files\Support\BatchIterator;
-use SConcur\Transport\MessagePackTransport;
 
 /**
  * A file read line by line, in batches.
@@ -26,7 +25,7 @@ class LinesResult extends BatchIterator
     protected function decode(TaskResultDto $result): array
     {
         /** @var list<string> $lines */
-        $lines = MessagePackTransport::unpack($result->payload);
+        $lines = is_array($result->payload) ? $result->payload : [];
 
         return $lines;
     }

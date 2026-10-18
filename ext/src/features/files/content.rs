@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-use crate::dto::Result;
+use crate::dto::{Map, Result, Value};
 use crate::helpers::calc_execution_ms;
 use crate::tasks::Task;
 
@@ -58,21 +58,15 @@ pub fn bytes_of(value: rmpv::Value) -> std::result::Result<Vec<u8>, String> {
 
 /// Answers with the number of bytes the operation moved, as a map so PHP reads
 /// it the way it reads every other structured result.
-pub fn encode_count(count: u64) -> Vec<u8> {
-    let mut buffer = Vec::new();
-
-    let _ = rmp::encode::write_map_len(&mut buffer, 1);
-    let _ = rmp::encode::write_str(&mut buffer, "n");
-    let _ = rmp::encode::write_uint(&mut buffer, count);
-
-    buffer
+pub fn count_value(count: u64) -> Value {
+    Map::new().set("n", count).into()
 }
 
 /// Reads a file whole, or the byte range the payload names.
 ///
-/// The bytes go back raw, not wrapped in MessagePack: a 100 MiB file would
-/// otherwise be copied once more just to be unwrapped on the other side, and
-/// the result frame already carries its own length.
+/// The bytes go back as one PHP string, not under a key of a map: the contents
+/// are the whole answer, and a 100 MiB file is handed to PHP as the one string
+/// it already is.
 pub async fn read(task: &Task, envelope: &mut payloads::Envelope) {
     let message = task.message();
     let start_time = Instant::now();
@@ -286,7 +280,7 @@ pub async fn write(task: &Task, envelope: &mut payloads::Envelope) {
         Some(Ok(count)) => {
             task.add_result(Result::success(
                 message,
-                encode_count(count),
+                count_value(count),
                 calc_execution_ms(start_time),
             ))
             .await;
@@ -436,7 +430,7 @@ pub async fn write_atomic(task: &Task, envelope: &mut payloads::Envelope) {
         Some(Ok(count)) => {
             task.add_result(Result::success(
                 message,
-                encode_count(count),
+                count_value(count),
                 calc_execution_ms(start_time),
             ))
             .await;
@@ -494,7 +488,7 @@ pub async fn truncate(task: &Task, envelope: &mut payloads::Envelope) {
         Some(Ok(_)) => {
             task.add_result(Result::success(
                 message,
-                Vec::new(),
+                Value::Nil,
                 calc_execution_ms(start_time),
             ))
             .await;
@@ -607,7 +601,7 @@ pub async fn copy(task: &Task, envelope: &mut payloads::Envelope) {
         Some(Ok(count)) => {
             task.add_result(Result::success(
                 message,
-                encode_count(count),
+                count_value(count),
                 calc_execution_ms(start_time),
             ))
             .await;
@@ -658,7 +652,7 @@ pub async fn move_file(task: &Task, envelope: &mut payloads::Envelope) {
         Some(Ok(())) => {
             task.add_result(Result::success(
                 message,
-                Vec::new(),
+                Value::Nil,
                 calc_execution_ms(start_time),
             ))
             .await;
@@ -779,7 +773,7 @@ pub async fn move_file(task: &Task, envelope: &mut payloads::Envelope) {
         Some(Ok(())) => {
             task.add_result(Result::success(
                 message,
-                Vec::new(),
+                Value::Nil,
                 calc_execution_ms(start_time),
             ))
             .await;
@@ -830,7 +824,7 @@ pub async fn delete(task: &Task, envelope: &mut payloads::Envelope) {
         Some(Ok(count)) => {
             task.add_result(Result::success(
                 message,
-                encode_count(count),
+                count_value(count),
                 calc_execution_ms(start_time),
             ))
             .await;

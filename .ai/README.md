@@ -10,9 +10,10 @@ SConcur is a PHP concurrency library backed by a custom PHP extension written in
 Rust. PHP Fibers suspend while the extension executes tasks concurrently on an
 async runtime. PHP sends a task as a msgpack-packed payload DTO
 (`Transport/MessagePackTransport`); the core hands the result back as a ready
-`TaskResultDto`, built on the PHP thread by the glue's result builder in
-`ext/sconcur.c` from the fields the core gives it, with the feature payload still
-msgpack inside it. The plan that removes the rest of msgpack is
+`TaskResultDto` whose payload is already the PHP value the feature chose — a
+feature builds a `dto::Value` tree (`ext/src/dto/value.rs`) and the glue's value
+builder in `ext/sconcur.c` turns it into zvals on the PHP thread, inside the wait
+call. The plan that removes the remaining msgpack is
 [.ai/plans/direct-zval-transport.md](plans/direct-zval-transport.md).
 
 Core PHP code lives in `src/` under the `SConcur\` namespace — main entry points

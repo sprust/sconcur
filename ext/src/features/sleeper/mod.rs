@@ -6,7 +6,7 @@ pub mod payloads;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use crate::dto::Result;
+use crate::dto::{Result, Value};
 use crate::errs::Factory;
 use crate::features::{BoxFuture, Feature};
 use crate::helpers::calc_execution_ms;
@@ -62,7 +62,7 @@ impl Feature for SleepFeature {
                 _ = sleep => {
                     task.add_result(Result::success(
                         message,
-                        Vec::new(),
+                        Value::Nil,
                         calc_execution_ms(start_time),
                     )).await;
                 }

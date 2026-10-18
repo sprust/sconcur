@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::dto::Result;
+use crate::dto::{Result, Value};
 use crate::errs::Factory;
 use crate::features::{BoxFuture, Feature};
 use crate::helpers::calc_execution_ms;
@@ -271,7 +271,7 @@ async fn start_streamed(
 
     task.add_result(Result::success_with_next(
         message,
-        Vec::new(),
+        Value::Nil,
         calc_execution_ms(start_time),
     ))
     .await;
@@ -401,7 +401,7 @@ async fn handle_upload(task: &Task, params: rmpv::Value, end: bool) {
 
     task.add_result(Result::success(
         message,
-        Vec::new(),
+        Value::Nil,
         calc_execution_ms(start_time),
     ))
     .await;
@@ -442,7 +442,7 @@ async fn download(task: &Task, builder: reqwest::RequestBuilder, params: &mut pa
                 headers,
                 written: 0,
             }
-            .encode(),
+            .into_value(),
             calc_execution_ms(start_time),
         ))
         .await;
@@ -517,7 +517,7 @@ async fn download(task: &Task, builder: reqwest::RequestBuilder, params: &mut pa
             // The bytes actually written, not a Content-Length header.
             written,
         }
-        .encode(),
+        .into_value(),
         calc_execution_ms(start_time),
     ))
     .await;
