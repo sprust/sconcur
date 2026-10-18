@@ -1,4 +1,4 @@
-//! Turning MessagePack bindings
+//! Turning the bindings PHP sent
 //! into driver arguments, and driver rows into the PHP values a result carries.
 //!
 //! The shapes here are a wire contract, not a preference. `tests/feature/
@@ -12,9 +12,9 @@ use sqlx::{Column, Row, TypeInfo, ValueRef};
 
 use crate::dto::{Map, Value};
 
-/// One binding, normalized out of MessagePack into something a driver accepts.
-/// msgpack's int8/int16/uint64/… all collapse into int64/float64, for one
-/// reason: the driver's converter should see one integer type, not nine.
+/// One binding, normalized out of the PHP value into something a driver
+/// accepts: the driver's converter sees one integer type and one float type,
+/// and text apart from bytes.
 pub enum Binding {
     Null,
     Bool(bool),
@@ -24,31 +24,28 @@ pub enum Binding {
     Bytes(Vec<u8>),
 }
 
-pub fn normalize_bindings(values: &[rmpv::Value]) -> Vec<Binding> {
+pub fn normalize_bindings(values: &[Value]) -> Vec<Binding> {
     values.iter().map(normalize_binding).collect()
 }
 
-fn normalize_binding(value: &rmpv::Value) -> Binding {
+fn normalize_binding(value: &Value) -> Binding {
     match value {
-        rmpv::Value::Nil => Binding::Null,
-        rmpv::Value::Boolean(flag) => Binding::Bool(*flag),
-        rmpv::Value::Integer(number) => match number.as_i64() {
-            Some(number) => Binding::Int(number),
-            // Past i64 the value cannot be an integer argument; hand it over as
-            // text rather than silently wrapping it.
-            None => Binding::Text(number.to_string()),
+        Value::Nil => Binding::Null,
+        Value::Bool(flag) => Binding::Bool(*flag),
+        Value::Int(number) => Binding::Int(*number),
+        Value::Float(number) => Binding::Float(*number),
+        // A PHP string is one type for text and bytes alike, so a BLOB binding
+        // arrives as a string holding bytes that are not valid UTF-8. Keep
+        // those as bytes instead of lossily converting them.
+        Value::Str(bytes) => match std::str::from_utf8(bytes) {
+            Ok(text) => Binding::Text(text.to_string()),
+            Err(_) => Binding::Bytes(bytes.clone()),
         },
-        rmpv::Value::F32(number) => Binding::Float(*number as f64),
-        rmpv::Value::F64(number) => Binding::Float(*number),
-        // PHP strings arrive as msgpack str; a binary payload (a BLOB binding)
-        // arrives as str too, holding bytes that are not valid UTF-8. Keep those
-        // as bytes instead of lossily converting them.
-        rmpv::Value::String(text) => match text.as_str() {
-            Some(text) => Binding::Text(text.to_string()),
-            None => Binding::Bytes(text.as_bytes().to_vec()),
-        },
-        rmpv::Value::Binary(bytes) => Binding::Bytes(bytes.clone()),
-        other => Binding::Text(other.to_string()),
+        // An array or an object is not something a driver can bind. No PHP
+        // caller sends one on purpose, so rather than failing the whole
+        // statement here it goes over as text, and the driver's own error is
+        // the message, as it has always been.
+        other => Binding::Text(format!("{other:?}")),
     }
 }
 

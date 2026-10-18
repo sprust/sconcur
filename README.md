@@ -8,8 +8,9 @@ English | [Русский](README.ru.md)
 
 A concurrency library for PHP on top of a custom Rust extension. The PHP side
 (a Fiber) suspends while the extension runs the task (MongoDB operations, sleep,
-and so on) concurrently on an async runtime. The two sides exchange data over
-MessagePack.
+and so on) concurrently on an async runtime. Nothing is serialized between the
+two: the extension reads a task's parameters off the PHP array it is given and
+builds the PHP values of the result itself.
 
 ## Contents
 
@@ -165,11 +166,11 @@ Everything else follows from that:
   PHP drivers or extensions.
 - The C glue is frozen: `push`, `wait`, `waitAny`/`waitAnyBatch`, `next`,
   `stopFlow` plus the `version`/`destroy` lifecycle. A new feature is data (a
-  `MethodEnum` value, a MessagePack payload DTO, a Rust handler), not a new C
+  `MethodEnum` value, a payload DTO, a Rust handler), not a new C
   symbol, so the export set never grows. A new long-lived server adds at most
   one control function, like `httpStopAccepting`, which stops accepting new
   connections while the ones in progress are finished.
-- One transport and one streaming model for everything: MessagePack DTOs plus
+- One transport and one streaming model for everything: payload DTOs plus
   the streaming states behind `next()` — MongoDB cursors, HTTP bodies, socket
   frames, WS messages all travel the same mechanism, and the sender waits when
   the reader falls behind.
@@ -236,7 +237,6 @@ The environment the project is built and tested against in CI:
 | MongoDB (server) | 8.0.5 |
 | ext-mongodb (PHP extension, tests and benchmarks only) | 1.21.5 |
 | mongodb/mongodb (composer package, tests and benchmarks only) | 1.21.3 |
-| ext-msgpack | 3.0.1 |
 | MySQL (server) | 8.4 |
 | PostgreSQL (server) | 16 |
 | RabbitMQ (server) | 4.1 |
@@ -297,8 +297,6 @@ The crates the core is built on:
   without streaming.
 - [How to add a new server](docs/adding-a-server.md) — the Serve/Respond pattern
   and the serve loop.
-- [Objects over MessagePack](docs/msgpack-objects.md) — how a PHP object crosses
-  to the extension and back, and how to add a type.
 - [Feature benchmarks](docs/benchmarks.md) — per-feature measurements
   (native/sync/async).
 - [Load testing](docs/load-testing.md) — server behaviour under load with all I/O

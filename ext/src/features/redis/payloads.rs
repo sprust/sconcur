@@ -1,20 +1,23 @@
 //! The Rust counterparts of the PHP Redis payload objects. The renames are the
 //! short keys the PHP getData()/command builders emit.
 //!
-//! Command arguments arrive as untyped MessagePack values rather than byte
-//! vectors: the PHP side has already refused everything that is not a string,
-//! an integer or a float, and values::decode_arg turns what is left into the
-//! bytes a command carries. Reading them as Vec<u8> here would rest on how
-//! serde maps a msgpack `bin` onto a byte sequence, which is not a thing to
-//! rest a wire format on.
+//! Command arguments stay untyped `Value`s rather than byte vectors: the PHP
+//! side has already refused everything that is not a string, an integer or a
+//! float and written the numbers out in decimal, and values::decode_arg turns
+//! what is left into the bytes a command carries. Decoding them straight into
+//! Vec<u8> would make a value that is not a string fail inside the params
+//! parse, with the deserializer's wording, instead of as the argument failure
+//! the handlers report.
 
 use serde::Deserialize;
+
+use crate::dto::Value;
 
 /// A missing command body decodes to nil rather than failing: the sub-operation
 /// handler reports what it actually needs, which is a better message than
 /// "missing field dt".
-fn nil_value() -> rmpv::Value {
-    rmpv::Value::Nil
+fn nil_value() -> Value {
+    Value::Nil
 }
 
 /// Wraps every Redis command: the sub-operation, the connection settings and
@@ -33,7 +36,7 @@ pub struct Envelope {
     pub conn_max_lifetime_ms: i64,
     /// The command body, decoded once the sub-operation is known.
     #[serde(rename = "dt", default = "nil_value")]
-    pub data: rmpv::Value,
+    pub data: Value,
 }
 
 /// The body of a Command (`cmd`).
@@ -43,7 +46,7 @@ pub struct CommandParams {
     #[serde(rename = "n", default)]
     pub name: String,
     #[serde(rename = "a", default)]
-    pub args: Vec<rmpv::Value>,
+    pub args: Vec<Value>,
     /// 0 — the core decides by name, 1 — blocking, 2 — not blocking.
     #[serde(rename = "bl", default)]
     pub blocking: i64,
@@ -55,7 +58,7 @@ pub struct PipelineCommand {
     #[serde(rename = "n", default)]
     pub name: String,
     #[serde(rename = "a", default)]
-    pub args: Vec<rmpv::Value>,
+    pub args: Vec<Value>,
 }
 
 /// The body of a Pipeline (`pip`).
@@ -77,7 +80,7 @@ pub struct ScanParams {
     /// The arguments after the cursor: the key for HSCAN/SSCAN/ZSCAN, then
     /// MATCH and COUNT. The cursor itself is the core's business.
     #[serde(rename = "a", default)]
-    pub args: Vec<rmpv::Value>,
+    pub args: Vec<Value>,
     #[serde(rename = "bs", default)]
     pub batch_size: i64,
 }
@@ -87,9 +90,9 @@ pub struct ScanParams {
 #[derive(Deserialize, Default)]
 pub struct SubscribeParams {
     #[serde(rename = "ch", default)]
-    pub channels: Vec<rmpv::Value>,
+    pub channels: Vec<Value>,
     #[serde(rename = "pt", default)]
-    pub patterns: Vec<rmpv::Value>,
+    pub patterns: Vec<Value>,
     #[serde(rename = "bs", default)]
     pub batch_size: i64,
 }
@@ -104,9 +107,9 @@ pub struct SubscriptionUpdateParams {
     #[serde(rename = "op", default)]
     pub operation: String,
     #[serde(rename = "ch", default)]
-    pub channels: Vec<rmpv::Value>,
+    pub channels: Vec<Value>,
     #[serde(rename = "pt", default)]
-    pub patterns: Vec<rmpv::Value>,
+    pub patterns: Vec<Value>,
 }
 
 /// The body of a SubscriptionClose (`suc`).

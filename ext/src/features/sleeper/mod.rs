@@ -27,7 +27,7 @@ impl Feature for SleepFeature {
             let start_time = Instant::now();
             let message = task.message();
 
-            let payload: payloads::SleeperPayload = match rmp_serde::from_slice(&message.payload) {
+            let payload: payloads::SleeperPayload = match message.payload.decode() {
                 Ok(payload) => payload,
                 Err(error) => {
                     task.add_result(Result::error(

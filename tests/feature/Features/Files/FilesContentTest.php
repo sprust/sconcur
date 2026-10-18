@@ -64,7 +64,7 @@ class FilesContentTest extends BaseTestCase
     {
         $path = $this->path(name: 'written.bin');
 
-        // Binary, not text: the contents cross as a MessagePack string and must come back
+        // Binary, not text: the contents cross as a PHP string and must come back
         // byte for byte, null bytes and invalid UTF-8 included.
         $contents = random_bytes(4096);
 

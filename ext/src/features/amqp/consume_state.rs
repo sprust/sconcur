@@ -199,7 +199,7 @@ impl ConsumeState {
 /// Registers a consumer and streams its deliveries. The consumer is not tied to
 /// the task's deadline — the stream state owns it, and `close()` cancels it when
 /// PHP stops reading or the flow ends.
-pub async fn handle_consume(task: &Task, raw: &rmpv::Value) {
+pub async fn handle_consume(task: &Task, raw: &Value) {
     let Some((entry, params, start_time)) =
         super::commands::resolve::<payloads::ConsumeParams>(task, raw, "consume").await
     else {

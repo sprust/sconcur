@@ -12,8 +12,8 @@ use SConcur\Features\Files\Support\BatchIterator;
  * whatever the file's size — where Files::read() holds it twice, once in the extension
  * and once here.
  *
- * The bytes arrive raw rather than wrapped in MessagePack, for the same reason read()
- * answers raw: wrapping would copy every batch once more on each side.
+ * The bytes arrive as the string itself rather than inside a map, for the same reason
+ * read() answers that way: a wrapper would be one more array per batch for nothing.
  *
  * @extends BatchIterator<string>
  */

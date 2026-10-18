@@ -10,8 +10,6 @@ use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\ExtensionCallException;
 use SConcur\Exceptions\ExtensionNotLoadedException;
 use SConcur\Exceptions\IncompatibleExtensionVersionException;
-use SConcur\Exceptions\MsgpackObjectSupportDisabledException;
-use SConcur\Transport\MessagePackTransport;
 use SConcur\Transport\PayloadInterface;
 use function SConcur\Extension\armPreemption;
 use function SConcur\Extension\destroy;
@@ -45,12 +43,14 @@ class Extension
     public const string REQUIRED_EXTENSION_VERSION = '0.16.0';
 
     /*
-     * Every wait answers with ready TaskResultDto objects. The core instantiates
-     * them on this thread, inside the wait call, by writing the declared
-     * properties of src/Dto/TaskResultDto.php in place (the result builder in
-     * ext/sconcur.c); only the feature payload inside is still MessagePack,
-     * decoded once by the feature. A wait that fails throws TaskErrorException
-     * from the core itself, and a timed wait that saw nothing answers null.
+     * Nothing is serialized in either direction. A push hands the core the
+     * payload array itself, which the core reads on this thread before the call
+     * returns; every wait answers with ready TaskResultDto objects the core
+     * instantiates on this thread, inside the wait call, by writing the declared
+     * properties of src/Dto/TaskResultDto.php in place (ext/sconcur.c, the
+     * result and value builders), the payload already being the PHP value the
+     * feature chose. A wait that fails throws TaskErrorException from the core
+     * itself, and a timed wait that saw nothing answers null.
      */
 
     protected static ?Extension $instance = null;
@@ -74,7 +74,7 @@ class Extension
 
         $taskKey = $flowKey . ':' . static::$tasksCounter;
 
-        $response = push($flowKey, $payload->getMethod()->value, $taskKey, MessagePackTransport::pack($payload), $ownerFiberId);
+        $response = push($flowKey, $payload->getMethod()->value, $taskKey, $payload->getData(), $ownerFiberId);
 
         static::checkCallResponse(flowKey: $flowKey, response: $response);
 
@@ -278,39 +278,7 @@ class Extension
             );
         }
 
-        self::checkMsgpackObjectSupport();
-
         static::$checked = true;
-    }
-
-    /**
-     * The boundary carries MessagePack, and some payloads carry PHP objects in it
-     * (the BSON value objects of the MongoDB feature). ext-msgpack only reads and
-     * writes those with msgpack.php_only enabled: with it off, packing loses the
-     * class and unpacking warns about an illegal key type and yields plain arrays.
-     *
-     * The setting is PHP_INI_ALL, so it is forced here rather than merely
-     * required — but a build that refuses the change must say so at startup
-     * instead of mangling documents later.
-     */
-    private static function checkMsgpackObjectSupport(): void
-    {
-        if (!extension_loaded('msgpack')) {
-            throw new MsgpackObjectSupportDisabledException(
-                message: 'The extension "msgpack" is not loaded.',
-            );
-        }
-
-        if (ini_get('msgpack.php_only') !== '1') {
-            ini_set('msgpack.php_only', '1');
-        }
-
-        if (ini_get('msgpack.php_only') !== '1') {
-            throw new MsgpackObjectSupportDisabledException(
-                message: 'msgpack.php_only could not be enabled: payloads carry PHP objects, '
-                    . 'and with it off every one of them silently decodes to a plain array.',
-            );
-        }
     }
 
     public function __destruct()

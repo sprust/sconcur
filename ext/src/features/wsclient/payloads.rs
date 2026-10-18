@@ -1,6 +1,6 @@
 //! The parameters of the WebSocket client commands. The envelope is the socket
-//! client's: `cm` selects the sub-operation, `p` carries a nested map of that
-//! command's parameters.
+//! client's: `cm` selects the sub-operation, `p` carries a nested array of that
+//! command's parameters, decoded once the command is known.
 
 use serde::Deserialize;
 
@@ -11,11 +11,12 @@ pub struct Envelope {
     #[serde(rename = "cm", default)]
     pub command: String,
     #[serde(rename = "p", default = "nil_value")]
-    pub params: rmpv::Value,
+    pub params: Value,
 }
 
-fn nil_value() -> rmpv::Value {
-    rmpv::Value::Nil
+/// `Value` has no `Default`, so a missing `p` is spelled out as null.
+fn nil_value() -> Value {
+    Value::Nil
 }
 
 /// The `p` of a Connect — the ws:// URL and the per-connection tuning.
@@ -46,8 +47,10 @@ pub struct SendParams {
     pub connection_id: String,
     #[serde(rename = "mt", default)]
     pub message_type: i64,
-    #[serde(rename = "dt", default = "nil_value")]
-    pub data: rmpv::Value,
+    /// The bytes of the PHP string: a binary message is not required to be
+    /// valid UTF-8, so not a `String`.
+    #[serde(rename = "dt", default, deserialize_with = "crate::dto::value_de::bytes")]
+    pub data: Vec<u8>,
 }
 
 impl SendParams {
@@ -55,11 +58,7 @@ impl SendParams {
     /// them: the decoded value already owns them and nothing reads `data`
     /// again.
     pub fn take_data_bytes(&mut self) -> Vec<u8> {
-        match std::mem::replace(&mut self.data, rmpv::Value::Nil) {
-            rmpv::Value::String(text) => text.into_bytes(),
-            rmpv::Value::Binary(bytes) => bytes,
-            _ => Vec::new(),
-        }
+        std::mem::take(&mut self.data)
     }
 }
 

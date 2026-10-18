@@ -1,11 +1,16 @@
-//! The value a result carries to PHP.
+//! The value that crosses the boundary, in either direction.
 //!
-//! A task does not encode its answer into bytes: it builds this tree on the
-//! runtime thread, and the wait export that PHP is parked in walks the tree on
-//! the PHP thread and asks the glue's value builder (sconcur.c) for the
-//! matching zval of every node. The variants are PHP's own scalar and container
+//! Outbound, a task does not encode its answer into bytes: it builds this tree
+//! on the runtime thread, and the wait export that PHP is parked in walks the
+//! tree on the PHP thread and asks the glue's value builder (sconcur.c) for the
+//! matching zval of every node. Inbound, the push export reads the PHP array a
+//! task was given into the same tree on the PHP thread, through the glue's value
+//! readers, and a feature decodes its parameters out of it (`Value::decode`, the
+//! serde side in value_de.rs). The variants are PHP's own scalar and container
 //! types plus an object of a named class, so a feature decides the exact PHP
-//! shape of its answer here and nothing re-interprets it on the other side.
+//! shape on this side and nothing re-interprets it on the other.
+
+use std::borrow::Cow;
 
 /// One PHP value.
 #[derive(Clone, Debug, PartialEq)]
@@ -37,11 +42,23 @@ pub enum Key {
 }
 
 /// An object: the class by its fully qualified name, and its declared
-/// properties in declaration order.
+/// properties in declaration order. The names are borrowed when a feature
+/// builds the object from its constants and owned when they were read off a PHP
+/// object, which is what the Cow is for.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Object {
-    pub class: &'static str,
-    pub properties: Vec<(&'static str, Value)>,
+    pub class: Cow<'static, str>,
+    pub properties: Vec<(Cow<'static, str>, Value)>,
+}
+
+impl Object {
+    /// The value of the named property, or none.
+    pub fn property(&self, name: &str) -> Option<&Value> {
+        self.properties
+            .iter()
+            .find(|(property, _)| property == name)
+            .map(|(_, value)| value)
+    }
 }
 
 /// A builder for `Value::Map`, so a feature writes its answer as a flat list of
@@ -95,13 +112,82 @@ impl Value {
 
     /// An object of `class` with its properties, in the order given.
     pub fn object(class: &'static str, properties: Vec<(&'static str, Value)>) -> Self {
-        Value::Object(Object { class, properties })
+        Value::Object(Object {
+            class: Cow::Borrowed(class),
+            properties: properties
+                .into_iter()
+                .map(|(name, value)| (Cow::Borrowed(name), value))
+                .collect(),
+        })
+    }
+
+    /// Whether this is the PHP `null`.
+    pub fn is_nil(&self) -> bool {
+        matches!(self, Value::Nil)
+    }
+
+    /// The string a PHP string value holds, or none for any other variant; a
+    /// string that is not UTF-8 is none too, so a caller that wants bytes asks
+    /// `as_bytes`.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Value::Str(bytes) => std::str::from_utf8(bytes).ok(),
+            _ => None,
+        }
+    }
+
+    /// The integer a PHP int holds, or none; a float with no fractional part is
+    /// not an integer here, because PHP would not have sent one.
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Value::Int(number) => Some(*number),
+            _ => None,
+        }
+    }
+
+    /// The number a PHP int or float holds, as a float.
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Value::Int(number) => Some(*number as f64),
+            Value::Float(number) => Some(*number),
+            _ => None,
+        }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Value::Bool(flag) => Some(*flag),
+            _ => None,
+        }
+    }
+
+    /// The object, or none for any other variant.
+    pub fn as_object(&self) -> Option<&Object> {
+        match self {
+            Value::Object(object) => Some(object),
+            _ => None,
+        }
+    }
+
+    /// The entries of a PHP array as key/value pairs, whether it is a list or a
+    /// map: a list's keys are its positions. None for any other variant.
+    pub fn entries(&self) -> Option<Vec<(Key, &Value)>> {
+        match self {
+            Value::List(items) => Some(
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| (Key::Int(index as i64), item))
+                    .collect(),
+            ),
+            Value::Map(entries) => Some(entries.iter().map(|(key, value)| (key.clone(), value)).collect()),
+            _ => None,
+        }
     }
 }
 
-/// Readers for the tests that pin a feature's answer: production code only
-/// builds a value and hands it over, it never looks inside one.
-#[cfg(test)]
+/// Readers that look inside a value: a feature reading the parameters of a
+/// task, and a test pinning the shape of an answer.
 impl Value {
     /// The bytes of a string value, or none for any other variant. For a test
     /// that reads a payload PHP would see as a string.
@@ -121,27 +207,47 @@ impl Value {
         }
     }
 
-    /// The entries of a map value, or none for any other variant.
+    /// The entries of a map value, or none for any other variant. An empty
+    /// PHP array is a list, so an empty list answers as an empty map too.
     pub fn as_map(&self) -> Option<&[(Key, Value)]> {
         match self {
             Value::Map(entries) => Some(entries),
+            Value::List(items) if items.is_empty() => Some(&[]),
             _ => None,
         }
     }
 
-    /// The value under a string key of a map, or none.
+    /// The value under a string key of a map, or none. A key that is the
+    /// decimal form of an integer finds the integer key PHP made of it.
     pub fn get(&self, key: &str) -> Option<&Value> {
+        let as_index = key.parse::<i64>().ok().filter(|number| number.to_string() == key);
+
         self.as_map()?
             .iter()
-            .find(|(entry_key, _)| matches!(entry_key, Key::Str(bytes) if bytes == key.as_bytes()))
+            .find(|(entry_key, _)| match entry_key {
+                Key::Str(bytes) => bytes == key.as_bytes(),
+                Key::Int(index) => Some(*index) == as_index,
+            })
             .map(|(_, value)| value)
     }
 
-    /// The items of a list value, or none for any other variant.
+    /// The items of a list value, or none for any other variant. An empty map
+    /// is an empty list too.
     pub fn as_list(&self) -> Option<&[Value]> {
         match self {
             Value::List(items) => Some(items),
+            Value::Map(entries) if entries.is_empty() => Some(&[]),
             _ => None,
+        }
+    }
+}
+
+impl Key {
+    /// The key as text: a string key as it is, an integer key in decimal.
+    pub fn text(&self) -> String {
+        match self {
+            Key::Int(index) => index.to_string(),
+            Key::Str(bytes) => String::from_utf8_lossy(bytes).into_owned(),
         }
     }
 }

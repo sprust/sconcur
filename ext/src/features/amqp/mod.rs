@@ -119,7 +119,7 @@ impl Feature for AmqpFeature {
         Box::pin(async move {
             let message = task.message();
 
-            let envelope: payloads::Envelope = match rmp_serde::from_slice(&message.payload) {
+            let envelope: payloads::Envelope = match message.payload.decode() {
                 Ok(envelope) => envelope,
                 Err(error) => {
                     task.add_result(Result::error(
@@ -144,7 +144,7 @@ impl Feature for AmqpFeature {
     fn handle_detached(&self, task: Task) {
         let message = task.message();
 
-        let Ok(envelope) = rmp_serde::from_slice::<payloads::Envelope>(&message.payload) else {
+        let Ok(envelope) = message.payload.decode::<payloads::Envelope>() else {
             return;
         };
 

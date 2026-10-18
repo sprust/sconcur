@@ -78,7 +78,7 @@ async fn handle_serve(task: Task) {
     let message = task.message();
     let start_time = Instant::now();
 
-    let payload: payloads::ServePayload = match rmp_serde::from_slice(&message.payload) {
+    let payload: payloads::ServePayload = match message.payload.decode() {
         Ok(payload) => payload,
         Err(error) => {
             task.add_result(Result::error(
@@ -202,10 +202,10 @@ async fn respond(task: &Task) -> Option<Result> {
     // every other key — the connection is still answered rather than left
     // hanging, which is the property the two-decode order used to buy on every
     // single response.
-    let mut payload: payloads::RespondPayload = match rmp_serde::from_slice(&message.payload) {
+    let mut payload: payloads::RespondPayload = match message.payload.decode() {
         Ok(payload) => payload,
         Err(parse_error) => {
-            let id_only: payloads::RespondRequestId = match rmp_serde::from_slice(&message.payload) {
+            let id_only: payloads::RespondRequestId = match message.payload.decode() {
                 Ok(id_only) => id_only,
                 Err(error) => {
                     return Some(fail_respond(task, ERR_FACTORY.by_err("parse respond requestId", error)));
@@ -313,10 +313,10 @@ fn respond_detached(task: &Task) -> Option<Result> {
     // the same order as the awaited respond above. Nothing is written back to a
     // malformed detached response: this path has no oneshot to wait on and the
     // coroutine that sent it awaits no result either.
-    let mut payload: payloads::RespondPayload = match rmp_serde::from_slice(&message.payload) {
+    let mut payload: payloads::RespondPayload = match message.payload.decode() {
         Ok(payload) => payload,
         Err(parse_error) => {
-            if rmp_serde::from_slice::<payloads::RespondRequestId>(&message.payload).is_err() {
+            if message.payload.decode::<payloads::RespondRequestId>().is_err() {
                 return Some(fail_respond(
                     task,
                     ERR_FACTORY.by_err("parse respond requestId", parse_error),

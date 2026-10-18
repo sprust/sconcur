@@ -13,15 +13,15 @@ use mongodb::options::{
 };
 use mongodb::{Collection, Namespace};
 
+use crate::dto::Value;
+
 use super::commands::{Error, Outcome};
-use super::serializer::document_from_msgpack;
+use super::serializer::document_from_value;
 
-pub fn parse(data: &[u8], namespace: &Namespace) -> Result<Vec<WriteModel>, Error> {
-    if data.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let document = document_from_msgpack(data)
+/// The models of one bulkWrite. A `null` or an empty body is no model at all,
+/// which `execute` answers with zero counts.
+pub fn parse(data: &Value, namespace: &Namespace) -> Result<Vec<WriteModel>, Error> {
+    let document = document_from_value(data)
         .map_err(|error| format!("error reading bulkWrite payload: {error}"))?;
 
     let mut models = Vec::with_capacity(document.len());
@@ -87,9 +87,9 @@ fn build(operation: &str, model: &Document, namespace: &Namespace) -> Result<Wri
     }
 }
 
-/// An empty filter/update/document is encoded by the PHP side as an empty
-/// array, which reaches BSON as an empty document — so a missing key is the
-/// error, an empty one is not.
+/// An empty filter/update/document is sent by the PHP side as an empty array,
+/// which reaches BSON as an empty document — so a missing key is the error, an
+/// empty one is not.
 fn field(model: &Document, key: &str, operation: &str, label: &str) -> Result<Document, Error> {
     match model.get(key) {
         Some(Bson::Document(document)) => Ok(document.clone()),

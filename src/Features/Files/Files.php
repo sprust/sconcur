@@ -60,8 +60,8 @@ class Files
         int $maxReadBytes = self::DEFAULT_MAX_READ_BYTES,
         int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
     ): string {
-        // The contents come back raw rather than wrapped in MessagePack: wrapping would
-        // copy the whole file once more on each side just to be unwrapped again.
+        // The contents come back as the string itself rather than inside a map: a
+        // wrapper would be one more array to build and read for nothing.
         return static::execute(
             command: FilesCommandEnum::Read,
             timeoutMs: $timeoutMs,

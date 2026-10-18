@@ -25,7 +25,6 @@ declare(strict_types=1);
 use SConcur\Connection\Extension;
 use SConcur\Features\Sleeper\Payloads\SleeperPayload;
 use SConcur\Tests\Impl\TestApplication;
-use SConcur\Transport\MessagePackTransport;
 
 use function SConcur\Extension\push as rawPush;
 use function SConcur\Extension\stopFlow as rawStopFlow;
@@ -55,7 +54,7 @@ const REPEATS = 7;
 
 $extension = Extension::get();
 $payload   = new SleeperPayload(microseconds: HOLD_SECONDS * 1_000_000);
-$packed    = MessagePackTransport::pack($payload);
+$data      = $payload->getData();
 $method    = $payload->getMethod()->value;
 
 /**
@@ -132,28 +131,18 @@ $report['boundary crossing (tasksCount)'] = $measure(
     pushes: false,
 );
 
-// 2. Packing the payload, which is PHP-side work the crossing never sees.
-$report['MessagePackTransport::pack'] = $measure(
-    case: static function () use ($payload): void {
+// 2. The extension function itself, given the payload array: the crossing, the
+//    core reading the array, and the runtime taking the task and arming it.
+$report['raw push (crossing + read + runtime)'] = $measure(
+    case: static function (string $flowKey) use ($method, $data): void {
         for ($index = 0; $index < PUSHES; $index++) {
-            MessagePackTransport::pack($payload);
-        }
-    },
-    pushes: false,
-);
-
-// 3. The extension function itself, with the payload packed in advance: the
-//    crossing plus the runtime taking the task and arming it.
-$report['raw push (crossing + runtime)'] = $measure(
-    case: static function (string $flowKey) use ($method, $packed): void {
-        for ($index = 0; $index < PUSHES; $index++) {
-            rawPush($flowKey, $method, "$flowKey:$index", $packed, 0);
+            rawPush($flowKey, $method, "$flowKey:$index", $data, 0);
         }
     },
 );
 
-// 4. The whole call as the scheduler makes it: the task key, the packing, the
-//    crossing, the response check and the DTO.
+// 3. The whole call as the scheduler makes it: the task key, the crossing, the
+//    response check and the DTO.
 $report['Extension::push (full path)'] = $measure(
     case: static function (string $flowKey) use ($extension, $payload): void {
         for ($index = 0; $index < PUSHES; $index++) {
@@ -180,14 +169,12 @@ foreach ($report as $name => $timing) {
 // in the same state — idle, holding timers — so none of them is priced in a
 // state the whole never has.
 $crossing = $report['boundary crossing (tasksCount)']['cpu'];
-$packing  = $report['MessagePackTransport::pack']['cpu'];
-$raw      = $report['raw push (crossing + runtime)']['cpu'];
+$raw      = $report['raw push (crossing + read + runtime)']['cpu'];
 $full     = $report['Extension::push (full path)']['cpu'];
 
 echo $eol . '  what that splits into, on cpu' . $eol . $eol;
 
 printf("  %-{$nameColumn}s  %12.3f%s", 'crossing floor', $crossing, $eol);
-printf("  %-{$nameColumn}s  %12.3f%s", 'runtime accepting the task', $raw - $crossing, $eol);
-printf("  %-{$nameColumn}s  %12.3f%s", 'packing the payload', $packing, $eol);
-printf("  %-{$nameColumn}s  %12.3f%s", 'PHP wrapper (key, check, DTO)', $full - $raw - $packing, $eol);
+printf("  %-{$nameColumn}s  %12.3f%s", 'reading the array + accepting the task', $raw - $crossing, $eol);
+printf("  %-{$nameColumn}s  %12.3f%s", 'PHP wrapper (key, check, DTO)', $full - $raw, $eol);
 printf("  %-{$nameColumn}s  %12.3f%s", 'one Extension::push', $full, $eol);

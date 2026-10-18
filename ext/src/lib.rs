@@ -56,7 +56,164 @@ unsafe extern "C" {
     fn sconcur_array_key_slot(array: *mut c_void, key: *const c_char, length: usize) -> *mut c_void;
     fn sconcur_value_object(destination: *mut c_void, class_name: *const c_char, length: usize) -> c_int;
     fn sconcur_object_property_slot(object: *mut c_void, name: *const c_char, length: usize) -> *mut c_void;
+    fn sconcur_zval_kind(value: *const c_void) -> c_int;
+    fn sconcur_zval_bool(value: *const c_void) -> c_int;
+    fn sconcur_zval_long(value: *const c_void) -> c_longlong;
+    fn sconcur_zval_double(value: *const c_void) -> f64;
+    fn sconcur_zval_string(value: *const c_void, length: *mut usize) -> *const c_char;
+    fn sconcur_array_count(array: *const c_void) -> c_uint;
+    fn sconcur_array_is_list(array: *const c_void) -> c_int;
+    fn sconcur_object_class(object: *const c_void, length: *mut usize) -> *const c_char;
+    fn sconcur_object_is_plain(object: *const c_void) -> c_int;
+    fn sconcur_array_iterate(array: *const c_void, context: *mut c_void, visit: VisitFn) -> c_int;
+    fn sconcur_object_iterate(object: *const c_void, context: *mut c_void, visit: VisitFn) -> c_int;
 }
+
+/// Mirrors sconcur_visit_t of sconcur_core.h: the callback the glue calls per
+/// entry of a container it walks for the value reader below.
+type VisitFn = unsafe extern "C" fn(
+    context: *mut c_void,
+    key: *const c_char,
+    key_length: usize,
+    index: c_longlong,
+    value: *const c_void,
+) -> c_int;
+
+// ---------------------------------------------------------------------------
+// Parameters on their way in.
+//
+// The push export is given the PHP array a task was called with and reads it
+// into a `Value` tree here, on the PHP thread, before it returns: the glue's
+// value readers answer what each zval is, and the two iterate calls walk a
+// container and call back per entry. Strings are copied, since the array is
+// PHP's and may be freed the moment the call returns. A PHP object is read as
+// its class and public properties, a stdClass as a plain map.
+// ---------------------------------------------------------------------------
+
+const KIND_NULL: c_int = 0;
+const KIND_BOOL: c_int = 1;
+const KIND_LONG: c_int = 2;
+const KIND_DOUBLE: c_int = 3;
+const KIND_STRING: c_int = 4;
+const KIND_ARRAY: c_int = 5;
+const KIND_OBJECT: c_int = 6;
+
+/// How deep a payload may nest. A PHP array cannot contain itself, but an
+/// object graph can, and json_encode's own limit is the same order of magnitude.
+const READ_DEPTH_LIMIT: usize = 256;
+
+/// The state of one container walk: the entries collected so far and the first
+/// failure, if any, which stops the walk.
+struct Collected {
+    entries: Vec<(Key, Value)>,
+    depth: usize,
+    error: Option<String>,
+}
+
+unsafe extern "C" fn collect_entry(
+    context: *mut c_void,
+    key: *const c_char,
+    key_length: usize,
+    index: c_longlong,
+    value: *const c_void,
+) -> c_int {
+    let collected = unsafe { &mut *(context as *mut Collected) };
+
+    let entry_key = if key.is_null() {
+        Key::Int(index)
+    } else {
+        Key::Str(unsafe { byte_view(key, key_length as c_int) }.to_vec())
+    };
+
+    match read_value(value, collected.depth + 1) {
+        Ok(value) => {
+            collected.entries.push((entry_key, value));
+
+            1
+        }
+        Err(error) => {
+            collected.error = Some(error);
+
+            0
+        }
+    }
+}
+
+fn read_entries(container: *const c_void, depth: usize, capacity: usize, object: bool) -> std::result::Result<Vec<(Key, Value)>, String> {
+    let mut collected = Collected {
+        entries: Vec::with_capacity(capacity),
+        depth,
+        error: None,
+    };
+
+    let context = &mut collected as *mut Collected as *mut c_void;
+
+    unsafe {
+        if object {
+            sconcur_object_iterate(container, context, collect_entry);
+        } else {
+            sconcur_array_iterate(container, context, collect_entry);
+        }
+    };
+
+    match collected.error {
+        Some(error) => Err(error),
+        None => Ok(collected.entries),
+    }
+}
+
+/// Reads one zval into a value, recursively.
+fn read_value(value: *const c_void, depth: usize) -> std::result::Result<Value, String> {
+    if depth > READ_DEPTH_LIMIT {
+        return Err(format!("the payload nests deeper than {READ_DEPTH_LIMIT} levels"));
+    }
+
+    match unsafe { sconcur_zval_kind(value) } {
+        KIND_NULL => Ok(Value::Nil),
+        KIND_BOOL => Ok(Value::Bool(unsafe { sconcur_zval_bool(value) } != 0)),
+        KIND_LONG => Ok(Value::Int(unsafe { sconcur_zval_long(value) })),
+        KIND_DOUBLE => Ok(Value::Float(unsafe { sconcur_zval_double(value) })),
+        KIND_STRING => {
+            let mut length: usize = 0;
+            let bytes = unsafe { sconcur_zval_string(value, &mut length) };
+
+            Ok(Value::Str(unsafe { byte_view(bytes, length as c_int) }.to_vec()))
+        }
+        KIND_ARRAY => {
+            let count = unsafe { sconcur_array_count(value) } as usize;
+            let entries = read_entries(value, depth, count, false)?;
+
+            // A list is a list only when PHP says so: keys 0..n in order. A map
+            // stays a map even when its keys happen to be integers.
+            if unsafe { sconcur_array_is_list(value) } != 0 {
+                Ok(Value::List(entries.into_iter().map(|(_, item)| item).collect()))
+            } else {
+                Ok(Value::Map(entries))
+            }
+        }
+        KIND_OBJECT => {
+            let entries = read_entries(value, depth, 4, true)?;
+
+            if unsafe { sconcur_object_is_plain(value) } != 0 {
+                return Ok(Value::Map(entries));
+            }
+
+            let mut length: usize = 0;
+            let class = unsafe { sconcur_object_class(value, &mut length) };
+            let class = String::from_utf8_lossy(unsafe { byte_view(class, length as c_int) }).into_owned();
+
+            Ok(Value::Object(dto::Object {
+                class: std::borrow::Cow::Owned(class),
+                properties: entries
+                    .into_iter()
+                    .map(|(key, item)| (std::borrow::Cow::Owned(key.text()), item))
+                    .collect(),
+            }))
+        }
+        _ => Err("the payload holds a value that is neither a scalar, an array nor an object".to_string()),
+    }
+}
+
 
 // ---------------------------------------------------------------------------
 // Results on their way to PHP.
@@ -309,6 +466,65 @@ mod glue_stubs {
     pub extern "C" fn sconcur_object_property_slot(_object: *mut c_void, _name: *const c_char, _length: usize) -> *mut c_void {
         std::ptr::null_mut()
     }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_zval_kind(_value: *const c_void) -> c_int {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_zval_bool(_value: *const c_void) -> c_int {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_zval_long(_value: *const c_void) -> c_longlong {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_zval_double(_value: *const c_void) -> f64 {
+        0.0
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_zval_string(_value: *const c_void, length: *mut usize) -> *const c_char {
+        unsafe { *length = 0 };
+
+        std::ptr::null()
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_array_count(_array: *const c_void) -> c_uint {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_array_is_list(_array: *const c_void) -> c_int {
+        1
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_object_class(_object: *const c_void, length: *mut usize) -> *const c_char {
+        unsafe { *length = 0 };
+
+        std::ptr::null()
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_object_is_plain(_object: *const c_void) -> c_int {
+        1
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_array_iterate(_array: *const c_void, _context: *mut c_void, _visit: super::VisitFn) -> c_int {
+        1
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_object_iterate(_object: *const c_void, _context: *mut c_void, _visit: super::VisitFn) -> c_int {
+        1
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -434,17 +650,22 @@ pub extern "C" fn push(
     task_key: *const c_char,
     task_key_len: c_int,
     payload: *const c_void,
-    payload_len: c_int,
     owner_id: c_longlong,
 ) -> *mut c_char {
     guarded(|| malloc_cstring("error: push: panic"), || {
+        // Read before anything else: the array is PHP's, valid for this call.
+        let payload = match read_value(payload, 0) {
+            Ok(payload) => payload,
+            Err(error) => return malloc_cstring(&format!("error: push: {error}")),
+        };
+
         let message = Message {
             flow_key: unsafe { owned_string(flow_key, flow_key_len) },
             // Resolved through a view: the method set is fixed, so nothing is
             // copied to identify it.
             method: Method::from_wire(unsafe { byte_view(method, method_len) }),
             task_key: unsafe { owned_string(task_key, task_key_len) },
-            payload: unsafe { byte_view(payload as *const c_char, payload_len) }.to_vec(),
+            payload,
             is_next: false,
             owner_id: owner_id as i64,
         };
@@ -472,7 +693,7 @@ pub extern "C" fn next(
             flow_key: unsafe { owned_string_nul(flow_key) },
             method: Method::Unknown,
             task_key: unsafe { owned_string_nul(task_key) },
-            payload: Vec::new(),
+            payload: Value::Nil,
             is_next: true,
             owner_id: owner_id as i64,
         };

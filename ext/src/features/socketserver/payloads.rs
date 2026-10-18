@@ -49,25 +49,17 @@ pub struct RespondPayload {
     pub connection_id: String,
     #[serde(rename = "op", default)]
     pub op: i64,
-    /// Arbitrary bytes, so an untyped value rather than a String — a frame is
-    /// not required to be valid UTF-8.
-    #[serde(rename = "dt", default = "nil_value")]
-    pub data: rmpv::Value,
-}
-
-fn nil_value() -> rmpv::Value {
-    rmpv::Value::Nil
+    /// The bytes of the PHP string, whatever they are: a frame is not required
+    /// to be valid UTF-8, so not a `String`.
+    #[serde(rename = "dt", default, deserialize_with = "crate::dto::value_de::bytes")]
+    pub data: Vec<u8>,
 }
 
 impl RespondPayload {
     /// The frame's bytes, taken out of the payload rather than copied out of
     /// it: the decoded value already owns them and nothing reads `data` again.
     pub fn take_data_bytes(&mut self) -> Vec<u8> {
-        match std::mem::replace(&mut self.data, rmpv::Value::Nil) {
-            rmpv::Value::String(text) => text.into_bytes(),
-            rmpv::Value::Binary(bytes) => bytes,
-            _ => Vec::new(),
-        }
+        std::mem::take(&mut self.data)
     }
 }
 

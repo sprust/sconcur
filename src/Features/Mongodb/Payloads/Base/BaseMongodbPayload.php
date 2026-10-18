@@ -8,7 +8,6 @@ use SConcur\Features\MethodEnum;
 use SConcur\Features\Mongodb\CommandEnum;
 use SConcur\Features\Mongodb\Payloads\Dto\Connection;
 use SConcur\Features\Mongodb\Payloads\Dto\Parameters;
-use SConcur\Features\Mongodb\Serialization\DocumentSerializer;
 use SConcur\Transport\PayloadInterface;
 
 /**
@@ -41,7 +40,7 @@ abstract readonly class BaseMongodbPayload implements PayloadInterface
             'to'  => $connection->timeoutMs,
             'sst' => $connection->serverSelectionTimeoutMs,
             'cm'  => $this->getCommand()->value,
-            'dt'  => DocumentSerializer::serialize($parameters->payload->getData()),
+            'dt'  => $parameters->payload->getData(),
         ];
     }
 }

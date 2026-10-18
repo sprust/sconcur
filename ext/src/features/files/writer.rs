@@ -29,7 +29,6 @@ use crate::helpers::calc_execution_ms;
 use crate::states::{self, StateCloseFuture, StateContract, StateFuture};
 use crate::tasks::Task;
 
-use super::content::bytes_of;
 use super::errors::{io_message, message as fail, Kind};
 use super::payloads;
 use super::{bounded, creates_the_file, params, permission_bits, std_write_options};
@@ -585,15 +584,7 @@ pub async fn chunk(task: &Task, envelope: &mut payloads::Envelope) {
         return;
     };
 
-    let chunk = match bytes_of(parameters.chunk) {
-        Ok(chunk) => chunk,
-        Err(error) => {
-            task.add_result(Result::error(message, fail(Kind::Argument, &error)))
-                .await;
-
-            return;
-        }
-    };
+    let chunk = parameters.chunk;
 
     let work = async move { session.write(&chunk).await };
 

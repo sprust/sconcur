@@ -44,8 +44,7 @@ COPY --from=ghcr.io/php/pie:bin /pie /usr/local/bin/pie
 # advisory (PKSA-r3zn-9sn1-sy2d, affects <1.21.2); 1.21.5 is the patched line.
 # sockets is required by spiral/roadrunner-worker (the RoadRunner reference server).
 RUN docker-php-ext-install zip pcntl pdo_mysql mysqli pdo_pgsql sockets && \
-    pie install mongodb/mongodb-extension:1.21.5 && \
-    pie install msgpack/msgpack-php:3.0.1
+    pie install mongodb/mongodb-extension:1.21.5
 
 # amqp is required only by the AMQP parity tests: they compare the calque in
 # SConcur\Features\Amqp against the live PECL extension instead of against

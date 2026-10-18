@@ -17,11 +17,11 @@ use crate::dto::{Map, Value};
 
 use super::values;
 
-/// Reads a field that may arrive as an explicit nil.
+/// Reads a field that may arrive as an explicit null.
 ///
-/// `ext-msgpack` writes `null` for a PHP option nobody set, and serde refuses a
-/// null where a value is expected. The two are reconciled here: a missing key
-/// and a null one both mean "not set".
+/// PHP sends `null` for an option nobody set, and serde refuses a null where a
+/// value is expected. The two are reconciled here: a missing key and a null one
+/// both mean "not set".
 fn nullable<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -30,21 +30,20 @@ where
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
-/// `rmpv::Value` has no `Default`, and the absence of an optional field on the
-/// wire is nil — which is exactly what the table and body readers treat as
-/// "nothing was sent".
-fn nil() -> rmpv::Value {
-    rmpv::Value::Nil
+/// `Value` has no `Default`, and an optional field PHP left out is null — which
+/// is exactly what the table readers treat as "nothing was sent".
+fn nil_value() -> Value {
+    Value::Nil
 }
 
-/// The command envelope decoded from the msgpack message.
+/// The command envelope decoded from the task's payload.
 /// PHP: SConcur\Features\Amqp\Payloads\AmqpPayload.
 #[derive(Deserialize)]
 pub struct Envelope {
     #[serde(rename = "cm")]
     pub command: String,
-    #[serde(rename = "p", default = "nil")]
-    pub params: rmpv::Value,
+    #[serde(rename = "p", default = "nil_value")]
+    pub params: Value,
 }
 
 /// What every command that runs on an already open channel carries: the handle
@@ -203,8 +202,8 @@ pub struct ExchangeDeclareParams {
     pub internal: bool,
     #[serde(rename = "nw", default, deserialize_with = "nullable")]
     pub no_wait: bool,
-    #[serde(rename = "ar", default = "nil")]
-    pub arguments: rmpv::Value,
+    #[serde(rename = "ar", default = "nil_value")]
+    pub arguments: Value,
 }
 
 channel_command!(ExchangeDeclareParams);
@@ -240,8 +239,8 @@ pub struct ExchangeBindParams {
     pub routing_key: String,
     #[serde(rename = "nw", default, deserialize_with = "nullable")]
     pub no_wait: bool,
-    #[serde(rename = "ar", default = "nil")]
-    pub arguments: rmpv::Value,
+    #[serde(rename = "ar", default = "nil_value")]
+    pub arguments: Value,
 }
 
 channel_command!(ExchangeBindParams);
@@ -266,8 +265,8 @@ pub struct QueueDeclareParams {
     pub auto_delete: bool,
     #[serde(rename = "nw", default, deserialize_with = "nullable")]
     pub no_wait: bool,
-    #[serde(rename = "ar", default = "nil")]
-    pub arguments: rmpv::Value,
+    #[serde(rename = "ar", default = "nil_value")]
+    pub arguments: Value,
 }
 
 channel_command!(QueueDeclareParams);
@@ -304,8 +303,8 @@ pub struct QueueBindParams {
     pub routing_key: String,
     #[serde(rename = "nw", default, deserialize_with = "nullable")]
     pub no_wait: bool,
-    #[serde(rename = "ar", default = "nil")]
-    pub arguments: rmpv::Value,
+    #[serde(rename = "ar", default = "nil_value")]
+    pub arguments: Value,
 }
 
 channel_command!(QueueBindParams);
@@ -337,8 +336,8 @@ pub struct Properties {
     pub content_type: String,
     #[serde(rename = "ce", default, deserialize_with = "nullable")]
     pub content_encoding: String,
-    #[serde(rename = "hd", default = "nil")]
-    pub headers: rmpv::Value,
+    #[serde(rename = "hd", default = "nil_value")]
+    pub headers: Value,
     #[serde(rename = "dm", default, deserialize_with = "nullable")]
     pub delivery_mode: i64,
     #[serde(rename = "pr", default, deserialize_with = "nullable")]
@@ -366,7 +365,7 @@ impl Default for Properties {
         Properties {
             content_type: String::new(),
             content_encoding: String::new(),
-            headers: rmpv::Value::Nil,
+            headers: Value::Nil,
             delivery_mode: 0,
             priority: 0,
             correlation_id: String::new(),
@@ -395,12 +394,12 @@ pub struct PublishParams {
     pub mandatory: bool,
     #[serde(rename = "im", default, deserialize_with = "nullable")]
     pub immediate: bool,
-    /// Untyped on purpose. A message body is arbitrary bytes, and declaring it
-    /// a String would corrupt every body that is not valid UTF-8 — the same
+    /// Bytes, not a String: a message body is arbitrary bytes, and declaring
+    /// it a String would refuse every body that is not valid UTF-8 — the same
     /// mistake the HTTP server's respond payload made before
     /// `testBinaryBodyRoundTripsExactly` caught it.
-    #[serde(rename = "bd", default = "nil")]
-    pub body: rmpv::Value,
+    #[serde(rename = "bd", default, deserialize_with = "crate::dto::value_de::nullable_bytes")]
+    pub body: Vec<u8>,
     #[serde(rename = "ps", default, deserialize_with = "nullable")]
     pub properties: Properties,
 }
@@ -442,8 +441,8 @@ pub struct ConsumeParams {
     pub no_local: bool,
     #[serde(rename = "nw", default, deserialize_with = "nullable")]
     pub no_wait: bool,
-    #[serde(rename = "ar", default = "nil")]
-    pub arguments: rmpv::Value,
+    #[serde(rename = "ar", default = "nil_value")]
+    pub arguments: Value,
     #[serde(rename = "rt", default, deserialize_with = "nullable")]
     pub read_timeout_ms: i64,
 }
@@ -744,16 +743,5 @@ fn push_number(fields: &mut Map, key: &'static str, value: Option<i64>) {
         if number != 0 {
             fields.push(key, number);
         }
-    }
-}
-
-/// The bytes of a value PHP sent as a string. `ext-msgpack` writes a PHP
-/// string as msgpack *str* whatever bytes it holds, so a binary body arrives
-/// here as a str whose contents are not valid UTF-8.
-pub fn bytes_of(value: &rmpv::Value) -> &[u8] {
-    match value {
-        rmpv::Value::String(text) => text.as_bytes(),
-        rmpv::Value::Binary(bytes) => bytes.as_slice(),
-        _ => &[],
     }
 }

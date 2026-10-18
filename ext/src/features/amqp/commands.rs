@@ -120,7 +120,7 @@ async fn cancel_detached(params: &payloads::CancelParams) {
 
 // --- connection and channel lifecycle -----------------------------------------
 
-async fn handle_connect(task: &Task, raw: &rmpv::Value) {
+async fn handle_connect(task: &Task, raw: &Value) {
     let start_time = Instant::now();
 
     let Some(params) = decoded::<payloads::ConnectParams>(task, raw, "connect params").await else {
@@ -153,7 +153,7 @@ async fn handle_connect(task: &Task, raw: &rmpv::Value) {
     }
 }
 
-async fn handle_disconnect(task: &Task, raw: &rmpv::Value) {
+async fn handle_disconnect(task: &Task, raw: &Value) {
     let start_time = Instant::now();
 
     let Some(params) = decoded::<payloads::ConnectionParams>(task, raw, "disconnect params").await
@@ -166,7 +166,7 @@ async fn handle_disconnect(task: &Task, raw: &rmpv::Value) {
     respond_done(task, start_time).await;
 }
 
-async fn handle_used_channels(task: &Task, raw: &rmpv::Value) {
+async fn handle_used_channels(task: &Task, raw: &Value) {
     let start_time = Instant::now();
 
     let Some(params) =
@@ -183,7 +183,7 @@ async fn handle_used_channels(task: &Task, raw: &rmpv::Value) {
     respond(task, payloads::used_channels_result_value(used), start_time).await;
 }
 
-async fn handle_channel_open(task: &Task, raw: &rmpv::Value) {
+async fn handle_channel_open(task: &Task, raw: &Value) {
     let start_time = Instant::now();
 
     let Some(params) =
@@ -250,7 +250,7 @@ async fn handle_channel_open(task: &Task, raw: &rmpv::Value) {
     }
 }
 
-async fn handle_channel_close(task: &Task, raw: &rmpv::Value) {
+async fn handle_channel_close(task: &Task, raw: &Value) {
     let start_time = Instant::now();
 
     let Some(params) = decoded::<payloads::ChannelParams>(task, raw, "channel close params").await
@@ -263,7 +263,7 @@ async fn handle_channel_close(task: &Task, raw: &rmpv::Value) {
     respond_done(task, start_time).await;
 }
 
-async fn handle_qos(task: &Task, raw: &rmpv::Value) {
+async fn handle_qos(task: &Task, raw: &Value) {
     let Some((entry, params, start_time)) =
         resolve::<payloads::QosParams>(task, raw, "qos").await
     else {
@@ -301,7 +301,7 @@ async fn handle_qos(task: &Task, raw: &rmpv::Value) {
 
 // --- topology -----------------------------------------------------------------
 
-async fn handle_exchange_declare(task: &Task, raw: &rmpv::Value) {
+async fn handle_exchange_declare(task: &Task, raw: &Value) {
     let Some((entry, params, start_time)) =
         resolve::<payloads::ExchangeDeclareParams>(task, raw, "exchange declare").await
     else {
@@ -331,7 +331,7 @@ async fn handle_exchange_declare(task: &Task, raw: &rmpv::Value) {
     finish(task, &entry, "exchange declare", start_time, outcome.map(|_| None)).await;
 }
 
-async fn handle_exchange_delete(task: &Task, raw: &rmpv::Value) {
+async fn handle_exchange_delete(task: &Task, raw: &Value) {
     let Some((entry, params, start_time)) =
         resolve::<payloads::ExchangeDeleteParams>(task, raw, "exchange delete").await
     else {
@@ -356,7 +356,7 @@ async fn handle_exchange_delete(task: &Task, raw: &rmpv::Value) {
     finish(task, &entry, "exchange delete", start_time, outcome.map(|_| None)).await;
 }
 
-async fn handle_exchange_binding(task: &Task, raw: &rmpv::Value, bind: bool) {
+async fn handle_exchange_binding(task: &Task, raw: &Value, bind: bool) {
     let Some((entry, params, start_time)) =
         resolve::<payloads::ExchangeBindParams>(task, raw, "exchange binding").await
     else {
@@ -400,7 +400,7 @@ async fn handle_exchange_binding(task: &Task, raw: &rmpv::Value, bind: bool) {
     finish(task, &entry, "exchange binding", start_time, outcome.map(|_| None)).await;
 }
 
-async fn handle_queue_declare(task: &Task, raw: &rmpv::Value) {
+async fn handle_queue_declare(task: &Task, raw: &Value) {
     let Some((entry, params, start_time)) =
         resolve::<payloads::QueueDeclareParams>(task, raw, "queue declare").await
     else {
@@ -436,7 +436,7 @@ async fn handle_queue_declare(task: &Task, raw: &rmpv::Value) {
     finish(task, &entry, "queue declare", start_time, outcome).await;
 }
 
-async fn handle_queue_delete(task: &Task, raw: &rmpv::Value) {
+async fn handle_queue_delete(task: &Task, raw: &Value) {
     let Some((entry, params, start_time)) =
         resolve::<payloads::QueueDeleteParams>(task, raw, "queue delete").await
     else {
@@ -463,7 +463,7 @@ async fn handle_queue_delete(task: &Task, raw: &rmpv::Value) {
     finish(task, &entry, "queue delete", start_time, outcome).await;
 }
 
-async fn handle_queue_binding(task: &Task, raw: &rmpv::Value, bind: bool) {
+async fn handle_queue_binding(task: &Task, raw: &Value, bind: bool) {
     let Some((entry, params, start_time)) =
         resolve::<payloads::QueueBindParams>(task, raw, "queue binding").await
     else {
@@ -506,7 +506,7 @@ async fn handle_queue_binding(task: &Task, raw: &rmpv::Value, bind: bool) {
     finish(task, &entry, "queue binding", start_time, outcome.map(|_| None)).await;
 }
 
-async fn handle_queue_purge(task: &Task, raw: &rmpv::Value) {
+async fn handle_queue_purge(task: &Task, raw: &Value) {
     let Some((entry, params, start_time)) =
         resolve::<payloads::QueuePurgeParams>(task, raw, "queue purge").await
     else {
@@ -536,7 +536,7 @@ async fn handle_queue_purge(task: &Task, raw: &rmpv::Value) {
 /// Publishes one message. `basic.publish` carries no reply, so a message the
 /// broker cannot route is only reported when it was published as mandatory and
 /// the application waits for the returns.
-async fn handle_publish(task: &Task, raw: &rmpv::Value) {
+async fn handle_publish(task: &Task, raw: &Value) {
     let Some((entry, params, start_time)) =
         resolve::<payloads::PublishParams>(task, raw, "publish").await
     else {
@@ -545,7 +545,6 @@ async fn handle_publish(task: &Task, raw: &rmpv::Value) {
 
     let timeout = ms_or_default(params.timeout_ms, DEFAULT_WRITE_TIMEOUT);
 
-    let body = payloads::bytes_of(&params.body).to_vec();
     let properties = properties_from(&params.properties);
 
     let outcome = entry
@@ -557,7 +556,7 @@ async fn handle_publish(task: &Task, raw: &rmpv::Value) {
                 mandatory: params.mandatory,
                 immediate: params.immediate,
             },
-            &body,
+            &params.body,
             properties,
         )
         .await;
@@ -627,7 +626,7 @@ fn collect_confirmation(
     });
 }
 
-async fn handle_confirm_select(task: &Task, raw: &rmpv::Value) {
+async fn handle_confirm_select(task: &Task, raw: &Value) {
     let Some((entry, params, start_time)) =
         resolve::<payloads::ConfirmSelectParams>(task, raw, "confirm select").await
     else {
@@ -644,7 +643,7 @@ async fn handle_confirm_select(task: &Task, raw: &rmpv::Value) {
 
 /// Waits until every message published since the last wait has been confirmed
 /// or rejected, and hands back what arrived, the returned messages included.
-async fn handle_confirm_wait(task: &Task, raw: &rmpv::Value) {
+async fn handle_confirm_wait(task: &Task, raw: &Value) {
     let Some((entry, params, start_time)) =
         resolve::<payloads::ChannelParams>(task, raw, "confirm wait").await
     else {
@@ -684,7 +683,7 @@ async fn handle_confirm_wait(task: &Task, raw: &rmpv::Value) {
 
 /// Pulls one message from a queue. An empty queue answers with nil, which PHP
 /// hands back as null — it never waits for a message to arrive.
-async fn handle_get(task: &Task, raw: &rmpv::Value) {
+async fn handle_get(task: &Task, raw: &Value) {
     let Some((entry, params, start_time)) =
         resolve::<payloads::GetParams>(task, raw, "get").await
     else {
@@ -735,7 +734,7 @@ async fn handle_get(task: &Task, raw: &rmpv::Value) {
 
 // --- settling -----------------------------------------------------------------
 
-async fn handle_ack(task: &Task, raw: &rmpv::Value) {
+async fn handle_ack(task: &Task, raw: &Value) {
     let Some((entry, params, start_time)) =
         resolve::<payloads::AckParams>(task, raw, "ack").await
     else {
@@ -770,7 +769,7 @@ async fn handle_ack(task: &Task, raw: &rmpv::Value) {
     finish(task, &entry, "ack", start_time, outcome.map(|_| None)).await;
 }
 
-async fn handle_nack(task: &Task, raw: &rmpv::Value) {
+async fn handle_nack(task: &Task, raw: &Value) {
     let Some((entry, params, start_time)) =
         resolve::<payloads::NackParams>(task, raw, "nack").await
     else {
@@ -804,7 +803,7 @@ async fn handle_nack(task: &Task, raw: &rmpv::Value) {
     finish(task, &entry, "nack", start_time, outcome.map(|_| None)).await;
 }
 
-async fn handle_reject(task: &Task, raw: &rmpv::Value) {
+async fn handle_reject(task: &Task, raw: &Value) {
     let Some((entry, params, start_time)) =
         resolve::<payloads::RejectParams>(task, raw, "reject").await
     else {
@@ -838,7 +837,7 @@ async fn handle_reject(task: &Task, raw: &rmpv::Value) {
 }
 
 /// Cancels a consumer. The channel stays open: it outlives its consumers.
-async fn handle_cancel(task: &Task, raw: &rmpv::Value) {
+async fn handle_cancel(task: &Task, raw: &Value) {
     let Some((entry, params, start_time)) =
         resolve::<payloads::CancelParams>(task, raw, "cancel").await
     else {
@@ -896,7 +895,7 @@ async fn finish(
 /// answering the task itself on either failure.
 pub async fn resolve<P>(
     task: &Task,
-    raw: &rmpv::Value,
+    raw: &Value,
     what: &str,
 ) -> Option<(Arc<ChannelEntry>, P, Instant)>
 where
@@ -908,7 +907,8 @@ where
 
     // Read separately and leniently: it is only used to explain a missing
     // channel, so a payload without it costs nothing here.
-    let connection_id = rmpv::ext::from_value::<super::payloads::ConnectionOf>(raw.clone())
+    let connection_id = raw
+        .decode::<super::payloads::ConnectionOf>()
         .map(|of| of.connection_id)
         .unwrap_or_default();
 
@@ -956,19 +956,15 @@ pub async fn channel_of(
     None
 }
 
-fn decode<P: serde::de::DeserializeOwned>(raw: &rmpv::Value) -> std::result::Result<P, String> {
-    // The envelope is decoded once into a value, so the parameters are decoded
-    // out of that value rather than from a second slice of the payload.
-    let mut buffer = Vec::new();
-
-    rmpv::encode::write_value(&mut buffer, raw).map_err(|error| error.to_string())?;
-
-    rmp_serde::from_slice(&buffer).map_err(|error| error.to_string())
+fn decode<P: serde::de::DeserializeOwned>(raw: &Value) -> std::result::Result<P, String> {
+    // The envelope kept its `p` as the value tree it arrived in, so the
+    // parameters are decoded straight out of that subtree.
+    raw.decode::<P>().map_err(|error| error.to_string())
 }
 
 async fn decoded<P: serde::de::DeserializeOwned>(
     task: &Task,
-    raw: &rmpv::Value,
+    raw: &Value,
     what: &str,
 ) -> Option<P> {
     match decode::<P>(raw) {
@@ -989,8 +985,8 @@ pub fn short(text: &str) -> ShortString {
     ShortString::from(text.to_string())
 }
 
-pub fn arguments(value: &rmpv::Value) -> FieldTable {
-    super::values::table_from_msgpack(Some(value)).unwrap_or_default()
+pub fn arguments(value: &Value) -> FieldTable {
+    super::values::table_from_value(Some(value)).unwrap_or_default()
 }
 
 fn clamp_u16(value: i64) -> u16 {
@@ -1020,7 +1016,7 @@ pub fn properties_from(properties: &payloads::Properties) -> AMQPProperties {
         built = built.with_content_encoding(short(&properties.content_encoding));
     }
 
-    if let Some(headers) = super::values::table_from_msgpack(Some(&properties.headers)) {
+    if let Some(headers) = super::values::table_from_value(Some(&properties.headers)) {
         built = built.with_headers(headers);
     }
 

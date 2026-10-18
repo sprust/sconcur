@@ -3,14 +3,9 @@
 //! back to PHP. The renames are the short keys exchanged with the PHP side.
 
 use serde::Deserialize;
+use std::collections::HashMap;
 
 use crate::dto::{Map, Value};
-
-/// A missing body decodes to nil, which reads back as no bytes.
-fn nil_value() -> rmpv::Value {
-    rmpv::Value::Nil
-}
-use std::collections::HashMap;
 
 /// The payload of an httpStart command — the listener address and the server
 /// tuning parameters (all timeouts in milliseconds, body limit in bytes).
@@ -55,9 +50,8 @@ pub struct ServePayload {
 /// The payload of an httpRespond command — one write a PHP request-handler
 /// coroutine sends back for a given request.
 ///
-/// `hd` and `nr` carry `default`: the PHP side omits both when empty (an empty
-/// PHP array would encode as a MessagePack array, not a map — see the comment
-/// in RespondPayload::getData).
+/// `hd` and `nr` carry `default`: the PHP side omits both when empty (see
+/// RespondPayload::getData).
 /// PHP: SConcur\Features\HttpServer\Payloads\RespondPayload.
 #[derive(Deserialize)]
 pub struct RespondPayload {
@@ -69,13 +63,12 @@ pub struct RespondPayload {
     pub status: i64,
     #[serde(rename = "hd", default)]
     pub headers: HashMap<String, Vec<String>>,
-    /// Kept as an untyped value rather than a String: a response body is
-    /// arbitrary bytes, and PHP sends it as a MessagePack str whatever it
-    /// holds. Decoding it into a String mangles — or refuses — any body that is
-    /// not valid UTF-8, which is what HttpServerRequestTest's binary round trip
-    /// catches.
-    #[serde(rename = "bd", default = "nil_value")]
-    pub body: rmpv::Value,
+    /// Bytes rather than a String: a response body is arbitrary bytes, and a
+    /// PHP string holds whatever it holds. Decoding it into a String refuses
+    /// any body that is not valid UTF-8, which is what HttpServerRequestTest's
+    /// binary round trip catches.
+    #[serde(rename = "bd", default, deserialize_with = "crate::dto::value_de::bytes")]
+    pub body: Vec<u8>,
     /// Marks a fire-and-forget write: publish no task result for it (the PHP
     /// coroutine does not await one — the final write of a full response).
     #[serde(rename = "nr", default)]
@@ -83,23 +76,17 @@ pub struct RespondPayload {
 }
 
 impl RespondPayload {
-    /// The body as raw bytes, whether PHP sent text or binary, taken out of the
-    /// payload rather than copied out of it.
+    /// The body as raw bytes, taken out of the payload rather than copied out
+    /// of it.
     ///
-    /// The value already owns those bytes: they were allocated when the payload
-    /// was decoded and nothing reads `body` again afterwards. Cloning them made
-    /// a 100 KB response cross as three copies — the C buffer, the decoded
-    /// value, the write command — where two will do. The rest of the struct is
-    /// still needed at the call site (the headers go into the same command),
-    /// which is why this takes `&mut self` and leaves nil behind instead of
-    /// consuming the whole payload.
+    /// The payload already owns those bytes: they were allocated when it was
+    /// decoded and nothing reads `body` again afterwards. Cloning them made a
+    /// 100 KB response cross as one copy more than it needs. The rest of the
+    /// struct is still needed at the call site (the headers go into the same
+    /// command), which is why this takes `&mut self` and leaves an empty body
+    /// behind instead of consuming the whole payload.
     pub fn take_body_bytes(&mut self) -> Vec<u8> {
-        match std::mem::replace(&mut self.body, rmpv::Value::Nil) {
-            rmpv::Value::String(text) => text.into_bytes(),
-            rmpv::Value::Binary(bytes) => bytes,
-            rmpv::Value::Nil => Vec::new(),
-            other => other.to_string().into_bytes(),
-        }
+        std::mem::take(&mut self.body)
     }
 }
 

@@ -25,7 +25,7 @@ pub mod writer;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
-use crate::dto::Result;
+use crate::dto::{Result, Value};
 use crate::features::{BoxFuture, Feature};
 use crate::tasks::Task;
 
@@ -44,7 +44,7 @@ impl Feature for FilesFeature {
         Box::pin(async move {
             let message = task.message();
 
-            let mut envelope: payloads::Envelope = match rmp_serde::from_slice(&message.payload) {
+            let mut envelope: payloads::Envelope = match message.payload.decode() {
                 Ok(envelope) => envelope,
                 Err(error) => {
                     task.add_result(Result::error(
@@ -142,16 +142,16 @@ pub fn exact_permission_bits(value: i64) -> std::result::Result<u32, String> {
 /// Decodes a sub-operation's body, reporting what could not be read rather than
 /// leaving the caller with "parse error".
 ///
-/// Takes the body out of the envelope instead of cloning it: for a write the
-/// body IS the file's contents, and a clone means the bytes exist twice on this
-/// side alone before `bytes_of` makes a third.
+/// Takes the body out of the envelope and drops it once decoded: for a write
+/// the body IS the file's contents, and left in the envelope those bytes would
+/// sit there for the whole operation next to the copy the parameters own.
 pub async fn params<T>(task: &Task, envelope: &mut payloads::Envelope, operation: &str) -> Option<T>
 where
     T: serde::de::DeserializeOwned,
 {
-    let data = std::mem::replace(&mut envelope.data, rmpv::Value::Nil);
+    let data = std::mem::replace(&mut envelope.data, Value::Nil);
 
-    match rmpv::ext::from_value(data) {
+    match data.decode() {
         Ok(parameters) => Some(parameters),
         Err(error) => {
             task.add_result(Result::error(

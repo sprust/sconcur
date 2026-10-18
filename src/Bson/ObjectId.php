@@ -12,15 +12,16 @@ use Stringable;
  * BSON ObjectId, mirroring MongoDB\BSON\ObjectId.
  *
  * The value is held as its 24-character hexadecimal form. The constructor is not
- * called when the MessagePack extension materialises the object while decoding a
- * document, so the validation here guards user code only — what arrives from the
- * wire is validated on the extension side.
+ * called when the extension materialises the object out of a document it hands
+ * back, so the validation here guards user code only — what arrives from the
+ * extension is validated on its side.
  */
 readonly class ObjectId implements Type, Stringable, JsonSerializable
 {
-    // Public on purpose: MessagePack mangles the name of a protected property the
-    // way serialize() does ("\0*\0oid"), and the extension side writes plain names. The
-    // class is readonly, so the value object stays immutable regardless.
+    // Public on purpose: the extension reads an object's public properties when a
+    // document crosses to it and writes them in place when one comes back, so a
+    // protected property would not cross. The class is readonly, so the value object
+    // stays immutable regardless.
     public string $oid;
 
     public function __construct(?string $id = null)

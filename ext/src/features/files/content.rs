@@ -39,23 +39,6 @@ const READ_PREALLOCATION_CAP_BYTES: u64 = 64 * 1024 * 1024;
 /// same path from the same process.
 static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// The bytes of a value PHP packed as a string.
-///
-/// Takes the value by move and unwraps the Vec out of it rather than cloning:
-/// for a write these bytes are the file's whole contents, and a clone here is
-/// the difference between holding a 100 MiB payload twice and holding it once.
-pub fn bytes_of(value: rmpv::Value) -> std::result::Result<Vec<u8>, String> {
-    match value {
-        rmpv::Value::Binary(bytes) => Ok(bytes),
-        // into_bytes, not into_str: a msgpack `str` is not required to be valid
-        // UTF-8, and a file's contents least of all. Refusing one is how a
-        // binary write would have failed depending on which form the packer
-        // happened to choose — which is the very thing reading both avoids.
-        rmpv::Value::String(text) => Ok(text.into_bytes()),
-        other => Err(format!("contents must be a string, got {other}")),
-    }
-}
-
 /// Answers with the number of bytes the operation moved, as a map so PHP reads
 /// it the way it reads every other structured result.
 pub fn count_value(count: u64) -> Value {
@@ -205,15 +188,7 @@ pub async fn write(task: &Task, envelope: &mut payloads::Envelope) {
         return;
     };
 
-    let contents = match bytes_of(parameters.contents) {
-        Ok(contents) => contents,
-        Err(error) => {
-            task.add_result(Result::error(message, fail(Kind::Argument, &error)))
-                .await;
-
-            return;
-        }
-    };
+    let contents = parameters.contents;
 
     let permissions = match permission_bits(parameters.permissions, 0o644) {
         Ok(permissions) => permissions,
@@ -328,15 +303,7 @@ pub async fn write_atomic(task: &Task, envelope: &mut payloads::Envelope) {
         return;
     };
 
-    let contents = match bytes_of(parameters.contents) {
-        Ok(contents) => contents,
-        Err(error) => {
-            task.add_result(Result::error(message, fail(Kind::Argument, &error)))
-                .await;
-
-            return;
-        }
-    };
+    let contents = parameters.contents;
 
     let path = parameters.path.clone();
     let temporary_path = temporary_sibling(&path);
@@ -901,23 +868,55 @@ mod tests {
         path.to_string_lossy().to_string()
     }
 
-    #[test]
-    fn contents_are_read_from_either_msgpack_string_form() {
-        assert_eq!(
-            bytes_of(rmpv::Value::Binary(vec![1, 2, 3])).unwrap(),
-            vec![1, 2, 3]
-        );
-        assert_eq!(
-            bytes_of(rmpv::Value::from("text")).unwrap(),
-            b"text".to_vec()
-        );
+    /// A PHP string is bytes, and a file's contents least of all are promised
+    /// to be UTF-8: what the caller passed is what lands on disk, byte for
+    /// byte, through the same decode and the same open options `write` uses.
+    #[tokio::test]
+    async fn contents_reach_the_file_byte_for_byte() {
+        let contents: Vec<u8> = vec![0xFF, 0xFE, b'a', 0x00, 0x80, b'\n', 0xC3];
+        let body: Value = Map::new()
+            .set("p", "unused-here")
+            .set("c", contents.clone())
+            .set("m", "crt")
+            .into();
+
+        let parameters: payloads::WriteParams = body.decode().unwrap();
+
+        assert_eq!(parameters.contents, contents);
+
+        let path = fixture_path("write-bytes").await;
+        let options = std_write_options(&parameters.mode, 0o644).unwrap();
+        let mut file = tokio::fs::File::from_std(options.open(&path).unwrap());
+
+        file.write_all(&parameters.contents).await.unwrap();
+        file.flush().await.unwrap();
+
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), contents);
+
+        tokio::fs::remove_file(&path).await.unwrap();
     }
 
     #[test]
     fn contents_that_are_not_a_string_are_refused() {
-        let error = bytes_of(rmpv::Value::from(7)).unwrap_err();
+        let body: Value = Map::new().set("p", "x").set("c", 7i64).into();
 
-        assert!(error.contains("must be a string"), "{error}");
+        let error = match body.decode::<payloads::WriteParams>() {
+            Ok(_) => panic!("an int was accepted as contents"),
+            Err(error) => error.to_string(),
+        };
+
+        assert!(error.contains("got an int"), "{error}");
+    }
+
+    /// A write body that names no contents writes an empty file rather than
+    /// failing with "missing field": the PHP side's defaults are the core's too.
+    #[test]
+    fn missing_contents_are_an_empty_string() {
+        let body: Value = Map::new().set("p", "x").into();
+
+        let parameters: payloads::WriteParams = body.decode().unwrap();
+
+        assert!(parameters.contents.is_empty());
     }
 
     #[test]

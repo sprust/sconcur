@@ -4,11 +4,13 @@
 
 use serde::Deserialize;
 
+use crate::dto::Value;
+
 /// A missing command body decodes to nil rather than failing: the sub-operation
 /// handler reports what it actually needs, which is a better message than
 /// "missing field dt".
-fn nil_value() -> rmpv::Value {
-    rmpv::Value::Nil
+fn nil_value() -> Value {
+    Value::Nil
 }
 
 /// Wraps every SQL command: the sub-operation, the connection settings and the
@@ -27,12 +29,11 @@ pub struct Envelope {
     pub max_idle_conns: i64,
     #[serde(rename = "cl", default)]
     pub conn_max_lifetime_ms: i64,
-    /// The command body, kept as a decoded-but-untyped value until the
-    /// sub-operation is known. The PHP side nests a map rather than an encoded
-    /// blob, so this is the value that is actually on the wire and there is no
-    /// second decode.
+    /// The command body, kept as an untyped subtree until the sub-operation is
+    /// known: the PHP side nests the command's own array under `dt`, and the
+    /// handler of that command decodes it into its parameter struct.
     #[serde(rename = "dt", default = "nil_value")]
-    pub data: rmpv::Value,
+    pub data: Value,
 }
 
 /// The body of a Query command (the `dt`).
@@ -42,7 +43,7 @@ pub struct QueryParams {
     #[serde(rename = "q", default)]
     pub sql: String,
     #[serde(rename = "b", default)]
-    pub bindings: Vec<rmpv::Value>,
+    pub bindings: Vec<Value>,
     #[serde(rename = "tx", default)]
     pub transaction_id: String,
     #[serde(rename = "bs", default)]
@@ -56,7 +57,7 @@ pub struct ExecParams {
     #[serde(rename = "q", default)]
     pub sql: String,
     #[serde(rename = "b", default)]
-    pub bindings: Vec<rmpv::Value>,
+    pub bindings: Vec<Value>,
     #[serde(rename = "tx", default)]
     pub transaction_id: String,
 }

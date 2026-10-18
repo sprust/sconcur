@@ -253,8 +253,8 @@ readonly class HttpClient implements ClientInterface
     }
 
     /**
-     * An empty header map decodes to stdClass (a MessagePack quirk), and nested
-     * values may too; normalize to array<string, array<int, string>>.
+     * Normalizes the header map the core built to array<string, array<int, string>>,
+     * whatever shape a value came in.
      *
      * @return array<string, array<int, string>>
      */

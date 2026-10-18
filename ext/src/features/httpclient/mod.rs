@@ -90,7 +90,7 @@ impl Feature for HttpClientFeature {
         Box::pin(async move {
             let message = task.message();
 
-            let envelope: payloads::Envelope = match rmp_serde::from_slice(&message.payload) {
+            let envelope: payloads::Envelope = match message.payload.decode() {
                 Ok(envelope) => envelope,
                 Err(error) => {
                     task.add_result(Result::error(
@@ -116,10 +116,10 @@ impl Feature for HttpClientFeature {
     }
 }
 
-async fn handle_request(task: &Task, params: rmpv::Value) {
+async fn handle_request(task: &Task, params: Value) {
     let message = task.message();
 
-    let mut params: payloads::RequestParams = match rmpv::ext::from_value(params) {
+    let mut params: payloads::RequestParams = match params.decode() {
         Ok(params) => params,
         Err(error) => {
             task.add_result(Result::error(
@@ -329,11 +329,11 @@ fn open_streamed(
     Ok(Pending::Streamed(response))
 }
 
-async fn handle_upload(task: &Task, params: rmpv::Value, end: bool) {
+async fn handle_upload(task: &Task, params: Value, end: bool) {
     let message = task.message();
     let start_time = Instant::now();
 
-    let mut params: payloads::UploadParams = match rmpv::ext::from_value(params) {
+    let mut params: payloads::UploadParams = match params.decode() {
         Ok(params) => params,
         Err(error) => {
             task.add_result(Result::error(

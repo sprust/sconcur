@@ -11,7 +11,7 @@ use mongodb::options::{IndexOptions, ReturnDocument};
 use mongodb::{Client, Collection, Database, IndexModel};
 
 use super::payloads::{Envelope, Params, decode_params};
-use super::serializer::{document_from_msgpack, documents_from_msgpack};
+use super::serializer::{document_from_value, documents_from_value};
 
 pub type Error = String;
 
@@ -33,7 +33,7 @@ pub enum Outcome {
 
 pub async fn run(
     client: &Client,
-    envelope: &Envelope,
+    envelope: &Envelope<'_>,
 ) -> Result<Outcome, Error> {
     let database = client.database(&envelope.database);
 
@@ -54,7 +54,7 @@ pub async fn run(
 
 async fn run_collection(
     collection: Collection<Document>,
-    envelope: &Envelope,
+    envelope: &Envelope<'_>,
 ) -> Result<Outcome, Error> {
     match envelope.command.as_str() {
         "ino" => insert_one(&collection, envelope).await,
@@ -87,8 +87,8 @@ async fn run_collection(
 // Writes
 // ---------------------------------------------------------------------------
 
-async fn insert_one(collection: &Collection<Document>, envelope: &Envelope) -> Result<Outcome, Error> {
-    let document = document_from_msgpack(&envelope.data)
+async fn insert_one(collection: &Collection<Document>, envelope: &Envelope<'_>) -> Result<Outcome, Error> {
+    let document = document_from_value(envelope.data)
         .map_err(|error| format!("parse insertOne payload: {error}"))?;
 
     let outcome = collection
@@ -102,8 +102,8 @@ async fn insert_one(collection: &Collection<Document>, envelope: &Envelope) -> R
     Ok(Outcome::Document(result))
 }
 
-async fn insert_many(collection: &Collection<Document>, envelope: &Envelope) -> Result<Outcome, Error> {
-    let documents = documents_from_msgpack(&envelope.data)
+async fn insert_many(collection: &Collection<Document>, envelope: &Envelope<'_>) -> Result<Outcome, Error> {
+    let documents = documents_from_value(envelope.data)
         .map_err(|error| format!("parse insertMany payload: {error}"))?;
 
     let outcome = collection
@@ -127,7 +127,7 @@ async fn insert_many(collection: &Collection<Document>, envelope: &Envelope) -> 
 
 async fn update(
     collection: &Collection<Document>,
-    envelope: &Envelope,
+    envelope: &Envelope<'_>,
     many: bool,
 ) -> Result<Outcome, Error> {
     let params = decode_params(&envelope.data)?;
@@ -181,7 +181,7 @@ async fn update(
     )))
 }
 
-async fn replace_one(collection: &Collection<Document>, envelope: &Envelope) -> Result<Outcome, Error> {
+async fn replace_one(collection: &Collection<Document>, envelope: &Envelope<'_>) -> Result<Outcome, Error> {
     let params = decode_params(&envelope.data)?;
 
     let filter = params.filter("f");
@@ -202,7 +202,7 @@ async fn replace_one(collection: &Collection<Document>, envelope: &Envelope) -> 
 
 async fn delete(
     collection: &Collection<Document>,
-    envelope: &Envelope,
+    envelope: &Envelope<'_>,
     many: bool,
 ) -> Result<Outcome, Error> {
     let params = decode_params(&envelope.data)?;
@@ -245,13 +245,13 @@ async fn delete(
     Ok(Outcome::Document(result))
 }
 
-async fn bulk_write(collection: &Collection<Document>, envelope: &Envelope) -> Result<Outcome, Error> {
+async fn bulk_write(collection: &Collection<Document>, envelope: &Envelope<'_>) -> Result<Outcome, Error> {
     let namespace = mongodb::Namespace {
         db: envelope.database.clone(),
         coll: envelope.collection.clone(),
     };
 
-    let operations = super::bulk::parse(&envelope.data, &namespace)?;
+    let operations = super::bulk::parse(envelope.data, &namespace)?;
 
     super::bulk::execute(collection, operations).await
 }
@@ -260,8 +260,8 @@ async fn bulk_write(collection: &Collection<Document>, envelope: &Envelope) -> R
 // Reads
 // ---------------------------------------------------------------------------
 
-async fn count_documents(collection: &Collection<Document>, envelope: &Envelope) -> Result<Outcome, Error> {
-    let filter = document_from_msgpack(&envelope.data)
+async fn count_documents(collection: &Collection<Document>, envelope: &Envelope<'_>) -> Result<Outcome, Error> {
+    let filter = document_from_value(envelope.data)
         .map_err(|error| format!("parse countDocuments payload: {error}"))?;
 
     let count = collection
@@ -281,7 +281,7 @@ async fn estimated_document_count(collection: &Collection<Document>) -> Result<O
     Ok(Outcome::Text(count.to_string()))
 }
 
-async fn find_one(collection: &Collection<Document>, envelope: &Envelope) -> Result<Outcome, Error> {
+async fn find_one(collection: &Collection<Document>, envelope: &Envelope<'_>) -> Result<Outcome, Error> {
     let params = decode_params(&envelope.data)?;
 
     let filter = params.filter("f");
@@ -306,7 +306,7 @@ async fn find_one(collection: &Collection<Document>, envelope: &Envelope) -> Res
     }
 }
 
-async fn find(collection: &Collection<Document>, envelope: &Envelope) -> Result<Outcome, Error> {
+async fn find(collection: &Collection<Document>, envelope: &Envelope<'_>) -> Result<Outcome, Error> {
     let params = decode_params(&envelope.data)?;
 
     let filter = params.filter("f");
@@ -352,7 +352,7 @@ async fn find(collection: &Collection<Document>, envelope: &Envelope) -> Result<
     Ok(Outcome::Cursor(cursor, batch_size))
 }
 
-async fn aggregate(collection: &Collection<Document>, envelope: &Envelope) -> Result<Outcome, Error> {
+async fn aggregate(collection: &Collection<Document>, envelope: &Envelope<'_>) -> Result<Outcome, Error> {
     let params = decode_params(&envelope.data)?;
 
     let pipeline = params.documents("p");
@@ -373,7 +373,7 @@ async fn aggregate(collection: &Collection<Document>, envelope: &Envelope) -> Re
     Ok(Outcome::Cursor(cursor, batch_size))
 }
 
-async fn distinct(collection: &Collection<Document>, envelope: &Envelope) -> Result<Outcome, Error> {
+async fn distinct(collection: &Collection<Document>, envelope: &Envelope<'_>) -> Result<Outcome, Error> {
     let params = decode_params(&envelope.data)?;
 
     let field = params.string("fn");
@@ -399,7 +399,7 @@ async fn distinct(collection: &Collection<Document>, envelope: &Envelope) -> Res
 
 async fn find_one_and_update(
     collection: &Collection<Document>,
-    envelope: &Envelope,
+    envelope: &Envelope<'_>,
 ) -> Result<Outcome, Error> {
     let params = decode_params(&envelope.data)?;
 
@@ -432,7 +432,7 @@ async fn find_one_and_update(
 
 async fn find_one_and_delete(
     collection: &Collection<Document>,
-    envelope: &Envelope,
+    envelope: &Envelope<'_>,
 ) -> Result<Outcome, Error> {
     let params = decode_params(&envelope.data)?;
 
@@ -449,7 +449,7 @@ async fn find_one_and_delete(
 
 async fn find_one_and_replace(
     collection: &Collection<Document>,
-    envelope: &Envelope,
+    envelope: &Envelope<'_>,
 ) -> Result<Outcome, Error> {
     let params = decode_params(&envelope.data)?;
 
@@ -472,7 +472,7 @@ async fn find_one_and_replace(
 // Indexes and collection management
 // ---------------------------------------------------------------------------
 
-async fn create_index(collection: &Collection<Document>, envelope: &Envelope) -> Result<Outcome, Error> {
+async fn create_index(collection: &Collection<Document>, envelope: &Envelope<'_>) -> Result<Outcome, Error> {
     let params = decode_params(&envelope.data)?;
 
     let keys = params.document_or_empty("k");
@@ -496,7 +496,7 @@ async fn create_index(collection: &Collection<Document>, envelope: &Envelope) ->
     Ok(Outcome::Text(outcome.index_name))
 }
 
-async fn create_indexes(collection: &Collection<Document>, envelope: &Envelope) -> Result<Outcome, Error> {
+async fn create_indexes(collection: &Collection<Document>, envelope: &Envelope<'_>) -> Result<Outcome, Error> {
     let params = decode_params(&envelope.data)?;
 
     // dt is {ix: [{k, n}, ...]}, read inline.
@@ -559,7 +559,7 @@ async fn list_indexes(collection: &Collection<Document>) -> Result<Outcome, Erro
     Ok(Outcome::Batch(documents))
 }
 
-async fn drop_index(collection: &Collection<Document>, envelope: &Envelope) -> Result<Outcome, Error> {
+async fn drop_index(collection: &Collection<Document>, envelope: &Envelope<'_>) -> Result<Outcome, Error> {
     let params = decode_params(&envelope.data)?;
     let name = params.string("n");
 
@@ -605,7 +605,7 @@ async fn list_databases(client: &Client) -> Result<Outcome, Error> {
     Ok(Outcome::Document(result))
 }
 
-async fn rename_collection(client: &Client, envelope: &Envelope) -> Result<Outcome, Error> {
+async fn rename_collection(client: &Client, envelope: &Envelope<'_>) -> Result<Outcome, Error> {
     let params = decode_params(&envelope.data)?;
 
     let mut command = Document::new();
@@ -629,8 +629,8 @@ async fn rename_collection(client: &Client, envelope: &Envelope) -> Result<Outco
     Ok(Outcome::Empty)
 }
 
-async fn run_command(database: &Database, envelope: &Envelope) -> Result<Outcome, Error> {
-    let command = document_from_msgpack(&envelope.data)
+async fn run_command(database: &Database, envelope: &Envelope<'_>) -> Result<Outcome, Error> {
+    let command = document_from_value(envelope.data)
         .map_err(|error| format!("parse runCommand payload: {error}"))?;
 
     let outcome = database

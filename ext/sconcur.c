@@ -84,7 +84,7 @@ static void sconcur_interrupt_function(zend_execute_data *execute_data)
  * looked up once, through the autoloader like any class, the offset of every
  * declared property is read from it, and each result becomes a new object whose
  * property slots are written in place. No constructor call and no name lookup
- * per property, the way unserialize() and ext-msgpack materialize an object.
+ * per property, the way unserialize() materializes an object.
  * That makes the property list of TaskResultDto a wire contract with this file,
  * and its docblock says so.
  *
@@ -512,6 +512,165 @@ zval *sconcur_object_property_slot(zval *object, const char *name, size_t length
 }
 
 /*
+ * Value readers: the core's view of the PHP array a push was given. Each one
+ * answers a question about one zval; the two iterate calls walk a container
+ * and call back into the core per entry, so the core never sees a HashTable.
+ */
+
+int sconcur_zval_kind(const zval *value)
+{
+    ZVAL_DEREF(value);
+
+    switch (Z_TYPE_P(value)) {
+        case IS_UNDEF:
+        case IS_NULL:
+            return SCONCUR_KIND_NULL;
+        case IS_FALSE:
+        case IS_TRUE:
+            return SCONCUR_KIND_BOOL;
+        case IS_LONG:
+            return SCONCUR_KIND_LONG;
+        case IS_DOUBLE:
+            return SCONCUR_KIND_DOUBLE;
+        case IS_STRING:
+            return SCONCUR_KIND_STRING;
+        case IS_ARRAY:
+            return SCONCUR_KIND_ARRAY;
+        case IS_OBJECT:
+            return SCONCUR_KIND_OBJECT;
+        default:
+            return SCONCUR_KIND_OTHER;
+    }
+}
+
+int sconcur_zval_bool(const zval *value)
+{
+    ZVAL_DEREF(value);
+
+    return Z_TYPE_P(value) == IS_TRUE;
+}
+
+long long sconcur_zval_long(const zval *value)
+{
+    ZVAL_DEREF(value);
+
+    return (long long)Z_LVAL_P(value);
+}
+
+double sconcur_zval_double(const zval *value)
+{
+    ZVAL_DEREF(value);
+
+    return Z_DVAL_P(value);
+}
+
+const char *sconcur_zval_string(const zval *value, size_t *length)
+{
+    ZVAL_DEREF(value);
+
+    *length = Z_STRLEN_P(value);
+
+    return Z_STRVAL_P(value);
+}
+
+unsigned int sconcur_array_count(const zval *array)
+{
+    ZVAL_DEREF(array);
+
+    return zend_hash_num_elements(Z_ARRVAL_P(array));
+}
+
+int sconcur_array_is_list(const zval *array)
+{
+    ZVAL_DEREF(array);
+
+    return zend_array_is_list(Z_ARRVAL_P(array));
+}
+
+const char *sconcur_object_class(const zval *object, size_t *length)
+{
+    zend_string *name;
+
+    ZVAL_DEREF(object);
+
+    name = Z_OBJCE_P(object)->name;
+    *length = ZSTR_LEN(name);
+
+    return ZSTR_VAL(name);
+}
+
+/* stdClass: an object that is nothing but its properties, so it reads as a map. */
+int sconcur_object_is_plain(const zval *object)
+{
+    ZVAL_DEREF(object);
+
+    return Z_OBJCE_P(object) == zend_standard_class_def;
+}
+
+static int sconcur_table_iterate(HashTable *table, void *context, sconcur_visit_t visit, int public_only)
+{
+    zend_string *key;
+    zend_ulong index;
+    zval *value;
+    int answer = 1;
+
+    ZEND_HASH_FOREACH_KEY_VAL(table, index, key, value) {
+        /* A declared property sits in the object, and its properties table
+         * points at it indirectly; an uninitialized typed property is UNDEF
+         * there and is not part of the value. */
+        if (Z_TYPE_P(value) == IS_INDIRECT) {
+            value = Z_INDIRECT_P(value);
+        }
+
+        if (Z_TYPE_P(value) == IS_UNDEF) {
+            continue;
+        }
+
+        if (key != NULL) {
+            /* A mangled name is a protected or private property: not part of
+             * what an object shows the world, so not part of its value. */
+            if (public_only && ZSTR_LEN(key) > 0 && ZSTR_VAL(key)[0] == '\0') {
+                continue;
+            }
+
+            answer = visit(context, ZSTR_VAL(key), ZSTR_LEN(key), 0, value);
+        } else {
+            answer = visit(context, NULL, 0, (long long)index, value);
+        }
+
+        if (answer == 0) {
+            break;
+        }
+    } ZEND_HASH_FOREACH_END();
+
+    return answer;
+}
+
+int sconcur_array_iterate(const zval *array, void *context, sconcur_visit_t visit)
+{
+    ZVAL_DEREF(array);
+
+    return sconcur_table_iterate(Z_ARRVAL_P(array), context, visit, 0);
+}
+
+int sconcur_object_iterate(const zval *object, void *context, sconcur_visit_t visit)
+{
+    HashTable *properties;
+
+    ZVAL_DEREF(object);
+
+    /* The engine's own view of the properties, declared and dynamic alike; a
+     * class with a get_properties handler of its own answers through it. */
+    properties = Z_OBJ_HT_P(object)->get_properties(Z_OBJ_P(object));
+
+    if (properties == NULL) {
+        return 1;
+    }
+
+    return sconcur_table_iterate(properties, context, visit, 1);
+}
+
+/*
  * Finishes a wait export. READY leaves the value the core wrote in place;
  * TIMEOUT answers null; FAILED releases whatever was built before the failure
  * and lets the exception the core threw propagate, with a backstop for the
@@ -538,7 +697,7 @@ static void sconcur_finish_wait(zval *return_value, int status, const char *what
 /*
  * arginfo:
  *  - ping(string name)
- *  - push(string flowKey, string method, string taskKey, string payload, int ownerId)
+ *  - push(string flowKey, string method, string taskKey, array payload, int ownerId)
  *  - next(string flowKey, string taskKey, int ownerId)
  *  - wait(string flowKey): TaskResultDto
  *  - waitAny(): TaskResultDto
@@ -561,12 +720,12 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_ping, 0, 0, 1)
     ZEND_ARG_TYPE_INFO(0, name, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
-// push(string flowKey, string method, string taskKey, string payload, int ownerId)
+// push(string flowKey, string method, string taskKey, array payload, int ownerId)
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_push, 0, 0, 5)
     ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, method, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, taskKey, IS_STRING, 0)
-    ZEND_ARG_TYPE_INFO(0, payload, IS_STRING, 0)
+    ZEND_ARG_TYPE_INFO(0, payload, IS_ARRAY, 0)
     ZEND_ARG_TYPE_INFO(0, ownerId, IS_LONG, 0)
 ZEND_END_ARG_INFO()
 
@@ -676,17 +835,20 @@ PHP_FUNCTION(ping)
     free(response);
 }
 
-// PHP: SConcur\Extension\push(string $flowKey, string $method, string $taskKey, string $payload, int $ownerId): string
+// PHP: SConcur\Extension\push(string $flowKey, string $method, string $taskKey, array $payload, int $ownerId): string
 PHP_FUNCTION(push)
 {
-    char *flow_key = NULL, *method = NULL, *task_key = NULL, *payload = NULL;
-    size_t flow_key_len, method_len, task_key_len, payload_len;
+    char *flow_key = NULL, *method = NULL, *task_key = NULL;
+    size_t flow_key_len, method_len, task_key_len;
+    zval *payload = NULL;
     zend_long owner_id = 0;
 
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "ssssl", &flow_key, &flow_key_len, &method, &method_len, &task_key, &task_key_len, &payload, &payload_len, &owner_id) == FAILURE) {
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "sssal", &flow_key, &flow_key_len, &method, &method_len, &task_key, &task_key_len, &payload, &owner_id) == FAILURE) {
         RETURN_THROWS();
     }
 
+    /* The core reads the array through the value readers before it returns, so
+     * the zval owes it nothing afterwards. */
     char *response = push(
         flow_key,
         (int)flow_key_len,
@@ -695,7 +857,6 @@ PHP_FUNCTION(push)
         task_key,
         (int)task_key_len,
         payload,
-        (int)payload_len,
         (long long)owner_id
     );
 

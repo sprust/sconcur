@@ -7,16 +7,16 @@ extension and runs in a runtime task while the coroutine is suspended; inside a
 `WaitGroup` operations run in parallel and the total time is bounded by the slowest
 one. Outside a `WaitGroup` the same API works synchronously.
 
-Documents are exchanged with the extension as MessagePack, which PHP already speaks
-through `ext-msgpack`. BSON values that MessagePack has no equivalent for arrive as
+Documents cross to the extension as the PHP arrays they are, and come back as
+arrays the extension builds. BSON values that a PHP array cannot express arrive as
 `SConcur\Bson\*` objects (`ObjectId`, `UTCDateTime`, `Decimal128`, …); documents
 and arrays arrive as plain PHP arrays.
 
 > `SConcur\Bson\*` reproduces the `MongoDB\BSON\*` API one for one — the same
 > constructors, getters, string and JSON forms — so moving an application from the
-> native driver is a change of `use` lines. The only PHP extension the feature
-> needs is `ext-msgpack`. How that works, and how to add a type, is in
-> [Objects over MessagePack](msgpack-objects.md).
+> native driver is a change of `use` lines. The feature needs no PHP extension
+> beyond SConcur's own. How a value object crosses, and how to add a type, is in
+> [Object conversion](#object-conversion).
 
 ## Quick start
 
@@ -60,7 +60,7 @@ cheap.
 ## Documents and BSON types
 
 A document is a PHP array; nested documents and arrays are arrays too. BSON values
-that have no MessagePack equivalent are objects from `SConcur\Bson\`:
+that a PHP array cannot express are objects from `SConcur\Bson\`:
 
 ```php
 use SConcur\Bson\ObjectId;
@@ -286,12 +286,12 @@ driver still wins) is in the [benchmarks](benchmarks.md#mongodb).
 - Cursors (`ext/src/features/mongodb/states.rs`) — the extension holds the cursor
   as state and hands out batches on a `next` request; it is closed on exhaustion,
   early exit, or a flow stop.
-- Documents are converted between BSON and MessagePack exactly once per message,
-  at the outer boundary (`payloads::decode_params` on the way in, the result
-  encoding on the way out). Everything inside — filters, updates, pipeline
-  stages, the bulkWrite walk, the option parsers — reads plain BSON, so a new
-  command needs no conversion code of its own. See
-  [Objects over MessagePack](msgpack-objects.md).
+- Documents are converted between BSON and PHP values exactly once per message,
+  at the outer boundary (`serializer/from_value.rs` on the way in,
+  `serializer/to_value.rs` on the way out). Everything inside — filters, updates,
+  pipeline stages, the bulkWrite walk, the option parsers — reads plain BSON, so a
+  new command needs no conversion code of its own. See
+  [Object conversion](#object-conversion).
 
 ## Limits
 
@@ -300,21 +300,30 @@ driver still wins) is in the [benchmarks](benchmarks.md#mongodb).
 - Of the BSON types the specification deprecates, `symbol` is read as a string and
   `undefined` as `null`; `dbPointer` is not supported and a document holding one
   fails to decode. They only occur in data written by very old drivers.
-- Forcing `msgpack.php_only` is process-wide — see
-  [Objects over MessagePack](msgpack-objects.md#the-extension-flag).
 - The library's general limits apply — see the [README](../README.md).
 
 ## Object conversion
 
-BSON values MessagePack cannot express — an id, a date, a decimal — cross the
-boundary as PHP objects, in the encoding `ext-msgpack` uses for objects. That
-mechanism is not specific to MongoDB and is documented on its own:
-[Objects over MessagePack](msgpack-objects.md) covers the format, the
-`msgpack.php_only` requirement, the `ext-msgpack` version pin, repeated instances,
-and how to add a type and test it.
+BSON values a PHP array cannot express — an id, a date, a decimal — cross the
+boundary as PHP objects, and nothing serializes them. On the way in the extension
+reads an instance's class name and public properties off the object it was given
+(`ext/src/features/mongodb/serializer/from_value.rs`, one arm per class); on the way
+out it creates the instance itself, without calling the constructor, and writes the
+declared properties in place (`serializer/to_value.rs`). The constructor therefore
+guards user code only, and what arrives from the extension is validated on its side.
 
-The BSON side of it is the type table in
-[Documents and BSON types](#documents-and-bson-types): adding a type means a class in
-`src/Bson/` mirroring its `MongoDB\BSON\*` counterpart, an arm in the encoder and
-one in the decoder, plus a value in `TestRoundTripsEveryBSONType` and a pair in
-`BsonDriverParityTest`.
+Two constraints follow for a class in `src/Bson/`: its properties are public, because
+the extension reads and writes them by name, and the class is `readonly`, so the
+value object stays immutable anyway. Keep the class name short: it travels with
+every value.
+
+Adding a type is three places: the PHP class in `src/Bson/`, mirroring its
+`MongoDB\BSON\*` counterpart exactly (same constructor, getters, `__toString()` and
+`jsonSerialize()`); an arm in `from_value.rs` reading the properties with the
+`property_*` helpers, which fail on a missing or mistyped property rather than
+substitute a zero; and an arm in `to_value.rs` building `Value::object(class,
+properties)` in declaration order. The tests to extend are the serializer's own unit
+tests on both arms, `tests/feature/Features/Mongodb/Bson/BsonDriverParityTest.php`
+(the value object against its `MongoDB\BSON\*` counterpart) and
+`tests/feature/Features/Mongodb/Serialization/MongodbDocumentSerializerTest.php`
+(a round trip through a live MongoDB).

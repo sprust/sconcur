@@ -70,11 +70,12 @@ needed does not apply to it.
 
 ## Conversion overhead (the PHP↔extension boundary)
 
-Every call crosses the boundary and converts its data: arguments are packed into
-MessagePack (`Transport/MessagePackTransport`), the result is built as PHP values by
-the core inside the wait call; Mongo documents go out in the same format, with the
-BSON values that MessagePack cannot express carried as objects. This is a fixed CPU price
-per operation, on top of the boundary call and runtime task dispatch. On cheap cached reads
+Every call crosses the boundary and converts its data: the core reads the
+arguments off the PHP array inside the push call and builds the result as PHP
+values inside the wait call; Mongo documents are converted to and from BSON at the
+same two points, with the BSON values a PHP array cannot express carried as objects.
+This is a fixed CPU price per operation, on top of the boundary call and runtime
+task dispatch. On cheap cached reads
 it shows up as the `native` → `sync` gap (both sequential, but `sync` goes through
 the extension): `pgsql-selectOne` 4.2 → 22.7 ms over 100 calls, `mysql-selectOne`
 7.3 → 35.3 ms. On a slow operation the same surcharge is a small fraction of the
@@ -664,7 +665,8 @@ heavier — the comparison is conservative.
 ## Conclusions
 
 - A single call through SConcur is always more expensive than the native driver
-  — the conversion at the boundary (MessagePack, plus BSON for MongoDB), most
+  — the conversion at the boundary (PHP values to and from the core's, plus BSON
+  for MongoDB), most
   noticeable on cheap cached reads.
 - The gain from concurrency is proportional to the price of an operation — an
   I/O wait (fsync, a network round-trip) or real server-side work — because

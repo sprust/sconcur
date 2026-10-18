@@ -118,10 +118,9 @@ readonly class RespondPayload implements PayloadInterface
         }
 
         // Normalize each header to a list of strings so the extension side — which
-        // reads a map of name to values — decodes it uniformly, whether the handler
-        // gave a single string or several values. Omit empty headers: an empty PHP
-        // array encodes as a MessagePack array, which the extension cannot decode
-        // into that map at all.
+        // reads a map of name to values — reads it uniformly, whether the handler
+        // gave a single string or several values. Empty headers are omitted: the
+        // extension side defaults the key, and the common case stays one key shorter.
         if ($this->headers !== []) {
             $headers = [];
 

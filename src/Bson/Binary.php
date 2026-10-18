@@ -22,9 +22,10 @@ readonly class Binary implements Type, Stringable, JsonSerializable
     public const int TYPE_SENSITIVE    = 0x08;
     public const int TYPE_USER_DEFINED = 0x80;
 
-    // Public on purpose: MessagePack mangles the name of a protected property the
-    // way serialize() does ("\0*\0data"), and the extension side writes plain names. The
-    // class is readonly, so the value object stays immutable regardless.
+    // Public on purpose: the extension reads an object's public properties when a
+    // document crosses to it and writes them in place when one comes back, so a
+    // protected property would not cross. The class is readonly, so the value object
+    // stays immutable regardless.
     public string $data;
     public int $subType;
 

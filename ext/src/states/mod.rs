@@ -217,7 +217,7 @@ mod tests {
             flow_key: flow_key.to_string(),
             method: Method::Mongodb,
             task_key: task_key.to_string(),
-            payload: Vec::new(),
+            payload: crate::dto::Value::Nil,
             is_next: true,
             owner_id,
         })

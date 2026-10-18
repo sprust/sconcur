@@ -159,7 +159,7 @@ mod tests {
             flow_key: "flow".to_string(),
             method: Method::Sleep,
             task_key: "flow:1".to_string(),
-            payload: Vec::new(),
+            payload: crate::dto::Value::Nil,
             is_next: false,
             owner_id: 1,
         })

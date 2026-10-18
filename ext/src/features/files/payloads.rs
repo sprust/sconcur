@@ -8,11 +8,13 @@
 
 use serde::Deserialize;
 
+use crate::dto::Value;
+
 /// A missing command body decodes to nil rather than failing: the sub-operation
 /// handler reports what it actually needs, which is a better message than
-/// "missing field dt".
-fn nil_value() -> rmpv::Value {
-    rmpv::Value::Nil
+/// "missing field dt". `Value` has no Default, hence a function.
+fn nil_value() -> Value {
+    Value::Nil
 }
 
 /// Wraps every file operation: the sub-operation, the execution deadline and
@@ -25,7 +27,7 @@ pub struct Envelope {
     pub timeout_ms: i64,
     /// The operation's body, decoded once the sub-operation is known.
     #[serde(rename = "dt", default = "nil_value")]
-    pub data: rmpv::Value,
+    pub data: Value,
 }
 
 /// The body of a Read (`rd`).
@@ -46,16 +48,14 @@ pub struct ReadParams {
 
 /// The body of a Write (`wr`).
 /// PHP: SConcur\Features\Files\Files::write().
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct WriteParams {
     #[serde(rename = "p", default)]
     pub path: String,
-    /// Untyped on purpose: whether PHP's packer emits a msgpack `str` or a
-    /// `bin` for a string is its business, and content::bytes_of reads both.
-    /// Declaring Vec<u8> here would rest the wire format on how serde maps one
-    /// of them onto a byte sequence.
-    #[serde(rename = "c", default = "nil_value")]
-    pub contents: rmpv::Value,
+    /// The bytes of the PHP string, as they are: a file holds bytes, text or
+    /// not, so nothing here asks them to be UTF-8.
+    #[serde(rename = "c", default, deserialize_with = "crate::dto::value_de::bytes")]
+    pub contents: Vec<u8>,
     /// A FileWriteMode wire value: rpl, crt or app.
     #[serde(rename = "m", default)]
     pub mode: String,
@@ -66,16 +66,14 @@ pub struct WriteParams {
 
 /// The body of a WriteAtomic (`wra`).
 /// PHP: SConcur\Features\Files\Files::writeAtomic().
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct WriteAtomicParams {
     #[serde(rename = "p", default)]
     pub path: String,
-    /// Untyped on purpose: whether PHP's packer emits a msgpack `str` or a
-    /// `bin` for a string is its business, and content::bytes_of reads both.
-    /// Declaring Vec<u8> here would rest the wire format on how serde maps one
-    /// of them onto a byte sequence.
-    #[serde(rename = "c", default = "nil_value")]
-    pub contents: rmpv::Value,
+    /// The bytes of the PHP string, as they are: a file holds bytes, text or
+    /// not, so nothing here asks them to be UTF-8.
+    #[serde(rename = "c", default, deserialize_with = "crate::dto::value_de::bytes")]
+    pub contents: Vec<u8>,
     #[serde(rename = "pm", default)]
     pub permissions: i64,
 }
@@ -294,12 +292,13 @@ pub struct WriteOpenParams {
 
 /// The body of a WriteChunk (`wrc`).
 /// PHP: SConcur\Features\Files\FileWriter::write().
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct WriteChunkParams {
     #[serde(rename = "i", default)]
     pub id: String,
-    #[serde(rename = "c", default = "nil_value")]
-    pub chunk: rmpv::Value,
+    /// The bytes of the PHP string, as they are — see WriteParams::contents.
+    #[serde(rename = "c", default, deserialize_with = "crate::dto::value_de::bytes")]
+    pub chunk: Vec<u8>,
 }
 
 /// The body of a WriteClose (`wrx`).

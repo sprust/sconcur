@@ -140,22 +140,21 @@ fn map_key(key: &Value) -> std::result::Result<Key, String> {
     })
 }
 
-/// One command argument, as the bytes it goes on the wire as.
+/// One command argument, as the bytes it goes on the wire as: the bytes of the
+/// PHP string, text or binary alike.
 ///
 /// The PHP side accepts only strings, integers and floats and writes integers
 /// and floats out as their decimal form, so a value that is not a string here
-/// is a payload that did not come from it. Both MessagePack string kinds are
-/// taken, because what PHP packs depends on whether the string is valid UTF-8.
-pub fn decode_arg(value: &rmpv::Value) -> Result<Vec<u8>, String> {
+/// is a payload that did not come from it.
+pub fn decode_arg(value: &PhpValue) -> Result<Vec<u8>, String> {
     match value {
-        rmpv::Value::Binary(bytes) => Ok(bytes.clone()),
-        rmpv::Value::String(text) => Ok(text.as_bytes().to_vec()),
-        other => Err(format!("a command argument must be a string, got {other}")),
+        PhpValue::Str(bytes) => Ok(bytes.clone()),
+        other => Err(format!("a command argument must be a string, got {other:?}")),
     }
 }
 
 /// Every argument of one command, in order.
-pub fn decode_args(values: &[rmpv::Value]) -> Result<Vec<Vec<u8>>, String> {
+pub fn decode_args(values: &[PhpValue]) -> Result<Vec<Vec<u8>>, String> {
     values.iter().map(decode_arg).collect()
 }
 
@@ -334,20 +333,14 @@ mod tests {
     }
 
     #[test]
-    fn an_argument_is_taken_from_either_string_kind() {
-        assert_eq!(
-            decode_arg(&rmpv::Value::Binary(vec![1, 2, 3])).unwrap(),
-            vec![1, 2, 3]
-        );
-        assert_eq!(
-            decode_arg(&rmpv::Value::from("key")).unwrap(),
-            b"key".to_vec()
-        );
+    fn an_argument_is_the_bytes_of_the_string_whatever_they_are() {
+        assert_eq!(decode_arg(&PhpValue::str(vec![1u8, 2, 3])).unwrap(), vec![1, 2, 3]);
+        assert_eq!(decode_arg(&PhpValue::str("key")).unwrap(), b"key".to_vec());
     }
 
     #[test]
     fn an_argument_that_is_not_a_string_is_refused() {
-        let error = decode_arg(&rmpv::Value::from(7)).unwrap_err();
+        let error = decode_arg(&PhpValue::Int(7)).unwrap_err();
 
         assert!(error.contains("must be a string"), "{error}");
     }

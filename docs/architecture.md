@@ -106,7 +106,7 @@ flowchart TB
         SCH -.->|"releases the Fiber's flow on completion"| ST
     end
 
-    EXT <-->|"boundary: push (msgpack payload) / waitAnyBatch (TaskResultDto) / next"| LIB
+    EXT <-->|"boundary: push (payload array) / waitAnyBatch (TaskResultDto) / next"| LIB
 
     subgraph EXTENSION["Extension (ext/)"]
         direction TB

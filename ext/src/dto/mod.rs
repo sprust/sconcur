@@ -4,7 +4,8 @@
 pub mod message;
 pub mod result;
 pub mod value;
+pub mod value_de;
 
 pub use message::Message;
 pub use result::Result;
-pub use value::{Key, Map, Value};
+pub use value::{Key, Map, Object, Value};

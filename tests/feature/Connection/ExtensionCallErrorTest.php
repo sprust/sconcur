@@ -21,7 +21,7 @@ class ExtensionCallErrorTest extends BaseTestCase
     {
         $flowKey = uniqid();
 
-        $response = push($flowKey, 'nope', 'task-1', 'payload', 0);
+        $response = push($flowKey, 'nope', 'task-1', ['payload' => true], 0);
 
         self::assertStringStartsWith('error:', $response);
 

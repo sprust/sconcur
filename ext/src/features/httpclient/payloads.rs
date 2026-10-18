@@ -12,12 +12,17 @@ use crate::dto::{Map, Value};
 pub struct Envelope {
     #[serde(rename = "cm", default)]
     pub command: String,
+    /// The command's parameters, kept as an untyped subtree until the command
+    /// is known: its handler decodes them into its own parameter struct.
     #[serde(rename = "p", default = "nil_value")]
-    pub params: rmpv::Value,
+    pub params: Value,
 }
 
-fn nil_value() -> rmpv::Value {
-    rmpv::Value::Nil
+/// Missing parameters decode to nil rather than failing: the command handler
+/// reports what it actually needs, which is a better message than
+/// "missing field p".
+fn nil_value() -> Value {
+    Value::Nil
 }
 
 /// The `p` of a Request — one request to send, plus its tuning.
@@ -30,8 +35,10 @@ pub struct RequestParams {
     pub url: String,
     #[serde(rename = "h", default)]
     pub headers: HashMap<String, Vec<String>>,
-    #[serde(rename = "b", default = "nil_value")]
-    pub body: rmpv::Value,
+    /// Bytes rather than a String: a request body is arbitrary bytes, and a
+    /// PHP string holds whatever it holds.
+    #[serde(rename = "b", default, deserialize_with = "crate::dto::value_de::bytes")]
+    pub body: Vec<u8>,
     /// Opens the request with a body PHP fills through upload commands.
     #[serde(rename = "sb", default)]
     pub stream_body: bool,
@@ -87,15 +94,11 @@ pub struct RequestParams {
 
 impl RequestParams {
     /// The request body, taken out of the params rather than copied out of
-    /// them: the decoded value already owns those bytes and nothing reads
+    /// them: the decoded params already own those bytes and nothing reads
     /// `body` again. The rest of the params is still needed at the call site,
     /// which is why this takes `&mut self` instead of consuming them.
     pub fn take_body_bytes(&mut self) -> Vec<u8> {
-        match std::mem::replace(&mut self.body, rmpv::Value::Nil) {
-            rmpv::Value::String(text) => text.into_bytes(),
-            rmpv::Value::Binary(bytes) => bytes,
-            _ => Vec::new(),
-        }
+        std::mem::take(&mut self.body)
     }
 }
 
@@ -105,19 +108,15 @@ impl RequestParams {
 pub struct UploadParams {
     #[serde(rename = "rid", default)]
     pub request_id: String,
-    #[serde(rename = "b", default = "nil_value")]
-    pub body: rmpv::Value,
+    #[serde(rename = "b", default, deserialize_with = "crate::dto::value_de::bytes")]
+    pub body: Vec<u8>,
 }
 
 impl UploadParams {
     /// The chunk's bytes, taken out of the params rather than copied out of
     /// them — see RequestParams::take_body_bytes.
     pub fn take_body_bytes(&mut self) -> Vec<u8> {
-        match std::mem::replace(&mut self.body, rmpv::Value::Nil) {
-            rmpv::Value::String(text) => text.into_bytes(),
-            rmpv::Value::Binary(bytes) => bytes,
-            _ => Vec::new(),
-        }
+        std::mem::take(&mut self.body)
     }
 }
 

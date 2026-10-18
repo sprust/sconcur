@@ -418,9 +418,8 @@ readonly class HttpServer
         // The headers and the query string are handed over unapplied: setting
         // seven headers costs 4.17 us of the 7.75 one decode takes, and parsing
         // a query string another 1.9, while a handler that dispatches on the
-        // method and the path reads 0.12 of it (`make bench-request`). An
-        // empty header map decodes to stdClass (a MessagePack quirk), and nested
-        // values may too, so they are normalized here rather than on first use —
+        // method and the path reads 0.12 of it (`make bench-request`). The map is
+        // normalized to name => list of strings here rather than on first use —
         // that part is cheap and keeps the deferral a pure postponement.
         $headers = [];
 

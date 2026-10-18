@@ -107,7 +107,7 @@ flowchart TB
         SCH -.->|"освобождает flow файбера по завершении"| ST
     end
 
-    EXT <-->|"граница: push (msgpack-payload) / waitAnyBatch (TaskResultDto) / next"| LIB
+    EXT <-->|"граница: push (массив payload) / waitAnyBatch (TaskResultDto) / next"| LIB
 
     subgraph EXTENSION["Расширение (ext/)"]
         direction TB

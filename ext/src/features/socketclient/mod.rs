@@ -63,7 +63,7 @@ impl Feature for SocketClientFeature {
         Box::pin(async move {
             let message = task.message();
 
-            let envelope: payloads::Envelope = match rmp_serde::from_slice(&message.payload) {
+            let envelope: payloads::Envelope = match message.payload.decode() {
                 Ok(envelope) => envelope,
                 Err(error) => {
                     task.add_result(Result::error(
@@ -136,11 +136,11 @@ impl StateContract for ConnectionState {
     }
 }
 
-async fn handle_connect(task: &Task, params: rmpv::Value) {
+async fn handle_connect(task: &Task, params: Value) {
     let message = task.message();
     let start_time = Instant::now();
 
-    let params: payloads::ConnectParams = match rmpv::ext::from_value(params) {
+    let params: payloads::ConnectParams = match params.decode() {
         Ok(params) => params,
         Err(error) => {
             task.add_result(Result::error(
@@ -321,8 +321,8 @@ async fn handle_connect(task: &Task, params: rmpv::Value) {
     }
 }
 
-async fn handle_send(task: &Task, params: rmpv::Value) {
-    let mut params: payloads::SendParams = match rmpv::ext::from_value(params) {
+async fn handle_send(task: &Task, params: Value) {
+    let mut params: payloads::SendParams = match params.decode() {
         Ok(params) => params,
         Err(error) => {
             task.add_result(Result::error(
@@ -342,8 +342,8 @@ async fn handle_send(task: &Task, params: rmpv::Value) {
     route(task, &params.connection_id, WriteKind::Frame, data).await;
 }
 
-async fn handle_close(task: &Task, params: rmpv::Value) {
-    let params: payloads::CloseParams = match rmpv::ext::from_value(params) {
+async fn handle_close(task: &Task, params: Value) {
+    let params: payloads::CloseParams = match params.decode() {
         Ok(params) => params,
         Err(error) => {
             task.add_result(Result::error(

@@ -5,31 +5,16 @@ declare(strict_types=1);
 namespace SConcur\Features\Mongodb\Serialization;
 
 use SConcur\Features\Mongodb\Exceptions\UnexpectedMongodbResponseFormatException;
-use function msgpack_pack;
 
 /**
- * Documents go to the extension as MessagePack and come back as the PHP arrays
- * the core builds, so nothing here depends on ext-mongodb.
- *
- * On the way out, BSON types MessagePack has no equivalent for (an id, a date, a
- * decimal, ...) ride in the object envelope ext-msgpack uses for PHP objects. On
- * the way back the core creates the SConcur\Bson\* instances itself, inside the
- * wait call, so a document arrives ready and PHP never walks it.
+ * Documents cross to the extension as the PHP arrays they are and come back as
+ * the arrays the core builds, so nothing here depends on ext-mongodb and nothing
+ * is serialized: the core reads a document off the array inside the push call and
+ * creates the SConcur\Bson\* instances itself inside the wait call. What is left
+ * here is saying what a result is when it is not a document.
  */
 class DocumentSerializer
 {
-    /**
-     * Encode a document for the wire. MessagePack preserves the PHP shape — a list
-     * packs as a list, a map as a map — and the extension side turns either into a BSON
-     * document, so the caller does not have to say which one it is.
-     *
-     * @param array<int|string, mixed> $document
-     */
-    public static function serialize(array $document): string
-    {
-        return msgpack_pack($document);
-    }
-
     /**
      * A document as the core handed it back: an array, or nothing.
      *

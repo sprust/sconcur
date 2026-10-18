@@ -92,6 +92,50 @@ extern void sconcur_request_vm_interrupt(void);
 
 extern char *ping(char *name);
 
+/*
+ * The value readers: how the core reads the PHP array a push was given, on the
+ * PHP thread, inside the push export. The zval pointers are valid for that call
+ * only, so the core copies what it keeps. A reference is read through.
+ */
+enum {
+	SCONCUR_KIND_NULL = 0,
+	SCONCUR_KIND_BOOL = 1,
+	SCONCUR_KIND_LONG = 2,
+	SCONCUR_KIND_DOUBLE = 3,
+	SCONCUR_KIND_STRING = 4,
+	SCONCUR_KIND_ARRAY = 5,
+	SCONCUR_KIND_OBJECT = 6,
+	SCONCUR_KIND_OTHER = 7,
+};
+
+extern int sconcur_zval_kind(const zval *value);
+extern int sconcur_zval_bool(const zval *value);
+extern long long sconcur_zval_long(const zval *value);
+extern double sconcur_zval_double(const zval *value);
+extern const char *sconcur_zval_string(const zval *value, size_t *length);
+extern unsigned int sconcur_array_count(const zval *array);
+extern int sconcur_array_is_list(const zval *array);
+extern const char *sconcur_object_class(const zval *object, size_t *length);
+extern int sconcur_object_is_plain(const zval *object);
+
+/*
+ * Visits every entry of an array, or every public property of an object, in
+ * order. A string key comes with its bytes, an integer key with its index and a
+ * NULL key pointer. The visit answers 0 to stop the walk, and the iterate call
+ * answers what the last visit answered.
+ */
+typedef int (*sconcur_visit_t)(
+	void *context,
+	const char *key,
+	size_t keyLength,
+	long long index,
+	const zval *value
+);
+
+extern int sconcur_array_iterate(const zval *array, void *context, sconcur_visit_t visit);
+extern int sconcur_object_iterate(const zval *object, void *context, sconcur_visit_t visit);
+
+/* The push export reads payload through the readers above before it returns. */
 extern char *push(
 	char *flowKey,
 	int flowKeyLen,
@@ -99,8 +143,7 @@ extern char *push(
 	int methodLen,
 	char *taskKey,
 	int taskKeyLen,
-	void *payload,
-	int payloadLen,
+	zval *payload,
 	long long ownerId
 );
 

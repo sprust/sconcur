@@ -533,11 +533,6 @@ bench-mongodb-deleteOne:
 bench-mongodb-updateMany:
 	$(PHP_EXT) tests/benchmarks/mongodb/update-many.php ${c}
 
-# Document-codec micro-benchmark: serialize/unserialize only, no database and no
-# extension. c = iterations (default 20000).
-bench-mongodb-serializer:
-	$(PHP_CLI) php tests/benchmarks/mongodb/serializer.php ${c}
-
 bench-mysql-insert:
 	$(PHP_EXT) tests/benchmarks/mysql/insert.php ${c}
 

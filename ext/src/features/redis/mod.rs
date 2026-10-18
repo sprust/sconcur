@@ -86,7 +86,7 @@ impl Feature for RedisFeature {
         Box::pin(async move {
             let message = task.message();
 
-            let envelope: payloads::Envelope = match rmp_serde::from_slice(&message.payload) {
+            let envelope: payloads::Envelope = match message.payload.decode() {
                 Ok(envelope) => envelope,
                 Err(error) => {
                     task.add_result(Result::error(
@@ -129,7 +129,7 @@ impl RedisFeature {
         let message = task.message();
         let start_time = Instant::now();
 
-        let params: payloads::CommandParams = match rmpv::ext::from_value(envelope.data.clone()) {
+        let params: payloads::CommandParams = match envelope.data.decode() {
             Ok(params) => params,
             Err(error) => {
                 task.add_result(Result::error(
@@ -244,7 +244,7 @@ impl RedisFeature {
         let message = task.message();
         let start_time = Instant::now();
 
-        let params: payloads::PipelineParams = match rmpv::ext::from_value(envelope.data.clone()) {
+        let params: payloads::PipelineParams = match envelope.data.decode() {
             Ok(params) => params,
             Err(error) => {
                 task.add_result(Result::error(
@@ -395,7 +395,7 @@ impl RedisFeature {
     async fn handle_scan(&'static self, task: &Task, envelope: &payloads::Envelope) {
         let message = task.message();
 
-        let params: payloads::ScanParams = match rmpv::ext::from_value(envelope.data.clone()) {
+        let params: payloads::ScanParams = match envelope.data.decode() {
             Ok(params) => params,
             Err(error) => {
                 task.add_result(Result::error(
@@ -469,7 +469,7 @@ impl RedisFeature {
         let message = task.message();
         let start_time = Instant::now();
 
-        let params: payloads::SubscribeParams = match rmpv::ext::from_value(envelope.data.clone()) {
+        let params: payloads::SubscribeParams = match envelope.data.decode() {
             Ok(params) => params,
             Err(error) => {
                 task.add_result(Result::error(
@@ -624,19 +624,18 @@ impl RedisFeature {
         let message = task.message();
         let start_time = Instant::now();
 
-        let params: payloads::SubscriptionUpdateParams =
-            match rmpv::ext::from_value(envelope.data.clone()) {
-                Ok(params) => params,
-                Err(error) => {
-                    task.add_result(Result::error(
-                        message,
-                        fail(Kind::Argument, &format!("parse subscription update params: {error}")),
-                    ))
-                    .await;
+        let params: payloads::SubscriptionUpdateParams = match envelope.data.decode() {
+            Ok(params) => params,
+            Err(error) => {
+                task.add_result(Result::error(
+                    message,
+                    fail(Kind::Argument, &format!("parse subscription update params: {error}")),
+                ))
+                .await;
 
-                    return;
-                }
-            };
+                return;
+            }
+        };
 
         let Some(subscription) = registry_subscriptions().load(&params.subscription_id) else {
             task.add_result(Result::error(
@@ -710,8 +709,7 @@ impl RedisFeature {
         let message = task.message();
         let start_time = Instant::now();
 
-        let params: payloads::SubscriptionRefParams = match rmpv::ext::from_value(envelope.data.clone())
-        {
+        let params: payloads::SubscriptionRefParams = match envelope.data.decode() {
             Ok(params) => params,
             Err(error) => {
                 task.add_result(Result::error(

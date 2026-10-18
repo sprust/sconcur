@@ -84,7 +84,7 @@ PHP:
    и узнаваемым): `case Foo = 'foo';`
 
 2. Класс payload'а, реализующий `PayloadInterface`. `getMethod()` возвращает новый
-   `Method`, `getData()` — параметры, сериализуемые в MessagePack:
+   `Method`, `getData()` — параметры массивом, который читает ядро:
 
    ```php
    /**

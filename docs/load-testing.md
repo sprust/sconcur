@@ -252,8 +252,8 @@ Single connection (1 server / 1 wrk thread / 1 connection / 5 s):
    errors, p99 ≈ 130 ms under sustained soak load.
 3. On disk backends the bottleneck is fsync, not CPU. The servers draw ~7–8 of 12
    cores versus ~0.5–1.5 on each DB — the ~2.7k rps ceiling is set by the 3 disk
-   commits per request plus the framework overhead (msgpack, fiber
-   spawn/scheduling, 3× boundary crossing), not by the `SELECT 1`/`findOne` reads.
+   commits per request plus the framework overhead (fiber spawn/scheduling,
+   3× boundary crossing with its value conversion), not by the `SELECT 1`/`findOne` reads.
 
 Caveats: the runs are synthetic and on a laptop (a consumer CPU understates core
 scaling); trivial queries understate the point of SConcur — the I/O-bound scenario

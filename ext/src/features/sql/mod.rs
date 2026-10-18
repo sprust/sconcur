@@ -104,7 +104,7 @@ impl Feature for SqlFeature {
         Box::pin(async move {
             let message = task.message();
 
-            let envelope: payloads::Envelope = match rmp_serde::from_slice(&message.payload) {
+            let envelope: payloads::Envelope = match message.payload.decode() {
                 Ok(envelope) => envelope,
                 Err(error) => {
                     task.add_result(Result::error(
@@ -155,7 +155,7 @@ impl SqlFeature {
     async fn handle_query(&'static self, task: &Task, envelope: &payloads::Envelope) {
         let message = task.message();
 
-        let params: payloads::QueryParams = match rmpv::ext::from_value(envelope.data.clone()) {
+        let params: payloads::QueryParams = match envelope.data.decode() {
             Ok(params) => params,
             Err(error) => {
                 task.add_result(Result::error(
@@ -249,7 +249,7 @@ impl SqlFeature {
         let message = task.message();
         let start_time = Instant::now();
 
-        let params: payloads::ExecParams = match rmpv::ext::from_value(envelope.data.clone()) {
+        let params: payloads::ExecParams = match envelope.data.decode() {
             Ok(params) => params,
             Err(error) => {
                 task.add_result(Result::error(
@@ -316,7 +316,7 @@ impl SqlFeature {
         let message = task.message();
         let start_time = Instant::now();
 
-        let params: payloads::BeginParams = match rmpv::ext::from_value(envelope.data.clone()) {
+        let params: payloads::BeginParams = match envelope.data.decode() {
             Ok(params) => params,
             Err(error) => {
                 task.add_result(Result::error(
@@ -408,7 +408,7 @@ impl SqlFeature {
         let message = task.message();
         let start_time = Instant::now();
 
-        let params: payloads::TransactionRefParams = match rmpv::ext::from_value(envelope.data.clone()) {
+        let params: payloads::TransactionRefParams = match envelope.data.decode() {
             Ok(params) => params,
             Err(error) => {
                 task.add_result(Result::error(

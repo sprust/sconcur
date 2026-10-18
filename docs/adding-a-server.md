@@ -73,7 +73,7 @@ deadline), a server has its own:
 
 ## Payloads
 
-Written like an ordinary feature's (mirrored, `msgpack` tags = short keys,
+Written like an ordinary feature's (mirrored, `serde(rename)` = the short keys,
 cross-references). A server needs at least three:
 
 1. `ServePayload` — the listener address plus tuning (timeouts in ms, limits in

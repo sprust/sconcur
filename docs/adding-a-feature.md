@@ -85,7 +85,7 @@ PHP:
    recognizable): `case Foo = 'foo';`
 
 2. The payload class implementing `PayloadInterface`. `getMethod()` returns the new
-   `Method`, `getData()` — the parameters serialized to MessagePack:
+   `Method`, `getData()` — the parameters as the array the core reads:
 
    ```php
    /**

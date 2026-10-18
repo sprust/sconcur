@@ -154,7 +154,8 @@ mod tests {
         let object = object_of(value.get("_id").expect("an _id"));
 
         assert_eq!(object.class, classes::OBJECT_ID);
-        assert_eq!(object.properties, vec![("oid", Value::Str(id.to_hex().into_bytes()))]);
+        assert_eq!(object.properties.len(), 1);
+        assert_eq!(object.property("oid"), Some(&Value::Str(id.to_hex().into_bytes())));
     }
 
     #[test]
@@ -165,8 +166,8 @@ mod tests {
         let big = object_of(value.get("big").expect("big"));
 
         assert_eq!(small.class, classes::INT64);
-        assert_eq!(small.properties, vec![("value", Value::Int(7))]);
-        assert_eq!(big.properties, vec![("value", Value::Int(i64::MAX))]);
+        assert_eq!(small.property("value"), Some(&Value::Int(7)));
+        assert_eq!(big.property("value"), Some(&Value::Int(i64::MAX)));
     }
 
     #[test]
@@ -187,35 +188,38 @@ mod tests {
 
         let value = document_value(&document);
 
-        let date = object_of(value.get("date").unwrap());
-        assert_eq!(date.class, classes::UTC_DATE_TIME);
-        assert_eq!(date.properties, vec![("epochMs", Value::Int(1_700_000_000_123))]);
-
-        let binary = object_of(value.get("binary").unwrap());
-        assert_eq!(binary.class, classes::BINARY);
         assert_eq!(
-            binary.properties,
-            vec![("data", Value::Str(vec![1, 2, 3])), ("subType", Value::Int(4))]
+            value.get("date"),
+            Some(&Value::object(classes::UTC_DATE_TIME, vec![("epochMs", Value::Int(1_700_000_000_123))]))
         );
-
-        let regex = object_of(value.get("regex").unwrap());
-        assert_eq!(regex.class, classes::REGEX);
-        assert_eq!(regex.properties, vec![("pattern", "^a".into()), ("flags", "i".into())]);
-
-        let stamp = object_of(value.get("stamp").unwrap());
-        assert_eq!(stamp.class, classes::TIMESTAMP);
         assert_eq!(
-            stamp.properties,
-            vec![("increment", Value::Int(7)), ("epochSeconds", Value::Int(42))]
+            value.get("binary"),
+            Some(&Value::object(
+                classes::BINARY,
+                vec![("data", Value::Str(vec![1, 2, 3])), ("subType", Value::Int(4))]
+            ))
         );
-
-        let code = object_of(value.get("code").unwrap());
-        assert_eq!(code.class, classes::JAVASCRIPT);
-        assert_eq!(code.properties, vec![("code", "f()".into()), ("scope", Value::Nil)]);
+        assert_eq!(
+            value.get("regex"),
+            Some(&Value::object(classes::REGEX, vec![("pattern", "^a".into()), ("flags", "i".into())]))
+        );
+        assert_eq!(
+            value.get("stamp"),
+            Some(&Value::object(
+                classes::TIMESTAMP,
+                vec![("increment", Value::Int(7)), ("epochSeconds", Value::Int(42))]
+            ))
+        );
+        assert_eq!(
+            value.get("code"),
+            Some(&Value::object(classes::JAVASCRIPT, vec![("code", "f()".into()), ("scope", Value::Nil)]))
+        );
 
         let scoped = object_of(value.get("scoped").unwrap());
-        assert_eq!(scoped.properties[0], ("code", "g()".into()));
-        assert_eq!(scoped.properties[1].1.get("x"), Some(&Value::Int(1)));
+        assert_eq!(scoped.class, classes::JAVASCRIPT);
+        assert_eq!(scoped.properties[0].0, "code");
+        assert_eq!(scoped.property("code"), Some(&"g()".into()));
+        assert_eq!(scoped.property("scope").and_then(|scope| scope.get("x")), Some(&Value::Int(1)));
 
         assert_eq!(object_of(value.get("min").unwrap()).class, classes::MIN_KEY);
         assert!(object_of(value.get("min").unwrap()).properties.is_empty());
@@ -231,7 +235,7 @@ mod tests {
         let object = object_of(value.get("price").unwrap());
 
         assert_eq!(object.class, classes::DECIMAL128);
-        assert_eq!(object.properties, vec![("value", "12.50".into())]);
+        assert_eq!(object.property("value"), Some(&"12.50".into()));
     }
 
     #[test]
