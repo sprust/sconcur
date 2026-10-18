@@ -272,6 +272,22 @@ feature's doc. Key PHP classes not covered there:
   `TelemetryRuntime`, `Collector`, `Store`, `PanelServer`, `FrameCodec`,
   `Aggregator`, `Dto/*`, `Render/*`.
 
+The C glue, `ext/sconcur.c`, is the one file between PHP and the core: the
+`SConcur\Extension\*` functions bound to the core's exports, the
+`zend_interrupt_function` hook preemption rides on, and the fiber observers that keep
+`json_last_error()`, `preg_last_error()`, `error_get_last()` and the `serialize()`
+object table per coroutine — captured into a block in the fiber context's reserved
+slot on every switch, applied back on resume. Two edges are handled on purpose: a
+fiber leaving on a bailout keeps its fatal in `PG(last_error_*)` so the shutdown
+functions still see it, and `resetEngineState()` is what `FiberPool` calls after
+each job, because a pooled fiber's block outlives the coroutine it served. Nothing
+else is isolated, each for a reason: output buffers and the error handler stack
+because that is a far larger job; libxml's error list because its error handler is
+one per process and the list cannot be made per coroutine without reshaping how that
+switch behaves (it was tried and taken out); `DateTime::getLastErrors()` and the
+OpenSSL error queue because `php` does not export their globals. What is and is not
+isolated is in [docs/coroutine-switching.md](../docs/coroutine-switching.md).
+
 The core (`ext/src/`), module by module:
 
 - `lib.rs` — the C exports the PHP glue binds to (`ping`, `push`, `wait`, `next`,

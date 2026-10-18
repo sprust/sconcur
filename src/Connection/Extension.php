@@ -25,6 +25,7 @@ use function SConcur\Extension\amqpStopConsuming;
 use function SConcur\Extension\httpStopAccepting;
 use function SConcur\Extension\next;
 use function SConcur\Extension\push;
+use function SConcur\Extension\resetEngineState;
 use function SConcur\Extension\socketStopAccepting;
 use function SConcur\Extension\stopFlow;
 use function SConcur\Extension\tasksCount;
@@ -46,7 +47,7 @@ class Extension
      * rejected instead of silently misbehaving. Public so tooling (bin/sconcur-status)
      * can report the version the package expects.
      */
-    public const string REQUIRED_EXTENSION_VERSION = '0.15.0';
+    public const string REQUIRED_EXTENSION_VERSION = '0.15.1';
 
     /**
      * Result frame layout (extension -> PHP), see ext/src/lib.rs. The envelope is
@@ -295,6 +296,17 @@ class Extension
     public function disarmPreemption(): void
     {
         disarmPreemption();
+    }
+
+    /**
+     * Clears the engine state the extension keeps per coroutine — json_last_error(),
+     * preg_last_error(), error_get_last() — for the running fiber. A fresh fiber starts
+     * with it clean; a pooled one would carry what its previous coroutine left, so
+     * FiberPool calls this after each job.
+     */
+    public function resetEngineState(): void
+    {
+        resetEngineState();
     }
 
     protected static function parseWaitResponse(string $response, string $errorContext, float $start): TaskResultDto
