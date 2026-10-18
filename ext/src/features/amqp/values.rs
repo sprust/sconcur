@@ -85,7 +85,7 @@ fn to_amqp_value(value: &Value) -> AMQPValue {
             AMQPValue::FieldArray(array)
         }
         // A value object PHP's TableCodec did not translate: its public
-        // properties travel as a nested table, the way a stdClass does.
+        // properties travel as a nested table, the way a nested array does.
         Value::Object(object) => {
             let mut table = FieldTable::default();
 
@@ -104,12 +104,17 @@ fn tagged_value_of(entries: &[(Key, Value)]) -> Option<AMQPValue> {
     let kind = lookup(entries, TAGGED_KIND)?;
 
     match kind.as_str()? {
-        TAGGED_DECIMAL => Some(AMQPValue::DecimalValue(DecimalValue {
-            scale: int_from_value(lookup(entries, TAGGED_EXPONENT)) as u8,
-            value: int_from_value(lookup(entries, TAGGED_SIGNIFICAND)) as u32,
-        })),
+        // Out of range is refused rather than wrapped: the keys are the caller's
+        // to write, and a scale of 300 silently becoming 44 is a wrong value on a
+        // queue every other client reads.
+        TAGGED_DECIMAL => {
+            let scale = u8::try_from(int_from_value(lookup(entries, TAGGED_EXPONENT))).ok()?;
+            let value = u32::try_from(int_from_value(lookup(entries, TAGGED_SIGNIFICAND))).ok()?;
+
+            Some(AMQPValue::DecimalValue(DecimalValue { scale, value }))
+        }
         TAGGED_TIMESTAMP => Some(AMQPValue::Timestamp(
-            int_from_value(lookup(entries, TAGGED_VALUE)) as u64,
+            u64::try_from(int_from_value(lookup(entries, TAGGED_VALUE))).ok()?,
         )),
         _ => None,
     }
@@ -180,5 +185,105 @@ fn field_value(value: &AMQPValue) -> Value {
         AMQPValue::FieldTable(table) => table_value(table),
         AMQPValue::ByteArray(bytes) => Value::str(bytes.as_slice()),
         AMQPValue::Void => Value::Nil,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tagged(kind: &str, fields: Map) -> Value {
+        let mut map = Map::new().set(TAGGED_KIND, kind);
+
+        for (key, value) in Value::from(fields).as_map().unwrap() {
+            map.push(key.clone(), value.clone());
+        }
+
+        map.into()
+    }
+
+    /// What TableCodec::encode sends, read back as the AMQP table the broker gets.
+    #[test]
+    fn a_table_reads_every_kind_a_php_array_holds() {
+        let value: Value = Map::new()
+            .set("flag", true)
+            .set("count", 7i64)
+            .set("ratio", 0.5f64)
+            .set("name", "n")
+            .set("bytes", Value::Str(vec![0, 255]))
+            .set("nothing", Value::Nil)
+            .set("list", vec![Value::Int(1), Value::Str(b"x".to_vec())])
+            .set("nested", Map::new().set("inner", 1i64))
+            .set(5usize, "numeric key")
+            .set("price", tagged(TAGGED_DECIMAL, Map::new().set(TAGGED_EXPONENT, 2i64).set(TAGGED_SIGNIFICAND, 1999i64)))
+            .set("when", tagged(TAGGED_TIMESTAMP, Map::new().set(TAGGED_VALUE, 1_700_000_000i64)))
+            .into();
+
+        let table = table_from_value(Some(&value)).expect("a table");
+        let inner = table.inner();
+
+        assert!(matches!(inner.get("flag"), Some(AMQPValue::Boolean(true))));
+        assert!(matches!(inner.get("count"), Some(AMQPValue::LongLongInt(7))));
+        assert!(matches!(inner.get("ratio"), Some(AMQPValue::Double(ratio)) if *ratio == 0.5));
+        assert!(matches!(inner.get("name"), Some(AMQPValue::LongString(text)) if text.as_bytes() == b"n"));
+        assert!(matches!(inner.get("bytes"), Some(AMQPValue::LongString(text)) if text.as_bytes() == [0, 255]));
+        assert!(matches!(inner.get("nothing"), Some(AMQPValue::Void)));
+        assert!(matches!(inner.get("list"), Some(AMQPValue::FieldArray(items)) if items.as_slice().len() == 2));
+        assert!(matches!(inner.get("nested"), Some(AMQPValue::FieldTable(_))));
+        assert!(inner.contains_key("5"), "a numeric PHP key is its decimal text");
+        assert!(matches!(inner.get("price"), Some(AMQPValue::DecimalValue(DecimalValue { scale: 2, value: 1999 }))));
+        assert!(matches!(inner.get("when"), Some(AMQPValue::Timestamp(1_700_000_000))));
+    }
+
+    #[test]
+    fn an_empty_or_non_table_value_is_no_table() {
+        assert!(table_from_value(None).is_none());
+        assert!(table_from_value(Some(&Value::List(vec![]))).is_none());
+        assert!(table_from_value(Some(&Value::Map(vec![]))).is_none());
+        assert!(table_from_value(Some(&Value::List(vec![Value::Int(1)]))).is_none());
+    }
+
+    #[test]
+    fn a_tagged_value_out_of_range_is_not_guessed_at() {
+        let value: Value = Map::new()
+            .set("price", tagged(TAGGED_DECIMAL, Map::new().set(TAGGED_EXPONENT, 300i64).set(TAGGED_SIGNIFICAND, 1i64)))
+            .into();
+
+        let table = table_from_value(Some(&value)).expect("a table");
+
+        // Not a decimal: the tagged map stays a nested table, which is what a
+        // header no reader can rebuild honestly looks like.
+        assert!(matches!(table.inner().get("price"), Some(AMQPValue::FieldTable(_))));
+    }
+
+    /// The way back: a table the broker sent, as the array TableCodec::decode reads,
+    /// with the tagged shapes for the two kinds a PHP array has no type for.
+    #[test]
+    fn a_table_round_trips_through_its_php_array() {
+        let value: Value = Map::new()
+            .set("count", 7i64)
+            .set("name", "n")
+            .set("list", vec![Value::Int(1)])
+            .set("price", tagged(TAGGED_DECIMAL, Map::new().set(TAGGED_EXPONENT, 2i64).set(TAGGED_SIGNIFICAND, 1999i64)))
+            .set("when", tagged(TAGGED_TIMESTAMP, Map::new().set(TAGGED_VALUE, 1_700_000_000i64)))
+            .into();
+
+        let table = table_from_value(Some(&value)).expect("a table");
+        let back = table_value(&table);
+
+        assert_eq!(back.get("count"), Some(&Value::Int(7)));
+        assert_eq!(back.get("name").and_then(Value::as_str), Some("n"));
+        assert_eq!(back.get("list").and_then(Value::as_list).map(|items| items.len()), Some(1));
+
+        let price = back.get("price").expect("the decimal");
+
+        assert_eq!(price.get(TAGGED_KIND).and_then(Value::as_str), Some(TAGGED_DECIMAL));
+        assert_eq!(price.get(TAGGED_EXPONENT), Some(&Value::Int(2)));
+        assert_eq!(price.get(TAGGED_SIGNIFICAND), Some(&Value::Int(1999)));
+
+        let when = back.get("when").expect("the timestamp");
+
+        assert_eq!(when.get(TAGGED_KIND).and_then(Value::as_str), Some(TAGGED_TIMESTAMP));
+        assert_eq!(when.get(TAGGED_VALUE), Some(&Value::Int(1_700_000_000)));
     }
 }

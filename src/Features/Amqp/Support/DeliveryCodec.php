@@ -16,7 +16,7 @@ use WeakReference;
  * publisher confirm can carry. It sits beside PropertiesCodec because the shape of a
  * message on the wire is one subject, and Channel is the API over the commands.
  *
- * Rust: payloads::Delivery, payloads.Confirmation, payloads.ReturnedMessage
+ * Rust: payloads::DeliveryOut, payloads::ReturnOut and payloads::wait_result_value
  * (ext/src/features/amqp/payloads.rs).
  */
 readonly class DeliveryCodec

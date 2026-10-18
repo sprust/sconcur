@@ -6,23 +6,16 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-use crate::dto::{Map, Value};
+use crate::dto::{Borrowed, Map, Value};
 
 #[derive(Deserialize)]
-pub struct Envelope {
+pub struct Envelope<'a> {
     #[serde(rename = "cm", default)]
     pub command: String,
     /// The command's parameters, kept as an untyped subtree until the command
     /// is known: its handler decodes them into its own parameter struct.
-    #[serde(rename = "p", default = "nil_value")]
-    pub params: Value,
-}
-
-/// Missing parameters decode to nil rather than failing: the command handler
-/// reports what it actually needs, which is a better message than
-/// "missing field p".
-fn nil_value() -> Value {
-    Value::Nil
+    #[serde(rename = "p", borrow, default = "crate::dto::value_de::borrowed_nil")]
+    pub params: Borrowed<'a>,
 }
 
 /// The `p` of a Request — one request to send, plus its tuning.
@@ -189,4 +182,48 @@ pub fn collect_headers(headers: &reqwest::header::HeaderMap) -> Vec<(String, Vec
     }
 
     collected
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The map HttpClient::buildResponse reads: status, headers as name => list,
+    /// the body as the string it is, the content length.
+    #[test]
+    fn a_response_meta_is_the_map_the_php_client_reads() {
+        let meta = ResponseMeta {
+            status: 404,
+            headers: vec![("Content-Type".to_string(), vec!["text/plain".to_string()])],
+            body: vec![0, 255],
+            content_length: -1,
+        };
+
+        let value = meta.into_value();
+
+        assert_eq!(value.get("st"), Some(&Value::Int(404)));
+        assert_eq!(value.get("b").and_then(Value::as_bytes), Some(&[0u8, 255][..]));
+        assert_eq!(value.get("cl"), Some(&Value::Int(-1)));
+        assert_eq!(
+            value.get("hd").and_then(|headers| headers.get("Content-Type")).and_then(Value::as_list).map(|values| values.len()),
+            Some(1)
+        );
+        assert_eq!(value.as_map().unwrap().len(), 4);
+    }
+
+    /// The map HttpClient::download reads after the sink is written.
+    #[test]
+    fn a_download_meta_is_the_map_the_php_client_reads() {
+        let meta = DownloadMeta {
+            status: 200,
+            headers: vec![],
+            written: 1024,
+        };
+
+        let value = meta.into_value();
+
+        assert_eq!(value.get("st"), Some(&Value::Int(200)));
+        assert_eq!(value.get("n"), Some(&Value::Int(1024)));
+        assert_eq!(value.get("hd").and_then(Value::as_map).map(|headers| headers.len()), Some(0));
+    }
 }

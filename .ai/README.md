@@ -49,7 +49,8 @@ User-facing documentation (each doc also exists in Russian as `*.ru.md`):
 - Operations: [worker-master](../docs/worker-master.md),
   [admin-stats](../docs/admin-stats.md)
 - Guides: [adding-a-feature](../docs/adding-a-feature.md),
-  [adding-a-server](../docs/adding-a-server.md)
+  [adding-a-server](../docs/adding-a-server.md),
+  [value-conversion](../docs/value-conversion.md)
 - Measurements: [benchmarks](../docs/benchmarks.md),
   [load-testing](../docs/load-testing.md), [positioning](../docs/positioning.md)
 - History: [the move to Rust](../docs/rust-core.md) — the gate the port had to
@@ -194,7 +195,7 @@ feature's doc. Key PHP classes not covered there:
   reads an instance's public properties on the way in
   (`features/mongodb/serializer/from_value.rs`) and creates the instance itself on
   the way out (`to_value.rs`), so adding a type is a PHP class plus an arm in each
-  of those two files.
+  of those two files — [docs/value-conversion.md](../docs/value-conversion.md).
 - `Features/Server/ServerRuntimeSupportTrait` — shared runtime glue for the
   long-lived workers (the servers and `Amqp/Consumer/QueueConsumer`):
   argv→constructor-override parsing, signal handlers, arming automatic preemption,

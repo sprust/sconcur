@@ -56,7 +56,7 @@ impl Method {
         }
     }
 
-    /// The wire value, written back into every result frame.
+    /// The wire value, the two- or three-letter code a push names the method by.
     pub fn as_wire(&self) -> &'static str {
         match self {
             Method::Sleep => "sl",

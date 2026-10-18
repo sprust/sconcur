@@ -6,11 +6,11 @@ function ping(string $str): string
 {
 }
 
-function push(string $fk, string $mt, string $tk, array $pl): string
+function push(string $fk, string $mt, string $tk, array $pl, int $ownerId): string
 {
 }
 
-function next(string $fk, string $tk): string
+function next(string $fk, string $tk, int $ownerId): string
 {
 }
 

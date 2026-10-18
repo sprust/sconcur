@@ -28,11 +28,4 @@ pub mod classes {
     pub const MIN_KEY: &str = r"SConcur\Bson\MinKey";
     pub const MAX_KEY: &str = r"SConcur\Bson\MaxKey";
     pub const INT64: &str = r"SConcur\Bson\Int64";
-
-    /// PHP's plain object. It names no BSON type — it is simply how an
-    /// object-shaped value reaches a document (a `(object)` cast, `json_decode`
-    /// without associative arrays) — so it converts to an ordinary
-    /// sub-document. The push export reads one as a map already; the constant
-    /// keeps the conversion complete should one arrive as an object.
-    pub const STD_CLASS: &str = "stdClass";
 }

@@ -86,7 +86,6 @@ impl Map {
     pub fn push(&mut self, key: impl Into<Key>, value: impl Into<Value>) {
         self.0.push((key.into(), value.into()));
     }
-
 }
 
 impl From<Map> for Value {

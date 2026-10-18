@@ -53,7 +53,7 @@ class Scheduler
 
     /**
      * How many ready results one waitAnyBatch crossing may drain. Bounds the
-     * peak multiframe size and, in the serve loop, the time between
+     * peak size of one batch and, in the serve loop, the time between
      * shouldStop() checks; a batch never waits to fill up, so the value only
      * caps a burst.
      */
@@ -819,7 +819,7 @@ class Scheduler
                             // failed, and a caller may read the scope a feature put on it
                             // (SConcur\Features\Amqp\Support\AmqpFailure).
                             throw new TaskErrorException(
-                                message: $result->payload,
+                                message: is_string($result->payload) ? $result->payload : 'Unknown error',
                             );
                         }
 

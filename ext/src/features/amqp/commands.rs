@@ -27,7 +27,7 @@ use super::{
     network_error_payload, respond, respond_done,
 };
 
-pub async fn dispatch(task: &Task, envelope: &payloads::Envelope) {
+pub async fn dispatch(task: &Task, envelope: &payloads::Envelope<'_>) {
     match envelope.command.as_str() {
         "con" => handle_connect(task, &envelope.params).await,
         "dis" => handle_disconnect(task, &envelope.params).await,
@@ -67,7 +67,7 @@ pub async fn dispatch(task: &Task, envelope: &payloads::Envelope) {
 /// Releases a resource whose owner is gone. Nothing is answered: the caller is
 /// a destructor that cannot wait, and by the time this runs its coroutine may
 /// not exist.
-pub async fn dispatch_detached(envelope: &payloads::Envelope) {
+pub async fn dispatch_detached(envelope: &payloads::Envelope<'_>) {
     match envelope.command.as_str() {
         "chc" => {
             if let Ok(params) = decode::<payloads::ChannelParams>(&envelope.params) {

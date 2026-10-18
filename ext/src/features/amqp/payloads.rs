@@ -13,7 +13,7 @@
 
 use serde::Deserialize;
 
-use crate::dto::{Map, Value};
+use crate::dto::{Borrowed, Map, Value};
 
 use super::values;
 
@@ -39,11 +39,11 @@ fn nil_value() -> Value {
 /// The command envelope decoded from the task's payload.
 /// PHP: SConcur\Features\Amqp\Payloads\AmqpPayload.
 #[derive(Deserialize)]
-pub struct Envelope {
+pub struct Envelope<'a> {
     #[serde(rename = "cm")]
     pub command: String,
-    #[serde(rename = "p", default = "nil_value")]
-    pub params: Value,
+    #[serde(rename = "p", borrow, default = "crate::dto::value_de::borrowed_nil")]
+    pub params: Borrowed<'a>,
 }
 
 /// What every command that runs on an already open channel carries: the handle
@@ -743,5 +743,57 @@ fn push_number(fields: &mut Map, key: &'static str, value: Option<i64>) {
         if number != 0 {
             fields.push(key, number);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What PropertiesCodec::decode reads: a property nobody set is absent, a
+    /// delivery mode or priority of zero is "not set" too.
+    #[test]
+    fn properties_carry_only_what_was_set() {
+        let properties = lapin::protocol::basic::AMQPProperties::default()
+            .with_content_type("text/plain".into())
+            .with_delivery_mode(2)
+            .with_priority(0)
+            .with_message_id("m-1".into());
+
+        let value = properties_value(&properties);
+        let keys: Vec<String> = value.as_map().unwrap().iter().map(|(key, _)| key.text()).collect();
+
+        assert_eq!(keys, ["ct", "dm", "mi"]);
+        assert_eq!(value.get("ct").and_then(Value::as_str), Some("text/plain"));
+        assert_eq!(value.get("dm"), Some(&Value::Int(2)));
+        assert_eq!(value.get("mi").and_then(Value::as_str), Some("m-1"));
+
+        let none = properties_value(&lapin::protocol::basic::AMQPProperties::default());
+
+        assert_eq!(none.as_map().map(|entries| entries.len()), Some(0));
+    }
+
+    /// The map DeliveryCodec::decode reads for every message a consumer takes.
+    #[test]
+    fn a_delivery_carries_the_routing_and_the_body_as_it_is() {
+        let properties = lapin::protocol::basic::AMQPProperties::default();
+        let value = DeliveryOut {
+            channel_id: "ch-1",
+            consumer_tag: "tag",
+            delivery_tag: 9,
+            redelivered: true,
+            exchange_name: "ex",
+            routing_key: "rk",
+            body: &[0, 255, 1],
+            properties: &properties,
+        }
+        .value();
+
+        let keys: Vec<String> = value.as_map().unwrap().iter().map(|(key, _)| key.text()).collect();
+
+        assert_eq!(keys, ["chid", "tg", "dt", "rd", "en", "rk", "bd", "ps"]);
+        assert_eq!(value.get("dt"), Some(&Value::Int(9)));
+        assert_eq!(value.get("rd"), Some(&Value::Bool(true)));
+        assert_eq!(value.get("bd").and_then(Value::as_bytes), Some(&[0u8, 255, 1][..]));
     }
 }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Features\SocketClient;
 
 use SConcur\Exceptions\SocketClient\SocketClientConnectException;
+use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\SocketClient\Dto\Connection;
 use SConcur\Features\SocketClient\Payloads\ConnectPayload;
@@ -51,6 +52,12 @@ readonly class SocketClient
             throw new SocketClientConnectException(
                 message: "Failed to connect to $address: " . $exception->getMessage(),
                 previous: $exception,
+            );
+        }
+
+        if (!is_array($result->payload)) {
+            throw new UnexpectedResponseFormatException(
+                message: 'The socket client connect result is not a map.',
             );
         }
 

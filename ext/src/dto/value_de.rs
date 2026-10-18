@@ -7,18 +7,22 @@
 //! when its keys are 0..n and a map otherwise, and an empty array is both: so an
 //! empty list deserializes as an empty map or an empty struct, and a map's
 //! integer keys read as their decimal text when a string key is asked for. A
-//! PHP string is bytes, so it deserializes as a `String` only when it is UTF-8,
-//! and as a `Vec<u8>` always. A PHP int fills a float field, since PHP does not
-//! keep the distinction for a whole number.
+//! PHP string is bytes, so it deserializes as a `String` only when it is UTF-8;
+//! a field that wants the bytes whatever they are is a `Vec<u8>` annotated with
+//! the `bytes` helper below, and a string never stands in for a list. A PHP int
+//! fills a float field, since PHP does not keep the distinction for a whole
+//! number. An untyped `Value` field keeps the subtree as it stands, an object's
+//! class included.
 
 use std::borrow::Cow;
 use std::fmt;
+use std::ops::Deref;
 
 use serde::de::{
     self, DeserializeSeed, Deserializer, EnumAccess, IntoDeserializer, MapAccess, SeqAccess, Visitor,
 };
 
-use super::value::{Key, Value};
+use super::value::{Key, Object, Value};
 
 /// What a decode that does not fit says. A string: it goes straight into the
 /// error result a feature reports.
@@ -158,9 +162,14 @@ impl<'de> Deserializer<'de> for &'de Value {
                 entries: entries.iter(),
                 pending: None,
             }),
+            // Through deserialize_any the class travels too, as a marker entry
+            // the Value visitor below recognises; a struct or map asked for
+            // explicitly gets the properties alone.
             Value::Object(object) => visitor.visit_map(ObjectAccess {
+                class: Some(&object.class),
                 properties: object.properties.iter(),
                 pending: None,
+                pending_class: None,
             }),
         }
     }
@@ -244,17 +253,24 @@ impl<'de> Deserializer<'de> for &'de Value {
         self.deserialize_unit(visitor)
     }
 
-    fn deserialize_newtype_struct<V: Visitor<'de>>(self, _name: &'static str, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_newtype_struct<V: Visitor<'de>>(self, name: &'static str, visitor: V) -> Result<V::Value, Error> {
+        // The one way a struct field borrows its subtree instead of copying it:
+        // `Borrowed` asks by this name, and gets the address of the node.
+        if name == BORROW_MARKER {
+            return visitor.visit_u64(self as *const Value as usize as u64);
+        }
+
         visitor.visit_newtype_struct(self)
     }
 
-    /// A `Vec<u8>` field is a sequence to serde, so a PHP string answers it as
-    /// its bytes: that is what a body or a BLOB binding is.
+    /// A string is refused here on purpose: serde reads a `Vec<u8>` as a
+    /// sequence, and letting a string answer would also let a string stand in
+    /// for a `Vec<Value>` as a list of byte integers, silently. Bytes are read
+    /// through the `bytes` helper.
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
         match self {
             Value::List(items) => visitor.visit_seq(ListAccess { items: items.iter() }),
             Value::Map(entries) if entries.is_empty() => visitor.visit_seq(ListAccess { items: [].iter() }),
-            Value::Str(bytes) => visitor.visit_seq(BytesAccess { bytes: bytes.iter() }),
             other => Err(other.mismatch("a list")),
         }
     }
@@ -284,8 +300,10 @@ impl<'de> Deserializer<'de> for &'de Value {
                 pending: None,
             }),
             Value::Object(object) => visitor.visit_map(ObjectAccess {
+                class: None,
                 properties: object.properties.iter(),
                 pending: None,
+                pending_class: None,
             }),
             other => Err(other.mismatch("a map")),
         }
@@ -337,25 +355,6 @@ impl<'de> SeqAccess<'de> for ListAccess<'de> {
 
     fn size_hint(&self) -> Option<usize> {
         Some(self.items.len())
-    }
-}
-
-struct BytesAccess<'de> {
-    bytes: std::slice::Iter<'de, u8>,
-}
-
-impl<'de> SeqAccess<'de> for BytesAccess<'de> {
-    type Error = Error;
-
-    fn next_element_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<Option<T::Value>, Error> {
-        match self.bytes.next() {
-            Some(byte) => seed.deserialize(byte.into_deserializer()).map(Some),
-            None => Ok(None),
-        }
-    }
-
-    fn size_hint(&self) -> Option<usize> {
-        Some(self.bytes.len())
     }
 }
 
@@ -433,16 +432,97 @@ impl<'de> MapAccess<'de> for MapEntries<'de> {
     }
 }
 
-/// An object read as a map of its properties.
+/// The name `Borrowed` asks for its subtree under, which no derived struct uses.
+const BORROW_MARKER: &str = "\0sconcur_borrowed_value";
+
+/// PHP null, for a field that borrows and was not sent.
+pub static NIL: Value = Value::Nil;
+
+/// A subtree of the tree a struct is decoded from, borrowed rather than copied.
+///
+/// A parameter struct keeps its command body untyped until the sub-operation
+/// knows what it is (`dt`, `p`), and a `Value` field would copy that body out of
+/// the message — for a file write or an upload chunk, the whole body, once more.
+/// This field type keeps a reference into the message instead; the struct gains
+/// the lifetime of the value it was decoded from, which is the message's.
+///
+/// It can only come out of `Value::decode`, this module's own deserializer: the
+/// address of the node travels through the marker newtype above, which no other
+/// deserializer answers, so another one fails here with an error rather than a
+/// forged reference. The type is crate-private for the same reason.
+#[derive(Clone, Copy, Debug)]
+pub struct Borrowed<'de>(pub &'de Value);
+
+impl Deref for Borrowed<'_> {
+    type Target = Value;
+
+    fn deref(&self) -> &Value {
+        self.0
+    }
+}
+
+impl PartialEq<Value> for Borrowed<'_> {
+    fn eq(&self, other: &Value) -> bool {
+        self.0 == other
+    }
+}
+
+/// The default of a borrowed field PHP did not send.
+pub fn borrowed_nil() -> Borrowed<'static> {
+    Borrowed(&NIL)
+}
+
+/// `'de: 'a`, which is what `#[serde(borrow)]` asks: a reference that lives for
+/// the decode lives for the struct.
+impl<'de: 'a, 'a> serde::Deserialize<'de> for Borrowed<'a> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct AddressVisitor<'a>(std::marker::PhantomData<&'a Value>);
+
+        impl<'de: 'a, 'a> Visitor<'de> for AddressVisitor<'a> {
+            type Value = Borrowed<'a>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a subtree of the value being decoded")
+            }
+
+            fn visit_u64<E>(self, address: u64) -> Result<Borrowed<'a>, E> {
+                // Only this module's deserializer answers the marker, and it
+                // answers with a node of the tree that lives for 'de, hence for 'a.
+                let node: &'de Value = unsafe { &*(address as usize as *const Value) };
+
+                Ok(Borrowed(node))
+            }
+        }
+
+        deserializer.deserialize_newtype_struct(BORROW_MARKER, AddressVisitor(std::marker::PhantomData))
+    }
+}
+
+/// The key under which an object read through `deserialize_any` names its class,
+/// ahead of its properties. A NUL byte keeps it apart from any property a PHP
+/// class can declare.
+const CLASS_MARKER: &str = "\0class";
+
+/// An object read as a map of its properties, with the class first when asked.
 struct ObjectAccess<'de> {
+    class: Option<&'de Cow<'static, str>>,
     properties: std::slice::Iter<'de, (Cow<'static, str>, Value)>,
     pending: Option<&'de Value>,
+    /// The class name handed out as the marker entry's value: it exists nowhere
+    /// in the tree as a `Value`, so it is carried on its own.
+    pending_class: Option<&'de str>,
 }
 
 impl<'de> MapAccess<'de> for ObjectAccess<'de> {
     type Error = Error;
 
     fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>, Error> {
+        if let Some(class) = self.class.take() {
+            self.pending_class = Some(class.as_ref());
+
+            return seed.deserialize(CLASS_MARKER.into_deserializer()).map(Some);
+        }
+
         match self.properties.next() {
             Some((name, value)) => {
                 self.pending = Some(value);
@@ -454,6 +534,10 @@ impl<'de> MapAccess<'de> for ObjectAccess<'de> {
     }
 
     fn next_value_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<T::Value, Error> {
+        if let Some(class) = self.pending_class.take() {
+            return seed.deserialize(class.into_deserializer());
+        }
+
         match self.pending.take() {
             Some(value) => seed.deserialize(value),
             None => Err(Error("a property value was asked for before its name".to_string())),
@@ -569,12 +653,30 @@ impl<'de> Visitor<'de> for ValueVisitor {
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
-        let mut entries = Vec::with_capacity(map.size_hint().unwrap_or(0));
+        let mut entries: Vec<(Key, Value)> = Vec::with_capacity(map.size_hint().unwrap_or(0));
 
         while let Some(key) = map.next_key::<MapKey>()? {
             let value = map.next_value()?;
 
             entries.push((key.0, value));
+        }
+
+        // An object announced itself: the marker entry names the class and the
+        // rest are its properties.
+        if let Some((Key::Str(marker), Value::Str(class))) = entries.first()
+            && marker == CLASS_MARKER.as_bytes()
+        {
+            let class = String::from_utf8_lossy(class).into_owned();
+            let properties = entries
+                .iter()
+                .skip(1)
+                .map(|(name, value)| (Cow::Owned(name.text()), value.clone()))
+                .collect();
+
+            return Ok(Value::Object(Object {
+                class: Cow::Owned(class),
+                properties,
+            }));
         }
 
         Ok(Value::Map(entries))
@@ -600,7 +702,10 @@ impl<'de> serde::Deserialize<'de> for MapKey {
             }
 
             fn visit_u64<E>(self, index: u64) -> Result<MapKey, E> {
-                Ok(MapKey(Key::Int(index as i64)))
+                Ok(MapKey(match i64::try_from(index) {
+                    Ok(index) => Key::Int(index),
+                    Err(_) => Key::Str(index.to_string().into_bytes()),
+                }))
             }
 
             fn visit_str<E>(self, text: &str) -> Result<MapKey, E> {
@@ -633,7 +738,7 @@ mod tests {
         timeout_ms: i64,
         #[serde(rename = "hd", default)]
         headers: HashMap<String, Vec<String>>,
-        #[serde(rename = "bd", default)]
+        #[serde(rename = "bd", default, deserialize_with = "crate::dto::value_de::bytes")]
         body: Vec<u8>,
         #[serde(rename = "ro", default)]
         read_only: bool,
@@ -736,6 +841,48 @@ mod tests {
         let wrong: Value = Map::new().set("bd", 5i64).into();
 
         assert!(wrong.decode::<Body>().is_err());
+    }
+
+    #[test]
+    fn a_borrowed_field_points_into_the_tree_instead_of_copying_it() {
+        #[derive(Deserialize)]
+        struct Envelope<'a> {
+            #[serde(rename = "cm", default)]
+            command: String,
+            #[serde(rename = "dt", borrow, default = "crate::dto::value_de::borrowed_nil")]
+            data: Borrowed<'a>,
+        }
+
+        let body: Value = Map::new().set("c", Value::Str(vec![1, 2, 3])).into();
+        let value: Value = Map::new().set("cm", "wr").set("dt", body.clone()).into();
+
+        let envelope: Envelope<'_> = value.decode().expect("decodes");
+
+        assert_eq!(envelope.command, "wr");
+        assert!(std::ptr::eq(envelope.data.0, value.get("dt").unwrap()), "the body is not copied");
+        assert_eq!(envelope.data.get("c"), body.get("c"));
+
+        let empty = Value::List(vec![]);
+        let without: Envelope<'_> = empty.decode().expect("decodes");
+
+        assert!(without.data.is_nil());
+    }
+
+    #[test]
+    fn a_string_never_stands_in_for_a_list() {
+        let value: Value = Map::new().set("b", "hi").into();
+
+        assert!(value.decode::<Params>().is_err(), "a string must not decode as a list of its bytes");
+    }
+
+    #[test]
+    fn a_value_field_keeps_an_object_with_its_class() {
+        let object = Value::object("SConcur\\Bson\\ObjectId", vec![("oid", "abc".into())]);
+        let value: Value = Map::new().set("b", vec![object.clone()]).into();
+
+        let params: Params = value.decode().expect("decodes");
+
+        assert_eq!(params.bindings, vec![object]);
     }
 
     #[test]

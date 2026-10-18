@@ -6,6 +6,7 @@ namespace SConcur\Features\Sql\Results;
 
 use Iterator;
 use SConcur\Dto\TaskResultDto;
+use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\State;
 use SConcur\Transport\PayloadInterface;
@@ -100,8 +101,25 @@ class RowsResult implements Iterator
     protected function setTaskResult(TaskResultDto $taskResult): void
     {
         $this->isLastBatch = !$taskResult->hasNext;
-        $this->items       = is_array($taskResult->payload) ? $taskResult->payload : [];
+        $this->items       = self::rows($taskResult);
         $this->itemIndex   = 0;
+    }
+
+    /**
+     * The batch as the core built it: a list of rows, or a loud failure, because a
+     * corrupt batch read as "no rows" would end the iteration as if it were complete.
+     *
+     * @return array<int, mixed>
+     */
+    protected static function rows(TaskResultDto $taskResult): array
+    {
+        if (!is_array($taskResult->payload)) {
+            throw new UnexpectedResponseFormatException(
+                message: 'The SQL rows batch is not a list.',
+            );
+        }
+
+        return $taskResult->payload;
     }
 
     protected function nextItem(): void

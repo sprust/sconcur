@@ -14,8 +14,7 @@ use super::classes;
 
 /// One document as the PHP array it becomes.
 pub fn document_value(document: &Document) -> Value {
-    // An empty document is an empty PHP array. PHP cannot tell {} from []
-    // anyway, and the ext-mongodb path this replaces mapped both to [] as well.
+    // An empty document is an empty PHP array: PHP cannot tell {} from [].
     let mut map = Map::with_capacity(document.len());
 
     for (key, value) in document {

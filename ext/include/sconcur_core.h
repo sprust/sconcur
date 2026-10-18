@@ -62,7 +62,11 @@ extern zval *sconcur_result_append(zval *list, const sconcur_result_t *result);
 
 /*
  * The value builder: one call per node of the value tree a result carries
- * (src/dto/value.rs), each writing into the zval it is given. The container
+ * (src/dto/value.rs), each writing into the zval it is given. Like every Zend
+ * allocation, a builder call may bail out (memory_limit, a fatal error): the
+ * longjmp skips the core's frames, so the core holds nothing across a builder
+ * call whose loss would corrupt state — the lost results are gone with the
+ * request, nothing else. The container
  * calls answer the zval of the new element, to be written in turn, or NULL with
  * a PHP exception pending; the slot is valid until the next element is added to
  * the same container, which is why a child is filled before its sibling is
@@ -134,6 +138,13 @@ typedef int (*sconcur_visit_t)(
 
 extern int sconcur_array_iterate(const zval *array, void *context, sconcur_visit_t visit);
 extern int sconcur_object_iterate(const zval *object, void *context, sconcur_visit_t visit);
+
+/*
+ * Whether a PHP exception is pending. An object's property table may be built by
+ * user code (a lazy object's initializer), so the core asks after a walk and
+ * refuses the payload rather than enqueue a task with a throw in flight.
+ */
+extern int sconcur_exception_pending(void);
 
 /* The push export reads payload through the readers above before it returns. */
 extern char *push(

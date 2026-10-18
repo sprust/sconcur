@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Features\WsClient;
 
+use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Exceptions\WsClient\WsClientConnectException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\WsClient\Dto\Connection;
@@ -52,6 +53,12 @@ readonly class WsClient
             throw new WsClientConnectException(
                 message: "Failed to connect to $url: " . $exception->getMessage(),
                 previous: $exception,
+            );
+        }
+
+        if (!is_array($result->payload)) {
+            throw new UnexpectedResponseFormatException(
+                message: 'The WebSocket client connect result is not a map.',
             );
         }
 

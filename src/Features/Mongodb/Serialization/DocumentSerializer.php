@@ -22,7 +22,7 @@ class DocumentSerializer
      */
     public static function unserialize(mixed $document): array
     {
-        if ($document === null || $document === '') {
+        if ($document === null) {
             return [];
         }
 
@@ -42,7 +42,7 @@ class DocumentSerializer
      */
     public static function unserializeBatch(mixed $payload): array
     {
-        if ($payload === null || $payload === '') {
+        if ($payload === null) {
             return [];
         }
 

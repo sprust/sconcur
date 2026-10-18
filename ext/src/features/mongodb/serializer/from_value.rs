@@ -34,12 +34,6 @@ pub fn document_from_value(value: &Value) -> Result<Document, Error> {
 
             Ok(document)
         }
-        // The glue reads a stdClass as a map, so this arm is for the class
-        // list staying complete: a plain object is a sub-document, not a
-        // BSON type.
-        Value::Object(object) if object.class == classes::STD_CLASS => {
-            document_from_properties(object)
-        }
         Value::Object(object) => Err(format!("a document cannot be a {}", object.class)),
         Value::Nil => Ok(Document::new()),
         other => Err(format!("expected a document, got {}", describe(other))),
@@ -99,22 +93,11 @@ fn document_from_entries(entries: &[(Key, Value)]) -> Result<Document, Error> {
     Ok(document)
 }
 
-fn document_from_properties(object: &Object) -> Result<Document, Error> {
-    let mut document = Document::new();
-
-    for (name, item) in &object.properties {
-        document.insert(name.to_string(), bson_from_value(item)?);
-    }
-
-    Ok(document)
-}
-
 /// The BSON value a `SConcur\Bson\*` object names. The property names are the
 /// declared public properties of the PHP classes, the same ones to_value.rs
 /// writes.
 fn bson_from_object(object: &Object) -> Result<Bson, Error> {
     match object.class.as_ref() {
-        classes::STD_CLASS => Ok(Bson::Document(document_from_properties(object)?)),
         classes::OBJECT_ID => {
             let hexadecimal = property_string(object, "oid")?;
 
@@ -217,7 +200,8 @@ fn property_string(object: &Object, name: &str) -> Result<String, Error> {
         Some(Value::Str(bytes)) => String::from_utf8(bytes.clone())
             .map_err(|_| format!("{} property {name} is not valid UTF-8", object.class)),
         Some(Value::Int(number)) => Ok(number.to_string()),
-        _ => Err(format!("{} is missing property {name}", object.class)),
+        Some(_) => Err(format!("{} property {name} is not a string", object.class)),
+        None => Err(format!("{} is missing property {name}", object.class)),
     }
 }
 
@@ -230,7 +214,8 @@ fn property_int(object: &Object, name: &str) -> Result<i64, Error> {
             .ok()
             .and_then(|text| text.parse::<i64>().ok())
             .ok_or_else(|| format!("{} property {name} is not an integer", object.class)),
-        _ => Err(format!("{} is missing property {name}", object.class)),
+        Some(_) => Err(format!("{} property {name} is not an integer", object.class)),
+        None => Err(format!("{} is missing property {name}", object.class)),
     }
 }
 
@@ -251,7 +236,8 @@ fn property_range(object: &Object, name: &str, maximum: i64) -> Result<i64, Erro
 fn property_bytes(object: &Object, name: &str) -> Result<Vec<u8>, Error> {
     match object.property(name) {
         Some(Value::Str(bytes)) => Ok(bytes.clone()),
-        _ => Err(format!("{} is missing property {name}", object.class)),
+        Some(_) => Err(format!("{} property {name} is not a string", object.class)),
+        None => Err(format!("{} is missing property {name}", object.class)),
     }
 }
 
@@ -536,7 +522,7 @@ mod tests {
         );
         assert_eq!(
             bson_from_value(&binary).unwrap_err(),
-            format!("{} is missing property data", classes::BINARY)
+            format!("{} property data is not a string", classes::BINARY)
         );
         assert_eq!(
             bson_from_value(&scoped).unwrap_err(),

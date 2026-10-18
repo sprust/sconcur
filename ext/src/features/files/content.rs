@@ -50,7 +50,7 @@ pub fn count_value(count: u64) -> Value {
 /// The bytes go back as one PHP string, not under a key of a map: the contents
 /// are the whole answer, and a 100 MiB file is handed to PHP as the one string
 /// it already is.
-pub async fn read(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn read(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -180,7 +180,7 @@ async fn read_file(parameters: &payloads::ReadParams) -> std::result::Result<Vec
 }
 
 /// Writes, appends or creates a file in one shot.
-pub async fn write(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn write(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -293,7 +293,7 @@ pub async fn remove_if_created(path: &str, created_by_us: bool) {
 /// temporary's identity: its permissions are inherited from the old file below,
 /// but its owner is whoever this process runs as and its ACLs are gone. Writing
 /// atomically over a file owned by someone else changes who owns it.
-pub async fn write_atomic(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn write_atomic(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -415,7 +415,7 @@ pub async fn write_atomic(task: &Task, envelope: &mut payloads::Envelope) {
 
 /// Cuts a file to the given length, growing it with zeroes when the length is
 /// past its end — the same behaviour as ftruncate().
-pub async fn truncate(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn truncate(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -469,7 +469,7 @@ pub async fn truncate(task: &Task, envelope: &mut payloads::Envelope) {
 
 /// Copies a file. The bytes are streamed inside the extension and never cross
 /// into PHP, which is what makes this the clearest win the feature has.
-pub async fn copy(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn copy(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -589,7 +589,7 @@ pub async fn copy(task: &Task, envelope: &mut payloads::Envelope) {
 /// place, so a failure at any point before the rename leaves the destination as
 /// it was. PHP's own rename() falls back too, but copies straight onto the
 /// destination.
-pub async fn move_file(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn move_file(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -768,7 +768,7 @@ async fn mode_of(path: &str) -> Option<u32> {
 /// Removes a file. With missing_ok a path that is not there is a success, which
 /// is the check-then-delete race written once here instead of at every call
 /// site.
-pub async fn delete(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn delete(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
     let start_time = Instant::now();
 

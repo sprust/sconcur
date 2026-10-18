@@ -217,7 +217,7 @@ readonly class HttpServer
                         onError: $onError,
                         serverRequestFactory: $serverRequestFactory,
                         responseFactory: $responseFactory,
-                        payload: $payload,
+                        data: $payload,
                     );
                 },
                 shouldStop: static function () use (&$stopRequested, $masterPid): bool {
@@ -251,18 +251,18 @@ readonly class HttpServer
      *
      * @param Closure(ServerRequestInterface): ResponseInterface                  $handler
      * @param null|Closure(Throwable, ServerRequestInterface): ?ResponseInterface $onError
-     * @param array<string, mixed>                                                $payload the request event the core built
+     * @param array<string, mixed>                                                $data    the request event the core built
      */
     private static function handle(
         Closure $handler,
         ?Closure $onError,
         ServerRequestFactoryInterface $serverRequestFactory,
         ResponseFactoryInterface $responseFactory,
-        array $payload,
+        array $data,
     ): void {
         [$requestId, $request] = self::decodeRequest(
             serverRequestFactory: $serverRequestFactory,
-            payload: $payload,
+            data: $data,
         );
 
         $response = self::resolveResponse(
@@ -361,16 +361,14 @@ readonly class HttpServer
      * to address the response. The body is wrapped in a lazy RequestBodyStream so it
      * is never buffered whole.
      *
-     * @param array<string, mixed> $payload the request event the core built
+     * @param array<string, mixed> $data the request event the core built
      *
      * @return array{0: string, 1: ServerRequestInterface}
      */
     private static function decodeRequest(
         ServerRequestFactoryInterface $serverRequestFactory,
-        array $payload,
+        array $data,
     ): array {
-        $data = $payload;
-
         $requestId  = (string) ($data['rid'] ?? '');
         $method     = (string) ($data['mt'] ?? '');
         $path       = (string) ($data['pt'] ?? '');

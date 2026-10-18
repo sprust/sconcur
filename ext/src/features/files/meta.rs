@@ -73,7 +73,7 @@ pub fn text_value(key: &str, value: &str) -> Value {
 /// Describes a path. A path that is not there is not a failure — it answers
 /// exists: false, which is what makes one command serve both stat() and
 /// exists().
-pub async fn stat(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn stat(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let start_time = Instant::now();
 
     let Some(parameters) = params::<payloads::StatParams>(task, envelope, "stat").await else {
@@ -101,7 +101,7 @@ pub async fn stat(task: &Task, envelope: &mut payloads::Envelope) {
 }
 
 /// Changes a path's permission bits.
-pub async fn chmod(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn chmod(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -139,7 +139,7 @@ pub async fn chmod(task: &Task, envelope: &mut payloads::Envelope) {
 
 /// Creates a file, or moves the modification time of one that is already there
 /// — the two halves of touch(1), in the order it does them.
-pub async fn touch(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn touch(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let start_time = Instant::now();
 
     let Some(parameters) = params::<payloads::TouchParams>(task, envelope, "touch").await else {
@@ -209,7 +209,7 @@ pub async fn touch(task: &Task, envelope: &mut payloads::Envelope) {
 
 /// Canonicalizes a path: symlinks resolved, `.` and `..` removed. The path must
 /// exist, as it must for PHP's realpath().
-pub async fn real_path(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn real_path(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let start_time = Instant::now();
 
     let Some(parameters) = params::<payloads::RealPathParams>(task, envelope, "realPath").await
@@ -236,7 +236,7 @@ pub async fn real_path(task: &Task, envelope: &mut payloads::Envelope) {
 /// and then created: the check-then-create version has a window in which another
 /// process takes the name, and a temporary file whose whole purpose is to be
 /// exclusively yours cannot have one.
-pub async fn temporary_file(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn temporary_file(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -373,7 +373,7 @@ pub async fn temporary_file(task: &Task, envelope: &mut payloads::Envelope) {
 
 /// Runs the work under the deadline and answers with whatever it built. The
 /// shape every operation in this module shares, written once.
-pub async fn publish<F>(task: &Task, envelope: &payloads::Envelope, start_time: Instant, work: F)
+pub async fn publish<F>(task: &Task, envelope: &payloads::Envelope<'_>, start_time: Instant, work: F)
 where
     F: std::future::Future<Output = std::result::Result<Value, String>>,
 {

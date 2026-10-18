@@ -297,6 +297,8 @@ The crates the core is built on:
   without streaming.
 - [How to add a new server](docs/adding-a-server.md) — the Serve/Respond pattern
   and the serve loop.
+- [Values across the boundary](docs/value-conversion.md) — how a PHP value reaches
+  the core and comes back, objects included, and how to add a value class.
 - [Feature benchmarks](docs/benchmarks.md) — per-feature measurements
   (native/sync/async).
 - [Load testing](docs/load-testing.md) — server behaviour under load with all I/O

@@ -91,3 +91,24 @@ impl ConnectionEvent {
             .into()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The map SocketServer::handleConnection reads into a Connection.
+    #[test]
+    fn a_connection_event_carries_the_three_addresses() {
+        let value = ConnectionEvent {
+            connection_id: "c-1".to_string(),
+            remote_addr: "10.0.0.1:5000".to_string(),
+            local_addr: "0.0.0.0:9000".to_string(),
+        }
+        .value();
+
+        assert_eq!(value.get("cid").and_then(Value::as_str), Some("c-1"));
+        assert_eq!(value.get("ra").and_then(Value::as_str), Some("10.0.0.1:5000"));
+        assert_eq!(value.get("la").and_then(Value::as_str), Some("0.0.0.0:9000"));
+        assert_eq!(value.as_map().unwrap().len(), 3);
+    }
+}

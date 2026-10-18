@@ -141,7 +141,7 @@ Rust:
                let start_time = Instant::now();
                let message = task.message();
 
-               let payload: payloads::FooPayload = match rmp_serde::from_slice(&message.payload) {
+               let payload: payloads::FooPayload = match message.payload.decode() {
                    Ok(payload) => payload,
                    Err(error) => {
                        task.add_result(Result::error(
@@ -200,9 +200,9 @@ needed.
 PHP: `MethodEnum` and the payload as in variant A; the public API returns an
 iterator result wrapped around the payload, which requests the first and subsequent
 batches itself. (`IteratorResult` below is Mongodb's
-`Features\Mongodb\Results\IteratorResult`, shown as the pattern — it decodes batches
-with the Mongo BSON serializer, so a new feature writes its own equivalent over its
-payload format.)
+`Features\Mongodb\Results\IteratorResult`, shown as the pattern — it checks that a
+batch is the list the core built, so a new feature writes its own equivalent over
+the shape of its batches.)
 
 ```php
 /**

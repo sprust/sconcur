@@ -119,7 +119,7 @@ impl Feature for AmqpFeature {
         Box::pin(async move {
             let message = task.message();
 
-            let envelope: payloads::Envelope = match message.payload.decode() {
+            let envelope: payloads::Envelope<'_> = match message.payload.decode() {
                 Ok(envelope) => envelope,
                 Err(error) => {
                     task.add_result(Result::error(
@@ -142,13 +142,13 @@ impl Feature for AmqpFeature {
     /// thread — this runs inside `push()`, and closing a channel waits on the
     /// broker.
     fn handle_detached(&self, task: Task) {
-        let message = task.message();
-
-        let Ok(envelope) = message.payload.decode::<payloads::Envelope>() else {
-            return;
-        };
-
+        // The envelope borrows the message, so the task goes along: it owns the
+        // message for as long as the dispatch needs it.
         crate::core::get().runtime().spawn(async move {
+            let Ok(envelope) = task.message().payload.decode::<payloads::Envelope<'_>>() else {
+                return;
+            };
+
             commands::dispatch_detached(&envelope).await;
         });
     }

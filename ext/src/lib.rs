@@ -33,8 +33,7 @@ use handler::{Handler, WaitError};
 use types::method::Method;
 
 /// The extension version the PHP package pins
-/// (Extension::REQUIRED_EXTENSION_VERSION). The spike answers with the same
-/// value so an unmodified package loads it.
+/// (Extension::REQUIRED_EXTENSION_VERSION); the package refuses any other.
 const VERSION: &str = "0.16.0";
 
 // Defined in sconcur.c: the VM interrupt request of the preemption ticker, the
@@ -67,6 +66,7 @@ unsafe extern "C" {
     fn sconcur_object_is_plain(object: *const c_void) -> c_int;
     fn sconcur_array_iterate(array: *const c_void, context: *mut c_void, visit: VisitFn) -> c_int;
     fn sconcur_object_iterate(object: *const c_void, context: *mut c_void, visit: VisitFn) -> c_int;
+    fn sconcur_exception_pending() -> c_int;
 }
 
 /// Mirrors sconcur_visit_t of sconcur_core.h: the callback the glue calls per
@@ -110,6 +110,10 @@ struct Collected {
     error: Option<String>,
 }
 
+/// The visit the glue calls per entry. `extern "C"`, so a panic inside would
+/// abort the process rather than reach `guarded`; nothing here can panic (an
+/// allocation failure aborts regardless), and the error path is the return
+/// value, not an unwind.
 unsafe extern "C" fn collect_entry(
     context: *mut c_void,
     key: *const c_char,
@@ -122,7 +126,7 @@ unsafe extern "C" fn collect_entry(
     let entry_key = if key.is_null() {
         Key::Int(index)
     } else {
-        Key::Str(unsafe { byte_view(key, key_length as c_int) }.to_vec())
+        Key::Str(unsafe { byte_view_len(key, key_length) }.to_vec())
     };
 
     match read_value(value, collected.depth + 1) {
@@ -156,6 +160,13 @@ fn read_entries(container: *const c_void, depth: usize, capacity: usize, object:
         }
     };
 
+    // An object's property table may have been built by user code (a lazy
+    // object's initializer); a throw there must refuse the payload, not travel
+    // alongside a task that was enqueued anyway.
+    if unsafe { sconcur_exception_pending() } != 0 {
+        return Err("PHP raised an exception while the payload was read".to_string());
+    }
+
     match collected.error {
         Some(error) => Err(error),
         None => Ok(collected.entries),
@@ -177,7 +188,7 @@ fn read_value(value: *const c_void, depth: usize) -> std::result::Result<Value, 
             let mut length: usize = 0;
             let bytes = unsafe { sconcur_zval_string(value, &mut length) };
 
-            Ok(Value::Str(unsafe { byte_view(bytes, length as c_int) }.to_vec()))
+            Ok(Value::Str(unsafe { byte_view_len(bytes, length) }.to_vec()))
         }
         KIND_ARRAY => {
             let count = unsafe { sconcur_array_count(value) } as usize;
@@ -200,7 +211,7 @@ fn read_value(value: *const c_void, depth: usize) -> std::result::Result<Value, 
 
             let mut length: usize = 0;
             let class = unsafe { sconcur_object_class(value, &mut length) };
-            let class = String::from_utf8_lossy(unsafe { byte_view(class, length as c_int) }).into_owned();
+            let class = String::from_utf8_lossy(unsafe { byte_view_len(class, length) }).into_owned();
 
             Ok(Value::Object(dto::Object {
                 class: std::borrow::Cow::Owned(class),
@@ -213,7 +224,6 @@ fn read_value(value: *const c_void, depth: usize) -> std::result::Result<Value, 
         _ => Err("the payload holds a value that is neither a scalar, an array nor an object".to_string()),
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Results on their way to PHP.
@@ -403,7 +413,9 @@ fn throw_wait_error(context: &str, error: &str) -> c_int {
 /// The glue's side of the contract, for the unit-test harness only: `cargo test
 /// --lib` links the core without sconcur.c, and these stand in for the C
 /// functions it would otherwise supply. Nothing in a unit test reaches them;
-/// they exist so the symbols resolve.
+/// they exist so the symbols resolve. rustc does not check a stub against the
+/// `extern` block, so a drifted signature here still links: the real contract
+/// is checked by `make ext-build` alone.
 #[cfg(test)]
 mod glue_stubs {
     use std::ffi::{c_char, c_int, c_longlong, c_uint, c_void};
@@ -525,6 +537,11 @@ mod glue_stubs {
     pub extern "C" fn sconcur_object_iterate(_object: *const c_void, _context: *mut c_void, _visit: super::VisitFn) -> c_int {
         1
     }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_exception_pending() -> c_int {
+        0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -565,6 +582,16 @@ unsafe fn byte_view<'a>(pointer: *const c_char, length: c_int) -> &'a [u8] {
     }
 
     unsafe { std::slice::from_raw_parts(pointer as *const u8, length as usize) }
+}
+
+/// `byte_view` for a length that is a size_t: what the value readers answer, so
+/// a string past 2 GiB is read whole rather than truncated by a narrowing cast.
+unsafe fn byte_view_len<'a>(pointer: *const c_char, length: usize) -> &'a [u8] {
+    if pointer.is_null() || length == 0 {
+        return &[];
+    }
+
+    unsafe { std::slice::from_raw_parts(pointer as *const u8, length) }
 }
 
 unsafe fn owned_string(pointer: *const c_char, length: c_int) -> String {

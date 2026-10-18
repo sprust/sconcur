@@ -305,7 +305,8 @@ driver still wins) is in the [benchmarks](benchmarks.md#mongodb).
 ## Object conversion
 
 BSON values a PHP array cannot express — an id, a date, a decimal — cross the
-boundary as PHP objects, and nothing serializes them. On the way in the extension
+boundary as PHP objects, and nothing serializes them; the mechanism itself is in
+[Values across the boundary](value-conversion.md). On the way in the extension
 reads an instance's class name and public properties off the object it was given
 (`ext/src/features/mongodb/serializer/from_value.rs`, one arm per class); on the way
 out it creates the instance itself, without calling the constructor, and writes the

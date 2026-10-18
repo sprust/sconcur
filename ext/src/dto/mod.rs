@@ -9,3 +9,4 @@ pub mod value_de;
 pub use message::Message;
 pub use result::Result;
 pub use value::{Key, Map, Object, Value};
+pub use value_de::Borrowed;

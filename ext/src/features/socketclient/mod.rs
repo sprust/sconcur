@@ -63,7 +63,7 @@ impl Feature for SocketClientFeature {
         Box::pin(async move {
             let message = task.message();
 
-            let envelope: payloads::Envelope = match message.payload.decode() {
+            let envelope: payloads::Envelope<'_> = match message.payload.decode() {
                 Ok(envelope) => envelope,
                 Err(error) => {
                     task.add_result(Result::error(
@@ -77,9 +77,9 @@ impl Feature for SocketClientFeature {
             };
 
             match envelope.command.as_str() {
-                "con" => handle_connect(&task, envelope.params).await,
-                "snd" => handle_send(&task, envelope.params).await,
-                "cls" => handle_close(&task, envelope.params).await,
+                "con" => handle_connect(&task, &envelope.params).await,
+                "snd" => handle_send(&task, &envelope.params).await,
+                "cls" => handle_close(&task, &envelope.params).await,
                 _ => {
                     task.add_result(Result::error(message, ERRORS.by_text("unknown command")))
                         .await;
@@ -136,7 +136,7 @@ impl StateContract for ConnectionState {
     }
 }
 
-async fn handle_connect(task: &Task, params: Value) {
+async fn handle_connect(task: &Task, params: &Value) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -321,7 +321,7 @@ async fn handle_connect(task: &Task, params: Value) {
     }
 }
 
-async fn handle_send(task: &Task, params: Value) {
+async fn handle_send(task: &Task, params: &Value) {
     let mut params: payloads::SendParams = match params.decode() {
         Ok(params) => params,
         Err(error) => {
@@ -342,7 +342,7 @@ async fn handle_send(task: &Task, params: Value) {
     route(task, &params.connection_id, WriteKind::Frame, data).await;
 }
 
-async fn handle_close(task: &Task, params: Value) {
+async fn handle_close(task: &Task, params: &Value) {
     let params: payloads::CloseParams = match params.decode() {
         Ok(params) => params,
         Err(error) => {

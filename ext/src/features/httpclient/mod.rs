@@ -90,7 +90,7 @@ impl Feature for HttpClientFeature {
         Box::pin(async move {
             let message = task.message();
 
-            let envelope: payloads::Envelope = match message.payload.decode() {
+            let envelope: payloads::Envelope<'_> = match message.payload.decode() {
                 Ok(envelope) => envelope,
                 Err(error) => {
                     task.add_result(Result::error(
@@ -104,9 +104,9 @@ impl Feature for HttpClientFeature {
             };
 
             match envelope.command.as_str() {
-                "req" => handle_request(&task, envelope.params).await,
-                "upc" => handle_upload(&task, envelope.params, false).await,
-                "upe" => handle_upload(&task, envelope.params, true).await,
+                "req" => handle_request(&task, &envelope.params).await,
+                "upc" => handle_upload(&task, &envelope.params, false).await,
+                "upe" => handle_upload(&task, &envelope.params, true).await,
                 _ => {
                     task.add_result(Result::error(message, ERRORS.by_text("unknown command")))
                         .await;
@@ -116,7 +116,7 @@ impl Feature for HttpClientFeature {
     }
 }
 
-async fn handle_request(task: &Task, params: Value) {
+async fn handle_request(task: &Task, params: &Value) {
     let message = task.message();
 
     let mut params: payloads::RequestParams = match params.decode() {
@@ -329,7 +329,7 @@ fn open_streamed(
     Ok(Pending::Streamed(response))
 }
 
-async fn handle_upload(task: &Task, params: Value, end: bool) {
+async fn handle_upload(task: &Task, params: &Value, end: bool) {
     let message = task.message();
     let start_time = Instant::now();
 

@@ -86,7 +86,7 @@ impl Feature for RedisFeature {
         Box::pin(async move {
             let message = task.message();
 
-            let envelope: payloads::Envelope = match message.payload.decode() {
+            let envelope: payloads::Envelope<'_> = match message.payload.decode() {
                 Ok(envelope) => envelope,
                 Err(error) => {
                     task.add_result(Result::error(
@@ -125,7 +125,7 @@ impl RedisFeature {
     /// One command. An ordinary one goes onto a shared multiplexed connection;
     /// a blocking one onto a connection of its own, because on a shared socket
     /// it would stall everything queued behind it.
-    async fn handle_command(&'static self, task: &Task, envelope: &payloads::Envelope) {
+    async fn handle_command(&'static self, task: &Task, envelope: &payloads::Envelope<'_>) {
         let message = task.message();
         let start_time = Instant::now();
 
@@ -240,7 +240,7 @@ impl RedisFeature {
     /// The failure of one command does not fail the answer — the server ran the
     /// others, and throwing their results away because of one typo would be
     /// worse than reporting the failure in its place.
-    async fn handle_pipeline(&'static self, task: &Task, envelope: &payloads::Envelope) {
+    async fn handle_pipeline(&'static self, task: &Task, envelope: &payloads::Envelope<'_>) {
         let message = task.message();
         let start_time = Instant::now();
 
@@ -392,7 +392,7 @@ impl RedisFeature {
 
     /// A cursor command. The cursor stays here and PHP pulls batches, so a keyspace
     /// bigger than memory is walked without ever holding it whole.
-    async fn handle_scan(&'static self, task: &Task, envelope: &payloads::Envelope) {
+    async fn handle_scan(&'static self, task: &Task, envelope: &payloads::Envelope<'_>) {
         let message = task.message();
 
         let params: payloads::ScanParams = match envelope.data.decode() {
@@ -465,7 +465,7 @@ impl RedisFeature {
     /// A subscription. It gets a connection of its own — the protocol puts the
     /// connection into subscriber mode — and streams messages to PHP in
     /// batches.
-    async fn handle_subscribe(&'static self, task: &Task, envelope: &payloads::Envelope) {
+    async fn handle_subscribe(&'static self, task: &Task, envelope: &payloads::Envelope<'_>) {
         let message = task.message();
         let start_time = Instant::now();
 
@@ -620,7 +620,7 @@ impl RedisFeature {
 
     /// Adds or removes channels on a live subscription, on the connection that
     /// subscription is on.
-    async fn handle_subscription_update(&'static self, task: &Task, envelope: &payloads::Envelope) {
+    async fn handle_subscription_update(&'static self, task: &Task, envelope: &payloads::Envelope<'_>) {
         let message = task.message();
         let start_time = Instant::now();
 
@@ -705,7 +705,7 @@ impl RedisFeature {
 
     /// Closes a subscription. Idempotent: an explicit close and the flow ending
     /// both arrive, in whichever order.
-    async fn handle_subscription_close(&'static self, task: &Task, envelope: &payloads::Envelope) {
+    async fn handle_subscription_close(&'static self, task: &Task, envelope: &payloads::Envelope<'_>) {
         let message = task.message();
         let start_time = Instant::now();
 
@@ -742,7 +742,7 @@ impl RedisFeature {
         .await;
     }
 
-    fn acquire(&'static self, envelope: &payloads::Envelope) -> std::result::Result<pools::Acquired, String> {
+    fn acquire(&'static self, envelope: &payloads::Envelope<'_>) -> std::result::Result<pools::Acquired, String> {
         pools::get()
             .acquire(&envelope.dsn, envelope.pool_size, envelope.conn_max_lifetime_ms)
             .map_err(|error| fail(Kind::Dsn, &error))

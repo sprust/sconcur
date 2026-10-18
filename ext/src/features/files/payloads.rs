@@ -8,26 +8,19 @@
 
 use serde::Deserialize;
 
-use crate::dto::Value;
-
-/// A missing command body decodes to nil rather than failing: the sub-operation
-/// handler reports what it actually needs, which is a better message than
-/// "missing field dt". `Value` has no Default, hence a function.
-fn nil_value() -> Value {
-    Value::Nil
-}
+use crate::dto::Borrowed;
 
 /// Wraps every file operation: the sub-operation, the execution deadline and
 /// the body. PHP: SConcur\Features\Files\Payloads\FilesPayload.
 #[derive(Deserialize)]
-pub struct Envelope {
+pub struct Envelope<'a> {
     #[serde(rename = "cm", default)]
     pub command: String,
     #[serde(rename = "to", default)]
     pub timeout_ms: i64,
     /// The operation's body, decoded once the sub-operation is known.
-    #[serde(rename = "dt", default = "nil_value")]
-    pub data: Value,
+    #[serde(rename = "dt", borrow, default = "crate::dto::value_de::borrowed_nil")]
+    pub data: Borrowed<'a>,
 }
 
 /// The body of a Read (`rd`).

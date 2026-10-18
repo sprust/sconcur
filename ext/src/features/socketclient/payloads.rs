@@ -8,19 +8,14 @@
 
 use serde::Deserialize;
 
-use crate::dto::{Map, Value};
+use crate::dto::{Borrowed, Map, Value};
 
 #[derive(Deserialize)]
-pub struct Envelope {
+pub struct Envelope<'a> {
     #[serde(rename = "cm", default)]
     pub command: String,
-    #[serde(rename = "p", default = "nil_value")]
-    pub params: Value,
-}
-
-/// `Value` has no `Default`, so a missing `p` is spelled out as null.
-fn nil_value() -> Value {
-    Value::Nil
+    #[serde(rename = "p", borrow, default = "crate::dto::value_de::borrowed_nil")]
+    pub params: Borrowed<'a>,
 }
 
 /// The `p` of a Connect — the remote address and the per-connection tuning.

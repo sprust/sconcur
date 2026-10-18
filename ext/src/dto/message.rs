@@ -12,7 +12,7 @@ pub struct Message {
     pub payload: Value,
     pub is_next: bool,
     /// The opaque PHP-side coroutine id awaiting this task's result (0 =
-    /// nobody). Carried into the result frame so the PHP scheduler routes the
-    /// result without its own task-to-fiber map.
+    /// nobody). Carried into the result so the PHP scheduler routes it without
+    /// a task-to-fiber map of its own.
     pub owner_id: i64,
 }

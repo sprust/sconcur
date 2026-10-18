@@ -163,7 +163,7 @@ pub fn epoch_ms(time: SystemTime) -> i64 {
 /// Creates a directory. Recursive creates the parents too, and then an existing
 /// directory is a success rather than a failure — which is the mkdir -p
 /// behaviour every caller of the recursive form is actually after.
-pub async fn make_directory(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn make_directory(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let start_time = Instant::now();
 
     let Some(parameters) =
@@ -206,7 +206,7 @@ pub async fn make_directory(task: &Task, envelope: &mut payloads::Envelope) {
 
 /// Removes a directory: empty by default, with everything under it when
 /// recursive.
-pub async fn remove_directory(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn remove_directory(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let start_time = Instant::now();
 
     let Some(parameters) =
@@ -246,7 +246,7 @@ pub async fn remove_directory(task: &Task, envelope: &mut payloads::Envelope) {
 /// Not recursive: a tree is walk(), which streams, because a listing that has
 /// to be held whole before it can be answered is exactly the shape this feature
 /// exists to avoid.
-pub async fn list(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn list(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let start_time = Instant::now();
 
     let Some(parameters) = params::<payloads::ListParams>(task, envelope, "list").await else {

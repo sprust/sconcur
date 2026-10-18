@@ -198,14 +198,16 @@ static int sconcur_result_classes_ready(void)
 
     for (int index = 0; index < SCONCUR_SLOT_COUNT; index++) {
         const char *name = SCONCUR_RESULT_PROPERTIES[index];
-        zend_property_info *info = zend_hash_str_find_ptr(&result_ce->properties_info, name, strlen(name));
+        zend_property_info *property_info = zend_hash_str_find_ptr(&result_ce->properties_info, name, strlen(name));
 
-        if (info == NULL || (info->flags & ZEND_ACC_STATIC) != 0) {
-            zend_throw_error(NULL, "%s declares no property %s, which the result builder writes", SCONCUR_RESULT_CLASS, name);
+        /* Static, or virtual (a hooked property with no backing slot): neither
+         * has a slot to write, and the builder writes slots. */
+        if (property_info == NULL || (property_info->flags & (ZEND_ACC_STATIC | ZEND_ACC_VIRTUAL)) != 0) {
+            zend_throw_error(NULL, "%s declares no backed property %s, which the result builder writes", SCONCUR_RESULT_CLASS, name);
             return 0;
         }
 
-        slots[index] = info->offset;
+        slots[index] = property_info->offset;
     }
 
     memcpy(sconcur_result_slots, slots, sizeof slots);
@@ -226,6 +228,12 @@ static int sconcur_result_classes_ready(void)
 static zval *sconcur_slot(zend_object *object, uint32_t offset)
 {
     zval *slot = OBJ_PROP(object, offset);
+
+    /* A declared default, or an earlier write under the same name, would leak
+     * under the new value otherwise. */
+    if (Z_TYPE_P(slot) != IS_UNDEF) {
+        zval_ptr_dtor(slot);
+    }
 
     Z_PROP_FLAG_P(slot) &= ~(IS_PROP_UNINIT | IS_PROP_REINITABLE);
 
@@ -251,6 +259,7 @@ static void sconcur_slot_long(zend_object *object, uint32_t offset, zend_long nu
 
 zval *sconcur_result_into(zval *destination, const sconcur_result_t *result)
 {
+    zend_class_constant *case_constant;
     zend_object *method_case;
     zend_object *object;
 
@@ -258,9 +267,11 @@ zval *sconcur_result_into(zval *destination, const sconcur_result_t *result)
         return NULL;
     }
 
-    method_case = zend_enum_get_case_cstr(sconcur_method_ce, result->method_case);
+    /* Looked up by hand first: zend_enum_get_case_cstr asserts the case exists
+     * and, in a release build, dereferences whatever the lookup answered. */
+    case_constant = zend_hash_str_find_ptr(&sconcur_method_ce->constants_table, result->method_case, strlen(result->method_case));
 
-    if (method_case == NULL) {
+    if (case_constant == NULL || (ZEND_CLASS_CONST_FLAGS(case_constant) & ZEND_CLASS_CONST_IS_CASE) == 0) {
         /*
          * Reported rather than folded into MethodEnum::Unknown. A method this
          * package does not know is the version skew REQUIRED_EXTENSION_VERSION
@@ -281,6 +292,8 @@ zval *sconcur_result_into(zval *destination, const sconcur_result_t *result)
 
         return NULL;
     }
+
+    method_case = zend_enum_get_case_cstr(sconcur_method_ce, result->method_case);
 
     if (object_init_ex(destination, sconcur_result_ce) == FAILURE) {
         return NULL;
@@ -489,13 +502,16 @@ int sconcur_value_object(zval *destination, const char *class_name, size_t lengt
 zval *sconcur_object_property_slot(zval *object, const char *name, size_t length)
 {
     zend_object *instance = Z_OBJ_P(object);
-    zend_property_info *info = zend_hash_str_find_ptr(&instance->ce->properties_info, name, length);
+    zend_property_info *property_info = zend_hash_str_find_ptr(&instance->ce->properties_info, name, length);
     zval *slot;
 
-    if (info == NULL || (info->flags & ZEND_ACC_STATIC) != 0) {
+    /* Static, or virtual (a hooked property with no backing slot): no slot to
+     * write, and writing OBJ_PROP at a virtual offset would land outside the
+     * object. */
+    if (property_info == NULL || (property_info->flags & (ZEND_ACC_STATIC | ZEND_ACC_VIRTUAL)) != 0) {
         zend_throw_error(
             NULL,
-            "%s declares no property %.*s, which a task result writes",
+            "%s declares no backed property %.*s, which a task result writes",
             ZSTR_VAL(instance->ce->name),
             (int)length,
             name
@@ -504,7 +520,7 @@ zval *sconcur_object_property_slot(zval *object, const char *name, size_t length
         return NULL;
     }
 
-    slot = sconcur_slot(instance, info->offset);
+    slot = sconcur_slot(instance, property_info->offset);
 
     ZVAL_NULL(slot);
 
@@ -644,6 +660,14 @@ static int sconcur_table_iterate(HashTable *table, void *context, sconcur_visit_
     } ZEND_HASH_FOREACH_END();
 
     return answer;
+}
+
+/* Whether PHP raised an exception while the core was reading: a get_properties
+ * handler may run user code (a lazy object's initializer), and the visit
+ * protocol has no channel for it, so the core asks afterwards. */
+int sconcur_exception_pending(void)
+{
+    return EG(exception) != NULL;
 }
 
 int sconcur_array_iterate(const zval *array, void *context, sconcur_visit_t visit)
@@ -1086,7 +1110,7 @@ PHP_FUNCTION(version)
 }
 
 // PHP: SConcur\Extension\armPreemption(int $quantumMs, callable $callback): void
-// Registers the preempt callback and starts the Go-side interrupt timer. Re-arming
+// Registers the preempt callback and starts the core's interrupt timer. Re-arming
 // replaces the previous timer and callback.
 PHP_FUNCTION(armPreemption)
 {

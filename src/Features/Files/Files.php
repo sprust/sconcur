@@ -62,7 +62,7 @@ class Files
     ): string {
         // The contents come back as the string itself rather than inside a map: a
         // wrapper would be one more array to build and read for nothing.
-        return static::execute(
+        $contents = static::execute(
             command: FilesCommandEnum::Read,
             timeoutMs: $timeoutMs,
             data: [
@@ -72,6 +72,14 @@ class Files
                 'mx' => $maxReadBytes,
             ],
         )->payload;
+
+        if (!is_string($contents)) {
+            throw new UnexpectedResponseFormatException(
+                message: 'The read result is not a string.',
+            );
+        }
+
+        return $contents;
     }
 
     /**

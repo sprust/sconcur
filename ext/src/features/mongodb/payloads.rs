@@ -211,7 +211,7 @@ mod tests {
     use crate::dto::Map;
 
     #[test]
-    fn the_envelope_reads_its_fields_and_borrows_the_body() {
+    fn the_envelope_reads_its_fields_and_points_at_the_body_in_place() {
         let body: Value = Map::new().set("f", Map::new().set("a", 1_i64)).into();
         let payload: Value = Map::new()
             .set("ul", "mongodb://localhost")

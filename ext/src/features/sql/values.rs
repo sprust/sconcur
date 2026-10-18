@@ -24,28 +24,35 @@ pub enum Binding {
     Bytes(Vec<u8>),
 }
 
-pub fn normalize_bindings(values: &[Value]) -> Vec<Binding> {
-    values.iter().map(normalize_binding).collect()
+/// A binding that is an array or an object is refused here, by position: a driver
+/// would store the text of it in a VARCHAR column without a word, and this is the
+/// one place that knows it was never a scalar.
+pub fn normalize_bindings(values: &[Value]) -> Result<Vec<Binding>, String> {
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            normalize_binding(value).ok_or_else(|| format!("binding {index} is an array or an object, not a value a driver can bind"))
+        })
+        .collect()
 }
 
-fn normalize_binding(value: &Value) -> Binding {
+fn normalize_binding(value: &Value) -> Option<Binding> {
     match value {
-        Value::Nil => Binding::Null,
-        Value::Bool(flag) => Binding::Bool(*flag),
-        Value::Int(number) => Binding::Int(*number),
-        Value::Float(number) => Binding::Float(*number),
+        Value::Nil => Some(Binding::Null),
+        Value::Bool(flag) => Some(Binding::Bool(*flag)),
+        Value::Int(number) => Some(Binding::Int(*number)),
+        Value::Float(number) => Some(Binding::Float(*number)),
         // A PHP string is one type for text and bytes alike, so a BLOB binding
         // arrives as a string holding bytes that are not valid UTF-8. Keep
         // those as bytes instead of lossily converting them.
         Value::Str(bytes) => match std::str::from_utf8(bytes) {
-            Ok(text) => Binding::Text(text.to_string()),
-            Err(_) => Binding::Bytes(bytes.clone()),
+            Ok(text) => Some(Binding::Text(text.to_string())),
+            Err(_) => Some(Binding::Bytes(bytes.clone())),
         },
-        // An array or an object is not something a driver can bind. No PHP
-        // caller sends one on purpose, so rather than failing the whole
-        // statement here it goes over as text, and the driver's own error is
-        // the message, as it has always been.
-        other => Binding::Text(format!("{other:?}")),
+        // An array or an object is not something a driver can bind, and sent as
+        // text it would be stored, not refused: the caller hears about it here.
+        Value::List(_) | Value::Map(_) | Value::Object(_) => None,
     }
 }
 
@@ -467,4 +474,79 @@ fn shift_pg_era(text: &str) -> Result<String, String> {
         .map_err(|error| format!("date {text:?}: {error}"))?;
 
     Ok(format!("{:04}-{rest}", 1 - year))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shape PHP's RowsResult walks: a list of rows, each a map keyed by the
+    /// column name in column order, with the kinds MysqlTypesTest pins.
+    #[test]
+    fn a_batch_is_a_list_of_column_keyed_rows() {
+        let columns = vec!["id".to_string(), "name".to_string(), "price".to_string(), "blob".to_string(), "gone".to_string()];
+        let rows = vec![vec![
+            ColumnValue::Int(7),
+            ColumnValue::Text(b"seven".to_vec()),
+            ColumnValue::Text(b"123.4500".to_vec()),
+            ColumnValue::Text(vec![0, 255, 7]),
+            ColumnValue::Null,
+        ]];
+
+        let batch = batch_value(&columns, &rows);
+        let rows = batch.as_list().expect("a list");
+
+        assert_eq!(rows.len(), 1);
+
+        let row = &rows[0];
+        let keys: Vec<String> = row.as_map().unwrap().iter().map(|(key, _)| key.text()).collect();
+
+        assert_eq!(keys, columns);
+        assert_eq!(row.get("id"), Some(&Value::Int(7)));
+        assert_eq!(row.get("name").and_then(Value::as_str), Some("seven"));
+        assert_eq!(row.get("price").and_then(Value::as_str), Some("123.4500"));
+        assert_eq!(row.get("blob").and_then(Value::as_bytes), Some(&[0u8, 255, 7][..]));
+        assert_eq!(row.get("gone"), Some(&Value::Nil));
+    }
+
+    #[test]
+    fn an_empty_batch_is_an_empty_list() {
+        assert_eq!(batch_value(&["id".to_string()], &[]), Value::List(vec![]));
+    }
+
+    #[test]
+    fn an_exec_result_carries_the_two_counters() {
+        let value = exec_result_value(3, 42);
+
+        assert_eq!(value.get("ar"), Some(&Value::Int(3)));
+        assert_eq!(value.get("li"), Some(&Value::Int(42)));
+        assert_eq!(value.as_map().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn bindings_keep_their_kinds_and_refuse_a_composite() {
+        let bindings = normalize_bindings(&[
+            Value::Nil,
+            Value::Bool(true),
+            Value::Int(5),
+            Value::Float(2.5),
+            Value::Str(b"text".to_vec()),
+            Value::Str(vec![0xff, 0x00]),
+        ])
+        .expect("scalars bind");
+
+        assert!(matches!(bindings[0], Binding::Null));
+        assert!(matches!(bindings[1], Binding::Bool(true)));
+        assert!(matches!(bindings[2], Binding::Int(5)));
+        assert!(matches!(bindings[3], Binding::Float(number) if number == 2.5));
+        assert!(matches!(&bindings[4], Binding::Text(text) if text == "text"));
+        assert!(matches!(&bindings[5], Binding::Bytes(bytes) if bytes == &[0xff, 0x00]));
+
+        let refused = match normalize_bindings(&[Value::Int(1), Value::List(vec![Value::Int(2)])]) {
+            Err(error) => error,
+            Ok(_) => panic!("a composite binding must be refused"),
+        };
+
+        assert!(refused.starts_with("binding 1 is an array or an object"), "{refused}");
+    }
 }

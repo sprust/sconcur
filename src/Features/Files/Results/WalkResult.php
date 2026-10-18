@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Features\Files\Results;
 
 use SConcur\Dto\TaskResultDto;
+use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\Files\Dto\DirectoryEntry;
 use SConcur\Features\Files\Support\BatchIterator;
 
@@ -24,7 +25,13 @@ class WalkResult extends BatchIterator
      */
     protected function decode(TaskResultDto $result): array
     {
-        $decoded = is_array($result->payload) ? $result->payload : [];
+        if (!is_array($result->payload)) {
+            throw new UnexpectedResponseFormatException(
+                message: 'The walk batch is not a map.',
+            );
+        }
+
+        $decoded = $result->payload;
 
         /** @var list<array<string, mixed>> $entries */
         $entries = $decoded['e'] ?? [];

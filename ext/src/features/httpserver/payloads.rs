@@ -103,8 +103,8 @@ pub struct RespondRequestId {
     pub request_id: String,
 }
 
-/// What the server emits to PHP for each accepted request. PHP decodes it into
-/// SConcur\Features\HttpServer\Dto\Request.
+/// What the server emits to PHP for each accepted request. PHP reads it in
+/// HttpServer::decodeRequest into a PSR-7 request.
 pub struct RequestEvent {
     pub request_id: String,
     pub method: String,
@@ -151,5 +151,46 @@ impl RequestEvent {
         event.push("hd", headers);
 
         event.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The array HttpServer::decodeRequest reads: the ten short keys, the body as
+    /// the string it is, the headers as name => list of values.
+    #[test]
+    fn a_request_event_is_the_map_the_php_server_reads() {
+        let event = RequestEvent {
+            request_id: "r-1".to_string(),
+            method: "POST".to_string(),
+            path: "/users".to_string(),
+            query: "a=1".to_string(),
+            headers: vec![("Host".to_string(), vec!["example".to_string()]), ("Accept".to_string(), vec!["a".to_string(), "b".to_string()])],
+            body: vec![0, 200, 7],
+            body_key: "body-1".to_string(),
+            remote_addr: "10.0.0.1:1234".to_string(),
+            host: "example".to_string(),
+            proto: "HTTP/1.1".to_string(),
+        };
+
+        let value = event.into_value();
+        let keys: Vec<String> = value.as_map().unwrap().iter().map(|(key, _)| key.text()).collect();
+
+        assert_eq!(keys, ["rid", "mt", "pt", "qr", "bk", "ra", "ho", "pr", "bd", "hd"]);
+        assert_eq!(value.get("rid").and_then(Value::as_str), Some("r-1"));
+        assert_eq!(value.get("mt").and_then(Value::as_str), Some("POST"));
+        assert_eq!(value.get("bd").and_then(Value::as_bytes), Some(&[0u8, 200, 7][..]));
+        assert_eq!(value.get("bk").and_then(Value::as_str), Some("body-1"));
+
+        let headers = value.get("hd").expect("headers");
+
+        assert_eq!(headers.as_map().unwrap().len(), 2);
+        assert_eq!(
+            headers.get("Accept").and_then(Value::as_list).map(|values| values.len()),
+            Some(2)
+        );
+        assert_eq!(headers.get("Host").and_then(Value::as_list).and_then(|values| values[0].as_str()), Some("example"));
     }
 }

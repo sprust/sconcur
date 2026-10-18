@@ -49,8 +49,7 @@ const ROUNDS = 5;
  *
  * The header set is what a browser or wrk sends, because the withHeader loop is
  * the stage most likely to dominate and its cost is per header.
- */
-/**
+ *
  * @return array<string, mixed>
  */
 function requestPayload(string $query = ''): array

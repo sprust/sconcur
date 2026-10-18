@@ -140,7 +140,7 @@ Rust:
                let start_time = Instant::now();
                let message = task.message();
 
-               let payload: payloads::FooPayload = match rmp_serde::from_slice(&message.payload) {
+               let payload: payloads::FooPayload = match message.payload.decode() {
                    Ok(payload) => payload,
                    Err(error) => {
                        task.add_result(Result::error(
@@ -199,7 +199,8 @@ PHP: `MethodEnum` и payload — как в варианте A; публичны�
 итератор-результат, обёрнутый вокруг payload'а, — он сам запросит первый и
 последующие батчи. (`IteratorResult` ниже — это
 `Features\Mongodb\Results\IteratorResult` из Mongodb, показанный как образец: он
-декодирует батчи сериализатором BSON, поэтому новая фича пишет свой эквивалент под
+проверяет, что батч — это список, который построило ядро, поэтому новая фича пишет
+свой эквивалент под
 свой формат payload'а.)
 
 ```php

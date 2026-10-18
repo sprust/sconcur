@@ -4,19 +4,14 @@
 
 use serde::Deserialize;
 
-use crate::dto::{Map, Value};
+use crate::dto::{Borrowed, Map, Value};
 
 #[derive(Deserialize)]
-pub struct Envelope {
+pub struct Envelope<'a> {
     #[serde(rename = "cm", default)]
     pub command: String,
-    #[serde(rename = "p", default = "nil_value")]
-    pub params: Value,
-}
-
-/// `Value` has no `Default`, so a missing `p` is spelled out as null.
-fn nil_value() -> Value {
-    Value::Nil
+    #[serde(rename = "p", borrow, default = "crate::dto::value_de::borrowed_nil")]
+    pub params: Borrowed<'a>,
 }
 
 /// The `p` of a Connect — the ws:// URL and the per-connection tuning.
@@ -113,4 +108,27 @@ pub fn split_address(address: &str) -> Result<(String, String, String), String> 
     };
 
     Ok((host, authority.to_string(), path.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The map WsClient::connect reads into a Connection.
+    #[test]
+    fn a_connection_meta_carries_the_addresses_and_the_subprotocol() {
+        let value = ConnectionMeta {
+            connection_id: "c-1".to_string(),
+            remote_addr: "10.0.0.1:5000".to_string(),
+            local_addr: "10.0.0.2:6000".to_string(),
+            subprotocol: "chat".to_string(),
+        }
+        .value();
+
+        assert_eq!(value.get("cid").and_then(Value::as_str), Some("c-1"));
+        assert_eq!(value.get("ra").and_then(Value::as_str), Some("10.0.0.1:5000"));
+        assert_eq!(value.get("la").and_then(Value::as_str), Some("10.0.0.2:6000"));
+        assert_eq!(value.get("su").and_then(Value::as_str), Some("chat"));
+        assert_eq!(value.as_map().unwrap().len(), 4);
+    }
 }

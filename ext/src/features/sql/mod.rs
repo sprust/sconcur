@@ -104,7 +104,7 @@ impl Feature for SqlFeature {
         Box::pin(async move {
             let message = task.message();
 
-            let envelope: payloads::Envelope = match message.payload.decode() {
+            let envelope: payloads::Envelope<'_> = match message.payload.decode() {
                 Ok(envelope) => envelope,
                 Err(error) => {
                     task.add_result(Result::error(
@@ -136,7 +136,7 @@ impl Feature for SqlFeature {
 }
 
 impl SqlFeature {
-    async fn acquire(&'static self, envelope: &payloads::Envelope) -> std::result::Result<Acquired, String> {
+    async fn acquire(&'static self, envelope: &payloads::Envelope<'_>) -> std::result::Result<Acquired, String> {
         pools::get()
             .acquire(
                 self.driver_name,
@@ -152,7 +152,7 @@ impl SqlFeature {
     /// Streams a SELECT. An autocommit query holds a pooled connection until the
     /// cursor closes; a transaction query runs on the pinned transaction and
     /// leaves its connection to the begin task.
-    async fn handle_query(&'static self, task: &Task, envelope: &payloads::Envelope) {
+    async fn handle_query(&'static self, task: &Task, envelope: &payloads::Envelope<'_>) {
         let message = task.message();
 
         let params: payloads::QueryParams = match envelope.data.decode() {
@@ -167,7 +167,14 @@ impl SqlFeature {
             }
         };
 
-        let bindings = normalize_bindings(&params.bindings);
+        let bindings = match normalize_bindings(&params.bindings) {
+            Ok(bindings) => bindings,
+            Err(error) => {
+                task.add_result(Result::error(message, self.errors.by_text(&error))).await;
+
+                return;
+            }
+        };
         let sql = params.sql.clone();
 
         // The cursor outlives this call (PHP pulls it via next), so the deadline
@@ -245,7 +252,7 @@ impl SqlFeature {
 
     /// Runs a non-row statement and answers with affected-rows and
     /// last-insert-id.
-    async fn handle_exec(&'static self, task: &Task, envelope: &payloads::Envelope) {
+    async fn handle_exec(&'static self, task: &Task, envelope: &payloads::Envelope<'_>) {
         let message = task.message();
         let start_time = Instant::now();
 
@@ -261,7 +268,14 @@ impl SqlFeature {
             }
         };
 
-        let bindings = normalize_bindings(&params.bindings);
+        let bindings = match normalize_bindings(&params.bindings) {
+            Ok(bindings) => bindings,
+            Err(error) => {
+                task.add_result(Result::error(message, self.errors.by_text(&error))).await;
+
+                return;
+            }
+        };
 
         let outcome = if params.transaction_id.is_empty() {
             let acquired = match self.acquire(envelope).await {
@@ -312,7 +326,7 @@ impl SqlFeature {
     /// Opens a transaction on a pooled connection and registers the holder
     /// state. The result carries hasNext so the begin task stays alive for the
     /// whole transaction.
-    async fn handle_begin(&'static self, task: &Task, envelope: &payloads::Envelope) {
+    async fn handle_begin(&'static self, task: &Task, envelope: &payloads::Envelope<'_>) {
         let message = task.message();
         let start_time = Instant::now();
 
@@ -404,7 +418,7 @@ impl SqlFeature {
     /// Commits or rolls back the transaction named by the command; PHP then
     /// releases the holder via next(). Finalising is idempotent, so a stop that
     /// races the explicit call cannot double-release.
-    async fn handle_finalize(&'static self, task: &Task, envelope: &payloads::Envelope, is_commit: bool) {
+    async fn handle_finalize(&'static self, task: &Task, envelope: &payloads::Envelope<'_>, is_commit: bool) {
         let message = task.message();
         let start_time = Instant::now();
 

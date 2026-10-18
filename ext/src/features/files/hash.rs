@@ -47,7 +47,7 @@ impl Algorithm {
 
 /// The digest of a file, lowercase hex — the same spelling hash_file() answers
 /// in, so a value from either side compares against a value from the other.
-pub async fn hash_file(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn hash_file(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
     let start_time = Instant::now();
 

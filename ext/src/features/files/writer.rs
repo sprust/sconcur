@@ -396,7 +396,7 @@ impl StateContract for WriterState {
 }
 
 /// Opens a writer and registers it under the id PHP drew.
-pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn open(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -562,7 +562,7 @@ async fn remove_if_created(path: &str, created_by_us: bool) {
 
 /// Writes one chunk. The answer waits for the write, which is what stops a fast
 /// producer from running ahead of the disk.
-pub async fn chunk(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn chunk(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -605,7 +605,7 @@ pub async fn chunk(task: &Task, envelope: &mut payloads::Envelope) {
 }
 
 /// Flushes, closes and answers with the total written.
-pub async fn close(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn close(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
     let start_time = Instant::now();
 

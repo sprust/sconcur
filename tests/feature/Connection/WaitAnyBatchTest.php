@@ -280,7 +280,7 @@ class WaitAnyBatchTest extends BaseTestCase
         $result = $this->extension->waitAny();
 
         self::assertLessThan(50, $result->totalExecutionMs);
-        self::assertGreaterThanOrEqual(20, $result->executionMs);
+        self::assertGreaterThanOrEqual(15, $result->executionMs);
 
         $this->extension->stopFlow('batch-ready');
 

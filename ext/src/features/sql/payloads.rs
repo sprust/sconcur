@@ -4,19 +4,12 @@
 
 use serde::Deserialize;
 
-use crate::dto::Value;
-
-/// A missing command body decodes to nil rather than failing: the sub-operation
-/// handler reports what it actually needs, which is a better message than
-/// "missing field dt".
-fn nil_value() -> Value {
-    Value::Nil
-}
+use crate::dto::{Borrowed, Value};
 
 /// Wraps every SQL command: the sub-operation, the connection settings and the
 /// command body. PHP: SConcur\Features\Sql\Payloads\Base\BaseSqlPayload.
 #[derive(Deserialize)]
-pub struct Envelope {
+pub struct Envelope<'a> {
     #[serde(rename = "cm", default)]
     pub command: String,
     #[serde(rename = "dsn", default)]
@@ -32,8 +25,8 @@ pub struct Envelope {
     /// The command body, kept as an untyped subtree until the sub-operation is
     /// known: the PHP side nests the command's own array under `dt`, and the
     /// handler of that command decodes it into its parameter struct.
-    #[serde(rename = "dt", default = "nil_value")]
-    pub data: Value,
+    #[serde(rename = "dt", borrow, default = "crate::dto::value_de::borrowed_nil")]
+    pub data: Borrowed<'a>,
 }
 
 /// The body of a Query command (the `dt`).

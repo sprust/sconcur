@@ -75,7 +75,8 @@ arguments off the PHP array inside the push call and builds the result as PHP
 values inside the wait call; Mongo documents are converted to and from BSON at the
 same two points, with the BSON values a PHP array cannot express carried as objects.
 This is a fixed CPU price per operation, on top of the boundary call and runtime
-task dispatch. On cheap cached reads
+task dispatch. The figures below were taken when the boundary still carried
+MessagePack and have not been re-measured since. On cheap cached reads
 it shows up as the `native` → `sync` gap (both sequential, but `sync` goes through
 the extension): `pgsql-selectOne` 4.2 → 22.7 ms over 100 calls, `mysql-selectOne`
 7.3 → 35.3 ms. On a slow operation the same surcharge is a small fraction of the

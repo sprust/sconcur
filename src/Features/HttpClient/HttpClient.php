@@ -14,6 +14,7 @@ use SConcur\Exceptions\HttpClient\HttpClientException;
 use SConcur\Exceptions\HttpClient\NetworkException;
 use SConcur\Exceptions\HttpClient\RequestException;
 use SConcur\Dto\TaskResultDto;
+use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\HttpClient\Dto\DownloadResult;
 use SConcur\Features\HttpClient\Dto\ResponseBodyStream;
@@ -112,8 +113,7 @@ readonly class HttpClient implements ClientInterface
             );
         }
 
-        /** @var array<string, mixed> $meta */
-        $meta = $result->payload;
+        $meta = self::meta($result);
 
         $statusCode = (int) ($meta['st'] ?? 0);
 
@@ -193,8 +193,7 @@ readonly class HttpClient implements ClientInterface
 
     protected function buildResponse(TaskResultDto $result): ResponseInterface
     {
-        /** @var array<string, mixed> $meta */
-        $meta = $result->payload;
+        $meta = self::meta($result);
 
         $response = $this->responseFactory->createResponse((int) ($meta['st'] ?? 200));
 
@@ -250,6 +249,23 @@ readonly class HttpClient implements ClientInterface
                 downloadBufferSizeBytes: $downloadBufferSizeBytes,
             ),
         );
+    }
+
+    /**
+     * The response meta the core built, or a loud failure: anything but an array
+     * here is a protocol bug, not a response.
+     *
+     * @return array<string, mixed>
+     */
+    protected static function meta(TaskResultDto $result): array
+    {
+        if (!is_array($result->payload)) {
+            throw new UnexpectedResponseFormatException(
+                message: 'The HTTP client result is not a map.',
+            );
+        }
+
+        return $result->payload;
     }
 
     /**
