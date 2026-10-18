@@ -9,6 +9,10 @@
 #include <ext/standard/basic_functions.h>
 #include "sconcur_core.h"
 
+#ifdef ZTS
+#error "sconcur is NTS-only: the core keeps its state per process, and the fiber state block reads module globals through zend_module_entry.globals_ptr"
+#endif
+
 /*
  * Preemption plumbing: what turns a CPU-bound handler into one that yields.
  *

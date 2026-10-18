@@ -105,11 +105,6 @@ class FiberPool
                     return;
                 }
 
-                // The engine state the extension keeps per fiber (json_last_error(),
-                // error_get_last()) is still the previous job's:
-                // a fresh fiber would start clean, so this one is made to.
-                Extension::get()->resetEngineState();
-
                 try {
                     $job();
                 } catch (Throwable) {
@@ -117,6 +112,11 @@ class FiberPool
                     // and silently drain the pool under load. Parity with the
                     // pre-pool behavior — a spawned coroutine's failure is
                     // dropped (see Scheduler::failCoroutine).
+                } finally {
+                    // The engine state the extension keeps per fiber (json_last_error(),
+                    // error_get_last()) would otherwise park with the fiber and greet
+                    // the next job: a fresh fiber starts clean, so this one is left clean.
+                    Extension::get()->resetEngineState();
                 }
             }
         });

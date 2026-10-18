@@ -234,7 +234,8 @@ fiber and on one the scheduler reuses alike:
 
 One exception on purpose: a fatal error inside a coroutine stays visible to
 `error_get_last()` in the shutdown functions, the way an application learns about a
-fatal at all.
+fatal at all. It stays visible in the context the shutdown functions run in; a
+coroutine started from one of them begins clean, like any other.
 
 The rest stays one per process. Code that reads its outcome from it is correct only
 in the safe form:

@@ -20,6 +20,9 @@ require __DIR__ . '/../../../vendor/autoload.php';
 register_shutdown_function(static function (): void {
     $lastError = error_get_last();
 
+    // The test asserts this line too: without the extension the engine alone
+    // keeps the record, and the test would pass for the wrong reason.
+    echo 'extension: ', extension_loaded('sconcur') ? 'loaded' : 'missing', PHP_EOL;
     echo 'last error: ', $lastError['message'] ?? 'none', PHP_EOL;
 });
 

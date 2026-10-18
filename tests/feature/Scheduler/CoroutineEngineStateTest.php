@@ -6,6 +6,7 @@ namespace SConcur\Tests\Feature\Scheduler;
 
 use ArrayObject;
 use Fiber;
+use SConcur\Connection\Extension;
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Scheduler\Scheduler;
 use SConcur\Tests\Feature\BaseTestCase;
@@ -26,8 +27,8 @@ use SConcur\WaitGroup;
  * parked on a feature wait — and the two most exposed ones are also hammered
  * under a 1 ms preemption quantum, where the switch lands right after the
  * internal call returns. The rest covers the edges the isolation has: a fatal
- * error must still reach the shutdown functions, and a pooled fiber must start
- * its next coroutine clean.
+ * error must still reach the shutdown functions, a pooled fiber must start its
+ * next coroutine clean, and the context outside a group keeps its own state.
  */
 class CoroutineEngineStateTest extends BaseTestCase
 {
@@ -192,7 +193,11 @@ class CoroutineEngineStateTest extends BaseTestCase
 
     public function testJsonErrorIsPerCoroutineUnderPreemption(): void
     {
-        $validJson = json_encode(array_fill(0, 2_000, ['id' => 1, 'name' => 'a name', 'tags' => ['x', 'y']]));
+        $validJson = json_encode(array_fill(0, 2_000, [
+            'id'   => 1,
+            'name' => 'a name',
+            'tags' => ['x', 'y'],
+        ]));
 
         self::assertIsString($validJson);
 
@@ -270,7 +275,7 @@ class CoroutineEngineStateTest extends BaseTestCase
 
     public function testSerializeObjectTableIsPerCoroutineUnderPreemption(): void
     {
-        $expected = $this->serializeProbeSequentially();
+        $this->serializeProbeSequentially();
 
         /** @var ArrayObject<string, mixed> $gate */
         $gate = new ArrayObject([
@@ -326,9 +331,172 @@ class CoroutineEngineStateTest extends BaseTestCase
             SerializeGate::onDestruct(null);
         }
 
-        self::assertSame(array_fill(0, 20, 0), $results, 'A serialize() preempted in its unlocked window shared its table.');
-        self::assertGreaterThan(1, $gate['maxDepth'], 'Coroutines must have been preempted inside the window at the same time.');
-        self::assertNotSame('', $expected);
+        self::assertSame(
+            array_fill(0, 20, 0),
+            $results,
+            'A serialize() preempted in its unlocked window shared its table.',
+        );
+        self::assertGreaterThan(
+            1,
+            $gate['maxDepth'],
+            'Coroutines must have been preempted inside the window at the same time.',
+        );
+    }
+
+    public function testUnserializeObjectTableIsPerCoroutineAcrossAWait(): void
+    {
+        $serialized = $this->serializeProbeSequentially();
+
+        // The engine calls __unserialize() under its lock; a wait inside it parks
+        // the coroutine with the unserialize table and that lock in flight.
+        SerializeProbe::onUnserialize(static function (): void {
+            Sleeper::usleep(microseconds: 3_000);
+        });
+
+        try {
+            $keys      = [];
+            $waitGroup = WaitGroup::create();
+
+            $keys[] = $waitGroup->add(
+                callback: static fn(): bool => self::probeIsIntact(unserialize($serialized)),
+            );
+
+            $keys[] = $waitGroup->add(
+                callback: static function () use ($serialized): bool {
+                    Sleeper::usleep(microseconds: 1_000);
+
+                    return self::probeIsIntact(unserialize($serialized));
+                },
+            );
+
+            $results = $this->resultsInAddOrder(
+                waitGroup: $waitGroup,
+                keys: $keys,
+            );
+        } finally {
+            SerializeProbe::onUnserialize(null);
+        }
+
+        self::assertSame(
+            [
+                true,
+                true,
+            ],
+            $results,
+            'An unserialize() parked inside __unserialize() must resolve its back-reference against its own table.',
+        );
+    }
+
+    public function testPcreErrorIsPerCoroutineUnderPreemption(): void
+    {
+        /** @var ArrayObject<string, mixed> $shared */
+        $shared = new ArrayObject([
+            'done'            => false,
+            'neighbourError'  => PREG_NO_ERROR,
+            'neighbourRounds' => 0,
+            'roundsAtStart'   => 0,
+            'roundsAtEnd'     => 0,
+        ]);
+
+        $subject = str_repeat('a', 200_000);
+
+        Scheduler::get()->enablePreemption(quantumMs: 1);
+
+        try {
+            $keys      = [];
+            $waitGroup = WaitGroup::create();
+
+            $keys[] = $waitGroup->add(
+                callback: static function () use ($shared): void {
+                    while (!$shared['done'] && $shared['neighbourRounds'] < 5_000_000) {
+                        preg_match('/\d/u', "\xff");
+
+                        $shared['neighbourError'] = preg_last_error();
+                        $shared['neighbourRounds']++;
+                    }
+                },
+            );
+
+            $keys[] = $waitGroup->add(
+                callback: static function () use ($subject, $shared): int {
+                    $mismatches = 0;
+
+                    $shared['roundsAtStart'] = $shared['neighbourRounds'];
+
+                    try {
+                        for ($iteration = 0; $iteration < 1_000; $iteration++) {
+                            preg_match_all('/a/', $subject);
+
+                            if (preg_last_error() !== PREG_NO_ERROR) {
+                                ++$mismatches;
+                            }
+                        }
+                    } finally {
+                        $shared['roundsAtEnd'] = $shared['neighbourRounds'];
+                        $shared['done']        = true;
+                    }
+
+                    return $mismatches;
+                },
+            );
+
+            $results = $this->resultsInAddOrder(
+                waitGroup: $waitGroup,
+                keys: $keys,
+            );
+        } finally {
+            Scheduler::get()->disablePreemption();
+        }
+
+        self::assertSame(0, $results[1], 'preg_last_error() reported the neighbour\'s error.');
+        self::assertSame(
+            PREG_BAD_UTF8_ERROR,
+            $shared['neighbourError'],
+            'The neighbour must have been failing matches.',
+        );
+        self::assertGreaterThan(
+            $shared['roundsAtStart'],
+            $shared['roundsAtEnd'],
+            'The neighbour must have run while the probe was looping, or nothing was interleaved.',
+        );
+    }
+
+    public function testTheContextOutsideKeepsItsOwnStateAcrossAGroup(): void
+    {
+        json_decode('[]');
+        preg_match('/a/', 'a');
+        error_clear_last();
+
+        $waitGroup = WaitGroup::create();
+
+        $waitGroup->add(
+            callback: static function (): void {
+                json_decode('{broken');
+                preg_match('/\d/u', "\xff");
+                self::raiseWarning('inside the coroutine');
+
+                Sleeper::usleep(microseconds: 1_000);
+            },
+        );
+
+        $waitGroup->waitAll();
+
+        self::assertSame(JSON_ERROR_NONE, json_last_error());
+        self::assertSame(PREG_NO_ERROR, preg_last_error());
+        self::assertNull(error_get_last(), 'The coroutine\'s warning must not become the last error outside it.');
+    }
+
+    public function testResetEngineStateClearsTheRunningContext(): void
+    {
+        json_decode('{broken');
+        preg_match('/\d/u', "\xff");
+        self::raiseWarning('before the reset');
+
+        Extension::get()->resetEngineState();
+
+        self::assertSame(JSON_ERROR_NONE, json_last_error());
+        self::assertSame(PREG_NO_ERROR, preg_last_error());
+        self::assertNull(error_get_last());
     }
 
     /**
@@ -343,11 +511,9 @@ class CoroutineEngineStateTest extends BaseTestCase
         $extension = getenv('SCONCUR_EXT') ?: $root . '/ext/build/sconcur.so';
 
         $command = [
-            'php',
+            PHP_BINARY,
             '-d',
             'extension=' . $extension,
-            '-d',
-            'display_errors=0',
             $root . '/tests/impl/EngineState/fatal-in-coroutine.php',
         ];
 
@@ -372,6 +538,7 @@ class CoroutineEngineStateTest extends BaseTestCase
         $exitCode = proc_close($process);
 
         self::assertSame(255, $exitCode, "A fatal error must end the script. stderr: $stderr");
+        self::assertStringContainsString('extension: loaded', (string) $stdout, 'The child must run the extension.');
         self::assertStringContainsString(
             'last error: Class FatalInCoroutineChild cannot extend final class FatalInCoroutineBase',
             (string) $stdout,
@@ -394,27 +561,23 @@ class CoroutineEngineStateTest extends BaseTestCase
             'second'        => [],
         ]);
 
-        try {
-            $scheduler->spawn(static function () use ($observed): void {
-                $observed['firstFiberId'] = self::currentFiberId();
+        $scheduler->spawn(callback: static function () use ($observed): void {
+            $observed['firstFiberId'] = self::currentFiberId();
 
-                json_decode('{broken');
-                preg_match('/\d/u', "\xff");
-                self::raiseWarning('first spawn warning');
-            });
+            json_decode('{broken');
+            preg_match('/\d/u', "\xff");
+            self::raiseWarning('first spawn warning');
+        });
 
-            $scheduler->spawn(static function () use ($observed): void {
-                $observed['secondFiberId'] = self::currentFiberId();
+        $scheduler->spawn(callback: static function () use ($observed): void {
+            $observed['secondFiberId'] = self::currentFiberId();
 
-                $observed['second'] = [
-                    json_last_error(),
-                    preg_last_error(),
-                    error_get_last()['message'] ?? null,
-                ];
-            });
-        } finally {
-            // Nothing to restore: the first coroutine's state died with its job.
-        }
+            $observed['second'] = [
+                json_last_error(),
+                preg_last_error(),
+                error_get_last()['message'] ?? null,
+            ];
+        });
 
         self::assertNotSame(0, $observed['firstFiberId']);
         self::assertSame(
@@ -438,6 +601,15 @@ class CoroutineEngineStateTest extends BaseTestCase
         $fiber = Fiber::getCurrent();
 
         return $fiber === null ? 0 : spl_object_id($fiber);
+    }
+
+    /**
+     * The graph came back with its one shared node shared, so the back-reference
+     * resolved against the right table.
+     */
+    protected static function probeIsIntact(mixed $probe): bool
+    {
+        return $probe instanceof SerializeProbe && $probe->first() === $probe->second();
     }
 
     protected static function makeProbe(): SerializeProbe

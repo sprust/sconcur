@@ -279,7 +279,7 @@ The C glue, `ext/sconcur.c`, is the one file between PHP and the core: the
 object table per coroutine — captured into a block in the fiber context's reserved
 slot on every switch, applied back on resume. Two edges are handled on purpose: a
 fiber leaving on a bailout keeps its fatal in `PG(last_error_*)` so the shutdown
-functions still see it, and `resetEngineState()` is what `FiberPool` calls around
+functions still see it, and `resetEngineState()` is what `FiberPool` calls after
 each job, because a pooled fiber's block outlives the coroutine it served. Nothing
 else is isolated, each for a reason: output buffers and the error handler stack
 because that is a far larger job; libxml's error list because its error handler is

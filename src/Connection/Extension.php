@@ -47,7 +47,7 @@ class Extension
      * rejected instead of silently misbehaving. Public so tooling (bin/sconcur-status)
      * can report the version the package expects.
      */
-    public const string REQUIRED_EXTENSION_VERSION = '0.15.0';
+    public const string REQUIRED_EXTENSION_VERSION = '0.15.1';
 
     /**
      * Result frame layout (extension -> PHP), see ext/src/lib.rs. The envelope is
@@ -300,8 +300,9 @@ class Extension
 
     /**
      * Clears the engine state the extension keeps per coroutine — json_last_error(),
-     * preg_last_error(), error_get_last() — for the running fiber. A fresh fiber starts with it clean; a pooled one carries what
-     * its previous coroutine left, so FiberPool calls this before each job.
+     * preg_last_error(), error_get_last() — for the running fiber. A fresh fiber starts
+     * with it clean; a pooled one would carry what its previous coroutine left, so
+     * FiberPool calls this after each job.
      */
     public function resetEngineState(): void
     {

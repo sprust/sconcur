@@ -163,12 +163,12 @@ Everything else follows from that:
 - Mature drivers are reused as-is — the MongoDB driver, sqlx, hyper, reqwest,
   lapin, fastwebsockets — and run concurrently right away. No waiting for async
   PHP drivers or extensions.
-- The C glue is frozen: `push`, `wait`, `waitAny`/`waitAnyBatch`, `next`,
-  `stopFlow` plus the `version`/`destroy` lifecycle. A new feature is data (a
-  `MethodEnum` value, a MessagePack payload DTO, a Rust handler), not a new C
-  symbol, so the export set never grows. A new long-lived server adds at most
-  one control function, like `httpStopAccepting`, which stops accepting new
-  connections while the ones in progress are finished.
+- The C glue is small and stays so: `push`, `wait`, `waitAny`/`waitAnyBatch`,
+  `next`, `stopFlow` plus the `version`/`destroy` lifecycle. A new feature is data
+  (a `MethodEnum` value, a MessagePack payload DTO, a Rust handler), not a new C
+  symbol. What does get added is a control function for a runtime concern, like
+  `httpStopAccepting`, which stops accepting new connections while the ones in
+  progress are finished, or `armPreemption`, which starts the preemption timer.
 - One transport and one streaming model for everything: MessagePack DTOs plus
   the streaming states behind `next()` — MongoDB cursors, HTTP bodies, socket
   frames, WS messages all travel the same mechanism, and the sender waits when
