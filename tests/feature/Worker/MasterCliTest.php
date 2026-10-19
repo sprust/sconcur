@@ -104,6 +104,42 @@ class MasterCliTest extends TestCase
         self::assertStringContainsString('Worker script not found', $err);
     }
 
+    /**
+     * Whether a fork group's ini settings can be honoured is the master's question — an
+     * extension has to be loaded in it — so it is asked at start, before the lock. The
+     * runtime directory is one that cannot be created: had the check let the config
+     * through, the start would fail on that instead of starting a master in this process.
+     */
+    public function testStartRefusesAForkGroupAskingForAnExtensionTheMasterLacks(): void
+    {
+        $configPath = $this->writeConfig([
+            'runtimeDir'   => '/proc/sconcur-no-such-dir',
+            'workerScript' => __FILE__,
+            'launch'       => 'fork',
+            'phpArgs'      => ['-d', 'extension=/usr/lib/php/missing_extension.so'],
+        ]);
+
+        [$code, , $err] = $this->runCli(['start', '--configPath=' . $configPath]);
+
+        self::assertSame(MasterCli::EXIT_ERROR, $code);
+        self::assertStringContainsString('which the master has not loaded', $err);
+    }
+
+    public function testStartRefusesAForkGroupSettingADirectiveFixedAtStartup(): void
+    {
+        $configPath = $this->writeConfig([
+            'runtimeDir'   => '/proc/sconcur-no-such-dir',
+            'workerScript' => __FILE__,
+            'launch'       => 'fork',
+            'phpArgs'      => ['-d', 'extension_dir=/tmp'],
+        ]);
+
+        [$code, , $err] = $this->runCli(['start', '--configPath=' . $configPath]);
+
+        self::assertSame(MasterCli::EXIT_ERROR, $code);
+        self::assertStringContainsString('cannot be changed once php has started', $err);
+    }
+
     public function testStartRejectsInvalidName(): void
     {
         $configPath = $this->writeConfig([

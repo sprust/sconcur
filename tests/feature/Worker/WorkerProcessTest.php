@@ -7,10 +7,10 @@ namespace SConcur\Tests\Feature\Worker;
 use PHPUnit\Framework\TestCase;
 use SConcur\Process\ProcessSignalEnum;
 use SConcur\Worker\WorkerOutputLine;
-use SConcur\Worker\WorkerProcess;
+use SConcur\Worker\ExecWorkerProcess;
 
 /**
- * Unit coverage of WorkerProcess: it spawns a short `php -r` script (no extension
+ * Unit coverage of ExecWorkerProcess: it spawns a short `php -r` script (no extension
  * needed), so a real child process exercises liveness, the cached exit outcome,
  * signal delivery (the pid is php itself, not a shell) and line-buffered output
  * draining including the no-newline tail flushed on exit.
@@ -221,16 +221,16 @@ class WorkerProcessTest extends TestCase
         }
     }
 
-    private function spawn(string $code): WorkerProcess
+    private function spawn(string $code): ExecWorkerProcess
     {
-        return new WorkerProcess(
+        return new ExecWorkerProcess(
             command: [PHP_BINARY, '-r', $code],
             cwd: sys_get_temp_dir(),
             env: getenv(),
         );
     }
 
-    private function waitForExit(WorkerProcess $process, float $timeoutSeconds = 5.0): bool
+    private function waitForExit(ExecWorkerProcess $process, float $timeoutSeconds = 5.0): bool
     {
         $deadline = microtime(true) + $timeoutSeconds;
 

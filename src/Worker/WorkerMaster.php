@@ -274,6 +274,7 @@ class WorkerMaster
         }
 
         static::assertWorkerScripts($this->groups);
+        static::assertLaunchable($this->groups);
 
         $directories = array_unique([$this->runtimeDir, $this->logDir ?? $this->runtimeDir]);
 
@@ -301,6 +302,75 @@ class WorkerMaster
                 );
             }
         }
+    }
+
+    /**
+     * Refuses a fork group whose ini settings this master cannot honour. A forked worker
+     * runs on the master's interpreter and applies the group's -d flags with ini_set, so
+     * an extension has to be loaded here already, and a directive has to be one PHP lets a
+     * script change. Checked here rather than with the rest of the config, because the
+     * answer is this process's: the CLI that writes a reload request may well run without
+     * the extensions the master has.
+     *
+     * Run on every reload as well as at startup, like assertWorkerScripts.
+     *
+     * @param list<WorkerGroupConfig> $groups
+     */
+    protected static function assertLaunchable(array $groups): void
+    {
+        $directives = ini_get_all(details: true);
+
+        foreach ($groups as $group) {
+            if ($group->launch !== LaunchMode::Fork) {
+                continue;
+            }
+
+            foreach ($group->iniSettings() as [$directive, $value]) {
+                if ($directive === 'extension' || $directive === 'zend_extension') {
+                    if (!static::isLoaded(extension: $value)) {
+                        throw new InvalidConfigException(
+                            message: sprintf(
+                                'config: group "%s" is launched by fork and asks for %s=%s, which the master'
+                                . ' has not loaded; load it in the master, or use launch=exec',
+                                $group->name,
+                                $directive,
+                                $value,
+                            ),
+                        );
+                    }
+
+                    continue;
+                }
+
+                // INI_USER is the bit that lets ini_set change a directive; INI_SYSTEM and
+                // INI_PERDIR ones are fixed once the process has started.
+                if ((($directives[$directive]['access'] ?? 0) & INI_USER) === 0) {
+                    throw new InvalidConfigException(
+                        message: sprintf(
+                            'config: group "%s" is launched by fork and sets %s, which %s; set it for the'
+                            . ' master, or use launch=exec',
+                            $group->name,
+                            $directive,
+                            isset($directives[$directive])
+                                ? 'cannot be changed once php has started'
+                                : 'this php does not know',
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    /**
+     * Whether the extension a `-d extension=` names is loaded: by its name or by the file
+     * it was given as (`/path/to/sconcur.so`, `php_redis.dll`), and under the "Zend "
+     * prefix a Zend extension's module carries (OPcache is "Zend OPcache").
+     */
+    protected static function isLoaded(string $extension): bool
+    {
+        $name = preg_replace('/^php_|\.(so|dll)$/', '', basename($extension)) ?? $extension;
+
+        return extension_loaded($name) || extension_loaded('Zend ' . $name);
     }
 
     protected function ensureWritableDir(string $directory): void
@@ -554,6 +624,7 @@ class WorkerMaster
             $groups = MasterConfig::fromFile($request->configPath)->groups();
 
             static::assertWorkerScripts($groups);
+            static::assertLaunchable($groups);
 
             return $groups;
         } catch (InvalidConfigException | RuntimePathException $exception) {

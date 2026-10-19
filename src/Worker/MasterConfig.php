@@ -50,6 +50,7 @@ readonly class MasterConfig
         'restartBackoffMs',
         'maxRestartBackoffMs',
         'watchdogTimeoutMs',
+        'launch',
         'groups',
     ];
 
@@ -144,6 +145,14 @@ readonly class MasterConfig
             );
         }
 
+        $launch = LaunchMode::tryFrom((string) ($data['launch'] ?? LaunchMode::Exec->value));
+
+        if ($launch === null) {
+            throw new InvalidConfigException(
+                message: 'config: "launch" must be exec|fork',
+            );
+        }
+
         $defaults = new MasterDefaults(
             phpBinary: (string) ($data['phpBinary'] ?? PHP_BINARY),
             phpArgs: self::stringList($data['phpArgs'] ?? []),
@@ -153,6 +162,7 @@ readonly class MasterConfig
             restartBackoffMs: self::nonNegativeInt($data, 'restartBackoffMs', 200),
             maxRestartBackoffMs: self::nonNegativeInt($data, 'maxRestartBackoffMs', 30_000),
             watchdogTimeoutMs: self::watchdogTimeoutMs($data, 60_000),
+            launch: $launch,
         );
 
         return new self(

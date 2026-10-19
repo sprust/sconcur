@@ -32,6 +32,7 @@ readonly class WorkerGroupConfig
         'restartBackoffMs',
         'maxRestartBackoffMs',
         'watchdogTimeoutMs',
+        'launch',
         'server',
     ];
 
@@ -55,6 +56,7 @@ readonly class WorkerGroupConfig
         public int $maxRestartBackoffMs,
         public int $watchdogTimeoutMs,
         public array $server,
+        public LaunchMode $launch = LaunchMode::Exec,
     ) {
     }
 
@@ -124,12 +126,31 @@ readonly class WorkerGroupConfig
             );
         }
 
+        $launch = LaunchMode::tryFrom((string) ($data['launch'] ?? $defaults->launch->value));
+
+        if ($launch === null) {
+            throw new InvalidConfigException(
+                message: sprintf('config: group "%s" launch must be exec|fork', $name),
+            );
+        }
+
+        $phpBinary = (string) ($data['phpBinary'] ?? $defaults->phpBinary);
+        $phpArgs   = isset($data['phpArgs']) ? MasterConfig::stringList($data['phpArgs']) : $defaults->phpArgs;
+
+        if ($launch === LaunchMode::Fork) {
+            static::assertForkable(
+                name: $name,
+                phpBinary: $phpBinary,
+                phpArgs: $phpArgs,
+            );
+        }
+
         return new self(
             name: $name,
             workerScript: $workerScript,
             workerCount: $workerCount,
-            phpBinary: (string) ($data['phpBinary'] ?? $defaults->phpBinary),
-            phpArgs: isset($data['phpArgs']) ? MasterConfig::stringList($data['phpArgs']) : $defaults->phpArgs,
+            phpBinary: $phpBinary,
+            phpArgs: $phpArgs,
             workerArgs: MasterConfig::stringList($data['workerArgs'] ?? []),
             env: array_merge($defaults->env, MasterConfig::stringMap($data['env'] ?? [])),
             restartPolicy: $restartPolicy,
@@ -157,7 +178,22 @@ readonly class WorkerGroupConfig
                 $name,
             ),
             server: MasterConfig::serverParams($data['server'] ?? null, $name),
+            launch: $launch,
         );
+    }
+
+    /**
+     * The group's phpArgs as the ini settings they make, for a worker launched by fork:
+     * [directive, value] pairs in the order given, so a later one wins as a later -d does.
+     * Each `-d` takes either the next argument or its own tail (`-dmemory_limit=1G`); a
+     * flag without a value sets the directive to "1", as php does. A pair rather than a map,
+     * because `extension` may come more than once.
+     *
+     * @return list<array{0: string, 1: string}>
+     */
+    public function iniSettings(): array
+    {
+        return static::parseIniFlags($this->phpArgs) ?? [];
     }
 
     /**
@@ -180,6 +216,78 @@ readonly class WorkerGroupConfig
         }
 
         return $flags;
+    }
+
+    /**
+     * Refuses what a fork group cannot honour, as far as the config alone tells: it runs on
+     * the master's interpreter, so a php binary of its own is out, and its phpArgs can only
+     * be ini settings. Whether each setting can be applied at runtime depends on the master
+     * process, and is checked there (WorkerMaster::assertLaunchable).
+     *
+     * @param list<string> $phpArgs
+     */
+    protected static function assertForkable(string $name, string $phpBinary, array $phpArgs): void
+    {
+        if ($phpBinary !== PHP_BINARY) {
+            throw new InvalidConfigException(
+                message: sprintf(
+                    'config: group "%s" is launched by fork, so it runs on the master\'s own php;'
+                    . ' "phpBinary" needs launch=exec',
+                    $name,
+                ),
+            );
+        }
+
+        if (static::parseIniFlags($phpArgs) === null) {
+            throw new InvalidConfigException(
+                message: sprintf(
+                    'config: group "%s" is launched by fork, so its phpArgs can only set ini values'
+                    . ' (-d name=value); %s needs launch=exec',
+                    $name,
+                    json_encode($phpArgs, JSON_UNESCAPED_SLASHES),
+                ),
+            );
+        }
+    }
+
+    /**
+     * @param list<string> $phpArgs
+     *
+     * @return list<array{0: string, 1: string}>|null null when an argument is not an ini
+     *                                                setting
+     */
+    protected static function parseIniFlags(array $phpArgs): ?array
+    {
+        $settings = [];
+
+        for ($index = 0; $index < count($phpArgs); ++$index) {
+            $argument = $phpArgs[$index];
+
+            if ($argument === '-d') {
+                $argument = $phpArgs[++$index] ?? null;
+
+                if ($argument === null) {
+                    return null;
+                }
+            } elseif (str_starts_with($argument, '-d') && strlen($argument) > 2) {
+                $argument = substr($argument, 2);
+            } else {
+                return null;
+            }
+
+            [$directive, $value] = array_pad(explode('=', $argument, 2), 2, '1');
+
+            if ($directive === '') {
+                return null;
+            }
+
+            $settings[] = [
+                $directive,
+                $value,
+            ];
+        }
+
+        return $settings;
     }
 
     protected static function flagValue(mixed $value): string

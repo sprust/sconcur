@@ -6,6 +6,7 @@ namespace SConcur\Tests\Feature\Worker;
 
 use PHPUnit\Framework\TestCase;
 use SConcur\Exceptions\Worker\InvalidConfigException;
+use SConcur\Worker\LaunchMode;
 use SConcur\Worker\MasterConfig;
 use SConcur\Worker\RestartPolicy;
 use SConcur\Worker\WorkerGroupConfig;
@@ -60,6 +61,104 @@ class WorkerGroupConfigTest extends TestCase
         self::assertSame(RestartPolicy::Never, $group->restartPolicy);
         self::assertSame(9000, $group->shutdownTimeoutMs);
         self::assertSame(['SHARED' => '1', 'OWN' => '2'], $group->env);
+    }
+
+    /**
+     * Exec is what a config that says nothing gets; a top-level launch is the default of
+     * every group, and a group's own wins.
+     */
+    public function testLaunchIsExecUnlessTheConfigSaysOtherwise(): void
+    {
+        self::assertSame(LaunchMode::Exec, $this->group([])->launch);
+
+        $config = MasterConfig::fromArray([
+            'launch' => 'fork',
+            'groups' => [
+                ['name' => 'inherits', 'workerScript' => '/app/x.php'],
+                ['name' => 'overrides', 'workerScript' => '/app/x.php', 'launch' => 'exec'],
+            ],
+        ]);
+
+        self::assertSame(LaunchMode::Fork, $config->groups()[0]->launch);
+        self::assertSame(LaunchMode::Exec, $config->groups()[1]->launch);
+    }
+
+    public function testAnUnknownLaunchIsRefused(): void
+    {
+        $this->expectException(InvalidConfigException::class);
+        $this->expectExceptionMessage('launch must be exec|fork');
+
+        $this->group(['launch' => 'spawn']);
+    }
+
+    /**
+     * A forked worker is a copy of the master, so it runs on the master's interpreter: a
+     * php binary of its own cannot be honoured, and is refused rather than ignored.
+     */
+    public function testAForkGroupRefusesAPhpBinaryOfItsOwn(): void
+    {
+        $this->expectException(InvalidConfigException::class);
+        $this->expectExceptionMessage('"phpBinary" needs launch=exec');
+
+        $this->group([
+            'launch'    => 'fork',
+            'phpBinary' => '/usr/bin/php8.3',
+        ]);
+    }
+
+    /**
+     * A forked worker applies its phpArgs with ini_set, so they may only be ini settings:
+     * another php.ini (-c) or no php.ini at all (-n) is something only a php of its own
+     * can have.
+     */
+    public function testAForkGroupTakesOnlyIniSettingsFromPhpArgs(): void
+    {
+        foreach ([['-c', '/etc/php.ini'], ['-n'], ['-d']] as $phpArgs) {
+            try {
+                $this->group([
+                    'launch'  => 'fork',
+                    'phpArgs' => $phpArgs,
+                ]);
+
+                self::fail('phpArgs ' . json_encode($phpArgs) . ' should have been refused');
+            } catch (InvalidConfigException $exception) {
+                self::assertStringContainsString('can only set ini values', $exception->getMessage());
+            }
+        }
+    }
+
+    /**
+     * Both spellings of -d, in the order given — a later one wins, as on a command line —
+     * and a directive named twice, as `extension` may be, is kept twice. A flag without a
+     * value is "1", as php reads it.
+     */
+    public function testTheIniSettingsOfAForkGroupKeepTheirOrder(): void
+    {
+        $group = $this->group([
+            'launch'  => 'fork',
+            'phpArgs' => [
+                '-d',
+                'memory_limit=1G',
+                '-dprecision=10',
+                '-d',
+                'extension=a.so',
+                '-d',
+                'extension=b.so',
+                '-d',
+                'html_errors',
+            ],
+        ]);
+
+        self::assertSame(
+            [
+                ['memory_limit', '1G'],
+                ['precision', '10'],
+                ['extension', 'a.so'],
+                ['extension', 'b.so'],
+                ['html_errors', '1'],
+            ],
+            $group->iniSettings(),
+        );
     }
 
     public function testTheServerBlockBecomesWorkerFlags(): void

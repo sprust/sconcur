@@ -4,23 +4,17 @@ declare(strict_types=1);
 
 namespace SConcur\Worker;
 
-use SConcur\Exceptions\Worker\WorkerSpawnException;
 use SConcur\Process\ProcessControl;
 use SConcur\Process\ProcessSignalEnum;
 
 /**
- * One supervised worker process, spawned via proc_open.
- *
- * The command is passed as an array (no shell), so pid() is the php process itself
- * and signals reach it directly — there is no intermediate `sh -c` to absorb them.
- * stdout/stderr are kept as non-blocking pipes; the master drains them line-by-line
- * (drainOutput) into its log, so a worker crash's output is preserved in one place.
- *
- * Everything above stderr is shut out of the worker (see inheritedDescriptorGuard):
- * proc_open hands the child every other descriptor the master holds, and none of them
- * are the worker's business.
+ * One supervised worker process, whichever way it was launched: ExecWorkerProcess runs a
+ * php of its own on the script, ForkedWorkerProcess forks the master. What the master
+ * does with a worker is the same either way and lives here — its stdout and stderr are
+ * non-blocking pipes drained line by line into the journal (drainOutput), so a crash's
+ * output is kept in one place; the liveness pipe feeds the watchdog; signals go by pid.
  */
-class WorkerProcess
+abstract class WorkerProcess
 {
     /**
      * Upper bound on a buffered partial line (no newline yet). A worker spewing a very
@@ -29,14 +23,11 @@ class WorkerProcess
      */
     protected const int MAX_LINE_BYTES = 1_048_576;
 
-    /** @var resource */
-    protected mixed $process;
+    /** @var resource|null */
+    protected mixed $stdoutPipe = null;
 
     /** @var resource|null */
-    protected mixed $stdoutPipe;
-
-    /** @var resource|null */
-    protected mixed $stderrPipe;
+    protected mixed $stderrPipe = null;
 
     /** @var resource|null the liveness pipe, when the group's watchdog is on */
     protected mixed $heartbeatPipe = null;
@@ -51,8 +42,8 @@ class WorkerProcess
 
     protected bool $running = true;
 
-    // proc_get_status reports exitcode/termsig only on the first running->false
-    // transition, so the outcome is captured once and cached.
+    // Captured once, on the first running->false transition, and cached: neither
+    // proc_get_status nor waitpid reports it a second time.
     protected ?int $exitCode = null;
 
     protected ?int $termSignal = null;
@@ -62,62 +53,13 @@ class WorkerProcess
     protected string $stderrBuffer = '';
 
     /**
-     * @param list<string>          $command   full command in array form (no shell)
-     * @param string                $cwd       working directory for the worker
-     * @param array<string, string> $env       full environment for the worker
-     * @param bool                  $heartbeat open the liveness pipe the watchdog reads
+     * Brings the running flag and the outcome up to date. The outcome is captured once, on
+     * the transition to not running: neither proc_get_status nor waitpid reports it twice.
      */
-    public function __construct(array $command, string $cwd, array $env, bool $heartbeat = false)
-    {
-        $descriptors = [
-            0 => ['pipe', 'r'],
-            1 => ['pipe', 'w'],
-            2 => ['pipe', 'w'],
-        ];
+    abstract protected function refresh(): void;
 
-        if ($heartbeat) {
-            $descriptors[Heartbeat::FD] = ['pipe', 'w'];
-        }
-
-        $descriptors += self::inheritedDescriptorGuard();
-
-        $pipes = [];
-
-        $process = proc_open(
-            command: $command,
-            descriptor_spec: $descriptors,
-            pipes: $pipes,
-            cwd: $cwd,
-            env_vars: $env,
-        );
-
-        if (!is_resource($process)) {
-            throw new WorkerSpawnException(
-                message: 'Failed to spawn worker process: ' . implode(' ', $command),
-            );
-        }
-
-        $status = proc_get_status($process);
-
-        $this->process     = $process;
-        $this->pid         = (int) $status['pid'];
-        $this->startedAtNs = hrtime(true);
-
-        // stdin is unused; close it so the worker never blocks waiting on it.
-        if (isset($pipes[0]) && is_resource($pipes[0])) {
-            fclose($pipes[0]);
-        }
-
-        $this->stdoutPipe    = $pipes[1] ?? null;
-        $this->stderrPipe    = $pipes[2] ?? null;
-        $this->heartbeatPipe = $pipes[Heartbeat::FD] ?? null;
-
-        foreach ([$this->stdoutPipe, $this->stderrPipe, $this->heartbeatPipe] as $pipe) {
-            if (is_resource($pipe)) {
-                stream_set_blocking($pipe, false);
-            }
-        }
-    }
+    /** Gives back what the launch holds once the worker has exited. */
+    abstract protected function release(): void;
 
     public function pid(): int
     {
@@ -281,8 +223,8 @@ class WorkerProcess
     }
 
     /**
-     * Closes the pipes and reaps the process (proc_close), preventing a zombie. Call
-     * only once the worker has exited; proc_close blocks until the process is gone.
+     * Closes the pipes and gives back what the launch holds. Call only once the worker
+     * has exited.
      */
     public function close(): void
     {
@@ -298,82 +240,7 @@ class WorkerProcess
         $this->stderrPipe    = null;
         $this->heartbeatPipe = null;
 
-        if (is_resource($this->process)) {
-            @proc_close($this->process);
-        }
-    }
-
-    /**
-     * A descriptor spec that points every descriptor above stderr at /dev/null in the
-     * child, so the worker inherits none of the master's own. The caller's own entries
-     * win over it, which is how the liveness pipe keeps Heartbeat::FD.
-     *
-     * proc_open only rewires the descriptors it is given and leaves the rest open in the
-     * child. The master holds the telemetry collector's unix listener and one accepted
-     * socket per live worker, the panel's listener and its open browser connections, its
-     * lock, state and log files, and the pipes of every other worker — a worker spawned
-     * later got a copy of all of them, kept them for its whole life and could hold a lock
-     * or a connection open long after the master let go of it. PHP cannot set FD_CLOEXEC
-     * on a stream, so the spawn itself is where this is closed.
-     *
-     * Reads /proc, which is where this library already runs; without it the guard is
-     * empty and the spawn behaves as it did before.
-     *
-     * @return array<int, array{0: string, 1: string, 2: string}>
-     */
-    protected static function inheritedDescriptorGuard(): array
-    {
-        $entries = @scandir('/proc/self/fd');
-
-        if ($entries === false) {
-            return [];
-        }
-
-        $guard = [];
-
-        foreach ($entries as $entry) {
-            if (!ctype_digit($entry)) {
-                continue;
-            }
-
-            $descriptor = (int) $entry;
-
-            // 0/1/2 are the worker's own pipes, spelled out by the caller.
-            if ($descriptor < 3) {
-                continue;
-            }
-
-            $guard[$descriptor] = ['file', '/dev/null', 'r'];
-        }
-
-        return $guard;
-    }
-
-    /**
-     * Refreshes the running flag and captures the exit outcome on the first
-     * running->false transition (proc_get_status only reports it once).
-     */
-    protected function refresh(): void
-    {
-        if (!$this->running) {
-            return;
-        }
-
-        $status = proc_get_status($this->process);
-
-        if ($status['running']) {
-            return;
-        }
-
-        $this->running = false;
-
-        if ($status['signaled']) {
-            $this->termSignal = (int) $status['termsig'];
-
-            return;
-        }
-
-        $this->exitCode = (int) $status['exitcode'];
+        $this->release();
     }
 
     /**

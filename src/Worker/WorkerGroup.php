@@ -6,6 +6,7 @@ namespace SConcur\Worker;
 
 use Closure;
 use SConcur\Exceptions\Worker\WorkerSpawnException;
+use SConcur\Process\Dto\ForkResult;
 use SConcur\Process\ProcessSignalEnum;
 use Throwable;
 
@@ -601,12 +602,15 @@ class WorkerGroup
         $this->forgetWatchdog($index);
 
         try {
-            $process = new WorkerProcess(
-                command: $this->buildCommand(),
-                cwd: $this->cwd,
-                env: $this->buildEnv($index),
-                heartbeat: $this->config->watchdogTimeoutMs > 0,
-            );
+            $process = match ($this->config->launch) {
+                LaunchMode::Exec => new ExecWorkerProcess(
+                    command: $this->buildCommand(),
+                    cwd: $this->cwd,
+                    env: $this->buildEnv($index),
+                    heartbeat: $this->config->watchdogTimeoutMs > 0,
+                ),
+                LaunchMode::Fork => $this->fork($index),
+            };
         } catch (WorkerSpawnException $exception) {
             $backoffMs = $this->nextBackoffMs(
                 index: $index,
@@ -770,9 +774,36 @@ class WorkerGroup
     }
 
     /**
-     * Builds the worker command. The master's pid rides along as the `--masterPid` argv
-     * flag — the same channel as the expanded `server` flags and the group's workerArgs,
-     * no environment involved — for the worker to use as it sees fit.
+     * Forks the master into the worker of a slot. The child half never returns: it becomes
+     * the worker in ForkedWorker::run() and leaves from there. What it needs is taken here,
+     * before the fork, so the child reads plain values rather than this group.
+     */
+    protected function fork(int $index): ForkedWorkerProcess
+    {
+        $title       = sprintf('sconcur-server: %s #%d', $this->config->name, $index);
+        $cwd         = $this->cwd;
+        $environment = $this->workerEnvironment($index);
+        $iniSettings = $this->config->iniSettings();
+        $argv        = $this->workerArgv();
+
+        return new ForkedWorkerProcess(
+            heartbeat: $this->config->watchdogTimeoutMs > 0,
+            child: static function (ForkResult $fork) use ($title, $cwd, $environment, $iniSettings, $argv): never {
+                ForkedWorker::run(
+                    fork: $fork,
+                    title: $title,
+                    cwd: $cwd,
+                    environment: $environment,
+                    iniSettings: $iniSettings,
+                    argv: $argv,
+                );
+            },
+        );
+    }
+
+    /**
+     * Builds the worker command for a group launched by exec: the interpreter, its flags
+     * and the worker's argv (workerArgv).
      *
      * `display_errors=stderr` is forced ahead of the group's phpArgs so a dying worker
      * always explains itself: with the production-ini `display_errors=Off` a fatal
@@ -790,6 +821,21 @@ class WorkerGroup
             '-d',
             'display_errors=stderr',
             ...$this->config->phpArgs,
+            ...$this->workerArgv(),
+        ];
+    }
+
+    /**
+     * The worker's argv, whichever way it is launched: the script, the expanded `server`
+     * flags, the group's workerArgs, and the master's pid as the `--masterPid` flag — the
+     * same channel as the rest, no environment involved — for the worker to use as it
+     * sees fit.
+     *
+     * @return list<string>
+     */
+    protected function workerArgv(): array
+    {
+        return [
             $this->config->workerScript,
             ...$this->config->argumentFlags(),
             ...$this->config->workerArgs,
@@ -798,9 +844,34 @@ class WorkerGroup
     }
 
     /**
-     * The worker environment: the inherited environment, the pool label, then the
-     * group's own env over both. No master metadata is injected here — that goes via
-     * argv (see buildCommand).
+     * The environment of a worker launched by exec: the inherited one, the liveness pipe's
+     * descriptor, then workerEnvironment() over both. No master metadata is injected here
+     * — that goes via argv (see workerArgv).
+     *
+     * @return array<string, string>
+     */
+    protected function buildEnv(int $index): array
+    {
+        $env = getenv();
+
+        // Tells the worker which descriptor its master opened for the liveness pipe. Set
+        // only with the watchdog on, so a worker under a master that does not watch does
+        // not look for a pipe that is not there. A forked worker is handed the pipe itself
+        // and needs no such variable.
+        if ($this->config->watchdogTimeoutMs > 0) {
+            $env[Heartbeat::FD_ENVIRONMENT_NAME] = (string) Heartbeat::FD;
+        }
+
+        foreach ($this->workerEnvironment($index) as $key => $value) {
+            $env[$key] = $value;
+        }
+
+        return $env;
+    }
+
+    /**
+     * What a worker's environment adds to the master's, whichever way it is launched: the
+     * pool label, then the group's own env over it.
      *
      * The label is "<group>:<slot>", which is what the worker puts on the snapshots it
      * pushes. It carries the slot so two workers of one pool are told apart, and the
@@ -809,31 +880,22 @@ class WorkerGroup
      *
      * @return array<string, string>
      */
-    protected function buildEnv(int $index): array
+    protected function workerEnvironment(int $index): array
     {
-        $env = getenv();
-
         // Labelled per worker and not per master, so the collector can tell the pools of
         // one master apart and aggregate each on its own.
-        $env['SCONCUR_SERVER_NAME'] = $this->config->name . ':' . $index;
+        $environment = ['SCONCUR_SERVER_NAME' => $this->config->name . ':' . $index];
 
         if ($this->telemetrySocket !== '') {
-            $env['SCONCUR_TELEMETRY_SOCKET'] = $this->telemetrySocket;
-        }
-
-        // Tells the worker which descriptor its master opened for the liveness pipe. Set
-        // only with the watchdog on, so a worker under a master that does not watch does
-        // not look for a pipe that is not there.
-        if ($this->config->watchdogTimeoutMs > 0) {
-            $env[Heartbeat::FD_ENVIRONMENT_NAME] = (string) Heartbeat::FD;
+            $environment['SCONCUR_TELEMETRY_SOCKET'] = $this->telemetrySocket;
         }
 
         // The group's own env wins on a collision: it is the more specific setting.
         foreach ($this->config->env as $key => $value) {
-            $env[$key] = $value;
+            $environment[$key] = $value;
         }
 
-        return $env;
+        return $environment;
     }
 
     /**

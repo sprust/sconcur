@@ -20,6 +20,13 @@ class TestWorkerMaster
     /** The flat option keys that describe a pool rather than the master. */
     private const array GROUP_KEYS = ['workerScript', 'workerCount', 'workerArgs', 'server'];
 
+    /**
+     * The launch every master started from here gets unless the test names one itself:
+     * null leaves it to the config default (exec). Set by a test class that runs the same
+     * scenarios under fork.
+     */
+    protected static ?string $launch = null;
+
     /** @var resource */
     private mixed $process;
 
@@ -37,6 +44,15 @@ class TestWorkerMaster
         private readonly string $outputFile,
     ) {
         $this->process = $process;
+    }
+
+    /**
+     * Makes every master started from here launch its workers this way, until reset with
+     * null.
+     */
+    public static function launchWith(?string $launch): void
+    {
+        static::$launch = $launch;
     }
 
     /**
@@ -88,6 +104,7 @@ class TestWorkerMaster
                 // Several workers behind one port: each must enable SO_REUSEPORT.
                 'server'       => ['address' => $address, 'reusePort' => true],
                 'workerArgs'   => array_values($workerArgs),
+                ...static::launchOption(),
                 ...$options,
             ]),
             JSON_PRETTY_PRINT,
@@ -138,6 +155,7 @@ class TestWorkerMaster
             'runtimeDir'   => sys_get_temp_dir(),
             'phpArgs'      => ['-d', 'extension=' . self::extensionPath()],
             'server'       => ['address' => self::HOST . ':0', 'reusePort' => true],
+            ...static::launchOption(),
             ...$overrides,
         ];
 
@@ -506,6 +524,17 @@ class TestWorkerMaster
         }
 
         return $process;
+    }
+
+    /**
+     * The top-level launch default, when a test class asked for one: it applies to every
+     * group of the config, the single shorthand one and those a test writes itself.
+     *
+     * @return array<string, string>
+     */
+    protected static function launchOption(): array
+    {
+        return static::$launch === null ? [] : ['launch' => static::$launch];
     }
 
     private static function root(): string

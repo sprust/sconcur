@@ -98,6 +98,23 @@ class Heartbeat
     }
 
     /**
+     * Claims a liveness pipe handed over directly rather than named in the environment:
+     * the write end a forked worker gets from its fork. No variable to take out of the
+     * environment, then, and no descriptor number for a child of the worker to find —
+     * nothing it starts can mark this worker alive.
+     *
+     * @param resource $stream
+     */
+    public static function adopt(mixed $stream): self
+    {
+        stream_set_blocking($stream, false);
+
+        self::$claimed = new self(stream: $stream);
+
+        return self::$claimed;
+    }
+
+    /**
      * Records that the PHP thread is still moving. Throttled to INTERVAL_MS, so it is an
      * hrtime comparison on all but every few hundredth call.
      */

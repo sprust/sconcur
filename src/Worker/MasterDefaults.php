@@ -27,6 +27,7 @@ readonly class MasterDefaults
         public int $restartBackoffMs,
         public int $maxRestartBackoffMs,
         public int $watchdogTimeoutMs,
+        public LaunchMode $launch = LaunchMode::Exec,
     ) {
     }
 }
