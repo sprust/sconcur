@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace SConcur\Worker;
 
 use SConcur\Exceptions\Worker\WorkerSpawnException;
+use SConcur\Process\ProcessControl;
+use SConcur\Process\ProcessSignalEnum;
 
 /**
  * One supervised worker process, spawned via proc_open.
@@ -179,10 +181,14 @@ class WorkerProcess
         return $this->exitCode === 0 && $this->termSignal === null;
     }
 
-    public function signal(int $signal): void
+    /**
+     * Sends a signal to a worker that is still running. Asked first, because a reaped
+     * worker's pid may already belong to another process.
+     */
+    public function signal(ProcessSignalEnum $signal): void
     {
         if ($this->isRunning()) {
-            proc_terminate($this->process, $signal);
+            ProcessControl::kill($this->pid, $signal);
         }
     }
 
@@ -308,8 +314,7 @@ class WorkerProcess
      * lock, state and log files, and the pipes of every other worker — a worker spawned
      * later got a copy of all of them, kept them for its whole life and could hold a lock
      * or a connection open long after the master let go of it. PHP cannot set FD_CLOEXEC
-     * on a stream, and pcntl_fork is out (the extension does not survive one), so the
-     * spawn itself is where this is closed.
+     * on a stream, so the spawn itself is where this is closed.
      *
      * Reads /proc, which is where this library already runs; without it the guard is
      * empty and the spawn behaves as it did before.

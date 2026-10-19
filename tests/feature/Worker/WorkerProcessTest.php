@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Worker;
 
 use PHPUnit\Framework\TestCase;
+use SConcur\Process\ProcessSignalEnum;
 use SConcur\Worker\WorkerOutputLine;
 use SConcur\Worker\WorkerProcess;
 
@@ -70,7 +71,7 @@ class WorkerProcessTest extends TestCase
         try {
             self::assertTrue($process->isRunning());
 
-            $process->signal(SIGTERM);
+            $process->signal(ProcessSignalEnum::Terminate);
 
             self::assertTrue($this->waitForExit($process), 'the signalled worker should terminate');
 

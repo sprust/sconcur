@@ -6,6 +6,7 @@ namespace SConcur\Worker;
 
 use Closure;
 use SConcur\Exceptions\Worker\WorkerSpawnException;
+use SConcur\Process\ProcessSignalEnum;
 use Throwable;
 
 /**
@@ -164,7 +165,7 @@ class WorkerGroup
         }
     }
 
-    public function signalAll(int $signal): void
+    public function signalAll(ProcessSignalEnum $signal): void
     {
         foreach ($this->slots as $process) {
             $process?->signal($signal);
@@ -286,7 +287,7 @@ class WorkerGroup
             message: sprintf('group %s: removed from the config; draining', $this->config->name),
         );
 
-        $this->signalAll(SIGTERM);
+        $this->signalAll(ProcessSignalEnum::Terminate);
     }
 
     /**
@@ -314,7 +315,7 @@ class WorkerGroup
                         message: 'reload drain timeout; sending SIGKILL',
                     );
 
-                    $process->signal(SIGKILL);
+                    $process->signal(ProcessSignalEnum::Kill);
 
                     $this->reloadKillSent = true;
                 }
@@ -382,7 +383,7 @@ class WorkerGroup
             message: 'reloading; sending SIGTERM',
         );
 
-        $process->signal(SIGTERM);
+        $process->signal(ProcessSignalEnum::Terminate);
 
         return true;
     }
@@ -448,7 +449,7 @@ class WorkerGroup
                 ),
             );
 
-            $process->signal(SIGTERM);
+            $process->signal(ProcessSignalEnum::Terminate);
 
             $this->reportWatchdogEvent(
                 event: WatchdogEventEnum::HeartbeatLost,
@@ -490,7 +491,7 @@ class WorkerGroup
             message: 'hung worker did not exit on SIGTERM; sending SIGKILL',
         );
 
-        $process->signal(SIGKILL);
+        $process->signal(ProcessSignalEnum::Kill);
 
         $this->reportWatchdogEvent(
             event: WatchdogEventEnum::KillEscalated,

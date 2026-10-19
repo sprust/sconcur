@@ -264,8 +264,8 @@ feature's doc. Key PHP classes not covered there:
 - `Features/Socket/Dto/AbstractConnection` — shared base for the socket and
   WebSocket `Connection` DTOs (server accept-side and client dial-side); keeps the
   features decoupled, since all depend on the neutral base rather than each other.
-- `Worker/` — the worker master (a process supervisor that does NOT load the
-  extension): `WorkerMaster`, `MasterConfig`, `MasterCli`, `WorkerProcess`, `Cpu`,
+- `Worker/` — the worker master (a process supervisor that loads the extension for
+  process control only — signals, kill — and never starts its runtime): `WorkerMaster`, `MasterConfig`, `MasterCli`, `WorkerProcess`, `Cpu`,
   `MasterLock`, `MasterState`/`MasterGroupState`/`MasterStateFile`, `MasterLogger`,
   `RestartPolicy`. One master supervises several **groups** — `WorkerGroupConfig`
   (a pool's settings, with `MasterDefaults` for what it inherits) and `WorkerGroup`

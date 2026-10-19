@@ -5,27 +5,30 @@ declare(strict_types=1);
 namespace SConcur\Worker;
 
 use Closure;
+use SConcur\Connection\Extension;
+use SConcur\Exceptions\ExtensionNotLoadedException;
 use SConcur\Exceptions\Worker\InvalidConfigException;
 use SConcur\Exceptions\Worker\InvalidWorkerCountException;
-use SConcur\Exceptions\Worker\MissingPcntlException;
 use SConcur\Exceptions\Worker\RuntimePathException;
+use SConcur\Process\ProcessControl;
+use SConcur\Process\ProcessSignalEnum;
 use SConcur\Telemetry\TelemetryRuntime;
 
 /**
  * Supervises a pool of worker processes (one per slot), each a separate `php
- * workerScript` process spawned via proc_open (pcntl_fork after loading the
- * extension is forbidden). The master is server-agnostic — it supervises any worker
- * script; with an SO_REUSEPORT-based server, for example, the workers bind one port
- * and the kernel load-balances connections across them.
+ * workerScript` process spawned via proc_open. The master is server-agnostic — it
+ * supervises any worker script; with an SO_REUSEPORT-based server, for example, the
+ * workers bind one port and the kernel load-balances connections across them.
  *
- * Lifecycle of run(): acquire a single-instance lock, write the state file, install
- * signal handlers, spawn the workers, then loop — draining each worker's output into
- * the log, restarting exited workers per RestartPolicy (with crash-loop backoff),
+ * Lifecycle of run(): acquire a single-instance lock, write the state file, start
+ * watching for signals, spawn the workers, then loop — draining each worker's output
+ * into the log, restarting exited workers per RestartPolicy (with crash-loop backoff),
  * and on SIGTERM/SIGINT forwarding the signal, draining in-flight workers within
  * shutdownTimeoutMs (SIGKILL stragglers), and exiting cleanly.
  *
- * The master itself does NOT load the sconcur extension — it is a plain supervisor.
- * See docs/worker-master.md.
+ * The master loads the sconcur extension and takes its signals and signals its
+ * workers through it (SConcur\Process\ProcessControl), so it needs neither ext-pcntl
+ * nor ext-posix. It never starts the extension's runtime. See docs/worker-master.md.
  */
 class WorkerMaster
 {
@@ -109,7 +112,7 @@ class WorkerMaster
      */
     public function run(): int
     {
-        $this->assertPcntl();
+        $this->assertExtension();
         $this->ensureDirectories();
 
         $this->masterPid = (int) getmypid();
@@ -192,13 +195,22 @@ class WorkerMaster
         return 0;
     }
 
-    protected function assertPcntl(): void
+    /**
+     * The master takes its signals and signals its workers through the extension, so it
+     * has to be loaded here too, not only in the workers. Extension::get() then checks
+     * that it is the version this package expects.
+     */
+    protected function assertExtension(): void
     {
-        if (!function_exists('pcntl_async_signals') || !function_exists('posix_kill')) {
-            throw new MissingPcntlException(
-                message: 'WorkerMaster requires ext-pcntl and ext-posix for signal-driven supervision.',
+        if (!extension_loaded('sconcur')) {
+            throw new ExtensionNotLoadedException(
+                message: 'The worker master needs the "sconcur" extension loaded: start it as'
+                    . ' php -d extension=/path/to/sconcur.so bin/sconcur-server start ..., or enable the'
+                    . ' extension in php.ini.',
             );
         }
+
+        Extension::get();
     }
 
     /**
@@ -307,41 +319,31 @@ class WorkerMaster
     }
 
     /**
-     * Installs SIGTERM/SIGINT handlers that request a graceful stop and returns a
-     * restorer that puts the previous handlers (and async-signals mode) back.
+     * Starts watching SIGTERM/SIGINT and returns a restorer that puts the previous
+     * handlers back. What arrived is taken once per tick (checkStopSignals): no PHP code
+     * runs inside a signal handler, and a tick is the soonest the loop could act on one
+     * anyway.
      *
      * @return Closure(): void
      */
     protected function installSignalHandlers(): Closure
     {
-        $signals = [SIGTERM, SIGINT];
+        ProcessControl::watchSignals([
+            ProcessSignalEnum::Terminate,
+            ProcessSignalEnum::Interrupt,
+        ]);
 
-        $previousAsync = pcntl_async_signals();
+        return static function (): void {
+            ProcessControl::restoreSignals();
+        };
+    }
 
-        /** @var array<int, callable|int> $previousHandlers */
-        $previousHandlers = [];
-
-        foreach ($signals as $signal) {
-            $previousHandlers[$signal] = pcntl_signal_get_handler($signal);
-        }
-
-        pcntl_async_signals(true);
-
-        $handler = function (): void {
+    /** Turns a SIGTERM or SIGINT that arrived since the last tick into a graceful stop. */
+    protected function checkStopSignals(): void
+    {
+        if (ProcessControl::takeSignals() !== []) {
             $this->stopping = true;
-        };
-
-        foreach ($signals as $signal) {
-            pcntl_signal($signal, $handler);
         }
-
-        return static function () use ($signals, $previousHandlers, $previousAsync): void {
-            foreach ($signals as $signal) {
-                pcntl_signal($signal, $previousHandlers[$signal]);
-            }
-
-            pcntl_async_signals($previousAsync);
-        };
     }
 
     protected function writeState(): void
@@ -404,6 +406,7 @@ class WorkerMaster
                 $pool->reapAndLog($this->stopping);
             }
 
+            $this->checkStopSignals();
             $this->checkStateFileStopSignal();
 
             if ($this->stopping) {
@@ -849,7 +852,7 @@ class WorkerMaster
 
             $this->logger->master(MasterLogger::INFO, 'shutdown requested; forwarding SIGTERM to workers');
 
-            $this->signalAll(SIGTERM);
+            $this->signalAll(ProcessSignalEnum::Terminate);
 
             return;
         }
@@ -863,7 +866,7 @@ class WorkerMaster
                     message: sprintf('shutdown timeout; sending SIGKILL to %d worker(s)', $alive),
                 );
 
-                $this->signalAll(SIGKILL);
+                $this->signalAll(ProcessSignalEnum::Kill);
             }
 
             $this->killSent       = true;
@@ -882,7 +885,7 @@ class WorkerMaster
         return $timeoutMs;
     }
 
-    protected function signalAll(int $signal): void
+    protected function signalAll(ProcessSignalEnum $signal): void
     {
         foreach ($this->pools as $pool) {
             $pool->signalAll($signal);

@@ -83,7 +83,7 @@ class TestWorkerMaster
                 'runtimeDir'   => $runtimeDir,
                 'logDir'       => $runtimeDir,
                 'name'         => $name,
-                // Workers must load the built extension; the master itself does not need it.
+                // Workers load the built extension too: an exec'd worker is a php of its own.
                 'phpArgs'      => ['-d', 'extension=' . self::extensionPath()],
                 // Several workers behind one port: each must enable SO_REUSEPORT.
                 'server'       => ['address' => $address, 'reusePort' => true],
@@ -107,12 +107,16 @@ class TestWorkerMaster
         );
 
         if ($waitReachable && !$server->waitUntilReachable()) {
+            // Both, because with logTo=file the master's own output is empty and the reason
+            // — a worker that died on startup, a refused config — is in the journal.
             $diagnostics = $server->masterOutput();
+            $journal     = $server->logText();
 
             $server->stop();
 
             throw new RuntimeException(
-                'The test master did not become reachable (is the extension built?). Output: ' . $diagnostics,
+                'The test master did not become reachable (is the extension built?). Output: ' . $diagnostics
+                . ' Journal: ' . $journal,
             );
         }
 
@@ -479,7 +483,9 @@ class TestWorkerMaster
      */
     private static function open(array $argv, array $env, string $outputFile): mixed
     {
-        $command = [PHP_BINARY, self::binPath(), ...$argv];
+        // The master takes and sends its signals through the extension, so it loads the
+        // build under test as well as the workers.
+        $command = [PHP_BINARY, '-d', 'extension=' . self::extensionPath(), self::binPath(), ...$argv];
 
         $descriptors = [
             0 => ['pipe', 'r'],

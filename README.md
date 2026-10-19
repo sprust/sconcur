@@ -214,8 +214,8 @@ Everything else follows from that:
   process on the assumption that one PHP thread issues every call, while the PHP
   side numbers flows with a class static that a ZTS build gives each thread a
   copy of — two request threads would collide on the same flow key.
-- Linux only — core-count detection, signals/`posix`, `SO_REUSEPORT`, the
-  master's `flock`.
+- Linux only — core-count detection, `/proc`, `SO_REUSEPORT`, the master's
+  `flock`.
 - `exit()`/`die()` with active tasks is safe but loses their results. The
   shutdown handler unwinds unfinished coroutines (finally blocks run,
   transactions roll back, cursors and flows are released), then the process exits

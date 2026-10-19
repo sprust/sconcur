@@ -8,7 +8,7 @@ brought up via [`SO_REUSEPORT`](http-server.md) under the
 the master once a second; the master keeps the pool state in memory and serves it
 on its own port — `GET /api/stats`, a live HTML panel and an SSE stream. Sampling
 and push happen inside the extension of the worker; the collector and panel are pure PHP
-in the master, which does not load the extension.
+in the master, which never starts the extension's runtime.
 
 ## Contents
 

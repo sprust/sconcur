@@ -8,9 +8,11 @@ one port and the kernel balances connections across them, scaling the server acr
 all cores without an external load balancer. Implementation: `src/Worker/` plus the
 universal CLI `bin/sconcur-server`.
 
-Each worker is a separate process started via `proc_open`. The master itself
-does not load the extension: it is a pure supervisor on `pcntl`/`posix` (both
-are required, otherwise it throws `MissingPcntlException`).
+Each worker is a separate process started via `proc_open`. The master loads the
+extension too and takes and sends its signals through it, so neither `pcntl` nor
+`posix` is needed; `start` without the extension fails with
+`ExtensionNotLoadedException`. It never starts the extension's runtime: the master
+does no asynchronous work of its own.
 
 A worker gets its stdin/stdout/stderr and nothing else: `proc_open` would otherwise
 leave every descriptor the master holds open in the child — the telemetry sockets,
