@@ -265,8 +265,13 @@ feature's doc. Key PHP classes not covered there:
   WebSocket `Connection` DTOs (server accept-side and client dial-side); keeps the
   features decoupled, since all depend on the neutral base rather than each other.
 - `Worker/` — the worker master (a process supervisor that loads the extension for
-  process control only — signals, kill — and never starts its runtime): `WorkerMaster`, `MasterConfig`, `MasterCli`, `WorkerProcess`, `Cpu`,
-  `MasterLock`, `MasterState`/`MasterGroupState`/`MasterStateFile`, `MasterLogger`,
+  process control only — signals, kill, fork — and never starts its runtime):
+  `WorkerMaster`, `MasterConfig`, `MasterCli`, `WorkerProcess` (the abstract worker:
+  journal pipes, heartbeat, outcome) with its two launches — `ExecWorkerProcess`
+  (`proc_open` of a php of its own) and `ForkedWorkerProcess` (a fork of the master,
+  whose child half is `ForkedWorker`: environment, ini, argv, `require` of the script,
+  `_exit`, and never a return into the master's frames) — chosen per group by
+  `LaunchMode`, `Cpu`, `MasterLock`, `MasterState`/`MasterGroupState`/`MasterStateFile`, `MasterLogger`,
   `RestartPolicy`. One master supervises several **groups** — `WorkerGroupConfig`
   (a pool's settings, with `MasterDefaults` for what it inherits) and `WorkerGroup`
   (its live slots, backoff and rolling reload). The groups are generic: everything

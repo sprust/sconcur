@@ -8,14 +8,16 @@ one port and the kernel balances connections across them, scaling the server acr
 all cores without an external load balancer. Implementation: `src/Worker/` plus the
 universal CLI `bin/sconcur-server`.
 
-Each worker is a separate process started via `proc_open`. The master loads the
+Each worker is a separate process: by default a `php` of its own started via
+`proc_open`, or a copy of the master made by `fork` (see
+[Launch: exec or fork](#launch-exec-or-fork)). The master loads the
 extension too and takes and sends its signals through it, so neither `pcntl` nor
 `posix` is needed; `start` without the extension fails with
 `ExtensionNotLoadedException`. It never starts the extension's runtime: the master
 does no asynchronous work of its own.
 
-A worker gets its stdin/stdout/stderr and nothing else: `proc_open` would otherwise
-leave every descriptor the master holds open in the child — the telemetry sockets,
+Either way a worker gets its stdin/stdout/stderr and nothing else: it would otherwise
+keep every descriptor the master holds open in the child — the telemetry sockets,
 the panel's connections, the lock and the log — so the spawn points all of them at
 `/dev/null` instead.
 
@@ -24,6 +26,7 @@ the panel's connections, the lock and the log — so the spawn points all of the
 - [Quick start](#quick-start)
 - [Commands](#commands)
 - [Parameters](#parameters)
+- [Launch: exec or fork](#launch-exec-or-fork)
 - [Restart policy and `maxRequests`](#restart-policy-and-maxrequests)
 - [Self-termination of orphaned workers](#self-termination-of-orphaned-workers)
 - [Stuck worker](#stuck-worker)
@@ -169,12 +172,13 @@ leaves the `SO_REUSEPORT` group early and finishes the requests it has already
 accepted), waiting up to `shutdownTimeoutMs` (otherwise `SIGKILL`) and spawning a
 replacement. While one worker finishes up, the rest hold traffic — so with N>1
 the restart is downtime-free, and a fresh `php worker.php` picks up new code from
-disk.
+disk; a [forked](#launch-exec-or-fork) one picks up the application's, while what the
+master itself loaded stays as it was.
 
 What a reload may change: the set of groups (one added is spawned, one removed
 has its workers finish their work and is not replaced), and each group's
-`workerCount`, `workerScript`, `workerArgs`, `server`, `env`, `phpBinary`,
-`phpArgs`, `restartPolicy`, timeouts and backoffs. Scaling a pool is therefore
+`workerCount`, `workerScript`, `workerArgs`, `server`, `env`, `launch`,
+`phpBinary`, `phpArgs`, `restartPolicy`, timeouts and backoffs. Scaling a pool is therefore
 an edit plus a `reload`, not a restart.
 
 What it may not: `runtimeDir` and `name` identify the running instance, and
@@ -210,7 +214,7 @@ glob and a `--group` value), and every timeout, count and day retention must be
 | `adminToken` | empty (off) | Panel Bearer token; needs `panelPort`. |
 
 The next keys are the defaults every group inherits unless it names its own:
-`phpBinary`, `phpArgs`, `env`, `restartPolicy`, `shutdownTimeoutMs`,
+`launch`, `phpBinary`, `phpArgs`, `env`, `restartPolicy`, `shutdownTimeoutMs`,
 `restartBackoffMs`, `maxRestartBackoffMs`, `watchdogTimeoutMs`.
 
 ### A group
@@ -222,8 +226,9 @@ The next keys are the defaults every group inherits unless it names its own:
 | `workerCount` | `0` (= logical CPUs, what `nproc` reports — twice the core count where hyperthreading is on) | How many workers to bring up. |
 | `server` | `{}` | Worker parameters → expanded into the worker's `argv`. |
 | `workerArgs` | `[]` | Extra raw worker `argv` flags, appended after `server`. |
-| `phpBinary` | the master's | Interpreter for this group's workers. |
-| `phpArgs` | the master's | Interpreter flags, e.g. `["-d", "extension=…"]`. |
+| `launch` | the master's (`exec`) | `exec` — a `php` of its own on the script; `fork` — a copy of the master. See [Launch: exec or fork](#launch-exec-or-fork). |
+| `phpBinary` | the master's | Interpreter for this group's workers (`exec` only). |
+| `phpArgs` | the master's | Interpreter flags, e.g. `["-d", "extension=…"]`; under `fork` only `-d name=value`. |
 | `env` | the master's | Extra worker env, merged over the master's and the inherited one. |
 | `restartPolicy` | the master's | `always` \| `on-failure` \| `never`. |
 | `shutdownTimeoutMs` | the master's | How long to wait for a worker to finish before `SIGKILL`. |
@@ -247,6 +252,49 @@ script (typically the orphan check below).
 
 Slot indices are local to a group, so the journal names both — `worker: 4711
 orders #2` is slot 2 of the `orders` pool.
+
+## Launch: exec or fork
+
+A group's `launch` says how its workers are started. `exec`, the default, starts each
+one as `php <phpArgs> workerScript <argv>`. `fork` makes each worker a copy of the
+master: the master is a `php` with the extension already loaded, and the copy sets up
+the worker's environment and argv and `require`s `workerScript`. The worker script is
+the same either way.
+
+| | `exec` | `fork` |
+|---|---|---|
+| A worker starts as | a new `php`: interpreter, `php.ini`, the extension | a copy of the master: nothing to start or load |
+| Master start to the first answer of one worker (demo server, median of 7) | 36–40 ms | 24–30 ms |
+| `phpBinary` | any | the master's only; another one is refused |
+| `phpArgs` | any flags | only `-d name=value`, applied with `ini_set` after `display_errors=stderr` |
+| `php.ini` | its own | the master's |
+| What a `reload` picks up | new code of everything | new application code; the library and the extension the master loaded stay as they were until it restarts |
+| Scope the script runs in | global | a function's |
+
+What a fork group's `phpArgs` may carry is checked at `start` and on every `reload`,
+and a group that asks for what cannot be honoured is refused rather than run without
+it: an `extension` has to be loaded in the master already, and a directive PHP fixes
+at startup (`extension_dir`, `opcache.enable_cli`) cannot be set at all.
+
+The script runs inside a function, so its top-level variables are that function's
+locals. `$argv`, `$argc` and `$_SERVER['argv']` hold what a `php` started on the
+script would have had. A script that relies on `global` or on `$GLOBALS` holding its
+top-level variables needs `exec`.
+
+The rest is the same as for `exec`. The child is prepared before PHP runs in it:
+stdin from `/dev/null`, stdout and stderr onto the master's pipes, so the journal reads
+as before, and every other descriptor of the master pointed at `/dev/null`. The
+signal handlers the master installed are put back to PHP's own, the random generators
+are reseeded, and the master's objects are marked as destroyed so their destructors
+never run in a worker. An uncaught exception is reported on stderr the way PHP reports
+it, and the worker exits with `255`; `exit()` works as usual. In `ps` a forked worker
+shows as `sconcur-server: <group> #<slot>`. Telemetry, the watchdog and `--masterPid`
+work as with `exec`.
+
+A fork is refused in a process that runs threads, because a fork keeps only the
+calling thread. The master's own code never starts the extension's runtime, but an
+`onWatchdogEvent` handler that used SConcur's asynchronous features would, and every
+fork after it would fail; the journal says why.
 
 ## Restart policy and `maxRequests`
 
@@ -509,6 +557,8 @@ supervision (spawning N workers, restarting a killed one, self-exit on
 and state (rejection of a second instance, `status`/`stop`, `status` after a
 crash), resilience (crash-loop backoff, config validation, orphan
 self-termination) and the logger (line format, context JSON, daily rotation).
+`ForkedWorkerMasterTest` runs every one of those scenarios once more with the
+workers launched by fork.
 
 ---
 
