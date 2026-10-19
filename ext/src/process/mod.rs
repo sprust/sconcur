@@ -51,6 +51,7 @@ pub fn run(command: &[u8], payload: &Value) -> Result<Value, Error> {
             Ok(Value::Nil)
         }
         b"cls" => close(decode(payload)?),
+        b"bnd" => bind(decode(payload)?),
         b"thr" => Ok(threads::count().map_or(Value::Nil, |count| Value::Int(count as i64))),
         other => Err(Error::Failed(format!(
             "unknown process command '{}'",
@@ -154,6 +155,28 @@ fn outcome(pid: i64, code: Option<i64>, signal: Option<i64>) -> Value {
         .set("cd", code.map_or(Value::Nil, Value::Int))
         .set("sg", signal.map_or(Value::Nil, Value::Int))
         .into()
+}
+
+/// A listening socket for workers to share, answered as its descriptor. Bound
+/// once in the master and inherited by every worker it forks or execs, so all of
+/// them accept from one queue: a stopping worker leaves connections to the others
+/// rather than resetting the ones that queued for it, as a SO_REUSEPORT socket
+/// closing would.
+///
+/// Close-on-exec like every socket created here: a fork keeps it regardless, an
+/// exec'd worker gets it through the descriptor it is placed on, and anything
+/// else the master execs does not.
+fn bind(params: payloads::BindParams) -> Result<Value, Error> {
+    let backlog = if params.backlog > 0 {
+        params.backlog.min(i32::MAX as i64) as i32
+    } else {
+        crate::features::httpserver::listen::LISTEN_BACKLOG
+    };
+
+    let socket = crate::features::httpserver::listen::bind(&params.address, false, backlog)
+        .map_err(|error| Error::Failed(format!("bind {}: {error}", params.address)))?;
+
+    Ok(Value::Int(std::os::fd::IntoRawFd::into_raw_fd(socket) as i64))
 }
 
 fn close(params: payloads::CloseParams) -> Result<Value, Error> {

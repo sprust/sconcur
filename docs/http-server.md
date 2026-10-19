@@ -126,6 +126,7 @@ timeouts are in milliseconds.
 | `handlerTimeoutMs` | `60000` | Max total handling time including streaming, otherwise `504`/abort. `0` — off. |
 | `maxRequests` | `0` (no limit) | Stop the server after this many requests, see [below](#stopping-after-n-requests). |
 | `reusePort` | `false` | `SO_REUSEPORT` — several processes on one port. |
+| `listenFd` | `null` | A listening socket bound elsewhere to accept on instead of binding `address` — the shared socket of a [worker master](worker-master.md) group, or one from systemd socket activation. A copy is taken, so stopping the server leaves the socket to whoever else holds it. |
 | `onError` | `null` | `Closure(Throwable, ServerRequestInterface): ?ResponseInterface`. |
 | `masterPid` | `null` | Stop gracefully once this pid is no longer the parent (the [master](worker-master.md) died); set from `--masterPid` by `fromArgs()`. |
 | `telemetrySocket` | `''` (off) | Unix socket for stats snapshots, injected by the master ([stats](admin-stats.md)). |

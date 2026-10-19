@@ -69,6 +69,10 @@ readonly class HttpServer
      * @param bool                                                                $reusePort            set SO_REUSEPORT so several processes can bind this same
      *                                                                                                  address; the kernel load-balances connections across them
      *                                                                                                  (run one process per core). Linux only; each process must set it.
+     * @param null|int                                                            $listenFd             a listening socket bound elsewhere to accept on instead of binding
+     *                                                                                                  the address: the shared socket of a WorkerMaster group with `listen`,
+     *                                                                                                  or one handed over by systemd socket activation. `address` and
+     *                                                                                                  `reusePort` are then not used. Null (default) binds the address.
      * @param null|Closure(Throwable, ServerRequestInterface): ?ResponseInterface $onError              observes a handler
      *                                                                                                  failure (exception or a non-ResponseInterface return). It may return a
      *                                                                                                  ResponseInterface to send instead of the default 500; returning null (or
@@ -111,6 +115,7 @@ readonly class HttpServer
         protected int $handlerTimeoutMs = 60_000,
         protected int $maxRequests = 0,
         protected bool $reusePort = false,
+        protected ?int $listenFd = null,
         protected ?Closure $onError = null,
         protected ?int $masterPid = null,
         protected string $telemetrySocket = '',
@@ -177,6 +182,7 @@ readonly class HttpServer
                     maxConcurrency: $this->maxConcurrency,
                     handlerTimeoutMs: $this->handlerTimeoutMs,
                     reusePort: $this->reusePort,
+                    listenFd: $this->listenFd,
                     telemetrySocket: $this->telemetrySocket,
                     serverName: $this->serverName,
                     telemetryIntervalMs: $this->telemetryIntervalMs,
@@ -186,7 +192,7 @@ readonly class HttpServer
             self::logServerEvent(
                 sprintf(
                     'sconcur http server listening on %s pid=%d version=%s maxConcurrency=%d maxRequests=%d reusePort=%d',
-                    $this->address,
+                    $this->listenFd === null ? $this->address : 'fd ' . $this->listenFd,
                     getmypid(),
                     Extension::REQUIRED_EXTENSION_VERSION,
                     $this->maxConcurrency,

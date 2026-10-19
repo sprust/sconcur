@@ -46,6 +46,10 @@ readonly class SocketServer
      * @param bool                                      $reusePort           set SO_REUSEPORT so several processes can bind this same address;
      *                                                                       the kernel load-balances connections across them (run one process
      *                                                                       per core). Linux only; each process must set it.
+     * @param null|int                                  $listenFd            a listening socket bound elsewhere to accept on instead of binding
+     *                                                                       the address: the shared socket of a WorkerMaster group with `listen`,
+     *                                                                       or one handed over by systemd socket activation. `address` and
+     *                                                                       `reusePort` are then not used. Null (default) binds the address.
      * @param null|Closure(Throwable, Connection): void $onError             observes an uncaught handler failure (for logging/tracing); the
      *                                                                       connection is closed afterwards. The hook may itself write a final
      *                                                                       frame to the connection before it is closed.
@@ -80,6 +84,7 @@ readonly class SocketServer
         protected int $maxConnections = 0,
         protected int $shutdownTimeoutMs = 10_000,
         protected bool $reusePort = false,
+        protected ?int $listenFd = null,
         protected ?Closure $onError = null,
         protected ?int $masterPid = null,
         protected string $telemetrySocket = '',
@@ -138,6 +143,7 @@ readonly class SocketServer
                     maxConcurrency: $this->maxConcurrency,
                     shutdownTimeoutMs: $this->shutdownTimeoutMs,
                     reusePort: $this->reusePort,
+                    listenFd: $this->listenFd,
                     telemetrySocket: $this->telemetrySocket,
                     serverName: $this->serverName,
                     telemetryIntervalMs: $this->telemetryIntervalMs,
@@ -147,7 +153,7 @@ readonly class SocketServer
             self::logServerEvent(
                 sprintf(
                     'sconcur socket server listening on %s pid=%d version=%s maxConcurrency=%d maxConnections=%d reusePort=%d',
-                    $this->address,
+                    $this->listenFd === null ? $this->address : 'fd ' . $this->listenFd,
                     getmypid(),
                     Extension::REQUIRED_EXTENSION_VERSION,
                     $this->maxConcurrency,

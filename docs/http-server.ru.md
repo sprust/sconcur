@@ -127,6 +127,7 @@ php -d extension=./ext/build/sconcur.so server.php
 | `handlerTimeoutMs` | `60000` | Полное время обработки запроса, включая стрим, иначе `504`/обрыв. `0` — выкл. |
 | `maxRequests` | `0` (без лимита) | Остановить сервер после N запросов, см. [ниже](#остановка-после-n-запросов). |
 | `reusePort` | `false` | `SO_REUSEPORT` — несколько процессов на одном порту. |
+| `listenFd` | `null` | Слушающий сокет, связанный кем-то другим, — на нём принимать вместо bind на `address`: общий сокет группы [мастера](worker-master.ru.md) или сокет из socket activation systemd. Берётся копия, поэтому остановка сервера оставляет сокет тем, кто держит его ещё. |
 | `onError` | `null` | `Closure(Throwable, ServerRequestInterface): ?ResponseInterface`. |
 | `masterPid` | `null` | Штатно остановиться, как только этот pid перестал быть родителем ([мастер](worker-master.ru.md) умер); ставится из `--masterPid` через `fromArgs()`. |
 | `telemetrySocket` | `''` (выкл.) | Unix-сокет для снапшотов статистики, инжектируется мастером ([статистика](admin-stats.ru.md)). |

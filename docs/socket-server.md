@@ -93,6 +93,7 @@ The `SocketServer` constructor; the PHP defaults mirror the extension's.
 | `maxConnections` | `0` (unlimited) | stop the server after N served connections (a guard against leaks) |
 | `shutdownTimeoutMs` | `10000` | accepted and not applied: finishing the connections already accepted is bounded by the grace period below, not by a clock of its own |
 | `reusePort` | `false` | `SO_REUSEPORT` — a process pool on one port (Linux) |
+| `listenFd` | `null` | A listening socket bound elsewhere to accept on instead of binding `address` — the shared socket of a [worker master](worker-master.md) group, or one from systemd socket activation. A copy is taken, so stopping the server leaves the socket to whoever else holds it. |
 | `onError` | `null` | handler-error hook |
 | `masterPid` | `null` | orphan check under the master |
 | `telemetrySocket` | `''` (off) | unix socket for stats snapshots, injected by the master ([stats](admin-stats.md)) |

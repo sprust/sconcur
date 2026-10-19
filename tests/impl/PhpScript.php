@@ -19,8 +19,10 @@ class PhpScript
      */
     public static function run(string $code, array $arguments = [], int $timeoutSeconds = 30): string
     {
+        // -k: a scenario running a server takes the SIGTERM timeout sends as a graceful
+        // stop and may carry on, so a SIGKILL follows it.
         $command = sprintf(
-            'timeout %d %s -d extension=%s -r %s %s 2>&1',
+            'timeout -k 5 %d %s -d extension=%s -r %s %s 2>&1',
             $timeoutSeconds,
             escapeshellarg(PHP_BINARY),
             escapeshellarg(self::extensionPath()),

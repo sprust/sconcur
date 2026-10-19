@@ -117,6 +117,7 @@ The `WsServer` constructor; the PHP defaults mirror the extension's.
 | `maxConnections` | `0` (no limit) | stop the server after N served connections (a leak guard) |
 | `shutdownTimeoutMs` | `10000` | accepted and not applied: finishing the connections already accepted is bounded by the grace period below, not by a clock of its own |
 | `reusePort` | `false` | `SO_REUSEPORT` — a pool of processes on one port (Linux) |
+| `listenFd` | `null` | A listening socket bound elsewhere to accept on instead of binding `address` — the shared socket of a [worker master](worker-master.md) group, or one from systemd socket activation. A copy is taken, so stopping the server leaves the socket to whoever else holds it. |
 | `path` | `/` | the path on which the upgrade is accepted (empty string — any path); another path → `404` |
 | `allowedOrigins` | `[]` | host patterns for the origin check (empty — the check is skipped) |
 | `subprotocols` | `[]` | negotiable WebSocket subprotocols |

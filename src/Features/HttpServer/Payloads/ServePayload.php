@@ -26,6 +26,7 @@ readonly class ServePayload implements PayloadInterface
         private int $maxConcurrency,
         private int $handlerTimeoutMs,
         private bool $reusePort,
+        protected ?int $listenFd,
         private string $telemetrySocket,
         private string $serverName,
         private int $telemetryIntervalMs,
@@ -38,7 +39,7 @@ readonly class ServePayload implements PayloadInterface
     }
 
     /**
-     * @return array<string, int|string|bool>
+     * @return array<string, int|string|bool|null>
      */
     public function getData(): array
     {
@@ -53,6 +54,7 @@ readonly class ServePayload implements PayloadInterface
             'mc'  => $this->maxConcurrency,
             'hto' => $this->handlerTimeoutMs,
             'rp'  => $this->reusePort,
+            'lfd' => $this->listenFd,
             'ts'  => $this->telemetrySocket,
             'sn'  => $this->serverName,
             'ti'  => $this->telemetryIntervalMs,

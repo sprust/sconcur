@@ -53,6 +53,10 @@ readonly class WsServer
      * @param bool                                      $reusePort           set SO_REUSEPORT so several processes can bind this same address;
      *                                                                       the kernel load-balances connections across them (run one process
      *                                                                       per core). Linux only; each process must set it.
+     * @param null|int                                  $listenFd            a listening socket bound elsewhere to accept on instead of binding
+     *                                                                       the address: the shared socket of a WorkerMaster group with `listen`,
+     *                                                                       or one handed over by systemd socket activation. `address` and
+     *                                                                       `reusePort` are then not used. Null (default) binds the address.
      * @param string                                    $path                restrict the upgrade endpoint to this request path (empty = any
      *                                                                       path); a request to another path is answered 404.
      * @param list<string>                              $allowedOrigins      host patterns accepted by the origin check (empty = allow any
@@ -94,6 +98,7 @@ readonly class WsServer
         protected int $maxConnections = 0,
         protected int $shutdownTimeoutMs = 10_000,
         protected bool $reusePort = false,
+        protected ?int $listenFd = null,
         protected string $path = '/',
         protected array $allowedOrigins = [],
         protected array $subprotocols = [],
@@ -157,6 +162,7 @@ readonly class WsServer
                     maxConcurrency: $this->maxConcurrency,
                     shutdownTimeoutMs: $this->shutdownTimeoutMs,
                     reusePort: $this->reusePort,
+                    listenFd: $this->listenFd,
                     path: $this->path,
                     allowedOrigins: $this->allowedOrigins,
                     subprotocols: $this->subprotocols,
@@ -169,7 +175,7 @@ readonly class WsServer
             self::logServerEvent(
                 sprintf(
                     'sconcur ws server listening on %s pid=%d version=%s maxConcurrency=%d maxConnections=%d reusePort=%d',
-                    $this->address,
+                    $this->listenFd === null ? $this->address : 'fd ' . $this->listenFd,
                     getmypid(),
                     Extension::REQUIRED_EXTENSION_VERSION,
                     $this->maxConcurrency,

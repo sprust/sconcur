@@ -41,6 +41,9 @@ enum ProcessCommandEnum: string
     /** Puts back what was installed for the watched signals before. No parameters. */
     case RestoreSignals = 'sgr';
 
+    /** Binds a listening socket for workers to share and answers its descriptor. Rust: payloads::BindParams. */
+    case Bind = 'bnd';
+
     /** Closes a descriptor the extension handed over. Rust: payloads::CloseParams. */
     case Close = 'cls';
 

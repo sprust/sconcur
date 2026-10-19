@@ -189,6 +189,39 @@ class ProcessControl
     }
 
     /**
+     * Binds a listening TCP socket and answers its descriptor, for workers to share: a
+     * server given it as listenFd accepts from it instead of binding its own. Every worker
+     * that holds it accepts from the one queue, so a worker that stops leaves the
+     * connections waiting there to the others instead of resetting them.
+     *
+     * The socket is close-on-exec: a fork keeps it, an exec'd worker gets it only through
+     * the descriptor it is placed on, and nothing else the process execs inherits it.
+     *
+     * @param int $backlog the queue length asked of the kernel; 0 for the servers' own 4096
+     */
+    public static function bind(string $address, int $backlog = 0): int
+    {
+        return (int) Extension::get()->process(
+            command: ProcessCommandEnum::Bind,
+            payload: [
+                'ad' => $address,
+                'bl' => $backlog,
+            ],
+        );
+    }
+
+    /**
+     * Closes a descriptor this process holds — one bind() answered, once nothing needs it.
+     */
+    public static function close(int $descriptor): void
+    {
+        Extension::get()->process(
+            command: ProcessCommandEnum::Close,
+            payload: ['fd' => $descriptor],
+        );
+    }
+
+    /**
      * How many threads this process runs, or null where the platform cannot say cheaply.
      */
     public static function threadCount(): ?int
@@ -212,10 +245,7 @@ class ProcessControl
 
         $stream = @fopen('php://fd/' . $descriptor, $mode);
 
-        Extension::get()->process(
-            command: ProcessCommandEnum::Close,
-            payload: ['fd' => $descriptor],
-        );
+        static::close($descriptor);
 
         if ($stream === false) {
             throw new ProcessException(
