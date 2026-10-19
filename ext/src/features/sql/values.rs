@@ -1,5 +1,5 @@
-//! Turning MessagePack bindings
-//! into driver arguments, and driver rows back into MessagePack.
+//! Turning the bindings PHP sent
+//! into driver arguments, and driver rows into the PHP values a result carries.
 //!
 //! The shapes here are a wire contract, not a preference. `tests/feature/
 //! Features/Mysql/MysqlTypesTest.php` pins them: integers arrive as integers,
@@ -8,12 +8,13 @@
 //! `\x00`..`\xff` byte for byte, NULL as null. Each of those is an explicit
 //! decision here, made once and pinned by the test.
 
-use rmp::encode;
 use sqlx::{Column, Row, TypeInfo, ValueRef};
 
-/// One binding, normalized out of MessagePack into something a driver accepts.
-/// msgpack's int8/int16/uint64/… all collapse into int64/float64, for one
-/// reason: the driver's converter should see one integer type, not nine.
+use crate::dto::{Map, Value};
+
+/// One binding, normalized out of the PHP value into something a driver
+/// accepts: the driver's converter sees one integer type and one float type,
+/// and text apart from bytes.
 pub enum Binding {
     Null,
     Bool(bool),
@@ -23,31 +24,35 @@ pub enum Binding {
     Bytes(Vec<u8>),
 }
 
-pub fn normalize_bindings(values: &[rmpv::Value]) -> Vec<Binding> {
-    values.iter().map(normalize_binding).collect()
+/// A binding that is an array or an object is refused here, by position: a driver
+/// would store the text of it in a VARCHAR column without a word, and this is the
+/// one place that knows it was never a scalar.
+pub fn normalize_bindings(values: &[Value]) -> Result<Vec<Binding>, String> {
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            normalize_binding(value).ok_or_else(|| format!("binding {index} is an array or an object, not a value a driver can bind"))
+        })
+        .collect()
 }
 
-fn normalize_binding(value: &rmpv::Value) -> Binding {
+fn normalize_binding(value: &Value) -> Option<Binding> {
     match value {
-        rmpv::Value::Nil => Binding::Null,
-        rmpv::Value::Boolean(flag) => Binding::Bool(*flag),
-        rmpv::Value::Integer(number) => match number.as_i64() {
-            Some(number) => Binding::Int(number),
-            // Past i64 the value cannot be an integer argument; hand it over as
-            // text rather than silently wrapping it.
-            None => Binding::Text(number.to_string()),
+        Value::Nil => Some(Binding::Null),
+        Value::Bool(flag) => Some(Binding::Bool(*flag)),
+        Value::Int(number) => Some(Binding::Int(*number)),
+        Value::Float(number) => Some(Binding::Float(*number)),
+        // A PHP string is one type for text and bytes alike, so a BLOB binding
+        // arrives as a string holding bytes that are not valid UTF-8. Keep
+        // those as bytes instead of lossily converting them.
+        Value::Str(bytes) => match std::str::from_utf8(bytes) {
+            Ok(text) => Some(Binding::Text(text.to_string())),
+            Err(_) => Some(Binding::Bytes(bytes.clone())),
         },
-        rmpv::Value::F32(number) => Binding::Float(*number as f64),
-        rmpv::Value::F64(number) => Binding::Float(*number),
-        // PHP strings arrive as msgpack str; a binary payload (a BLOB binding)
-        // arrives as str too, holding bytes that are not valid UTF-8. Keep those
-        // as bytes instead of lossily converting them.
-        rmpv::Value::String(text) => match text.as_str() {
-            Some(text) => Binding::Text(text.to_string()),
-            None => Binding::Bytes(text.as_bytes().to_vec()),
-        },
-        rmpv::Value::Binary(bytes) => Binding::Bytes(bytes.clone()),
-        other => Binding::Text(other.to_string()),
+        // An array or an object is not something a driver can bind, and sent as
+        // text it would be stored, not refused: the caller hears about it here.
+        Value::List(_) | Value::Map(_) | Value::Object(_) => None,
     }
 }
 
@@ -57,16 +62,13 @@ pub enum ColumnValue {
     Bool(bool),
     Int(i64),
     Float(f64),
-    /// Text or bytes. Written as a MessagePack *str* either way, because that is
-    /// what a PHP string is on the wire, and what the PHP side
-    /// expects to read back as a plain string — including for a BLOB whose
-    /// bytes are not valid UTF-8.
+    /// Text or bytes. Handed to PHP as one string either way, because PHP has
+    /// one string type and the PHP side expects a plain string — including for
+    /// a BLOB whose bytes are not valid UTF-8.
     Text(Vec<u8>),
 }
 
-/// Encodes a batch of rows as a MessagePack array of maps. An empty batch
-/// encodes as an empty array, never null, so the PHP side always decodes a list.
-/// A DATE in the shape the PHP side expects (see the DATE arms above).
+/// A DATETIME in the shape the PHP side expects (see the DATETIME arms below):
 /// RFC3339 with the fractional second trimmed of its trailing zeroes, which is
 /// the shape PHP has always been handed:
 /// `.5`, not `.500`. chrono's own AutoSi pads to three, six or nine places
@@ -88,6 +90,7 @@ fn render_rfc3339(stamp: chrono::DateTime<chrono::Utc>) -> Vec<u8> {
     rendered.into_bytes()
 }
 
+/// A DATE in the shape the PHP side expects (see the DATE arms below).
 fn render_date(date: chrono::NaiveDate) -> Vec<u8> {
     date.and_hms_opt(0, 0, 0)
         .map(|stamp| {
@@ -99,53 +102,37 @@ fn render_date(date: chrono::NaiveDate) -> Vec<u8> {
         .unwrap_or_else(|| date.to_string().into_bytes())
 }
 
-pub fn encode_batch(columns: &[String], rows: &[Vec<ColumnValue>]) -> Vec<u8> {
-    let mut buffer = Vec::with_capacity(64 + rows.len() * columns.len() * 16);
-
-    let _ = encode::write_array_len(&mut buffer, rows.len() as u32);
+/// A batch of rows as a list of maps, one map per row keyed by column name.
+/// An empty batch is an empty list, never null, so the PHP side always gets a
+/// list.
+pub fn batch_value(columns: &[String], rows: &[Vec<ColumnValue>]) -> Value {
+    let mut batch = Vec::with_capacity(rows.len());
 
     for row in rows {
-        let _ = encode::write_map_len(&mut buffer, columns.len() as u32);
+        let mut row_map = Map::with_capacity(columns.len());
 
         for (index, column) in columns.iter().enumerate() {
-            let _ = encode::write_str(&mut buffer, column);
+            let value = match row.get(index) {
+                Some(ColumnValue::Null) | None => Value::Nil,
+                Some(ColumnValue::Bool(flag)) => Value::Bool(*flag),
+                Some(ColumnValue::Int(number)) => Value::Int(*number),
+                Some(ColumnValue::Float(number)) => Value::Float(*number),
+                Some(ColumnValue::Text(bytes)) => Value::Str(bytes.clone()),
+            };
 
-            match row.get(index) {
-                Some(ColumnValue::Null) | None => {
-                    let _ = encode::write_nil(&mut buffer);
-                }
-                Some(ColumnValue::Bool(flag)) => {
-                    let _ = encode::write_bool(&mut buffer, *flag);
-                }
-                Some(ColumnValue::Int(number)) => {
-                    let _ = encode::write_sint(&mut buffer, *number);
-                }
-                Some(ColumnValue::Float(number)) => {
-                    let _ = encode::write_f64(&mut buffer, *number);
-                }
-                Some(ColumnValue::Text(bytes)) => {
-                    let _ = encode::write_str_len(&mut buffer, bytes.len() as u32);
-                    buffer.extend_from_slice(bytes);
-                }
-            }
+            row_map.push(column.as_str(), value);
         }
+
+        batch.push(Value::from(row_map));
     }
 
-    buffer
+    Value::List(batch)
 }
 
-/// Encodes the answer to an Exec: affected rows and last insert id, under the
-/// same two keys the PHP side reads.
-pub fn encode_exec_result(affected_rows: i64, last_insert_id: i64) -> Vec<u8> {
-    let mut buffer = Vec::with_capacity(16);
-
-    let _ = encode::write_map_len(&mut buffer, 2);
-    let _ = encode::write_str(&mut buffer, "ar");
-    let _ = encode::write_sint(&mut buffer, affected_rows);
-    let _ = encode::write_str(&mut buffer, "li");
-    let _ = encode::write_sint(&mut buffer, last_insert_id);
-
-    buffer
+/// The answer to an Exec: affected rows and last insert id, under the same two
+/// keys the PHP side reads.
+pub fn exec_result_value(affected_rows: i64, last_insert_id: i64) -> Value {
+    Map::new().set("ar", affected_rows).set("li", last_insert_id).into()
 }
 
 /// Reads one MySQL row into the wire shapes above, dispatching on the column's
@@ -487,4 +474,79 @@ fn shift_pg_era(text: &str) -> Result<String, String> {
         .map_err(|error| format!("date {text:?}: {error}"))?;
 
     Ok(format!("{:04}-{rest}", 1 - year))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shape PHP's RowsResult walks: a list of rows, each a map keyed by the
+    /// column name in column order, with the kinds MysqlTypesTest pins.
+    #[test]
+    fn a_batch_is_a_list_of_column_keyed_rows() {
+        let columns = vec!["id".to_string(), "name".to_string(), "price".to_string(), "blob".to_string(), "gone".to_string()];
+        let rows = vec![vec![
+            ColumnValue::Int(7),
+            ColumnValue::Text(b"seven".to_vec()),
+            ColumnValue::Text(b"123.4500".to_vec()),
+            ColumnValue::Text(vec![0, 255, 7]),
+            ColumnValue::Null,
+        ]];
+
+        let batch = batch_value(&columns, &rows);
+        let rows = batch.as_list().expect("a list");
+
+        assert_eq!(rows.len(), 1);
+
+        let row = &rows[0];
+        let keys: Vec<String> = row.as_map().unwrap().iter().map(|(key, _)| key.text()).collect();
+
+        assert_eq!(keys, columns);
+        assert_eq!(row.get("id"), Some(&Value::Int(7)));
+        assert_eq!(row.get("name").and_then(Value::as_str), Some("seven"));
+        assert_eq!(row.get("price").and_then(Value::as_str), Some("123.4500"));
+        assert_eq!(row.get("blob").and_then(Value::as_bytes), Some(&[0u8, 255, 7][..]));
+        assert_eq!(row.get("gone"), Some(&Value::Nil));
+    }
+
+    #[test]
+    fn an_empty_batch_is_an_empty_list() {
+        assert_eq!(batch_value(&["id".to_string()], &[]), Value::List(vec![]));
+    }
+
+    #[test]
+    fn an_exec_result_carries_the_two_counters() {
+        let value = exec_result_value(3, 42);
+
+        assert_eq!(value.get("ar"), Some(&Value::Int(3)));
+        assert_eq!(value.get("li"), Some(&Value::Int(42)));
+        assert_eq!(value.as_map().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn bindings_keep_their_kinds_and_refuse_a_composite() {
+        let bindings = normalize_bindings(&[
+            Value::Nil,
+            Value::Bool(true),
+            Value::Int(5),
+            Value::Float(2.5),
+            Value::Str(b"text".to_vec()),
+            Value::Str(vec![0xff, 0x00]),
+        ])
+        .expect("scalars bind");
+
+        assert!(matches!(bindings[0], Binding::Null));
+        assert!(matches!(bindings[1], Binding::Bool(true)));
+        assert!(matches!(bindings[2], Binding::Int(5)));
+        assert!(matches!(bindings[3], Binding::Float(number) if number == 2.5));
+        assert!(matches!(&bindings[4], Binding::Text(text) if text == "text"));
+        assert!(matches!(&bindings[5], Binding::Bytes(bytes) if bytes == &[0xff, 0x00]));
+
+        let refused = match normalize_bindings(&[Value::Int(1), Value::List(vec![Value::Int(2)])]) {
+            Err(error) => error,
+            Ok(_) => panic!("a composite binding must be refused"),
+        };
+
+        assert!(refused.starts_with("binding 1 is an array or an object"), "{refused}");
+    }
 }

@@ -1,90 +1,70 @@
 //! The parameters of the MongoDB commands.
 //!
-//! Every command arrives as an envelope (`ul`/`db`/`cl`/`to`/`sst`/`cm`/`dt`).
-//! `dt` is one MessagePack blob: for some commands the document itself, for
-//! others a map of named parameters whose values are **ordinary nested values**,
-//! not blobs of their own — `'f' => $this->filter` on the PHP side.
-//!
-//! The whole map is converted once under a single counter, rather than field by
-//! field from its own raw bytes. That is what
-//! keeps object references resolvable: ext-msgpack numbers containers across the
-//! entire blob, so a per-field conversion would count them wrong.
+//! Every command arrives as an envelope (`ul`/`db`/`cl`/`to`/`sst`/`cm`/`dt`):
+//! the PHP array the task was called with, as the push export read it. `dt` is
+//! the command body, nested in place: for some commands the document itself,
+//! for others a map of named parameters whose values are ordinary nested
+//! values — `'f' => $this->filter` on the PHP side. The handler that knows what
+//! shape the body has is the one that converts it.
 
 use mongodb::bson::{Bson, Document};
-use rmpv::Value;
 
-use super::serializer::{PayloadConverter, read_payload_value};
+use crate::dto::Value;
+
+use super::serializer::bson_from_value;
 
 pub type Error = String;
 
-pub struct Envelope {
+/// The envelope borrows the body from the message rather than copying it: a
+/// document can be large, and the message outlives the command.
+#[derive(Debug)]
+pub struct Envelope<'a> {
     pub url: String,
     pub database: String,
     pub collection: String,
     pub timeout_ms: i64,
     pub server_selection_timeout_ms: i64,
     pub command: String,
-    /// The command body, still MessagePack — decoded by the handler that knows
-    /// what shape it is.
-    pub data: Vec<u8>,
+    /// The command body, still a PHP value — converted by the handler that
+    /// knows what shape it is.
+    pub data: &'a Value,
 }
 
-pub fn decode_envelope(payload: &[u8]) -> Result<Envelope, Error> {
-    let value = read_payload_value(payload)?;
-
-    let Value::Map(pairs) = value else {
-        return Err("expected a MessagePack map".to_string());
-    };
-
-    let map: Vec<(String, Value)> = pairs
-        .into_iter()
-        .filter_map(|(key, value)| key_name(&key).map(|name| (name, value)))
-        .collect();
+pub fn decode_envelope(payload: &Value) -> Result<Envelope<'_>, Error> {
+    if payload.as_map().is_none() {
+        return Err("expected a map".to_string());
+    }
 
     Ok(Envelope {
-        url: field_string(&map, "ul").unwrap_or_default(),
-        database: field_string(&map, "db").unwrap_or_default(),
-        collection: field_string(&map, "cl").unwrap_or_default(),
-        timeout_ms: field_int(&map, "to").unwrap_or(0),
-        server_selection_timeout_ms: field_int(&map, "sst").unwrap_or(0),
-        command: field_string(&map, "cm").unwrap_or_default(),
-        // The envelope's own `dt` really is a blob: the PHP side puts a
-        // DocumentSerializer::serialize() result there.
-        data: field_bytes(&map, "dt").unwrap_or_default(),
+        url: field_string(payload, "ul").unwrap_or_default(),
+        database: field_string(payload, "db").unwrap_or_default(),
+        collection: field_string(payload, "cl").unwrap_or_default(),
+        timeout_ms: field_int(payload, "to").unwrap_or(0),
+        server_selection_timeout_ms: field_int(payload, "sst").unwrap_or(0),
+        command: field_string(payload, "cm").unwrap_or_default(),
+        data: payload.get("dt").unwrap_or(&Value::Nil),
     })
 }
 
 /// The `dt` of a command that carries named parameters, already converted.
+#[derive(Debug)]
 pub struct Params {
     fields: Vec<(String, Bson)>,
 }
 
-pub fn decode_params(data: &[u8]) -> Result<Params, Error> {
-    if data.is_empty() {
+pub fn decode_params(data: &Value) -> Result<Params, Error> {
+    if data.is_nil() {
         return Ok(Params { fields: Vec::new() });
     }
 
-    let value = read_payload_value(data)?;
-
-    let Value::Map(pairs) = value else {
-        return Err("expected a MessagePack map of parameters".to_string());
+    let Some(entries) = data.as_map() else {
+        return Err("expected a map of parameters".to_string());
     };
 
-    let mut converter = PayloadConverter::new();
+    let mut fields = Vec::with_capacity(entries.len());
 
-    // The params map is itself a container and takes the first number.
-    converter.count_container();
-
-    let mut fields = Vec::with_capacity(pairs.len());
-
-    for (key, value) in &pairs {
-        let Some(name) = key_name(key) else {
-            continue;
-        };
-
-        // Converted in wire order, so the shared counter stays in step with the
-        // order ext-msgpack wrote the containers in.
-        fields.push((name, converter.value(value)?));
+    for (key, value) in entries {
+        fields.push((key.text(), bson_from_value(value)?));
     }
 
     Ok(Params { fields })
@@ -131,7 +111,7 @@ impl Params {
                     _ => None,
                 })
                 .collect(),
-            // A PHP list whose keys are not sequential packs as a map; the
+            // A PHP array whose keys are not sequential arrives as a map; the
             // values are still the entries.
             Some(Bson::Document(document)) => document
                 .values()
@@ -205,43 +185,98 @@ impl Params {
     }
 }
 
-fn key_name(value: &Value) -> Option<String> {
+fn field_string(payload: &Value, name: &str) -> Option<String> {
+    let value = payload.get(name)?;
+
     match value {
-        Value::String(text) => text.as_str().map(str::to_string),
-        Value::Integer(number) => Some(number.to_string()),
+        Value::Str(_) => value.as_str().map(str::to_string),
+        Value::Int(number) => Some(number.to_string()),
         _ => None,
     }
 }
 
-fn find<'a>(pairs: &'a [(String, Value)], name: &str) -> Option<&'a Value> {
-    pairs
-        .iter()
-        .find(|(key, _)| key == name)
-        .map(|(_, value)| value)
-}
-
-fn field_string(pairs: &[(String, Value)], name: &str) -> Option<String> {
-    match find(pairs, name)? {
-        Value::String(text) => text.as_str().map(str::to_string),
-        Value::Integer(number) => Some(number.to_string()),
+fn field_int(payload: &Value, name: &str) -> Option<i64> {
+    match payload.get(name)? {
+        Value::Int(number) => Some(*number),
+        Value::Float(number) => Some(*number as i64),
         _ => None,
     }
 }
 
-fn field_int(pairs: &[(String, Value)], name: &str) -> Option<i64> {
-    match find(pairs, name)? {
-        Value::Integer(number) => number.as_i64(),
-        Value::F64(number) => Some(*number as i64),
-        _ => None,
-    }
-}
+#[cfg(test)]
+mod tests {
+    use mongodb::bson::doc;
 
-/// `ext-msgpack` may write a PHP string as either a str or a bin, so both are
-/// accepted for the one field that really is a nested blob.
-fn field_bytes(pairs: &[(String, Value)], name: &str) -> Option<Vec<u8>> {
-    match find(pairs, name)? {
-        Value::String(text) => Some(text.as_bytes().to_vec()),
-        Value::Binary(bytes) => Some(bytes.clone()),
-        _ => None,
+    use super::*;
+    use crate::dto::Map;
+
+    #[test]
+    fn the_envelope_reads_its_fields_and_points_at_the_body_in_place() {
+        let body: Value = Map::new().set("f", Map::new().set("a", 1_i64)).into();
+        let payload: Value = Map::new()
+            .set("ul", "mongodb://localhost")
+            .set("db", "shop")
+            .set("cl", "orders")
+            .set("to", 1500_i64)
+            .set("sst", 3000_i64)
+            .set("cm", "fnd")
+            .set("dt", body.clone())
+            .into();
+
+        let envelope = decode_envelope(&payload).expect("an envelope");
+
+        assert_eq!(envelope.url, "mongodb://localhost");
+        assert_eq!(envelope.database, "shop");
+        assert_eq!(envelope.collection, "orders");
+        assert_eq!(envelope.timeout_ms, 1500);
+        assert_eq!(envelope.server_selection_timeout_ms, 3000);
+        assert_eq!(envelope.command, "fnd");
+        assert_eq!(envelope.data, &body);
+    }
+
+    #[test]
+    fn a_missing_field_takes_its_default_and_a_missing_body_is_null() {
+        let payload: Value = Map::new().set("cm", "drp").into();
+
+        let envelope = decode_envelope(&payload).expect("an envelope");
+
+        assert_eq!(envelope.url, "");
+        assert_eq!(envelope.timeout_ms, 0);
+        assert_eq!(envelope.data, &Value::Nil);
+        assert_eq!(decode_envelope(&Value::Int(1)).unwrap_err(), "expected a map");
+    }
+
+    #[test]
+    fn params_read_their_fields_through_bson() {
+        let data: Value = Map::new()
+            .set("f", Map::new().set("a", 1_i64))
+            .set("op", Value::List(vec![]))
+            .set("u", Value::List(vec![]))
+            .set("af", Value::List(vec![Map::new().set("x", 1_i64).into()]))
+            .set("bs", 10_i64)
+            .set("ou", true)
+            .set("fn", "name")
+            .set("hn", Map::new().set("v", "index_name"))
+            .into();
+
+        let params = decode_params(&data).expect("params");
+
+        assert_eq!(params.filter("f"), doc! { "a": 1_i32 });
+        assert_eq!(params.filter("missing"), doc! {});
+        assert_eq!(params.document("op"), None);
+        assert_eq!(params.document_or_empty("u"), doc! {});
+        assert_eq!(params.documents("af"), vec![doc! { "x": 1_i32 }]);
+        assert_eq!(params.int("bs"), 10);
+        assert!(params.bool("ou"));
+        assert_eq!(params.string("fn"), "name");
+        assert!(matches!(params.hint("hn"), Some(mongodb::options::Hint::Name(name)) if name == "index_name"));
+        assert!(params.hint("missing").is_none());
+    }
+
+    #[test]
+    fn an_absent_or_empty_body_has_no_params_and_a_scalar_is_an_error() {
+        assert!(decode_params(&Value::Nil).expect("params").fields.is_empty());
+        assert!(decode_params(&Value::List(vec![])).expect("params").fields.is_empty());
+        assert_eq!(decode_params(&Value::Int(1)).unwrap_err(), "expected a map of parameters");
     }
 }

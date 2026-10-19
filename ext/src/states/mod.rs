@@ -200,7 +200,7 @@ impl States {
 mod tests {
     use super::*;
 
-    use crate::dto::Message;
+    use crate::dto::{Message, Value};
     use crate::tasks::ResultSink;
     use crate::types::method::Method;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -217,7 +217,7 @@ mod tests {
             flow_key: flow_key.to_string(),
             method: Method::Mongodb,
             task_key: task_key.to_string(),
-            payload: Vec::new(),
+            payload: crate::dto::Value::Nil,
             is_next: true,
             owner_id,
         })
@@ -260,7 +260,7 @@ mod tests {
                     method: Method::Mongodb,
                     task_key: String::new(),
                     is_error: false,
-                    payload: Vec::new(),
+                    payload: Value::Nil,
                     has_next: *remaining > 0,
                     execution_ms: 0,
                     owner_id: 999,
@@ -303,7 +303,7 @@ mod tests {
         let refused = rx.recv().unwrap();
 
         assert!(refused.is_error);
-        assert_eq!(String::from_utf8_lossy(&refused.payload), "state not started");
+        assert_eq!(refused.payload.text(), "state not started");
     }
 
     /// The reason `start` hooks the flow at all: PHP breaking out of a cursor

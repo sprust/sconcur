@@ -2,21 +2,20 @@
 //!
 //! Every message is a command envelope (`cm`/`p`) under the socketClient method:
 //! `cm` selects the sub-operation, `p` carries that command's parameters. `p` is
-//! a nested map, not a blob of its own — `'p' => $this->getParameters()->getData()`
-//! on the PHP side — so it is decoded as a value and typed per command.
+//! a nested array — `'p' => $this->getParameters()->getData()` on the PHP side —
+//! so it stays an untyped value until the command is known, then is decoded into
+//! that command's struct.
 
 use serde::Deserialize;
 
+use crate::dto::{Borrowed, Map, Value};
+
 #[derive(Deserialize)]
-pub struct Envelope {
+pub struct Envelope<'a> {
     #[serde(rename = "cm", default)]
     pub command: String,
-    #[serde(rename = "p", default = "nil_value")]
-    pub params: rmpv::Value,
-}
-
-fn nil_value() -> rmpv::Value {
-    rmpv::Value::Nil
+    #[serde(rename = "p", borrow, default = "crate::dto::value_de::borrowed_nil")]
+    pub params: Borrowed<'a>,
 }
 
 /// The `p` of a Connect — the remote address and the per-connection tuning.
@@ -43,9 +42,10 @@ pub struct ConnectParams {
 pub struct SendParams {
     #[serde(rename = "cid", default)]
     pub connection_id: String,
-    /// Binary-safe, so an untyped value rather than a String.
-    #[serde(rename = "dt", default = "nil_value")]
-    pub data: rmpv::Value,
+    /// The bytes of the PHP string, whatever they are: a frame is not required
+    /// to be valid UTF-8, so not a `String`.
+    #[serde(rename = "dt", default, deserialize_with = "crate::dto::value_de::bytes")]
+    pub data: Vec<u8>,
 }
 
 impl SendParams {
@@ -53,11 +53,7 @@ impl SendParams {
     /// them: the decoded value already owns them and nothing reads `data`
     /// again.
     pub fn take_data_bytes(&mut self) -> Vec<u8> {
-        match std::mem::replace(&mut self.data, rmpv::Value::Nil) {
-            rmpv::Value::String(text) => text.into_bytes(),
-            rmpv::Value::Binary(bytes) => bytes,
-            _ => Vec::new(),
-        }
+        std::mem::take(&mut self.data)
     }
 }
 
@@ -77,22 +73,12 @@ pub struct ConnectionMeta {
 }
 
 impl ConnectionMeta {
-    pub fn encode(&self) -> Vec<u8> {
-        use rmp::encode;
-
-        let mut buffer = Vec::with_capacity(96);
-
-        let _ = encode::write_map_len(&mut buffer, 3);
-
-        for (key, value) in [
-            ("cid", &self.connection_id),
-            ("ra", &self.remote_addr),
-            ("la", &self.local_addr),
-        ] {
-            let _ = encode::write_str(&mut buffer, key);
-            let _ = encode::write_str(&mut buffer, value);
-        }
-
-        buffer
+    /// The array PHP receives: `cid`, `ra`, `la`, all strings.
+    pub fn value(&self) -> Value {
+        Map::with_capacity(3)
+            .set("cid", &self.connection_id)
+            .set("ra", &self.remote_addr)
+            .set("la", &self.local_addr)
+            .into()
     }
 }

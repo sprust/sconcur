@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::dto::{Message, Result};
+use crate::dto::{Message, Result, Value};
 use crate::helpers::calc_execution_ms;
 use crate::states::{StateCloseFuture, StateContract, StateFuture};
 use crate::ws::{InboundMessage, encode_inbound};
@@ -54,7 +54,7 @@ impl MessageState {
     }
 
     fn finished(&self) -> Result {
-        Result::success(&self.message, Vec::new(), calc_execution_ms(self.start_time))
+        Result::success(&self.message, Value::Nil, calc_execution_ms(self.start_time))
     }
 
     /// What a drained stream answers: a message already in hand wins, a
@@ -153,7 +153,7 @@ mod tests {
             flow_key: "flow".to_string(),
             method: Method::WsServe,
             task_key: "task".to_string(),
-            payload: Vec::new(),
+            payload: crate::dto::Value::Nil,
             is_next: false,
             owner_id: 0,
         })
@@ -166,9 +166,11 @@ mod tests {
         }
     }
 
-    /// The payload PHP would see, with the type byte encode_inbound prefixes.
+    /// The text PHP would see, without the type byte encode_inbound prefixes.
     fn payload_of(result: &Result) -> String {
-        String::from_utf8_lossy(&result.payload[1..]).to_string()
+        let bytes = result.payload.as_bytes().expect("a string payload");
+
+        String::from_utf8_lossy(&bytes[1..]).to_string()
     }
 
     /// A message already in hand wins over a drain that has already fired. An

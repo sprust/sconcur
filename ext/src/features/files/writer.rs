@@ -24,12 +24,11 @@ use std::time::Instant;
 
 use tokio::io::AsyncWriteExt;
 
-use crate::dto::Result;
+use crate::dto::{Result, Value};
 use crate::helpers::calc_execution_ms;
 use crate::states::{self, StateCloseFuture, StateContract, StateFuture};
 use crate::tasks::Task;
 
-use super::content::bytes_of;
 use super::errors::{io_message, message as fail, Kind};
 use super::payloads;
 use super::{bounded, creates_the_file, params, permission_bits, std_write_options};
@@ -397,7 +396,7 @@ impl StateContract for WriterState {
 }
 
 /// Opens a writer and registers it under the id PHP drew.
-pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn open(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -544,7 +543,7 @@ pub async fn open(task: &Task, envelope: &mut payloads::Envelope) {
 
     task.add_result(Result::success_with_next(
         message,
-        Vec::new(),
+        Value::Nil,
         calc_execution_ms(start_time),
     ))
     .await;
@@ -563,7 +562,7 @@ async fn remove_if_created(path: &str, created_by_us: bool) {
 
 /// Writes one chunk. The answer waits for the write, which is what stops a fast
 /// producer from running ahead of the disk.
-pub async fn chunk(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn chunk(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -585,15 +584,7 @@ pub async fn chunk(task: &Task, envelope: &mut payloads::Envelope) {
         return;
     };
 
-    let chunk = match bytes_of(parameters.chunk) {
-        Ok(chunk) => chunk,
-        Err(error) => {
-            task.add_result(Result::error(message, fail(Kind::Argument, &error)))
-                .await;
-
-            return;
-        }
-    };
+    let chunk = parameters.chunk;
 
     let work = async move { session.write(&chunk).await };
 
@@ -601,7 +592,7 @@ pub async fn chunk(task: &Task, envelope: &mut payloads::Envelope) {
         Some(Ok(total)) => {
             task.add_result(Result::success(
                 message,
-                super::content::encode_count(total),
+                super::content::count_value(total),
                 calc_execution_ms(start_time),
             ))
             .await;
@@ -614,7 +605,7 @@ pub async fn chunk(task: &Task, envelope: &mut payloads::Envelope) {
 }
 
 /// Flushes, closes and answers with the total written.
-pub async fn close(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn close(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -666,7 +657,7 @@ pub async fn close(task: &Task, envelope: &mut payloads::Envelope) {
         Some(Ok(total)) => {
             task.add_result(Result::success(
                 message,
-                super::content::encode_count(total),
+                super::content::count_value(total),
                 calc_execution_ms(start_time),
             ))
             .await;

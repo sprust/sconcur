@@ -8,8 +8,9 @@ English | [Русский](README.ru.md)
 
 A concurrency library for PHP on top of a custom Rust extension. The PHP side
 (a Fiber) suspends while the extension runs the task (MongoDB operations, sleep,
-and so on) concurrently on an async runtime. The two sides exchange data over
-MessagePack.
+and so on) concurrently on an async runtime. Nothing is serialized between the
+two: the extension reads a task's parameters off the PHP array it is given and
+builds the PHP values of the result itself.
 
 ## Contents
 
@@ -36,9 +37,9 @@ generator does not yet share cores with the servers):
 
 | Request | SConcur | RoadRunner | Swoole |
 | --- | ---: | ---: | ---: |
-| empty response (12 workers) | ≈194 300 rps, p50 0.9 ms | ≈45 100 rps, p50 5.4 ms | ≈365 600 rps, p50 0.35 ms |
-| point SELECT by id, `/db` (8 workers) | 44 200 rps, p50 5.4 ms | 22 887 rps, p50 10.7 ms | 117 693 rps, p50 2.0 ms |
-| INSERT + COUNT(*) + SELECT, `/db-rw` (8 workers) | 2 366 rps, p50 95.8 ms | 289 rps, p50 877 ms | 2 467 rps, p50 89.8 ms |
+| empty response (12 workers) | ≈248 300 rps, p50 0.84 ms | ≈52 000 rps, p50 4.7 ms | ≈490 500 rps, p50 0.25 ms |
+| point SELECT by id, `/db` (8 workers) | 51 656 rps, p50 4.6 ms | 27 452 rps, p50 8.9 ms | 136 151 rps, p50 1.6 ms |
+| INSERT + COUNT(*) + SELECT, `/db-rw` (8 workers) | 2 738 rps, p50 82.9 ms | 581 rps, p50 438 ms | 2 872 rps, p50 77.6 ms |
 
 Swoole is faster on the cheap paths, but its concurrency rests on hooks into the
 existing PHP drivers: whatever the hooks do not cover blocks the whole worker (as
@@ -108,7 +109,7 @@ Operations and clients — wrapped in a coroutine (`$waitGroup->add()` +
 | --- | --- | --- |
 | `sleep()`, `usleep()` | `Sleeper::sleep()`, `Sleeper::usleep()` | pause for seconds or microseconds |
 | `PDO` / `mysqli` (MySQL) | `Features\Mysql\Connection` | queries, transactions, SELECT streaming; a connection pool in the extension |
-| `PDO` (PostgreSQL) | `Features\Pgsql\Connection` | the same SQL feature on the pgx driver |
+| `PDO` (PostgreSQL) | `Features\Pgsql\Connection` | the same SQL feature on the sqlx `postgres` driver |
 | `mongodb/mongodb`, `ext-mongodb` | `Features\Mongodb\Connection\*` | CRUD, aggregation, cursors; BSON values are `SConcur\Bson\*` |
 | `curl`, `file_get_contents`, Guzzle | `Features\HttpClient\HttpClient` (PSR-18) | response streaming, download straight to a file inside the extension |
 | `fsockopen`, `stream_socket_client` | `Features\SocketClient\SocketClient` | TCP with length-prefix framing |
@@ -163,14 +164,16 @@ Everything else follows from that:
 - Mature drivers are reused as-is — the MongoDB driver, sqlx, hyper, reqwest,
   lapin, fastwebsockets — and run concurrently right away. No waiting for async
   PHP drivers or extensions.
-- The C glue is frozen: `push`, `wait`, `waitAny`/`waitAnyBatch`, `next`,
-  `stopFlow` plus the `version`/`destroy` lifecycle. A new feature is data (a
-  `MethodEnum` value, a MessagePack payload DTO, a Rust handler), not a new C
-  symbol, so the export set never grows. A new long-lived server adds at most
-  one control function, like `httpStopAccepting`, which stops accepting new
-  connections while the ones in progress are finished.
-- One transport and one streaming model for everything: MessagePack DTOs plus
-  the streaming states behind `next()` — MongoDB cursors, HTTP bodies, socket
+- The C glue does not grow per feature. It exports the task calls (`push`,
+  `next`, `wait` and its `waitAny*` variants, `tasksCount`, `stopFlow`), the
+  lifecycle (`ping`, `version`, `destroy`) and the preemption switch
+  (`armPreemption`/`disarmPreemption`). A new feature is data (a `MethodEnum`
+  value, a payload DTO, a Rust handler), not a new C symbol. A long-lived
+  server or consumer adds a control function or two, like `httpStopAccepting`,
+  which stops accepting new connections while the ones in progress are
+  finished.
+- One transport and one streaming model for everything: payload DTOs plus the
+  streaming states behind `next()` — MongoDB cursors, HTTP client bodies, socket
   frames, WS messages all travel the same mechanism, and the sender waits when
   the reader falls behind.
 - One API for sync and async: no separate "async" and "sync" variants of the
@@ -236,7 +239,6 @@ The environment the project is built and tested against in CI:
 | MongoDB (server) | 8.0.5 |
 | ext-mongodb (PHP extension, tests and benchmarks only) | 1.21.5 |
 | mongodb/mongodb (composer package, tests and benchmarks only) | 1.21.3 |
-| ext-msgpack | 3.0.1 |
 | MySQL (server) | 8.4 |
 | PostgreSQL (server) | 16 |
 | RabbitMQ (server) | 4.1 |
@@ -297,8 +299,8 @@ The crates the core is built on:
   without streaming.
 - [How to add a new server](docs/adding-a-server.md) — the Serve/Respond pattern
   and the serve loop.
-- [Objects over MessagePack](docs/msgpack-objects.md) — how a PHP object crosses
-  to the extension and back, and how to add a type.
+- [Values across the boundary](docs/value-conversion.md) — how a PHP value reaches
+  the core and comes back, objects included, and how to add a value class.
 - [Feature benchmarks](docs/benchmarks.md) — per-feature measurements
   (native/sync/async).
 - [Load testing](docs/load-testing.md) — server behaviour under load with all I/O

@@ -18,7 +18,7 @@ foreach ($autoloads as $autoload) {
     }
 }
 
-// Downloads the "sconcur" Go extension (.so) matching the version this PHP package is
+// Downloads the "sconcur" extension (.so) matching the version this PHP package is
 // built against (Extension::REQUIRED_EXTENSION_VERSION), so the loaded extension passes
 // Extension::checkExtension. The first argument is the full local target path.
 $fail = static function (string $message): never {

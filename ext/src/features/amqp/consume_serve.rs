@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 use tokio_util::sync::CancellationToken;
 
-use crate::dto::{Message, Result};
+use crate::dto::{Message, Result, Value};
 use crate::helpers::calc_execution_ms;
 use crate::tasks::Task;
 
@@ -140,11 +140,11 @@ pub fn reopen_consumer(flow_key: &str, channel_id: &str) {
 
 /// Opens the consumers of one supervised worker and streams their deliveries
 /// under a single task.
-pub async fn handle_consume_serve(task: &Task, raw: &rmpv::Value) {
+pub async fn handle_consume_serve(task: &Task, raw: &Value) {
     let start_time = Instant::now();
     let message = task.message();
 
-    let params = match rmpv_decode::<ConsumeServeParams>(raw) {
+    let params = match raw.decode::<ConsumeServeParams>() {
         Ok(params) => params,
         Err(error) => {
             task.add_result(Result::error(
@@ -544,7 +544,7 @@ impl ServeStream {
         self.task
             .add_result(Result::success_with_next(
                 &self.message,
-                payloads::encode_delivery(&payloads::DeliveryOut {
+                payloads::DeliveryOut {
                     channel_id: &entry.id,
                     consumer_tag,
                     delivery_tag: delivery.delivery_tag,
@@ -553,7 +553,8 @@ impl ServeStream {
                     routing_key: delivery.routing_key.as_str(),
                     body: &delivery.data,
                     properties: &delivery.properties,
-                }),
+                }
+                .value(),
                 calc_execution_ms(self.start_time),
             ))
             .await;
@@ -640,14 +641,4 @@ impl ServeStream {
     fn forget(&self, slot: usize) {
         self.state.lock().unwrap().live.remove(&slot);
     }
-}
-
-fn rmpv_decode<P: serde::de::DeserializeOwned>(
-    raw: &rmpv::Value,
-) -> std::result::Result<P, String> {
-    let mut buffer = Vec::new();
-
-    rmpv::encode::write_value(&mut buffer, raw).map_err(|error| error.to_string())?;
-
-    rmp_serde::from_slice(&buffer).map_err(|error| error.to_string())
 }

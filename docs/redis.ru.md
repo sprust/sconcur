@@ -227,7 +227,8 @@ DSN держит их одновременно не больше 64, и шест
 завершается ошибкой.
 
 Ждать вечно (`timeoutSeconds: 0`) имеет смысл только с `timeoutMs: 0`. Такая
-команда всё равно снимается остановкой флоу.
+команда всё равно снимается остановкой флоу (флоу — группа задач, которой
+владеет `WaitGroup` на стороне расширения).
 
 ## Курсоры
 
@@ -294,9 +295,8 @@ $subscription->close();
 | --- | --- |
 | `RedisCommandException` | сервер отказал команде; в `errorCode` лежит `WRONGTYPE`, `NOSCRIPT`, `MOVED`, `LOADING`, … |
 | `RedisConnectionException` | сервер недоступен, логин отвергнут, сокет пропал посреди команды или флоу остановлен под ней |
-| `RedisTimeoutException` | вышел `timeoutMs` |
+| `RedisTimeoutException` | вышел `timeoutMs` — у команды или у одного батча курсора |
 | `SubscriptionClosedException` | подписку или курсор использовали после закрытия |
-| `RedisTimeoutException` | батч курсора не уложился в `timeoutMs` |
 | `UnsupportedRedisCommandException` | команда, меняющая состояние общего соединения |
 | `InvalidRedisArgumentException` | аргумент не `string`, не `int` и не `float`, либо payload, который эта сторона не смогла использовать |
 | `NestedPipelineExecutionException` | `execute()` вызван внутри замыкания `transaction()` |

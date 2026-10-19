@@ -15,7 +15,7 @@ use crate::errs::Factory;
 use crate::helpers::calc_execution_ms;
 use crate::states::{StateContract, StateFuture};
 
-use super::serializer::documents_to_msgpack;
+use super::serializer::documents_value;
 
 pub struct CursorState {
     message: Arc<Message>,
@@ -56,22 +56,12 @@ impl CursorState {
 
 
     fn batch(&self, documents: &[Document], has_next: bool) -> Result {
-        match documents_to_msgpack(documents) {
-            Ok(payload) => {
-                if has_next {
-                    Result::success_with_next(
-                        &self.message,
-                        payload,
-                        calc_execution_ms(self.start_time),
-                    )
-                } else {
-                    Result::success(&self.message, payload, calc_execution_ms(self.start_time))
-                }
-            }
-            Err(error) => Result::error(
-                &self.message,
-                self.err_factory.by_text(&format!("marshal batch: {error}")),
-            ),
+        let payload = documents_value(documents);
+
+        if has_next {
+            Result::success_with_next(&self.message, payload, calc_execution_ms(self.start_time))
+        } else {
+            Result::success(&self.message, payload, calc_execution_ms(self.start_time))
         }
     }
 }

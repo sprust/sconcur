@@ -2,13 +2,13 @@
 
 use serde::Deserialize;
 
+use crate::dto::{Map, Value};
+
 /// The payload of a socketServe command — the listener address and the server
 /// tuning (timeouts in milliseconds, sizes in bytes).
 ///
-/// As with the HTTP server, every field is decoded but not all are acted on:
-/// `max_concurrency`, `shutdown_timeout_ms` and the telemetry block are accepted
-/// and ignored. A scope limit worth knowing before reading anything but
-/// throughput into a comparison.
+/// Every field is decoded but not all are acted on: `shutdown_timeout_ms` is
+/// accepted and not applied.
 /// PHP: SConcur\Features\SocketServer\Payloads\ServePayload.
 #[allow(dead_code)]
 #[derive(Deserialize, Default)]
@@ -47,25 +47,17 @@ pub struct RespondPayload {
     pub connection_id: String,
     #[serde(rename = "op", default)]
     pub op: i64,
-    /// Arbitrary bytes, so an untyped value rather than a String — a frame is
-    /// not required to be valid UTF-8.
-    #[serde(rename = "dt", default = "nil_value")]
-    pub data: rmpv::Value,
-}
-
-fn nil_value() -> rmpv::Value {
-    rmpv::Value::Nil
+    /// The bytes of the PHP string, whatever they are: a frame is not required
+    /// to be valid UTF-8, so not a `String`.
+    #[serde(rename = "dt", default, deserialize_with = "crate::dto::value_de::bytes")]
+    pub data: Vec<u8>,
 }
 
 impl RespondPayload {
     /// The frame's bytes, taken out of the payload rather than copied out of
     /// it: the decoded value already owns them and nothing reads `data` again.
     pub fn take_data_bytes(&mut self) -> Vec<u8> {
-        match std::mem::replace(&mut self.data, rmpv::Value::Nil) {
-            rmpv::Value::String(text) => text.into_bytes(),
-            rmpv::Value::Binary(bytes) => bytes,
-            _ => Vec::new(),
-        }
+        std::mem::take(&mut self.data)
     }
 }
 
@@ -79,7 +71,7 @@ pub struct RespondConnectionId {
     pub connection_id: String,
 }
 
-/// What the server emits to PHP for each accepted connection. PHP decodes it
+/// What the server emits to PHP for each accepted connection. PHP reads it
 /// inline in SocketServer::handleConnection.
 pub struct ConnectionEvent {
     pub connection_id: String,
@@ -88,22 +80,33 @@ pub struct ConnectionEvent {
 }
 
 impl ConnectionEvent {
-    pub fn encode(&self) -> Vec<u8> {
-        use rmp::encode;
+    /// The array PHP receives: `cid`, `ra`, `la`, all strings.
+    pub fn value(&self) -> Value {
+        Map::with_capacity(3)
+            .set("cid", &self.connection_id)
+            .set("ra", &self.remote_addr)
+            .set("la", &self.local_addr)
+            .into()
+    }
+}
 
-        let mut buffer = Vec::with_capacity(96);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        let _ = encode::write_map_len(&mut buffer, 3);
-
-        for (key, value) in [
-            ("cid", &self.connection_id),
-            ("ra", &self.remote_addr),
-            ("la", &self.local_addr),
-        ] {
-            let _ = encode::write_str(&mut buffer, key);
-            let _ = encode::write_str(&mut buffer, value);
+    /// The map SocketServer::handleConnection reads into a Connection.
+    #[test]
+    fn a_connection_event_carries_the_three_addresses() {
+        let value = ConnectionEvent {
+            connection_id: "c-1".to_string(),
+            remote_addr: "10.0.0.1:5000".to_string(),
+            local_addr: "0.0.0.0:9000".to_string(),
         }
+        .value();
 
-        buffer
+        assert_eq!(value.get("cid").and_then(Value::as_str), Some("c-1"));
+        assert_eq!(value.get("ra").and_then(Value::as_str), Some("10.0.0.1:5000"));
+        assert_eq!(value.get("la").and_then(Value::as_str), Some("0.0.0.0:9000"));
+        assert_eq!(value.as_map().unwrap().len(), 3);
     }
 }

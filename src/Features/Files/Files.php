@@ -16,7 +16,6 @@ use SConcur\Features\Files\Results\LinesResult;
 use SConcur\Features\Files\Results\WalkResult;
 use SConcur\Features\Files\Support\FilesFailure;
 use SConcur\Exceptions\UnexpectedResponseFormatException;
-use SConcur\Transport\MessagePackTransport;
 
 /**
  * Async counterparts of PHP's file functions. The whole operation — opening, seeking,
@@ -61,9 +60,9 @@ class Files
         int $maxReadBytes = self::DEFAULT_MAX_READ_BYTES,
         int $timeoutMs = self::DEFAULT_TIMEOUT_MS,
     ): string {
-        // The contents come back raw rather than wrapped in MessagePack: wrapping would
-        // copy the whole file once more on each side just to be unwrapped again.
-        return static::execute(
+        // The contents come back as the string itself rather than inside a map: a
+        // wrapper would be one more array to build and read for nothing.
+        $contents = static::execute(
             command: FilesCommandEnum::Read,
             timeoutMs: $timeoutMs,
             data: [
@@ -73,6 +72,14 @@ class Files
                 'mx' => $maxReadBytes,
             ],
         )->payload;
+
+        if (!is_string($contents)) {
+            throw new UnexpectedResponseFormatException(
+                message: 'The read result is not a string.',
+            );
+        }
+
+        return $contents;
     }
 
     /**
@@ -288,7 +295,7 @@ class Files
             ],
         );
 
-        return FileStat::fromArray(MessagePackTransport::unpack($result->payload));
+        return FileStat::fromArray(self::decoded($result));
     }
 
     /**
@@ -475,7 +482,7 @@ class Files
             ],
         );
 
-        $decoded = MessagePackTransport::unpack($result->payload);
+        $decoded = self::decoded($result);
 
         /** @var list<array<string, mixed>> $entries */
         $entries = $decoded['e'] ?? [];
@@ -670,7 +677,7 @@ class Files
      */
     protected static function field(TaskResultDto $result, string $key): mixed
     {
-        $decoded = MessagePackTransport::unpack($result->payload);
+        $decoded = self::decoded($result);
 
         if (!array_key_exists($key, $decoded)) {
             throw new UnexpectedResponseFormatException(
@@ -679,5 +686,22 @@ class Files
         }
 
         return $decoded[$key];
+    }
+
+    /**
+     * The map a files result is, or a loud failure: the core builds the value, so
+     * anything but an array here is a protocol bug, not an empty answer.
+     *
+     * @return array<string, mixed>
+     */
+    protected static function decoded(TaskResultDto $result): array
+    {
+        if (!is_array($result->payload)) {
+            throw new UnexpectedResponseFormatException(
+                message: 'The files result is not a map.',
+            );
+        }
+
+        return $result->payload;
     }
 }

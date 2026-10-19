@@ -11,12 +11,12 @@ use SConcur\Exceptions\Amqp\ChannelException;
 use SConcur\Exceptions\Amqp\InvalidPrefetchException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Exceptions\TaskExecutionException;
+use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\Amqp\AmqpCommandEnum;
 use SConcur\Features\Amqp\Channel;
 use SConcur\Features\Amqp\Connection;
 use SConcur\Features\Amqp\Payloads\AmqpPayload;
 use SConcur\Features\FeatureExecutor;
-use SConcur\Transport\MessagePackTransport;
 use Throwable;
 use WeakReference;
 
@@ -105,18 +105,24 @@ abstract class AmqpResource
     }
 
     /**
-     * An empty payload is an empty answer, not a decoding failure: several commands report
-     * only that they succeeded.
+     * A null payload is an empty answer, not a failure: several commands report only
+     * that they succeeded.
      *
      * @return array<mixed>
      */
     protected static function decode(TaskResultDto $result): array
     {
-        if ($result->payload === '') {
+        if ($result->payload === null) {
             return [];
         }
 
-        return MessagePackTransport::unpack($result->payload);
+        if (!is_array($result->payload)) {
+            throw new UnexpectedResponseFormatException(
+                message: 'The AMQP result is neither a map nor empty.',
+            );
+        }
+
+        return $result->payload;
     }
 
     /**

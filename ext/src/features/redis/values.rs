@@ -1,127 +1,96 @@
 //! RESP values on their way to PHP, and PHP arguments on their way to a command.
 //!
-//! Strings go across as MessagePack `bin`, not `str`: a Redis value is
-//! arbitrary bytes, and declaring them UTF-8 breaks on the first compressed
-//! blob somebody stored.
+//! A reply crosses as the PHP value it becomes. Every string kind of RESP lands
+//! in one PHP string of the bytes the server sent: a Redis value is arbitrary
+//! bytes, and reading them as UTF-8 breaks on the first compressed blob somebody
+//! stored.
 
 use redis::{ErrorKind, RedisError, ServerError, Value};
 
 use super::errors::Kind;
-use rmp::encode;
+use crate::dto::{Key, Map, Value as PhpValue};
 
-/// Encodes one reply. The command is not consulted: what the server sent is
-/// what crosses, and shaping a reply into something friendlier is the PHP
-/// facade's job, where it is visible in the method that does it.
+/// One reply as the value PHP receives. The command is not consulted: what the
+/// server sent is what crosses, and shaping a reply into something friendlier
+/// is the PHP facade's job, where it is visible in the method that does it.
 ///
 /// Fallible, because `Value` is non_exhaustive: a variant a later redis-rs adds
-/// must fail loudly rather than cross as nil and be read as a missing key.
-pub fn encode_value(value: &Value) -> std::result::Result<Vec<u8>, String> {
-    let mut buffer = Vec::new();
-
-    write_value(&mut buffer, value)?;
-
-    Ok(buffer)
+/// must fail loudly rather than cross as null and be read as a missing key.
+pub fn reply_value(value: &Value) -> std::result::Result<PhpValue, String> {
+    convert(value)
 }
 
-/// Encodes a list of replies — the elements of one batch.
-pub fn encode_values(values: &[Value]) -> std::result::Result<Vec<u8>, String> {
-    let mut buffer = Vec::new();
-
-    write_array(&mut buffer, values)?;
-
-    Ok(buffer)
+/// A list of replies — the elements of one batch.
+pub fn replies_value(values: &[Value]) -> std::result::Result<PhpValue, String> {
+    convert_list(values)
 }
 
-/// The answer to a pipeline: the replies, plus the failures by the position of
-/// the command that caused them.
+/// The answer to a pipeline: the replies under `r`, plus the failures under `e`
+/// by the position of the command that caused them, each as `{c: code, m: message}`.
 ///
 /// The failures travel beside the replies rather than inside them. They used to
 /// be a marked map in the reply's own place, and that was forgeable: a hash with
 /// a field named after the marker decoded into exactly the same shape, so a
 /// value somebody had stored could come back to PHP as an error object.
-pub fn encode_pipeline(values: &[Value]) -> std::result::Result<Vec<u8>, String> {
-    let mut errors: Vec<(usize, &ServerError)> = Vec::new();
+pub fn pipeline_value(values: &[Value]) -> std::result::Result<PhpValue, String> {
+    let mut replies: Vec<PhpValue> = Vec::with_capacity(values.len());
+    let mut errors = Map::new();
 
     for (index, value) in values.iter().enumerate() {
-        if let Value::ServerError(error) = value {
-            errors.push((index, error));
-        }
-    }
-
-    let mut buffer = Vec::new();
-
-    let _ = encode::write_map_len(&mut buffer, 2);
-
-    let _ = encode::write_str(&mut buffer, "r");
-    let _ = encode::write_array_len(&mut buffer, values.len() as u32);
-
-    for value in values {
-        // A failed command has no reply; nil holds its place so the list still
-        // lines up with the commands that were sent.
         match value {
-            Value::ServerError(_) => {
-                let _ = encode::write_nil(&mut buffer);
+            // A failed command has no reply; null holds its place so the list
+            // still lines up with the commands that were sent.
+            Value::ServerError(error) => {
+                replies.push(PhpValue::Nil);
+                errors.push(index, failure_value(error));
             }
-            other => write_value(&mut buffer, other)?,
+            other => replies.push(convert(other)?),
         }
     }
 
-    let _ = encode::write_str(&mut buffer, "e");
-    let _ = encode::write_map_len(&mut buffer, errors.len() as u32);
-
-    for (index, error) in errors {
-        let _ = encode::write_uint(&mut buffer, index as u64);
-
-        let _ = encode::write_map_len(&mut buffer, 2);
-        let _ = encode::write_str(&mut buffer, "c");
-        let _ = encode::write_str(&mut buffer, error.code());
-        let _ = encode::write_str(&mut buffer, "m");
-        let _ = encode::write_str(&mut buffer, error.details().unwrap_or(""));
-    }
-
-    Ok(buffer)
+    Ok(Map::new().set("r", replies).set("e", errors).into())
 }
 
-fn write_value(buffer: &mut Vec<u8>, value: &Value) -> std::result::Result<(), String> {
-    match value {
-        Value::Nil => {
-            let _ = encode::write_nil(buffer);
-        }
-        Value::Int(number) => {
-            let _ = encode::write_sint(buffer, *number);
-        }
-        Value::BulkString(bytes) => write_bin(buffer, bytes),
-        Value::SimpleString(text) => write_bin(buffer, text.as_bytes()),
+fn failure_value(error: &ServerError) -> PhpValue {
+    Map::new()
+        .set("c", error.code())
+        .set("m", error.details().unwrap_or(""))
+        .into()
+}
+
+fn convert(value: &Value) -> std::result::Result<PhpValue, String> {
+    Ok(match value {
+        Value::Nil => PhpValue::Nil,
+        Value::Int(number) => PhpValue::Int(*number),
+        Value::BulkString(bytes) => PhpValue::str(bytes.as_slice()),
+        Value::SimpleString(text) => PhpValue::str(text.as_str()),
         // The status reply of SET, DEL and the rest. PHP sees the string every
         // other client shows, rather than a boolean this side invented.
-        Value::Okay => write_bin(buffer, b"OK"),
-        Value::Array(items) | Value::Set(items) => write_array(buffer, items)?,
+        Value::Okay => PhpValue::str("OK"),
+        Value::Array(items) | Value::Set(items) => convert_list(items)?,
         Value::Map(pairs) => {
-            let _ = encode::write_map_len(buffer, pairs.len() as u32);
+            let mut map = Map::with_capacity(pairs.len());
 
             for (key, item) in pairs {
-                write_value(buffer, key)?;
-                write_value(buffer, item)?;
+                map.push(map_key(key)?, convert(item)?);
             }
+
+            map.into()
         }
-        Value::Double(number) => {
-            let _ = encode::write_f64(buffer, *number);
-        }
-        Value::Boolean(flag) => {
-            let _ = encode::write_bool(buffer, *flag);
-        }
-        Value::VerbatimString { text, .. } => write_bin(buffer, text.as_bytes()),
+        Value::Double(number) => PhpValue::Float(*number),
+        Value::Boolean(flag) => PhpValue::Bool(*flag),
+        Value::VerbatimString { text, .. } => PhpValue::str(text.as_str()),
         // Without the num-bigint feature redis-rs hands the digits over as
         // bytes, which is what a number too large for an i64 has to stay on the
         // PHP side anyway.
-        Value::BigNumber(digits) => write_bin(buffer, digits),
+        Value::BigNumber(digits) => PhpValue::str(digits.as_slice()),
         // An attribute is metadata attached to a reply; the reply is what the
         // caller asked for.
-        Value::Attribute { data, .. } => write_value(buffer, data)?,
-        Value::Push { data, .. } => write_array(buffer, data)?,
+        Value::Attribute { data, .. } => convert(data)?,
+        Value::Push { data, .. } => convert_list(data)?,
         // Reached only where a server error is nested inside another reply. The
         // single-command path lifts a top-level one into the call's failure, and
-        // the pipeline path takes them out before encoding.
+        // the pipeline path takes them out before converting.
         Value::ServerError(error) => {
             return Err(format!(
                 "{} {}",
@@ -130,43 +99,62 @@ fn write_value(buffer: &mut Vec<u8>, value: &Value) -> std::result::Result<(), S
             ));
         }
         // Value is non_exhaustive: a variant added by a later redis-rs must not
-        // silently become nil, which PHP would read as a missing key.
+        // silently become null, which PHP would read as a missing key.
         other => return Err(format!("unsupported reply type: {other:?}")),
-    }
-
-    Ok(())
+    })
 }
 
-fn write_array(buffer: &mut Vec<u8>, items: &[Value]) -> std::result::Result<(), String> {
-    let _ = encode::write_array_len(buffer, items.len() as u32);
-
-    for item in items {
-        write_value(buffer, item)?;
-    }
-
-    Ok(())
+fn convert_list(items: &[Value]) -> std::result::Result<PhpValue, String> {
+    items
+        .iter()
+        .map(convert)
+        .collect::<std::result::Result<Vec<PhpValue>, String>>()
+        .map(PhpValue::List)
 }
 
-fn write_bin(buffer: &mut Vec<u8>, bytes: &[u8]) {
-    let _ = encode::write_bin(buffer, bytes);
+/// The array key a RESP3 map key becomes: the key PHP itself makes of that
+/// scalar when it is used as an array offset. A string stays a string (the glue
+/// turns a numeric one into an integer, as PHP does), a float is truncated, a
+/// boolean is 0 or 1 and nil is the empty string. A container cannot be an
+/// array key, so one here fails the conversion.
+fn map_key(key: &Value) -> std::result::Result<Key, String> {
+    Ok(match key {
+        Value::Int(number) => Key::Int(*number),
+        Value::BulkString(bytes) => Key::Str(bytes.clone()),
+        Value::SimpleString(text) => Key::Str(text.as_bytes().to_vec()),
+        Value::Okay => Key::Str(b"OK".to_vec()),
+        Value::VerbatimString { text, .. } => Key::Str(text.as_bytes().to_vec()),
+        Value::BigNumber(digits) => Key::Str(digits.clone()),
+        Value::Double(number) => Key::Int(*number as i64),
+        Value::Boolean(flag) => Key::Int(i64::from(*flag)),
+        Value::Nil => Key::Str(Vec::new()),
+        Value::Attribute { data, .. } => map_key(data)?,
+        Value::ServerError(error) => {
+            return Err(format!(
+                "{} {}",
+                error.code(),
+                error.details().unwrap_or("")
+            ));
+        }
+        other => return Err(format!("unsupported map key type: {other:?}")),
+    })
 }
 
-/// One command argument, as the bytes it goes on the wire as.
+/// One command argument, as the bytes it goes on the wire as: the bytes of the
+/// PHP string, text or binary alike.
 ///
 /// The PHP side accepts only strings, integers and floats and writes integers
 /// and floats out as their decimal form, so a value that is not a string here
-/// is a payload that did not come from it. Both MessagePack string kinds are
-/// taken, because what PHP packs depends on whether the string is valid UTF-8.
-pub fn decode_arg(value: &rmpv::Value) -> Result<Vec<u8>, String> {
+/// is a payload that did not come from it.
+pub fn decode_arg(value: &PhpValue) -> Result<Vec<u8>, String> {
     match value {
-        rmpv::Value::Binary(bytes) => Ok(bytes.clone()),
-        rmpv::Value::String(text) => Ok(text.as_bytes().to_vec()),
-        other => Err(format!("a command argument must be a string, got {other}")),
+        PhpValue::Str(bytes) => Ok(bytes.clone()),
+        other => Err(format!("a command argument must be a string, got {other:?}")),
     }
 }
 
 /// Every argument of one command, in order.
-pub fn decode_args(values: &[rmpv::Value]) -> Result<Vec<Vec<u8>>, String> {
+pub fn decode_args(values: &[PhpValue]) -> Result<Vec<Vec<u8>>, String> {
     values.iter().map(decode_arg).collect()
 }
 
@@ -207,40 +195,32 @@ pub fn classify_error(error: &RedisError) -> (Kind, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rmpv::decode::read_value;
 
-    fn decode(bytes: &[u8]) -> rmpv::Value {
-        read_value(&mut &bytes[..]).expect("the encoder wrote valid MessagePack")
-    }
-
-    fn encoded(value: &Value) -> rmpv::Value {
-        decode(&encode_value(value).expect("the value is encodable"))
+    fn converted(value: &Value) -> PhpValue {
+        reply_value(value).expect("the value is convertible")
     }
 
     #[test]
     fn nil_becomes_nil() {
-        assert_eq!(encoded(&Value::Nil), rmpv::Value::Nil);
+        assert_eq!(converted(&Value::Nil), PhpValue::Nil);
     }
 
     #[test]
     fn an_integer_stays_an_integer() {
-        assert_eq!(encoded(&Value::Int(-42)), rmpv::Value::from(-42));
+        assert_eq!(converted(&Value::Int(-42)), PhpValue::Int(-42));
     }
 
     #[test]
-    fn a_bulk_string_crosses_as_binary() {
-        match encoded(&Value::BulkString(vec![0x00, 0xff, b'a'])) {
-            rmpv::Value::Binary(bytes) => assert_eq!(bytes, vec![0x00, 0xff, b'a']),
-            other => panic!("expected binary, got {other:?}"),
-        }
+    fn a_bulk_string_crosses_as_its_bytes() {
+        assert_eq!(
+            converted(&Value::BulkString(vec![0x00, 0xff, b'a'])).as_bytes(),
+            Some(&[0x00, 0xff, b'a'][..])
+        );
     }
 
     #[test]
     fn okay_crosses_as_the_status_string() {
-        match encoded(&Value::Okay) {
-            rmpv::Value::Binary(bytes) => assert_eq!(bytes, b"OK".to_vec()),
-            other => panic!("expected binary, got {other:?}"),
-        }
+        assert_eq!(converted(&Value::Okay).as_bytes(), Some(&b"OK"[..]));
     }
 
     #[test]
@@ -250,102 +230,82 @@ mod tests {
             Value::Array(vec![Value::BulkString(b"inner".to_vec()), Value::Nil]),
         ]);
 
-        match encoded(&value) {
-            rmpv::Value::Array(items) => {
-                assert_eq!(items.len(), 2);
+        let items = converted(&value).as_list().expect("a list").to_vec();
 
-                match &items[1] {
-                    rmpv::Value::Array(inner) => assert_eq!(inner.len(), 2),
-                    other => panic!("expected a nested array, got {other:?}"),
-                }
-            }
-            other => panic!("expected an array, got {other:?}"),
-        }
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1].as_list().expect("a nested list").len(), 2);
     }
 
     #[test]
     fn a_map_crosses_as_a_map() {
         let value = Value::Map(vec![(Value::BulkString(b"k".to_vec()), Value::Int(7))]);
 
-        match encoded(&value) {
-            rmpv::Value::Map(pairs) => assert_eq!(pairs.len(), 1),
-            other => panic!("expected a map, got {other:?}"),
-        }
+        let converted = converted(&value);
+
+        assert_eq!(converted.as_map().expect("a map").len(), 1);
+        assert_eq!(converted.get("k"), Some(&PhpValue::Int(7)));
+    }
+
+    #[test]
+    fn an_integer_map_key_stays_an_integer_key() {
+        let value = Value::Map(vec![(Value::Int(3), Value::Okay)]);
+
+        let entries = converted(&value).as_map().expect("a map").to_vec();
+
+        assert_eq!(entries[0].0, Key::Int(3));
     }
 
     #[test]
     fn resp3_scalars_keep_their_types() {
-        assert_eq!(encoded(&Value::Double(1.5)), rmpv::Value::from(1.5));
-        assert_eq!(encoded(&Value::Boolean(true)), rmpv::Value::from(true));
+        assert_eq!(converted(&Value::Double(1.5)), PhpValue::Float(1.5));
+        assert_eq!(converted(&Value::Boolean(true)), PhpValue::Bool(true));
     }
 
     #[test]
-    fn a_nested_server_error_fails_the_encoding() {
+    fn a_nested_server_error_fails_the_conversion() {
         // Rather than crossing as some value PHP would read as data.
         let value = Value::Array(vec![Value::Int(1), server_error()]);
 
-        assert!(encode_value(&value).is_err());
+        assert!(reply_value(&value).is_err());
     }
 
     #[test]
     fn a_pipeline_answer_carries_replies_and_failures_apart() {
         let values = vec![Value::Okay, server_error(), Value::Int(3)];
 
-        let decoded = decode(&encode_pipeline(&values).expect("encodable"));
+        let answer = pipeline_value(&values).expect("convertible");
 
-        let rmpv::Value::Map(fields) = decoded else {
-            panic!("expected a map");
-        };
-
-        let replies = fields
-            .iter()
-            .find(|(key, _)| key.as_str() == Some("r"))
-            .map(|(_, value)| value)
+        let replies = answer
+            .get("r")
+            .and_then(PhpValue::as_list)
             .expect("the replies are there");
 
-        let errors = fields
-            .iter()
-            .find(|(key, _)| key.as_str() == Some("e"))
-            .map(|(_, value)| value)
+        let errors = answer
+            .get("e")
+            .and_then(PhpValue::as_map)
             .expect("the failures are there");
 
-        match replies {
-            rmpv::Value::Array(items) => {
-                assert_eq!(items.len(), 3);
-                // The failed command holds its place, so the list still lines up
-                // with the commands that were sent.
-                assert_eq!(items[1], rmpv::Value::Nil);
-            }
-            other => panic!("expected an array, got {other:?}"),
-        }
+        assert_eq!(replies.len(), 3);
+        // The failed command holds its place, so the list still lines up with
+        // the commands that were sent.
+        assert_eq!(replies[1], PhpValue::Nil);
 
-        match errors {
-            rmpv::Value::Map(pairs) => {
-                assert_eq!(pairs.len(), 1);
-                assert_eq!(pairs[0].0.as_u64(), Some(1));
-            }
-            other => panic!("expected a map, got {other:?}"),
-        }
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].0, Key::Int(1));
+        assert_eq!(errors[0].1.get("c"), Some(&PhpValue::str("WRONGTYPE")));
+        assert_eq!(errors[0].1.get("m"), Some(&PhpValue::str("bad")));
     }
 
     #[test]
     fn a_pipeline_without_failures_says_so() {
-        let decoded = decode(&encode_pipeline(&[Value::Int(1)]).expect("encodable"));
+        let answer = pipeline_value(&[Value::Int(1)]).expect("convertible");
 
-        let rmpv::Value::Map(fields) = decoded else {
-            panic!("expected a map");
-        };
-
-        let errors = fields
-            .iter()
-            .find(|(key, _)| key.as_str() == Some("e"))
-            .map(|(_, value)| value)
+        let errors = answer
+            .get("e")
+            .and_then(PhpValue::as_map)
             .expect("the failures field is always there");
 
-        match errors {
-            rmpv::Value::Map(pairs) => assert!(pairs.is_empty()),
-            other => panic!("expected a map, got {other:?}"),
-        }
+        assert!(errors.is_empty());
     }
 
     #[test]
@@ -362,39 +322,25 @@ mod tests {
             (Value::BulkString(b"code".to_vec()), Value::BulkString(b"BOOM".to_vec())),
         ]);
 
-        let decoded = decode(&encode_pipeline(&[value]).expect("encodable"));
+        let answer = pipeline_value(&[value]).expect("convertible");
 
-        let rmpv::Value::Map(fields) = decoded else {
-            panic!("expected a map");
-        };
-
-        let errors = fields
-            .iter()
-            .find(|(key, _)| key.as_str() == Some("e"))
-            .map(|(_, value)| value)
+        let errors = answer
+            .get("e")
+            .and_then(PhpValue::as_map)
             .expect("the failures field is always there");
 
-        match errors {
-            rmpv::Value::Map(pairs) => assert!(pairs.is_empty(), "a stored value forged a failure"),
-            other => panic!("expected a map, got {other:?}"),
-        }
+        assert!(errors.is_empty(), "a stored value forged a failure");
     }
 
     #[test]
-    fn an_argument_is_taken_from_either_string_kind() {
-        assert_eq!(
-            decode_arg(&rmpv::Value::Binary(vec![1, 2, 3])).unwrap(),
-            vec![1, 2, 3]
-        );
-        assert_eq!(
-            decode_arg(&rmpv::Value::from("key")).unwrap(),
-            b"key".to_vec()
-        );
+    fn an_argument_is_the_bytes_of_the_string_whatever_they_are() {
+        assert_eq!(decode_arg(&PhpValue::str(vec![1u8, 2, 3])).unwrap(), vec![1, 2, 3]);
+        assert_eq!(decode_arg(&PhpValue::str("key")).unwrap(), b"key".to_vec());
     }
 
     #[test]
     fn an_argument_that_is_not_a_string_is_refused() {
-        let error = decode_arg(&rmpv::Value::from(7)).unwrap_err();
+        let error = decode_arg(&PhpValue::Int(7)).unwrap_err();
 
         assert!(error.contains("must be a string"), "{error}");
     }
@@ -433,7 +379,7 @@ mod tests {
         assert_eq!(classify_error(&unreadable).0, Kind::Connection);
     }
 
-    /// A server error to encode with: what the parser makes of an error reply,
+    /// A server error to convert with: what the parser makes of an error reply,
     /// which is exactly what a connection hands back.
     fn server_error() -> Value {
         match redis::parse_redis_value(b"-WRONGTYPE bad\r\n") {

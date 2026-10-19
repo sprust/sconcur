@@ -6,16 +6,16 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
+use crate::dto::{Borrowed, Map, Value};
+
 #[derive(Deserialize)]
-pub struct Envelope {
+pub struct Envelope<'a> {
     #[serde(rename = "cm", default)]
     pub command: String,
-    #[serde(rename = "p", default = "nil_value")]
-    pub params: rmpv::Value,
-}
-
-fn nil_value() -> rmpv::Value {
-    rmpv::Value::Nil
+    /// The command's parameters, kept as an untyped subtree until the command
+    /// is known: its handler decodes them into its own parameter struct.
+    #[serde(rename = "p", borrow, default = "crate::dto::value_de::borrowed_nil")]
+    pub params: Borrowed<'a>,
 }
 
 /// The `p` of a Request — one request to send, plus its tuning.
@@ -28,8 +28,10 @@ pub struct RequestParams {
     pub url: String,
     #[serde(rename = "h", default)]
     pub headers: HashMap<String, Vec<String>>,
-    #[serde(rename = "b", default = "nil_value")]
-    pub body: rmpv::Value,
+    /// Bytes rather than a String: a request body is arbitrary bytes, and a
+    /// PHP string holds whatever it holds.
+    #[serde(rename = "b", default, deserialize_with = "crate::dto::value_de::bytes")]
+    pub body: Vec<u8>,
     /// Opens the request with a body PHP fills through upload commands.
     #[serde(rename = "sb", default)]
     pub stream_body: bool,
@@ -85,15 +87,11 @@ pub struct RequestParams {
 
 impl RequestParams {
     /// The request body, taken out of the params rather than copied out of
-    /// them: the decoded value already owns those bytes and nothing reads
+    /// them: the decoded params already own those bytes and nothing reads
     /// `body` again. The rest of the params is still needed at the call site,
     /// which is why this takes `&mut self` instead of consuming them.
     pub fn take_body_bytes(&mut self) -> Vec<u8> {
-        match std::mem::replace(&mut self.body, rmpv::Value::Nil) {
-            rmpv::Value::String(text) => text.into_bytes(),
-            rmpv::Value::Binary(bytes) => bytes,
-            _ => Vec::new(),
-        }
+        std::mem::take(&mut self.body)
     }
 }
 
@@ -103,19 +101,15 @@ impl RequestParams {
 pub struct UploadParams {
     #[serde(rename = "rid", default)]
     pub request_id: String,
-    #[serde(rename = "b", default = "nil_value")]
-    pub body: rmpv::Value,
+    #[serde(rename = "b", default, deserialize_with = "crate::dto::value_de::bytes")]
+    pub body: Vec<u8>,
 }
 
 impl UploadParams {
     /// The chunk's bytes, taken out of the params rather than copied out of
     /// them — see RequestParams::take_body_bytes.
     pub fn take_body_bytes(&mut self) -> Vec<u8> {
-        match std::mem::replace(&mut self.body, rmpv::Value::Nil) {
-            rmpv::Value::String(text) => text.into_bytes(),
-            rmpv::Value::Binary(bytes) => bytes,
-            _ => Vec::new(),
-        }
+        std::mem::take(&mut self.body)
     }
 }
 
@@ -130,27 +124,15 @@ pub struct ResponseMeta {
 }
 
 impl ResponseMeta {
-    pub fn encode(&self) -> Vec<u8> {
-        use rmp::encode;
-
-        let mut buffer = Vec::with_capacity(256 + self.body.len());
-
-        let _ = encode::write_map_len(&mut buffer, 4);
-
-        let _ = encode::write_str(&mut buffer, "st");
-        let _ = encode::write_sint(&mut buffer, self.status as i64);
-
-        let _ = encode::write_str(&mut buffer, "hd");
-        write_headers(&mut buffer, &self.headers);
-
-        let _ = encode::write_str(&mut buffer, "b");
-        let _ = encode::write_str_len(&mut buffer, self.body.len() as u32);
-        buffer.extend_from_slice(&self.body);
-
-        let _ = encode::write_str(&mut buffer, "cl");
-        let _ = encode::write_sint(&mut buffer, self.content_length);
-
-        buffer
+    pub fn into_value(self) -> Value {
+        Map::with_capacity(4)
+            .set("st", self.status)
+            .set("hd", headers_value(self.headers))
+            // The body is bytes, but PHP reads it as a string: one string type
+            // on that side, so the raw bytes travel as-is.
+            .set("b", self.body)
+            .set("cl", self.content_length)
+            .into()
     }
 }
 
@@ -164,39 +146,24 @@ pub struct DownloadMeta {
 }
 
 impl DownloadMeta {
-    pub fn encode(&self) -> Vec<u8> {
-        use rmp::encode;
-
-        let mut buffer = Vec::with_capacity(256);
-
-        let _ = encode::write_map_len(&mut buffer, 3);
-
-        let _ = encode::write_str(&mut buffer, "st");
-        let _ = encode::write_sint(&mut buffer, self.status as i64);
-
-        let _ = encode::write_str(&mut buffer, "hd");
-        write_headers(&mut buffer, &self.headers);
-
-        let _ = encode::write_str(&mut buffer, "n");
-        let _ = encode::write_sint(&mut buffer, self.written);
-
-        buffer
+    pub fn into_value(self) -> Value {
+        Map::with_capacity(3)
+            .set("st", self.status)
+            .set("hd", headers_value(self.headers))
+            .set("n", self.written)
+            .into()
     }
 }
 
-fn write_headers(buffer: &mut Vec<u8>, headers: &[(String, Vec<String>)]) {
-    use rmp::encode;
-
-    let _ = encode::write_map_len(buffer, headers.len() as u32);
+/// The headers as PHP reads them: a map of name to the list of its values.
+fn headers_value(headers: Vec<(String, Vec<String>)>) -> Value {
+    let mut map = Map::with_capacity(headers.len());
 
     for (name, values) in headers {
-        let _ = encode::write_str(buffer, name);
-        let _ = encode::write_array_len(buffer, values.len() as u32);
-
-        for value in values {
-            let _ = encode::write_str(buffer, value);
-        }
+        map.push(name, values.into_iter().map(Value::from).collect::<Vec<Value>>());
     }
+
+    map.into()
 }
 
 /// Collects a response's headers, grouping repeated names the way net/http
@@ -215,4 +182,48 @@ pub fn collect_headers(headers: &reqwest::header::HeaderMap) -> Vec<(String, Vec
     }
 
     collected
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The map HttpClient::buildResponse reads: status, headers as name => list,
+    /// the body as the string it is, the content length.
+    #[test]
+    fn a_response_meta_is_the_map_the_php_client_reads() {
+        let meta = ResponseMeta {
+            status: 404,
+            headers: vec![("Content-Type".to_string(), vec!["text/plain".to_string()])],
+            body: vec![0, 255],
+            content_length: -1,
+        };
+
+        let value = meta.into_value();
+
+        assert_eq!(value.get("st"), Some(&Value::Int(404)));
+        assert_eq!(value.get("b").and_then(Value::as_bytes), Some(&[0u8, 255][..]));
+        assert_eq!(value.get("cl"), Some(&Value::Int(-1)));
+        assert_eq!(
+            value.get("hd").and_then(|headers| headers.get("Content-Type")).and_then(Value::as_list).map(|values| values.len()),
+            Some(1)
+        );
+        assert_eq!(value.as_map().unwrap().len(), 4);
+    }
+
+    /// The map HttpClient::download reads after the sink is written.
+    #[test]
+    fn a_download_meta_is_the_map_the_php_client_reads() {
+        let meta = DownloadMeta {
+            status: 200,
+            headers: vec![],
+            written: 1024,
+        };
+
+        let value = meta.into_value();
+
+        assert_eq!(value.get("st"), Some(&Value::Int(200)));
+        assert_eq!(value.get("n"), Some(&Value::Int(1024)));
+        assert_eq!(value.get("hd").and_then(Value::as_map).map(|headers| headers.len()), Some(0));
+    }
 }

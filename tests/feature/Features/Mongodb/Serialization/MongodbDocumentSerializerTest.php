@@ -123,7 +123,7 @@ class MongodbDocumentSerializerTest extends BaseTestCase
 
     /**
      * Every BSON type must round-trip unchanged through the full path:
-     * PHP (MessagePack) → extension (BSON) → MongoDB → extension (BSON) → PHP (MessagePack).
+     * PHP (arrays and value objects) → extension (BSON) → MongoDB → extension (BSON) → PHP.
      */
     public function testRoundTripsAllBsonTypes(): void
     {
@@ -243,10 +243,9 @@ class MongodbDocumentSerializerTest extends BaseTestCase
     }
 
     /**
-     * ext-msgpack writes a repeated object instance as a reference to the container
-     * it wrote earlier, numbering every container it emits. A scope is a container
-     * inside a value object, so it shifts that numbering — and a decoder that
-     * miscounts does not fail, it hands the collection a neighbouring value.
+     * One value object used in several places of a document, one of them inside the
+     * scope of another value object: every occurrence must reach the collection as
+     * its own full value, and come back as one.
      */
     public function testRoundTripsAScopeAndAReusedInstance(): void
     {

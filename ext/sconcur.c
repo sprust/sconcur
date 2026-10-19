@@ -1,6 +1,10 @@
 #include <php.h>
 #include <stdlib.h>
 #include <zend_atomic.h>
+#include <zend_closures.h>
+#include <zend_enum.h>
+#include <zend_exceptions.h>
+#include <zend_fibers.h>
 #include "sconcur_core.h"
 
 /*
@@ -10,7 +14,8 @@
  * the next opcode boundary the engine calls sconcur_interrupt_function on the
  * PHP thread, which invokes the PHP callback registered by armPreemption() (the
  * Scheduler's preempt hook that parks the current coroutine). The original
- * interrupt handler is always chained so pcntl signal dispatch keeps working.
+ * interrupt handler is always chained so pcntl signal dispatch keeps working,
+ * and it runs first: see sconcur_interrupt_function.
  */
 
 static void (*sconcur_original_interrupt_function)(zend_execute_data *execute_data) = NULL;
@@ -41,6 +46,21 @@ static void sconcur_preemption_release_callback(void)
 static void sconcur_interrupt_function(zend_execute_data *execute_data)
 {
     /*
+     * The chained handler (pcntl's signal dispatch) goes first. Run after a
+     * preemption, it would wait until the parked coroutine is resumed, so a
+     * SIGTERM would sit queued behind the other coroutines' quanta.
+     */
+    if (sconcur_original_interrupt_function != NULL) {
+        sconcur_original_interrupt_function(execute_data);
+    }
+
+    /*
+     * Never preempt where the engine forbids a fiber switch. A pcntl signal
+     * handler runs that way, and an interrupt landing inside it would throw
+     * the handler's own FiberError out of it before it finished: the signal
+     * is already off the queue by then, so a SIGTERM handler cut short this
+     * way loses the stop for good.
+     *
      * Never preempt while an autoload is in flight: the engine tracks the class
      * being loaded in EG(in_autoload), and parking the fiber mid-autoload makes
      * every other coroutine that asks for the same class fail with "class not
@@ -50,6 +70,7 @@ static void sconcur_interrupt_function(zend_execute_data *execute_data)
         && Z_TYPE(sconcur_preemption_callback) != IS_UNDEF
         && !EG(exception)
         && !zend_atomic_bool_load(&EG(timed_out))
+        && !zend_fiber_switch_blocked()
         && (EG(in_autoload) == NULL || zend_hash_num_elements(EG(in_autoload)) == 0)
     ) {
         zval retval;
@@ -67,20 +88,681 @@ static void sconcur_interrupt_function(zend_execute_data *execute_data)
          * throwing pcntl signal handler.
          */
     }
+}
 
-    if (sconcur_original_interrupt_function != NULL) {
-        sconcur_original_interrupt_function(execute_data);
+/*
+ * Result builder: what turns the fields of a finished task into the PHP
+ * package's TaskResultDto, on the PHP thread, inside a wait export.
+ *
+ * The core hands over one sconcur_result_t (sconcur_core.h) per result, and this
+ * side instantiates SConcur\Dto\TaskResultDto for it directly: the class entry is
+ * looked up once, through the autoloader like any class, the offset of every
+ * declared property is read from it, and each result becomes a new object whose
+ * property slots are written in place. No constructor call and no name lookup
+ * per property, the way unserialize() materializes an object.
+ * That makes the property list of TaskResultDto a wire contract with this file,
+ * and its docblock says so.
+ *
+ * The cache lives for one request. Under PHP-FPM userland classes are declared
+ * anew for every request, so the previous request's class entry is a dangling
+ * pointer: RSHUTDOWN clears the cache. The CLI's single request never sees the
+ * reset.
+ */
+
+static const char *const SCONCUR_RESULT_CLASS    = "SConcur\\Dto\\TaskResultDto";
+static const char *const SCONCUR_METHOD_CLASS    = "SConcur\\Features\\MethodEnum";
+static const char *const SCONCUR_FORMAT_EXCEPTION = "SConcur\\Exceptions\\UnexpectedResponseFormatException";
+
+enum {
+    SCONCUR_SLOT_FLOW_KEY,
+    SCONCUR_SLOT_METHOD,
+    SCONCUR_SLOT_KEY,
+    SCONCUR_SLOT_IS_ERROR,
+    SCONCUR_SLOT_PAYLOAD,
+    SCONCUR_SLOT_HAS_NEXT,
+    SCONCUR_SLOT_EXECUTION_MS,
+    SCONCUR_SLOT_TOTAL_EXECUTION_MS,
+    SCONCUR_SLOT_OWNER_FIBER_ID,
+    SCONCUR_SLOT_COUNT
+};
+
+/* The declared properties of TaskResultDto, in slot order. */
+static const char *const SCONCUR_RESULT_PROPERTIES[SCONCUR_SLOT_COUNT] = {
+    "flowKey",
+    "method",
+    "key",
+    "isError",
+    "payload",
+    "hasNext",
+    "executionMs",
+    "totalExecutionMs",
+    "ownerFiberId",
+};
+
+static zend_class_entry *sconcur_result_ce = NULL;
+static zend_class_entry *sconcur_method_ce = NULL;
+static uint32_t sconcur_result_slots[SCONCUR_SLOT_COUNT];
+
+static zend_class_entry *sconcur_lookup_class(const char *name)
+{
+    zend_string *class_name = zend_string_init(name, strlen(name), 0);
+    zend_class_entry *ce = zend_lookup_class(class_name);
+
+    zend_string_release(class_name);
+
+    return ce;
+}
+
+void sconcur_throw(const char *class_name, const char *message)
+{
+    zend_class_entry *ce = sconcur_lookup_class(class_name);
+
+    /* The autoloader threw: that exception is the report, not this one. */
+    if (EG(exception) != NULL) {
+        return;
+    }
+
+    if (ce == NULL) {
+        zend_throw_error(NULL, "%s", message);
+        return;
+    }
+
+    zend_throw_exception(ce, message, 0);
+}
+
+static void sconcur_result_cache_reset(void)
+{
+    sconcur_result_ce = NULL;
+    sconcur_method_ce = NULL;
+}
+
+/*
+ * Resolves the two classes and the property slots on first use. Answers 0 with
+ * an exception pending when it cannot; nothing is cached until all of it could
+ * be, so a failed attempt is retried whole.
+ */
+static int sconcur_result_classes_ready(void)
+{
+    zend_class_entry *result_ce;
+    zend_class_entry *method_ce;
+    uint32_t slots[SCONCUR_SLOT_COUNT];
+
+    if (sconcur_result_ce != NULL) {
+        return 1;
+    }
+
+    result_ce = sconcur_lookup_class(SCONCUR_RESULT_CLASS);
+
+    if (result_ce == NULL) {
+        if (EG(exception) == NULL) {
+            zend_throw_error(NULL, "The class %s cannot be loaded, so no task result can be built", SCONCUR_RESULT_CLASS);
+        }
+
+        return 0;
+    }
+
+    method_ce = sconcur_lookup_class(SCONCUR_METHOD_CLASS);
+
+    if (method_ce == NULL) {
+        if (EG(exception) == NULL) {
+            zend_throw_error(NULL, "The enum %s cannot be loaded, so no task result can be built", SCONCUR_METHOD_CLASS);
+        }
+
+        return 0;
+    }
+
+    for (int index = 0; index < SCONCUR_SLOT_COUNT; index++) {
+        const char *name = SCONCUR_RESULT_PROPERTIES[index];
+        zend_property_info *property_info = zend_hash_str_find_ptr(&result_ce->properties_info, name, strlen(name));
+
+        /* Static, or virtual (a hooked property with no backing slot): neither
+         * has a slot to write, and the builder writes slots. */
+        if (property_info == NULL || (property_info->flags & (ZEND_ACC_STATIC | ZEND_ACC_VIRTUAL)) != 0) {
+            zend_throw_error(NULL, "%s declares no backed property %s, which the result builder writes", SCONCUR_RESULT_CLASS, name);
+            return 0;
+        }
+
+        slots[index] = property_info->offset;
+    }
+
+    memcpy(sconcur_result_slots, slots, sizeof slots);
+
+    sconcur_method_ce = method_ce;
+    /* Last: a non-NULL result class is what marks the cache as filled. */
+    sconcur_result_ce = result_ce;
+
+    return 1;
+}
+
+/*
+ * The declared-property slot at offset, ready for its first write: a new
+ * object's slot is uninitialized and flagged so, and the flags are cleared the
+ * way zend_std_write_property clears them on that first write. The caller
+ * writes the value straight into the slot, which then owns the reference.
+ */
+static zval *sconcur_slot(zend_object *object, uint32_t offset)
+{
+    zval *slot = OBJ_PROP(object, offset);
+
+    /* A declared default, or an earlier write under the same name, would leak
+     * under the new value otherwise. */
+    if (Z_TYPE_P(slot) != IS_UNDEF) {
+        zval_ptr_dtor(slot);
+    }
+
+    Z_PROP_FLAG_P(slot) &= ~(IS_PROP_UNINIT | IS_PROP_REINITABLE);
+
+    return slot;
+}
+
+static void sconcur_slot_stringl(zend_object *object, uint32_t offset, const char *bytes, size_t length)
+{
+    /* FAST: an empty or one-byte string is interned, and the payload of the
+     * cheapest results is empty. */
+    ZVAL_STRINGL_FAST(sconcur_slot(object, offset), bytes, length);
+}
+
+static void sconcur_slot_bool(zend_object *object, uint32_t offset, int flag)
+{
+    ZVAL_BOOL(sconcur_slot(object, offset), flag != 0);
+}
+
+static void sconcur_slot_long(zend_object *object, uint32_t offset, zend_long number)
+{
+    ZVAL_LONG(sconcur_slot(object, offset), number);
+}
+
+zval *sconcur_result_into(zval *destination, const sconcur_result_t *result)
+{
+    zend_class_constant *case_constant;
+    zend_object *method_case;
+    zend_object *object;
+
+    if (!sconcur_result_classes_ready()) {
+        return NULL;
+    }
+
+    /* Looked up by hand first: zend_enum_get_case_cstr asserts the case exists
+     * and, in a release build, dereferences whatever the lookup answered. */
+    case_constant = zend_hash_str_find_ptr(&sconcur_method_ce->constants_table, result->method_case, strlen(result->method_case));
+
+    if (case_constant == NULL || (ZEND_CLASS_CONST_FLAGS(case_constant) & ZEND_CLASS_CONST_IS_CASE) == 0) {
+        /*
+         * Reported rather than folded into MethodEnum::Unknown. A method this
+         * package does not know is the version skew REQUIRED_EXTENSION_VERSION
+         * exists to catch, and building a valid result out of it is how that
+         * signal would be lost at the one point it could be seen. The core's own
+         * unknown method is not this case: it names the Unknown case and resolves
+         * here like any other.
+         */
+        char message[256];
+
+        snprintf(
+            message,
+            sizeof message,
+            "The core reports a result of the method '%s', which this package does not know: the loaded core is newer than the package.",
+            result->method_case
+        );
+        sconcur_throw(SCONCUR_FORMAT_EXCEPTION, message);
+
+        return NULL;
+    }
+
+    method_case = zend_enum_get_case_cstr(sconcur_method_ce, result->method_case);
+
+    if (object_init_ex(destination, sconcur_result_ce) == FAILURE) {
+        return NULL;
+    }
+
+    object = Z_OBJ_P(destination);
+
+    sconcur_slot_stringl(object, sconcur_result_slots[SCONCUR_SLOT_FLOW_KEY], result->flow_key, result->flow_key_len);
+    /* The enum case is shared, so the slot takes a new reference to it. */
+    ZVAL_OBJ_COPY(sconcur_slot(object, sconcur_result_slots[SCONCUR_SLOT_METHOD]), method_case);
+    sconcur_slot_stringl(object, sconcur_result_slots[SCONCUR_SLOT_KEY], result->task_key, result->task_key_len);
+    sconcur_slot_bool(object, sconcur_result_slots[SCONCUR_SLOT_IS_ERROR], result->is_error);
+    sconcur_slot_bool(object, sconcur_result_slots[SCONCUR_SLOT_HAS_NEXT], result->has_next);
+    sconcur_slot_long(object, sconcur_result_slots[SCONCUR_SLOT_EXECUTION_MS], (zend_long)result->execution_ms);
+    sconcur_slot_long(object, sconcur_result_slots[SCONCUR_SLOT_TOTAL_EXECUTION_MS], (zend_long)result->total_execution_ms);
+    sconcur_slot_long(object, sconcur_result_slots[SCONCUR_SLOT_OWNER_FIBER_ID], (zend_long)result->owner_id);
+
+    /* Null until the core fills it, so a failure halfway leaves a whole object. */
+    zval *payload = sconcur_slot(object, sconcur_result_slots[SCONCUR_SLOT_PAYLOAD]);
+
+    ZVAL_NULL(payload);
+
+    return payload;
+}
+
+zval *sconcur_result_append(zval *list, const sconcur_result_t *result)
+{
+    zval element;
+    zval *payload;
+    zval *stored;
+
+    ZVAL_UNDEF(&element);
+
+    payload = sconcur_result_into(&element, result);
+
+    if (payload == NULL) {
+        zval_ptr_dtor(&element);
+        return NULL;
+    }
+
+    /* The list takes over the element's reference; the payload slot lives in the
+     * object, which does not move, so the pointer stays valid. */
+    stored = zend_hash_next_index_insert(Z_ARRVAL_P(list), &element);
+
+    if (stored == NULL) {
+        zval_ptr_dtor(&element);
+        zend_throw_error(NULL, "A task result could not be appended to the batch");
+        return NULL;
+    }
+
+    return payload;
+}
+
+/*
+ * Value builder: the zval of each node of a result's value tree, written where
+ * the core says. A container is initialized to its final size, then each child
+ * gets a slot: a null placeholder inserted into the array (or the declared
+ * property of the object) that the core overwrites in place. The slot of one
+ * child is handed out only after the previous one is complete, so a growing
+ * table never moves a slot the core still holds.
+ */
+
+void sconcur_value_null(zval *destination)
+{
+    ZVAL_NULL(destination);
+}
+
+void sconcur_value_bool(zval *destination, int flag)
+{
+    ZVAL_BOOL(destination, flag != 0);
+}
+
+void sconcur_value_long(zval *destination, long long number)
+{
+    ZVAL_LONG(destination, (zend_long)number);
+}
+
+void sconcur_value_double(zval *destination, double number)
+{
+    ZVAL_DOUBLE(destination, number);
+}
+
+void sconcur_value_stringl(zval *destination, const char *bytes, size_t length)
+{
+    ZVAL_STRINGL_FAST(destination, bytes, length);
+}
+
+void sconcur_value_array(zval *destination, unsigned int size)
+{
+    array_init_size(destination, size);
+}
+
+zval *sconcur_array_next_slot(zval *array)
+{
+    zval placeholder;
+    zval *slot;
+
+    ZVAL_NULL(&placeholder);
+
+    slot = zend_hash_next_index_insert(Z_ARRVAL_P(array), &placeholder);
+
+    if (slot == NULL) {
+        zend_throw_error(NULL, "A list element could not be appended: the array is full");
+    }
+
+    return slot;
+}
+
+zval *sconcur_array_index_slot(zval *array, long long index)
+{
+    zval placeholder;
+
+    ZVAL_NULL(&placeholder);
+
+    return zend_hash_index_update(Z_ARRVAL_P(array), (zend_ulong)index, &placeholder);
+}
+
+zval *sconcur_array_key_slot(zval *array, const char *key, size_t length)
+{
+    zval placeholder;
+
+    ZVAL_NULL(&placeholder);
+
+    /* symtable: a numeric-string key becomes the integer key PHP would make
+     * of it in an array literal. */
+    return zend_symtable_str_update(Z_ARRVAL_P(array), key, length, &placeholder);
+}
+
+/*
+ * The classes a value tree names, cached per request like the result class:
+ * a handful of value classes (the BSON ones), looked up through the
+ * autoloader once and reused for the rest of the request.
+ */
+#define SCONCUR_VALUE_CLASS_CACHE_SIZE 16
+
+typedef struct {
+    char *name;
+    size_t length;
+    zend_class_entry *ce;
+} sconcur_value_class_t;
+
+static sconcur_value_class_t sconcur_value_classes[SCONCUR_VALUE_CLASS_CACHE_SIZE];
+static int sconcur_value_class_count = 0;
+
+static void sconcur_value_class_cache_reset(void)
+{
+    for (int index = 0; index < sconcur_value_class_count; index++) {
+        free(sconcur_value_classes[index].name);
+    }
+
+    sconcur_value_class_count = 0;
+}
+
+static zend_class_entry *sconcur_value_class(const char *name, size_t length)
+{
+    zend_string *class_name;
+    zend_class_entry *ce;
+
+    for (int index = 0; index < sconcur_value_class_count; index++) {
+        sconcur_value_class_t *cached = &sconcur_value_classes[index];
+
+        if (cached->length == length && memcmp(cached->name, name, length) == 0) {
+            return cached->ce;
+        }
+    }
+
+    class_name = zend_string_init(name, length, 0);
+    ce = zend_lookup_class(class_name);
+    zend_string_release(class_name);
+
+    if (ce == NULL) {
+        if (EG(exception) == NULL) {
+            zend_throw_error(NULL, "The class %.*s a task result carries cannot be loaded", (int)length, name);
+        }
+
+        return NULL;
+    }
+
+    if (sconcur_value_class_count < SCONCUR_VALUE_CLASS_CACHE_SIZE) {
+        sconcur_value_class_t *cached = &sconcur_value_classes[sconcur_value_class_count];
+
+        cached->name = malloc(length);
+
+        if (cached->name != NULL) {
+            memcpy(cached->name, name, length);
+            cached->length = length;
+            cached->ce = ce;
+            sconcur_value_class_count++;
+        }
+    }
+
+    return ce;
+}
+
+int sconcur_value_object(zval *destination, const char *class_name, size_t length)
+{
+    zend_class_entry *ce = sconcur_value_class(class_name, length);
+
+    if (ce == NULL) {
+        return 0;
+    }
+
+    return object_init_ex(destination, ce) == SUCCESS;
+}
+
+zval *sconcur_object_property_slot(zval *object, const char *name, size_t length)
+{
+    zend_object *instance = Z_OBJ_P(object);
+    zend_property_info *property_info = zend_hash_str_find_ptr(&instance->ce->properties_info, name, length);
+    zval *slot;
+
+    /* Static, or virtual (a hooked property with no backing slot): no slot to
+     * write, and writing OBJ_PROP at a virtual offset would land outside the
+     * object. */
+    if (property_info == NULL || (property_info->flags & (ZEND_ACC_STATIC | ZEND_ACC_VIRTUAL)) != 0) {
+        zend_throw_error(
+            NULL,
+            "%s declares no backed property %.*s, which a task result writes",
+            ZSTR_VAL(instance->ce->name),
+            (int)length,
+            name
+        );
+
+        return NULL;
+    }
+
+    slot = sconcur_slot(instance, property_info->offset);
+
+    ZVAL_NULL(slot);
+
+    return slot;
+}
+
+/*
+ * Value readers: the core's view of the PHP array a push was given. Each one
+ * answers a question about one zval; the two iterate calls walk a container
+ * and call back into the core per entry, so the core never sees a HashTable.
+ */
+
+int sconcur_zval_kind(const zval *value)
+{
+    ZVAL_DEREF(value);
+
+    switch (Z_TYPE_P(value)) {
+        case IS_UNDEF:
+        case IS_NULL:
+            return SCONCUR_KIND_NULL;
+        case IS_FALSE:
+        case IS_TRUE:
+            return SCONCUR_KIND_BOOL;
+        case IS_LONG:
+            return SCONCUR_KIND_LONG;
+        case IS_DOUBLE:
+            return SCONCUR_KIND_DOUBLE;
+        case IS_STRING:
+            return SCONCUR_KIND_STRING;
+        case IS_ARRAY:
+            return SCONCUR_KIND_ARRAY;
+        case IS_OBJECT:
+            return SCONCUR_KIND_OBJECT;
+        default:
+            return SCONCUR_KIND_OTHER;
+    }
+}
+
+int sconcur_zval_bool(const zval *value)
+{
+    ZVAL_DEREF(value);
+
+    return Z_TYPE_P(value) == IS_TRUE;
+}
+
+long long sconcur_zval_long(const zval *value)
+{
+    ZVAL_DEREF(value);
+
+    return (long long)Z_LVAL_P(value);
+}
+
+double sconcur_zval_double(const zval *value)
+{
+    ZVAL_DEREF(value);
+
+    return Z_DVAL_P(value);
+}
+
+const char *sconcur_zval_string(const zval *value, size_t *length)
+{
+    ZVAL_DEREF(value);
+
+    *length = Z_STRLEN_P(value);
+
+    return Z_STRVAL_P(value);
+}
+
+unsigned int sconcur_array_count(const zval *array)
+{
+    ZVAL_DEREF(array);
+
+    return zend_hash_num_elements(Z_ARRVAL_P(array));
+}
+
+int sconcur_array_is_list(const zval *array)
+{
+    ZVAL_DEREF(array);
+
+    return zend_array_is_list(Z_ARRVAL_P(array));
+}
+
+const char *sconcur_object_class(const zval *object, size_t *length)
+{
+    zend_string *name;
+
+    ZVAL_DEREF(object);
+
+    name = Z_OBJCE_P(object)->name;
+    *length = ZSTR_LEN(name);
+
+    return ZSTR_VAL(name);
+}
+
+/* stdClass: an object that is nothing but its properties, so it reads as a map. */
+int sconcur_object_is_plain(const zval *object)
+{
+    ZVAL_DEREF(object);
+
+    return Z_OBJCE_P(object) == zend_standard_class_def;
+}
+
+/* 1 for a Closure, 2 for an enum case, 0 for any other object. Neither of the
+ * two carries state a feature could read as properties, so a push refuses
+ * them instead of sending an object that means nothing on the other side. */
+int sconcur_object_refused(const zval *object)
+{
+    ZVAL_DEREF(object);
+
+    zend_class_entry *ce = Z_OBJCE_P(object);
+
+    if (ce == zend_ce_closure) {
+        return 1;
+    }
+
+    if (ce->ce_flags & ZEND_ACC_ENUM) {
+        return 2;
+    }
+
+    return 0;
+}
+
+static int sconcur_table_iterate(HashTable *table, void *context, sconcur_visit_t visit, int public_only)
+{
+    zend_string *key;
+    zend_ulong index;
+    zval *value;
+    int answer = 1;
+
+    ZEND_HASH_FOREACH_KEY_VAL(table, index, key, value) {
+        /* A declared property sits in the object, and its properties table
+         * points at it indirectly; an uninitialized typed property is UNDEF
+         * there and is not part of the value. */
+        if (Z_TYPE_P(value) == IS_INDIRECT) {
+            value = Z_INDIRECT_P(value);
+        }
+
+        if (Z_TYPE_P(value) == IS_UNDEF) {
+            continue;
+        }
+
+        if (key != NULL) {
+            /* A mangled name is a protected or private property: not part of
+             * what an object shows the world, so not part of its value. */
+            if (public_only && ZSTR_LEN(key) > 0 && ZSTR_VAL(key)[0] == '\0') {
+                continue;
+            }
+
+            answer = visit(context, ZSTR_VAL(key), ZSTR_LEN(key), 0, value);
+        } else {
+            answer = visit(context, NULL, 0, (long long)index, value);
+        }
+
+        if (answer == 0) {
+            break;
+        }
+    } ZEND_HASH_FOREACH_END();
+
+    return answer;
+}
+
+/* Whether PHP raised an exception while the core was reading: a get_properties
+ * handler may run user code (a lazy object's initializer), and the visit
+ * protocol has no channel for it, so the core asks afterwards. */
+int sconcur_exception_pending(void)
+{
+    return EG(exception) != NULL;
+}
+
+int sconcur_array_iterate(const zval *array, void *context, sconcur_visit_t visit)
+{
+    ZVAL_DEREF(array);
+
+    return sconcur_table_iterate(Z_ARRVAL_P(array), context, visit, 0);
+}
+
+int sconcur_object_iterate(const zval *object, void *context, sconcur_visit_t visit)
+{
+    HashTable *properties;
+
+    ZVAL_DEREF(object);
+
+    /* The engine's own view of the properties, declared and dynamic alike; a
+     * class with a get_properties handler of its own answers through it. */
+    properties = Z_OBJ_HT_P(object)->get_properties(Z_OBJ_P(object));
+
+    if (properties == NULL) {
+        return 1;
+    }
+
+    return sconcur_table_iterate(properties, context, visit, 1);
+}
+
+/*
+ * Finishes a wait export. READY leaves the value the core wrote in place;
+ * TIMEOUT answers null; FAILED releases whatever was built before the failure
+ * and lets the exception the core threw propagate, with a backstop for the
+ * case it threw none.
+ */
+static void sconcur_finish_wait(zval *return_value, int status, const char *what)
+{
+    if (status == SCONCUR_WAIT_READY) {
+        return;
+    }
+
+    zval_ptr_dtor(return_value);
+    ZVAL_NULL(return_value);
+
+    if (status == SCONCUR_WAIT_TIMEOUT) {
+        return;
+    }
+
+    if (EG(exception) == NULL) {
+        zend_throw_error(NULL, "%s failed without a report", what);
     }
 }
 
 /*
  * arginfo:
  *  - ping(string name)
- *  - push(string flowKey, string method, string taskKey, string payload, int ownerId)
+ *  - push(string flowKey, string method, string taskKey, array payload, int ownerId)
  *  - next(string flowKey, string taskKey, int ownerId)
- *  - wait(string flowKey)
- *  - waitAny()
- *  - waitAnyTimeout(int timeoutMs)
+ *  - wait(string flowKey): TaskResultDto
+ *  - waitAny(): TaskResultDto
+ *  - waitAnyTimeout(int timeoutMs): ?TaskResultDto
+ *  - waitAnyBatch(int maxResults): list<TaskResultDto>
+ *  - waitAnyTimeoutBatch(int timeoutMs, int maxResults): ?list<TaskResultDto>
  *  - tasksCount()
  *  - stopFlow(string flowKey)
  *  - httpStopAccepting(string flowKey)
@@ -97,12 +779,12 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_ping, 0, 0, 1)
     ZEND_ARG_TYPE_INFO(0, name, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
-// push(string flowKey, string method, string taskKey, string payload, int ownerId)
+// push(string flowKey, string method, string taskKey, array payload, int ownerId)
 ZEND_BEGIN_ARG_INFO_EX(arginfo_sconcur_push, 0, 0, 5)
     ZEND_ARG_TYPE_INFO(0, flowKey, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, method, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, taskKey, IS_STRING, 0)
-    ZEND_ARG_TYPE_INFO(0, payload, IS_STRING, 0)
+    ZEND_ARG_TYPE_INFO(0, payload, IS_ARRAY, 0)
     ZEND_ARG_TYPE_INFO(0, ownerId, IS_LONG, 0)
 ZEND_END_ARG_INFO()
 
@@ -212,17 +894,20 @@ PHP_FUNCTION(ping)
     free(response);
 }
 
-// PHP: SConcur\Extension\push(string $flowKey, string $method, string $taskKey, string $payload, int $ownerId): string
+// PHP: SConcur\Extension\push(string $flowKey, string $method, string $taskKey, array $payload, int $ownerId): string
 PHP_FUNCTION(push)
 {
-    char *flow_key = NULL, *method = NULL, *task_key = NULL, *payload = NULL;
-    size_t flow_key_len, method_len, task_key_len, payload_len;
+    char *flow_key = NULL, *method = NULL, *task_key = NULL;
+    size_t flow_key_len, method_len, task_key_len;
+    zval *payload = NULL;
     zend_long owner_id = 0;
 
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "ssssl", &flow_key, &flow_key_len, &method, &method_len, &task_key, &task_key_len, &payload, &payload_len, &owner_id) == FAILURE) {
+    if (zend_parse_parameters(ZEND_NUM_ARGS(), "sssal", &flow_key, &flow_key_len, &method, &method_len, &task_key, &task_key_len, &payload, &owner_id) == FAILURE) {
         RETURN_THROWS();
     }
 
+    /* The core reads the array through the value readers before it returns, so
+     * the zval owes it nothing afterwards. */
     char *response = push(
         flow_key,
         (int)flow_key_len,
@@ -231,7 +916,6 @@ PHP_FUNCTION(push)
         task_key,
         (int)task_key_len,
         payload,
-        (int)payload_len,
         (long long)owner_id
     );
 
@@ -267,122 +951,72 @@ PHP_FUNCTION(next)
     free(response);
 }
 
-// PHP: SConcur\Extension\wait(string $flowKey): string
+// PHP: SConcur\Extension\wait(string $flowKey): TaskResultDto
 PHP_FUNCTION(wait)
 {
     char *flow_key = NULL;
     size_t flow_key_len;
-    buffer_result_t response;
 
     if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &flow_key, &flow_key_len) == FAILURE) {
         RETURN_THROWS();
     }
 
-    response = wait(
-        flow_key,
-        (int)flow_key_len
-    );
-
-    if (response.err != NULL) {
-        RETVAL_STRING(response.err);
-        free(response.err);
-        return;
-    }
-
-    RETVAL_STRINGL((char *)response.data, response.len);
-    free(response.data);
+    sconcur_finish_wait(return_value, wait(flow_key, (int)flow_key_len, return_value), "wait");
 }
 
-// PHP: SConcur\Extension\waitAny(): string
+// PHP: SConcur\Extension\waitAny(): TaskResultDto
 PHP_FUNCTION(waitAny)
 {
-    buffer_result_t response;
-
     if (zend_parse_parameters_none() == FAILURE) {
         RETURN_THROWS();
     }
 
-    response = waitAny();
-
-    if (response.err != NULL) {
-        RETVAL_STRING(response.err);
-        free(response.err);
-        return;
-    }
-
-    RETVAL_STRINGL((char *)response.data, response.len);
-    free(response.data);
+    sconcur_finish_wait(return_value, waitAny(return_value), "waitAny");
 }
 
-// PHP: SConcur\Extension\waitAnyTimeout(int $timeoutMs): string
-// Returns the literal "timeout" when no result became ready in time.
+// PHP: SConcur\Extension\waitAnyTimeout(int $timeoutMs): ?TaskResultDto
+// Null when no result became ready in time.
 PHP_FUNCTION(waitAnyTimeout)
 {
     zend_long timeout_ms;
-    buffer_result_t response;
 
     if (zend_parse_parameters(ZEND_NUM_ARGS(), "l", &timeout_ms) == FAILURE) {
         RETURN_THROWS();
     }
 
-    response = waitAnyTimeout((int)timeout_ms);
-
-    if (response.err != NULL) {
-        RETVAL_STRING(response.err);
-        free(response.err);
-        return;
-    }
-
-    RETVAL_STRINGL((char *)response.data, response.len);
-    free(response.data);
+    sconcur_finish_wait(return_value, waitAnyTimeout((int)timeout_ms, return_value), "waitAnyTimeout");
 }
 
-// PHP: SConcur\Extension\waitAnyBatch(int $maxResults): string
-// Returns a result multiframe: the first ready result (blocking, like waitAny)
-// plus every already-ready result up to $maxResults in one crossing.
+// PHP: SConcur\Extension\waitAnyBatch(int $maxResults): list<TaskResultDto>
+// The first ready result (blocking, like waitAny) plus every already-ready
+// result up to $maxResults, in one crossing.
 PHP_FUNCTION(waitAnyBatch)
 {
     zend_long max_results;
-    buffer_result_t response;
 
     if (zend_parse_parameters(ZEND_NUM_ARGS(), "l", &max_results) == FAILURE) {
         RETURN_THROWS();
     }
 
-    response = waitAnyBatch((int)max_results);
-
-    if (response.err != NULL) {
-        RETVAL_STRING(response.err);
-        free(response.err);
-        return;
-    }
-
-    RETVAL_STRINGL((char *)response.data, response.len);
-    free(response.data);
+    sconcur_finish_wait(return_value, waitAnyBatch((int)max_results, return_value), "waitAnyBatch");
 }
 
-// PHP: SConcur\Extension\waitAnyTimeoutBatch(int $timeoutMs, int $maxResults): string
-// Returns the literal "timeout" when no result became ready in time.
+// PHP: SConcur\Extension\waitAnyTimeoutBatch(int $timeoutMs, int $maxResults): ?list<TaskResultDto>
+// Null when no result became ready in time.
 PHP_FUNCTION(waitAnyTimeoutBatch)
 {
     zend_long timeout_ms;
     zend_long max_results;
-    buffer_result_t response;
 
     if (zend_parse_parameters(ZEND_NUM_ARGS(), "ll", &timeout_ms, &max_results) == FAILURE) {
         RETURN_THROWS();
     }
 
-    response = waitAnyTimeoutBatch((int)timeout_ms, (int)max_results);
-
-    if (response.err != NULL) {
-        RETVAL_STRING(response.err);
-        free(response.err);
-        return;
-    }
-
-    RETVAL_STRINGL((char *)response.data, response.len);
-    free(response.data);
+    sconcur_finish_wait(
+        return_value,
+        waitAnyTimeoutBatch((int)timeout_ms, (int)max_results, return_value),
+        "waitAnyTimeoutBatch"
+    );
 }
 
 // PHP: SConcur\Extension\tasksCount(): int
@@ -511,7 +1145,7 @@ PHP_FUNCTION(version)
 }
 
 // PHP: SConcur\Extension\armPreemption(int $quantumMs, callable $callback): void
-// Registers the preempt callback and starts the Go-side interrupt timer. Re-arming
+// Registers the preempt callback and starts the core's interrupt timer. Re-arming
 // replaces the previous timer and callback.
 PHP_FUNCTION(armPreemption)
 {
@@ -592,6 +1226,18 @@ PHP_MINIT_FUNCTION(sconcur)
     return SUCCESS;
 }
 
+/*
+ * The result builder's class cache is per request: see the builder above for
+ * why a class entry must not outlive the request that declared it.
+ */
+PHP_RSHUTDOWN_FUNCTION(sconcur)
+{
+    sconcur_result_cache_reset();
+    sconcur_value_class_cache_reset();
+
+    return SUCCESS;
+}
+
 PHP_MSHUTDOWN_FUNCTION(sconcur)
 {
     preemptionDisarm();
@@ -621,7 +1267,7 @@ zend_module_entry sconcur_module_entry = {
     PHP_MINIT(sconcur),
     PHP_MSHUTDOWN(sconcur),
     NULL,  // RINIT
-    NULL,  // RSHUTDOWN
+    PHP_RSHUTDOWN(sconcur),
     NULL,  // MINFO
     NO_VERSION_YET,
     STANDARD_MODULE_PROPERTIES

@@ -53,7 +53,7 @@ class Scheduler
 
     /**
      * How many ready results one waitAnyBatch crossing may drain. Bounds the
-     * peak multiframe size and, in the serve loop, the time between
+     * peak size of one batch and, in the serve loop, the time between
      * shouldStop() checks; a batch never waits to fill up, so the value only
      * caps a burst.
      */
@@ -693,29 +693,29 @@ class Scheduler
      * limiting request is dispatched and drained like any in-flight one, and the
      * listener is closed before draining, so no accepted request is bounced.
      *
-     * @param int                   $maxRequests         stop after dispatching this many requests (0 = unlimited)
-     * @param Closure(string): void $onRequest           receives the raw request payload
-     * @param Closure(): bool       $shouldStop          true once a shutdown was requested
-     * @param Closure(): void       $onDrainStart        called once when draining begins, before
-     *                                                   in-flight handlers finish (e.g. to stop the
-     *                                                   listener from accepting so siblings take over)
-     * @param Closure(string): void $onShutdownStep      receives a human-readable graceful-shutdown
-     *                                                   step (drain begin, fully drained, stopped) for
-     *                                                   the caller to log
-     * @param int                   $preemptionQuantumMs arm automatic preemption with this quantum
-     *                                                   while serving (a worker without a serve loop
-     *                                                   does the same through
-     *                                                   ServerRuntimeSupportTrait::withPreemption):
-     *                                                   the extension's timer requests
-     *                                                   a VM interrupt every quantum and preempt()
-     *                                                   parks the running handler coroutine, so a
-     *                                                   CPU-bound handler cannot starve the others
-     *                                                   (0 disables)
-     * @param int                   $handlerTimeoutMs    how long one handler coroutine may run before
-     *                                                   it is unwound where it stands (0 disables).
-     *                                                   Preemption is what lets it reach a handler
-     *                                                   that never waits, so the two options work
-     *                                                   together
+     * @param int                                 $maxRequests         stop after dispatching this many requests (0 = unlimited)
+     * @param Closure(array<string, mixed>): void $onRequest           receives the request event the core built
+     * @param Closure(): bool                     $shouldStop          true once a shutdown was requested
+     * @param Closure(): void                     $onDrainStart        called once when draining begins, before
+     *                                                                 in-flight handlers finish (e.g. to stop the
+     *                                                                 listener from accepting so siblings take over)
+     * @param Closure(string): void               $onShutdownStep      receives a human-readable graceful-shutdown
+     *                                                                 step (drain begin, fully drained, stopped) for
+     *                                                                 the caller to log
+     * @param int                                 $preemptionQuantumMs arm automatic preemption with this quantum
+     *                                                                 while serving (a worker without a serve loop
+     *                                                                 does the same through
+     *                                                                 ServerRuntimeSupportTrait::withPreemption):
+     *                                                                 the extension's timer requests
+     *                                                                 a VM interrupt every quantum and preempt()
+     *                                                                 parks the running handler coroutine, so a
+     *                                                                 CPU-bound handler cannot starve the others
+     *                                                                 (0 disables)
+     * @param int                                 $handlerTimeoutMs    how long one handler coroutine may run before
+     *                                                                 it is unwound where it stands (0 disables).
+     *                                                                 Preemption is what lets it reach a handler
+     *                                                                 that never waits, so the two options work
+     *                                                                 together
      */
     public function serve(
         string $serverFlowKey,
@@ -819,7 +819,7 @@ class Scheduler
                             // failed, and a caller may read the scope a feature put on it
                             // (SConcur\Features\Amqp\Support\AmqpFailure).
                             throw new TaskErrorException(
-                                message: $result->payload,
+                                message: is_string($result->payload) ? $result->payload : 'Unknown error',
                             );
                         }
 
@@ -1201,7 +1201,7 @@ class Scheduler
         }
 
         return sprintf(
-            'drain stalled: %d in-flight, %d go tasks, %d dropped, tracked=[%s], waiters=[%s], switched=%d, parked on [%s]',
+            'drain stalled: %d in-flight, %d extension tasks, %d dropped, tracked=[%s], waiters=[%s], switched=%d, parked on [%s]',
             $this->spawnedCount,
             Extension::get()->count(),
             $this->droppedResultsCount,

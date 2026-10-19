@@ -72,7 +72,7 @@ async fn start(task: &Task, timeout_ms: i64, state: Arc<dyn states::StateContrac
 }
 
 /// Reads a file in raw batches.
-pub async fn read_chunks(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn read_chunks(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let Some(parameters) =
         params::<payloads::ReadChunksParams>(task, envelope, "readChunks").await
     else {
@@ -105,7 +105,7 @@ pub async fn read_chunks(task: &Task, envelope: &mut payloads::Envelope) {
 }
 
 /// Reads a file as batches of lines.
-pub async fn read_lines(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn read_lines(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let Some(parameters) = params::<payloads::ReadLinesParams>(task, envelope, "readLines").await
     else {
         return;
@@ -138,7 +138,7 @@ pub async fn read_lines(task: &Task, envelope: &mut payloads::Envelope) {
 }
 
 /// Walks a directory tree in batches of entries.
-pub async fn walk(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn walk(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
 
     let Some(parameters) = params::<payloads::WalkParams>(task, envelope, "walk").await else {

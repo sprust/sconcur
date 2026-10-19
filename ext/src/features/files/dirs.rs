@@ -9,6 +9,7 @@
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use crate::dto::{Map, Value};
 use crate::tasks::Task;
 
 use super::errors::io_message;
@@ -28,41 +29,30 @@ pub struct Entry {
     pub modified_at_ms: Option<i64>,
 }
 
-/// Writes a batch of entries as the map PHP turns into DirectoryEntry objects.
-pub fn encode_entries(entries: &[Entry]) -> Vec<u8> {
-    let mut buffer = Vec::new();
+/// A batch of entries as the map PHP turns into DirectoryEntry objects: one
+/// list under "e", one map per entry.
+pub fn entries_value(entries: &[Entry]) -> Value {
+    let items = entries
+        .iter()
+        .map(|entry| {
+            let with_metadata = entry.size_bytes.is_some() || entry.modified_at_ms.is_some();
 
-    let _ = rmp::encode::write_map_len(&mut buffer, 1);
-    let _ = rmp::encode::write_str(&mut buffer, "e");
-    let _ = rmp::encode::write_array_len(&mut buffer, entries.len() as u32);
+            let mut fields = Map::with_capacity(if with_metadata { 6 } else { 4 })
+                .set("n", &entry.name)
+                .set("p", &entry.path)
+                .set("d", entry.is_directory)
+                .set("l", entry.is_symlink);
 
-    for entry in entries {
-        let with_metadata = entry.size_bytes.is_some() || entry.modified_at_ms.is_some();
+            if with_metadata {
+                fields.push("sz", entry.size_bytes.unwrap_or(0));
+                fields.push("mt", entry.modified_at_ms.unwrap_or(0));
+            }
 
-        let _ = rmp::encode::write_map_len(&mut buffer, if with_metadata { 6 } else { 4 });
+            Value::from(fields)
+        })
+        .collect::<Vec<Value>>();
 
-        let _ = rmp::encode::write_str(&mut buffer, "n");
-        let _ = rmp::encode::write_str(&mut buffer, &entry.name);
-
-        let _ = rmp::encode::write_str(&mut buffer, "p");
-        let _ = rmp::encode::write_str(&mut buffer, &entry.path);
-
-        let _ = rmp::encode::write_str(&mut buffer, "d");
-        let _ = rmp::encode::write_bool(&mut buffer, entry.is_directory);
-
-        let _ = rmp::encode::write_str(&mut buffer, "l");
-        let _ = rmp::encode::write_bool(&mut buffer, entry.is_symlink);
-
-        if with_metadata {
-            let _ = rmp::encode::write_str(&mut buffer, "sz");
-            let _ = rmp::encode::write_uint(&mut buffer, entry.size_bytes.unwrap_or(0));
-
-            let _ = rmp::encode::write_str(&mut buffer, "mt");
-            let _ = rmp::encode::write_sint(&mut buffer, entry.modified_at_ms.unwrap_or(0));
-        }
-    }
-
-    buffer
+    Map::new().set("e", items).into()
 }
 
 /// Reads one directory whole — names, types and, if asked, a stat each — in a
@@ -173,7 +163,7 @@ pub fn epoch_ms(time: SystemTime) -> i64 {
 /// Creates a directory. Recursive creates the parents too, and then an existing
 /// directory is a success rather than a failure — which is the mkdir -p
 /// behaviour every caller of the recursive form is actually after.
-pub async fn make_directory(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn make_directory(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let start_time = Instant::now();
 
     let Some(parameters) =
@@ -208,7 +198,7 @@ pub async fn make_directory(task: &Task, envelope: &mut payloads::Envelope) {
             .await
             .map_err(|error| io_message("create directory", &path, &error))?;
 
-        Ok::<Vec<u8>, String>(Vec::new())
+        Ok::<Value, String>(Value::Nil)
     };
 
     publish(task, envelope, start_time, work).await;
@@ -216,7 +206,7 @@ pub async fn make_directory(task: &Task, envelope: &mut payloads::Envelope) {
 
 /// Removes a directory: empty by default, with everything under it when
 /// recursive.
-pub async fn remove_directory(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn remove_directory(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let start_time = Instant::now();
 
     let Some(parameters) =
@@ -237,11 +227,11 @@ pub async fn remove_directory(task: &Task, envelope: &mut payloads::Envelope) {
         };
 
         match removed {
-            Ok(()) => Ok::<Vec<u8>, String>(super::content::encode_count(1)),
+            Ok(()) => Ok::<Value, String>(super::content::count_value(1)),
             // Answered as a count, the way delete answers, so a caller can tell
             // "removed it" from "there was nothing to remove".
             Err(error) if missing_ok && error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(super::content::encode_count(0))
+                Ok(super::content::count_value(0))
             }
             Err(error) => Err(io_message("remove directory", &path, &error)),
         }
@@ -256,7 +246,7 @@ pub async fn remove_directory(task: &Task, envelope: &mut payloads::Envelope) {
 /// Not recursive: a tree is walk(), which streams, because a listing that has
 /// to be held whole before it can be answered is exactly the shape this feature
 /// exists to avoid.
-pub async fn list(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn list(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let start_time = Instant::now();
 
     let Some(parameters) = params::<payloads::ListParams>(task, envelope, "list").await else {
@@ -270,7 +260,7 @@ pub async fn list(task: &Task, envelope: &mut payloads::Envelope) {
     let work = async move {
         read_directory(path, pattern_text, with_metadata)
             .await
-            .map(|entries| encode_entries(&entries))
+            .map(|entries| entries_value(&entries))
     };
 
     publish(task, envelope, start_time, work).await;
@@ -280,8 +270,13 @@ pub async fn list(task: &Task, envelope: &mut payloads::Envelope) {
 mod tests {
     use super::*;
 
-    fn decoded(entries: &[Entry]) -> rmpv::Value {
-        rmp_serde::from_slice(&encode_entries(entries)).unwrap()
+    fn listed(entries: &[Entry]) -> Vec<Value> {
+        entries_value(entries)
+            .get("e")
+            .expect("the list under e")
+            .as_list()
+            .expect("a list")
+            .to_vec()
     }
 
     fn entry(name: &str, with_metadata: bool) -> Entry {
@@ -297,34 +292,27 @@ mod tests {
 
     #[test]
     fn an_entry_without_metadata_carries_only_the_four_free_fields() {
-        let value = decoded(&[entry("a.txt", false)]);
-        let list = value.as_map().unwrap()[0].1.as_array().unwrap();
+        let list = listed(&[entry("a.txt", false)]);
 
         assert_eq!(list[0].as_map().unwrap().len(), 4);
+        assert_eq!(list[0].get("sz"), None);
     }
 
     #[test]
     fn an_entry_with_metadata_carries_the_size_and_the_time() {
-        let value = decoded(&[entry("a.txt", true)]);
-        let list = value.as_map().unwrap()[0].1.as_array().unwrap();
-        let fields = list[0].as_map().unwrap();
+        let list = listed(&[entry("a.txt", true)]);
 
-        assert_eq!(fields.len(), 6);
-
-        let size = fields
-            .iter()
-            .find(|(key, _)| key.as_str() == Some("sz"))
-            .unwrap();
-
-        assert_eq!(size.1.as_u64().unwrap(), 42);
+        assert_eq!(list[0].as_map().unwrap().len(), 6);
+        assert_eq!(list[0].get("sz"), Some(&Value::Int(42)));
+        assert_eq!(list[0].get("mt"), Some(&Value::Int(1_700_000_000_000)));
     }
 
     #[test]
     fn an_empty_listing_is_an_empty_array_not_a_missing_key() {
-        let value = decoded(&[]);
-        let map = value.as_map().unwrap();
+        let value = entries_value(&[]);
 
-        assert_eq!(map[0].0.as_str().unwrap(), "e");
-        assert!(map[0].1.as_array().unwrap().is_empty());
+        assert_eq!(value.as_map().unwrap().len(), 1);
+        assert!(listed(&[]).is_empty());
+        assert_eq!(value.get("e"), Some(&Value::List(Vec::new())));
     }
 }

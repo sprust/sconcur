@@ -454,6 +454,13 @@ bench-db-lifecycle:
 bench-db-runs:
 	tests/benchmarks/db/runs.sh
 
+# Takes every measurement the benchmark docs quote, in one session, and writes
+# the results to .bench-runs/docs/<timestamp>/ (see the script's header). No flags
+# run every section in turn; some of them: make bench-docs f="--db --payload";
+# the list: make bench-docs f=--list
+bench-docs:
+	tests/benchmarks/docs/run.py $(f)
+
 bench-http-client-download:
 	$(PHP_EXT) tests/benchmarks/http/client-download.php ${c}
 
@@ -478,11 +485,6 @@ bench-coordination:
 # a lazy request can be judged against what it would actually save.
 bench-request:
 	$(PHP_EXT) tests/benchmarks/runtime/request-profile.php
-
-# What taking a result out of the batch costs on the PHP side: the frame parse
-# the profile puts at 17%, priced stage by stage on a captured batch.
-bench-result:
-	$(PHP_EXT) tests/benchmarks/runtime/result-profile.php
 
 # Whether tearing a coroutine down costs more when more coroutines are alive:
 # the same group of short-lived members against a growing crowd of parked
@@ -537,11 +539,6 @@ bench-mongodb-deleteOne:
 
 bench-mongodb-updateMany:
 	$(PHP_EXT) tests/benchmarks/mongodb/update-many.php ${c}
-
-# Document-codec micro-benchmark: serialize/unserialize only, no database and no
-# extension. c = iterations (default 20000).
-bench-mongodb-serializer:
-	$(PHP_CLI) php tests/benchmarks/mongodb/serializer.php ${c}
 
 bench-mysql-insert:
 	$(PHP_EXT) tests/benchmarks/mysql/insert.php ${c}

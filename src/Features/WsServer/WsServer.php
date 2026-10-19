@@ -11,7 +11,6 @@ use SConcur\Features\Server\ServerRuntimeSupportTrait;
 use SConcur\Features\WsServer\Dto\Connection;
 use SConcur\Features\WsServer\Payloads\ServePayload;
 use SConcur\Scheduler\Scheduler;
-use SConcur\Transport\MessagePackTransport;
 use Throwable;
 
 /**
@@ -188,11 +187,11 @@ readonly class WsServer
                 serverFlowKey: $flowKey,
                 serverTaskKey: $runningTask->key,
                 maxRequests: $this->maxConnections,
-                onRequest: static function (string $payload) use ($handler, $onError): void {
+                onRequest: static function (array $payload) use ($handler, $onError): void {
                     self::handleConnection(
                         handler: $handler,
                         onError: $onError,
-                        payload: $payload,
+                        event: $payload,
                     );
                 },
                 shouldStop: static function () use (&$stopRequested, $masterPid): bool {
@@ -224,12 +223,10 @@ readonly class WsServer
      *
      * @param Closure(Connection): void                 $handler
      * @param null|Closure(Throwable, Connection): void $onError
+     * @param array<string, mixed>                      $event   the connection event the core built
      */
-    private static function handleConnection(Closure $handler, ?Closure $onError, string $payload): void
+    private static function handleConnection(Closure $handler, ?Closure $onError, array $event): void
     {
-        /** @var array<string, mixed> $event */
-        $event = MessagePackTransport::unpack($payload);
-
         $connection = new Connection(
             id: (string) ($event['cid'] ?? ''),
             remoteAddr: (string) ($event['ra'] ?? ''),

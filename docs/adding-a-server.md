@@ -73,7 +73,7 @@ deadline), a server has its own:
 
 ## Payloads
 
-Written like an ordinary feature's (mirrored, `msgpack` tags = short keys,
+Written like an ordinary feature's (mirrored, `serde(rename)` = the short keys,
 cross-references). A server needs at least three:
 
 1. `ServePayload` — the listener address plus tuning (timeouts in ms, limits in
@@ -85,8 +85,7 @@ cross-references). A server needs at least three:
 3. `RequestEvent` — what the extension streams into PHP per request (an
    extension-side struct only; PHP
    decodes it straight into the handler's request object). It carries `requestId`,
-   the method/path/headers, the inline first body chunk and a streaming key for the
-   rest of the body (`BodyKey`).
+   the method/path/headers and the whole body, read before the event is sent.
 
 > `requestId` is the end-to-end identifier: the extension generates it on accept
 > (`flowKey:r:<n>`), puts it into `RequestEvent`, PHP returns it in every
@@ -176,9 +175,9 @@ so stop-accepting can find the listener).
 accept loop task and the self-pumping stream that publishes every accepted request
 as the next result of the serve task, until the flow is cancelled. The accept
 stream bypasses the `states` registry — that one serves only the secondary streams
-(the request body, the inbound message streams). Backpressure is layered:
-publishing a result waits on the shared results buffer, the requests channel
-buffers accepts, and beyond that the connection task itself waits.
+(the inbound message streams). A fast side cannot outrun a slow one at any
+layer: publishing a result waits on the shared results buffer, the requests
+channel buffers accepts, and beyond that the connection task itself waits.
 
 The accept loop (`server.rs`) takes a `maxConcurrency` permit before reading the
 body — so a request waiting for a slot does not hold a body buffer — registers the
@@ -196,14 +195,6 @@ handler coroutine continues only once the bytes have gone into the socket, or th
 request is gone. A payload with the no-result flag (`nr`, the full write) is handed
 over fire-and-forget instead: no result is published, and the handover does not
 wait on the flow token, because the coroutine may already be gone.
-
-If the body is larger than the inline first chunk, the extension puts the remainder
-into a separate streaming state (registered under `<requestId>:body`) and yields
-that key in the request event's `bk`; PHP reads the pieces through the same shared
-`next()` mechanism, with a fixed 64 KiB transport granularity. The inline
-first-chunk buffer is sized by the declared `Content-Length` when that is smaller
-(a per-request allocation hot spot); chunked or unknown lengths use the full
-64 KiB.
 
 ## The C export `StopAccepting`
 

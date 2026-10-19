@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace SConcur\Features\Files\Results;
 
 use SConcur\Dto\TaskResultDto;
+use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\Files\Support\BatchIterator;
-use SConcur\Transport\MessagePackTransport;
 
 /**
  * A file read line by line, in batches.
@@ -25,8 +25,14 @@ class LinesResult extends BatchIterator
      */
     protected function decode(TaskResultDto $result): array
     {
+        if (!is_array($result->payload)) {
+            throw new UnexpectedResponseFormatException(
+                message: 'The lines batch is not a list.',
+            );
+        }
+
         /** @var list<string> $lines */
-        $lines = MessagePackTransport::unpack($result->payload);
+        $lines = $result->payload;
 
         return $lines;
     }

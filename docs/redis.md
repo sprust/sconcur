@@ -225,7 +225,8 @@ dsn holds at most 64 of them at once, and asking for the sixty-fifth fails
 rather than opening it.
 
 Waiting forever (`timeoutSeconds: 0`) is only coherent with `timeoutMs: 0`. Such
-a command is still stopped by the flow ending.
+a command is still stopped by the flow ending (a flow is the group of tasks a
+`WaitGroup` owns inside the extension).
 
 ## Cursors
 
@@ -295,9 +296,8 @@ which is not supported either.
 | --- | --- |
 | `RedisCommandException` | the server refused the command; `errorCode` holds `WRONGTYPE`, `NOSCRIPT`, `MOVED`, `LOADING`, … |
 | `RedisConnectionException` | the server is unreachable, the login was refused, the socket went away mid-command, or the flow was stopped under the command |
-| `RedisTimeoutException` | `timeoutMs` ran out |
+| `RedisTimeoutException` | `timeoutMs` ran out, for a command or for one cursor batch |
 | `SubscriptionClosedException` | a subscription or a cursor was used after it was closed |
-| `RedisTimeoutException` | a cursor batch ran past `timeoutMs` |
 | `UnsupportedRedisCommandException` | a command that would change the state of a shared connection |
 | `InvalidRedisArgumentException` | an argument that is not a string, an int or a float, or a payload this side could not use |
 | `NestedPipelineExecutionException` | `execute()` called inside a `transaction()` callback |
@@ -313,7 +313,7 @@ Lua script answering `redis.error_reply('connect: ...')` must not be able to pic
 the exception an application catches.
 
 A connection that drops is re-established behind the commands, but a command
-that was in flight when it happened fails, and nothing is retried on its own: the
+that was running when it happened fails, and nothing is retried on its own: the
 server may have run it and lost only the answer, and a retried `INCR` would count
 twice.
 
@@ -365,8 +365,8 @@ allowed for the same reason and stall the whole server while they run.
 - No consumer groups over streams. `XREAD` and `XREADGROUP` work as commands
   (with `blocking: true` where the arguments carry `BLOCK`). What is missing is
   the supervised consumer AMQP has — a worker the scheduler drives, with
-  acknowledgement and a graceful drain — which is a subsystem rather than a
-  command.
+  acknowledgement and a stop that finishes the messages already taken — which is
+  a subsystem rather than a command.
 - No sharded pub/sub. The driver does not say whether a message arrived as
   `message` or `smessage`, so the kind could not be reported honestly; and
   sharded channels exist for a cluster, which is out anyway.

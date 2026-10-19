@@ -6,3 +6,4 @@
 /.phpunit-failed
 .php-cs-fixer.cache
 /.bench-runs
+__pycache__/

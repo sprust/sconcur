@@ -62,7 +62,7 @@ Inside `WaitGroup::add(...)` the same calls run concurrently.
   `checkConnLiveness`, `compress`, `connectionAttributes`, `maxAllowedPacket`,
   `rejectReadOnly`, `serverPubKey`, `timeout`, `readTimeout`, `writeTimeout`.
   Query and exec deadlines come from `timeoutMs` instead, the connect included.
-- `multiStatements` and `clientFoundRows` are accepted at `true` and **refused**
+- `multiStatements` and `clientFoundRows` are accepted at `true` and refused
   at `false`: the driver negotiates both unconditionally and cannot turn either
   off, and `clientFoundRows` decides what `exec()` counts — see
   [Session settings](#session-settings).
@@ -87,7 +87,7 @@ a PDO one against the same server:
 | character set | `SET NAMES utf8mb4`, with the collation left to the server (`utf8mb4_0900_ai_ci` on MySQL 8) | `charset` and `collation` in the DSN |
 | TLS | attempted whenever the server offers it and dropped when it does not, where this DSN format defaults to no TLS at all | `tls` in the DSN |
 
-`PIPES_AS_CONCAT` is deliberately **not** set, although sqlx sets it by default:
+`PIPES_AS_CONCAT` is deliberately not set, although sqlx sets it by default:
 it makes `||` string concatenation instead of MySQL's OR, and the same query
 would then mean one thing here and another under PDO.
 
@@ -117,10 +117,11 @@ the same `query`/`fetchAll`/`exec` as the connection.
 
 If a transaction is abandoned without `commit()`/`rollback()` (an exception, an
 early exit, a `WaitGroup` stop), the extension rolls it back automatically: the
-transaction is bound to the begin task's context, which is cancelled when the flow
-stops. On the synchronous path the `Transaction` destructor additionally releases
-the held flow. Within one `WaitGroup` each coroutine holds its own transaction on
-its own connection, so transactions run in parallel.
+transaction is bound to the begin task's context, which is cancelled when the
+flow (the group of tasks a `WaitGroup` owns inside the extension) stops. On the
+synchronous path the `Transaction` destructor additionally releases the held
+flow. Within one `WaitGroup` each coroutine holds its own transaction on its own
+connection, so transactions run in parallel.
 
 ### Nested transactions
 
@@ -272,10 +273,10 @@ pool no smaller than the expected number of concurrent transactions.
   precision (`14:30:00.500000`), with a leading `-` for a negative span, `NULL` →
   `null`.
   `TINYINT(1)` is an `int`, not a `bool`.
-- An unsigned `BIGINT` larger than `PHP_INT_MAX` arrives as its decimal **string**,
+- An unsigned `BIGINT` larger than `PHP_INT_MAX` arrives as its decimal string,
   because it does not fit a signed 64-bit int. Compare and store such values as
   strings.
-- `begin(isolationLevel:)` is **refused** on MySQL. The level has to be set by a
+- `begin(isolationLevel:)` is refused on MySQL. The level has to be set by a
   separate statement before the transaction starts, on the same connection, and
   the driver hands out a transaction that already owns its pooled connection —
   there is no moment in between. Set it on the session or on the server instead.

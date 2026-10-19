@@ -35,5 +35,6 @@ make rr-serve RR_WORKER_CMD='php -d extension=/sconcur/ext/build/sconcur.so rr-w
 Check with `curl http://<container-ip>:18081/all` (and `/all-sconcur` when the
 extension is loaded).
 
-The default port is 18081 because the SConcur pool in `http-load-stats.sh` takes
-18080, so both stacks can stay up at once.
+The default port is 18081 because the SConcur pool in
+`tests/benchmarks/http/load-stats.sh` takes 18080, so both stacks can stay up at
+once.

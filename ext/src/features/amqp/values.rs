@@ -2,7 +2,7 @@
 //! directions.
 //!
 //! An AMQP field table — queue and exchange arguments, message headers —
-//! carries kinds MessagePack has no equivalent for. Two of them matter, and
+//! carries kinds a PHP array has no equivalent for. Two of them matter, and
 //! both are tagged rather than flattened: a decimal written as a float and a
 //! timestamp written as an integer would change the type of a header for every
 //! other client reading the same queue, and would not come back to PHP as the
@@ -11,7 +11,8 @@
 //! PHP: SConcur\Features\Amqp\Support\TableCodec.
 
 use lapin::types::{AMQPValue, DecimalValue, FieldArray, FieldTable, LongString, ShortString};
-use rmp::encode;
+
+use crate::dto::{Key, Map, Value};
 
 /// Names the kind of a tagged value. It starts with a NUL byte, which no AMQP
 /// field name may contain, so an application's own header can never be mistaken
@@ -28,89 +29,53 @@ const TAGGED_VALUE: &str = "v";
 
 /// Turns the arguments and headers PHP sent into an AMQP field table.
 ///
-/// What the values can be is settled by what `ext-msgpack` writes for a PHP
-/// array: nil, bool, string (binary payloads included — PHP packs them as str),
-/// integers of every width, floats, and nested maps and lists. An empty table
-/// answers `None`, so a command that was given no arguments sends none rather
-/// than an empty one.
-pub fn table_from_msgpack(value: Option<&rmpv::Value>) -> Option<FieldTable> {
-    let entries = match value {
-        Some(rmpv::Value::Map(entries)) => entries,
-        // A PHP empty array packs as an empty MessagePack array, not as an
-        // empty map — the same asymmetry the MongoDB serializer handles. A
-        // non-empty array is not a field table and is dropped rather than
-        // guessed at.
-        _ => return None,
-    };
+/// The values are what a PHP array can hold: null, bool, int, float, string
+/// (binary payloads included: PHP has one string type for both), and nested
+/// arrays. An empty table answers `None`, so a command that was given no
+/// arguments sends none rather than an empty one.
+pub fn table_from_value(value: Option<&Value>) -> Option<FieldTable> {
+    // An empty PHP array arrives as an empty list, and `as_map` reads it as an
+    // empty map. A non-empty list is not a field table and is dropped rather
+    // than guessed at.
+    let entries = value?.as_map()?;
 
     if entries.is_empty() {
         return None;
     }
 
+    Some(table_from_entries(entries))
+}
+
+fn table_from_entries(entries: &[(Key, Value)]) -> FieldTable {
     let mut table = FieldTable::default();
 
     for (key, item) in entries {
         table.insert(ShortString::from(table_key(key)), to_amqp_value(item));
     }
 
-    Some(table)
+    table
 }
 
 /// AMQP field names are strings, so a numeric PHP key — which stays numeric
 /// however PHP is asked to write it — is rendered as its decimal form.
-fn table_key(key: &rmpv::Value) -> String {
-    match key {
-        rmpv::Value::String(text) => match text.as_str() {
-            Some(text) => text.to_string(),
-            None => String::from_utf8_lossy(text.as_bytes()).into_owned(),
-        },
-        rmpv::Value::Integer(number) => number.to_string(),
-        rmpv::Value::F32(number) => format_float(*number as f64),
-        rmpv::Value::F64(number) => format_float(*number),
-        other => other.to_string(),
-    }
+fn table_key(key: &Key) -> String {
+    key.text()
 }
 
-/// A float key is rendered in the shortest form that round-trips, and never as
-/// an exponent.
-fn format_float(number: f64) -> String {
-    if number == number.trunc() && number.abs() < 1e15 {
-        return format!("{}", number as i64);
-    }
-
-    format!("{number}")
-}
-
-fn to_amqp_value(value: &rmpv::Value) -> AMQPValue {
+fn to_amqp_value(value: &Value) -> AMQPValue {
     match value {
-        rmpv::Value::Nil => AMQPValue::Void,
-        rmpv::Value::Boolean(flag) => AMQPValue::Boolean(*flag),
-        rmpv::Value::Integer(number) => match number.as_i64() {
-            Some(number) => AMQPValue::LongLongInt(number),
-            // Past i64 there is no AMQP integer field wide enough; the driver
-            // refuses an unsigned 64-bit field, so it travels as text rather
-            // than wrapping into a negative number.
-            None => AMQPValue::LongString(LongString::from(number.to_string())),
-        },
-        rmpv::Value::F32(number) => AMQPValue::Double(*number as f64),
-        rmpv::Value::F64(number) => AMQPValue::Double(*number),
+        Value::Nil => AMQPValue::Void,
+        Value::Bool(flag) => AMQPValue::Boolean(*flag),
+        Value::Int(number) => AMQPValue::LongLongInt(*number),
+        Value::Float(number) => AMQPValue::Double(*number),
         // Binary-safe: a PHP string holding bytes that are not valid UTF-8 is
         // still one string on the wire, and LongString carries bytes.
-        rmpv::Value::String(text) => AMQPValue::LongString(LongString::from(text.as_bytes())),
-        rmpv::Value::Binary(bytes) => AMQPValue::LongString(LongString::from(bytes.as_slice())),
-        rmpv::Value::Map(entries) => match tagged_value_of(entries) {
+        Value::Str(bytes) => AMQPValue::LongString(LongString::from(bytes.as_slice())),
+        Value::Map(entries) => match tagged_value_of(entries) {
             Some(tagged) => tagged,
-            None => {
-                let mut table = FieldTable::default();
-
-                for (key, item) in entries {
-                    table.insert(ShortString::from(table_key(key)), to_amqp_value(item));
-                }
-
-                AMQPValue::FieldTable(table)
-            }
+            None => AMQPValue::FieldTable(table_from_entries(entries)),
         },
-        rmpv::Value::Array(items) => {
+        Value::List(items) => {
             let mut array = FieldArray::default();
 
             for item in items {
@@ -119,138 +84,206 @@ fn to_amqp_value(value: &rmpv::Value) -> AMQPValue {
 
             AMQPValue::FieldArray(array)
         }
-        rmpv::Value::Ext(_, bytes) => AMQPValue::LongString(LongString::from(bytes.as_slice())),
+        // A value object PHP's TableCodec did not translate: its public
+        // properties travel as a nested table, the way a nested array does.
+        Value::Object(object) => {
+            let mut table = FieldTable::default();
+
+            for (name, item) in &object.properties {
+                table.insert(ShortString::from(name.to_string()), to_amqp_value(item));
+            }
+
+            AMQPValue::FieldTable(table)
+        }
     }
 }
 
 /// Recognizes the map a Decimal or a Timestamp was encoded into and rebuilds
 /// the AMQP field value it stands for.
-fn tagged_value_of(entries: &[(rmpv::Value, rmpv::Value)]) -> Option<AMQPValue> {
+fn tagged_value_of(entries: &[(Key, Value)]) -> Option<AMQPValue> {
     let kind = lookup(entries, TAGGED_KIND)?;
 
-    match text_of(kind)?.as_str() {
-        TAGGED_DECIMAL => Some(AMQPValue::DecimalValue(DecimalValue {
-            scale: int_from_value(lookup(entries, TAGGED_EXPONENT)) as u8,
-            value: int_from_value(lookup(entries, TAGGED_SIGNIFICAND)) as u32,
-        })),
+    match kind.as_str()? {
+        // Out of range is refused rather than wrapped: the keys are the caller's
+        // to write, and a scale of 300 silently becoming 44 is a wrong value on a
+        // queue every other client reads.
+        TAGGED_DECIMAL => {
+            let scale = u8::try_from(int_from_value(lookup(entries, TAGGED_EXPONENT))).ok()?;
+            let value = u32::try_from(int_from_value(lookup(entries, TAGGED_SIGNIFICAND))).ok()?;
+
+            Some(AMQPValue::DecimalValue(DecimalValue { scale, value }))
+        }
         TAGGED_TIMESTAMP => Some(AMQPValue::Timestamp(
-            int_from_value(lookup(entries, TAGGED_VALUE)) as u64,
+            u64::try_from(int_from_value(lookup(entries, TAGGED_VALUE))).ok()?,
         )),
         _ => None,
     }
 }
 
-fn lookup<'a>(entries: &'a [(rmpv::Value, rmpv::Value)], name: &str) -> Option<&'a rmpv::Value> {
+fn lookup<'a>(entries: &'a [(Key, Value)], name: &str) -> Option<&'a Value> {
     entries
         .iter()
-        .find(|(key, _)| matches!(key, rmpv::Value::String(text) if text.as_str() == Some(name)))
+        .find(|(key, _)| matches!(key, Key::Str(bytes) if bytes == name.as_bytes()))
         .map(|(_, value)| value)
 }
 
-fn text_of(value: &rmpv::Value) -> Option<String> {
+/// Reads back an integer whether PHP sent it as an int or as a float.
+fn int_from_value(value: Option<&Value>) -> i64 {
     match value {
-        rmpv::Value::String(text) => text.as_str().map(|text| text.to_string()),
-        _ => None,
-    }
-}
-
-/// Reads back an integer whichever of the numeric types `ext-msgpack` landed it
-/// in.
-fn int_from_value(value: Option<&rmpv::Value>) -> i64 {
-    match value {
-        Some(rmpv::Value::Integer(number)) => number
-            .as_i64()
-            .or_else(|| number.as_u64().map(|number| number as i64))
-            .unwrap_or(0),
-        Some(rmpv::Value::F32(number)) => *number as i64,
-        Some(rmpv::Value::F64(number)) => *number as i64,
+        Some(Value::Int(number)) => *number,
+        Some(Value::Float(number)) => *number as i64,
         _ => 0,
     }
 }
 
-/// Writes an AMQP field table as the MessagePack map PHP reads back. A decimal
-/// and a timestamp keep their kind, in the tagged shape `TableCodec` turns back
-/// into a `Decimal` and a `Timestamp`.
-pub fn encode_table(buffer: &mut Vec<u8>, table: &FieldTable) {
+/// Turns an AMQP field table into the associative array PHP reads back. A
+/// decimal and a timestamp keep their kind, in the tagged shape `TableCodec`
+/// turns back into a `Decimal` and a `Timestamp`.
+pub fn table_value(table: &FieldTable) -> Value {
     let entries = table.inner();
-
-    encode::write_map_len(buffer, entries.len() as u32).ok();
+    let mut map = Map::with_capacity(entries.len());
 
     for (name, value) in entries {
-        write_str(buffer, name.as_str());
-        encode_value(buffer, value);
+        map.push(name.as_str(), field_value(value));
     }
+
+    map.into()
 }
 
-fn encode_value(buffer: &mut Vec<u8>, value: &AMQPValue) {
+fn field_value(value: &AMQPValue) -> Value {
     match value {
-        AMQPValue::Boolean(flag) => {
-            encode::write_bool(buffer, *flag).ok();
-        }
-        AMQPValue::ShortShortInt(number) => write_int(buffer, *number as i64),
-        AMQPValue::ShortShortUInt(number) => write_int(buffer, *number as i64),
-        AMQPValue::ShortInt(number) => write_int(buffer, *number as i64),
-        AMQPValue::ShortUInt(number) => write_int(buffer, *number as i64),
-        AMQPValue::LongInt(number) => write_int(buffer, *number as i64),
-        AMQPValue::LongUInt(number) => write_int(buffer, *number as i64),
-        AMQPValue::LongLongInt(number) => write_int(buffer, *number),
-        AMQPValue::Float(number) => {
-            encode::write_f64(buffer, *number as f64).ok();
-        }
-        AMQPValue::Double(number) => {
-            encode::write_f64(buffer, *number).ok();
-        }
-        AMQPValue::DecimalValue(decimal) => {
-            encode::write_map_len(buffer, 3).ok();
-            write_str(buffer, TAGGED_KIND);
-            write_str(buffer, TAGGED_DECIMAL);
-            write_str(buffer, TAGGED_EXPONENT);
-            write_int(buffer, decimal.scale as i64);
-            write_str(buffer, TAGGED_SIGNIFICAND);
+        AMQPValue::Boolean(flag) => Value::Bool(*flag),
+        AMQPValue::ShortShortInt(number) => Value::Int(*number as i64),
+        AMQPValue::ShortShortUInt(number) => Value::Int(*number as i64),
+        AMQPValue::ShortInt(number) => Value::Int(*number as i64),
+        AMQPValue::ShortUInt(number) => Value::Int(*number as i64),
+        AMQPValue::LongInt(number) => Value::Int(*number as i64),
+        AMQPValue::LongUInt(number) => Value::Int(*number as i64),
+        AMQPValue::LongLongInt(number) => Value::Int(*number),
+        AMQPValue::Float(number) => Value::Float(*number as f64),
+        AMQPValue::Double(number) => Value::Float(*number),
+        AMQPValue::DecimalValue(decimal) => Map::with_capacity(3)
+            .set(TAGGED_KIND, TAGGED_DECIMAL)
+            .set(TAGGED_EXPONENT, decimal.scale as i64)
             // Widened through u32, which is the type the field actually
             // carries: an AMQP decimal's significand is unsigned, and anything
             // at or above 2^31 must not arrive at PHP as a negative number it
             // refuses to build a Decimal from.
-            write_int(buffer, decimal.value as i64);
-        }
-        AMQPValue::Timestamp(seconds) => {
-            encode::write_map_len(buffer, 2).ok();
-            write_str(buffer, TAGGED_KIND);
-            write_str(buffer, TAGGED_TIMESTAMP);
-            write_str(buffer, TAGGED_VALUE);
-            write_int(buffer, *seconds as i64);
-        }
-        AMQPValue::ShortString(text) => write_str(buffer, text.as_str()),
-        AMQPValue::LongString(text) => write_bytes_as_str(buffer, text.as_bytes()),
+            .set(TAGGED_SIGNIFICAND, decimal.value as i64)
+            .into(),
+        AMQPValue::Timestamp(seconds) => Map::with_capacity(2)
+            .set(TAGGED_KIND, TAGGED_TIMESTAMP)
+            .set(TAGGED_VALUE, *seconds as i64)
+            .into(),
+        AMQPValue::ShortString(text) => Value::str(text.as_str()),
+        // A PHP string whatever bytes it holds: PHP reads a header value as a
+        // plain string, including one that is not valid UTF-8.
+        AMQPValue::LongString(text) => Value::str(text.as_bytes()),
         AMQPValue::FieldArray(items) => {
-            let items = items.as_slice();
-
-            encode::write_array_len(buffer, items.len() as u32).ok();
-
-            for item in items {
-                encode_value(buffer, item);
-            }
+            Value::List(items.as_slice().iter().map(field_value).collect())
         }
-        AMQPValue::FieldTable(table) => encode_table(buffer, table),
-        AMQPValue::ByteArray(bytes) => write_bytes_as_str(buffer, bytes.as_slice()),
-        AMQPValue::Void => {
-            encode::write_nil(buffer).ok();
-        }
+        AMQPValue::FieldTable(table) => table_value(table),
+        AMQPValue::ByteArray(bytes) => Value::str(bytes.as_slice()),
+        AMQPValue::Void => Value::Nil,
     }
 }
 
-fn write_int(buffer: &mut Vec<u8>, number: i64) {
-    encode::write_sint(buffer, number).ok();
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn write_str(buffer: &mut Vec<u8>, text: &str) {
-    encode::write_str(buffer, text).ok();
-}
+    fn tagged(kind: &str, fields: Map) -> Value {
+        let mut map = Map::new().set(TAGGED_KIND, kind);
 
-/// A MessagePack *str*, not *bin*: PHP reads a header value as a plain string,
-/// so it stays a string on the wire — including for bytes that are not valid
-/// UTF-8.
-fn write_bytes_as_str(buffer: &mut Vec<u8>, bytes: &[u8]) {
-    encode::write_str_len(buffer, bytes.len() as u32).ok();
-    buffer.extend_from_slice(bytes);
+        for (key, value) in Value::from(fields).as_map().unwrap() {
+            map.push(key.clone(), value.clone());
+        }
+
+        map.into()
+    }
+
+    /// What TableCodec::encode sends, read back as the AMQP table the broker gets.
+    #[test]
+    fn a_table_reads_every_kind_a_php_array_holds() {
+        let value: Value = Map::new()
+            .set("flag", true)
+            .set("count", 7i64)
+            .set("ratio", 0.5f64)
+            .set("name", "n")
+            .set("bytes", Value::Str(vec![0, 255]))
+            .set("nothing", Value::Nil)
+            .set("list", vec![Value::Int(1), Value::Str(b"x".to_vec())])
+            .set("nested", Map::new().set("inner", 1i64))
+            .set(5usize, "numeric key")
+            .set("price", tagged(TAGGED_DECIMAL, Map::new().set(TAGGED_EXPONENT, 2i64).set(TAGGED_SIGNIFICAND, 1999i64)))
+            .set("when", tagged(TAGGED_TIMESTAMP, Map::new().set(TAGGED_VALUE, 1_700_000_000i64)))
+            .into();
+
+        let table = table_from_value(Some(&value)).expect("a table");
+        let inner = table.inner();
+
+        assert!(matches!(inner.get("flag"), Some(AMQPValue::Boolean(true))));
+        assert!(matches!(inner.get("count"), Some(AMQPValue::LongLongInt(7))));
+        assert!(matches!(inner.get("ratio"), Some(AMQPValue::Double(ratio)) if *ratio == 0.5));
+        assert!(matches!(inner.get("name"), Some(AMQPValue::LongString(text)) if text.as_bytes() == b"n"));
+        assert!(matches!(inner.get("bytes"), Some(AMQPValue::LongString(text)) if text.as_bytes() == [0, 255]));
+        assert!(matches!(inner.get("nothing"), Some(AMQPValue::Void)));
+        assert!(matches!(inner.get("list"), Some(AMQPValue::FieldArray(items)) if items.as_slice().len() == 2));
+        assert!(matches!(inner.get("nested"), Some(AMQPValue::FieldTable(_))));
+        assert!(inner.contains_key("5"), "a numeric PHP key is its decimal text");
+        assert!(matches!(inner.get("price"), Some(AMQPValue::DecimalValue(DecimalValue { scale: 2, value: 1999 }))));
+        assert!(matches!(inner.get("when"), Some(AMQPValue::Timestamp(1_700_000_000))));
+    }
+
+    #[test]
+    fn an_empty_or_non_table_value_is_no_table() {
+        assert!(table_from_value(None).is_none());
+        assert!(table_from_value(Some(&Value::List(vec![]))).is_none());
+        assert!(table_from_value(Some(&Value::Map(vec![]))).is_none());
+        assert!(table_from_value(Some(&Value::List(vec![Value::Int(1)]))).is_none());
+    }
+
+    #[test]
+    fn a_tagged_value_out_of_range_is_not_guessed_at() {
+        let value: Value = Map::new()
+            .set("price", tagged(TAGGED_DECIMAL, Map::new().set(TAGGED_EXPONENT, 300i64).set(TAGGED_SIGNIFICAND, 1i64)))
+            .into();
+
+        let table = table_from_value(Some(&value)).expect("a table");
+
+        // Not a decimal: the tagged map stays a nested table, which is what a
+        // header no reader can rebuild honestly looks like.
+        assert!(matches!(table.inner().get("price"), Some(AMQPValue::FieldTable(_))));
+    }
+
+    /// The way back: a table the broker sent, as the array TableCodec::decode reads,
+    /// with the tagged shapes for the two kinds a PHP array has no type for.
+    #[test]
+    fn a_table_round_trips_through_its_php_array() {
+        let value: Value = Map::new()
+            .set("count", 7i64)
+            .set("name", "n")
+            .set("list", vec![Value::Int(1)])
+            .set("price", tagged(TAGGED_DECIMAL, Map::new().set(TAGGED_EXPONENT, 2i64).set(TAGGED_SIGNIFICAND, 1999i64)))
+            .set("when", tagged(TAGGED_TIMESTAMP, Map::new().set(TAGGED_VALUE, 1_700_000_000i64)))
+            .into();
+
+        let table = table_from_value(Some(&value)).expect("a table");
+        let back = table_value(&table);
+
+        assert_eq!(back.get("count"), Some(&Value::Int(7)));
+        assert_eq!(back.get("name").and_then(Value::as_str), Some("n"));
+        assert_eq!(back.get("list").and_then(Value::as_list).map(|items| items.len()), Some(1));
+
+        let price = back.get("price").expect("the decimal");
+
+        assert_eq!(price.get(TAGGED_KIND).and_then(Value::as_str), Some(TAGGED_DECIMAL));
+        assert_eq!(price.get(TAGGED_EXPONENT), Some(&Value::Int(2)));
+        assert_eq!(price.get(TAGGED_SIGNIFICAND), Some(&Value::Int(1999)));
+
+        let when = back.get("when").expect("the timestamp");
+
+        assert_eq!(when.get(TAGGED_KIND).and_then(Value::as_str), Some(TAGGED_TIMESTAMP));
+        assert_eq!(when.get(TAGGED_VALUE), Some(&Value::Int(1_700_000_000)));
+    }
 }

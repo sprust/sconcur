@@ -1,6 +1,6 @@
 [package]
 name    = "sconcur"
-version = "0.15.0"
+version = "0.16.0"
 edition = "2024"
 
 # staticlib, not cdylib: build.sh compiles ext/sconcur.c (the same PHP glue
@@ -17,10 +17,9 @@ crate-type = ["staticlib"]
 # what handler.waitSpinIterations hand-rolls with runtime.Gosched on the Go side.
 crossbeam-channel = "0.5"
 libc              = "0.2"
-# MessagePack, the wire format of every feature payload (the frame envelope
-# itself is hand-built binary, exactly as in main.go).
-rmp        = "0.8"
-rmp-serde  = "1.3"
+# The derive behind every parameter struct: a task's parameters arrive as a
+# dto::Value tree read off the PHP array, and src/dto/value_de.rs is the
+# Deserializer that fills a struct from it.
 serde      = { version = "1", features = ["derive"] }
 # "fs" is named here rather than left to feature unification: the files feature
 # is built on tokio::fs, and until it was added this crate compiled against it
@@ -74,8 +73,6 @@ sqlx = { version = "0.9", default-features = false, features = [
     "chrono",
     "bigdecimal",
 ] }
-# rmpv carries a decoded-but-not-yet-typed MessagePack value: SQL bindings
-# arrive as a heterogeneous list, which is Go's []any here.
 # StreamExt, for consuming sqlx's row stream.
 futures-util = { version = "0.3", default-features = false }
 # chrono directly, not through sqlx's re-export: that one carries only the
@@ -95,9 +92,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # Shared by hyper, reqwest and this crate; named so the buffer type the HTTP
 # stack hands over is not an implicit dependency.
 bytes      = "1"
-rmpv       = { version = "1", features = ["with-serde"] }
 # The telemetry snapshot, and nothing else: the collector's wire format is JSON
-# (src/stats), while every feature payload is MessagePack.
+# (src/stats); nothing else in the crate serializes.
 serde_json = "1"
 # The AMQP feature. lapin is what stands in for amqp091-go, and it was chosen by
 # checking the five places the feature is thin rather than by reputation: a
@@ -116,7 +112,7 @@ lapin = { version = "4", default-features = false, features = [
 # The Redis feature. redis-rs is what the feature is thin over, and it was picked
 # by the five places that thinness shows: a Cmd builds from a name and byte
 # arguments (so the raw command path needs to know no command), Value covers RESP2
-# and RESP3 in one enum that maps onto the msgpack encoding here one for one,
+# and RESP3 in one enum that maps onto the PHP values built here one for one,
 # MultiplexedConnection pipelines the commands of many tasks into one socket —
 # which is the whole reason this feature exists — ConnectionManager reconnects on
 # its own, and PubSub::split hands out a sink and a stream so a live subscription

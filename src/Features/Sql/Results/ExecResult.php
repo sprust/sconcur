@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Features\Sql\Results;
 
-use SConcur\Transport\MessagePackTransport;
+use SConcur\Exceptions\UnexpectedResponseFormatException;
 
 /**
  * Result of an Exec command: rows affected and the last auto-increment id.
@@ -20,9 +20,15 @@ readonly class ExecResult
     ) {
     }
 
-    public static function fromPayload(string $payload): self
+    public static function fromPayload(mixed $payload): self
     {
-        $decoded = $payload === '' ? [] : MessagePackTransport::unpack($payload);
+        if (!is_array($payload)) {
+            throw new UnexpectedResponseFormatException(
+                message: 'The SQL exec result is not a map.',
+            );
+        }
+
+        $decoded = $payload;
 
         return new self(
             affectedRows: (int) ($decoded['ar'] ?? 0),

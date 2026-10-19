@@ -8,8 +8,13 @@ here.
 
 SConcur is a PHP concurrency library backed by a custom PHP extension written in
 Rust. PHP Fibers suspend while the extension executes tasks concurrently on an
-async runtime; the two sides exchange msgpack-tagged DTOs
-(`Transport/MessagePackTransport`).
+async runtime. Nothing is serialized between the two sides: a push hands the core
+the payload DTO's array, which the core reads into a `dto::Value` tree
+(`ext/src/dto/value.rs`) on the PHP thread through the glue's value readers in
+`ext/sconcur.c`, and a result comes back as a ready `TaskResultDto` whose payload
+is the `Value` tree the feature built, turned into zvals by the glue's value
+builder inside the wait call. How it came to be is in
+[.ai/plans/direct-zval-transport.md](plans/direct-zval-transport.md).
 
 Core PHP code lives in `src/` under the `SConcur\` namespace — main entry points
 are `WaitGroup`, `Scheduler`, `State`, `Connection/Extension` and the feature
@@ -45,7 +50,7 @@ User-facing documentation (each doc also exists in Russian as `*.ru.md`):
   [admin-stats](../docs/admin-stats.md)
 - Guides: [adding-a-feature](../docs/adding-a-feature.md),
   [adding-a-server](../docs/adding-a-server.md),
-  [msgpack-objects](../docs/msgpack-objects.md)
+  [value-conversion](../docs/value-conversion.md)
 - Measurements: [benchmarks](../docs/benchmarks.md),
   [load-testing](../docs/load-testing.md), [positioning](../docs/positioning.md)
 - History: [the move to Rust](../docs/rust-core.md) — the gate the port had to
@@ -94,6 +99,7 @@ make cs-fixer-check     # check code style (PSR-12 + custom rules)
 make cs-fixer-fix       # auto-fix code style
 make check              # cs-fixer, phpstan, ext-build, ext-check, tests
 make bench-all          # run all benchmarks
+make bench-docs         # every measurement the docs quote, one session, results to .bench-runs/docs/
 ```
 
 Rebuild the extension with `make ext-build` before running tests that depend on
@@ -178,7 +184,7 @@ feature's doc. Key PHP classes not covered there:
   served, so `spl_object_id` alone identifies nothing.
 - `State` — the static registry mapping Fibers ↔ flows, plus the per-coroutine
   context store (released in `unRegisterFiber`). Results route by the owner id
-  carried in the frame, so there is no task → fiber map.
+  carried in the result, so there is no task → fiber map.
 - `Context/Context`, `Context/CoroutineContext` — the framework-neutral
   `find`/`has`/`set`/`forget` contract; parent links are recorded in
   `Scheduler::spawn` / `WaitGroup::add`.
@@ -186,10 +192,11 @@ feature's doc. Key PHP classes not covered there:
   context via `Fiber::getCurrent()`.
 - `Bson/` — the BSON value objects (`ObjectId`, `UTCDateTime`, `Binary`, …) the
   MongoDB feature hands out, mirroring `MongoDB\BSON\*` so an application moves
-  over by changing `use` lines. The namespace is deliberately short: the class name
-  travels on the wire with every value. The envelope they cross the boundary in,
-  and how to add a type, are in
-  [docs/msgpack-objects.md](../docs/msgpack-objects.md).
+  over by changing `use` lines. They cross the boundary as what they are: the core
+  reads an instance's public properties on the way in
+  (`features/mongodb/serializer/from_value.rs`) and creates the instance itself on
+  the way out (`to_value.rs`), so adding a type is a PHP class plus an arm in each
+  of those two files — [docs/value-conversion.md](../docs/value-conversion.md).
 - `Features/Server/ServerRuntimeSupportTrait` — shared runtime glue for the
   long-lived workers (the servers and `Amqp/Consumer/QueueConsumer`):
   argv→constructor-override parsing, signal handlers, arming automatic preemption,
@@ -425,7 +432,7 @@ lifecycle-sensitive tests extend `BaseTestCase`.
   to the short name. `use Stringable;` then `implements Stringable`, not
   `implements \Stringable`; the same for `\DateTimeImmutable`, `\Throwable`,
   `\RuntimeException` and every other global class. Imported function names
-  (`use function msgpack_pack;`) follow the same rule. This keeps the imports at
+  (`use function array_key_exists;`) follow the same rule. This keeps the imports at
   the top of a file an honest inventory of what it depends on.
 
 ### Language

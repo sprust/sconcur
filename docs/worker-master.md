@@ -8,10 +8,9 @@ one port and the kernel balances connections across them, scaling the server acr
 all cores without an external load balancer. Implementation: `src/Worker/` plus the
 universal CLI `bin/sconcur-server`.
 
-Each worker is a separate process started via `proc_open` (`pcntl_fork` after
-loading the extension is forbidden — the extension's runtime does not survive a fork). The
-master itself does not load the extension: it is a pure supervisor on
-`pcntl`/`posix` (both are required, otherwise it throws `MissingPcntlException`).
+Each worker is a separate process started via `proc_open`. The master itself
+does not load the extension: it is a pure supervisor on `pcntl`/`posix` (both
+are required, otherwise it throws `MissingPcntlException`).
 
 A worker gets its stdin/stdout/stderr and nothing else: `proc_open` would otherwise
 leave every descriptor the master holds open in the child — the telemetry sockets,
@@ -170,17 +169,18 @@ replacement. While one worker finishes up, the rest hold traffic — so with N>1
 the restart is downtime-free, and a fresh `php worker.php` picks up new code from
 disk.
 
-What a reload may change: the set of groups (one added is spawned, one removed is
-drained and not replaced), and each group's `workerCount`, `workerScript`,
-`workerArgs`, `server`, `env`, `phpBinary`, `phpArgs`, `restartPolicy`, timeouts
-and backoffs. Scaling a pool is therefore an edit plus a `reload`, not a restart.
+What a reload may change: the set of groups (one added is spawned, one removed
+has its workers finish their work and is not replaced), and each group's
+`workerCount`, `workerScript`, `workerArgs`, `server`, `env`, `phpBinary`,
+`phpArgs`, `restartPolicy`, timeouts and backoffs. Scaling a pool is therefore
+an edit plus a `reload`, not a restart.
 
 What it may not: `runtimeDir` and `name` identify the running instance, and
 `panelPort`, `adminToken` and `logDir` are bound at startup. A reload reads the new
 values and ignores them without a word — a full restart is what applies them.
 
-**A config that does not parse, or that names a `workerScript` that is not there, is
-refused and the master keeps running on the one it has.** A typo must never take a
+A config that does not parse, or that names a `workerScript` that is not there, is
+refused and the master keeps running on the one it has. A typo must never take a
 working pool down; the refusal and its reason go to the journal. The same goes for a
 trigger naming a config file the master cannot find — which is why the CLI resolves the
 path to an absolute one before writing it, the master reading it from its own working
@@ -352,15 +352,17 @@ What the watch leaves alone:
   leaves its worker unservable for that whole time, and the worker will be replaced —
   raise `watchdogTimeoutMs` past the longest such handler, or set it to `0` for that
   group.
-- The one worker a rolling `reload` is currently unwinding: its `SIGTERM` is sent and
-  its drain deadline is running. The slots still queued behind it are watched as
-  usual. A group being drained out of the config after a reload removed it is watched
-  too, and deliberately: `retire()` has no deadline of its own, so a hung worker would
-  otherwise hold the retiring group open forever.
-- A worker that is draining but never finishes — `maxRequests` reached or `SIGTERM`
-  taken, with one handler waiting on a result that will not arrive. Its serve loop
-  keeps turning, so it keeps marking itself alive while serving nothing. Give such
-  handlers a `handlerTimeoutMs`; the watchdog cannot see this one.
+- The one worker a rolling `reload` is currently unwinding: its `SIGTERM` is
+  sent and its deadline for finishing the work it has is running. The slots
+  still queued behind it are watched as usual. A group being retired after a
+  reload removed it from the config is watched too, and deliberately: `retire()`
+  has no deadline of its own, so a hung worker would otherwise hold the retiring
+  group open forever.
+- A worker that is stopping but never finishes — `maxRequests` reached or
+  `SIGTERM` taken, with one handler waiting on a result that will not arrive.
+  Its serve loop keeps turning, so it keeps marking itself alive while serving
+  nothing. Give such handlers a `handlerTimeoutMs`; the watchdog cannot see this
+  one.
 - A worker that hangs before it reaches its serve loop — in a synchronous call made
   during bootstrap. It has never marked itself alive, and nothing tells that apart
   from a worker script that has no serve loop at all, so such a slot stays what it
@@ -401,8 +403,9 @@ $onWatchdogEvent = static function (WatchdogEvent $event): void {
 exit(new MasterCli(onWatchdogEvent: $onWatchdogEvent)->run($argv));
 ```
 
-  Or straight on the master, when the config is built in memory rather than read from
-  a file: `MasterConfig::fromFile($path)->toWorkerMaster($onWatchdogEvent)->run()`.
+Or straight on the master, when the config is built in memory rather than read
+from a file:
+`MasterConfig::fromArray($config)->toWorkerMaster($onWatchdogEvent)->run()`.
 
 The handler runs inside the supervision tick, so keep it short — and whatever it
 throws is written to the journal and dropped, because alerting must not be able to

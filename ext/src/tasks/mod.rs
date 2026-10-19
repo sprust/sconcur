@@ -144,6 +144,7 @@ impl Task {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dto::Value;
 
     use crate::types::method::Method;
     use std::time::Duration;
@@ -158,7 +159,7 @@ mod tests {
             flow_key: "flow".to_string(),
             method: Method::Sleep,
             task_key: "flow:1".to_string(),
-            payload: Vec::new(),
+            payload: crate::dto::Value::Nil,
             is_next: false,
             owner_id: 1,
         })
@@ -169,7 +170,7 @@ mod tests {
     }
 
     fn result() -> Result {
-        Result::success(&message(), Vec::new(), 0)
+        Result::success(&message(), Value::Nil, 0)
     }
 
     /// The invariant the permits exist for. Both ways of getting it wrong are

@@ -14,7 +14,7 @@ use lapin::Consumer;
 use lapin::options::BasicConsumeOptions;
 use tokio_util::sync::CancellationToken;
 
-use crate::dto::{Message, Result};
+use crate::dto::{Message, Result, Value};
 use crate::helpers::calc_execution_ms;
 use crate::states::{self, StateCloseFuture, StateContract, StateFuture};
 use crate::tasks::Task;
@@ -56,7 +56,7 @@ impl StateContract for ConsumeState {
             if !self.meta_sent.swap(true, Ordering::SeqCst) {
                 return Result::success_with_next(
                     &self.message,
-                    payloads::encode_consumer_meta(&self.consumer_tag),
+                    payloads::consumer_meta_value(&self.consumer_tag),
                     calc_execution_ms(self.start_time),
                 );
             }
@@ -104,7 +104,7 @@ impl StateContract for ConsumeState {
 
                     Result::success_with_next(
                         &self.message,
-                        payloads::encode_delivery(&payloads::DeliveryOut {
+                        payloads::DeliveryOut {
                             channel_id: &self.entry.id,
                             consumer_tag: &self.consumer_tag,
                             delivery_tag: delivery.delivery_tag,
@@ -113,7 +113,8 @@ impl StateContract for ConsumeState {
                             routing_key: delivery.routing_key.as_str(),
                             body: &delivery.data,
                             properties: &delivery.properties,
-                        }),
+                        }
+                        .value(),
                         calc_execution_ms(self.start_time),
                     )
                 }
@@ -129,7 +130,7 @@ impl StateContract for ConsumeState {
                 // loop.
                 None => Result::success(
                     &self.message,
-                    Vec::new(),
+                    Value::Nil,
                     calc_execution_ms(self.start_time),
                 ),
             }
@@ -163,7 +164,7 @@ impl ConsumeState {
         if self.flow.is_cancelled() {
             return Result::success(
                 &self.message,
-                Vec::new(),
+                Value::Nil,
                 calc_execution_ms(self.start_time),
             );
         }
@@ -198,7 +199,7 @@ impl ConsumeState {
 /// Registers a consumer and streams its deliveries. The consumer is not tied to
 /// the task's deadline — the stream state owns it, and `close()` cancels it when
 /// PHP stops reading or the flow ends.
-pub async fn handle_consume(task: &Task, raw: &rmpv::Value) {
+pub async fn handle_consume(task: &Task, raw: &Value) {
     let Some((entry, params, start_time)) =
         super::commands::resolve::<payloads::ConsumeParams>(task, raw, "consume").await
     else {

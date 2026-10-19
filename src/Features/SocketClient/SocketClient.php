@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace SConcur\Features\SocketClient;
 
 use SConcur\Exceptions\SocketClient\SocketClientConnectException;
+use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\SocketClient\Dto\Connection;
 use SConcur\Features\SocketClient\Payloads\ConnectPayload;
 use SConcur\Features\SocketClient\Payloads\ConnectPayloadParameters;
-use SConcur\Transport\MessagePackTransport;
 use Throwable;
 
 /**
@@ -55,8 +55,14 @@ readonly class SocketClient
             );
         }
 
+        if (!is_array($result->payload)) {
+            throw new UnexpectedResponseFormatException(
+                message: 'The socket client connect result is not a map.',
+            );
+        }
+
         /** @var array<string, mixed> $meta */
-        $meta = MessagePackTransport::unpack($result->payload);
+        $meta = $result->payload;
 
         return new Connection(
             id: (string) ($meta['cid'] ?? ''),

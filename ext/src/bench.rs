@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::dto::Message;
+use crate::dto::{Map, Message, Value};
 use crate::features;
 use crate::flows::flow::run_task_protected;
 use crate::flows::Flows;
@@ -43,23 +43,17 @@ const ROUNDS: usize = 5;
 /// Long enough that nothing pushed inside a window can finish inside it.
 const SLEEP_MICROSECONDS: i64 = 5_000_000;
 
-fn sleep_payload() -> Vec<u8> {
-    // The wire shape of SleeperPayload: a one-entry map, "us" => microseconds.
-    let mut payload = Vec::with_capacity(16);
-
-    let _ = rmp::encode::write_map_len(&mut payload, 1);
-    let _ = rmp::encode::write_str(&mut payload, "us");
-    let _ = rmp::encode::write_sint(&mut payload, SLEEP_MICROSECONDS);
-
-    payload
+fn sleep_payload() -> Value {
+    // The shape of SleeperPayload: a one-entry map, "us" => microseconds.
+    Map::new().set("us", SLEEP_MICROSECONDS).into()
 }
 
-fn message(flow_key: &str, task_key: &str, payload: &[u8]) -> Message {
+fn message(flow_key: &str, task_key: &str, payload: &Value) -> Message {
     Message {
         flow_key: flow_key.to_string(),
         method: Method::Sleep,
         task_key: task_key.to_string(),
-        payload: payload.to_vec(),
+        payload: payload.clone(),
         is_next: false,
         owner_id: 1,
     }

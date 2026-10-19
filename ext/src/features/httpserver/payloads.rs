@@ -1,24 +1,20 @@
 //! The Rust counterparts of
 //! the PHP HTTP-server payload objects and the request event the server streams
-//! back to PHP. The renames are the short keys exchanged via MessagePack.
+//! back to PHP. The renames are the short keys exchanged with the PHP side.
 
 use serde::Deserialize;
-
-/// A missing body decodes to nil, which reads back as no bytes.
-fn nil_value() -> rmpv::Value {
-    rmpv::Value::Nil
-}
 use std::collections::HashMap;
+
+use crate::dto::{Map, Value};
 
 /// The payload of an httpStart command — the listener address and the server
 /// tuning parameters (all timeouts in milliseconds, body limit in bytes).
 /// PHP: SConcur\Features\HttpServer\Payloads\ServePayload.
 ///
-/// Every field of the wire payload is decoded, but the spike only acts on
-/// `address`, `reuse_port` and `handler_timeout_ms`. The read/write/idle
-/// timeouts, the body limit, `max_concurrency` and the telemetry block are
-/// accepted and ignored — a scope limit worth knowing before reading anything
-/// but the ladder into a comparison.
+/// Every field of the wire payload is decoded. The core acts on `address`,
+/// `reuse_port`, `handler_timeout_ms`, the body limit, `max_concurrency` and the
+/// telemetry block; the read-header/read/write/idle/shutdown timeouts are
+/// accepted and not applied.
 #[allow(dead_code)]
 #[derive(Deserialize, Default)]
 pub struct ServePayload {
@@ -53,9 +49,8 @@ pub struct ServePayload {
 /// The payload of an httpRespond command — one write a PHP request-handler
 /// coroutine sends back for a given request.
 ///
-/// `hd` and `nr` carry `default`: the PHP side omits both when empty (an empty
-/// PHP array would encode as a MessagePack array, not a map — see the comment
-/// in RespondPayload::getData).
+/// `hd` and `nr` carry `default`: the PHP side omits both when empty (see
+/// RespondPayload::getData).
 /// PHP: SConcur\Features\HttpServer\Payloads\RespondPayload.
 #[derive(Deserialize)]
 pub struct RespondPayload {
@@ -67,13 +62,12 @@ pub struct RespondPayload {
     pub status: i64,
     #[serde(rename = "hd", default)]
     pub headers: HashMap<String, Vec<String>>,
-    /// Kept as an untyped value rather than a String: a response body is
-    /// arbitrary bytes, and PHP sends it as a MessagePack str whatever it
-    /// holds. Decoding it into a String mangles — or refuses — any body that is
-    /// not valid UTF-8, which is what HttpServerRequestTest's binary round trip
-    /// catches.
-    #[serde(rename = "bd", default = "nil_value")]
-    pub body: rmpv::Value,
+    /// Bytes rather than a String: a response body is arbitrary bytes, and a
+    /// PHP string holds whatever it holds. Decoding it into a String refuses
+    /// any body that is not valid UTF-8, which is what HttpServerRequestTest's
+    /// binary round trip catches.
+    #[serde(rename = "bd", default, deserialize_with = "crate::dto::value_de::bytes")]
+    pub body: Vec<u8>,
     /// Marks a fire-and-forget write: publish no task result for it (the PHP
     /// coroutine does not await one — the final write of a full response).
     #[serde(rename = "nr", default)]
@@ -81,23 +75,17 @@ pub struct RespondPayload {
 }
 
 impl RespondPayload {
-    /// The body as raw bytes, whether PHP sent text or binary, taken out of the
-    /// payload rather than copied out of it.
+    /// The body as raw bytes, taken out of the payload rather than copied out
+    /// of it.
     ///
-    /// The value already owns those bytes: they were allocated when the payload
-    /// was decoded and nothing reads `body` again afterwards. Cloning them made
-    /// a 100 KB response cross as three copies — the C buffer, the decoded
-    /// value, the write command — where two will do. The rest of the struct is
-    /// still needed at the call site (the headers go into the same command),
-    /// which is why this takes `&mut self` and leaves nil behind instead of
-    /// consuming the whole payload.
+    /// The payload already owns those bytes: they were allocated when it was
+    /// decoded and nothing reads `body` again afterwards. Cloning them made a
+    /// 100 KB response cross as one copy more than it needs. The rest of the
+    /// struct is still needed at the call site (the headers go into the same
+    /// command), which is why this takes `&mut self` and leaves an empty body
+    /// behind instead of consuming the whole payload.
     pub fn take_body_bytes(&mut self) -> Vec<u8> {
-        match std::mem::replace(&mut self.body, rmpv::Value::Nil) {
-            rmpv::Value::String(text) => text.into_bytes(),
-            rmpv::Value::Binary(bytes) => bytes,
-            rmpv::Value::Nil => Vec::new(),
-            other => other.to_string().into_bytes(),
-        }
+        std::mem::take(&mut self.body)
     }
 }
 
@@ -114,16 +102,16 @@ pub struct RespondRequestId {
     pub request_id: String,
 }
 
-/// What the server emits to PHP for each accepted request. PHP decodes it into
-/// SConcur\Features\HttpServer\Dto\Request.
+/// What the server emits to PHP for each accepted request. PHP reads it in
+/// HttpServer::decodeRequest into a PSR-7 request.
 pub struct RequestEvent {
     pub request_id: String,
     pub method: String,
     pub path: String,
     pub query: String,
     pub headers: Vec<(String, Vec<String>)>,
-    /// The inline first chunk of the request body. `body_key` is the streaming
-    /// state key for the remainder, or "" when the whole body fits in `body`.
+    /// The whole request body, read before the event is sent. `body_key` stays
+    /// "": the PHP side still accepts a streaming key, the core never sets one.
     pub body: Vec<u8>,
     pub body_key: String,
     pub remote_addr: String,
@@ -132,53 +120,76 @@ pub struct RequestEvent {
 }
 
 impl RequestEvent {
-    /// Writes the event by hand instead of through a derived serializer: one
-    /// event is marshaled per accepted request, and it is on the hot path. The wire
-    /// bytes are a plain MessagePack map with the struct's short keys, so the
-    /// PHP side is unaffected.
-    pub fn encode(&self) -> Vec<u8> {
-        use rmp::encode;
+    /// Builds the event by hand instead of through a derived serializer: one
+    /// event is marshaled per accepted request, and it is on the hot path. PHP
+    /// receives a plain associative array with the struct's short keys, so the
+    /// PHP side is unaffected by how it is built here.
+    pub fn into_value(self) -> Value {
+        let mut event = Map::with_capacity(10);
 
-        // Roughly one small write per field plus the headers; sized to cover a
-        // typical request without a growth reallocation.
-        let mut buffer: Vec<u8> = Vec::with_capacity(256 + self.body.len());
+        event.push("rid", self.request_id);
+        event.push("mt", self.method);
+        event.push("pt", self.path);
+        event.push("qr", self.query);
+        event.push("bk", self.body_key);
+        event.push("ra", self.remote_addr);
+        event.push("ho", self.host);
+        event.push("pr", self.proto);
 
-        let _ = encode::write_map_len(&mut buffer, 10);
+        // The body is bytes, but PHP reads it as a string: there is one string
+        // type on that side, so the raw bytes travel as-is and the handler gets
+        // the same value it always did.
+        event.push("bd", self.body);
 
-        let fields: [(&str, &str); 8] = [
-            ("rid", &self.request_id),
-            ("mt", &self.method),
-            ("pt", &self.path),
-            ("qr", &self.query),
-            ("bk", &self.body_key),
-            ("ra", &self.remote_addr),
-            ("ho", &self.host),
-            ("pr", &self.proto),
-        ];
+        let mut headers = Map::with_capacity(self.headers.len());
 
-        for (key, value) in fields {
-            let _ = encode::write_str(&mut buffer, key);
-            let _ = encode::write_str(&mut buffer, value);
+        for (name, values) in self.headers {
+            headers.push(name, values.into_iter().map(Value::from).collect::<Vec<Value>>());
         }
 
-        // The body is bytes, but PHP reads it as a string — it has to stay a
-        // msgpack string, or ext-msgpack hands the handler a different value.
-        let _ = encode::write_str(&mut buffer, "bd");
-        let _ = encode::write_str_len(&mut buffer, self.body.len() as u32);
-        buffer.extend_from_slice(&self.body);
+        event.push("hd", headers);
 
-        let _ = encode::write_str(&mut buffer, "hd");
-        let _ = encode::write_map_len(&mut buffer, self.headers.len() as u32);
+        event.into()
+    }
+}
 
-        for (name, values) in &self.headers {
-            let _ = encode::write_str(&mut buffer, name);
-            let _ = encode::write_array_len(&mut buffer, values.len() as u32);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-            for value in values {
-                let _ = encode::write_str(&mut buffer, value);
-            }
-        }
+    /// The array HttpServer::decodeRequest reads: the ten short keys, the body as
+    /// the string it is, the headers as name => list of values.
+    #[test]
+    fn a_request_event_is_the_map_the_php_server_reads() {
+        let event = RequestEvent {
+            request_id: "r-1".to_string(),
+            method: "POST".to_string(),
+            path: "/users".to_string(),
+            query: "a=1".to_string(),
+            headers: vec![("Host".to_string(), vec!["example".to_string()]), ("Accept".to_string(), vec!["a".to_string(), "b".to_string()])],
+            body: vec![0, 200, 7],
+            body_key: "body-1".to_string(),
+            remote_addr: "10.0.0.1:1234".to_string(),
+            host: "example".to_string(),
+            proto: "HTTP/1.1".to_string(),
+        };
 
-        buffer
+        let value = event.into_value();
+        let keys: Vec<String> = value.as_map().unwrap().iter().map(|(key, _)| key.text()).collect();
+
+        assert_eq!(keys, ["rid", "mt", "pt", "qr", "bk", "ra", "ho", "pr", "bd", "hd"]);
+        assert_eq!(value.get("rid").and_then(Value::as_str), Some("r-1"));
+        assert_eq!(value.get("mt").and_then(Value::as_str), Some("POST"));
+        assert_eq!(value.get("bd").and_then(Value::as_bytes), Some(&[0u8, 200, 7][..]));
+        assert_eq!(value.get("bk").and_then(Value::as_str), Some("body-1"));
+
+        let headers = value.get("hd").expect("headers");
+
+        assert_eq!(headers.as_map().unwrap().len(), 2);
+        assert_eq!(
+            headers.get("Accept").and_then(Value::as_list).map(|values| values.len()),
+            Some(2)
+        );
+        assert_eq!(headers.get("Host").and_then(Value::as_list).and_then(|values| values[0].as_str()), Some("example"));
     }
 }

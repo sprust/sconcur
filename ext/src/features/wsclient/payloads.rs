@@ -1,19 +1,17 @@
 //! The parameters of the WebSocket client commands. The envelope is the socket
-//! client's: `cm` selects the sub-operation, `p` carries a nested map of that
-//! command's parameters.
+//! client's: `cm` selects the sub-operation, `p` carries a nested array of that
+//! command's parameters, decoded once the command is known.
 
 use serde::Deserialize;
 
+use crate::dto::{Borrowed, Map, Value};
+
 #[derive(Deserialize)]
-pub struct Envelope {
+pub struct Envelope<'a> {
     #[serde(rename = "cm", default)]
     pub command: String,
-    #[serde(rename = "p", default = "nil_value")]
-    pub params: rmpv::Value,
-}
-
-fn nil_value() -> rmpv::Value {
-    rmpv::Value::Nil
+    #[serde(rename = "p", borrow, default = "crate::dto::value_de::borrowed_nil")]
+    pub params: Borrowed<'a>,
 }
 
 /// The `p` of a Connect — the ws:// URL and the per-connection tuning.
@@ -44,8 +42,10 @@ pub struct SendParams {
     pub connection_id: String,
     #[serde(rename = "mt", default)]
     pub message_type: i64,
-    #[serde(rename = "dt", default = "nil_value")]
-    pub data: rmpv::Value,
+    /// The bytes of the PHP string: a binary message is not required to be
+    /// valid UTF-8, so not a `String`.
+    #[serde(rename = "dt", default, deserialize_with = "crate::dto::value_de::bytes")]
+    pub data: Vec<u8>,
 }
 
 impl SendParams {
@@ -53,11 +53,7 @@ impl SendParams {
     /// them: the decoded value already owns them and nothing reads `data`
     /// again.
     pub fn take_data_bytes(&mut self) -> Vec<u8> {
-        match std::mem::replace(&mut self.data, rmpv::Value::Nil) {
-            rmpv::Value::String(text) => text.into_bytes(),
-            rmpv::Value::Binary(bytes) => bytes,
-            _ => Vec::new(),
-        }
+        std::mem::take(&mut self.data)
     }
 }
 
@@ -77,24 +73,14 @@ pub struct ConnectionMeta {
 }
 
 impl ConnectionMeta {
-    pub fn encode(&self) -> Vec<u8> {
-        use rmp::encode;
-
-        let mut buffer = Vec::with_capacity(128);
-
-        let _ = encode::write_map_len(&mut buffer, 4);
-
-        for (key, value) in [
-            ("cid", &self.connection_id),
-            ("ra", &self.remote_addr),
-            ("la", &self.local_addr),
-            ("su", &self.subprotocol),
-        ] {
-            let _ = encode::write_str(&mut buffer, key);
-            let _ = encode::write_str(&mut buffer, value);
-        }
-
-        buffer
+    /// The array PHP receives: `cid`, `ra`, `la`, `su`, all strings.
+    pub fn value(&self) -> Value {
+        Map::with_capacity(4)
+            .set("cid", &self.connection_id)
+            .set("ra", &self.remote_addr)
+            .set("la", &self.local_addr)
+            .set("su", &self.subprotocol)
+            .into()
     }
 }
 
@@ -122,4 +108,27 @@ pub fn split_address(address: &str) -> Result<(String, String, String), String> 
     };
 
     Ok((host, authority.to_string(), path.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The map WsClient::connect reads into a Connection.
+    #[test]
+    fn a_connection_meta_carries_the_addresses_and_the_subprotocol() {
+        let value = ConnectionMeta {
+            connection_id: "c-1".to_string(),
+            remote_addr: "10.0.0.1:5000".to_string(),
+            local_addr: "10.0.0.2:6000".to_string(),
+            subprotocol: "chat".to_string(),
+        }
+        .value();
+
+        assert_eq!(value.get("cid").and_then(Value::as_str), Some("c-1"));
+        assert_eq!(value.get("ra").and_then(Value::as_str), Some("10.0.0.1:5000"));
+        assert_eq!(value.get("la").and_then(Value::as_str), Some("10.0.0.2:6000"));
+        assert_eq!(value.get("su").and_then(Value::as_str), Some("chat"));
+        assert_eq!(value.as_map().unwrap().len(), 4);
+    }
 }

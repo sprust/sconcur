@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::dto::{Message, Result};
+use crate::dto::{Message, Result, Value};
 use crate::errs::Factory;
 use crate::features::{BoxFuture, Feature};
 use crate::helpers::calc_execution_ms;
@@ -63,7 +63,7 @@ impl Feature for SocketClientFeature {
         Box::pin(async move {
             let message = task.message();
 
-            let envelope: payloads::Envelope = match rmp_serde::from_slice(&message.payload) {
+            let envelope: payloads::Envelope<'_> = match message.payload.decode() {
                 Ok(envelope) => envelope,
                 Err(error) => {
                     task.add_result(Result::error(
@@ -77,9 +77,9 @@ impl Feature for SocketClientFeature {
             };
 
             match envelope.command.as_str() {
-                "con" => handle_connect(&task, envelope.params).await,
-                "snd" => handle_send(&task, envelope.params).await,
-                "cls" => handle_close(&task, envelope.params).await,
+                "con" => handle_connect(&task, &envelope.params).await,
+                "snd" => handle_send(&task, &envelope.params).await,
+                "cls" => handle_close(&task, &envelope.params).await,
                 _ => {
                     task.add_result(Result::error(message, ERRORS.by_text("unknown command")))
                         .await;
@@ -110,7 +110,7 @@ impl StateContract for ConnectionState {
             if !self.meta_sent.swap(true, Ordering::SeqCst) {
                 return Result::success_with_next(
                     &self.message,
-                    self.meta.encode(),
+                    self.meta.value(),
                     calc_execution_ms(self.start_time),
                 );
             }
@@ -136,11 +136,11 @@ impl StateContract for ConnectionState {
     }
 }
 
-async fn handle_connect(task: &Task, params: rmpv::Value) {
+async fn handle_connect(task: &Task, params: &Value) {
     let message = task.message();
     let start_time = Instant::now();
 
-    let params: payloads::ConnectParams = match rmpv::ext::from_value(params) {
+    let params: payloads::ConnectParams = match params.decode() {
         Ok(params) => params,
         Err(error) => {
             task.add_result(Result::error(
@@ -321,8 +321,8 @@ async fn handle_connect(task: &Task, params: rmpv::Value) {
     }
 }
 
-async fn handle_send(task: &Task, params: rmpv::Value) {
-    let mut params: payloads::SendParams = match rmpv::ext::from_value(params) {
+async fn handle_send(task: &Task, params: &Value) {
+    let mut params: payloads::SendParams = match params.decode() {
         Ok(params) => params,
         Err(error) => {
             task.add_result(Result::error(
@@ -342,8 +342,8 @@ async fn handle_send(task: &Task, params: rmpv::Value) {
     route(task, &params.connection_id, WriteKind::Frame, data).await;
 }
 
-async fn handle_close(task: &Task, params: rmpv::Value) {
-    let params: payloads::CloseParams = match rmpv::ext::from_value(params) {
+async fn handle_close(task: &Task, params: &Value) {
+    let params: payloads::CloseParams = match params.decode() {
         Ok(params) => params,
         Err(error) => {
             task.add_result(Result::error(
@@ -394,7 +394,7 @@ async fn route(task: &Task, connection_id: &str, kind: WriteKind, data: Vec<u8>)
         Ok(()) => {
             task.add_result(Result::success(
                 message,
-                Vec::new(),
+                Value::Nil,
                 calc_execution_ms(start_time),
             ))
             .await;

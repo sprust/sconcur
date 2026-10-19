@@ -21,7 +21,6 @@ use SConcur\Features\HttpServer\Payloads\RespondPayload;
 use SConcur\Features\HttpServer\Payloads\ServePayload;
 use SConcur\Features\Server\ServerRuntimeSupportTrait;
 use SConcur\Scheduler\Scheduler;
-use SConcur\Transport\MessagePackTransport;
 use Throwable;
 
 /**
@@ -207,7 +206,7 @@ readonly class HttpServer
                 serverFlowKey: $flowKey,
                 serverTaskKey: $runningTask->key,
                 maxRequests: $this->maxRequests,
-                onRequest: static function (string $payload) use (
+                onRequest: static function (array $payload) use (
                     $handler,
                     $onError,
                     $serverRequestFactory,
@@ -218,7 +217,7 @@ readonly class HttpServer
                         onError: $onError,
                         serverRequestFactory: $serverRequestFactory,
                         responseFactory: $responseFactory,
-                        payload: $payload,
+                        data: $payload,
                     );
                 },
                 shouldStop: static function () use (&$stopRequested, $masterPid): bool {
@@ -252,17 +251,18 @@ readonly class HttpServer
      *
      * @param Closure(ServerRequestInterface): ResponseInterface                  $handler
      * @param null|Closure(Throwable, ServerRequestInterface): ?ResponseInterface $onError
+     * @param array<string, mixed>                                                $data    the request event the core built
      */
     private static function handle(
         Closure $handler,
         ?Closure $onError,
         ServerRequestFactoryInterface $serverRequestFactory,
         ResponseFactoryInterface $responseFactory,
-        string $payload,
+        array $data,
     ): void {
         [$requestId, $request] = self::decodeRequest(
             serverRequestFactory: $serverRequestFactory,
-            payload: $payload,
+            data: $data,
         );
 
         $response = self::resolveResponse(
@@ -356,20 +356,19 @@ readonly class HttpServer
     }
 
     /**
-     * Decodes the streaming payload the extension's server emits (payloads.RequestEvent) into
+     * Turns the request event the extension's server emits (payloads.RequestEvent) into
      * a PSR-7 ServerRequestInterface, returning it together with the request id used
      * to address the response. The body is wrapped in a lazy RequestBodyStream so it
      * is never buffered whole.
+     *
+     * @param array<string, mixed> $data the request event the core built
      *
      * @return array{0: string, 1: ServerRequestInterface}
      */
     private static function decodeRequest(
         ServerRequestFactoryInterface $serverRequestFactory,
-        string $payload,
+        array $data,
     ): array {
-        /** @var array<string, mixed> $data */
-        $data = MessagePackTransport::unpack($payload);
-
         $requestId  = (string) ($data['rid'] ?? '');
         $method     = (string) ($data['mt'] ?? '');
         $path       = (string) ($data['pt'] ?? '');
@@ -417,9 +416,8 @@ readonly class HttpServer
         // The headers and the query string are handed over unapplied: setting
         // seven headers costs 4.17 us of the 7.75 one decode takes, and parsing
         // a query string another 1.9, while a handler that dispatches on the
-        // method and the path reads 0.12 of it (`make bench-request`). An
-        // empty header map decodes to stdClass (a MessagePack quirk), and nested
-        // values may too, so they are normalized here rather than on first use —
+        // method and the path reads 0.12 of it (`make bench-request`). The map is
+        // normalized to name => list of strings here rather than on first use —
         // that part is cheap and keeps the deferral a pure postponement.
         $headers = [];
 

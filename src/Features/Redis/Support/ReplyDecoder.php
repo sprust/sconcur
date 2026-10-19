@@ -6,23 +6,17 @@ namespace SConcur\Features\Redis\Support;
 
 use SConcur\Dto\TaskResultDto;
 use SConcur\Features\Redis\Dto\ErrorReply;
-use function msgpack_unpack;
 
 /**
- * A reply on its way back into PHP values.
- *
- * MessagePackTransport::unpack is not used here because it insists on an array,
- * and a Redis reply is just as often a string, an integer or null.
+ * A reply on its way back into PHP values. The core already built the value a
+ * reply is — a string, an integer, null, a list, a map — so there is nothing to
+ * decode; what remains is reading the shapes the feature agreed on.
  */
 readonly class ReplyDecoder
 {
     public static function decode(TaskResultDto $result): mixed
     {
-        if ($result->payload === '') {
-            return null;
-        }
-
-        return msgpack_unpack($result->payload);
+        return $result->payload;
     }
 
     /**

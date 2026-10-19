@@ -123,12 +123,12 @@ the connect result key. That `Dto\Connection` descends from
 a mirror of the extension's structs.
 
 Rust (`ext/src/features/wsclient/`): the connect path performs the upgrade with
-`connectTimeout` (cancellable by the flow context) and registers a streaming
-`connectionState` — the first `Next` is the metadata, then inbound messages from a
-read runtime task — plus the write loop, cleaned up on flow stop; `mod.rs`
-dispatches the commands by `cid`. The write loop that waits for each flush and the
-message-type codec live in the neutral `ext/src/ws/`, shared with the WS
-server (like `ext/src/socket/` for the raw TCP pair).
+`connect_timeout_ms` (cancellable by the flow context) and registers a streaming
+`ConnectionState` — the first `next()` is the metadata, then inbound messages
+from a read runtime task — plus the write loop, cleaned up on flow stop;
+`mod.rs` dispatches the commands by `cid`. The write loop that waits for each
+flush and the message-type codec live in the neutral `ext/src/ws/`, shared with
+the WS server (like `ext/src/socket/` for the raw TCP pair).
 
 ## Not in v1
 

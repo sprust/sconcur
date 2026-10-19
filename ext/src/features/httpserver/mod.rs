@@ -13,7 +13,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::dto::Result;
+use crate::dto::{Result, Value};
 use crate::errs::Factory;
 use crate::features::{BoxFuture, Feature};
 use crate::helpers::calc_execution_ms;
@@ -78,7 +78,7 @@ async fn handle_serve(task: Task) {
     let message = task.message();
     let start_time = Instant::now();
 
-    let payload: payloads::ServePayload = match rmp_serde::from_slice(&message.payload) {
+    let payload: payloads::ServePayload = match message.payload.decode() {
         Ok(payload) => payload,
         Err(error) => {
             task.add_result(Result::error(
@@ -171,7 +171,7 @@ async fn handle_serve(task: Task) {
             Some(event) => {
                 task.add_result(Result::success_with_next(
                     message,
-                    event.encode(),
+                    event.into_value(),
                     calc_execution_ms(start_time),
                 )).await;
             }
@@ -180,7 +180,7 @@ async fn handle_serve(task: Task) {
 
                 task.add_result(Result::success(
                     message,
-                    Vec::new(),
+                    Value::Nil,
                     calc_execution_ms(start_time),
                 )).await;
 
@@ -202,10 +202,10 @@ async fn respond(task: &Task) -> Option<Result> {
     // every other key — the connection is still answered rather than left
     // hanging, which is the property the two-decode order used to buy on every
     // single response.
-    let mut payload: payloads::RespondPayload = match rmp_serde::from_slice(&message.payload) {
+    let mut payload: payloads::RespondPayload = match message.payload.decode() {
         Ok(payload) => payload,
         Err(parse_error) => {
-            let id_only: payloads::RespondRequestId = match rmp_serde::from_slice(&message.payload) {
+            let id_only: payloads::RespondRequestId = match message.payload.decode() {
                 Ok(id_only) => id_only,
                 Err(error) => {
                     return Some(fail_respond(task, ERR_FACTORY.by_err("parse respond requestId", error)));
@@ -288,7 +288,7 @@ async fn respond(task: &Task) -> Option<Result> {
     match outcome.await {
         Ok(Ok(())) => Some(Result::success(
             message,
-            Vec::new(),
+            Value::Nil,
             calc_execution_ms(start_time),
         )),
         Ok(Err(error)) => Some(fail_respond(task, ERR_FACTORY.by_text(&format!("write response: {error}")))),
@@ -313,10 +313,10 @@ fn respond_detached(task: &Task) -> Option<Result> {
     // the same order as the awaited respond above. Nothing is written back to a
     // malformed detached response: this path has no oneshot to wait on and the
     // coroutine that sent it awaits no result either.
-    let mut payload: payloads::RespondPayload = match rmp_serde::from_slice(&message.payload) {
+    let mut payload: payloads::RespondPayload = match message.payload.decode() {
         Ok(payload) => payload,
         Err(parse_error) => {
-            if rmp_serde::from_slice::<payloads::RespondRequestId>(&message.payload).is_err() {
+            if message.payload.decode::<payloads::RespondRequestId>().is_err() {
                 return Some(fail_respond(
                     task,
                     ERR_FACTORY.by_err("parse respond requestId", parse_error),
@@ -360,7 +360,7 @@ fn respond_detached(task: &Task) -> Option<Result> {
     }
 
     match sent {
-        Ok(()) => Some(Result::success(message, Vec::new(), 0)),
+        Ok(()) => Some(Result::success(message, Value::Nil, 0)),
         Err(_) => Some(fail_respond(
             task,
             ERR_FACTORY.by_text("write response: request abandoned"),

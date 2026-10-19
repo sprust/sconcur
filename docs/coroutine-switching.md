@@ -64,15 +64,18 @@ handlers read as their own is shared by the whole process — see
 [process-wide state](#process-wide-state). How it works:
 
 1. On startup the extension hooks the engine's interrupt entry point
-   (`zend_interrupt_function`), chaining the previous handler, so pcntl signal
-   dispatch keeps working.
+   (`zend_interrupt_function`) and calls the previous handler first, so a pcntl
+   signal is dispatched before the coroutine is parked, not after it is resumed.
 2. A running worker arms a timer inside the extension; every quantum the timer
    atomically requests a VM interrupt (`EG(vm_interrupt)`), which the engine
    notices at the next opcode boundary — function calls, loop back-edges, and the
    same checks opcache JIT inserts into compiled loops.
 3. The extension's handler, called on the PHP thread, invokes the scheduler's
    preempt hook, which force-parks the running coroutine exactly like a `switch()`
-   with the quantum elapsed. When the work ends the timer is disarmed.
+   with the quantum elapsed. It skips the places where the engine forbids a fiber
+   switch, a pcntl signal handler among them: parking there would throw out of
+   the handler before it finished, and a SIGTERM handler cut short that way loses
+   the stop. When the work ends the timer is disarmed.
 4. While the PHP thread is parked inside a blocking wait call (an idle server
    waiting for the next request), the timer pauses: no PHP code is running, so
    an interrupt could not be serviced anyway. It resumes as soon as the wait
@@ -132,19 +135,19 @@ worker is serving at the same time. On a single thread that is arithmetic, not a
 setting.
 
 Measured on 8 workers and 256 connections, with 90% of requests hitting an empty
-endpoint and 10% a handler worth ~49 ms of CPU:
+endpoint and 10% a handler worth ~43 ms of CPU:
 
 | `preemptionQuantumMs` | p50 | p90 | p99 |
 | ---: | ---: | ---: | ---: |
-| 5 | 29.8 ms | 2.02 s | 2.86 s |
-| 20 | 79.1 ms | 1.82 s | 2.91 s |
-| 50 | 147.5 ms | 1.56 s | 2.85 s |
-| 100 | 180.2 ms | 1.66 s | 4.33 s |
-| 0 (off, default) | 227.9 ms | 381.0 ms | 539.0 ms |
+| 5 | 16.7 ms | 1.94 s | 2.75 s |
+| 20 | 40.3 ms | 1.94 s | 2.95 s |
+| 50 | 81.1 ms | 2.00 s | 3.79 s |
+| 100 | 86.3 ms | 3.22 s | 6.46 s |
+| 0 (off, default) | 215.5 ms | 367.5 ms | 571.3 ms |
 
 Nothing but switching preemption off moves the tail: with any quantum the
 coroutines interleave and all of them stretch at once, without it they run to
-completion in turn. An intermediate quantum only costs p50 and buys no p99, so
+completion in turn. An intermediate quantum only costs p50 and makes p99 worse, so
 once preemption is on there is usually no reason to pick anything but 5 ms.
 
 The other setting is the HTTP server's `maxConcurrency`, which bounds not the
@@ -153,10 +156,10 @@ share the thread. Measured with a 5 ms quantum:
 
 | `maxConcurrency` | p50 | p90 | p99 |
 | ---: | ---: | ---: | ---: |
-| 0 (no limit) | 29.8 ms | 2.02 s | 2.86 s |
-| 16 | 152.7 ms | 1.02 s | 1.42 s |
-| 8 | 201.3 ms | 586.0 ms | 914.5 ms |
-| 4 | 244.3 ms | 441.9 ms | 659.5 ms |
+| 0 (no limit) | 16.7 ms | 1.94 s | 2.75 s |
+| 16 | 154.6 ms | 983.0 ms | 1.73 s |
+| 8 | 254.9 ms | 572.3 ms | 1.08 s |
+| 4 | 266.4 ms | 481.1 ms | 620.4 ms |
 
 Both settings move along one curve: a low p50 for the cheap requests and a short
 tail for the heavy ones are not available together. Pick the end that matches
@@ -212,11 +215,9 @@ if (json_last_error() !== JSON_ERROR_NONE) {   // may be a neighbour's result
 
 The engine checks for a pending interrupt right after an internal function returns,
 and a long call is exactly where the timer fires. So a preemption between
-`json_decode()` and `json_last_error()` is the likely case, not a rare one. Measured
-with two coroutines, one call failing and the other succeeding: with a 1 ms quantum
-`json_last_error()` returned the neighbour's result in about 60% of the checks
-(`json_decode` of about 50 KB), with 5 ms in about 14%. A single coroutine with
-preemption armed was never affected: the scheduler itself does not touch this state.
+`json_decode()` and `json_last_error()` is the likely case, not a rare one, and a shorter quantum makes it more likely
+still. A single coroutine with preemption armed is not affected: the scheduler
+itself does not touch this state.
 
 | State | What reads it | Safe form |
 | --- | --- | --- |

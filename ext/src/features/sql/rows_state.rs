@@ -20,7 +20,7 @@ use crate::errs::Factory;
 use crate::helpers::calc_execution_ms;
 use crate::states::{StateCloseFuture, StateContract, StateFuture};
 
-use super::values::{ColumnValue, encode_batch};
+use super::values::{ColumnValue, batch_value};
 
 /// What the producing task sends over. Columns arrive first so an empty result
 /// still carries its shape.
@@ -70,7 +70,7 @@ impl RowsState {
 
     fn batch(&self, rows: &[Vec<ColumnValue>], has_next: bool) -> Result {
         let columns = self.columns.lock().unwrap().clone();
-        let payload = encode_batch(&columns, rows);
+        let payload = batch_value(&columns, rows);
 
         if has_next {
             Result::success_with_next(&self.message, payload, calc_execution_ms(self.start_time))

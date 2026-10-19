@@ -1,8 +1,8 @@
-//! The C exports the PHP glue (sconcur.c) binds to, the
-//! binary result frame, and the preemption timer.
+//! The C exports the PHP glue (sconcur.c) binds to, the hand-over of results to
+//! the glue's result builder, and the preemption timer.
 //!
 //! Everything the PHP side can call ends up here: the exports themselves, the
-//! shared results channel behind them, and the frame the results cross in.
+//! shared results channel behind them, and the fields a result crosses as.
 //! A method the build does not carry answers "unknown method" through the same
 //! facade rather than failing differently.
 
@@ -23,139 +23,331 @@ mod states;
 mod tasks;
 mod types;
 
-use std::ffi::{c_char, c_int, c_longlong, c_void};
+use std::ffi::{CStr, CString, c_char, c_int, c_longlong, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use dto::{Message, Result};
+use dto::{Key, Message, Result, Value};
 use handler::{Handler, WaitError};
 use types::method::Method;
 
 /// The extension version the PHP package pins
-/// (Extension::REQUIRED_EXTENSION_VERSION). The spike answers with the same
-/// value so an unmodified package loads it.
-const VERSION: &str = "0.15.0";
+/// (Extension::REQUIRED_EXTENSION_VERSION); the package refuses any other.
+const VERSION: &str = "0.16.0";
 
-// Defined in sconcur.c: atomically requests a VM interrupt on the PHP thread.
+// Defined in sconcur.c: the VM interrupt request of the preemption ticker, the
+// result builder the wait exports hand their results to, and the value builder
+// that turns a result's value tree into zvals.
 unsafe extern "C" {
     fn sconcur_request_vm_interrupt();
+    fn sconcur_result_into(destination: *mut c_void, result: *const ResultFields) -> *mut c_void;
+    fn sconcur_result_append(list: *mut c_void, result: *const ResultFields) -> *mut c_void;
+    fn sconcur_throw(class_name: *const c_char, message: *const c_char);
+    fn sconcur_value_null(destination: *mut c_void);
+    fn sconcur_value_bool(destination: *mut c_void, flag: c_int);
+    fn sconcur_value_long(destination: *mut c_void, number: c_longlong);
+    fn sconcur_value_double(destination: *mut c_void, number: f64);
+    fn sconcur_value_stringl(destination: *mut c_void, bytes: *const c_char, length: usize);
+    fn sconcur_value_array(destination: *mut c_void, size: c_uint);
+    fn sconcur_array_next_slot(array: *mut c_void) -> *mut c_void;
+    fn sconcur_array_index_slot(array: *mut c_void, index: c_longlong) -> *mut c_void;
+    fn sconcur_array_key_slot(array: *mut c_void, key: *const c_char, length: usize) -> *mut c_void;
+    fn sconcur_value_object(destination: *mut c_void, class_name: *const c_char, length: usize) -> c_int;
+    fn sconcur_object_property_slot(object: *mut c_void, name: *const c_char, length: usize) -> *mut c_void;
+    fn sconcur_zval_kind(value: *const c_void) -> c_int;
+    fn sconcur_zval_bool(value: *const c_void) -> c_int;
+    fn sconcur_zval_long(value: *const c_void) -> c_longlong;
+    fn sconcur_zval_double(value: *const c_void) -> f64;
+    fn sconcur_zval_string(value: *const c_void, length: *mut usize) -> *const c_char;
+    fn sconcur_array_count(array: *const c_void) -> c_uint;
+    fn sconcur_array_is_list(array: *const c_void) -> c_int;
+    fn sconcur_object_class(object: *const c_void, length: *mut usize) -> *const c_char;
+    fn sconcur_object_is_plain(object: *const c_void) -> c_int;
+    fn sconcur_object_refused(object: *const c_void) -> c_int;
+    fn sconcur_array_iterate(array: *const c_void, context: *mut c_void, visit: VisitFn) -> c_int;
+    fn sconcur_object_iterate(object: *const c_void, context: *mut c_void, visit: VisitFn) -> c_int;
+    fn sconcur_exception_pending() -> c_int;
 }
 
-/// Mirrors the buffer_result_t of sconcur.c. `data` and `err` are released by
-/// the C side with free(), so both are allocated with libc::malloc here — never
-/// with the Rust allocator.
-#[repr(C)]
-pub struct BufferResult {
-    data: *mut c_void,
-    len: c_int,
-    err: *mut c_char,
-}
+/// Mirrors sconcur_visit_t of sconcur_core.h: the callback the glue calls per
+/// entry of a container it walks for the value reader below.
+type VisitFn = unsafe extern "C" fn(
+    context: *mut c_void,
+    key: *const c_char,
+    key_length: usize,
+    index: c_longlong,
+    value: *const c_void,
+) -> c_int;
 
 // ---------------------------------------------------------------------------
-// Result frame layout (core -> PHP). The envelope is a fixed binary header, not
-// MessagePack, so the result is never double-encoded: only the feature payload
-// stays MessagePack and is decoded once on the PHP side. Must match
-// Extension::parseWaitResponse.
+// Parameters on their way in.
 //
-//  [0]      flags    uint8  (bit0 isError, bit1 hasNext)
-//  [1]      method   length uint8
-//  [2:6]    execMs   uint32 (big-endian)
-//  [6:8]    flowKey  length uint16 (big-endian)
-//  [8:10]   taskKey  length uint16 (big-endian)
-//  [10:18]  ownerId  uint64 (big-endian; the PHP coroutine awaiting this
-//           result, 0 = none — lets the PHP side route without a task map)
-//  [18:]    method bytes, then flowKey bytes, then taskKey bytes, then the raw
-//           payload (the rest)
+// The push export is given the PHP array a task was called with and reads it
+// into a `Value` tree here, on the PHP thread, before it returns: the glue's
+// value readers answer what each zval is, and the two iterate calls walk a
+// container and call back per entry. Strings are copied, since the array is
+// PHP's and may be freed the moment the call returns. A PHP object is read as
+// its class and public properties, a stdClass as a plain map.
 // ---------------------------------------------------------------------------
 
-const FRAME_HEADER_SIZE: usize = 18;
-const FRAME_FLAG_ERROR: u8 = 1 << 0;
-const FRAME_FLAG_HAS_NEXT: u8 = 1 << 1;
+const KIND_NULL: c_int = 0;
+const KIND_BOOL: c_int = 1;
+const KIND_LONG: c_int = 2;
+const KIND_DOUBLE: c_int = 3;
+const KIND_STRING: c_int = 4;
+const KIND_ARRAY: c_int = 5;
+const KIND_OBJECT: c_int = 6;
 
-fn result_frame_size(result: &Result) -> usize {
-    FRAME_HEADER_SIZE
-        + result.method.as_wire().len()
-        + result.flow_key.len()
-        + result.task_key.len()
-        + result.payload.len()
+/// How deep a payload may nest. A PHP array cannot contain itself, but an
+/// object graph can, and json_encode's own limit is the same order of magnitude.
+const READ_DEPTH_LIMIT: usize = 256;
+
+/// The state of one container walk: the entries collected so far and the first
+/// failure, if any, which stops the walk.
+struct Collected {
+    entries: Vec<(Key, Value)>,
+    depth: usize,
+    error: Option<String>,
 }
 
-fn append_result_frame(destination: &mut Vec<u8>, result: &Result) {
-    let mut flags: u8 = 0;
+/// The visit the glue calls per entry. `extern "C"`, so a panic inside would
+/// abort the process rather than reach `guarded`; nothing here can panic (an
+/// allocation failure aborts regardless), and the error path is the return
+/// value, not an unwind.
+unsafe extern "C" fn collect_entry(
+    context: *mut c_void,
+    key: *const c_char,
+    key_length: usize,
+    index: c_longlong,
+    value: *const c_void,
+) -> c_int {
+    let collected = unsafe { &mut *(context as *mut Collected) };
 
-    if result.is_error {
-        flags |= FRAME_FLAG_ERROR;
+    let entry_key = if key.is_null() {
+        Key::Int(index)
+    } else {
+        Key::Str(unsafe { byte_view_len(key, key_length) }.to_vec())
+    };
+
+    match read_value(value, collected.depth + 1) {
+        Ok(value) => {
+            collected.entries.push((entry_key, value));
+
+            1
+        }
+        Err(error) => {
+            collected.error = Some(error);
+
+            0
+        }
     }
-
-    if result.has_next {
-        flags |= FRAME_FLAG_HAS_NEXT;
-    }
-
-    let method = result.method.as_wire();
-
-    destination.push(flags);
-    destination.push(method.len() as u8);
-    destination.extend_from_slice(&result.execution_ms.to_be_bytes());
-    destination.extend_from_slice(&(result.flow_key.len() as u16).to_be_bytes());
-    destination.extend_from_slice(&(result.task_key.len() as u16).to_be_bytes());
-    destination.extend_from_slice(&(result.owner_id as u64).to_be_bytes());
-    destination.extend_from_slice(method.as_bytes());
-    destination.extend_from_slice(result.flow_key.as_bytes());
-    destination.extend_from_slice(result.task_key.as_bytes());
-    destination.extend_from_slice(&result.payload);
 }
 
-fn build_result_frame(result: &Result) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(result_frame_size(result));
+fn read_entries(container: *const c_void, depth: usize, capacity: usize, object: bool) -> std::result::Result<Vec<(Key, Value)>, String> {
+    let mut collected = Collected {
+        entries: Vec::with_capacity(capacity),
+        depth,
+        error: None,
+    };
 
-    append_result_frame(&mut frame, result);
+    let context = &mut collected as *mut Collected as *mut c_void;
 
-    frame
+    unsafe {
+        if object {
+            sconcur_object_iterate(container, context, collect_entry);
+        } else {
+            sconcur_array_iterate(container, context, collect_entry);
+        }
+    };
+
+    // An object's property table may have been built by user code (a lazy
+    // object's initializer); a throw there must refuse the payload, not travel
+    // alongside a task that was enqueued anyway.
+    if unsafe { sconcur_exception_pending() } != 0 {
+        return Err("PHP raised an exception while the payload was read".to_string());
+    }
+
+    match collected.error {
+        Some(error) => Err(error),
+        None => Ok(collected.entries),
+    }
 }
 
-/// Concatenates result frames into the multiframe the PHP side iterates:
-/// [count uint16][frameLen uint32][frame]... (big-endian), each inner frame in
-/// the exact single-result format. Must match Extension::parseWaitBatchResponse.
-fn build_result_batch_frame(results: &[Result]) -> Vec<u8> {
-    let total = 2 + results
-        .iter()
-        .map(|result| 4 + result_frame_size(result))
-        .sum::<usize>();
-
-    let mut batch = Vec::with_capacity(total);
-
-    batch.extend_from_slice(&(results.len() as u16).to_be_bytes());
-
-    for result in results {
-        batch.extend_from_slice(&(result_frame_size(result) as u32).to_be_bytes());
-        append_result_frame(&mut batch, result);
+/// Reads one zval into a value, recursively.
+fn read_value(value: *const c_void, depth: usize) -> std::result::Result<Value, String> {
+    if depth > READ_DEPTH_LIMIT {
+        return Err(format!("the payload nests deeper than {READ_DEPTH_LIMIT} levels"));
     }
 
-    batch
+    match unsafe { sconcur_zval_kind(value) } {
+        KIND_NULL => Ok(Value::Nil),
+        KIND_BOOL => Ok(Value::Bool(unsafe { sconcur_zval_bool(value) } != 0)),
+        KIND_LONG => Ok(Value::Int(unsafe { sconcur_zval_long(value) })),
+        KIND_DOUBLE => Ok(Value::Float(unsafe { sconcur_zval_double(value) })),
+        KIND_STRING => {
+            let mut length: usize = 0;
+            let bytes = unsafe { sconcur_zval_string(value, &mut length) };
+
+            Ok(Value::Str(unsafe { byte_view_len(bytes, length) }.to_vec()))
+        }
+        KIND_ARRAY => {
+            let count = unsafe { sconcur_array_count(value) } as usize;
+            let entries = read_entries(value, depth, count, false)?;
+
+            // A list is a list only when PHP says so: keys 0..n in order. A map
+            // stays a map even when its keys happen to be integers.
+            if unsafe { sconcur_array_is_list(value) } != 0 {
+                Ok(Value::List(entries.into_iter().map(|(_, item)| item).collect()))
+            } else {
+                Ok(Value::Map(entries))
+            }
+        }
+        KIND_OBJECT => {
+            match unsafe { sconcur_object_refused(value) } {
+                1 => return Err("the payload holds a Closure, which cannot cross into the extension".to_string()),
+                2 => return Err("the payload holds an enum case; pass its value or name instead".to_string()),
+                _ => {}
+            }
+
+            let entries = read_entries(value, depth, 4, true)?;
+
+            if unsafe { sconcur_object_is_plain(value) } != 0 {
+                return Ok(Value::Map(entries));
+            }
+
+            let mut length: usize = 0;
+            let class = unsafe { sconcur_object_class(value, &mut length) };
+            let class = String::from_utf8_lossy(unsafe { byte_view_len(class, length) }).into_owned();
+
+            Ok(Value::Object(dto::Object {
+                class: std::borrow::Cow::Owned(class),
+                properties: entries
+                    .into_iter()
+                    .map(|(key, item)| (std::borrow::Cow::Owned(key.text()), item))
+                    .collect(),
+            }))
+        }
+        // Whatever is left after the kinds above is a resource: a reference is
+        // read through and an undefined slot reads as null.
+        _ => Err("the payload holds a resource, which cannot cross into the extension".to_string()),
+    }
 }
 
-/// Copies bytes into a libc::malloc block the C side owns and frees.
-fn malloc_copy(bytes: &[u8]) -> *mut c_void {
-    if bytes.is_empty() {
-        // malloc(0) may legally return NULL; a zero-length RETVAL_STRINGL still
-        // needs a non-null pointer, so give it one byte.
-        let block = unsafe { libc::malloc(1) };
+// ---------------------------------------------------------------------------
+// Results on their way to PHP.
+//
+// A result is not framed into bytes: the core hands the fields of each one to
+// the glue's result builder (sconcur.c), which instantiates the PHP package's
+// TaskResultDto on the PHP thread, inside the wait export PHP is parked in,
+// and the result's value tree is walked here into the payload slot through the
+// glue's value builder. Nothing here touches a zval — the builders are C, every
+// destination is an opaque pointer, and an export only reports how the wait
+// ended.
+// ---------------------------------------------------------------------------
 
-        return block;
+/// Mirrors sconcur_result_t of sconcur_core.h, field for field. The pointers
+/// are views into the `Result` the fields were taken from, valid for the
+/// builder call and nothing longer.
+#[repr(C)]
+struct ResultFields {
+    flow_key: *const c_char,
+    flow_key_len: usize,
+    method_case: *const c_char,
+    task_key: *const c_char,
+    task_key_len: usize,
+    is_error: c_int,
+    has_next: c_int,
+    execution_ms: c_uint,
+    total_execution_ms: c_longlong,
+    owner_id: c_longlong,
+}
+
+impl ResultFields {
+    fn of(result: &Result, total_execution_ms: u64) -> Self {
+        ResultFields {
+            flow_key: result.flow_key.as_ptr() as *const c_char,
+            flow_key_len: result.flow_key.len(),
+            method_case: result.method.as_php_case().as_ptr(),
+            task_key: result.task_key.as_ptr() as *const c_char,
+            task_key_len: result.task_key.len(),
+            is_error: c_int::from(result.is_error),
+            has_next: c_int::from(result.has_next),
+            execution_ms: result.execution_ms,
+            total_execution_ms: total_execution_ms as c_longlong,
+            owner_id: result.owner_id,
+        }
+    }
+}
+
+/// Writes one value tree into `destination`, node by node, through the glue's
+/// value builder. A child is written before the next sibling's slot is asked
+/// for, because adding to a PHP array may move what the array holds. False
+/// means the builder threw; the partial value is released with the whole
+/// result by the glue.
+fn write_value(destination: *mut c_void, value: &Value) -> bool {
+    match value {
+        Value::Nil => unsafe { sconcur_value_null(destination) },
+        Value::Bool(flag) => unsafe { sconcur_value_bool(destination, c_int::from(*flag)) },
+        Value::Int(number) => unsafe { sconcur_value_long(destination, *number as c_longlong) },
+        Value::Float(number) => unsafe { sconcur_value_double(destination, *number) },
+        Value::Str(bytes) => unsafe {
+            sconcur_value_stringl(destination, bytes.as_ptr() as *const c_char, bytes.len())
+        },
+        Value::List(items) => {
+            unsafe { sconcur_value_array(destination, items.len() as c_uint) };
+
+            for item in items {
+                let slot = unsafe { sconcur_array_next_slot(destination) };
+
+                if slot.is_null() || !write_value(slot, item) {
+                    return false;
+                }
+            }
+        }
+        Value::Map(entries) => {
+            unsafe { sconcur_value_array(destination, entries.len() as c_uint) };
+
+            for (key, item) in entries {
+                let slot = match key {
+                    Key::Int(index) => unsafe { sconcur_array_index_slot(destination, *index as c_longlong) },
+                    Key::Str(bytes) => unsafe {
+                        sconcur_array_key_slot(destination, bytes.as_ptr() as *const c_char, bytes.len())
+                    },
+                };
+
+                if slot.is_null() || !write_value(slot, item) {
+                    return false;
+                }
+            }
+        }
+        Value::Object(object) => {
+            let created = unsafe {
+                sconcur_value_object(destination, object.class.as_ptr() as *const c_char, object.class.len())
+            };
+
+            if created == 0 {
+                return false;
+            }
+
+            for (name, item) in &object.properties {
+                let slot = unsafe {
+                    sconcur_object_property_slot(destination, name.as_ptr() as *const c_char, name.len())
+                };
+
+                if slot.is_null() || !write_value(slot, item) {
+                    return false;
+                }
+            }
+        }
     }
 
-    let block = unsafe { libc::malloc(bytes.len()) };
-
-    if !block.is_null() {
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), block as *mut u8, bytes.len()) };
-    }
-
-    block
+    true
 }
 
 /// Copies a message into a NUL-terminated libc::malloc block, the shape every
-/// `char *` export returns.
+/// `char *` export returns; the C side frees it with free(), so it is never
+/// allocated with the Rust allocator.
 fn malloc_cstring(text: &str) -> *mut c_char {
     let bytes = text.as_bytes();
     let block = unsafe { libc::malloc(bytes.len() + 1) } as *mut u8;
@@ -172,27 +364,197 @@ fn malloc_cstring(text: &str) -> *mut c_char {
     block as *mut c_char
 }
 
-/// Wraps framed bytes into the buffer_result_t crossing the boundary. c_int is
-/// 32-bit: a frame past 2 GiB would truncate into a negative length and crash
-/// the PHP side on RETVAL_STRINGL — answer with an error instead (the result is
-/// lost either way; a loud error beats a segfault).
-fn buffer_from_frame(frame: &[u8]) -> BufferResult {
-    if frame.len() > i32::MAX as usize {
-        return error_buffer("error: result frame exceeds the 2 GiB boundary limit");
+/// The SCONCUR_WAIT_* codes of sconcur_core.h: how a wait export ended.
+const WAIT_READY: c_int = 0;
+const WAIT_TIMEOUT: c_int = 1;
+const WAIT_FAILED: c_int = 2;
+
+/// The exception a failed wait throws, the PHP package's own: the glue looks
+/// the class up by name, so the caller catches what it has always caught.
+const TASK_ERROR_EXCEPTION: &CStr = c"SConcur\\Exceptions\\TaskErrorException";
+
+/// Builds one TaskResultDto into `destination`. `total_execution_ms` is how long
+/// the export waited for it, measured here rather than on the PHP side, which
+/// no longer sees the crossing's edges.
+fn write_result(destination: *mut c_void, result: &Result, total_execution_ms: u64) -> c_int {
+    let fields = ResultFields::of(result, total_execution_ms);
+    let payload = unsafe { sconcur_result_into(destination, &fields) };
+
+    if payload.is_null() || !write_value(payload, &result.payload) {
+        return WAIT_FAILED;
     }
 
-    BufferResult {
-        data: malloc_copy(frame),
-        len: frame.len() as c_int,
-        err: std::ptr::null_mut(),
-    }
+    WAIT_READY
 }
 
-fn error_buffer(text: &str) -> BufferResult {
-    BufferResult {
-        data: std::ptr::null_mut(),
-        len: 0,
-        err: malloc_cstring(text),
+/// Builds the list of a batch into `destination`. Only the first result waited:
+/// the tail was already ready when the crossing returned, so it carries 0,
+/// the per-call semantics of the singular wait, where a ready result's own wait
+/// returns at once.
+fn write_result_batch(destination: *mut c_void, results: &[Result], first_total_execution_ms: u64) -> c_int {
+    unsafe { sconcur_value_array(destination, results.len() as c_uint) };
+
+    for (index, result) in results.iter().enumerate() {
+        let total_execution_ms = if index == 0 { first_total_execution_ms } else { 0 };
+        let fields = ResultFields::of(result, total_execution_ms);
+        let payload = unsafe { sconcur_result_append(destination, &fields) };
+
+        if payload.is_null() || !write_value(payload, &result.payload) {
+            return WAIT_FAILED;
+        }
+    }
+
+    WAIT_READY
+}
+
+/// Throws the TaskErrorException of a failed wait, naming the export it failed
+/// in, and answers FAILED so a call site returns the two in one expression.
+fn throw_wait_error(context: &str, error: &str) -> c_int {
+    // A NUL inside the text would end the C string early; none is expected, but a
+    // message is not worth a panic, so it is replaced rather than refused.
+    let message = CString::new(format!("{context}: {error}").replace('\0', " ")).unwrap_or_default();
+
+    unsafe { sconcur_throw(TASK_ERROR_EXCEPTION.as_ptr(), message.as_ptr()) };
+
+    WAIT_FAILED
+}
+
+/// The glue's side of the contract, for the unit-test harness only: `cargo test
+/// --lib` links the core without sconcur.c, and these stand in for the C
+/// functions it would otherwise supply. Nothing in a unit test reaches them;
+/// they exist so the symbols resolve. rustc does not check a stub against the
+/// `extern` block, so a drifted signature here still links: the real contract
+/// is checked by `make ext-build` alone.
+#[cfg(test)]
+mod glue_stubs {
+    use std::ffi::{c_char, c_int, c_longlong, c_uint, c_void};
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_request_vm_interrupt() {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_result_into(_destination: *mut c_void, _result: *const super::ResultFields) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_result_append(_list: *mut c_void, _result: *const super::ResultFields) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_throw(_class_name: *const c_char, _message: *const c_char) {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_value_null(_destination: *mut c_void) {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_value_bool(_destination: *mut c_void, _flag: c_int) {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_value_long(_destination: *mut c_void, _number: c_longlong) {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_value_double(_destination: *mut c_void, _number: f64) {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_value_stringl(_destination: *mut c_void, _bytes: *const c_char, _length: usize) {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_value_array(_destination: *mut c_void, _size: c_uint) {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_array_next_slot(_array: *mut c_void) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_array_index_slot(_array: *mut c_void, _index: c_longlong) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_array_key_slot(_array: *mut c_void, _key: *const c_char, _length: usize) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_value_object(_destination: *mut c_void, _class_name: *const c_char, _length: usize) -> c_int {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_object_property_slot(_object: *mut c_void, _name: *const c_char, _length: usize) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_zval_kind(_value: *const c_void) -> c_int {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_zval_bool(_value: *const c_void) -> c_int {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_zval_long(_value: *const c_void) -> c_longlong {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_zval_double(_value: *const c_void) -> f64 {
+        0.0
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_zval_string(_value: *const c_void, length: *mut usize) -> *const c_char {
+        unsafe { *length = 0 };
+
+        std::ptr::null()
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_array_count(_array: *const c_void) -> c_uint {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_array_is_list(_array: *const c_void) -> c_int {
+        1
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_object_class(_object: *const c_void, length: *mut usize) -> *const c_char {
+        unsafe { *length = 0 };
+
+        std::ptr::null()
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_object_is_plain(_object: *const c_void) -> c_int {
+        1
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_object_refused(_object: *const c_void) -> c_int {
+        0
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_array_iterate(_array: *const c_void, _context: *mut c_void, _visit: super::VisitFn) -> c_int {
+        1
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_object_iterate(_object: *const c_void, _context: *mut c_void, _visit: super::VisitFn) -> c_int {
+        1
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_exception_pending() -> c_int {
+        0
     }
 }
 
@@ -234,6 +596,16 @@ unsafe fn byte_view<'a>(pointer: *const c_char, length: c_int) -> &'a [u8] {
     }
 
     unsafe { std::slice::from_raw_parts(pointer as *const u8, length as usize) }
+}
+
+/// `byte_view` for a length that is a size_t: what the value readers answer, so
+/// a string past 2 GiB is read whole rather than truncated by a narrowing cast.
+unsafe fn byte_view_len<'a>(pointer: *const c_char, length: usize) -> &'a [u8] {
+    if pointer.is_null() || length == 0 {
+        return &[];
+    }
+
+    unsafe { std::slice::from_raw_parts(pointer as *const u8, length) }
 }
 
 unsafe fn owned_string(pointer: *const c_char, length: c_int) -> String {
@@ -319,17 +691,22 @@ pub extern "C" fn push(
     task_key: *const c_char,
     task_key_len: c_int,
     payload: *const c_void,
-    payload_len: c_int,
     owner_id: c_longlong,
 ) -> *mut c_char {
     guarded(|| malloc_cstring("error: push: panic"), || {
+        // Read before anything else: the array is PHP's, valid for this call.
+        let payload = match read_value(payload, 0) {
+            Ok(payload) => payload,
+            Err(error) => return malloc_cstring(&format!("error: push: {error}")),
+        };
+
         let message = Message {
             flow_key: unsafe { owned_string(flow_key, flow_key_len) },
             // Resolved through a view: the method set is fixed, so nothing is
             // copied to identify it.
             method: Method::from_wire(unsafe { byte_view(method, method_len) }),
             task_key: unsafe { owned_string(task_key, task_key_len) },
-            payload: unsafe { byte_view(payload as *const c_char, payload_len) }.to_vec(),
+            payload,
             is_next: false,
             owner_id: owner_id as i64,
         };
@@ -357,7 +734,7 @@ pub extern "C" fn next(
             flow_key: unsafe { owned_string_nul(flow_key) },
             method: Method::Unknown,
             task_key: unsafe { owned_string_nul(task_key) },
-            payload: Vec::new(),
+            payload: Value::Nil,
             is_next: true,
             owner_id: owner_id as i64,
         };
@@ -372,9 +749,9 @@ pub extern "C" fn next(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wait(flow_key: *const c_char, flow_key_len: c_int) -> BufferResult {
-    guarded(|| error_buffer("error: wait: panic"), || {
-        // A view is enough: wait only compares and looks the key up.
+pub extern "C" fn wait(flow_key: *const c_char, flow_key_len: c_int, return_value: *mut c_void) -> c_int {
+    guarded(|| throw_wait_error("wait", "panic"), || {
+        let started = Instant::now();
         let flow_key = unsafe { owned_string(flow_key, flow_key_len) };
 
         begin_blocking_wait();
@@ -382,46 +759,50 @@ pub extern "C" fn wait(flow_key: *const c_char, flow_key_len: c_int) -> BufferRe
         end_blocking_wait();
 
         match outcome {
-            Ok(result) => buffer_from_frame(&build_result_frame(&result)),
-            Err(error) => error_buffer(&format!("error: {error}")),
+            Ok(result) => write_result(return_value, &result, elapsed_ms(started)),
+            Err(error) => throw_wait_error("wait", &error),
         }
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn waitAny() -> BufferResult {
-    guarded(|| error_buffer("error: waitAny: panic"), || {
+pub extern "C" fn waitAny(return_value: *mut c_void) -> c_int {
+    guarded(|| throw_wait_error("waitAny", "panic"), || {
+        let started = Instant::now();
+
         begin_blocking_wait();
         let outcome = handler().wait_any();
         end_blocking_wait();
 
         match outcome {
-            Ok(result) => buffer_from_frame(&build_result_frame(&result)),
-            Err(error) => error_buffer(&format!("error: {error}")),
+            Ok(result) => write_result(return_value, &result, elapsed_ms(started)),
+            Err(error) => throw_wait_error("waitAny", &error),
         }
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn waitAnyTimeout(timeout_ms: c_int) -> BufferResult {
-    guarded(|| error_buffer("error: waitAnyTimeout: panic"), || {
+pub extern "C" fn waitAnyTimeout(timeout_ms: c_int, return_value: *mut c_void) -> c_int {
+    guarded(|| throw_wait_error("waitAnyTimeout", "panic"), || {
+        let started = Instant::now();
+
         begin_blocking_wait();
         let outcome = handler().wait_any_timeout(timeout_ms);
         end_blocking_wait();
 
         match outcome {
-            Ok(result) => buffer_from_frame(&build_result_frame(&result)),
-            // A timeout is not an error: signal it with a distinct,
-            // non-"error:" sentinel the PHP side maps to "no result yet".
-            Err(WaitError::Timeout) => error_buffer("timeout"),
-            Err(WaitError::Failed(error)) => error_buffer(&format!("error: {error}")),
+            Ok(result) => write_result(return_value, &result, elapsed_ms(started)),
+            // A timeout is not an error: the glue answers null for it.
+            Err(WaitError::Timeout) => WAIT_TIMEOUT,
+            Err(WaitError::Failed(error)) => throw_wait_error("waitAnyTimeout", &error),
         }
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn waitAnyBatch(max_results: c_int) -> BufferResult {
-    guarded(|| error_buffer("error: waitAnyBatch: panic"), || {
+pub extern "C" fn waitAnyBatch(max_results: c_int, return_value: *mut c_void) -> c_int {
+    guarded(|| throw_wait_error("waitAnyBatch", "panic"), || {
+        let started = Instant::now();
         let handler = handler();
 
         begin_blocking_wait();
@@ -430,20 +811,21 @@ pub extern "C" fn waitAnyBatch(max_results: c_int) -> BufferResult {
 
         match outcome {
             Ok(results) => {
-                let buffer = buffer_from_frame(&build_result_batch_frame(&results));
+                let status = write_result_batch(return_value, &results, elapsed_ms(started));
 
                 handler.recycle_batch(results);
 
-                buffer
+                status
             }
-            Err(error) => error_buffer(&format!("error: {error}")),
+            Err(error) => throw_wait_error("waitAnyBatch", &error),
         }
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn waitAnyTimeoutBatch(timeout_ms: c_int, max_results: c_int) -> BufferResult {
-    guarded(|| error_buffer("error: waitAnyTimeoutBatch: panic"), || {
+pub extern "C" fn waitAnyTimeoutBatch(timeout_ms: c_int, max_results: c_int, return_value: *mut c_void) -> c_int {
+    guarded(|| throw_wait_error("waitAnyTimeoutBatch", "panic"), || {
+        let started = Instant::now();
         let handler = handler();
 
         begin_blocking_wait();
@@ -452,16 +834,21 @@ pub extern "C" fn waitAnyTimeoutBatch(timeout_ms: c_int, max_results: c_int) -> 
 
         match outcome {
             Ok(results) => {
-                let buffer = buffer_from_frame(&build_result_batch_frame(&results));
+                let status = write_result_batch(return_value, &results, elapsed_ms(started));
 
                 handler.recycle_batch(results);
 
-                buffer
+                status
             }
-            Err(WaitError::Timeout) => error_buffer("timeout"),
-            Err(WaitError::Failed(error)) => error_buffer(&format!("error: {error}")),
+            Err(WaitError::Timeout) => WAIT_TIMEOUT,
+            Err(WaitError::Failed(error)) => throw_wait_error("waitAnyTimeoutBatch", &error),
         }
     })
+}
+
+/// Whole milliseconds since `started`, the unit TaskResultDto carries.
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis() as u64
 }
 
 #[unsafe(no_mangle)]

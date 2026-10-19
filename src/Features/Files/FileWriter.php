@@ -13,7 +13,6 @@ use SConcur\Features\FeatureExecutor;
 use SConcur\Features\Files\Payloads\FilesPayload;
 use SConcur\Features\Files\Support\FilesFailure;
 use SConcur\State;
-use SConcur\Transport\MessagePackTransport;
 
 /**
  * An open file PHP fills chunk by chunk instead of handing over whole.
@@ -197,9 +196,9 @@ class FileWriter
 
     protected function count(TaskResultDto $result): int
     {
-        $decoded = MessagePackTransport::unpack($result->payload);
+        $decoded = $result->payload;
 
-        if (!array_key_exists('n', $decoded)) {
+        if (!is_array($decoded) || !array_key_exists('n', $decoded)) {
             // Refused rather than read as zero, which would reset a correct running
             // total — see Files::field() for the rest of the reasoning.
             throw new UnexpectedResponseFormatException(

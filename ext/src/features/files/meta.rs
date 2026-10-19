@@ -10,7 +10,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use crate::dto::Result;
+use crate::dto::{Map, Result, Value};
 use crate::helpers::calc_execution_ms;
 use crate::tasks::Task;
 
@@ -41,74 +41,39 @@ fn epoch_ms(time: std::io::Result<SystemTime>) -> i64 {
 }
 
 /// Everything one stat(2) knows, as the map PHP builds its FileStat from.
-fn encode_stat(metadata: Option<&std::fs::Metadata>) -> Vec<u8> {
-    let mut buffer = Vec::new();
-
+fn stat_value(metadata: Option<&std::fs::Metadata>) -> Value {
     let Some(metadata) = metadata else {
-        let _ = rmp::encode::write_map_len(&mut buffer, 1);
-        let _ = rmp::encode::write_str(&mut buffer, "ex");
-        let _ = rmp::encode::write_bool(&mut buffer, false);
-
-        return buffer;
+        return Map::new().set("ex", false).into();
     };
 
-    let _ = rmp::encode::write_map_len(&mut buffer, 11);
-
-    let _ = rmp::encode::write_str(&mut buffer, "ex");
-    let _ = rmp::encode::write_bool(&mut buffer, true);
-
-    let _ = rmp::encode::write_str(&mut buffer, "isf");
-    let _ = rmp::encode::write_bool(&mut buffer, metadata.is_file());
-
-    let _ = rmp::encode::write_str(&mut buffer, "isd");
-    let _ = rmp::encode::write_bool(&mut buffer, metadata.is_dir());
-
-    let _ = rmp::encode::write_str(&mut buffer, "isl");
-    let _ = rmp::encode::write_bool(&mut buffer, metadata.is_symlink());
-
-    let _ = rmp::encode::write_str(&mut buffer, "sz");
-    let _ = rmp::encode::write_uint(&mut buffer, metadata.len());
-
-    let _ = rmp::encode::write_str(&mut buffer, "mt");
-    let _ = rmp::encode::write_sint(&mut buffer, epoch_ms(metadata.modified()));
-
-    let _ = rmp::encode::write_str(&mut buffer, "at");
-    let _ = rmp::encode::write_sint(&mut buffer, epoch_ms(metadata.accessed()));
-
-    let _ = rmp::encode::write_str(&mut buffer, "ct");
-    let _ = rmp::encode::write_sint(&mut buffer, epoch_ms(metadata.created()));
-
-    // The permission bits alone: the type bits above them are already answered
-    // by isf/isd/isl, and a caller comparing against 0644 should not have to
-    // mask them off.
-    let _ = rmp::encode::write_str(&mut buffer, "pm");
-    let _ = rmp::encode::write_uint(&mut buffer, (metadata.permissions().mode() & 0o7777) as u64);
-
-    let _ = rmp::encode::write_str(&mut buffer, "ui");
-    let _ = rmp::encode::write_uint(&mut buffer, metadata.uid() as u64);
-
-    let _ = rmp::encode::write_str(&mut buffer, "gi");
-    let _ = rmp::encode::write_uint(&mut buffer, metadata.gid() as u64);
-
-    buffer
+    Map::with_capacity(11)
+        .set("ex", true)
+        .set("isf", metadata.is_file())
+        .set("isd", metadata.is_dir())
+        .set("isl", metadata.is_symlink())
+        .set("sz", metadata.len())
+        .set("mt", epoch_ms(metadata.modified()))
+        .set("at", epoch_ms(metadata.accessed()))
+        .set("ct", epoch_ms(metadata.created()))
+        // The permission bits alone: the type bits above them are already
+        // answered by isf/isd/isl, and a caller comparing against 0644 should
+        // not have to mask them off.
+        .set("pm", u64::from(metadata.permissions().mode() & 0o7777))
+        .set("ui", u64::from(metadata.uid()))
+        .set("gi", u64::from(metadata.gid()))
+        .into()
 }
 
 /// A single-value answer, as a map so PHP reads every structured result the
 /// same way.
-pub fn encode_text(key: &str, value: &str) -> Vec<u8> {
-    let mut buffer = Vec::new();
-
-    let _ = rmp::encode::write_map_len(&mut buffer, 1);
-    let _ = rmp::encode::write_str(&mut buffer, key);
-    let _ = rmp::encode::write_str(&mut buffer, value);
-
-    buffer
+pub fn text_value(key: &str, value: &str) -> Value {
+    Map::new().set(key, value).into()
 }
 
 /// Describes a path. A path that is not there is not a failure — it answers
 /// exists: false, which is what makes one command serve both stat() and
 /// exists().
-pub async fn stat(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn stat(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let start_time = Instant::now();
 
     let Some(parameters) = params::<payloads::StatParams>(task, envelope, "stat").await else {
@@ -126,10 +91,8 @@ pub async fn stat(task: &Task, envelope: &mut payloads::Envelope) {
         };
 
         match metadata {
-            Ok(metadata) => Ok::<Vec<u8>, String>(encode_stat(Some(&metadata))),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(encode_stat(None))
-            }
+            Ok(metadata) => Ok::<Value, String>(stat_value(Some(&metadata))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(stat_value(None)),
             Err(error) => Err(io_message("stat", &path, &error)),
         }
     };
@@ -138,7 +101,7 @@ pub async fn stat(task: &Task, envelope: &mut payloads::Envelope) {
 }
 
 /// Changes a path's permission bits.
-pub async fn chmod(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn chmod(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -168,7 +131,7 @@ pub async fn chmod(task: &Task, envelope: &mut payloads::Envelope) {
 
         // Nothing to answer with: the caller knows the path it named, and a map
         // holding it back is a field no reader ever looks at.
-        Ok::<Vec<u8>, String>(Vec::new())
+        Ok::<Value, String>(Value::Nil)
     };
 
     publish(task, envelope, start_time, work).await;
@@ -176,7 +139,7 @@ pub async fn chmod(task: &Task, envelope: &mut payloads::Envelope) {
 
 /// Creates a file, or moves the modification time of one that is already there
 /// — the two halves of touch(1), in the order it does them.
-pub async fn touch(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn touch(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let start_time = Instant::now();
 
     let Some(parameters) = params::<payloads::TouchParams>(task, envelope, "touch").await else {
@@ -238,7 +201,7 @@ pub async fn touch(task: &Task, envelope: &mut payloads::Envelope) {
 
         outcome.map_err(|error| io_message("set times on", &path, &error))?;
 
-        Ok::<Vec<u8>, String>(Vec::new())
+        Ok::<Value, String>(Value::Nil)
     };
 
     publish(task, envelope, start_time, work).await;
@@ -246,7 +209,7 @@ pub async fn touch(task: &Task, envelope: &mut payloads::Envelope) {
 
 /// Canonicalizes a path: symlinks resolved, `.` and `..` removed. The path must
 /// exist, as it must for PHP's realpath().
-pub async fn real_path(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn real_path(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let start_time = Instant::now();
 
     let Some(parameters) = params::<payloads::RealPathParams>(task, envelope, "realPath").await
@@ -261,7 +224,7 @@ pub async fn real_path(task: &Task, envelope: &mut payloads::Envelope) {
             .await
             .map_err(|error| io_message("resolve", &path, &error))?;
 
-        Ok::<Vec<u8>, String>(encode_text("p", &resolved.to_string_lossy()))
+        Ok::<Value, String>(text_value("p", &resolved.to_string_lossy()))
     };
 
     publish(task, envelope, start_time, work).await;
@@ -273,7 +236,7 @@ pub async fn real_path(task: &Task, envelope: &mut payloads::Envelope) {
 /// and then created: the check-then-create version has a window in which another
 /// process takes the name, and a temporary file whose whole purpose is to be
 /// exclusively yours cannot have one.
-pub async fn temporary_file(task: &Task, envelope: &mut payloads::Envelope) {
+pub async fn temporary_file(task: &Task, envelope: &mut payloads::Envelope<'_>) {
     let message = task.message();
     let start_time = Instant::now();
 
@@ -382,7 +345,7 @@ pub async fn temporary_file(task: &Task, envelope: &mut payloads::Envelope) {
         Some(Ok(Ok(path))) => {
             task.add_result(Result::success(
                 task.message(),
-                encode_text("p", &path),
+                text_value("p", &path),
                 calc_execution_ms(start_time),
             ))
             .await;
@@ -410,9 +373,9 @@ pub async fn temporary_file(task: &Task, envelope: &mut payloads::Envelope) {
 
 /// Runs the work under the deadline and answers with whatever it built. The
 /// shape every operation in this module shares, written once.
-pub async fn publish<F>(task: &Task, envelope: &payloads::Envelope, start_time: Instant, work: F)
+pub async fn publish<F>(task: &Task, envelope: &payloads::Envelope<'_>, start_time: Instant, work: F)
 where
-    F: std::future::Future<Output = std::result::Result<Vec<u8>, String>>,
+    F: std::future::Future<Output = std::result::Result<Value, String>>,
 {
     let message = task.message();
 
@@ -437,15 +400,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_missing_path_encodes_as_not_existing() {
-        let encoded = encode_stat(None);
-        let decoded: rmpv::Value = rmp_serde::from_slice(&encoded).unwrap();
+    fn a_missing_path_answers_as_not_existing() {
+        let value = stat_value(None);
 
-        let map = decoded.as_map().unwrap();
+        let map = value.as_map().unwrap();
 
         assert_eq!(map.len(), 1);
-        assert_eq!(map[0].0.as_str().unwrap(), "ex");
-        assert_eq!(map[0].1.as_bool().unwrap(), false);
+        assert_eq!(value.get("ex"), Some(&Value::Bool(false)));
     }
 
     #[test]

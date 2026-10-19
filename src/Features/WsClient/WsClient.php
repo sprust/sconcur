@@ -4,12 +4,12 @@ declare(strict_types=1);
 
 namespace SConcur\Features\WsClient;
 
+use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Exceptions\WsClient\WsClientConnectException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\WsClient\Dto\Connection;
 use SConcur\Features\WsClient\Payloads\ConnectPayload;
 use SConcur\Features\WsClient\Payloads\ConnectPayloadParameters;
-use SConcur\Transport\MessagePackTransport;
 use Throwable;
 
 /**
@@ -56,8 +56,14 @@ readonly class WsClient
             );
         }
 
+        if (!is_array($result->payload)) {
+            throw new UnexpectedResponseFormatException(
+                message: 'The WebSocket client connect result is not a map.',
+            );
+        }
+
         /** @var array<string, mixed> $meta */
-        $meta = MessagePackTransport::unpack($result->payload);
+        $meta = $result->payload;
 
         return new Connection(
             id: (string) ($meta['cid'] ?? ''),

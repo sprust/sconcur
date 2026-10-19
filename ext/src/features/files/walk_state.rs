@@ -25,7 +25,7 @@ use crate::dto::{Message, Result};
 use crate::helpers::calc_execution_ms;
 use crate::states::{StateCloseFuture, StateContract, StateFuture};
 
-use super::dirs::{encode_entries, read_directory, Entry};
+use super::dirs::{entries_value, read_directory, Entry};
 
 struct Frontier {
     /// The entries of the directory read last, not yet handed to PHP.
@@ -208,7 +208,7 @@ impl WalkState {
 
             match self.collect(&mut frontier).await {
                 Ok(entries) => {
-                    let body = encode_entries(&entries);
+                    let body = entries_value(&entries);
 
                     if Self::finished(&frontier) {
                         Result::success(&self.message, body, calc_execution_ms(self.start_time))

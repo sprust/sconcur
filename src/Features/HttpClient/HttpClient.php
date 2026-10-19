@@ -14,6 +14,7 @@ use SConcur\Exceptions\HttpClient\HttpClientException;
 use SConcur\Exceptions\HttpClient\NetworkException;
 use SConcur\Exceptions\HttpClient\RequestException;
 use SConcur\Dto\TaskResultDto;
+use SConcur\Exceptions\UnexpectedResponseFormatException;
 use SConcur\Features\FeatureExecutor;
 use SConcur\Features\HttpClient\Dto\DownloadResult;
 use SConcur\Features\HttpClient\Dto\ResponseBodyStream;
@@ -22,7 +23,6 @@ use SConcur\Features\HttpClient\Payloads\RequestPayloadParameters;
 use SConcur\Features\HttpClient\Payloads\UploadChunkPayload;
 use SConcur\Features\HttpClient\Payloads\UploadEndPayload;
 use SConcur\State;
-use SConcur\Transport\MessagePackTransport;
 use Throwable;
 
 /**
@@ -113,8 +113,7 @@ readonly class HttpClient implements ClientInterface
             );
         }
 
-        /** @var array<string, mixed> $meta */
-        $meta = MessagePackTransport::unpack($result->payload);
+        $meta = self::meta($result);
 
         $statusCode = (int) ($meta['st'] ?? 0);
 
@@ -194,8 +193,7 @@ readonly class HttpClient implements ClientInterface
 
     protected function buildResponse(TaskResultDto $result): ResponseInterface
     {
-        /** @var array<string, mixed> $meta */
-        $meta = MessagePackTransport::unpack($result->payload);
+        $meta = self::meta($result);
 
         $response = $this->responseFactory->createResponse((int) ($meta['st'] ?? 200));
 
@@ -254,8 +252,25 @@ readonly class HttpClient implements ClientInterface
     }
 
     /**
-     * An empty header map decodes to stdClass (a MessagePack quirk), and nested
-     * values may too; normalize to array<string, array<int, string>>.
+     * The response meta the core built, or a loud failure: anything but an array
+     * here is a protocol bug, not a response.
+     *
+     * @return array<string, mixed>
+     */
+    protected static function meta(TaskResultDto $result): array
+    {
+        if (!is_array($result->payload)) {
+            throw new UnexpectedResponseFormatException(
+                message: 'The HTTP client result is not a map.',
+            );
+        }
+
+        return $result->payload;
+    }
+
+    /**
+     * Normalizes the header map the core built to array<string, array<int, string>>,
+     * whatever shape a value came in.
      *
      * @return array<string, array<int, string>>
      */

@@ -16,7 +16,7 @@ pub mod values;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::dto::Result;
+use crate::dto::{Result, Value};
 use crate::errs::Factory;
 use crate::features::{BoxFuture, Feature};
 use crate::helpers::calc_execution_ms;
@@ -119,7 +119,7 @@ impl Feature for AmqpFeature {
         Box::pin(async move {
             let message = task.message();
 
-            let envelope: payloads::Envelope = match rmp_serde::from_slice(&message.payload) {
+            let envelope: payloads::Envelope<'_> = match message.payload.decode() {
                 Ok(envelope) => envelope,
                 Err(error) => {
                     task.add_result(Result::error(
@@ -142,13 +142,13 @@ impl Feature for AmqpFeature {
     /// thread — this runs inside `push()`, and closing a channel waits on the
     /// broker.
     fn handle_detached(&self, task: Task) {
-        let message = task.message();
-
-        let Ok(envelope) = rmp_serde::from_slice::<payloads::Envelope>(&message.payload) else {
-            return;
-        };
-
+        // The envelope borrows the message, so the task goes along: it owns the
+        // message for as long as the dispatch needs it.
         crate::core::get().runtime().spawn(async move {
+            let Ok(envelope) = task.message().payload.decode::<payloads::Envelope<'_>>() else {
+                return;
+            };
+
             commands::dispatch_detached(&envelope).await;
         });
     }
@@ -179,8 +179,8 @@ pub fn shutdown() {
 
 // --- answering a task ---------------------------------------------------------
 
-/// Answers the task with an already encoded payload.
-pub async fn respond(task: &Task, payload: Vec<u8>, start_time: Instant) {
+/// Answers the task with the value PHP receives as the result.
+pub async fn respond(task: &Task, payload: Value, start_time: Instant) {
     task.add_result(Result::success(
         task.message(),
         payload,
@@ -193,7 +193,7 @@ pub async fn respond(task: &Task, payload: Vec<u8>, start_time: Instant) {
 pub async fn respond_done(task: &Task, start_time: Instant) {
     task.add_result(Result::success(
         task.message(),
-        Vec::new(),
+        Value::Nil,
         calc_execution_ms(start_time),
     ))
     .await;

@@ -19,7 +19,7 @@ use SConcur\Features\Amqp\Timestamp;
  *   deeper down, so a header carrying a list keeps its values;
  * - a nested array with no string key anywhere is an AMQP field array, not a table.
  *
- * A decimal and a timestamp are the two values MessagePack has no type for. They travel in
+ * A decimal and a timestamp are the two values a PHP array has no type for. They travel in
  * a tagged map the extension side turns into the real field value and back, because flattening
  * them would change the type of a header for every other client reading the same queue.
  *
@@ -124,7 +124,7 @@ readonly class TableCodec
 
     /**
      * A nested array with no string keys: an AMQP field array, which travels as a
-     * MessagePack list.
+     * PHP list.
      *
      * @param array<array-key, mixed> $values
      *

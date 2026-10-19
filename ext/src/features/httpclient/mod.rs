@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::dto::Result;
+use crate::dto::{Result, Value};
 use crate::errs::Factory;
 use crate::features::{BoxFuture, Feature};
 use crate::helpers::calc_execution_ms;
@@ -90,7 +90,7 @@ impl Feature for HttpClientFeature {
         Box::pin(async move {
             let message = task.message();
 
-            let envelope: payloads::Envelope = match rmp_serde::from_slice(&message.payload) {
+            let envelope: payloads::Envelope<'_> = match message.payload.decode() {
                 Ok(envelope) => envelope,
                 Err(error) => {
                     task.add_result(Result::error(
@@ -104,9 +104,9 @@ impl Feature for HttpClientFeature {
             };
 
             match envelope.command.as_str() {
-                "req" => handle_request(&task, envelope.params).await,
-                "upc" => handle_upload(&task, envelope.params, false).await,
-                "upe" => handle_upload(&task, envelope.params, true).await,
+                "req" => handle_request(&task, &envelope.params).await,
+                "upc" => handle_upload(&task, &envelope.params, false).await,
+                "upe" => handle_upload(&task, &envelope.params, true).await,
                 _ => {
                     task.add_result(Result::error(message, ERRORS.by_text("unknown command")))
                         .await;
@@ -116,10 +116,10 @@ impl Feature for HttpClientFeature {
     }
 }
 
-async fn handle_request(task: &Task, params: rmpv::Value) {
+async fn handle_request(task: &Task, params: &Value) {
     let message = task.message();
 
-    let mut params: payloads::RequestParams = match rmpv::ext::from_value(params) {
+    let mut params: payloads::RequestParams = match params.decode() {
         Ok(params) => params,
         Err(error) => {
             task.add_result(Result::error(
@@ -271,7 +271,7 @@ async fn start_streamed(
 
     task.add_result(Result::success_with_next(
         message,
-        Vec::new(),
+        Value::Nil,
         calc_execution_ms(start_time),
     ))
     .await;
@@ -329,11 +329,11 @@ fn open_streamed(
     Ok(Pending::Streamed(response))
 }
 
-async fn handle_upload(task: &Task, params: rmpv::Value, end: bool) {
+async fn handle_upload(task: &Task, params: &Value, end: bool) {
     let message = task.message();
     let start_time = Instant::now();
 
-    let mut params: payloads::UploadParams = match rmpv::ext::from_value(params) {
+    let mut params: payloads::UploadParams = match params.decode() {
         Ok(params) => params,
         Err(error) => {
             task.add_result(Result::error(
@@ -401,7 +401,7 @@ async fn handle_upload(task: &Task, params: rmpv::Value, end: bool) {
 
     task.add_result(Result::success(
         message,
-        Vec::new(),
+        Value::Nil,
         calc_execution_ms(start_time),
     ))
     .await;
@@ -442,7 +442,7 @@ async fn download(task: &Task, builder: reqwest::RequestBuilder, params: &mut pa
                 headers,
                 written: 0,
             }
-            .encode(),
+            .into_value(),
             calc_execution_ms(start_time),
         ))
         .await;
@@ -517,7 +517,7 @@ async fn download(task: &Task, builder: reqwest::RequestBuilder, params: &mut pa
             // The bytes actually written, not a Content-Length header.
             written,
         }
-        .encode(),
+        .into_value(),
         calc_execution_ms(start_time),
     ))
     .await;

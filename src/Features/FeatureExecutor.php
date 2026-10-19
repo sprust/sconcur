@@ -244,7 +244,7 @@ readonly class FeatureExecutor
     {
         if ($result->isError) {
             throw new TaskErrorException(
-                message: $result->payload ?: 'Unknown error',
+                message: (is_string($result->payload) && $result->payload !== '') ? $result->payload : 'Unknown error',
             );
         }
 
@@ -258,7 +258,7 @@ readonly class FeatureExecutor
      * surfaces as TaskExecutionException, exactly like any resume-time failure.
      * The task key is unknown here (the push happens on the resuming side); result
      * routing is guaranteed by the owner id the dispatcher sends with the push —
-     * the extension side carries it back in the result frame.
+     * the extension side carries it back in the result.
      */
     protected static function suspend(PendingPushDto|PendingNextDto $pendingTask): TaskResultDto
     {

@@ -53,10 +53,8 @@ flowchart TB
     worker2["Worker #2 (extension pusher)"]
     client["Browser / Prometheus / curl (Bearer)"]
 
-    master -->|"spawn and supervise"| worker1
-    master -->|"spawn and supervise"| worker2
-    worker1 -->|"push snapshot every 1s (unix socket)"| master
-    worker2 -->|"push snapshot"| master
+    master <-->|"spawn and supervise / push snapshot every 1s (unix socket)"| worker1
+    master <-->|"spawn and supervise / push snapshot"| worker2
     master <-->|"metrics / JSON / HTML / SSE"| client
 ```
 
@@ -158,16 +156,16 @@ running unlike pools shows each of them beside the others.
 | `startedAt` / `uptimeSeconds` | when the worker's serve loop started (UTC) and its lifetime | serve-loop start |
 | `requests.completed` | requests served (HTTP) | counter |
 | `requests.avgMs` | average request duration | sum / count |
-| `requests.inFlight` | in progress right now | in-flight registry |
-| `requests.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | of those, by age [1s,5s) / [5s,15s) / ≥15s | in-flight age |
+| `requests.inFlight` | in progress right now | registry of the requests being handled |
+| `requests.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | of those, by age [1s,5s) / [5s,15s) / ≥15s | age of the requests being handled |
 | `connections.active` / `totalAccepted` | connections open now / accepted over all time | counter |
 | `consumers.coroutines` | consumers open — one per coroutine, so the capacity in use | consumer registry |
 | `consumers.delivered` | deliveries handed to PHP (queue consumer) | counter |
 | `consumers.acked` / `refused` | deliveries acknowledged / nacked or rejected, counted as deliveries rather than as commands | the `ack`, `nack` and `reject` commands themselves |
-| `consumers.timed` | of those, how many had a handler time to measure (an auto-acknowledged delivery has none) | in-flight registry |
+| `consumers.timed` | of those, how many had a handler time to measure (an auto-acknowledged delivery has none) | registry of the deliveries being handled |
 | `consumers.avgMs` | average time a delivery spends in a handler | delivery → its acknowledgement |
-| `consumers.inFlight` | delivered and not settled yet | in-flight registry |
-| `consumers.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | of those, by age [1s,5s) / [5s,15s) / ≥15s | in-flight age |
+| `consumers.inFlight` | delivered and not settled yet | registry of the deliveries being handled |
+| `consumers.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | of those, by age [1s,5s) / [5s,15s) / ≥15s | age of the deliveries being handled |
 | `master.pid` / `startedAt` / `uptimeSeconds` | the master process itself | master |
 | `master.memory.rssBytes` / `master.cpuPercent` | RSS and CPU of the master | `/proc/self/*` |
 
@@ -224,13 +222,13 @@ The same data in three representations, chosen by `Accept`. The HTTP pool's JSON
   "groups": [
     {
       "name": "http",
-      "workersTotal": 3,
+      "workersTotal": 8,
       "workersHung": 0,
       "watchdogKills": 0,
       "totals": {
-        "memory": { "rssBytes": 125829120 },
-        "cpuPercent": 10.6,
-        "runtimeTasks": 72,
+        "memory": { "rssBytes": 335544320 },
+        "cpuPercent": 28.4,
+        "runtimeTasks": 192,
         "requests": { "completed": 843210, "avgMs": 2.6, "inFlight": 41, "inFlight1to5s": 12, "inFlight5to15s": 4, "inFlightOver15s": 1 }
       }
     }

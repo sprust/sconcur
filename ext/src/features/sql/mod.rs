@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::dto::Result;
+use crate::dto::{Result, Value};
 use crate::errs::Factory;
 use crate::features::{BoxFuture, Feature};
 use crate::helpers::calc_execution_ms;
@@ -104,7 +104,7 @@ impl Feature for SqlFeature {
         Box::pin(async move {
             let message = task.message();
 
-            let envelope: payloads::Envelope = match rmp_serde::from_slice(&message.payload) {
+            let envelope: payloads::Envelope<'_> = match message.payload.decode() {
                 Ok(envelope) => envelope,
                 Err(error) => {
                     task.add_result(Result::error(
@@ -136,7 +136,7 @@ impl Feature for SqlFeature {
 }
 
 impl SqlFeature {
-    async fn acquire(&'static self, envelope: &payloads::Envelope) -> std::result::Result<Acquired, String> {
+    async fn acquire(&'static self, envelope: &payloads::Envelope<'_>) -> std::result::Result<Acquired, String> {
         pools::get()
             .acquire(
                 self.driver_name,
@@ -152,10 +152,10 @@ impl SqlFeature {
     /// Streams a SELECT. An autocommit query holds a pooled connection until the
     /// cursor closes; a transaction query runs on the pinned transaction and
     /// leaves its connection to the begin task.
-    async fn handle_query(&'static self, task: &Task, envelope: &payloads::Envelope) {
+    async fn handle_query(&'static self, task: &Task, envelope: &payloads::Envelope<'_>) {
         let message = task.message();
 
-        let params: payloads::QueryParams = match rmpv::ext::from_value(envelope.data.clone()) {
+        let params: payloads::QueryParams = match envelope.data.decode() {
             Ok(params) => params,
             Err(error) => {
                 task.add_result(Result::error(
@@ -167,7 +167,14 @@ impl SqlFeature {
             }
         };
 
-        let bindings = normalize_bindings(&params.bindings);
+        let bindings = match normalize_bindings(&params.bindings) {
+            Ok(bindings) => bindings,
+            Err(error) => {
+                task.add_result(Result::error(message, self.errors.by_text(&error))).await;
+
+                return;
+            }
+        };
         let sql = params.sql.clone();
 
         // The cursor outlives this call (PHP pulls it via next), so the deadline
@@ -245,11 +252,11 @@ impl SqlFeature {
 
     /// Runs a non-row statement and answers with affected-rows and
     /// last-insert-id.
-    async fn handle_exec(&'static self, task: &Task, envelope: &payloads::Envelope) {
+    async fn handle_exec(&'static self, task: &Task, envelope: &payloads::Envelope<'_>) {
         let message = task.message();
         let start_time = Instant::now();
 
-        let params: payloads::ExecParams = match rmpv::ext::from_value(envelope.data.clone()) {
+        let params: payloads::ExecParams = match envelope.data.decode() {
             Ok(params) => params,
             Err(error) => {
                 task.add_result(Result::error(
@@ -261,7 +268,14 @@ impl SqlFeature {
             }
         };
 
-        let bindings = normalize_bindings(&params.bindings);
+        let bindings = match normalize_bindings(&params.bindings) {
+            Ok(bindings) => bindings,
+            Err(error) => {
+                task.add_result(Result::error(message, self.errors.by_text(&error))).await;
+
+                return;
+            }
+        };
 
         let outcome = if params.transaction_id.is_empty() {
             let acquired = match self.acquire(envelope).await {
@@ -299,7 +313,7 @@ impl SqlFeature {
         match outcome {
             Ok((affected_rows, last_insert_id)) => task.add_result(Result::success(
                 message,
-                values::encode_exec_result(affected_rows, last_insert_id),
+                values::exec_result_value(affected_rows, last_insert_id),
                 calc_execution_ms(start_time),
             )).await,
             Err(error) => task.add_result(Result::error(
@@ -312,11 +326,11 @@ impl SqlFeature {
     /// Opens a transaction on a pooled connection and registers the holder
     /// state. The result carries hasNext so the begin task stays alive for the
     /// whole transaction.
-    async fn handle_begin(&'static self, task: &Task, envelope: &payloads::Envelope) {
+    async fn handle_begin(&'static self, task: &Task, envelope: &payloads::Envelope<'_>) {
         let message = task.message();
         let start_time = Instant::now();
 
-        let params: payloads::BeginParams = match rmpv::ext::from_value(envelope.data.clone()) {
+        let params: payloads::BeginParams = match envelope.data.decode() {
             Ok(params) => params,
             Err(error) => {
                 task.add_result(Result::error(
@@ -396,7 +410,7 @@ impl SqlFeature {
 
         task.add_result(Result::success_with_next(
             message,
-            Vec::new(),
+            Value::Nil,
             calc_execution_ms(start_time),
         )).await;
     }
@@ -404,11 +418,11 @@ impl SqlFeature {
     /// Commits or rolls back the transaction named by the command; PHP then
     /// releases the holder via next(). Finalising is idempotent, so a stop that
     /// races the explicit call cannot double-release.
-    async fn handle_finalize(&'static self, task: &Task, envelope: &payloads::Envelope, is_commit: bool) {
+    async fn handle_finalize(&'static self, task: &Task, envelope: &payloads::Envelope<'_>, is_commit: bool) {
         let message = task.message();
         let start_time = Instant::now();
 
-        let params: payloads::TransactionRefParams = match rmpv::ext::from_value(envelope.data.clone()) {
+        let params: payloads::TransactionRefParams = match envelope.data.decode() {
             Ok(params) => params,
             Err(error) => {
                 task.add_result(Result::error(
@@ -441,7 +455,7 @@ impl SqlFeature {
         match outcome {
             Ok(()) => task.add_result(Result::success(
                 message,
-                Vec::new(),
+                Value::Nil,
                 calc_execution_ms(start_time),
             )).await,
             Err(error) => task.add_result(Result::error(

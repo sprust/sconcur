@@ -65,7 +65,7 @@ $streamed = static function (string $path, int $bufferSizeBytes): int {
 };
 
 $benchmarker->run(
-    nativeCallback: static function () use (&$nativeIndex, $nativePaths, $bufferSize): int {
+    nativeCallback: static function () use (&$nativeIndex, $nativePaths, $bufferSizeBytes): int {
         $handle = fopen($nativePaths[$nativeIndex++ % count($nativePaths)], 'rb');
 
         if ($handle === false) {
@@ -83,10 +83,10 @@ $benchmarker->run(
         return $read;
     },
     syncCallback: static function () use (&$syncIndex, $syncPaths, $bufferSizeBytes, $streamed): int {
-        return $streamed($syncPaths[$syncIndex++ % count($syncPaths)], $bufferSize);
+        return $streamed($syncPaths[$syncIndex++ % count($syncPaths)], $bufferSizeBytes);
     },
     asyncCallback: static function () use (&$asyncIndex, $asyncPaths, $bufferSizeBytes, $streamed): int {
-        return $streamed($asyncPaths[$asyncIndex++ % count($asyncPaths)], $bufferSize);
+        return $streamed($asyncPaths[$asyncIndex++ % count($asyncPaths)], $bufferSizeBytes);
     },
 );
 

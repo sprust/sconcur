@@ -16,7 +16,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::dto::{Message, Result};
+use crate::dto::{Message, Result, Value};
 use crate::errs::Factory;
 use crate::features::{BoxFuture, Feature};
 use crate::helpers::calc_execution_ms;
@@ -104,7 +104,7 @@ async fn handle_serve(task: Task) {
     let message = task.message();
     let start_time = Instant::now();
 
-    let payload: payloads::ServePayload = match rmp_serde::from_slice(&message.payload) {
+    let payload: payloads::ServePayload = match message.payload.decode() {
         Ok(payload) => payload,
         Err(error) => {
             task.add_result(Result::error(
@@ -184,7 +184,7 @@ async fn handle_serve(task: Task) {
             Some(event) => {
                 task.add_result(Result::success_with_next(
                     message,
-                    event.encode(),
+                    event.value(),
                     calc_execution_ms(start_time),
                 ))
                 .await;
@@ -196,7 +196,7 @@ async fn handle_serve(task: Task) {
 
                 task.add_result(Result::success(
                     message,
-                    Vec::new(),
+                    Value::Nil,
                     calc_execution_ms(start_time),
                 ))
                 .await;
@@ -479,13 +479,13 @@ async fn handle_respond(task: Task) {
     // The payload carries the connection id, so the happy path decodes once; the
     // id-only struct is the fallback that still tells a malformed payload apart
     // from one whose id alone is unreadable.
-    let mut payload: payloads::RespondPayload = match rmp_serde::from_slice(&message.payload) {
+    let mut payload: payloads::RespondPayload = match message.payload.decode() {
         Ok(payload) => payload,
         Err(parse_error) => {
             // The id-only struct ignores every other key, so it still names the
             // connection whose payload is malformed — which is the difference
             // between a report an operator can act on and one they cannot.
-            let text = match rmp_serde::from_slice::<payloads::RespondConnectionId>(&message.payload) {
+            let text = match message.payload.decode::<payloads::RespondConnectionId>() {
                 Ok(id_only) => format!("parse respond payload of connectionId {}", id_only.connection_id),
                 Err(_) => "parse respond connectionId".to_string(),
             };
@@ -535,7 +535,7 @@ async fn handle_respond(task: Task) {
         Ok(()) => {
             task.add_result(Result::success(
                 message,
-                Vec::new(),
+                Value::Nil,
                 calc_execution_ms(start_time),
             ))
             .await;

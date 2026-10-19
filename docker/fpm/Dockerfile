@@ -3,9 +3,9 @@
 # operations at once inside one FPM process. Driven by ext/check/fpm-check.sh.
 #
 # Same php:8.4.15 tag as every other image here, so the extension built in the
-# `php` container loads unchanged — only the SAPI differs. Carries ext-msgpack
-# (the package requires it) and cgi-fcgi, which drives requests straight at the
-# FPM pool without an HTTP server in front.
+# `php` container loads unchanged — only the SAPI differs. Carries cgi-fcgi, which
+# drives requests straight at the FPM pool without an HTTP server in front; the
+# package needs no PHP extension beyond its own.
 #
 # Spike-only: not part of docker-compose.yml, not part of `make check`.
 FROM php:8.4.15-fpm
@@ -17,6 +17,3 @@ RUN apt-get update && \
       unzip && \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/php/pie:bin /pie /usr/local/bin/pie
-
-RUN pie install msgpack/msgpack-php:3.0.1

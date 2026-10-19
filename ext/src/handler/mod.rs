@@ -21,10 +21,9 @@ use crate::types::method::Method;
 /// Backpressure still applies past the buffer (tasks::Task::add_result).
 const RESULTS_BUFFER_SIZE: usize = 1024;
 
-/// Caps one batch at what the multiframe's uint16 count field can carry.
-/// Without the cap a larger max would silently truncate the count: PHP would
-/// parse fewer frames than the buffer holds, while the excess results are
-/// already delivered on this side — lost with no error anywhere.
+/// Caps one batch at what a PHP array comfortably holds per crossing. The
+/// buffer itself is RESULTS_BUFFER_SIZE deep, so the cap is a guard against a
+/// caller asking for the moon rather than a limit anything reaches.
 const BATCH_MAX_CAP: usize = 65535;
 
 /// How a wait ended. `Timeout` is not a failure: the caller polls again (the

@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use redis::aio::ConnectionLike;
 use redis::Value;
 
-use crate::dto::Result;
+use crate::dto::{Map, Result, Value as PhpValue};
 use crate::features::{BoxFuture, Feature};
 use crate::helpers::calc_execution_ms;
 use crate::states;
@@ -86,7 +86,7 @@ impl Feature for RedisFeature {
         Box::pin(async move {
             let message = task.message();
 
-            let envelope: payloads::Envelope = match rmp_serde::from_slice(&message.payload) {
+            let envelope: payloads::Envelope<'_> = match message.payload.decode() {
                 Ok(envelope) => envelope,
                 Err(error) => {
                     task.add_result(Result::error(
@@ -125,11 +125,11 @@ impl RedisFeature {
     /// One command. An ordinary one goes onto a shared multiplexed connection;
     /// a blocking one onto a connection of its own, because on a shared socket
     /// it would stall everything queued behind it.
-    async fn handle_command(&'static self, task: &Task, envelope: &payloads::Envelope) {
+    async fn handle_command(&'static self, task: &Task, envelope: &payloads::Envelope<'_>) {
         let message = task.message();
         let start_time = Instant::now();
 
-        let params: payloads::CommandParams = match rmpv::ext::from_value(envelope.data.clone()) {
+        let params: payloads::CommandParams = match envelope.data.decode() {
             Ok(params) => params,
             Err(error) => {
                 task.add_result(Result::error(
@@ -221,7 +221,7 @@ impl RedisFeature {
         };
 
         match outcome.and_then(|value| {
-            values::encode_value(&value).map_err(|error| (Kind::Command, error))
+            values::reply_value(&value).map_err(|error| (Kind::Command, error))
         }) {
             Ok(payload) => {
                 task.add_result(Result::success(message, payload, calc_execution_ms(start_time)))
@@ -240,11 +240,11 @@ impl RedisFeature {
     /// The failure of one command does not fail the answer — the server ran the
     /// others, and throwing their results away because of one typo would be
     /// worse than reporting the failure in its place.
-    async fn handle_pipeline(&'static self, task: &Task, envelope: &payloads::Envelope) {
+    async fn handle_pipeline(&'static self, task: &Task, envelope: &payloads::Envelope<'_>) {
         let message = task.message();
         let start_time = Instant::now();
 
-        let params: payloads::PipelineParams = match rmpv::ext::from_value(envelope.data.clone()) {
+        let params: payloads::PipelineParams = match envelope.data.decode() {
             Ok(params) => params,
             Err(error) => {
                 task.add_result(Result::error(
@@ -356,12 +356,12 @@ impl RedisFeature {
             }
         };
 
-        let encoded = if atomic {
+        let answer = if atomic {
             match values.into_iter().next() {
                 // The transaction was not run: a watched key changed under it.
                 // PHP sees null, which is what EXEC answered.
-                Some(Value::Nil) => values::encode_value(&Value::Nil),
-                Some(Value::Array(replies)) => values::encode_pipeline(&replies),
+                Some(Value::Nil) => values::reply_value(&Value::Nil),
+                Some(Value::Array(replies)) => values::pipeline_value(&replies),
                 // EXEC itself failed — a command was refused while it was being
                 // queued, so the server ran none of them.
                 Some(Value::ServerError(error)) => Err(format!(
@@ -369,14 +369,14 @@ impl RedisFeature {
                     error.code(),
                     error.details().unwrap_or("")
                 )),
-                Some(other) => values::encode_value(&other),
-                None => values::encode_pipeline(&[]),
+                Some(other) => values::reply_value(&other),
+                None => values::pipeline_value(&[]),
             }
         } else {
-            values::encode_pipeline(&values)
+            values::pipeline_value(&values)
         };
 
-        let payload = match encoded {
+        let payload = match answer {
             Ok(payload) => payload,
             Err(error) => {
                 task.add_result(Result::error(message, fail(Kind::Command, &error)))
@@ -392,10 +392,10 @@ impl RedisFeature {
 
     /// A cursor command. The cursor stays here and PHP pulls batches, so a keyspace
     /// bigger than memory is walked without ever holding it whole.
-    async fn handle_scan(&'static self, task: &Task, envelope: &payloads::Envelope) {
+    async fn handle_scan(&'static self, task: &Task, envelope: &payloads::Envelope<'_>) {
         let message = task.message();
 
-        let params: payloads::ScanParams = match rmpv::ext::from_value(envelope.data.clone()) {
+        let params: payloads::ScanParams = match envelope.data.decode() {
             Ok(params) => params,
             Err(error) => {
                 task.add_result(Result::error(
@@ -465,11 +465,11 @@ impl RedisFeature {
     /// A subscription. It gets a connection of its own — the protocol puts the
     /// connection into subscriber mode — and streams messages to PHP in
     /// batches.
-    async fn handle_subscribe(&'static self, task: &Task, envelope: &payloads::Envelope) {
+    async fn handle_subscribe(&'static self, task: &Task, envelope: &payloads::Envelope<'_>) {
         let message = task.message();
         let start_time = Instant::now();
 
-        let params: payloads::SubscribeParams = match rmpv::ext::from_value(envelope.data.clone()) {
+        let params: payloads::SubscribeParams = match envelope.data.decode() {
             Ok(params) => params,
             Err(error) => {
                 task.add_result(Result::error(
@@ -612,7 +612,7 @@ impl RedisFeature {
         // it to add channels or close, and the messages start at the next pull.
         task.add_result(Result::success_with_next(
             message,
-            encode_subscription_id(&subscription_id),
+            subscription_id_value(&subscription_id),
             calc_execution_ms(start_time),
         ))
         .await;
@@ -620,23 +620,22 @@ impl RedisFeature {
 
     /// Adds or removes channels on a live subscription, on the connection that
     /// subscription is on.
-    async fn handle_subscription_update(&'static self, task: &Task, envelope: &payloads::Envelope) {
+    async fn handle_subscription_update(&'static self, task: &Task, envelope: &payloads::Envelope<'_>) {
         let message = task.message();
         let start_time = Instant::now();
 
-        let params: payloads::SubscriptionUpdateParams =
-            match rmpv::ext::from_value(envelope.data.clone()) {
-                Ok(params) => params,
-                Err(error) => {
-                    task.add_result(Result::error(
-                        message,
-                        fail(Kind::Argument, &format!("parse subscription update params: {error}")),
-                    ))
-                    .await;
+        let params: payloads::SubscriptionUpdateParams = match envelope.data.decode() {
+            Ok(params) => params,
+            Err(error) => {
+                task.add_result(Result::error(
+                    message,
+                    fail(Kind::Argument, &format!("parse subscription update params: {error}")),
+                ))
+                .await;
 
-                    return;
-                }
-            };
+                return;
+            }
+        };
 
         let Some(subscription) = registry_subscriptions().load(&params.subscription_id) else {
             task.add_result(Result::error(
@@ -693,7 +692,7 @@ impl RedisFeature {
             Ok(()) => {
                 task.add_result(Result::success(
                     message,
-                    Vec::new(),
+                    PhpValue::Nil,
                     calc_execution_ms(start_time),
                 ))
                 .await
@@ -706,12 +705,11 @@ impl RedisFeature {
 
     /// Closes a subscription. Idempotent: an explicit close and the flow ending
     /// both arrive, in whichever order.
-    async fn handle_subscription_close(&'static self, task: &Task, envelope: &payloads::Envelope) {
+    async fn handle_subscription_close(&'static self, task: &Task, envelope: &payloads::Envelope<'_>) {
         let message = task.message();
         let start_time = Instant::now();
 
-        let params: payloads::SubscriptionRefParams = match rmpv::ext::from_value(envelope.data.clone())
-        {
+        let params: payloads::SubscriptionRefParams = match envelope.data.decode() {
             Ok(params) => params,
             Err(error) => {
                 task.add_result(Result::error(
@@ -738,13 +736,13 @@ impl RedisFeature {
 
         task.add_result(Result::success(
             message,
-            Vec::new(),
+            PhpValue::Nil,
             calc_execution_ms(start_time),
         ))
         .await;
     }
 
-    fn acquire(&'static self, envelope: &payloads::Envelope) -> std::result::Result<pools::Acquired, String> {
+    fn acquire(&'static self, envelope: &payloads::Envelope<'_>) -> std::result::Result<pools::Acquired, String> {
         pools::get()
             .acquire(&envelope.dsn, envelope.pool_size, envelope.conn_max_lifetime_ms)
             .map_err(|error| fail(Kind::Dsn, &error))
@@ -774,14 +772,9 @@ where
         .map_err(|error| values::classify_error(&error))
 }
 
-fn encode_subscription_id(subscription_id: &str) -> Vec<u8> {
-    let mut buffer = Vec::new();
-
-    let _ = rmp::encode::write_map_len(&mut buffer, 1);
-    let _ = rmp::encode::write_str(&mut buffer, "sid");
-    let _ = rmp::encode::write_str(&mut buffer, subscription_id);
-
-    buffer
+/// The first answer of a subscription: the id PHP addresses it by, under `sid`.
+fn subscription_id_value(subscription_id: &str) -> PhpValue {
+    Map::new().set("sid", subscription_id).into()
 }
 
 fn normalize_batch_size(batch_size: i64) -> usize {

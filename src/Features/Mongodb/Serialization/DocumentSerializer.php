@@ -5,75 +5,53 @@ declare(strict_types=1);
 namespace SConcur\Features\Mongodb\Serialization;
 
 use SConcur\Features\Mongodb\Exceptions\UnexpectedMongodbResponseFormatException;
-use function msgpack_pack;
-use function msgpack_unpack;
 
 /**
- * Documents are exchanged with the extension as MessagePack, so nothing here
- * depends on ext-mongodb.
- *
- * BSON types MessagePack has no equivalent for (an id, a date, a decimal, ...)
- * ride in the object envelope ext-msgpack uses for PHP objects, and become
- * SConcur\Bson\* instances. The extension materialises them in C while parsing,
- * so decoding a document is one pass and PHP never walks the result — which is
- * what made the earlier hand-rolled converter expensive.
+ * Documents cross to the extension as the PHP arrays they are and come back as
+ * the arrays the core builds, so nothing here depends on ext-mongodb and nothing
+ * is serialized: the core reads a document off the array inside the push call and
+ * creates the SConcur\Bson\* instances itself inside the wait call. What is left
+ * here is saying what a result is when it is not a document.
  */
 class DocumentSerializer
 {
     /**
-     * Encode a document for the wire. MessagePack preserves the PHP shape — a list
-     * packs as a list, a map as a map — and the extension side turns either into a BSON
-     * document, so the caller does not have to say which one it is.
-     *
-     * @param array<int|string, mixed> $document
-     */
-    public static function serialize(array $document): string
-    {
-        return msgpack_pack($document);
-    }
-
-    /**
-     * Decode a document from the wire.
+     * A document as the core handed it back: an array, or nothing.
      *
      * @return array<int|string, mixed>
      */
-    public static function unserialize(string $document): array
+    public static function unserialize(mixed $document): array
     {
-        if ($document === '') {
+        if ($document === null) {
             return [];
         }
 
-        $decoded = msgpack_unpack($document);
-
-        if (!is_array($decoded)) {
+        if (!is_array($document)) {
             throw new UnexpectedMongodbResponseFormatException(
-                message: 'Decoded MongoDB document is not an array.',
+                message: 'The MongoDB document the core handed back is not an array.',
             );
         }
 
-        return $decoded;
+        return $document;
     }
 
     /**
-     * Decode a cursor batch. The batch is a plain list — the BSON path needed a
-     * {"d": [...]} wrapper because PHP could only decode a document.
+     * A cursor batch as the core handed it back: a plain list of documents.
      *
      * @return array<int, mixed>
      */
-    public static function unserializeBatch(string $payload): array
+    public static function unserializeBatch(mixed $payload): array
     {
-        if ($payload === '') {
+        if ($payload === null) {
             return [];
         }
 
-        $decoded = msgpack_unpack($payload);
-
-        if (!is_array($decoded)) {
+        if (!is_array($payload)) {
             throw new UnexpectedMongodbResponseFormatException(
-                message: 'Decoded MongoDB batch is not a list.',
+                message: 'The MongoDB batch the core handed back is not a list.',
             );
         }
 
-        return array_values($decoded);
+        return array_values($payload);
     }
 }
