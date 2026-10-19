@@ -99,6 +99,7 @@ make cs-fixer-check     # check code style (PSR-12 + custom rules)
 make cs-fixer-fix       # auto-fix code style
 make check              # cs-fixer, phpstan, ext-build, ext-check, tests
 make bench-all          # run all benchmarks
+make bench-docs         # every measurement the docs quote, one session, results to .bench-runs/docs/
 ```
 
 Rebuild the extension with `make ext-build` before running tests that depend on

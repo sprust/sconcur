@@ -454,6 +454,13 @@ bench-db-lifecycle:
 bench-db-runs:
 	tests/benchmarks/db/runs.sh
 
+# Takes every measurement the benchmark docs quote, in one session, and writes
+# the results to .bench-runs/docs/<timestamp>/ (see the script's header). No flags
+# run every section in turn; some of them: make bench-docs f="--db --payload";
+# the list: make bench-docs f=--list
+bench-docs:
+	tests/benchmarks/docs/run.py $(f)
+
 bench-http-client-download:
 	$(PHP_EXT) tests/benchmarks/http/client-download.php ${c}
 
