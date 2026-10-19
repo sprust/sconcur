@@ -21,6 +21,8 @@
 #   after SIGTERM before it is killed and named, default 30), SERVER_ENV (extra VAR=value
 #   assignments for the worker environment, space-separated), SERVER_ARGS (extra
 #   --flags appended to the server command line, e.g. --ladder=l1),
+#   SHARED_SOCKET (1 = one socket inherited by every worker instead of SO_REUSEPORT),
+#   CONNECTION_CLOSE (1 = no keep-alive: a connection, and so an accept, per request),
 #   PIN_SERVERS: 1 = pin each worker to one logical CPU, as throughput.sh does —
 #   on an SMT machine that puts a worker's PHP thread and its runtime thread on
 #   the same logical CPU, which they are not meant to share;
@@ -80,6 +82,11 @@ DB_POOL_SIZE=${DB_POOL_SIZE:-9}
 # it — that is how the per-worker request/latency spread is measured.
 DISTINCT_PORTS=${DISTINCT_PORTS:-0}
 WORKER_LOGS=${WORKER_LOGS:-0}
+# SHARED_SOCKET=1: one listening socket, bound once and inherited by every worker
+# (--listenFd), the way a worker master with `listen` runs its pool, instead of a
+# SO_REUSEPORT socket per worker. The kernel then queues every connection once and
+# whichever worker accepts first takes it.
+SHARED_SOCKET=${SHARED_SOCKET:-0}
 # WRK_SCRIPT: a wrk Lua script (host path) for mixed load profiles; the URL still
 # selects host/port, the script selects the paths.
 WRK_SCRIPT=${WRK_SCRIPT:-}
@@ -97,6 +104,7 @@ WORKERLOGPREFIX=/tmp/sc-http-load-$PORT-w
 
 command -v wrk >/dev/null || { echo "wrk not found on host (apt-get install wrk)"; exit 1; }
 [ -z "$WRK_SCRIPT" ] || [ -f "$WRK_SCRIPT" ] || { echo "WRK_SCRIPT not found: $WRK_SCRIPT"; exit 1; }
+(( SHARED_SOCKET == 0 || DISTINCT_PORTS == 0 )) || { echo "SHARED_SOCKET and DISTINCT_PORTS exclude each other"; exit 1; }
 
 CORES=$(nproc)
 : "${SERVERS:=$(( CORES - WRK_THREADS ))}"
@@ -297,6 +305,8 @@ esac
 
 if (( DISTINCT_PORTS == 1 )); then
     echo "   server procs    : $SERVERS  (ports $(( PORT + 1 ))-$(( PORT + SERVERS )), no reusePort)"
+elif (( SHARED_SOCKET == 1 )); then
+    echo "   server procs    : $SERVERS  (one shared socket, inherited)"
 else
     echo "   server procs    : $SERVERS  (reusePort)"
 fi
@@ -311,6 +321,7 @@ else
 fi
 echo "   db pool / proc  : $DB_POOL_SIZE  (the /db* routes)"
 [ -n "$WRK_SCRIPT" ] && echo "   wrk script      : $WRK_SCRIPT  (mixed profile; ROUTE used only for the readiness probe)"
+[ "${CONNECTION_CLOSE:-0}" = "1" ] && echo "   keep-alive      : off (Connection: close, one request per connection)"
 [ "$WORKER_LOGS" = "1" ] && echo "   worker logs     : ${WORKERLOGPREFIX}<i>.log  (access log per worker)"
 echo "   target          : http://$IP:$PORT$ROUTE  (container bridge IP, no NAT)"
 echo "=================================================================="
@@ -320,8 +331,11 @@ kill_stray
 
 # Spawn one server per core (synchronous exec so the pidfile is fully written).
 # With DISTINCT_PORTS each worker gets its own port and no SO_REUSEPORT, so a
-# proxy in front decides the placement instead of the kernel.
-$DOCKER_COMPOSE exec -T php sh -c '
+# proxy in front decides the placement instead of the kernel. With SHARED_SOCKET
+# the loop runs under shared-socket.php, which binds the socket and hands its
+# number down in SCONCUR_LISTEN_FD; the workers keep --address, which a listenFd
+# overrides, so kill_stray still finds them by port.
+SPAWN='
     : > "'"$PIDFILE"'"
     : > "'"$STDERRLOG"'"
     rm -f "'"$WORKERLOGPREFIX"'"*.log
@@ -329,9 +343,14 @@ $DOCKER_COMPOSE exec -T php sh -c '
     while [ "$i" -lt "'"$SERVERS"'" ]; do
         port='"$PORT"'
         reuse=1
+        listen=""
         if [ "'"$DISTINCT_PORTS"'" = "1" ]; then
             port=$(( '"$PORT"' + 1 + i ))
             reuse=0
+        fi
+        if [ -n "${SCONCUR_LISTEN_FD:-}" ]; then
+            reuse=0
+            listen="--listenFd=$SCONCUR_LISTEN_FD"
         fi
 
         out=/dev/null
@@ -351,13 +370,20 @@ $DOCKER_COMPOSE exec -T php sh -c '
 
         SCONCUR_DB_POOL_SIZE='"$DB_POOL_SIZE"' \
         env '"${SERVER_ENV:-}"' $pin php -d extension='"$EXTENSION"' '"$SCRIPT"' \
-            --address=0.0.0.0:$port --reusePort=$reuse --maxConcurrency='"$MAXCONCURRENCY"' \
+            --address=0.0.0.0:$port --reusePort=$reuse $listen --maxConcurrency='"$MAXCONCURRENCY"' \
             '"${SERVER_ARGS:-}"' \
             >"$out" 2>>"'"$STDERRLOG"'" &
         echo $! >> "'"$PIDFILE"'"
         i=$(( i + 1 ))
     done
 '
+
+if (( SHARED_SOCKET == 1 )); then
+    $DOCKER_COMPOSE exec -T php php -d extension="$EXTENSION" \
+        /sconcur/tests/benchmarks/http/shared-socket.php "0.0.0.0:$PORT" sh -c "$SPAWN"
+else
+    $DOCKER_COMPOSE exec -T php sh -c "$SPAWN"
+fi
 
 # Wait until /all answers (the lazy feature init + backend connects happen here).
 ready=0
@@ -406,6 +432,9 @@ WRK_ARGS=(-t"$WRK_THREADS" -c"$CONNECTIONS" -d"${DURATION}s" --latency)
 # slow tail silently reports a prettier p99 than it earned; raise the timeout past
 # the expected tail instead of comparing truncated distributions.
 [ -n "${WRK_TIMEOUT:-}" ] && WRK_ARGS+=(--timeout "$WRK_TIMEOUT")
+# CONNECTION_CLOSE=1: a fresh connection per request, so every request goes through
+# accept — where a shared socket and a SO_REUSEPORT group differ most.
+[ "${CONNECTION_CLOSE:-0}" = "1" ] && WRK_ARGS+=(-H "Connection: close")
 
 taskset -c "$WRK_CPULIST" wrk "${WRK_ARGS[@]}" "http://$IP:$PORT$ROUTE"
 

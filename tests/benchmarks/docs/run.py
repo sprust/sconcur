@@ -562,6 +562,24 @@ def section_spread():
                                    for connections in ('256', '32')])
 
 
+def section_shared_socket():
+    """One socket shared by 12 workers against a SO_REUSEPORT socket each, on four
+    profiles, with the per-worker spread."""
+    base = {'SERVERS': '12', 'PIN_SERVERS': 'group', 'ROUTE': '/', 'WORKER_LOGS': '1'}
+    profiles = [
+        ('256 connections', {}),
+        ('32 connections', {'CONNECTIONS': '32'}),
+        ('connection per request', {'CONNECTION_CLOSE': '1'}),
+        ('mixed', {'WRK_SCRIPT': f'{HTTP}/mixed-profile.lua', 'HEAVY_PATH': '/cpu/20000', 'HEAVY_RATIO': '0.10',
+                   'WRK_TIMEOUT': '10s'}),
+    ]
+    measure_interleaved('shared-socket', [
+        (f'{accepting} {profile}', 'sconcur', {**base, **env, **accepting_env}, None)
+        for profile, env in profiles
+        for accepting, accepting_env in (('SO_REUSEPORT', {}), ('shared socket', {'SHARED_SOCKET': '1'}))
+    ])
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -584,6 +602,7 @@ SECTIONS = {
     'preemption': (section_preemption, False, 'coroutine-switching: cost under load; http-server: maxConcurrency'),
     'proxy': (section_proxy, False, 'http-server: a proxy in front of the pool'),
     'spread': (section_spread, False, 'http-server: how evenly the kernel spreads'),
+    'shared-socket': (section_shared_socket, False, 'load-testing, http-server: one socket for the whole pool'),
 }
 
 
