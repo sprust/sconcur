@@ -469,10 +469,19 @@ socket, and the server accepts on it instead of binding `address`. The
 systemd's socket activation hands over a descriptor the same way.
 
 All the workers then take connections from one queue. A worker that stops leaves what
-is waiting in it to the others, the port stays open through every restart and rolling
-reload, and nothing about it is Linux-specific. The server takes over a copy of the
-descriptor, so stopping it closes the copy and leaves the socket to whoever else holds
-it.
+is waiting in it to the others, and the port stays open through every restart and
+rolling reload. The server takes over a copy of the descriptor, so stopping it closes
+the copy and leaves the socket to whoever else holds it.
+
+On Linux a server accepts on a shared socket from a thread of its own, one more
+thread per server. The thread waits with `EPOLLEXCLUSIVE`, and only while the server
+asks for a connection, so a connection wakes one waiting worker and the workers take
+turns. Without it every worker wakes for every connection and the first to run takes
+what is queued: across 12 workers that put 7–9× between the busiest and the idlest,
+and on other systems a shared socket is still accepted that way. With the thread, on
+the same 12 workers, the rps stayed within 2% of `SO_REUSEPORT` and the requests were
+spread at least as evenly. With a connection per request it costs about 10% more CPU
+per request ([the measurements](load-testing.md#shared-socket-vs-so_reuseport)).
 
 ### A proxy in front of the pool
 
@@ -481,7 +490,8 @@ out: across 8 workers the request-count spread was 1.13–1.33× at 256
 connections. With a few long-lived keep-alive connections it does not: at 32
 connections the busiest worker served 2.8–5.1× the requests of the idlest,
 because some workers held one connection and others six. The per-worker tails
-stayed alike in both cases.
+stayed alike in both cases. One shared socket does not change that: at 32
+connections across 12 workers it left 2.9–6.7× between them as well.
 
 A proxy hands out requests rather than connections, which is what a pool fed by
 a handful of keep-alive clients needs. With many connections it does not pay.

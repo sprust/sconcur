@@ -12,10 +12,10 @@ pub mod payloads;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
+use crate::features::httpserver::listen::Listener;
 use crate::dto::{Message, Result, Value};
 use crate::errs::Factory;
 use crate::features::{BoxFuture, Feature};
@@ -242,7 +242,7 @@ impl Config {
 }
 
 async fn accept_loop(
-    listener: TcpListener,
+    mut listener: Listener,
     message: Arc<Message>,
     config: Config,
     connections: mpsc::Sender<ConnectionEvent>,

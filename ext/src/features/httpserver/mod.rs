@@ -1,5 +1,7 @@
 //! The HTTP server feature: the command dispatch behind serve and respond.
 
+#[cfg(target_os = "linux")]
+mod exclusive;
 pub mod listen;
 pub mod payloads;
 pub mod requeststats;

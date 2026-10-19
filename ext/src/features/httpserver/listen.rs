@@ -6,17 +6,40 @@
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
 use std::os::fd::{FromRawFd, RawFd};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 /// Backlog for the pending-connection queue, asked of the kernel at bind time.
 pub const LISTEN_BACKLOG: i32 = 4096;
 
+/// What a server accepts from.
+pub struct Listener(Accepting);
+
+enum Accepting {
+    /// A socket of this process alone, accepted on the runtime.
+    Polled(TcpListener),
+    /// A socket shared with other processes, accepted by a thread of its own.
+    #[cfg(target_os = "linux")]
+    Shared(super::exclusive::Acceptor),
+}
+
+impl Listener {
+    /// The next connection. Safe to drop half way, as a select! does: a
+    /// connection is never lost to an accept that did not finish.
+    pub async fn accept(&mut self) -> std::io::Result<(TcpStream, SocketAddr)> {
+        match &mut self.0 {
+            Accepting::Polled(listener) => listener.accept().await,
+            #[cfg(target_os = "linux")]
+            Accepting::Shared(acceptor) => acceptor.accept().await,
+        }
+    }
+}
+
 /// The listener a serve payload asks for: the descriptor it hands over, when it
 /// hands one over, and otherwise a socket bound to its address.
-pub fn open(address: &str, reuse_port: bool, listen_fd: Option<i64>) -> std::io::Result<TcpListener> {
+pub fn open(address: &str, reuse_port: bool, listen_fd: Option<i64>) -> std::io::Result<Listener> {
     match listen_fd {
         Some(descriptor) => adopt(descriptor),
-        None => listen(address, reuse_port),
+        None => Ok(Listener(Accepting::Polled(listen(address, reuse_port)?))),
     }
 }
 
@@ -61,7 +84,11 @@ pub fn bind(address: &str, reuse_port: bool, backlog: i32) -> std::io::Result<So
 /// socket goes on accepting for whoever else holds it, and a second serve in the
 /// same process can take it over again. The copy is close-on-exec, so nothing a
 /// handler execs inherits the listener.
-fn adopt(descriptor: i64) -> std::io::Result<TcpListener> {
+///
+/// Other processes accept on the socket too, so on Linux it is accepted by a
+/// thread that takes turns with them (see `exclusive`). Elsewhere it is polled
+/// like a socket of its own, and every worker wakes for every connection.
+fn adopt(descriptor: i64) -> std::io::Result<Listener> {
     let descriptor = RawFd::try_from(descriptor)
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("no descriptor {descriptor}")))?;
 
@@ -86,7 +113,15 @@ fn adopt(descriptor: i64) -> std::io::Result<TcpListener> {
         ));
     }
 
-    socket.set_nonblocking(true)?;
+    #[cfg(target_os = "linux")]
+    {
+        Ok(Listener(Accepting::Shared(super::exclusive::Acceptor::start(socket)?)))
+    }
 
-    TcpListener::from_std(socket.into())
+    #[cfg(not(target_os = "linux"))]
+    {
+        socket.set_nonblocking(true)?;
+
+        Ok(Listener(Accepting::Polled(TcpListener::from_std(socket.into())?)))
+    }
 }

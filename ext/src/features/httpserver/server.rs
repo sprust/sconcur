@@ -11,10 +11,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::features::httpserver::listen::Listener;
 use crate::features::httpserver::payloads::RequestEvent;
 use crate::features::httpserver::requeststats::RequestStats;
 use crate::stats::Pusher;
@@ -168,7 +168,7 @@ pub struct ServerState {
 #[allow(clippy::too_many_arguments)]
 pub async fn accept_loop(
     registries: &'static Registries,
-    listener: TcpListener,
+    mut listener: Listener,
     flow_key: String,
     requests: mpsc::Sender<RequestEvent>,
     handler_timeout_ms: i64,

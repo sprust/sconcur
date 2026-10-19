@@ -43,6 +43,11 @@ make bench-http-load-stats-empty
 # soak mode: a long run with an RSS trend and slope (MiB/min) for slow-leak detection
 make bench-http-load-soak               # 10 minutes by default
 DURATION=3600 make bench-http-load-soak # hour-long soak
+
+# one shared socket instead of SO_REUSEPORT, a connection per request,
+# requests counted per worker
+SHARED_SOCKET=1 CONNECTION_CLOSE=1 WORKER_LOGS=1 ROUTE=/ PIN_SERVERS=group \
+    tests/benchmarks/http/load-stats.sh
 ```
 
 `MODE=soak` additionally prints a `trend (elapsed → RSS)` table, and the
@@ -245,6 +250,79 @@ Single connection (1 server / 1 wrk thread / 1 connection / 5 s):
    connection still answers faster with the calls running at the same time
    (0.46 vs 0.66 ms). Run the calls of one request concurrently when it has
    genuinely slow I/O to wait for.
+
+## Shared socket vs `SO_REUSEPORT`
+
+`SHARED_SOCKET=1` runs the same pool on one socket, bound once and inherited by
+every worker as `--listenFd`, the way a [worker master](worker-master.md) group
+with `listen` runs it: `tests/benchmarks/http/shared-socket.php` binds the socket
+and runs the spawn loop under it. `CONNECTION_CLOSE=1` sends `Connection: close`,
+so every request opens a connection of its own and goes through `accept`.
+
+12 workers with `PIN_SERVERS=group`, `wrk` with 4 threads on the other cores, the
+empty endpoint `/`, 15 s per run, three runs of each arm with the arms
+alternating, the medians below. The spread is the requests served by the busiest
+worker over those of the idlest (`WORKER_LOGS=1`); CPU per request is the average
+CPU of the `php` container over the rps. Profiles: 256 and 32 keep-alive
+connections, a connection per request, and the mixed one of
+`mixed-profile.lua` (10% of the requests on `/cpu/20000`, 256 connections).
+
+Three ways of accepting:
+
+1. `SO_REUSEPORT`: a socket per worker, the kernel picks one by a hash of the
+   client's address and port.
+2. A shared socket accepted on the runtime, like a socket of its own: every
+   worker wakes for every connection, and the first to run takes whatever is
+   queued. The first version did this, and on systems other than Linux the
+   server still does.
+3. A shared socket accepted by a thread of the server (Linux): the thread waits
+   with `EPOLLEXCLUSIVE`, and only while the server asks for a connection, so a
+   connection wakes one waiting worker and the workers take turns.
+
+Accepting on the runtime, against `SO_REUSEPORT` in the same series:
+
+| Profile | Accepting | rps | p99 | CPU per request | Spread |
+|---|---|---:|---:|---:|---|
+| 256 connections | `SO_REUSEPORT` | 239 848 | 4.6 ms | 46 µs | 1.36–1.71× |
+| | shared, runtime | 233 877 | 4.2 ms | 45 µs | 7.4–9.0×, 2 workers idle in one run |
+| 32 connections | `SO_REUSEPORT` | 180 143 | 1.2 ms | 59 µs | 6.1–6.5×, 2 workers idle in one run |
+| | shared, runtime | 176 957 | 0.5 ms | 52 µs | 6 to 9 of 12 workers idle |
+| connection per request | `SO_REUSEPORT` | 67 936 | 3.8 ms | 97 µs | 1.08–1.10× |
+| | shared, runtime | 62 942 | 3.9 ms | 105 µs | 8.2–9.6× |
+| mixed | `SO_REUSEPORT` | 21 530 | 33.6 ms | 550 µs | 1.06–1.09× |
+| | shared, runtime | 21 312 | 46.6 ms | 552 µs | 1.16–1.23×, 1 worker idle in one run |
+
+The accept thread, against `SO_REUSEPORT` in a second series:
+
+| Profile | Accepting | rps | p99 | CPU per request | Spread |
+|---|---|---:|---:|---:|---|
+| 256 connections | `SO_REUSEPORT` | 244 515 | 4.4 ms | 45 µs | 1.41–1.60× |
+| | shared, thread | 247 418 | 4.3 ms | 45 µs | 1.22–1.53× |
+| 32 connections | `SO_REUSEPORT` | 189 918 | 1.2 ms | 59 µs | 6.3×, 1 worker idle in two runs |
+| | shared, thread | 182 740 | 1.1 ms | 63 µs | 2.9–6.7× |
+| connection per request | `SO_REUSEPORT` | 68 765 | 3.3 ms | 93 µs | 1.08–1.11× |
+| | shared, thread | 67 455 | 3.6 ms | 103 µs | 1.02× |
+| mixed | `SO_REUSEPORT` | 21 500 | 34.2 ms | 559 µs | 1.08–1.16× |
+| | shared, thread | 21 602 | 35.5 ms | 558 µs | 1.06–1.15× |
+
+1. Accepting a shared socket on the runtime does not work. The workers that wake
+   first take the connections: 7–9× between the busiest and the idlest at 256
+   connections, half the pool or more idle at 32. With a connection per request
+   every worker wakes for every connection, which costs 7% of the rps and 9%
+   more CPU per request, and in the mixed profile the p99 is 40% worse.
+2. With the accept thread a shared socket keeps up with `SO_REUSEPORT`: the rps
+   within 2% at 256 connections, with a connection per request and in the mixed
+   profile, the spread no worse. With a connection per request it is even
+   exactly even, where the hash of `SO_REUSEPORT` gives 1.08–1.11×.
+3. The price is CPU when connections are short: with a connection per request
+   about 10% more per request, most likely the hand-off of every connection from
+   the thread to the runtime. With keep-alive connections it does not show.
+4. Neither spreads 32 connections evenly over 12 workers. The kernel hands out
+   connections, not requests, and wrk opens all of them at once. `SO_REUSEPORT`
+   left a worker without a connection in two runs of three. The shared socket
+   gave every worker at least one, at 2.9–6.7× and 4% fewer rps. For a handful
+   of long-lived connections the answer is a proxy, see
+   [a proxy in front of the pool](http-server.md#a-proxy-in-front-of-the-pool).
 
 ## Conclusions
 

@@ -238,7 +238,7 @@ async fn handle_serve(task: Task) {
 }
 
 async fn accept_loop(
-    listener: tokio::net::TcpListener,
+    mut listener: crate::features::httpserver::listen::Listener,
     message: Arc<Message>,
     config: Config,
     connections: mpsc::Sender<ConnectionEvent>,
