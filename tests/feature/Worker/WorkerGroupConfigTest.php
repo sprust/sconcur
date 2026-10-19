@@ -161,6 +161,29 @@ class WorkerGroupConfigTest extends TestCase
         );
     }
 
+    /**
+     * The master's socket and a socket of each worker's are two ways to share a port; a
+     * group asking for both would leave the master's unused.
+     */
+    public function testListenRefusesAServerThatBindsItsOwnSocket(): void
+    {
+        foreach ([['reusePort' => true], ['listenFd' => 5]] as $server) {
+            try {
+                $this->group([
+                    'listen' => '0.0.0.0:8080',
+                    'server' => $server,
+                ]);
+
+                self::fail('server ' . json_encode($server) . ' should have been refused next to listen');
+            } catch (InvalidConfigException $exception) {
+                self::assertStringContainsString('accept on the master\'s socket', $exception->getMessage());
+            }
+        }
+
+        self::assertSame('0.0.0.0:8080', $this->group(['listen' => '0.0.0.0:8080'])->listen);
+        self::assertSame('', $this->group([])->listen);
+    }
+
     public function testTheServerBlockBecomesWorkerFlags(): void
     {
         $group = $this->group([

@@ -7,6 +7,7 @@ namespace SConcur\Worker;
 use Closure;
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\ExtensionNotLoadedException;
+use SConcur\Exceptions\Process\ProcessException;
 use SConcur\Exceptions\Worker\InvalidConfigException;
 use SConcur\Exceptions\Worker\InvalidWorkerCountException;
 use SConcur\Exceptions\Worker\RuntimePathException;
@@ -60,6 +61,14 @@ class WorkerMaster
 
     /** @var array<string, WorkerGroup> live pools by group name */
     protected array $pools = [];
+
+    /**
+     * @var array<string, int> the listening socket of each group with `listen`, by group
+     *                         name: bound once and held for as long as the group runs, so
+     *                         the port stays open through every worker's restart and every
+     *                         rolling reload
+     */
+    protected array $listeners = [];
 
     protected bool $stopping = false;
 
@@ -221,14 +230,89 @@ class WorkerMaster
     {
         $this->pools = [];
 
+        $this->bindListeners($this->groups);
+
         foreach ($this->groups as $group) {
-            $this->pools[$group->name] = new WorkerGroup(
-                config: $group,
-                logger: $this->logger,
-                masterPid: $this->masterPid,
-                cwd: $this->cwd,
-                telemetrySocket: $this->telemetrySocket(),
-                onWatchdogEvent: $this->watchdogReporter(),
+            $this->pools[$group->name] = $this->newPool($group);
+        }
+    }
+
+    protected function newPool(WorkerGroupConfig $group): WorkerGroup
+    {
+        return new WorkerGroup(
+            config: $group,
+            logger: $this->logger,
+            masterPid: $this->masterPid,
+            cwd: $this->cwd,
+            telemetrySocket: $this->telemetrySocket(),
+            onWatchdogEvent: $this->watchdogReporter(),
+            listenFd: $this->listeners[$group->name] ?? null,
+        );
+    }
+
+    /**
+     * Binds the listening socket of every group with `listen` that has none yet. All or
+     * nothing: a bind that fails closes the ones this call made before it and refuses the
+     * lot, so neither a start nor a reload is left holding half its ports.
+     *
+     * @param list<WorkerGroupConfig> $groups
+     */
+    protected function bindListeners(array $groups): void
+    {
+        $bound = [];
+
+        foreach ($groups as $group) {
+            if ($group->listen === '' || isset($this->listeners[$group->name])) {
+                continue;
+            }
+
+            try {
+                $bound[$group->name] = ProcessControl::bind($group->listen);
+            } catch (ProcessException $exception) {
+                foreach ($bound as $descriptor) {
+                    ProcessControl::close($descriptor);
+                }
+
+                throw new InvalidConfigException(
+                    message: sprintf(
+                        'config: group "%s" cannot listen on %s: %s',
+                        $group->name,
+                        $group->listen,
+                        $exception->getMessage(),
+                    ),
+                    previous: $exception,
+                );
+            }
+        }
+
+        $this->listeners = [...$this->listeners, ...$bound];
+    }
+
+    /**
+     * Refuses a reload that moves the listening socket of a group already running. The
+     * workers serving now accept on the socket the master bound at the start; moving the
+     * port means a socket the running workers do not have, and a gap while it changes
+     * hands — a restart of the master is the honest way to do that.
+     *
+     * @param list<WorkerGroupConfig> $groups
+     */
+    protected function assertListenersUnchanged(array $groups): void
+    {
+        foreach ($groups as $group) {
+            $pool = $this->pools[$group->name] ?? null;
+
+            if ($pool === null || $pool->config()->listen === $group->listen) {
+                continue;
+            }
+
+            throw new InvalidConfigException(
+                message: sprintf(
+                    'config: group "%s" listens on %s and the config says %s; a listening socket'
+                    . ' does not move on a reload, restart the master to change it',
+                    $group->name,
+                    $pool->config()->listen === '' ? 'no socket of the master\'s' : $pool->config()->listen,
+                    $group->listen === '' ? 'none' : $group->listen,
+                ),
             );
         }
     }
@@ -626,6 +710,14 @@ class WorkerMaster
             static::assertWorkerScripts($groups);
             static::assertLaunchable($groups);
 
+            $this->assertListenersUnchanged($groups);
+
+            // Last, so nothing is bound for a reload refused for another reason. A reload
+            // narrowed to one group adds no group, so it binds nothing either.
+            if ($request->group === '') {
+                $this->bindListeners($groups);
+            }
+
             return $groups;
         } catch (InvalidConfigException | RuntimePathException $exception) {
             $this->logger->master(
@@ -741,14 +833,7 @@ class WorkerMaster
                     message: sprintf('group %s: added by the reload', $group->name),
                 );
 
-                $pool = new WorkerGroup(
-                    config: $group,
-                    logger: $this->logger,
-                    masterPid: $this->masterPid,
-                    cwd: $this->cwd,
-                    telemetrySocket: $this->telemetrySocket(),
-                    onWatchdogEvent: $this->watchdogReporter(),
-                );
+                $pool = $this->newPool($group);
 
                 $this->pools[$group->name] = $pool;
 
@@ -817,6 +902,14 @@ class WorkerMaster
         foreach ($this->pools as $name => $pool) {
             if ($pool->isRetiring() && $pool->allSlotsEmpty()) {
                 unset($this->pools[$name]);
+
+                // Its workers are gone, so nobody accepts on its socket any more: closed
+                // here, the port is free for a group that may come back with it.
+                if (isset($this->listeners[$name])) {
+                    ProcessControl::close($this->listeners[$name]);
+
+                    unset($this->listeners[$name]);
+                }
 
                 $this->logger->master(
                     level: MasterLogger::INFO,

@@ -22,13 +22,22 @@ class ExecWorkerProcess extends WorkerProcess
     protected mixed $process;
 
     /**
-     * @param list<string>          $command   full command in array form (no shell)
-     * @param string                $cwd       working directory for the worker
-     * @param array<string, string> $env       full environment for the worker
-     * @param bool                  $heartbeat open the liveness pipe the watchdog reads
+     * @param list<string>          $command         full command in array form (no shell)
+     * @param string                $cwd             working directory for the worker
+     * @param array<string, string> $env             full environment for the worker
+     * @param bool                  $heartbeat       open the liveness pipe the watchdog reads
+     * @param list<int>             $keepDescriptors descriptors the worker gets under the same
+     *                                               numbers, such as the group's listening
+     *                                               socket; everything else above stderr is
+     *                                               shut out
      */
-    public function __construct(array $command, string $cwd, array $env, bool $heartbeat = false)
-    {
+    public function __construct(
+        array $command,
+        string $cwd,
+        array $env,
+        bool $heartbeat = false,
+        array $keepDescriptors = [],
+    ) {
         $descriptors = [
             0 => ['pipe', 'r'],
             1 => ['pipe', 'w'],
@@ -37,6 +46,25 @@ class ExecWorkerProcess extends WorkerProcess
 
         if ($heartbeat) {
             $descriptors[Heartbeat::FD] = ['pipe', 'w'];
+        }
+
+        // A stream for each descriptor to keep, which proc_open then places under the
+        // number the descriptor already has. php://fd opens a copy, closed again below
+        // once the child has its own.
+        $kept = [];
+
+        foreach ($keepDescriptors as $descriptor) {
+            $stream = @fopen('php://fd/' . $descriptor, 'r');
+
+            if ($stream === false) {
+                throw new WorkerSpawnException(
+                    message: sprintf('Cannot hand descriptor %d to a worker', $descriptor),
+                );
+            }
+
+            $kept[] = $stream;
+
+            $descriptors[$descriptor] = $stream;
         }
 
         $descriptors += self::inheritedDescriptorGuard();
@@ -50,6 +78,10 @@ class ExecWorkerProcess extends WorkerProcess
             cwd: $cwd,
             env_vars: $env,
         );
+
+        foreach ($kept as $stream) {
+            fclose($stream);
+        }
 
         if (!is_resource($process)) {
             throw new WorkerSpawnException(

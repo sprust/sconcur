@@ -33,6 +33,7 @@ readonly class WorkerGroupConfig
         'maxRestartBackoffMs',
         'watchdogTimeoutMs',
         'launch',
+        'listen',
         'server',
     ];
 
@@ -57,6 +58,7 @@ readonly class WorkerGroupConfig
         public int $watchdogTimeoutMs,
         public array $server,
         public LaunchMode $launch = LaunchMode::Exec,
+        public string $listen = '',
     ) {
     }
 
@@ -145,6 +147,22 @@ readonly class WorkerGroupConfig
             );
         }
 
+        $server = MasterConfig::serverParams($data['server'] ?? null, $name);
+        $listen = (string) ($data['listen'] ?? '');
+
+        // One socket the master binds and a socket each worker binds for itself are two
+        // ways of sharing a port; a worker told both would bind its own and leave the
+        // master's unused.
+        if ($listen !== '' && (($server['reusePort'] ?? false) || isset($server['listenFd']))) {
+            throw new InvalidConfigException(
+                message: sprintf(
+                    'config: group "%s" has "listen", so its workers accept on the master\'s socket;'
+                    . ' drop "reusePort" and "listenFd" from its "server"',
+                    $name,
+                ),
+            );
+        }
+
         return new self(
             name: $name,
             workerScript: $workerScript,
@@ -177,8 +195,9 @@ readonly class WorkerGroupConfig
                 $defaults->watchdogTimeoutMs,
                 $name,
             ),
-            server: MasterConfig::serverParams($data['server'] ?? null, $name),
+            server: $server,
             launch: $launch,
+            listen: $listen,
         );
     }
 

@@ -23,6 +23,9 @@ class WorkerGroup
 {
     protected const float HEALTHY_UPTIME_SECONDS = 1.0; // shorter run counts as a fast fail
 
+    /** The argv flag that tells a server which descriptor is its listening socket. */
+    protected const string LISTEN_FD_ARG = '--listenFd';
+
     /** How long past its SIGKILL a worker has to still be there before that is reported. */
     protected const float SIGKILL_REPORT_AFTER_SECONDS = 2.0;
 
@@ -88,6 +91,7 @@ class WorkerGroup
         protected string $cwd,
         protected string $telemetrySocket = '',
         protected ?Closure $onWatchdogEvent = null,
+        protected ?int $listenFd = null,
     ) {
         $this->workers = $config->workerCount > 0 ? $config->workerCount : Cpu::count();
     }
@@ -100,6 +104,12 @@ class WorkerGroup
     public function config(): WorkerGroupConfig
     {
         return $this->config;
+    }
+
+    /** The listening socket the master bound for this group, or null when it has none. */
+    public function listenFd(): ?int
+    {
+        return $this->listenFd;
     }
 
     public function workerCount(): int
@@ -608,6 +618,7 @@ class WorkerGroup
                     cwd: $this->cwd,
                     env: $this->buildEnv($index),
                     heartbeat: $this->config->watchdogTimeoutMs > 0,
+                    keepDescriptors: $this->keepDescriptors(),
                 ),
                 LaunchMode::Fork => $this->fork($index),
             };
@@ -788,6 +799,7 @@ class WorkerGroup
 
         return new ForkedWorkerProcess(
             heartbeat: $this->config->watchdogTimeoutMs > 0,
+            keepDescriptors: $this->keepDescriptors(),
             child: static function (ForkResult $fork) use ($title, $cwd, $environment, $iniSettings, $argv): never {
                 ForkedWorker::run(
                     fork: $fork,
@@ -829,18 +841,35 @@ class WorkerGroup
      * The worker's argv, whichever way it is launched: the script, the expanded `server`
      * flags, the group's workerArgs, and the master's pid as the `--masterPid` flag — the
      * same channel as the rest, no environment involved — for the worker to use as it
-     * sees fit.
+     * sees fit. A group with a listening socket of the master's adds `--listenFd`, the
+     * number the socket has in the worker.
      *
      * @return list<string>
      */
     protected function workerArgv(): array
     {
-        return [
+        $argv = [
             $this->config->workerScript,
             ...$this->config->argumentFlags(),
             ...$this->config->workerArgs,
             WorkerMaster::MASTER_PID_ARG . '=' . $this->masterPid,
         ];
+
+        if ($this->listenFd !== null) {
+            $argv[] = self::LISTEN_FD_ARG . '=' . $this->listenFd;
+        }
+
+        return $argv;
+    }
+
+    /**
+     * The descriptors a worker of this group keeps from the master: its listening socket.
+     *
+     * @return list<int>
+     */
+    protected function keepDescriptors(): array
+    {
+        return $this->listenFd === null ? [] : [$this->listenFd];
     }
 
     /**

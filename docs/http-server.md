@@ -460,6 +460,20 @@ Caveats:
   intercept part of the connections; keep that in mind in a multi-tenant
   environment.
 
+### One socket for the whole pool
+
+Instead of every process binding a `SO_REUSEPORT` socket of its own, one socket can be
+bound once and handed to all of them: `listenFd` takes the descriptor of a listening
+socket, and the server accepts on it instead of binding `address`. The
+[worker master](worker-master.md#parameters) does this for a group with `listen`, and
+systemd's socket activation hands over a descriptor the same way.
+
+All the workers then take connections from one queue. A worker that stops leaves what
+is waiting in it to the others, the port stays open through every restart and rolling
+reload, and nothing about it is Linux-specific. The server takes over a copy of the
+descriptor, so stopping it closes the copy and leaves the socket to whoever else holds
+it.
+
 ### A proxy in front of the pool
 
 The kernel spreads connections, not requests. With many connections that evens

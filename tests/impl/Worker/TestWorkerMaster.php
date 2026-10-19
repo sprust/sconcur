@@ -18,7 +18,7 @@ class TestWorkerMaster
     private const string HOST = '127.0.0.1';
 
     /** The flat option keys that describe a pool rather than the master. */
-    private const array GROUP_KEYS = ['workerScript', 'workerCount', 'workerArgs', 'server'];
+    private const array GROUP_KEYS = ['workerScript', 'workerCount', 'workerArgs', 'server', 'listen'];
 
     /**
      * The launch every master started from here gets unless the test names one itself:
@@ -596,7 +596,7 @@ class TestWorkerMaster
         @rmdir($dir);
     }
 
-    private static function freePort(): int
+    public static function freePort(): int
     {
         $socket = stream_socket_server('tcp://' . self::HOST . ':0', $errno, $errstr);
 

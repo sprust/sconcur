@@ -183,7 +183,12 @@ an edit plus a `reload`, not a restart.
 
 What it may not: `runtimeDir` and `name` identify the running instance, and
 `panelPort`, `adminToken` and `logDir` are bound at startup. A reload reads the new
-values and ignores them without a word — a full restart is what applies them.
+values and ignores them without a word — a full restart is what applies them. A
+group's `listen` is the one exception that is refused rather than ignored: its
+workers accept on the socket the master bound at the start, so a reload that moves it
+is turned down with the reason in the journal. A group added by a reload gets its
+socket then, and one removed closes its socket once its workers have finished; a
+`start` whose `listen` address is taken fails before any worker runs.
 
 A config that does not parse, or that names a `workerScript` that is not there, is
 refused and the master keeps running on the one it has. A typo must never take a
@@ -226,6 +231,7 @@ The next keys are the defaults every group inherits unless it names its own:
 | `workerCount` | `0` (= logical CPUs, what `nproc` reports — twice the core count where hyperthreading is on) | How many workers to bring up. |
 | `server` | `{}` | Worker parameters → expanded into the worker's `argv`. |
 | `workerArgs` | `[]` | Extra raw worker `argv` flags, appended after `server`. |
+| `listen` | empty | An address the master binds once and hands to every worker of the group as `--listenFd` — [one socket for the whole pool](http-server.md#one-socket-for-the-whole-pool) instead of `SO_REUSEPORT`. Excludes `reusePort` and `listenFd` in `server`. |
 | `launch` | the master's (`exec`) | `exec` — a `php` of its own on the script; `fork` — a copy of the master. See [Launch: exec or fork](#launch-exec-or-fork). |
 | `phpBinary` | the master's | Interpreter for this group's workers (`exec` only). |
 | `phpArgs` | the master's | Interpreter flags, e.g. `["-d", "extension=…"]`; under `fork` only `-d name=value`. |

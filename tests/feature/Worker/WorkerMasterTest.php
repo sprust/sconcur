@@ -767,6 +767,187 @@ class WorkerMasterTest extends TestCase
         }
     }
 
+    /**
+     * A group with `listen` accepts on one socket the master bound, rather than on a socket
+     * each worker binds with SO_REUSEPORT. Both workers serve from it.
+     */
+    public function testWorkersShareTheMastersListeningSocket(): void
+    {
+        $port = TestWorkerMaster::freePort();
+
+        $master = TestWorkerMaster::start(
+            options: [
+                'workerCount' => 2,
+                'listen'      => '127.0.0.1:' . $port,
+                'server'      => [],
+            ],
+            port: $port,
+        );
+
+        try {
+            self::assertGreaterThanOrEqual(2, count($master->distinctWorkerPids()), 'both workers should serve');
+
+            // The journal is written once per supervision tick, so the banner may trail the
+            // first answers by one.
+            self::assertTrue(
+                $this->waitFor(
+                    static fn(): bool => str_contains($master->logText(), 'listening on fd'),
+                    5.0,
+                ),
+                'the workers must say they accept on the inherited socket: ' . $master->logText(),
+            );
+        } finally {
+            $master->stop();
+        }
+    }
+
+    /**
+     * The point of the shared socket: every worker accepts from one queue, so a rolling
+     * reload, which stops the workers one after another, leaves no request without a
+     * worker to take it. Requests run the whole time on fresh connections, from a process
+     * of their own, and not one of them may fail.
+     */
+    public function testAReloadOnTheSharedSocketLosesNoRequest(): void
+    {
+        $port = TestWorkerMaster::freePort();
+
+        $master = TestWorkerMaster::start(
+            options: [
+                'workerCount' => 2,
+                'listen'      => '127.0.0.1:' . $port,
+                'server'      => [],
+            ],
+            port: $port,
+        );
+
+        $stopFile = $master->runtimeDir() . '/stop-load';
+
+        $load = proc_open(
+            command: [
+                PHP_BINARY,
+                '-r',
+                <<<'PHP'
+                $ok     = 0;
+                $failed = [];
+
+                while (!file_exists($argv[2])) {
+                    $body = @file_get_contents('http://' . $argv[1] . '/', false, stream_context_create([
+                        'http' => ['timeout' => 5],
+                    ]));
+
+                    if ($body === 'ok') {
+                        ++$ok;
+                    } else {
+                        $failed[] = error_get_last()['message'] ?? 'an empty answer';
+                    }
+                }
+
+                echo json_encode(['ok' => $ok, 'failed' => $failed]);
+                PHP,
+                '127.0.0.1:' . $port,
+                $stopFile,
+            ],
+            descriptor_spec: [1 => ['pipe', 'w']],
+            pipes: $pipes,
+        );
+
+        self::assertIsResource($load);
+
+        try {
+            usleep(300_000);
+
+            [$code, $output] = TestWorkerMaster::runCommand('reload', $master->configPath());
+
+            self::assertSame(MasterCli::EXIT_OK, $code, 'reload should succeed: ' . $output);
+
+            usleep(300_000);
+        } finally {
+            touch($stopFile);
+
+            $result = json_decode((string) stream_get_contents($pipes[1]), true);
+
+            proc_close($load);
+
+            $master->stop();
+        }
+
+        self::assertIsArray($result);
+        self::assertGreaterThan(0, $result['ok']);
+        self::assertSame([], $result['failed'], 'requests failed during the reload');
+    }
+
+    /**
+     * The workers serving now accept on the socket the master bound at the start: a reload
+     * cannot move it, and says so instead of rolling the pool onto a port nobody listens on.
+     */
+    public function testAReloadThatMovesTheListeningSocketIsRefused(): void
+    {
+        $port = TestWorkerMaster::freePort();
+
+        $master = TestWorkerMaster::start(
+            options: [
+                'workerCount' => 1,
+                'listen'      => '127.0.0.1:' . $port,
+                'server'      => [],
+            ],
+            port: $port,
+        );
+
+        try {
+            $pid = $master->workerPid();
+
+            /** @var array{groups: list<array<string, mixed>>} $config */
+            $config = json_decode((string) file_get_contents($master->configPath()), true);
+
+            $config['groups'][0]['listen'] = '127.0.0.1:' . TestWorkerMaster::freePort();
+
+            $movedPath = $master->runtimeDir() . '/moved.json';
+
+            file_put_contents($movedPath, (string) json_encode($config));
+            file_put_contents($master->runtimeDir() . '/' . $master->name() . '.reload', $movedPath . "\n");
+
+            self::assertTrue(
+                $this->waitFor(
+                    static fn(): bool => str_contains($master->logText(), 'reload refused'),
+                    10.0,
+                ),
+                'the master must report the refusal: ' . $master->logText(),
+            );
+
+            self::assertStringContainsString('does not move on a reload', $master->logText());
+            self::assertSame($pid, $master->workerPid(), 'the worker must be left as it was');
+        } finally {
+            $master->stop();
+        }
+    }
+
+    public function testStartFailsWhenTheListenAddressIsTaken(): void
+    {
+        $taken = stream_socket_server('tcp://127.0.0.1:0', $errorCode, $errorMessage);
+
+        self::assertNotFalse($taken, $errorMessage);
+
+        $address = (string) stream_socket_get_name($taken, false);
+
+        $master = TestWorkerMaster::start(
+            options: [
+                'workerCount' => 1,
+                'listen'      => $address,
+                'server'      => [],
+            ],
+            waitReachable: false,
+        );
+
+        try {
+            self::assertSame(MasterCli::EXIT_ERROR, $master->waitForExit(8.0));
+            self::assertStringContainsString('cannot listen on ' . $address, $master->masterOutput());
+        } finally {
+            $master->stop();
+
+            fclose($taken);
+        }
+    }
+
     public function testReloadReportsNotRunningWithoutMaster(): void
     {
         $configPath = TestWorkerMaster::writeConfig(['workerCount' => 1]);
