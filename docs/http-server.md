@@ -381,8 +381,8 @@ OOM under a flood of large bodies; set a limit on public servers.
 It has a second use — the latency tail. CPU-heavy handlers share the single PHP
 thread, so each one's latency grows with how many are being served at once, and
 `maxConcurrency` is what bounds that number. On a profile of 90% empty requests
-and 10% handlers worth ~49 ms of CPU, a limit of `4` takes p99 from 2.86 s down
-to 659 ms, at the cost of p50 rising from 30 ms to 244 ms. The trade and both
+and 10% handlers worth ~43 ms of CPU, a limit of `4` takes p99 from 2.75 s down
+to 620 ms, at the cost of p50 rising from 17 ms to 266 ms. The trade and both
 settings are covered in
 [coroutine switching](coroutine-switching.md#the-cost-under-load).
 
@@ -461,27 +461,29 @@ Caveats:
 
 ### A proxy in front of the pool
 
-In practice the kernel spreads evenly: across 8 workers the request-count spread
-was 1.13× at 256 connections and 1.16× at 32, and the per-worker tails are
-indistinguishable. A balancer in front of the pool is not needed for evenness.
+The kernel spreads connections, not requests. With many connections that evens
+out: across 8 workers the request-count spread was 1.13–1.33× at 256
+connections. With a few long-lived keep-alive connections it does not: at 32
+connections the busiest worker served 2.8–5.1× the requests of the idlest,
+because some workers held one connection and others six. The per-worker tails
+stayed alike in both cases.
 
-It does improve the tail on homogeneous load, because it hands out requests
-rather than connections and keeps its own keep-alive pool to the workers. Empty
-endpoint, 8 workers, 256 connections:
+A proxy hands out requests rather than connections, which is what a pool fed by
+a handful of keep-alive clients needs. With many connections it does not pay.
+Empty endpoint, 8 workers on their own cores, nginx on four more, 256
+connections:
 
-| Setup | rps | p99 |
-| --- | ---: | ---: |
-| `SO_REUSEPORT` | 90 014 | 38.8 ms |
-| nginx round-robin | 90 518 | 70.5 ms |
-| nginx `least_conn` | 94 076 | 29.3 ms |
-| nginx `random two least_conn` | 93 614 | 18.0 ms |
+| Setup | rps | p99 | CPU per request, nginx included |
+| --- | ---: | ---: | ---: |
+| `SO_REUSEPORT` | 200 211 | 4.0 ms | 40 µs |
+| nginx round-robin | 167 035 | 7.2 ms | 52 µs |
+| nginx `least_conn` | 194 281 | 4.8 ms | 44 µs |
+| nginx `random two least_conn` | 186 825 | 5.0 ms | 46 µs |
 
-Total CPU per request did not grow (90.3 against 86.3 µs): the proxy's pool takes
-client-connection handling off the workers, and that saving covers its own cost.
-
-Two conditions. Do not take the default round-robin — it hands out blindly and
-loses to the kernel; what works is the load-aware choice. And the workers here
-run with `reusePort: false` on separate ports, listed in the upstream:
+If a proxy goes in front anyway, two conditions. Do not take the default
+round-robin: it hands out blindly and is the worst of the three; take a
+load-aware strategy. And the workers run with `reusePort: false` on separate
+ports, listed in the upstream:
 
 ```nginx
 upstream workers {
@@ -503,7 +505,9 @@ server {
 ```
 
 On heterogeneous load, where the heavy requests hit the pool's CPU, the proxy
-does not help: the limit there is capacity, not request placement.
+does not help either: on the profile above with preemption off, p99 was 563 ms
+behind `SO_REUSEPORT` and 568 ms behind nginx `random two least_conn`. The limit
+there is capacity, not request placement.
 
 ## OPcache and JIT
 

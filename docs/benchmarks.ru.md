@@ -96,12 +96,14 @@ stream-обёртки, сырые сокеты), последовательно;
 Память — пик RSS процесса PHP на режим.
 
 Вызовов на режим: 100 по умолчанию, 50 для клиентских I/O-бенчей. Три
-MongoDB-бенчмарка ограничены природой операции: `createIndex` и `bulkWrite` — 20,
-`updateMany` — 10. Одиночные запуски: `make bench-<name> c=<count>`; вся
-БД-сессия — `make bench-db-runs`. Скрипты лежат в `tests/benchmarks/`, по каталогу
-на замеряемую технологию (`mongodb/`, `mysql/`, `pgsql/`, `http/`, `socket/`,
-`ws/`, `amqp/`, `redis/`, `files/`), поэтому `make bench-mysql-selectOne` запускает
-`tests/benchmarks/mysql/select-one.php`.
+MongoDB-бенчмарка ограничены природой операции: `createIndex` и `bulkWrite` —
+20, `updateMany` — 10. Одиночные запуски: `make bench-<name> c=<count>`; вся
+БД-сессия — `make bench-db-runs`, а все замеры этой страницы и тех, что на неё
+ссылаются, — `make bench-docs`: он складывает сырые результаты одной сессии в
+`.bench-runs/docs/`. Скрипты лежат в `tests/benchmarks/`, по каталогу на
+замеряемую технологию (`mongodb/`, `mysql/`, `pgsql/`, `http/`, `socket/`,
+`ws/`, `amqp/`, `redis/`, `files/`), поэтому `make bench-mysql-selectOne`
+запускает `tests/benchmarks/mysql/select-one.php`.
 
 `async к native` — знаковый процент `(native − async) / native`, ✅ когда `async`
 быстрее; в БД-таблицах у колонок median, min и max свой процент, что показывает

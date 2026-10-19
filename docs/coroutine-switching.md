@@ -135,19 +135,19 @@ worker is serving at the same time. On a single thread that is arithmetic, not a
 setting.
 
 Measured on 8 workers and 256 connections, with 90% of requests hitting an empty
-endpoint and 10% a handler worth ~49 ms of CPU:
+endpoint and 10% a handler worth ~43 ms of CPU:
 
 | `preemptionQuantumMs` | p50 | p90 | p99 |
 | ---: | ---: | ---: | ---: |
-| 5 | 29.8 ms | 2.02 s | 2.86 s |
-| 20 | 79.1 ms | 1.82 s | 2.91 s |
-| 50 | 147.5 ms | 1.56 s | 2.85 s |
-| 100 | 180.2 ms | 1.66 s | 4.33 s |
-| 0 (off, default) | 227.9 ms | 381.0 ms | 539.0 ms |
+| 5 | 16.7 ms | 1.94 s | 2.75 s |
+| 20 | 40.3 ms | 1.94 s | 2.95 s |
+| 50 | 81.1 ms | 2.00 s | 3.79 s |
+| 100 | 86.3 ms | 3.22 s | 6.46 s |
+| 0 (off, default) | 215.5 ms | 367.5 ms | 571.3 ms |
 
 Nothing but switching preemption off moves the tail: with any quantum the
 coroutines interleave and all of them stretch at once, without it they run to
-completion in turn. An intermediate quantum only costs p50 and buys no p99, so
+completion in turn. An intermediate quantum only costs p50 and makes p99 worse, so
 once preemption is on there is usually no reason to pick anything but 5 ms.
 
 The other setting is the HTTP server's `maxConcurrency`, which bounds not the
@@ -156,10 +156,10 @@ share the thread. Measured with a 5 ms quantum:
 
 | `maxConcurrency` | p50 | p90 | p99 |
 | ---: | ---: | ---: | ---: |
-| 0 (no limit) | 29.8 ms | 2.02 s | 2.86 s |
-| 16 | 152.7 ms | 1.02 s | 1.42 s |
-| 8 | 201.3 ms | 586.0 ms | 914.5 ms |
-| 4 | 244.3 ms | 441.9 ms | 659.5 ms |
+| 0 (no limit) | 16.7 ms | 1.94 s | 2.75 s |
+| 16 | 154.6 ms | 983.0 ms | 1.73 s |
+| 8 | 254.9 ms | 572.3 ms | 1.08 s |
+| 4 | 266.4 ms | 481.1 ms | 620.4 ms |
 
 Both settings move along one curve: a low p50 for the cheap requests and a short
 tail for the heavy ones are not available together. Pick the end that matches

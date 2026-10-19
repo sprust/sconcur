@@ -97,9 +97,11 @@ up the connection pool inside the measured phase; the SQL pools are
 the peak RSS of the PHP process per mode.
 
 Calls per mode: 100 by default, 50 for client I/O benchmarks. Three MongoDB
-benchmarks are bounded by the operation's nature: `createIndex` and `bulkWrite` 20,
-`updateMany` 10. Single runs: `make bench-<name> c=<count>`; the whole DB session
-is `make bench-db-runs`. The scripts live in `tests/benchmarks/`, one directory
+benchmarks are bounded by the operation's nature: `createIndex` and `bulkWrite`
+20, `updateMany` 10. Single runs: `make bench-<name> c=<count>`; the whole DB
+session is `make bench-db-runs`, and every measurement on this page and the ones
+that quote it is `make bench-docs`, which writes the raw results of one session
+to `.bench-runs/docs/`. The scripts live in `tests/benchmarks/`, one directory
 per measured technology (`mongodb/`, `mysql/`, `pgsql/`, `http/`, `socket/`,
 `ws/`, `amqp/`, `redis/`, `files/`), so `make bench-mysql-selectOne` runs
 `tests/benchmarks/mysql/select-one.php`.
