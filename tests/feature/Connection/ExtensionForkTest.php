@@ -6,6 +6,7 @@ namespace SConcur\Tests\Feature\Connection;
 
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Feature\BaseTestCase;
+use SConcur\Tests\Impl\PhpScript;
 use SConcur\WaitGroup;
 
 /**
@@ -147,7 +148,7 @@ class ExtensionForkTest extends BaseTestCase
             self::markTestSkipped('counting threads needs /proc');
         }
 
-        $output = $this->runPhp(
+        $output = PhpScript::run(
             code: <<<'PHP'
             SConcur\Extension\tasksCount();
             SConcur\Extension\stopFlow('none');
@@ -172,7 +173,7 @@ class ExtensionForkTest extends BaseTestCase
      */
     public function testAChildForkedAfterTheParentLoggedWritesItsOwnAccessLines(): void
     {
-        $output = $this->runPhp(
+        $output = PhpScript::run(
             code: <<<'PHP'
             require $argv[1] . '/vendor/autoload.php';
 
@@ -226,7 +227,7 @@ class ExtensionForkTest extends BaseTestCase
             Extension::get()->destroy();
             PHP,
             arguments: [
-                dirname(__DIR__, 3),
+                PhpScript::projectRoot(),
                 '127.0.0.1:' . self::freePort(),
                 '127.0.0.1:' . self::freePort(),
             ],
@@ -255,28 +256,6 @@ class ExtensionForkTest extends BaseTestCase
         }
 
         return '';
-    }
-
-    /**
-     * Runs PHP code in a process of its own with the extension loaded, and answers what
-     * it printed. A process of its own, because this one has used the core long before
-     * any test here runs.
-     *
-     * @param list<string> $arguments
-     */
-    protected function runPhp(string $code, array $arguments = []): string
-    {
-        $extension = getenv('SCONCUR_EXT') ?: dirname(__DIR__, 3) . '/ext/build/sconcur.so';
-
-        $command = sprintf(
-            'timeout 30 %s -d extension=%s -r %s %s 2>&1',
-            escapeshellarg(PHP_BINARY),
-            escapeshellarg($extension),
-            escapeshellarg($code),
-            implode(' ', array_map('escapeshellarg', $arguments)),
-        );
-
-        return (string) shell_exec($command);
     }
 
     protected static function freePort(): int

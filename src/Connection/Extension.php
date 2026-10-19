@@ -10,6 +10,7 @@ use SConcur\Dto\TaskResultDto;
 use SConcur\Exceptions\ExtensionCallException;
 use SConcur\Exceptions\ExtensionNotLoadedException;
 use SConcur\Exceptions\IncompatibleExtensionVersionException;
+use SConcur\Process\ProcessCommandEnum;
 use SConcur\Transport\PayloadInterface;
 use function SConcur\Extension\armPreemption;
 use function SConcur\Extension\destroy;
@@ -18,6 +19,7 @@ use function SConcur\Extension\amqpReopenConsumer;
 use function SConcur\Extension\amqpStopConsuming;
 use function SConcur\Extension\httpStopAccepting;
 use function SConcur\Extension\next;
+use function SConcur\Extension\process;
 use function SConcur\Extension\push;
 use function SConcur\Extension\socketStopAccepting;
 use function SConcur\Extension\stopFlow;
@@ -40,7 +42,7 @@ class Extension
      * rejected instead of silently misbehaving. Public so tooling (bin/sconcur-status)
      * can report the version the package expects.
      */
-    public const string REQUIRED_EXTENSION_VERSION = '0.16.0';
+    public const string REQUIRED_EXTENSION_VERSION = '0.17.0';
 
     /*
      * Nothing is serialized in either direction. A push hands the core the
@@ -221,6 +223,19 @@ class Extension
     public function version(): string
     {
         return version();
+    }
+
+    /**
+     * Runs one process-control command — a fork, a reap, a signal — for the worker
+     * master, and answers what the core returned for it. Synchronous, and it starts no
+     * runtime: the process that forks must not run threads. See
+     * SConcur\Process\ProcessControl, the one caller.
+     *
+     * @param array<string, mixed> $payload
+     */
+    public function process(ProcessCommandEnum $command, array $payload = []): mixed
+    {
+        return process($command->value, $payload);
     }
 
     /**

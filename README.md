@@ -166,12 +166,14 @@ Everything else follows from that:
   PHP drivers or extensions.
 - The C glue does not grow per feature. It exports the task calls (`push`,
   `next`, `wait` and its `waitAny*` variants, `tasksCount`, `stopFlow`), the
-  lifecycle (`ping`, `version`, `destroy`) and the preemption switch
-  (`armPreemption`/`disarmPreemption`). A new feature is data (a `MethodEnum`
-  value, a payload DTO, a Rust handler), not a new C symbol. A long-lived
-  server or consumer adds a control function or two, like `httpStopAccepting`,
-  which stops accepting new connections while the ones in progress are
-  finished.
+  lifecycle (`ping`, `version`, `destroy`), the preemption switch
+  (`armPreemption`/`disarmPreemption`) and process control (`process`: fork,
+  reap, signals — what a worker master needs, synchronous and without the
+  runtime, since a process that forks must not run threads). A new feature is
+  data (a `MethodEnum` value, a payload DTO, a Rust handler), not a new C
+  symbol, and so is a new process command. A long-lived server or consumer adds
+  a control function or two, like `httpStopAccepting`, which stops accepting
+  new connections while the ones in progress are finished.
 - One transport and one streaming model for everything: payload DTOs plus the
   streaming states behind `next()` — MongoDB cursors, HTTP client bodies, socket
   frames, WS messages all travel the same mechanism, and the sender waits when

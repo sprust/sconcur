@@ -19,6 +19,7 @@ mod stats;
 mod ws;
 mod helpers;
 mod logger;
+mod process;
 mod states;
 mod tasks;
 mod types;
@@ -34,13 +35,16 @@ use types::method::Method;
 
 /// The extension version the PHP package pins
 /// (Extension::REQUIRED_EXTENSION_VERSION); the package refuses any other.
-const VERSION: &str = "0.16.0";
+const VERSION: &str = "0.17.0";
 
 // Defined in sconcur.c: the VM interrupt request of the preemption ticker, the
-// result builder the wait exports hand their results to, and the value builder
-// that turns a result's value tree into zvals.
+// result builder the wait exports hand their results to, the value builder that
+// turns a result's value tree into zvals, and the two steps of the process export
+// that only PHP can take.
 unsafe extern "C" {
     fn sconcur_request_vm_interrupt();
+    fn sconcur_after_fork_in_child();
+    fn sconcur_flush_output();
     fn sconcur_result_into(destination: *mut c_void, result: *const ResultFields) -> *mut c_void;
     fn sconcur_result_append(list: *mut c_void, result: *const ResultFields) -> *mut c_void;
     fn sconcur_throw(class_name: *const c_char, message: *const c_char);
@@ -431,6 +435,12 @@ mod glue_stubs {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn sconcur_request_vm_interrupt() {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_after_fork_in_child() {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_flush_output() {}
 
     #[unsafe(no_mangle)]
     pub extern "C" fn sconcur_result_into(_destination: *mut c_void, _result: *const super::ResultFields) -> *mut c_void {
@@ -1006,6 +1016,51 @@ pub extern "C" fn destroy() {
         core.handler().destroy();
 
         core.replace_handler();
+    })
+}
+
+/// The exceptions the process export throws, the PHP package's own: a refused
+/// fork is a misuse the caller has to fix, anything else the system saying no.
+const PROCESS_EXCEPTION: &CStr = c"SConcur\\Exceptions\\Process\\ProcessException";
+const FORK_REFUSED_EXCEPTION: &CStr = c"SConcur\\Exceptions\\Process\\ForkRefusedException";
+
+fn throw_process_error(class_name: &CStr, message: &str) -> c_int {
+    let message = CString::new(format!("process: {message}").replace('\0', " ")).unwrap_or_default();
+
+    unsafe { sconcur_throw(class_name.as_ptr(), message.as_ptr()) };
+
+    WAIT_FAILED
+}
+
+/// Process control, for the worker master: one command, named by `command`,
+/// with its parameters in `payload`; the answer is written into `return_value`.
+/// Synchronous and runtime-free — see the `process` module for why — and the
+/// only export a fork can return through twice: once in the parent, once in the
+/// child.
+#[unsafe(no_mangle)]
+pub extern "C" fn process(
+    command: *const c_char,
+    command_len: c_int,
+    payload: *const c_void,
+    return_value: *mut c_void,
+) -> c_int {
+    guarded(|| throw_process_error(PROCESS_EXCEPTION, "panic"), || {
+        let payload = match read_value(payload, 0) {
+            Ok(payload) => payload,
+            Err(error) => return throw_process_error(PROCESS_EXCEPTION, &error),
+        };
+
+        match process::run(unsafe { byte_view(command, command_len) }, &payload) {
+            Ok(answer) => {
+                if write_value(return_value, &answer) {
+                    WAIT_READY
+                } else {
+                    WAIT_FAILED
+                }
+            }
+            Err(process::Error::Refused(message)) => throw_process_error(FORK_REFUSED_EXCEPTION, &message),
+            Err(process::Error::Failed(message)) => throw_process_error(PROCESS_EXCEPTION, &message),
+        }
     })
 }
 

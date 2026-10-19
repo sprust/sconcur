@@ -275,6 +275,10 @@ feature's doc. Key PHP classes not covered there:
   `Worker/` that runs in the worker: a byte per serve-loop pass on the pipe the
   master's watchdog reads, which is the only signal that says whether the worker's
   PHP thread — as opposed to the extension's runtime — is still moving.
+- `Process/ProcessControl` — the worker master's process control over the
+  `process` export, in place of ext-pcntl and ext-posix; `@internal`. Commands are
+  `ProcessCommandEnum` cases, signals go by name (`ProcessSignalEnum`), because
+  their numbers differ between platforms
 - `Telemetry/` — the master-side stats collector and live panel (pure PHP):
   `TelemetryRuntime`, `Collector`, `Store`, `PanelServer`, `FrameCodec`,
   `Aggregator`, `Dto/*`, `Render/*`.
@@ -285,13 +289,19 @@ The core (`ext/src/`), module by module:
   `waitAny`, `waitAnyTimeout`, `waitAnyBatch`, `waitAnyTimeoutBatch`,
   `tasksCount`, `stopFlow`, `httpStopAccepting`, `socketStopAccepting`,
   `wsStopAccepting`, `preemptionArm`, `preemptionDisarm`, `amqpStopConsuming`,
-  `amqpReopenConsumer`, `destroy`, `version`)
+  `amqpReopenConsumer`, `destroy`, `version`, `process`)
 - `core.rs` — the process-wide state and what it takes to survive a `fork`:
   nothing starts until the first push (the exports that only act on running work —
   `destroy`, `stopFlow`, `tasksCount`, the `*StopAccepting` ones — answer without
   starting it), and a `pthread_atfork` handler flags the inherited runtime so the
   next call rebuilds it. Whatever a child must not inherit lives on the `Core`: the
   feature registries, the streaming states, the telemetry registry and the log sink
+- `process/` — process control behind the one `process` export: fork with the
+  child prepared before PHP runs in it (stdio onto pipes, the parent's other
+  descriptors onto /dev/null, signal watching undone, and through the glue the
+  random generators unseeded and the parent's objects marked destroyed), `_exit`,
+  `kill`, `waitpid`, `getppid`, signals recorded by a handler that only sets a
+  bit. Synchronous and runtime-free, and a fork is refused while any thread runs
 - `handler/` — the singleton orchestrator routing messages to flows
 - `flows/`, `tasks/` — concurrent `Flow` instances holding tasks and the shared
   result sink; a task carries the flow's cancellation token directly
