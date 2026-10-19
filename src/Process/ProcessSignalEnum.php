@@ -9,7 +9,7 @@ namespace SConcur\Process;
  * platforms — USR1 is 10 on Linux and 30 on macOS — so the extension resolves them, and
  * PHP never needs the SIG* constants of ext-pcntl.
  *
- * @internal the worker master's tool, see ProcessControl
+ * @internal see ProcessControl
  */
 enum ProcessSignalEnum: string
 {

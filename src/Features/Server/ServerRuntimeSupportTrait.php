@@ -13,10 +13,9 @@ use SConcur\Scheduler\Scheduler;
 
 /**
  * Shared runtime support for the long-lived workers a WorkerMaster supervises — the three
- * servers and the AMQP queue consumer: build constructor overrides from CLI argv, install
- * graceful-shutdown signal handlers, arm automatic preemption, read the telemetry
- * environment, and detect an orphaned worker. Stateless — it only adds behaviour, never
- * properties.
+ * servers and the AMQP queue consumer: build constructor overrides from CLI argv, watch for
+ * a stop (a signal, or an orphaned worker), arm automatic preemption and read the telemetry
+ * environment. Stateless — it only adds behaviour, never properties.
  *
  * None of that is about serving a socket, which is why a consumer uses it unchanged; the
  * namespace is where the first user happened to live.
@@ -142,48 +141,14 @@ trait ServerRuntimeSupportTrait
     }
 
     /**
-     * Installs SIGTERM/SIGINT handlers that flip $stopRequested so the serve loop
-     * shuts down gracefully, and returns a callback that restores the handlers (and
-     * async-signals mode) that were in place before. Requires ext-pcntl; without it
-     * the server runs until the process is killed and the restorer is a no-op.
-     *
-     * @return Closure(): void
+     * Starts watching for a stop — SIGTERM, SIGINT, or the master going away when it
+     * passed its pid — and answers the request the serve loop's stop check reads. The
+     * caller releases it once the loop is over. Needs nothing but this extension: no
+     * ext-pcntl, no ext-posix.
      */
-    protected function installSignalHandlers(bool &$stopRequested): Closure
+    protected static function watchForStop(?int $masterPid): StopRequest
     {
-        if (!function_exists('pcntl_async_signals')) {
-            return static function (): void {
-            };
-        }
-
-        $signals = [SIGTERM, SIGINT];
-
-        $previousAsync = pcntl_async_signals();
-
-        /** @var array<int, callable|int> $previousHandlers */
-        $previousHandlers = [];
-
-        foreach ($signals as $signal) {
-            $previousHandlers[$signal] = pcntl_signal_get_handler($signal);
-        }
-
-        pcntl_async_signals(true);
-
-        $handler = static function () use (&$stopRequested): void {
-            $stopRequested = true;
-        };
-
-        foreach ($signals as $signal) {
-            pcntl_signal($signal, $handler);
-        }
-
-        return static function () use ($signals, $previousHandlers, $previousAsync): void {
-            foreach ($signals as $signal) {
-                pcntl_signal($signal, $previousHandlers[$signal]);
-            }
-
-            pcntl_async_signals($previousAsync);
-        };
+        return StopRequest::watch($masterPid);
     }
 
     /**
@@ -232,25 +197,6 @@ trait ServerRuntimeSupportTrait
         } finally {
             $scheduler->disablePreemption();
         }
-    }
-
-    /**
-     * Whether this worker has been orphaned — its launching master is no longer its
-     * parent. Uses posix_getppid() (immune to PID reuse: the kernel reparents the
-     * worker once the master dies, so getppid stops matching). Falls back to a
-     * signal-0 liveness probe when posix_getppid is unavailable.
-     */
-    protected static function isOrphaned(int $masterPid): bool
-    {
-        if (function_exists('posix_getppid')) {
-            return posix_getppid() !== $masterPid;
-        }
-
-        if (function_exists('posix_kill')) {
-            return !@posix_kill($masterPid, 0);
-        }
-
-        return false;
     }
 
     /**

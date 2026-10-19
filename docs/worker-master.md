@@ -268,9 +268,9 @@ healthy and the backoff is reset.
 
 If the master dies suddenly (crash, `SIGKILL`, OOM), the workers would otherwise
 keep living and holding the port. To prevent that the master passes its pid via
-`--masterPid`, and on every tick of the serve loop the server compares
-`posix_getppid()` against it: after the master's death the kernel reparents the
-process, `getppid()` stops matching (immune to PID reuse), and the server starts
+`--masterPid`, and the serve loop compares its parent pid against it, asking the
+extension at most every 100 ms: after the master's death the kernel reparents the
+process, the parent pid stops matching (immune to PID reuse), and the server starts
 its own graceful shutdown — finishing the requests it has already accepted — and
 exits, freeing the port. Outside the master there is no flag, so the check is
 disabled.

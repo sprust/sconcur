@@ -115,11 +115,12 @@ lifecycle log are already extracted into the stateless
 - `parseArgs(array $argv): array` — collect the scalar (`int`/`bool`/`float`/
   `string`) constructor parameters by reflection, coerce each `--name=value` string
   to the type and throw `InvalidServerArgumentException` on an unknown argument;
-- `installSignalHandlers(bool &$stopRequested): Closure` — install SIGTERM/SIGINT
-  (via `pcntl_async_signals`; without ext-pcntl it is a no-op) and return a
-  restorer to call in `finally`;
-- `isOrphaned(int $masterPid): bool` — `posix_getppid() !== $masterPid`, immune to
-  PID reuse because the kernel reparents the process once the master dies;
+- `watchForStop(?int $masterPid): StopRequest` — start watching SIGTERM/SIGINT
+  and answer the request the serve loop's `shouldStop` reads
+  (`$stopRequest->isRequested()`); it also says yes once the master is no longer
+  the parent, which survives PID reuse because the kernel reparents the process
+  once the master dies. Release it in `finally`. It needs nothing but this
+  extension — no ext-pcntl, no ext-posix — and asks it at most every 100 ms;
 - `applyTelemetryEnvironment(array $overrides): array` — read the telemetry env;
 - `withPreemption(int $quantumMs, Closure $callback): mixed` — run the callback with
   automatic preemption armed and disarm it afterwards. A server passes its quantum to
@@ -278,7 +279,7 @@ PHP:
       `Rust: payloads::<Type>`).
 - [ ] Request/response shape: your own `readonly` DTOs or PSR-7 outward.
 - [ ] `use ServerRuntimeSupportTrait;` —
-      `parseArgs`/`installSignalHandlers`/`isOrphaned`/`logServerEvent`.
+      `parseArgs`/`watchForStop`/`logServerEvent`.
 - [ ] `fromArgs()` via `self::parseArgs($argv)`, accepting `--masterPid`.
 - [ ] `serve()`: start the listener via `push(ServePayload)` plus
       `Scheduler::serve(...)` with `onRequest`/`shouldStop`/`onDrainStart`/

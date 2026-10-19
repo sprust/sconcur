@@ -24,7 +24,8 @@ use SConcur\Process\Dto\ProcessExit;
  * generators reseeded, and the parent's objects marked as destroyed so their
  * destructors never run in a worker.
  *
- * @internal the worker master's tool, not a public API
+ * @internal the tool of the worker master and of the long-lived workers it runs, not a
+ *           public API
  */
 class ProcessControl
 {

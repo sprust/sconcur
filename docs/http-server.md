@@ -560,8 +560,8 @@ yet answered in the narrow window between the signal and the socket close gets
 `503 Service Unavailable` rather than a dropped connection.
 
 - Signal handlers are installed before the listener starts and restored on exit.
-- `ext-pcntl` is required; without it the process is killed hard. The project's
-  Docker images enable it.
+- The signals are taken through the extension: neither `ext-pcntl` nor
+  `ext-posix` is needed.
 - On an idle server shutdown fires within ~250 ms — the `serve()` loop polls
   `waitAnyTimeoutBatch` at that interval and notices the signal without traffic.
 - The final response write is fire-and-forget: a handler finishes once its

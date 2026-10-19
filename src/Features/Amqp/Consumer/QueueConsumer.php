@@ -186,11 +186,9 @@ class QueueConsumer
             $connection->connect();
         }
 
-        $stopRequested = false;
-
-        // Installed before the stream opens, so a signal arriving during startup is not the
+        // Watched before the stream opens, so a signal arriving during startup is not the
         // one that gets lost.
-        $restoreSignals = $this->installSignalHandlers($stopRequested);
+        $stopRequest = self::watchForStop($this->masterPid);
 
         $flowKey   = uniqid('amqp_', more_entropy: true);
         $startedAt = microtime(true);
@@ -235,8 +233,6 @@ class QueueConsumer
                 $this->maxMessages,
             ));
 
-            $masterPid = $this->masterPid;
-
             // The stream's own failure carries the scope the extension side put on it and reaches
             // here as the generic task failure every feature gets. Left that way, a worker
             // whose broker went down would report a task error instead of a
@@ -267,10 +263,8 @@ class QueueConsumer
                             handled: $handled,
                         );
                     },
-                    shouldStop: function () use (&$stopRequested, $masterPid, $startedAt): bool {
-                        return $stopRequested
-                            || ($masterPid !== null && static::isOrphaned($masterPid))
-                            || $this->limitReached($startedAt);
+                    shouldStop: function () use ($stopRequest, $startedAt): bool {
+                        return $stopRequest->isRequested() || $this->limitReached($startedAt);
                     },
                     onDrainStart: static function () use ($flowKey): void {
                         // Cancel the consumers and keep their channels: the handlers still
@@ -291,7 +285,7 @@ class QueueConsumer
                 );
             }
         } finally {
-            $restoreSignals();
+            $stopRequest->release();
 
             $publishChannels->close();
 

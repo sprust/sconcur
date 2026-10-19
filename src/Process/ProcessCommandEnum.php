@@ -13,7 +13,7 @@ namespace SConcur\Process;
  *
  * Rust: the command values matched in ext/src/process/mod.rs.
  *
- * @internal the worker master's tool, see ProcessControl
+ * @internal see ProcessControl
  */
 enum ProcessCommandEnum: string
 {

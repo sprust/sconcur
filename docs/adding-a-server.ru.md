@@ -114,12 +114,12 @@ flowchart TB
   `string`) параметры конструктора рефлексией, привести каждую строку
   `--name=value` к типу и бросить `InvalidServerArgumentException` на неизвестном
   аргументе;
-- `installSignalHandlers(bool &$stopRequested): Closure` — поставить
-  SIGTERM/SIGINT (через `pcntl_async_signals`; без ext-pcntl это no-op) и вернуть
-  восстановитель, который вызывается в `finally`;
-- `isOrphaned(int $masterPid): bool` — `posix_getppid() !== $masterPid`,
-  устойчиво к переиспользованию PID, потому что после смерти мастера ядро меняет
-  родителя;
+- `watchForStop(?int $masterPid): StopRequest` — начать слушать SIGTERM/SIGINT и
+  вернуть запрос, который читает `shouldStop` серверного цикла
+  (`$stopRequest->isRequested()`); он отвечает «да» и тогда, когда мастер перестал
+  быть родителем, — это устойчиво к переиспользованию PID, потому что после смерти
+  мастера ядро меняет родителя. Освобождается в `finally`. Нужно только это
+  расширение — ни ext-pcntl, ни ext-posix — и спрашивает его не чаще раза в 100 мс;
 - `applyTelemetryEnvironment(array $overrides): array` — прочитать env телеметрии;
 - `withPreemption(int $quantumMs, Closure $callback): mixed` — выполнить колбэк с
   включённой автоматической преемпцией и выключить её после. Сервер вместо этого
@@ -276,7 +276,7 @@ PHP:
       `Rust: payloads::<Type>`).
 - [ ] Форма запроса и ответа: свои `readonly` DTO либо PSR-7 наружу.
 - [ ] `use ServerRuntimeSupportTrait;` —
-      `parseArgs`/`installSignalHandlers`/`isOrphaned`/`logServerEvent`.
+      `parseArgs`/`watchForStop`/`logServerEvent`.
 - [ ] `fromArgs()` через `self::parseArgs($argv)`, принимает `--masterPid`.
 - [ ] `serve()`: поднять листенер через `push(ServePayload)` плюс
       `Scheduler::serve(...)` с `onRequest`/`shouldStop`/`onDrainStart`/

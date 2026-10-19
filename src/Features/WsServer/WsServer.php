@@ -140,11 +140,9 @@ readonly class WsServer
     {
         $flowKey = uniqid('ws_', more_entropy: true);
 
-        $stopRequested = false;
-
         // Install handlers before starting the listener so a signal arriving during
         // startup is not missed, and restore the previous ones when serving ends.
-        $restoreSignals = $this->installSignalHandlers($stopRequested);
+        $stopRequest = self::watchForStop($this->masterPid);
 
         try {
             $runningTask = Extension::get()->push(
@@ -180,8 +178,7 @@ readonly class WsServer
                 ),
             );
 
-            $onError   = $this->onError;
-            $masterPid = $this->masterPid;
+            $onError = $this->onError;
 
             Scheduler::get()->serve(
                 serverFlowKey: $flowKey,
@@ -194,11 +191,8 @@ readonly class WsServer
                         event: $payload,
                     );
                 },
-                shouldStop: static function () use (&$stopRequested, $masterPid): bool {
-                    // Stop on a shutdown signal, or when this worker has been orphaned
-                    // — its WorkerMaster (parent pid) is gone.
-                    return $stopRequested || ($masterPid !== null && self::isOrphaned($masterPid));
-                },
+                // A shutdown signal, or this worker orphaned: its WorkerMaster is gone.
+                shouldStop: static fn(): bool => $stopRequest->isRequested(),
                 onDrainStart: static function () use ($flowKey): void {
                     // Leave the SO_REUSEPORT group early: stop accepting and drain
                     // in-flight connections so new connections go to siblings.
@@ -211,7 +205,7 @@ readonly class WsServer
                 handlerTimeoutMs: $this->handlerTimeoutMs,
             );
         } finally {
-            $restoreSignals();
+            $stopRequest->release();
         }
     }
 
