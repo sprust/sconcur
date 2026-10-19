@@ -45,9 +45,11 @@ make bench-http-load-soak               # 10 minutes by default
 DURATION=3600 make bench-http-load-soak # hour-long soak
 ```
 
-`MODE=soak` additionally prints a `trend (elapsed → RSS)` table and a least-squares
-slope in MiB/min with a verdict: `stable` / `growth — possible leak` /
-`declining (GC/memory return)`.
+`MODE=soak` additionally prints a `trend (elapsed → RSS)` table, and the
+least-squares slope in MiB/min gets a verdict: `stable` / `growing — possible leak` /
+`falling (GC / memory returned)`. A short run prints the slope without a verdict:
+its first RSS sample is taken before the load starts, so the slope over 20 s is
+mostly warm-up and would read as a leak every time.
 
 The methodology matches `tests/benchmarks/http/throughput.sh`: the servers and
 the load generator are pinned to non-overlapping cores (`taskset`), and `wrk`

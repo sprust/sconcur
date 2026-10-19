@@ -45,9 +45,12 @@ make bench-http-load-soak               # 10 минут по умолчанию
 DURATION=3600 make bench-http-load-soak # часовой прогон
 ```
 
-`MODE=soak` дополнительно печатает таблицу `trend (elapsed → RSS)` и наклон по
-методу наименьших квадратов в MiB/мин с вердиктом: `stable` /
-`growth — possible leak` / `declining (GC/memory return)`.
+`MODE=soak` дополнительно печатает таблицу `trend (elapsed → RSS)`, а наклон по
+методу наименьших квадратов в MiB/мин получает вердикт: `stable` /
+`growing — possible leak` / `falling (GC / memory returned)`. Короткий прогон
+печатает наклон без вердикта: первая точка RSS снимается до начала нагрузки,
+поэтому наклон за 20 с — это в основном прогрев, и он каждый раз читался бы как
+утечка.
 
 Методология совпадает с `tests/benchmarks/http/throughput.sh`: серверы и
 генератор нагрузки закреплены за непересекающимися ядрами (`taskset`), а `wrk`

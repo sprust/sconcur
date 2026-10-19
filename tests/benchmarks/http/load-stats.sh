@@ -441,7 +441,8 @@ echo "------------------------------------------------------------------"
 echo " Worker RSS (sum across $SERVERS processes) — leak check"
 echo "------------------------------------------------------------------"
 # RSS samples are "elapsed_seconds total_kb". Report first/peak/last/drift plus a
-# least-squares slope (MiB/min) over the run; in soak mode also dump the full trend.
+# least-squares slope (MiB/min) over the run; in soak mode also dump the full trend
+# and give a verdict.
 [ "$MODE" = "soak" ] && TREND=1 || TREND=0
 awk -v trend="$TREND" '
     {
@@ -463,9 +464,16 @@ awk -v trend="$TREND" '
         denom = n * stt - st * st;
         if (n >= 2 && denom != 0) {
             slope = (n * sty - st * sy) / denom * 60;  # MiB per minute
-            verdict = (slope > 0.5) ? "growing — possible leak" \
-                    : (slope < -0.5) ? "falling (GC / memory returned)" \
-                    : "stable";
+            # The first sample is taken before the load starts, so a short run is
+            # mostly warm-up and its slope says nothing about a leak: the verdict is
+            # left to the soak, where the warm-up is a small part of the line.
+            if (trend != "1") {
+                verdict = "no verdict: a short run is mostly warm-up, use MODE=soak";
+            } else {
+                verdict = (slope > 0.5) ? "growing — possible leak" \
+                        : (slope < -0.5) ? "falling (GC / memory returned)" \
+                        : "stable";
+            }
             printf "  slope: %+.2f MiB/min  ->  %s\n", slope, verdict;
         }
     }
