@@ -24,6 +24,7 @@
 #   SERVERS       server processes / cores to use            (default: cores - WRK_THREADS)
 #   WRK_THREADS   wrk threads / cores reserved for the client (default: 4)
 #   CONNECTIONS   total keep-alive connections wrk opens       (default: 256)
+#   STOP_TIMEOUT  seconds a server gets to exit after SIGTERM  (default: 30)
 #   DURATION      load duration, seconds                       (default: 15)
 #   PORT          in-container listen port                     (default: 18080)
 #   ROUTE         path to hit                                  (default: /)
@@ -72,12 +73,37 @@ CID=$($DOCKER_COMPOSE ps -q php)
 IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID")
 [ -n "$IP" ] || { echo "could not resolve php container IP"; exit 1; }
 
+# SIGTERM first, the way production stops a worker, and then wait for it to go.
+# One still there after STOP_TIMEOUT seconds is killed and named on stderr: a
+# worker that survives its SIGTERM keeps its SO_REUSEPORT socket and quietly
+# takes a share of the next run's traffic, and once the next run has rewritten
+# the pidfile nothing would stop it any more. A zombie counts as gone.
+STOP_TIMEOUT=${STOP_TIMEOUT:-30}
+
 stop_servers() {
     $DOCKER_COMPOSE exec -T php sh -c '
         [ -f "'"$PIDFILE"'" ] || exit 0
-        while read -r pid; do kill "$pid" 2>/dev/null || true; done < "'"$PIDFILE"'"
+        pids=$(cat "'"$PIDFILE"'")
+        for pid in $pids; do kill "$pid" 2>/dev/null || true; done
+        waited=0
+        while :; do
+            alive=""
+            for pid in $pids; do
+                if [ -d "/proc/$pid" ] && ! grep -q "^State:.*Z" "/proc/$pid/status" 2>/dev/null; then
+                    alive="$alive $pid"
+                fi
+            done
+            [ -z "$alive" ] && break
+            if [ "$waited" -ge '"$STOP_TIMEOUT"' ]; then
+                echo "WARNING: worker(s)$alive still running '"$STOP_TIMEOUT"'s after SIGTERM; killed" >&2
+                for pid in $alive; do kill -9 "$pid" 2>/dev/null || true; done
+                break
+            fi
+            sleep 1
+            waited=$(( waited + 1 ))
+        done
         rm -f "'"$PIDFILE"'"
-    ' 2>/dev/null || true
+    ' || true
 }
 
 # Kills any demo server still bound to this port, including ones leaked by an

@@ -17,7 +17,8 @@
 #
 # Tunables (env): SERVERS, WRK_THREADS, CONNECTIONS, DURATION, PORT, ROUTE (=/all),
 #   MAXCONCURRENCY, DB_POOL_SIZE (the /db* pool per process), SAMPLE_INTERVAL
-#   (resource-sampling period, s), SERVER_ENV (extra VAR=value
+#   (resource-sampling period, s), STOP_TIMEOUT (seconds a worker gets to exit
+#   after SIGTERM before it is killed and named, default 30), SERVER_ENV (extra VAR=value
 #   assignments for the worker environment, space-separated), SERVER_ARGS (extra
 #   --flags appended to the server command line, e.g. --ladder=l1),
 #   PIN_SERVERS: 1 = pin each worker to one logical CPU, as throughput.sh does —
@@ -142,12 +143,65 @@ fi
 WATCH=$(printf 'php\t%s\nmongodb\t%s\nmysql\t%s\npostgres\t%s\n%s\t%s\n' "$PHP_CID" "$MONGO_CID" "$MYSQL_CID" "$PG_CID" "${WATCH_EXTRA:-extra}" "$EXTRA_CID" | awk -F'\t' '$2!=""')
 WATCH_CIDS=$(printf '%s\n' "$WATCH" | awk -F'\t' '{print $2}')
 
+# SIGTERM first, the way production stops a worker, and then wait for it to go.
+# One still there after STOP_TIMEOUT seconds is killed and named on stderr: a
+# worker that survives its SIGTERM keeps its SO_REUSEPORT socket and quietly
+# takes a share of the next run's traffic, and once the next run has rewritten
+# the pidfile nothing would stop it any more. A zombie counts as gone.
+STOP_TIMEOUT=${STOP_TIMEOUT:-30}
+
 stop_servers() {
     $DOCKER_COMPOSE exec -T php sh -c '
         [ -f "'"$PIDFILE"'" ] || exit 0
-        while read -r pid; do kill "$pid" 2>/dev/null || true; done < "'"$PIDFILE"'"
+        pids=$(cat "'"$PIDFILE"'")
+        for pid in $pids; do kill "$pid" 2>/dev/null || true; done
+        waited=0
+        while :; do
+            alive=""
+            for pid in $pids; do
+                if [ -d "/proc/$pid" ] && ! grep -q "^State:.*Z" "/proc/$pid/status" 2>/dev/null; then
+                    alive="$alive $pid"
+                fi
+            done
+            [ -z "$alive" ] && break
+            if [ "$waited" -ge '"$STOP_TIMEOUT"' ]; then
+                echo "WARNING: worker(s)$alive still running '"$STOP_TIMEOUT"'s after SIGTERM; killed" >&2
+                for pid in $alive; do kill -9 "$pid" 2>/dev/null || true; done
+                break
+            fi
+            sleep 1
+            waited=$(( waited + 1 ))
+        done
         rm -f "'"$PIDFILE"'"
-    ' 2>/dev/null || true
+    ' || true
+}
+
+# A server left on one of this run's ports by an earlier run whose pidfile is
+# gone (an interrupted run, or one whose stop above had to give up) would join
+# the SO_REUSEPORT group or hold a port a proxy needs. Killed and named before
+# anything starts. No procps in the container, so /proc is scanned, and the
+# scanning shell itself ($$) is skipped: its own cmdline holds the match string.
+kill_stray() {
+    $DOCKER_COMPOSE exec -T php sh -c '
+        self=$$
+        ports="'"$PORT"'"
+        i=1
+        while [ "$i" -le '"$SERVERS"' ]; do ports="$ports $(( '"$PORT"' + i ))"; i=$(( i + 1 )); done
+        for d in /proc/[0-9]*; do
+            pid=${d#/proc/}
+            [ "$pid" = "$self" ] && continue
+            cmd=$(tr "\\0" " " < "$d/cmdline" 2>/dev/null) || continue
+            case "$cmd" in php\ *) ;; *) continue ;; esac
+            for port in $ports; do
+                case "$cmd" in
+                    *"--address=0.0.0.0:$port "*)
+                        echo "WARNING: stray server $pid on port $port from an earlier run; killed" >&2
+                        kill -9 "$pid" 2>/dev/null || true
+                        ;;
+                esac
+            done
+        done
+    ' || true
 }
 
 # The /all and /db* routes write a row per request, and the databases live on a
@@ -262,6 +316,7 @@ echo "   target          : http://$IP:$PORT$ROUTE  (container bridge IP, no NAT)
 echo "=================================================================="
 
 stop_servers
+kill_stray
 
 # Spawn one server per core (synchronous exec so the pidfile is fully written).
 # With DISTINCT_PORTS each worker gets its own port and no SO_REUSEPORT, so a

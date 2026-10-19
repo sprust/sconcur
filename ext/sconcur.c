@@ -4,6 +4,7 @@
 #include <zend_closures.h>
 #include <zend_enum.h>
 #include <zend_exceptions.h>
+#include <zend_fibers.h>
 #include "sconcur_core.h"
 
 /*
@@ -13,7 +14,8 @@
  * the next opcode boundary the engine calls sconcur_interrupt_function on the
  * PHP thread, which invokes the PHP callback registered by armPreemption() (the
  * Scheduler's preempt hook that parks the current coroutine). The original
- * interrupt handler is always chained so pcntl signal dispatch keeps working.
+ * interrupt handler is always chained so pcntl signal dispatch keeps working,
+ * and it runs first: see sconcur_interrupt_function.
  */
 
 static void (*sconcur_original_interrupt_function)(zend_execute_data *execute_data) = NULL;
@@ -44,6 +46,21 @@ static void sconcur_preemption_release_callback(void)
 static void sconcur_interrupt_function(zend_execute_data *execute_data)
 {
     /*
+     * The chained handler (pcntl's signal dispatch) goes first. Run after a
+     * preemption, it would wait until the parked coroutine is resumed, so a
+     * SIGTERM would sit queued behind the other coroutines' quanta.
+     */
+    if (sconcur_original_interrupt_function != NULL) {
+        sconcur_original_interrupt_function(execute_data);
+    }
+
+    /*
+     * Never preempt where the engine forbids a fiber switch. A pcntl signal
+     * handler runs that way, and an interrupt landing inside it would throw
+     * the handler's own FiberError out of it before it finished: the signal
+     * is already off the queue by then, so a SIGTERM handler cut short this
+     * way loses the stop for good.
+     *
      * Never preempt while an autoload is in flight: the engine tracks the class
      * being loaded in EG(in_autoload), and parking the fiber mid-autoload makes
      * every other coroutine that asks for the same class fail with "class not
@@ -53,6 +70,7 @@ static void sconcur_interrupt_function(zend_execute_data *execute_data)
         && Z_TYPE(sconcur_preemption_callback) != IS_UNDEF
         && !EG(exception)
         && !zend_atomic_bool_load(&EG(timed_out))
+        && !zend_fiber_switch_blocked()
         && (EG(in_autoload) == NULL || zend_hash_num_elements(EG(in_autoload)) == 0)
     ) {
         zval retval;
@@ -69,10 +87,6 @@ static void sconcur_interrupt_function(zend_execute_data *execute_data)
          * propagates it at the interrupted opcode — the same semantics as a
          * throwing pcntl signal handler.
          */
-    }
-
-    if (sconcur_original_interrupt_function != NULL) {
-        sconcur_original_interrupt_function(execute_data);
     }
 }
 
