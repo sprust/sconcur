@@ -574,10 +574,6 @@ fn handler() -> Arc<Handler> {
     core::get().handler()
 }
 
-fn replace_handler() {
-    core::get().replace_handler();
-}
-
 // ---------------------------------------------------------------------------
 // Boundary helpers
 // ---------------------------------------------------------------------------
@@ -851,25 +847,42 @@ fn elapsed_ms(started: Instant) -> u64 {
     started.elapsed().as_millis() as u64
 }
 
+// The exports from here to destroy() only act on work already running. In a
+// process that has built no core there is none, so they answer at once instead
+// of building one to find that out: a core is a runtime with threads, and a
+// process that may be about to fork must not grow them as a side effect of
+// asking, stopping or tearing down.
+
 #[unsafe(no_mangle)]
 pub extern "C" fn tasksCount() -> c_int {
-    guarded(|| 0, || handler().tasks_count() as c_int)
+    guarded(|| 0, || match core::built() {
+        Some(core) => core.handler().tasks_count() as c_int,
+        None => 0,
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn stopFlow(flow_key: *const c_char, flow_key_len: c_int) {
     guarded(|| (), || {
+        let Some(core) = core::built() else {
+            return;
+        };
+
         // The length comes from the C side, which already has it from
         // zend_parse_parameters — no strlen scan per stop.
         let flow_key = unsafe { owned_string(flow_key, flow_key_len) };
 
-        handler().stop_flow(&flow_key);
+        core.handler().stop_flow(&flow_key);
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn httpStopAccepting(flow_key: *const c_char) {
     guarded(|| (), || {
+        if core::built().is_none() {
+            return;
+        }
+
         features::httpserver::stop_accepting(&unsafe { owned_string_nul(flow_key) });
     })
 }
@@ -877,6 +890,10 @@ pub extern "C" fn httpStopAccepting(flow_key: *const c_char) {
 #[unsafe(no_mangle)]
 pub extern "C" fn socketStopAccepting(flow_key: *const c_char) {
     guarded(|| (), || {
+        if core::built().is_none() {
+            return;
+        }
+
         features::socketserver::stop_accepting(&unsafe { owned_string_nul(flow_key) });
     })
 }
@@ -884,6 +901,10 @@ pub extern "C" fn socketStopAccepting(flow_key: *const c_char) {
 #[unsafe(no_mangle)]
 pub extern "C" fn wsStopAccepting(flow_key: *const c_char) {
     guarded(|| (), || {
+        if core::built().is_none() {
+            return;
+        }
+
         features::wsserver::stop_accepting(&unsafe { owned_string_nul(flow_key) });
     })
 }
@@ -895,6 +916,10 @@ pub extern "C" fn wsStopAccepting(flow_key: *const c_char) {
 #[unsafe(no_mangle)]
 pub extern "C" fn amqpStopConsuming(flow_key: *const c_char) {
     guarded(|| (), || {
+        if core::built().is_none() {
+            return;
+        }
+
         features::amqp::consume_serve::stop_consuming(&unsafe { owned_string_nul(flow_key) });
     })
 }
@@ -907,6 +932,10 @@ pub extern "C" fn amqpStopConsuming(flow_key: *const c_char) {
 #[unsafe(no_mangle)]
 pub extern "C" fn amqpReopenConsumer(flow_key: *const c_char, channel_id: *const c_char) {
     guarded(|| (), || {
+        if core::built().is_none() {
+            return;
+        }
+
         features::amqp::consume_serve::reopen_consumer(
             &unsafe { owned_string_nul(flow_key) },
             &unsafe { owned_string_nul(channel_id) },
@@ -964,13 +993,19 @@ pub extern "C" fn destroy() {
     guarded(|| (), || {
         preemptionDisarm();
 
+        // Extension::__destruct calls this in every process that touched the
+        // package, the ones that never pushed anything included.
+        let Some(core) = core::built() else {
+            return;
+        };
+
         // Flush the buffered access lines before the runtime goes: a process
         // that exits right after must still show its last ones.
-        logger::flush();
+        core.logger().flush();
 
-        handler().destroy();
+        core.handler().destroy();
 
-        replace_handler();
+        core.replace_handler();
     })
 }
 

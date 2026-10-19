@@ -134,6 +134,109 @@ class ExtensionForkTest extends BaseTestCase
     }
 
     /**
+     * The calls a process makes on its way out — Extension::__destruct runs destroy()
+     * in every process that touched the package — and the ones that only act on work
+     * already running. In a process that never pushed anything there is no such work,
+     * and none of them may build the core to find that out: the core is a runtime with
+     * threads, and a process with threads cannot fork safely. A worker master is
+     * exactly that process.
+     */
+    public function testAProcessThatNeverUsedTheCoreGrowsNoThreadsWhenTornDown(): void
+    {
+        if (!is_dir('/proc/self/task')) {
+            self::markTestSkipped('counting threads needs /proc');
+        }
+
+        $output = $this->runPhp(
+            code: <<<'PHP'
+            SConcur\Extension\tasksCount();
+            SConcur\Extension\stopFlow('none');
+            SConcur\Extension\httpStopAccepting('none');
+            SConcur\Extension\socketStopAccepting('none');
+            SConcur\Extension\wsStopAccepting('none');
+            SConcur\Extension\amqpStopConsuming('none');
+            SConcur\Extension\amqpReopenConsumer('none', 'none');
+            SConcur\Extension\destroy();
+
+            echo 'THREADS:', count(glob('/proc/self/task/*'));
+            PHP,
+        );
+
+        self::assertStringContainsString('THREADS:1', $output);
+    }
+
+    /**
+     * The access log after a fork from a process that had already logged. The log is
+     * written by a thread, and a child has none: its lines went into the channel it
+     * inherited, which nothing reads, and never came out.
+     */
+    public function testAChildForkedAfterTheParentLoggedWritesItsOwnAccessLines(): void
+    {
+        $output = $this->runPhp(
+            code: <<<'PHP'
+            require $argv[1] . '/vendor/autoload.php';
+
+            use Nyholm\Psr7\Factory\Psr17Factory;
+            use SConcur\Connection\Extension;
+            use SConcur\Features\HttpClient\HttpClient;
+            use SConcur\Features\HttpServer\HttpServer;
+            use SConcur\Features\Sleeper\Sleeper;
+            use SConcur\Scheduler\Scheduler;
+
+            // One request through a server that stops after it, so its access line is
+            // the only one the process writes.
+            function serveOnce(string $address, string $path): void
+            {
+                $factory = new Psr17Factory();
+
+                Scheduler::get()->spawn(
+                    callback: static function () use ($factory, $address, $path): void {
+                        // The listener binds once serve() runs, after this is spawned.
+                        Sleeper::usleep(microseconds: 100_000);
+
+                        (new HttpClient(responseFactory: $factory))
+                            ->sendRequest($factory->createRequest('GET', 'http://' . $address . $path));
+                    },
+                );
+
+                $server = new HttpServer(
+                    serverRequestFactory: $factory,
+                    responseFactory: $factory,
+                    address: $address,
+                    maxRequests: 1,
+                );
+
+                $server->serve(static fn () => $factory->createResponse(200));
+            }
+
+            serveOnce($argv[2], '/parent');
+
+            $pid = pcntl_fork();
+
+            if ($pid === 0) {
+                serveOnce($argv[3], '/child');
+
+                Extension::get()->destroy();
+
+                exit(0);
+            }
+
+            pcntl_waitpid($pid, $status);
+
+            Extension::get()->destroy();
+            PHP,
+            arguments: [
+                dirname(__DIR__, 3),
+                '127.0.0.1:' . self::freePort(),
+                '127.0.0.1:' . self::freePort(),
+            ],
+        );
+
+        self::assertMatchesRegularExpression('~ GET /parent 200 ~', $output);
+        self::assertMatchesRegularExpression('~ GET /child 200 ~', $output, 'the child lost its access line: ' . $output);
+    }
+
+    /**
      * One coroutine through the extension and back, answering the label it was
      * given.
      */
@@ -152,5 +255,40 @@ class ExtensionForkTest extends BaseTestCase
         }
 
         return '';
+    }
+
+    /**
+     * Runs PHP code in a process of its own with the extension loaded, and answers what
+     * it printed. A process of its own, because this one has used the core long before
+     * any test here runs.
+     *
+     * @param list<string> $arguments
+     */
+    protected function runPhp(string $code, array $arguments = []): string
+    {
+        $extension = getenv('SCONCUR_EXT') ?: dirname(__DIR__, 3) . '/ext/build/sconcur.so';
+
+        $command = sprintf(
+            'timeout 30 %s -d extension=%s -r %s %s 2>&1',
+            escapeshellarg(PHP_BINARY),
+            escapeshellarg($extension),
+            escapeshellarg($code),
+            implode(' ', array_map('escapeshellarg', $arguments)),
+        );
+
+        return (string) shell_exec($command);
+    }
+
+    protected static function freePort(): int
+    {
+        $socket = stream_socket_server('tcp://127.0.0.1:0', $errorCode, $errorMessage);
+
+        self::assertNotFalse($socket, "could not allocate a port: $errorMessage");
+
+        $name = (string) stream_socket_get_name($socket, false);
+
+        fclose($socket);
+
+        return (int) substr($name, (int) strrpos($name, ':') + 1);
     }
 }

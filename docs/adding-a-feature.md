@@ -185,6 +185,18 @@ Rust:
 
    As with `Sleeper`, the feature is a singleton behind `OnceLock` + `get()`.
 
+   The singleton itself holds nothing. What the feature keeps for the life of the
+   process — connections, pools, open handles, a flag that a background task is
+   running — goes into a `Registries` struct the core owns (`ext/src/core.rs`),
+   reached through `crate::core::get()`, and never into a `static`. After a `fork`
+   the child rebuilds the core and everything on it; a `static` would hand the
+   child the parent's connections, a flag for a task that runs in a runtime the
+   child does not have, or a mutex another thread held at the moment of the fork.
+   A task started on first use is armed by a flag on the registry for the same
+   reason (`sweeping` in `ext/src/features/sql/pools.rs`). Counters that only
+   number ids may stay `static`: a child that carries on the parent's numbering
+   breaks nothing.
+
 3. Registration in `ext/src/features/mod.rs` — an arm in `detect_message_handler`:
 
    ```rust
@@ -317,6 +329,8 @@ Rust:
 - [ ] A feature module with `handle`: the task's cancellation token honoured by
       every call; the work bounded by the passed timeout; for streaming — a
       `StateContract` state whose `close()` is awaited.
+- [ ] Whatever the feature keeps for the life of the process sits in its
+      `Registries` on the core, not in a `static`.
 - [ ] Registration in `ext/src/features/mod.rs`.
 - [ ] (opt.) unit tests in the extension.
 

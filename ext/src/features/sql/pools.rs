@@ -7,7 +7,8 @@
 
 use sqlx::{AssertSqlSafe, Executor};
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use super::dsn;
@@ -45,12 +46,17 @@ struct Entry {
 
 pub struct Pools {
     entries: Mutex<HashMap<PoolKey, Entry>>,
+    /// Whether the idle sweeper runs. On the pools rather than in a static, so a
+    /// child forked after the parent used them — and given fresh pools with the
+    /// fresh core — starts a sweeper of its own on its own runtime.
+    sweeping: AtomicBool,
 }
 
 impl Pools {
     pub fn new() -> Self {
         Pools {
             entries: Mutex::new(HashMap::new()),
+            sweeping: AtomicBool::new(false),
         }
     }
 }
@@ -81,25 +87,25 @@ pub fn get() -> &'static Pools {
     crate::core::get().sql().pools()
 }
 
-/// Starts the idle sweeper. Called once the runtime exists (a spawn needs one),
-/// not from the registry's constructor.
-pub fn start_sweeper() {
-    static STARTED: OnceLock<()> = OnceLock::new();
+impl Pools {
+    /// Starts the idle sweeper the first time it is asked to. Called once the
+    /// runtime exists (a spawn needs one), not from the constructor.
+    pub fn start_sweeper(&'static self) {
+        if self.sweeping.swap(true, Ordering::SeqCst) {
+            return;
+        }
 
-    STARTED.get_or_init(|| {
-        tokio::spawn(async {
+        tokio::spawn(async move {
             let mut ticker = tokio::time::interval(POOL_SWEEP_INTERVAL);
 
             loop {
                 ticker.tick().await;
 
-                get().sweep();
+                self.sweep();
             }
         });
-    });
-}
+    }
 
-impl Pools {
     /// Returns the pool for driver+dsn+sizing, opening it on first use, and
     /// marks it held. Like `sql.Open`, this does not connect: the first query
     /// connects under its own deadline, so a connect timeout still applies.

@@ -287,8 +287,11 @@ The core (`ext/src/`), module by module:
   `wsStopAccepting`, `preemptionArm`, `preemptionDisarm`, `amqpStopConsuming`,
   `amqpReopenConsumer`, `destroy`, `version`)
 - `core.rs` — the process-wide state and what it takes to survive a `fork`:
-  nothing starts until the first push, and a `pthread_atfork` handler flags the
-  inherited runtime so the next call rebuilds it
+  nothing starts until the first push (the exports that only act on running work —
+  `destroy`, `stopFlow`, `tasksCount`, the `*StopAccepting` ones — answer without
+  starting it), and a `pthread_atfork` handler flags the inherited runtime so the
+  next call rebuilds it. Whatever a child must not inherit lives on the `Core`: the
+  feature registries, the streaming states, the telemetry registry and the log sink
 - `handler/` — the singleton orchestrator routing messages to flows
 - `flows/`, `tasks/` — concurrent `Flow` instances holding tasks and the shared
   result sink; a task carries the flow's cancellation token directly

@@ -251,18 +251,56 @@ struct SnapshotFrame<'a> {
 /// to push, under which name and how often, and fixes the start the snapshots
 /// report — every provider here belongs to the same worker, and its telemetry
 /// settings come from the same environment the master injected.
-struct Registry {
+///
+/// It lives on the Core, so a fork discards it: a child that inherited the
+/// parent's would find the loop marked as running — the loop being a task of a
+/// runtime the child does not have — and never start one of its own.
+pub struct Registry {
+    state: Mutex<RegistryState>,
+}
+
+struct RegistryState {
     providers: Vec<(u64, Arc<dyn WorkloadProvider>)>,
     next_id: u64,
     /// Cancels the push loop; `None` while no provider is registered.
     loop_stop: Option<CancellationToken>,
 }
 
-static REGISTRY: Mutex<Registry> = Mutex::new(Registry {
-    providers: Vec::new(),
-    next_id: 0,
-    loop_stop: None,
-});
+impl Registry {
+    pub fn new() -> Self {
+        Registry {
+            state: Mutex::new(RegistryState {
+                providers: Vec::new(),
+                next_id: 0,
+                loop_stop: None,
+            }),
+        }
+    }
+
+    /// The sections of every provider registered right now, merged into one.
+    ///
+    /// The registry lock is released before any provider is asked: a provider
+    /// takes a lock of its own, and holding both would order two unrelated locks
+    /// against each other for no reason.
+    fn collect_workload(&self) -> Workload {
+        let providers: Vec<Arc<dyn WorkloadProvider>> = self
+            .state
+            .lock()
+            .unwrap()
+            .providers
+            .iter()
+            .map(|(_, provider)| provider.clone())
+            .collect();
+
+        let mut merged = Workload::default();
+
+        for provider in providers {
+            merged.merge(provider.workload_snapshot());
+        }
+
+        merged
+    }
+}
 
 /// A registration in the process-wide push loop.
 ///
@@ -271,9 +309,9 @@ static REGISTRY: Mutex<Registry> = Mutex::new(Registry {
 /// entry, so it goes exactly when the server does. An explicit `stop()` would
 /// need guarding against a second call, which ownership makes unnecessary here.
 pub struct Pusher {
-    /// The registration to withdraw on drop; `None` for a pusher that registered
-    /// nothing (push is off).
-    id: Option<u64>,
+    /// The registration to withdraw on drop, and the registry it was made in;
+    /// `None` for a pusher that registered nothing (push is off).
+    registration: Option<(&'static Registry, u64)>,
 }
 
 impl Pusher {
@@ -281,7 +319,7 @@ impl Pusher {
     /// It exists so a server state holds a `Pusher` either way and nothing has to
     /// branch on an Option to stop one.
     pub fn disabled() -> Self {
-        Pusher { id: None }
+        Pusher { registration: None }
     }
 
     /// Registers one server's or consumer's counters with the process push loop,
@@ -300,20 +338,23 @@ impl Pusher {
         provider: Arc<dyn WorkloadProvider>,
     ) -> Self {
         if socket_path.is_empty() {
-            return Pusher { id: None };
+            return Pusher { registration: None };
         }
 
-        let mut registry = REGISTRY.lock().unwrap();
+        let core = crate::core::get();
+        let registry = core.stats();
 
-        let id = registry.next_id;
+        let mut state = registry.state.lock().unwrap();
 
-        registry.next_id += 1;
-        registry.providers.push((id, provider));
+        let id = state.next_id;
 
-        if registry.loop_stop.is_none() {
+        state.next_id += 1;
+        state.providers.push((id, provider));
+
+        if state.loop_stop.is_none() {
             let stop = CancellationToken::new();
 
-            registry.loop_stop = Some(stop.clone());
+            state.loop_stop = Some(stop.clone());
 
             let interval = Duration::from_millis(if interval_ms > 0 {
                 interval_ms as u64
@@ -326,59 +367,39 @@ impl Pusher {
             // an epoch time, and the loop must report the same value every tick.
             let started_at_ms = epoch_millis() - start_time.elapsed().as_millis() as i64;
 
-            crate::core::get().runtime().spawn(async move {
-                run(name, socket_path, interval, start_time, started_at_ms, stop).await;
+            core.runtime().spawn(async move {
+                run(registry, name, socket_path, interval, start_time, started_at_ms, stop).await;
             });
         }
 
-        Pusher { id: Some(id) }
+        Pusher {
+            registration: Some((registry, id)),
+        }
     }
 }
 
 impl Drop for Pusher {
     fn drop(&mut self) {
-        let Some(id) = self.id else {
+        let Some((registry, id)) = self.registration else {
             return;
         };
 
-        let mut registry = REGISTRY.lock().unwrap();
+        let mut state = registry.state.lock().unwrap();
 
-        registry.providers.retain(|(other, _)| *other != id);
+        state.providers.retain(|(other, _)| *other != id);
 
-        if registry.providers.is_empty() {
+        if state.providers.is_empty() {
             // Nothing left to report: end the loop, which closes the connection —
             // and that is how the collector learns this worker is gone.
-            if let Some(stop) = registry.loop_stop.take() {
+            if let Some(stop) = state.loop_stop.take() {
                 stop.cancel();
             }
         }
     }
 }
 
-/// The sections of every provider registered right now, merged into one.
-///
-/// The registry lock is released before any provider is asked: a provider takes a
-/// lock of its own, and holding both would order two unrelated locks against each
-/// other for no reason.
-fn collect_workload() -> Workload {
-    let providers: Vec<Arc<dyn WorkloadProvider>> = REGISTRY
-        .lock()
-        .unwrap()
-        .providers
-        .iter()
-        .map(|(_, provider)| provider.clone())
-        .collect();
-
-    let mut merged = Workload::default();
-
-    for provider in providers {
-        merged.merge(provider.workload_snapshot());
-    }
-
-    merged
-}
-
 async fn run(
+    registry: &'static Registry,
     name: String,
     socket_path: String,
     interval: Duration,
@@ -402,6 +423,7 @@ async fn run(
         }
 
         push_once(
+            registry,
             &name,
             &socket_path,
             start_time,
@@ -417,6 +439,7 @@ async fn run(
 /// when not yet connected. Any write failure drops the connection so the next
 /// tick redials; the frame itself is lost — best-effort, at most once.
 async fn push_once(
+    registry: &Registry,
     name: &str,
     socket_path: &str,
     start_time: Instant,
@@ -433,7 +456,7 @@ async fn push_once(
         }
     }
 
-    let workload = collect_workload();
+    let workload = registry.collect_workload();
     let now = Instant::now();
 
     let snapshot = Snapshot {
