@@ -1201,7 +1201,7 @@ class Scheduler
         }
 
         return sprintf(
-            'drain stalled: %d in-flight, %d go tasks, %d dropped, tracked=[%s], waiters=[%s], switched=%d, parked on [%s]',
+            'drain stalled: %d in-flight, %d extension tasks, %d dropped, tracked=[%s], waiters=[%s], switched=%d, parked on [%s]',
             $this->spawnedCount,
             Extension::get()->count(),
             $this->droppedResultsCount,
