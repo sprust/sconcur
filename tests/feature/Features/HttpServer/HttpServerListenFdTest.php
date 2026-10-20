@@ -41,6 +41,10 @@ class HttpServerListenFdTest extends BaseTestCase
 
             $children = [];
 
+            // Held for as long as the children run: their stdout and stderr are pipes into
+            // this process, and a child whose pipes nobody holds open dies on its first line.
+            $forks = [];
+
             for ($index = 0; $index < 2; ++$index) {
                 $fork = ProcessControl::fork(keepDescriptors: [$descriptor]);
 
@@ -65,6 +69,7 @@ class HttpServerListenFdTest extends BaseTestCase
                 }
 
                 $children[] = $fork->pid;
+                $forks[]    = $fork;
             }
 
             // A fresh connection per request, so every one goes back to the shared queue.
@@ -133,6 +138,11 @@ class HttpServerListenFdTest extends BaseTestCase
 
         self::assertIsArray($answer, 'the scenario printed no JSON: ' . $output);
         self::assertNotContains(null, $answer['before'], 'a request failed while both served: ' . $output);
+        self::assertEqualsCanonicalizing(
+            $answer['children'],
+            array_values(array_unique($answer['before'])),
+            'both workers should take connections from the one socket: ' . $output,
+        );
         self::assertTrue($answer['firstStopped'], 'the first worker did not stop on SIGTERM');
         self::assertNotContains(null, $answer['after'], 'a request was refused once one worker stopped: ' . $output);
         self::assertSame([$answer['children'][1]], array_values(array_unique($answer['after'])));
