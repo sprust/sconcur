@@ -304,28 +304,36 @@ orders #2` is slot 2 of the `orders` pool.
 
 ## Launch: exec or fork
 
-A group's `launch` says how its workers are started. The worker script is the same
-either way.
+There are two launches, set per group by `launch`. The worker script is the same either
+way.
 
-- `exec` starts each worker as `php <phpArgs> workerScript <argv>`.
-- `fork`, the default, starts a fork server for the group: a `php` of its own, started
-  with the group's `phpBinary` and `phpArgs` like an exec'd worker, which loads the
-  group's [bootstrap](#loading-the-application-once-bootstrap), if it has one, and forks
-  the workers from itself. A worker is a copy of the fork server that sets up its
-  environment and argv and `require`s `workerScript`.
+```mermaid
+flowchart TB
+    master["master"]
+    master -->|"proc_open, launch: exec"| execWorker["worker: a php of its own"]
+    master -->|"proc_open, launch: fork"| forkServer["fork server: a php of its own, runs the bootstrap if there is one"]
+    forkServer -->|"fork"| forkWorker["worker: a copy of the fork server"]
+```
 
-The fork server supervises its workers — restarts, the [watchdog](#stuck-worker), the
-journal lines — the way the master supervises an exec group's, and the master
-supervises the fork servers. The master itself never forks.
+- `exec`: the master starts each worker as `php <phpArgs> workerScript <argv>` and
+  watches it.
+- `fork`, the default: the master starts one fork server for the group — a `php` of its
+  own, with the group's `phpBinary` and `phpArgs` — and watches it. The fork server
+  forks the workers from itself and watches them — restarts, the
+  [watchdog](#stuck-worker), the journal lines — the way the master watches an exec
+  group's. A worker is a copy of the fork server that sets up its environment and argv
+  and `require`s `workerScript`. The master itself never forks.
 
-| | `exec` | `fork` |
-|---|---|---|
-| A worker starts as | a new `php`: interpreter, `php.ini`, the extension, the application | a copy of the fork server: nothing to start, and with a bootstrap nothing to load |
-| Master start to the first answer of one worker (demo server, median of 7) | 40 ms | 45 ms — the fork server starts first |
-| A killed worker to the first answer of its replacement (median of 7) | 103 ms | 103 ms — both wait for the master's or the fork server's 100 ms tick |
-| `phpBinary`, `phpArgs`, `php.ini` | the worker's | the fork server's, and so its workers' |
-| What a `reload` picks up | new code of everything | new code of everything: the next generation is a new fork server, see [reload](#commands) |
-| Scope the script runs in | global | a function's |
+A fork group may also have a `bootstrap`: a file the fork server runs before it forks
+any worker. It is not a third launch. It only decides what is in the fork server's
+memory when a worker is forked from it:
+
+- without a bootstrap, the fork server has loaded Composer's autoloader and this library,
+  nothing of the application; every worker loads the application itself, in its worker
+  script, after the fork;
+- with one, the fork server has loaded the application, and every worker starts with it
+  in memory and shares its pages — see
+  [loading the application once](#loading-the-application-once-bootstrap).
 
 The script runs inside a function, so its top-level variables are that function's
 locals. `$argv`, `$argc` and `$_SERVER['argv']` hold what a `php` started on the
@@ -346,6 +354,56 @@ the process the worker is a child of.
 A fork server that dies takes its workers with it: they find themselves orphaned and stop,
 and the master stops the ones it still knows of. The master then starts a new
 generation, after a backoff if the fork servers keep dying before they load.
+
+### Which to choose
+
+The measurements: the demo server for the timings (median of 7),
+`make bench-worker-memory` for the memory — 12 workers, a stand-in application of about
+1 250 classes (Composer's classmap, some 11 MiB of compiled code), OPcache off in the
+CLI, after 5 000 requests, three runs within 0.2 MiB of each other. Pss counts each
+shared page in shares, so its sum is what the pool takes from the machine. Where a
+bootstrap changes the answer, the `fork` column gives both.
+
+| | `exec` | `fork` |
+|---|---|---|
+| A worker is | a `php` of its own | a copy of the fork server |
+| The application is loaded | by every worker | without a bootstrap: by every worker, after its fork; with one: once per generation, in the fork server |
+| Pss, all 12 workers | 279.1 MiB | without a bootstrap: 191.0 MiB; with one: 59.8 MiB |
+| Pss per worker | 23.3 MiB | without: 15.9 MiB; with: 5.0 MiB |
+| Private_Dirty, all workers | 260.2 MiB | without: 176.4 MiB; with: 34.3 MiB |
+| Supervising processes | the master: 10.8 MiB | the master and a fork server per group: 17–19 MiB together |
+| Master start to the first answer of one worker | 40 ms | 45 ms — the fork server starts first; with a bootstrap, plus the application's load, once |
+| A killed worker to its replacement's first answer | 103 ms | 103 ms — both wait for a 100 ms supervision tick |
+| If the fork server crashes | there is none | its workers stop with it, and a new generation is started |
+| What a `reload` picks up | everything | everything; after a deploy that switched a symlink to a new release only with a bootstrap — without one the master's autoloader keeps the old release's paths |
+| A `reload` holds in memory | one more worker at a time | one more worker and a second fork server; with a bootstrap, the application twice for the length of the roll |
+| Shared between the workers | nothing | this library's code; with a bootstrap, also the application and whatever it opened or computed while loading |
+| Scope the worker script runs in | global | a function's |
+| `phpBinary`, `phpArgs`, `php.ini` | the worker's | the fork server's, and so its workers' |
+
+**`exec` or `fork`?** `fork`, the default, fits almost every group: the workers share
+the library's code at the least. `exec` is for a worker that must have nothing of its
+siblings': a worker script that relies on the global scope; an extension that starts
+threads of its own when `php` starts — an APM agent, say — which leaves a process that
+cannot fork, so the fork server refuses with the reason; or a group that must not depend
+on one more process, since a fork server that crashes takes its generation with it.
+
+**A bootstrap for a fork group?** Yes for an application of any size — a framework, a
+container built on boot: it loads once per generation instead of once per worker, its
+memory is shared, and a `reload` loads it afresh and follows a deploy that switches a
+`current` symlink. What it asks of the application is in
+[loading the application once](#loading-the-application-once-bootstrap): nothing
+asynchronous and no connection while loading. Leave it out for a worker script that
+loads what it needs itself — a small script, or an application that cannot be loaded
+without opening connections it cannot close again — and give such a group a bootstrap of
+one line (`require __DIR__ . '/vendor/autoload.php';`) if deploys switch a symlink.
+
+Each server also runs without a master: under systemd, a container's restart policy or
+another supervisor, several processes share the port with `reusePort` or a socket
+handed over as `listenFd` — see
+[scaling across cores](http-server.md#scaling-across-cores-so_reuseport). The master is
+what adds the rolling reload with readiness, the watchdog, the restart policy and the
+single journal.
 
 ### Loading the application once: bootstrap
 
@@ -381,19 +439,7 @@ bootstrap loads the autoloader the master loaded, and keeps that release's paths
 the master restarts; give it a bootstrap of one line (`require __DIR__ .
 '/vendor/autoload.php';`) when deploys switch a symlink.
 
-Measured with `make bench-worker-memory`: 12 workers, a stand-in application of about
-1 250 classes (Composer's classmap, some 11 MiB of compiled code), OPcache off in the
-CLI, after 5 000 requests, three runs within 0.2 MiB of each other. Pss counts each
-shared page in shares, so its sum is what the pool takes from the machine:
-
-| The workers start as | Pss, all workers | Pss per worker | Private_Dirty, all workers |
-|---|---:|---:|---:|
-| `exec` | 279.1 MiB | 23.3 MiB | 260.2 MiB |
-| `fork`, the application loaded by the worker script | 191.0 MiB | 15.9 MiB | 176.4 MiB |
-| `fork`, the application loaded by the bootstrap | 59.8 MiB | 5.0 MiB | 34.3 MiB |
-
-The master adds 10.8 MiB of its own; with fork, the master and the fork server together
-add 17–19 MiB.
+The memory this saves is in [which to choose](#which-to-choose).
 
 What the fork server takes care of:
 
