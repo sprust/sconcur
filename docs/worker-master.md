@@ -8,8 +8,8 @@ one port and the kernel balances connections across them, scaling the server acr
 all cores without an external load balancer. Implementation: `src/Worker/` plus the
 universal CLI `bin/sconcur-server`.
 
-Each worker is a separate process: by default a `php` of its own started via
-`proc_open`, or a copy of the master made by `fork` (see
+Each worker is a separate process: by default a copy of the master made by `fork`,
+or a `php` of its own started via `proc_open` (see
 [Launch: exec or fork](#launch-exec-or-fork)). The master loads the
 extension too and takes and sends its signals through it, so neither `pcntl` nor
 `posix` is needed; `start` without the extension fails with
@@ -125,8 +125,13 @@ over means wrapping what was at the top level in a single entry of `groups` and
 giving it a `name`.
 
 ```sh
-vendor/bin/sconcur-server start --configPath=/app/master.json
+php -d extension=/app/ext/build/sconcur.so vendor/bin/sconcur-server start --configPath=/app/master.json
 ```
+
+The master loads the extension itself — here with `-d`, or through `php.ini`. Workers
+launched by `fork`, the default, are copies of it and have it already; the `phpArgs`
+line matters to a group with `launch: exec`, and is accepted under `fork` as long as the
+extension it names is the one loaded.
 
 `start` blocks in the foreground and supervises the pool until `SIGTERM`/`SIGINT`,
 until the state file is removed, or until every worker has finished with nothing
@@ -263,8 +268,8 @@ The next keys are the defaults every group inherits unless it names its own:
 | `server` | `{}` | Worker parameters → expanded into the worker's `argv`. |
 | `workerArgs` | `[]` | Extra raw worker `argv` flags, appended after `server`. |
 | `listen` | empty | An address the master binds once and hands to every worker of the group as `--listenFd` — [one socket for the whole pool](http-server.md#one-socket-for-the-whole-pool) instead of `SO_REUSEPORT`. Excludes `reusePort` and `listenFd` in `server`. |
-| `launch` | the master's (`exec`) | `exec` — a `php` of its own on the script; `fork` — a copy of the master. See [Launch: exec or fork](#launch-exec-or-fork). |
-| `phpBinary` | the master's | Interpreter for this group's workers (`exec` only). |
+| `launch` | the master's (`fork`) | `fork` — a copy of the master; `exec` — a `php` of its own on the script. See [Launch: exec or fork](#launch-exec-or-fork). |
+| `phpBinary` | the master's | Interpreter for this group's workers. Under `fork` only the php the master runs on, named by its path, a symlink or a name on `PATH`. |
 | `phpArgs` | the master's | Interpreter flags, e.g. `["-d", "extension=…"]`; under `fork` only `-d name=value`. |
 | `env` | the master's | Extra worker env, merged over the master's and the inherited one. |
 | `restartPolicy` | the master's | `always` \| `on-failure` \| `never`. |
@@ -293,17 +298,17 @@ orders #2` is slot 2 of the `orders` pool.
 
 ## Launch: exec or fork
 
-A group's `launch` says how its workers are started. `exec`, the default, starts each
-one as `php <phpArgs> workerScript <argv>`. `fork` makes each worker a copy of the
-master: the master is a `php` with the extension already loaded, and the copy sets up
-the worker's environment and argv and `require`s `workerScript`. The worker script is
-the same either way.
+A group's `launch` says how its workers are started. `fork`, the default, makes each
+worker a copy of the master: the master is a `php` with the extension already loaded,
+and the copy sets up the worker's environment and argv and `require`s `workerScript`.
+`exec` starts each one as `php <phpArgs> workerScript <argv>`. The worker script is the
+same either way.
 
 | | `exec` | `fork` |
 |---|---|---|
 | A worker starts as | a new `php`: interpreter, `php.ini`, the extension | a copy of the master: nothing to start or load |
 | Master start to the first answer of one worker (demo server, median of 7) | 36–40 ms | 24–30 ms |
-| `phpBinary` | any | the master's only; another one is refused |
+| `phpBinary` | any | the master's own only (by path, symlink or name on `PATH`); another one is refused |
 | `phpArgs` | any flags | only `-d name=value`, applied with `ini_set` after `display_errors=stderr` |
 | `php.ini` | its own | the master's |
 | What a `reload` picks up | new code of everything | new application code; the library and the extension the master loaded stay as they were until it restarts |
@@ -334,6 +339,17 @@ A fork is refused in a process that runs threads, because a fork keeps only the
 calling thread. The master's own code never starts the extension's runtime, but an
 `onWatchdogEvent` handler that used SConcur's asynchronous features would, and every
 fork after it would fail; the journal says why.
+
+`exec` is the choice for a group that needs:
+
+- another interpreter, another `php.ini` (`-c`) or none (`-n`);
+- a worker script that relies on running in the global scope;
+- a `reload` that picks up a new library or extension without restarting the master.
+
+Before 0.17 every worker was started by `exec`. A config written then that names
+another php or passes `phpArgs` other than `-d name=value` is refused at `start`, with
+the reason and the group's name; `launch: exec` on the group, or at the top level for
+all of them, brings back what it had.
 
 ### Loading the application in the master
 

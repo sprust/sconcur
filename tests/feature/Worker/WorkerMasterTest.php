@@ -11,13 +11,30 @@ use SConcur\Worker\WorkerMaster;
 use SConcur\Tests\Impl\Worker\TestWorkerMaster;
 
 /**
- * End-to-end coverage of WorkerMaster via the bin/sconcur-server CLI: the
- * master spawns demo workers (HttpServer + SO_REUSEPORT + masterPid) and we observe
- * supervision, restarts, graceful shutdown, single-instance, status/stop, orphan
- * self-termination and crash-loop backoff. Each test manages its own master.
+ * End-to-end coverage of WorkerMaster via the bin/sconcur-server CLI, with the workers
+ * launched by exec: the master spawns demo workers (HttpServer + SO_REUSEPORT +
+ * masterPid) and we observe supervision, restarts, graceful shutdown, single-instance,
+ * status/stop, orphan self-termination and crash-loop backoff. Each test manages its
+ * own master.
  */
 class WorkerMasterTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // Named rather than left to the default, which is fork: ForkedWorkerMasterTest
+        // runs every scenario again under fork, and this class is the exec half.
+        TestWorkerMaster::launchWith('exec');
+    }
+
+    protected function tearDown(): void
+    {
+        TestWorkerMaster::launchWith(null);
+
+        parent::tearDown();
+    }
+
     public function testSpawnsWorkersAndAllServe(): void
     {
         $master = TestWorkerMaster::start(['workerCount' => 2]);

@@ -8,8 +8,9 @@ use SConcur\Tests\Impl\Worker\TestWorkerMaster;
 use SConcur\Worker\WorkerMaster;
 
 /**
- * Every scenario of WorkerMasterTest once more, with the workers launched by fork: the
- * master copies itself into each worker instead of starting php on the script.
+ * Every scenario of WorkerMasterTest once more, with the workers launched by fork — the
+ * default: the master copies itself into each worker instead of starting php on the
+ * script.
  * Supervision, restarts, the watchdog, reload, the journal and the CLI must not depend on
  * how a worker came to be.
  */

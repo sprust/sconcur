@@ -58,7 +58,7 @@ readonly class WorkerGroupConfig
         public int $maxRestartBackoffMs,
         public int $watchdogTimeoutMs,
         public array $server,
-        public LaunchMode $launch = LaunchMode::Exec,
+        public LaunchMode $launch = LaunchMode::Fork,
         public string $listen = '',
         public int $readyTimeoutMs = MasterConfig::DEFAULT_READY_TIMEOUT_MS,
     ) {
@@ -254,7 +254,7 @@ readonly class WorkerGroupConfig
      */
     protected static function assertForkable(string $name, string $phpBinary, array $phpArgs): void
     {
-        if ($phpBinary !== PHP_BINARY) {
+        if (!static::isMastersBinary($phpBinary)) {
             throw new InvalidConfigException(
                 message: sprintf(
                     'config: group "%s" is launched by fork, so it runs on the master\'s own php;'
@@ -274,6 +274,41 @@ readonly class WorkerGroupConfig
                 ),
             );
         }
+    }
+
+    /**
+     * Whether a phpBinary names the php the master runs on. A fork group can run on
+     * nothing else, but a config that names that same php — `php` found on the PATH, a
+     * symlink to it — asks for nothing a fork cannot give, and refusing it would break
+     * every config that spelled the interpreter out.
+     */
+    protected static function isMastersBinary(string $phpBinary): bool
+    {
+        if ($phpBinary === PHP_BINARY) {
+            return true;
+        }
+
+        $path = $phpBinary;
+
+        if (!str_contains($phpBinary, '/')) {
+            $path = null;
+
+            foreach (explode(PATH_SEPARATOR, (string) getenv('PATH')) as $directory) {
+                if ($directory !== '' && is_executable($directory . '/' . $phpBinary)) {
+                    $path = $directory . '/' . $phpBinary;
+
+                    break;
+                }
+            }
+
+            if ($path === null) {
+                return false;
+            }
+        }
+
+        $resolved = realpath($path);
+
+        return $resolved !== false && $resolved === realpath(PHP_BINARY);
     }
 
     /**

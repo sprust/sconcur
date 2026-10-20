@@ -20,6 +20,8 @@ class WorkerGroupConfigTest extends TestCase
     public function testAGroupInheritsTheMasterWideDefaults(): void
     {
         $config = MasterConfig::fromArray([
+            // An interpreter of its own takes exec: a forked worker runs on the master's.
+            'launch'            => 'exec',
             'phpBinary'         => '/usr/bin/php8.4',
             'phpArgs'           => ['-d', 'extension=x.so'],
             'env'               => ['SHARED' => '1'],
@@ -64,23 +66,23 @@ class WorkerGroupConfigTest extends TestCase
     }
 
     /**
-     * Exec is what a config that says nothing gets; a top-level launch is the default of
+     * Fork is what a config that says nothing gets; a top-level launch is the default of
      * every group, and a group's own wins.
      */
-    public function testLaunchIsExecUnlessTheConfigSaysOtherwise(): void
+    public function testLaunchIsForkUnlessTheConfigSaysOtherwise(): void
     {
-        self::assertSame(LaunchMode::Exec, $this->group([])->launch);
+        self::assertSame(LaunchMode::Fork, $this->group([])->launch);
 
         $config = MasterConfig::fromArray([
-            'launch' => 'fork',
+            'launch' => 'exec',
             'groups' => [
                 ['name' => 'inherits', 'workerScript' => '/app/x.php'],
-                ['name' => 'overrides', 'workerScript' => '/app/x.php', 'launch' => 'exec'],
+                ['name' => 'overrides', 'workerScript' => '/app/x.php', 'launch' => 'fork'],
             ],
         ]);
 
-        self::assertSame(LaunchMode::Fork, $config->groups()[0]->launch);
-        self::assertSame(LaunchMode::Exec, $config->groups()[1]->launch);
+        self::assertSame(LaunchMode::Exec, $config->groups()[0]->launch);
+        self::assertSame(LaunchMode::Fork, $config->groups()[1]->launch);
     }
 
     public function testAnUnknownLaunchIsRefused(): void
@@ -104,6 +106,36 @@ class WorkerGroupConfigTest extends TestCase
             'launch'    => 'fork',
             'phpBinary' => '/usr/bin/php8.3',
         ]);
+    }
+
+    /**
+     * A config that spells out the php the master already runs on asks for nothing a fork
+     * cannot give: by its path, through a symlink, or by name on the PATH.
+     */
+    public function testAForkGroupAcceptsTheMastersOwnPhpHoweverItIsNamed(): void
+    {
+        $link = sys_get_temp_dir() . '/sc-php-link-' . getmypid();
+
+        @unlink($link);
+        symlink(PHP_BINARY, $link);
+
+        $directory = dirname(PHP_BINARY);
+        $path      = (string) getenv('PATH');
+
+        putenv('PATH=' . $directory . PATH_SEPARATOR . $path);
+
+        try {
+            foreach ([PHP_BINARY, $link, basename(PHP_BINARY)] as $phpBinary) {
+                self::assertSame(
+                    $phpBinary,
+                    $this->group(['launch' => 'fork', 'phpBinary' => $phpBinary])->phpBinary,
+                );
+            }
+        } finally {
+            putenv('PATH=' . $path);
+
+            @unlink($link);
+        }
     }
 
     /**

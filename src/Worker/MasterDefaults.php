@@ -27,7 +27,7 @@ readonly class MasterDefaults
         public int $restartBackoffMs,
         public int $maxRestartBackoffMs,
         public int $watchdogTimeoutMs,
-        public LaunchMode $launch = LaunchMode::Exec,
+        public LaunchMode $launch = LaunchMode::Fork,
         public int $readyTimeoutMs = MasterConfig::DEFAULT_READY_TIMEOUT_MS,
     ) {
     }

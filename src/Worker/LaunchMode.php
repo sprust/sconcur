@@ -5,7 +5,8 @@ declare(strict_types=1);
 namespace SConcur\Worker;
 
 /**
- * How the master starts a worker of a group.
+ * How the master starts a worker of a group. Fork unless a group says otherwise: it is
+ * the cheaper start, and it is what lets workers share an application loaded once.
  *
  * Exec runs a php process of its own on the worker script: its own interpreter, its own
  * php.ini and -d flags, and a reload that rolls the workers picks up new code from disk,

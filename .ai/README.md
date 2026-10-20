@@ -269,7 +269,7 @@ feature's doc. Key PHP classes not covered there:
   `WorkerMaster`, `MasterConfig`, `MasterCli`, `WorkerProcess` (the abstract worker:
   journal pipes, heartbeat, outcome) with its two launches — `ExecWorkerProcess`
   (`proc_open` of a php of its own) and `ForkedWorkerProcess` (a fork of the master,
-  whose child half is `ForkedWorker`: environment, ini, argv, `require` of the script,
+  the default, whose child half is `ForkedWorker`: environment, ini, argv, `require` of the script,
   `_exit`, and never a return into the master's frames) — chosen per group by
   `LaunchMode`, `Cpu`, `MasterLock`, `MasterState`/`MasterGroupState`/`MasterStateFile`, `MasterLogger`,
   `RestartPolicy`. One master supervises several **groups** — `WorkerGroupConfig`

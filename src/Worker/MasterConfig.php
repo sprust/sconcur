@@ -156,7 +156,7 @@ readonly class MasterConfig
             );
         }
 
-        $launch = LaunchMode::tryFrom((string) ($data['launch'] ?? LaunchMode::Exec->value));
+        $launch = LaunchMode::tryFrom((string) ($data['launch'] ?? LaunchMode::Fork->value));
 
         if ($launch === null) {
             throw new InvalidConfigException(
