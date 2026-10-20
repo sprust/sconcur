@@ -47,8 +47,11 @@ enum ProcessCommandEnum: string
     /** Closes a descriptor the extension handed over. Rust: payloads::CloseParams. */
     case Close = 'cls';
 
-    /** How many threads this process runs, where the platform can say. No parameters. */
-    case ThreadCount = 'thr';
+    /**
+     * Closes a descriptor a fork handed over once PHP has opened its stream on a copy, and
+     * makes that copy close-on-exec. Rust: payloads::CloseParams.
+     */
+    case Adopted = 'adp';
 
     /** Refuses as a fork would, without forking. No parameters. */
     case CheckFork = 'cfk';

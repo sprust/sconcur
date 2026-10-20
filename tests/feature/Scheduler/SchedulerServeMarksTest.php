@@ -10,6 +10,7 @@ use SConcur\Exceptions\TaskErrorException;
 use SConcur\Features\HttpServer\HttpServer;
 use SConcur\Scheduler\Scheduler;
 use SConcur\Tests\Feature\BaseTestCase;
+use SConcur\Tests\Impl\FreePort;
 use SConcur\Worker\Heartbeat;
 
 /**
@@ -124,14 +125,26 @@ class SchedulerServeMarksTest extends BaseTestCase
     {
         Heartbeat::adopt($this->writeEnd);
 
-        $port = self::freePort();
+        $port = FreePort::find();
 
-        // One request from another process, once the server below is listening.
+        // One request from another process, asked until the server below is listening:
+        // a request that never arrives would leave serve() waiting for its limit forever.
         $client = proc_open(
             [
                 PHP_BINARY,
                 '-r',
-                'usleep(300000); echo @file_get_contents("http://127.0.0.1:' . $port . '/");',
+                <<<'PHP'
+                $url      = $argv[1];
+                $deadline = microtime(true) + 10.0;
+                $context  = stream_context_create(['http' => ['timeout' => 2]]);
+
+                while (($body = @file_get_contents($url, false, $context)) === false && microtime(true) < $deadline) {
+                    usleep(20_000);
+                }
+
+                echo $body;
+                PHP,
+                'http://127.0.0.1:' . $port . '/',
             ],
             [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes,
@@ -194,18 +207,5 @@ class SchedulerServeMarksTest extends BaseTestCase
         }
 
         return $marks;
-    }
-
-    protected static function freePort(): int
-    {
-        $socket = stream_socket_server('tcp://127.0.0.1:0', $errorCode, $errorMessage);
-
-        self::assertNotFalse($socket, "could not allocate a port: $errorMessage");
-
-        $name = (string) stream_socket_get_name($socket, false);
-
-        fclose($socket);
-
-        return (int) substr($name, (int) strrpos($name, ':') + 1);
     }
 }

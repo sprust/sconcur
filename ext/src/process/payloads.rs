@@ -60,7 +60,7 @@ pub struct BindParams {
     pub backlog: i64,
 }
 
-/// PHP: ProcessCommandEnum::Close.
+/// PHP: ProcessCommandEnum::Close and ProcessCommandEnum::Adopted.
 #[derive(Deserialize)]
 pub struct CloseParams {
     #[serde(rename = "fd")]

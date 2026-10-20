@@ -114,32 +114,35 @@ result: `RespondPayload::full()` sets the no-result flag (`nr`) and goes through
 key), so the coroutine finishes without waiting for the write (the socket and WS
 servers acknowledge every command).
 
-Argv parsing, signal handlers, arming automatic preemption, the orphan check and the
-lifecycle log are already extracted into the stateless
-`SConcur\Features\Server\ServerRuntimeSupportTrait`:
+Argv parsing, arming automatic preemption and the lifecycle log are already
+extracted into the stateless `SConcur\Features\Server\ServerRuntimeSupportTrait`:
 
 - `parseArgs(array $argv): array` — collect the scalar (`int`/`bool`/`float`/
   `string`) constructor parameters by reflection, coerce each `--name=value` string
   to the type and throw `InvalidServerArgumentException` on an unknown argument;
-- `watchForStop(?int $masterPid): StopRequest` — start watching SIGTERM/SIGINT
-  and answer the request the serve loop's `shouldStop` reads
-  (`$stopRequest->isRequested()`); it also says yes once the master is no longer
-  the parent, which survives PID reuse because the kernel reparents the process
-  once the master dies. Release it in `finally`. It needs nothing but this
-  extension — no ext-pcntl, no ext-posix — and asks it at most every 100 ms;
 - `applyTelemetryEnvironment(array $overrides): array` — read the telemetry env;
 - `withPreemption(int $quantumMs, Closure $callback): mixed` — run the callback with
   automatic preemption armed and disarm it afterwards. A server passes its quantum to
   `Scheduler::serve()` instead and needs this only if it has no serve loop of its own;
 - `logServerEvent(string $message): void` — one timestamped line about the worker's own
-  lifecycle, on stdout.
+  lifecycle, on stdout;
+- `describeListener(string $address, ?int $listenFd): string` — the listener as the
+  startup line names it: the address, or `fd N` for a socket the server was handed.
+
+The stop check is `SConcur\Features\Server\StopRequest`.
+`StopRequest::watch(?int $masterPid)` starts watching SIGTERM/SIGINT and answers the
+request the serve loop's `shouldStop` reads (`$stopRequest->isRequested(...)`); it
+also says yes once the master is no longer the parent, which survives PID reuse
+because the kernel reparents the process once the master dies. Release it in
+`finally`. It needs nothing but this extension — no ext-pcntl, no ext-posix — and
+asks it at most every 100 ms.
 
 A new server just uses the trait, and to be launchable under `bin/sconcur-server`
 it adds a static `fromArgs()` modelled on `HttpServer::fromArgs()`: call
 `self::parseArgs($argv)`, add `onError` if present, unpack into the constructor.
 
 The public `serve(Closure $handler)` then generates a `flowKey`, starts
-`watchForStop()` (released in `finally`), starts the listener with
+`StopRequest::watch()` (released in `finally`), starts the listener with
 `Extension::get()->push($flowKey, new ServePayload(...))` — a streaming task whose
 batches are the incoming requests — and hands control to the shared
 `Scheduler::get()->serve(...)`, passing:
@@ -303,7 +306,8 @@ PHP:
       `Rust: payloads::<Type>`).
 - [ ] Request/response shape: your own DTOs or PSR-7 outward.
 - [ ] `use ServerRuntimeSupportTrait;` —
-      `parseArgs`/`watchForStop`/`logServerEvent`.
+      `parseArgs`/`logServerEvent`/`describeListener`; `StopRequest::watch()` for
+      `shouldStop`.
 - [ ] `fromArgs()` via `self::parseArgs($argv)`, accepting `--masterPid` and
       `--listenFd`.
 - [ ] `serve()`: start the listener via `push(ServePayload)` plus
@@ -326,7 +330,8 @@ Rust:
 - [ ] A no-result write (`nr`): `handle_detached()` on the feature and the method
       in `detachable()` (`ext/src/handler/mod.rs`).
 - [ ] The server-state and pending-request registries; `stop_accepting(flow_key)`;
-      `listen::open()` for `SO_REUSEPORT` and `listenFd`.
+      `httpserver::listen::open()` for `SO_REUSEPORT` and `listenFd`, the one
+      listener every server opens.
 - [ ] The flow's cancellation token honoured; `handlerTimeoutMs`; the access log
       written on the extension side.
 - [ ] Statistics: a workload counter, a `stats::Pusher` started with the server

@@ -90,7 +90,7 @@ The `SocketServer` constructor; the PHP defaults mirror the extension's.
 | `maxMessageBytes` | `1048576` (1 MiB) | length limit of one inbound frame; exceeding it ends the connection's input |
 | `maxConcurrency` | `0` (unlimited) | max connections served at once; excess ones wait for a free slot |
 | `handlerTimeoutMs` | `0` (unlimited) | how long one connection handler may run before it is unwound where it stands — see [coroutine timeout](coroutine-timeout.md) |
-| `maxConnections` | `0` (unlimited) | stop the server after N served connections (a guard against leaks) |
+| `maxConnections` | `0` (unlimited) | stop the server after N served connections (a guard against leaks); spread under the master, see [restart policy](worker-master.md#restart-policy-and-maxrequests) |
 | `shutdownTimeoutMs` | `10000` | accepted and not applied: finishing the connections already accepted is bounded by the grace period below, not by a clock of its own |
 | `reusePort` | `false` | `SO_REUSEPORT` — a process pool on one port (Linux) |
 | `listenFd` | `null` | A listening socket bound elsewhere to accept on instead of binding `address` — the shared socket of a [worker master](worker-master.md) group, or one from systemd socket activation. `address` and `reusePort` are then not used. A copy is taken, so stopping the server leaves the socket to whoever else holds it — see [one socket for the whole pool](http-server.md#one-socket-for-the-whole-pool). |

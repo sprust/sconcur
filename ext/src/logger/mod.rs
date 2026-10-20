@@ -54,7 +54,10 @@ enum Message {
 }
 
 pub struct Logger {
-    sender: OnceLock<crossbeam_channel::Sender<Message>>,
+    /// The writer's queue, set by the first line. None inside once the writer
+    /// thread could not be started: every line after is dropped and counted, and
+    /// a flush has no writer to wait for.
+    sender: OnceLock<Option<crossbeam_channel::Sender<Message>>>,
 }
 
 impl Logger {
@@ -64,30 +67,39 @@ impl Logger {
         }
     }
 
-    fn sender(&self) -> &crossbeam_channel::Sender<Message> {
-        self.sender.get_or_init(|| {
-            let (sender, receiver) = crossbeam_channel::bounded::<Message>(QUEUE_SIZE);
+    fn sender(&self) -> Option<&crossbeam_channel::Sender<Message>> {
+        self.sender
+            .get_or_init(|| {
+                let (sender, receiver) = crossbeam_channel::bounded::<Message>(QUEUE_SIZE);
 
-            // Read when the sink starts, on the PHP thread: by then the worker master's
-            // variables are in this process's environment, whichever way it started.
-            let access = AccessTarget::from_environment();
+                // Read when the sink starts, on the PHP thread: by then the worker master's
+                // variables are in this process's environment, whichever way it started.
+                let access = AccessTarget::from_environment();
 
-            // A plain OS thread, not a runtime task: the sink must keep working
-            // while the runtime is busy.
-            let _ = std::thread::Builder::new()
-                .name("sconcur-log".to_string())
-                .spawn(move || {
-                    let output = standard_descriptor(1);
-                    let errors = standard_descriptor(2);
+                // A plain OS thread, not a runtime task: the sink must keep working
+                // while the runtime is busy.
+                let started = std::thread::Builder::new()
+                    .name("sconcur-log".to_string())
+                    .spawn(move || {
+                        let output = standard_descriptor(1);
+                        let errors = standard_descriptor(2);
 
-                    run(
-                        receiver,
-                        Writer::new(&*output, &*errors, access, today),
-                    );
-                });
+                        run(
+                            receiver,
+                            Writer::new(&*output, &*errors, access, today),
+                        );
+                    });
 
-            sender
-        })
+                match started {
+                    Ok(_) => Some(sender),
+                    Err(error) => {
+                        report_unstarted(&error);
+
+                        None
+                    }
+                }
+            })
+            .as_ref()
     }
 
     /// Queues one pre-formatted line for stdout. Never blocks: past the queue the
@@ -103,7 +115,11 @@ impl Logger {
     }
 
     fn queue(&self, message: Message) {
-        if self.sender().try_send(message).is_err() {
+        let queued = self
+            .sender()
+            .is_some_and(|sender| sender.try_send(message).is_ok());
+
+        if !queued {
             DROPPED.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -120,7 +136,7 @@ impl Logger {
     /// just to be flushed: that would put a thread into a process that may be
     /// about to fork.
     pub fn flush(&self) {
-        let Some(sender) = self.sender.get() else {
+        let Some(Some(sender)) = self.sender.get() else {
             return;
         };
 
@@ -130,6 +146,15 @@ impl Logger {
             let _ = wait.recv_timeout(FLUSH_WAIT);
         }
     }
+}
+
+/// Says on stderr that the writer thread did not start, once: the writer is
+/// what reports dropped lines, so nothing else would ever say it.
+fn report_unstarted(error: &std::io::Error) {
+    let _ = writeln!(
+        &*standard_descriptor(2),
+        "log: the writer thread cannot start ({error}); every line of this process is dropped"
+    );
 }
 
 /// Queues one pre-formatted line for stdout on this process's sink.
@@ -683,7 +708,7 @@ mod tests {
         let (sender, receiver) = crossbeam_channel::bounded::<Message>(QUEUE_SIZE);
         let logger = Logger::new();
 
-        assert!(logger.sender.set(sender).is_ok());
+        assert!(logger.sender.set(Some(sender)).is_ok());
 
         // Exactly full: a line past it would be dropped and counted, which another
         // test reads.
@@ -691,7 +716,7 @@ mod tests {
             logger.write(format!("{index}\n"));
         }
 
-        assert!(logger.sender.get().unwrap().is_full());
+        assert!(logger.sender.get().unwrap().as_ref().unwrap().is_full());
 
         let captured = Captured::default();
         let output = captured.clone();

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\SocketServer;
 
 use PHPUnit\Framework\TestCase;
+use SConcur\Tests\Impl\FreePort;
 use SConcur\Tests\Impl\Worker\TestWorkerMaster;
 
 /**
@@ -20,7 +21,7 @@ class SocketServerStatsTest extends TestCase
 
     public function testServesAggregatedSocketStatistics(): void
     {
-        $panelPort = self::freePort();
+        $panelPort = FreePort::find();
 
         $master = TestWorkerMaster::start(
             options: [
@@ -117,20 +118,5 @@ class SocketServerStatsTest extends TestCase
         curl_close($curl);
 
         return [$status, is_string($body) ? $body : ''];
-    }
-
-    private static function freePort(): int
-    {
-        $socket = stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
-
-        if ($socket === false) {
-            self::fail("Could not allocate a port: {$errstr}");
-        }
-
-        $name = (string) stream_socket_get_name($socket, false);
-
-        fclose($socket);
-
-        return (int) substr($name, (int) strrpos($name, ':') + 1);
     }
 }

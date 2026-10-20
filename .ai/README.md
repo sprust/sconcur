@@ -410,8 +410,10 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
   `socket/`, `ws/`, `amqp/`, `redis/`, `files/` (each holds its per-operation benches plus, for the protocols,
   the server benches and the load scripts), `db/` (a whole DB session: repeated
   runs and their aggregation into the markdown rows of `docs/benchmarks.md`),
-  `runtime/` (scheduler and the boundary, no backend involved) and `lib/`
-  (the shared harness the benches include). A new bench goes into its
+  `runtime/` (scheduler and the boundary, no backend involved), `worker/` (what a
+  worker master's pool costs in memory — the PSS of its workers exec'd, forked, and
+  forked from a fork server that loaded the application once — `bench-worker-memory`)
+  and `lib/` (the shared harness the benches include). A new bench goes into its
   technology's directory, named after the operation (`mysql/select-one.php`), and
   gets a `bench-<tech>-<operation>` make target.
 - `tests/consumers/` — demo/test worker scripts that are not servers (the AMQP

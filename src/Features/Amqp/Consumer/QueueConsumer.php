@@ -22,6 +22,7 @@ use SConcur\Features\Amqp\Payloads\AmqpPayload;
 use SConcur\Features\Amqp\Support\AmqpFailure;
 use SConcur\Features\Amqp\Support\DeliveryCodec;
 use SConcur\Features\Server\ServerRuntimeSupportTrait;
+use SConcur\Features\Server\StopRequest;
 use SConcur\Scheduler\Scheduler;
 use Throwable;
 use WeakReference;
@@ -113,7 +114,11 @@ class QueueConsumer
      *                                    dead-letters it, or drops it where the queue names
      *                                    no exchange; true puts it back, which loops forever
      *                                    on a message that always fails
-     * @param int    $maxMessages         drain and stop after this many
+     * @param int    $maxMessages         drain and stop after this many. Under a worker
+     *                                    master each worker stops at a number drawn
+     *                                    between it and half again as many, so a pool does
+     *                                    not restart as one (Scheduler::spreadLimit(),
+     *                                    docs/worker-master.md)
      * @param int    $maxRuntimeSeconds   drain and stop after this long
      * @param int    $maxMemoryBytes      drain and stop once the PHP heap passes this
      * @param int    $preemptionQuantumMs what lets $handlerTimeoutMs and a stop reach a
@@ -188,7 +193,7 @@ class QueueConsumer
 
         // Watched before the stream opens, so a signal arriving during startup is not the
         // one that gets lost.
-        $stopRequest = self::watchForStop($this->masterPid);
+        $stopRequest = StopRequest::watch($this->masterPid);
 
         $flowKey   = uniqid('amqp_', more_entropy: true);
         $startedAt = microtime(true);

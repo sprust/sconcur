@@ -6,7 +6,6 @@
 //! per-connection inbound stream — a socket handler reads frames itself, so each
 //! connection registers a MessageState PHP pulls with next().
 
-pub mod listen;
 pub mod payloads;
 
 use std::collections::HashMap;
@@ -15,9 +14,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::features::httpserver::listen::Listener;
 use crate::dto::{Message, Result, Value};
 use crate::errs::Factory;
+use crate::features::httpserver::listen::{self, Listener};
 use crate::features::{BoxFuture, Feature};
 use crate::helpers::calc_execution_ms;
 use crate::socket::{MessageState, PendingConnection, WriteKind, dispatch, next_connection_id};

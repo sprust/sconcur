@@ -98,7 +98,7 @@ foreach ($arms as $arm => $setup) {
 
         report($arm, 'served', $masterPid, $workers);
     } finally {
-        proc_terminate($master, SIGTERM);
+        proc_terminate($master);
         proc_close($master);
 
         foreach (glob($runtimeDir . '/*') ?: [] as $file) {

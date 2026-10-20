@@ -6,6 +6,7 @@ namespace SConcur\Tests\Feature\Connection;
 
 use SConcur\Features\Sleeper\Sleeper;
 use SConcur\Tests\Feature\BaseTestCase;
+use SConcur\Tests\Impl\FreePort;
 use SConcur\Tests\Impl\PhpScript;
 use SConcur\WaitGroup;
 
@@ -228,8 +229,8 @@ class ExtensionForkTest extends BaseTestCase
             PHP,
             arguments: [
                 PhpScript::projectRoot(),
-                '127.0.0.1:' . self::freePort(),
-                '127.0.0.1:' . self::freePort(),
+                '127.0.0.1:' . FreePort::find(),
+                '127.0.0.1:' . FreePort::find(),
             ],
         );
 
@@ -256,18 +257,5 @@ class ExtensionForkTest extends BaseTestCase
         }
 
         return '';
-    }
-
-    protected static function freePort(): int
-    {
-        $socket = stream_socket_server('tcp://127.0.0.1:0', $errorCode, $errorMessage);
-
-        self::assertNotFalse($socket, "could not allocate a port: $errorMessage");
-
-        $name = (string) stream_socket_get_name($socket, false);
-
-        fclose($socket);
-
-        return (int) substr($name, (int) strrpos($name, ':') + 1);
     }
 }

@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\Amqp;
 
 use SConcur\Telemetry\FrameCodec;
+use SConcur\Tests\Impl\FreePort;
+use SConcur\Tests\Impl\PhpScript;
 use SConcur\Tests\Impl\Worker\TestWorkerMaster;
 
 /**
@@ -28,7 +30,7 @@ class AmqpConsumerTelemetryTest extends AmqpTestCase
         // One message is refused, so the refused counter is not just zero on both sides.
         $this->publishToQueue($channel, $queue->name(), 'reject');
 
-        $panelPort  = $this->freePort();
+        $panelPort  = FreePort::find();
         $adminToken = bin2hex(random_bytes(16));
 
         $master = TestWorkerMaster::start(
@@ -38,7 +40,7 @@ class AmqpConsumerTelemetryTest extends AmqpTestCase
                 'groups'     => [
                     [
                         'name'         => 'consumers',
-                        'workerScript' => dirname(__DIR__, 3) . '/consumers/amqp/amqp-consumer.php',
+                        'workerScript' => PhpScript::projectRoot() . '/tests/consumers/amqp/amqp-consumer.php',
                         'workerCount'  => 1,
                         // No maxMessages: the counters live in the worker process, so a
                         // worker that finished and was replaced would report the empty
@@ -140,16 +142,14 @@ class AmqpConsumerTelemetryTest extends AmqpTestCase
         Extension::get()->destroy();
         PHP;
 
-        $extension = getenv('SCONCUR_EXT') ?: dirname(__DIR__, 4) . '/ext/build/sconcur.so';
-
         $process = proc_open(
             command: [
                 PHP_BINARY,
                 '-d',
-                'extension=' . $extension,
+                'extension=' . PhpScript::extensionPath(),
                 '-r',
                 $code,
-                dirname(__DIR__, 4),
+                PhpScript::projectRoot(),
                 $socketPath,
             ],
             descriptor_spec: [
@@ -304,18 +304,5 @@ class AmqpConsumerTelemetryTest extends AmqpTestCase
         $decoded = json_decode($body, true);
 
         return is_array($decoded) ? $decoded : [];
-    }
-
-    protected function freePort(): int
-    {
-        $socket = stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
-
-        self::assertNotFalse($socket, "could not allocate a port: $errstr");
-
-        $name = (string) stream_socket_get_name($socket, false);
-
-        fclose($socket);
-
-        return (int) substr($name, (int) strrpos($name, ':') + 1);
     }
 }

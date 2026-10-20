@@ -114,20 +114,13 @@ flowchart TB
 отдельно от флоу (с пустым ключом флоу), так что корутина завершается, не дожидаясь
 записи (сокет- и WS-серверы подтверждают каждую команду).
 
-Разбор argv, обработчики сигналов, включение автоматической преемпции, проверка на
-сироту и лог жизненного цикла уже вынесены в трейт без состояния
-`SConcur\Features\Server\ServerRuntimeSupportTrait`:
+Разбор argv, включение автоматической преемпции и лог жизненного цикла уже вынесены
+в трейт без состояния `SConcur\Features\Server\ServerRuntimeSupportTrait`:
 
 - `parseArgs(array $argv): array` — собрать скалярные (`int`/`bool`/`float`/
   `string`) параметры конструктора рефлексией, привести каждую строку
   `--name=value` к типу и бросить `InvalidServerArgumentException` на неизвестном
   аргументе;
-- `watchForStop(?int $masterPid): StopRequest` — начать слушать SIGTERM/SIGINT и
-  вернуть запрос, который читает `shouldStop` серверного цикла
-  (`$stopRequest->isRequested()`); он отвечает «да» и тогда, когда мастер перестал
-  быть родителем, — это устойчиво к переиспользованию PID, потому что после смерти
-  мастера ядро меняет родителя. Освобождается в `finally`. Нужно только это
-  расширение — ни ext-pcntl, ни ext-posix — и спрашивает его не чаще раза в 100 мс;
 - `applyTelemetryEnvironment(array $overrides): array` — прочитать переменные
   окружения телеметрии;
 - `withPreemption(int $quantumMs, Closure $callback): mixed` — выполнить колбэк с
@@ -135,7 +128,17 @@ flowchart TB
   передаёт свой квант в `Scheduler::serve()`, а это нужно только тому, у кого нет
   своего цикла обслуживания;
 - `logServerEvent(string $message): void` — одна строка с меткой времени о
-  жизненном цикле самого воркера, в stdout.
+  жизненном цикле самого воркера, в stdout;
+- `describeListener(string $address, ?int $listenFd): string` — слушатель так, как
+  его называет стартовая строка: адрес или `fd N` для переданного серверу сокета.
+
+Проверка остановки — `SConcur\Features\Server\StopRequest`.
+`StopRequest::watch(?int $masterPid)` начинает слушать SIGTERM/SIGINT и возвращает
+запрос, который читает `shouldStop` серверного цикла (`$stopRequest->isRequested(...)`);
+он отвечает «да» и тогда, когда мастер перестал быть родителем, — это устойчиво к
+переиспользованию PID, потому что после смерти мастера ядро меняет родителя.
+Освобождается в `finally`. Нужно только это расширение — ни ext-pcntl, ни ext-posix —
+и спрашивает его не чаще раза в 100 мс.
 
 Новому серверу достаточно подключить трейт, а чтобы запускаться под
 `bin/sconcur-server`, он добавляет статический `fromArgs()` по образцу
@@ -143,7 +146,7 @@ flowchart TB
 если он есть, и распаковать в конструктор.
 
 Публичный `serve(Closure $handler)` затем генерирует `flowKey`, запускает
-`watchForStop()` (освобождая его в `finally`), поднимает слушатель через
+`StopRequest::watch()` (освобождая его в `finally`), поднимает слушатель через
 `Extension::get()->push($flowKey, new ServePayload(...))` — это стриминговая
 задача, батчи которой и есть входящие запросы — и передаёт управление общему
 `Scheduler::get()->serve(...)`, передав:
@@ -302,7 +305,8 @@ PHP:
       `Rust: payloads::<Type>`).
 - [ ] Форма запроса и ответа: свои DTO либо PSR-7 наружу.
 - [ ] `use ServerRuntimeSupportTrait;` —
-      `parseArgs`/`watchForStop`/`logServerEvent`.
+      `parseArgs`/`logServerEvent`/`describeListener`; `StopRequest::watch()` для
+      `shouldStop`.
 - [ ] `fromArgs()` через `self::parseArgs($argv)`, принимает `--masterPid` и
       `--listenFd`.
 - [ ] `serve()`: поднять слушатель через `push(ServePayload)` плюс
@@ -325,7 +329,8 @@ Rust:
 - [ ] Запись без результата (`nr`): `handle_detached()` у фичи и метод в
       `detachable()` (`ext/src/handler/mod.rs`).
 - [ ] Реестры состояний серверов и ждущих запросов; `stop_accepting(flow_key)`;
-      `listen::open()` для `SO_REUSEPORT` и `listenFd`.
+      `httpserver::listen::open()` для `SO_REUSEPORT` и `listenFd` — один слушатель
+      на все серверы.
 - [ ] Токен отмены флоу учитывается; `handlerTimeoutMs`; access-лог на стороне
       расширения.
 - [ ] Статистика: счётчик нагрузки, `stats::Pusher`, запускаемый вместе с

@@ -28,7 +28,6 @@ class ProcessControlTest extends BaseTestCase
     require $argv[1] . '/vendor/autoload.php';
 
     use SConcur\Exceptions\Process\ProcessException;
-    use SConcur\Features\Sleeper\Sleeper;
     use SConcur\Process\Dto\ProcessExit;
     use SConcur\Process\ProcessControl;
     use SConcur\Process\ProcessSignalEnum;
@@ -55,7 +54,8 @@ class ProcessControlTest extends BaseTestCase
     /**
      * A fork keeps only the calling thread, and the runtime runs threads of its own: a
      * child would inherit their locks without them. So once the runtime is up, the fork
-     * is refused rather than attempted.
+     * is refused rather than attempted, and the refusal says how many threads it found —
+     * Linux, where the suite runs, can count them.
      */
     public function testAForkIsRefusedOnceTheRuntimeRuns(): void
     {
@@ -66,6 +66,7 @@ class ProcessControlTest extends BaseTestCase
         $group->waitAll();
 
         $this->expectException(ForkRefusedException::class);
+        $this->expectExceptionMessageMatches('~runtime already runs in this process \(\d+ threads\)~');
 
         ProcessControl::fork();
     }
@@ -121,11 +122,15 @@ class ProcessControlTest extends BaseTestCase
             $delivered = ProcessControl::kill($fork->pid, ProcessSignalEnum::Terminate);
             $exit      = waitFor($fork->pid);
 
+            // Not the child's pid again: once reaped, it may already be another process's.
+            // Pids wrap around at pid_max, so no process has that one.
+            $unknownPid = (int) file_get_contents('/proc/sys/kernel/pid_max');
+
             echo json_encode([
-                'delivered'     => $delivered,
-                'code'          => $exit->exitCode,
-                'signal'        => $exit->signal,
-                'deliveredAgain' => ProcessControl::kill($fork->pid, ProcessSignalEnum::Terminate),
+                'delivered'  => $delivered,
+                'code'       => $exit->exitCode,
+                'signal'     => $exit->signal,
+                'unknownPid' => ProcessControl::kill($unknownPid, ProcessSignalEnum::Child),
             ]);
             PHP,
         );
@@ -134,7 +139,7 @@ class ProcessControlTest extends BaseTestCase
         self::assertNull($answer['code']);
         // SIGTERM's number on Linux, where the suite runs.
         self::assertSame(15, $answer['signal']);
-        self::assertFalse($answer['deliveredAgain'], 'a reaped child is no process to signal');
+        self::assertFalse($answer['unknownPid'], 'a pid no process has is no process to signal');
     }
 
     /**
@@ -431,9 +436,9 @@ class ProcessControlTest extends BaseTestCase
     {
         $answer = $this->runScenario(
             <<<'PHP'
-            ProcessControl::watchSignals([ProcessSignalEnum::User1]);
+            ProcessControl::watchSignals([ProcessSignalEnum::Terminate]);
 
-            ProcessControl::kill(getmypid(), ProcessSignalEnum::User1);
+            ProcessControl::kill(getmypid(), ProcessSignalEnum::Terminate);
 
             $first  = ProcessControl::takeSignals();
             $second = ProcessControl::takeSignals();
@@ -447,25 +452,25 @@ class ProcessControlTest extends BaseTestCase
             PHP,
         );
 
-        self::assertSame(['USR1'], $answer['first']);
+        self::assertSame(['TERM'], $answer['first']);
         self::assertSame([], $answer['second']);
     }
 
     /**
      * The parent's watching ends at the fork: the child gets back what was installed
-     * before it, so a USR1 it receives does what USR1 does by default — end the process —
+     * before it, so a TERM it receives does what TERM does by default — end the process —
      * rather than land in a record nobody reads.
      */
     public function testAChildDoesNotInheritTheParentsWatching(): void
     {
         $answer = $this->runScenario(
             <<<'PHP'
-            ProcessControl::watchSignals([ProcessSignalEnum::User1]);
+            ProcessControl::watchSignals([ProcessSignalEnum::Terminate]);
 
             $fork = ProcessControl::fork();
 
             if ($fork->isChild()) {
-                ProcessControl::kill(getmypid(), ProcessSignalEnum::User1);
+                ProcessControl::kill(getmypid(), ProcessSignalEnum::Terminate);
 
                 usleep(500_000);
 
@@ -481,9 +486,9 @@ class ProcessControlTest extends BaseTestCase
             PHP,
         );
 
-        self::assertNull($answer['code'], 'the child survived its USR1: it still had the parent\'s handler');
-        // SIGUSR1's number on Linux, where the suite runs.
-        self::assertSame(10, $answer['signal']);
+        self::assertNull($answer['code'], 'the child survived its TERM: it still had the parent\'s handler');
+        // SIGTERM's number on Linux, where the suite runs.
+        self::assertSame(15, $answer['signal']);
     }
 
     public function testTheChildsParentPidIsTheForkingProcess(): void
@@ -569,27 +574,75 @@ class ProcessControlTest extends BaseTestCase
         self::assertSame(1, substr_count($output, 'BUFFERED-BY-THE-CHILD'), $output);
     }
 
-    public function testAProcessThatNeverStartedTheRuntimeRunsOneThread(): void
+    /**
+     * The pipes a fork hands over reach nothing either side execs. php://fd opens its
+     * stream on a copy without close-on-exec, and the extension puts the flag back: left
+     * off, a program a worker runs would hold the worker's heartbeat and could write marks
+     * into it, and one its parent runs would hold the read ends of the child's pipes.
+     */
+    public function testThePipesOfAForkReachNothingEitherSideExecs(): void
     {
         $answer = $this->runScenario(
             <<<'PHP'
-            $before = ProcessControl::threadCount();
+            // The inodes of the pipes a php started from this process has open.
+            function pipesOfAnExec(): array
+            {
+                $listing = <<<'LISTING'
+                foreach (scandir('/proc/self/fd') as $entry) {
+                    if (preg_match('~^pipe:\[(\d+)\]$~', (string) @readlink('/proc/self/fd/' . $entry), $match)) {
+                        echo $match[1], PHP_EOL;
+                    }
+                }
+                LISTING;
 
-            Sleeper::usleep(microseconds: 1_000);
+                $output = (string) shell_exec(escapeshellarg(PHP_BINARY) . ' -n -r ' . escapeshellarg($listing));
+
+                return array_map('intval', array_values(array_filter(explode(PHP_EOL, $output))));
+            }
+
+            $fork = ProcessControl::fork(heartbeat: true);
+
+            if ($fork->isChild()) {
+                echo json_encode([
+                    'heartbeat' => fstat($fork->heartbeat)['ino'],
+                    'exec'      => pipesOfAnExec(),
+                ]);
+
+                ProcessControl::exit(0);
+            }
+
+            waitFor($fork->pid);
+
+            $child = json_decode(stream_get_contents($fork->stdout), true);
 
             echo json_encode([
-                'before' => $before,
-                'after'  => ProcessControl::threadCount(),
+                'childHeartbeat' => $child['heartbeat'],
+                'childExec'      => $child['exec'],
+                'parentEnds'     => [
+                    fstat($fork->stdout)['ino'],
+                    fstat($fork->stderr)['ino'],
+                    fstat($fork->heartbeat)['ino'],
+                ],
+                'parentExec'     => pipesOfAnExec(),
             ]);
             PHP,
         );
 
-        if ($answer['before'] === null) {
-            self::markTestSkipped('this platform cannot count threads cheaply');
-        }
+        // The child's stderr is a pipe it hands on, so an empty listing is a broken one.
+        self::assertNotEmpty($answer['childExec'], 'the exec listed no pipes at all');
+        self::assertNotContains(
+            $answer['childHeartbeat'],
+            $answer['childExec'],
+            'a program the child ran holds its heartbeat',
+        );
 
-        self::assertSame(1, $answer['before']);
-        self::assertGreaterThan(1, $answer['after']);
+        foreach ($answer['parentEnds'] as $inode) {
+            self::assertNotContains(
+                $inode,
+                $answer['parentExec'],
+                'a program the parent ran holds a pipe of its child',
+            );
+        }
     }
 
     /**

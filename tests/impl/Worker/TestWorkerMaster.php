@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Impl\Worker;
 
 use RuntimeException;
+use SConcur\Tests\Impl\FreePort;
 
 /**
  * Spawns the universal master CLI (bin/sconcur-server) as its own process,
@@ -603,16 +604,6 @@ class TestWorkerMaster
 
     public static function freePort(): int
     {
-        $socket = stream_socket_server('tcp://' . self::HOST . ':0', $errno, $errstr);
-
-        if ($socket === false) {
-            throw new RuntimeException("Could not allocate a port: $errstr");
-        }
-
-        $name = (string) stream_socket_get_name($socket, false);
-
-        fclose($socket);
-
-        return (int) substr($name, (int) strrpos($name, ':') + 1);
+        return FreePort::find();
     }
 }

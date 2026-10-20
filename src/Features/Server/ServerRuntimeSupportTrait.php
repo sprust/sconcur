@@ -13,9 +13,10 @@ use SConcur\Scheduler\Scheduler;
 
 /**
  * Shared runtime support for the long-lived workers a WorkerMaster supervises — the three
- * servers and the AMQP queue consumer: build constructor overrides from CLI argv, watch for
- * a stop (a signal, or an orphaned worker), arm automatic preemption and read the telemetry
- * environment. Stateless — it only adds behaviour, never properties.
+ * servers and the AMQP queue consumer: build constructor overrides from CLI argv, read the
+ * telemetry environment, arm automatic preemption and write the lifecycle lines. What
+ * tells a worker to stop — a signal, or its master gone — is StopRequest. Stateless — it
+ * only adds behaviour, never properties.
  *
  * None of that is about serving a socket, which is why a consumer uses it unchanged; the
  * namespace is where the first user happened to live.
@@ -141,17 +142,6 @@ trait ServerRuntimeSupportTrait
     }
 
     /**
-     * Starts watching for a stop — SIGTERM, SIGINT, or the master going away when it
-     * passed its pid — and answers the request the serve loop's stop check reads. The
-     * caller releases it once the loop is over. Needs nothing but this extension: no
-     * ext-pcntl, no ext-posix.
-     */
-    protected static function watchForStop(?int $masterPid): StopRequest
-    {
-        return StopRequest::watch($masterPid);
-    }
-
-    /**
      * Writes one server lifecycle line to stdout, prefixed with a microsecond ISO
      * timestamp (same shape as the extension's access log), so the startup banner and the
      * graceful-shutdown steps land in the same stream a supervisor already captures.
@@ -164,6 +154,15 @@ trait ServerRuntimeSupportTrait
         // buffered, so the startup banner would otherwise not surface until the buffer fills
         // or the process exits.
         fflush(STDOUT);
+    }
+
+    /**
+     * The listener as a server's startup line names it: the address it binds, or the
+     * descriptor it accepts on when it was handed one.
+     */
+    protected static function describeListener(string $address, ?int $listenFd): string
+    {
+        return $listenFd === null ? $address : 'fd ' . $listenFd;
     }
 
     /**

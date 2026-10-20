@@ -20,6 +20,7 @@ use SConcur\Features\HttpServer\Dto\RequestBodyStream;
 use SConcur\Features\HttpServer\Payloads\RespondPayload;
 use SConcur\Features\HttpServer\Payloads\ServePayload;
 use SConcur\Features\Server\ServerRuntimeSupportTrait;
+use SConcur\Features\Server\StopRequest;
 use SConcur\Scheduler\Scheduler;
 use Throwable;
 
@@ -65,7 +66,10 @@ readonly class HttpServer
      *                                                                                                  supervisor can respawn a fresh process. Reuses the graceful-
      *                                                                                                  shutdown path: the limiting request is dispatched and drained
      *                                                                                                  like any in-flight one, while a request accepted during the
-     *                                                                                                  drain is answered 503 (see docs/http-server.md).
+     *                                                                                                  drain is answered 503 (see docs/http-server.md). Under a worker
+     *                                                                                                  master each worker stops at a number drawn between it and half
+     *                                                                                                  again as many, so a pool does not restart as one
+     *                                                                                                  (Scheduler::spreadLimit(), docs/worker-master.md).
      * @param bool                                                                $reusePort            set SO_REUSEPORT so several processes can bind this same
      *                                                                                                  address; the kernel load-balances connections across them
      *                                                                                                  (run one process per core). Linux only; each process must set it.
@@ -164,9 +168,9 @@ readonly class HttpServer
     {
         $flowKey = uniqid('http_', more_entropy: true);
 
-        // Install handlers before starting the listener so a signal arriving during
-        // startup is not missed, and restore the previous ones when serving ends.
-        $stopRequest = self::watchForStop($this->masterPid);
+        // Watched before the listener opens, so a signal arriving during startup is not the
+        // one that gets lost.
+        $stopRequest = StopRequest::watch($this->masterPid);
 
         try {
             $runningTask = Extension::get()->push(
@@ -192,7 +196,10 @@ readonly class HttpServer
             self::logServerEvent(
                 sprintf(
                     'sconcur http server listening on %s pid=%d version=%s maxConcurrency=%d maxRequests=%d reusePort=%d',
-                    $this->listenFd === null ? $this->address : 'fd ' . $this->listenFd,
+                    self::describeListener(
+                        address: $this->address,
+                        listenFd: $this->listenFd,
+                    ),
                     getmypid(),
                     Extension::REQUIRED_EXTENSION_VERSION,
                     $this->maxConcurrency,
@@ -224,7 +231,7 @@ readonly class HttpServer
                     );
                 },
                 // A shutdown signal, or this worker orphaned: its WorkerMaster is gone.
-                shouldStop: static fn(): bool => $stopRequest->isRequested(),
+                shouldStop: $stopRequest->isRequested(...),
                 onDrainStart: static function () use ($flowKey): void {
                     // Leave the SO_REUSEPORT group early: stop accepting so new
                     // connections go to sibling processes, then drain in-flight.

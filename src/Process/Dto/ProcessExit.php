@@ -17,10 +17,4 @@ readonly class ProcessExit
         public ?int $signal,
     ) {
     }
-
-    /** Exited on its own with code 0. */
-    public function isClean(): bool
-    {
-        return $this->exitCode === 0;
-    }
 }

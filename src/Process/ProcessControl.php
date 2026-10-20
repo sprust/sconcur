@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace SConcur\Process;
 
 use SConcur\Connection\Extension;
-use SConcur\Exceptions\Process\ForkRefusedException;
 use SConcur\Exceptions\Process\ProcessException;
 use SConcur\Process\Dto\ForkResult;
 use SConcur\Process\Dto\ProcessExit;
@@ -104,7 +103,7 @@ class ProcessControl
      */
     public static function kill(int $pid, ProcessSignalEnum $signal): bool
     {
-        static::assertChildPid($pid);
+        self::assertChildPid($pid);
 
         return (bool) Extension::get()->process(
             command: ProcessCommandEnum::Kill,
@@ -127,7 +126,7 @@ class ProcessControl
     public static function reap(array $pids): array
     {
         foreach ($pids as $pid) {
-            static::assertChildPid($pid);
+            self::assertChildPid($pid);
         }
 
         /** @var list<array{pid: int, cd: int|null, sg: int|null}> $exited */
@@ -232,10 +231,10 @@ class ProcessControl
     }
 
     /**
-     * Throws what fork() would throw in this process, without forking: a process that
-     * already runs the extension's runtime, or threads of anything else, cannot fork.
-     *
-     * @throws ForkRefusedException
+     * Refuses as fork() would in this process, without forking: a process that already
+     * runs the extension's runtime, or threads of anything else, cannot fork. The refusal
+     * is a ForkRefusedException, and says how many threads the process runs where the
+     * platform can count them.
      */
     public static function assertForkable(): void
     {
@@ -256,16 +255,6 @@ class ProcessControl
     }
 
     /**
-     * How many threads this process runs, or null where the platform cannot say cheaply.
-     */
-    public static function threadCount(): ?int
-    {
-        $count = Extension::get()->process(command: ProcessCommandEnum::ThreadCount);
-
-        return is_int($count) ? $count : null;
-    }
-
-    /**
      * Refuses a pid that names no single process before it reaches the system: to kill(2)
      * 0 is this process's whole group — a master included — and -1 every process it may
      * signal; to waitpid(2) both are any child, which would be reported under the pid
@@ -283,7 +272,9 @@ class ProcessControl
 
     /**
      * Opens a descriptor the extension handed over as a non-blocking stream. php://fd
-     * opens a copy of it, so the original is closed here.
+     * opens a copy of it made by dup(2), which does not carry close-on-exec over, so the
+     * extension closes the original and puts the flag on the copy: nothing this process
+     * execs inherits the pipe.
      *
      * @return resource|null
      */
@@ -295,7 +286,10 @@ class ProcessControl
 
         $stream = @fopen('php://fd/' . $descriptor, $mode);
 
-        static::close($descriptor);
+        Extension::get()->process(
+            command: ProcessCommandEnum::Adopted,
+            payload: ['fd' => $descriptor],
+        );
 
         if ($stream === false) {
             throw new ProcessException(

@@ -43,7 +43,7 @@ pub fn open(address: &str, reuse_port: bool, listen_fd: Option<i64>) -> std::io:
     }
 }
 
-pub fn listen(address: &str, reuse_port: bool) -> std::io::Result<TcpListener> {
+fn listen(address: &str, reuse_port: bool) -> std::io::Result<TcpListener> {
     let socket = bind(address, reuse_port, LISTEN_BACKLOG)?;
 
     socket.set_nonblocking(true)?;

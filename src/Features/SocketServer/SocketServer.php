@@ -8,6 +8,7 @@ use Closure;
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Features\Server\ServerRuntimeSupportTrait;
+use SConcur\Features\Server\StopRequest;
 use SConcur\Features\SocketServer\Dto\Connection;
 use SConcur\Features\SocketServer\Payloads\ServePayload;
 use SConcur\Scheduler\Scheduler;
@@ -42,7 +43,10 @@ readonly class SocketServer
      * @param int                                       $maxConnections      stop the server after it has handled this many connections
      *                                                                       (0 = unlimited). Meant against handler memory leaks: once reached
      *                                                                       the server shuts down gracefully so a master can respawn a fresh
-     *                                                                       process. Reuses the graceful-shutdown path.
+     *                                                                       process. Reuses the graceful-shutdown path. Under a worker master
+     *                                                                       each worker stops at a number drawn between it and half again as
+     *                                                                       many, so a pool does not restart as one (Scheduler::spreadLimit(),
+     *                                                                       docs/worker-master.md).
      * @param bool                                      $reusePort           set SO_REUSEPORT so several processes can bind this same address;
      *                                                                       the kernel load-balances connections across them (run one process
      *                                                                       per core). Linux only; each process must set it.
@@ -128,9 +132,9 @@ readonly class SocketServer
     {
         $flowKey = uniqid('sock_', more_entropy: true);
 
-        // Install handlers before starting the listener so a signal arriving during
-        // startup is not missed, and restore the previous ones when serving ends.
-        $stopRequest = self::watchForStop($this->masterPid);
+        // Watched before the listener opens, so a signal arriving during startup is not the
+        // one that gets lost.
+        $stopRequest = StopRequest::watch($this->masterPid);
 
         try {
             $runningTask = Extension::get()->push(
@@ -153,7 +157,10 @@ readonly class SocketServer
             self::logServerEvent(
                 sprintf(
                     'sconcur socket server listening on %s pid=%d version=%s maxConcurrency=%d maxConnections=%d reusePort=%d',
-                    $this->listenFd === null ? $this->address : 'fd ' . $this->listenFd,
+                    self::describeListener(
+                        address: $this->address,
+                        listenFd: $this->listenFd,
+                    ),
                     getmypid(),
                     Extension::REQUIRED_EXTENSION_VERSION,
                     $this->maxConcurrency,
@@ -176,7 +183,7 @@ readonly class SocketServer
                     );
                 },
                 // A shutdown signal, or this worker orphaned: its WorkerMaster is gone.
-                shouldStop: static fn(): bool => $stopRequest->isRequested(),
+                shouldStop: $stopRequest->isRequested(...),
                 onDrainStart: static function () use ($flowKey): void {
                     // Leave the SO_REUSEPORT group early: stop accepting and drain
                     // in-flight connections so new connections go to siblings.

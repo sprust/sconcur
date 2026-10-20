@@ -84,11 +84,14 @@ pub fn fork(params: ForkParams) -> Result<Value, Error> {
 /// anything is written, rather than at its first worker.
 pub fn refuse_unless_alone() -> Result<(), Error> {
     if crate::core::built().is_some() {
-        return Err(Error::Refused(
-            "the extension's runtime already runs in this process, and a child would inherit its locks without its \
-             threads: fork before any asynchronous work"
-                .to_string(),
-        ));
+        // Read only here, on the way to a refusal: the count says what the runtime
+        // started, which is worth the read of /proc it costs.
+        let counted = threads::count().map_or(String::new(), |count| format!(" ({count} threads)"));
+
+        return Err(Error::Refused(format!(
+            "the extension's runtime already runs in this process{counted}, and a child would inherit its locks \
+             without its threads: fork before any asynchronous work"
+        )));
     }
 
     if let Some(count) = threads::count()
@@ -132,8 +135,9 @@ fn prepare_child(keep: &[i64], output: Option<(Pipe, Pipe)>, heartbeat: Option<P
         abandon(b"dup2 of /dev/null onto stdin");
     }
 
-    // The read end is the parent's; only the write end stays, close-on-exec, so
-    // nothing this worker execs can mark it alive.
+    // The read end is the parent's; only the write end stays, close-on-exec — and
+    // so does the copy PHP opens its stream on (see `adopted`) — so nothing this
+    // worker execs can mark it alive.
     let heartbeat = heartbeat.map_or(-1, |pipe| pipe.write.into_raw_fd());
 
     neutralize(null, keep, heartbeat);
@@ -311,12 +315,110 @@ fn pipe() -> Result<Pipe, Error> {
     })
 }
 
-/// Gives a descriptor up to PHP, which opens it as a stream and closes this
-/// number.
+/// Gives a descriptor up to PHP, which opens it as a stream and then hands this
+/// number back to `adopted`.
 fn handed_over(descriptor: OwnedFd) -> RawFd {
     descriptor.into_raw_fd()
 }
 
+/// Closes a descriptor the fork handed over, once PHP has opened its stream on
+/// it, and makes the descriptor of that stream close-on-exec. php://fd opens a
+/// copy made by dup(2), which leaves the flag behind: without this, a program a
+/// worker runs would inherit its heartbeat and could write marks into it, and
+/// every process a forking parent starts would hold the read ends of its
+/// children's pipes.
+///
+/// The copy is found as the other descriptor open on the same file the same
+/// way. A pipe the fork made is open nowhere else in this process — the end
+/// that went to the other process is closed here — so that is PHP's copy and
+/// nothing else. Where the open descriptors cannot be listed, the descriptor
+/// is only closed.
+pub fn adopted(descriptor: RawFd) -> Result<Value, Error> {
+    let copies = identity(descriptor).map_or_else(Vec::new, |original| {
+        open_descriptors()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|&other| other != descriptor && identity(other) == Some(original))
+            .collect()
+    });
+
+    if unsafe { libc::close(descriptor) } != 0 {
+        return Err(Error::Failed(format!(
+            "close {descriptor}: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+
+    for copy in copies {
+        let flags = unsafe { libc::fcntl(copy, libc::F_GETFD) };
+
+        if flags < 0 || unsafe { libc::fcntl(copy, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+            return Err(failed("fcntl"));
+        }
+    }
+
+    Ok(Value::Nil)
+}
+
+/// The file a descriptor is open on and the way it is open: the two ends of a
+/// pipe share an inode and differ in their access mode. None for a descriptor
+/// that is not open.
+fn identity(descriptor: RawFd) -> Option<(libc::dev_t, libc::ino_t, c_int)> {
+    let mut status: libc::stat = unsafe { std::mem::zeroed() };
+
+    if unsafe { libc::fstat(descriptor, &mut status) } != 0 {
+        return None;
+    }
+
+    let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
+
+    if flags < 0 {
+        return None;
+    }
+
+    Some((status.st_dev, status.st_ino, flags & libc::O_ACCMODE))
+}
+
 fn failed(call: &str) -> Error {
     Error::Failed(format!("{call}: {}", std::io::Error::last_os_error()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close_on_exec(descriptor: RawFd) -> bool {
+        let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
+
+        flags & libc::FD_CLOEXEC != 0
+    }
+
+    /// What php://fd does to a handed-over end is a dup(2), which leaves the flag
+    /// behind. The copy of the adopted end gets it back; a copy of another pipe
+    /// open in the same process is left as it was, and so is the other end of the
+    /// adopted pipe, which shares its inode.
+    #[test]
+    fn the_copy_php_opened_of_a_handed_over_descriptor_is_made_close_on_exec() {
+        let adopted_pipe = pipe().ok().unwrap();
+        let other_pipe = pipe().ok().unwrap();
+
+        let handed = handed_over(adopted_pipe.read);
+        let copy = unsafe { libc::dup(handed) };
+        let other = unsafe { libc::dup(other_pipe.read.as_raw_fd()) };
+        let other_end = unsafe { libc::dup(adopted_pipe.write.as_raw_fd()) };
+
+        assert!(!close_on_exec(copy) && !close_on_exec(other) && !close_on_exec(other_end));
+
+        assert!(adopted(handed).is_ok());
+
+        assert!(close_on_exec(copy), "the copy would reach whatever this process execs");
+        assert!(!close_on_exec(other), "a descriptor on another pipe was changed");
+        assert!(!close_on_exec(other_end), "the other end of the pipe was changed");
+
+        unsafe {
+            libc::close(copy);
+            libc::close(other);
+            libc::close(other_end);
+        }
+    }
 }

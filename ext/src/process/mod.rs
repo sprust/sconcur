@@ -53,8 +53,12 @@ pub fn run(command: &[u8], payload: &Value) -> Result<Value, Error> {
             Ok(Value::Nil)
         }
         b"cls" => close(decode(payload)?),
+        b"adp" => {
+            let params: payloads::CloseParams = decode(payload)?;
+
+            fork::adopted(params.descriptor as libc::c_int)
+        }
         b"bnd" => bind(decode(payload)?),
-        b"thr" => Ok(threads::count().map_or(Value::Nil, |count| Value::Int(count as i64))),
         b"cfk" => fork::refuse_unless_alone().map(|_| Value::Nil),
         b"fds" => Ok(fork::inherited_descriptors()),
         other => Err(Error::Failed(format!(

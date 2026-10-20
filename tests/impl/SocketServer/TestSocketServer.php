@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Impl\SocketServer;
 
 use RuntimeException;
+use SConcur\Tests\Impl\FreePort;
 
 /**
  * Spawns the demo socket server (tests/servers/socket/socket-server.php) as its own
@@ -48,7 +49,7 @@ class TestSocketServer
             throw new RuntimeException('The "address" option is not supported in tests. Use "port" instead.');
         }
 
-        $port ??= self::freePort();
+        $port ??= FreePort::find();
         $options['address'] = self::HOST . ':' . $port;
 
         $root      = dirname(__DIR__, 3);
@@ -304,20 +305,5 @@ class TestSocketServer
         }
 
         return false;
-    }
-
-    private static function freePort(): int
-    {
-        $socket = stream_socket_server('tcp://' . self::HOST . ':0', $errno, $errstr);
-
-        if ($socket === false) {
-            throw new RuntimeException("Could not allocate a port: $errstr");
-        }
-
-        $name = (string) stream_socket_get_name($socket, false);
-
-        fclose($socket);
-
-        return (int) substr($name, (int) strrpos($name, ':') + 1);
     }
 }

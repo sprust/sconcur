@@ -8,6 +8,7 @@ use Nyholm\Psr7\Factory\Psr17Factory;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Features\HttpServer\HttpServer;
 use SConcur\Tests\Feature\BaseTestCase;
+use SConcur\Tests\Impl\FreePort;
 use SConcur\Tests\Impl\PhpScript;
 
 /**
@@ -130,7 +131,7 @@ class HttpServerListenFdTest extends BaseTestCase
             PHP,
             arguments: [
                 PhpScript::projectRoot(),
-                (string) self::freePort(),
+                (string) FreePort::find(),
             ],
         );
 
@@ -211,7 +212,7 @@ class HttpServerListenFdTest extends BaseTestCase
             PHP,
             arguments: [
                 PhpScript::projectRoot(),
-                (string) self::freePort(),
+                (string) FreePort::find(),
             ],
         );
 
@@ -236,18 +237,5 @@ class HttpServerListenFdTest extends BaseTestCase
         $this->expectExceptionMessage('descriptor 0 is not a listening socket');
 
         $server->serve(static fn() => $factory->createResponse(200));
-    }
-
-    protected static function freePort(): int
-    {
-        $socket = stream_socket_server('tcp://127.0.0.1:0', $errorCode, $errorMessage);
-
-        self::assertNotFalse($socket, "could not allocate a port: $errorMessage");
-
-        $name = (string) stream_socket_get_name($socket, false);
-
-        fclose($socket);
-
-        return (int) substr($name, (int) strrpos($name, ':') + 1);
     }
 }

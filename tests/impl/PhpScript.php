@@ -9,8 +9,7 @@ namespace SConcur\Tests\Impl;
  * printed, stderr included.
  *
  * For what has to start from a process that has not used the extension's runtime yet: a
- * fork, a thread count, a teardown. The PHPUnit process has used it long before most
- * tests run.
+ * fork, a teardown. The PHPUnit process has used it long before most tests run.
  */
 class PhpScript
 {
