@@ -6,7 +6,9 @@ PgSQL — второй драйвер той же SQL-фичи, PostgreSQL-др�
 (`SConcur\Features\Sql`) общее с MySQL, а
 `SConcur\Features\Pgsql\Connection` — тонкий фасад, задающий драйвер. Стриминг,
 пул, транзакции и конкурентность ведут себя одинаково — см.
-[docs/mysql.ru.md](mysql.ru.md); здесь описаны только отличия PostgreSQL.
+[docs/mysql.ru.md](mysql.ru.md); здесь описаны только отличия PostgreSQL. Потолок пула —
+на процесс, а `max_connections` у PostgreSQL по умолчанию 100: при пуле воркеров см.
+[соединения с базами данных](worker-master.ru.md#соединения-с-базами-данных).
 
 ```php
 $connection = new \SConcur\Features\Pgsql\Connection(

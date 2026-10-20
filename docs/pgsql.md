@@ -6,7 +6,9 @@ PgSQL is the second driver of the same SQL feature, sqlx's PostgreSQL one. The
 core (`SConcur\Features\Sql`) is shared with MySQL, and
 `SConcur\Features\Pgsql\Connection` is a thin facade that sets the driver.
 Streaming, pool, transactions and concurrency behave identically — see
-[docs/mysql.md](mysql.md); only the PostgreSQL differences are described here.
+[docs/mysql.md](mysql.md); only the PostgreSQL differences are described here. The
+pool cap is per process, and PostgreSQL's `max_connections` is 100 by default: under a
+worker pool see [database connections](worker-master.md#database-connections).
 
 ```php
 $connection = new \SConcur\Features\Pgsql\Connection(

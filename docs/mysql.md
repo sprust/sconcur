@@ -232,7 +232,9 @@ In a `WaitGroup` each autocommit operation and each transaction takes a separate
 connection for its duration, so `N` coroutines open up to `maxOpenConns`
 connections at once. The cap is per process: with a pool of servers, multiply it
 by their number before comparing against `max_connections`, or the server answers
-`1040 Too many connections`. Set `maxOpenConns` to the parallelism you expect:
+`1040 Too many connections` — how to split the budget across a worker pool is in
+[database connections](worker-master.md#database-connections). Set `maxOpenConns` to
+the parallelism you expect:
 
 ```php
 $connection = new \SConcur\Features\Mysql\Connection(

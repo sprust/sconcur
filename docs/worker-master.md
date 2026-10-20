@@ -32,6 +32,7 @@ before the master started (see
 - [Readiness](#readiness)
 - [Restart policy and `maxRequests`](#restart-policy-and-maxrequests)
 - [A group that never comes up](#a-group-that-never-comes-up)
+- [Database connections](#database-connections)
 - [Self-termination of orphaned workers](#self-termination-of-orphaned-workers)
 - [Stuck worker](#stuck-worker)
 - [Logging](#logging)
@@ -311,7 +312,7 @@ same either way.
 | `phpBinary` | any | the master's own only (by path, symlink or name on `PATH`); another one is refused |
 | `phpArgs` | any flags | only `-d name=value`, applied with `ini_set` after `display_errors=stderr` |
 | `php.ini` | its own | the master's |
-| What a `reload` picks up | new code of everything | new application code; the library and the extension the master loaded stay as they were until it restarts |
+| What a `reload` picks up | new code of everything | new application code when its files are replaced in place, not when a deploy switches a symlink to a new release (see below); the library and the extension the master loaded stay as they were until it restarts |
 | Scope the script runs in | global | a function's |
 
 What a fork group's `phpArgs` may carry is checked at `start` and on every `reload`,
@@ -340,11 +341,19 @@ calling thread. The master's own code never starts the extension's runtime, but 
 `onWatchdogEvent` handler that used SConcur's asynchronous features would, and every
 fork after it would fail; the journal says why.
 
+A forked worker loads the application's classes through the autoloader the master
+loaded when it started, and Composer's autoloader holds its paths with symlinks already
+resolved. A deploy that writes a new release into a directory of its own and switches a
+`current` symlink to it leaves that autoloader pointing into the old release: after a
+`reload` the worker script comes from the new release and the classes it loads from the
+old one. Restart the master on such a deploy, or launch the group with `exec`.
+
 `exec` is the choice for a group that needs:
 
 - another interpreter, another `php.ini` (`-c`) or none (`-n`);
 - a worker script that relies on running in the global scope;
-- a `reload` that picks up a new library or extension without restarting the master.
+- a `reload` that picks up a new library or extension without restarting the master;
+- a `reload` after a deploy that switches a symlink to a new release.
 
 Before 0.17 every worker was started by `exec`. A config written then that names
 another php or passes `phpArgs` other than `-d name=value` is refused at `start`, with
@@ -504,6 +513,46 @@ A worker counts as up once it [says so](#readiness), or once it has run for long
 failure, as long as it does not crash at startup. A clean exit is not a failure. Only
 the groups the master started with are checked: one a `reload` added must not take a
 running pool down, and its failures are left to the backoff.
+
+## Database connections
+
+Every pool lives in a worker: each worker opens its own connections, and nothing is
+shared between workers. A connection is not just a socket but state in the process that
+opened it — TLS keys, protocol sequence numbers, an open transaction — so it cannot be
+handed to another process. The master opens none. What a database sees is therefore the
+sum over the workers:
+
+| Feature | Per worker, per pool | Set by |
+|---|---|---|
+| MySQL, PostgreSQL | up to `maxOpenConns`, 32 when it is `0`; opened on demand, and a pool unused for 5 minutes is closed | `maxOpenConns` of the `Connection` ([MySQL](mysql.md#connection-pool-and-concurrency)) |
+| Redis | `poolSize` shared connections (4 by default, 64 at most), plus one for each blocking command in flight and one for each subscription | `poolSize`; the rest by how many run at once ([Redis](redis.md#blocking-commands)) |
+| MongoDB | the driver's pool for each server of the deployment, 10 by default | `maxPoolSize` in the URI |
+
+A pool is the DSN together with the sizes, so two `Connection`s with different sizes are
+two pools in the same worker.
+
+The defaults add up fast: 16 workers × 32 is 512 connections to MySQL or PostgreSQL,
+against a `max_connections` of 151 in MySQL and 100 in PostgreSQL by default. Divide the
+budget the server gives you, minus what else connects to it (migrations, cron jobs,
+consoles), by the number of workers: 90 connections of PostgreSQL's 100 over 16 workers
+is `maxOpenConns: 5`. With `workerCount: 0` the count is the number of logical CPUs, so
+the same config needs a smaller cap on a bigger machine.
+
+Leave room for a worker or two above `workerCount`. A [reload](#commands) runs each
+replacement beside the worker it replaces, and a worker that reached its limit finishes
+its last requests while its replacement starts — for that moment both hold their pools.
+
+When the cap per worker comes out smaller than the concurrency a worker needs, put a
+connection pooler in front of the server: PgBouncer for PostgreSQL, ProxySQL for MySQL.
+The workers hold connections to the pooler, and it shares fewer server connections
+between them. In PgBouncer's transaction mode a server connection changes hands between
+transactions, so nothing tied to the session survives outside one: a `SET`, a temporary
+table, an advisory lock, `LISTEN`. Whether this library's statements work through such a
+pooler has not been tested.
+
+A connection opened before the master starts is a different problem — one socket shared
+by every forked worker; see [loading the application in the
+master](#loading-the-application-in-the-master).
 
 ## Self-termination of orphaned workers
 
