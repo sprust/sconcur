@@ -8,7 +8,6 @@ use Closure;
 use SConcur\Exceptions\Worker\WorkerSpawnException;
 use SConcur\Process\ProcessControl;
 use SConcur\Process\ProcessSignalEnum;
-use Throwable;
 
 /**
  * A fork group as the master runs it: through a fork server per generation (ForkServer), which
@@ -31,7 +30,7 @@ use Throwable;
 class ForkServerGroup implements SupervisedGroup
 {
     /** How long past shutdownTimeoutMs a released slot may take to be reported gone. */
-    protected const int RELEASE_GRACE_MS = 5_000;
+    public const int RELEASE_GRACE_MS = 5_000;
 
     protected int $workers = 0;
 
@@ -57,8 +56,11 @@ class ForkServerGroup implements SupervisedGroup
 
     protected bool $cameUp = false;
 
-    /** Set when a generation said the group never came up, or the first one died before loading. */
-    protected bool $failedToStart = false;
+    /**
+     * Why the group failed to start, before it ever came up: a generation said its workers
+     * never came up, or one died before it loaded or could not be started. Empty until then.
+     */
+    protected string $startFailure = '';
 
     protected bool $reloading = false;
 
@@ -75,17 +77,13 @@ class ForkServerGroup implements SupervisedGroup
     /** hrtime by which the next generation must load. */
     protected int $loadDeadlineNs = 0;
 
-    /**
-     * @var list<array{slot: int, from: ?ForkServerGeneration, to: ?ForkServerGeneration}> the moves
-     *                                                                             still to do
-     */
+    /** @var list<SlotMove> the moves still to do */
     protected array $steps = [];
 
-    /** @var array{slot: int, from: ?ForkServerGeneration, to: ?ForkServerGeneration}|null */
-    protected ?array $step = null;
+    /** The move under way, null between moves. */
+    protected ?SlotMove $step = null;
 
-    /** 'spawn' (waiting for the slot to be up in `to`) or 'release' (for it to be gone from `from`). */
-    protected string $stepPhase = '';
+    protected ?SlotMovePhaseEnum $stepPhase = null;
 
     protected int $stepDeadlineNs = 0;
 
@@ -111,7 +109,7 @@ class ForkServerGroup implements SupervisedGroup
         protected ?int $listenFd = null,
         protected bool $guardsStartup = false,
     ) {
-        $this->workers = $config->workerCount > 0 ? $config->workerCount : Cpu::count();
+        $this->workers = $config->resolvedWorkerCount();
     }
 
     public function name(): string
@@ -154,12 +152,13 @@ class ForkServerGroup implements SupervisedGroup
         return $this->generations() === [];
     }
 
+    /** The workers of every generation, as their fork servers last reported them; not the fork servers. */
     public function aliveSlotCount(): int
     {
         $alive = 0;
 
         foreach ($this->generations() as $generation) {
-            $alive += 1 + count($generation->pids);
+            $alive += count($generation->pids);
         }
 
         return $alive;
@@ -167,7 +166,12 @@ class ForkServerGroup implements SupervisedGroup
 
     public function neverCameUp(): bool
     {
-        return $this->guardsStartup && !$this->cameUp && $this->failedToStart;
+        return $this->guardsStartup && !$this->cameUp && $this->startFailure !== '';
+    }
+
+    public function neverCameUpReason(): string
+    {
+        return $this->startFailure;
     }
 
     public function takeReloadFailure(): string
@@ -227,7 +231,11 @@ class ForkServerGroup implements SupervisedGroup
         }
     }
 
-    public function respawnDue(): void
+    /**
+     * Starts the next generation once a dead one's backoff is over. The drains, the watchdog
+     * and the respawns of single workers are each fork server's own, over its own workers.
+     */
+    public function tick(): void
     {
         if ($this->respawnAtNs === null || $this->retiring || hrtime(true) < $this->respawnAtNs) {
             return;
@@ -238,30 +246,12 @@ class ForkServerGroup implements SupervisedGroup
         $this->spawnAll();
     }
 
-    /** The fork server of each generation watches its own workers' drains. */
-    public function driveDraining(): void
-    {
-    }
-
-    /** The fork server of each generation runs the watchdog over its own workers. */
-    public function driveWatchdog(): void
-    {
-    }
-
-    public function startReload(): void
-    {
-        $this->reconfigure($this->config);
-    }
-
+    /** The master asks for it only while no reload is under way (WorkerMaster::checkReloadSignal). */
     public function reconfigure(WorkerGroupConfig $config): void
     {
-        if ($this->reloading) {
-            return;
-        }
-
         $this->configBeforeReload = $this->config;
         $this->config             = $config;
-        $this->workers            = $config->workerCount > 0 ? $config->workerCount : Cpu::count();
+        $this->workers            = $config->resolvedWorkerCount();
 
         // Nothing running to roll from — the last generation died and the next one is still
         // waiting out its backoff, or the group was being retired: the new settings simply
@@ -355,6 +345,7 @@ class ForkServerGroup implements SupervisedGroup
         return true;
     }
 
+    /** The master asks for it only while no reload is under way (WorkerMaster::checkReloadSignal). */
     public function retire(): void
     {
         if ($this->retiring) {
@@ -363,12 +354,6 @@ class ForkServerGroup implements SupervisedGroup
 
         $this->retiring    = true;
         $this->respawnAtNs = null;
-
-        if ($this->reloading) {
-            $this->reloading = false;
-            $this->steps     = [];
-            $this->step      = null;
-        }
 
         $this->logger->master(
             level: MasterLogger::INFO,
@@ -396,11 +381,11 @@ class ForkServerGroup implements SupervisedGroup
         $slots = max($this->workers, count($this->current->slots ?? []));
 
         for ($slot = 0; $slot < $slots; ++$slot) {
-            $this->steps[] = [
-                'slot' => $slot,
-                'from' => $this->current,
-                'to'   => $slot < $this->workers ? $this->next : null,
-            ];
+            $this->steps[] = new SlotMove(
+                slot: $slot,
+                from: $this->current,
+                to: $slot < $this->workers ? $this->next : null,
+            );
         }
     }
 
@@ -420,10 +405,10 @@ class ForkServerGroup implements SupervisedGroup
 
             $this->step = $step;
 
-            if ($step['to'] !== null) {
-                $step['to']->spawn($step['slot']);
+            if ($step->to !== null) {
+                $step->to->spawn($step->slot);
 
-                $this->stepPhase      = 'spawn';
+                $this->stepPhase      = SlotMovePhaseEnum::Spawn;
                 $this->stepDeadlineNs = hrtime(true) + $this->config->readyTimeoutMs * 1_000_000;
             } else {
                 $this->startRelease();
@@ -433,10 +418,10 @@ class ForkServerGroup implements SupervisedGroup
         }
 
         $step = $this->step;
-        $slot = $step['slot'];
+        $slot = $step->slot;
 
-        if ($this->stepPhase === 'spawn') {
-            $to = $step['to'];
+        if ($this->stepPhase === SlotMovePhaseEnum::Spawn) {
+            $to = $step->to;
 
             if ($to === null) {
                 $this->startRelease();
@@ -514,7 +499,7 @@ class ForkServerGroup implements SupervisedGroup
             return;
         }
 
-        $from = $step['from'];
+        $from = $step->from;
 
         $gone = $from === null || isset($from->gone[$slot]) || !$from->isRunning();
 
@@ -532,20 +517,20 @@ class ForkServerGroup implements SupervisedGroup
             return;
         }
 
-        $from = $step['from'];
+        $from = $step->from;
 
-        if ($from === null || !$from->isRunning() || !isset($from->slots[$step['slot']])) {
+        if ($from === null || !$from->isRunning() || !isset($from->slots[$step->slot])) {
             $this->step = null;
 
             return;
         }
 
         $from->release(
-            slot: $step['slot'],
-            reason: $step['to'] === null ? 'removed by the reload' : 'reloading',
+            slot: $step->slot,
+            reason: $step->to === null ? 'removed by the reload' : 'reloading',
         );
 
-        $this->stepPhase      = 'release';
+        $this->stepPhase      = SlotMovePhaseEnum::Release;
         $this->stepDeadlineNs = hrtime(true)
             + ($this->config->shutdownTimeoutMs + self::RELEASE_GRACE_MS) * 1_000_000;
     }
@@ -562,22 +547,17 @@ class ForkServerGroup implements SupervisedGroup
         $this->logger->master(
             level: MasterLogger::ERROR,
             message: sprintf(
-                'group %s: reload given up: %s; the workers it had not reached keep running',
+                'group %s: reload given up: %s; %s',
                 $this->config->name,
                 $reason,
+                $this->current === null
+                    ? 'the running generation is gone too, keeping the next one as it is'
+                    : 'the workers it had not reached keep running, and the ones it moved are moved back',
             ),
         );
 
         // Nothing to move back to: the generation that was running died during the reload.
         if ($this->current === null) {
-            $this->logger->master(
-                level: MasterLogger::ERROR,
-                message: sprintf(
-                    'group %s: the running generation is gone too; keeping the next one as it is',
-                    $this->config->name,
-                ),
-            );
-
             $this->keepNextGeneration();
 
             return;
@@ -585,7 +565,7 @@ class ForkServerGroup implements SupervisedGroup
 
         if ($this->configBeforeReload !== null) {
             $this->config  = $this->configBeforeReload;
-            $this->workers = $this->config->workerCount > 0 ? $this->config->workerCount : Cpu::count();
+            $this->workers = $this->config->resolvedWorkerCount();
         }
 
         $this->reverting = true;
@@ -593,11 +573,11 @@ class ForkServerGroup implements SupervisedGroup
         $this->steps     = [];
 
         foreach ($this->moved as $slot) {
-            $this->steps[] = [
-                'slot' => $slot,
-                'from' => $this->next,
-                'to'   => $this->current,
-            ];
+            $this->steps[] = new SlotMove(
+                slot: $slot,
+                from: $this->next,
+                to: $this->current,
+            );
         }
 
         $this->moved = [];
@@ -625,7 +605,7 @@ class ForkServerGroup implements SupervisedGroup
         // The settings follow the generation that is left. A reload being given up has
         // already put back the ones from before it, which the next generation does not run.
         $this->config  = $next->config ?? $this->configBeforeReload ?? $this->config;
-        $this->workers = $this->config->workerCount > 0 ? $this->config->workerCount : Cpu::count();
+        $this->workers = $this->config->resolvedWorkerCount();
 
         if ($next !== null) {
             for ($slot = 0; $slot < $this->workers; ++$slot) {
@@ -724,11 +704,16 @@ class ForkServerGroup implements SupervisedGroup
 
                 break;
             case ForkServer::EVENT_ALIVE:
-                $generation->pids = array_map(intval(...), (array) ($event['pids'] ?? []));
+                // Only real pids: the master signals these when the fork server is gone, and
+                // a malformed entry read as 0 would make that refuse.
+                $generation->pids = array_values(array_filter(
+                    array_map(intval(...), (array) ($event['pids'] ?? [])),
+                    static fn(int $pid): bool => $pid > 0,
+                ));
 
                 break;
             case ForkServer::EVENT_NEVER:
-                $this->failedToStart = true;
+                $this->startFailure = sprintf('%d failed before any said it was up', $this->workers);
 
                 break;
             case ForkServer::EVENT_FINISHED:
@@ -753,25 +738,16 @@ class ForkServerGroup implements SupervisedGroup
             return;
         }
 
-        try {
-            ($this->onWatchdogEvent)(new WatchdogEvent(
-                event: $kind,
-                group: $this->config->name,
-                slot: (int) ($event['slot'] ?? -1),
-                pid: (int) ($event['pid'] ?? 0),
-                ageSeconds: isset($event['ageSeconds']) ? (float) $event['ageSeconds'] : null,
-                watchdogTimeoutMs: $this->config->watchdogTimeoutMs,
-            ));
-        } catch (Throwable $exception) {
-            $this->logger->master(
-                level: MasterLogger::ERROR,
-                message: sprintf(
-                    'group %s: watchdog handler failed: %s',
-                    $this->config->name,
-                    $exception->getMessage(),
-                ),
-            );
-        }
+        // The master's handler (WorkerMaster::watchdogReporter) logs and drops what the
+        // application's own throws.
+        ($this->onWatchdogEvent)(new WatchdogEvent(
+            event: $kind,
+            group: $this->config->name,
+            slot: (int) ($event['slot'] ?? -1),
+            pid: (int) ($event['pid'] ?? 0),
+            ageSeconds: isset($event['ageSeconds']) ? (float) $event['ageSeconds'] : null,
+            watchdogTimeoutMs: $this->config->watchdogTimeoutMs,
+        ));
     }
 
     /**
@@ -787,9 +763,7 @@ class ForkServerGroup implements SupervisedGroup
             lines: $generation->process->drainFinalOutput(),
         );
 
-        $reason = $generation->process->termSignal() !== null
-            ? sprintf('signal=%d', $generation->process->termSignal())
-            : sprintf('code=%d', (int) $generation->process->exitCode());
+        $reason = $generation->process->exitReason();
 
         // A fork server whose workers all finished under a policy that does not restart them
         // leaves on its own, and that is the group finishing, not a generation dying.
@@ -831,7 +805,7 @@ class ForkServerGroup implements SupervisedGroup
             // The running generation died earlier in this reload, so this one was all the
             // group had: with both gone, a new one is started as after any generation that died.
             if ($this->current === null && !$this->reloading && !$expected && !$this->retiring) {
-                $this->startNewGeneration($generation);
+                $this->startNewGeneration($generation->ranHealthily());
             }
 
             return;
@@ -873,33 +847,30 @@ class ForkServerGroup implements SupervisedGroup
         // A bootstrap that does not load fails every generation the same way: for a group
         // the master started with, that is a failed start.
         if (!$generation->loaded && !$this->cameUp) {
-            $this->failedToStart = true;
+            $this->startFailure = $generation->refusedReason !== ''
+                ? $generation->refusedReason
+                : sprintf('the fork server of generation %d exited %s before it loaded', $generation->number, $reason);
         }
 
-        $this->startNewGeneration($generation);
+        $this->startNewGeneration($generation->ranHealthily());
     }
 
     /**
-     * Schedules the generation that replaces one that died: at once after one that ran
-     * healthily, otherwise after a backoff that doubles with each such death in a row. A
-     * fault every generation shares — a bootstrap that throws, a fork server that crashes
-     * soon after it loads — would otherwise have the master start a php and load the
-     * application again on every tick.
+     * Schedules the generation that replaces one that died or could not be started: at once
+     * after one that ran healthily, otherwise after a backoff that doubles with each such
+     * failure in a row. A fault every generation shares — a bootstrap that throws, a fork
+     * server that crashes soon after it loads, a phpBinary that cannot be run — would
+     * otherwise have the master start a php and load the application again on every tick.
      */
-    protected function startNewGeneration(ForkServerGeneration $generation): void
+    protected function startNewGeneration(bool $ranHealthily): void
     {
-        if ($generation->ranHealthily()) {
+        if ($ranHealthily) {
             $this->fastFails = 0;
         } else {
             ++$this->fastFails;
         }
 
-        $backoffMs = $this->fastFails === 0
-            ? 0
-            : (int) min(
-                $this->config->restartBackoffMs * (2 ** ($this->fastFails - 1)),
-                $this->config->maxRestartBackoffMs,
-            );
+        $backoffMs = $this->config->backoffMs($this->fastFails);
 
         $this->respawnAtNs = hrtime(true) + $backoffMs * 1_000_000;
 
@@ -917,7 +888,10 @@ class ForkServerGroup implements SupervisedGroup
     protected function signalWorkers(ForkServerGeneration $generation, ProcessSignalEnum $signal): void
     {
         foreach ($generation->pids as $pid) {
-            ProcessControl::kill($pid, $signal);
+            ProcessControl::kill(
+                pid: $pid,
+                signal: $signal,
+            );
         }
     }
 
@@ -949,19 +923,26 @@ class ForkServerGroup implements SupervisedGroup
                 keepDescriptors: $this->listenFd === null ? [] : [$this->listenFd],
             );
         } catch (WorkerSpawnException $exception) {
-            ++$this->fastFails;
-
-            $this->respawnAtNs = $spawnAll ? hrtime(true) + $config->restartBackoffMs * 1_000_000 : null;
+            $failure = sprintf(
+                'the fork server of generation %d could not be started: %s',
+                $number,
+                $exception->getMessage(),
+            );
 
             $this->logger->master(
                 level: MasterLogger::ERROR,
-                message: sprintf(
-                    'group %s: the fork server of generation %d could not be started: %s',
-                    $config->name,
-                    $number,
-                    $exception->getMessage(),
-                ),
+                message: sprintf('group %s: %s', $config->name, $failure),
             );
+
+            // A generation started whole is all the group has, and is replaced as one that
+            // died before it loaded; a reload's next one gives the reload up instead.
+            if ($spawnAll) {
+                if (!$this->cameUp) {
+                    $this->startFailure = $failure;
+                }
+
+                $this->startNewGeneration(ranHealthily: false);
+            }
 
             return null;
         }
@@ -983,7 +964,7 @@ class ForkServerGroup implements SupervisedGroup
         );
 
         if ($spawnAll) {
-            $workers = $config->workerCount > 0 ? $config->workerCount : Cpu::count();
+            $workers = $config->resolvedWorkerCount();
 
             for ($slot = 0; $slot < $workers; ++$slot) {
                 $generation->slots[$slot] = true;
@@ -996,20 +977,36 @@ class ForkServerGroup implements SupervisedGroup
     /**
      * What a fork server is started with: the group, how the journal is written, and where the
      * workers push their telemetry. A group without a bootstrap loads the autoloader the
-     * master loaded, found the way bin/sconcur-server finds it.
+     * master loaded, found the way bin/sconcur-server finds it; with neither the fork server
+     * would have nothing to load, and is not started.
      *
      * @return array<string, mixed>
      */
     protected function spec(WorkerGroupConfig $config, bool $spawnAll): array
     {
+        $candidates = [
+            dirname(__DIR__, 2) . '/vendor/autoload.php',
+            dirname(__DIR__, 4) . '/autoload.php',
+        ];
+
         $autoload = '';
 
-        foreach ([dirname(__DIR__, 2) . '/vendor/autoload.php', dirname(__DIR__, 4) . '/autoload.php'] as $candidate) {
+        foreach ($candidates as $candidate) {
             if (is_file($candidate)) {
                 $autoload = $candidate;
 
                 break;
             }
+        }
+
+        if ($autoload === '' && $config->bootstrap === '') {
+            throw new WorkerSpawnException(
+                message: sprintf(
+                    'the group has no bootstrap, and no Composer autoloader was found for its fork server'
+                    . ' at %s; give the group a bootstrap that requires the autoloader',
+                    implode(' or ', $candidates),
+                ),
+            );
         }
 
         return [
@@ -1023,8 +1020,11 @@ class ForkServerGroup implements SupervisedGroup
             'telemetrySocket' => $this->telemetrySocket,
             'listenFd'        => $this->listenFd,
             'spawnAll'        => $spawnAll,
-            // Only the first generation of a group the master started with can stop the
-            // master: a later one failing is a failed reload or a respawn, not a failed deploy.
+            // Every generation started whole, for as long as the group the master started with
+            // has not come up: one respawned after a broken first one fails the same way, and
+            // its workers never coming up still stops the master. Once a worker has been up,
+            // and for a reload's generation, a failure is a failed respawn or reload, not a
+            // failed deploy.
             'guardsStartup'   => $this->guardsStartup && !$this->cameUp && $spawnAll,
             'autoload'        => $autoload,
         ];

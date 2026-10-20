@@ -9,8 +9,8 @@ use SConcur\Worker\WorkerMaster;
 
 /**
  * Every scenario of WorkerMasterTest once more, with the workers launched by fork — the
- * default: the master copies itself into each worker instead of starting php on the
- * script.
+ * default: the group's fork server copies itself into each worker instead of starting php
+ * on the script.
  * Supervision, restarts, the watchdog, reload, the journal and the CLI must not depend on
  * how a worker came to be.
  */
@@ -31,7 +31,7 @@ class ForkedWorkerMasterTest extends WorkerMasterTest
     }
 
     /**
-     * The fork counterpart of the exec scenario. A forked worker runs on the master's
+     * The fork counterpart of the exec scenario. A forked worker runs on its fork server's
      * php.ini, so display_errors=Off goes there; the worker forces display_errors=stderr
      * on itself, as an exec worker gets it on its command line. The fatal is a real one —
      * an exhausted memory limit — because an uncaught exception would be reported by the
@@ -47,7 +47,7 @@ class ForkedWorkerMasterTest extends WorkerMasterTest
         file_put_contents($iniDirectory . '/display-errors.ini', "display_errors=Off\n");
         file_put_contents(
             $workerScript,
-            // The limit sits above what the copy of the master already holds — a lower one
+            // The limit sits above what the copy of the fork server already holds — a lower one
             // is refused outright — and the string is well past it.
             "<?php\nini_set('memory_limit', (string) (memory_get_usage(true) + 8 * 1024 * 1024));\n"
             . "\$filler = str_repeat('x', 32 * 1024 * 1024);\n",

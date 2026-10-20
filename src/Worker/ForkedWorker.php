@@ -61,8 +61,8 @@ class ForkedWorker
     /**
      * What PHP does with an exception nothing caught: hands it to the exception handler if
      * one is set — an application's reporter, installed while it loaded — and otherwise
-     * prints it, in the words PHP itself uses, on stderr, so the master logs it at ERROR
-     * the way it logs an exec worker's.
+     * prints it, in the words PHP itself uses, on stderr, so the fork server logs it at
+     * ERROR the way the master logs an exec worker's.
      */
     protected static function reportUncaught(Throwable $exception): void
     {
@@ -90,7 +90,7 @@ class ForkedWorker
         string $cwd,
         array $environment,
     ): void {
-        // Without it every worker shows in `ps` as the master's own command line.
+        // Without it every worker shows in `ps` as the fork server's own command line.
         @cli_set_process_title($title);
 
         chdir($cwd);
@@ -109,8 +109,8 @@ class ForkedWorker
         // group's own -d flags are the fork server's already, which was started with them.
         ini_set('display_errors', 'stderr');
 
-        // Also without one: what the master's process knew of a heartbeat — none, or one of
-        // its own master's — is not this worker's.
+        // Also without one: what the fork server's process knew of a heartbeat — none, or
+        // one it inherited — is not this worker's.
         Heartbeat::adopt($fork->heartbeat);
 
         // Last, so what is silenced above stays out of it: the fork server's own handler, which

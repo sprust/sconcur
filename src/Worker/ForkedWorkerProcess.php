@@ -12,17 +12,17 @@ use SConcur\Process\Dto\ForkResult;
 use SConcur\Process\ProcessControl;
 
 /**
- * A worker launched by forking the master (LaunchMode::Fork).
+ * A worker launched by forking its group's fork server (LaunchMode::Fork, see ForkServer).
  *
- * The fork returns twice. In the master this object is built around the child's pid and
- * pipes; in the child the constructor hands over to $child, which turns the copy into the
- * worker and never returns — the master's call stack is still below it, and nothing of
- * the worker may run there.
+ * The fork returns twice. In the fork server this object is built around the child's pid
+ * and pipes; in the child the constructor hands over to $child, which turns the copy into
+ * the worker and never returns — the fork server's call stack is still below it, and
+ * nothing of the worker may run there.
  *
  * The extension prepares the child before PHP runs in it: stdout and stderr onto the
- * pipes read here, every other descriptor of the master pointed at /dev/null, the
- * master's signal watching undone, the random generators reseeded and the master's
- * objects marked as destroyed. See SConcur\Process\ProcessControl.
+ * pipes read here, every other descriptor of the fork server pointed at /dev/null, the
+ * fork server's signal watching undone, the random generators reseeded and the fork
+ * server's objects marked as destroyed. See SConcur\Process\ProcessControl.
  */
 class ForkedWorkerProcess extends WorkerProcess
 {
@@ -30,7 +30,7 @@ class ForkedWorkerProcess extends WorkerProcess
      * @param Closure(ForkResult): never $child           what the child runs; it never returns
      * @param list<int>                  $keepDescriptors descriptors the worker keeps, such as the
      *                                                    group's listening socket; every other one
-     *                                                    of the master's is pointed at /dev/null
+     *                                                    of the fork server's is pointed at /dev/null
      */
     public function __construct(Closure $child, array $keepDescriptors = [])
     {

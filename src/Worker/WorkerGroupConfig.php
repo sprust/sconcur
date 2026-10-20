@@ -157,7 +157,10 @@ readonly class WorkerGroupConfig
             );
         }
 
-        $server = MasterConfig::serverParams($data['server'] ?? null, $name);
+        $server = MasterConfig::serverParams(
+            value: $data['server'] ?? null,
+            groupName: $name,
+        );
         $listen = (string) ($data['listen'] ?? '');
 
         // One socket the master binds and a socket each worker binds for itself are two
@@ -183,48 +186,133 @@ readonly class WorkerGroupConfig
             env: array_merge($defaults->env, MasterConfig::stringMap($data['env'] ?? [])),
             restartPolicy: $restartPolicy,
             shutdownTimeoutMs: MasterConfig::nonNegativeInt(
-                $data,
-                'shutdownTimeoutMs',
-                $defaults->shutdownTimeoutMs,
-                $name,
+                data: $data,
+                key: 'shutdownTimeoutMs',
+                default: $defaults->shutdownTimeoutMs,
+                groupName: $name,
             ),
             restartBackoffMs: MasterConfig::nonNegativeInt(
-                $data,
-                'restartBackoffMs',
-                $defaults->restartBackoffMs,
-                $name,
+                data: $data,
+                key: 'restartBackoffMs',
+                default: $defaults->restartBackoffMs,
+                groupName: $name,
             ),
             maxRestartBackoffMs: MasterConfig::nonNegativeInt(
-                $data,
-                'maxRestartBackoffMs',
-                $defaults->maxRestartBackoffMs,
-                $name,
+                data: $data,
+                key: 'maxRestartBackoffMs',
+                default: $defaults->maxRestartBackoffMs,
+                groupName: $name,
             ),
             watchdogTimeoutMs: MasterConfig::watchdogTimeoutMs(
-                $data,
-                $defaults->watchdogTimeoutMs,
-                $name,
+                data: $data,
+                default: $defaults->watchdogTimeoutMs,
+                groupName: $name,
             ),
             server: $server,
             launch: $launch,
             listen: $listen,
             readyTimeoutMs: MasterConfig::readyTimeoutMs(
-                $data,
-                $defaults->readyTimeoutMs,
-                $name,
+                data: $data,
+                default: $defaults->readyTimeoutMs,
+                groupName: $name,
             ),
             bootstrap: $bootstrap,
             accessLog: MasterConfig::accessLog(
-                $data,
-                $defaults->accessLog,
-                $name,
+                data: $data,
+                default: $defaults->accessLog,
+                groupName: $name,
             ),
         );
     }
 
     /**
-     * Every setting, defaults resolved, in the shape fromArray() reads: how the master hands
-     * a group to the fork server it starts for it, which is a php process of its own.
+     * Reads what toArray() wrote: every setting there and already resolved, so nothing falls
+     * back to a default. How the fork server takes its group from the master. A key that is
+     * missing means the fork server runs another release of this library than the master
+     * that wrote it, and is refused rather than guessed.
+     *
+     * @param array<string, mixed> $data
+     */
+    public static function fromResolvedArray(array $data): self
+    {
+        $name    = (string) ($data['name'] ?? '');
+        $missing = array_diff(self::KNOWN_KEYS, array_keys($data));
+
+        if ($missing !== []) {
+            throw new InvalidConfigException(
+                message: sprintf(
+                    'group "%s" was handed over without %s; the master and the fork server run'
+                    . ' different releases of the library, restart the master',
+                    $name,
+                    implode(', ', $missing),
+                ),
+            );
+        }
+
+        $restartPolicy = RestartPolicy::tryFrom((string) $data['restartPolicy']);
+        $launch        = LaunchMode::tryFrom((string) $data['launch']);
+        $accessLog     = AccessLogTarget::tryFrom((string) $data['accessLog']);
+
+        if ($restartPolicy === null || $launch === null || $accessLog === null) {
+            throw new InvalidConfigException(
+                message: sprintf(
+                    'group "%s" was handed over with an unknown restartPolicy, launch or accessLog',
+                    $name,
+                ),
+            );
+        }
+
+        return new self(
+            name: $name,
+            workerScript: (string) $data['workerScript'],
+            workerCount: (int) $data['workerCount'],
+            phpBinary: (string) $data['phpBinary'],
+            phpArgs: MasterConfig::stringList($data['phpArgs']),
+            workerArgs: MasterConfig::stringList($data['workerArgs']),
+            env: MasterConfig::stringMap($data['env']),
+            restartPolicy: $restartPolicy,
+            shutdownTimeoutMs: (int) $data['shutdownTimeoutMs'],
+            restartBackoffMs: (int) $data['restartBackoffMs'],
+            maxRestartBackoffMs: (int) $data['maxRestartBackoffMs'],
+            watchdogTimeoutMs: (int) $data['watchdogTimeoutMs'],
+            server: MasterConfig::serverParams(
+                value: $data['server'],
+                groupName: $name,
+            ),
+            launch: $launch,
+            listen: (string) $data['listen'],
+            readyTimeoutMs: (int) $data['readyTimeoutMs'],
+            bootstrap: (string) $data['bootstrap'],
+            accessLog: $accessLog,
+        );
+    }
+
+    /** How many workers the group keeps: workerCount, or one per core when that is 0. */
+    public function resolvedWorkerCount(): int
+    {
+        return $this->workerCount > 0 ? $this->workerCount : Cpu::count();
+    }
+
+    /**
+     * How long to wait before a restart that follows this many fast failures in a row: not
+     * at all after none, then restartBackoffMs, doubled with each further one, up to
+     * maxRestartBackoffMs. Keeps a crash loop from spinning.
+     */
+    public function backoffMs(int $consecutiveFastFails): int
+    {
+        if ($consecutiveFastFails <= 0) {
+            return 0;
+        }
+
+        return (int) min(
+            $this->restartBackoffMs * (2 ** ($consecutiveFastFails - 1)),
+            $this->maxRestartBackoffMs,
+        );
+    }
+
+    /**
+     * Every setting, defaults resolved, in the shape fromResolvedArray() reads: how the master
+     * hands a group to the fork server it starts for it, which is a php process of its own.
      *
      * @return array<string, mixed>
      */

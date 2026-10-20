@@ -14,6 +14,7 @@ use SConcur\Exceptions\Worker\RuntimePathException;
 use SConcur\Process\ProcessControl;
 use SConcur\Process\ProcessSignalEnum;
 use SConcur\Telemetry\TelemetryRuntime;
+use Throwable;
 
 /**
  * Supervises pools of worker processes (one per slot). An exec group's workers are php
@@ -232,7 +233,11 @@ class WorkerMaster
             $this->stateFile->clear();
             $this->lock->release();
 
-            $this->logger->master(MasterLogger::INFO, 'stopped');
+            $this->logger->master(
+                level: MasterLogger::INFO,
+                message: 'stopped',
+            );
+
             $this->logger->close();
         }
 
@@ -384,7 +389,10 @@ class WorkerMaster
 
     /**
      * What the pools call when the watchdog acts: counts the kill for the panel and then
-     * hands the event on to the application's own handler, if it gave one.
+     * hands the event on to the application's own handler, if it gave one. Anything that
+     * handler throws is written to the journal and dropped here, where the events of exec
+     * and fork groups alike arrive: an application's alerting must not be able to stop the
+     * supervisor from supervising.
      *
      * @return Closure(WatchdogEvent): void
      */
@@ -399,7 +407,17 @@ class WorkerMaster
                 return;
             }
 
-            ($this->onWatchdogEvent)($event);
+            try {
+                ($this->onWatchdogEvent)($event);
+            } catch (Throwable $exception) {
+                $this->logger->worker(
+                    level: MasterLogger::ERROR,
+                    workerPid: $event->pid,
+                    workerIndex: $event->slot,
+                    message: sprintf('watchdog handler failed: %s', $exception->getMessage()),
+                    group: $event->group,
+                );
+            }
         };
     }
 
@@ -546,7 +564,10 @@ class WorkerMaster
         }
 
         if (!is_file($this->stateFile->path())) {
-            $this->logger->master(MasterLogger::WARN, 'state file removed; shutting down gracefully');
+            $this->logger->master(
+                level: MasterLogger::WARN,
+                message: 'state file removed; shutting down gracefully',
+            );
 
             $this->stopping = true;
         }
@@ -590,11 +611,7 @@ class WorkerMaster
                 foreach ($this->pools as $pool) {
                     $reloading = $pool->driveReload() || $reloading;
 
-                    $pool->driveDraining();
-
-                    $pool->driveWatchdog();
-
-                    $pool->respawnDue();
+                    $pool->tick();
                 }
 
                 $this->retireDrainedPools();
@@ -611,7 +628,10 @@ class WorkerMaster
                 // to supervise. A reload in progress keeps the master alive even when a
                 // slot is momentarily empty between the drain and its replacement.
                 if (!$this->stopping && !$reloading && $this->allSlotsEmpty() && !$this->hasPendingRespawns()) {
-                    $this->logger->master(MasterLogger::INFO, 'all workers finished; exiting');
+                    $this->logger->master(
+                        level: MasterLogger::INFO,
+                        message: 'all workers finished; exiting',
+                    );
 
                     break;
                 }
@@ -642,9 +662,11 @@ class WorkerMaster
      */
     protected function checkReloadSignal(): void
     {
-        // A request still being served is still in the trigger file. A roll given up while
-        // its pool was reaped ends before finishReload() has cleared it, and reading it here
-        // again would start the same failing roll once a tick, for ever.
+        // The one guard against a reload starting while another is under way: a group's
+        // reconfigure() and retire() take it that none is, and do not check for one
+        // themselves. A request still being served is also still in the trigger file: a roll
+        // given up while its pool was reaped ends before finishReload() has cleared it, and
+        // reading it here again would start the same failing roll once a tick, for ever.
         if ($this->servedReloadRequest !== null || $this->anyPoolReloading()) {
             return;
         }
@@ -761,7 +783,10 @@ class WorkerMaster
     protected function refreshState(): void
     {
         if (!is_file($this->stateFile->path())) {
-            $this->logger->master(MasterLogger::WARN, 'state file removed; shutting down gracefully');
+            $this->logger->master(
+                level: MasterLogger::WARN,
+                message: 'state file removed; shutting down gracefully',
+            );
 
             $this->stopping = true;
 
@@ -984,7 +1009,10 @@ class WorkerMaster
         if ($failures === []) {
             $this->reloadFile->clear($request->signature);
 
-            $this->logger->master(MasterLogger::INFO, 'reload complete');
+            $this->logger->master(
+                level: MasterLogger::INFO,
+                message: 'reload complete',
+            );
 
             return;
         }
@@ -1008,9 +1036,9 @@ class WorkerMaster
             $this->logger->master(
                 level: MasterLogger::ERROR,
                 message: sprintf(
-                    'group %s: no worker came up — %d failed before any said it was up; stopping with code %d',
+                    'group %s: no worker came up — %s; stopping with code %d',
                     $pool->name(),
-                    $pool->workerCount(),
+                    $pool->neverCameUpReason(),
                     self::EXIT_NEVER_CAME_UP,
                 ),
             );
@@ -1072,7 +1100,10 @@ class WorkerMaster
             name: $this->name,
             masterStartedAtMs: (int) ($this->startedAt * 1000),
             logError: static function (string $message) use ($logger): void {
-                $logger->master(MasterLogger::ERROR, $message);
+                $logger->master(
+                    level: MasterLogger::ERROR,
+                    message: $message,
+                );
             },
         );
 
@@ -1095,7 +1126,10 @@ class WorkerMaster
             $this->termSent       = true;
             $this->stopDeadlineNs = $nowNs + $this->maxShutdownTimeoutMs() * 1_000_000;
 
-            $this->logger->master(MasterLogger::INFO, 'shutdown requested; forwarding SIGTERM to workers');
+            $this->logger->master(
+                level: MasterLogger::INFO,
+                message: 'shutdown requested; forwarding SIGTERM to workers',
+            );
 
             $this->signalAll(ProcessSignalEnum::Terminate);
 
@@ -1103,12 +1137,12 @@ class WorkerMaster
         }
 
         if (!$this->killSent && $nowNs > $this->stopDeadlineNs) {
-            $alive = $this->aliveSlotCount();
-
-            if ($alive > 0) {
+            // Asked of the groups rather than read off the count: a fork server left with no
+            // worker is still a process to kill.
+            if (!$this->allSlotsEmpty()) {
                 $this->logger->master(
                     level: MasterLogger::WARN,
-                    message: sprintf('shutdown timeout; sending SIGKILL to %d worker(s)', $alive),
+                    message: sprintf('shutdown timeout; sending SIGKILL to %d worker(s)', $this->aliveSlotCount()),
                 );
 
                 $this->signalAll(ProcessSignalEnum::Kill);

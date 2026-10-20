@@ -665,11 +665,18 @@ the journal.
 
 A worker counts as up once it [says so](#readiness), or once it has run for longer than
 `readyTimeoutMs` — so a script that never calls `markReady()` is not taken for a
-failure, as long as it does not crash at startup. A clean exit is not a failure. For a
-fork group, a fork server that dies before it has loaded — a bootstrap that throws, or one
-that started the extension's runtime — is a failed start of the whole group. Only
+failure, as long as it does not crash at startup. A clean exit is not a failure. Only
 the groups the master started with are checked: one a `reload` added must not take a
 running pool down, and its failures are left to the backoff.
+
+For a fork group, a fork server that dies before it has loaded — a bootstrap that throws,
+or one that started the extension's runtime — or cannot be started at all is a failed
+start of the whole group, and the line says what became of it instead of counting
+workers:
+
+```
+group http: no worker came up — the fork server of generation 1 exited code=255 before it loaded; stopping with code 70
+```
 
 ## Database connections
 

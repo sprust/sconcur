@@ -251,7 +251,10 @@ class MasterCli
         $nonce = $reloadFile->request(configPath: $resolvedPath, group: $group);
 
         if ($nonce === null) {
-            return $this->fail('cannot write reload trigger: ' . $reloadFile->path(), self::EXIT_ERROR);
+            return $this->fail(
+                message: 'cannot write reload trigger: ' . $reloadFile->path(),
+                code: self::EXIT_ERROR,
+            );
         }
 
         $timeoutMs = $this->reloadTimeoutMs(
@@ -297,7 +300,9 @@ class MasterCli
     /**
      * A generous bound on how long the rolling reload may take: each replacement may take
      * up to its group's readyTimeoutMs to come up, each worker it replaces up to
-     * shutdownTimeoutMs to drain before it is killed, and they roll one at a time.
+     * shutdownTimeoutMs to drain before it is killed, and they roll one at a time. A fork
+     * group first waits up to readyTimeoutMs for its next fork server to load, and gives a
+     * worker it lets go of ForkServerGroup::RELEASE_GRACE_MS more to be reported gone.
      */
     protected function reloadTimeoutMs(MasterConfig $config, string $group = ''): int
     {
@@ -310,9 +315,14 @@ class MasterCli
                 continue;
             }
 
-            $workers = $configured->workerCount > 0 ? $configured->workerCount : Cpu::count();
+            $stepMs = $configured->readyTimeoutMs + $configured->shutdownTimeoutMs + 2_000;
 
-            $timeoutMs += $workers * ($configured->readyTimeoutMs + $configured->shutdownTimeoutMs + 2_000);
+            if ($configured->launch === LaunchMode::Fork) {
+                $timeoutMs += $configured->readyTimeoutMs;
+                $stepMs += ForkServerGroup::RELEASE_GRACE_MS;
+            }
+
+            $timeoutMs += $configured->resolvedWorkerCount() * $stepMs;
         }
 
         return $timeoutMs;

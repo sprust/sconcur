@@ -215,7 +215,7 @@ readonly class MasterConfig
         $total = 0;
 
         foreach ($this->groups as $group) {
-            $total += $group->workerCount > 0 ? $group->workerCount : Cpu::count();
+            $total += $group->resolvedWorkerCount();
         }
 
         return $total;
@@ -235,8 +235,7 @@ readonly class MasterConfig
 
     /**
      * Builds the supervisor.
-     */
-    /**
+     *
      * @param null|Closure(WatchdogEvent): void $onWatchdogEvent notified when the watchdog
      *                                                           acts on a worker — see docs/worker-master.md
      */

@@ -106,20 +106,7 @@ class ForkServer
     protected function supervise(): int
     {
         $pid    = (int) getmypid();
-        $config = WorkerGroupConfig::fromArray(
-            data: (array) $this->spec['group'],
-            defaults: new MasterDefaults(
-                phpBinary: PHP_BINARY,
-                phpArgs: [],
-                env: [],
-                restartPolicy: RestartPolicy::Always,
-                shutdownTimeoutMs: 0,
-                restartBackoffMs: 0,
-                maxRestartBackoffMs: 0,
-                watchdogTimeoutMs: 0,
-            ),
-            index: 0,
-        );
+        $config = WorkerGroupConfig::fromResolvedArray((array) $this->spec['group']);
 
         $this->logger = new MasterLogger(
             logDir: (string) $this->spec['logDir'],
@@ -153,7 +140,11 @@ class ForkServer
                 $exception->getMessage(),
             );
 
-            $this->logger->master(MasterLogger::ERROR, $reason);
+            $this->logger->master(
+                level: MasterLogger::ERROR,
+                message: $reason,
+            );
+
             $this->logger->close();
 
             $this->emit(
@@ -205,7 +196,10 @@ class ForkServer
             ),
         );
 
-        $this->logger->master(MasterLogger::INFO, 'loaded; forking workers from here');
+        $this->logger->master(
+            level: MasterLogger::INFO,
+            message: 'loaded; forking workers from here',
+        );
 
         $this->emit(event: self::EVENT_LOADED);
 
@@ -217,7 +211,11 @@ class ForkServer
 
         ProcessControl::restoreSignals();
 
-        $this->logger->master(MasterLogger::INFO, 'stopped');
+        $this->logger->master(
+            level: MasterLogger::INFO,
+            message: 'stopped',
+        );
+
         $this->logger->close();
 
         return 0;
@@ -225,10 +223,11 @@ class ForkServer
 
     protected function loop(): void
     {
-        $masterPid = (int) $this->spec['masterPid'];
-        $stopping  = false;
-        $killSent  = false;
-        $deadline  = 0;
+        $masterPid      = (int) $this->spec['masterPid'];
+        $stopping       = false;
+        $killSent       = false;
+        $stopDeadlineNs = 0;
+        $killDeadlineNs = 0;
 
         while (true) {
             $nowNs = hrtime(true);
@@ -239,8 +238,8 @@ class ForkServer
                 $orphaned = ProcessControl::parentPid() !== $masterPid;
 
                 if ($orphaned || ProcessControl::takeSignals() !== []) {
-                    $stopping = true;
-                    $deadline = $nowNs + $this->group->shutdownTimeoutMs() * 1_000_000;
+                    $stopping       = true;
+                    $stopDeadlineNs = $nowNs + $this->group->shutdownTimeoutMs() * 1_000_000;
 
                     $this->logger->master(
                         level: $orphaned ? MasterLogger::WARN : MasterLogger::INFO,
@@ -258,26 +257,27 @@ class ForkServer
                     break;
                 }
 
-                if (!$killSent && $nowNs > $deadline) {
-                    $killSent = true;
-                    $deadline = $nowNs + (int) (self::SIGKILL_GRACE_SECONDS * 1_000_000_000);
+                if (!$killSent && $nowNs > $stopDeadlineNs) {
+                    $killSent       = true;
+                    $killDeadlineNs = $nowNs + (int) (self::SIGKILL_GRACE_SECONDS * 1_000_000_000);
 
                     $this->group->signalAll(ProcessSignalEnum::Kill);
-                } elseif ($killSent && $nowNs > $deadline) {
+                } elseif ($killSent && $nowNs > $killDeadlineNs) {
                     break;
                 }
             } else {
                 $this->takeCommands();
 
-                $this->group->driveDraining();
-                $this->group->driveWatchdog();
-                $this->group->respawnDue();
+                $this->group->tick();
             }
 
             $this->report();
 
             if (!$stopping && $this->finished()) {
-                $this->logger->master(MasterLogger::INFO, 'every worker finished; nothing to restart');
+                $this->logger->master(
+                    level: MasterLogger::INFO,
+                    message: 'every worker finished; nothing to restart',
+                );
 
                 $this->emit(event: self::EVENT_FINISHED);
 

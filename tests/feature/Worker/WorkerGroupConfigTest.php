@@ -9,7 +9,6 @@ use SConcur\Exceptions\Worker\InvalidConfigException;
 use SConcur\Worker\AccessLogTarget;
 use SConcur\Worker\LaunchMode;
 use SConcur\Worker\MasterConfig;
-use SConcur\Worker\MasterDefaults;
 use SConcur\Worker\RestartPolicy;
 use SConcur\Worker\WorkerGroupConfig;
 
@@ -130,7 +129,7 @@ class WorkerGroupConfigTest extends TestCase
 
     /**
      * The master hands a group to its fork server as toArray(), and the fork server reads it back
-     * with fromArray(): every setting has to make the trip, defaults it did not write
+     * with fromResolvedArray(): every setting has to make the trip, defaults it did not write
      * included.
      */
     public function testAGroupMakesTheTripToItsForkServerWhole(): void
@@ -159,22 +158,25 @@ class WorkerGroupConfigTest extends TestCase
 
         self::assertIsArray($decoded);
 
-        $copy = WorkerGroupConfig::fromArray(
-            data: $decoded,
-            defaults: new MasterDefaults(
-                phpBinary: 'unused',
-                phpArgs: ['unused'],
-                env: [],
-                restartPolicy: RestartPolicy::Never,
-                shutdownTimeoutMs: 1,
-                restartBackoffMs: 1,
-                maxRestartBackoffMs: 1,
-                watchdogTimeoutMs: 0,
-            ),
-            index: 0,
-        );
+        $copy = WorkerGroupConfig::fromResolvedArray($decoded);
 
         self::assertEquals($group, $copy);
+    }
+
+    /**
+     * A setting missing from what the fork server is handed means it runs another release of
+     * the library than the master; it is refused by name rather than filled with a guess.
+     */
+    public function testAGroupHandedOverWithoutASettingIsRefused(): void
+    {
+        $handed = $this->group([])->toArray();
+
+        unset($handed['readyTimeoutMs']);
+
+        $this->expectException(InvalidConfigException::class);
+        $this->expectExceptionMessage('without readyTimeoutMs');
+
+        WorkerGroupConfig::fromResolvedArray($handed);
     }
 
     /**

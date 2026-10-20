@@ -9,11 +9,12 @@ use SConcur\Process\ProcessSignalEnum;
 
 /**
  * One supervised worker process, whichever way it was launched: ExecWorkerProcess runs a
- * php of its own on the script, ForkedWorkerProcess forks the master. What the master
- * does with a worker is the same either way and lives here — its stdout and stderr are
- * non-blocking pipes drained line by line into the journal (drainOutput), so a crash's
- * output is kept in one place; the liveness pipe feeds the watchdog and says when the
- * worker is up; signals go by pid.
+ * php of its own on the script (the master does, for an exec group), ForkedWorkerProcess
+ * forks the fork server it is created in (for a fork group). What the supervisor does with
+ * a worker is the same either way and lives here — its stdout and stderr are non-blocking
+ * pipes drained line by line into the journal (drainOutput), so a crash's output is kept
+ * in one place; the liveness pipe feeds the watchdog and says when the worker is up;
+ * signals go by pid.
  */
 abstract class WorkerProcess
 {
@@ -138,8 +139,21 @@ abstract class WorkerProcess
     public function signal(ProcessSignalEnum $signal): void
     {
         if ($this->isRunning()) {
-            ProcessControl::kill($this->pid, $signal);
+            ProcessControl::kill(
+                pid: $this->pid,
+                signal: $signal,
+            );
         }
+    }
+
+    /** How the process ended, for the journal: `signal=N` when a signal killed it, `code=N` otherwise. */
+    public function exitReason(): string
+    {
+        $termSignal = $this->termSignal();
+
+        return $termSignal !== null
+            ? sprintf('signal=%d', $termSignal)
+            : sprintf('code=%d', (int) $this->exitCode());
     }
 
     /**
