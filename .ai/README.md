@@ -328,9 +328,12 @@ The core (`ext/src/`), module by module:
 - `states/` — registry of streaming states (cursor batches, request-body chunks,
   client message streams) driven by `next()`; the server accept streams are
   self-pumping and bypass it
-- `logger/` — fire-and-forget async log sink: a background task writes
-  pre-formatted lines to stdout (buffered, timer-flushed, drops on overflow), so
-  the loop never blocks on log I/O
+- `logger/` — fire-and-forget async log sink: a background thread writes
+  pre-formatted lines (buffered, timer-flushed, drops on overflow), so the loop never
+  blocks on log I/O. Access lines (`logger::access`) go where `SCONCUR_ACCESS_LOG` says —
+  stdout, a file of the day the worker writes itself, or nowhere — which the worker
+  master sets from a group's `accessLog`; every other line goes to stdout. Dropped lines
+  are reported on stderr at most once a minute
 - `features/files/` — the file feature. Every syscall goes through `tokio::fs` or
   a `spawn_blocking`, and that is a correctness rule rather than a style one: the
   runtime has one worker thread by default, so a synchronous read would stand in
