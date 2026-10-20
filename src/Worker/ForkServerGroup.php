@@ -22,9 +22,11 @@ use Throwable;
  *   old fork server has no slots left it is stopped. A fork server that does not load, or a
  *   replacement that does not come up within readyTimeoutMs, gives the reload up: the
  *   slots already moved are moved back the same way, and the new fork server is stopped, so
- *   the group stays one generation.
+ *   the group stays one generation. The new fork server dying gives the reload up the same
+ *   way; the old one dying while the slots are moved back leaves the group on the new one.
  * - A fork server that dies: its workers notice they are orphaned and stop (the master stops
- *   the ones it still knows of as well), and a new generation is started.
+ *   the ones it still knows of as well), and a new generation is started — at once after one
+ *   that ran healthily, after a growing backoff when they keep dying soon after they start.
  */
 class ForkServerGroup implements SupervisedGroup
 {
@@ -45,8 +47,11 @@ class ForkServerGroup implements SupervisedGroup
     /** hrtime at which to start a new generation after the last one died; null when none is due. */
     protected ?int $respawnAtNs = null;
 
-    /** Consecutive generations that died before they loaded (drives the backoff). */
-    protected int $failedLoads = 0;
+    /**
+     * Consecutive generations that could not be started, or died before they had run
+     * healthily past their load (drives the backoff).
+     */
+    protected int $fastFails = 0;
 
     protected bool $retiring = false;
 
@@ -308,14 +313,16 @@ class ForkServerGroup implements SupervisedGroup
 
         $next = $this->next;
 
-        if ($next === null) {
+        // A reload being given up goes on without the next generation: when its fork server
+        // died, the slots it had taken still have to be brought back up in the old one.
+        if ($next === null && !$this->reverting) {
             $this->finishReload();
 
             return false;
         }
 
         // The next generation loads first: nothing is touched until it has.
-        if (!$next->loaded) {
+        if ($next !== null && !$next->loaded) {
             if ($next->refusedReason !== '') {
                 $this->abortReload($next->refusedReason);
             } elseif (hrtime(true) > $this->loadDeadlineNs) {
@@ -455,7 +462,22 @@ class ForkServerGroup implements SupervisedGroup
                 return;
             }
 
-            $failure = $to->failed[$slot] ?? null;
+            if ($to->isRunning()) {
+                $failure = $to->failed[$slot] ?? null;
+            } else {
+                // Moving back, this is the running generation dying, and the next reap keeps
+                // the next one in its place (handleExit). Moving forward, the move has failed,
+                // and there is no point waiting out the deadline for it.
+                if ($this->reverting) {
+                    return;
+                }
+
+                $failure = sprintf(
+                    'the fork server of generation %d exited before worker %d was up',
+                    $to->number,
+                    $slot,
+                );
+            }
 
             if ($failure === null && hrtime(true) > $this->stepDeadlineNs) {
                 $failure = sprintf(
@@ -547,7 +569,6 @@ class ForkServerGroup implements SupervisedGroup
         );
 
         // Nothing to move back to: the generation that was running died during the reload.
-        // The next one is all the group has, so it stays, on the settings it was started with.
         if ($this->current === null) {
             $this->logger->master(
                 level: MasterLogger::ERROR,
@@ -557,18 +578,7 @@ class ForkServerGroup implements SupervisedGroup
                 ),
             );
 
-            $this->steps = [];
-            $this->step  = null;
-
-            // Every slot it does not have yet is brought up there; its fork server keeps trying
-            // the ones that fail, with its own backoff.
-            for ($slot = 0; $slot < $this->workers; ++$slot) {
-                if ($this->next !== null && !isset($this->next->slots[$slot])) {
-                    $this->next->spawn($slot);
-                }
-            }
-
-            $this->finishReload();
+            $this->keepNextGeneration();
 
             return;
         }
@@ -595,6 +605,37 @@ class ForkServerGroup implements SupervisedGroup
         if ($this->steps === []) {
             $this->finishReload();
         }
+    }
+
+    /**
+     * Ends the reload on the next generation, whatever it was doing: the generation that was
+     * running is gone, so the next one is all the group has. It stays, on the settings it was
+     * started with, and every slot it does not have yet is brought up there; its fork server
+     * keeps trying the ones that fail, with its own backoff. With the next one gone as well,
+     * the group is left with no generation, on the settings from before the reload.
+     */
+    protected function keepNextGeneration(): void
+    {
+        $this->reverting = false;
+        $this->steps     = [];
+        $this->step      = null;
+
+        $next = $this->next;
+
+        // The settings follow the generation that is left. A reload being given up has
+        // already put back the ones from before it, which the next generation does not run.
+        $this->config  = $next->config ?? $this->configBeforeReload ?? $this->config;
+        $this->workers = $this->config->workerCount > 0 ? $this->config->workerCount : Cpu::count();
+
+        if ($next !== null) {
+            for ($slot = 0; $slot < $this->workers; ++$slot) {
+                if (!isset($next->slots[$slot])) {
+                    $next->spawn($slot);
+                }
+            }
+        }
+
+        $this->finishReload();
     }
 
     /**
@@ -628,6 +669,12 @@ class ForkServerGroup implements SupervisedGroup
         $this->current = $this->next;
         $this->next    = null;
 
+        // Both generations died during the reload: nothing took over, and the caller starts
+        // a new one.
+        if ($this->current === null) {
+            return;
+        }
+
         $this->logger->master(
             level: MasterLogger::INFO,
             message: sprintf('group %s: reload complete', $this->config->name),
@@ -653,8 +700,8 @@ class ForkServerGroup implements SupervisedGroup
 
         switch ($event['e']) {
             case ForkServer::EVENT_LOADED:
-                $generation->loaded = true;
-                $this->failedLoads  = 0;
+                $generation->loaded     = true;
+                $generation->loadedAtNs = hrtime(true);
 
                 break;
             case ForkServer::EVENT_REFUSED:
@@ -730,7 +777,8 @@ class ForkServerGroup implements SupervisedGroup
     /**
      * A fork server exited. One asked to stop is simply gone. Otherwise its workers are left
      * orphaned and stop by themselves, and the master stops the ones it knows of too. The
-     * running generation dying starts a new one; the next one dying gives the reload up.
+     * running generation dying starts a new one, or, while a reload is being given up, leaves
+     * the group on the next one; the next one dying gives the reload up.
      */
     protected function handleExit(ForkServerGeneration $generation, bool $stopping): void
     {
@@ -780,6 +828,12 @@ class ForkServerGroup implements SupervisedGroup
                 );
             }
 
+            // The running generation died earlier in this reload, so this one was all the
+            // group had: with both gone, a new one is started as after any generation that died.
+            if ($this->current === null && !$this->reloading && !$expected && !$this->retiring) {
+                $this->startNewGeneration($generation);
+            }
+
             return;
         }
 
@@ -789,26 +843,61 @@ class ForkServerGroup implements SupervisedGroup
 
         $this->current = null;
 
-        // During a reload the next generation takes every slot anyway: the moves out of a
-        // generation that is gone only bring the slot up.
-        if ($expected || $this->retiring || $this->reloading) {
+        if ($expected || $this->retiring) {
             return;
         }
 
-        if (!$generation->loaded) {
-            ++$this->failedLoads;
+        if ($this->reloading && $this->reverting) {
+            // The slots were being moved back onto this generation, and there is nothing to move
+            // them onto now: the next generation is all the group has.
+            $this->logger->master(
+                level: MasterLogger::ERROR,
+                message: sprintf(
+                    'group %s: the running generation died while the reload was being given up;'
+                    . ' keeping the next one',
+                    $this->config->name,
+                ),
+            );
 
-            // A bootstrap that does not load fails every generation the same way: for a group
-            // the master started with, that is a failed start.
-            if (!$this->cameUp) {
-                $this->failedToStart = true;
-            }
+            $this->keepNextGeneration();
+        } elseif ($this->reloading) {
+            // During a reload the next generation takes every slot anyway: the moves out of a
+            // generation that is gone only bring the slot up.
+            return;
         }
 
-        $backoffMs = $this->failedLoads === 0
+        if ($this->current !== null) {
+            return;
+        }
+
+        // A bootstrap that does not load fails every generation the same way: for a group
+        // the master started with, that is a failed start.
+        if (!$generation->loaded && !$this->cameUp) {
+            $this->failedToStart = true;
+        }
+
+        $this->startNewGeneration($generation);
+    }
+
+    /**
+     * Schedules the generation that replaces one that died: at once after one that ran
+     * healthily, otherwise after a backoff that doubles with each such death in a row. A
+     * fault every generation shares — a bootstrap that throws, a fork server that crashes
+     * soon after it loads — would otherwise have the master start a php and load the
+     * application again on every tick.
+     */
+    protected function startNewGeneration(ForkServerGeneration $generation): void
+    {
+        if ($generation->ranHealthily()) {
+            $this->fastFails = 0;
+        } else {
+            ++$this->fastFails;
+        }
+
+        $backoffMs = $this->fastFails === 0
             ? 0
             : (int) min(
-                $this->config->restartBackoffMs * (2 ** ($this->failedLoads - 1)),
+                $this->config->restartBackoffMs * (2 ** ($this->fastFails - 1)),
                 $this->config->maxRestartBackoffMs,
             );
 
@@ -860,7 +949,7 @@ class ForkServerGroup implements SupervisedGroup
                 keepDescriptors: $this->listenFd === null ? [] : [$this->listenFd],
             );
         } catch (WorkerSpawnException $exception) {
-            ++$this->failedLoads;
+            ++$this->fastFails;
 
             $this->respawnAtNs = $spawnAll ? hrtime(true) + $config->restartBackoffMs * 1_000_000 : null;
 

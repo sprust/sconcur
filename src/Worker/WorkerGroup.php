@@ -25,7 +25,7 @@ use Throwable;
  */
 class WorkerGroup implements SupervisedGroup
 {
-    protected const float HEALTHY_UPTIME_SECONDS = 1.0; // shorter run counts as a fast fail
+    public const float HEALTHY_UPTIME_SECONDS = 1.0; // shorter run counts as a fast fail
 
     /** The argv flag that tells a server which descriptor is its listening socket. */
     protected const string LISTEN_FD_ARG = '--listenFd';

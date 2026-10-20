@@ -357,7 +357,8 @@ the process the worker is a child of.
 
 A fork server that dies takes its workers with it: they find themselves orphaned and stop,
 and the master stops the ones it still knows of. The master then starts a new
-generation, after a backoff if the fork servers keep dying before they load.
+generation, after a backoff if the fork servers keep dying before they load or within
+~1 s of it.
 
 ### Which to choose
 

@@ -12,6 +12,9 @@ class ForkServerGeneration
 {
     public bool $loaded = false;
 
+    /** hrtime at which the master heard it had loaded; 0 until then. */
+    public int $loadedAtNs = 0;
+
     /** Set when every worker finished and nothing was left to restart: the fork server left on its own. */
     public bool $finished = false;
 
@@ -43,6 +46,17 @@ class ForkServerGeneration
     public function isRunning(): bool
     {
         return $this->process->isRunning();
+    }
+
+    /**
+     * Whether it kept running for long enough after it loaded to count as healthy, by the
+     * measure WorkerGroup judges a worker with. The load is left out: a bootstrap that takes
+     * seconds to load says nothing about whether the fork server then holds.
+     */
+    public function ranHealthily(): bool
+    {
+        return $this->loaded
+            && (hrtime(true) - $this->loadedAtNs) >= WorkerGroup::HEALTHY_UPTIME_SECONDS * 1_000_000_000;
     }
 
     /** Asks the fork server to bring a slot up, and counts the slot as this generation's. */
