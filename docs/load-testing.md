@@ -48,7 +48,20 @@ DURATION=3600 make bench-http-load-soak # hour-long soak
 # requests counted per worker
 SHARED_SOCKET=1 CONNECTION_CLOSE=1 WORKER_LOGS=1 ROUTE=/ PIN_SERVERS=group \
     tests/benchmarks/http/load-stats.sh
+
+# the workers as forks of one php, the way a worker master with launch=fork starts them
+LAUNCH=fork make bench-http-load-stats-empty
 ```
+
+`LAUNCH` says how the workers start: `exec` (the default) runs a `php` of its own per
+worker, `fork` makes every worker a fork of one `php` that loaded the library
+(`tests/benchmarks/http/fork-pool.php`, through the same `ForkedWorker` a
+[worker master](worker-master.md#launch-exec-or-fork) group uses). Placement, ports
+and output are the same in both, so a pair of runs differs in the launch alone. A
+forked worker pinned to its own CPUs gets them before its threads exist: the parent
+sets its own affinity before each fork. The workers' output goes to `/dev/null` in
+both, not through a master's journal. `WORKER_LOGS=1` needs `exec`, since forks of one
+process share its stdout.
 
 `MODE=soak` additionally prints a `trend (elapsed → RSS)` table, and the
 least-squares slope in MiB/min gets a verdict: `stable` / `growing — possible leak` /

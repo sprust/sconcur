@@ -48,7 +48,20 @@ DURATION=3600 make bench-http-load-soak # часовой прогон
 # счёт запросов по воркерам
 SHARED_SOCKET=1 CONNECTION_CLOSE=1 WORKER_LOGS=1 ROUTE=/ PIN_SERVERS=group \
     tests/benchmarks/http/load-stats.sh
+
+# воркеры — форки одного php, как их запускает мастер воркеров с launch=fork
+LAUNCH=fork make bench-http-load-stats-empty
 ```
+
+`LAUNCH` говорит, как запускаются воркеры: `exec` (по умолчанию) — свой `php` на
+каждого, `fork` — каждый воркер форк одного `php`, загрузившего библиотеку
+(`tests/benchmarks/http/fork-pool.php`, через тот же `ForkedWorker`, что у группы
+[мастера воркеров](worker-master.ru.md#запуск-exec-или-fork)). Размещение, порты и вывод
+в обоих одинаковы, так что пара прогонов отличается только способом запуска.
+Fork-воркер, закреплённый за своими CPU, получает их раньше, чем появятся его потоки:
+родитель выставляет маску себе перед каждым форком. Вывод воркеров в обоих случаях
+уходит в `/dev/null`, а не через журнал мастера. `WORKER_LOGS=1` требует `exec`: форки
+одного процесса делят его stdout.
 
 `MODE=soak` дополнительно печатает таблицу `trend (elapsed → RSS)`, а наклон по
 методу наименьших квадратов в MiB/мин получает вердикт: `stable` /

@@ -23,6 +23,9 @@
 #   --flags appended to the server command line, e.g. --ladder=l1),
 #   SHARED_SOCKET (1 = one socket inherited by every worker instead of SO_REUSEPORT),
 #   CONNECTION_CLOSE (1 = no keep-alive: a connection, and so an accept, per request),
+#   LAUNCH (exec = a php of its own per worker, the default; fork = every worker a fork
+#   of one php that loaded the library, the way a worker master with launch=fork starts
+#   them — see fork-pool.php),
 #   PIN_SERVERS: 1 = pin each worker to one logical CPU, as throughput.sh does —
 #   on an SMT machine that puts a worker's PHP thread and its runtime thread on
 #   the same logical CPU, which they are not meant to share;
@@ -87,6 +90,10 @@ WORKER_LOGS=${WORKER_LOGS:-0}
 # SO_REUSEPORT socket per worker. The kernel then queues every connection once and
 # whichever worker accepts first takes it.
 SHARED_SOCKET=${SHARED_SOCKET:-0}
+# LAUNCH=fork: the workers are forks of one php (fork-pool.php) instead of a php each.
+# Placement, ports and output stay as they are, so the arm differs in the launch alone.
+# The per-worker access logs need a stdout per worker, which forks of one process share.
+LAUNCH=${LAUNCH:-exec}
 # WRK_SCRIPT: a wrk Lua script (host path) for mixed load profiles; the URL still
 # selects host/port, the script selects the paths.
 WRK_SCRIPT=${WRK_SCRIPT:-}
@@ -101,10 +108,13 @@ SCRIPT=/sconcur/tests/servers/http/http-server.php
 PIDFILE=/tmp/sc-http-load-$PORT.pids
 STDERRLOG=/tmp/sc-http-load-$PORT.err
 WORKERLOGPREFIX=/tmp/sc-http-load-$PORT-w
+SPECFILE=/tmp/sc-http-load-$PORT.specs
 
 command -v wrk >/dev/null || { echo "wrk not found on host (apt-get install wrk)"; exit 1; }
 [ -z "$WRK_SCRIPT" ] || [ -f "$WRK_SCRIPT" ] || { echo "WRK_SCRIPT not found: $WRK_SCRIPT"; exit 1; }
 (( SHARED_SOCKET == 0 || DISTINCT_PORTS == 0 )) || { echo "SHARED_SOCKET and DISTINCT_PORTS exclude each other"; exit 1; }
+case "$LAUNCH" in exec|fork) ;; *) echo "LAUNCH must be exec or fork"; exit 1 ;; esac
+[ "$LAUNCH" = "exec" ] || [ "$WORKER_LOGS" = "0" ] || { echo "WORKER_LOGS needs LAUNCH=exec: forks share one stdout"; exit 1; }
 
 CORES=$(nproc)
 : "${SERVERS:=$(( CORES - WRK_THREADS ))}"
@@ -199,10 +209,10 @@ kill_stray() {
             pid=${d#/proc/}
             [ "$pid" = "$self" ] && continue
             cmd=$(tr "\\0" " " < "$d/cmdline" 2>/dev/null) || continue
-            case "$cmd" in php\ *) ;; *) continue ;; esac
+            case "$cmd" in php\ *|sconcur-load\ *) ;; *) continue ;; esac
             for port in $ports; do
                 case "$cmd" in
-                    *"--address=0.0.0.0:$port "*)
+                    *"--address=0.0.0.0:$port "*|"sconcur-load :$port "*)
                         echo "WARNING: stray server $pid on port $port from an earlier run; killed" >&2
                         kill -9 "$pid" 2>/dev/null || true
                         ;;
@@ -310,6 +320,11 @@ elif (( SHARED_SOCKET == 1 )); then
 else
     echo "   server procs    : $SERVERS  (reusePort)"
 fi
+if [ "$LAUNCH" = "fork" ]; then
+    echo "   launch          : fork (forks of one php, as a worker master with launch=fork)"
+else
+    echo "   launch          : exec (a php of its own per worker)"
+fi
 echo "   placement       : $placement  (PIN_SERVERS=$PIN_SERVERS)"
 echo "   wrk threads     : $WRK_THREADS (pinned to cores $WRK_CPULIST)"
 echo "   connections     : $CONNECTIONS"
@@ -334,11 +349,13 @@ kill_stray
 # proxy in front decides the placement instead of the kernel. With SHARED_SOCKET
 # the loop runs under shared-socket.php, which binds the socket and hands its
 # number down in SCONCUR_LISTEN_FD; the workers keep --address, which a listenFd
-# overrides, so kill_stray still finds them by port.
+# overrides, so kill_stray still finds them by port. With LAUNCH=fork the loop only
+# collects each worker's CPUs and argv, and fork-pool.php starts them all at the end.
 SPAWN='
     : > "'"$PIDFILE"'"
     : > "'"$STDERRLOG"'"
     rm -f "'"$WORKERLOGPREFIX"'"*.log
+    : > "'"$SPECFILE"'"
     i=0
     while [ "$i" -lt "'"$SERVERS"'" ]; do
         port='"$PORT"'
@@ -360,22 +377,36 @@ SPAWN='
 
         # The i-th entry of the list the host computed, or nothing when the
         # list is empty (PIN_SERVERS=0).
-        pin=""
+        cpus=""
         if [ -n "'"$PIN_CPULISTS"'" ]; then
             set -- '"$PIN_CPULISTS"'
             skip=$i
             while [ "$skip" -gt 0 ]; do shift; skip=$(( skip - 1 )); done
-            pin="taskset -c $1"
+            cpus=$1
         fi
 
-        SCONCUR_DB_POOL_SIZE='"$DB_POOL_SIZE"' \
-        env '"${SERVER_ENV:-}"' $pin php -d extension='"$EXTENSION"' '"$SCRIPT"' \
-            --address=0.0.0.0:$port --reusePort=$reuse $listen --maxConcurrency='"$MAXCONCURRENCY"' \
-            '"${SERVER_ARGS:-}"' \
-            >"$out" 2>>"'"$STDERRLOG"'" &
-        echo $! >> "'"$PIDFILE"'"
+        args="--address=0.0.0.0:$port --reusePort=$reuse $listen --maxConcurrency='"$MAXCONCURRENCY"' '"${SERVER_ARGS:-}"'"
+
+        if [ "'"$LAUNCH"'" = "fork" ]; then
+            echo "$cpus;$args" >> "'"$SPECFILE"'"
+        else
+            pin=""
+            [ -n "$cpus" ] && pin="taskset -c $cpus"
+
+            SCONCUR_DB_POOL_SIZE='"$DB_POOL_SIZE"' \
+            env '"${SERVER_ENV:-}"' $pin php -d extension='"$EXTENSION"' '"$SCRIPT"' $args \
+                >"$out" 2>>"'"$STDERRLOG"'" &
+            echo $! >> "'"$PIDFILE"'"
+        fi
         i=$(( i + 1 ))
     done
+
+    if [ "'"$LAUNCH"'" = "fork" ]; then
+        SCONCUR_DB_POOL_SIZE='"$DB_POOL_SIZE"' \
+        env '"${SERVER_ENV:-}"' php -d extension='"$EXTENSION"' \
+            /sconcur/tests/benchmarks/http/fork-pool.php "'"$PIDFILE"'" '"$SCRIPT"' "'"$SPECFILE"'" \
+            >/dev/null 2>>"'"$STDERRLOG"'"
+    fi
 '
 
 if (( SHARED_SOCKET == 1 )); then
