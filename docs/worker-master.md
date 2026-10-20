@@ -261,7 +261,8 @@ glob and a `--group` value), and every timeout, count and day retention must be
 
 The next keys are the defaults every group inherits unless it names its own:
 `launch`, `phpBinary`, `phpArgs`, `env`, `restartPolicy`, `shutdownTimeoutMs`,
-`restartBackoffMs`, `maxRestartBackoffMs`, `watchdogTimeoutMs`, `readyTimeoutMs`.
+`restartBackoffMs`, `maxRestartBackoffMs`, `watchdogTimeoutMs`, `readyTimeoutMs`,
+`accessLog`.
 
 ### A group
 
@@ -284,6 +285,7 @@ The next keys are the defaults every group inherits unless it names its own:
 | `maxRestartBackoffMs` | the master's | Backoff ceiling. |
 | `watchdogTimeoutMs` | the master's (`60000`) | How long a worker may stop signalling it is alive before it is killed and replaced — see [stuck worker](#stuck-worker). `0` switches the watch off; anything else must be at least 5000. |
 | `readyTimeoutMs` | the master's (`30000`) | How long a `reload` waits for each replacement to say it is up before it gives the reload up — see [readiness](#readiness). At least 1000; there is no "off". |
+| `accessLog` | the master's (`stdout`) | Where the workers write their access lines: `stdout` — into the journal, through the master or the fork server, which under heavy load drops some of them; `file` — each worker to a file of the day itself; `off` — nowhere. See [access lines](#access-lines). |
 
 The `server` block is pure forwarding: each key becomes a `--key=value` flag. A
 scalar travels as it is (booleans → `1`/`0`); a list or an object travels as JSON
@@ -794,8 +796,56 @@ override this deliberately.
 
 `logTo` sets the sink: `file` (default), `stdout` (collected by
 `docker logs`/journald) or `both` — under `docker logs` you need one of the
-latter two. This does not affect performance: records are buffered and flushed
-once per supervision tick (~100 ms), not per line.
+latter two. Records are buffered and flushed once per supervision tick (~100 ms), not
+per line.
+
+### Access lines
+
+The HTTP and socket servers write a line per request or connection. A group's
+`accessLog` says where:
+
+| `accessLog` | Where the lines go |
+|---|---|
+| `stdout` (default) | the worker's stdout, which the master — or the group's fork server — reads and writes into the journal with the rest of the worker's output. Under heavy load lines are lost |
+| `file` | each worker writes them itself to `<logDir>/<name>-access-YYYY-MM-DD.log`, opened for appending and reopened when the date changes; the journal's `rotateDays` removes the old ones with its own |
+| `off` | nowhere |
+
+With `stdout` every line of every worker of a group passes through one PHP process — the
+master for an exec group, the fork server for a fork group — which reads the pipes once
+a tick and writes the lines out. Under load that process falls behind. It spends CPU on
+the lines, and a worker whose pipe is full drops what its log queue cannot hold: in the
+measurement below, at about 11 000 requests a second per worker, almost half of the
+lines never reached the journal. A busy server that needs every access line wants
+`file`. `file`
+takes the reader out of the way: a worker hands a burst of lines to the kernel in one
+write. Several workers share the file, so each line ends with the worker's place in its
+pool and its pid:
+
+```
+2026-10-20T12:00:00.123456 GET / 200 0.12ms http#0 pid=4711
+```
+
+A line goes to the file in one write together with the others of its burst, whole lines
+only, and appending writes do not cut into each other, so the lines of different workers
+never mix. A file that cannot be opened is said in the journal, and the lines go to
+stdout instead. Lines the worker's queue had no room for are counted, and the count is
+written to the journal at most once a minute (`log: N line(s) dropped in the last
+minute`), whatever the target.
+
+Measured on a fork group of 16 workers under a master, the empty endpoint `/`, 256
+connections, 20 s, master and workers on cores 0–15 and `wrk` on the other four, runs
+of the two targets alternating — the medians of 3 runs with `stdout` and 5 with `file`:
+
+| `accessLog` | rps | p99 | CPU of the master and the fork server | Access lines written |
+|---|---:|---:|---:|---:|
+| `stdout` | 172 422 | 14.9 ms | 0.56 of a core | 52.4% — the rest dropped in the workers |
+| `file` | 176 760 | 21.1 ms | none | 100% |
+
+The p99 with `file` is the p99 with no access lines at all: two runs with `off` gave
+20.6 and 20.9 ms. What keeps it lower with `stdout` is not known; it is not the lines
+written, which are twice as many with `file`.
+
+A server started without a master writes its access lines to its stdout.
 
 ## Single instance and state
 

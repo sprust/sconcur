@@ -461,7 +461,7 @@ async fn serve_connection(
 
     core_states::get().delete_state(&inbound_key).await;
 
-    crate::logger::write(access_line(
+    crate::logger::access(access_line(
         started_at,
         started.elapsed(),
         &remote_addr.to_string(),

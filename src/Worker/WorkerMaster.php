@@ -308,6 +308,10 @@ class WorkerMaster
             onWatchdogEvent: $this->watchdogReporter(),
             listenFd: $this->listeners[$group->name] ?? null,
             guardsStartup: $guardsStartup,
+            accessLogPrefix: MasterLogger::accessLogPrefix(
+                logDir: $this->logDir ?? $this->runtimeDir,
+                name: $this->name,
+            ),
         );
     }
 

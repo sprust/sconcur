@@ -163,7 +163,8 @@ grace-периода (2 c). В пуле `SO_REUSEPORT` ядро сразу от�
 `reason=signal` — `SIGTERM`/`SIGINT` или потеря мастера; `reason=limit` — лимит
 `maxConnections` (`reason=limit, limit=N`; под мастером он разбрасывается, см.
 [политику перезапуска и `maxRequests`](worker-master.ru.md#политика-перезапуска-и-maxrequests)). Под [мастером воркеров](worker-master.ru.md) они попадают в общий
-лог.
+лог, а access-строки можно вместо этого писать в файл дня — см.
+[access-строки](worker-master.ru.md#access-строки).
 
 ## Запуск под мастером воркеров
 

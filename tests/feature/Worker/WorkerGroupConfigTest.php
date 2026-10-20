@@ -6,6 +6,7 @@ namespace SConcur\Tests\Feature\Worker;
 
 use PHPUnit\Framework\TestCase;
 use SConcur\Exceptions\Worker\InvalidConfigException;
+use SConcur\Worker\AccessLogTarget;
 use SConcur\Worker\LaunchMode;
 use SConcur\Worker\MasterConfig;
 use SConcur\Worker\MasterDefaults;
@@ -148,6 +149,7 @@ class WorkerGroupConfigTest extends TestCase
                     'readyTimeoutMs' => 9000,
                     'listen'         => '0.0.0.0:8080',
                     'bootstrap'      => '/app/bootstrap.php',
+                    'accessLog'      => 'file',
                     'server'         => ['queues' => [['name' => 'orders']], 'maxRequests' => 10],
                 ],
             ],
@@ -335,6 +337,32 @@ class WorkerGroupConfigTest extends TestCase
                 ['name' => 'orders', 'workerScript' => '/app/consumer.php', 'readyTimeoutMs' => 0],
             ],
         ]);
+    }
+
+    public function testTheAccessLogDefaultsToStdoutAndIsInheritedOrOverridden(): void
+    {
+        self::assertSame(AccessLogTarget::Stdout, $this->group([])->accessLog);
+
+        $config = MasterConfig::fromArray([
+            'accessLog' => 'file',
+            'groups'    => [
+                ['name' => 'http', 'workerScript' => '/app/worker.php'],
+                ['name' => 'orders', 'workerScript' => '/app/consumer.php', 'accessLog' => 'off'],
+            ],
+        ]);
+
+        [$http, $orders] = $config->groups();
+
+        self::assertSame(AccessLogTarget::File, $http->accessLog, 'a group inherits the master-wide target');
+        self::assertSame(AccessLogTarget::Off, $orders->accessLog, 'and may name its own');
+    }
+
+    public function testAnUnknownAccessLogIsRefused(): void
+    {
+        $this->expectException(InvalidConfigException::class);
+        $this->expectExceptionMessage('config: group "group": "accessLog" must be stdout|file|off');
+
+        $this->group(['accessLog' => 'journal']);
     }
 
     public function testAGroupWithoutANameIsRefused(): void

@@ -61,6 +61,7 @@ readonly class MasterConfig
         'maxRestartBackoffMs',
         'watchdogTimeoutMs',
         'readyTimeoutMs',
+        'accessLog',
         'launch',
         'groups',
     ];
@@ -175,6 +176,7 @@ readonly class MasterConfig
             watchdogTimeoutMs: self::watchdogTimeoutMs($data, 60_000),
             launch: $launch,
             readyTimeoutMs: self::readyTimeoutMs($data, self::DEFAULT_READY_TIMEOUT_MS),
+            accessLog: self::accessLog($data, AccessLogTarget::Stdout),
         );
 
         return new self(
@@ -318,6 +320,26 @@ readonly class MasterConfig
                     $groupName,
                     self::MIN_WATCHDOG_TIMEOUT_MS,
                 ),
+        );
+    }
+
+    /**
+     * `accessLog`: stdout, file or off.
+     *
+     * @param array<string, mixed> $data
+     */
+    public static function accessLog(array $data, AccessLogTarget $default, string $groupName = ''): AccessLogTarget
+    {
+        $target = AccessLogTarget::tryFrom((string) ($data['accessLog'] ?? $default->value));
+
+        if ($target !== null) {
+            return $target;
+        }
+
+        throw new InvalidConfigException(
+            message: $groupName === ''
+                ? 'config: "accessLog" must be stdout|file|off'
+                : sprintf('config: group "%s": "accessLog" must be stdout|file|off', $groupName),
         );
     }
 

@@ -29,6 +29,7 @@ readonly class MasterDefaults
         public int $watchdogTimeoutMs,
         public LaunchMode $launch = LaunchMode::Fork,
         public int $readyTimeoutMs = MasterConfig::DEFAULT_READY_TIMEOUT_MS,
+        public AccessLogTarget $accessLog = AccessLogTarget::Stdout,
     ) {
     }
 }

@@ -332,7 +332,7 @@ async fn serve_request(
     if bench_ladder_l0() {
         let response = text_response(StatusCode::OK, "ok");
 
-        crate::logger::write(access_line(
+        crate::logger::access(access_line(
             started_at,
             started.elapsed(),
             request.method().as_str(),
@@ -443,7 +443,7 @@ async fn serve_request(
         }
     };
 
-    crate::logger::write(access_line(
+    crate::logger::access(access_line(
         started_at,
         started.elapsed(),
         &log_method,
@@ -552,7 +552,7 @@ fn oversize_response(
 ) -> Response<ResponseBody> {
     let response = text_response(StatusCode::PAYLOAD_TOO_LARGE, "Payload Too Large");
 
-    crate::logger::write(access_line(
+    crate::logger::access(access_line(
         started_at,
         started.elapsed(),
         method,

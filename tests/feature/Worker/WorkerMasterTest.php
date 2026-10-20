@@ -812,6 +812,66 @@ class WorkerMasterTest extends TestCase
         }
     }
 
+    /**
+     * With `accessLog: file` a worker writes its access lines itself, to a file of the
+     * day beside the journal, signed with its place in the pool — instead of handing them
+     * to its supervisor to journal.
+     */
+    public function testAccessLinesGoToAFileOfTheDayWhenAskedTo(): void
+    {
+        $master = TestWorkerMaster::start([
+            'workerCount' => 1,
+            'accessLog'   => 'file',
+        ]);
+
+        try {
+            for ($request = 0; $request < 3; ++$request) {
+                $master->get('/');
+            }
+
+            $pattern = $master->runtimeDir() . '/' . $master->name() . '-access-*.log';
+
+            $written = $this->waitFor(
+                static function () use ($pattern): bool {
+                    $files = glob($pattern) ?: [];
+
+                    return $files !== [] && str_contains((string) file_get_contents($files[0]), 'GET / 200');
+                },
+                timeoutSeconds: 5.0,
+            );
+
+            self::assertTrue($written, 'the access lines should reach the file: ' . $master->logText());
+
+            $lines = (string) file_get_contents((glob($pattern) ?: [''])[0]);
+
+            self::assertMatchesRegularExpression('/GET \/ 200 [\d.]+ms default#0 pid=\d+\n/', $lines);
+            self::assertStringNotContainsString('GET / 200', $master->logText(), 'none of them in the journal');
+        } finally {
+            $master->stop();
+        }
+    }
+
+    public function testAccessLinesCanBeSwitchedOff(): void
+    {
+        $master = TestWorkerMaster::start([
+            'workerCount' => 1,
+            'accessLog'   => 'off',
+        ]);
+
+        try {
+            for ($request = 0; $request < 3; ++$request) {
+                $master->get('/');
+            }
+
+            usleep(500_000);
+
+            self::assertStringNotContainsString('GET / 200', $master->logText());
+            self::assertSame([], glob($master->runtimeDir() . '/' . $master->name() . '-access-*.log') ?: []);
+        } finally {
+            $master->stop();
+        }
+    }
+
     public function testReloadRollsEveryWorkerWithoutDowntime(): void
     {
         $master = TestWorkerMaster::start(['workerCount' => 2]);

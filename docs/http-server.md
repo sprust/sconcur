@@ -325,7 +325,8 @@ An `onError` that itself throws is safely swallowed — the client still gets `5
 
 ## Logs
 
-Access log — one line per request to `STDOUT`, always on, including requests the
+Access log — one line per request to `STDOUT` (under a worker master, wherever its
+[`accessLog`](worker-master.md#access-lines) says), including requests the
 PHP handler never sees (`503` on shutdown, `504` on timeout, `413` on body
 overflow, a dropped connection):
 
@@ -358,7 +359,9 @@ startup, one per shutdown step:
 `reason=signal` — `SIGTERM`/`SIGINT` or a lost master; `reason=limit` —
 `maxRequests` reached, logged as `reason=limit, limit=N` with the number the worker
 stopped at. Under a [worker master](worker-master.md) the worker's
-`STDOUT` is captured and rewritten into the shared log.
+`STDOUT` is captured and rewritten into the shared log; the access lines can go to a
+file of the day each worker writes itself instead — see
+[access lines](worker-master.md#access-lines).
 
 ## Concurrency and limits
 

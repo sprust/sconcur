@@ -33,6 +33,7 @@ readonly class WorkerGroupConfig
         'maxRestartBackoffMs',
         'watchdogTimeoutMs',
         'readyTimeoutMs',
+        'accessLog',
         'launch',
         'listen',
         'bootstrap',
@@ -46,6 +47,7 @@ readonly class WorkerGroupConfig
      * @param array<string, string> $env        extra env merged over the inherited one
      * @param string                $bootstrap  a file the group's fork server loads once per generation, in
      *                                          the global scope, before it forks the workers (fork only)
+     * @param AccessLogTarget       $accessLog  where the workers write their access lines
      */
     public function __construct(
         public string $name,
@@ -65,6 +67,7 @@ readonly class WorkerGroupConfig
         public string $listen = '',
         public int $readyTimeoutMs = MasterConfig::DEFAULT_READY_TIMEOUT_MS,
         public string $bootstrap = '',
+        public AccessLogTarget $accessLog = AccessLogTarget::Stdout,
     ) {
     }
 
@@ -211,6 +214,11 @@ readonly class WorkerGroupConfig
                 $name,
             ),
             bootstrap: $bootstrap,
+            accessLog: MasterConfig::accessLog(
+                $data,
+                $defaults->accessLog,
+                $name,
+            ),
         );
     }
 
@@ -239,6 +247,7 @@ readonly class WorkerGroupConfig
             'launch'              => $this->launch->value,
             'listen'              => $this->listen,
             'bootstrap'           => $this->bootstrap,
+            'accessLog'           => $this->accessLog->value,
             'server'              => (object) $this->server,
         ];
     }

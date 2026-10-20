@@ -199,6 +199,10 @@ class ForkServer
             listenFd: $listenFd,
             inheritedDescriptors: $inherited,
             guardsStartup: (bool) $this->spec['guardsStartup'],
+            accessLogPrefix: MasterLogger::accessLogPrefix(
+                logDir: (string) $this->spec['logDir'],
+                name: (string) $this->spec['name'],
+            ),
         );
 
         $this->logger->master(MasterLogger::INFO, 'loaded; forking workers from here');

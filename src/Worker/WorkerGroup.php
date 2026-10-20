@@ -113,6 +113,9 @@ class WorkerGroup implements SupervisedGroup
      *                                                                take the supervisor down
      * @param list<int>                         $inheritedDescriptors the descriptors the master found open when it
      *                                                                started, which a forked worker keeps
+     * @param string                            $accessLogPrefix      where the workers write their access lines when
+     *                                                                the group says `accessLog: file`, see
+     *                                                                MasterLogger::accessLogPrefix
      * @param bool                              $guardsStartup        whether a group that never comes up stops the
      *                                                                master (neverCameUp): true for the groups the
      *                                                                master started with, false for one a reload
@@ -128,6 +131,7 @@ class WorkerGroup implements SupervisedGroup
         protected ?int $listenFd = null,
         protected array $inheritedDescriptors = [],
         protected bool $guardsStartup = false,
+        protected string $accessLogPrefix = '',
     ) {
         $this->workers = $config->workerCount > 0 ? $config->workerCount : Cpu::count();
     }
@@ -1443,6 +1447,14 @@ class WorkerGroup implements SupervisedGroup
         if ($this->telemetrySocket !== '') {
             $environment['SCONCUR_TELEMETRY_SOCKET'] = $this->telemetrySocket;
         }
+
+        // Read by the extension's logger when the worker writes its first line. Set in
+        // every case, empty for stdout, so a worker never acts on a value it inherited.
+        $environment['SCONCUR_ACCESS_LOG'] = match ($this->config->accessLog) {
+            AccessLogTarget::Stdout => '',
+            AccessLogTarget::File   => $this->accessLogPrefix,
+            AccessLogTarget::Off    => 'off',
+        };
 
         // The group's own env wins on a collision: it is the more specific setting.
         foreach ($this->config->env as $key => $value) {
