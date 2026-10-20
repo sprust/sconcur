@@ -29,7 +29,9 @@ before the master started (see
 - [Commands](#commands)
 - [Parameters](#parameters)
 - [Launch: exec or fork](#launch-exec-or-fork)
+- [Readiness](#readiness)
 - [Restart policy and `maxRequests`](#restart-policy-and-maxrequests)
+- [A group that never comes up](#a-group-that-never-comes-up)
 - [Self-termination of orphaned workers](#self-termination-of-orphaned-workers)
 - [Stuck worker](#stuck-worker)
 - [Logging](#logging)
@@ -160,22 +162,49 @@ its neighbours where they are. A name the config does not define is a usage erro
 (exit `2`). `stop` takes the whole master — there is one lock and one state file,
 and stopping half of it is not a thing.
 
-Exit codes: `start` — the master's own; `status` — `0` running / `3`
-stopped-or-stale; `stop` — `0` once stopped (or none was running), `1` on timeout;
-`reload` — `0` on completion, `3` if the master is not running, `1` on
-timeout/error.
+Exit codes: `start` — the master's own: `0` after a stop, `70` when a group never came
+up (see [below](#a-group-that-never-comes-up)), `1` when it could not start; `status`
+— `0` running / `3` stopped-or-stale; `stop` — `0` once stopped (or none was running),
+`1` on timeout; `reload` — `0` on completion, `3` if the master is not running, `1` on
+timeout, or when the master refused the reload or gave it up — the reason is printed
+(`reload failed: …`) and is in the journal too.
 
 `status` prints the totals and then one line per group.
 
 `reload` re-reads the config and rolls the workers onto it. The command creates
 the trigger file `<runtimeDir>/<name>.reload` naming the config; the master reads
-it, then rolls each group's workers one by one, sending each `SIGTERM` (which
-leaves the `SO_REUSEPORT` group early and finishes the requests it has already
-accepted), waiting up to `shutdownTimeoutMs` (otherwise `SIGKILL`) and spawning a
-replacement. While one worker finishes up, the rest hold traffic — so with N>1
-the restart is downtime-free, and a fresh `php worker.php` picks up new code from
-disk; a [forked](#launch-exec-or-fork) one picks up the application's, while what the
-master itself loaded stays as it was.
+it, then rolls each group's workers one at a time, the new one first:
+
+1. It starts a replacement beside the worker of the slot.
+2. It waits for the replacement to say it is up (see [readiness](#readiness)), at most
+   `readyTimeoutMs`.
+3. The replacement takes the slot, and the old worker gets `SIGTERM`: it stops
+   accepting, finishes the requests it has already accepted and exits; past
+   `shutdownTimeoutMs` it gets `SIGKILL`.
+4. Once the old worker is gone, the next slot.
+
+The group never runs below its `workerCount` while it rolls, and at most one process
+above it. A fresh `php worker.php` picks up new code from disk; a
+[forked](#launch-exec-or-fork) one picks up the application's, while what the master
+itself loaded stays as it was.
+
+The old worker and its replacement run side by side for a moment, so they must be able
+to share the port: `reusePort: true` in `server`, or the group's `listen`. A worker that
+binds its address alone cannot be replaced this way — its replacement fails to bind
+and the reload is given up.
+
+A replacement that exits before it is up, or is not up within `readyTimeoutMs`, gives
+the reload up:
+
+- the replacement is stopped, and the slots the reload had not reached keep the
+  workers they have;
+- the slots it had already rolled keep their new workers: those came up;
+- the group's previous settings are put back, so a worker that crashes later is
+  respawned on what was running, not on what failed;
+- the journal says `group <name>: reload given up: <reason>`, and `reload` exits with
+  `1` and the same reason.
+
+A version that crashes on startup therefore costs one replacement, not the pool.
 
 What a reload may change: the set of groups (one added is spawned, one removed
 has its workers finish their work and is not replaced), and each group's
@@ -222,7 +251,7 @@ glob and a `--group` value), and every timeout, count and day retention must be
 
 The next keys are the defaults every group inherits unless it names its own:
 `launch`, `phpBinary`, `phpArgs`, `env`, `restartPolicy`, `shutdownTimeoutMs`,
-`restartBackoffMs`, `maxRestartBackoffMs`, `watchdogTimeoutMs`.
+`restartBackoffMs`, `maxRestartBackoffMs`, `watchdogTimeoutMs`, `readyTimeoutMs`.
 
 ### A group
 
@@ -243,6 +272,7 @@ The next keys are the defaults every group inherits unless it names its own:
 | `restartBackoffMs` | the master's | Exponential backoff base in a crash loop. |
 | `maxRestartBackoffMs` | the master's | Backoff ceiling. |
 | `watchdogTimeoutMs` | the master's (`60000`) | How long a worker may stop signalling it is alive before it is killed and replaced — see [stuck worker](#stuck-worker). `0` switches the watch off; anything else must be at least 5000. |
+| `readyTimeoutMs` | the master's (`30000`) | How long a `reload` waits for each replacement to say it is up before it gives the reload up — see [readiness](#readiness). At least 1000; there is no "off". |
 
 The `server` block is pure forwarding: each key becomes a `--key=value` flag. A
 scalar travels as it is (booleans → `1`/`0`); a list or an object travels as JSON
@@ -373,23 +403,91 @@ What is left to the application:
 - A `reload` restarts the workers with the application the master loaded. Changed
   application code takes a restart of the master.
 
+## Readiness
+
+A worker tells the master it is up: it is running and doing its work. A `reload` waits
+for that from every replacement before it stops the worker the replacement takes over
+from, and the master uses it to tell a group that [never came
+up](#a-group-that-never-comes-up).
+
+The three servers and the [AMQP consumer](amqp.md#a-supervised-consumer) say it on
+their own. Their serve loop does, once its first wait for work comes back with anything
+but the server's own failure. A server binds its socket before anything else, so a
+socket it cannot have is that failure, and such a worker is never up.
+
+A worker script that does its work in a loop of its own — a `WaitGroup` loop, a
+consumer built on `Queue::consume()`, a Redis subscription — says it itself, once the
+loop is running:
+
+```php
+use SConcur\Scheduler\Scheduler;
+
+while (!$stopRequested) {
+    // ... one round of work ...
+
+    Scheduler::get()->markReady(); // only the first call says anything
+}
+```
+
+`markReady()` does nothing outside a worker started by a master. A script that never
+calls it is never up: it runs and is restarted as before, but a `reload` gives up on its
+first replacement after `readyTimeoutMs`. The master cannot tell such a script from one
+that hangs while it loads, and it does not guess.
+
+How it travels: the same pipe the [watchdog](#stuck-worker) reads, one byte for "up".
+The master opens it for every worker, with the watchdog off too.
+
 ## Restart policy and `maxRequests`
 
 | Policy | Behaviour |
 |---|---|
 | `always` (default) | Restart on any exit — clean or abnormal. |
-| `on-failure` | Restart only on a non-zero code or death by signal. |
+| `on-failure` | Restart on a non-zero code, on death by signal, and when the worker reached its own limit. |
 | `never` | One-shot. |
 
-`always` is the default for a reason: [`maxRequests`](http-server.md#stopping-after-n-requests)
-shuts a worker down cleanly with code 0, and only `always` brings up a replacement.
-Together with the worker's early listener close and `SO_REUSEPORT` this gives a
-rolling restart without traffic loss.
+A server's [`maxRequests`](http-server.md#stopping-after-n-requests) (`maxConnections` for
+the socket and WebSocket servers, `maxMessages` for the AMQP consumer) stops a worker
+once it has handled that much, as a guard against leaks in a long-lived process. Under a
+master:
+
+- The worker says why it is stopping, before it finishes its last requests. The master
+  starts its replacement at once, without the crash backoff and without counting it as
+  a failure, so the slot is not empty for the length of a finish and a start. That is a
+  replacement under `always` and `on-failure`; under `never` the worker is let go.
+- The limit is spread. Each worker stops at a number drawn between the limit and half
+  again as many (`10000` becomes something from `10000` to `15000`). The workers of a
+  pool start together and share the load evenly, so with one number they would all
+  reach it within the same second and the pool would restart as one. Spread, they come
+  apart, and further with each generation. The number drawn is in the worker's
+  shutdown line: `stop accepting (reason=limit, limit=12408)`.
+
+Without a master the limit is exact: a one-off consumer told to take `maxMessages: 100`
+takes 100.
 
 Crash-loop protection: a worker that crashes right at startup gets a per-slot
 exponential backoff (base `restartBackoffMs`, doubled on each fast crash, ceiling
 `maxRestartBackoffMs`). A worker that has lived longer than ~1 s is considered
 healthy and the backoff is reset.
+
+## A group that never comes up
+
+When as many workers of a group as it has slots die before any of them is up — exit
+with an error or by a signal, or cannot be started at all — the master stops all its
+groups and exits with code `70` (`EX_SOFTWARE`):
+
+```
+group http: no worker came up — 8 failed before any said it was up; stopping with code 70
+```
+
+That is a broken deploy, and systemd or an orchestrator sees it as one, instead of a
+master respawning into the same failure with growing delays for as long as nobody reads
+the journal.
+
+A worker counts as up once it [says so](#readiness), or once it has run for longer than
+`readyTimeoutMs` — so a script that never calls `markReady()` is not taken for a
+failure, as long as it does not crash at startup. A clean exit is not a failure. Only
+the groups the master started with are checked: one a `reload` added must not take a
+running pool down, and its failures are left to the backoff.
 
 ## Self-termination of orphaned workers
 
@@ -414,9 +512,11 @@ the orphan check helps: a stuck worker does not *finish* a request, and the mast
 is alive.
 
 The master finds such a worker by itself and replaces it. A worker writes a byte to
-an extra pipe (descriptor 3, opened by `proc_open` beside stdout and stderr) every
-time its PHP thread comes back to the scheduler, at most twice a second; the master
-reads that pipe on every supervision tick and times the last byte by its own clock.
+an extra pipe (descriptor 3, opened by `proc_open` beside stdout and stderr; a forked
+worker is handed it) every time its PHP thread comes back to the scheduler, at most
+twice a second; the master reads that pipe on every supervision tick and times the last
+byte by its own clock. The same pipe carries the worker's [readiness](#readiness) and
+its "stopping at my limit".
 Stop coming back and the bytes stop, which is what "stuck" means here. It costs one
 clock read per pass, and nothing at all in a worker running without a master.
 
@@ -479,17 +579,16 @@ What the watch leaves alone:
   leaves its worker unservable for that whole time, and the worker will be replaced —
   raise `watchdogTimeoutMs` past the longest such handler, or set it to `0` for that
   group.
-- The one worker a rolling `reload` is currently unwinding: its `SIGTERM` is
-  sent and its deadline for finishing the work it has is running. The slots
-  still queued behind it are watched as usual. A group being retired after a
-  reload removed it from the config is watched too, and deliberately: `retire()`
-  has no deadline of its own, so a hung worker would otherwise hold the retiring
-  group open forever.
-- A worker that is stopping but never finishes — `maxRequests` reached or
-  `SIGTERM` taken, with one handler waiting on a result that will not arrive.
-  Its serve loop keeps turning, so it keeps marking itself alive while serving
-  nothing. Give such handlers a `handlerTimeoutMs`; the watchdog cannot see this
-  one.
+- A worker that has left its slot: one a `reload` replaced, or one that reached its
+  limit after its replacement was started. It has `shutdownTimeoutMs` to finish and
+  gets `SIGKILL` past that, hung or not. The replacement a `reload` is waiting on is
+  not watched either: `readyTimeoutMs` bounds it. A group being retired after a reload
+  removed it from the config is watched, and deliberately: `retire()` has no deadline
+  of its own, so a hung worker would otherwise hold the retiring group open forever.
+- A worker that is stopping but never finishes — `SIGTERM` taken, with one handler
+  waiting on a result that will not arrive. Its serve loop keeps turning, so it keeps
+  marking itself alive while serving nothing. Give such handlers a `handlerTimeoutMs`;
+  the watchdog cannot see this one.
 - A worker that hangs before it reaches its serve loop — in a synchronous call made
   during bootstrap. It has never marked itself alive, and nothing tells that apart
   from a worker script that has no serve loop at all, so such a slot stays what it
@@ -629,7 +728,10 @@ The tests do not depend on a docker service:
 separate process on a loopback port, with the shared demo server as the worker.
 Coverage (`tests/feature/Worker/` + `tests/feature/Features/HttpServer/`):
 supervision (spawning N workers, restarting a killed one, self-exit on
-`maxRequests` → restart, the `on-failure` and `never` policies), stopping
+`maxRequests` → restart, the `on-failure` and `never` policies), reload (each
+replacement up before the old worker stops, given up on a replacement that dies or
+never says it is up, a script with `markReady()`), a group that never comes up (exit
+`70`), stopping
 (graceful shutdown on `SIGTERM` and on removal of the state file), singleness
 and state (rejection of a second instance, `status`/`stop`, `status` after a
 crash), resilience (crash-loop backoff, config validation, orphan

@@ -248,7 +248,9 @@ class MasterCli
 
         $reloadFile = $this->reloadFile($config);
 
-        if (!$reloadFile->request(configPath: $resolvedPath, group: $group)) {
+        $nonce = $reloadFile->request(configPath: $resolvedPath, group: $group);
+
+        if ($nonce === null) {
             return $this->fail('cannot write reload trigger: ' . $reloadFile->path(), self::EXIT_ERROR);
         }
 
@@ -269,6 +271,15 @@ class MasterCli
             }
 
             if (!$reloadFile->requested()) {
+                $failure = $reloadFile->failure($nonce);
+
+                if ($failure !== null) {
+                    return $this->fail(
+                        message: 'reload failed: ' . $failure,
+                        code: self::EXIT_ERROR,
+                    );
+                }
+
                 $this->writeOut('reloaded');
 
                 return self::EXIT_OK;
@@ -284,23 +295,27 @@ class MasterCli
     }
 
     /**
-     * A generous bound on how long the rolling reload may take: each worker may drain
-     * for up to the master's shutdownTimeoutMs before it is killed, and they roll one
-     * at a time.
+     * A generous bound on how long the rolling reload may take: each replacement may take
+     * up to its group's readyTimeoutMs to come up, each worker it replaces up to
+     * shutdownTimeoutMs to drain before it is killed, and they roll one at a time.
      */
     protected function reloadTimeoutMs(MasterConfig $config, string $group = ''): int
     {
-        // Workers roll one at a time, so the wait is the sum of their drains rather than
-        // the longest of them. A scoped reload waits for its group alone.
-        foreach ($config->groups() as $configured) {
-            if ($group !== '' && $configured->name === $group) {
-                $workers = $configured->workerCount > 0 ? $configured->workerCount : Cpu::count();
+        // Workers roll one at a time, so the wait is the sum of their steps rather than the
+        // longest of them. A scoped reload waits for its group alone.
+        $timeoutMs = 5_000;
 
-                return $workers * ($configured->shutdownTimeoutMs + 2_000) + 5_000;
+        foreach ($config->groups() as $configured) {
+            if ($group !== '' && $configured->name !== $group) {
+                continue;
             }
+
+            $workers = $configured->workerCount > 0 ? $configured->workerCount : Cpu::count();
+
+            $timeoutMs += $workers * ($configured->readyTimeoutMs + $configured->shutdownTimeoutMs + 2_000);
         }
 
-        return $config->totalWorkerCount() * ($config->maxShutdownTimeoutMs() + 2_000) + 5_000;
+        return $timeoutMs;
     }
 
     protected function reloadFile(MasterConfig $config): MasterReloadFile

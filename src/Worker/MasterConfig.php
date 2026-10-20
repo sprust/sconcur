@@ -33,6 +33,16 @@ readonly class MasterConfig
      */
     public const int MIN_WATCHDOG_TIMEOUT_MS = 5_000;
 
+    /** How long a rolling reload waits for a replacement to say it is up, unless told otherwise. */
+    public const int DEFAULT_READY_TIMEOUT_MS = 30_000;
+
+    /**
+     * The shortest wait for a replacement that is accepted. A serve loop says it is up after
+     * its first wait for work, which may take a quarter of a second on an idle server, and
+     * the process has to start and load before that.
+     */
+    public const int MIN_READY_TIMEOUT_MS = 1_000;
+
     /** The keys the top level accepts. */
     protected const array KNOWN_KEYS = [
         'runtimeDir',
@@ -50,6 +60,7 @@ readonly class MasterConfig
         'restartBackoffMs',
         'maxRestartBackoffMs',
         'watchdogTimeoutMs',
+        'readyTimeoutMs',
         'launch',
         'groups',
     ];
@@ -163,6 +174,7 @@ readonly class MasterConfig
             maxRestartBackoffMs: self::nonNegativeInt($data, 'maxRestartBackoffMs', 30_000),
             watchdogTimeoutMs: self::watchdogTimeoutMs($data, 60_000),
             launch: $launch,
+            readyTimeoutMs: self::readyTimeoutMs($data, self::DEFAULT_READY_TIMEOUT_MS),
         );
 
         return new self(
@@ -305,6 +317,32 @@ readonly class MasterConfig
                     'config: group "%s": "watchdogTimeoutMs" must be 0 (off) or at least %dms',
                     $groupName,
                     self::MIN_WATCHDOG_TIMEOUT_MS,
+                ),
+        );
+    }
+
+    /**
+     * `readyTimeoutMs`, refusing one below MIN_READY_TIMEOUT_MS. There is no "off": a
+     * reload that does not wait for its replacements is the one this setting exists to
+     * prevent, so a value that cannot be met is a mistake to report, not a switch.
+     *
+     * @param array<string, mixed> $data
+     */
+    public static function readyTimeoutMs(array $data, int $default, string $groupName = ''): int
+    {
+        $value = self::nonNegativeInt($data, 'readyTimeoutMs', $default, $groupName);
+
+        if ($value >= self::MIN_READY_TIMEOUT_MS) {
+            return $value;
+        }
+
+        throw new InvalidConfigException(
+            message: $groupName === ''
+                ? sprintf('config: "readyTimeoutMs" must be at least %dms', self::MIN_READY_TIMEOUT_MS)
+                : sprintf(
+                    'config: group "%s": "readyTimeoutMs" must be at least %dms',
+                    $groupName,
+                    self::MIN_READY_TIMEOUT_MS,
                 ),
         );
     }

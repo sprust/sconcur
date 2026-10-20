@@ -277,9 +277,16 @@ feature's doc. Key PHP classes not covered there:
   (its live slots, backoff and rolling reload). The groups are generic: everything
   a worker needs rides in the group's `server` block, forwarded to its argv
   untouched, so the master stays worker-agnostic. `Heartbeat` is the one piece of
-  `Worker/` that runs in the worker: a byte per serve-loop pass on the pipe the
-  master's watchdog reads, which is the only signal that says whether the worker's
-  PHP thread — as opposed to the extension's runtime — is still moving.
+  `Worker/` that runs in the worker: one byte at a time on a pipe the master opens for
+  every worker — alive (a scheduler pass, which the watchdog times and which is the
+  only signal that says whether the worker's PHP thread, as opposed to the extension's
+  runtime, is still moving), ready (`Scheduler::markReady()`, said by `serve()` itself)
+  and recycling (a server's own limit reached). A rolling reload starts each
+  replacement beside its worker and stops the worker only once the replacement is
+  ready, giving the reload up when it is not; a worker that left its slot — replaced,
+  or recycling with its replacement already started — finishes as a `DrainingWorker`.
+  A group the master started with that never comes up ends the master with
+  `WorkerMaster::EXIT_NEVER_CAME_UP` (70).
 - `Process/ProcessControl` — the worker master's process control over the
   `process` export, in place of ext-pcntl and ext-posix; `@internal`. Commands are
   `ProcessCommandEnum` cases, signals go by name (`ProcessSignalEnum`), because

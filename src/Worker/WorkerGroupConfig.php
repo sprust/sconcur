@@ -32,6 +32,7 @@ readonly class WorkerGroupConfig
         'restartBackoffMs',
         'maxRestartBackoffMs',
         'watchdogTimeoutMs',
+        'readyTimeoutMs',
         'launch',
         'listen',
         'server',
@@ -59,6 +60,7 @@ readonly class WorkerGroupConfig
         public array $server,
         public LaunchMode $launch = LaunchMode::Exec,
         public string $listen = '',
+        public int $readyTimeoutMs = MasterConfig::DEFAULT_READY_TIMEOUT_MS,
     ) {
     }
 
@@ -198,6 +200,11 @@ readonly class WorkerGroupConfig
             server: $server,
             launch: $launch,
             listen: $listen,
+            readyTimeoutMs: MasterConfig::readyTimeoutMs(
+                $data,
+                $defaults->readyTimeoutMs,
+                $name,
+            ),
         );
     }
 

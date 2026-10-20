@@ -27,19 +27,19 @@ use SConcur\Process\ProcessControl;
 class ForkedWorkerProcess extends WorkerProcess
 {
     /**
-     * @param bool                       $heartbeat       open the liveness pipe the watchdog reads
      * @param Closure(ForkResult): never $child           what the child runs; it never returns
      * @param list<int>                  $keepDescriptors descriptors the worker keeps, such as the
      *                                                    group's listening socket; every other one
      *                                                    of the master's is pointed at /dev/null
      */
-    public function __construct(bool $heartbeat, Closure $child, array $keepDescriptors = [])
+    public function __construct(Closure $child, array $keepDescriptors = [])
     {
         try {
             $fork = ProcessControl::fork(
                 keepDescriptors: $keepDescriptors,
                 captureOutput: true,
-                heartbeat: $heartbeat,
+                // The pipe the worker marks itself on: alive, up, leaving at its limit.
+                heartbeat: true,
             );
         } catch (ProcessException|ForkRefusedException $exception) {
             throw new WorkerSpawnException(

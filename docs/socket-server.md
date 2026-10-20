@@ -161,7 +161,8 @@ side writes when each connection closes:
 ```
 
 `reason=signal` — `SIGTERM`/`SIGINT` or the loss of the master; `reason=limit` —
-the `maxConnections` limit. Under the [worker master](worker-master.md) these land
+the `maxConnections` limit (`reason=limit, limit=N`; under the master it is spread, see
+[restart policy and `maxRequests`](worker-master.md#restart-policy-and-maxrequests)). Under the [worker master](worker-master.md) these land
 in the shared log.
 
 ## Running under the worker master

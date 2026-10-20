@@ -12,7 +12,8 @@ use SConcur\Process\ProcessSignalEnum;
  * php of its own on the script, ForkedWorkerProcess forks the master. What the master
  * does with a worker is the same either way and lives here — its stdout and stderr are
  * non-blocking pipes drained line by line into the journal (drainOutput), so a crash's
- * output is kept in one place; the liveness pipe feeds the watchdog; signals go by pid.
+ * output is kept in one place; the liveness pipe feeds the watchdog and says when the
+ * worker is up; signals go by pid.
  */
 abstract class WorkerProcess
 {
@@ -29,11 +30,17 @@ abstract class WorkerProcess
     /** @var resource|null */
     protected mixed $stderrPipe = null;
 
-    /** @var resource|null the liveness pipe, when the group's watchdog is on */
+    /** @var resource|null the pipe the worker marks itself on (Heartbeat) */
     protected mixed $heartbeatPipe = null;
 
     /** hrtime of the last byte read from the liveness pipe; null while none has arrived. */
     protected ?int $lastHeartbeatNs = null;
+
+    /** hrtime the worker said it was up (Heartbeat::MARK_READY); null until it does. */
+    protected ?int $readyAtNs = null;
+
+    /** The worker said it is stopping because it reached its own limit. */
+    protected bool $recycling = false;
 
     protected int $pid;
 
@@ -113,8 +120,9 @@ abstract class WorkerProcess
     }
 
     /**
-     * A clean exit is code 0 and not killed by a signal — the signal the maxRequests
-     * feature and a successful run produce. Used by RestartPolicy.
+     * A clean exit is code 0 and not killed by a signal — what a successful run produces.
+     * Used by RestartPolicy; a worker that reached its own limit says so instead
+     * (isRecycling), whatever its code.
      */
     public function exitedCleanly(): bool
     {
@@ -135,9 +143,10 @@ abstract class WorkerProcess
     }
 
     /**
-     * Reads the liveness pipe dry and, if anything arrived, records when. The bytes
-     * themselves say nothing — the worker marks itself alive by writing at all, and the
-     * master times it by its own clock, so no timestamp has to cross between processes.
+     * Reads the liveness pipe dry and, if anything arrived, records when. Every byte is
+     * the PHP thread writing, so any of them says it is alive, and the master times it by
+     * its own clock — no timestamp has to cross between processes. Two of them say more:
+     * that the worker is up, and that it is leaving because it reached its limit.
      */
     public function drainHeartbeat(): void
     {
@@ -145,16 +154,40 @@ abstract class WorkerProcess
             return;
         }
 
-        if ($this->readAvailable($this->heartbeatPipe) === '') {
+        $marks = $this->readAvailable($this->heartbeatPipe);
+
+        if ($marks === '') {
             return;
         }
 
-        $this->lastHeartbeatNs = hrtime(true);
+        $nowNs = hrtime(true);
+
+        $this->lastHeartbeatNs = $nowNs;
+
+        if ($this->readyAtNs === null && str_contains($marks, Heartbeat::MARK_READY)) {
+            $this->readyAtNs = $nowNs;
+        }
+
+        if (str_contains($marks, Heartbeat::MARK_RECYCLING)) {
+            $this->recycling = true;
+        }
+    }
+
+    /** Whether the worker has said it is up (Scheduler::markReady). */
+    public function isReady(): bool
+    {
+        return $this->readyAtNs !== null;
+    }
+
+    /** Whether the worker has said it is leaving because it reached its own limit. */
+    public function isRecycling(): bool
+    {
+        return $this->recycling;
     }
 
     /**
      * How long ago the worker last marked itself alive, or null when it never has: a
-     * worker script without a serve loop writes nothing, and one that has not reached its
+     * worker script that drives no scheduler loop writes nothing, and one that has not reached its
      * loop yet has not written yet. Both read as "nothing to judge" — the watchdog acts
      * on evidence of a hang, never on its absence.
      *

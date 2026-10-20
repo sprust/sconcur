@@ -8,8 +8,8 @@ use PHPUnit\Framework\TestCase;
 use SConcur\Worker\Heartbeat;
 
 /**
- * The worker's half of the liveness channel: what reaches the master's end of the pipe,
- * how often, and what happens when the master opened no pipe at all.
+ * The worker's half of the channel to its master: what reaches the master's end of the
+ * pipe, how often, and what happens when the master opened no pipe at all.
  */
 class HeartbeatTest extends TestCase
 {
@@ -126,6 +126,30 @@ class HeartbeatTest extends TestCase
         $heartbeat->touch();
 
         self::assertSame("\x01\x01", $this->readAvailable(), 'a mark is due again once the interval has passed');
+    }
+
+    /**
+     * Ready is said once: a script that starts a second server after the first ended was
+     * up the first time, and a reload waiting on it has nothing more to learn.
+     */
+    public function testReadyIsSaidOnce(): void
+    {
+        $heartbeat = new Heartbeat(stream: $this->writeEnd);
+
+        $heartbeat->ready();
+        $heartbeat->ready();
+
+        self::assertSame(Heartbeat::MARK_READY, $this->readAvailable());
+    }
+
+    public function testRecyclingPutsItsOwnMarkOnTheWire(): void
+    {
+        $heartbeat = new Heartbeat(stream: $this->writeEnd);
+
+        $heartbeat->touch();
+        $heartbeat->recycling();
+
+        self::assertSame(Heartbeat::MARK_ALIVE . Heartbeat::MARK_RECYCLING, $this->readAvailable());
     }
 
     protected function readAvailable(): string

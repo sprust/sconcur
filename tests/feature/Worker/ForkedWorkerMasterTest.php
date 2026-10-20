@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Worker;
 
 use SConcur\Tests\Impl\Worker\TestWorkerMaster;
+use SConcur\Worker\WorkerMaster;
 
 /**
  * Every scenario of WorkerMasterTest once more, with the workers launched by fork: the
@@ -68,7 +69,8 @@ class ForkedWorkerMasterTest extends WorkerMasterTest
 
             $logText = $master->logText();
 
-            self::assertSame(0, $exitCode, 'the master should finish on its own: ' . $logText);
+            self::assertSame(WorkerMaster::EXIT_NEVER_CAME_UP, $exitCode, 'the master should stop: ' . $logText);
+            self::assertStringContainsString('no worker came up', $logText);
             self::assertMatchesRegularExpression(
                 '/ERROR \[worker: \d+ \S+ #0\]: [^\n]*Allowed memory size/',
                 $logText,

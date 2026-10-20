@@ -284,6 +284,45 @@ class WorkerGroupConfigTest extends TestCase
         self::assertSame(0, $orders->watchdogTimeoutMs, 'zero switches the watch off for one pool');
     }
 
+    public function testTheReadyTimeoutDefaultsAndIsInheritedOrOverridden(): void
+    {
+        $defaulted = MasterConfig::fromArray([
+            'groups' => [
+                ['name' => 'http', 'workerScript' => '/app/worker.php'],
+            ],
+        ]);
+
+        self::assertSame(MasterConfig::DEFAULT_READY_TIMEOUT_MS, $defaulted->groups()[0]->readyTimeoutMs);
+        self::assertSame(30_000, MasterConfig::DEFAULT_READY_TIMEOUT_MS);
+
+        $config = MasterConfig::fromArray([
+            'readyTimeoutMs' => 45_000,
+            'groups'         => [
+                ['name' => 'http', 'workerScript' => '/app/worker.php'],
+                ['name' => 'orders', 'workerScript' => '/app/consumer.php', 'readyTimeoutMs' => 120_000],
+            ],
+        ]);
+
+        [$http, $orders] = $config->groups();
+
+        self::assertSame(45_000, $http->readyTimeoutMs, 'a group inherits the master-wide wait');
+        self::assertSame(120_000, $orders->readyTimeoutMs, 'and may set its own');
+    }
+
+    public function testAReadyTimeoutBelowTheFloorIsRefused(): void
+    {
+        // There is no "off": a zero would be a reload that never waits, which is the one
+        // this setting exists to prevent.
+        $this->expectException(InvalidConfigException::class);
+        $this->expectExceptionMessage('config: group "orders": "readyTimeoutMs" must be at least 1000ms');
+
+        MasterConfig::fromArray([
+            'groups' => [
+                ['name' => 'orders', 'workerScript' => '/app/consumer.php', 'readyTimeoutMs' => 0],
+            ],
+        ]);
+    }
+
     public function testAGroupWithoutANameIsRefused(): void
     {
         $this->expectException(InvalidConfigException::class);

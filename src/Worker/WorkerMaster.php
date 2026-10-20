@@ -42,6 +42,14 @@ class WorkerMaster
      */
     public const string MASTER_PID_ARG = '--masterPid';
 
+    /**
+     * What run() returns when a group the master started with never came up: as many of
+     * its workers as it has slots died before any of them said it was up. EX_SOFTWARE from
+     * sysexits.h, the code Rapira uses for the same case, so systemd or an orchestrator
+     * sees a broken deploy rather than a master respawning into it forever.
+     */
+    public const int EXIT_NEVER_CAME_UP = 70;
+
     protected const int TICK_MICROSECONDS = 100_000; // 100 ms supervision tick
 
     protected const float SIGKILL_GRACE_SECONDS = 2.0; // give up waiting this long after SIGKILL
@@ -81,12 +89,15 @@ class WorkerMaster
 
     protected bool $stopping = false;
 
+    /** What run() returns: 0, or EXIT_NEVER_CAME_UP once a group has failed to start. */
+    protected int $exitCode = 0;
+
     /**
-     * The signature of the reload request currently being rolled, empty when none is.
-     * It is what keeps the clear at the end of a roll from deleting a second request an
-     * operator wrote while the first was still going.
+     * The reload request currently being rolled, null when none is. Its signature is what
+     * keeps the clear at the end of a roll from deleting a second request an operator
+     * wrote while the first was still going.
      */
-    protected string $servedReloadSignature = '';
+    protected ?MasterReloadRequest $servedReloadRequest = null;
 
     protected bool $termSent = false;
 
@@ -233,7 +244,7 @@ class WorkerMaster
             $this->logger->close();
         }
 
-        return 0;
+        return $this->exitCode;
     }
 
     /**
@@ -298,11 +309,19 @@ class WorkerMaster
         $this->bindListeners($this->groups);
 
         foreach ($this->groups as $group) {
-            $this->pools[$group->name] = $this->newPool($group);
+            $this->pools[$group->name] = $this->newPool(
+                group: $group,
+                guardsStartup: true,
+            );
         }
     }
 
-    protected function newPool(WorkerGroupConfig $group): WorkerGroup
+    /**
+     * @param bool $guardsStartup whether the group failing to start stops the master — only
+     *                            for the groups it starts with: one a reload adds must not
+     *                            take a running pool down
+     */
+    protected function newPool(WorkerGroupConfig $group, bool $guardsStartup = false): WorkerGroup
     {
         return new WorkerGroup(
             config: $group,
@@ -313,6 +332,7 @@ class WorkerMaster
             onWatchdogEvent: $this->watchdogReporter(),
             listenFd: $this->listeners[$group->name] ?? null,
             inheritedDescriptors: $this->inheritedDescriptors,
+            guardsStartup: $guardsStartup,
         );
     }
 
@@ -659,6 +679,8 @@ class WorkerMaster
                 foreach ($this->pools as $pool) {
                     $reloading = $pool->driveReload() || $reloading;
 
+                    $pool->driveDraining();
+
                     $pool->driveWatchdog();
 
                     $pool->respawnDue();
@@ -668,11 +690,16 @@ class WorkerMaster
 
                 $this->finishReload($reloading);
 
+                // Before the check below: a group whose workers all failed to start, under
+                // a policy that does not restart them, is a failed start too, not a pool
+                // that finished its work. The drain begins on the next tick.
+                $this->checkNeverCameUp();
+
                 // RestartPolicy::Never (or a clean exit under OnFailure): once every
                 // worker has finished and nothing is pending, there is nothing left
                 // to supervise. A reload in progress keeps the master alive even when a
                 // slot is momentarily empty between the drain and its replacement.
-                if (!$reloading && $this->allSlotsEmpty() && !$this->hasPendingRespawns()) {
+                if (!$this->stopping && !$reloading && $this->allSlotsEmpty() && !$this->hasPendingRespawns()) {
                     $this->logger->master(MasterLogger::INFO, 'all workers finished; exiting');
 
                     break;
@@ -704,7 +731,10 @@ class WorkerMaster
      */
     protected function checkReloadSignal(): void
     {
-        if ($this->anyPoolReloading()) {
+        // A request still being served is still in the trigger file. A roll given up while
+        // its pool was reaped ends before finishReload() has cleared it, and reading it here
+        // again would start the same failing roll once a tick, for ever.
+        if ($this->servedReloadRequest !== null || $this->anyPoolReloading()) {
             return;
         }
 
@@ -724,15 +754,11 @@ class WorkerMaster
         $groups = $this->reloadedGroups($request);
 
         if ($groups === null) {
-            $this->reloadFile->clear($request->signature);
-
             return;
         }
 
         if ($request->group !== '') {
-            if (!$this->applyOneGroup(groups: $groups, name: $request->group)) {
-                $this->reloadFile->clear($request->signature);
-
+            if (!$this->applyOneGroup(groups: $groups, request: $request)) {
                 return;
             }
         } else {
@@ -741,12 +767,29 @@ class WorkerMaster
             $this->applyGroups();
         }
 
-        // Written down only once the reload was applied. A refused one clears its own
-        // request above and leaves nothing behind — recording it here would have
+        // Written down only once the reload was applied. A refused one ends its own
+        // request (refuseReload) and leaves nothing behind — recording it here would have
         // finishReload log "reload complete" on the tick after "reload refused".
-        $this->servedReloadSignature = $request->signature;
+        $this->servedReloadRequest = $request;
 
         $this->refreshState();
+    }
+
+    /**
+     * Ends a reload request the master will not honour: says why in the journal and to the
+     * CLI that asked, and keeps the config it has.
+     */
+    protected function refuseReload(MasterReloadRequest $request, string $reason): void
+    {
+        $this->logger->master(
+            level: MasterLogger::ERROR,
+            message: $reason,
+        );
+
+        $this->reloadFile->fail(
+            request: $request,
+            reason: $reason,
+        );
     }
 
     /**
@@ -766,9 +809,9 @@ class WorkerMaster
             // The CLI resolves the path before writing it, so this is a trigger written
             // by something else — or a config that has since been moved. Saying so beats
             // rolling the workers onto the old config while reporting a reload.
-            $this->logger->master(
-                level: MasterLogger::ERROR,
-                message: sprintf('reload refused: no config file at %s', $request->configPath),
+            $this->refuseReload(
+                request: $request,
+                reason: sprintf('reload refused: no config file at %s', $request->configPath),
             );
 
             return null;
@@ -790,9 +833,9 @@ class WorkerMaster
 
             return $groups;
         } catch (InvalidConfigException | RuntimePathException $exception) {
-            $this->logger->master(
-                level: MasterLogger::ERROR,
-                message: 'reload refused, keeping the running config: ' . $exception->getMessage(),
+            $this->refuseReload(
+                request: $request,
+                reason: 'reload refused, keeping the running config: ' . $exception->getMessage(),
             );
 
             return null;
@@ -826,8 +869,10 @@ class WorkerMaster
      *
      * @param list<WorkerGroupConfig> $groups
      */
-    protected function applyOneGroup(array $groups, string $name): bool
+    protected function applyOneGroup(array $groups, MasterReloadRequest $request): bool
     {
+        $name = $request->group;
+
         foreach ($groups as $group) {
             if ($group->name !== $name) {
                 continue;
@@ -839,9 +884,9 @@ class WorkerMaster
             // is a request it cannot honour, and recording its settings anyway would let
             // the next plain reload bring up a pool nobody asked for.
             if ($pool === null) {
-                $this->logger->master(
-                    level: MasterLogger::ERROR,
-                    message: sprintf('reload --group=%s: the master is not running that group', $name),
+                $this->refuseReload(
+                    request: $request,
+                    reason: sprintf('reload --group=%s: the master is not running that group', $name),
                 );
 
                 return false;
@@ -876,9 +921,9 @@ class WorkerMaster
             return true;
         }
 
-        $this->logger->master(
-            level: MasterLogger::ERROR,
-            message: sprintf('reload --group=%s: the config describes no such group', $name),
+        $this->refuseReload(
+            request: $request,
+            reason: sprintf('reload --group=%s: the config describes no such group', $name),
         );
 
         return false;
@@ -990,25 +1035,81 @@ class WorkerMaster
     }
 
     /**
-     * Clears the trigger file once every pool has finished rolling, which is what the
-     * waiting CLI is polling for.
+     * Ends the reload request once every pool has finished rolling, which is what the
+     * waiting CLI is polling for. A pool that gave its roll up has put its previous
+     * settings back, and the master's group list follows it, so the next reload — and a
+     * hand-written trigger that rolls the config already loaded — starts from what is
+     * running.
      */
     protected function finishReload(bool $reloading): void
     {
-        if ($reloading || $this->servedReloadSignature === '') {
+        if ($reloading || $this->servedReloadRequest === null) {
             return;
         }
 
-        $signature = $this->servedReloadSignature;
+        $request = $this->servedReloadRequest;
 
-        $this->servedReloadSignature = '';
+        $this->servedReloadRequest = null;
+
+        $failures = [];
+
+        foreach ($this->pools as $pool) {
+            $failure = $pool->takeReloadFailure();
+
+            if ($failure === '') {
+                continue;
+            }
+
+            $failures[] = $failure;
+
+            $this->groups = $this->withGroupReplaced(
+                groups: $this->groups,
+                group: $pool->config(),
+            );
+        }
 
         // Only the request that was actually rolled is cleared. An operator who asked for
         // a second reload while the first was still going would otherwise have it deleted
         // unread, and the change would never reach the workers.
-        $this->reloadFile->clear($signature);
+        if ($failures === []) {
+            $this->reloadFile->clear($request->signature);
 
-        $this->logger->master(MasterLogger::INFO, 'reload complete');
+            $this->logger->master(MasterLogger::INFO, 'reload complete');
+
+            return;
+        }
+
+        $this->refreshState();
+
+        $this->refuseReload(
+            request: $request,
+            reason: 'reload given up: ' . implode('; ', $failures),
+        );
+    }
+
+    /** Stops the master, with EXIT_NEVER_CAME_UP, when a group it started with never came up. */
+    protected function checkNeverCameUp(): void
+    {
+        foreach ($this->pools as $pool) {
+            if (!$pool->neverCameUp()) {
+                continue;
+            }
+
+            $this->logger->master(
+                level: MasterLogger::ERROR,
+                message: sprintf(
+                    'group %s: no worker came up — %d failed before any said it was up; stopping with code %d',
+                    $pool->name(),
+                    $pool->workerCount(),
+                    self::EXIT_NEVER_CAME_UP,
+                ),
+            );
+
+            $this->stopping = true;
+            $this->exitCode = self::EXIT_NEVER_CAME_UP;
+
+            return;
+        }
     }
 
     protected function anyPoolReloading(): bool

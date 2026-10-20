@@ -114,7 +114,7 @@ The `WsServer` constructor; the PHP defaults mirror the extension's.
 | `maxMessageBytes` | `1048576` (1 MiB) | size limit of a single inbound message; exceeding it closes the connection with code 1009 |
 | `maxConcurrency` | `0` (no limit) | max connections served at once; excess ones wait for a free slot |
 | `handlerTimeoutMs` | `0` (no limit) | how long one connection handler may run before it is unwound where it stands — see [coroutine timeout](coroutine-timeout.md) |
-| `maxConnections` | `0` (no limit) | stop the server after N served connections (a leak guard) |
+| `maxConnections` | `0` (no limit) | stop the server after N served connections (a leak guard); spread under the master, see [restart policy](worker-master.md#restart-policy-and-maxrequests) |
 | `shutdownTimeoutMs` | `10000` | accepted and not applied: finishing the connections already accepted is bounded by the grace period below, not by a clock of its own |
 | `reusePort` | `false` | `SO_REUSEPORT` — a pool of processes on one port (Linux) |
 | `listenFd` | `null` | A listening socket bound elsewhere to accept on instead of binding `address` — the shared socket of a [worker master](worker-master.md) group, or one from systemd socket activation. A copy is taken, so stopping the server leaves the socket to whoever else holds it. |

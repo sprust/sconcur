@@ -5,23 +5,30 @@ declare(strict_types=1);
 namespace SConcur\Worker;
 
 /**
- * The worker's half of the liveness channel its master's watchdog listens on: a byte
- * written to an extra pipe whenever the PHP thread comes back to the scheduler.
+ * The worker's half of the channel its master listens on: an extra pipe the worker's PHP
+ * thread writes one byte to whenever it has something to say. Three things, one byte each:
  *
- * It exists because the telemetry snapshot cannot answer this question. Snapshots are
- * pushed by a loop inside the extension, on its own runtime thread, so a worker whose
- * PHP thread is frozen in a native call keeps reporting as if nothing happened. This
- * mark is written by the PHP thread itself, which is the thread the watchdog needs to
- * know about.
+ * - alive (MARK_ALIVE): the PHP thread came back to the scheduler. Written over and over,
+ *   at most every INTERVAL_MS, and what the master's watchdog times;
+ * - ready (MARK_READY): the worker is up and doing its work — a server's serve loop is
+ *   running on a bound socket. Written once, and what a rolling reload waits for before it
+ *   stops the worker this one replaces;
+ * - recycling (MARK_RECYCLING): the worker is stopping because it reached its own limit
+ *   (maxRequests, maxConnections, maxMessages). Written once, so the master brings up its
+ *   replacement at once and does not count the exit as a failure.
+ *
+ * Alive exists because the telemetry snapshot cannot answer that question. Snapshots are
+ * pushed by a loop inside the extension, on its own runtime thread, so a worker whose PHP
+ * thread is frozen in a native call keeps reporting as if nothing happened. This mark is
+ * written by the PHP thread itself, which is the thread the watchdog needs to know about.
  *
  * A pipe rather than a file: nothing survives the process, the master already reads the
- * worker's other two pipes on every supervision tick, and the kernel closes this one
- * when the worker dies. What travels is one byte — the content carries no meaning, the
- * arrival is the whole message, so the master times it by its own clock and no timestamp
- * has to cross the process boundary.
+ * worker's other two pipes on every supervision tick, and the kernel closes this one when
+ * the worker dies. The master times the bytes by its own clock, so no timestamp has to
+ * cross the process boundary.
  *
- * A worker started without a master, or under one whose watchdog is off, finds no
- * descriptor in its environment and writes nothing.
+ * A worker started without a master finds no descriptor in its environment and writes
+ * nothing.
  */
 class Heartbeat
 {
@@ -34,6 +41,15 @@ class Heartbeat
 
     /** The descriptor the master attaches the pipe to, past stdin/stdout/stderr. */
     public const int FD = 3;
+
+    /** The PHP thread is still moving. */
+    public const string MARK_ALIVE = "\x01";
+
+    /** The worker is up and doing its work. */
+    public const string MARK_READY = "\x02";
+
+    /** The worker is stopping because it reached its own limit, and wants replacing. */
+    public const string MARK_RECYCLING = "\x03";
 
     /**
      * The shortest gap between two writes. The serve loop passes its top many times a
@@ -49,6 +65,8 @@ class Heartbeat
     protected static bool $resolved = false;
 
     protected int $lastTouchNs = 0;
+
+    protected bool $readySent = false;
 
     /** @param resource $stream */
     public function __construct(protected mixed $stream)
@@ -73,8 +91,8 @@ class Heartbeat
     }
 
     /**
-     * The heartbeat this process should write, or null when it runs without a master or
-     * under one whose watchdog is off (no descriptor, nothing to write to).
+     * The heartbeat this process should write, or null when it runs without a master (no
+     * descriptor, nothing to write to).
      */
     public static function fromEnvironment(): ?self
     {
@@ -156,6 +174,28 @@ class Heartbeat
 
         $this->lastTouchNs = $nowNs;
 
-        @fwrite($this->stream, "\x01");
+        @fwrite($this->stream, self::MARK_ALIVE);
+    }
+
+    /**
+     * Tells the master the worker is up. Once per process: a worker that serves twice (a
+     * script that starts a second server after the first one ended) was ready the first
+     * time, and the master has nothing more to learn from it.
+     */
+    public function ready(): void
+    {
+        if ($this->readySent) {
+            return;
+        }
+
+        $this->readySent = true;
+
+        @fwrite($this->stream, self::MARK_READY);
+    }
+
+    /** Tells the master the worker is stopping because it reached its own limit. */
+    public function recycling(): void
+    {
+        @fwrite($this->stream, self::MARK_RECYCLING);
     }
 }

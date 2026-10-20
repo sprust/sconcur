@@ -356,7 +356,8 @@ startup, one per shutdown step:
 ```
 
 `reason=signal` — `SIGTERM`/`SIGINT` or a lost master; `reason=limit` —
-`maxRequests` reached. Under a [worker master](worker-master.md) the worker's
+`maxRequests` reached, logged as `reason=limit, limit=N` with the number the worker
+stopped at. Under a [worker master](worker-master.md) the worker's
 `STDOUT` is captured and rewritten into the shared log.
 
 ## Concurrency and limits
@@ -571,6 +572,10 @@ $server = new HttpServer(
 The limit is per process (the total budget until restart is `maxRequests` × the
 number of workers). Dispatched requests are counted — the limit request itself
 is not aborted, and requests rejected while the server is stopping do not count.
+Under the worker master each worker stops somewhere between `maxRequests` and half
+again as many, so the pool does not restart all at once, and its replacement is started
+before it finishes — see [restart policy and
+`maxRequests`](worker-master.md#restart-policy-and-maxrequests).
 
 ## Graceful shutdown
 

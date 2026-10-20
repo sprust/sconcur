@@ -18,6 +18,10 @@ use Throwable;
  * The master owns what is process-wide (the lock, the state file, signals, telemetry)
  * and asks each group to reap, respawn and roll itself. Slot indices are local to a
  * group, so "worker 0" is always read together with the group it belongs to.
+ *
+ * A worker that gives up its slot while still running — replaced by a reload, or leaving
+ * at its own limit with its replacement already started — finishes outside the slots, in
+ * the draining list, so the slot belongs to the worker that serves from it.
  */
 class WorkerGroup
 {
@@ -45,12 +49,36 @@ class WorkerGroup
     /** @var list<int> slot indices still to roll in the current rolling reload */
     protected array $reloadQueue = [];
 
-    /** slot currently draining for reload (SIGTERM sent, awaiting exit), or -1 if none */
+    /** slot whose replacement is starting, or -1 if none */
     protected int $reloadingIndex = -1;
 
-    protected int $reloadDeadlineNs = 0;
+    /** The replacement the reload is waiting on to say it is up, outside the slots until it does. */
+    protected ?WorkerProcess $reloadCandidate = null;
 
-    protected bool $reloadKillSent = false;
+    /** hrtime past which the replacement has not come up in time and the reload is given up. */
+    protected int $reloadCandidateDeadlineNs = 0;
+
+    /** The worker the last replacement took over from: the next slot waits until it is gone. */
+    protected ?DrainingWorker $reloadOutgoing = null;
+
+    /** The settings in force before the reload under way, put back if it is given up. */
+    protected ?WorkerGroupConfig $configBeforeReload = null;
+
+    /** Why the last reload was given up, until the master takes it; empty when it was not. */
+    protected string $reloadFailure = '';
+
+    /** @var list<DrainingWorker> workers out of their slots, finishing before they exit */
+    protected array $draining = [];
+
+    /**
+     * Whether a worker of this group has been up since the master started it: said so, or
+     * kept running for longer than readyTimeoutMs. Until then a failure to start counts
+     * towards neverCameUp().
+     */
+    protected bool $cameUp = false;
+
+    /** Workers that failed before the group ever came up. */
+    protected int $failedStarts = 0;
 
     /** Set while the group is being retired: its workers are drained and not replaced. */
     protected bool $retiring = false;
@@ -85,6 +113,10 @@ class WorkerGroup
      *                                                                take the supervisor down
      * @param list<int>                         $inheritedDescriptors the descriptors the master found open when it
      *                                                                started, which a forked worker keeps
+     * @param bool                              $guardsStartup        whether a group that never comes up stops the
+     *                                                                master (neverCameUp): true for the groups the
+     *                                                                master started with, false for one a reload
+     *                                                                added, which must not take a running pool down
      */
     public function __construct(
         protected WorkerGroupConfig $config,
@@ -95,6 +127,7 @@ class WorkerGroup
         protected ?Closure $onWatchdogEvent = null,
         protected ?int $listenFd = null,
         protected array $inheritedDescriptors = [],
+        protected bool $guardsStartup = false,
     ) {
         $this->workers = $config->workerCount > 0 ? $config->workerCount : Cpu::count();
     }
@@ -146,20 +179,20 @@ class WorkerGroup
         return $this->respawnAtNs !== [];
     }
 
+    /** Whether no process of the group is left: none in a slot, draining or starting. */
     public function allSlotsEmpty(): bool
     {
-        foreach ($this->slots as $process) {
-            if ($process !== null) {
-                return false;
-            }
-        }
-
-        return true;
+        return $this->aliveSlotCount() === 0;
     }
 
+    /** Every process of the group still running: in a slot, draining, or starting for a reload. */
     public function aliveSlotCount(): int
     {
-        $alive = 0;
+        $alive = count($this->draining);
+
+        if ($this->reloadCandidate !== null) {
+            ++$alive;
+        }
 
         foreach ($this->slots as $process) {
             if ($process !== null) {
@@ -168,6 +201,27 @@ class WorkerGroup
         }
 
         return $alive;
+    }
+
+    /**
+     * Whether the group failed to start: as many of its workers as it has slots died
+     * before any of them came up. A broken deploy then ends the master with an exit code
+     * that systemd or an orchestrator acts on, instead of respawning into the same failure
+     * with growing delays for as long as nobody reads the journal.
+     */
+    public function neverCameUp(): bool
+    {
+        return $this->guardsStartup && !$this->cameUp && $this->failedStarts >= $this->workers;
+    }
+
+    /** Why the last reload was given up, once; empty when it was not. */
+    public function takeReloadFailure(): string
+    {
+        $failure = $this->reloadFailure;
+
+        $this->reloadFailure = '';
+
+        return $failure;
     }
 
     public function spawnAll(): void
@@ -184,11 +238,20 @@ class WorkerGroup
         foreach ($this->slots as $process) {
             $process?->signal($signal);
         }
+
+        $this->reloadCandidate?->signal($signal);
+
+        foreach ($this->draining as $draining) {
+            $draining->process->signal($signal);
+        }
     }
 
     /**
      * Drains each live worker's output into the log and handles any that have exited.
      * $stopping suppresses the restart policy: the whole master is going away.
+     *
+     * The same for the processes outside the slots: the replacement a reload is waiting on,
+     * whose death ends the reload, and the workers draining out.
      */
     public function reapAndLog(bool $stopping): void
     {
@@ -207,14 +270,29 @@ class WorkerGroup
             // fill the pipe and block the worker on its next mark.
             $process->drainHeartbeat();
 
+            $this->noteCameUp($process);
+
             if (!$process->isRunning()) {
                 $this->handleExit(
                     index: $index,
                     process: $process,
                     stopping: $stopping,
                 );
+
+                continue;
+            }
+
+            if ($process->isRecycling() && !$stopping) {
+                $this->recycle(
+                    index: $index,
+                    process: $process,
+                );
             }
         }
+
+        $this->reapCandidate($stopping);
+
+        $this->reapDraining();
     }
 
     public function respawnDue(): void
@@ -222,6 +300,11 @@ class WorkerGroup
         $nowNs = hrtime(true);
 
         foreach ($this->respawnAtNs as $index => $dueAtNs) {
+            // The slot a reload is bringing a replacement up for gets that replacement.
+            if ($index === $this->reloadingIndex) {
+                continue;
+            }
+
             if ($dueAtNs <= $nowNs && ($this->slots[$index] ?? null) === null) {
                 unset($this->respawnAtNs[$index]);
 
@@ -231,8 +314,36 @@ class WorkerGroup
     }
 
     /**
-     * Starts a rolling restart of every slot. Rolling one at a time is what keeps the
-     * pool serving while it happens.
+     * Kills the draining workers that overstayed their deadline. Called every tick, a
+     * reload or not: a worker leaving at its limit drains here too.
+     */
+    public function driveDraining(): void
+    {
+        $nowNs = hrtime(true);
+
+        foreach ($this->draining as $draining) {
+            if ($draining->killSent || $nowNs <= $draining->deadlineNs) {
+                continue;
+            }
+
+            $draining->killSent = true;
+
+            $this->logWorker(
+                level: MasterLogger::WARN,
+                pid: $draining->process->pid(),
+                index: $draining->index,
+                message: sprintf('drain timeout (%s); sending SIGKILL', $draining->reason),
+            );
+
+            $draining->process->signal(ProcessSignalEnum::Kill);
+        }
+    }
+
+    /**
+     * Starts a rolling restart of every slot. One slot at a time, and each replacement
+     * has to say it is up before the worker it replaces is stopped, so the group serves
+     * at full strength throughout and a version that does not come up goes no further
+     * than one replacement.
      */
     public function startReload(): void
     {
@@ -243,7 +354,8 @@ class WorkerGroup
         $this->reloading      = true;
         $this->reloadQueue    = array_keys($this->slots);
         $this->reloadingIndex = -1;
-        $this->reloadKillSent = false;
+        $this->reloadOutgoing = null;
+        $this->configBeforeReload ??= $this->config;
 
         $this->logger->master(
             level: MasterLogger::INFO,
@@ -256,10 +368,12 @@ class WorkerGroup
      * so the group keeps serving throughout. A slot count that grew is filled as the roll
      * reaches it, and the slots that no longer fit are drained by the roll and not
      * replaced — so a resize is complete when the roll is, not the moment the config is
-     * read.
+     * read. A roll that is given up puts the settings it replaced back.
      */
     public function reconfigure(WorkerGroupConfig $config): void
     {
+        $this->configBeforeReload ??= $this->config;
+
         $this->config = $config;
 
         $this->workers = $config->workerCount > 0 ? $config->workerCount : Cpu::count();
@@ -296,6 +410,12 @@ class WorkerGroup
         $this->retiring    = true;
         $this->respawnAtNs = [];
 
+        // After the flag: a roll given up fills its missing slots, which a retiring group
+        // must not do.
+        if ($this->reloading) {
+            $this->abortReload('the group was removed from the config');
+        }
+
         $this->logger->master(
             level: MasterLogger::INFO,
             message: sprintf('group %s: removed from the config; draining', $this->config->name),
@@ -305,9 +425,13 @@ class WorkerGroup
     }
 
     /**
-     * Drives the rolling reload: for the current slot send SIGTERM, wait up to
-     * shutdownTimeoutMs for it to drain (SIGKILL past that), then spawn a fresh
-     * replacement and advance. Answers whether the reload is still running.
+     * Drives the rolling reload, one slot at a time: start a replacement beside the
+     * worker, wait for it to say it is up (Scheduler::markReady), only then put it in the
+     * slot and stop the worker it replaces, and wait for that one to be gone before the
+     * next slot. A replacement that dies first, or is not up within readyTimeoutMs, gives
+     * the reload up: the slots not reached yet keep their workers, and the settings the
+     * reload brought are put back for the respawns to come. Answers whether the reload is
+     * still running.
      */
     public function driveReload(): bool
     {
@@ -315,89 +439,84 @@ class WorkerGroup
             return false;
         }
 
-        // A slot is mid-roll: wait for the worker to drain and exit (reapAndLog reaps it
-        // into a null slot), escalating to SIGKILL once its drain deadline passes.
-        if ($this->reloadingIndex !== -1) {
-            $process = $this->slots[$this->reloadingIndex] ?? null;
-
-            if ($process !== null) {
-                if (!$this->reloadKillSent && hrtime(true) > $this->reloadDeadlineNs) {
-                    $this->logWorker(
-                        level: MasterLogger::WARN,
-                        pid: $process->pid(),
-                        index: $this->reloadingIndex,
-                        message: 'reload drain timeout; sending SIGKILL',
-                    );
-
-                    $process->signal(ProcessSignalEnum::Kill);
-
-                    $this->reloadKillSent = true;
-                }
+        if ($this->reloadCandidate !== null) {
+            if ($this->reloadCandidate->isReady()) {
+                $this->promoteCandidate();
 
                 return true;
             }
 
-            $index = $this->reloadingIndex;
+            if (hrtime(true) > $this->reloadCandidateDeadlineNs) {
+                $this->abortReload(
+                    sprintf(
+                        'the replacement for worker %d did not say it was up within %dms',
+                        $this->reloadingIndex,
+                        $this->config->readyTimeoutMs,
+                    ),
+                );
 
-            $this->reloadingIndex = -1;
-            $this->reloadKillSent = false;
-
-            unset($this->respawnAtNs[$index]);
-
-            // A slot past the (possibly shrunk) worker count is retired rather than
-            // replaced — that is how a smaller workerCount takes effect on a reload.
-            if ($index < $this->workers) {
-                $this->spawn($index);
-            } else {
-                unset($this->slots[$index]);
+                return false;
             }
 
             return true;
         }
 
-        // No slot in flight: finish the reload, or start the next slot in the queue.
+        // The worker the last replacement took over from is still finishing. Waiting for
+        // it keeps the group at most one process over its count while it rolls.
+        if ($this->reloadOutgoing !== null) {
+            if (in_array($this->reloadOutgoing, $this->draining, true)) {
+                return true;
+            }
+
+            $this->reloadOutgoing = null;
+        }
+
         if ($this->reloadQueue === []) {
-            $this->reloading = false;
-
-            $this->fillMissingSlots();
-
-            $this->logger->master(
-                level: MasterLogger::INFO,
-                message: sprintf('group %s: reload complete', $this->config->name),
-            );
+            $this->finishReload();
 
             return false;
         }
 
         $index = array_shift($this->reloadQueue);
 
-        $process = $this->slots[$index] ?? null;
+        // A slot past the (possibly shrunk) worker count is retired rather than replaced —
+        // that is how a smaller workerCount takes effect on a reload.
+        if ($index >= $this->workers) {
+            $process = $this->slots[$index] ?? null;
 
-        // An already-empty slot (awaiting a crash respawn): just bring up a fresh one.
-        if ($process === null) {
-            unset($this->respawnAtNs[$index]);
+            unset($this->slots[$index], $this->respawnAtNs[$index]);
 
-            if ($index < $this->workers) {
-                $this->spawn($index);
-            } else {
-                unset($this->slots[$index]);
+            if ($process !== null) {
+                $this->reloadOutgoing = $this->drain(
+                    index: $index,
+                    process: $process,
+                    reason: 'removed by the reload',
+                );
             }
 
             return true;
         }
 
-        $this->reloadingIndex   = $index;
-        $this->reloadKillSent   = false;
-        $this->reloadDeadlineNs = hrtime(true) + $this->config->shutdownTimeoutMs * 1_000_000;
+        try {
+            $candidate = $this->launch($index);
+        } catch (WorkerSpawnException $exception) {
+            $this->abortReload(
+                sprintf('the replacement for worker %d could not be started: %s', $index, $exception->getMessage()),
+            );
+
+            return false;
+        }
+
+        $this->reloadingIndex            = $index;
+        $this->reloadCandidate           = $candidate;
+        $this->reloadCandidateDeadlineNs = hrtime(true) + $this->config->readyTimeoutMs * 1_000_000;
 
         $this->logWorker(
             level: MasterLogger::INFO,
-            pid: $process->pid(),
+            pid: $candidate->pid(),
             index: $index,
-            message: 'reloading; sending SIGTERM',
+            message: 'spawned as a replacement; waiting for it to be up',
         );
-
-        $process->signal(ProcessSignalEnum::Terminate);
 
         return true;
     }
@@ -417,12 +536,6 @@ class WorkerGroup
     {
         foreach ($this->slots as $index => $process) {
             if ($process === null) {
-                continue;
-            }
-
-            // Already being unwound for a reload: its SIGTERM is sent and its deadline
-            // runs in driveReload(). A second opinion here would only double the signals.
-            if ($this->reloading && $index === $this->reloadingIndex) {
                 continue;
             }
 
@@ -472,6 +585,301 @@ class WorkerGroup
                 ageSeconds: $ageSeconds,
             );
         }
+    }
+
+    /** The reload's replacement said it is up: it takes the slot, and the worker there leaves. */
+    protected function promoteCandidate(): void
+    {
+        $index     = $this->reloadingIndex;
+        $candidate = $this->reloadCandidate;
+
+        if ($candidate === null) {
+            return;
+        }
+
+        $outgoing = $this->slots[$index] ?? null;
+
+        $this->reloadCandidate = null;
+        $this->reloadingIndex  = -1;
+
+        unset($this->respawnAtNs[$index]);
+
+        // The slot starts unjudged: the replacement inherits nothing the watchdog decided
+        // about the worker before it.
+        $this->forgetWatchdog($index);
+
+        $this->slots[$index] = $candidate;
+
+        $this->logWorker(
+            level: MasterLogger::INFO,
+            pid: $candidate->pid(),
+            index: $index,
+            message: 'up; took over the slot',
+        );
+
+        if ($outgoing !== null) {
+            $this->reloadOutgoing = $this->drain(
+                index: $index,
+                process: $outgoing,
+                reason: 'reloading',
+            );
+        }
+    }
+
+    /**
+     * Gives the reload up. The replacement being waited on is stopped, the slots not
+     * reached keep the workers they have, and the settings in force before the reload are
+     * put back, so a worker that crashes later is respawned on what was running rather
+     * than on what failed to come up. The slots already rolled keep their new workers:
+     * those came up.
+     */
+    protected function abortReload(string $reason): void
+    {
+        if ($this->reloadCandidate !== null) {
+            $this->drain(
+                index: $this->reloadingIndex,
+                process: $this->reloadCandidate,
+                reason: 'the reload was given up',
+            );
+        }
+
+        if ($this->configBeforeReload !== null) {
+            $this->config  = $this->configBeforeReload;
+            $this->workers = $this->config->workerCount > 0 ? $this->config->workerCount : Cpu::count();
+        }
+
+        $this->reloading          = false;
+        $this->reloadQueue        = [];
+        $this->reloadingIndex     = -1;
+        $this->reloadCandidate    = null;
+        $this->reloadOutgoing     = null;
+        $this->configBeforeReload = null;
+        $this->reloadFailure      = sprintf('group %s: %s', $this->config->name, $reason);
+
+        $this->logger->master(
+            level: MasterLogger::ERROR,
+            message: sprintf(
+                'group %s: reload given up: %s; the workers it had not reached keep running',
+                $this->config->name,
+                $reason,
+            ),
+        );
+
+        // A slot the settings put back count but the group lacks is brought up on them.
+        $this->fillMissingSlots();
+    }
+
+    protected function finishReload(): void
+    {
+        $this->reloading          = false;
+        $this->configBeforeReload = null;
+
+        $this->fillMissingSlots();
+
+        $this->logger->master(
+            level: MasterLogger::INFO,
+            message: sprintf('group %s: reload complete', $this->config->name),
+        );
+    }
+
+    /**
+     * Logs the reload's replacement and, when it died before it was up, gives the reload
+     * up. Reaped here rather than left to the slots' loop: it holds no slot until it is up.
+     */
+    protected function reapCandidate(bool $stopping): void
+    {
+        $candidate = $this->reloadCandidate;
+
+        if ($candidate === null) {
+            return;
+        }
+
+        $this->logWorkerLines(
+            index: $this->reloadingIndex,
+            process: $candidate,
+            lines: $candidate->drainOutput(),
+        );
+
+        $candidate->drainHeartbeat();
+
+        if ($candidate->isRunning()) {
+            return;
+        }
+
+        $this->logWorkerLines(
+            index: $this->reloadingIndex,
+            process: $candidate,
+            lines: $candidate->drainFinalOutput(),
+        );
+
+        $reason = $this->exitReason($candidate);
+
+        $this->logWorker(
+            level: $stopping ? MasterLogger::INFO : MasterLogger::ERROR,
+            pid: $candidate->pid(),
+            index: $this->reloadingIndex,
+            message: sprintf('exited %s uptime=%.1fs before it was up', $reason, $candidate->uptimeSeconds()),
+        );
+
+        $candidate->close();
+
+        $this->reloadCandidate = null;
+
+        if ($stopping) {
+            $this->reloadingIndex = -1;
+
+            return;
+        }
+
+        $this->abortReload(
+            sprintf('the replacement for worker %d exited %s before it was up', $this->reloadingIndex, $reason),
+        );
+    }
+
+    /** Logs the draining workers and lets go of the ones that are gone. */
+    protected function reapDraining(): void
+    {
+        $remaining = [];
+
+        foreach ($this->draining as $draining) {
+            $process = $draining->process;
+
+            $this->logWorkerLines(
+                index: $draining->index,
+                process: $process,
+                lines: $process->drainOutput(),
+            );
+
+            $process->drainHeartbeat();
+
+            if ($process->isRunning()) {
+                $remaining[] = $draining;
+
+                continue;
+            }
+
+            $this->logWorkerLines(
+                index: $draining->index,
+                process: $process,
+                lines: $process->drainFinalOutput(),
+            );
+
+            $this->logWorker(
+                level: MasterLogger::INFO,
+                pid: $process->pid(),
+                index: $draining->index,
+                message: sprintf(
+                    'exited %s uptime=%.1fs (%s)',
+                    $this->exitReason($process),
+                    $process->uptimeSeconds(),
+                    $draining->reason,
+                ),
+            );
+
+            $process->close();
+        }
+
+        $this->draining = $remaining;
+    }
+
+    /**
+     * Takes a worker out of its slot to finish outside it, and asks it to stop unless it
+     * is stopping already (one that reached its own limit). Its deadline is the group's
+     * shutdownTimeoutMs, past which driveDraining() kills it.
+     */
+    protected function drain(int $index, WorkerProcess $process, string $reason, bool $terminate = true): DrainingWorker
+    {
+        $draining = new DrainingWorker(
+            process: $process,
+            index: $index,
+            deadlineNs: hrtime(true) + $this->config->shutdownTimeoutMs * 1_000_000,
+            reason: $reason,
+        );
+
+        $this->draining[] = $draining;
+
+        if ($terminate) {
+            $this->logWorker(
+                level: MasterLogger::INFO,
+                pid: $process->pid(),
+                index: $index,
+                message: sprintf('%s; sending SIGTERM', $reason),
+            );
+
+            $process->signal(ProcessSignalEnum::Terminate);
+        }
+
+        return $draining;
+    }
+
+    /**
+     * A worker said it is leaving because it reached its own limit: its replacement is
+     * started now, while it is still finishing its last requests, so the slot is not
+     * empty for the length of a drain and a start. Under Never nothing replaces it, and
+     * it stays in its slot to be reaped there. The slot a reload is bringing a
+     * replacement up for is left to that replacement.
+     */
+    protected function recycle(int $index, WorkerProcess $process): void
+    {
+        if ($this->retiring || !$this->config->restartPolicy->shouldRestart(cleanExit: true, reachedLimit: true)) {
+            return;
+        }
+
+        $this->slots[$index] = null;
+
+        $this->forgetWatchdog($index);
+
+        $this->drain(
+            index: $index,
+            process: $process,
+            reason: 'reached its limit',
+            terminate: false,
+        );
+
+        $this->logWorker(
+            level: MasterLogger::INFO,
+            pid: $process->pid(),
+            index: $index,
+            message: 'reached its limit; starting its replacement',
+        );
+
+        if ($index !== $this->reloadingIndex && $index < $this->workers) {
+            $this->spawn($index);
+        }
+    }
+
+    /**
+     * Notes that the group came up: a worker said it was up, or kept running for longer
+     * than readyTimeoutMs — the second for a worker script that never says so, which is
+     * then judged the way it was before readiness existed.
+     */
+    protected function noteCameUp(WorkerProcess $process): void
+    {
+        if ($this->cameUp) {
+            return;
+        }
+
+        if ($process->isReady() || ($process->uptimeSeconds() * 1000) >= $this->config->readyTimeoutMs) {
+            $this->cameUp = true;
+        }
+    }
+
+    /**
+     * Counts a worker that failed before the group ever came up — exited with an error or
+     * by a signal before it said it was up, or could not be started at all.
+     */
+    protected function noteFailedStart(): void
+    {
+        if (!$this->cameUp) {
+            ++$this->failedStarts;
+        }
+    }
+
+    protected function exitReason(WorkerProcess $process): string
+    {
+        return $process->termSignal() !== null
+            ? sprintf('signal=%d', $process->termSignal())
+            : sprintf('code=%d', (int) $process->exitCode());
     }
 
     /** The second half of driveWatchdog: SIGKILL once the terminated worker overstays. */
@@ -615,17 +1023,10 @@ class WorkerGroup
         $this->forgetWatchdog($index);
 
         try {
-            $process = match ($this->config->launch) {
-                LaunchMode::Exec => new ExecWorkerProcess(
-                    command: $this->buildCommand(),
-                    cwd: $this->cwd,
-                    env: $this->buildEnv($index),
-                    heartbeat: $this->config->watchdogTimeoutMs > 0,
-                    keepDescriptors: $this->keepDescriptors(),
-                ),
-                LaunchMode::Fork => $this->fork($index),
-            };
+            $process = $this->launch($index);
         } catch (WorkerSpawnException $exception) {
+            $this->noteFailedStart();
+
             $backoffMs = $this->nextBackoffMs(
                 index: $index,
                 uptimeSeconds: 0.0,
@@ -660,6 +1061,20 @@ class WorkerGroup
         );
     }
 
+    /** Starts the worker of a slot, the way its group is launched. */
+    protected function launch(int $index): WorkerProcess
+    {
+        return match ($this->config->launch) {
+            LaunchMode::Exec => new ExecWorkerProcess(
+                command: $this->buildCommand(),
+                cwd: $this->cwd,
+                env: $this->buildEnv($index),
+                keepDescriptors: $this->keepDescriptors(),
+            ),
+            LaunchMode::Fork => $this->fork($index),
+        };
+    }
+
     protected function handleExit(int $index, WorkerProcess $process, bool $stopping): void
     {
         $this->logWorkerLines(
@@ -671,10 +1086,20 @@ class WorkerGroup
         $pid           = $process->pid();
         $uptimeSeconds = $process->uptimeSeconds();
         $exitedCleanly = $process->exitedCleanly();
+        $reachedLimit  = $process->isRecycling();
+        $reason        = $this->exitReason($process);
 
-        $reason = $process->termSignal() !== null
-            ? sprintf('signal=%d', $process->termSignal())
-            : sprintf('code=%d', (int) $process->exitCode());
+        // Died before it was up, and before it had run long enough to count as up without
+        // saying so: a failure to start, which is what neverCameUp() is counting.
+        if (
+            !$stopping
+            && !$this->retiring
+            && !$exitedCleanly
+            && !$process->isReady()
+            && ($uptimeSeconds * 1000) < $this->config->readyTimeoutMs
+        ) {
+            $this->noteFailedStart();
+        }
 
         $process->close();
 
@@ -698,20 +1123,12 @@ class WorkerGroup
             return;
         }
 
-        // The worker we are rolling for a reload exited on purpose: do not treat it as a
-        // crash (no policy check, no backoff). driveReload() spawns its replacement.
-        if ($this->reloading && $index === $this->reloadingIndex) {
-            $this->logWorker(
-                level: MasterLogger::INFO,
-                pid: $pid,
-                index: $index,
-                message: sprintf('exited %s uptime=%.1fs (reloading)', $reason, $uptimeSeconds),
-            );
+        $shouldRestart = $this->config->restartPolicy->shouldRestart(
+            cleanExit: $exitedCleanly,
+            reachedLimit: $reachedLimit,
+        );
 
-            return;
-        }
-
-        if (!$this->config->restartPolicy->shouldRestart($exitedCleanly)) {
+        if (!$shouldRestart) {
             $this->logWorker(
                 level: MasterLogger::INFO,
                 pid: $pid,
@@ -722,6 +1139,22 @@ class WorkerGroup
                     $uptimeSeconds,
                     $this->config->restartPolicy->value,
                 ),
+            );
+
+            return;
+        }
+
+        // It asked to be replaced: at once, and without counting the exit against the slot.
+        // Usually it said so while still draining and recycle() took it out of the slot
+        // then; this is the one that said so and exited within the same tick.
+        if ($reachedLimit) {
+            $this->respawnAtNs[$index] = hrtime(true);
+
+            $this->logWorker(
+                level: MasterLogger::INFO,
+                pid: $pid,
+                index: $index,
+                message: sprintf('exited %s uptime=%.1fs at its limit; restarting', $reason, $uptimeSeconds),
             );
 
             return;
@@ -801,7 +1234,6 @@ class WorkerGroup
         $argv        = $this->workerArgv();
 
         return new ForkedWorkerProcess(
-            heartbeat: $this->config->watchdogTimeoutMs > 0,
             // A forked worker is the master's copy, the application the master was started
             // from included, and keeps what that application had open — a log file a
             // logger opened while loading would otherwise write to /dev/null in every
@@ -880,7 +1312,7 @@ class WorkerGroup
     }
 
     /**
-     * The environment of a worker launched by exec: the inherited one, the liveness pipe's
+     * The environment of a worker launched by exec: the inherited one, the marks pipe's
      * descriptor, then workerEnvironment() over both. No master metadata is injected here
      * — that goes via argv (see workerArgv).
      *
@@ -890,13 +1322,11 @@ class WorkerGroup
     {
         $env = getenv();
 
-        // Tells the worker which descriptor its master opened for the liveness pipe. Set
-        // only with the watchdog on, so a worker under a master that does not watch does
-        // not look for a pipe that is not there. A forked worker is handed the pipe itself
+        // Tells the worker which descriptor its master opened for the pipe it marks itself
+        // on. Always there: the watchdog reads it when it is on, and a reload reads it for
+        // the mark that says a replacement is up. A forked worker is handed the pipe itself
         // and needs no such variable.
-        if ($this->config->watchdogTimeoutMs > 0) {
-            $env[Heartbeat::FD_ENVIRONMENT_NAME] = (string) Heartbeat::FD;
-        }
+        $env[Heartbeat::FD_ENVIRONMENT_NAME] = (string) Heartbeat::FD;
 
         foreach ($this->workerEnvironment($index) as $key => $value) {
             $env[$key] = $value;

@@ -25,7 +25,6 @@ class ExecWorkerProcess extends WorkerProcess
      * @param list<string>          $command         full command in array form (no shell)
      * @param string                $cwd             working directory for the worker
      * @param array<string, string> $env             full environment for the worker
-     * @param bool                  $heartbeat       open the liveness pipe the watchdog reads
      * @param list<int>             $keepDescriptors descriptors the worker gets under the same
      *                                               numbers, such as the group's listening
      *                                               socket; everything else above stderr is
@@ -35,18 +34,15 @@ class ExecWorkerProcess extends WorkerProcess
         array $command,
         string $cwd,
         array $env,
-        bool $heartbeat = false,
         array $keepDescriptors = [],
     ) {
         $descriptors = [
             0 => ['pipe', 'r'],
             1 => ['pipe', 'w'],
             2 => ['pipe', 'w'],
+            // The pipe the worker marks itself on: alive, up, leaving at its limit.
+            Heartbeat::FD => ['pipe', 'w'],
         ];
-
-        if ($heartbeat) {
-            $descriptors[Heartbeat::FD] = ['pipe', 'w'];
-        }
 
         // A stream for each descriptor to keep, which proc_open then places under the
         // number the descriptor already has. php://fd opens a copy, closed again below

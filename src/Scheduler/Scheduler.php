@@ -178,12 +178,28 @@ class Scheduler
      * synchronous work between SConcur calls. Every loop that does drive the scheduler
      * marks itself already, so this is for the ones that do not.
      *
-     * A no-op outside a worker started by a master with its watchdog on, and throttled, so
-     * calling it often costs a clock read. See docs/worker-master.md, "Stuck worker".
+     * A no-op outside a worker started by a master, and throttled, so calling it often
+     * costs a clock read. See docs/worker-master.md, "Stuck worker".
      */
     public function markAlive(): void
     {
         Heartbeat::current()?->touch();
+    }
+
+    /**
+     * Tells this worker's master that the worker is up and doing its work. A rolling
+     * reload waits for it from every replacement before it stops the worker that
+     * replacement takes over from, and gives up on the reload when it does not come.
+     *
+     * serve() calls it for the servers and the AMQP consumer, so only a worker script
+     * that does its work in a loop of its own needs it — called once that loop is
+     * running. Such a script that never calls it cannot be reloaded. A no-op outside a
+     * worker started by a master, and only the first call says anything. See
+     * docs/worker-master.md, "Readiness".
+     */
+    public function markReady(): void
+    {
+        Heartbeat::current()?->ready();
     }
 
     public static function get(): Scheduler
@@ -683,9 +699,12 @@ class Scheduler
      * drain once it has dispatched that many requests — a built-in mitigation for
      * handler memory leaks, letting a supervisor respawn a fresh process. The
      * limiting request is dispatched and drained like any in-flight one, and the
-     * listener is closed before draining, so no accepted request is bounced.
+     * listener is closed before draining, so no accepted request is bounced. Under a
+     * master the limit is spread (spreadLimit) and the master is told why the worker is
+     * leaving, so it replaces it at once and does not count the exit as a failure.
      *
-     * @param int                                 $maxRequests         stop after dispatching this many requests (0 = unlimited)
+     * @param int                                 $maxRequests         stop after dispatching this many requests (0 = unlimited;
+     *                                                                 spread up to half again under a master)
      * @param Closure(array<string, mixed>): void $onRequest           receives the request event the core built
      * @param Closure(): bool                     $shouldStop          true once a shutdown was requested
      * @param Closure(): void                     $onDrainStart        called once when draining begins, before
@@ -731,6 +750,10 @@ class Scheduler
 
         $dispatchedCount = 0;
 
+        $limit = static::spreadLimit($maxRequests);
+
+        $ready = false;
+
         if ($preemptionQuantumMs > 0) {
             $this->enablePreemption(quantumMs: $preemptionQuantumMs);
         }
@@ -740,17 +763,29 @@ class Scheduler
         // it does not leak for the process lifetime.
         try {
             while (true) {
-                if (!$draining && ($shouldStop() || ($maxRequests > 0 && $dispatchedCount >= $maxRequests))) {
+                $limitReached = $limit > 0 && $dispatchedCount >= $limit;
+
+                if (!$draining && ($shouldStop() || $limitReached)) {
                     // Stop accepting new requests; keep draining in-flight handlers.
                     $draining = true;
 
                     $lastDrainDiagnosticAt = microtime(true);
 
-                    $reason = ($maxRequests > 0 && $dispatchedCount >= $maxRequests) ? 'limit' : 'signal';
-
                     $onShutdownStep(
-                        sprintf('stop accepting (reason=%s), draining %d in-flight', $reason, $this->spawnedCount),
+                        $limitReached
+                            ? sprintf(
+                                'stop accepting (reason=limit, limit=%d), draining %d in-flight',
+                                $limit,
+                                $this->spawnedCount,
+                            )
+                            : sprintf('stop accepting (reason=signal), draining %d in-flight', $this->spawnedCount),
                     );
+
+                    // Said before the drain rather than at the exit: the master brings the
+                    // replacement up while this one is still finishing its last requests.
+                    if ($limitReached) {
+                        Heartbeat::current()?->recycling();
+                    }
 
                     // Close the listener up front so the kernel reroutes new
                     // connections to SO_REUSEPORT siblings while we drain.
@@ -782,6 +817,23 @@ class Scheduler
                         $this->switchedCoroutines === [] ? self::SERVE_POLL_INTERVAL_MS : 0,
                     ),
                 );
+
+                // A server task binds its listener before it does anything else, so a
+                // socket that cannot be had is what the first wait hands back. A first wait
+                // that brings anything else — a request, another flow's result, or nothing
+                // within the poll — finds the worker up.
+                if (!$ready) {
+                    $failed = $result !== null
+                        && $result->flowKey === $serverFlowKey
+                        && $result->key === $serverTaskKey
+                        && $result->isError;
+
+                    if (!$failed) {
+                        $ready = true;
+
+                        $this->markReady();
+                    }
+                }
 
                 if ($result === null) {
                     // A stalled drain is otherwise silent: report what the loop
@@ -1005,6 +1057,28 @@ class Scheduler
                 message: "A coroutine timeout cannot be negative, got $timeoutMs ms.",
             );
         }
+    }
+
+    /**
+     * The limit serve() actually stops at: the one asked for, or — in a worker started by
+     * a master — a number picked at random from it up to half again as many.
+     *
+     * The workers of a pool start together and share the load evenly, so with one limit
+     * they all reach it within the same second and the pool restarts as one: nobody
+     * accepts while they drain, and every worker loads again at once. Spread, they come
+     * apart, and a little further each generation. A worker of its own — a one-off
+     * consumer told to take N messages — has nobody to come apart from and stops at
+     * exactly N.
+     */
+    protected static function spreadLimit(int $limit): int
+    {
+        if ($limit <= 0 || Heartbeat::current() === null) {
+            return $limit;
+        }
+
+        // random_int reads the system's generator: nothing a fork copies from the master
+        // decides the number, so forked workers draw apart as surely as exec'd ones.
+        return random_int($limit, $limit + intdiv($limit, 2));
     }
 
     /**

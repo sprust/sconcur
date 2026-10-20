@@ -221,6 +221,56 @@ class WorkerProcessTest extends TestCase
         }
     }
 
+    /**
+     * The master reads what the worker says about itself off the pipe at Heartbeat::FD:
+     * any byte is the PHP thread alive, and two of them say more.
+     */
+    public function testReadsTheMarksTheWorkerPutsOnItsPipe(): void
+    {
+        $process = $this->spawn(
+            '$pipe = fopen("php://fd/3", "w");'
+            . ' fwrite($pipe, "\x01\x02"); usleep(200000);'
+            . ' fwrite($pipe, "\x03"); usleep(200000);',
+        );
+
+        try {
+            self::assertFalse($process->isReady(), 'nothing is read before the master drains the pipe');
+
+            $deadline = microtime(true) + 5.0;
+
+            while (microtime(true) < $deadline && !$process->isRecycling()) {
+                $process->drainHeartbeat();
+
+                usleep(20_000);
+            }
+
+            self::assertTrue($process->isReady(), 'the worker said it is up');
+            self::assertTrue($process->isRecycling(), 'the worker said it is leaving at its limit');
+            self::assertNotNull($process->heartbeatAgeSeconds(), 'every mark says the thread is alive');
+        } finally {
+            $this->waitForExit($process);
+
+            $process->close();
+        }
+    }
+
+    public function testAWorkerThatOnlyMarksItselfAliveIsNotUp(): void
+    {
+        $process = $this->spawn('fwrite(fopen("php://fd/3", "w"), "\x01"); usleep(200000);');
+
+        try {
+            self::assertTrue($this->waitForExit($process));
+
+            $process->drainHeartbeat();
+
+            self::assertNotNull($process->heartbeatAgeSeconds());
+            self::assertFalse($process->isReady());
+            self::assertFalse($process->isRecycling());
+        } finally {
+            $process->close();
+        }
+    }
+
     private function spawn(string $code): ExecWorkerProcess
     {
         return new ExecWorkerProcess(
