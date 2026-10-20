@@ -49,4 +49,10 @@ enum ProcessCommandEnum: string
 
     /** How many threads this process runs, where the platform can say. No parameters. */
     case ThreadCount = 'thr';
+
+    /** Refuses as a fork would, without forking. No parameters. */
+    case CheckFork = 'cfk';
+
+    /** The descriptors above stderr this process has open. No parameters. */
+    case OpenDescriptors = 'fds';
 }

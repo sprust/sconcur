@@ -74,15 +74,17 @@ class WorkerGroup
     protected array $watchdogServedSeconds = [];
 
     /**
-     * @param string                            $telemetrySocket the collector socket the master listens on, empty
-     *                                                           when telemetry is off. It reaches the workers through
-     *                                                           their environment rather than their argv, so the
-     *                                                           worker-agnostic master never feeds a non-matching
-     *                                                           worker an unknown --flag
-     * @param null|Closure(WatchdogEvent): void $onWatchdogEvent called when the watchdog
-     *                                                           acts on a worker of this pool. Failures in it are
-     *                                                           logged and swallowed: watching must not be able to
-     *                                                           take the supervisor down
+     * @param string                            $telemetrySocket      the collector socket the master listens on, empty
+     *                                                                when telemetry is off. It reaches the workers through
+     *                                                                their environment rather than their argv, so the
+     *                                                                worker-agnostic master never feeds a non-matching
+     *                                                                worker an unknown --flag
+     * @param null|Closure(WatchdogEvent): void $onWatchdogEvent      called when the watchdog
+     *                                                                acts on a worker of this pool. Failures in it are
+     *                                                                logged and swallowed: watching must not be able to
+     *                                                                take the supervisor down
+     * @param list<int>                         $inheritedDescriptors the descriptors the master found open when it
+     *                                                                started, which a forked worker keeps
      */
     public function __construct(
         protected WorkerGroupConfig $config,
@@ -92,6 +94,7 @@ class WorkerGroup
         protected string $telemetrySocket = '',
         protected ?Closure $onWatchdogEvent = null,
         protected ?int $listenFd = null,
+        protected array $inheritedDescriptors = [],
     ) {
         $this->workers = $config->workerCount > 0 ? $config->workerCount : Cpu::count();
     }
@@ -799,7 +802,11 @@ class WorkerGroup
 
         return new ForkedWorkerProcess(
             heartbeat: $this->config->watchdogTimeoutMs > 0,
-            keepDescriptors: $this->keepDescriptors(),
+            // A forked worker is the master's copy, the application the master was started
+            // from included, and keeps what that application had open — a log file a
+            // logger opened while loading would otherwise write to /dev/null in every
+            // worker. An exec'd worker is a php of its own and loads its own.
+            keepDescriptors: [...$this->keepDescriptors(), ...$this->inheritedDescriptors],
             child: static function (ForkResult $fork) use ($title, $cwd, $environment, $iniSettings, $argv): never {
                 ForkedWorker::run(
                     fork: $fork,

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Process;
 
 use SConcur\Connection\Extension;
+use SConcur\Exceptions\Process\ForkRefusedException;
 use SConcur\Exceptions\Process\ProcessException;
 use SConcur\Process\Dto\ForkResult;
 use SConcur\Process\Dto\ProcessExit;
@@ -219,6 +220,30 @@ class ProcessControl
             command: ProcessCommandEnum::Close,
             payload: ['fd' => $descriptor],
         );
+    }
+
+    /**
+     * Throws what fork() would throw in this process, without forking: a process that
+     * already runs the extension's runtime, or threads of anything else, cannot fork.
+     *
+     * @throws ForkRefusedException
+     */
+    public static function assertForkable(): void
+    {
+        Extension::get()->process(command: ProcessCommandEnum::CheckFork);
+    }
+
+    /**
+     * The descriptors above stderr this process has open, in no particular order.
+     *
+     * @return list<int>
+     */
+    public static function openDescriptors(): array
+    {
+        /** @var list<int> $descriptors */
+        $descriptors = Extension::get()->process(command: ProcessCommandEnum::OpenDescriptors);
+
+        return $descriptors;
     }
 
     /**

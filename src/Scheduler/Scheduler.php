@@ -167,17 +167,9 @@ class Scheduler
      */
     protected int $spawnCounter = 0;
 
-    /**
-     * The mark this worker leaves for its master's watchdog, or null when it runs without
-     * a master. Taken once here rather than per loop: every loop that drives the scheduler
-     * writes it, so there is no one loop that owns it.
-     */
-    protected ?Heartbeat $heartbeat;
-
     public function __construct()
     {
         $this->fiberPool = new FiberPool();
-        $this->heartbeat = Heartbeat::fromEnvironment();
     }
 
     /**
@@ -191,7 +183,7 @@ class Scheduler
      */
     public function markAlive(): void
     {
-        $this->heartbeat?->touch();
+        Heartbeat::current()?->touch();
     }
 
     public static function get(): Scheduler
@@ -1268,7 +1260,7 @@ class Scheduler
         // Every loop that drives the scheduler comes through here — a server's serve(),
         // and run() under any WaitGroup — so this is where the worker says its PHP thread
         // is still moving. Throttled inside touch(), so the cost is one clock read.
-        $this->heartbeat?->touch();
+        Heartbeat::current()?->touch();
 
         if ($this->readyResults !== []) {
             return array_shift($this->readyResults);

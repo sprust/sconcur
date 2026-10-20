@@ -65,6 +65,9 @@ class TestWorkerMaster
      * @param list<string>              $workerArgs    extra worker argv (e.g. ['--maxRequests=3'])
      * @param int|null                  $port          bind this exact port (default: a free one)
      * @param bool                      $waitReachable wait until a worker answers before returning
+     * @param string|null               $masterScript  the script the master runs as, in place of
+     *                                                 bin/sconcur-server: one that loads an
+     *                                                 application before it starts the master
      */
     public static function start(
         array $options = [],
@@ -72,6 +75,7 @@ class TestWorkerMaster
         array $workerArgs = [],
         ?int $port = null,
         bool $waitReachable = true,
+        ?string $masterScript = null,
     ): self {
         $port ??= self::freePort();
 
@@ -112,7 +116,7 @@ class TestWorkerMaster
 
         $outputFile = (string) tempnam(sys_get_temp_dir(), 'sc-master-out-');
 
-        $process = self::open(['start', '--configPath=' . $configPath], $env, $outputFile);
+        $process = self::open(['start', '--configPath=' . $configPath], $env, $outputFile, $masterScript);
 
         $server = new self(
             process: $process,
@@ -494,16 +498,17 @@ class TestWorkerMaster
     }
 
     /**
-     * @param list<string>          $argv full argv after the bin path
-     * @param array<string, string> $env  extra env merged over the inherited one
+     * @param list<string>          $argv         full argv after the bin path
+     * @param array<string, string> $env          extra env merged over the inherited one
+     * @param string|null           $masterScript what to run in place of bin/sconcur-server
      *
      * @return resource
      */
-    private static function open(array $argv, array $env, string $outputFile): mixed
+    private static function open(array $argv, array $env, string $outputFile, ?string $masterScript = null): mixed
     {
         // The master takes and sends its signals through the extension, so it loads the
         // build under test as well as the workers.
-        $command = [PHP_BINARY, '-d', 'extension=' . self::extensionPath(), self::binPath(), ...$argv];
+        $command = [PHP_BINARY, '-d', 'extension=' . self::extensionPath(), $masterScript ?? self::binPath(), ...$argv];
 
         $descriptors = [
             0 => ['pipe', 'r'],

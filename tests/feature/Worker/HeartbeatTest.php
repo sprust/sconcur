@@ -39,6 +39,9 @@ class HeartbeatTest extends TestCase
         }
 
         putenv(Heartbeat::FD_ENVIRONMENT_NAME);
+
+        // What this process, which no master started, would have found on its own.
+        Heartbeat::adopt(null);
     }
 
     public function testTouchPutsAMarkOnTheWire(): void
@@ -82,6 +85,34 @@ class HeartbeatTest extends TestCase
         putenv(Heartbeat::FD_ENVIRONMENT_NAME . '=three');
 
         self::assertNull(Heartbeat::fromEnvironment());
+    }
+
+    /**
+     * What a forked worker is handed is what is written to, whatever the process it was
+     * forked from had found before: its scheduler asks at every mark rather than once.
+     */
+    public function testTheHeartbeatAForkHandsOverIsTheOneWritten(): void
+    {
+        Heartbeat::adopt(null);
+
+        self::assertNull(Heartbeat::current());
+
+        $adopted = Heartbeat::adopt($this->writeEnd);
+
+        self::assertNotNull($adopted);
+        self::assertSame($adopted, Heartbeat::current());
+
+        $adopted->touch();
+
+        self::assertSame("\x01", $this->readAvailable());
+    }
+
+    public function testAForkHandedNoneHasNoHeartbeat(): void
+    {
+        Heartbeat::adopt($this->writeEnd);
+        Heartbeat::adopt(null);
+
+        self::assertNull(Heartbeat::current());
     }
 
     public function testTheThrottleExpires(): void

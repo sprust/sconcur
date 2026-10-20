@@ -79,7 +79,10 @@ pub fn fork(params: ForkParams) -> Result<Value, Error> {
         .into())
 }
 
-fn refuse_unless_alone() -> Result<(), Error> {
+/// Refuses a fork in a process that runs threads, without forking: what a master
+/// asks before it starts, so a process that is not fit to fork is refused before
+/// anything is written, rather than at its first worker.
+pub fn refuse_unless_alone() -> Result<(), Error> {
     if crate::core::built().is_some() {
         return Err(Error::Refused(
             "the extension's runtime already runs in this process, and a child would inherit its locks without its \
@@ -157,6 +160,20 @@ fn neutralize(null: RawFd, keep: &[i64], heartbeat: RawFd) {
 
         unsafe { libc::dup2(null, descriptor) };
     }
+}
+
+/// The descriptors above stderr this process has open: what a master finds open
+/// as it starts, opened by the application that started it, which its forked
+/// workers keep. The listing's own directory is in the listing and closed by the
+/// time it is returned, so it is left out.
+pub fn inherited_descriptors() -> Value {
+    Value::List(
+        open_descriptors()
+            .into_iter()
+            .filter(|&descriptor| descriptor > 2 && unsafe { libc::fcntl(descriptor, libc::F_GETFD) } >= 0)
+            .map(|descriptor| Value::Int(descriptor as i64))
+            .collect(),
+    )
 }
 
 /// The descriptors this process has open. /proc on Linux, /dev/fd elsewhere.

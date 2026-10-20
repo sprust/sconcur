@@ -3,8 +3,8 @@
 Takes every measurement the benchmark docs are built from, in one session.
 
 docs/benchmarks.md, docs/load-testing.md, docs/positioning.md, the README tables
-and the measured parts of docs/coroutine-switching.md and docs/http-server.md
-quote numbers that have to come from one session on one machine. This runs the
+and the measured parts of docs/coroutine-switching.md, docs/http-server.md and
+docs/worker-master.md quote numbers that have to come from one session on one machine. This runs the
 existing harnesses for each of them (the bench scripts in the php container, the
 HTTP load scripts on the host), repeats what the docs report as a median, and
 writes what it measured to disk. It does not touch the docs: reading the results
@@ -580,6 +580,19 @@ def section_shared_socket():
     ])
 
 
+def section_worker_memory():
+    """What 12 workers take in memory by how they start: exec, fork, and fork from a master
+    that loaded the application first. Deterministic to 0.1 MiB, so one run."""
+    output = php('tests/benchmarks/worker/memory.php', env={'WORKERS': '12', 'REQUESTS': '5000'})
+    save_raw('worker-memory', 'memory', output)
+    pattern = r'^(\w+)\s+served\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB'
+    for arm, pss, rss, private_dirty, per_worker in re.findall(pattern, output, re.M):
+        summary = {'pss_mib': float(pss), 'rss_mib': float(rss), 'private_dirty_mib': float(private_dirty),
+                   'pss_per_worker_mib': float(per_worker)}
+        record('worker-memory', arm, {'workers': 12, 'requests': 5000}, [summary], summary)
+        say(f'[worker-memory] {arm}: Pss {pss} MiB, {per_worker} MiB per worker, Private_Dirty {private_dirty} MiB')
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -603,6 +616,7 @@ SECTIONS = {
     'proxy': (section_proxy, False, 'http-server: a proxy in front of the pool'),
     'spread': (section_spread, False, 'http-server: how evenly the kernel spreads'),
     'shared-socket': (section_shared_socket, False, 'load-testing, http-server: one socket for the whole pool'),
+    'worker-memory': (section_worker_memory, False, 'worker-master: loading the application in the master'),
 }
 
 

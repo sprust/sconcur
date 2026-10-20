@@ -689,6 +689,13 @@ bench-http-load-stats:
 bench-http-load-soak:
 	MODE=soak tests/benchmarks/http/load-stats.sh
 
+# What a pool of workers costs in memory by how its workers start: exec, fork, and
+# fork from a master that loaded the application first (Pss and Private_Dirty from
+# smaps_rollup). Override via env, e.g.: make bench-worker-memory WORKERS=16
+bench-worker-memory:
+	$(DOCKER_COMPOSE) exec -e WORKERS=$${WORKERS:-12} -e REQUESTS=$${REQUESTS:-5000} php \
+		php -d extension=$(SCONCUR_EXT) tests/benchmarks/worker/memory.php
+
 # Baseline variant: same harness against the bare "/" route (no I/O fan-out) —
 # measures the pure HTTP + framework ceiling, the floor under the /all numbers.
 # Placement defaults to group, the one the docs/benchmarks.md numbers are taken

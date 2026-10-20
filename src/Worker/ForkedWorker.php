@@ -18,6 +18,10 @@ use Throwable;
  * pool. So the script runs inside a catch-all, and the worker leaves through
  * ProcessControl::exit() however it ends. An exit() inside the script leaves through
  * PHP's own shutdown instead, which skips finally blocks and is safe.
+ *
+ * The worker runs under the error and exception handlers of the application the master
+ * was started from, as a php started on the script would run under its own: the master
+ * keeps its error handler out of its loop (WorkerMaster::run), and it is given back here.
  */
 class ForkedWorker
 {
@@ -54,12 +58,33 @@ class ForkedWorker
 
             $exitCode = 0;
         } catch (Throwable $exception) {
-            // The words PHP itself uses for an uncaught exception, on stderr, so the master
-            // logs it at ERROR the way it logs an exec worker's.
-            fwrite(STDERR, 'PHP Fatal error:  Uncaught ' . $exception . PHP_EOL);
+            static::reportUncaught($exception);
         }
 
         ProcessControl::exit($exitCode);
+    }
+
+    /**
+     * What PHP does with an exception nothing caught: hands it to the exception handler if
+     * one is set — an application's reporter, installed while it loaded — and otherwise
+     * prints it, in the words PHP itself uses, on stderr, so the master logs it at ERROR
+     * the way it logs an exec worker's.
+     */
+    protected static function reportUncaught(Throwable $exception): void
+    {
+        $handler = set_exception_handler(null);
+
+        if ($handler !== null) {
+            try {
+                $handler($exception);
+
+                return;
+            } catch (Throwable $thrown) {
+                $exception = $thrown;
+            }
+        }
+
+        fwrite(STDERR, 'PHP Fatal error:  Uncaught ' . $exception . PHP_EOL);
     }
 
     /**
@@ -101,9 +126,13 @@ class ForkedWorker
             ini_set($directive, $value);
         }
 
-        if ($fork->heartbeat !== null) {
-            Heartbeat::adopt($fork->heartbeat);
-        }
+        // Also without one: what the master's process knew of a heartbeat — none, or one of
+        // its own master's — is not this worker's.
+        Heartbeat::adopt($fork->heartbeat);
+
+        // Last, so what is silenced above stays out of it: the master's own handler, which
+        // WorkerMaster::run() put over the application's, comes off.
+        restore_error_handler();
     }
 
     /**

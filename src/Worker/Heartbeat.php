@@ -45,11 +45,31 @@ class Heartbeat
     /** The one heartbeat of this process, kept because claiming it consumes the variable. */
     protected static ?self $claimed = null;
 
+    /** Whether current() has looked: once it has, the answer stands, none included. */
+    protected static bool $resolved = false;
+
     protected int $lastTouchNs = 0;
 
     /** @param resource $stream */
     public function __construct(protected mixed $stream)
     {
+    }
+
+    /**
+     * The heartbeat this process writes, or null when there is none to write: looked for
+     * in the environment the first time, unless a fork handed one over (adopt()). Asked
+     * where it is written rather than kept by whoever writes it, so a scheduler built
+     * before its process was forked into a worker writes the worker's, not the master's.
+     */
+    public static function current(): ?self
+    {
+        if (!self::$resolved) {
+            self::$resolved = true;
+
+            self::fromEnvironment();
+        }
+
+        return self::$claimed;
     }
 
     /**
@@ -101,12 +121,20 @@ class Heartbeat
      * Claims a liveness pipe handed over directly rather than named in the environment:
      * the write end a forked worker gets from its fork. No variable to take out of the
      * environment, then, and no descriptor number for a child of the worker to find —
-     * nothing it starts can mark this worker alive.
+     * nothing it starts can mark this worker alive. Null for a fork that got none: the
+     * worker then writes nothing, whatever its master's process had claimed.
      *
-     * @param resource $stream
+     * @param resource|null $stream
      */
-    public static function adopt(mixed $stream): self
+    public static function adopt(mixed $stream): ?self
     {
+        self::$resolved = true;
+        self::$claimed  = null;
+
+        if ($stream === null) {
+            return null;
+        }
+
         stream_set_blocking($stream, false);
 
         self::$claimed = new self(stream: $stream);

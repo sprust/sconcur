@@ -16,10 +16,12 @@ extension too and takes and sends its signals through it, so neither `pcntl` nor
 `ExtensionNotLoadedException`. It never starts the extension's runtime: the master
 does no asynchronous work of its own.
 
-Either way a worker gets its stdin/stdout/stderr and nothing else: it would otherwise
-keep every descriptor the master holds open in the child — the telemetry sockets,
-the panel's connections, the lock and the log — so the spawn points all of them at
-`/dev/null` instead.
+Either way a worker gets its stdin/stdout/stderr and none of the master's own
+descriptors: it would otherwise keep every one the master holds open in the child —
+the telemetry sockets, the panel's connections, the lock and the log — so the spawn
+points all of them at `/dev/null` instead. A forked worker also keeps what was open
+before the master started (see
+[Loading the application in the master](#loading-the-application-in-the-master)).
 
 ## Table of contents
 
@@ -289,18 +291,87 @@ top-level variables needs `exec`.
 
 The rest is the same as for `exec`. The child is prepared before PHP runs in it:
 stdin from `/dev/null`, stdout and stderr onto the master's pipes, so the journal reads
-as before, and every other descriptor of the master pointed at `/dev/null`. The
+as before, and every descriptor the master opened itself pointed at `/dev/null`. The
 signal handlers the master installed are put back to PHP's own, the random generators
 are reseeded, and the master's objects are marked as destroyed so their destructors
-never run in a worker. An uncaught exception is reported on stderr the way PHP reports
-it, and the worker exits with `255`; `exit()` works as usual. In `ps` a forked worker
-shows as `sconcur-server: <group> #<slot>`. Telemetry, the watchdog and `--masterPid`
-work as with `exec`.
+never run in a worker. An uncaught exception goes to the exception handler, if one is
+set, and is otherwise reported on stderr the way PHP reports it; the worker exits with
+`255`, and `exit()` works as usual. In `ps` a forked worker shows as
+`sconcur-server: <group> #<slot>`. Telemetry, the watchdog and `--masterPid` work as
+with `exec`.
 
 A fork is refused in a process that runs threads, because a fork keeps only the
 calling thread. The master's own code never starts the extension's runtime, but an
 `onWatchdogEvent` handler that used SConcur's asynchronous features would, and every
 fork after it would fail; the journal says why.
+
+### Loading the application in the master
+
+A forked worker is a copy of the master, and of whatever its process loaded before the
+master started. An application that loads itself first and starts the master after is
+loaded once: every worker starts with it in memory, and the pages stay shared until a
+worker writes to them. There is no setting for it; it is what the process does before
+`start`:
+
+```php
+// server.php: php -d extension=sconcur.so server.php start --configPath=master.json
+require __DIR__ . '/vendor/autoload.php';
+
+$GLOBALS['app'] = require __DIR__ . '/bootstrap/app.php';
+
+exit(new SConcur\Worker\MasterCli()->run($argv));
+```
+
+The groups that use the application have `launch: fork`, and their worker script takes
+it from `$GLOBALS` or a static instead of loading it. The script runs inside a
+function, so its own top-level variables are not global, but one the entry script set
+is. `status`, `stop` and `reload` do not need the application and work through
+`bin/sconcur-server` with the same `--configPath`.
+
+Measured with `make bench-worker-memory`: 12 workers, a stand-in application of about
+1 250 classes (Composer's classmap, some 11 MiB of compiled code), OPcache off in the
+CLI, after 5 000 requests. Pss counts each shared page in shares, so its sum is what
+the pool takes from the machine:
+
+| The workers start as | Pss, all workers | Pss per worker | Private_Dirty, all workers |
+|---|---:|---:|---:|
+| `exec` | 275.5 MiB | 23.0 MiB | 259.9 MiB |
+| `fork`, the application loaded by the worker script | 190.5 MiB | 15.9 MiB | 176.0 MiB |
+| `fork`, the application loaded before the master started | 63.8 MiB | 5.3 MiB | 38.6 MiB |
+
+The master adds 4–11 MiB of its own in each case.
+
+What the master takes care of:
+
+- Descriptors open when the master starts stay open in forked workers: a log file a
+  logger opened while the application loaded is written from every worker. Only the
+  descriptors the master opens itself are pointed at `/dev/null`.
+- The application's error handler is kept out of the master's loop: a handler that
+  turns warnings into exceptions would otherwise end the master at the first warning
+  it silences, and the master silences one on every tick. Every forked worker runs
+  under the handler again, and an exception that escapes the worker script goes to the
+  application's exception handler, as it would in a `php` of its own.
+- A scheduler built while the application loaded marks the worker alive for the
+  watchdog, not the master.
+
+What is left to the application:
+
+- No asynchronous call before the master starts. It starts the extension's runtime, a
+  process with the runtime running cannot fork, and `start` is refused with the reason.
+- No connection opened before the master starts. A fork does not copy a connection, it
+  shares it: the master and every worker hold the same socket, and each takes it for
+  its own. Two workers sending at once interleave their bytes on one stream, and the
+  database answers with a protocol error (`Packets out of order`, `server has gone
+  away`). A response goes to whichever worker reads first, so one request can get the
+  rows of another's query. And a worker that closes the connection closes it for all.
+  Most clients connect on the first query, as Laravel's do, and those are fine; a
+  connection made while loading is to be closed before the master starts
+  (`DB::disconnect()`). A listening socket and a datagram one (syslog, statsd) are safe
+  to share.
+- The server is built in the worker script. Its flags (`server`, `--listenFd`,
+  `--masterPid`) reach the worker's argv, not the master's.
+- A `reload` restarts the workers with the application the master loaded. Changed
+  application code takes a restart of the master.
 
 ## Restart policy and `maxRequests`
 
@@ -564,7 +635,8 @@ and state (rejection of a second instance, `status`/`stop`, `status` after a
 crash), resilience (crash-loop backoff, config validation, orphan
 self-termination) and the logger (line format, context JSON, daily rotation).
 `ForkedWorkerMasterTest` runs every one of those scenarios once more with the
-workers launched by fork.
+workers launched by fork. `PreloadedWorkerMasterTest` starts the master from a script
+that loads an application first and checks what reaches its forked workers.
 
 ---
 

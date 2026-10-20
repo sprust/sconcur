@@ -53,6 +53,8 @@ pub fn run(command: &[u8], payload: &Value) -> Result<Value, Error> {
         b"cls" => close(decode(payload)?),
         b"bnd" => bind(decode(payload)?),
         b"thr" => Ok(threads::count().map_or(Value::Nil, |count| Value::Int(count as i64))),
+        b"cfk" => fork::refuse_unless_alone().map(|_| Value::Nil),
+        b"fds" => Ok(fork::inherited_descriptors()),
         other => Err(Error::Failed(format!(
             "unknown process command '{}'",
             String::from_utf8_lossy(other)
@@ -201,6 +203,31 @@ mod tests {
     fn an_exit_code_and_a_signal_are_told_apart() {
         assert_eq!(classify(7 << 8), (Some(7), None));
         assert_eq!(classify(libc::SIGTERM), (None, Some(libc::SIGTERM as i64)));
+    }
+
+    /// A descriptor this process opened is listed; stdin, stdout and stderr never
+    /// are, being every process's own.
+    #[test]
+    fn the_descriptors_above_stderr_are_listed() {
+        use std::os::fd::AsRawFd;
+
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let descriptor = file.as_raw_fd() as i64;
+
+        let Value::List(listed) = fork::inherited_descriptors() else {
+            panic!("not a list");
+        };
+
+        let numbers: Vec<i64> = listed
+            .iter()
+            .filter_map(|item| match item {
+                Value::Int(number) => Some(*number),
+                _ => None,
+            })
+            .collect();
+
+        assert!(numbers.contains(&descriptor), "{numbers:?}");
+        assert!(numbers.iter().all(|&number| number > 2), "{numbers:?}");
     }
 
     #[test]

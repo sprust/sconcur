@@ -7,6 +7,7 @@ namespace SConcur\Worker;
 use Closure;
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\ExtensionNotLoadedException;
+use SConcur\Exceptions\Process\ForkRefusedException;
 use SConcur\Exceptions\Process\ProcessException;
 use SConcur\Exceptions\Worker\InvalidConfigException;
 use SConcur\Exceptions\Worker\InvalidWorkerCountException;
@@ -70,6 +71,14 @@ class WorkerMaster
      */
     protected array $listeners = [];
 
+    /**
+     * @var list<int> the descriptors open when the master started: the application's that
+     *                started it — a log file it opened while loading, a socket systemd
+     *                passed — which forked workers keep, where every descriptor the master
+     *                opens itself is shut out of them
+     */
+    protected array $inheritedDescriptors = [];
+
     protected bool $stopping = false;
 
     /**
@@ -118,10 +127,33 @@ class WorkerMaster
     /**
      * Runs the supervisor until a shutdown signal drains all workers. Returns the
      * process exit code (0 on clean shutdown).
+     *
+     * The process may have loaded an application before calling this, for forked workers
+     * to start from. Its error handler is kept out of the master's loop for as long as this
+     * runs: a handler that turns warnings into exceptions, as frameworks install, would end
+     * the master at the first warning it silences, and the master silences one on every
+     * tick. A forked worker gets the handler back (ForkedWorker).
      */
     public function run(): int
     {
+        // Returning false hands every error on to PHP's own handling, which respects @ and
+        // error_reporting — the master behaves as if nothing had been installed.
+        set_error_handler(static fn(): bool => false);
+
+        try {
+            return $this->runSupervisor();
+        } finally {
+            restore_error_handler();
+        }
+    }
+
+    protected function runSupervisor(): int
+    {
         $this->assertExtension();
+
+        // First, before the master opens anything of its own.
+        $this->inheritedDescriptors = ProcessControl::openDescriptors();
+
         $this->ensureDirectories();
 
         $this->masterPid = (int) getmypid();
@@ -223,6 +255,39 @@ class WorkerMaster
     }
 
     /**
+     * Refuses to start groups launched by fork in a process that cannot fork, before
+     * anything is written: the application that started the master made an asynchronous
+     * call while loading, so the extension's runtime runs, or another extension started
+     * threads. Refused at the first worker instead, the reason would come after the
+     * journal had already said the pool started.
+     */
+    protected function assertForkable(): void
+    {
+        foreach ($this->groups as $group) {
+            if ($group->launch !== LaunchMode::Fork) {
+                continue;
+            }
+
+            try {
+                ProcessControl::assertForkable();
+            } catch (ForkRefusedException $exception) {
+                throw new ForkRefusedException(
+                    message: sprintf(
+                        'group "%s" is launched by fork, and this process cannot fork: %s. Nothing may use'
+                        . ' the extension before the master starts; open connections and make calls in'
+                        . ' the worker script',
+                        $group->name,
+                        $exception->getMessage(),
+                    ),
+                    previous: $exception,
+                );
+            }
+
+            return;
+        }
+    }
+
+    /**
      * Builds one live pool per configured group. Ordered as the config lists them, so
      * the journal and `status` read the way the file does.
      */
@@ -247,6 +312,7 @@ class WorkerMaster
             telemetrySocket: $this->telemetrySocket(),
             onWatchdogEvent: $this->watchdogReporter(),
             listenFd: $this->listeners[$group->name] ?? null,
+            inheritedDescriptors: $this->inheritedDescriptors,
         );
     }
 
@@ -359,6 +425,10 @@ class WorkerMaster
 
         static::assertWorkerScripts($this->groups);
         static::assertLaunchable($this->groups);
+
+        // After the config is known to be sound, so a config error is named as one, and
+        // before anything is created.
+        $this->assertForkable();
 
         $directories = array_unique([$this->runtimeDir, $this->logDir ?? $this->runtimeDir]);
 
