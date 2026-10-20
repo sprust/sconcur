@@ -269,7 +269,7 @@ The next keys are the defaults every group inherits unless it names its own:
 | Key | Default | Purpose |
 |---|---|---|
 | `name` | — (required) | Identifies the pool in the journal, in `status` and in `--group`. Unique. |
-| `workerScript` | — (required) | The script each of its workers runs. |
+| `workerScript` | — (required) | The script each of its workers runs. A relative path is taken from the master's working directory — see [paths and symlinks](#paths-and-symlinks). |
 | `workerCount` | `0` (= logical CPUs, what `nproc` reports — twice the core count where hyperthreading is on) | How many workers to bring up. |
 | `server` | `{}` | Worker parameters → expanded into the worker's `argv`. |
 | `workerArgs` | `[]` | Extra raw worker `argv` flags, appended after `server`. |
@@ -277,7 +277,7 @@ The next keys are the defaults every group inherits unless it names its own:
 | `launch` | the master's (`fork`) | `fork` — a copy of the master; `exec` — a `php` of its own on the script. See [Launch: exec or fork](#launch-exec-or-fork). |
 | `phpBinary` | the master's | Interpreter for this group's workers — under `fork`, for its fork server, which they are copies of. |
 | `phpArgs` | the master's | Interpreter flags, e.g. `["-d", "extension=…"]`; under `fork`, the fork server's. |
-| `bootstrap` | empty | A file the fork server of a `fork` group loads once per generation, before it forks the workers — see [loading the application once](#loading-the-application-once-bootstrap). |
+| `bootstrap` | empty | A file the fork server of a `fork` group loads once per generation, before it forks the workers — see [loading the application once](#loading-the-application-once-bootstrap). A relative path is taken from the master's working directory. |
 | `env` | the master's | Extra worker env, merged over the master's and the inherited one. |
 | `restartPolicy` | the master's | `always` \| `on-failure` \| `never`. |
 | `shutdownTimeoutMs` | the master's | How long to wait for a worker to finish before `SIGKILL`. |
@@ -363,25 +363,26 @@ The measurements: the demo server for the timings (median of 7),
 `make bench-worker-memory` for the memory — 12 workers, a stand-in application of about
 1 250 classes (Composer's classmap, some 11 MiB of compiled code), OPcache off in the
 CLI, after 5 000 requests, three runs within 0.2 MiB of each other. Pss counts each
-shared page in shares, so its sum is what the pool takes from the machine. Where a
-bootstrap changes the answer, the `fork` column gives both.
+shared page in shares, so its sum is what the pool takes from the machine. `fork` takes
+two columns, without a bootstrap and with one: it is one launch, and the bootstrap only
+changes what its fork server has loaded.
 
-| | `exec` | `fork` |
-|---|---|---|
-| A worker is | a `php` of its own | a copy of the fork server |
-| The application is loaded | by every worker | without a bootstrap: by every worker, after its fork; with one: once per generation, in the fork server |
-| Pss, all 12 workers | 279.1 MiB | without a bootstrap: 191.0 MiB; with one: 59.8 MiB |
-| Pss per worker | 23.3 MiB | without: 15.9 MiB; with: 5.0 MiB |
-| Private_Dirty, all workers | 260.2 MiB | without: 176.4 MiB; with: 34.3 MiB |
-| Supervising processes | the master: 10.8 MiB | the master and a fork server per group: 17–19 MiB together |
-| Master start to the first answer of one worker | 40 ms | 45 ms — the fork server starts first; with a bootstrap, plus the application's load, once |
-| A killed worker to its replacement's first answer | 103 ms | 103 ms — both wait for a 100 ms supervision tick |
-| If the fork server crashes | there is none | its workers stop with it, and a new generation is started |
-| What a `reload` picks up | everything | everything; after a deploy that switched a symlink to a new release only with a bootstrap — without one the master's autoloader keeps the old release's paths |
-| A `reload` holds in memory | one more worker at a time | one more worker and a second fork server; with a bootstrap, the application twice for the length of the roll |
-| Shared between the workers | nothing | this library's code; with a bootstrap, also the application and whatever it opened or computed while loading |
-| Scope the worker script runs in | global | a function's |
-| `phpBinary`, `phpArgs`, `php.ini` | the worker's | the fork server's, and so its workers' |
+| | `exec` | `fork`, without a bootstrap | `fork`, with a bootstrap |
+|---|---|---|---|
+| A worker is | a `php` of its own | a copy of the fork server | a copy of the fork server |
+| The application is loaded | by every worker | by every worker, after its fork | once per generation, in the fork server |
+| Pss, all 12 workers | 279.1 MiB | 191.0 MiB | 59.8 MiB |
+| Pss per worker | 23.3 MiB | 15.9 MiB | 5.0 MiB |
+| Private_Dirty, all workers | 260.2 MiB | 176.4 MiB | 34.3 MiB |
+| Supervising processes | the master: 10.8 MiB | the master and a fork server per group: 17–19 MiB together | the same as without |
+| Master start to the first answer of one worker | 40 ms | 45 ms — the fork server starts first | 45 ms plus the application's load, once |
+| A killed worker to its replacement's first answer | 103 ms | 103 ms | 103 ms — all three wait for a 100 ms supervision tick |
+| If the fork server crashes | there is none | its workers stop with it, and a new generation is started | the same as without |
+| What a `reload` picks up | everything | everything, but after a deploy that switched a symlink to a new release the master's autoloader keeps the old release's paths | everything, the release a switched symlink points to included |
+| A `reload` holds in memory | one more worker at a time | one more worker and a second fork server | one more worker, a second fork server and the application loaded twice, for the length of the roll |
+| Shared between the workers | nothing | this library's code | this library's code, the application, and whatever it opened or computed while loading |
+| Scope the worker script runs in | global | a function's | a function's |
+| `phpBinary`, `phpArgs`, `php.ini` | the worker's | the fork server's, and so its workers' | the same as without |
 
 **`exec` or `fork`?** `fork`, the default, fits almost every group: the workers share
 the library's code at the least. `exec` is for a worker that must have nothing of its
@@ -423,23 +424,82 @@ in memory, and the pages stay shared until a worker writes to them:
 }
 ```
 
+The bootstrap runs once per generation, in the fork server, in the global scope. It
+loads Composer's autoloader first, then builds whatever every worker needs and none of
+them changes — the configuration, the routes, a container with its services defined —
+and leaves it where the worker script can reach it: in `$GLOBALS` or a static property.
+
 ```php
-// sconcur-bootstrap.php: Composer's autoloader first, then the application
+<?php
+// sconcur-bootstrap.php: runs in the fork server, before any worker is forked
+
+declare(strict_types=1);
+
+// First, and by this file's own path: the fork server has loaded nothing of the
+// library yet, and a deploy that switched the symlink is followed from here.
 require __DIR__ . '/vendor/autoload.php';
 
-$GLOBALS['app'] = require __DIR__ . '/bootstrap/app.php';
+use App\Kernel;
+
+$kernel = new Kernel(environment: 'production');
+
+// Configuration, routes, the container's definitions: built once, shared by every
+// worker. No connection is opened and nothing asynchronous is called here.
+$kernel->boot();
+
+$GLOBALS['kernel'] = $kernel;
 ```
 
-The bootstrap runs in the global scope, so the worker script reaches what it set through
-`$GLOBALS` or a static instead of loading it again. It has to load Composer's autoloader
-itself: the fork server touches none of the library before the bootstrap has run. That
-is what makes a deploy that switches a `current` symlink to a new release work — a
-process that loaded through the symlink keeps the paths of the release it found,
-Composer's autoloader included, and the next generation is a new process that follows
-the symlink to the new release, the application and this library both. A group without a
-bootstrap loads the autoloader the master loaded, and keeps that release's paths until
-the master restarts; give it a bootstrap of one line (`require __DIR__ .
-'/vendor/autoload.php';`) when deploys switch a symlink.
+The worker script runs in every worker, after the fork. What the bootstrap built is
+already in memory: the script takes it from `$GLOBALS` instead of building it again,
+opens what is the worker's own — connections — and serves:
+
+```php
+<?php
+// worker.php: runs in each worker, a copy of the fork server
+
+declare(strict_types=1);
+
+use App\Kernel;
+use Nyholm\Psr7\Factory\Psr17Factory;
+use Psr\Http\Message\ServerRequestInterface;
+use SConcur\Features\HttpServer\HttpServer;
+
+// The script runs inside a function: what the bootstrap left in the global scope is
+// reached through $GLOBALS, not as a variable of its own.
+/** @var Kernel $kernel */
+$kernel = $GLOBALS['kernel'];
+
+$factory = new Psr17Factory();
+
+$server = HttpServer::fromArgs(
+    argv: $argv,
+    serverRequestFactory: $factory,
+    responseFactory: $factory,
+);
+
+// A connection is opened by the worker that uses it — lazily, on its first query, or
+// here — never by the bootstrap, whose objects every worker shares.
+$server->serve(static fn(ServerRequestInterface $request) => $kernel->handle($request));
+```
+
+A worker script meant to run with and without a bootstrap can still
+`require_once __DIR__ . '/vendor/autoload.php';` and load the application when
+`$GLOBALS['kernel']` is not set: with a bootstrap both are already done.
+
+A static property works the same way and reads better in a framework that has a place
+for it — `App\Runtime::$kernel = $kernel;` in the bootstrap, `App\Runtime::$kernel` in the
+worker script. Either is set once in the fork server and copied into every worker with
+the rest of its memory.
+
+The bootstrap has to load Composer's autoloader itself: the fork server touches none of
+the library before the bootstrap has run. That is what makes a deploy that switches a
+`current` symlink to a new release work — a process that loaded through the symlink keeps
+the paths of the release it found, Composer's autoloader included, and the next
+generation is a new process that follows the symlink to the new release, the application
+and this library both. A group without a bootstrap loads the autoloader the master
+loaded, and keeps that release's paths until the master restarts; give it a bootstrap of
+one line (`require __DIR__ . '/vendor/autoload.php';`) when deploys switch a symlink.
 
 The memory this saves is in [which to choose](#which-to-choose).
 
@@ -470,12 +530,27 @@ What is left to the application:
   first query, as Laravel's do, and those are fine; a connection made while loading is
   to be closed at the end of the bootstrap (`DB::disconnect()`). A listening socket and
   a datagram one (syslog, statsd) are safe to share.
+- Whatever the bootstrap computes is the same in every worker: an id generated while
+  loading, a pid a logger remembered, a timestamp taken then. PHP's own random
+  generators are reseeded in each worker; anything else that has to differ between
+  workers is made in the worker script.
 - The server is built in the worker script. Its flags (`server`, `--listenFd`,
   `--masterPid`) reach the worker's argv.
 
 An application loaded before the master starts — a framework command that loads
 everything and then runs `MasterCli` — reaches no worker: the master never forks, and
 each fork server is a `php` of its own. Load it in the bootstrap instead.
+
+#### Paths and symlinks
+
+`bootstrap` and `workerScript` may be relative. They are taken from the master's working
+directory — where `start` was run — which is also where the fork server and every worker
+run. But the master holds that directory as the operating system gives it: with every
+symlink resolved. Started in `/app/current`, a link to `/app/releases/1`, it works in
+`/app/releases/1`, and a relative `bootstrap` stays in that release after the link is
+switched: the next generation loads the old application again. A deploy that switches a
+symlink needs absolute paths through it — `/app/current/sconcur-bootstrap.php`, as in
+the example above. Relative paths are fine where the code is replaced in place.
 
 ## Readiness
 
