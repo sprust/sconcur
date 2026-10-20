@@ -1630,5 +1630,5 @@ copy-on-write делит страницы, пока в них никто не п
 - `PR_SET_THP_DISABLE`: https://man7.org/linux/man-pages/man2/PR_SET_THP_DISABLE.2const.html
 - Свои документы: `docs/worker-master.md`, `docs/admin-stats.md`,
   `docs/http-server.md` («A proxy in front of the pool»), `docs/load-testing.md` (soak),
-  [direct-zval-transport.md](direct-zval-transport.md) (правила С-клея и
-  `zend_bailout`), [pie-publishing.md](pie-publishing.md) (матрица платформ).
+  [direct-zval-transport.md](../direct-zval-transport.md) (правила С-клея и
+  `zend_bailout`), [pie-publishing.md](../pie-publishing.md) (матрица платформ).
