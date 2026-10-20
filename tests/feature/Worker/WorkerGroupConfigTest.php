@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use SConcur\Exceptions\Worker\InvalidConfigException;
 use SConcur\Worker\LaunchMode;
 use SConcur\Worker\MasterConfig;
+use SConcur\Worker\MasterDefaults;
 use SConcur\Worker\RestartPolicy;
 use SConcur\Worker\WorkerGroupConfig;
 
@@ -94,103 +95,84 @@ class WorkerGroupConfigTest extends TestCase
     }
 
     /**
-     * A forked worker is a copy of the master, so it runs on the master's interpreter: a
-     * php binary of its own cannot be honoured, and is refused rather than ignored.
+     * A fork group's workers are copies of its fork server, which the master starts like an
+     * exec'd worker: any interpreter and any flags are honoured, as for exec.
      */
-    public function testAForkGroupRefusesAPhpBinaryOfItsOwn(): void
-    {
-        $this->expectException(InvalidConfigException::class);
-        $this->expectExceptionMessage('"phpBinary" needs launch=exec');
-
-        $this->group([
-            'launch'    => 'fork',
-            'phpBinary' => '/usr/bin/php8.3',
-        ]);
-    }
-
-    /**
-     * A config that spells out the php the master already runs on asks for nothing a fork
-     * cannot give: by its path, through a symlink, or by name on the PATH.
-     */
-    public function testAForkGroupAcceptsTheMastersOwnPhpHoweverItIsNamed(): void
-    {
-        $link = sys_get_temp_dir() . '/sc-php-link-' . getmypid();
-
-        @unlink($link);
-        symlink(PHP_BINARY, $link);
-
-        $directory = dirname(PHP_BINARY);
-        $path      = (string) getenv('PATH');
-
-        putenv('PATH=' . $directory . PATH_SEPARATOR . $path);
-
-        try {
-            foreach ([PHP_BINARY, $link, basename(PHP_BINARY)] as $phpBinary) {
-                self::assertSame(
-                    $phpBinary,
-                    $this->group(['launch' => 'fork', 'phpBinary' => $phpBinary])->phpBinary,
-                );
-            }
-        } finally {
-            putenv('PATH=' . $path);
-
-            @unlink($link);
-        }
-    }
-
-    /**
-     * A forked worker applies its phpArgs with ini_set, so they may only be ini settings:
-     * another php.ini (-c) or no php.ini at all (-n) is something only a php of its own
-     * can have.
-     */
-    public function testAForkGroupTakesOnlyIniSettingsFromPhpArgs(): void
-    {
-        foreach ([['-c', '/etc/php.ini'], ['-n'], ['-d']] as $phpArgs) {
-            try {
-                $this->group([
-                    'launch'  => 'fork',
-                    'phpArgs' => $phpArgs,
-                ]);
-
-                self::fail('phpArgs ' . json_encode($phpArgs) . ' should have been refused');
-            } catch (InvalidConfigException $exception) {
-                self::assertStringContainsString('can only set ini values', $exception->getMessage());
-            }
-        }
-    }
-
-    /**
-     * Both spellings of -d, in the order given — a later one wins, as on a command line —
-     * and a directive named twice, as `extension` may be, is kept twice. A flag without a
-     * value is "1", as php reads it.
-     */
-    public function testTheIniSettingsOfAForkGroupKeepTheirOrder(): void
+    public function testAForkGroupRunsOnAnyPhpWithAnyFlags(): void
     {
         $group = $this->group([
-            'launch'  => 'fork',
-            'phpArgs' => [
-                '-d',
-                'memory_limit=1G',
-                '-dprecision=10',
-                '-d',
-                'extension=a.so',
-                '-d',
-                'extension=b.so',
-                '-d',
-                'html_errors',
-            ],
+            'launch'    => 'fork',
+            'phpBinary' => '/usr/bin/php8.3',
+            'phpArgs'   => ['-c', '/etc/php.ini', '-n'],
         ]);
 
-        self::assertSame(
-            [
-                ['memory_limit', '1G'],
-                ['precision', '10'],
-                ['extension', 'a.so'],
-                ['extension', 'b.so'],
-                ['html_errors', '1'],
+        self::assertSame('/usr/bin/php8.3', $group->phpBinary);
+        self::assertSame(['-c', '/etc/php.ini', '-n'], $group->phpArgs);
+    }
+
+    /**
+     * The bootstrap is loaded by a fork server, which only a fork group has; an exec'd worker
+     * loads what it needs in its script.
+     */
+    public function testABootstrapNeedsLaunchFork(): void
+    {
+        self::assertSame('/app/bootstrap.php', $this->group(['bootstrap' => '/app/bootstrap.php'])->bootstrap);
+
+        $this->expectException(InvalidConfigException::class);
+        $this->expectExceptionMessage('"bootstrap", which needs launch=fork');
+
+        $this->group([
+            'launch'    => 'exec',
+            'bootstrap' => '/app/bootstrap.php',
+        ]);
+    }
+
+    /**
+     * The master hands a group to its fork server as toArray(), and the fork server reads it back
+     * with fromArray(): every setting has to make the trip, defaults it did not write
+     * included.
+     */
+    public function testAGroupMakesTheTripToItsForkServerWhole(): void
+    {
+        $group = MasterConfig::fromArray([
+            'shutdownTimeoutMs' => 4000,
+            'env'               => ['SHARED' => '1'],
+            'groups'            => [
+                [
+                    'name'           => 'http',
+                    'workerScript'   => '/app/worker.php',
+                    'workerCount'    => 3,
+                    'phpArgs'        => ['-d', 'memory_limit=1G'],
+                    'workerArgs'     => ['--flag=1'],
+                    'restartPolicy'  => 'on-failure',
+                    'readyTimeoutMs' => 9000,
+                    'listen'         => '0.0.0.0:8080',
+                    'bootstrap'      => '/app/bootstrap.php',
+                    'server'         => ['queues' => [['name' => 'orders']], 'maxRequests' => 10],
+                ],
             ],
-            $group->iniSettings(),
+        ])->groups()[0];
+
+        $decoded = json_decode((string) json_encode($group->toArray()), true);
+
+        self::assertIsArray($decoded);
+
+        $copy = WorkerGroupConfig::fromArray(
+            data: $decoded,
+            defaults: new MasterDefaults(
+                phpBinary: 'unused',
+                phpArgs: ['unused'],
+                env: [],
+                restartPolicy: RestartPolicy::Never,
+                shutdownTimeoutMs: 1,
+                restartBackoffMs: 1,
+                maxRestartBackoffMs: 1,
+                watchdogTimeoutMs: 0,
+            ),
+            index: 0,
         );
+
+        self::assertEquals($group, $copy);
     }
 
     /**

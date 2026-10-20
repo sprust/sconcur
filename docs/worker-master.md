@@ -8,20 +8,19 @@ one port and the kernel balances connections across them, scaling the server acr
 all cores without an external load balancer. Implementation: `src/Worker/` plus the
 universal CLI `bin/sconcur-server`.
 
-Each worker is a separate process: by default a copy of the master made by `fork`,
-or a `php` of its own started via `proc_open` (see
-[Launch: exec or fork](#launch-exec-or-fork)). The master loads the
-extension too and takes and sends its signals through it, so neither `pcntl` nor
-`posix` is needed; `start` without the extension fails with
-`ExtensionNotLoadedException`. It never starts the extension's runtime: the master
-does no asynchronous work of its own.
+Each worker is a separate process: by default a copy of a fork server the master starts
+for the group, which loads the application once, or a `php` of its own started via
+`proc_open` (see [Launch: exec or fork](#launch-exec-or-fork)). The master loads the
+extension too and takes and sends its signals through it, so neither `pcntl` nor `posix`
+is needed; `start` without the extension fails with `ExtensionNotLoadedException`. It
+never forks and never starts the extension's runtime: the master does no asynchronous
+work of its own.
 
 Either way a worker gets its stdin/stdout/stderr and none of the master's own
 descriptors: it would otherwise keep every one the master holds open in the child —
 the telemetry sockets, the panel's connections, the lock and the log — so the spawn
-points all of them at `/dev/null` instead. A forked worker also keeps what was open
-before the master started (see
-[Loading the application in the master](#loading-the-application-in-the-master)).
+points all of them at `/dev/null` instead. A forked worker also keeps what its group's
+bootstrap opened (see [Loading the application once](#loading-the-application-once-bootstrap)).
 
 ## Table of contents
 
@@ -129,10 +128,10 @@ giving it a `name`.
 php -d extension=/app/ext/build/sconcur.so vendor/bin/sconcur-server start --configPath=/app/master.json
 ```
 
-The master loads the extension itself — here with `-d`, or through `php.ini`. Workers
-launched by `fork`, the default, are copies of it and have it already; the `phpArgs`
-line matters to a group with `launch: exec`, and is accepted under `fork` as long as the
-extension it names is the one loaded.
+The master loads the extension itself — here with `-d`, or through `php.ini`. The
+workers load it too, through `phpArgs` or their `php.ini`: an exec'd worker is a `php`
+of its own, and a forked one is a copy of its group's fork server, which is started the
+same way.
 
 `start` blocks in the foreground and supervises the pool until `SIGTERM`/`SIGINT`,
 until the state file is removed, or until every worker has finished with nothing
@@ -190,9 +189,12 @@ it, then rolls each group's workers one at a time, the new one first:
 4. Once the old worker is gone, the next slot.
 
 The group never runs below its `workerCount` while it rolls, and at most one process
-above it. A fresh `php worker.php` picks up new code from disk; a
-[forked](#launch-exec-or-fork) one picks up the application's, while what the master
-itself loaded stays as it was.
+above it. A fresh `php worker.php` picks up new code from disk. A
+[fork](#launch-exec-or-fork) group rolls onto a new generation: the master starts a new
+fork server, which loads the bootstrap — the application, this library, the extension —
+from disk afresh, and moves the slots onto it one at a time as above, the old fork
+server letting go of each; when it has none left it is stopped. A new fork server that
+does not load gives the reload up before any worker is touched.
 
 The old worker and its replacement run side by side for a moment, so they must be able
 to share the port: `reusePort: true` in `server`, or the group's `listen`. A worker that
@@ -204,7 +206,9 @@ the reload up:
 
 - the replacement is stopped, and the slots the reload had not reached keep the
   workers they have;
-- the slots it had already rolled keep their new workers: those came up;
+- for an exec group, the slots it had already rolled keep their new workers: those came
+  up; a fork group moves them back onto the old generation the same way, and stops the
+  new fork server, so the group stays one generation;
 - the group's previous settings are put back, so a worker that crashes later is
   respawned on what was running, not on what failed;
 - the journal says `group <name>: reload given up: <reason>`, and `reload` exits with
@@ -270,8 +274,9 @@ The next keys are the defaults every group inherits unless it names its own:
 | `workerArgs` | `[]` | Extra raw worker `argv` flags, appended after `server`. |
 | `listen` | empty | An address the master binds once and hands to every worker of the group as `--listenFd` — [one socket for the whole pool](http-server.md#one-socket-for-the-whole-pool) instead of `SO_REUSEPORT`. Excludes `reusePort` and `listenFd` in `server`. |
 | `launch` | the master's (`fork`) | `fork` — a copy of the master; `exec` — a `php` of its own on the script. See [Launch: exec or fork](#launch-exec-or-fork). |
-| `phpBinary` | the master's | Interpreter for this group's workers. Under `fork` only the php the master runs on, named by its path, a symlink or a name on `PATH`. |
-| `phpArgs` | the master's | Interpreter flags, e.g. `["-d", "extension=…"]`; under `fork` only `-d name=value`. |
+| `phpBinary` | the master's | Interpreter for this group's workers — under `fork`, for its fork server, which they are copies of. |
+| `phpArgs` | the master's | Interpreter flags, e.g. `["-d", "extension=…"]`; under `fork`, the fork server's. |
+| `bootstrap` | empty | A file the fork server of a `fork` group loads once per generation, before it forks the workers — see [loading the application once](#loading-the-application-once-bootstrap). |
 | `env` | the master's | Extra worker env, merged over the master's and the inherited one. |
 | `restartPolicy` | the master's | `always` \| `on-failure` \| `never`. |
 | `shutdownTimeoutMs` | the master's | How long to wait for a worker to finish before `SIGKILL`. |
@@ -299,134 +304,130 @@ orders #2` is slot 2 of the `orders` pool.
 
 ## Launch: exec or fork
 
-A group's `launch` says how its workers are started. `fork`, the default, makes each
-worker a copy of the master: the master is a `php` with the extension already loaded,
-and the copy sets up the worker's environment and argv and `require`s `workerScript`.
-`exec` starts each one as `php <phpArgs> workerScript <argv>`. The worker script is the
-same either way.
+A group's `launch` says how its workers are started. The worker script is the same
+either way.
+
+- `exec` starts each worker as `php <phpArgs> workerScript <argv>`.
+- `fork`, the default, starts a fork server for the group: a `php` of its own, started
+  with the group's `phpBinary` and `phpArgs` like an exec'd worker, which loads the
+  group's [bootstrap](#loading-the-application-once-bootstrap), if it has one, and forks
+  the workers from itself. A worker is a copy of the fork server that sets up its
+  environment and argv and `require`s `workerScript`.
+
+The fork server supervises its workers — restarts, the [watchdog](#stuck-worker), the
+journal lines — the way the master supervises an exec group's, and the master
+supervises the fork servers. The master itself never forks.
 
 | | `exec` | `fork` |
 |---|---|---|
-| A worker starts as | a new `php`: interpreter, `php.ini`, the extension | a copy of the master: nothing to start or load |
-| Master start to the first answer of one worker (demo server, median of 7) | 36–40 ms | 24–30 ms |
-| `phpBinary` | any | the master's own only (by path, symlink or name on `PATH`); another one is refused |
-| `phpArgs` | any flags | only `-d name=value`, applied with `ini_set` after `display_errors=stderr` |
-| `php.ini` | its own | the master's |
-| What a `reload` picks up | new code of everything | new application code when its files are replaced in place, not when a deploy switches a symlink to a new release (see below); the library and the extension the master loaded stay as they were until it restarts |
+| A worker starts as | a new `php`: interpreter, `php.ini`, the extension, the application | a copy of the fork server: nothing to start, and with a bootstrap nothing to load |
+| Master start to the first answer of one worker (demo server, median of 7) | 40 ms | 45 ms — the fork server starts first |
+| A killed worker to the first answer of its replacement (median of 7) | 103 ms | 103 ms — both wait for the master's or the fork server's 100 ms tick |
+| `phpBinary`, `phpArgs`, `php.ini` | the worker's | the fork server's, and so its workers' |
+| What a `reload` picks up | new code of everything | new code of everything: the next generation is a new fork server, see [reload](#commands) |
 | Scope the script runs in | global | a function's |
-
-What a fork group's `phpArgs` may carry is checked at `start` and on every `reload`,
-and a group that asks for what cannot be honoured is refused rather than run without
-it: an `extension` has to be loaded in the master already, and a directive PHP fixes
-at startup (`extension_dir`, `opcache.enable_cli`) cannot be set at all.
 
 The script runs inside a function, so its top-level variables are that function's
 locals. `$argv`, `$argc` and `$_SERVER['argv']` hold what a `php` started on the
 script would have had. A script that relies on `global` or on `$GLOBALS` holding its
 top-level variables needs `exec`.
 
-The rest is the same as for `exec`. The child is prepared before PHP runs in it:
-stdin from `/dev/null`, stdout and stderr onto the master's pipes, so the journal reads
-as before, and every descriptor the master opened itself pointed at `/dev/null`. The
-signal handlers the master installed are put back to PHP's own, the random generators
-are reseeded, and the master's objects are marked as destroyed so their destructors
-never run in a worker. An uncaught exception goes to the exception handler, if one is
-set, and is otherwise reported on stderr the way PHP reports it; the worker exits with
-`255`, and `exit()` works as usual. In `ps` a forked worker shows as
-`sconcur-server: <group> #<slot>`. Telemetry, the watchdog and `--masterPid` work as
-with `exec`.
+The child is prepared before PHP runs in it: stdin from `/dev/null`, stdout and stderr
+onto the fork server's pipes, so the journal reads as with `exec`, and every descriptor
+the fork server opened itself pointed at `/dev/null`. The fork server's signal handlers
+are put back to PHP's own, the random generators are reseeded, and the fork server's
+objects are marked as destroyed so their destructors never run in a worker. An uncaught
+exception goes to the exception handler, if one is set, and is otherwise reported on
+stderr the way PHP reports it; the worker exits with `255`, and `exit()` works as usual.
+In `ps` a forked worker shows as `sconcur-server: <group> #<slot>`. Telemetry, the
+watchdog and `--masterPid` work as with `exec`; `--masterPid` is the fork server's pid,
+the process the worker is a child of.
 
-A fork is refused in a process that runs threads, because a fork keeps only the
-calling thread. The master's own code never starts the extension's runtime, but an
-`onWatchdogEvent` handler that used SConcur's asynchronous features would, and every
-fork after it would fail; the journal says why.
+A fork server that dies takes its workers with it: they find themselves orphaned and stop,
+and the master stops the ones it still knows of. The master then starts a new
+generation, after a backoff if the fork servers keep dying before they load.
 
-A forked worker loads the application's classes through the autoloader the master
-loaded when it started, and Composer's autoloader holds its paths with symlinks already
-resolved. A deploy that writes a new release into a directory of its own and switches a
-`current` symlink to it leaves that autoloader pointing into the old release: after a
-`reload` the worker script comes from the new release and the classes it loads from the
-old one. Restart the master on such a deploy, or launch the group with `exec`.
+### Loading the application once: bootstrap
 
-`exec` is the choice for a group that needs:
+A group with `launch: fork` and a `bootstrap` has its application loaded once per
+generation, in the fork server, before any worker is forked. Every worker starts with it
+in memory, and the pages stay shared until a worker writes to them:
 
-- another interpreter, another `php.ini` (`-c`) or none (`-n`);
-- a worker script that relies on running in the global scope;
-- a `reload` that picks up a new library or extension without restarting the master;
-- a `reload` after a deploy that switches a symlink to a new release.
-
-Before 0.17 every worker was started by `exec`. A config written then that names
-another php or passes `phpArgs` other than `-d name=value` is refused at `start`, with
-the reason and the group's name; `launch: exec` on the group, or at the top level for
-all of them, brings back what it had.
-
-### Loading the application in the master
-
-A forked worker is a copy of the master, and of whatever its process loaded before the
-master started. An application that loads itself first and starts the master after is
-loaded once: every worker starts with it in memory, and the pages stay shared until a
-worker writes to them. There is no setting for it; it is what the process does before
-`start`:
+```json
+{
+  "name": "http",
+  "launch": "fork",
+  "bootstrap": "/app/current/sconcur-bootstrap.php",
+  "workerScript": "/app/current/worker.php",
+  "server": { "address": "0.0.0.0:8080", "reusePort": true }
+}
+```
 
 ```php
-// server.php: php -d extension=sconcur.so server.php start --configPath=master.json
+// sconcur-bootstrap.php: Composer's autoloader first, then the application
 require __DIR__ . '/vendor/autoload.php';
 
 $GLOBALS['app'] = require __DIR__ . '/bootstrap/app.php';
-
-exit(new SConcur\Worker\MasterCli()->run($argv));
 ```
 
-The groups that use the application have `launch: fork`, and their worker script takes
-it from `$GLOBALS` or a static instead of loading it. The script runs inside a
-function, so its own top-level variables are not global, but one the entry script set
-is. `status`, `stop` and `reload` do not need the application and work through
-`bin/sconcur-server` with the same `--configPath`.
+The bootstrap runs in the global scope, so the worker script reaches what it set through
+`$GLOBALS` or a static instead of loading it again. It has to load Composer's autoloader
+itself: the fork server touches none of the library before the bootstrap has run. That
+is what makes a deploy that switches a `current` symlink to a new release work — a
+process that loaded through the symlink keeps the paths of the release it found,
+Composer's autoloader included, and the next generation is a new process that follows
+the symlink to the new release, the application and this library both. A group without a
+bootstrap loads the autoloader the master loaded, and keeps that release's paths until
+the master restarts; give it a bootstrap of one line (`require __DIR__ .
+'/vendor/autoload.php';`) when deploys switch a symlink.
 
 Measured with `make bench-worker-memory`: 12 workers, a stand-in application of about
 1 250 classes (Composer's classmap, some 11 MiB of compiled code), OPcache off in the
-CLI, after 5 000 requests. Pss counts each shared page in shares, so its sum is what
-the pool takes from the machine:
+CLI, after 5 000 requests, three runs within 0.2 MiB of each other. Pss counts each
+shared page in shares, so its sum is what the pool takes from the machine:
 
 | The workers start as | Pss, all workers | Pss per worker | Private_Dirty, all workers |
 |---|---:|---:|---:|
-| `exec` | 275.5 MiB | 23.0 MiB | 259.9 MiB |
-| `fork`, the application loaded by the worker script | 190.5 MiB | 15.9 MiB | 176.0 MiB |
-| `fork`, the application loaded before the master started | 63.8 MiB | 5.3 MiB | 38.6 MiB |
+| `exec` | 279.1 MiB | 23.3 MiB | 260.2 MiB |
+| `fork`, the application loaded by the worker script | 191.0 MiB | 15.9 MiB | 176.4 MiB |
+| `fork`, the application loaded by the bootstrap | 59.8 MiB | 5.0 MiB | 34.3 MiB |
 
-The master adds 4–11 MiB of its own in each case.
+The master adds 10.8 MiB of its own; with fork, the master and the fork server together
+add 17–19 MiB.
 
-What the master takes care of:
+What the fork server takes care of:
 
-- Descriptors open when the master starts stay open in forked workers: a log file a
-  logger opened while the application loaded is written from every worker. Only the
-  descriptors the master opens itself are pointed at `/dev/null`.
-- The application's error handler is kept out of the master's loop: a handler that
-  turns warnings into exceptions would otherwise end the master at the first warning
-  it silences, and the master silences one on every tick. Every forked worker runs
-  under the handler again, and an exception that escapes the worker script goes to the
+- Descriptors the bootstrap opened stay open in the workers: a log file a logger opened
+  while the application loaded is written from every worker. Only the descriptors the
+  fork server opens itself are pointed at `/dev/null`.
+- The application's error handler is kept out of the fork server's loop: a handler that
+  turns warnings into exceptions would otherwise end the fork server at the first
+  warning it silences, and it silences one on every tick. Every worker runs under the
+  handler again, and an exception that escapes the worker script goes to the
   application's exception handler, as it would in a `php` of its own.
 - A scheduler built while the application loaded marks the worker alive for the
-  watchdog, not the master.
+  watchdog, not the fork server.
 
 What is left to the application:
 
-- No asynchronous call before the master starts. It starts the extension's runtime, a
-  process with the runtime running cannot fork, and `start` is refused with the reason.
-- No connection opened before the master starts. A fork does not copy a connection, it
-  shares it: the master and every worker hold the same socket, and each takes it for
-  its own. Two workers sending at once interleave their bytes on one stream, and the
-  database answers with a protocol error (`Packets out of order`, `server has gone
-  away`). A response goes to whichever worker reads first, so one request can get the
-  rows of another's query. And a worker that closes the connection closes it for all.
-  Most clients connect on the first query, as Laravel's do, and those are fine; a
-  connection made while loading is to be closed before the master starts
-  (`DB::disconnect()`). A listening socket and a datagram one (syslog, statsd) are safe
-  to share.
+- No asynchronous call in the bootstrap. It starts the extension's runtime, a process
+  with the runtime running cannot fork, and the fork server refuses with the reason: the
+  group does not come up, and on a `reload` the reload is given up.
+- No connection opened in the bootstrap. A fork does not copy a connection, it shares
+  it: every worker holds the same socket, and each takes it for its own. Two workers
+  sending at once interleave their bytes on one stream, and the database answers with a
+  protocol error (`Packets out of order`, `server has gone away`). A response goes to
+  whichever worker reads first, so one request can get the rows of another's query. And
+  a worker that closes the connection closes it for all. Most clients connect on the
+  first query, as Laravel's do, and those are fine; a connection made while loading is
+  to be closed at the end of the bootstrap (`DB::disconnect()`). A listening socket and
+  a datagram one (syslog, statsd) are safe to share.
 - The server is built in the worker script. Its flags (`server`, `--listenFd`,
-  `--masterPid`) reach the worker's argv, not the master's.
-- A `reload` restarts the workers with the application the master loaded. Changed
-  application code takes a restart of the master.
+  `--masterPid`) reach the worker's argv.
+
+An application loaded before the master starts — a framework command that loads
+everything and then runs `MasterCli` — reaches no worker: the master never forks, and
+each fork server is a `php` of its own. Load it in the bootstrap instead.
 
 ## Readiness
 
@@ -510,7 +511,9 @@ the journal.
 
 A worker counts as up once it [says so](#readiness), or once it has run for longer than
 `readyTimeoutMs` — so a script that never calls `markReady()` is not taken for a
-failure, as long as it does not crash at startup. A clean exit is not a failure. Only
+failure, as long as it does not crash at startup. A clean exit is not a failure. For a
+fork group, a fork server that dies before it has loaded — a bootstrap that throws, or one
+that started the extension's runtime — is a failed start of the whole group. Only
 the groups the master started with are checked: one a `reload` added must not take a
 running pool down, and its failures are left to the backoff.
 
@@ -550,9 +553,8 @@ transactions, so nothing tied to the session survives outside one: a `SET`, a te
 table, an advisory lock, `LISTEN`. Whether this library's statements work through such a
 pooler has not been tested.
 
-A connection opened before the master starts is a different problem — one socket shared
-by every forked worker; see [loading the application in the
-master](#loading-the-application-in-the-master).
+A connection opened in a bootstrap is a different problem — one socket shared by every
+forked worker; see [loading the application once](#loading-the-application-once-bootstrap).
 
 ## Self-termination of orphaned workers
 
@@ -645,11 +647,13 @@ What the watch leaves alone:
   raise `watchdogTimeoutMs` past the longest such handler, or set it to `0` for that
   group.
 - A worker that has left its slot: one a `reload` replaced, or one that reached its
-  limit after its replacement was started. It has `shutdownTimeoutMs` to finish and
-  gets `SIGKILL` past that, hung or not. The replacement a `reload` is waiting on is
-  not watched either: `readyTimeoutMs` bounds it. A group being retired after a reload
-  removed it from the config is watched, and deliberately: `retire()` has no deadline
-  of its own, so a hung worker would otherwise hold the retiring group open forever.
+  limit after its replacement was started. It has `shutdownTimeoutMs` to finish and gets
+  `SIGKILL` past that, hung or not. In an exec group the replacement a `reload` is
+  waiting on is not watched either: `readyTimeoutMs` bounds it; in a fork group it is a
+  worker of the next fork server, watched by it like any other. A group being retired
+  after a reload removed it from the config is watched, and deliberately: `retire()` has
+  no deadline of its own, so a hung worker would otherwise hold the retiring group open
+  forever.
 - A worker that is stopping but never finishes — `SIGTERM` taken, with one handler
   waiting on a result that will not arrive. Its serve loop keeps turning, so it keeps
   marking itself alive while serving nothing. Give such handlers a `handlerTimeoutMs`;
@@ -723,21 +727,24 @@ The master writes to a single daily file in `logDir`
 (`sconcur-server-2026-06-18.log`); at the day boundary a new file is opened and
 files older than `rotateDays` are deleted. The line format is
 `[Y-m-d H:i:s.uuuuuu] LEVEL [<scope>]: <message> [<context>]`, where `<scope>` is
-`master: <pid>` or `worker: <pid> <group> #<index>` — the group is part of it because a
-slot index only names a worker together with its pool:
+`master: <pid>`, `fork-server: <pid> <group>` or `worker: <pid> <group> #<index>` — the
+group is part of it because a slot index only names a worker together with its pool:
 
 ```
 [2026-06-18 12:00:00.180210] INFO [worker: 12346 http #0]: spawned []
 [2026-06-18 12:01:00.012044] ERROR [worker: 12346 http #0]: exited code=1 uptime=0.3s; restarting in 200ms []
 ```
 
-The master intercepts the workers' `stdout`/`stderr` and rewrites them into the
-same log (stderr → `ERROR`, stdout → `INFO`), so crash output and the worker's
-access log are preserved next to the exit record. It also forces
-`-d display_errors=stderr` into every worker command (ahead of `phpArgs`), so PHP's
-own errors always reach the journal even when the deployment `php.ini` sets
-`display_errors=Off`; a later `-d` wins, so `phpArgs` can override this
-deliberately.
+The master intercepts the workers' `stdout`/`stderr` and rewrites them into the same log
+(stderr → `ERROR`, stdout → `INFO`), so crash output and the worker's access log are
+preserved next to the exit record. For a fork group the fork server does that for its
+workers, writing into the same file and to the same stdout as the master, one write per
+line, so the lines of the two never cut into each other; what the fork server itself
+writes to stderr — a bootstrap that does not load — the master logs as `group <name>:
+fork server <pid>: …`. It also forces `-d display_errors=stderr` into every worker
+command (ahead of `phpArgs`), so PHP's own errors always reach the journal even when the
+deployment `php.ini` sets `display_errors=Off`; a later `-d` wins, so `phpArgs` can
+override this deliberately.
 
 `logTo` sets the sink: `file` (default), `stdout` (collected by
 `docker logs`/journald) or `both` — under `docker logs` you need one of the
@@ -789,21 +796,21 @@ state file, releases the lock and exits with code `0`.
 ## Testing
 
 The tests do not depend on a docker service:
-`SConcur\Tests\Impl\Worker\TestWorkerMaster` runs `bin/sconcur-server` as a
-separate process on a loopback port, with the shared demo server as the worker.
-Coverage (`tests/feature/Worker/` + `tests/feature/Features/HttpServer/`):
-supervision (spawning N workers, restarting a killed one, self-exit on
-`maxRequests` → restart, the `on-failure` and `never` policies), reload (each
-replacement up before the old worker stops, given up on a replacement that dies or
-never says it is up, a script with `markReady()`), a group that never comes up (exit
-`70`), stopping
-(graceful shutdown on `SIGTERM` and on removal of the state file), singleness
-and state (rejection of a second instance, `status`/`stop`, `status` after a
-crash), resilience (crash-loop backoff, config validation, orphan
-self-termination) and the logger (line format, context JSON, daily rotation).
-`ForkedWorkerMasterTest` runs every one of those scenarios once more with the
-workers launched by fork. `PreloadedWorkerMasterTest` starts the master from a script
-that loads an application first and checks what reaches its forked workers.
+`SConcur\Tests\Impl\Worker\TestWorkerMaster` runs `bin/sconcur-server` as a separate
+process on a loopback port, with the shared demo server as the worker. Coverage
+(`tests/feature/Worker/` + `tests/feature/Features/HttpServer/`): supervision (spawning
+N workers, restarting a killed one, self-exit on `maxRequests` → restart, the
+`on-failure` and `never` policies), reload (each replacement up before the old worker
+stops, given up on a replacement that dies or never says it is up, a script with
+`markReady()`), a group that never comes up (exit `70`), stopping (graceful shutdown on
+`SIGTERM` and on removal of the state file), singleness and state (rejection of a second
+instance, `status`/`stop`, `status` after a crash), resilience (crash-loop backoff,
+config validation, orphan self-termination) and the logger (line format, context JSON,
+daily rotation). `ForkedWorkerMasterTest` runs every one of those scenarios once more
+with the workers launched by fork, through fork servers. `BootstrapWorkerMasterTest`
+gives a fork group a bootstrap and checks what reaches its workers, that a reload loads
+the application again — after a symlink switch to a new release too — and what a
+bootstrap that does not load does to a start and to a reload.
 
 ---
 

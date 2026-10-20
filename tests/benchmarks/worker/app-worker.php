@@ -1,8 +1,8 @@
 <?php
 
 /**
- * The worker of the memory benchmark: loads the stand-in application unless its master
- * has, then answers every request with its pid.
+ * The worker of the memory benchmark: loads the stand-in application unless its fork server
+ * has (the bootstrap arm), then answers every request with its pid.
  */
 
 declare(strict_types=1);

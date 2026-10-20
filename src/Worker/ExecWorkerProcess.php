@@ -36,14 +36,50 @@ class ExecWorkerProcess extends WorkerProcess
         array $env,
         array $keepDescriptors = [],
     ) {
-        $descriptors = [
-            0 => ['pipe', 'r'],
-            1 => ['pipe', 'w'],
-            2 => ['pipe', 'w'],
-            // The pipe the worker marks itself on: alive, up, leaving at its limit.
-            Heartbeat::FD => ['pipe', 'w'],
-        ];
+        $pipes = $this->open(
+            command: $command,
+            cwd: $cwd,
+            env: $env,
+            descriptors: [
+                0 => ['pipe', 'r'],
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+                // The pipe the worker marks itself on: alive, up, leaving at its limit.
+                Heartbeat::FD => ['pipe', 'w'],
+            ],
+            keepDescriptors: $keepDescriptors,
+        );
 
+        // stdin is unused; close it so the worker never blocks waiting on it.
+        if (isset($pipes[0]) && is_resource($pipes[0])) {
+            fclose($pipes[0]);
+        }
+
+        $this->stdoutPipe    = $pipes[1] ?? null;
+        $this->stderrPipe    = $pipes[2] ?? null;
+        $this->heartbeatPipe = $pipes[Heartbeat::FD] ?? null;
+
+        foreach ([$this->stdoutPipe, $this->stderrPipe, $this->heartbeatPipe] as $pipe) {
+            if (is_resource($pipe)) {
+                stream_set_blocking($pipe, false);
+            }
+        }
+    }
+
+    /**
+     * Starts the process with the descriptors given, each one to keep placed under the
+     * number it already has, and everything else above stderr shut out
+     * (inheritedDescriptorGuard). Answers the pipes proc_open made.
+     *
+     * @param list<string>          $command
+     * @param array<string, string> $env
+     * @param array<int, mixed>     $descriptors
+     * @param list<int>             $keepDescriptors
+     *
+     * @return array<int, resource>
+     */
+    protected function open(array $command, string $cwd, array $env, array $descriptors, array $keepDescriptors): array
+    {
         // A stream for each descriptor to keep, which proc_open then places under the
         // number the descriptor already has. php://fd opens a copy, closed again below
         // once the child has its own.
@@ -91,20 +127,8 @@ class ExecWorkerProcess extends WorkerProcess
         $this->pid         = (int) $status['pid'];
         $this->startedAtNs = hrtime(true);
 
-        // stdin is unused; close it so the worker never blocks waiting on it.
-        if (isset($pipes[0]) && is_resource($pipes[0])) {
-            fclose($pipes[0]);
-        }
-
-        $this->stdoutPipe    = $pipes[1] ?? null;
-        $this->stderrPipe    = $pipes[2] ?? null;
-        $this->heartbeatPipe = $pipes[Heartbeat::FD] ?? null;
-
-        foreach ([$this->stdoutPipe, $this->stderrPipe, $this->heartbeatPipe] as $pipe) {
-            if (is_resource($pipe)) {
-                stream_set_blocking($pipe, false);
-            }
-        }
+        /** @var array<int, resource> $pipes */
+        return $pipes;
     }
 
     /**

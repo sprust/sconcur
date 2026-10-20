@@ -9,38 +9,33 @@ use SConcur\Process\ProcessControl;
 use Throwable;
 
 /**
- * The child half of a forked worker: turns the fresh copy of the master into the worker
- * its group describes, runs the worker script and leaves.
+ * The child half of a forked worker: turns the fresh copy of its parent — the fork server of
+ * its group — into the worker the group describes, runs the worker script and leaves.
  *
- * It never returns. The master's call stack is still below it, and an exception that
- * reached those frames would run the master's finally blocks in the worker — the one in
- * WorkerMaster::run() removes the state file, which is the signal that stops the whole
- * pool. So the script runs inside a catch-all, and the worker leaves through
+ * It never returns. The parent's call stack is still below it, and an exception that
+ * reached those frames would run the parent's finally blocks and its supervision loop in
+ * the worker. So the script runs inside a catch-all, and the worker leaves through
  * ProcessControl::exit() however it ends. An exit() inside the script leaves through
  * PHP's own shutdown instead, which skips finally blocks and is safe.
  *
- * The worker runs under the error and exception handlers of the application the master
- * was started from, as a php started on the script would run under its own: the master
- * keeps its error handler out of its loop (WorkerMaster::run), and it is given back here.
+ * The worker runs under the error and exception handlers of the application the fork server
+ * loaded (its bootstrap), as a php started on the script would run under its own: the
+ * fork server keeps its error handler out of its loop (ForkServer::run), and it is given back here.
  */
 class ForkedWorker
 {
     /**
-     * @param string                            $title       what `ps` shows for the worker
-     * @param string                            $cwd         the directory the worker runs in
-     * @param array<string, string>             $environment what the worker's environment adds to the
-     *                                                       master's
-     * @param list<array{0: string, 1: string}> $iniSettings the group's -d flags, applied
-     *                                                       after display_errors=stderr so a
-     *                                                       later one wins
-     * @param list<string>                      $argv        the argv the script sees, its own path first
+     * @param string                $title       what `ps` shows for the worker
+     * @param string                $cwd         the directory the worker runs in
+     * @param array<string, string> $environment what the worker's environment adds to the
+     *                                           parent's
+     * @param list<string>          $argv        the argv the script sees, its own path first
      */
     public static function run(
         ForkResult $fork,
         string $title,
         string $cwd,
         array $environment,
-        array $iniSettings,
         array $argv,
     ): never {
         $exitCode = 255;
@@ -51,7 +46,6 @@ class ForkedWorker
                 title: $title,
                 cwd: $cwd,
                 environment: $environment,
-                iniSettings: $iniSettings,
             );
 
             static::runScript($argv);
@@ -88,15 +82,13 @@ class ForkedWorker
     }
 
     /**
-     * @param array<string, string>             $environment
-     * @param list<array{0: string, 1: string}> $iniSettings
+     * @param array<string, string> $environment
      */
     protected static function prepare(
         ForkResult $fork,
         string $title,
         string $cwd,
         array $environment,
-        array $iniSettings,
     ): void {
         // Without it every worker shows in `ps` as the master's own command line.
         @cli_set_process_title($title);
@@ -113,25 +105,16 @@ class ForkedWorker
         }
 
         // What an exec worker gets as `-d display_errors=stderr`: a worker dying on
-        // startup explains itself in the journal, at ERROR, whatever php.ini says.
+        // startup explains itself in the journal, at ERROR, whatever php.ini says. The
+        // group's own -d flags are the fork server's already, which was started with them.
         ini_set('display_errors', 'stderr');
-
-        foreach ($iniSettings as [$directive, $value]) {
-            // Loaded in the master already — WorkerMaster::assertLaunchable refuses the
-            // group otherwise — and not something ini_set can do.
-            if ($directive === 'extension' || $directive === 'zend_extension') {
-                continue;
-            }
-
-            ini_set($directive, $value);
-        }
 
         // Also without one: what the master's process knew of a heartbeat — none, or one of
         // its own master's — is not this worker's.
         Heartbeat::adopt($fork->heartbeat);
 
-        // Last, so what is silenced above stays out of it: the master's own handler, which
-        // WorkerMaster::run() put over the application's, comes off.
+        // Last, so what is silenced above stays out of it: the fork server's own handler, which
+        // ForkServer::run() put over the application's, comes off.
         restore_error_handler();
     }
 

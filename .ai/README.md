@@ -268,10 +268,16 @@ feature's doc. Key PHP classes not covered there:
   process control only — signals, kill, fork — and never starts its runtime):
   `WorkerMaster`, `MasterConfig`, `MasterCli`, `WorkerProcess` (the abstract worker:
   journal pipes, heartbeat, outcome) with its two launches — `ExecWorkerProcess`
-  (`proc_open` of a php of its own) and `ForkedWorkerProcess` (a fork of the master,
-  the default, whose child half is `ForkedWorker`: environment, ini, argv, `require` of the script,
-  `_exit`, and never a return into the master's frames) — chosen per group by
-  `LaunchMode`, `Cpu`, `MasterLock`, `MasterState`/`MasterGroupState`/`MasterStateFile`, `MasterLogger`,
+  (`proc_open` of a php of its own) and `ForkedWorkerProcess` (a fork of the group's
+  fork server, whose child half is `ForkedWorker`: environment, argv, `require` of the script,
+  `_exit`, and never a return into its parent's frames) — chosen per group by
+  `LaunchMode`. The master runs an exec group as a `WorkerGroup` and a fork group (the
+  default) as a `ForkServerGroup`, both `SupervisedGroup`s: a fork group gets a fork server per
+  generation (`ForkServer`, started through `bin/sconcur-fork-server` as a php of its own via
+  `ForkServerProcess`), which loads the group's `bootstrap` once and runs a `WorkerGroup` of its
+  own; the master never forks, and a reload starts the next generation's fork server and moves
+  the slots across one at a time (`ForkServerGeneration`), moving them back if it is given
+  up. Then `Cpu`, `MasterLock`, `MasterState`/`MasterGroupState`/`MasterStateFile`, `MasterLogger`,
   `RestartPolicy`. One master supervises several **groups** — `WorkerGroupConfig`
   (a pool's settings, with `MasterDefaults` for what it inherits) and `WorkerGroup`
   (its live slots, backoff and rolling reload). The groups are generic: everything

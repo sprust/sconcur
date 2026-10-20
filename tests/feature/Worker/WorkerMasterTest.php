@@ -788,6 +788,30 @@ class WorkerMasterTest extends TestCase
         }
     }
 
+    /**
+     * A group's workers run on the php its config names, with its phpArgs, whichever way
+     * they start — a fork group's fork server is started that way too. One whose phpArgs do not
+     * load the extension cannot run a server; it never comes up, and the journal says why.
+     */
+    public function testAGroupWhosePhpArgsDoNotLoadTheExtensionNeverComesUp(): void
+    {
+        $master = TestWorkerMaster::start(
+            options: [
+                'workerCount' => 1,
+                'phpArgs'     => [],
+            ],
+            waitReachable: false,
+        );
+
+        try {
+            self::assertSame(WorkerMaster::EXIT_NEVER_CAME_UP, $master->waitForExit(10.0), $master->logText());
+            self::assertStringContainsString('sconcur', $master->logText());
+            self::assertStringContainsString('no worker came up', $master->logText());
+        } finally {
+            $master->stop();
+        }
+    }
+
     public function testReloadRollsEveryWorkerWithoutDowntime(): void
     {
         $master = TestWorkerMaster::start(['workerCount' => 2]);

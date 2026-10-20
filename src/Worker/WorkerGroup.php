@@ -23,7 +23,7 @@ use Throwable;
  * at its own limit with its replacement already started — finishes outside the slots, in
  * the draining list, so the slot belongs to the worker that serves from it.
  */
-class WorkerGroup
+class WorkerGroup implements SupervisedGroup
 {
     protected const float HEALTHY_UPTIME_SECONDS = 1.0; // shorter run counts as a fast fail
 
@@ -222,6 +222,95 @@ class WorkerGroup
         $this->reloadFailure = '';
 
         return $failure;
+    }
+
+    /** @return list<int> the slots the group keeps, empty ones awaiting a respawn included */
+    public function slotIndices(): array
+    {
+        return array_keys($this->slots);
+    }
+
+    /** The worker of a slot, or null while the slot is empty or not this group's. */
+    public function slotWorker(int $index): ?WorkerProcess
+    {
+        return $this->slots[$index] ?? null;
+    }
+
+    /**
+     * Every process of the group still running — in a slot, draining, or starting for a
+     * reload — by pid: what the master stops itself when the fork server that ran them is gone.
+     *
+     * @return list<int>
+     */
+    public function livePids(): array
+    {
+        $pids = [];
+
+        foreach ($this->slots as $process) {
+            if ($process !== null) {
+                $pids[] = $process->pid();
+            }
+        }
+
+        foreach ($this->draining as $draining) {
+            $pids[] = $draining->process->pid();
+        }
+
+        if ($this->reloadCandidate !== null) {
+            $pids[] = $this->reloadCandidate->pid();
+        }
+
+        return $pids;
+    }
+
+    /**
+     * Brings a slot up on a command of the master: a reload moving the slot into this
+     * generation from the one before it. A slot that already has its worker is left as it
+     * is.
+     */
+    public function spawnSlot(int $index): void
+    {
+        if (($this->slots[$index] ?? null) !== null) {
+            return;
+        }
+
+        $this->slots[$index] = null;
+
+        $this->spawn(
+            index: $index,
+            message: 'spawned as a replacement; waiting for it to be up',
+        );
+    }
+
+    /**
+     * Gives a slot up on a command of the master: a reload moved it to the next generation,
+     * or stops a slot the next config no longer has. Its worker is asked to stop and drains
+     * outside the slots, and the slot is not refilled. Answers the draining worker, for
+     * the caller to see when it is gone, or null when the slot had none.
+     */
+    public function releaseSlot(int $index, string $reason): ?DrainingWorker
+    {
+        $process = $this->slots[$index] ?? null;
+
+        unset($this->slots[$index], $this->respawnAtNs[$index]);
+
+        $this->forgetWatchdog($index);
+
+        if ($process === null) {
+            return null;
+        }
+
+        return $this->drain(
+            index: $index,
+            process: $process,
+            reason: $reason,
+        );
+    }
+
+    /** Whether a worker the group let go of is still finishing. */
+    public function isDraining(DrainingWorker $draining): bool
+    {
+        return in_array($draining, $this->draining, true);
     }
 
     public function spawnAll(): void
@@ -1012,7 +1101,7 @@ class WorkerGroup
         }
     }
 
-    protected function spawn(int $index): void
+    protected function spawn(int $index, string $message = 'spawned'): void
     {
         if ($this->retiring) {
             return;
@@ -1057,7 +1146,7 @@ class WorkerGroup
             level: MasterLogger::INFO,
             pid: $process->pid(),
             index: $index,
-            message: 'spawned',
+            message: $message,
         );
     }
 
@@ -1221,31 +1310,30 @@ class WorkerGroup
     }
 
     /**
-     * Forks the master into the worker of a slot. The child half never returns: it becomes
-     * the worker in ForkedWorker::run() and leaves from there. What it needs is taken here,
-     * before the fork, so the child reads plain values rather than this group.
+     * Forks this process — the group's fork server — into the worker of a slot. The child half
+     * never returns: it becomes the worker in ForkedWorker::run() and leaves from there.
+     * What it needs is taken here, before the fork, so the child reads plain values rather
+     * than this group.
      */
     protected function fork(int $index): ForkedWorkerProcess
     {
         $title       = sprintf('sconcur-server: %s #%d', $this->config->name, $index);
         $cwd         = $this->cwd;
         $environment = $this->workerEnvironment($index);
-        $iniSettings = $this->config->iniSettings();
         $argv        = $this->workerArgv();
 
         return new ForkedWorkerProcess(
-            // A forked worker is the master's copy, the application the master was started
-            // from included, and keeps what that application had open — a log file a
-            // logger opened while loading would otherwise write to /dev/null in every
-            // worker. An exec'd worker is a php of its own and loads its own.
+            // A forked worker is the fork server's copy, the application its bootstrap loaded
+            // included, and keeps what that application had open — a log file a logger
+            // opened while loading would otherwise write to /dev/null in every worker. An
+            // exec'd worker is a php of its own and loads its own.
             keepDescriptors: [...$this->keepDescriptors(), ...$this->inheritedDescriptors],
-            child: static function (ForkResult $fork) use ($title, $cwd, $environment, $iniSettings, $argv): never {
+            child: static function (ForkResult $fork) use ($title, $cwd, $environment, $argv): never {
                 ForkedWorker::run(
                     fork: $fork,
                     title: $title,
                     cwd: $cwd,
                     environment: $environment,
-                    iniSettings: $iniSettings,
                     argv: $argv,
                 );
             },

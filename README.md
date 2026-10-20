@@ -330,9 +330,6 @@ php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello'
 
 In the order it is meant to happen:
 
-- Reloading an application that forked workers share without restarting the master:
-  today a `reload` of such a group brings its workers back on the code the master
-  loaded — see [worker master](docs/worker-master.md#loading-the-application-in-the-master).
 - Installation through [PIE](https://php.github.io/pie/) — `pie install` for the
   extension, instead of taking `sconcur.so` from the releases and writing the
   `extension=` line by hand.

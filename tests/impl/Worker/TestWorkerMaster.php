@@ -18,7 +18,7 @@ class TestWorkerMaster
     private const string HOST = '127.0.0.1';
 
     /** The flat option keys that describe a pool rather than the master. */
-    private const array GROUP_KEYS = ['workerScript', 'workerCount', 'workerArgs', 'server', 'listen'];
+    private const array GROUP_KEYS = ['workerScript', 'workerCount', 'workerArgs', 'server', 'listen', 'bootstrap'];
 
     /**
      * The launch every master started from here gets unless the test names one itself:

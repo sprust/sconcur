@@ -18,6 +18,10 @@ namespace SConcur\Worker;
  *
  * Worker stdout/stderr captured by the master is re-emitted here via worker(), so a
  * crash's output lives in the same file and format as the lifecycle events.
+ *
+ * The fork server of a fork group writes the same journal through a logger of its own, whose
+ * own lines are scoped `fork-server: pid group`. Each line is one write, to a file opened for
+ * appending and to stdout, so lines of the two processes never cut into each other.
  */
 class MasterLogger
 {
@@ -30,12 +34,18 @@ class MasterLogger
 
     protected string $currentDate = '';
 
+    /**
+     * @param string $scope what this logger's own lines are scoped as instead of
+     *                      `master: pid` — the fork server of a fork group writes its lines as
+     *                      `fork-server: pid group` into the same journal
+     */
     public function __construct(
         protected string $logDir,
         protected string $name,
         protected int $rotateDays,
         protected int $masterPid,
         protected LogTarget $logTo = LogTarget::File,
+        protected string $scope = '',
     ) {
     }
 
@@ -107,7 +117,7 @@ class MasterLogger
         $this->rotateIfNeeded();
 
         $scope = $workerPid === null
-            ? sprintf('master: %d', $this->masterPid)
+            ? ($this->scope === '' ? sprintf('master: %d', $this->masterPid) : $this->scope)
             : sprintf(
                 'worker: %d %s#%d',
                 $workerPid,

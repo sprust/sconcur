@@ -91,7 +91,6 @@ foreach ($specs as $index => $spec) {
             title: sprintf('sconcur-load :%s #%d', $port, $index),
             cwd: (string) getcwd(),
             environment: [],
-            iniSettings: [],
             argv: $workerArgv,
         );
     }

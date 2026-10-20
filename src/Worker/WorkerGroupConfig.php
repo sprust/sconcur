@@ -35,6 +35,7 @@ readonly class WorkerGroupConfig
         'readyTimeoutMs',
         'launch',
         'listen',
+        'bootstrap',
         'server',
     ];
 
@@ -43,6 +44,8 @@ readonly class WorkerGroupConfig
      * @param list<string>          $phpArgs    interpreter flags for this group's workers
      * @param list<string>          $workerArgs extra raw worker argv flags
      * @param array<string, string> $env        extra env merged over the inherited one
+     * @param string                $bootstrap  a file the group's fork server loads once per generation, in
+     *                                          the global scope, before it forks the workers (fork only)
      */
     public function __construct(
         public string $name,
@@ -61,6 +64,7 @@ readonly class WorkerGroupConfig
         public LaunchMode $launch = LaunchMode::Fork,
         public string $listen = '',
         public int $readyTimeoutMs = MasterConfig::DEFAULT_READY_TIMEOUT_MS,
+        public string $bootstrap = '',
     ) {
     }
 
@@ -140,12 +144,13 @@ readonly class WorkerGroupConfig
 
         $phpBinary = (string) ($data['phpBinary'] ?? $defaults->phpBinary);
         $phpArgs   = isset($data['phpArgs']) ? MasterConfig::stringList($data['phpArgs']) : $defaults->phpArgs;
+        $bootstrap = (string) ($data['bootstrap'] ?? '');
 
-        if ($launch === LaunchMode::Fork) {
-            static::assertForkable(
-                name: $name,
-                phpBinary: $phpBinary,
-                phpArgs: $phpArgs,
+        // Loaded by the fork server a fork group's workers are copies of; an exec'd worker is a php
+        // of its own and loads whatever it needs in its script.
+        if ($bootstrap !== '' && $launch !== LaunchMode::Fork) {
+            throw new InvalidConfigException(
+                message: sprintf('config: group "%s" has "bootstrap", which needs launch=fork', $name),
             );
         }
 
@@ -205,21 +210,37 @@ readonly class WorkerGroupConfig
                 $defaults->readyTimeoutMs,
                 $name,
             ),
+            bootstrap: $bootstrap,
         );
     }
 
     /**
-     * The group's phpArgs as the ini settings they make, for a worker launched by fork:
-     * [directive, value] pairs in the order given, so a later one wins as a later -d does.
-     * Each `-d` takes either the next argument or its own tail (`-dmemory_limit=1G`); a
-     * flag without a value sets the directive to "1", as php does. A pair rather than a map,
-     * because `extension` may come more than once.
+     * Every setting, defaults resolved, in the shape fromArray() reads: how the master hands
+     * a group to the fork server it starts for it, which is a php process of its own.
      *
-     * @return list<array{0: string, 1: string}>
+     * @return array<string, mixed>
      */
-    public function iniSettings(): array
+    public function toArray(): array
     {
-        return static::parseIniFlags($this->phpArgs) ?? [];
+        return [
+            'name'                => $this->name,
+            'workerScript'        => $this->workerScript,
+            'workerCount'         => $this->workerCount,
+            'phpBinary'           => $this->phpBinary,
+            'phpArgs'             => $this->phpArgs,
+            'workerArgs'          => $this->workerArgs,
+            'env'                 => (object) $this->env,
+            'restartPolicy'       => $this->restartPolicy->value,
+            'shutdownTimeoutMs'   => $this->shutdownTimeoutMs,
+            'restartBackoffMs'    => $this->restartBackoffMs,
+            'maxRestartBackoffMs' => $this->maxRestartBackoffMs,
+            'watchdogTimeoutMs'   => $this->watchdogTimeoutMs,
+            'readyTimeoutMs'      => $this->readyTimeoutMs,
+            'launch'              => $this->launch->value,
+            'listen'              => $this->listen,
+            'bootstrap'           => $this->bootstrap,
+            'server'              => (object) $this->server,
+        ];
     }
 
     /**
@@ -242,113 +263,6 @@ readonly class WorkerGroupConfig
         }
 
         return $flags;
-    }
-
-    /**
-     * Refuses what a fork group cannot honour, as far as the config alone tells: it runs on
-     * the master's interpreter, so a php binary of its own is out, and its phpArgs can only
-     * be ini settings. Whether each setting can be applied at runtime depends on the master
-     * process, and is checked there (WorkerMaster::assertLaunchable).
-     *
-     * @param list<string> $phpArgs
-     */
-    protected static function assertForkable(string $name, string $phpBinary, array $phpArgs): void
-    {
-        if (!static::isMastersBinary($phpBinary)) {
-            throw new InvalidConfigException(
-                message: sprintf(
-                    'config: group "%s" is launched by fork, so it runs on the master\'s own php;'
-                    . ' "phpBinary" needs launch=exec',
-                    $name,
-                ),
-            );
-        }
-
-        if (static::parseIniFlags($phpArgs) === null) {
-            throw new InvalidConfigException(
-                message: sprintf(
-                    'config: group "%s" is launched by fork, so its phpArgs can only set ini values'
-                    . ' (-d name=value); %s needs launch=exec',
-                    $name,
-                    json_encode($phpArgs, JSON_UNESCAPED_SLASHES),
-                ),
-            );
-        }
-    }
-
-    /**
-     * Whether a phpBinary names the php the master runs on. A fork group can run on
-     * nothing else, but a config that names that same php — `php` found on the PATH, a
-     * symlink to it — asks for nothing a fork cannot give, and refusing it would break
-     * every config that spelled the interpreter out.
-     */
-    protected static function isMastersBinary(string $phpBinary): bool
-    {
-        if ($phpBinary === PHP_BINARY) {
-            return true;
-        }
-
-        $path = $phpBinary;
-
-        if (!str_contains($phpBinary, '/')) {
-            $path = null;
-
-            foreach (explode(PATH_SEPARATOR, (string) getenv('PATH')) as $directory) {
-                if ($directory !== '' && is_executable($directory . '/' . $phpBinary)) {
-                    $path = $directory . '/' . $phpBinary;
-
-                    break;
-                }
-            }
-
-            if ($path === null) {
-                return false;
-            }
-        }
-
-        $resolved = realpath($path);
-
-        return $resolved !== false && $resolved === realpath(PHP_BINARY);
-    }
-
-    /**
-     * @param list<string> $phpArgs
-     *
-     * @return list<array{0: string, 1: string}>|null null when an argument is not an ini
-     *                                                setting
-     */
-    protected static function parseIniFlags(array $phpArgs): ?array
-    {
-        $settings = [];
-
-        for ($index = 0; $index < count($phpArgs); ++$index) {
-            $argument = $phpArgs[$index];
-
-            if ($argument === '-d') {
-                $argument = $phpArgs[++$index] ?? null;
-
-                if ($argument === null) {
-                    return null;
-                }
-            } elseif (str_starts_with($argument, '-d') && strlen($argument) > 2) {
-                $argument = substr($argument, 2);
-            } else {
-                return null;
-            }
-
-            [$directive, $value] = array_pad(explode('=', $argument, 2), 2, '1');
-
-            if ($directive === '') {
-                return null;
-            }
-
-            $settings[] = [
-                $directive,
-                $value,
-            ];
-        }
-
-        return $settings;
     }
 
     protected static function flagValue(mixed $value): string

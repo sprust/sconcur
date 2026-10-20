@@ -3,13 +3,14 @@
 /**
  * What a pool of workers costs in memory, by how its workers come to be:
  *
- *   exec     a php of its own per worker, which loads the application itself;
- *   fork     a copy of the master per worker, which loads the application after the fork;
- *   preload  a copy of a master that loaded the application before it started.
+ *   exec       a php of its own per worker, which loads the application itself;
+ *   fork       a fork of the group's fork server per worker, which loads the application after
+ *              the fork;
+ *   bootstrap  a fork of a fork server that loaded the application (the group's bootstrap).
  *
  * The application is app.php, a stand-in for a framework's bootstrap. Each arm starts a
  * master with WORKERS workers on a loopback port, waits for all of them to answer, reads
- * /proc/<pid>/smaps_rollup of the master and every worker, sends REQUESTS requests on
+ * /proc/<pid>/smaps_rollup of the master, the fork server and every worker, sends REQUESTS requests on
  * fresh connections (so the kernel spreads them over the workers and each has served),
  * and reads it again.
  *
@@ -30,9 +31,9 @@ $workers   = (int) (getenv('WORKERS') ?: 12);
 $requests  = (int) (getenv('REQUESTS') ?: 5000);
 
 $arms = [
-    'exec'    => ['launch' => 'exec', 'entry' => $root . '/bin/sconcur-server'],
-    'fork'    => ['launch' => 'fork', 'entry' => $root . '/bin/sconcur-server'],
-    'preload' => ['launch' => 'fork', 'entry' => __DIR__ . '/preload-master.php'],
+    'exec'      => ['launch' => 'exec', 'bootstrap' => ''],
+    'fork'      => ['launch' => 'fork', 'bootstrap' => ''],
+    'bootstrap' => ['launch' => 'fork', 'bootstrap' => __DIR__ . '/bootstrap.php'],
 ];
 
 printf(
@@ -42,7 +43,7 @@ printf(
     ini_get('opcache.enable_cli') ?: '0',
 );
 
-printf("%-8s %-6s %12s %12s %16s %12s\n", 'arm', 'when', 'Pss, sum', 'Rss, sum', 'Private_Dirty', 'Pss/worker');
+printf("%-10s %-6s %12s %12s %16s %12s\n", 'arm', 'when', 'Pss, sum', 'Rss, sum', 'Private_Dirty', 'Pss/worker');
 
 foreach ($arms as $arm => $setup) {
     $runtimeDir = sys_get_temp_dir() . '/sc-memory-' . $arm . '-' . getmypid();
@@ -61,13 +62,21 @@ foreach ($arms as $arm => $setup) {
             'workerScript' => __DIR__ . '/app-worker.php',
             'workerCount'  => $workers,
             'launch'       => $setup['launch'],
+            'bootstrap'    => $setup['bootstrap'],
             'phpArgs'      => ['-d', 'extension=' . $extension],
             'server'       => ['address' => '127.0.0.1:' . $port, 'reusePort' => true],
         ]],
     ]));
 
     $master = proc_open(
-        [PHP_BINARY, '-d', 'extension=' . $extension, $setup['entry'], 'start', '--configPath=' . $config],
+        [
+            PHP_BINARY,
+            '-d',
+            'extension=' . $extension,
+            $root . '/bin/sconcur-server',
+            'start',
+            '--configPath=' . $config,
+        ],
         [0 => ['file', '/dev/null', 'r'], 1 => ['file', $runtimeDir . '/out', 'w'], 2 => ['file', $runtimeDir . '/out', 'a']],
         $pipes,
     );
@@ -104,24 +113,57 @@ function report(string $arm, string $when, int $masterPid, int $workers): void
 {
     $sum = ['Pss' => 0, 'Rss' => 0, 'Private_Dirty' => 0];
 
-    foreach (children($masterPid) as $pid) {
+    [$workerPids, $forkServerPids] = workersOf($masterPid);
+
+    foreach ($workerPids as $pid) {
         foreach (rollup($pid) as $field => $kib) {
             $sum[$field] += $kib;
         }
     }
 
-    $master = rollup($masterPid);
+    $supervisorPss = rollup($masterPid)['Pss'];
+
+    foreach ($forkServerPids as $pid) {
+        $supervisorPss += rollup($pid)['Pss'];
+    }
 
     printf(
-        "%-8s %-6s %9.1f MiB %9.1f MiB %13.1f MiB %9.1f MiB   (master Pss %.1f MiB)\n",
+        "%-10s %-6s %9.1f MiB %9.1f MiB %13.1f MiB %9.1f MiB   (master and fork server Pss %.1f MiB)\n",
         $arm,
         $when,
         $sum['Pss'] / 1024,
         $sum['Rss'] / 1024,
         $sum['Private_Dirty'] / 1024,
         $sum['Pss'] / 1024 / $workers,
-        $master['Pss'] / 1024,
+        $supervisorPss / 1024,
     );
+}
+
+/**
+ * The workers of a master, and its fork servers: an exec group's workers are the master's
+ * children, a fork group's are the children of the fork server that is.
+ *
+ * @return array{0: list<int>, 1: list<int>}
+ */
+function workersOf(int $masterPid): array
+{
+    $workers = [];
+    $forkServers = [];
+
+    foreach (children($masterPid) as $child) {
+        $grandchildren = children($child);
+
+        if ($grandchildren === []) {
+            $workers[] = $child;
+
+            continue;
+        }
+
+        $forkServers[] = $child;
+        $workers   = [...$workers, ...$grandchildren];
+    }
+
+    return [$workers, $forkServers];
 }
 
 /**
@@ -163,7 +205,7 @@ function waitForWorkers(int $masterPid, int $workers, int $port): bool
     $deadline = microtime(true) + 30.0;
 
     while (microtime(true) < $deadline) {
-        if (count(children($masterPid)) >= $workers && ask($port) !== '') {
+        if (count(workersOf($masterPid)[0]) >= $workers && ask($port) !== '') {
             // Every worker has to be past its start, not only the first to answer.
             usleep(500_000);
 

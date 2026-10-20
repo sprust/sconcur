@@ -1,12 +1,14 @@
 <?php
 
 /**
- * The worker script of a fork group whose master loaded the application first
- * (preloaded-master.php). It uses what the master loaded instead of loading it again, and
- * reaches it through $GLOBALS: a forked worker runs its script in a function's scope.
+ * The worker script of a fork group with a bootstrap (bootstrap-app.php). It uses what
+ * its fork server loaded instead of loading it again, and reaches it through $GLOBALS: a forked
+ * worker runs its script in a function's scope.
  *
  *   /pid   this worker's pid, which is what TestWorkerMaster waits for
- *   /      {"loadedBy": <the pid the application loaded in>, "pid": <this worker>}
+ *   /      {"loadedBy": <the pid the application loaded in>, "pid": <this worker>,
+ *          "version": <what the application read when it loaded>, "release": <the
+ *          NAME of the ReleaseMarker class a release's bootstrap autoloads, if any>}
  *   /log   writes a line to the log the application opened, then answers as /
  *   /warn  raises a warning, then answers as /
  *   /hang  holds the PHP thread for 20 s, which the watchdog takes for a hung worker
@@ -25,7 +27,7 @@ if (getenv('SCONCUR_TEST_WORKER_THROWS') === '1') {
     throw new RuntimeException('the worker failed to start');
 }
 
-/** @var array{loadedBy: int, log: resource} $app */
+/** @var array{loadedBy: int, version: string, log: resource} $app */
 $app     = $GLOBALS['app'];
 $factory = new Psr17Factory();
 
@@ -51,6 +53,10 @@ $server->serve(static function (ServerRequestInterface $request) use ($app, $fac
             : (string) json_encode([
                 'loadedBy' => $app['loadedBy'],
                 'pid'      => getmypid(),
+                'version'  => $app['version'],
+                // A class of the release the bootstrap was loaded from, loaded by the worker
+                // on its first request: which directory it comes from is the test.
+                'release'  => class_exists('ReleaseMarker') ? ReleaseMarker::NAME : '',
             ]),
     );
 

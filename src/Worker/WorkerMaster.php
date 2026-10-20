@@ -7,7 +7,6 @@ namespace SConcur\Worker;
 use Closure;
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\ExtensionNotLoadedException;
-use SConcur\Exceptions\Process\ForkRefusedException;
 use SConcur\Exceptions\Process\ProcessException;
 use SConcur\Exceptions\Worker\InvalidConfigException;
 use SConcur\Exceptions\Worker\InvalidWorkerCountException;
@@ -17,10 +16,12 @@ use SConcur\Process\ProcessSignalEnum;
 use SConcur\Telemetry\TelemetryRuntime;
 
 /**
- * Supervises a pool of worker processes (one per slot), each a separate `php
- * workerScript` process spawned via proc_open. The master is server-agnostic — it
- * supervises any worker script; with an SO_REUSEPORT-based server, for example, the
- * workers bind one port and the kernel load-balances connections across them.
+ * Supervises pools of worker processes (one per slot). An exec group's workers are php
+ * processes of their own the master starts via proc_open; a fork group's are forks of a
+ * fork server the master starts for each generation of the group (ForkServerGroup), which loads
+ * the application once. The master is server-agnostic — it supervises any worker script;
+ * with an SO_REUSEPORT-based server, for example, the workers bind one port and the
+ * kernel load-balances connections across them.
  *
  * Lifecycle of run(): acquire a single-instance lock, write the state file, start
  * watching for signals, spawn the workers, then loop — draining each worker's output
@@ -30,7 +31,8 @@ use SConcur\Telemetry\TelemetryRuntime;
  *
  * The master loads the sconcur extension and takes its signals and signals its
  * workers through it (SConcur\Process\ProcessControl), so it needs neither ext-pcntl
- * nor ext-posix. It never starts the extension's runtime. See docs/worker-master.md.
+ * nor ext-posix. It never forks and never starts the extension's runtime. See
+ * docs/worker-master.md.
  */
 class WorkerMaster
 {
@@ -68,7 +70,7 @@ class WorkerMaster
 
     protected string $cwd = '.';
 
-    /** @var array<string, WorkerGroup> live pools by group name */
+    /** @var array<string, SupervisedGroup> live pools by group name */
     protected array $pools = [];
 
     /**
@@ -78,14 +80,6 @@ class WorkerMaster
      *                         rolling reload
      */
     protected array $listeners = [];
-
-    /**
-     * @var list<int> the descriptors open when the master started: the application's that
-     *                started it — a log file it opened while loading, a socket systemd
-     *                passed — which forked workers keep, where every descriptor the master
-     *                opens itself is shut out of them
-     */
-    protected array $inheritedDescriptors = [];
 
     protected bool $stopping = false;
 
@@ -139,11 +133,12 @@ class WorkerMaster
      * Runs the supervisor until a shutdown signal drains all workers. Returns the
      * process exit code (0 on clean shutdown).
      *
-     * The process may have loaded an application before calling this, for forked workers
-     * to start from. Its error handler is kept out of the master's loop for as long as this
-     * runs: a handler that turns warnings into exceptions, as frameworks install, would end
-     * the master at the first warning it silences, and the master silences one on every
-     * tick. A forked worker gets the handler back (ForkedWorker).
+     * The process may have loaded an application before calling this — a framework's
+     * command that starts the master. Its error handler is kept out of the master's loop
+     * for as long as this runs: a handler that turns warnings into exceptions, as
+     * frameworks install, would end the master at the first warning it silences, and the
+     * master silences one on every tick. Nothing loaded here reaches a worker: fork groups
+     * load their application in their fork server (the group's bootstrap).
      */
     public function run(): int
     {
@@ -161,9 +156,6 @@ class WorkerMaster
     protected function runSupervisor(): int
     {
         $this->assertExtension();
-
-        // First, before the master opens anything of its own.
-        $this->inheritedDescriptors = ProcessControl::openDescriptors();
 
         $this->ensureDirectories();
 
@@ -266,39 +258,6 @@ class WorkerMaster
     }
 
     /**
-     * Refuses to start groups launched by fork in a process that cannot fork, before
-     * anything is written: the application that started the master made an asynchronous
-     * call while loading, so the extension's runtime runs, or another extension started
-     * threads. Refused at the first worker instead, the reason would come after the
-     * journal had already said the pool started.
-     */
-    protected function assertForkable(): void
-    {
-        foreach ($this->groups as $group) {
-            if ($group->launch !== LaunchMode::Fork) {
-                continue;
-            }
-
-            try {
-                ProcessControl::assertForkable();
-            } catch (ForkRefusedException $exception) {
-                throw new ForkRefusedException(
-                    message: sprintf(
-                        'group "%s" is launched by fork, and this process cannot fork: %s. Nothing may use'
-                        . ' the extension before the master starts; open connections and make calls in'
-                        . ' the worker script',
-                        $group->name,
-                        $exception->getMessage(),
-                    ),
-                    previous: $exception,
-                );
-            }
-
-            return;
-        }
-    }
-
-    /**
      * Builds one live pool per configured group. Ordered as the config lists them, so
      * the journal and `status` read the way the file does.
      */
@@ -321,8 +280,25 @@ class WorkerMaster
      *                            for the groups it starts with: one a reload adds must not
      *                            take a running pool down
      */
-    protected function newPool(WorkerGroupConfig $group, bool $guardsStartup = false): WorkerGroup
+    protected function newPool(WorkerGroupConfig $group, bool $guardsStartup = false): SupervisedGroup
     {
+        if ($group->launch === LaunchMode::Fork) {
+            return new ForkServerGroup(
+                config: $group,
+                logger: $this->logger,
+                masterPid: $this->masterPid,
+                cwd: $this->cwd,
+                logDir: $this->logDir ?? $this->runtimeDir,
+                name: $this->name,
+                rotateDays: $this->rotateDays,
+                logTo: $this->logTo,
+                telemetrySocket: $this->telemetrySocket(),
+                onWatchdogEvent: $this->watchdogReporter(),
+                listenFd: $this->listeners[$group->name] ?? null,
+                guardsStartup: $guardsStartup,
+            );
+        }
+
         return new WorkerGroup(
             config: $group,
             logger: $this->logger,
@@ -331,7 +307,6 @@ class WorkerMaster
             telemetrySocket: $this->telemetrySocket(),
             onWatchdogEvent: $this->watchdogReporter(),
             listenFd: $this->listeners[$group->name] ?? null,
-            inheritedDescriptors: $this->inheritedDescriptors,
             guardsStartup: $guardsStartup,
         );
     }
@@ -444,11 +419,6 @@ class WorkerMaster
         }
 
         static::assertWorkerScripts($this->groups);
-        static::assertLaunchable($this->groups);
-
-        // After the config is known to be sound, so a config error is named as one, and
-        // before anything is created.
-        $this->assertForkable();
 
         $directories = array_unique([$this->runtimeDir, $this->logDir ?? $this->runtimeDir]);
 
@@ -458,7 +428,7 @@ class WorkerMaster
     }
 
     /**
-     * Refuses a set of groups naming a script that is not there.
+     * Refuses a set of groups naming a script — or a bootstrap — that is not there.
      *
      * Run on every reload as well as at startup: a config that parses but points at a
      * path that does not exist would otherwise roll every worker of the group — SIGTERM
@@ -475,76 +445,13 @@ class WorkerMaster
                     message: sprintf('Worker script not found for group "%s": %s', $group->name, $group->workerScript),
                 );
             }
-        }
-    }
 
-    /**
-     * Refuses a fork group whose ini settings this master cannot honour. A forked worker
-     * runs on the master's interpreter and applies the group's -d flags with ini_set, so
-     * an extension has to be loaded here already, and a directive has to be one PHP lets a
-     * script change. Checked here rather than with the rest of the config, because the
-     * answer is this process's: the CLI that writes a reload request may well run without
-     * the extensions the master has.
-     *
-     * Run on every reload as well as at startup, like assertWorkerScripts.
-     *
-     * @param list<WorkerGroupConfig> $groups
-     */
-    protected static function assertLaunchable(array $groups): void
-    {
-        $directives = ini_get_all(details: true);
-
-        foreach ($groups as $group) {
-            if ($group->launch !== LaunchMode::Fork) {
-                continue;
-            }
-
-            foreach ($group->iniSettings() as [$directive, $value]) {
-                if ($directive === 'extension' || $directive === 'zend_extension') {
-                    if (!static::isLoaded(extension: $value)) {
-                        throw new InvalidConfigException(
-                            message: sprintf(
-                                'config: group "%s" is launched by fork and asks for %s=%s, which the master'
-                                . ' has not loaded; load it in the master, or use launch=exec',
-                                $group->name,
-                                $directive,
-                                $value,
-                            ),
-                        );
-                    }
-
-                    continue;
-                }
-
-                // INI_USER is the bit that lets ini_set change a directive; INI_SYSTEM and
-                // INI_PERDIR ones are fixed once the process has started.
-                if ((($directives[$directive]['access'] ?? 0) & INI_USER) === 0) {
-                    throw new InvalidConfigException(
-                        message: sprintf(
-                            'config: group "%s" is launched by fork and sets %s, which %s; set it for the'
-                            . ' master, or use launch=exec',
-                            $group->name,
-                            $directive,
-                            isset($directives[$directive])
-                                ? 'cannot be changed once php has started'
-                                : 'this php does not know',
-                        ),
-                    );
-                }
+            if ($group->bootstrap !== '' && !is_file($group->bootstrap)) {
+                throw new RuntimePathException(
+                    message: sprintf('Bootstrap not found for group "%s": %s', $group->name, $group->bootstrap),
+                );
             }
         }
-    }
-
-    /**
-     * Whether the extension a `-d extension=` names is loaded: by its name or by the file
-     * it was given as (`/path/to/sconcur.so`, `php_redis.dll`), and under the "Zend "
-     * prefix a Zend extension's module carries (OPcache is "Zend OPcache").
-     */
-    protected static function isLoaded(string $extension): bool
-    {
-        $name = preg_replace('/^php_|\.(so|dll)$/', '', basename($extension)) ?? $extension;
-
-        return extension_loaded($name) || extension_loaded('Zend ' . $name);
     }
 
     protected function ensureWritableDir(string $directory): void
@@ -821,7 +728,6 @@ class WorkerMaster
             $groups = MasterConfig::fromFile($request->configPath)->groups();
 
             static::assertWorkerScripts($groups);
-            static::assertLaunchable($groups);
 
             $this->assertListenersUnchanged($groups);
 
