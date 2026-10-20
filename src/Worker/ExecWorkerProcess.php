@@ -81,38 +81,42 @@ class ExecWorkerProcess extends WorkerProcess
     protected function open(array $command, string $cwd, array $env, array $descriptors, array $keepDescriptors): array
     {
         // A stream for each descriptor to keep, which proc_open then places under the
-        // number the descriptor already has. php://fd opens a copy, closed again below
-        // once the child has its own.
-        $kept = [];
-
-        foreach ($keepDescriptors as $descriptor) {
-            $stream = @fopen('php://fd/' . $descriptor, 'r');
-
-            if ($stream === false) {
-                throw new WorkerSpawnException(
-                    message: sprintf('Cannot hand descriptor %d to a worker', $descriptor),
-                );
-            }
-
-            $kept[] = $stream;
-
-            $descriptors[$descriptor] = $stream;
-        }
-
-        $descriptors += self::inheritedDescriptorGuard();
-
+        // number the descriptor already has. php://fd opens a copy, without close-on-exec,
+        // that lives only through this spawn: the guard below is taken with the copies
+        // open, so the child finds none of them under its own number, and every path out
+        // of here closes them. Not left to the garbage collector: the exception a failed
+        // spawn throws can hold the descriptor spec in its trace, and the copies with it.
+        $kept  = [];
         $pipes = [];
 
-        $process = proc_open(
-            command: $command,
-            descriptor_spec: $descriptors,
-            pipes: $pipes,
-            cwd: $cwd,
-            env_vars: $env,
-        );
+        try {
+            foreach ($keepDescriptors as $descriptor) {
+                $stream = @fopen('php://fd/' . $descriptor, 'r');
 
-        foreach ($kept as $stream) {
-            fclose($stream);
+                if ($stream === false) {
+                    throw new WorkerSpawnException(
+                        message: sprintf('Cannot hand descriptor %d to a worker', $descriptor),
+                    );
+                }
+
+                $kept[] = $stream;
+
+                $descriptors[$descriptor] = $stream;
+            }
+
+            $descriptors += self::inheritedDescriptorGuard();
+
+            $process = proc_open(
+                command: $command,
+                descriptor_spec: $descriptors,
+                pipes: $pipes,
+                cwd: $cwd,
+                env_vars: $env,
+            );
+        } finally {
+            foreach ($kept as $stream) {
+                fclose($stream);
+            }
         }
 
         if (!is_resource($process)) {
