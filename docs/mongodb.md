@@ -2,10 +2,12 @@ English | [Русский](mongodb.ru.md)
 
 # MongoDB
 
-Asynchronous MongoDB on top of the official Rust driver. Each operation goes into the
-extension and runs in a runtime task while the coroutine is suspended; inside a
-`WaitGroup` operations run in parallel and the total time is bounded by the slowest
-one. Outside a `WaitGroup` the same API works synchronously.
+Asynchronous MongoDB on top of the official Rust driver — one of the extension's
+features (a module with a PHP API in `src/Features/Mongodb/` and a handler in the
+Rust core). Each operation goes into the extension and runs in a runtime task while
+the coroutine (a PHP fiber the scheduler suspends while the extension works) waits;
+inside a `WaitGroup` operations run in parallel and the total time is bounded by the
+slowest one. Outside a `WaitGroup` the same API works synchronously.
 
 Documents cross to the extension as the PHP arrays they are, and come back as
 arrays the extension builds. BSON values that a PHP array cannot express arrive as
@@ -50,8 +52,8 @@ $collection = $database->selectCollection('users');
 | `Client` parameter | Default | Purpose |
 |---|---|---|
 | `uri` | — | MongoDB connection string |
-| `timeoutMs` | 30000 | operation deadline, enforced by the extension around each call; exceeding it fails the call with `operation timed out`. A cursor's later batches are pulled by calls of their own and are not under this deadline |
-| `serverSelectionTimeoutMs` | 10000 | how long to wait for an available server (the driver's `server_selection_timeout`), so an unreachable MongoDB fails fast instead of hanging on the driver default of 30 s |
+| `timeoutMs` | 30000 | deadline for each call, enforced by the extension; exceeding it fails the call with `operation timed out`. `0` also means 30000. A cursor's later batches are pulled by calls of their own and are not under this deadline |
+| `serverSelectionTimeoutMs` | 10000 | how long to wait for an available server (the driver's `server_selection_timeout`), so an unreachable MongoDB fails fast instead of waiting out the driver default of 30 s. `0` also means 10000 |
 
 Clients are reused inside the extension by the key
 `uri + serverSelectionTimeoutMs`, so creating a `Client` per request is
@@ -233,8 +235,8 @@ and `selectDatabase()`.
 ## Cursors and streaming
 
 `find()` and `aggregate()` return an `Iterator` that lazily pulls the next batches
-from the extension (by `batchSize`), so a large result set is not buffered whole either in the
-extension or in PHP:
+from the extension (by `batchSize`), so a large result set is not buffered whole
+either in the extension or in PHP:
 
 ```php
 foreach ($collection->find(['active' => true], batchSize: 100) as $document) {
@@ -245,9 +247,9 @@ foreach ($collection->find(['active' => true], batchSize: 100) as $document) {
 ```
 
 An early `break`, an exception, or a `WaitGroup` stop closes the cursor on the
-extension side (the cursor is dropped, and the driver sends `killCursors`). Each
-cursor in concurrent flows (a flow is the group of tasks a `WaitGroup` owns
-inside the extension) is independent.
+extension side when its flow ends (a flow is the group of tasks a `WaitGroup` owns
+inside the extension): the cursor is dropped, and the driver sends `killCursors`.
+Cursors in concurrent flows are independent of each other.
 
 ## Concurrency
 

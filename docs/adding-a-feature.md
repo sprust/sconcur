@@ -2,10 +2,12 @@ English | [Русский](adding-a-feature.ru.md)
 
 # How to add a new top-level feature
 
-A top-level feature is a new domain with its own `Method` (like `Sleeper`). The
-reference to copy is `Sleeper`: PHP in `src/Features/Sleeper/`, Rust in
-`ext/src/features/sleeper/`. Below is the walkthrough in two variants — without
-streaming (a single result) and with streaming (multiple batches).
+A feature is a PHP API in `src/Features/<Feature>/` plus the Rust module in
+`ext/src/features/<feature>/` that executes its tasks. A top-level feature is a new
+domain with its own `Method` (like `Sleeper`). The reference to copy is `Sleeper`:
+PHP in `src/Features/Sleeper/`, Rust in `ext/src/features/sleeper/`. Below is the
+walkthrough in two variants — without streaming (a single result) and with
+streaming (multiple batches).
 
 > Building a long-lived network server (like `HttpServer`)? That is a special kind
 > of streaming feature with its own listener and serving loop — see
@@ -16,14 +18,15 @@ streaming (a single result) and with streaming (multiple batches).
 Every handler inside the extension must satisfy both; violating them leaks resources and
 breaks `WaitGroup` behaviour.
 
-1. **Cancellation.** The task's cancellation token, `task.context()`, is
-   cancelled when a flow stops (`WaitGroup::stop()`, an early `break`, `WaitGroup`
-   destruction, `destroy`). For a long operation put `_ = task.context().cancelled()`
+1. Cancellation. The task's cancellation token, `task.context()`, is cancelled
+   when its flow (the group of tasks a `WaitGroup` owns in the extension) stops
+   (`WaitGroup::stop()`, an early `break`, `WaitGroup` destruction, `destroy`).
+   For a long operation put `_ = task.context().cancelled()`
    into the `select!` beside it, otherwise the task cannot be stopped. Cleanup
    after a stream must not run under that token — it is already cancelled by the
    time the cleanup starts, so give the release its own bound.
 
-2. **Passing the execution deadline.** The payload pushed from PHP must carry the
+2. The execution deadline. The payload pushed from PHP must carry the
    execution deadline, and the extension must bound the operation with it — a task
    must not run indefinitely. How it is applied varies: sometimes the time is the
    essence of the operation (`Sleeper`); sometimes the driver takes it (the
@@ -56,24 +59,24 @@ pub struct SleeperPayload {
 }
 ```
 
-Multi-command features (the reference is `Mongodb`) use a two-level payload: a
-shared envelope with a command field and `dt` (the command's parameters as a
-plain array) — one `Payload` type in Rust, built by `Base\BaseMongodbPayload` on
-PHP — plus one struct per command for the contents of `dt`. There the PHP
-`*PayloadParameters` classes are a PHP-only convenience for assembling `dt` and
-are not carried over: their fields are expanded directly into the corresponding
-Rust struct. If a command's `dt` is an arbitrary user document (insert, count,
-runCommand, …) or empty (drop, list…), it has no struct — `dt` is read as an
-untyped value in the handler, and that case is marked with a comment, so every
-PHP `*Payload` corresponds to either a struct or an explicit note.
+`Mongodb` is the exception to the struct-per-payload rule. Every command is one
+envelope (`ul`/`db`/`cl`/`to`/`sst`/`cm`/`dt`) built by `Base\BaseMongodbPayload`
+on PHP; Rust reads it by hand with `decode_envelope()` into `Envelope`
+(`ext/src/features/mongodb/payloads.rs`), without serde, because `dt` holds nested
+values that are converted to BSON. `dt` is either the user's document (insert,
+count, runCommand, …), empty (drop, list…), or a map of named parameters assembled
+by the PHP `*PayloadParameters` classes; the handler in `commands.rs` reads that map by
+short key through `decode_params()` and `Params` (`params.filter("f")`). There is
+no Rust struct per command.
 
 A feature with many commands whose parameters are flat maps of short keys can
 skip the class-per-command entirely: `Amqp` has one
-`AmqpPayload(AmqpCommandEnum $command, array $data)`, the callers write the keys
-where the values are, and each enum case names the struct its `p` is decoded
-into. Two dozen near-identical classes buy nothing a named argument at the call
-site does not already give. Prefer that shape when the parameters carry no
-logic, and the Mongodb one when they do.
+`AmqpPayload(AmqpCommandEnum $command, array $data)` (Rust `payloads::Envelope`),
+the callers write the keys where the values are, and the docblock of each
+`AmqpCommandEnum` case names the struct its `p` is decoded into. Two dozen
+near-identical classes buy nothing a named argument at the call site does not
+already give. Prefer that shape when the parameters carry no logic, and a class per
+command when they do.
 
 The PHP payload is `readonly`, its fields are typed, and the names are not
 abbreviated.
@@ -128,8 +131,10 @@ PHP:
 
 Rust:
 
-1. `ext/src/types/method.rs` — the same constant: a `Foo` case whose wire value is
-   `"foo"`.
+1. `ext/src/types/method.rs` — the same constant: a `Method::Foo` variant, plus an
+   arm in each of `from_wire()` (`b"foo"`), `as_wire()` (`"foo"`) and
+   `as_php_case()` (`c"Foo"`, the PHP case name the glue's result builder fetches
+   the enum case by).
 
 2. The feature module `ext/src/features/foo/mod.rs` implementing `Feature`
    (`handle(&self, task: Task) -> BoxFuture`): decode `message.payload`, do the
@@ -187,11 +192,12 @@ Rust:
 
    The singleton itself holds nothing. What the feature keeps for the life of the
    process — connections, pools, open handles, a flag that a background task is
-   running — goes into a `Registries` struct the core owns (`ext/src/core.rs`),
-   reached through `crate::core::get()`, and never into a `static`. After a `fork`
-   the child rebuilds the core and everything on it; a `static` would hand the
-   child the parent's connections, a flag for a task that runs in a runtime the
-   child does not have, or a mutex another thread held at the moment of the fork.
+   running — goes into the feature's `Registries` struct, a field of `Core` in
+   `ext/src/core.rs` reached through its accessor (`crate::core::get().sql()`),
+   and never into a `static`. After a `fork` the child rebuilds the core and
+   everything on it; a `static` would hand the child the parent's connections, a
+   flag for a task that runs in a runtime the child does not have, or a mutex
+   another thread held at the moment of the fork.
    A task started on first use is armed by a flag on the registry for the same
    reason (`sweeping` in `ext/src/features/sql/pools.rs`). Counters that only
    number ids may stay `static`: a child that carries on the parent's numbering
@@ -296,7 +302,8 @@ nothing ends that task before the flow does.
 ## Tests (mandatory)
 
 - One test per feature; if the feature has sub-operations, a test for each.
-- All tests inherit from `BaseTestCase` (directly or via `BaseAsyncTestCase`).
+- All tests inherit from `BaseTestCase` (`tests/feature/BaseTestCase.php`, directly
+  or via `tests/feature/BaseAsyncTestCase.php`).
   `BaseTestCase` manages the extension's lifecycle and in `tearDown` checks that
   there are no dangling tasks — this catches leaks and forgotten context
   cancellation.
@@ -307,7 +314,7 @@ nothing ends that task before the flow does.
   `on_exception`, `assertException`, `assertResult`) — in `assertResult` you also
   verify concurrency, i.e. that the total time ≈ the slowest operation rather than
   their sum. The reference is `tests/feature/Features/Sleeper/SleeperTest.php`.
-- Add edge and synchronous checks as separate tests inheriting from
+- Add edge-case and synchronous checks as separate tests inheriting from
   `BaseTestCase`, and cover the extension's own logic with unit tests (`make ext-test`).
 
 ## Checklist
@@ -319,20 +326,21 @@ PHP:
       parameter assembly happens inside it; the payload carries the execution
       deadline; docblock with the cross-reference `Rust: payloads::<Type>`.
 - [ ] Public API (for streaming — returns `IteratorResult`).
-- [ ] A test from `BaseAsyncTestCase` plus edge tests from `BaseTestCase`.
+- [ ] A test from `BaseAsyncTestCase` plus edge-case tests from `BaseTestCase`.
 
 Rust:
 
-- [ ] The same constant in `ext/src/types/method.rs`.
+- [ ] The same constant in `ext/src/types/method.rs`: the variant and its arms in
+      `from_wire()`, `as_wire()`, `as_php_case()`.
 - [ ] Payload structs in `payloads.rs`, mirroring the PHP `*Payload` 1:1 (names,
-      `serde(rename)` keys) plus the cross-reference `// PHP: …`.
+      `serde(rename)` keys) plus the cross-reference `/// PHP: …`.
 - [ ] A feature module with `handle`: the task's cancellation token honoured by
       every call; the work bounded by the passed timeout; for streaming — a
       `StateContract` state whose `close()` is awaited.
 - [ ] Whatever the feature keeps for the life of the process sits in its
-      `Registries` on the core, not in a `static`.
+      `Registries` on `Core`, not in a `static`.
 - [ ] Registration in `ext/src/features/mod.rs`.
 - [ ] (opt.) unit tests in the extension.
 
-Verification:
-`make ext-build && make ext-test && make php-stan && make cs-fixer-check && make test`.
+Verification: `make check` (runs `cs-fixer-check`, `php-stan`, `ext-build`,
+`ext-test`, `ext-check` and `test`).

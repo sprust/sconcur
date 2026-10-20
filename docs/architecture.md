@@ -8,7 +8,8 @@ of one task. See also the [README](../README.md).
 ## How it works
 
 `WaitGroup` is the public API of a coroutine group built on PHP Fibers. Each
-task closure is wrapped in a `Fiber`; when an async feature is called inside a
+task closure is wrapped in a `Fiber` and runs as a coroutine; when an async feature
+(an operation the extension runs, such as `Sleeper::sleep()`) is called inside a
 coroutine, the coroutine suspends and hands out a deferred task
 (`Fiber::suspend(PendingPushDto)`). The push to the extension is done by whoever took over
 control — `WaitGroup::launch` or the scheduler — through
@@ -98,12 +99,12 @@ flowchart TB
         SCH["Scheduler (waitAnyBatch + resume loop)"]
         ST["State (Fiber ↔ flow registry)"]
 
-        WG -->|"coroutine body calls a feature"| F
+        WG -->|"callback calls Sleeper::sleep() / insertOne() / …"| F
         F -->|"exec / next"| FE
         FE -->|"Fiber::suspend(PendingPushDto / PendingNextDto)"| SCH
         SCH -->|"dispatchPendingTask: push the task"| EXT
-        WG -.->|"delegates waiting"| SCH
-        SCH -.->|"releases the Fiber's flow on completion"| ST
+        WG -.->|"run / awaitGroup"| SCH
+        SCH -.->|"unRegisterFiber"| ST
     end
 
     EXT <-->|"boundary: push (payload array) / waitAnyBatch (TaskResultDto) / next"| LIB
@@ -118,9 +119,9 @@ flowchart TB
 
         LIB -->|"push"| H
         H -->|"init_flow"| FLOWS
-        FLOWS --> FLOW
-        FLOW -->|"spawn(handler)"| TASK
-        TASK -.->|"shared results channel"| H
+        FLOWS -->|"handle_message"| FLOW
+        FLOW -->|"tokio::spawn(run_task_protected)"| TASK
+        TASK -.->|"shared results channel, read by wait_any_batch"| H
     end
 ```
 
@@ -173,7 +174,7 @@ Key entities:
    The result goes into the shared bounded channel, and the task finishes without
    waiting for PHP to pick it up.
 5. `WaitGroup::iterate()` hands out ready results and delegates waiting: at the
-   top level it spins `Scheduler::run()` (the `waitAnyBatch` loop), while a
+   top level it runs `Scheduler::run()` (the `waitAnyBatch` loop), while a
    nested `iterate()` cooperatively suspends via `Scheduler::awaitGroup()`.
 6. The result carries the owner id back; the scheduler checks the
    coroutine still awaits exactly this flow/task (ids are reused once a fiber is

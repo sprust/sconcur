@@ -28,10 +28,11 @@ $reply = $connection->read();          // ?string
 $connection->close();
 ```
 
-`connect()` takes a full `ws://host:port/path` URL. Best to drive the whole
-conversation inside the same coroutine as `connect()`: when the coroutine finishes,
-its flow is stopped and the unread connection inside the extension is closed (the same
-caveat as with `HttpClient`/`SocketClient`).
+`connect()` takes a `ws://host:port/path` URL; only `ws://` is accepted, the port
+defaults to `80` and the path to `/`. Best to drive the whole conversation inside the
+same coroutine as `connect()`: when the coroutine finishes, its flow (the group of
+tasks it started) is stopped and the unread connection inside the extension is closed
+(the same caveat as with `HttpClient`/`SocketClient`).
 
 ## Connection: read / write / close
 
@@ -43,9 +44,9 @@ caveat as with `HttpClient`/`SocketClient`).
 | `read(): ?string` | the next inbound message; `null` — the peer closed its side, the connection ended, or `maxMessageBytes` was exceeded. Cooperatively suspends the coroutine |
 | `write(string $data, bool $binary = false): void` | send a message; waits until it has actually been flushed, so a fast writer cannot outrun the peer. Text by default. Throws `WsClientConnectionClosedException` if the connection is gone |
 | `lastMessageWasBinary(): bool` | whether the last `read()` was binary |
-| `close(): void` | close the connection (idempotent, best-effort) |
+| `close(): void` | close the connection (idempotent; does nothing if the connection is already gone) |
 | `isClosed(): bool` | whether the connection is closed |
-| `id`, `remoteAddr`, `localAddr`, `subprotocol` | identifier, addresses and the negotiated subprotocol. `remoteAddr` is the host from the connection URL (may be without a port); `localAddr` on the dial side is currently always empty |
+| `id`, `remoteAddr`, `localAddr`, `subprotocol` | identifier, the peer's and the local `ip:port` of the TCP connection, and the negotiated subprotocol (empty if none) |
 
 Between reads and writes you can make asynchronous calls (Sleeper, Mongodb, SQL,
 HTTP client) — the coroutine suspends cooperatively, other connections keep
@@ -79,8 +80,8 @@ $replies = $waitGroup->waitResults(); // total time ≈ the slowest connection
 ## Parameters and timeouts
 
 `SConcur\Features\WsClient\WsClientOptions` (`readonly`), all timeouts in ms; the
-PHP defaults mirror the extension's. A long-lived connection has no single "operation time" —
-that role is played by the dial/read/write timeouts.
+PHP defaults mirror the extension's. A long-lived connection has no single "operation
+time" — that role is played by the dial/read/write timeouts.
 
 | Parameter | Default | Purpose |
 | --- | --- | --- |
@@ -104,7 +105,7 @@ $client = new WsClient(new WsClientOptions(
 
 | Case | Exception |
 | --- | --- |
-| Failed to dial (refused / DNS-fail / connect-timeout / upgrade rejection) | `SConcur\Exceptions\WsClient\WsClientConnectException`, thrown by `connect()` |
+| Failed to dial (connection refused, DNS failure, connect timeout, upgrade rejected, an address that is not `ws://`) | `SConcur\Exceptions\WsClient\WsClientConnectException`, thrown by `connect()` |
 | `write()` to a broken connection | `SConcur\Exceptions\WsClient\WsClientConnectionClosedException` |
 | Peer closed the connection / idle timeout / `maxMessageBytes` exceeded | not an exception — `read()` returns `null` |
 
@@ -144,7 +145,7 @@ cases plus the concurrency contract on `BaseAsyncTestCase`, against a real
 SConcur `WsServer` spawned via `TestWsServer`; the extension is covered by
 the core's own unit tests. The benchmark (`make bench-ws-client c=20`) runs N
 round-trips to the demo server's `msleep` endpoint, concurrent async against
-sequential native (raw WS framing in PHP) and sync; server-side pool benches are
+sequential native (raw WS framing in PHP) and sync; server-side pool benchmarks are
 `make bench-ws-server-io` / `bench-ws-server-cpu` / `bench-ws-throughput`.
 
 Run: `make test c="--filter=WsClient"`, `make ext-test`.

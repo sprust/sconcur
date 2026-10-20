@@ -48,7 +48,7 @@ automatically.
 | --- | --- |
 | `read(): ?string` | the next inbound frame; `null` — the client closed its side (EOF) or the connection ended. Cooperatively suspends the coroutine until a frame arrives |
 | `write(string $data): void` | send a frame to the client; waits until the bytes are actually flushed, so a fast handler cannot outrun the client. Throws `SocketServerConnectionClosedException` if the connection is broken |
-| `close(): void` | close the connection (idempotent, best-effort) |
+| `close(): void` | close the connection (idempotent; does nothing if the connection is already gone) |
 | `isClosed(): bool` | whether the connection is closed |
 | `id`, `remoteAddr`, `localAddr` | identifier and addresses |
 
@@ -93,12 +93,12 @@ The `SocketServer` constructor; the PHP defaults mirror the extension's.
 | `maxConnections` | `0` (unlimited) | stop the server after N served connections (a guard against leaks) |
 | `shutdownTimeoutMs` | `10000` | accepted and not applied: finishing the connections already accepted is bounded by the grace period below, not by a clock of its own |
 | `reusePort` | `false` | `SO_REUSEPORT` — a process pool on one port (Linux) |
-| `listenFd` | `null` | A listening socket bound elsewhere to accept on instead of binding `address` — the shared socket of a [worker master](worker-master.md) group, or one from systemd socket activation. A copy is taken, so stopping the server leaves the socket to whoever else holds it. |
+| `listenFd` | `null` | A listening socket bound elsewhere to accept on instead of binding `address` — the shared socket of a [worker master](worker-master.md) group, or one from systemd socket activation. `address` and `reusePort` are then not used. A copy is taken, so stopping the server leaves the socket to whoever else holds it — see [one socket for the whole pool](http-server.md#one-socket-for-the-whole-pool). |
 | `onError` | `null` | handler-error hook |
 | `masterPid` | `null` | orphan check under the master |
 | `telemetrySocket` | `''` (off) | unix socket for stats snapshots, injected by the master ([stats](admin-stats.md)) |
 | `serverName` | `'sconcur-server'` | worker name in the stats snapshots |
-| `telemetryIntervalMs` | `0` | stats cadence (`0` — pusher default, 1000 ms) |
+| `telemetryIntervalMs` | `0` | snapshot cadence (`0` — the default of the component that sends them, 1000 ms) |
 | `preemptionQuantumMs` | `0` | automatic-preemption quantum (`0` — off); read [process-wide state](coroutine-switching.md#process-wide-state) before turning it on |
 
 ## Concurrency
@@ -110,11 +110,12 @@ for the connection's whole lifetime); excess connections are accepted on the soc
 but not handled until a slot frees up.
 
 > A handler stuck in a native call (`sleep`, synchronous PDO/`curl`) freezes the
-> single PHP thread — nothing preempts a native call. A userland CPU loop is
+> single PHP thread — nothing preempts a native call. A CPU loop in PHP code is
 > preempted only with [automatic preemption](coroutine-switching.md) on, and then
 > it delays the neighbours by the quantum. The push model has no per-message timeout
 > (there is no notion of a "request"); the boundaries are the idle `readTimeoutMs`,
-> `writeTimeoutMs` and graceful shutdown.
+> `writeTimeoutMs`, `handlerTimeoutMs` for the whole connection, and graceful
+> shutdown.
 
 ## Error handling
 
@@ -143,15 +144,22 @@ On a signal (SIGTERM/SIGINT), on reaching `maxConnections`, or on being orphaned
 (`masterPid`), the server closes the listener and stops reading on the active
 connections (`close_read`: the pending read is cancelled, and the peer gets no
 FIN until the connection closes for good): a handler reading in a loop gets EOF
-(its current write still goes through) and returns. A push-only handler that
-never reads does not notice the EOF and is finished off by a forced close after
-the grace period (2 s). In a `SO_REUSEPORT` pool the kernel immediately hands
-new connections to siblings, and the process exits on its own. `reusePort: true`
-— several processes on one port, one per core — is the basis for scaling under
-the worker master.
+(its current write still goes through) and returns. A connection that has not
+sent its first frame yet gets 250 ms more for it. A push-only handler that never
+reads does not notice the EOF and is finished off by a forced close after the
+grace period (2 s). In a pool on one port the kernel immediately hands new
+connections to the siblings, and the process exits on its own. The pool shares
+the port with `reusePort: true` or a shared `listenFd`, as the HTTP server does —
+see [scaling across cores](http-server.md#scaling-across-cores-so_reuseport).
 
-Lifecycle lines go to `STDOUT`, alongside the per-connection access log that the extension
-side writes when each connection closes:
+Lifecycle lines go to `STDOUT`, alongside the per-connection access log that the
+extension writes when each connection closes — the start time, the client address,
+the frames written to it, the outcome (`ok`, `shutdown`, `write_error`) and the
+duration:
+
+```
+2026-06-28T12:00:00.500000 127.0.0.1:51234 frames=3 ok 812.40ms
+```
 
 ```
 2026-06-28T12:00:00.000000 sconcur socket server listening on 0.0.0.0:9100 pid=12345 version=X.Y.Z maxConcurrency=0 maxConnections=0 reusePort=0
@@ -162,14 +170,16 @@ side writes when each connection closes:
 
 `reason=signal` — `SIGTERM`/`SIGINT` or the loss of the master; `reason=limit` —
 the `maxConnections` limit (`reason=limit, limit=N`; under the master it is spread, see
-[restart policy and `maxRequests`](worker-master.md#restart-policy-and-maxrequests)). Under the [worker master](worker-master.md) these land
-in the shared log, and the access lines can go to a file of the day instead — see
+[restart policy and `maxRequests`](worker-master.md#restart-policy-and-maxrequests)).
+Under the [worker master](worker-master.md) these land in the shared log, and the
+access lines can go to a file of the day instead — see
 [access lines](worker-master.md#access-lines).
 
 ## Running under the worker master
 
-The server is a server-agnostic worker for `bin/sconcur-server`; an example config
-is the `socket` group of `config/sconcur.servers.config.json`. The master expands the `server`
+The server is an ordinary worker for `bin/sconcur-server`, which needs to know nothing
+about it; an example config is the `socket` group of
+`config/sconcur.servers.config.json`. The master expands the `server`
 block of that config into `--key=value` argv (which `fromArgs` parses) and passes
 its own pid as `--masterPid` for the orphan check — details in the
 [worker master](worker-master.md).

@@ -2,16 +2,19 @@ English | [Русский](files.ru.md)
 
 # Files
 
-Asynchronous file operations. The whole operation — opening, seeking, reading,
-writing, waiting for the disk — happens inside the extension, so the PHP thread
-is free while it runs. Inside a `WaitGroup` many operations run at the same
-time; outside one the same API works synchronously.
+Asynchronous file operations — one of the extension's features (a module with
+a PHP API in `src/Features/Files/` and a handler in the Rust core). The whole
+operation — opening, seeking, reading, writing, waiting for the disk — happens
+inside the extension, so the PHP thread is free while it runs. Inside a
+`WaitGroup` each call runs in a coroutine (a PHP fiber the scheduler suspends
+while the extension works), and many operations run at the same time; outside
+one the same API works synchronously.
 
-That is what the feature is for. A single small file with a warm page cache is
-faster read natively — the boundary crossing is added to the same work — and
-the [benchmarks](benchmarks.md) say so plainly. What the feature buys is
-elsewhere: the thread that is not held while a slow disk answers, and the
-operations whose bytes never cross the boundary at all.
+A single small file with a warm page cache is faster read natively: the crossing
+between PHP and the extension is added to the same work (see
+[benchmarks](benchmarks.md)). The gain is elsewhere: the PHP thread is not held
+while a slow disk answers, and some operations never move their bytes into PHP
+at all.
 
 ## Quick start
 
@@ -44,8 +47,8 @@ Inside `WaitGroup::add(...)` the same calls run concurrently.
 | `list` of 10 000 entries with metadata | `scandir()` + `filesize()` + `filemtime()` per entry | 1.3x faster concurrently; the per-entry syscalls never reach PHP |
 | `hashFile` of 64 MiB | `hash_file()` | 1.2x faster concurrently; the read loop leaves the PHP thread free |
 | `readChunks` of 64 MiB | `Files::read()` of the same file | same bytes at a 4 MB peak instead of 68 MB |
-| `read`/`write` of 64 MiB | `file_get_contents()` / `file_put_contents()` | slower — the payload crosses the boundary; what is bought is a free thread, not throughput |
-| anything on a 1 KiB file with a warm cache | the native function | slower, and there is no reason to use the feature for it |
+| `read`/`write` of 64 MiB | `file_get_contents()` / `file_put_contents()` | slower at every measured size — the payload crosses into PHP; what is bought is a free thread, not throughput |
+| anything on a 1 KiB file with a warm cache | the native function | slower (the benchmark's `read` row: 1.1 ms concurrently against 0.20 ms natively); no reason to use the feature here |
 
 The numbers are in [benchmarks](benchmarks.md). Two things they do not measure,
 and both are the point: a coroutine waiting on a disk does not hold the worker,
@@ -57,10 +60,9 @@ process is serving.
 Every call takes `timeoutMs`, defaulting to `Files::DEFAULT_TIMEOUT_MS`
 (30 000). `0` means no deadline.
 
-A writer is the exception, and deliberately so: `openWriter()` takes the
-deadline once and every `write()` and the `close()` are bounded by it. A session
-is one operation spread over many calls, and giving each call its own budget
-would mean a writer with no bound at all.
+A writer is the exception: `openWriter()` takes the deadline once, and it bounds
+every `write()` and the `close()` together. A session is one operation spread
+over many calls; a budget per call would leave the writer with no bound at all.
 
 On a stream the deadline bounds one batch, not the whole read: a stream lasts as
 long as the caller keeps pulling, and what must not hang is a single pull.
@@ -69,16 +71,15 @@ A deadline here means the caller stops waiting — not that the syscall is
 interrupted. File work runs on the runtime's blocking pool, and a thread already
 inside `read(2)` stays there until the kernel returns.
 
+That pool is the process's, not the feature's: name resolution and anything else
+that hands over blocking work share it. It is left at tokio's own 512 threads for
+that reason, and `SCONCUR_BLOCKING_THREADS` changes it — lowering it to cap how
+many file operations run at the same time caps name resolution as well.
+
 For an operation that proceeds in pieces — a streamed read, a copy, a tree walk,
 the chunks of a writer — the deadline and a `WaitGroup::stop()` land between the
 pieces rather than at the end. A write or a copy that ends that way removes what
 it created (see below); a read or a walk has nothing to remove and simply stops.
-
-That pool is the process's, not the feature's: name resolution and anything else
-that hands over blocking work share it. It is left at tokio's own 512 threads for
-that reason, and `SCONCUR_BLOCKING_THREADS` changes it — lowering it to cap how
-many file operations run at the same time caps name resolution in the same
-breath.
 
 ## Reading and writing
 
@@ -121,12 +122,10 @@ the thing that created it** — which means only in `Create` mode, the one mode
 that fails when the path is already taken.
 
 A failed `Replace` therefore leaves a partial file where a whole one used to be.
-That is deliberate. `Replace` truncated the old contents on open, which is what
-was asked for; removing the file on top of that would destroy an inode, its
-permissions and its ownership that the call never created, and when the path is a
-symlink it would unlink the link and leave its target empty. A partial file is
-the lesser loss, and it is the caller's own file either way. Open with `Create`
-when the file must be this call's or nothing.
+`Replace` truncated the old contents on open, which is what was asked for;
+removing the file as well would destroy an inode, permissions and ownership the
+call never created, and on a symlink it would unlink the link and leave its
+target empty. Open with `Create` when the file must be this call's or nothing.
 
 ### Atomic writes
 
@@ -156,9 +155,9 @@ Files::delete(path: $path, missingOk: true);
 Files::truncate(path: $path, sizeBytes: 0);
 ```
 
-`copy` streams the file inside the extension; only a path and a count cross the
-boundary. It takes the same `mode` and `permissions`, plus a `bufferSizeBytes`
-that tunes the copy granularity — 64 KiB by default, 8 MiB at most.
+`copy` copies the file in pieces inside the extension; only the paths go in and
+a byte count comes back. It takes the same `mode` and `permissions`, plus
+`bufferSizeBytes`, the size of a piece — 64 KiB by default, 8 MiB at most.
 
 `move` renames within one filesystem. It replaces an existing destination and
 has no mode to refuse one: `rename(2)` replaces, the portable alternative does
@@ -179,14 +178,13 @@ landed. A failure there leaves the destination replaced and the source still in
 place, and says so.
 
 `truncate` past the end of the file grows it with zeroes, as `ftruncate()` does.
+Its size is a required argument: a default would make `truncate($path)` read as
+"tidy this file" and empty it.
 
 `delete` with `missingOk` treats an absent path as a success and answers whether
 something was actually removed — the check-then-delete race written once here
-instead of at every call site. `removeDirectory` answers the same way.
-
-`truncate` takes its size as a required argument. A default would make
-`truncate($path)` read as "tidy this file" and empty it, which is the one call
-here that destroys data by being written carelessly.
+instead of at every call site. `removeDirectory` takes `missingOk` too and
+answers the same way.
 
 ## Checksums
 
@@ -287,8 +285,8 @@ process umask, as they are for `mkdir(2)`.
 directory read itself, which is free on the filesystems that carry it.
 
 An entry removed between the directory read and its `stat` is skipped rather
-than reported: a directory being written to is the ordinary case, and failing a
-whole listing over one vanished file would make this unusable anywhere real.
+than reported: a directory being written to is the ordinary case, and one
+vanished file must not fail the whole listing.
 
 `pattern` filters inside the extension, so a directory of a hundred thousand
 files does not cross the boundary to be filtered in PHP. It understands `*`, `?`
@@ -405,9 +403,8 @@ file holds.
 
 ### Abandoning a stream
 
-Breaking out of any of them early is safe. The coroutine's flow — the group of
-tasks the extension holds for it, see [architecture](architecture.md) — ends,
-and with it the extension releases what the stream held. That release is what
+Breaking out of any of them early is safe. The coroutine's flow ends, and with it
+the extension releases what the stream held. That release is what
 `make mem-leak-files scenario=abandoned` soaks, and what the feature tests
 assert by counting the process's own open descriptors before and after.
 
@@ -441,12 +438,12 @@ a handler written for the filesystem's own failures must not swallow it.
 
 ## What the feature does not do
 
-- **No `fopen`-style handle** with `seek`, `tell`, `read` and `write`. Every one
+- No `fopen`-style handle with `seek`, `tell`, `read` and `write`. Every one
   of those calls would be a boundary crossing spent on the cheapest thing there
   is. Random access is `read(offsetBytes, lengthBytes)`; sequential access is
   the streams.
-- **No locks.** `flock` across a suspension needs a descriptor living in the
+- No locks. `flock` across a suspension needs a descriptor living in the
   extension and an ownership model for it. `writeAtomic()` covers what a lock is
   usually taken for.
-- **No filesystem watching**, no `symlink`/`readlink`, no `glob(3)`, no
+- No filesystem watching, no `symlink`/`readlink`, no `glob(3)`, no
   `fgetcsv` — parsing stays in PHP on top of `readLines()`.

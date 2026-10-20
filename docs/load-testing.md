@@ -2,17 +2,19 @@ English | [Русский](load-testing.ru.md)
 
 # Load testing: server behaviour under load
 
-How to load the HTTP server with all async-I/O features at once while capturing
-memory and CPU, plus the results of a reference run.
+How to load the HTTP server with all async-I/O features at once (a feature is one
+of the library's integrations in `src/Features/`) while capturing memory and CPU,
+plus the results of a reference run.
 
 Tools:
 
 - `/all` of the demo server (`tests/servers/http/http-server.php`) — per request
-  it runs six operations at the same time (a nested `WaitGroup`): MongoDB
-  (insert + findOne), MySQL (`INSERT` + `SELECT 1`) and PostgreSQL (`INSERT` +
-  `SELECT 1`). The HTTP client is deliberately excluded: its self-hit into the
-  server's own `/` would make every `/all` serve a second request and skew the
-  rps. Connections are created lazily, once per worker;
+  it runs three blocks at the same time (a nested `WaitGroup`), each making its
+  two calls one after another: MongoDB (insert + findOne), MySQL (`INSERT` +
+  `SELECT 1`) and PostgreSQL (`INSERT` + `SELECT 1`). The HTTP client is
+  deliberately excluded: its self-hit into the server's own `/` would make every
+  `/all` serve a second request and skew the rps. Connections are created
+  lazily, once per worker;
 - `/all-nowg` — the same six operations one after another, with no `WaitGroup`,
   so the only concurrency left is between different requests. Run it via
   `ROUTE=/all-nowg tests/benchmarks/http/load-stats.sh`;
@@ -24,7 +26,7 @@ Tools:
   `make bench-swoole-load-stats`) — the same test rig against the RoadRunner and
   Swoole reference stacks on native drivers, with `ROUTE=/all-coro`
   (`make bench-swoole-coro-load-stats`) for the variant where Swoole runs the
-  six operations concurrently in its own coroutines.
+  three blocks concurrently in its own coroutines.
 
 ## How to run
 
@@ -114,7 +116,7 @@ The empty endpoint, 12 workers, the same `cpu0-11` budget in every arm, `wrk` on
 | placement | rps | p50 | p90 | p99 |
 |---|---:|---:|---:|---:|
 | `1` — one logical CPU each | 232 864 | 1.01 ms | 1.60 ms | 3.86 ms |
-| `group` — the scheduler places them | **248 002** | 0.86 ms | 2.09 ms | 4.19 ms |
+| `group` — the scheduler places them | 248 002 | 0.86 ms | 2.09 ms | 4.19 ms |
 
 `group` is 6.5% ahead on throughput and median; the pinned arm has the slightly
 shorter tail (p90 1.6 against 2.1 ms, p99 within 0.3 ms). `physical` lands on
@@ -188,8 +190,8 @@ at ~1200 %.
 
 ## Reference run
 
-Same machine and parameters, `wrk` against `/all` — 6 DB operations running at
-the same time in three feature blocks, 3 of them disk writes.
+Same machine and parameters, `wrk` against `/all` — 6 DB operations in three
+feature blocks running at the same time, 3 of them disk writes.
 
 | Metric | Value |
 |---|---|
@@ -234,23 +236,24 @@ Same machine and parameters, disk-backed backends, state reset
 
 | Metric | `/all` (concurrent) | `/all-nowg` (sequential) |
 |---|---|---|
-| Throughput | 2 950 req/sec | 2 768 req/sec (−6 %) |
+| Throughput | 2 950 req/sec | 2 768 req/sec (−6 % vs `/all`) |
 | Latency | p50 83.1 · p90 120.0 · p99 189.7 ms | p50 91.8 · p90 123.5 · p99 161.6 ms |
-| Servers CPU (`php`) | avg 205 % | avg 136 % (−34 %) |
+| Servers CPU (`php`) | avg 205 % | avg 136 % (−34 % vs `/all`) |
 | Worker RSS drift (20 s) | +1.6 MiB | +1.4 MiB |
 
 Single connection (1 server / 1 wrk thread / 1 connection / 5 s):
 
 | Metric | `/all` (concurrent) | `/all-nowg` (sequential) |
 |---|---|---|
-| Latency avg | 6.3 ms | 7.6 ms (+20 %) |
+| Latency avg | 6.3 ms | 7.6 ms (+20 % vs `/all`) |
 | Throughput | 158 req/sec | 132 req/sec |
 
 1. Under saturation the throughput is nearly the same: the ceiling is the
-   backends' disk commits, and the 256 request coroutines being served keep them busy even
-   without running the calls of a single request concurrently — a feature called
-   outside a `WaitGroup` still suspends its coroutine, and the process serves
-   other requests in the meantime.
+   backends' disk commits, and the 256 requests being served keep them busy even
+   without running the calls of a single request concurrently. The server runs
+   every request in a coroutine of its own (a PHP Fiber suspended while it waits
+   on the extension), so a feature called outside a `WaitGroup` still suspends
+   only that coroutine, and the process serves other requests in the meantime.
 2. What running them concurrently improves is per-request latency — 6.3 vs
    7.6 ms at a single connection, where the three feature blocks wait for their disk
    commits at the same time.
@@ -297,26 +300,26 @@ Accepting on the runtime, against `SO_REUSEPORT` in the same series:
 | Profile | Accepting | rps | p99 | CPU per request | Spread |
 |---|---|---:|---:|---:|---|
 | 256 connections | `SO_REUSEPORT` | 239 848 | 4.6 ms | 46 µs | 1.36–1.71× |
-| | shared, runtime | 233 877 | 4.2 ms | 45 µs | 7.4–9.0×, 2 workers idle in one run |
+| 256 connections | shared, runtime | 233 877 | 4.2 ms | 45 µs | 7.4–9.0×, 2 workers idle in one run |
 | 32 connections | `SO_REUSEPORT` | 180 143 | 1.2 ms | 59 µs | 6.1–6.5×, 2 workers idle in one run |
-| | shared, runtime | 176 957 | 0.5 ms | 52 µs | 6 to 9 of 12 workers idle |
+| 32 connections | shared, runtime | 176 957 | 0.5 ms | 52 µs | 6 to 9 of 12 workers idle |
 | connection per request | `SO_REUSEPORT` | 67 936 | 3.8 ms | 97 µs | 1.08–1.10× |
-| | shared, runtime | 62 942 | 3.9 ms | 105 µs | 8.2–9.6× |
+| connection per request | shared, runtime | 62 942 | 3.9 ms | 105 µs | 8.2–9.6× |
 | mixed | `SO_REUSEPORT` | 21 530 | 33.6 ms | 550 µs | 1.06–1.09× |
-| | shared, runtime | 21 312 | 46.6 ms | 552 µs | 1.16–1.23×, 1 worker idle in one run |
+| mixed | shared, runtime | 21 312 | 46.6 ms | 552 µs | 1.16–1.23×, 1 worker idle in one run |
 
 The accept thread, against `SO_REUSEPORT` in a second series:
 
 | Profile | Accepting | rps | p99 | CPU per request | Spread |
 |---|---|---:|---:|---:|---|
 | 256 connections | `SO_REUSEPORT` | 244 515 | 4.4 ms | 45 µs | 1.41–1.60× |
-| | shared, thread | 247 418 | 4.3 ms | 45 µs | 1.22–1.53× |
+| 256 connections | shared, thread | 247 418 | 4.3 ms | 45 µs | 1.22–1.53× |
 | 32 connections | `SO_REUSEPORT` | 189 918 | 1.2 ms | 59 µs | 6.3×, 1 worker idle in two runs |
-| | shared, thread | 182 740 | 1.1 ms | 63 µs | 2.9–6.7× |
+| 32 connections | shared, thread | 182 740 | 1.1 ms | 63 µs | 2.9–6.7× |
 | connection per request | `SO_REUSEPORT` | 68 765 | 3.3 ms | 93 µs | 1.08–1.11× |
-| | shared, thread | 67 455 | 3.6 ms | 103 µs | 1.02× |
+| connection per request | shared, thread | 67 455 | 3.6 ms | 103 µs | 1.02× |
 | mixed | `SO_REUSEPORT` | 21 500 | 34.2 ms | 559 µs | 1.08–1.16× |
-| | shared, thread | 21 602 | 35.5 ms | 558 µs | 1.06–1.15× |
+| mixed | shared, thread | 21 602 | 35.5 ms | 558 µs | 1.06–1.15× |
 
 1. Accepting a shared socket on the runtime does not work. The workers that wake
    first take the connections: 7–9× between the busiest and the idlest at 256

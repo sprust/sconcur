@@ -3,14 +3,15 @@ English | [Русский](mysql.ru.md)
 # MySQL (universal SQL feature)
 
 Asynchronous work with a relational database on top of sqlx. Every
-query goes into the extension and runs in a runtime task while the coroutine is
-suspended, so dozens of queries proceed in parallel. Outside a `WaitGroup` the same
-API works synchronously.
+query goes into the extension and runs in a runtime task while the calling
+coroutine (a PHP fiber the scheduler suspends while the extension works) waits, so
+dozens of queries proceed in parallel. Outside a `WaitGroup` the same API works
+synchronously.
 
-The feature is driver-agnostic: the `SConcur\Features\Sql` core knows nothing about
-a specific database, and `SConcur\Features\Mysql\Connection` is a thin facade that
-sets the MySQL driver (`MethodEnum::Mysql`). [PostgreSQL](pgsql.md) is a mirror
-facade over the same core.
+The feature (an extension module with a PHP API) is driver-agnostic: the
+`SConcur\Features\Sql` core knows nothing about a specific database, and
+`SConcur\Features\Mysql\Connection` is a thin facade that sets the MySQL driver
+(`MethodEnum::Mysql`). [PostgreSQL](pgsql.md) is a mirror facade over the same core.
 
 ## Quick start
 
@@ -42,9 +43,9 @@ Inside `WaitGroup::add(...)` the same calls run concurrently.
   socket, and a `mysql://` URL is accepted too.
 - Applied parameters: `charset`, `collation`, `time_zone` and `tls`. `tls` takes
   `false`, `preferred`, `skip-verify` (encrypt without checking the certificate)
-  or `true` (verify the certificate and the host name), plus the `1`/`0`/`t`/`f`
-  spellings of the first two; a named TLS configuration has no counterpart here
-  and is refused rather than silently downgraded.
+  or `true` (verify the certificate and the host name), plus the `1`/`t` and
+  `0`/`f` spellings of `true` and `false`; a named TLS configuration has no
+  counterpart here and is refused rather than silently downgraded.
 - Any other parameter is a session system variable, exactly as this DSN format
   defines it: it is issued as `SET name=value` on every connection the pool
   opens, after the driver's own session setup, so it wins over that. This is how
@@ -141,8 +142,8 @@ $transaction->exec('ROLLBACK TO SAVEPOINT sp1');   // only the inner row goes
 $transaction->commit();
 ```
 
-A savepoint belongs to the connection, and a transaction owns one for its whole
-life, so concurrent coroutines can each use the same savepoint names without
+A savepoint belongs to the connection, and a transaction holds its connection for its
+whole life, so concurrent coroutines can each use the same savepoint names without
 colliding.
 
 MySQL refuses a set of commands in the prepared-statement protocol with error
@@ -169,11 +170,11 @@ pool hands out whichever is free. `begin()` is what pins one: the `Transaction`
 keeps its connection even after the lock has committed the transaction out from
 under it, so the pair lands together whatever the pool size.
 
-**A lock left behind poisons the pool.** Neither `commit()` nor `rollback()`
-releases a table lock, so a connection returned to the pool still holding one
-blocks every later query that touches the table — for up to the pool's five idle
-minutes, on a connection nothing in the calling code still points at. `UNLOCK
-TABLES` therefore belongs in a `finally`:
+**A lock left behind stays on the pooled connection.** Neither `commit()` nor
+`rollback()` releases a table lock, so a connection returned to the pool still
+holding one blocks every later query that touches the table — for as long as that
+connection stays in the pool, and nothing in the calling code still points at it.
+`UNLOCK TABLES` therefore belongs in a `finally`:
 
 ```php
 $transaction = $connection->begin();   // here only to pin the connection
@@ -216,7 +217,8 @@ PHP-side consumption included, so a slow `foreach` over a large result can hit i
 mid-iteration. It does not apply to `begin()`, nor to the lifetime of the
 transaction it opens, which lives until commit/rollback or a flow stop — so a
 `begin()` against a server that accepts the connection and never answers is not
-bounded from here. The statements inside the transaction are bounded as usual.
+bounded from here. An `exec()` inside the transaction is bounded as usual; a
+`query()` on a transaction is not.
 
 ## Connection pool and concurrency
 
@@ -255,8 +257,9 @@ pool no smaller than the expected number of concurrent transactions.
   `driver+dsn+pool sizes` struct, with a refcount so a pool in use is never swept
   and eviction of idle ones after 5 minutes. The sweeper walks the registry once a
   minute.
-- SELECT streaming (`rows_state.rs`) — `RowsState` holds the live sqlx stream and gives
-  out rows in batches (`batchSize` comes from the PHP side, default 50; `<= 0` —
+- SELECT streaming (`rows_state.rs`) — the sqlx stream runs in a task of its own
+  and hands rows over a bounded channel; `RowsState` reads them and gives out rows
+  in batches (`batchSize` comes from the PHP side, default 50; `<= 0` —
   one unbounded batch) with a one-row look-ahead to detect whether a next batch
   exists. It is closed on exhaustion, an early `break` or a flow stop.
 - Transactions (`transactions.rs`) — `begin` puts a `TransactionSession` (holding the
@@ -271,9 +274,9 @@ pool no smaller than the expected number of concurrent transactions.
   and every binary type (`BLOB`/`BINARY`/`JSON`/`BIT`/`GEOMETRY`) → string, byte for
   byte, `DECIMAL` → string (to avoid losing precision), `DATE`/`DATETIME`/`TIMESTAMP`
   → an RFC3339 string with the fractional second trimmed of trailing zeroes
-  (`2026-12-06T14:30:00.25Z`), `TIME` → `HH:MM:SS` padded to the column's declared
-  precision (`14:30:00.500000`), with a leading `-` for a negative span, `NULL` →
-  `null`.
+  (`2026-12-06T14:30:00.25Z`, a `DATE` at midnight UTC), `TIME` → `HH:MM:SS` with a
+  six-digit fraction when it is not zero (`14:30:00.500000`) and a leading `-` for a
+  negative span, `NULL` → `null`.
   `TINYINT(1)` is an `int`, not a `bool`.
 - An unsigned `BIGINT` larger than `PHP_INT_MAX` arrives as its decimal string,
   because it does not fit a signed 64-bit int. Compare and store such values as

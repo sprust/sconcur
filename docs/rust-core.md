@@ -10,14 +10,14 @@ project keeps alive.
 
 ## Contents
 
-- [The question, and the gate set before the code](#the-question-and-the-gate-set-before-the-code)
+- [The question, and the threshold set before the code](#the-question-and-the-threshold-set-before-the-code)
 - [The floor and the boundary](#the-floor-and-the-boundary)
 - [The pathology that disappeared](#the-pathology-that-disappeared)
 - [fork and PHP-FPM](#fork-and-php-fpm)
 - [What it gave on the benchmarks](#what-it-gave-on-the-benchmarks)
 - [What it did not give](#what-it-did-not-give)
 
-## The question, and the gate set before the code
+## The question, and the threshold set before the code
 
 The cost of a request had already been attributed: on the Go core an empty
 request was ~91 µs of CPU, of which the extension floor was 14.2 µs and the
@@ -49,11 +49,11 @@ load throughout, so the deltas are the subject and the absolute numbers are not.
 | L1 — every request goes into PHP and back | 28.24 | 17.64 | −38% |
 | the boundary (L1 − L0) | 16.39 | 11.33 | −31% |
 
-Both gate conditions were met, and the port went ahead.
+Both threshold conditions were met, and the port went ahead.
 
 ## The pathology that disappeared
 
-The gate did not ask about this, and it turned out to matter more than the
+The threshold did not ask about this, and it turned out to matter more than the
 percentages.
 
 Pushing a task from inside a coroutine was, on the Go core, catastrophically
@@ -105,7 +105,7 @@ of the library's architecture, and it is gone.
 
 ## What it gave on the benchmarks
 
-The spike projected −12…16% of CPU on an empty request, or roughly 133 500 rps
+The prototype projected −12…16% of CPU on an empty request, or roughly 133 500 rps
 becoming 151 000–158 000. Measured on the finished port at the same placement the
 old figure was taken with, the empty endpoint went 133 500 → 154 432 rps, +16% —
 inside the projected band, on a different day and a different session.
@@ -155,19 +155,19 @@ by a client that keeps exactly one request in flight per connection:
 
 ## What it did not give
 
-- **Nothing where the backend is the ceiling.** On `/all` and across the DB
+- Nothing where the backend is the ceiling. On `/all` and across the DB
   benchmarks the limit is the backends' fsync, and the extension core has no part
   in it. The projection said zero there before the port and the measurement
   agreed.
-- **Nothing on the two most expensive steps of a request.** The Fiber machinery
+- Nothing on the two most expensive steps of a request. The Fiber machinery
   (~13.9 µs) and the PHP-side plumbing (~33.5 µs) are untouched by which language
   the core is written in. After the port the PHP side is two thirds of an empty
   request, so everything the core can still win is a fight over the remaining
   third.
-- **No smaller feature code, as a rule.** The MongoDB feature came out at 2 247
+- No smaller feature code, as a rule. The MongoDB feature came out at 2 247
   lines against 4 073, but that is the driver's `Document` building BSON where Go
   assembled it byte by byte — not a property of the language.
-- **No free correctness.** The port re-ran the project's own suites as its
+- No free correctness. The port re-ran the project's own suites as its
   specification, and MongoDB landed on 109/109 with 21 521 assertions, exactly
   what the Go core produced. Getting there meant finding five ways the wire
   contract had been silently misread, each of which corrupted data rather than

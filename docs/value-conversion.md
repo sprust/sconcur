@@ -12,6 +12,8 @@ lifecycle.
 
 ## The two directions
 
+The glue is `ext/sconcur.c`: the C layer PHP calls, which in turn calls the Rust core.
+
 | Direction | Where | What happens |
 |---|---|---|
 | PHP → core, a task's parameters | `SConcur\Extension\push()`, `ext/sconcur.c`, `read_value` in `ext/src/lib.rs` | the glue answers what each zval is; the core reads the array into a `dto::Value` tree before the call returns |
@@ -34,7 +36,7 @@ zval; it sees the tree.
 | `Value::Str(Vec<u8>)` | `string`, text or bytes alike: PHP has one type for both |
 | `Value::List(Vec<Value>)` | an array whose keys are `0..n` in order |
 | `Value::Map(Vec<(Key, Value)>)` | any other array, in insertion order; `Key` is `Int` or `Str` |
-| `Value::Object { class, properties }` | an instance of a userland class: its fully qualified name and its public properties in declaration order |
+| `Value::Object(Object)`, `Object { class, properties }` | an instance of a userland class: its fully qualified name and its public properties in declaration order |
 
 A `Map` is built with `Map::new().set("key", value)`; scalars, strings, byte
 vectors, `Vec<Value>` and `Option` convert into a `Value` with `.into()`.
@@ -50,7 +52,7 @@ core back per entry. The reading rules:
 
 - a reference is read through; an uninitialized typed property is skipped;
 - an array is a `List` when PHP says its keys are `0..n`, a `Map` otherwise, and
-  **an empty array is an empty `List`**;
+  an empty array is an empty `List`;
 - a `stdClass` is read as a `Map` of its properties;
 - any other object is read as `Value::Object` with its class name and its public
   properties; a protected or private property is not part of the value;
@@ -72,7 +74,7 @@ and it follows PHP rather than a wire format:
 | `f64` | a float, or an int |
 | `bool` | a bool |
 | `Option<T>` | `null` or a `T` |
-| `Vec<T>` | a list; **a string never stands in for a list** |
+| `Vec<T>` | a list; a string never stands in for a list |
 | `HashMap<String, T>`, a struct | a map, or an empty array; an integer key reads as its decimal text |
 | `Value` | the subtree as it stands, an object's class included |
 | `Borrowed<'a>` with `#[serde(borrow)]` | a reference into the message instead of a copy — for the untyped command body a sub-operation decodes later |

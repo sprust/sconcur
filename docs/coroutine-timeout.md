@@ -39,7 +39,7 @@ $waitGroup->add(
 );
 ```
 
-The two are the same mechanism. `Deadline::run()` bounds a piece of work and composes;
+The two are the same mechanism. `Deadline::run()` bounds a piece of work and nests;
 `add(timeoutMs: …)` bounds a callback from its first line, which is what you want when
 the caller — not the callback — decides how long it may take. Both take `0` to mean no
 deadline, and refuse a negative one.
@@ -142,25 +142,31 @@ The scheduler enforces it at the points where it already takes control:
 | parked by `Scheduler::switch()` | unwound before it would have been resumed |
 | running PHP, with preemption armed | unwound by the preemption hook, between two opcodes |
 | running PHP, without preemption | unwound at its next suspension point |
-| inside a boundary call | **not** unwound until the call returns |
+| inside a boundary call | not unwound until the call returns |
 
-The last two rows are the honest limits.
+The last two rows are the limits.
 
-**Without preemption** the deadline is cooperative. Preemption is off by default
+### Without preemption
+
+The deadline is cooperative. Preemption is off by default
 everywhere. The servers and the AMQP queue consumer arm it while they run when the
 `preemptionQuantumMs` option is above `0`; a CLI script or library code has to ask —
-`Scheduler::get()->enablePreemption()`, see [coroutine switching](coroutine-switching.md). Without it a loop that computes
-and never waits runs to its end, and the timeout is delivered afterwards.
+`Scheduler::get()->enablePreemption()`, see [coroutine switching](coroutine-switching.md).
+Without it a loop that computes and never waits runs to its end, and the timeout is
+delivered afterwards.
 
-**Inside a boundary call** no PHP runs at all, so nothing can be delivered. A query, a
-request or a publish that hangs is bounded by that feature's own timeout on the extension
-side — `rpcTimeoutSeconds` and `readTimeoutSeconds` on an AMQP connection, the
+### Inside a boundary call
+
+No PHP runs at all, so nothing can be delivered. A query, a request or a publish that
+hangs is bounded by that feature's own timeout on the extension side —
+`rpcTimeoutSeconds` and `readTimeoutSeconds` on an AMQP connection, the
 HTTP client's own deadlines — and not by this one. A coroutine deadline bounds the
 PHP coroutine, which is not the same as bounding everything it can wait for.
 
-Outside a coroutine there is nothing to unwind, so `Deadline::run()` runs the
-callback unbounded — the same rule the rest of the library follows for code that is
-not in a concurrent context.
+### Outside a coroutine
+
+There is nothing to unwind, so `Deadline::run()` runs the callback unbounded — the
+same rule the rest of the library follows for code that is not in a concurrent context.
 
 ## What it does not release
 

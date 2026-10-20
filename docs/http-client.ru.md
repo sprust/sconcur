@@ -3,9 +3,10 @@
 # HTTP-клиент (PSR-18) со стримингом
 
 Асинхронный PSR-18 HTTP-клиент. Весь сетевой I/O (DNS, соединение, TLS, отправка
-запроса, чтение ответа) живёт в расширении поверх reqwest: запрос
-уходит в задачу рантайма, корутина приостанавливается, и десятки запросов могут
-выполняться одновременно. Вне `WaitGroup` тот же API работает синхронно.
+запроса, чтение ответа) живёт в расширении поверх reqwest: запрос уходит в задачу
+рантайма, вызывающая корутина (PHP-файбер, который планировщик приостанавливает, пока
+работает расширение) ждёт, и десятки запросов могут выполняться одновременно. Вне
+`WaitGroup` тот же API работает синхронно.
 
 Тело ответа — PSR-7 `StreamInterface` (`ResponseBodyStream`), который лениво тянет
 чанки из расширения, как курсор Mongo, поэтому ответ никогда не буферизуется целиком.
@@ -43,21 +44,21 @@ sequenceDiagram
 
     PHP->>EXT: exec(RequestPayload) — открыть запрос
     Note over PHP: Fiber::suspend() — управление планировщику
-    Note over EXT: Next#1: http.Client.Do(ctx) — соединение, отправка
+    Note over EXT: Next#1: reqwest — соединение, отправка
     Note over EXT: читаем статус + заголовки + первый чанк тела
     EXT-->>PHP: result#1 {st, hd, b: firstChunk, cl} (WithNext / Success)
     Note over PHP: собираем PSR-7 Response + ResponseBodyStream → return $response
 
     PHP->>EXT: next(bodyKey) — на read() / __toString()
-    Note over EXT: Next#2..N: следующий чанк resp.Body
+    Note over EXT: Next#2..N: следующий чанк тела ответа
     EXT-->>PHP: result#k — сырой чанк (WithNext, последний → Success)
     Note over PHP: поток исчерпан → состояние удалено
-    Note over EXT: Close(): resp.Body.Close()
+    Note over EXT: Close(): поток тела ответа отбрасывается
 ```
 
 `sendRequest()` внутри корутины приостанавливает её, не блокируя другие запросы;
 вне Fiber работает синхронно (`Extension::wait`). Недочитанный ответ (ранний
-`break`, разрушение объекта) убирает машинерия стриминговых состояний: состояние
+`break`, разрушение объекта) убирает механизм потоковых состояний: состояние
 закрывается, а вместе с ним отбрасывается и поток тела ответа.
 
 ## Параллельное выполнение запросов
@@ -101,21 +102,21 @@ while (!$stream->eof()) {
 }
 ```
 
-Транспортная гранулярность — опция `chunkSize` (дефолт 64 KiB): тело до этого
-размера приходит inline с первым результатом без лишних round-trip'ов, большее
-идёт кусками по round-trip'у.
+Транспортная гранулярность — опция `chunkSize` (по умолчанию 64 KiB): тело до этого
+размера приходит inline с первым результатом без лишних round-trip'ов, большее идёт
+кусками по round-trip'у.
 
 > Тело лучше читать в той же корутине, что и `sendRequest`: когда корутина
 > завершается, её флоу останавливается и недочитанный поток на стороне расширения
-> закрывается. Небольшие ответы (≤ 64 KiB) приходят inline с первым результатом и
-> доступны после `waitResults()` без оговорок.
+> закрывается. Ответ не больше `chunkSize` (по умолчанию 64 KiB) приходит inline с
+> первым результатом и доступен после `waitResults()` без оговорок.
 
 ## Тело запроса
 
 По умолчанию тело запроса читается целиком и уходит в payload. Для крупных тел
-включите `streamRequestBody: true`: тело отправляется кусками по `chunkSize` PHP
-→ расширение и пишется в исходящее тело: темп записи задаёт
-Расширение, и тело нигде не буферизуется целиком.
+включите `streamRequestBody: true`: тело отправляется кусками по `chunkSize` PHP →
+расширение и пишется в исходящее тело; темп записи задаёт транспорт, и тело нигде не
+буферизуется целиком.
 
 ```php
 $client = new HttpClient($factory, new HttpClientOptions(streamRequestBody: true));
@@ -132,14 +133,14 @@ $response = $client->sendRequest(
 ## Параметры и таймауты
 
 `SConcur\Features\HttpClient\HttpClientOptions` (`readonly`), все таймауты в мс;
-дефолты PHP зеркалят транспортные.
+значения по умолчанию в PHP совпадают с транспортными.
 
-| Параметр | Дефолт | Назначение |
+| Параметр | По умолчанию | Назначение |
 |---|---|---|
 | `requestTimeoutMs` | `30000` | Полный дедлайн запроса (соединение + отправка + чтение всего тела), жёсткий лимит контекста на стороне расширения. `0` — выкл. (не рекомендуется). |
 | `connectTimeoutMs` | `10000` | Предел установления соединения, включая TLS-рукопожатие. |
-| `responseHeaderTimeoutMs` | `15000` | Предел ожидания статуса и заголовков. |
-| `maxResponseBody` | `0` (без лимита) | Кап тела ответа в байтах; превышение → ошибка чтения потока. **Внимание:** `0` — без лимита, следите за OOM. |
+| `responseHeaderTimeoutMs` | `15000` | Предел ожидания статуса и заголовков. При `streamRequestBody: true` не применяется. |
+| `maxResponseBody` | `0` (без лимита) | Потолок тела ответа в байтах; превышение → ошибка чтения потока. При `0` следите за OOM. |
 | `followRedirects` | `true` | Следовать ли редиректам 3xx. |
 | `maxRedirects` | `10` | Лимит переходов по редиректам. |
 | `chunkSize` | `65536` | Гранулярность чтения тела ответа и отправки тела запроса. |
@@ -148,7 +149,7 @@ $response = $client->sendRequest(
 | `maxIdleConnsPerHost` | `16` | Простаивающих keep-alive соединений на хост. |
 | `idleConnTimeoutMs` | `90000` | Сколько держать простаивающее keep-alive соединение. |
 | `tlsHandshakeTimeoutMs` | `10000` | Принимается и не применяется: отдельного предела на рукопожатие нет, его вместе с соединением ограничивает `connectTimeoutMs`. |
-| `streamRequestBody` | `false` | Стримить тело запроса кусками вместо буферизации целиком. |
+| `streamRequestBody` | `false` | Передавать тело запроса потоком кусков вместо буферизации целиком. |
 | `throwOnToStringError` | `true` | Может ли `ResponseBodyStream::__toString()` бросить на ошибке чтения. PSR-7 запрещает бросать из `__toString`; при `false` ошибка превращается в `E_USER_WARNING` и пустую строку. |
 
 ```php
@@ -179,7 +180,7 @@ use SConcur\Features\HttpClient\DownloadFileMode;
 $result = $httpClient->download(
     request: $factory->createRequest('GET', 'https://example.com/big.iso'),
     path: '/var/data/big.iso',
-    mode: DownloadFileMode::Replace,   // дефолт
+    mode: DownloadFileMode::Replace,   // по умолчанию
     bufferSizeBytes: 1 << 20,          // опц., принимается и не применяется — см. ниже
     perm: 0644,                        // опц., права при создании
 );
@@ -213,7 +214,7 @@ $result->executionMs;         // время скачивания
 | Случай | Исключение SConcur | Интерфейс PSR-18 |
 |---|---|---|
 | Сеть недоступна (refused, DNS-fail, таймаут, обрыв, лимит редиректов) | `Exceptions\HttpClient\NetworkException` | `NetworkExceptionInterface` |
-| Некорректный запрос (плохой URL/метод, не отправлен) | `Exceptions\HttpClient\RequestException` | `RequestExceptionInterface` |
+| Некорректный запрос (недопустимый метод, не отправлен) | `Exceptions\HttpClient\RequestException` | `RequestExceptionInterface` |
 | Прочая ошибка клиента | `Exceptions\HttpClient\HttpClientException` | `ClientExceptionInterface` |
 
 `NetworkException`/`RequestException` несут `getRequest(): RequestInterface`.
@@ -224,7 +225,7 @@ $result->executionMs;         // время скачивания
 try {
     $response = $client->sendRequest($request);
 } catch (NetworkExceptionInterface $exception) {
-    $failedRequest = $exception->getRequest();  // ретрай / логирование
+    $failedRequest = $exception->getRequest();  // повтор / логирование
 }
 ```
 
@@ -243,8 +244,7 @@ Rust (`ext/src/features/httpclient/`): `mod.rs` собирает запрос, �
 возвращает метаданные плюс первый чанк, дальше идут сырые чанки тела, а закрытие
 отбрасывает поток тела ответа), там же лимит `maxResponseBody`; `client.rs` —
 реестр переиспользуемых `reqwest::Client`; обработчики команд `download` и
-`upload` — файловый приёмник и pipe тела запроса. Общий хелпер
-`ext/src/helpers/` нарезает тела и для сервера, и для клиента.
+`upload` — файловый приёмник и pipe тела запроса.
 
 ## Ограничения
 
@@ -258,12 +258,12 @@ middleware), прокси и собственный CA-бандл, PSR-18 async 
 
 ## Тестирование
 
-PHP feature-тесты лежат в `tests/feature/Features/HttpClient/` — edge-случаи,
+PHP feature-тесты лежат в `tests/feature/Features/HttpClient/` — граничные случаи,
 скачивание в файл и контракт конкурентности на `BaseAsyncTestCase`, причём
 запросы идут в реальный HTTP-сервер SConcur, поднятый через `TestHttpServer`.
-Собственные тесты ядра покрывают метаданные первого
-результата, стриминг тела, лимит `maxResponseBody`, классификацию ошибок, сборку
-запроса и скачивание. Бенчмарк (`make bench-http-client c=20`) шлёт N запросов к
-`/msleep`: одновременный async против последовательных native/sync.
+Собственные тесты ядра (`ext/src/features/httpclient/payloads.rs`) фиксируют
+структуры, которые PHP читает из первого результата и из результата скачивания.
+Бенчмарк (`make bench-http-client c=20`) шлёт N запросов к `/msleep`:
+одновременный async против последовательных native/sync.
 
 Запуск: `make test c="--filter=HttpClient"`, `make ext-test`.

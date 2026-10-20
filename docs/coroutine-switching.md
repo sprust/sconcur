@@ -50,8 +50,8 @@ Mechanics: the coroutine suspends with a `PendingSwitchDto` marker, and the
 scheduler appends it to a FIFO queue of parked coroutines — those waiting for
 the thread rather than for a result. Ready results always take priority — a
 parked coroutine is resumed only when nothing is deliverable right now. Two CPU
-loops therefore round-robin each other, and I/O completions are never delayed by
-parked crunchers.
+loops therefore take turns, and I/O completions are never delayed by parked
+CPU-bound coroutines.
 
 ## Automatic preemption
 
@@ -72,10 +72,8 @@ handlers read as their own is shared by the whole process — see
    same checks opcache JIT inserts into compiled loops.
 3. The extension's handler, called on the PHP thread, invokes the scheduler's
    preempt hook, which force-parks the running coroutine exactly like a `switch()`
-   with the quantum elapsed. It skips the places where the engine forbids a fiber
-   switch, a pcntl signal handler among them: parking there would throw out of
-   the handler before it finished, and a SIGTERM handler cut short that way loses
-   the stop. When the work ends the timer is disarmed.
+   with the quantum elapsed. It skips the states listed under
+   [Safety guards](#safety-guards). When the work ends the timer is disarmed.
 4. While the PHP thread is parked inside a blocking wait call (an idle server
    waiting for the next request), the timer pauses: no PHP code is running, so
    an interrupt could not be serviced anyway. It resumes as soon as the wait
@@ -84,9 +82,9 @@ handlers read as their own is shared by the whole process — see
 ```mermaid
 flowchart TB
     Timer["timer thread in the extension (every quantum)"] -->|"EG(vm_interrupt) = true"| Engine["Zend VM (next opcode boundary)"]
-    Engine -->|"interrupt handler"| Preempt["Scheduler::preempt() — park the running coroutine"]
-    Preempt -->|"PendingSwitchDto"| Queue["switched queue (FIFO)"]
-    Scheduler["Scheduler loop (results first, then the queue)"] -->|"resume"| Queue
+    Engine -->|"zend_interrupt_function"| Preempt["Scheduler::preempt() — park the running coroutine"]
+    Preempt -->|"Fiber::suspend(PendingSwitchDto)"| Queue["switched queue (FIFO)"]
+    Scheduler["Scheduler loop (results first, then the queue)"] -->|"resumeNextSwitched"| Queue
 ```
 
 Configuration is the `preemptionQuantumMs` option (default `0`, which leaves preemption
@@ -105,7 +103,7 @@ php server.php --preemptionQuantumMs=5   # enable preemption for this worker
 ```
 
 CLI scripts and library code outside those workers never arm the timer, so there
-`Scheduler::switch()` is the only switch point — unless the same machinery is armed
+`Scheduler::switch()` is the only switch point — unless the same timer is armed
 manually:
 
 ```php
@@ -174,6 +172,9 @@ the pool, and keeping heavy computation out of the handler.
 The interrupt handler refuses to park a coroutine in states where an invisible
 switch would corrupt engine or scheduler bookkeeping:
 
+- where the engine forbids a fiber switch (`zend_fiber_switch_blocked()`), a pcntl
+  signal handler among them — parking there would throw out of the handler before
+  it finished, and a SIGTERM handler cut short that way loses the stop;
 - while an autoload is in progress (`EG(in_autoload)` non-empty) — parking there
   would make every other coroutine requesting the same class fail with "class
   not found";
@@ -215,9 +216,9 @@ if (json_last_error() !== JSON_ERROR_NONE) {   // may be a neighbour's result
 
 The engine checks for a pending interrupt right after an internal function returns,
 and a long call is exactly where the timer fires. So a preemption between
-`json_decode()` and `json_last_error()` is the likely case, not a rare one, and a shorter quantum makes it more likely
-still. A single coroutine with preemption armed is not affected: the scheduler
-itself does not touch this state.
+`json_decode()` and `json_last_error()` is the likely case, not a rare one, and a
+shorter quantum makes it more likely still. A single coroutine with preemption
+armed is not affected: the scheduler itself does not touch this state.
 
 | State | What reads it | Safe form |
 | --- | --- | --- |

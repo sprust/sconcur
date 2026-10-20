@@ -30,8 +30,9 @@ $connection->close();
 ```
 
 Best to run the whole dialogue inside the same coroutine as `connect()`: when the
-coroutine finishes, its flow is stopped and an unfinished connection inside the extension
-is closed (the same caveat as with `HttpClient`/`SocketServer`).
+coroutine finishes, its flow (the group of tasks it started) is stopped and an
+unfinished connection inside the extension is closed (the same caveat as with
+`HttpClient`/`SocketServer`).
 
 ## Connection: read / write / close
 
@@ -42,7 +43,7 @@ is closed (the same caveat as with `HttpClient`/`SocketServer`).
 | --- | --- |
 | `read(): ?string` | the next inbound frame; `null` — the peer closed its side (EOF), the connection ended, or the input limit was exceeded. Cooperatively suspends the coroutine |
 | `write(string $data): void` | send a frame to the peer; waits until it has actually been flushed, so a fast writer cannot outrun the peer. Throws `SocketClientConnectionClosedException` if the connection is broken |
-| `close(): void` | close the connection (idempotent, best-effort) |
+| `close(): void` | close the connection (idempotent; does nothing if the connection is already gone) |
 | `isClosed(): bool` | whether the connection is closed |
 | `id`, `remoteAddr`, `localAddr` | identifier and addresses |
 
@@ -78,8 +79,8 @@ $replies = $waitGroup->waitResults(); // total time ≈ the slowest connection
 ## Options and timeouts
 
 `SConcur\Features\SocketClient\SocketClientOptions` (`readonly`), all timeouts in
-ms; the PHP defaults mirror the extension's. A long-lived connection has no single "operation
-time" — that role is played by the dial/read/write timeouts.
+ms; the PHP defaults mirror the extension's. A long-lived connection has no single
+"operation time" — that role is played by the dial/read/write timeouts.
 
 | Option | Default | Purpose |
 | --- | --- | --- |
@@ -101,9 +102,9 @@ $client = new SocketClient(new SocketClientOptions(
 
 | Case | Exception |
 | --- | --- |
-| Failed to dial (refused / DNS-fail / connect-timeout) | `SConcur\Exceptions\SocketClient\SocketClientConnectException`, thrown by `connect()` |
+| Failed to dial (connection refused, DNS failure, connect timeout) | `SConcur\Exceptions\SocketClient\SocketClientConnectException`, thrown by `connect()` |
 | `write()` to a broken connection | `SConcur\Exceptions\SocketClient\SocketClientConnectionClosedException` |
-| The peer closed the connection / EOF / idle-timeout / `maxMessageBytes` exceeded | not an exception — `read()` returns `null` |
+| The peer closed the connection / EOF / idle timeout / `maxMessageBytes` exceeded | not an exception — `read()` returns `null` |
 
 The extension tags network failures with a `net:` marker, preserved in the exception
 message (handy for logging and retries).

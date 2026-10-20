@@ -112,8 +112,10 @@ build through only when `ready` is true, and tags the release as
 
 ## sconcur-server — worker master
 
-Starts and supervises a pool of worker processes (scaling across cores via
-`SO_REUSEPORT`, restarting crashed ones, graceful shutdown). Commands
+Starts and supervises pools of worker processes: the workers of a pool share one
+port (each with its own `SO_REUSEPORT` socket, or all on one socket the master
+binds), a crashed worker is restarted, and a stop finishes the requests already
+accepted. Commands
 `start` / `status` / `stop` / `reload`, all taking a `--configPath` flag pointing to the
 master's JSON config; `--group=NAME` narrows `status` and `reload` to one pool
 (`start` and `stop` accept it and check the name, but serve the whole config):
@@ -122,5 +124,6 @@ master's JSON config; `--group=NAME` narrows `status` and `reload` to one pool
 vendor/bin/sconcur-server start --configPath=/app/master.json
 ```
 
-Details — config parameters, restart policy, logging and graceful shutdown — are in
+Details — config parameters, the `fork` and `exec` launches, restart policy,
+logging and graceful shutdown — are in
 [Worker master](worker-master.md).

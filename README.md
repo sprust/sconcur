@@ -60,8 +60,9 @@ operations take two seconds.
 
 SConcur runs such operations at the same time. You swap the blocking calls for
 SConcur equivalents (see [What it replaces](#what-it-replaces)), wrap them in
-coroutines, and the work moves into the extension and runs there in parallel. The
-total time is bound by the slowest operation, not by their sum. PHP stays a thin
+coroutines (closures that `WaitGroup` runs each in its own PHP Fiber), and the
+work moves into the extension and runs there in parallel. The total time is
+bound by the slowest operation, not by their sum. PHP stays a thin
 orchestration layer; all concurrency lives below it.
 
 ## Example
@@ -150,11 +151,9 @@ lifecycle — in [docs/architecture.md](docs/architecture.md).
 
 The whole concurrency model reduces to one primitive: a channel. Every task runs
 as its own task on the runtime, and the results of every flow land in one shared
-bounded channel. PHP runs no event loop and polls nothing — the single
-process-wide `Scheduler` blocks reading a message from that channel
-(`waitAnyBatch`) and wakes on the first ready result, taking the results that
-are already ready with it in the same crossing. Which task finished first is
-decided by the channel; PHP only resumes the matching coroutine by `taskKey`.
+bounded channel. PHP runs no event loop and polls nothing: the `Scheduler` blocks
+on that channel as described above. Which task finished first is decided by the
+channel; PHP only resumes the matching coroutine.
 
 Everything else follows from that:
 
@@ -309,7 +308,7 @@ The crates the core is built on:
   features at once.
 - [Positioning](docs/positioning.md) — SConcur vs php-fpm, RoadRunner and Swoole.
 - [The move to Rust](docs/rust-core.md) — why the core was ported from Go, the
-  gate it had to pass and what it measured.
+  bar it had to clear and what was measured.
 - [SConcur for Laravel](https://github.com/sprust/sconcur-laravel) — a separate
   package: a concurrent HTTP worker, an application whose state is per coroutine,
   and Eloquent, cache, queues and WebSocket on top of SConcur's features.
@@ -323,9 +322,11 @@ make ext-build
 ```
 
 ## echo test
+
 ```shell
 php -d extension=./ext/build/sconcur.so -r "echo \SConcur\Extension\ping('hello') . PHP_EOL;"
 ```
+
 ## Roadmap
 
 In the order it is meant to happen:
@@ -339,12 +340,12 @@ In the order it is meant to happen:
 - The `Std` feature — SConcur equivalents of the remaining standard PHP
   functions that block the worker: password hashing, plus sleep, which absorbs
   `Sleeper`. File I/O is done and shipped as [Files](docs/files.md). json, gzip
-  and hash are candidates behind a benchmark gate, not a promise: their native
-  implementations are C already, and what the extension buys there is a free PHP
-  thread, not speed.
+  and hash are candidates, not a promise: each has to pass a benchmark first.
+  Their native implementations are C already, and what the extension buys there
+  is a free PHP thread, not speed.
 
 Deferred on purpose: splitting the core and the features into separate packages,
-and optimizing the synchronous path (a call outside a coroutine going to the
-extension directly, bypassing the scheduler and the Fiber machinery). Both are
-worth doing; neither moves a single verdict in
+and optimizing the synchronous path (a call outside a coroutine opens a task group
+of its own and costs three calls into the extension: `push`, `wait`, `stopFlow`).
+Both are worth doing; neither moves a single verdict in
 [positioning](docs/positioning.md#is-sconcur-for-you).

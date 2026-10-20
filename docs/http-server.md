@@ -22,6 +22,7 @@ extension; PHP stays a thin orchestration layer. Implementation:
 - [Logs](#logs)
 - [Concurrency and limits](#concurrency-and-limits)
 - [Scaling across cores (SO_REUSEPORT)](#scaling-across-cores-so_reuseport)
+  - [One socket for the whole pool](#one-socket-for-the-whole-pool)
   - [A proxy in front of the pool](#a-proxy-in-front-of-the-pool)
 - [OPcache and JIT](#opcache-and-jit)
 - [Stopping after N requests](#stopping-after-n-requests)
@@ -102,9 +103,10 @@ Any PSR-7/PSR-17 implementation works (`nyholm/psr7`, `guzzlehttp/psr7`,
 php -d extension=./ext/build/sconcur.so server.php
 ```
 
-`serve()` blocks until `SIGTERM`/`SIGINT` or a flow stop. The handler runs in its
-own coroutine, so async features inside it (`Sleeper::usleep()`, MongoDB, SQL, the
-HTTP client) do not block other requests.
+`serve()` blocks until `SIGTERM`/`SIGINT` or until its flow (the group of tasks the
+server runs in) is stopped. The handler runs in its own coroutine, so async features
+inside it (`Sleeper::usleep()`, MongoDB, SQL, the HTTP client) do not block other
+requests.
 
 ## Server parameters
 
@@ -123,10 +125,10 @@ timeouts are in milliseconds.
 | `shutdownTimeoutMs` | `10000` | Accepted and not applied. |
 | `maxRequestBody` | `10485760` (10 MiB) | Request body limit; exceeding it → `413`. |
 | `maxConcurrency` | `0` (no limit) | Requests handled at once, see [limits](#concurrency-and-limits). |
-| `handlerTimeoutMs` | `60000` | Max total handling time including streaming, otherwise `504`/abort. `0` — off. |
+| `handlerTimeoutMs` | `60000` | Max total handling time including streaming, otherwise `504`/abort. `0` — the PHP handler is not unwound; the extension still answers `504` after 60 s. |
 | `maxRequests` | `0` (no limit) | Stop the server after this many requests, see [below](#stopping-after-n-requests). |
 | `reusePort` | `false` | `SO_REUSEPORT` — several processes on one port. |
-| `listenFd` | `null` | A listening socket bound elsewhere to accept on instead of binding `address` — the shared socket of a [worker master](worker-master.md) group, or one from systemd socket activation. A copy is taken, so stopping the server leaves the socket to whoever else holds it. |
+| `listenFd` | `null` | A listening socket bound elsewhere to accept on instead of binding `address` — the shared socket of a [worker master](worker-master.md) group, or one from systemd socket activation. `address` and `reusePort` are then not used. A copy is taken, so stopping the server leaves the socket to whoever else holds it. |
 | `onError` | `null` | `Closure(Throwable, ServerRequestInterface): ?ResponseInterface`. |
 | `masterPid` | `null` | Stop gracefully once this pid is no longer the parent (the [master](worker-master.md) died); set from `--masterPid` by `fromArgs()`. |
 | `telemetrySocket` | `''` (off) | Unix socket for stats snapshots, injected by the master ([stats](admin-stats.md)). |
@@ -134,7 +136,7 @@ timeouts are in milliseconds.
 | `telemetryIntervalMs` | `0` | Snapshot cadence; `0` — the default of the component that sends them (1000 ms). |
 | `preemptionQuantumMs` | `0` | Automatic-preemption quantum while serving; `0` — off. Read [process-wide state](coroutine-switching.md#process-wide-state) before turning it on. |
 
-`0` means "off" for `maxConcurrency`/`handlerTimeoutMs`/`maxRequests`.
+`0` means "no limit" for `maxConcurrency` and `maxRequests`.
 
 ### Connection timeouts
 
@@ -142,9 +144,9 @@ The four connection deadlines and `shutdownTimeoutMs` cross the boundary and are
 not acted on: the extension bounds a request by `handlerTimeoutMs` and nothing
 else. A slow client therefore holds its connection for as long as it likes, and
 a shutdown waits for the handlers already accepted to finish rather than for a
-clock — bounded in practice by `handlerTimeoutMs`, which is why leaving it at
-`0` on a public listener is what actually costs you. Terminate slow clients in
-the reverse proxy in front.
+clock — bounded in practice by `handlerTimeoutMs`. At `0` a stuck handler is never
+unwound and the shutdown waits for it. Terminate slow clients in the reverse proxy in
+front.
 
 `HttpServer::fromArgs()` assembles the server from `argv`: every `--name=value` is
 matched to the constructor's scalar parameter of the same name (type-checked), an
@@ -241,7 +243,8 @@ return $factory->createResponse(200)
 
 - A body of known size goes out in a single write; `getSize() === null` means a
   stream, see below.
-- Without `Content-Type` the extension does not guess one.
+- Without `Content-Type` a non-empty one-shot body goes out as
+  `text/plain; charset=utf-8`; a streamed response gets none.
 - 204/304 responses have their body discarded.
 - Returning a non-`ResponseInterface` is a contract error
   (`InvalidHandlerResponseException`): the client gets `500`, `onError` is called.
@@ -250,8 +253,8 @@ return $factory->createResponse(200)
 
 There is no separate stream DTO — PSR-7 covers it: return a response whose body is
 a lazy `StreamInterface` of unknown size (`getSize()` → `null`). The framework then
-reads it chunk by chunk (`read()`), sending each to the client and waiting for the
-flush (chunked transfer, SSE). The reading happens in the request coroutine, so
+reads it chunk by chunk (`read()`, 64 KiB at a time), sending each to the client and
+waiting until the connection has taken it (chunked transfer, SSE). The reading happens in the request coroutine, so
 your `read()` can suspend on async features and lazily produce the next chunk.
 
 ```php
@@ -259,7 +262,7 @@ use SConcur\Tests\Impl\HttpServer\GeneratorStream; // StreamInterface over a Gen
 
 $chunks = (static function (): Generator {
     foreach (range(1, 5) as $i) {
-        yield "data: event $i\n\n"; // one yield — one chunk flushed to the client
+        yield "data: event $i\n\n"; // one yield — one chunk sent to the client
         Sleeper::sleep(seconds: 1); // async work between chunks
     }
 })();
@@ -269,8 +272,8 @@ return $factory->createResponse(200)
     ->withBody(new GeneratorStream($chunks));
 ```
 
-- The client sets the pace: each chunk is acknowledged only after the extension has written
-  and flushed it, so a fast producer cannot outrun a slow client.
+- The client sets the pace: each chunk is acknowledged only after the connection has
+  taken it, so a fast producer cannot outrun a slow client.
 - No `Content-Length` — a header without length, then chunked transfer encoding.
 - The status cannot change after the first chunk (headers are on the wire), so an
   exception while reading the body is not turned into a `500` — it is only
@@ -339,10 +342,9 @@ The time is the moment the request was accepted; the last field is the total
 handling time (for a stream — its whole duration). The line is formatted by the
 same runtime task that writes the response, so the log costs no crossing
 per request (that crossing is the most expensive part of a tiny request — moving
-moving the log out of PHP nearly doubles the throughput of one core on
-hello-world). Output
-is asynchronous: a background runtime task writes from a buffer with a ~100 ms
-timer flush; on overflow the extra lines are discarded and counted. The method
+the log out of PHP nearly doubles the throughput of one core on hello-world).
+Output is asynchronous: a background thread writes from a buffer, flushed every
+~100 ms; on overflow the extra lines are discarded and counted. The method
 and path are escaped (control bytes, including `CR`/`LF` from a URL-encoded
 path, become `\xNN`), so a request cannot forge a second log line.
 
@@ -469,8 +471,9 @@ Caveats:
 Instead of every process binding a `SO_REUSEPORT` socket of its own, one socket can be
 bound once and handed to all of them: `listenFd` takes the descriptor of a listening
 socket, and the server accepts on it instead of binding `address`. The
-[worker master](worker-master.md#parameters) does this for a group with `listen`, and
-systemd's socket activation hands over a descriptor the same way.
+[worker master](worker-master.md#sharing-the-port-reuseport-or-listen) does this for a
+group with `listen`, and systemd's socket activation hands over a descriptor the same
+way.
 
 All the workers then take connections from one queue. A worker that stops leaves what
 is waiting in it to the others, and the port stays open through every restart and
@@ -482,8 +485,8 @@ thread per server. The thread waits with `EPOLLEXCLUSIVE`, and only while the se
 asks for a connection, so a connection wakes one waiting worker and the workers take
 turns. Without it every worker wakes for every connection and the first to run takes
 what is queued: across 12 workers the busiest served 7–9 times as many requests as the
-idlest, and on other systems a shared socket is still accepted that way. With the thread, on
-the same 12 workers, the rps stayed within 2% of `SO_REUSEPORT` and the requests were
+idlest, and on other systems a shared socket is still accepted that way. With the
+thread, on the same 12 workers, the rps stayed within 2% of `SO_REUSEPORT` and the requests were
 spread at least as evenly. With a connection per request it costs about 10% more CPU
 per request ([the measurements](load-testing.md#shared-socket-vs-so_reuseport)).
 
@@ -584,7 +587,8 @@ before it finishes — see [restart policy and
 
 On `SIGTERM`/`SIGINT` (or a lost master, or the `maxRequests` limit) the server
 closes the listening socket immediately — the accept loop stops, the connections
-already accepted are not cancelled — waits for the running handlers, and exits. Each step is logged, see [Logs](#logs).
+already accepted are not cancelled — waits for the running handlers, and exits.
+Each step is logged, see [Logs](#logs).
 
 Closing the socket first matters for `SO_REUSEPORT`: the terminating worker
 leaves the reuseport group, so the kernel routes new connections to its
@@ -618,7 +622,7 @@ sequenceDiagram
     EXT-->>PHP: request event (batch, HasNext=true; the stream pumps itself)
     Note over PHP: spawn(coroutine) — handle($handler)
     PHP->>EXT: execNoResult(RespondPayload::full, HttpRespond)
-    Note over EXT: handle_respond — dispatch the write command, the connection writes status+headers+body
+    Note over EXT: respond_detached — hand the write command to the connection, which writes status+headers+body
     EXT->>Client: response
     Note over PHP: coroutine finished right after the push, the flow is cleaned up
 ```
@@ -638,7 +642,8 @@ connection reads the handler's writes from) and `server_states` (`flowKey →`
 server state, for `StopAccepting`). It is also the accept loop and the
 per-request service over `hyper`, handling the concurrency semaphore, the
 handler timeout, 503/504 and the graceful stop. `listen.rs` is the TCP listener
-and `SO_REUSEPORT`.
+and `SO_REUSEPORT`; `exclusive.rs` is the accept thread for a shared socket
+(`listenFd`, Linux).
 
 The listener is a self-pumping stream: an extension-side runtime task publishes every
 accepted request as the next batch result (`HasNext=true`), so PHP pays no
@@ -661,9 +666,9 @@ an `abandoned` error and unwinds cleanly instead of hanging.
 
 ## What's missing compared to typical servers
 
-The general limits of the library (FPM, `pcntl_fork`, NTS only) are in the
-[README](../README.md#use-and-limitations); the table holds what is specific to
-the server.
+The general limits of the library (FPM, `fork`, NTS only, `exit()` with active
+tasks) are in the [README](../README.md#use-and-limitations); the table holds what
+is specific to the server.
 
 | What | Status | Comment |
 |---|---|---|
@@ -674,7 +679,6 @@ the server.
 | CPU-bound handlers | ⚠️ limited | Neighbours' latency is bounded by [preemption](coroutine-switching.md); throughput comes from the per-core pool. |
 | Synchronous I/O in a handler | ⚠️ dangerous | Native `sleep`/PDO/`curl`/files freeze the loop. |
 | Router / middleware | ❌ no | A low-level PSR-7 contract; layer a PSR-15 stack on top yourself. |
-| `exit()`/`die()` with active tasks | ❌ no | Finish or stop the tasks first. |
 | Streaming the request body | ❌ no | The extension reads the whole body, up to `maxRequestBody`, before the handler runs. |
 
 What does work: keep-alive, the timeout pipeline, chunked/SSE streaming, multiple

@@ -2,13 +2,12 @@ English | [Русский](admin-stats.ru.md)
 
 # Server statistics
 
-Aggregated statistics across a whole server pool (HTTP, socket or WebSocket)
-brought up via [`SO_REUSEPORT`](http-server.md) under the
-[master](worker-master.md). Every worker pushes its snapshot over a unix socket to
-the master once a second; the master keeps the pool state in memory and serves it
-on its own port — `GET /api/stats`, a live HTML panel and an SSE stream. Sampling
-and push happen inside the extension of the worker; the collector and panel are pure PHP
-in the master, which never starts the extension's runtime.
+Aggregated statistics across the worker pools of the [master](worker-master.md): HTTP,
+socket and WebSocket servers and queue consumers. Every worker pushes its snapshot
+over a unix socket to the master once a second; the master keeps the pool state in
+memory and serves it on its own port — `GET /api/stats`, a live HTML panel and an SSE
+stream. Sampling and push happen inside the extension of the worker; the collector and
+panel are pure PHP in the master, which never starts the extension's runtime.
 
 ## Contents
 
@@ -23,13 +22,14 @@ in the master, which never starts the extension's runtime.
 
 ## How it works
 
-With `SO_REUSEPORT` each worker is a separate process with its own counters, and a
-request to the shared port lands in exactly one random worker — so statistics
-cannot be collected by polling a single socket. Instead each worker connects at
-startup to the collector's unix socket (brought up by the master in `runtimeDir`)
-and sends its snapshot there once a second as a length-prefix frame. The master is
-the sole consumer: it holds the last snapshot of each worker in memory (keyed by
-connection) and serves the pool sum on a separate port.
+Each worker is a separate process with its own counters, and a connection to the
+shared port (a [`SO_REUSEPORT`](http-server.md#scaling-across-cores-so_reuseport)
+socket per worker or the master's `listen` socket) lands in one of them — so
+statistics cannot be collected by polling a single socket. Instead each worker
+connects at startup to the collector's unix socket (brought up by the master in
+`runtimeDir`) and sends its snapshot there once a second as a length-prefix frame. The
+master is the sole consumer: it holds the last snapshot of each worker in memory
+(keyed by connection) and serves the pool sum on a separate port.
 
 A worker holds exactly one connection whatever mix it runs. A process that serves
 WebSocket connections and consumes a queue at the same time reports both sections in
@@ -53,8 +53,8 @@ flowchart TB
     worker2["Worker #2 (extension pusher)"]
     client["Browser / Prometheus / curl (Bearer)"]
 
-    master <-->|"spawn and supervise / push snapshot every 1s (unix socket)"| worker1
-    master <-->|"spawn and supervise / push snapshot"| worker2
+    master <-->|"start and supervise / push snapshot every 1s (unix socket)"| worker1
+    master <-->|"start and supervise / push snapshot"| worker2
     master <-->|"metrics / JSON / HTML / SSE"| client
 ```
 
@@ -103,7 +103,7 @@ Everything is on the master's `panelPort`.
   `text/plain`) → Prometheus metrics.
 - `GET /` — the live HTML panel (meta-refresh every 2 s; the link carries the
   token).
-- `GET /events` — an SSE stream: one JSON aggregate per tick.
+- `GET /events` — an SSE stream: one JSON aggregate a second.
 - Authorization — `Authorization: Bearer <token>`, compared in constant time; for
   the browser `?token=<token>` is also accepted.
 - A wrong or missing token gives `404` (not `401`, to avoid revealing the
@@ -127,7 +127,7 @@ running without a master):
 | Worker variable | Purpose | Default |
 |---|---|---|
 | `SCONCUR_TELEMETRY_SOCKET` | collector unix socket; empty = push off | empty |
-| `SCONCUR_SERVER_NAME` | pool name (snapshot label) | `sconcur-server` |
+| `SCONCUR_SERVER_NAME` | snapshot label; the master sets `<group>:<slot>` | `sconcur-server` |
 | `SCONCUR_TELEMETRY_INTERVAL_MS` | snapshot sample/push cadence | `1000` |
 
 Under the master the socket is `<runtimeDir>/<name>.telemetry.sock`, injected only
@@ -136,8 +136,8 @@ server via its constructor (`telemetrySocket`, `serverName`,
 `telemetryIntervalMs`), on the master via the `WorkerMaster` constructor
 (`panelPort`, `adminToken`). A queue consumer has no such parameters — the
 extension reads the socket and the pool name from the environment, and labels its
-snapshots `<group>:<slot>` from what the master set. Several pools on one machine
-need different `panelPort`, `name` and `runtimeDir`.
+snapshots `<group>:<slot>` from what the master set. Several masters on one machine
+need different `panelPort`s and a different `runtimeDir` or `name`.
 
 ## Metrics
 
@@ -176,9 +176,10 @@ buckets are exclusive: a request that has been running for 7 s lands only in
 sum of per-process values and can exceed 100%.
 
 The consumer numbers cost nothing extra on the wire: a delivery is counted where it
-leaves for PHP, and settled by the `basic.ack` or `basic.nack` that PHP was going to
-send anyway. They are the worker process's own — a worker that finishes and is
-replaced starts its counters afresh, exactly as a server's `completed` does.
+leaves for PHP, and settled by the `basic.ack`, `basic.nack` or `basic.reject` that
+PHP was going to send anyway. They are the worker process's own — a worker that
+finishes and is replaced starts its counters afresh, exactly as a server's `completed`
+does.
 
 `snapshotAgeMs` is computed by the master's own clock from the moment the frame
 was received, so it does not depend on clock skew; a live connection with no fresh
@@ -258,9 +259,9 @@ In a socket or WebSocket pool `connections` takes the place of `requests`, both 
 ```
 
 The Prometheus format (the default) carries the summed `sconcur_pool_*`, the master
-metrics `sconcur_master_*` and the per-worker `sconcur_worker_*` (with a `pid`
-label). Start date-times are served as unix seconds (`*_start_time_seconds`) —
-Prometheus carries no strings:
+metrics `sconcur_master_*`, the per-pool `sconcur_group_*` and the per-worker
+`sconcur_worker_*` (with a `pid` label). Start date-times are served as unix seconds
+(`*_start_time_seconds`) — Prometheus carries no strings:
 
 ```text
 # HELP sconcur_pool_requests_completed_total Requests completed across the pool.
@@ -272,7 +273,7 @@ sconcur_master_memory_rss_bytes{name="sconcur-servers"} 16777216
 sconcur_group_workers{name="sconcur-servers",group="http"} 3
 sconcur_group_memory_rss_bytes{name="sconcur-servers",group="http"} 125829120
 sconcur_worker_start_time_seconds{name="sconcur-servers",pid="12346",group="http"} 1750766087
-sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346",group="http"} 105432
+sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346"} 105432
 ```
 
 Four scopes, told apart by their prefix and their labels:
@@ -282,14 +283,16 @@ Four scopes, told apart by their prefix and their labels:
 | `sconcur_pool_*` | every worker of the master together — `requests`, `connections` and `deliveries` (the queue workload) | `name` |
 | `sconcur_group_*` | one pool: its worker count, hung count, watchdog kills, CPU, RSS and runtime tasks | `name`, `group` |
 | `sconcur_master_*` | the master process itself | `name` |
-| `sconcur_worker_*` | one worker | `name`, `pid`, `group` |
+| `sconcur_worker_*` | one worker | `name`, `pid`; `group` on the process metrics only |
 
-The workload of a pool is only under `sconcur_pool_*`: `sconcur_group_*` carries the
-process metrics, because adding up requests and deliveries per group would need a
-family per kind of pool. To read one pool's workload on its own, sum the
-`sconcur_worker_*` series by `group`.
+Workload is summed only under `sconcur_pool_*`, across every worker of the master:
+`sconcur_group_*` carries the process metrics, because adding up requests and
+deliveries per group would need a family per kind of pool. The per-worker workload
+series (`sconcur_worker_requests_*`, `sconcur_worker_connections_*`) carry no `group`
+label, and there are none for deliveries, so Prometheus cannot show one pool's
+workload on its own.
 
-The JSON view splits it the same way: `groups` sums each pool of the master on its own,
+In the JSON view `groups` sums each pool of the master on its own, workload included,
 while `totals` sums all of its workers. Adding up the workload of unlike pools means
 nothing, so the workload numbers are read off `groups`; in `totals` it is memory, CPU
 and runtime tasks that carry meaning. A worker says which pool it belongs to in `group`,
@@ -303,8 +306,10 @@ third-party supervisor too:
 - transport: unix socket (`SOCK_STREAM`), path — `SCONCUR_TELEMETRY_SOCKET`;
 - framing: 4-byte big-endian length prefix + body (the same codec as the
   [socket server](socket-server.md));
-- body: UTF-8 JSON, envelope `{"t":"snapshot","s":<snapshot>}`; the snapshot schema
-  is the [metrics](#metrics) table;
+- body: UTF-8 JSON, envelope `{"t":"snapshot","s":<snapshot>}`; the snapshot carries
+  `name` (the label), `pid`, `startedAtMs` and `updatedAtMs` (epoch ms) and the
+  worker fields of the [metrics](#metrics) table — the collector renders `startedAt`
+  from `startedAtMs` and ages the snapshot by its own clock;
 - semantics: best-effort, at-most-once, no ack; the collector holds last-value per
   connection, and closing the connection means the worker is gone;
 - one connection per worker process: a snapshot carries every section that process
@@ -317,8 +322,8 @@ third-party supervisor too:
   re-push.
 - `requests.avgMs` is the average over the worker's whole lifetime, so it smooths
   spikes (percentiles are a possible future improvement).
-- The whole snapshot is sampled once a second, and no source does a
-  stop-the-world.
+- The whole snapshot is sampled once an interval (1 s by default), and no source
+  stops the process to read it.
 
 ---
 

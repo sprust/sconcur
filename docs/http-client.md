@@ -2,11 +2,11 @@ English | [Русский](http-client.ru.md)
 
 # HTTP client (PSR-18) with streaming
 
-An asynchronous PSR-18 HTTP client. All network I/O (DNS, connection, TLS,
-sending the request, reading the response) lives in the extension on top of
-`reqwest`: the request goes into a runtime task, the coroutine suspends,
-and dozens of requests can be in progress at once. Outside a `WaitGroup` the
-same API works synchronously.
+An asynchronous PSR-18 HTTP client. All network I/O (DNS, connection, TLS, sending the
+request, reading the response) lives in the extension on top of `reqwest`: the request
+goes into a runtime task, the calling coroutine (a PHP fiber the scheduler suspends
+while the extension works) waits, and dozens of requests can be in progress at once.
+Outside a `WaitGroup` the same API works synchronously.
 
 The response body is a PSR-7 `StreamInterface` (`ResponseBodyStream`) that lazily
 pulls chunks from the extension, like a Mongo cursor, so a response is never
@@ -108,8 +108,8 @@ one comes in pieces per round-trip.
 
 > Better to read the body inside the same coroutine as `sendRequest`: once the
 > coroutine finishes its flow stops and the unread stream inside the extension is closed.
-> Small responses (≤ 64 KiB) arrive inline with the first result and are available
-> after `waitResults()` with no caveats.
+> A response no larger than `chunkSize` (64 KiB by default) arrives inline with the
+> first result and is available after `waitResults()` with no caveats.
 
 ## Request body
 
@@ -139,8 +139,8 @@ the PHP defaults mirror the transport's.
 |---|---|---|
 | `requestTimeoutMs` | `30000` | Full request deadline (connect + send + reading the whole body), a hard context limit inside the extension. `0` — off (not recommended). |
 | `connectTimeoutMs` | `10000` | Connection establishment limit, TLS handshake included. |
-| `responseHeaderTimeoutMs` | `15000` | Limit waiting for status + headers. |
-| `maxResponseBody` | `0` (unlimited) | Response body cap in bytes; exceeding it → stream read error. **Warning:** `0` is unlimited — watch for OOM. |
+| `responseHeaderTimeoutMs` | `15000` | Limit waiting for status + headers. Not applied with `streamRequestBody: true`. |
+| `maxResponseBody` | `0` (unlimited) | Response body cap in bytes; exceeding it → stream read error. With `0`, watch for OOM. |
 | `followRedirects` | `true` | Whether to follow 3xx redirects. |
 | `maxRedirects` | `10` | Redirect hop limit. |
 | `chunkSize` | `65536` | Granularity of reading the response body and sending the request body. |
@@ -216,7 +216,7 @@ Exceptions are thrown only on a send or connection failure:
 | Case | SConcur exception | PSR-18 interface |
 |---|---|---|
 | Network unreachable (refused, DNS-fail, timeout, dropped, redirect limit) | `Exceptions\HttpClient\NetworkException` | `NetworkExceptionInterface` |
-| Malformed request (bad URL/method, not sent) | `Exceptions\HttpClient\RequestException` | `RequestExceptionInterface` |
+| Malformed request (invalid method, not sent) | `Exceptions\HttpClient\RequestException` | `RequestExceptionInterface` |
 | Other client error | `Exceptions\HttpClient\HttpClientException` | `ClientExceptionInterface` |
 
 `NetworkException`/`RequestException` carry `getRequest(): RequestInterface`. The
@@ -246,8 +246,7 @@ is the streaming state (the first step runs the request and returns metadata plu
 the first chunk, the rest are raw body chunks, closing it drops the response body
 stream) and also holds the `maxResponseBody` limit; `client.rs` is the registry
 of reusable `reqwest::Client`s; the `download` and `upload` command handlers are
-the file sink and the request-body pipe. The shared helper `ext/src/helpers/`
-slices bodies for both the server and the client.
+the file sink and the request-body pipe.
 
 ## Limitations
 
@@ -264,9 +263,9 @@ goes through `WaitGroup`, not promises.
 PHP feature tests are in `tests/feature/Features/HttpClient/` — edge cases,
 download to a file and the concurrency contract on `BaseAsyncTestCase`, with
 requests targeting the real SConcur HTTP server started via `TestHttpServer`.
-The core's own tests cover the first-result
-metadata, body streaming, the `maxResponseBody` limit, error classification,
-request assembly and download. The benchmark (`make bench-http-client c=20`)
-sends N requests to `/msleep`, concurrent async against sequential native/sync.
+The core's own tests (`ext/src/features/httpclient/payloads.rs`) pin the maps PHP
+reads for the first result and for a download. The benchmark
+(`make bench-http-client c=20`) sends N requests to `/msleep`, concurrent async
+against sequential native/sync.
 
 Run: `make test c="--filter=HttpClient"`, `make ext-test`.

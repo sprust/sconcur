@@ -41,11 +41,11 @@ echo $result->affectedRows;
   ```
 - `BOOLEAN` is a real type and comes back as a PHP `bool`, not `0/1` (in MySQL it
   is `TINYINT(1)` → `int`). `NUMERIC`/`DECIMAL` is a string, as in MySQL.
-- No `interpolateParams`. A parameterised statement is sent as a
-  `PREPARE`/`EXECUTE`/`DEALLOCATE` batch in one round trip: your SQL goes into the
-  `PREPARE` untouched, the parameters are dollar-quoted literals in the `EXECUTE`,
-  and the server infers each parameter's type from where it appears. That is what
-  makes results arrive in the text format — see [Value types](#value-types).
+- A parameterised statement is sent as a `PREPARE`/`EXECUTE`/`DEALLOCATE` batch in one
+  round trip: your SQL goes into the `PREPARE` untouched, the parameters are
+  dollar-quoted literals in the `EXECUTE`, and the server infers each parameter's type
+  from where it appears. That is what makes results arrive in the text format — see
+  [Value types](#value-types).
 - A transaction aborts on error: after a failing query PostgreSQL puts it into the
   aborted state, and further commands fail with `current transaction is aborted`
   until `rollback()` — or until `ROLLBACK TO SAVEPOINT`, which returns the
@@ -55,9 +55,9 @@ echo $result->affectedRows;
 
 ## Limits
 
-A `TEXT` binding cannot carry a NUL byte — PostgreSQL holds none in a text value —
-and one is refused by name before the statement runs. Bind such a value to a
-`BYTEA` parameter, which takes arbitrary bytes.
+A `TEXT` binding cannot carry a NUL byte — PostgreSQL holds none in a text value — and
+one is refused before the statement runs, with an error naming the binding's position.
+Bind such a value to a `BYTEA` parameter, which takes arbitrary bytes.
 
 ## Value types
 
