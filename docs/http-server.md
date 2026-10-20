@@ -481,8 +481,8 @@ On Linux a server accepts on a shared socket from a thread of its own, one more
 thread per server. The thread waits with `EPOLLEXCLUSIVE`, and only while the server
 asks for a connection, so a connection wakes one waiting worker and the workers take
 turns. Without it every worker wakes for every connection and the first to run takes
-what is queued: across 12 workers that put 7–9× between the busiest and the idlest,
-and on other systems a shared socket is still accepted that way. With the thread, on
+what is queued: across 12 workers the busiest served 7–9 times as many requests as the
+idlest, and on other systems a shared socket is still accepted that way. With the thread, on
 the same 12 workers, the rps stayed within 2% of `SO_REUSEPORT` and the requests were
 spread at least as evenly. With a connection per request it costs about 10% more CPU
 per request ([the measurements](load-testing.md#shared-socket-vs-so_reuseport)).

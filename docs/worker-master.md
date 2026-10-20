@@ -401,6 +401,28 @@ loads what it needs itself — a small script, or an application that cannot be 
 without opening connections it cannot close again — and give such a group a bootstrap of
 one line (`require __DIR__ . '/vendor/autoload.php';`) if deploys switch a symlink.
 
+**Sharing the port: `reusePort` or `listen`?** The workers of a group share one port
+either way. With `reusePort: true` in `server` each worker binds a socket of its own and
+the kernel spreads the connections over them; with `listen` on the group the master
+binds one socket and hands it to every worker. Neither is set by default, and a group of
+several workers with neither starts workers that cannot all bind the port.
+
+| | `reusePort` | `listen` |
+|---|---|---|
+| rps (12 workers, `/`) | the reference | within 2% |
+| How evenly the requests are spread — the busiest worker's count over the idlest's | 1.4–1.6 times; 1.08–1.11 times with a connection per request | 1.2–1.5 times; 1.02 times with a connection per request |
+| CPU per request with a connection per request | the reference | about 10% more, and a thread more per server |
+| What a stopping worker had queued | reset when its socket closes | left in the shared queue for the others |
+| The port during restarts and reloads | held by the workers | held by the master throughout |
+| Platforms | spreads evenly on Linux | spreads evenly on Linux only, where a thread accepts with `EPOLLEXCLUSIVE`; elsewhere every worker wakes for every connection, and in that mode the busiest worker served 7–10 times as many requests as the idlest |
+
+On Linux, `listen` is the one for a pool that restarts its workers often — `maxRequests`,
+frequent reloads — where the connections queued on a stopping worker would otherwise be
+reset; `reusePort` where every request opens a connection and the CPU per request counts.
+Off Linux, keep `reusePort`. The measurements are in
+[load testing](load-testing.md#shared-socket-vs-so_reuseport), the mechanics in
+[one socket for the whole pool](http-server.md#one-socket-for-the-whole-pool).
+
 Each server also runs without a master: under systemd, a container's restart policy or
 another supervisor, several processes share the port with `reusePort` or a socket
 handed over as `listenFd` — see
