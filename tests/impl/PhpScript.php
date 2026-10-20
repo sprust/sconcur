@@ -15,10 +15,16 @@ namespace SConcur\Tests\Impl;
 class PhpScript
 {
     /**
-     * @param list<string> $arguments $argv[1] onwards
+     * @param list<string> $arguments          $argv[1] onwards
+     * @param int|null     $maxOpenDescriptors the process's limit on open descriptors, as
+     *                                         `ulimit -n` sets it; null keeps the inherited one
      */
-    public static function run(string $code, array $arguments = [], int $timeoutSeconds = 30): string
-    {
+    public static function run(
+        string $code,
+        array $arguments = [],
+        int $timeoutSeconds = 30,
+        ?int $maxOpenDescriptors = null,
+    ): string {
         // -k: a scenario running a server takes the SIGTERM timeout sends as a graceful
         // stop and may carry on, so a SIGKILL follows it.
         $command = sprintf(
@@ -29,6 +35,10 @@ class PhpScript
             escapeshellarg($code),
             implode(' ', array_map('escapeshellarg', $arguments)),
         );
+
+        if ($maxOpenDescriptors !== null) {
+            $command = sprintf('ulimit -n %d && %s', $maxOpenDescriptors, $command);
+        }
 
         return (string) shell_exec($command);
     }

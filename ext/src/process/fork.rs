@@ -11,7 +11,7 @@
 //! /dev/null, stdout and stderr onto the parent's pipes, the parent's other
 //! descriptors pointed at /dev/null, the parent's signal watching undone, and —
 //! in the glue — the random generators unseeded and the parent's objects marked
-//! as destroyed.
+//! as destroyed. A child that cannot be prepared exits instead (see `abandon`).
 
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
@@ -103,32 +103,43 @@ pub fn refuse_unless_alone() -> Result<(), Error> {
     Ok(())
 }
 
+/// The exit code of a child that cannot be isolated from its parent: EX_OSERR of
+/// sysexits.h, an operating system error.
+const UNISOLATED_EXIT_CODE: c_int = 71;
+
 fn prepare_child(keep: &[i64], output: Option<(Pipe, Pipe)>, heartbeat: Option<Pipe>) -> Value {
-    let null = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDWR) };
-
-    if null >= 0 {
-        unsafe { libc::dup2(null, 0) };
-    }
-
+    // The pipes first, so that a child failing past this point says so where its
+    // parent reads it.
     if let Some((stdout, stderr)) = output {
-        unsafe {
-            libc::dup2(stdout.write.as_raw_fd(), 1);
-            libc::dup2(stderr.write.as_raw_fd(), 2);
+        if unsafe { libc::dup2(stdout.write.as_raw_fd(), 1) } < 0 {
+            abandon(b"dup2 of the stdout pipe");
+        }
+
+        if unsafe { libc::dup2(stderr.write.as_raw_fd(), 2) } < 0 {
+            abandon(b"dup2 of the stderr pipe");
         }
 
         // The originals close as the pipes drop; 1 and 2 are what stays.
+    }
+
+    let null = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDWR) };
+
+    if null < 0 {
+        abandon(b"open of /dev/null");
+    }
+
+    if unsafe { libc::dup2(null, 0) } < 0 {
+        abandon(b"dup2 of /dev/null onto stdin");
     }
 
     // The read end is the parent's; only the write end stays, close-on-exec, so
     // nothing this worker execs can mark it alive.
     let heartbeat = heartbeat.map_or(-1, |pipe| pipe.write.into_raw_fd());
 
-    if null >= 0 {
-        neutralize(null, keep, heartbeat);
+    neutralize(null, keep, heartbeat);
 
-        if null > 2 {
-            unsafe { libc::close(null) };
-        }
+    if null > 2 {
+        unsafe { libc::close(null) };
     }
 
     unsafe { crate::sconcur_after_fork_in_child() };
@@ -147,7 +158,11 @@ fn prepare_child(keep: &[i64], output: Option<(Pipe, Pipe)>, heartbeat: Option<P
 /// them. A closed number is reused by the next open, and that stream's eventual
 /// close would then close the new file.
 fn neutralize(null: RawFd, keep: &[i64], heartbeat: RawFd) {
-    for descriptor in open_descriptors() {
+    let Some(descriptors) = open_descriptors() else {
+        abandon(b"listing of the open descriptors");
+    };
+
+    for descriptor in descriptors {
         let kept = descriptor <= 2
             || descriptor == null
             || descriptor == heartbeat
@@ -158,7 +173,81 @@ fn neutralize(null: RawFd, keep: &[i64], heartbeat: RawFd) {
             continue;
         }
 
-        unsafe { libc::dup2(null, descriptor) };
+        if unsafe { libc::dup2(null, descriptor) } < 0 {
+            abandon(b"dup2 of /dev/null onto an inherited descriptor");
+        }
+    }
+}
+
+/// Ends a child that cannot be isolated from its parent, before it runs a line of
+/// PHP: run on, it would keep the parent's descriptors — its lock, its log, the
+/// other workers' pipes — or write where the parent writes, and the parent would
+/// never know. One line on stderr names the step that failed and its errno, and
+/// the exit code is UNISOLATED_EXIT_CODE (71), for the parent to reap.
+///
+/// The line is put together on the stack and written with one write(2), the
+/// errno read before anything else can change it.
+fn abandon(step: &[u8]) -> ! {
+    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+
+    let mut line = Line::default();
+
+    line.push(b"sconcur: a forked child cannot be isolated from its parent and exits: ");
+    line.push(step);
+    line.push(b" failed, errno ");
+    line.push_number(errno);
+    line.push(b"\n");
+
+    unsafe {
+        libc::write(2, line.bytes.as_ptr().cast(), line.length);
+        libc::_exit(UNISOLATED_EXIT_CODE)
+    }
+}
+
+/// A line of at most 256 bytes on the stack; what does not fit is cut off.
+struct Line {
+    bytes: [u8; 256],
+    length: usize,
+}
+
+impl Default for Line {
+    fn default() -> Self {
+        Line {
+            bytes: [0; 256],
+            length: 0,
+        }
+    }
+}
+
+impl Line {
+    fn push(&mut self, part: &[u8]) {
+        let taken = part.len().min(self.bytes.len() - self.length);
+
+        self.bytes[self.length..self.length + taken].copy_from_slice(&part[..taken]);
+        self.length += taken;
+    }
+
+    fn push_number(&mut self, number: i32) {
+        let mut digits = [0_u8; 12];
+        let mut at = digits.len();
+        let mut rest = number.unsigned_abs();
+
+        loop {
+            at -= 1;
+            digits[at] = b'0' + (rest % 10) as u8;
+            rest /= 10;
+
+            if rest == 0 {
+                break;
+            }
+        }
+
+        if number < 0 {
+            at -= 1;
+            digits[at] = b'-';
+        }
+
+        self.push(&digits[at..]);
     }
 }
 
@@ -169,6 +258,7 @@ fn neutralize(null: RawFd, keep: &[i64], heartbeat: RawFd) {
 pub fn inherited_descriptors() -> Value {
     Value::List(
         open_descriptors()
+            .unwrap_or_default()
             .into_iter()
             .filter(|&descriptor| descriptor > 2 && unsafe { libc::fcntl(descriptor, libc::F_GETFD) } >= 0)
             .map(|descriptor| Value::Int(descriptor as i64))
@@ -176,17 +266,20 @@ pub fn inherited_descriptors() -> Value {
     )
 }
 
-/// The descriptors this process has open. /proc on Linux, /dev/fd elsewhere.
-fn open_descriptors() -> Vec<RawFd> {
+/// The descriptors this process has open. /proc on Linux, /dev/fd elsewhere;
+/// none when neither can be read.
+fn open_descriptors() -> Option<Vec<RawFd>> {
     for directory in ["/proc/self/fd", "/dev/fd"] {
         if let Ok(entries) = std::fs::read_dir(directory) {
-            return entries
-                .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
-                .collect();
+            return Some(
+                entries
+                    .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+                    .collect(),
+            );
         }
     }
 
-    Vec::new()
+    None
 }
 
 /// A pipe whose ends are close-on-exec: the parent's ends must not leak into a

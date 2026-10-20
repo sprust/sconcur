@@ -20,7 +20,9 @@ use crate::dto::{Map, Value};
 
 /// How a command failed. `Refused` is a misuse the caller has to fix — forking a
 /// process that already runs threads — and is raised as a LogicException;
-/// `Failed` is the system saying no, raised as a RuntimeException.
+/// `Failed` is the system saying no, or a parameter nothing can be done with — an
+/// unknown signal, a pid that names no single process — raised as a
+/// RuntimeException.
 pub enum Error {
     Refused(String),
     Failed(String),
@@ -84,9 +86,10 @@ fn exit(code: i64) -> ! {
 
 /// True once the signal is on its way, false when there is no such process.
 fn kill(params: payloads::KillParams) -> Result<Value, Error> {
+    let pid = one_process(params.pid)?;
     let signal = signals::number(&params.signal)?;
 
-    if unsafe { libc::kill(params.pid as libc::pid_t, signal) } == 0 {
+    if unsafe { libc::kill(pid, signal) } == 0 {
         return Ok(Value::Bool(true));
     }
 
@@ -103,13 +106,23 @@ fn kill(params: payloads::KillParams) -> Result<Value, Error> {
 /// rest. Each comes with its exit code or the signal that ended it; a pid that is
 /// not a child of this process (any more) comes with neither, so the caller can
 /// stop waiting for it.
+///
+/// Every pid is checked before any is reaped: a list refused half way would have
+/// reaped the children ahead of the bad pid without reporting them, and a child
+/// reaped unreported is waited for forever.
 fn reap(params: payloads::ReapParams) -> Result<Value, Error> {
+    let pids = params
+        .pids
+        .iter()
+        .map(|&pid| one_process(pid))
+        .collect::<Result<Vec<libc::pid_t>, Error>>()?;
+
     let mut exited = Vec::new();
 
-    for pid in params.pids {
+    for pid in pids {
         let mut status: libc::c_int = 0;
 
-        let answer = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG) };
+        let answer = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
 
         if answer == 0 {
             continue;
@@ -122,7 +135,7 @@ fn reap(params: payloads::ReapParams) -> Result<Value, Error> {
                 // Asked again on the next tick.
                 Some(libc::EINTR) => continue,
                 Some(libc::ECHILD) => {
-                    exited.push(outcome(pid, None, None));
+                    exited.push(outcome(pid.into(), None, None));
 
                     continue;
                 }
@@ -132,10 +145,26 @@ fn reap(params: payloads::ReapParams) -> Result<Value, Error> {
 
         let (code, signal) = classify(status);
 
-        exited.push(outcome(pid, code, signal));
+        exited.push(outcome(pid.into(), code, signal));
     }
 
     Ok(Value::List(exited))
+}
+
+/// A pid that names one process. kill(2) takes 0 for this process's whole group —
+/// the master included — and -1 for every process it may signal; waitpid(2) takes
+/// both for any child, which would then be reported under the pid asked for. A
+/// number outside pid_t's range would be truncated to one of them by a cast. All
+/// are refused.
+///
+/// Refused as Failed, so the caller gets the ProcessException the PHP side throws
+/// for the same pid before it asks: Refused is a ForkRefusedException, which says
+/// the process runs threads.
+fn one_process(pid: i64) -> Result<libc::pid_t, Error> {
+    match libc::pid_t::try_from(pid) {
+        Ok(pid) if pid > 0 => Ok(pid),
+        _ => Err(Error::Failed(format!("pid {pid} is not a child"))),
+    }
 }
 
 /// The exit code, or the number of the signal that ended the process.
@@ -228,6 +257,68 @@ mod tests {
 
         assert!(numbers.contains(&descriptor), "{numbers:?}");
         assert!(numbers.iter().all(|&number| number > 2), "{numbers:?}");
+    }
+
+    /// The message a command failed with as a ProcessException.
+    fn failure(result: Result<Value, Error>) -> String {
+        match result {
+            Err(Error::Failed(message)) => message,
+            Err(Error::Refused(message)) => panic!("refused as a fork: {message}"),
+            Ok(_) => panic!("answered"),
+        }
+    }
+
+    /// 0 and -1 name no single process: to kill(2) they are this process's group and
+    /// every process it may signal, to waitpid(2) any child; 2^32 and 2^32 - 1 would
+    /// become them in a cast to pid_t. The signal is CHLD, which nothing acts on by
+    /// default, so that the test harms nobody where the check is missing.
+    #[test]
+    fn a_pid_that_names_no_single_process_is_refused() {
+        for pid in [0, -1, 1 << 32, (1 << 32) - 1] {
+            let killed = kill(payloads::KillParams {
+                pid,
+                signal: "CHLD".to_string(),
+            });
+
+            assert_eq!(failure(killed), format!("pid {pid} is not a child"));
+
+            let reaped = reap(payloads::ReapParams { pids: vec![pid] });
+
+            assert_eq!(failure(reaped), format!("pid {pid} is not a child"));
+        }
+    }
+
+    /// A list with a bad pid in it is refused whole: the child ahead of it is not
+    /// reaped by the refused call, so the next one still reports how it exited.
+    #[test]
+    fn a_refused_reap_reaps_none_of_its_pids() {
+        let child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id() as i64;
+
+        // Until it has exited, left unreaped.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let flags = libc::WEXITED | libc::WNOWAIT;
+
+        assert_eq!(
+            unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, flags) },
+            0
+        );
+
+        let refused = reap(payloads::ReapParams { pids: vec![pid, 0] });
+
+        assert_eq!(failure(refused), "pid 0 is not a child");
+
+        let Ok(exited) = reap(payloads::ReapParams { pids: vec![pid] }) else {
+            panic!("not reaped");
+        };
+
+        let first = exited.as_list().and_then(|exited| exited.first());
+
+        assert_eq!(
+            first.and_then(|outcome| outcome.get("cd")),
+            Some(&Value::Int(0)),
+            "the child was reaped by the refused call and reported by neither: {exited:?}"
+        );
     }
 
     #[test]

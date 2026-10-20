@@ -99,10 +99,13 @@ class ProcessControl
     }
 
     /**
-     * Sends a signal. False when there is no such process.
+     * Sends a signal. False when there is no such process. A pid of 0 or below is refused
+     * (see assertChildPid()).
      */
     public static function kill(int $pid, ProcessSignalEnum $signal): bool
     {
+        static::assertChildPid($pid);
+
         return (bool) Extension::get()->process(
             command: ProcessCommandEnum::Kill,
             payload: [
@@ -113,7 +116,9 @@ class ProcessControl
     }
 
     /**
-     * The children among $pids that have exited, without waiting for the others.
+     * The children among $pids that have exited, without waiting for the others. A list
+     * with a pid of 0 or below in it is refused whole, before any child is reaped (see
+     * assertChildPid()).
      *
      * @param list<int> $pids
      *
@@ -121,6 +126,10 @@ class ProcessControl
      */
     public static function reap(array $pids): array
     {
+        foreach ($pids as $pid) {
+            static::assertChildPid($pid);
+        }
+
         /** @var list<array{pid: int, cd: int|null, sg: int|null}> $exited */
         $exited = Extension::get()->process(
             command: ProcessCommandEnum::Reap,
@@ -254,6 +263,22 @@ class ProcessControl
         $count = Extension::get()->process(command: ProcessCommandEnum::ThreadCount);
 
         return is_int($count) ? $count : null;
+    }
+
+    /**
+     * Refuses a pid that names no single process before it reaches the system: to kill(2)
+     * 0 is this process's whole group — a master included — and -1 every process it may
+     * signal; to waitpid(2) both are any child, which would be reported under the pid
+     * asked for. A child's ForkResult has a pid of 0, so one that reached the wrong side
+     * of the fork would do exactly that. The extension refuses them too.
+     */
+    protected static function assertChildPid(int $pid): void
+    {
+        if ($pid <= 0) {
+            throw new ProcessException(
+                message: sprintf('process: pid %d is not a child', $pid),
+            );
+        }
     }
 
     /**

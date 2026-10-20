@@ -96,8 +96,8 @@ impl Acceptor {
         match accepted {
             Some(Ok((stream, address))) => Ok((TcpStream::from_std(stream)?, address)),
             Some(Err(error)) => Err(error),
-            // The thread only ends on its own when epoll itself fails, which
-            // nothing short of a bug makes it do. Waiting here leaves the server
+            // The thread only ends on its own when an epoll call fails, and it
+            // hands that error over first. Waiting here after it leaves the server
             // to its stop instead of spinning the accept loop on an error.
             None => std::future::pending().await,
         }
@@ -113,9 +113,47 @@ impl Drop for Acceptor {
     }
 }
 
-/// The thread: waits for a request for a connection, then for a connection,
-/// accepts it and hands it over, until the server stops.
+/// The epoll call that failed, and how.
+type Failure = (&'static str, std::io::Error);
+
+/// The thread: accepts for its server until the server stops, then lets go of
+/// the socket.
+///
+/// An epoll call that fails ends it as well — a registration past the user's
+/// fs.epoll.max_user_watches is refused with ENOSPC — and that ending the server
+/// would not hear of otherwise: it would wait for a connection nothing accepts
+/// any more. So the failure goes to the log, and the server's next accept
+/// returns it.
 fn run(socket: Socket, epoll: OwnedFd, bells: Arc<Bells>, accepted: mpsc::Sender<Accepted>) {
+    let Err((call, error)) = serve(&socket, &epoll, &bells, &accepted) else {
+        return;
+    };
+
+    // Let go of first, as a thread that ended would: the error may wait a long
+    // time for a server that does not ask again.
+    drop(epoll);
+    drop(socket);
+
+    // A server runs on the runtime, so there is a core to log through; a test
+    // may run without one, and is not given one just for this line.
+    if let Some(core) = crate::core::built() {
+        core.logger().write(format!(
+            "accept: {call} failed on a shared listening socket: {error}; this server accepts no more \
+             connections\n"
+        ));
+    }
+
+    let _ = accepted.blocking_send(Err(error));
+}
+
+/// Waits for a request for a connection, then for a connection, accepts it and
+/// hands it over, until the server stops or an epoll call fails.
+fn serve(
+    socket: &Socket,
+    epoll: &OwnedFd,
+    bells: &Bells,
+    accepted: &mpsc::Sender<Accepted>,
+) -> Result<(), Failure> {
     let epoll = epoll.as_raw_fd();
     let listener = socket.as_raw_fd();
 
@@ -127,17 +165,19 @@ fn run(socket: Socket, epoll: OwnedFd, bells: Arc<Bells>, accepted: mpsc::Sender
         };
 
         if count < 0 {
-            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            let error = std::io::Error::last_os_error();
+
+            if error.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
 
-            return;
+            return Err(("epoll_wait", error));
         }
 
         let ready = &events[..count as usize];
 
         if ready.iter().any(|event| event.u64 == STOP) {
-            return;
+            return Ok(());
         }
 
         if ready.iter().any(|event| event.u64 == DEMAND) {
@@ -145,9 +185,8 @@ fn run(socket: Socket, epoll: OwnedFd, bells: Arc<Bells>, accepted: mpsc::Sender
 
             // At the back of the queue of waiters. Registered even when there is
             // already a connection waiting: epoll then reports it at once.
-            if control(epoll, libc::EPOLL_CTL_ADD, listener, LISTENER, libc::EPOLLEXCLUSIVE).is_err() {
-                return;
-            }
+            control(epoll, libc::EPOLL_CTL_ADD, listener, LISTENER, libc::EPOLLEXCLUSIVE)
+                .map_err(|error| ("epoll_ctl(EPOLL_CTL_ADD)", error))?;
         }
 
         if !ready.iter().any(|event| event.u64 == LISTENER) {
@@ -166,13 +205,17 @@ fn run(socket: Socket, epoll: OwnedFd, bells: Arc<Bells>, accepted: mpsc::Sender
             },
         };
 
-        if control(epoll, libc::EPOLL_CTL_DEL, listener, LISTENER, 0).is_err() {
-            return;
+        // Before the hand-over, so the socket is not waited on until the server
+        // asks again.
+        let deregistered = control(epoll, libc::EPOLL_CTL_DEL, listener, LISTENER, 0);
+
+        // A connection already accepted is the server's either way.
+        if accepted.blocking_send(outcome).is_err() {
+            return Ok(());
         }
 
-        if accepted.blocking_send(outcome).is_err() {
-            return;
-        }
+        // Still registered, the thread would take the next connections unasked.
+        deregistered.map_err(|error| ("epoll_ctl(EPOLL_CTL_DEL)", error))?;
     }
 }
 
@@ -303,6 +346,28 @@ mod tests {
         let (_, peer) = within(asking.accept()).await.unwrap();
 
         assert_eq!(peer.ip(), address.ip());
+    }
+
+    /// An epoll call that fails ends the thread, and the server hears of it: its
+    /// accept returns the error once, then waits for the server's stop rather than
+    /// return it again to an accept loop that would spin on it. /dev/null stands in
+    /// for the socket because epoll refuses to watch it, as it refuses a socket
+    /// past the user's max_user_watches.
+    #[tokio::test]
+    async fn an_epoll_call_that_fails_reaches_the_server() {
+        let null = std::fs::File::open("/dev/null").unwrap();
+
+        let mut acceptor = Acceptor::start(Socket::from(OwnedFd::from(null))).unwrap();
+
+        let error = within(acceptor.accept()).await.expect_err("accepted from /dev/null");
+
+        assert_eq!(error.raw_os_error(), Some(libc::EPERM), "{error}");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), acceptor.accept())
+                .await
+                .is_err(),
+            "the error was returned again"
+        );
     }
 
     /// Dropping the acceptor ends its thread, and the thread closes its copy of

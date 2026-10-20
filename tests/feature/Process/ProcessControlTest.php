@@ -27,6 +27,8 @@ class ProcessControlTest extends BaseTestCase
     protected const string PRELUDE = <<<'PHP'
     require $argv[1] . '/vendor/autoload.php';
 
+    use SConcur\Exceptions\Process\ProcessException;
+    use SConcur\Features\Sleeper\Sleeper;
     use SConcur\Process\Dto\ProcessExit;
     use SConcur\Process\ProcessControl;
     use SConcur\Process\ProcessSignalEnum;
@@ -133,6 +135,74 @@ class ProcessControlTest extends BaseTestCase
         // SIGTERM's number on Linux, where the suite runs.
         self::assertSame(15, $answer['signal']);
         self::assertFalse($answer['deliveredAgain'], 'a reaped child is no process to signal');
+    }
+
+    /**
+     * 0 and -1 name no single process: to kill(2) they are the caller's whole process
+     * group — a master included — and every process it may signal, to waitpid(2) any
+     * child, reported under the pid asked for. Both are refused before anything is
+     * signalled or reaped, and a list with one of them in it is refused whole: the child
+     * ahead of it is still there for the next reap. The signal is CHLD, which nothing acts
+     * on by default, so a regression signals nobody that would mind.
+     */
+    public function testAPidThatNamesNoSingleProcessIsRefused(): void
+    {
+        $answer = $this->runScenario(
+            <<<'PHP'
+            $refusals = [];
+
+            foreach ([0, -1] as $pid) {
+                $attempts = [
+                    'kill' => static fn() => ProcessControl::kill($pid, ProcessSignalEnum::Child),
+                    'reap' => static fn() => ProcessControl::reap([$pid]),
+                ];
+
+                foreach ($attempts as $call => $attempt) {
+                    try {
+                        $attempt();
+
+                        $refusals[] = "$call($pid) was answered";
+                    } catch (ProcessException $exception) {
+                        $refusals[] = $exception->getMessage();
+                    }
+                }
+            }
+
+            $fork = ProcessControl::fork();
+
+            if ($fork->isChild()) {
+                ProcessControl::exit(3);
+            }
+
+            // Exited by now, so a reap that went ahead would take it.
+            usleep(200_000);
+
+            try {
+                ProcessControl::reap([$fork->pid, 0]);
+
+                $refusals[] = 'the list was answered';
+            } catch (ProcessException $exception) {
+                $refusals[] = $exception->getMessage();
+            }
+
+            echo json_encode([
+                'refusals' => $refusals,
+                'code'     => waitFor($fork->pid)->exitCode,
+            ]);
+            PHP,
+        );
+
+        self::assertSame(
+            [
+                'process: pid 0 is not a child',
+                'process: pid 0 is not a child',
+                'process: pid -1 is not a child',
+                'process: pid -1 is not a child',
+                'process: pid 0 is not a child',
+            ],
+            $answer['refusals'],
+        );
+        self::assertSame(3, $answer['code'], 'the refused list reaped the child ahead of the bad pid');
     }
 
     /**
@@ -315,6 +385,48 @@ class ProcessControlTest extends BaseTestCase
         self::assertSame('written by the child', $answer['kept']);
     }
 
+    /**
+     * A child that cannot point the parent's descriptors at /dev/null must not run on with
+     * them: it says why on stderr and exits with 71 (EX_OSERR) before a line of PHP runs in
+     * it. Here the parent holds every descriptor it may open, so the child has none left
+     * for /dev/null.
+     */
+    public function testAChildThatCannotBeIsolatedExitsBeforeRunningAnyPhp(): void
+    {
+        $output = PhpScript::run(
+            code: self::PRELUDE . <<<'PHP'
+            // Loaded while a file can still be opened: what the fork and the reap use.
+            ProcessControl::reap([]);
+            class_exists(SConcur\Process\Dto\ForkResult::class);
+            class_exists(ProcessExit::class);
+
+            $held = [];
+
+            while (($handle = @fopen('/dev/null', 'r')) !== false) {
+                $held[] = $handle;
+            }
+
+            $fork = ProcessControl::fork(captureOutput: false);
+
+            if ($fork->isChild()) {
+                echo 'CHILD-RAN', PHP_EOL;
+
+                ProcessControl::exit(0);
+            }
+
+            $exit = waitFor($fork->pid);
+
+            echo 'CHILD-CODE:', $exit->exitCode, PHP_EOL;
+            PHP,
+            arguments: [PhpScript::projectRoot()],
+            maxOpenDescriptors: 64,
+        );
+
+        self::assertStringContainsString('CHILD-CODE:71', $output);
+        self::assertStringContainsString('a forked child cannot be isolated from its parent', $output);
+        self::assertStringNotContainsString('CHILD-RAN', $output);
+    }
+
     public function testAWatchedSignalIsHandedOverOnce(): void
     {
         $answer = $this->runScenario(
@@ -463,7 +575,7 @@ class ProcessControlTest extends BaseTestCase
             <<<'PHP'
             $before = ProcessControl::threadCount();
 
-            SConcur\Features\Sleeper\Sleeper::usleep(microseconds: 1_000);
+            Sleeper::usleep(microseconds: 1_000);
 
             echo json_encode([
                 'before' => $before,

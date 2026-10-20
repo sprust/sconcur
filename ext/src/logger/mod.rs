@@ -39,6 +39,9 @@ const BURST_BYTES: usize = 16 * 1024;
 /// How often lines dropped since the last report are reported, at most.
 const DROP_REPORT_INTERVAL: Duration = Duration::from_secs(60);
 
+/// How long a flush waits for room in the queue, and then for the writer.
+const FLUSH_WAIT: Duration = Duration::from_secs(1);
+
 /// The variable naming where access lines go.
 const ACCESS_LOG_VARIABLE: &str = "SCONCUR_ACCESS_LOG";
 
@@ -105,8 +108,13 @@ impl Logger {
         }
     }
 
-    /// Flushes what is buffered and waits for it. Called from destroy(), so a
-    /// process that exits right after still shows its last lines.
+    /// Flushes what is buffered and waits for it. Called from destroy(), and by
+    /// the process export's exit right before _exit, so a process that exits
+    /// right after still shows its last lines.
+    ///
+    /// Unlike a line, the flush waits for room in a full queue: dropped, it would
+    /// release its caller to exit with every line queued ahead of it unwritten.
+    /// Both waits are bounded by FLUSH_WAIT, for a writer that is gone.
     ///
     /// A sink that never took a line has nothing to flush, and is not started
     /// just to be flushed: that would put a thread into a process that may be
@@ -118,8 +126,8 @@ impl Logger {
 
         let (done, wait) = crossbeam_channel::bounded(1);
 
-        if sender.try_send(Message::Flush(done)).is_ok() {
-            let _ = wait.recv_timeout(Duration::from_secs(1));
+        if sender.send_timeout(Message::Flush(done), FLUSH_WAIT).is_ok() {
+            let _ = wait.recv_timeout(FLUSH_WAIT);
         }
     }
 }
@@ -263,8 +271,9 @@ impl<O: Write, E: Write, D: Fn() -> String> Writer<O, E, D> {
     }
 
     /// Writes the buffered access lines to the file of the day, opening it — or the
-    /// next day's — first. A file that cannot be opened is reported once, and its
-    /// lines go to stdout rather than nowhere.
+    /// next day's — first. A file that cannot be opened, or stops taking writes — a
+    /// full disk, an I/O error — is reported once, and its lines go to stdout for
+    /// the rest of the day rather than nowhere.
     fn write_access(&mut self) {
         let today = (self.today)();
 
@@ -272,9 +281,7 @@ impl<O: Write, E: Write, D: Fn() -> String> Writer<O, E, D> {
             self.date = today;
             self.file = None;
 
-            if let AccessTarget::Daily { prefix, .. } = &self.access {
-                let path = format!("{prefix}-{}.log", self.date);
-
+            if let Some(path) = self.daily_path() {
                 match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
                     Ok(file) => self.file = Some(file),
                     Err(error) => {
@@ -287,16 +294,36 @@ impl<O: Write, E: Write, D: Fn() -> String> Writer<O, E, D> {
             }
         }
 
-        match &mut self.file {
-            Some(file) => {
-                let _ = file.write_all(&self.access_buffer);
-            }
-            None => {
-                let _ = self.output.write_all(&self.access_buffer);
-            }
+        let failure = match &mut self.file {
+            Some(file) => file.write_all(&self.access_buffer).err(),
+            None => None,
+        };
+
+        if let Some(error) = failure {
+            let _ = writeln!(
+                self.errors,
+                "access log: cannot write {}: {error}; access lines go to stdout",
+                self.daily_path().unwrap_or_default()
+            );
+
+            // The whole burst goes to stdout, since how much of it reached the file
+            // is not known: a line twice rather than none.
+            self.file = None;
+        }
+
+        if self.file.is_none() {
+            let _ = self.output.write_all(&self.access_buffer);
         }
 
         self.access_buffer.clear();
+    }
+
+    /// The file of `date`, when access lines go to a file of the day.
+    fn daily_path(&self) -> Option<String> {
+        match &self.access {
+            AccessTarget::Daily { prefix, .. } => Some(format!("{prefix}-{}.log", self.date)),
+            _ => None,
+        }
     }
 
     /// Says on stderr — which the worker master journals at ERROR — how many lines
@@ -605,6 +632,96 @@ mod tests {
             *output.0.lock().unwrap(),
             b"first http#0 pid=1\nsecond http#0 pid=1\n".to_vec(),
         );
+    }
+
+    /// A file that stops taking lines loses none of them: they go to stdout for the
+    /// rest of the day, stderr says why once, and the next day's file is opened
+    /// anew. /dev/full is the full disk: every write to it fails with ENOSPC.
+    #[test]
+    fn a_file_that_cannot_be_written_is_reported_once_and_its_lines_go_to_stdout() {
+        let directory = TempDir::new("full");
+
+        let full = directory.0.join("pool-access-2026-10-20.log");
+
+        std::os::unix::fs::symlink("/dev/full", full).unwrap();
+
+        let day = Arc::new(Mutex::new("2026-10-20".to_string()));
+        let clock = day.clone();
+        let output = Captured::default();
+        let errors = Captured::default();
+
+        let mut writer = Writer::new(
+            output.clone(),
+            errors.clone(),
+            AccessTarget::parse(&directory.prefix(), "http:0", 1),
+            move || clock.lock().unwrap().clone(),
+        );
+
+        feed(&mut writer, vec![Message::Access("first\n".to_string())]);
+        feed(&mut writer, vec![Message::Access("second\n".to_string())]);
+
+        *day.lock().unwrap() = "2026-10-21".to_string();
+
+        feed(&mut writer, vec![Message::Access("next day\n".to_string())]);
+
+        let reported = String::from_utf8(errors.0.lock().unwrap().clone()).unwrap();
+
+        assert_eq!(reported.matches("access log: cannot write").count(), 1, "{reported}");
+        assert_eq!(
+            *output.0.lock().unwrap(),
+            b"first http#0 pid=1\nsecond http#0 pid=1\n".to_vec(),
+        );
+        assert_eq!(directory.read("2026-10-21"), "next day http#0 pid=1\n");
+    }
+
+    /// The process export's exit flushes right before _exit, so a flush behind a
+    /// full queue must wait for room rather than be dropped, and its caller for the
+    /// lines ahead of it. The writer starts late, as one held up by a slow disk
+    /// takes the queue.
+    #[test]
+    fn a_flush_behind_a_full_queue_waits_for_the_lines_ahead_of_it() {
+        let (sender, receiver) = crossbeam_channel::bounded::<Message>(QUEUE_SIZE);
+        let logger = Logger::new();
+
+        assert!(logger.sender.set(sender).is_ok());
+
+        // Exactly full: a line past it would be dropped and counted, which another
+        // test reads.
+        for index in 0..QUEUE_SIZE {
+            logger.write(format!("{index}\n"));
+        }
+
+        assert!(logger.sender.get().unwrap().is_full());
+
+        let captured = Captured::default();
+        let output = captured.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+
+            run(
+                receiver,
+                Writer::new(output, Captured::default(), AccessTarget::Stdout, fixed_day),
+            )
+        });
+
+        logger.flush();
+
+        let written = captured
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|&&byte| byte == b'\n')
+            .count();
+
+        assert_eq!(
+            written, QUEUE_SIZE,
+            "the flush returned before the lines ahead of it were written"
+        );
+
+        drop(logger);
+
+        writer.join().unwrap();
     }
 
     #[test]
