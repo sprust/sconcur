@@ -214,6 +214,13 @@ extern int process(char *command, int commandLen, zval *payload, zval *returnVal
  */
 extern void processStartup(void);
 
+/*
+ * What the process export does as each request starts, from RINIT: in a process
+ * a worker master started, once, every descriptor above stderr becomes
+ * close-on-exec, the script PHP CLI has opened by then among them.
+ */
+extern void processRequestStartup(void);
+
 #ifdef __cplusplus
 }
 #endif

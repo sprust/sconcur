@@ -17,6 +17,8 @@ mod payloads;
 mod signals;
 mod threads;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use serde::Deserialize;
 
 use crate::dto::{Map, Value};
@@ -90,8 +92,29 @@ pub fn run(command: &[u8], payload: &Value) -> Result<Value, Error> {
 /// starts — from its bootstrap on — inherits the pipe or the variable naming it,
 /// and the variable leaves an environment no other thread can be reading yet.
 pub fn startup() {
-    heartbeat::settle();
-    events::settle();
+    let heartbeat = heartbeat::settle();
+    let events = events::settle();
+
+    STARTED_BY_MASTER.store(heartbeat.is_some() || events.is_some(), Ordering::Relaxed);
+}
+
+/// Whether this process found a pipe from a worker master as it started: an
+/// exec'd worker its heartbeat, a fork server its events pipe.
+static STARTED_BY_MASTER: AtomicBool = AtomicBool::new(false);
+
+/// Whether the request start has marked what the master handed over.
+static HANDED_OVER_MARKED: AtomicBool = AtomicBool::new(false);
+
+/// What the request start does (RINIT), once per process and only in one its
+/// master started: every descriptor above stderr becomes close-on-exec
+/// (`fork::close_on_exec_above_stderr`). By then PHP CLI has opened the script it
+/// runs, and the application has opened nothing; so a program the worker or its
+/// bootstrap starts inherits neither the master's placeholders nor the script,
+/// and what the application opens later stays its own business.
+pub fn request_startup() {
+    if STARTED_BY_MASTER.load(Ordering::Relaxed) && !HANDED_OVER_MARKED.swap(true, Ordering::Relaxed) {
+        fork::close_on_exec_above_stderr();
+    }
 }
 
 fn decode<'a, T: Deserialize<'a>>(payload: &'a Value) -> Result<T, Error> {

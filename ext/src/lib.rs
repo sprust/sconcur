@@ -1071,6 +1071,12 @@ pub extern "C" fn processStartup() {
     guarded(|| (), process::startup)
 }
 
+/// Run as each request starts (RINIT). See `process::request_startup`.
+#[unsafe(no_mangle)]
+pub extern "C" fn processRequestStartup() {
+    guarded(|| (), process::request_startup)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn version() -> *mut c_char {
     guarded(std::ptr::null_mut, || {

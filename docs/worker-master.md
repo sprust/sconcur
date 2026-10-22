@@ -23,6 +23,13 @@ the telemetry sockets, the panel's connections, the lock and the log — so the 
 points all of them at `/dev/null` instead. A forked worker also keeps what its group's
 bootstrap opened (see [Loading the application once](#loading-the-application-once-bootstrap)).
 
+A program the worker starts — `shell_exec`, `proc_open`, a sidecar — gets its own
+stdin/stdout/stderr and nothing else of the worker's: not those `/dev/null` placeholders,
+not the heartbeat pipe, not the group's listening socket. Everything the master hands a
+worker is close-on-exec by the time its script runs, so a program that outlives the worker
+cannot keep the port bound after the pool has stopped. What the application opens itself
+is left as the application opened it.
+
 ## Table of contents
 
 - [Quick start](#quick-start)

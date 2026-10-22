@@ -1300,6 +1300,17 @@ PHP_MINIT_FUNCTION(sconcur)
 }
 
 /*
+ * What a process a worker master started hands no program it runs: see
+ * processRequestStartup.
+ */
+PHP_RINIT_FUNCTION(sconcur)
+{
+    processRequestStartup();
+
+    return SUCCESS;
+}
+
+/*
  * The result builder's class cache is per request: see the builder above for
  * why a class entry must not outlive the request that declared it.
  */
@@ -1339,7 +1350,7 @@ zend_module_entry sconcur_module_entry = {
     sconcur_functions,
     PHP_MINIT(sconcur),
     PHP_MSHUTDOWN(sconcur),
-    NULL,  // RINIT
+    PHP_RINIT(sconcur),
     PHP_RSHUTDOWN(sconcur),
     NULL,  // MINFO
     NO_VERSION_YET,

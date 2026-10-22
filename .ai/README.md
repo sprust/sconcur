@@ -314,8 +314,8 @@ The core (`ext/src/`), module by module:
   `waitAny`, `waitAnyTimeout`, `waitAnyBatch`, `waitAnyTimeoutBatch`,
   `tasksCount`, `stopFlow`, `httpStopAccepting`, `socketStopAccepting`,
   `wsStopAccepting`, `preemptionArm`, `preemptionDisarm`, `amqpStopConsuming`,
-  `amqpReopenConsumer`, `destroy`, `version`, `process`, and `processStartup`, which
-  MINIT calls)
+  `amqpReopenConsumer`, `destroy`, `version`, `process`, and `processStartup` and
+  `processRequestStartup`, which MINIT and RINIT call)
 - `core.rs` — the process-wide state and what it takes to survive a `fork`:
   nothing starts until the first push (the exports that only act on running work —
   `destroy`, `stopFlow`, `tasksCount`, the `*StopAccepting` ones — answer without
@@ -330,7 +330,11 @@ The core (`ext/src/`), module by module:
   bit, the worker's end of its heartbeat pipe (`heartbeat.rs`) and a fork server's end of
   its events pipe (`events.rs`) — both claimed from the environment as the module starts,
   close-on-exec, by `claim.rs`, and written by the extension, never through a PHP stream.
-  Synchronous and runtime-free, and a fork is refused while any thread runs
+  In a process a master started, every descriptor above stderr is made close-on-exec as the
+  request starts (RINIT, `processRequestStartup`), and a fork's placeholders on /dev/null
+  are close-on-exec too: a program a worker starts gets its stdio and nothing else
+  (`WorkerDescriptorsTest`). Synchronous and runtime-free, and a fork is refused while any
+  thread runs
 - `handler/` — the singleton orchestrator routing messages to flows
 - `flows/`, `tasks/` — concurrent `Flow` instances holding tasks and the shared
   result sink; a task carries the flow's cancellation token directly

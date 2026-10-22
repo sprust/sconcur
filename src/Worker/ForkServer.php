@@ -161,12 +161,11 @@ class ForkServer
         $listenFd = isset($this->spec['listenFd']) ? (int) $this->spec['listenFd'] : null;
 
         // Taken after the bootstrap, so what the application opened while loading — a log
-        // file, a socket systemd passed — stays open in its workers; the events pipe is the
-        // fork server's alone.
-        $inherited = array_values(array_diff(
-            ProcessControl::openDescriptors(),
-            [self::EVENTS_FD, $listenFd ?? -1],
-        ));
+        // file, a socket systemd passed — stays open in its workers. The events pipe is the
+        // fork server's alone, and the listening socket is handed to the workers anyway.
+        $inherited = static::applicationDescriptors(
+            exclude: [self::EVENTS_FD, $listenFd ?? -1],
+        );
 
         ProcessControl::watchSignals([
             ProcessSignalEnum::Terminate,
@@ -432,6 +431,38 @@ class ForkServer
 
             $this->emit(event: self::EVENT_NEVER);
         }
+    }
+
+    /**
+     * The descriptors this process has open that the application opened, but for $exclude.
+     * Left out besides: the placeholders on /dev/null the master's spawn put over its own
+     * descriptors, and the script PHP runs, bin/sconcur-fork-server — neither is the
+     * application's, and a worker that kept them would hold them for nothing. They are
+     * pointed at /dev/null in the worker like everything else it does not keep.
+     *
+     * @param list<int> $exclude
+     *
+     * @return list<int>
+     */
+    protected static function applicationDescriptors(array $exclude): array
+    {
+        $notTheApplications = ['/dev/null', (string) realpath(get_included_files()[0])];
+
+        $descriptors = [];
+
+        foreach (ProcessControl::openDescriptors() as $descriptor) {
+            if (in_array($descriptor, $exclude, true)) {
+                continue;
+            }
+
+            if (in_array(@readlink('/proc/self/fd/' . $descriptor), $notTheApplications, true)) {
+                continue;
+            }
+
+            $descriptors[] = $descriptor;
+        }
+
+        return $descriptors;
     }
 
     /**

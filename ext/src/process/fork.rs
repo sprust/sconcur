@@ -164,7 +164,8 @@ fn prepare_child(keep: &[i64], output: Option<(Pipe, Pipe)>, heartbeat: Option<P
 ///
 /// Pointed rather than closed, because PHP may still hold a stream on one of
 /// them. A closed number is reused by the next open, and that stream's eventual
-/// close would then close the new file.
+/// close would then close the new file. Pointed close-on-exec (`point_at_null`),
+/// so a program the worker starts inherits none of the placeholders.
 fn neutralize(null: RawFd, keep: &[i64], heartbeat: RawFd) {
     let Some(descriptors) = open_descriptors() else {
         abandon(b"listing of the open descriptors");
@@ -181,8 +182,46 @@ fn neutralize(null: RawFd, keep: &[i64], heartbeat: RawFd) {
             continue;
         }
 
-        if unsafe { libc::dup2(null, descriptor) } < 0 {
-            abandon(b"dup2 of /dev/null onto an inherited descriptor");
+        if !point_at_null(null, descriptor) {
+            abandon(b"dup of /dev/null onto an inherited descriptor");
+        }
+    }
+}
+
+/// Points `descriptor` at the /dev/null open as `null`, close-on-exec: dup2(2)
+/// would clear the flag on the copy it makes.
+fn point_at_null(null: RawFd, descriptor: RawFd) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        unsafe { libc::dup3(null, descriptor, libc::O_CLOEXEC) >= 0 }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        unsafe { libc::dup2(null, descriptor) >= 0 && libc::fcntl(descriptor, libc::F_SETFD, libc::FD_CLOEXEC) == 0 }
+    }
+}
+
+/// Makes every descriptor above stderr close-on-exec. For a process its master
+/// started (see `super::request_startup`): what the master handed it is the
+/// extension's to write (the heartbeat, a fork server's events), a server's to
+/// copy (a listening socket, which it takes over as a close-on-exec copy) or a
+/// placeholder on /dev/null, and none of it is for a program the process starts.
+/// The flag changes nothing in the process itself, nor in a fork of it.
+pub fn close_on_exec_above_stderr() {
+    close_on_exec_all(open_descriptors().unwrap_or_default());
+}
+
+/// Makes each of `descriptors` above stderr close-on-exec; one that is not open
+/// any more — the listing's own directory — is skipped.
+fn close_on_exec_all(descriptors: Vec<RawFd>) {
+    for descriptor in descriptors {
+        if descriptor > 2 {
+            let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
+
+            if flags >= 0 {
+                unsafe { libc::fcntl(descriptor, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+            }
         }
     }
 }
@@ -394,6 +433,45 @@ mod tests {
         let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
 
         flags & libc::FD_CLOEXEC != 0
+    }
+
+    /// A placeholder is /dev/null and close-on-exec: a dup2 would leave a program
+    /// the worker starts a copy of it.
+    #[test]
+    fn a_placeholder_is_close_on_exec() {
+        let null = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDWR) };
+        let placeholder_pipe = pipe().ok().unwrap();
+        let descriptor = placeholder_pipe.read.as_raw_fd();
+
+        assert!(point_at_null(null, descriptor));
+
+        assert!(close_on_exec(descriptor), "a program the worker starts would inherit the placeholder");
+        assert_eq!(
+            std::fs::read_link(format!("/proc/self/fd/{descriptor}")).ok(),
+            Some(std::path::PathBuf::from("/dev/null"))
+        );
+
+        unsafe { libc::close(null) };
+    }
+
+    /// Every descriptor above stderr ends close-on-exec; stderr and below are left
+    /// as they were, and a number nothing is open on is skipped. Only descriptors
+    /// of its own are handed in: the tests share the process, and the others'
+    /// flags are theirs.
+    #[test]
+    fn what_a_master_handed_over_is_made_close_on_exec() {
+        let plain = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY) };
+
+        assert!(!close_on_exec(plain));
+
+        let stderr_before = unsafe { libc::fcntl(2, libc::F_GETFD) };
+
+        close_on_exec_all(vec![2, plain, c_int::MAX]);
+
+        assert!(close_on_exec(plain), "a descriptor above stderr was left inheritable");
+        assert_eq!(unsafe { libc::fcntl(2, libc::F_GETFD) }, stderr_before, "stderr was changed");
+
+        unsafe { libc::close(plain) };
     }
 
     /// What php://fd does to a handed-over end is a dup(2), which leaves the flag
