@@ -775,10 +775,12 @@ static void sconcur_finish_wait(zval *return_value, int status, const char *what
  *
  * The objects that exist now are the parent's, and a destructor of one run in
  * every worker would undo the parent's work once per worker (a temporary file
- * removed, a connection closed). They are marked as already destroyed. The
- * worker leaves through _exit and runs no destructor anyway; the mark is for the
- * one exit that is not its own, a fatal error, where PHP's shutdown does run.
- * Objects the child creates afterwards are destroyed as usual.
+ * removed, a connection closed). They are marked as already destroyed. A
+ * worker whose script ends leaves through _exit and runs no destructor anyway;
+ * the mark is for the exits where PHP's shutdown does run: exit() in the script
+ * and a fatal error. Objects the child creates afterwards are destroyed as
+ * usual, the extension's own handle among them: the worker makes it anew
+ * (ForkedWorker), so exit() tears down what it runs.
  */
 void sconcur_after_fork_in_child(void)
 {

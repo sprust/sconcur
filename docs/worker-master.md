@@ -355,7 +355,9 @@ The child is prepared before PHP runs in it: stdin from `/dev/null`, stdout and 
 onto the fork server's pipes, so the journal reads as with `exec`, and every descriptor
 the fork server opened itself pointed at `/dev/null`. The fork server's signal handlers
 are put back to PHP's own, the random generators are reseeded, and the fork server's
-objects are marked as destroyed so their destructors never run in a worker. An uncaught
+objects are marked as destroyed so their destructors never run in a worker — all but
+the handle on the extension, which the worker makes anew, so that `exit()` in a worker
+stops its server and ends its flows as with `exec`. An uncaught
 exception goes to the exception handler, if one is set, and is otherwise reported on
 stderr the way PHP reports it; the worker exits with `255`, and `exit()` works as usual.
 In `ps` a forked worker shows as `sconcur-server: <group> #<slot>`. Telemetry, the

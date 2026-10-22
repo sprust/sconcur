@@ -70,6 +70,18 @@ class Extension
         return static::$instance ??= new Extension();
     }
 
+    /**
+     * Lets go of the instance a forked worker inherited from its fork server. The fork marks
+     * the parent's objects destroyed in the child, this one among them, so its destructor —
+     * destroy(): the servers stop accepting, the flows are cancelled, the access log is
+     * flushed — would not run when the worker leaves through exit(). The next get() makes
+     * the worker one of its own, destroyed as in a php started on the script.
+     */
+    public static function forgetInherited(): void
+    {
+        static::$instance = null;
+    }
+
     public function push(string $flowKey, PayloadInterface $payload, int $ownerFiberId = 0): RunningTaskDto
     {
         ++static::$tasksCounter;

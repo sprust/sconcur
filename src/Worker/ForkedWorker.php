@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Worker;
 
+use SConcur\Connection\Extension;
 use SConcur\Process\ProcessControl;
 use SConcur\Scheduler\Scheduler;
 use Throwable;
@@ -109,6 +110,11 @@ class ForkedWorker
         // What the fork server's process knew of a master is not this worker's: the fork
         // handed the worker a heartbeat of its own, and its scheduler asks for it afresh.
         Scheduler::forgetSupervision();
+
+        // The fork server's handle on the extension is marked destroyed here, and an exit()
+        // in the script would leave without the teardown its destructor does: the worker
+        // gets one of its own.
+        Extension::forgetInherited();
 
         // Last, so what is silenced above stays out of it: the fork server's own handler, which
         // ForkServer::run() put over the application's, comes off.
