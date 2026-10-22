@@ -377,11 +377,26 @@ shared page in shares, so its sum is what the pool takes from the machine. `fork
 two columns, without a bootstrap and with one: it is one launch, and the bootstrap only
 changes what its fork server has loaded.
 
+The rows after 15 minutes come from `make bench-worker-memory-soak`: 32 requests in flight
+for 15 minutes, about 14 000 a second, each running a request's worth of the application
+(a value exported, two texts diffed, two values compared), read once a minute; one run an
+arm, counted as Pss plus SwapPss, because the host was moving cold pages to swap. Every
+pool grows by about 20 MiB, almost all of it in the first minute, `exec` included: that is
+the workers' own memory warming up, not shared pages being lost. What a bootstrap's
+workers copy of what their fork server loaded — PHP updates reference counts even when it
+only reads — is the difference on top of that, about 5 MiB for the whole pool. After the
+first minute every arm grows by 0.15–0.18 MiB a minute. The bootstrap keeps its lead: less
+than a third of `exec` after 15 minutes. OPcache helps a fork group and costs an exec one:
+its shared memory is created as `php` starts, so the workers of a fork server share it
+with each other, and every exec'd worker has its own.
+
 | | `exec` | `fork`, without a bootstrap | `fork`, with a bootstrap |
 |---|---|---|---|
 | A worker is | a `php` of its own | a copy of the fork server | a copy of the fork server |
 | The application is loaded | by every worker | by every worker, after its fork | once per generation, in the fork server |
 | Pss, all 12 workers | 279.1 MiB | 191.0 MiB | 59.8 MiB |
+| Pss, all 12 workers, after 15 minutes of load | 300.8 MiB | 208.6 MiB | 84.9 MiB |
+| The same with OPcache in the CLI: after 5 000 requests, after 15 minutes | 366.2, 384.5 MiB | 93.9, 111.2 MiB | 42.7, 63.6 MiB |
 | Pss per worker | 23.3 MiB | 15.9 MiB | 5.0 MiB |
 | Private_Dirty, all workers | 260.2 MiB | 176.4 MiB | 34.3 MiB |
 | Supervising processes | the master: 10.8 MiB | the master and a fork server per group: 17–19 MiB together | the same as without |
