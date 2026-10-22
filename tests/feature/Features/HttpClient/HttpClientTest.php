@@ -681,7 +681,7 @@ class HttpClientTest extends BaseHttpClientTestCase
         self::assertNotNull($warning);
     }
 
-    private function bigBody(int $size): string
+    protected function bigBody(int $size): string
     {
         $pattern = '0123456789abcdef';
 

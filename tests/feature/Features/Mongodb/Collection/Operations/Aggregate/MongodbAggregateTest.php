@@ -249,7 +249,7 @@ class MongodbAggregateTest extends BaseTestCase
         );
     }
 
-    private function seedDocuments(): void
+    protected function seedDocuments(): void
     {
         $this->sconcurCollection->deleteMany(
             filter: [],

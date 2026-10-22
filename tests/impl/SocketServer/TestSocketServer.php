@@ -18,20 +18,20 @@ use SConcur\Tests\Impl\FreePort;
  */
 class TestSocketServer
 {
-    private const string HOST = '127.0.0.1';
+    protected const string HOST = '127.0.0.1';
 
     /** @var resource */
-    private $process;
+    protected $process;
 
-    private bool $closed = false;
+    protected bool $closed = false;
 
     /**
      * @param resource $process
      */
-    private function __construct(
+    protected function __construct(
         $process,
-        private readonly int $port,
-        private readonly string $stdoutFile,
+        protected readonly int $port,
+        protected readonly string $stdoutFile,
     ) {
         $this->process = $process;
     }
@@ -195,7 +195,7 @@ class TestSocketServer
      *
      * @param resource $connection
      */
-    private static function readExactly(mixed $connection, int $length): ?string
+    protected static function readExactly(mixed $connection, int $length): ?string
     {
         $buffer = '';
 
@@ -284,7 +284,7 @@ class TestSocketServer
         @unlink($this->stdoutFile);
     }
 
-    private function waitUntilReachable(): bool
+    protected function waitUntilReachable(): bool
     {
         $deadline = microtime(true) + 5.0;
 

@@ -23,10 +23,10 @@ class TestWorkerMaster
      */
     protected const float STOP_TIMEOUT_SECONDS = 6.0;
 
-    private const string HOST = '127.0.0.1';
+    protected const string HOST = '127.0.0.1';
 
     /** The flat option keys that describe a pool rather than the master. */
-    private const array GROUP_KEYS = ['workerScript', 'workerCount', 'workerArgs', 'server', 'listen', 'bootstrap'];
+    protected const array GROUP_KEYS = ['workerScript', 'workerCount', 'workerArgs', 'server', 'listen', 'bootstrap'];
 
     /**
      * The launch every master started from here gets unless the test names one itself:
@@ -36,20 +36,20 @@ class TestWorkerMaster
     protected static ?string $launch = null;
 
     /** @var resource */
-    private mixed $process;
+    protected mixed $process;
 
-    private bool $closed = false;
+    protected bool $closed = false;
 
     /**
      * @param resource $process
      */
-    private function __construct(
+    protected function __construct(
         mixed $process,
-        private readonly int $port,
-        private readonly string $runtimeDir,
-        private readonly string $name,
-        private readonly string $configPath,
-        private readonly string $outputFile,
+        protected readonly int $port,
+        protected readonly string $runtimeDir,
+        protected readonly string $name,
+        protected readonly string $configPath,
+        protected readonly string $outputFile,
     ) {
         $this->process = $process;
     }
@@ -189,7 +189,7 @@ class TestWorkerMaster
      *
      * @return array<string, mixed>
      */
-    private static function buildConfig(array $flat): array
+    protected static function buildConfig(array $flat): array
     {
         // A test that needs several pools writes "groups" itself; the flat keys are the
         // shorthand for the single-pool case, which is most of them.
@@ -495,7 +495,7 @@ class TestWorkerMaster
         self::removeDir($this->runtimeDir);
     }
 
-    private function waitUntilReachable(): bool
+    protected function waitUntilReachable(): bool
     {
         $deadline = microtime(true) + 5.0;
 
@@ -521,7 +521,7 @@ class TestWorkerMaster
      *
      * @return resource
      */
-    private static function open(array $argv, array $env, string $outputFile, ?string $masterScript = null): mixed
+    protected static function open(array $argv, array $env, string $outputFile, ?string $masterScript = null): mixed
     {
         // The master takes and sends its signals through the extension, so it loads the
         // build under test as well as the workers.
@@ -559,22 +559,22 @@ class TestWorkerMaster
         return static::$launch === null ? [] : ['launch' => static::$launch];
     }
 
-    private static function root(): string
+    protected static function root(): string
     {
         return dirname(__DIR__, 3);
     }
 
-    private static function binPath(): string
+    protected static function binPath(): string
     {
         return self::root() . '/bin/sconcur-server';
     }
 
-    private static function workerScript(): string
+    protected static function workerScript(): string
     {
         return self::root() . '/tests/servers/http/http-server.php';
     }
 
-    private static function extensionPath(): string
+    protected static function extensionPath(): string
     {
         // The build under test, so a run that spawns its own worker loads the same
         // extension the suite does. Without it a run would answer for one core while
@@ -582,7 +582,7 @@ class TestWorkerMaster
         return getenv('SCONCUR_EXT') ?: self::root() . '/ext/build/sconcur.so';
     }
 
-    private static function makeRuntimeDir(): string
+    protected static function makeRuntimeDir(): string
     {
         $dir = sys_get_temp_dir() . '/sc-master-' . uniqid('', true);
 
@@ -593,7 +593,7 @@ class TestWorkerMaster
         return $dir;
     }
 
-    private static function removeDir(string $dir): void
+    protected static function removeDir(string $dir): void
     {
         if (!is_dir($dir)) {
             return;

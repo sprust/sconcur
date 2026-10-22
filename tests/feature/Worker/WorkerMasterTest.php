@@ -1535,7 +1535,7 @@ class WorkerMasterTest extends TestCase
      *
      * @return array<string, mixed>
      */
-    private function reloadConfig(TestWorkerMaster $master, array $overrides): array
+    protected function reloadConfig(TestWorkerMaster $master, array $overrides): array
     {
         $config = json_decode((string) file_get_contents($master->configPath()), true);
 
@@ -1548,7 +1548,7 @@ class WorkerMasterTest extends TestCase
     }
 
     /** Where a line first appears in the journal; fails the test when it does not. */
-    private function journalPosition(string $log, string $needle): int
+    protected function journalPosition(string $log, string $needle): int
     {
         $position = strpos($log, $needle);
 
@@ -1557,12 +1557,12 @@ class WorkerMasterTest extends TestCase
         return $position;
     }
 
-    private static function demoWorkerScript(): string
+    protected static function demoWorkerScript(): string
     {
         return dirname(__DIR__, 3) . '/tests/servers/http/http-server.php';
     }
 
-    private static function extensionPath(): string
+    protected static function extensionPath(): string
     {
         // The build under test, so a run that spawns its own worker loads the same
         // extension the suite does. Without it a run would answer for one core while
@@ -1573,7 +1573,7 @@ class WorkerMasterTest extends TestCase
     /**
      * Polls $condition until it returns true or the timeout elapses.
      */
-    private function waitFor(Closure $condition, float $timeoutSeconds): bool
+    protected function waitFor(Closure $condition, float $timeoutSeconds): bool
     {
         $deadline = microtime(true) + $timeoutSeconds;
 

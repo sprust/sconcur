@@ -19,15 +19,15 @@ use Throwable;
  */
 class HttpClientConcurrencyTest extends BaseAsyncTestCase
 {
-    private const int REQUEST_SLEEP_MS = 60;
+    protected const int REQUEST_SLEEP_MS = 60;
 
-    private static ?TestHttpServer $server = null;
+    protected static ?TestHttpServer $server = null;
 
-    private Psr17Factory $factory;
-    private HttpClient $client;
+    protected Psr17Factory $factory;
+    protected HttpClient $client;
 
-    private float $startTime = 0;
-    private float $endTime   = 0;
+    protected float $startTime = 0;
+    protected float $endTime   = 0;
 
     public static function setUpBeforeClass(): void
     {
@@ -126,7 +126,7 @@ class HttpClientConcurrencyTest extends BaseAsyncTestCase
         );
     }
 
-    private function sleepRequest(): void
+    protected function sleepRequest(): void
     {
         $request  = $this->factory->createRequest('GET', self::server()->baseUrl() . '/msleep/' . self::REQUEST_SLEEP_MS);
         $response = $this->client->sendRequest($request);
@@ -134,7 +134,7 @@ class HttpClientConcurrencyTest extends BaseAsyncTestCase
         self::assertSame('slept', (string) $response->getBody());
     }
 
-    private static function server(): TestHttpServer
+    protected static function server(): TestHttpServer
     {
         if (self::$server === null) {
             self::fail('Test HTTP server is not started.');

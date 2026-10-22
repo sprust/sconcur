@@ -16,7 +16,7 @@ use SConcur\Tests\Impl\WsServer\TestWsServer;
  */
 abstract class BaseWsServerTestCase extends TestCase
 {
-    private static ?TestWsServer $server = null;
+    protected static ?TestWsServer $server = null;
 
     public static function setUpBeforeClass(): void
     {

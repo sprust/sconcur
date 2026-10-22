@@ -10,9 +10,9 @@ use SConcur\Tests\Impl\TestMongodbResolver;
 
 class MongodbRenameTest extends BaseTestCase
 {
-    private Collection $source;
-    private Collection $target;
-    private string $targetName = 'renameTarget';
+    protected Collection $source;
+    protected Collection $target;
+    protected string $targetName = 'renameTarget';
 
     protected function setUp(): void
     {

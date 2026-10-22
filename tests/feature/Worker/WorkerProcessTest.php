@@ -271,7 +271,7 @@ class WorkerProcessTest extends TestCase
         }
     }
 
-    private function spawn(string $code): ExecWorkerProcess
+    protected function spawn(string $code): ExecWorkerProcess
     {
         return new ExecWorkerProcess(
             command: [PHP_BINARY, '-r', $code],
@@ -280,7 +280,7 @@ class WorkerProcessTest extends TestCase
         );
     }
 
-    private function waitForExit(ExecWorkerProcess $process, float $timeoutSeconds = 5.0): bool
+    protected function waitForExit(ExecWorkerProcess $process, float $timeoutSeconds = 5.0): bool
     {
         $deadline = microtime(true) + $timeoutSeconds;
 

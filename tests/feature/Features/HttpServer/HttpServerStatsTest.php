@@ -17,8 +17,8 @@ use SConcur\Tests\Impl\Worker\TestWorkerMaster;
  */
 class HttpServerStatsTest extends TestCase
 {
-    private const string TOKEN = 'test-admin-token-12345';
-    private const string PATH  = '/api/stats';
+    protected const string TOKEN = 'test-admin-token-12345';
+    protected const string PATH  = '/api/stats';
 
     public function testServesAggregatedHttpStatistics(): void
     {
@@ -110,7 +110,7 @@ class HttpServerStatsTest extends TestCase
      *
      * @return array{int, string}
      */
-    private function getStats(int $port, string $authorization): array
+    protected function getStats(int $port, string $authorization): array
     {
         $deadline = microtime(true) + 10.0;
 
@@ -144,7 +144,7 @@ class HttpServerStatsTest extends TestCase
      *
      * @return array{int, string}
      */
-    private function request(string $url, array $headers, string $method = 'GET'): array
+    protected function request(string $url, array $headers, string $method = 'GET'): array
     {
         $curl = curl_init($url);
 

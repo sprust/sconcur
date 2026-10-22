@@ -13,7 +13,7 @@ use SConcur\Worker\MasterReloadFile;
  */
 class MasterReloadFileTest extends TestCase
 {
-    private string $path;
+    protected string $path;
 
     protected function setUp(): void
     {

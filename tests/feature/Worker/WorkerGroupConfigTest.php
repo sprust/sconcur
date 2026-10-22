@@ -453,7 +453,7 @@ class WorkerGroupConfigTest extends TestCase
     /**
      * @param array<string, mixed> $overrides
      */
-    private function group(array $overrides): WorkerGroupConfig
+    protected function group(array $overrides): WorkerGroupConfig
     {
         return MasterConfig::fromArray([
             'groups' => [

@@ -16,8 +16,8 @@ use SConcur\Tests\Impl\Worker\TestWorkerMaster;
  */
 class SocketServerStatsTest extends TestCase
 {
-    private const string TOKEN = 'socket-stats-token-67890';
-    private const string PATH  = '/api/stats';
+    protected const string TOKEN = 'socket-stats-token-67890';
+    protected const string PATH  = '/api/stats';
 
     public function testServesAggregatedSocketStatistics(): void
     {
@@ -57,7 +57,7 @@ class SocketServerStatsTest extends TestCase
         }
     }
 
-    private static function socketWorkerScript(): string
+    protected static function socketWorkerScript(): string
     {
         return dirname(__DIR__, 4) . '/tests/servers/socket/socket-server.php';
     }
@@ -68,7 +68,7 @@ class SocketServerStatsTest extends TestCase
      *
      * @return array{int, string}
      */
-    private function getStats(int $port, string $authorization): array
+    protected function getStats(int $port, string $authorization): array
     {
         $deadline = microtime(true) + 10.0;
 
@@ -99,7 +99,7 @@ class SocketServerStatsTest extends TestCase
      *
      * @return array{int, string}
      */
-    private function request(string $url, array $headers): array
+    protected function request(string $url, array $headers): array
     {
         $curl = curl_init($url);
 

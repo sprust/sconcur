@@ -366,7 +366,7 @@ class BootstrapWorkerMasterTest extends TestCase
         file_put_contents($this->appDirectory . '/' . $file, $contents);
     }
 
-    private function waitFor(Closure $condition, float $timeoutSeconds): bool
+    protected function waitFor(Closure $condition, float $timeoutSeconds): bool
     {
         $deadline = microtime(true) + $timeoutSeconds;
 

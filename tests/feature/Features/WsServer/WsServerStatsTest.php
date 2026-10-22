@@ -16,8 +16,8 @@ use SConcur\Tests\Impl\Worker\TestWorkerMaster;
  */
 class WsServerStatsTest extends TestCase
 {
-    private const string TOKEN = 'ws-stats-token-67890';
-    private const string PATH  = '/api/stats';
+    protected const string TOKEN = 'ws-stats-token-67890';
+    protected const string PATH  = '/api/stats';
 
     public function testServesAggregatedWsStatistics(): void
     {
@@ -57,7 +57,7 @@ class WsServerStatsTest extends TestCase
         }
     }
 
-    private static function wsWorkerScript(): string
+    protected static function wsWorkerScript(): string
     {
         return dirname(__DIR__, 4) . '/tests/servers/ws/ws-server.php';
     }
@@ -68,7 +68,7 @@ class WsServerStatsTest extends TestCase
      *
      * @return array{int, string}
      */
-    private function getStats(int $port, string $authorization): array
+    protected function getStats(int $port, string $authorization): array
     {
         $deadline = microtime(true) + 10.0;
 
@@ -99,7 +99,7 @@ class WsServerStatsTest extends TestCase
      *
      * @return array{int, string}
      */
-    private function request(string $url, array $headers): array
+    protected function request(string $url, array $headers): array
     {
         $curl = curl_init($url);
 

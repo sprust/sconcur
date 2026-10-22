@@ -12,7 +12,7 @@ use Throwable;
 
 class MongodbCommandTest extends BaseTestCase
 {
-    private Database $database;
+    protected Database $database;
 
     protected function setUp(): void
     {
