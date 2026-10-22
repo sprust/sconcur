@@ -385,7 +385,10 @@ pool grows by about 20 MiB, almost all of it in the first minute, `exec` include
 the workers' own memory warming up, not shared pages being lost. What a bootstrap's
 workers copy of what their fork server loaded — PHP updates reference counts even when it
 only reads — is the difference on top of that, about 5 MiB for the whole pool. After the
-first minute every arm grows by 0.15–0.18 MiB a minute. The bootstrap keeps its lead: less
+first minute the growth fades, and it is not a leak: in an hour of the same load on `exec`
+and the bootstrap, PHP's heap in the workers (`memory_get_usage()`) did not move after the
+first minute, and what `exec`'s workers hold alone, swapped out included, grew by 0.6 MiB
+for the whole pool over the last half hour. The bootstrap keeps its lead: less
 than a third of `exec` after 15 minutes. OPcache helps a fork group and costs an exec one:
 its shared memory is created as `php` starts, so the workers of a fork server share it
 with each other, and every exec'd worker has its own.
