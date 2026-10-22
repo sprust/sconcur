@@ -482,14 +482,12 @@ lines go to stdout")`, `self.file = None`, пачку в `self.output` (тот �
 | Докблоки, мёртвый код, дублирование и правила в `src/Worker/` | `148f7dc` |
 | То же в `src/Process`, серверах, тестах, Rust; попутно найденная утечка `FD_CLOEXEC` у `php://fd` и команда `adp` | `32c09d5` |
 | `try/finally` вокруг `proc_open` в `ExecWorkerProcess::open()`, чтобы копии дескрипторов закрывались и при исключении | `f564955` |
+| Heartbeat у расширения: класс `Heartbeat` удалён, команды `hbq`/`hbw`, захват пайпа на `MINIT`; утечка в exec-режиме закрыта | `d029a2f` |
 
 Открыто:
 
-- Та же утечка `FD_CLOEXEC` в exec-режиме (`Heartbeat::fromEnvironment`). Решение —
-  heartbeat у расширения, см. [план](fork-master.md#heartbeat-дескриптор-у-расширения).
-  Делать следующим.
 - Events-пайп `ForkServer` через `php://fd` — теоретическая утечка, fork-сервер не
-  exec-ает; там же.
+  exec-ает; см. [план](fork-master.md#heartbeat-дескриптор-у-расширения), «Что остаётся».
 
 Оставлено осознанно:
 

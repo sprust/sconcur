@@ -16,6 +16,13 @@ use SConcur\Tests\Impl\FreePort;
  */
 class TestWorkerMaster
 {
+    /**
+     * How long stop() waits for the master to leave on SIGTERM before it kills it: the
+     * workers' shutdownTimeoutMs plus the grace the master gives a SIGKILL plus its own
+     * tick, with room to spare.
+     */
+    protected const float STOP_TIMEOUT_SECONDS = 6.0;
+
     private const string HOST = '127.0.0.1';
 
     /** The flat option keys that describe a pool rather than the master. */
@@ -458,7 +465,12 @@ class TestWorkerMaster
     }
 
     /**
-     * Stops the master (SIGKILL if still running) and cleans up. Idempotent.
+     * Stops the master and cleans up. Idempotent.
+     *
+     * Asked to stop first, and only killed when it does not: a master killed outright leaves
+     * its workers orphaned, and while a server notices its parent changed and leaves, a
+     * worker that drives a WaitGroup of its own has no such check and would run on past the
+     * test, for as long as the container lives.
      */
     public function stop(): void
     {
@@ -469,7 +481,11 @@ class TestWorkerMaster
         $this->closed = true;
 
         if ($this->isRunning()) {
-            proc_terminate($this->process, SIGKILL);
+            proc_terminate($this->process, SIGTERM);
+
+            if ($this->waitForExit(timeoutSeconds: self::STOP_TIMEOUT_SECONDS) === null) {
+                proc_terminate($this->process, SIGKILL);
+            }
         }
 
         proc_close($this->process);
