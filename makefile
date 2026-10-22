@@ -423,6 +423,19 @@ mem-leak-files:
 		php -d extension=$(SCONCUR_EXT) \
 		tests/mem-leak/files-soak.php $(or $(scenario),read-large) $(or $(seconds),120)
 
+# Soak test for the worker master under failures: one master per scenario, with workers and
+# requests failing over and over around steady load, reporting what the master, the fork
+# server and the surviving workers hold — memory, descriptors, threads, zombies, the PHP
+# heap and the runtime's tasks — and a verdict per scenario. Scenarios: oom, kill, exit,
+# fatal, spin, block, recycle, crash-at-start, fork-server-kill, reload, reload-broken,
+# sigterm, throw, disconnect, slowloris, bad-http, orphan, handler-timeout, external,
+# preempt; all of them, four minutes each, by default (about an hour and a half).
+# e.g.: make mem-leak-worker scenario=oom,reload seconds=600 launch=exec,bootstrap
+mem-leak-worker:
+	$(DOCKER_COMPOSE) exec -e LAUNCH=$(or $(launch),bootstrap) php \
+		php -d extension=$(SCONCUR_EXT) \
+		tests/mem-leak/worker-soak.php $(or $(scenario),all) $(or $(seconds),240)
+
 bench-redis-get:
 	$(PHP_EXT) tests/benchmarks/redis/get.php ${c}
 

@@ -457,7 +457,14 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
   (read-large, read-stream, write-stream, copy, walk, abandoned), and it reports the
   process RSS beside the PHP heap because what a file stream holds is native memory.
   `abandoned` is the one that earns its keep: streams broken out of halfway and a writer
-  dropped without a close are released by nothing but the flow ending
+  dropped without a close are released by nothing but the flow ending. The worker master
+  has `make mem-leak-worker scenario=<list> seconds=<n> launch=<exec|fork|bootstrap>`:
+  twenty scenarios in which workers die (out of memory, killed, hung and killed by the
+  watchdog, at their limit, at startup, with their fork server, by reload) or requests
+  fail (thrown, cut off, malformed, abandoned with coroutines in flight), each on a master
+  of its own under steady load. What it watches is what survives — the master's and the
+  fork server's memory, descriptors and threads, zombies, and the surviving workers' heap
+  and runtime tasks — and it says why each failed request on the load failed
 
 Tests use PHPUnit 11. Add feature tests in `tests/feature/...` with `*Test.php`
 suffixes; async flow tests commonly extend `BaseAsyncTestCase`,
