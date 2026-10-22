@@ -800,6 +800,16 @@ uninterruptible I/O — and the second one takes no signal at all, so if the slo
 still occupied two seconds after the kill the journal says so and the slot stays down
 until the kernel releases it.
 
+Until the watchdog acts, a hung worker keeps accepting. Its accept loop runs on the
+extension's runtime, not on the stuck PHP thread, so it goes on taking its share of new
+connections — with the shared socket and with `SO_REUSEPORT` alike — and those requests
+wait with it and die with it. A pool under open traffic loses at least that share for
+as long as the worker hangs; clients that wait for each answer before sending the next
+end up nearly all stuck in it (a soak with 8 such clients against 4 workers got from a
+few hundred to twenty thousand answers in three minutes of repeated hangs, against two
+and a half million without them). Keep `watchdogTimeoutMs` as short as the slowest
+legitimate blocking handler allows.
+
 A worker that hung at startup is replaced after a backoff rather than at once: the
 threshold is what it lived through, not work it did, and when the cause is shared — a
 wedged upstream every worker calls synchronously — the replacement hangs the same

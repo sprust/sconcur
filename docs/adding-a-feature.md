@@ -20,7 +20,8 @@ breaks `WaitGroup` behaviour.
 
 1. Cancellation. The task's cancellation token, `task.context()`, is cancelled
    when its flow (the group of tasks a `WaitGroup` owns in the extension) stops
-   (`WaitGroup::stop()`, an early `break`, `WaitGroup` destruction, `destroy`).
+   (`WaitGroup::stop()`, an early `break`, `WaitGroup` destruction — which waits for
+   its running members, since they hold it — `destroy`).
    For a long operation put `_ = task.context().cancelled()`
    into the `select!` beside it, otherwise the task cannot be stopped. Cleanup
    after a stream must not run under that token — it is already cancelled by the

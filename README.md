@@ -220,6 +220,10 @@ Everything else follows from that:
   transactions roll back, cursors and flows are released), then the process exits
   normally. Better to run tasks to completion or stop them explicitly
   (`WaitGroup::stop()`).
+- A `WaitGroup` left without a wait — the code that filled it throws or returns
+  first — is not stopped when its variable goes: its running members hold it and
+  run to their own end, and one that never ends lives as long as the process. Wait
+  for the group or call `stop()` in a `finally`.
 - Concurrent mode is optional. Any feature can be called outside a `WaitGroup` as
   an ordinary synchronous call: outside a Fiber `FeatureExecutor` detects the
   non-async context and simply waits for the result (`Extension::wait`).

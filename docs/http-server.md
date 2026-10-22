@@ -461,7 +461,8 @@ Caveats:
   requests of one connection land in the same process. Few long-lived connections
   distribute unevenly.
 - Limits are per process: the total is value × number of processes.
-- Graceful shutdown is per process and loses no traffic — see below.
+- Graceful shutdown is per process; under load it still loses a request or two per
+  restart — see below.
 - `SO_REUSEPORT` lets another process with the same UID bind the port and
   intercept part of the connections; keep that in mind in a multi-tenant
   environment.
@@ -592,9 +593,18 @@ Each step is logged, see [Logs](#logs).
 
 Closing the socket first matters for `SO_REUSEPORT`: the terminating worker
 leaves the reuseport group, so the kernel routes new connections to its
-neighbours and a rolling restart loses no requests. A request accepted but not
-yet answered in the narrow window between the signal and the socket close gets
-`503 Service Unavailable` rather than a dropped connection.
+neighbours. A request accepted but not yet answered in the narrow window between
+the signal and the socket close gets `503 Service Unavailable` rather than a
+dropped connection.
+
+Under load the stop is not yet lossless. Requests the runtime has already read off a
+connection but PHP has not taken when the drain begins are refused, and connections
+still open when the worker exits are closed without an answer. A soak with 8
+requests in flight against 4 workers lost about two requests per worker restart
+(`maxRequests`, reload) and about one per `SIGTERM`, mostly as a connection closed
+with no response, the rest as `503`; the same with the master's shared socket and
+with `SO_REUSEPORT`. A client that retries an idempotent request on a dropped
+connection rides over it.
 
 - Signal handlers are installed before the listener starts and restored on exit.
 - The signals are taken through the extension: neither `ext-pcntl` nor
