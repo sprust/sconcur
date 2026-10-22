@@ -4,7 +4,9 @@
  * The worker of the memory benchmark: loads the stand-in application unless its fork server
  * has (the bootstrap arm), then answers every request with its pid — after running a
  * request's worth of the application on /work (memoryBenchmarkWork()), which is what the
- * long run sends.
+ * long run sends. /memory answers the pid with what PHP's heap holds and has taken from the
+ * system (memory_get_usage() without and with real), which the long run reads to tell a
+ * leak from pages a worker has merely touched.
  */
 
 declare(strict_types=1);
@@ -25,7 +27,11 @@ HttpServer::fromArgs(argv: $argv, serverRequestFactory: $factory, responseFactor
 
         $response = $factory->createResponse(200);
 
-        $response->getBody()->write((string) getmypid());
+        $response->getBody()->write(
+            $request->getUri()->getPath() === '/memory'
+                ? getmypid() . ' ' . memory_get_usage() . ' ' . memory_get_usage(true)
+                : (string) getmypid(),
+        );
 
         return $response;
     });

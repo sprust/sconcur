@@ -27,7 +27,9 @@
  * All three count resident pages only. On a host short of memory the kernel moves cold
  * pages — the parts of the application a worker never runs — to swap, and they drop out
  * of them while the pool still holds them; SwapPss is that share of swap, divided like
- * Pss. The long run judges Pss + SwapPss, which a page leaving for swap does not move.
+ * Pss. The long run judges Pss + SwapPss, which a page leaving for swap does not move. A
+ * clean page of a file (php, a .so) is dropped rather than swapped, though, and leaves both:
+ * under pressure the sum falls, and the heap and Private_Dirty + Swap say more.
  *
  * The long run (SOAK_SECONDS above 0) keeps CONCURRENCY requests on /work in flight for
  * that long — a request's worth of the application each (app.php), on a fresh connection
@@ -36,6 +38,12 @@
  * creeps up towards exec's as the run goes on; the trend and its slope after the first two
  * minutes say whether it levels off:
  *   SOAK_SECONDS=900 php -d extension=ext/build/sconcur.so tests/benchmarks/worker/memory.php
+ *
+ * Every read also asks the workers what PHP's heap holds (memory_get_usage() on /memory,
+ * until each has answered): the pages of a process stay its own once touched, so Pss can
+ * creep while nothing leaks, but a leak in PHP code is in the heap. A heap that keeps
+ * still while Pss grows on points outside PHP — at the extension, or at pages merely
+ * touched.
  *
  * OPCACHE=1 starts every php of the pool with opcache.enable_cli=1. ARMS=exec,bootstrap
  * runs only those arms.
@@ -73,7 +81,7 @@ printf(
 );
 
 printf(
-    "%-10s %-7s %12s %12s %16s %12s %12s %12s\n",
+    "%-10s %-7s %12s %12s %16s %12s %12s %12s %14s %14s %14s\n",
     'arm',
     'when',
     'Pss, sum',
@@ -82,6 +90,9 @@ printf(
     'Pss/worker',
     'SwapPss, sum',
     'Swap, sum',
+    'heap used, sum',
+    'heap used, max',
+    'heap real, sum',
 );
 
 foreach ($arms as $arm => $setup) {
@@ -134,13 +145,13 @@ foreach ($arms as $arm => $setup) {
             continue;
         }
 
-        report($arm, 'idle', $masterPid, $workers);
+        report($arm, 'idle', $masterPid, $workers, $port);
 
         for ($request = 0; $request < $requests; ++$request) {
             ask($port);
         }
 
-        $served = report($arm, 'served', $masterPid, $workers);
+        $served = report($arm, 'served', $masterPid, $workers, $port);
 
         if ($soakSeconds > 0) {
             soak(
@@ -151,7 +162,7 @@ foreach ($arms as $arm => $setup) {
                 soakSeconds: $soakSeconds,
                 sampleSeconds: $sampleSeconds,
                 concurrency: $concurrency,
-                servedFootprintKib: $served,
+                served: $served,
             );
         }
     } finally {
@@ -168,10 +179,12 @@ foreach ($arms as $arm => $setup) {
 
 /**
  * Keeps $concurrency requests on /work in flight for $soakSeconds, reads the pool every
- * $sampleSeconds, and says how the Pss + SwapPss sum moved: from the read after the burst to the
- * last, and its least-squares slope after the first two minutes (warm-up: the first
- * requests of every worker copy the pages they touch at all). The verdict uses the bound
- * the HTTP soak uses, half a MiB a minute.
+ * $sampleSeconds, and says how the Pss + SwapPss sum and the heap used sum moved: from the
+ * read after the burst to the last, and their least-squares slopes after the first two
+ * minutes (warm-up: the first requests of every worker copy the pages they touch at all).
+ * The verdict, on Pss + SwapPss, uses the bound the HTTP soak uses, half a MiB a minute.
+ *
+ * @param array{footprintKib: int, heapUsedKib: int} $served
  */
 function soak(
     string $arm,
@@ -181,7 +194,7 @@ function soak(
     int $soakSeconds,
     int $sampleSeconds,
     int $concurrency,
-    int $servedFootprintKib,
+    array $served,
 ): void {
     $multi = curl_multi_init();
 
@@ -195,6 +208,7 @@ function soak(
     $answered     = 0;
     $failed       = 0;
     $trend        = [];
+    $heapTrend    = [];
 
     while (true) {
         curl_multi_exec($multi, $running);
@@ -220,7 +234,10 @@ function soak(
         if ($now >= $nextSampleAt) {
             $elapsed = (int) round($now - $startedAt);
 
-            $trend[$elapsed] = report($arm, 't=' . $elapsed . 's', $masterPid, $workers);
+            $read = report($arm, 't=' . $elapsed . 's', $masterPid, $workers, $port);
+
+            $trend[$elapsed]     = $read['footprintKib'];
+            $heapTrend[$elapsed] = $read['heapUsedKib'];
 
             $nextSampleAt += $sampleSeconds;
         }
@@ -232,18 +249,27 @@ function soak(
 
     curl_multi_close($multi);
 
-    $last  = $trend === [] ? $servedFootprintKib : (int) end($trend);
-    $slope = slopeMibPerMinute(array_filter($trend, static fn(int $elapsed): bool => $elapsed >= 120, ARRAY_FILTER_USE_KEY));
+    $afterWarmUp = static fn(int $elapsed): bool => $elapsed >= 120;
+
+    $last      = $trend === [] ? $served['footprintKib'] : (int) end($trend);
+    $slope     = slopeMibPerMinute(array_filter($trend, $afterWarmUp, ARRAY_FILTER_USE_KEY));
+    $heapLast  = $heapTrend === [] ? $served['heapUsedKib'] : (int) end($heapTrend);
+    $heapSlope = slopeMibPerMinute(array_filter($heapTrend, $afterWarmUp, ARRAY_FILTER_USE_KEY));
 
     printf(
-        "%-10s soak: %d answered, %d failed (%.0f rps); Pss+SwapPss sum %.1f -> %.1f MiB (%+.1f MiB); slope after 2 min %s -> %s\n\n",
+        "%-10s soak: %d answered, %d failed (%.0f rps); heap used sum %.2f -> %.2f MiB (%+.2f MiB), slope after 2 min %s;"
+        . " Pss+SwapPss sum %.1f -> %.1f MiB (%+.1f MiB); slope after 2 min %s -> %s\n\n",
         $arm,
         $answered,
         $failed,
         $answered / max(1.0, $soakSeconds),
-        $servedFootprintKib / 1024,
+        $served['heapUsedKib'] / 1024,
+        $heapLast / 1024,
+        ($heapLast - $served['heapUsedKib']) / 1024,
+        $heapSlope === null ? 'n/a' : sprintf('%+.3f MiB/min', $heapSlope),
+        $served['footprintKib'] / 1024,
         $last / 1024,
-        ($last - $servedFootprintKib) / 1024,
+        ($last - $served['footprintKib']) / 1024,
         $slope === null ? 'n/a' : sprintf('%+.2f MiB/min', $slope),
         match (true) {
             $slope === null => 'no verdict: run longer than two minutes and two samples',
@@ -257,7 +283,7 @@ function soak(
 /**
  * The least-squares slope of the samples, in MiB a minute; null for fewer than two.
  *
- * @param array<int, int> $samples Pss + SwapPss sum in KiB by elapsed seconds
+ * @param array<int, int> $samples a sum in KiB by elapsed seconds
  */
 function slopeMibPerMinute(array $samples): ?float
 {
@@ -297,8 +323,12 @@ function workHandle(int $port): CurlHandle
     return $curl;
 }
 
-/** Prints one read of the pool, and answers the workers' Pss + SwapPss sum in KiB. */
-function report(string $arm, string $when, int $masterPid, int $workers): int
+/**
+ * Prints one read of the pool, and answers the workers' Pss + SwapPss sum and heap used sum.
+ *
+ * @return array{footprintKib: int, heapUsedKib: int} in KiB
+ */
+function report(string $arm, string $when, int $masterPid, int $workers, int $port): array
 {
     $sum = ['Pss' => 0, 'Rss' => 0, 'Private_Dirty' => 0, 'Swap' => 0, 'SwapPss' => 0];
 
@@ -320,8 +350,13 @@ function report(string $arm, string $when, int $masterPid, int $workers): int
         $supervisorKib += $forkServer['Pss'] + $forkServer['SwapPss'];
     }
 
+    $heaps = heapsOf($port, $workers);
+
+    $heapUsedBytes = array_sum(array_column($heaps, 'used'));
+
     printf(
-        "%-10s %-7s %9.1f MiB %9.1f MiB %13.1f MiB %9.1f MiB %9.1f MiB %9.1f MiB   (master and fork server Pss+SwapPss %.1f MiB)\n",
+        "%-10s %-7s %9.1f MiB %9.1f MiB %13.1f MiB %9.1f MiB %9.1f MiB %9.1f MiB %10.2f MiB %10.2f MiB %10.1f MiB"
+        . "   (%d of %d workers answered; master and fork server Pss+SwapPss %.1f MiB)\n",
         $arm,
         $when,
         $sum['Pss'] / 1024,
@@ -330,10 +365,37 @@ function report(string $arm, string $when, int $masterPid, int $workers): int
         $sum['Pss'] / 1024 / $workers,
         $sum['SwapPss'] / 1024,
         $sum['Swap'] / 1024,
+        $heapUsedBytes / 1024 / 1024,
+        ($heaps === [] ? 0 : max(array_column($heaps, 'used'))) / 1024 / 1024,
+        array_sum(array_column($heaps, 'real')) / 1024 / 1024,
+        count($heaps),
+        $workers,
         $supervisorKib / 1024,
     );
 
-    return $sum['Pss'] + $sum['SwapPss'];
+    return ['footprintKib' => $sum['Pss'] + $sum['SwapPss'], 'heapUsedKib' => intdiv($heapUsedBytes, 1024)];
+}
+
+/**
+ * What PHP's heap holds in every worker that answered /memory: asks on fresh connections,
+ * which the kernel spreads over the workers, until each has answered or the attempts run
+ * out. A worker that has not answered is left out, and the read says how many did.
+ *
+ * @return array<int, array{used: int, real: int}> in bytes, by worker pid
+ */
+function heapsOf(int $port, int $workers): array
+{
+    $heaps = [];
+
+    for ($attempt = 0; $attempt < $workers * 50 && count($heaps) < $workers; ++$attempt) {
+        $answer = explode(' ', ask($port, '/memory'));
+
+        if (count($answer) === 3) {
+            $heaps[(int) $answer[0]] = ['used' => (int) $answer[1], 'real' => (int) $answer[2]];
+        }
+    }
+
+    return $heaps;
 }
 
 /**
@@ -415,9 +477,9 @@ function waitForWorkers(int $masterPid, int $workers, int $port): bool
     return false;
 }
 
-function ask(int $port): string
+function ask(int $port, string $path = '/'): string
 {
-    $curl = curl_init('http://127.0.0.1:' . $port . '/');
+    $curl = curl_init('http://127.0.0.1:' . $port . $path);
 
     curl_setopt_array($curl, [
         CURLOPT_RETURNTRANSFER => true,

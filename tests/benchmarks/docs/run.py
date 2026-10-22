@@ -596,11 +596,13 @@ def section_worker_memory():
 
 def section_worker_memory_soak():
     """The same pools under a long run on /work, with and without OPcache: whether the forked
-    arms' Pss creeps towards exec's as the workers touch the pages their fork server loaded.
-    15 minutes an arm, six arms."""
+    arms' Pss creeps towards exec's as the workers touch the pages their fork server loaded,
+    and whether PHP's heap in the workers keeps still meanwhile. 15 minutes an arm, six arms."""
     trend_pattern = (r'^(\w+)\s+t=(\d+)s\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB\s+[\d.]+ MiB'
-                     r'\s+([\d.]+) MiB\s+([\d.]+) MiB')
-    soak_pattern = (r'^(\w+)\s+soak: (\d+) answered, (\d+) failed \((\d+) rps\); Pss\+SwapPss sum ([\d.]+) -> ([\d.]+) MiB'
+                     r'\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB')
+    soak_pattern = (r'^(\w+)\s+soak: (\d+) answered, (\d+) failed \((\d+) rps\);'
+                    r' heap used sum ([\d.]+) -> ([\d.]+) MiB \(([+-][\d.]+) MiB\), slope after 2 min (\S+)(?: MiB/min)?;'
+                    r' Pss\+SwapPss sum ([\d.]+) -> ([\d.]+) MiB'
                     r' \(([+-][\d.]+) MiB\); slope after 2 min (\S+)(?: MiB/min)? -> (.+)$')
     for opcache in ('0', '1'):
         params = {'workers': 12, 'requests': 5000, 'soak_seconds': 900, 'sample_seconds': 60, 'opcache': opcache}
@@ -609,18 +611,27 @@ def section_worker_memory_soak():
                           'OPCACHE': opcache})
         save_raw('worker-memory-soak', f'opcache-{opcache}', output)
         trends = {}
-        for arm, elapsed, pss, rss, private_dirty, swap_pss, swap in re.findall(trend_pattern, output, re.M):
+        for (arm, elapsed, pss, rss, private_dirty, swap_pss, swap, heap_used, heap_used_max,
+             heap_real) in re.findall(trend_pattern, output, re.M):
             trends.setdefault(arm, []).append({'seconds': int(elapsed), 'pss_mib': float(pss), 'rss_mib': float(rss),
                                                'private_dirty_mib': float(private_dirty),
-                                               'swap_pss_mib': float(swap_pss), 'swap_mib': float(swap)})
-        for arm, answered, failed, rps, before, after, grown, slope, verdict in re.findall(soak_pattern, output, re.M):
+                                               'swap_pss_mib': float(swap_pss), 'swap_mib': float(swap),
+                                               'heap_used_mib': float(heap_used),
+                                               'heap_used_max_mib': float(heap_used_max),
+                                               'heap_real_mib': float(heap_real)})
+        for (arm, answered, failed, rps, heap_before, heap_after, heap_grown, heap_slope, before, after, grown, slope,
+             verdict) in re.findall(soak_pattern, output, re.M):
             summary = {'answered': int(answered), 'failed': int(failed), 'rps': int(rps),
+                       'heap_used_served_mib': float(heap_before), 'heap_used_last_mib': float(heap_after),
+                       'heap_used_grown_mib': float(heap_grown),
+                       'heap_slope_mib_per_min': None if heap_slope == 'n/a' else float(heap_slope),
                        'footprint_served_mib': float(before), 'footprint_last_mib': float(after),
                        'footprint_grown_mib': float(grown),
                        'slope_mib_per_min': None if slope == 'n/a' else float(slope), 'verdict': verdict,
                        'trend': trends.get(arm, [])}
             record('worker-memory-soak', f'{arm} opcache={opcache}', params, [summary], summary)
-            say(f'[worker-memory-soak] {arm} opcache={opcache}: Pss+SwapPss {before} -> {after} MiB ({grown}), '
+            say(f'[worker-memory-soak] {arm} opcache={opcache}: heap used {heap_before} -> {heap_after} MiB '
+                f'({heap_grown}, slope {heap_slope}); Pss+SwapPss {before} -> {after} MiB ({grown}), '
                 f'slope {slope}, {verdict}, {rps} rps, {failed} failed')
 
 # ---------------------------------------------------------------------------
