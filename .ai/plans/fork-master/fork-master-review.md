@@ -486,8 +486,8 @@ lines go to stdout")`, `self.file = None`, пачку в `self.output` (тот �
 
 Открыто:
 
-- Events-пайп `ForkServer` через `php://fd` — теоретическая утечка, fork-сервер не
-  exec-ает; см. [план](fork-master.md#heartbeat-дескриптор-у-расширения), «Что остаётся».
+- Ничего. Events-пайп `ForkServer` оказался не теоретической утечкой — копию держал каждый
+  воркер; закрыто, см. [план релиза](fork-master-release.md#3-хвосты), пункт a.
 
 Оставлено осознанно:
 
@@ -496,6 +496,3 @@ lines go to stdout")`, `self.file = None`, пачку в `self.output` (тот �
   пулов с общим дедлайном у мастера против одной группы у fork-сервера), общего там
   несколько строк арифметики.
 - Эвристика готовности в `Scheduler::serve()`: проектное решение, см. план.
-- `private` в тестах (`MasterCliTest`, `MasterLoggerTest`, `MasterReloadFileTest`,
-  `WorkerGroupConfigTest`, `BootstrapWorkerMasterTest`): правило сформулировано для
-  свойств в `src/`, прецеденты в тестах старые.
