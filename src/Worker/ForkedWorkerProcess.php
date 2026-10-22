@@ -8,7 +8,6 @@ use Closure;
 use SConcur\Exceptions\Process\ForkRefusedException;
 use SConcur\Exceptions\Process\ProcessException;
 use SConcur\Exceptions\Worker\WorkerSpawnException;
-use SConcur\Process\Dto\ForkResult;
 use SConcur\Process\ProcessControl;
 
 /**
@@ -27,10 +26,10 @@ use SConcur\Process\ProcessControl;
 class ForkedWorkerProcess extends WorkerProcess
 {
     /**
-     * @param Closure(ForkResult): never $child           what the child runs; it never returns
-     * @param list<int>                  $keepDescriptors descriptors the worker keeps, such as the
-     *                                                    group's listening socket; every other one
-     *                                                    of the fork server's is pointed at /dev/null
+     * @param Closure(): never $child           what the child runs; it never returns
+     * @param list<int>        $keepDescriptors descriptors the worker keeps, such as the group's
+     *                                          listening socket; every other one of the fork
+     *                                          server's is pointed at /dev/null
      */
     public function __construct(Closure $child, array $keepDescriptors = [])
     {
@@ -49,7 +48,7 @@ class ForkedWorkerProcess extends WorkerProcess
         }
 
         if ($fork->isChild()) {
-            $child($fork);
+            $child();
         }
 
         $this->pid           = $fork->pid;

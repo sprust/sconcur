@@ -1294,6 +1294,8 @@ PHP_MINIT_FUNCTION(sconcur)
     sconcur_original_interrupt_function = zend_interrupt_function;
     zend_interrupt_function             = sconcur_interrupt_function;
 
+    processStartup();
+
     return SUCCESS;
 }
 

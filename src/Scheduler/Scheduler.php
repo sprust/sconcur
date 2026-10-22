@@ -18,9 +18,10 @@ use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Exceptions\InvalidCoroutineTimeoutException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Flow\CurrentFlow;
+use SConcur\Process\HeartbeatMarkEnum;
+use SConcur\Process\ProcessControl;
 use SConcur\State;
 use SConcur\WaitGroup;
-use SConcur\Worker\Heartbeat;
 use Throwable;
 
 /**
@@ -59,7 +60,29 @@ class Scheduler
      */
     private const int WAIT_BATCH_SIZE = 64;
 
+    /**
+     * The shortest gap between two alive marks. The serve loop passes its top many times a
+     * second on a busy server, and the watchdog's threshold is in tens of seconds, so
+     * marking more often would only cost syscalls.
+     */
+    private const int ALIVE_MARK_INTERVAL_MS = 500;
+
     protected static ?Scheduler $instance = null;
+
+    /**
+     * Whether a master supervises this process — whether it has a heartbeat pipe to mark
+     * itself on. Asked of the extension once and kept, because every pass of every
+     * scheduler loop marks alive and none of them may cross into the extension for it; null
+     * until asked. Per process rather than per scheduler: a second scheduler built in the
+     * same worker marks the same pipe.
+     */
+    protected static ?bool $supervised = null;
+
+    /** hrtime of the last alive mark; 0 before the first one. */
+    protected static int $lastAliveMarkNs = 0;
+
+    /** Whether the ready mark was written. */
+    protected static bool $readyMarked = false;
 
     /**
      * Recycles the fibers of spawned coroutines: a request handler runs on a
@@ -183,7 +206,18 @@ class Scheduler
      */
     public function markAlive(): void
     {
-        Heartbeat::current()?->touch();
+        $nowNs = hrtime(true);
+
+        if (
+            static::$lastAliveMarkNs !== 0
+            && ($nowNs - static::$lastAliveMarkNs) < (self::ALIVE_MARK_INTERVAL_MS * 1_000_000)
+        ) {
+            return;
+        }
+
+        static::$lastAliveMarkNs = $nowNs;
+
+        static::markHeartbeat(HeartbeatMarkEnum::Alive);
     }
 
     /**
@@ -194,12 +228,33 @@ class Scheduler
      * serve() calls it for the servers and the AMQP consumer, so only a worker script
      * that does its work in a loop of its own needs it — called once that loop is
      * running. Such a script that never calls it cannot be reloaded. A no-op outside a
-     * worker started by a master, and only the first call says anything. See
-     * docs/worker-master.md, "Readiness".
+     * worker started by a master, and only the first call says anything: a worker that
+     * serves twice (a script that starts a second server after the first one ended) was
+     * ready the first time. See docs/worker-master.md, "Readiness".
      */
     public function markReady(): void
     {
-        Heartbeat::current()?->ready();
+        if (static::$readyMarked) {
+            return;
+        }
+
+        static::$readyMarked = true;
+
+        static::markHeartbeat(HeartbeatMarkEnum::Ready);
+    }
+
+    /**
+     * Forgets what this process knew of its master, for a process that was just forked into
+     * a worker: the process it was forked from asked for itself, and its answer, its last
+     * alive mark and its ready mark are not the worker's.
+     *
+     * @internal for ForkedWorker
+     */
+    public static function forgetSupervision(): void
+    {
+        static::$supervised      = null;
+        static::$lastAliveMarkNs = 0;
+        static::$readyMarked     = false;
     }
 
     public static function get(): Scheduler
@@ -784,7 +839,7 @@ class Scheduler
                     // Said before the drain rather than at the exit: the master brings the
                     // replacement up while this one is still finishing its last requests.
                     if ($limitReached) {
-                        Heartbeat::current()?->recycling();
+                        static::markHeartbeat(HeartbeatMarkEnum::Recycling);
                     }
 
                     // Close the listener up front so the kernel reroutes new
@@ -1072,13 +1127,43 @@ class Scheduler
      */
     protected static function spreadLimit(int $limit): int
     {
-        if ($limit <= 0 || Heartbeat::current() === null) {
+        if ($limit <= 0 || !static::isSupervised()) {
             return $limit;
         }
 
         // random_int reads the system's generator: nothing a fork copies from the master
         // decides the number, so forked workers draw apart as surely as exec'd ones.
         return random_int($limit, $limit + intdiv($limit, 2));
+    }
+
+    /**
+     * Whether a master supervises this process, asked of the extension the first time.
+     *
+     * The extension took the variable naming the pipe out of the environment as it loaded,
+     * which is before PHP builds $_ENV and $_SERVER from it — unless it was loaded at run
+     * time. They are cleaned here for that case, so that a program started with either as
+     * its environment does not find the variable.
+     */
+    protected static function isSupervised(): bool
+    {
+        if (static::$supervised === null) {
+            static::$supervised = ProcessControl::hasHeartbeat();
+
+            unset(
+                $_ENV[ProcessControl::HEARTBEAT_FD_ENVIRONMENT_NAME],
+                $_SERVER[ProcessControl::HEARTBEAT_FD_ENVIRONMENT_NAME],
+            );
+        }
+
+        return static::$supervised;
+    }
+
+    /** Puts a mark on the heartbeat pipe, in a process that has one. */
+    protected static function markHeartbeat(HeartbeatMarkEnum $mark): void
+    {
+        if (static::isSupervised()) {
+            ProcessControl::markHeartbeat($mark);
+        }
     }
 
     /**
@@ -1333,8 +1418,8 @@ class Scheduler
     {
         // Every loop that drives the scheduler comes through here — a server's serve(),
         // and run() under any WaitGroup — so this is where the worker says its PHP thread
-        // is still moving. Throttled inside touch(), so the cost is one clock read.
-        Heartbeat::current()?->touch();
+        // is still moving. Throttled, so the cost is one clock read.
+        $this->markAlive();
 
         if ($this->readyResults !== []) {
             return array_shift($this->readyResults);

@@ -9,16 +9,17 @@
 //!
 //! The child is prepared before PHP runs another line in it: stdin from
 //! /dev/null, stdout and stderr onto the parent's pipes, the parent's other
-//! descriptors pointed at /dev/null, the parent's signal watching undone, and —
-//! in the glue — the random generators unseeded and the parent's objects marked
-//! as destroyed. A child that cannot be prepared exits instead (see `abandon`).
+//! descriptors pointed at /dev/null, the parent's signal watching undone, its
+//! heartbeat swapped for the child's own or none, and — in the glue — the random
+//! generators unseeded and the parent's objects marked as destroyed. A child
+//! that cannot be prepared exits instead (see `abandon`).
 
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
 use libc::c_int;
 
 use super::payloads::ForkParams;
-use super::{Error, signals, threads};
+use super::{Error, heartbeat, signals, threads};
 use crate::dto::{Map, Value};
 
 /// The two ends of one pipe.
@@ -135,23 +136,24 @@ fn prepare_child(keep: &[i64], output: Option<(Pipe, Pipe)>, heartbeat: Option<P
         abandon(b"dup2 of /dev/null onto stdin");
     }
 
-    // The read end is the parent's; only the write end stays, close-on-exec — and
-    // so does the copy PHP opens its stream on (see `adopted`) — so nothing this
-    // worker execs can mark it alive.
-    let heartbeat = heartbeat.map_or(-1, |pipe| pipe.write.into_raw_fd());
+    // The read end is the parent's; only the write end stays, close-on-exec, and
+    // it is the extension's to write the marks to (`heartbeat`). PHP opens no
+    // stream on it, so nothing this worker execs inherits it.
+    let heartbeat = heartbeat.map(|pipe| pipe.write.into_raw_fd());
 
-    neutralize(null, keep, heartbeat);
+    neutralize(null, keep, heartbeat.unwrap_or(-1));
 
     if null > 2 {
         unsafe { libc::close(null) };
     }
 
+    if !heartbeat::reset_in_child(heartbeat) {
+        abandon(b"fcntl of the heartbeat pipe");
+    }
+
     unsafe { crate::sconcur_after_fork_in_child() };
 
-    Map::new()
-        .set("pid", 0_i64)
-        .set("hb", heartbeat as i64)
-        .into()
+    Map::new().set("pid", 0_i64).into()
 }
 
 /// Points every descriptor above stderr at /dev/null, except the ones asked to be
@@ -323,10 +325,9 @@ fn handed_over(descriptor: OwnedFd) -> RawFd {
 
 /// Closes a descriptor the fork handed over, once PHP has opened its stream on
 /// it, and makes the descriptor of that stream close-on-exec. php://fd opens a
-/// copy made by dup(2), which leaves the flag behind: without this, a program a
-/// worker runs would inherit its heartbeat and could write marks into it, and
-/// every process a forking parent starts would hold the read ends of its
-/// children's pipes.
+/// copy made by dup(2), which leaves the flag behind: without this, every
+/// process a forking parent starts would hold the read ends of its children's
+/// pipes.
 ///
 /// The copy is found as the other descriptor open on the same file the same
 /// way. A pipe the fork made is open nowhere else in this process — the end

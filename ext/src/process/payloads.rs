@@ -60,6 +60,14 @@ pub struct BindParams {
     pub backlog: i64,
 }
 
+/// PHP: ProcessCommandEnum::MarkHeartbeat.
+#[derive(Deserialize)]
+pub struct MarkParams {
+    /// The mark, by its byte. PHP: HeartbeatMarkEnum; here: heartbeat::Mark.
+    #[serde(rename = "mk")]
+    pub mark: i64,
+}
+
 /// PHP: ProcessCommandEnum::Close and ProcessCommandEnum::Adopted.
 #[derive(Deserialize)]
 pub struct CloseParams {

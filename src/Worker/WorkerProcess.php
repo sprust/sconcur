@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Worker;
 
+use SConcur\Process\HeartbeatMarkEnum;
 use SConcur\Process\ProcessControl;
 use SConcur\Process\ProcessSignalEnum;
 
@@ -31,13 +32,13 @@ abstract class WorkerProcess
     /** @var resource|null */
     protected mixed $stderrPipe = null;
 
-    /** @var resource|null the pipe the worker marks itself on (Heartbeat) */
+    /** @var resource|null the pipe the worker marks itself on (HeartbeatMarkEnum) */
     protected mixed $heartbeatPipe = null;
 
     /** hrtime of the last byte read from the liveness pipe; null while none has arrived. */
     protected ?int $lastHeartbeatNs = null;
 
-    /** hrtime the worker said it was up (Heartbeat::MARK_READY); null until it does. */
+    /** hrtime the worker said it was up (HeartbeatMarkEnum::Ready); null until it does. */
     protected ?int $readyAtNs = null;
 
     /** The worker said it is stopping because it reached its own limit. */
@@ -178,11 +179,11 @@ abstract class WorkerProcess
 
         $this->lastHeartbeatNs = $nowNs;
 
-        if ($this->readyAtNs === null && str_contains($marks, Heartbeat::MARK_READY)) {
+        if ($this->readyAtNs === null && str_contains($marks, HeartbeatMarkEnum::Ready->byte())) {
             $this->readyAtNs = $nowNs;
         }
 
-        if (str_contains($marks, Heartbeat::MARK_RECYCLING)) {
+        if (str_contains($marks, HeartbeatMarkEnum::Recycling->byte())) {
             $this->recycling = true;
         }
     }

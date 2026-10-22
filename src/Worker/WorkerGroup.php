@@ -6,7 +6,7 @@ namespace SConcur\Worker;
 
 use Closure;
 use SConcur\Exceptions\Worker\WorkerSpawnException;
-use SConcur\Process\Dto\ForkResult;
+use SConcur\Process\ProcessControl;
 use SConcur\Process\ProcessSignalEnum;
 
 /**
@@ -589,9 +589,9 @@ class WorkerGroup implements SupervisedGroup
     /**
      * Kills a worker whose PHP thread stopped turning its serve loop, so its slot can be
      * refilled by the ordinary restart path. The evidence is the worker's own liveness
-     * pipe (Heartbeat), written by that thread and drained by reapAndLog; a worker that
-     * has never written to it is left alone, because a script without a serve loop never
-     * will.
+     * pipe (Scheduler::markAlive), written by that thread and drained by reapAndLog; a worker
+     * that has never written to it is left alone, because a script without a serve loop
+     * never will.
      *
      * SIGTERM first, SIGKILL after the group's shutdownTimeoutMs: a thread stuck in a
      * native call is usually freed by the signal itself (it interrupts the system call)
@@ -1301,9 +1301,8 @@ class WorkerGroup implements SupervisedGroup
             // opened while loading would otherwise write to /dev/null in every worker. An
             // exec'd worker is a php of its own and loads its own.
             keepDescriptors: [...$this->keepDescriptors(), ...$this->inheritedDescriptors],
-            child: static function (ForkResult $fork) use ($title, $cwd, $environment, $argv): never {
+            child: static function () use ($title, $cwd, $environment, $argv): never {
                 ForkedWorker::run(
-                    fork: $fork,
                     title: $title,
                     cwd: $cwd,
                     environment: $environment,
@@ -1387,7 +1386,7 @@ class WorkerGroup implements SupervisedGroup
         // on. Always there: the watchdog reads it when it is on, and a reload reads it for
         // the mark that says a replacement is up. A forked worker is handed the pipe itself
         // and needs no such variable.
-        $env[Heartbeat::FD_ENVIRONMENT_NAME] = (string) Heartbeat::FD;
+        $env[ProcessControl::HEARTBEAT_FD_ENVIRONMENT_NAME] = (string) ProcessControl::HEARTBEAT_FD;
 
         foreach ($this->workerEnvironment($index) as $key => $value) {
             $env[$key] = $value;

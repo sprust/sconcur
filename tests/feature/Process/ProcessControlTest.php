@@ -516,7 +516,8 @@ class ProcessControlTest extends BaseTestCase
     }
 
     /**
-     * The liveness pipe: the child marks, the parent reads the mark.
+     * The heartbeat pipe: the child marks through the extension, which holds its end — the
+     * child is handed no stream on it — and the parent reads the mark.
      */
     public function testTheHeartbeatPipeCarriesTheChildsMark(): void
     {
@@ -525,17 +526,30 @@ class ProcessControlTest extends BaseTestCase
             $fork = ProcessControl::fork(heartbeat: true);
 
             if ($fork->isChild()) {
-                fwrite($fork->heartbeat, "\x01");
+                echo json_encode([
+                    'stream' => $fork->heartbeat,
+                    'marked' => ProcessControl::markHeartbeat(SConcur\Process\HeartbeatMarkEnum::Alive),
+                ]);
 
                 ProcessControl::exit(0);
             }
 
             waitFor($fork->pid);
 
-            echo json_encode(['mark' => bin2hex(stream_get_contents($fork->heartbeat))]);
+            echo json_encode([
+                'child' => json_decode(stream_get_contents($fork->stdout), true),
+                'mark'  => bin2hex(stream_get_contents($fork->heartbeat)),
+            ]);
             PHP,
         );
 
+        self::assertSame(
+            [
+                'stream' => null,
+                'marked' => true,
+            ],
+            $answer['child'],
+        );
         self::assertSame('01', $answer['mark']);
     }
 
@@ -575,10 +589,11 @@ class ProcessControlTest extends BaseTestCase
     }
 
     /**
-     * The pipes a fork hands over reach nothing either side execs. php://fd opens its
-     * stream on a copy without close-on-exec, and the extension puts the flag back: left
-     * off, a program a worker runs would hold the worker's heartbeat and could write marks
-     * into it, and one its parent runs would hold the read ends of the child's pipes.
+     * The pipes a fork makes reach nothing either side execs. The child's end of its
+     * heartbeat stays with the extension, close-on-exec: a program a worker runs that held it
+     * could mark the worker alive. The parent's ends are streams, which php://fd opens on a
+     * copy without close-on-exec, and the extension puts the flag back: left off, a program
+     * the parent runs would hold the read ends of the child's pipes.
      */
     public function testThePipesOfAForkReachNothingEitherSideExecs(): void
     {
@@ -603,21 +618,17 @@ class ProcessControlTest extends BaseTestCase
             $fork = ProcessControl::fork(heartbeat: true);
 
             if ($fork->isChild()) {
-                echo json_encode([
-                    'heartbeat' => fstat($fork->heartbeat)['ino'],
-                    'exec'      => pipesOfAnExec(),
-                ]);
+                echo json_encode(pipesOfAnExec());
 
                 ProcessControl::exit(0);
             }
 
             waitFor($fork->pid);
 
-            $child = json_decode(stream_get_contents($fork->stdout), true);
-
             echo json_encode([
-                'childHeartbeat' => $child['heartbeat'],
-                'childExec'      => $child['exec'],
+                // The two ends of a pipe share its inode.
+                'childHeartbeat' => fstat($fork->heartbeat)['ino'],
+                'childExec'      => json_decode(stream_get_contents($fork->stdout), true),
                 'parentEnds'     => [
                     fstat($fork->stdout)['ino'],
                     fstat($fork->stderr)['ino'],

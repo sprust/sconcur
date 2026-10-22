@@ -12,7 +12,7 @@ use SConcur\Process\Dto\ProcessExit;
 /**
  * What a worker master asks of the operating system — fork a worker, reap it, signal it,
  * watch its own signals, find its parent — through the extension, so neither ext-pcntl
- * nor ext-posix is needed.
+ * nor ext-posix is needed; and the heartbeat its workers mark themselves on.
  *
  * Every call is synchronous and starts no runtime. A fork is refused once the
  * extension's runtime runs in this process, or any other thread does: a fork keeps only
@@ -30,6 +30,19 @@ use SConcur\Process\Dto\ProcessExit;
 class ProcessControl
 {
     /**
+     * The environment variable an exec'd worker finds its heartbeat descriptor's number in
+     * — env rather than argv, for the same reason the telemetry socket travels that way: the
+     * master supervises any worker script and must not feed one an argv flag it does not
+     * know. The extension takes it out of the environment as it loads.
+     *
+     * Rust: ENVIRONMENT_NAME in ext/src/process/heartbeat.rs.
+     */
+    public const string HEARTBEAT_FD_ENVIRONMENT_NAME = 'SCONCUR_HEARTBEAT_FD';
+
+    /** The descriptor a master puts an exec'd worker's heartbeat pipe on, past stdin/stdout/stderr. */
+    public const int HEARTBEAT_FD = 3;
+
+    /**
      * Forks this process. The answer comes back twice: in the parent with the child's pid
      * and pipes, in the child with a pid of 0. The child continues from here and leaves
      * through exit().
@@ -38,14 +51,15 @@ class ProcessControl
      *                                   are, such as a listening socket
      * @param bool      $captureOutput   the child's stdout and stderr become pipes the parent
      *                                   reads; otherwise the child writes where the parent does
-     * @param bool      $heartbeat       a third pipe, for the child's liveness mark
+     * @param bool      $heartbeat       a third pipe, for the child's marks: the parent reads
+     *                                   it, the child writes it through markHeartbeat()
      */
     public static function fork(
         array $keepDescriptors = [],
         bool $captureOutput = true,
         bool $heartbeat = false,
     ): ForkResult {
-        /** @var array{pid: int, out?: int, err?: int, hb: int} $answer */
+        /** @var array{pid: int, out?: int, err?: int, hb?: int} $answer */
         $answer = Extension::get()->process(
             command: ProcessCommandEnum::Fork,
             payload: [
@@ -55,14 +69,9 @@ class ProcessControl
             ],
         );
 
+        // The child's end of the heartbeat stays with the extension, which writes the marks.
         if ($answer['pid'] === 0) {
-            return new ForkResult(
-                pid: 0,
-                heartbeat: self::adopt(
-                    descriptor: $answer['hb'],
-                    mode: 'w',
-                ),
-            );
+            return new ForkResult(pid: 0);
         }
 
         return new ForkResult(
@@ -76,9 +85,32 @@ class ProcessControl
                 mode: 'r',
             ),
             heartbeat: self::adopt(
-                descriptor: $answer['hb'],
+                descriptor: $answer['hb'] ?? -1,
                 mode: 'r',
             ),
+        );
+    }
+
+    /**
+     * Whether this process has a heartbeat pipe to a master: an exec'd worker its master
+     * opened one for, or a child of fork(heartbeat: true). The extension settles it once —
+     * an exec'd worker's as it loads, a forked one's in the fork — and the answer stands.
+     */
+    public static function hasHeartbeat(): bool
+    {
+        return (bool) Extension::get()->process(command: ProcessCommandEnum::HasHeartbeat);
+    }
+
+    /**
+     * Writes one mark for the master to read, and answers whether it was written. Not
+     * written is not a failure: there is no heartbeat, the master stopped reading and the
+     * pipe is full, or the master is gone.
+     */
+    public static function markHeartbeat(HeartbeatMarkEnum $mark): bool
+    {
+        return (bool) Extension::get()->process(
+            command: ProcessCommandEnum::MarkHeartbeat,
+            payload: ['mk' => $mark->value],
         );
     }
 

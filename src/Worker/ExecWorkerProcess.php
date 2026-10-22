@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Worker;
 
 use SConcur\Exceptions\Worker\WorkerSpawnException;
+use SConcur\Process\ProcessControl;
 
 /**
  * A worker launched as a php process of its own, via proc_open.
@@ -45,7 +46,7 @@ class ExecWorkerProcess extends WorkerProcess
                 1 => ['pipe', 'w'],
                 2 => ['pipe', 'w'],
                 // The pipe the worker marks itself on: alive, up, leaving at its limit.
-                Heartbeat::FD => ['pipe', 'w'],
+                ProcessControl::HEARTBEAT_FD => ['pipe', 'w'],
             ],
             keepDescriptors: $keepDescriptors,
         );
@@ -57,7 +58,7 @@ class ExecWorkerProcess extends WorkerProcess
 
         $this->stdoutPipe    = $pipes[1] ?? null;
         $this->stderrPipe    = $pipes[2] ?? null;
-        $this->heartbeatPipe = $pipes[Heartbeat::FD] ?? null;
+        $this->heartbeatPipe = $pipes[ProcessControl::HEARTBEAT_FD] ?? null;
 
         foreach ([$this->stdoutPipe, $this->stderrPipe, $this->heartbeatPipe] as $pipe) {
             if (is_resource($pipe)) {
@@ -138,7 +139,7 @@ class ExecWorkerProcess extends WorkerProcess
     /**
      * A descriptor spec that points every descriptor above stderr at /dev/null in the
      * child, so the worker inherits none of the master's own. The caller's own entries
-     * win over it, which is how the liveness pipe keeps Heartbeat::FD.
+     * win over it, which is how the liveness pipe keeps ProcessControl::HEARTBEAT_FD.
      *
      * proc_open only rewires the descriptors it is given and leaves the rest open in the
      * child. The master holds the telemetry collector's unix listener and one accepted

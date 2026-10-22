@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace SConcur\Worker;
 
-use SConcur\Process\Dto\ForkResult;
 use SConcur\Process\ProcessControl;
+use SConcur\Scheduler\Scheduler;
 use Throwable;
 
 /**
@@ -32,7 +32,6 @@ class ForkedWorker
      * @param list<string>          $argv        the argv the script sees, its own path first
      */
     public static function run(
-        ForkResult $fork,
         string $title,
         string $cwd,
         array $environment,
@@ -42,7 +41,6 @@ class ForkedWorker
 
         try {
             static::prepare(
-                fork: $fork,
                 title: $title,
                 cwd: $cwd,
                 environment: $environment,
@@ -85,7 +83,6 @@ class ForkedWorker
      * @param array<string, string> $environment
      */
     protected static function prepare(
-        ForkResult $fork,
         string $title,
         string $cwd,
         array $environment,
@@ -109,9 +106,9 @@ class ForkedWorker
         // group's own -d flags are the fork server's already, which was started with them.
         ini_set('display_errors', 'stderr');
 
-        // Also without one: what the fork server's process knew of a heartbeat — none, or
-        // one it inherited — is not this worker's.
-        Heartbeat::adopt($fork->heartbeat);
+        // What the fork server's process knew of a master is not this worker's: the fork
+        // handed the worker a heartbeat of its own, and its scheduler asks for it afresh.
+        Scheduler::forgetSupervision();
 
         // Last, so what is silenced above stays out of it: the fork server's own handler, which
         // ForkServer::run() put over the application's, comes off.

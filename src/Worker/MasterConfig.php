@@ -26,10 +26,10 @@ readonly class MasterConfig
 {
     /**
      * The shortest watchdog threshold that can be honoured. A worker marks itself alive at
-     * most twice a second (Heartbeat), so anything near that reads an ordinary gap between
-     * two marks as a hang and kills every worker of the group on sight — including the
-     * replacements, forever. Ten marks' worth leaves room for a GC pause, a descheduled
-     * process and the master's own tick.
+     * most twice a second (Scheduler::markAlive), so anything near that reads an ordinary
+     * gap between two marks as a hang and kills every worker of the group on sight —
+     * including the replacements, forever. Ten marks' worth leaves room for a GC pause, a
+     * descheduled process and the master's own tick.
      */
     public const int MIN_WATCHDOG_TIMEOUT_MS = 5_000;
 

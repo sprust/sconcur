@@ -1064,6 +1064,13 @@ pub extern "C" fn process(
     })
 }
 
+/// Run once as the module starts (MINIT), before PHP runs a line of the script
+/// and before any thread exists. See `process::startup`.
+#[unsafe(no_mangle)]
+pub extern "C" fn processStartup() {
+    guarded(|| (), process::startup)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn version() -> *mut c_char {
     guarded(std::ptr::null_mut, || {

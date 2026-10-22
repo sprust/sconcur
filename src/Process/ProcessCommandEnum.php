@@ -58,4 +58,10 @@ enum ProcessCommandEnum: string
 
     /** The descriptors above stderr this process has open. No parameters. */
     case OpenDescriptors = 'fds';
+
+    /** Whether this process has a heartbeat pipe to its master. No parameters. */
+    case HasHeartbeat = 'hbq';
+
+    /** Writes one mark on the heartbeat pipe. Rust: payloads::MarkParams. */
+    case MarkHeartbeat = 'hbw';
 }

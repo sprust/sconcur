@@ -282,21 +282,28 @@ feature's doc. Key PHP classes not covered there:
   (a pool's settings, with `MasterDefaults` for what it inherits) and `WorkerGroup`
   (its live slots, backoff and rolling reload). The groups are generic: everything
   a worker needs rides in the group's `server` block, forwarded to its argv
-  untouched, so the master stays worker-agnostic. `Heartbeat` is the one piece of
-  `Worker/` that runs in the worker: one byte at a time on a pipe the master opens for
-  every worker — alive (a scheduler pass, which the watchdog times and which is the
-  only signal that says whether the worker's PHP thread, as opposed to the extension's
-  runtime, is still moving), ready (`Scheduler::markReady()`, said by `serve()` itself)
-  and recycling (a server's own limit reached). A rolling reload starts each
-  replacement beside its worker and stops the worker only once the replacement is
-  ready, giving the reload up when it is not; a worker that left its slot — replaced,
-  or recycling with its replacement already started — finishes as a `DrainingWorker`.
+  untouched, so the master stays worker-agnostic. The worker talks back one byte at a
+  time (`Process/HeartbeatMarkEnum`) on a pipe the master opens for every worker —
+  alive (a scheduler pass, which the watchdog times and which is the only signal that
+  says whether the worker's PHP thread, as opposed to the extension's runtime, is still
+  moving), ready (`Scheduler::markReady()`, said by `serve()` itself) and recycling (a
+  server's own limit reached). The worker's end belongs to the extension, not to a PHP
+  stream (php://fd would open a copy without close-on-exec, which everything the worker
+  runs would inherit): an exec'd worker's is claimed as the module starts, from
+  `SCONCUR_HEARTBEAT_FD` and descriptor 3, close-on-exec and with the variable taken out
+  of the environment; a forked worker's is the one its fork made. `Scheduler` asks
+  once whether there is one, throttles alive to every 500 ms and says ready once;
+  `ForkedWorker` has it ask afresh (`Scheduler::forgetSupervision()`). A rolling
+  reload starts each replacement beside its worker and stops the worker only once the
+  replacement is ready, giving the reload up when it is not; a worker that left its
+  slot — replaced, or recycling with its replacement already started — finishes as a
+  `DrainingWorker`.
   A group the master started with that never comes up ends the master with
   `WorkerMaster::EXIT_NEVER_CAME_UP` (70).
 - `Process/ProcessControl` — the worker master's process control over the
-  `process` export, in place of ext-pcntl and ext-posix; `@internal`. Commands are
-  `ProcessCommandEnum` cases, signals go by name (`ProcessSignalEnum`), because
-  their numbers differ between platforms
+  `process` export, in place of ext-pcntl and ext-posix, and the worker's heartbeat
+  marks; `@internal`. Commands are `ProcessCommandEnum` cases, signals go by name
+  (`ProcessSignalEnum`), because their numbers differ between platforms
 - `Telemetry/` — the master-side stats collector and live panel (pure PHP):
   `TelemetryRuntime`, `Collector`, `Store`, `PanelServer`, `FrameCodec`,
   `Aggregator`, `Dto/*`, `Render/*`.
@@ -307,7 +314,8 @@ The core (`ext/src/`), module by module:
   `waitAny`, `waitAnyTimeout`, `waitAnyBatch`, `waitAnyTimeoutBatch`,
   `tasksCount`, `stopFlow`, `httpStopAccepting`, `socketStopAccepting`,
   `wsStopAccepting`, `preemptionArm`, `preemptionDisarm`, `amqpStopConsuming`,
-  `amqpReopenConsumer`, `destroy`, `version`, `process`)
+  `amqpReopenConsumer`, `destroy`, `version`, `process`, and `processStartup`, which
+  MINIT calls)
 - `core.rs` — the process-wide state and what it takes to survive a `fork`:
   nothing starts until the first push (the exports that only act on running work —
   `destroy`, `stopFlow`, `tasksCount`, the `*StopAccepting` ones — answer without
@@ -319,7 +327,8 @@ The core (`ext/src/`), module by module:
   descriptors onto /dev/null, signal watching undone, and through the glue the
   random generators unseeded and the parent's objects marked destroyed), `_exit`,
   `kill`, `waitpid`, `getppid`, signals recorded by a handler that only sets a
-  bit. Synchronous and runtime-free, and a fork is refused while any thread runs
+  bit, and the worker's end of its heartbeat pipe (`heartbeat.rs`). Synchronous and
+  runtime-free, and a fork is refused while any thread runs
 - `handler/` — the singleton orchestrator routing messages to flows
 - `flows/`, `tasks/` — concurrent `Flow` instances holding tasks and the shared
   result sink; a task carries the flow's cancellation token directly

@@ -87,7 +87,6 @@ foreach ($specs as $index => $spec) {
         // The port in the title is what load-stats.sh finds a stray worker of an earlier
         // run by: the title replaces the command line it would otherwise match.
         ForkedWorker::run(
-            fork: $fork,
             title: sprintf('sconcur-load :%s #%d', $port, $index),
             cwd: (string) getcwd(),
             environment: [],

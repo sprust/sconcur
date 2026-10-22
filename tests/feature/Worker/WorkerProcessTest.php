@@ -222,8 +222,8 @@ class WorkerProcessTest extends TestCase
     }
 
     /**
-     * The master reads what the worker says about itself off the pipe at Heartbeat::FD:
-     * any byte is the PHP thread alive, and two of them say more.
+     * The master reads what the worker says about itself off the pipe at
+     * ProcessControl::HEARTBEAT_FD: any byte is the PHP thread alive, and two of them say more.
      */
     public function testReadsTheMarksTheWorkerPutsOnItsPipe(): void
     {

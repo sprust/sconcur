@@ -746,8 +746,10 @@ replaces it. A worker writes a byte to an extra pipe (descriptor 3, opened by
 thread comes back to the scheduler, at most twice a second; its supervisor reads that
 pipe on every tick and times the last byte by its own clock. Stop coming back and the
 bytes stop, which is what "stuck" means here. It costs one clock read per pass, and
-nothing at all in a worker running without a master. The same pipe carries the worker's
-[readiness](#readiness) and its "stopping at my limit".
+nothing at all in a worker running without a master. Programs the worker starts
+(`shell_exec`, `proc_open`) get neither the pipe nor the `SCONCUR_HEARTBEAT_FD` variable
+an exec'd worker finds it by, so none of them can mark the worker alive in its place. The
+same pipe carries the worker's [readiness](#readiness) and its "stopping at my limit".
 
 That covers a server's serve loop and equally any loop driving an ordinary
 `WaitGroup` — a pool of periodic jobs, a consumer written by hand. A worker whose
