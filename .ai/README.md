@@ -56,6 +56,9 @@ User-facing documentation (each doc also exists in Russian as `*.ru.md`):
 - History: [the move to Rust](../docs/rust-core.md) — the threshold the port had to
   pass and what it measured, kept as a record rather than a live comparison
 - [.ai/plans/](plans/) — detailed designs for roadmap items
+- [.ai/soak-analysis.md](soak-analysis.md) — running and reading the memory and failure
+  soaks: which memory to read, descriptors and zombies, losses per death, taking apart a
+  difference between two launches, proving a test catches the bug
 
 ## Plans
 
@@ -464,7 +467,11 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
   fail (thrown, cut off, malformed, abandoned with coroutines in flight), each on a master
   of its own under steady load. What it watches is what survives — the master's and the
   fork server's memory, descriptors and threads, zombies, and the surviving workers' heap
-  and runtime tasks — and it says why each failed request on the load failed
+  and runtime tasks — and it says why each failed request on the load failed.
+  `make mem-leak-worker-summary file=<saved output>` lays a run out (losses per death,
+  every read of one scenario), and `make mem-leak-worker-exit-timing launch=<one>` times
+  each step of a worker's death by `exit()`. How to read them, and the traps:
+  [soak-analysis.md](soak-analysis.md).
 
 Tests use PHPUnit 11. Add feature tests in `tests/feature/...` with `*Test.php`
 suffixes; async flow tests commonly extend `BaseAsyncTestCase`,

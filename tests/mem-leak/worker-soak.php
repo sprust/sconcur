@@ -210,7 +210,11 @@ function runScenario(
                 // LISTEN=0 gives every worker a socket of its own on the port (reusePort)
                 // instead of the master's shared one.
                 ...(getenv('LISTEN') === '0' ? [] : ['listen' => '127.0.0.1:' . $port]),
-                'env'          => ['FAILURES_PORT' => (string) $port, ...($scenario['env'] ?? [])],
+                'env'          => [
+                    'FAILURES_PORT'       => (string) $port,
+                    'FAILURES_EXIT_TRACE' => (string) getenv('FAILURES_EXIT_TRACE'),
+                    ...($scenario['env'] ?? []),
+                ],
                 'server'       => getenv('LISTEN') === '0'
                     ? ['address' => '127.0.0.1:' . $port, 'reusePort' => true, ...($scenario['server'] ?? [])]
                     : ($scenario['server'] ?? (object) []),

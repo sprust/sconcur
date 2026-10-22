@@ -23,7 +23,9 @@
  *   /cpu              300 ms of CPU, for a server with preemption and a short handlerTimeoutMs
  *
  * FAILURES_PORT is the port the group listens on; FAILURES_CRASH_AT_START_PERCENT makes that
- * share of the workers exit before they serve.
+ * share of the workers exit before they serve. FAILURES_EXIT_TRACE names a file
+ * (worker-exit-timing.php reads it) where /exit notes when it calls exit(), and the worker's
+ * shutdown functions when they start and end, in milliseconds of the monotonic clock.
  */
 
 declare(strict_types=1);
@@ -45,11 +47,30 @@ if ($crashAtStartPercent > 0 && random_int(1, 100) <= $crashAtStartPercent) {
     exit(1);
 }
 
+$exitTrace = (string) getenv('FAILURES_EXIT_TRACE');
+
+$traceExit = static function (string $event) use ($exitTrace): void {
+    if ($exitTrace !== '') {
+        file_put_contents($exitTrace, sprintf("%d %s %.3f\n", getmypid(), $event, hrtime(true) / 1e6), FILE_APPEND);
+    }
+};
+
+if ($exitTrace !== '') {
+    // One registered from a shutdown function runs after every one queued before it: the
+    // pair brackets the shutdown functions this worker registers, the scheduler's among them
+    // (one a fork server registered before the fork runs ahead of both).
+    register_shutdown_function(static function () use ($traceExit): void {
+        $traceExit('shutdown');
+
+        register_shutdown_function(static fn() => $traceExit('shutdown-end'));
+    });
+}
+
 $factory = new Psr17Factory();
 $slowUrl = 'http://127.0.0.1:' . (int) getenv('FAILURES_PORT') . '/slow';
 
 HttpServer::fromArgs(argv: $argv, serverRequestFactory: $factory, responseFactory: $factory)
-    ->serve(static function ($request) use ($factory, $slowUrl) {
+    ->serve(static function ($request) use ($factory, $slowUrl, $traceExit) {
         $body = (string) getmypid();
 
         switch ($request->getUri()->getPath()) {
@@ -73,6 +94,8 @@ HttpServer::fromArgs(argv: $argv, serverRequestFactory: $factory, responseFactor
                 }
 
             case '/exit':
+                $traceExit('exit');
+
                 exit(1);
 
             case '/fatal':
