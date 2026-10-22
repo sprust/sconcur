@@ -2,7 +2,9 @@
 
 /**
  * The worker of the memory benchmark: loads the stand-in application unless its fork server
- * has (the bootstrap arm), then answers every request with its pid.
+ * has (the bootstrap arm), then answers every request with its pid — after running a
+ * request's worth of the application on /work (memoryBenchmarkWork()), which is what the
+ * long run sends.
  */
 
 declare(strict_types=1);
@@ -16,7 +18,11 @@ use SConcur\Features\HttpServer\HttpServer;
 $factory = new Psr17Factory();
 
 HttpServer::fromArgs(argv: $argv, serverRequestFactory: $factory, responseFactory: $factory)
-    ->serve(static function () use ($factory) {
+    ->serve(static function ($request) use ($factory) {
+        if ($request->getUri()->getPath() === '/work') {
+            memoryBenchmarkWork();
+        }
+
         $response = $factory->createResponse(200);
 
         $response->getBody()->write((string) getmypid());

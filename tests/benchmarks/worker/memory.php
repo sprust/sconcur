@@ -20,15 +20,37 @@
  *
  * Pss divides every shared page among the processes that share it, so its sum is what
  * the pool takes from the machine; Private_Dirty is what a worker has written and
- * holds alone.
+ * holds alone. Rss counts a shared page whole in every process that maps it, so its sum
+ * overstates the pool, and a page a forked worker has copied costs it no more Rss than
+ * one it still shares.
+ *
+ * All three count resident pages only. On a host short of memory the kernel moves cold
+ * pages — the parts of the application a worker never runs — to swap, and they drop out
+ * of them while the pool still holds them; SwapPss is that share of swap, divided like
+ * Pss. The long run judges Pss + SwapPss, which a page leaving for swap does not move.
+ *
+ * The long run (SOAK_SECONDS above 0) keeps CONCURRENCY requests on /work in flight for
+ * that long — a request's worth of the application each (app.php), on a fresh connection
+ * each so the kernel spreads them over every worker — and reads every SAMPLE_SECONDS. A
+ * worker that touches a page the fork server loaded copies it, so the forked arms' Pss
+ * creeps up towards exec's as the run goes on; the trend and its slope after the first two
+ * minutes say whether it levels off:
+ *   SOAK_SECONDS=900 php -d extension=ext/build/sconcur.so tests/benchmarks/worker/memory.php
+ *
+ * OPCACHE=1 starts every php of the pool with opcache.enable_cli=1. ARMS=exec,bootstrap
+ * runs only those arms.
  */
 
 declare(strict_types=1);
 
 $root      = dirname(__DIR__, 3);
 $extension = (string) (getenv('SCONCUR_EXT') ?: $root . '/ext/build/sconcur.so');
-$workers   = (int) (getenv('WORKERS') ?: 12);
-$requests  = (int) (getenv('REQUESTS') ?: 5000);
+$workers       = (int) (getenv('WORKERS') ?: 12);
+$requests      = (int) (getenv('REQUESTS') ?: 5000);
+$soakSeconds   = (int) (getenv('SOAK_SECONDS') ?: 0);
+$sampleSeconds = max(1, (int) (getenv('SAMPLE_SECONDS') ?: 60));
+$concurrency   = max(1, (int) (getenv('CONCURRENCY') ?: 32));
+$opcache       = getenv('OPCACHE') === '1' ? '1' : '0';
 
 $arms = [
     'exec'      => ['launch' => 'exec', 'bootstrap' => ''],
@@ -36,14 +58,31 @@ $arms = [
     'bootstrap' => ['launch' => 'fork', 'bootstrap' => __DIR__ . '/bootstrap.php'],
 ];
 
+if (getenv('ARMS') !== false && getenv('ARMS') !== '') {
+    $arms = array_intersect_key($arms, array_flip(explode(',', (string) getenv('ARMS'))));
+}
+
 printf(
-    "%d workers, %d requests, opcache.enable_cli=%s\n\n",
+    "%d workers, %d requests, opcache.enable_cli=%s%s\n\n",
     $workers,
     $requests,
-    ini_get('opcache.enable_cli') ?: '0',
+    $opcache,
+    $soakSeconds > 0
+        ? sprintf(', then %d s of %d requests in flight on /work, read every %d s', $soakSeconds, $concurrency, $sampleSeconds)
+        : '',
 );
 
-printf("%-10s %-6s %12s %12s %16s %12s\n", 'arm', 'when', 'Pss, sum', 'Rss, sum', 'Private_Dirty', 'Pss/worker');
+printf(
+    "%-10s %-7s %12s %12s %16s %12s %12s %12s\n",
+    'arm',
+    'when',
+    'Pss, sum',
+    'Rss, sum',
+    'Private_Dirty',
+    'Pss/worker',
+    'SwapPss, sum',
+    'Swap, sum',
+);
 
 foreach ($arms as $arm => $setup) {
     $runtimeDir = sys_get_temp_dir() . '/sc-memory-' . $arm . '-' . getmypid();
@@ -63,8 +102,11 @@ foreach ($arms as $arm => $setup) {
             'workerCount'  => $workers,
             'launch'       => $setup['launch'],
             'bootstrap'    => $setup['bootstrap'],
-            'phpArgs'      => ['-d', 'extension=' . $extension],
+            'phpArgs'      => ['-d', 'extension=' . $extension, '-d', 'opcache.enable_cli=' . $opcache],
             'server'       => ['address' => '127.0.0.1:' . $port, 'reusePort' => true],
+            // A long run sends hundreds of thousands of requests; the journal is not what is
+            // measured.
+            'accessLog'    => 'off',
         ]],
     ]));
 
@@ -73,6 +115,8 @@ foreach ($arms as $arm => $setup) {
             PHP_BINARY,
             '-d',
             'extension=' . $extension,
+            '-d',
+            'opcache.enable_cli=' . $opcache,
             $root . '/bin/sconcur-server',
             'start',
             '--configPath=' . $config,
@@ -96,7 +140,20 @@ foreach ($arms as $arm => $setup) {
             ask($port);
         }
 
-        report($arm, 'served', $masterPid, $workers);
+        $served = report($arm, 'served', $masterPid, $workers);
+
+        if ($soakSeconds > 0) {
+            soak(
+                arm: $arm,
+                port: $port,
+                masterPid: $masterPid,
+                workers: $workers,
+                soakSeconds: $soakSeconds,
+                sampleSeconds: $sampleSeconds,
+                concurrency: $concurrency,
+                servedFootprintKib: $served,
+            );
+        }
     } finally {
         proc_terminate($master);
         proc_close($master);
@@ -109,9 +166,141 @@ foreach ($arms as $arm => $setup) {
     }
 }
 
-function report(string $arm, string $when, int $masterPid, int $workers): void
+/**
+ * Keeps $concurrency requests on /work in flight for $soakSeconds, reads the pool every
+ * $sampleSeconds, and says how the Pss + SwapPss sum moved: from the read after the burst to the
+ * last, and its least-squares slope after the first two minutes (warm-up: the first
+ * requests of every worker copy the pages they touch at all). The verdict uses the bound
+ * the HTTP soak uses, half a MiB a minute.
+ */
+function soak(
+    string $arm,
+    int $port,
+    int $masterPid,
+    int $workers,
+    int $soakSeconds,
+    int $sampleSeconds,
+    int $concurrency,
+    int $servedFootprintKib,
+): void {
+    $multi = curl_multi_init();
+
+    for ($handle = 0; $handle < $concurrency; ++$handle) {
+        curl_multi_add_handle($multi, workHandle($port));
+    }
+
+    $startedAt    = microtime(true);
+    $endsAt       = $startedAt + $soakSeconds;
+    $nextSampleAt = $startedAt + $sampleSeconds;
+    $answered     = 0;
+    $failed       = 0;
+    $trend        = [];
+
+    while (true) {
+        curl_multi_exec($multi, $running);
+        curl_multi_select($multi, 0.1);
+
+        while (($done = curl_multi_info_read($multi)) !== false) {
+            $handle = $done['handle'];
+
+            $ok = $done['result'] === CURLE_OK && curl_getinfo($handle, CURLINFO_RESPONSE_CODE) === 200;
+
+            $ok ? ++$answered : ++$failed;
+
+            curl_multi_remove_handle($multi, $handle);
+            curl_close($handle);
+
+            if (microtime(true) < $endsAt) {
+                curl_multi_add_handle($multi, workHandle($port));
+            }
+        }
+
+        $now = microtime(true);
+
+        if ($now >= $nextSampleAt) {
+            $elapsed = (int) round($now - $startedAt);
+
+            $trend[$elapsed] = report($arm, 't=' . $elapsed . 's', $masterPid, $workers);
+
+            $nextSampleAt += $sampleSeconds;
+        }
+
+        if ($now >= $endsAt && $running === 0) {
+            break;
+        }
+    }
+
+    curl_multi_close($multi);
+
+    $last  = $trend === [] ? $servedFootprintKib : (int) end($trend);
+    $slope = slopeMibPerMinute(array_filter($trend, static fn(int $elapsed): bool => $elapsed >= 120, ARRAY_FILTER_USE_KEY));
+
+    printf(
+        "%-10s soak: %d answered, %d failed (%.0f rps); Pss+SwapPss sum %.1f -> %.1f MiB (%+.1f MiB); slope after 2 min %s -> %s\n\n",
+        $arm,
+        $answered,
+        $failed,
+        $answered / max(1.0, $soakSeconds),
+        $servedFootprintKib / 1024,
+        $last / 1024,
+        ($last - $servedFootprintKib) / 1024,
+        $slope === null ? 'n/a' : sprintf('%+.2f MiB/min', $slope),
+        match (true) {
+            $slope === null => 'no verdict: run longer than two minutes and two samples',
+            $slope > 0.5    => 'growing',
+            $slope < -0.5   => 'falling',
+            default         => 'stable',
+        },
+    );
+}
+
+/**
+ * The least-squares slope of the samples, in MiB a minute; null for fewer than two.
+ *
+ * @param array<int, int> $samples Pss + SwapPss sum in KiB by elapsed seconds
+ */
+function slopeMibPerMinute(array $samples): ?float
 {
-    $sum = ['Pss' => 0, 'Rss' => 0, 'Private_Dirty' => 0];
+    $count = count($samples);
+
+    if ($count < 2) {
+        return null;
+    }
+
+    $sumX  = array_sum(array_keys($samples));
+    $sumY  = array_sum($samples) / 1024;
+    $sumXY = 0.0;
+    $sumXX = 0.0;
+
+    foreach ($samples as $elapsed => $pssKib) {
+        $sumXY += $elapsed * ($pssKib / 1024);
+        $sumXX += $elapsed * $elapsed;
+    }
+
+    $denominator = $count * $sumXX - $sumX * $sumX;
+
+    return $denominator == 0 ? null : ($count * $sumXY - $sumX * $sumY) / $denominator * 60;
+}
+
+/** A request on /work on a fresh connection, so the kernel spreads them over the workers. */
+function workHandle(int $port): CurlHandle
+{
+    $curl = curl_init('http://127.0.0.1:' . $port . '/work');
+
+    curl_setopt_array($curl, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FORBID_REUSE   => true,
+        CURLOPT_FRESH_CONNECT  => true,
+        CURLOPT_TIMEOUT        => 5,
+    ]);
+
+    return $curl;
+}
+
+/** Prints one read of the pool, and answers the workers' Pss + SwapPss sum in KiB. */
+function report(string $arm, string $when, int $masterPid, int $workers): int
+{
+    $sum = ['Pss' => 0, 'Rss' => 0, 'Private_Dirty' => 0, 'Swap' => 0, 'SwapPss' => 0];
 
     [$workerPids, $forkServerPids] = workersOf($masterPid);
 
@@ -121,22 +310,30 @@ function report(string $arm, string $when, int $masterPid, int $workers): void
         }
     }
 
-    $supervisorPss = rollup($masterPid)['Pss'];
+    $supervisor = rollup($masterPid);
+
+    $supervisorKib = $supervisor['Pss'] + $supervisor['SwapPss'];
 
     foreach ($forkServerPids as $pid) {
-        $supervisorPss += rollup($pid)['Pss'];
+        $forkServer = rollup($pid);
+
+        $supervisorKib += $forkServer['Pss'] + $forkServer['SwapPss'];
     }
 
     printf(
-        "%-10s %-6s %9.1f MiB %9.1f MiB %13.1f MiB %9.1f MiB   (master and fork server Pss %.1f MiB)\n",
+        "%-10s %-7s %9.1f MiB %9.1f MiB %13.1f MiB %9.1f MiB %9.1f MiB %9.1f MiB   (master and fork server Pss+SwapPss %.1f MiB)\n",
         $arm,
         $when,
         $sum['Pss'] / 1024,
         $sum['Rss'] / 1024,
         $sum['Private_Dirty'] / 1024,
         $sum['Pss'] / 1024 / $workers,
-        $supervisorPss / 1024,
+        $sum['SwapPss'] / 1024,
+        $sum['Swap'] / 1024,
+        $supervisorKib / 1024,
     );
+
+    return $sum['Pss'] + $sum['SwapPss'];
 }
 
 /**
@@ -167,14 +364,14 @@ function workersOf(int $masterPid): array
 }
 
 /**
- * @return array{Pss: int, Rss: int, Private_Dirty: int} in KiB
+ * @return array{Pss: int, Rss: int, Private_Dirty: int, Swap: int, SwapPss: int} in KiB
  */
 function rollup(int $pid): array
 {
-    $values = ['Pss' => 0, 'Rss' => 0, 'Private_Dirty' => 0];
+    $values = ['Pss' => 0, 'Rss' => 0, 'Private_Dirty' => 0, 'Swap' => 0, 'SwapPss' => 0];
 
     foreach (explode("\n", (string) @file_get_contents('/proc/' . $pid . '/smaps_rollup')) as $line) {
-        if (preg_match('/^(Pss|Rss|Private_Dirty):\s+(\d+) kB/', $line, $match) === 1) {
+        if (preg_match('/^(Pss|Rss|Private_Dirty|Swap|SwapPss):\s+(\d+) kB/', $line, $match) === 1) {
             $values[$match[1]] = (int) $match[2];
         }
     }

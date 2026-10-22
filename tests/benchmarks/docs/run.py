@@ -593,6 +593,36 @@ def section_worker_memory():
         say(f'[worker-memory] {arm}: Pss {pss} MiB, {per_worker} MiB per worker, Private_Dirty {private_dirty} MiB')
 
 
+
+def section_worker_memory_soak():
+    """The same pools under a long run on /work, with and without OPcache: whether the forked
+    arms' Pss creeps towards exec's as the workers touch the pages their fork server loaded.
+    15 minutes an arm, six arms."""
+    trend_pattern = (r'^(\w+)\s+t=(\d+)s\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB\s+[\d.]+ MiB'
+                     r'\s+([\d.]+) MiB\s+([\d.]+) MiB')
+    soak_pattern = (r'^(\w+)\s+soak: (\d+) answered, (\d+) failed \((\d+) rps\); Pss\+SwapPss sum ([\d.]+) -> ([\d.]+) MiB'
+                    r' \(([+-][\d.]+) MiB\); slope after 2 min (\S+)(?: MiB/min)? -> (.+)$')
+    for opcache in ('0', '1'):
+        params = {'workers': 12, 'requests': 5000, 'soak_seconds': 900, 'sample_seconds': 60, 'opcache': opcache}
+        output = php('tests/benchmarks/worker/memory.php',
+                     env={'WORKERS': '12', 'REQUESTS': '5000', 'SOAK_SECONDS': '900', 'SAMPLE_SECONDS': '60',
+                          'OPCACHE': opcache})
+        save_raw('worker-memory-soak', f'opcache-{opcache}', output)
+        trends = {}
+        for arm, elapsed, pss, rss, private_dirty, swap_pss, swap in re.findall(trend_pattern, output, re.M):
+            trends.setdefault(arm, []).append({'seconds': int(elapsed), 'pss_mib': float(pss), 'rss_mib': float(rss),
+                                               'private_dirty_mib': float(private_dirty),
+                                               'swap_pss_mib': float(swap_pss), 'swap_mib': float(swap)})
+        for arm, answered, failed, rps, before, after, grown, slope, verdict in re.findall(soak_pattern, output, re.M):
+            summary = {'answered': int(answered), 'failed': int(failed), 'rps': int(rps),
+                       'footprint_served_mib': float(before), 'footprint_last_mib': float(after),
+                       'footprint_grown_mib': float(grown),
+                       'slope_mib_per_min': None if slope == 'n/a' else float(slope), 'verdict': verdict,
+                       'trend': trends.get(arm, [])}
+            record('worker-memory-soak', f'{arm} opcache={opcache}', params, [summary], summary)
+            say(f'[worker-memory-soak] {arm} opcache={opcache}: Pss+SwapPss {before} -> {after} MiB ({grown}), '
+                f'slope {slope}, {verdict}, {rps} rps, {failed} failed')
+
 # ---------------------------------------------------------------------------
 
 
@@ -617,6 +647,7 @@ SECTIONS = {
     'spread': (section_spread, False, 'http-server: how evenly the kernel spreads'),
     'shared-socket': (section_shared_socket, False, 'load-testing, http-server: one socket for the whole pool'),
     'worker-memory': (section_worker_memory, False, 'worker-master: loading the application in the master'),
+    'worker-memory-soak': (section_worker_memory_soak, False, 'worker-master: the memory of a pool over a 15-minute run'),
 }
 
 

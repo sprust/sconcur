@@ -696,6 +696,15 @@ bench-worker-memory:
 	$(DOCKER_COMPOSE) exec -e WORKERS=$${WORKERS:-12} -e REQUESTS=$${REQUESTS:-5000} php \
 		php -d extension=$(SCONCUR_EXT) tests/benchmarks/worker/memory.php
 
+# The same pools under a long run on /work (SOAK_SECONDS an arm, 15 minutes by default),
+# without OPcache and with it: six arms, an hour and a half.
+bench-worker-memory-soak:
+	for opcache in 0 1; do \
+		$(DOCKER_COMPOSE) exec -e WORKERS=$${WORKERS:-12} -e REQUESTS=$${REQUESTS:-5000} \
+			-e SOAK_SECONDS=$${SOAK_SECONDS:-900} -e SAMPLE_SECONDS=$${SAMPLE_SECONDS:-60} -e OPCACHE=$$opcache php \
+			php -d extension=$(SCONCUR_EXT) tests/benchmarks/worker/memory.php || exit 1; \
+	done
+
 # Baseline variant: same harness against the bare "/" route (no I/O fan-out) —
 # measures the pure HTTP + framework ceiling, the floor under the /all numbers.
 # Placement defaults to group, the one the docs/benchmarks.md numbers are taken
