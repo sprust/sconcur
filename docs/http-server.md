@@ -600,9 +600,9 @@ dropped connection.
 Under load the stop is not yet lossless. Requests the runtime has already read off a
 connection but PHP has not taken when the drain begins are refused, and connections
 still open when the worker exits are closed without an answer. A soak with 8
-requests in flight against 4 workers lost about two requests per worker restart
-(`maxRequests`, reload) and about one per `SIGTERM`, mostly as a connection closed
-with no response, the rest as `503`; the same with the master's shared socket and
+requests in flight against 4 workers lost about two requests per worker leaving at
+`maxRequests`, about one per `SIGTERM` and about two per reload of the whole pool,
+mostly as a connection closed with no response, the rest as `503`; the same with the master's shared socket and
 with `SO_REUSEPORT`. A client that retries an idempotent request on a dropped
 connection rides over it.
 
