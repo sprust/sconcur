@@ -327,8 +327,10 @@ The core (`ext/src/`), module by module:
   descriptors onto /dev/null, signal watching undone, and through the glue the
   random generators unseeded and the parent's objects marked destroyed), `_exit`,
   `kill`, `waitpid`, `getppid`, signals recorded by a handler that only sets a
-  bit, and the worker's end of its heartbeat pipe (`heartbeat.rs`). Synchronous and
-  runtime-free, and a fork is refused while any thread runs
+  bit, the worker's end of its heartbeat pipe (`heartbeat.rs`) and a fork server's end of
+  its events pipe (`events.rs`) — both claimed from the environment as the module starts,
+  close-on-exec, by `claim.rs`, and written by the extension, never through a PHP stream.
+  Synchronous and runtime-free, and a fork is refused while any thread runs
 - `handler/` — the singleton orchestrator routing messages to flows
 - `flows/`, `tasks/` — concurrent `Flow` instances holding tasks and the shared
   result sink; a task carries the flow's cancellation token directly

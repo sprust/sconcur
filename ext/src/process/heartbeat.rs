@@ -11,16 +11,16 @@
 //! whether there is a heartbeat and hands over the marks.
 //!
 //! Process-level state, like the signals being watched: one descriptor or
-//! none. An exec'd worker finds it in its environment (`settle`), as the module
-//! starts; a forked one is handed the end its fork made (`reset_in_child`) and
-//! never keeps the one its parent held.
+//! none. An exec'd worker finds it in its environment as the module starts
+//! (`settle`, through `claim`); a forked one is handed the end its fork made
+//! (`reset_in_child`) and never keeps the one its parent held.
 
 use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use libc::c_int;
 
-use super::Error;
+use super::{Error, claim};
 use crate::dto::Value;
 
 /// The variable an exec'd worker finds the number of its heartbeat descriptor
@@ -66,7 +66,7 @@ pub fn settle() -> Option<RawFd> {
     let mut descriptor = DESCRIPTOR.load(Ordering::Relaxed);
 
     if descriptor == UNSETTLED {
-        descriptor = claim(ENVIRONMENT_NAME).unwrap_or(NONE);
+        descriptor = claim::writable_pipe(ENVIRONMENT_NAME, true).unwrap_or(NONE);
 
         DESCRIPTOR.store(descriptor, Ordering::Relaxed);
     }
@@ -107,62 +107,13 @@ pub fn reset_in_child(descriptor: Option<RawFd>) -> bool {
 
     // A master that stopped reading must slow nothing down: a full pipe drops
     // the mark instead.
-    if !add_flag(descriptor, libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK) {
+    if !claim::add_flag(descriptor, libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK) {
         return false;
     }
 
     DESCRIPTOR.store(descriptor, Ordering::Relaxed);
 
     true
-}
-
-/// The descriptor the master named in `variable`, made close-on-exec and
-/// non-blocking, or None.
-///
-/// The variable leaves the environment whatever it says: it was addressed to
-/// this process, and a program it starts must not find it. Only a pipe open for
-/// writing above stderr is taken. Anything else — a number nothing is open on,
-/// a file, a socket, a read end — did not come from a master, and marks written
-/// there would land in whatever it is.
-fn claim(variable: &str) -> Option<RawFd> {
-    let value = std::env::var_os(variable)?;
-
-    // Safety: unsetenv is unsafe beside another thread reading the environment.
-    // The module start calls this before any thread exists; past it, the
-    // variable is gone and this line is not reached again.
-    unsafe { std::env::remove_var(variable) };
-
-    let descriptor: RawFd = value.to_str()?.parse().ok()?;
-
-    if descriptor <= 2 || !is_writable_pipe(descriptor) {
-        return None;
-    }
-
-    // Close-on-exec, so nothing this worker starts inherits the pipe;
-    // non-blocking, as in `reset_in_child`.
-    let flagged = add_flag(descriptor, libc::F_GETFD, libc::F_SETFD, libc::FD_CLOEXEC)
-        && add_flag(descriptor, libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK);
-
-    flagged.then_some(descriptor)
-}
-
-fn is_writable_pipe(descriptor: RawFd) -> bool {
-    let mut status: libc::stat = unsafe { std::mem::zeroed() };
-
-    if unsafe { libc::fstat(descriptor, &mut status) } != 0 || status.st_mode & libc::S_IFMT != libc::S_IFIFO {
-        return false;
-    }
-
-    let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
-
-    flags >= 0 && matches!(flags & libc::O_ACCMODE, libc::O_WRONLY | libc::O_RDWR)
-}
-
-/// Adds a flag through the fcntl pair that reads and sets it.
-fn add_flag(descriptor: RawFd, get: c_int, set: c_int, flag: c_int) -> bool {
-    let flags = unsafe { libc::fcntl(descriptor, get) };
-
-    flags >= 0 && unsafe { libc::fcntl(descriptor, set, flags | flag) } == 0
 }
 
 fn write_mark(descriptor: RawFd, mark: Mark) -> Result<bool, Error> {
@@ -191,47 +142,8 @@ fn write_mark(descriptor: RawFd, mark: Mark) -> Result<bool, Error> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::claim::test_pipes::*;
     use super::*;
-
-    /// A pipe without close-on-exec or O_NONBLOCK, as proc_open hands an exec'd
-    /// worker its descriptor 3.
-    fn plain_pipe() -> (RawFd, RawFd) {
-        let mut ends: [c_int; 2] = [-1, -1];
-
-        assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
-
-        (ends[0], ends[1])
-    }
-
-    fn has_flag(descriptor: RawFd, get: c_int, flag: c_int) -> bool {
-        unsafe { libc::fcntl(descriptor, get) & flag != 0 }
-    }
-
-    fn read_available(descriptor: RawFd) -> Vec<u8> {
-        let mut buffer = [0_u8; 16];
-
-        let read = unsafe { libc::read(descriptor, buffer.as_mut_ptr().cast(), buffer.len()) };
-
-        buffer[..read.max(0) as usize].to_vec()
-    }
-
-    fn close(descriptors: &[RawFd]) {
-        for &descriptor in descriptors {
-            unsafe { libc::close(descriptor) };
-        }
-    }
-
-    /// Each test claims through a variable of its own: the tests run on threads
-    /// of one process, and share its environment.
-    fn claim_named(variable: &str, value: &str) -> Option<RawFd> {
-        unsafe { std::env::set_var(variable, value) };
-
-        let claimed = claim(variable);
-
-        assert!(std::env::var_os(variable).is_none(), "the variable stays for whatever {value} is");
-
-        claimed
-    }
 
     /// What an exec'd worker's master opened is taken: close-on-exec, so nothing
     /// the worker starts inherits it, non-blocking, and out of the environment.
@@ -239,7 +151,7 @@ mod tests {
     fn the_pipe_an_exec_d_worker_is_handed_is_claimed_from_its_environment() {
         let (read, write) = plain_pipe();
 
-        let claimed = claim_named("SCONCUR_TEST_HEARTBEAT_CLAIMED", &write.to_string());
+        let claimed = claim_named("SCONCUR_TEST_HEARTBEAT_CLAIMED", &write.to_string(), true);
 
         assert_eq!(claimed, Some(write));
         assert!(has_flag(write, libc::F_GETFD, libc::FD_CLOEXEC), "a program the worker starts inherits it");
@@ -251,36 +163,12 @@ mod tests {
         close(&[read, write]);
     }
 
-    /// Only a pipe open for writing above stderr is taken; the variable goes
-    /// whatever it named.
-    #[test]
-    fn only_a_pipe_open_for_writing_is_claimed() {
-        let (read, write) = plain_pipe();
-
-        let file = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
-        let file_descriptor = std::os::fd::AsRawFd::as_raw_fd(&file);
-
-        for (value, what) in [
-            (read.to_string(), "the read end"),
-            (file_descriptor.to_string(), "a file open for writing"),
-            (c_int::MAX.to_string(), "a number nothing is open on"),
-            ("2".to_string(), "stderr"),
-            ("three".to_string(), "not a number"),
-        ] {
-            assert_eq!(claim_named("SCONCUR_TEST_HEARTBEAT_REFUSED", &value), None, "{what} was claimed");
-        }
-
-        assert!(!has_flag(read, libc::F_GETFD, libc::FD_CLOEXEC), "a refused descriptor was changed");
-
-        close(&[read, write]);
-    }
-
     /// A pipe the master stopped reading drops the mark rather than block.
     #[test]
     fn a_full_pipe_drops_the_mark() {
         let (read, write) = plain_pipe();
 
-        assert!(add_flag(write, libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK));
+        assert!(claim::add_flag(write, libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK));
 
         let chunk = [0_u8; 4096];
 

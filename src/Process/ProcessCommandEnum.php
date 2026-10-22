@@ -64,4 +64,10 @@ enum ProcessCommandEnum: string
 
     /** Writes one mark on the heartbeat pipe. Rust: payloads::MarkParams. */
     case MarkHeartbeat = 'hbw';
+
+    /** Whether this process is a fork server with an events pipe to its master. No parameters. */
+    case HasForkServerEvents = 'evq';
+
+    /** Writes one event line on a fork server's events pipe. Rust: payloads::EventParams. */
+    case WriteForkServerEvent = 'evw';
 }

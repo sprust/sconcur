@@ -9,6 +9,8 @@
 //! parameter map, decoded into the structs of `payloads` — so a new one is a
 //! match arm here, not a new C symbol.
 
+mod claim;
+mod events;
 mod fork;
 mod heartbeat;
 mod payloads;
@@ -68,6 +70,12 @@ pub fn run(command: &[u8], payload: &Value) -> Result<Value, Error> {
 
             heartbeat::mark(params.mark)
         }
+        b"evq" => Ok(events::present()),
+        b"evw" => {
+            let params: payloads::EventParams = decode(payload)?;
+
+            events::write(&params.line)
+        }
         other => Err(Error::Failed(format!(
             "unknown process command '{}'",
             String::from_utf8_lossy(other)
@@ -77,12 +85,13 @@ pub fn run(command: &[u8], payload: &Value) -> Result<Value, Error> {
 
 /// What the module start does for the process, before PHP runs a line of the
 /// script and before any thread exists: an exec'd worker claims the heartbeat
-/// its master opened (`heartbeat::settle`). Then, rather than at the first mark,
-/// nothing the worker starts — from its bootstrap on — inherits the pipe or the
-/// variable naming it, and the variable leaves an environment no other thread
-/// can be reading yet.
+/// its master opened (`heartbeat::settle`), a fork server its events pipe
+/// (`events::settle`). Then, rather than at the first write, nothing the process
+/// starts — from its bootstrap on — inherits the pipe or the variable naming it,
+/// and the variable leaves an environment no other thread can be reading yet.
 pub fn startup() {
     heartbeat::settle();
+    events::settle();
 }
 
 fn decode<'a, T: Deserialize<'a>>(payload: &'a Value) -> Result<T, Error> {

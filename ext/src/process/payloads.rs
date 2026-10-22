@@ -68,6 +68,14 @@ pub struct MarkParams {
     pub mark: i64,
 }
 
+/// PHP: ProcessCommandEnum::WriteForkServerEvent.
+#[derive(Deserialize)]
+pub struct EventParams {
+    /// One event: a JSON object and its newline.
+    #[serde(rename = "ln")]
+    pub line: String,
+}
+
 /// PHP: ProcessCommandEnum::Close and ProcessCommandEnum::Adopted.
 #[derive(Deserialize)]
 pub struct CloseParams {

@@ -115,6 +115,29 @@ class ProcessControl
     }
 
     /**
+     * Whether this process is a fork server its master opened an events pipe for. The
+     * extension claims the pipe as it loads — before the bootstrap runs — and the answer
+     * stands.
+     */
+    public static function hasForkServerEvents(): bool
+    {
+        return (bool) Extension::get()->process(command: ProcessCommandEnum::HasForkServerEvents);
+    }
+
+    /**
+     * Writes one event line — a JSON object and its newline — for the master to read, whole,
+     * and answers whether it was written. Not written is not a failure: this process is no
+     * fork server, or the master is gone.
+     */
+    public static function writeForkServerEvent(string $line): bool
+    {
+        return (bool) Extension::get()->process(
+            command: ProcessCommandEnum::WriteForkServerEvent,
+            payload: ['ln' => $line],
+        );
+    }
+
+    /**
      * Leaves this process after writing out what it printed, without PHP's shutdown: the
      * shutdown functions and destructors a worker would run are its master's, inherited
      * with its memory.

@@ -19,7 +19,7 @@ use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use libc::c_int;
 
 use super::payloads::ForkParams;
-use super::{Error, heartbeat, signals, threads};
+use super::{Error, events, heartbeat, signals, threads};
 use crate::dto::{Map, Value};
 
 /// The two ends of one pipe.
@@ -150,6 +150,8 @@ fn prepare_child(keep: &[i64], output: Option<(Pipe, Pipe)>, heartbeat: Option<P
     if !heartbeat::reset_in_child(heartbeat) {
         abandon(b"fcntl of the heartbeat pipe");
     }
+
+    events::reset_in_child();
 
     unsafe { crate::sconcur_after_fork_in_child() };
 

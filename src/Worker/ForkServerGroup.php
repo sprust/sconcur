@@ -912,7 +912,8 @@ class ForkServerGroup implements SupervisedGroup
                 cwd: $this->cwd,
                 env: [
                     ...getenv(),
-                    ForkServer::SPEC_ENVIRONMENT_NAME => (string) json_encode(
+                    ForkServer::EVENTS_FD_ENVIRONMENT_NAME => (string) ForkServer::EVENTS_FD,
+                    ForkServer::SPEC_ENVIRONMENT_NAME      => (string) json_encode(
                         $this->spec(
                             config: $config,
                             spawnAll: $spawnAll,

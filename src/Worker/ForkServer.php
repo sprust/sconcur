@@ -31,8 +31,18 @@ class ForkServer
     /** The environment variable the master hands the spec over in. */
     public const string SPEC_ENVIRONMENT_NAME = 'SCONCUR_FORK_SERVER_SPEC';
 
-    /** The descriptor the fork server writes its events to. */
+    /** The descriptor the master opens the fork server's events pipe under. */
     public const int EVENTS_FD = 3;
+
+    /**
+     * The environment variable that names EVENTS_FD to the fork server. The extension claims
+     * the pipe from it as it loads — close-on-exec before the bootstrap runs, so nothing the
+     * bootstrap or a worker starts inherits it — and writes the events itself; PHP opens no
+     * stream on it (php://fd would open a copy without close-on-exec).
+     *
+     * Rust: ENVIRONMENT_NAME in ext/src/process/events.rs.
+     */
+    public const string EVENTS_FD_ENVIRONMENT_NAME = 'SCONCUR_FORK_SERVER_EVENTS_FD';
 
     public const string COMMAND_SPAWN   = 'spawn';
     public const string COMMAND_RELEASE = 'release';
@@ -54,9 +64,6 @@ class ForkServer
     protected WorkerGroup $group;
 
     protected MasterLogger $logger;
-
-    /** @var resource */
-    protected mixed $events;
 
     protected string $commandBuffer = '';
 
@@ -117,15 +124,11 @@ class ForkServer
             scope: sprintf('fork-server: %d %s', $pid, $config->name),
         );
 
-        $events = fopen('php://fd/' . self::EVENTS_FD, 'w');
-
-        if ($events === false) {
+        if (!ProcessControl::hasForkServerEvents()) {
             fwrite(STDERR, 'fork server: the events pipe is not open' . PHP_EOL);
 
             return 1;
         }
-
-        $this->events = $events;
 
         stream_set_blocking(STDIN, false);
 
@@ -437,9 +440,13 @@ class ForkServer
     protected function emit(string $event, array $data = []): void
     {
         try {
-            fwrite($this->events, json_encode(['e' => $event, ...$data], JSON_THROW_ON_ERROR) . "\n");
+            // Not written when the master is gone or going; the orphan check ends this.
+            ProcessControl::writeForkServerEvent(
+                json_encode(['e' => $event, ...$data], JSON_THROW_ON_ERROR) . "\n",
+            );
         } catch (Throwable) {
-            // A master that stopped reading is gone or going; the orphan check ends this.
+            // An event that cannot be encoded or written is lost rather than taking the
+            // fork server and its workers down with it.
         }
     }
 }

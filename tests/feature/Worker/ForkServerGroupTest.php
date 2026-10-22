@@ -280,6 +280,113 @@ class ForkServerGroupTest extends TestCase
     }
 
     /**
+     * The fork server's events pipe is its own. Its bootstrap runs before the fork server
+     * does anything, and a worker is forked with whatever the fork server holds, so a
+     * program either of them starts — a `shell_exec` while a framework boots, a sidecar —
+     * would otherwise inherit the pipe and could write into the master's view of the group.
+     * The fork server holds it once, close-on-exec, and nobody else holds it at all.
+     */
+    public function testNothingButTheForkServerHoldsItsEventsPipe(): void
+    {
+        $root      = dirname(__DIR__, 3);
+        $bootstrap = $this->holdDirectory . '/bootstrap.php';
+        $worker    = $this->holdDirectory . '/worker.php';
+
+        $listChildDescriptors = static fn(string $file): string => sprintf(
+            "file_put_contents(getenv('SCONCUR_TEST_HOLD_DIR') . '/%s', (string) shell_exec('ls -l /proc/self/fd'));\n",
+            $file,
+        );
+
+        file_put_contents(
+            $bootstrap,
+            "<?php\nrequire " . var_export($root . '/vendor/autoload.php', true) . ";\n"
+            . $listChildDescriptors('bootstrap-child.txt'),
+        );
+
+        file_put_contents(
+            $worker,
+            "<?php\n" . $listChildDescriptors('worker-child.txt')
+            . 'require ' . var_export($root . '/tests/servers/http/http-server.php', true) . ";\n",
+        );
+
+        $master = $this->startMaster(
+            options: [
+                'workerCount'  => 1,
+                'workerScript' => $worker,
+                'bootstrap'    => $bootstrap,
+            ],
+        );
+
+        try {
+            $forkServerPid = $this->forkServerPid(
+                master: $master,
+                generation: 1,
+            );
+
+            $workerPid = $master->workerPid();
+
+            self::assertGreaterThan(0, $workerPid, 'the worker should answer');
+
+            $eventsPipe = (string) readlink(sprintf('/proc/%d/fd/3', $forkServerPid));
+
+            self::assertStringStartsWith('pipe:', $eventsPipe, 'the fork server holds its events pipe as 3');
+
+            $forkServerHolds = $this->descriptorsOn(
+                pid: $forkServerPid,
+                target: $eventsPipe,
+            );
+
+            self::assertSame([3], $forkServerHolds, 'the fork server holds a copy of its events pipe');
+
+            $flags = (string) file_get_contents(sprintf('/proc/%d/fdinfo/3', $forkServerPid));
+
+            self::assertMatchesRegularExpression('/^flags:\s+0*2\d{6}$/m', $flags, 'the events pipe is not close-on-exec');
+
+            self::assertSame(
+                [],
+                $this->descriptorsOn(
+                    pid: $workerPid,
+                    target: $eventsPipe,
+                ),
+                'the worker holds the fork server\'s events pipe',
+            );
+
+            foreach (['bootstrap-child.txt' => 'the bootstrap', 'worker-child.txt' => 'the worker'] as $file => $who) {
+                $listing = (string) @file_get_contents($this->holdDirectory . '/' . $file);
+
+                self::assertNotSame('', $listing, sprintf('a program %s started should have listed its descriptors', $who));
+                self::assertStringNotContainsString(
+                    $eventsPipe,
+                    $listing,
+                    sprintf('a program %s started inherited the events pipe', $who),
+                );
+            }
+        } finally {
+            $master->stop();
+        }
+    }
+
+    /**
+     * The descriptors of a process that are open on `target`, as readlink names it.
+     *
+     * @return list<int>
+     */
+    protected function descriptorsOn(int $pid, string $target): array
+    {
+        $descriptors = [];
+
+        foreach ((array) glob(sprintf('/proc/%d/fd/*', $pid)) as $path) {
+            if (@readlink((string) $path) === $target) {
+                $descriptors[] = (int) basename((string) $path);
+            }
+        }
+
+        sort($descriptors);
+
+        return $descriptors;
+    }
+
+    /**
      * @param array<string, mixed> $options
      */
     protected function startMaster(array $options, bool $waitReachable = true): TestWorkerMaster
