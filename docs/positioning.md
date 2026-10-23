@@ -18,21 +18,19 @@ of adding up.
 | --- | --- | :---: |
 | A high-concurrency I/O-bound HTTP/WS service | On the same hardware SConcur serves [~4.8× the requests per second](#throughput-on-the-same-hardware) RoadRunner does, and holding that load takes ~2× less memory than RoadRunner and ~6–12× less than php-fpm — [resources](#resources-to-hold-the-same-load) | ✅ |
 | One request or job needs several DB or network calls | Running them concurrently instead of one after another finishes SQL writes [~13–22×](benchmarks.md#mysql) faster, heavy reads [~2–7×](benchmarks.md#mongodb), network waits [~49×](benchmarks.md#clients-http--socket--websocket) | ✅ |
-| MongoDB with concurrency | SConcur is the only way to have several MongoDB operations in progress at once inside one PHP process — [tables](benchmarks.md#mongodb) | ✅ |
+| MongoDB with concurrency | Several MongoDB operations at once inside one PHP process, which neither `ext-mongodb` nor Swoole's hooks give: run concurrently, `count` takes ~6.7× and `findOne` 43% less time than one after another on the native driver — [tables](benchmarks.md#mongodb) | ✅ |
 | Single cheap queries, one at a time (SConcur used as a library) | Slower than the native driver: a sequential call through the [PHP↔extension boundary](benchmarks.md#conversion-overhead-the-phpextension-boundary) costs ~30–150 µs more than the native one (MongoDB `findOne` ~30, MySQL ~65, PostgreSQL ~150), more than a cheap query itself takes | ❌ |
 | Megabyte payloads per operation | A 1 MB point read through the boundary costs ~0.3–0.6 ms more per call than the native SQL drivers, and the results of all operations running at once are held in memory together: 50 concurrent 1 MB reads peak at ~106–112 MB against 8–12 MB native — [payload size](benchmarks.md#payload-size) | ❌ |
 | CPU-bound handlers | No gain: PHP stays single-threaded, and a handler busy with computation blocks the whole process — [servers](benchmarks.md#servers-http--socket--websocket). [Coroutine switching](coroutine-switching.md) keeps such a handler from freezing its neighbours for long, but it does not add throughput | ❌ |
 
-Three rules behind the table:
+Two rules behind the table:
 
 - Running operations concurrently wins wherever a single operation has a real
   cost — an fsync per write, server-side work over a dataset, a network wait.
   The higher that cost, the bigger the win.
-- Cheap single operations stay with the native driver: crossing the boundary
-  costs more than the operation, and there is no waiting time to hide other work
-  behind.
-- A single call through SConcur is always more expensive than the native one;
-  the gain comes only from having several operations in progress at once.
+- Cheap single operations stay with the native driver: a single call through
+  SConcur always costs more than the native one, and with no waiting time to hide
+  other work behind there is nothing to win it back.
 
 The ❌ on single queries is about the price of one call inside one process. As a
 server SConcur wins even on many small operations: every handler runs in its own
@@ -42,8 +40,9 @@ next request — no `WaitGroup` needed. The `/all-nowg` endpoint,
 which makes its six calls strictly one after another, still holds ≈2 770 rps
 against RoadRunner's ≈612 on the same operations
 ([load testing](load-testing.md#concurrent-vs-sequential-calls-all-vs-all-nowg)).
-Only on microsecond cache hits does the edge shrink to what the server layer
-alone gives (~4.8× on the empty endpoint) — it never turns into a loss.
+On cheap point queries the edge narrows — +38% to +182% over RoadRunner on the
+`/db` ladder ([benchmarks](benchmarks.md#point-query-the-worker-count-ladder)) —
+but it never turns into a loss against the worker model.
 
 ## Execution models
 
@@ -58,8 +57,8 @@ alone gives (~4.8× on the empty endpoint) — it never turns into a loss.
 
 php-fpm and RoadRunner share the trait that matters under load: a request holds
 a worker for its full duration, I/O waits included. RoadRunner removes the
-per-request bootstrap and keeps connections alive, which buys 2–10× on light
-endpoints — but the worker-per-request model stays. SConcur keeps the
+per-request bootstrap and keeps connections alive — but the worker-per-request
+model stays. SConcur keeps the
 long-lived-worker gains and breaks that trait: a request waiting on I/O costs a
 suspended fiber, not a worker.
 

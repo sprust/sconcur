@@ -25,9 +25,10 @@
 Каждый воркер — отдельный процесс со своими счётчиками, а соединение на общий порт
 (свой [`SO_REUSEPORT`](http-server.ru.md#масштабирование-на-ядра-so_reuseport)-сокет у
 каждого воркера или сокет `listen` мастера) попадает в один из них, поэтому статистику
-нельзя собрать опросом одного сокета. Вместо этого каждый воркер на старте
-подключается к unix-сокету коллектора (поднимает мастер в `runtimeDir`) и раз в
-секунду шлёт туда снапшот length-prefix-кадром. Мастер — единственный потребитель: он
+нельзя собрать опросом одного сокета. Вместо этого каждый воркер подключается к
+unix-сокету коллектора (поднимает мастер в `runtimeDir`) при первой отправке,
+через интервал после старта (и заново после неудачной записи), и раз в секунду
+шлёт туда снапшот length-prefix-кадром. Мастер — единственный потребитель: он
 держит последний снапшот каждого воркера в памяти (ключ — соединение) и отдаёт сумму
 по пулу на отдельном порту.
 
@@ -157,7 +158,7 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 | `requests.inFlight` | в обработке прямо сейчас | реестр запросов в обработке |
 | `requests.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | из них по возрасту [1с,5с) / [5с,15с) / ≥15с | возраст запросов в обработке |
 | `connections.active` / `totalAccepted` | открыто сейчас / принято за всё время | счётчик |
-| `consumers.coroutines` | открытых консьюмеров — по одному на корутину, то есть текущая ёмкость | реестр консьюмеров |
+| `consumers.coroutines` | открытых консьюмеров — по одному на корутину (обработчик в собственном PHP Fiber), то есть текущая ёмкость | реестр консьюмеров |
 | `consumers.delivered` | доставок отдано в PHP (консьюмер очереди) | счётчик |
 | `consumers.acked` / `refused` | доставок подтверждено / отклонено (nack или reject) — счёт идёт по доставкам, а не по командам | сами команды `ack`, `nack` и `reject` |
 | `consumers.timed` | из них у скольких было измеримое время обработчика (у авто-подтверждённой его нет) | реестр в работе |
@@ -265,11 +266,11 @@ Prometheus не носит:
 # TYPE sconcur_pool_requests_completed_total counter
 sconcur_pool_requests_completed_total{name="sconcur-servers"} 843210
 sconcur_pool_deliveries_total{name="sconcur-servers"} 51204
-sconcur_master_start_time_seconds{name="sconcur-servers"} 1750762800
+sconcur_master_start_time_seconds{name="sconcur-servers"} 1782298800
 sconcur_master_memory_rss_bytes{name="sconcur-servers"} 16777216
-sconcur_group_workers{name="sconcur-servers",group="http"} 3
-sconcur_group_memory_rss_bytes{name="sconcur-servers",group="http"} 125829120
-sconcur_worker_start_time_seconds{name="sconcur-servers",pid="12346",group="http"} 1750766087
+sconcur_group_workers{name="sconcur-servers",group="http"} 8
+sconcur_group_memory_rss_bytes{name="sconcur-servers",group="http"} 335544320
+sconcur_worker_start_time_seconds{name="sconcur-servers",pid="12346",group="http"} 1782302087
 sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346"} 105432
 ```
 
@@ -277,7 +278,7 @@ sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346"} 1054
 
 | Семейство | Область | Метки |
 | --- | --- | --- |
-| `sconcur_pool_*` | все воркеры мастера вместе — `requests`, `connections` и `deliveries` (нагрузка очередей) | `name` |
+| `sconcur_pool_*` | все воркеры мастера вместе: число воркеров и зависших, убитых watchdog, CPU, RSS, задачи рантайма и нагрузка — `requests`, `connections`, `deliveries` (нагрузка очередей) | `name` |
 | `sconcur_group_*` | один пул: число воркеров, зависших, убитых watchdog, CPU, RSS и задачи рантайма | `name`, `group` |
 | `sconcur_master_*` | сам процесс мастера | `name` |
 | `sconcur_worker_*` | один воркер | `name`, `pid`; `group` — только у метрик процесса |
@@ -306,8 +307,9 @@ sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346"} 1054
   (метку), `pid`, `startedAtMs` и `updatedAtMs` (epoch ms) и поля воркера из
   таблицы [метрик](#метрики) — `startedAt` коллектор выводит из `startedAtMs`, а
   возраст снапшота считает по своим часам;
-- семантика: best-effort, at-most-once, без ack; коллектор держит last-value на
-  соединение, а закрытие соединения означает, что воркер ушёл;
+- семантика: best-effort, at-most-once (потерянный кадр не пересылается), без ack;
+  коллектор держит last-value на соединение, а закрытие соединения означает, что
+  воркер ушёл;
 - одно соединение на процесс воркера: снапшот несёт все секции, какие у этого
   процесса есть, и один и тот же pid никогда не приходит по двум соединениям.
 

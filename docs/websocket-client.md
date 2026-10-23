@@ -6,8 +6,9 @@ An asynchronous WebSocket client — the dial-side mirror of the
 [WebSocket server](websocket-server.md), just as the
 [socket client](socket-client.md) is the pair of the socket server. All network
 I/O (dial, upgrade handshake, read, write) lives in the extension:
-`connect()` goes into a runtime task, the coroutine suspends, so dozens of
-connections can be dialled at the same time. Outside a `WaitGroup` the same API
+`connect()` goes into a runtime task, the coroutine (a PHP fiber the scheduler
+suspends while the extension works) suspends, so dozens of connections can be
+dialled at the same time. Outside a `WaitGroup` the same API
 works synchronously.
 
 The model is a long-lived bidirectional connection: the application dials, gets a
@@ -29,10 +30,13 @@ $connection->close();
 ```
 
 `connect()` takes a `ws://host:port/path` URL; only `ws://` is accepted, the port
-defaults to `80` and the path to `/`. Best to drive the whole conversation inside the
-same coroutine as `connect()`: when the coroutine finishes, its flow (the group of
-tasks it started) is stopped and the unread connection inside the extension is closed
-(the same caveat as with `HttpClient`/`SocketClient`).
+defaults to `80` and the path to `/`.
+
+A connection belongs to the flow it was opened in — the group of tasks a
+`WaitGroup` owns inside the extension (a server handler has one of its own). When
+that flow ends (`waitResults()` returns, the group is stopped, the handler
+returns), a connection still open is closed, so finish the conversation inside the
+group that called `connect()`.
 
 ## Connection: read / write / close
 
@@ -77,16 +81,14 @@ foreach ($urls as $url) {
 $replies = $waitGroup->waitResults(); // total time ≈ the slowest connection
 ```
 
-## Parameters and timeouts
+## Options and timeouts
 
-`SConcur\Features\WsClient\WsClientOptions` (`readonly`), all timeouts in ms; the
-PHP defaults mirror the extension's. A long-lived connection has no single "operation
-time" — that role is played by the dial/read/write timeouts.
+`SConcur\Features\WsClient\WsClientOptions` (`readonly`), all timeouts in ms.
 
-| Parameter | Default | Purpose |
+| Option | Default | Purpose |
 | --- | --- | --- |
 | `connectTimeoutMs` | `10000` | connection establishment limit (dial + handshake) |
-| `readTimeoutMs` | `0` (off) | idle timeout for waiting for an inbound message in `read()` |
+| `readTimeoutMs` | `0` (off) | idle timeout: no inbound message for this long ends the input, counted on the connection whether or not `read()` is waiting |
 | `writeTimeoutMs` | `30000` | max time to send one message |
 | `maxMessageBytes` | `1048576` (1 MiB) | size limit of a single inbound message; exceeding it ends the input (`read()` → `null`) |
 | `subprotocols` | `[]` | WebSocket subprotocols offered in the handshake |
@@ -109,8 +111,7 @@ $client = new WsClient(new WsClientOptions(
 | `write()` to a broken connection | `SConcur\Exceptions\WsClient\WsClientConnectionClosedException` |
 | Peer closed the connection / idle timeout / `maxMessageBytes` exceeded | not an exception — `read()` returns `null` |
 
-The extension marks network failures with a `net:` marker, preserved in the exception
-message.
+The message of a dial or upgrade failure keeps the extension's `net:` marker.
 
 ## Internals
 
@@ -123,20 +124,19 @@ the connect result key. That `Dto\Connection` descends from
 `WsClientCommandEnum` and `Payloads/` are the `Connect`/`Send`/`Close` envelope,
 a mirror of the extension's structs.
 
-Rust (`ext/src/features/wsclient/`): the connect path performs the upgrade with
-`connect_timeout_ms` (cancellable by the flow context) and registers a streaming
-`ConnectionState` — the first `next()` is the metadata, then inbound messages
-from a read runtime task — plus the write loop, cleaned up on flow stop;
-`mod.rs` dispatches the commands by `cid`. The write loop that waits for each
-flush and the message-type codec live in the neutral `ext/src/ws/`, shared with
+Rust (`ext/src/features/wsclient/`): the connect path performs the dial and upgrade
+within `connect_timeout_ms` and registers a streaming `ConnectionState` — the
+first `next()` is the metadata, then inbound messages from a read runtime task —
+plus the write loop, cleaned up on flow stop; `mod.rs` dispatches the commands by
+`cid`. `MessageState`, `dispatch` (the hand-over that waits for the write loop) and
+the one-byte message-type marker live in the neutral `ext/src/ws/`, shared with
 the WS server (like `ext/src/socket/` for the raw TCP pair).
 
-## Not in v1
+## Not supported
 
-TLS (`wss://`), `permessage-deflate` (the library can do it, not enabled yet), a
-connection pool / keep-alive (each `connect()` is a new connection) and
-auto-reconnect (application side). The library's general limits — see the
-[README](../README.md).
+TLS (`wss://`), `permessage-deflate` compression, a connection pool / keep-alive (each
+`connect()` is a new connection) and auto-reconnect (application side). The library's
+general limits — see the [README](../README.md).
 
 ## Testing
 

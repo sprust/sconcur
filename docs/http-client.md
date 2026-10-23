@@ -27,7 +27,7 @@ $status = $response->getStatusCode();        // int
 $body   = (string) $response->getBody();     // reads the stream to the end
 ```
 
-`ResponseFactoryInterface` (PSR-17) is a mandatory constructor argument — the core
+`ResponseFactoryInterface` (PSR-17) is a mandatory constructor argument — the library
 is not tied to a specific PSR-7 implementation. In `require` there are only the
 interfaces (`psr/http-client`, `psr/http-message`, `psr/http-factory`); the tests
 use `nyholm/psr7`.
@@ -57,10 +57,9 @@ sequenceDiagram
     Note over EXT: Close(): the response body is dropped
 ```
 
-`sendRequest()` inside a coroutine suspends it without blocking other requests;
-outside a Fiber it works synchronously (`Extension::wait`). An unfinished response
-(an early `break`, object destruction) is cleaned up by the streaming-state
-machinery: the state is closed and the response body stream dropped with it.
+An unfinished response is closed with its flow (the group of tasks a `WaitGroup`
+owns inside the extension): outside a coroutine `close()`, `detach()` or destroying
+the stream does it at once; inside a `WaitGroup` it happens when the group finishes.
 
 ## Running requests concurrently
 
@@ -77,9 +76,8 @@ foreach ($urls as $url) {
 $responses = $waitGroup->waitResults();      // total time ≈ the slowest request
 ```
 
-PSR-18 is synchronous by contract (`sendRequest(): ResponseInterface`); the Fiber
-suspension is transparent to the caller — it gets a ready `ResponseInterface`,
-whose construction is simply concurrent with other coroutines.
+PSR-18 is synchronous by contract; inside a coroutine `sendRequest()` still returns
+a ready `ResponseInterface`, built while other coroutines run.
 
 ## Response streaming
 
@@ -89,7 +87,7 @@ streams). `read($length)` returns up to `$length` bytes — first the inline chu
 the first result, then the rest via `next($bodyKey)`, which suspends the coroutine
 so a slow server does not block other requests. `getSize()` is `Content-Length` if
 known (not chunked), otherwise `null`; `close()`/`detach()`/`__destruct()` release
-the flow on early abandonment.
+it early only outside a coroutine (see Model).
 
 ```php
 $response = $client->sendRequest($factory->createRequest('GET', $url));
@@ -106,10 +104,9 @@ The transport granularity is the `chunkSize` option (default 64 KiB): a body up 
 that size arrives inline with the first result without extra round-trips, a larger
 one comes in pieces per round-trip.
 
-> Better to read the body inside the same coroutine as `sendRequest`: once the
-> coroutine finishes its flow stops and the unread stream inside the extension is closed.
-> A response no larger than `chunkSize` (64 KiB by default) arrives inline with the
-> first result and is available after `waitResults()` with no caveats.
+> Read the body inside the `WaitGroup` that sent the request: when `waitResults()`
+> returns, the group's flow ends and an unread body is closed. A response no larger
+> than `chunkSize` arrives whole with the first result and stays readable afterwards.
 
 ## Request body
 
@@ -132,15 +129,14 @@ $response = $client->sendRequest(
 
 ## Options and timeouts
 
-`SConcur\Features\HttpClient\HttpClientOptions` (`readonly`), all timeouts in ms;
-the PHP defaults mirror the transport's.
+`SConcur\Features\HttpClient\HttpClientOptions` (`readonly`), all timeouts in ms.
 
 | Option | Default | Purpose |
 |---|---|---|
-| `requestTimeoutMs` | `30000` | Full request deadline (connect + send + reading the whole body), a hard context limit inside the extension. `0` — off (not recommended). |
+| `requestTimeoutMs` | `30000` | Full request deadline (connect + send + reading the whole body), a hard limit enforced inside the extension. `0` — off (not recommended). |
 | `connectTimeoutMs` | `10000` | Connection establishment limit, TLS handshake included. |
-| `responseHeaderTimeoutMs` | `15000` | Limit waiting for status + headers. Not applied with `streamRequestBody: true`. |
-| `maxResponseBody` | `0` (unlimited) | Response body cap in bytes; exceeding it → stream read error. With `0`, watch for OOM. |
+| `responseHeaderTimeoutMs` | `15000` | Limit waiting for status + headers. Not applied with `streamRequestBody: true` or in `download()`. |
+| `maxResponseBody` | `0` (unlimited) | Response body cap in bytes. Crossing it fails the read that crosses it: `sendRequest()` throws `NetworkException` if that is the first chunk, a later `read()` throws otherwise. `download()` does not apply it. With `0`, watch for OOM. |
 | `followRedirects` | `true` | Whether to follow 3xx redirects. |
 | `maxRedirects` | `10` | Redirect hop limit. |
 | `chunkSize` | `65536` | Granularity of reading the response body and sending the request body. |
@@ -182,7 +178,7 @@ $result = $httpClient->download(
     request: $factory->createRequest('GET', 'https://example.com/big.iso'),
     path: '/var/data/big.iso',
     mode: DownloadFileMode::Replace,   // default
-    bufferSizeBytes: 1 << 20,          // opt., accepted and not applied — see below
+    bufferSizeBytes: 1 << 20,          // opt., ignored: the transport sizes the buffers
     perm: 0644,                        // opt., create permissions
 );
 
@@ -195,18 +191,15 @@ $result->executionMs;         // download time
 Modes: `Replace` — create or truncate; `Create` — create, error if the file
 exists; `Append` — create or append.
 
-`bufferSizeBytes` is accepted and not applied: the body arrives as buffers the
-transport has already sized, so there is no buffer here to size.
-
-The file is written only on 2xx. A non-2xx, transport or file error →
-`SConcur\Exceptions\HttpClient\DownloadException` (`getStatusCode()` carries the
-status for a non-2xx, `null` for the rest; the cause is in `getPrevious()`). On a
-non-2xx the file is not touched — the status is checked before opening it. On a
-copy interruption the partial file is removed for `Replace`/`Create`; for `Append`
-it stays, since an append cannot be rolled back. `filesizeBytes` is always
-available, including for chunked responses without a `Content-Length`. The whole
-operation is bounded by `requestTimeoutMs` — raise it for large files.
-`download()` ignores `streamRequestBody` (the body is buffered).
+Only a 2xx is written; the status is checked before the file is opened, so a
+non-2xx leaves it untouched. A non-2xx, transport or file error throws
+`SConcur\Exceptions\HttpClient\DownloadException` (`getStatusCode()` is the status
+for a non-2xx and `null` otherwise; the cause is in `getPrevious()`). A transfer
+that breaks off removes the partial file for `Replace`/`Create` and keeps it for
+`Append`, since an append cannot be rolled back. `filesizeBytes` does not depend
+on `Content-Length`. The whole download is bounded by `requestTimeoutMs` — raise it
+for large files; a stopped `WaitGroup` does not interrupt it, only that deadline
+does. `streamRequestBody` does not apply (the request body is buffered).
 
 ## Error handling (PSR-18)
 
@@ -255,8 +248,9 @@ connection is HTTP/1.1 and there is no prior-knowledge h2c. The protocol version
 is not surfaced to PHP.
 
 Not supported: a cookie jar (do it application-side or in PSR-7 middleware), a
-proxy and a custom CA bundle, and PSR-18 async (`sendAsyncRequest`) — concurrency
-goes through `WaitGroup`, not promises.
+proxy set in code (the `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`
+environment variables are honoured), a custom CA bundle, and PSR-18 async
+(`sendAsyncRequest`) — concurrency goes through `WaitGroup`, not promises.
 
 ## Testing
 

@@ -23,7 +23,8 @@ The cost of a request had already been attributed: on the Go core an empty
 request was ~91 µs of CPU, of which the extension floor was 14.2 µs and the
 PHP↔extension boundary another 29.8 µs. The open question was how much of that
 boundary was the idea — packing MessagePack and crossing — and how much was cgo
-specifically: `needm`/`dropm` on entry, waking a cgo-locked M, copying strings.
+specifically: attaching the calling thread to the Go runtime and detaching it on
+every call (`needm`/`dropm`), waking the OS thread cgo had locked, copying strings.
 
 A threshold was fixed before a line was written, so the answer could not be
 argued into being good enough:

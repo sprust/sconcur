@@ -30,10 +30,9 @@ builds the PHP values of the result itself.
 ## Numbers against RoadRunner and Swoole
 
 The same demo application on the same machine: `wrk` 4 threads / 256 connections
-/ 20 s, database data on disk. The worker count per server is given in the row:
-the empty response was measured at 12, while `/db` and `/db-rw` come from the
-worker-count ladder, at its 8-worker rung (where SConcur peaks and the load
-generator does not yet share cores with the servers):
+/ 20 s, database data on disk. Each row gives the worker count per server; `/db`
+and `/db-rw` are the 8-worker rung of the worker-count ladder, where the load
+generator does not yet share cores with the servers:
 
 | Request | SConcur | RoadRunner | Swoole |
 | --- | ---: | ---: | ---: |
@@ -47,7 +46,7 @@ existing PHP drivers: whatever the hooks do not cover blocks the whole worker (a
 mature Rust driver, which makes new features easier to add and to maintain.
 
 Where SConcur does not win — single cheap queries, megabyte payloads, CPU-bound
-handlers — is listed just as plainly in
+handlers — is listed just as plainly in the table
 ["Is SConcur for you?"](docs/positioning.md#is-sconcur-for-you), next to the
 [feature benchmarks](docs/benchmarks.md) and the
 [behaviour under load](docs/load-testing.md).
@@ -129,15 +128,14 @@ Long-lived servers:
 
 ## How it works
 
-`WaitGroup` wraps each closure in a `Fiber`. When an async feature is called,
-the coroutine suspends and the task goes to the extension, onto its own runtime
-task. Every `WaitGroup` owns one flow — the group of tasks that belong to it on
-the extension side.
-A single process-wide `Scheduler` waits on the extension (`waitAnyBatch`): it
-blocks until the first result of any flow is ready, picks up the results that
-are already ready together with it in one crossing of the boundary, and resumes
-the matching coroutines by `taskKey`. Results arrive in task-completion order,
-not in `add()` order.
+`WaitGroup` wraps each closure in a `Fiber`. When an async feature is called, the
+coroutine suspends and the task goes to the extension, onto its own runtime task.
+Every `WaitGroup` owns one flow — the group of tasks that belong to it on the
+extension side. A single process-wide `Scheduler` waits on the extension
+(`waitAnyBatch`): it blocks until the first result of any flow is ready, picks up the
+results that are already ready together with it in one crossing of the boundary, and
+resumes the coroutine each result belongs to (the result carries its owner). Results
+arrive in task-completion order, not in `add()` order.
 
 The number of concurrently live coroutines in a group is unlimited by default.
 To bound memory or a DB connection pool, set a limit:
@@ -163,16 +161,17 @@ Everything else follows from that:
 - Mature drivers are reused as-is — the MongoDB driver, sqlx, hyper, reqwest,
   lapin, fastwebsockets — and run concurrently right away. No waiting for async
   PHP drivers or extensions.
-- The C glue does not grow per feature. It exports the task calls (`push`,
-  `next`, `wait` and its `waitAny*` variants, `tasksCount`, `stopFlow`), the
-  lifecycle (`ping`, `version`, `destroy`), the preemption switch
-  (`armPreemption`/`disarmPreemption`) and process control (`process`: fork,
-  reap, signals — what a worker master needs, synchronous and without the
-  runtime, since a process that forks must not run threads). A new feature is
-  data (a `MethodEnum` value, a payload DTO, a Rust handler), not a new C
-  symbol, and so is a new process command. A long-lived server or consumer adds
-  a control function or two, like `httpStopAccepting`, which stops accepting
-  new connections while the ones in progress are finished.
+- The C glue does not grow per feature. It exports the task calls (`push`, `next`,
+  `wait` and its `waitAny*` variants, `tasksCount`, `stopFlow`), the lifecycle
+  (`ping`, `version`, `destroy`), the preemption switch
+  (`armPreemption`/`disarmPreemption`: the timer that lets the scheduler pause a busy
+  coroutine, see [coroutine switching](docs/coroutine-switching.md)) and process
+  control (`process`: fork, reap, signals — what a worker master needs, synchronous
+  and without the runtime, since a process that forks must not run threads). A new
+  feature is data (a `MethodEnum` value, a payload DTO, a Rust handler), not a new C
+  symbol, and so is a new process command. A long-lived server or consumer adds a
+  control function or two, like `httpStopAccepting`, which stops accepting new
+  connections while the ones in progress are finished.
 - One transport and one streaming model for everything: payload DTOs plus the
   streaming states behind `next()` — MongoDB cursors, HTTP client bodies, socket
   frames, WS messages all travel the same mechanism, and the sender waits when
@@ -181,8 +180,9 @@ Everything else follows from that:
   same function. The same call works inside a `WaitGroup` (concurrent) and
   outside it (an ordinary blocking call); concurrency is chosen by the caller,
   not by the feature author.
-- A feature gets the runtime for free: nested coroutines, context cancellation,
-  deadline propagation, graceful shutdown with unwinding.
+- A feature gets the runtime for free: nested coroutines, cancellation of its
+  tasks when their group stops, coroutine deadlines, graceful shutdown with
+  unwinding.
 - Client and server features expose PSR interfaces (PSR-7/17, PSR-18) with
   injected factories, so they drop into any application without adapters.
 
@@ -271,7 +271,7 @@ The crates the core is built on:
 - [Architecture](docs/architecture.md) — Fiber ↔ runtime task, the scheduler, the
   layers, the task lifecycle.
 - [Coroutine switching](docs/coroutine-switching.md) — `Scheduler::switch()` and
-  the servers' opt-in automatic preemption for CPU-bound code.
+  the opt-in automatic preemption of the long-lived workers, for CPU-bound code.
 - [Coroutine timeout](docs/coroutine-timeout.md) — `Deadline::run()` and
   `add(timeoutMs: …)`: work that is unwound when it runs too long.
 - [Coroutine context](docs/coroutine-context.md) — per-coroutine key-value store.

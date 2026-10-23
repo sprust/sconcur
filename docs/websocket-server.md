@@ -3,7 +3,8 @@ English | [Русский](websocket-server.ru.md)
 # WebSocket server
 
 A long-lived WebSocket server: the network lives in the extension, and every
-upgraded connection is streamed into PHP and handled in its own coroutine. It is a
+upgraded connection is streamed into PHP and handled in its own coroutine (a PHP
+Fiber the scheduler runs). It is a
 hybrid — the listener and the handshake are the same HTTP layer the
 [HTTP server](http-server.md) runs on (`hyper`), and after the upgrade the
 connection works in the push model of the [socket server](socket-server.md). It
@@ -15,9 +16,10 @@ runs under the same
 A connection starts as an ordinary HTTP request with `Upgrade: websocket`. A
 request with a valid upgrade is accepted by
 [`fastwebsockets`](https://github.com/denoland/fastwebsockets) and becomes a
-bidirectional message stream; any other request gets `426 Upgrade Required`, a
-request not on the configured `path` gets `404`, and an `Origin` that
-`allowedOrigins` does not list gets `403`. Framing is the WS protocol
+bidirectional message stream. A request without an upgrade gets `426 Upgrade
+Required`; an upgrade on a path other than `path` gets `404`, one whose `Origin`
+`allowedOrigins` does not list gets `403`, and a malformed upgrade gets `400`.
+Framing is the WS protocol
 itself (opcode, client masking, ping/pong/close control frames, UTF-8 validation
 of text), not the length-prefix of the socket server, so the WS server has its
 own inbound message stream on top of the upgraded connection.
@@ -30,9 +32,9 @@ flowchart TB
     handler["handler(Connection): void — read/write loop"]
 
     client <-->|"HTTP Upgrade, then WS messages"| serve
-    serve -->|"ConnectionEvent (self-pumping stream), then messages via next()"| sched
+    serve -->|"ConnectionEvent, then messages via next()"| sched
     sched -->|"spawns a coroutine per connection"| handler
-    handler -->|"write/close routed by id back to the connection"| serve
+    handler -->|"WsRespond (RespondPayload::frame / close) by connection id"| serve
 ```
 
 ## Quick start
@@ -109,7 +111,7 @@ The `WsServer` constructor; the PHP defaults mirror the extension's.
 | --- | --- | --- |
 | `address` | `0.0.0.0:9200` | listener address `host:port` |
 | `handshakeTimeoutMs` | `10000` | accepted and not applied |
-| `idleTimeoutMs` | `0` (off) | idle timeout between inbound messages; an idle connection is kept alive by the keepalive ping |
+| `idleTimeoutMs` | `0` (off) | idle timeout between inbound frames — data messages and the client's pongs, so a client that answers the keepalive ping stays connected |
 | `writeTimeoutMs` | `30000` | max time to send one message (and one ping) |
 | `pingIntervalMs` | `30000` | server keepalive ping cadence (`0` — off) |
 | `maxMessageBytes` | `1048576` (1 MiB) | size limit of a single inbound message; exceeding it closes the connection with code 1009 |
@@ -118,9 +120,9 @@ The `WsServer` constructor; the PHP defaults mirror the extension's.
 | `maxConnections` | `0` (no limit) | stop the server after N served connections (a leak guard); spread under the master, see [restart policy](worker-master.md#restart-policy-and-maxrequests) |
 | `shutdownTimeoutMs` | `10000` | accepted and not applied: finishing the connections already accepted is bounded by the grace period below, not by a clock of its own |
 | `reusePort` | `false` | `SO_REUSEPORT` — a pool of processes on one port (Linux) |
-| `listenFd` | `null` | A listening socket bound elsewhere to accept on instead of binding `address` — the shared socket of a [worker master](worker-master.md) group, or one from systemd socket activation. `address` and `reusePort` are then not used. A copy is taken, so stopping the server leaves the socket to whoever else holds it — see [one socket for the whole pool](http-server.md#one-socket-for-the-whole-pool). |
+| `listenFd` | `null` | A listening socket bound elsewhere, accepted on instead of `address` — see [one socket for the whole pool](http-server.md#one-socket-for-the-whole-pool) |
 | `path` | `/` | the path on which the upgrade is accepted (empty string — any path); another path → `404` |
-| `allowedOrigins` | `[]` | hosts the `Origin` header may name, port included, compared exactly; `*` — any (empty — the check is skipped; a request without `Origin` always passes) |
+| `allowedOrigins` | `[]` | hosts the `Origin` header may name, port included, compared ignoring case; `*` — any (empty — the check is skipped; a request without `Origin` always passes) |
 | `subprotocols` | `[]` | negotiable WebSocket subprotocols; the first one in this list that the client offers wins |
 | `onError` | `null` | handler-error hook |
 | `masterPid` | `null` | orphan check under the master |
@@ -137,17 +139,19 @@ the worker script.
 
 Concurrency is between connections: each lives in its own coroutine.
 `maxConcurrency` limits how many are served at once (a slot is held for the whole
-lifetime of a connection); excess upgrades wait for a free slot. The same CPU-bound
+lifetime of a connection); excess connections complete the handshake and then wait
+for a free slot before they are read or served. The same CPU-bound
 caveat as everywhere applies: a native blocking call freezes the single PHP thread,
 and so does a CPU loop in PHP code, unless preemption is on — then it is preempted
 every [quantum](coroutine-switching.md).
 
-The server pings the client every `pingIntervalMs`, which keeps a push-only
-connection alive when the client sends nothing. It does not wait for the pong: a
-ping that cannot be written within `writeTimeoutMs` ends the connection, and a
-peer that is gone but still accepts bytes is caught only by `idleTimeoutMs`.
-`idleTimeoutMs` (if set) ends a connection's input when too much time passes
-between inbound messages. A message larger than `maxMessageBytes` closes the
+The server pings the client every `pingIntervalMs`, which keeps a push-only connection
+alive when the client sends nothing. It does not wait for the pong: a ping that cannot
+be written within `writeTimeoutMs` ends the connection, and a peer that is gone but
+still accepts bytes is caught only by `idleTimeoutMs`. `idleTimeoutMs` (if set) ends a
+connection's input when too much time passes between inbound frames; the client's
+pongs count, so with `pingIntervalMs` below `idleTimeoutMs` a quiet client that
+answers the pings stays connected. A message larger than `maxMessageBytes` closes the
 connection with code 1009, and on the handler side `read()` returns `null`.
 
 If the handler throws, the exception is caught, the connection is closed, and the
@@ -160,7 +164,8 @@ final message before the close. In ordinary code `write` throws
 On a signal (SIGTERM/SIGINT), on reaching `maxConnections`, or on being orphaned
 (`masterPid`), the server stops accepting new connections and ends the input of
 the active ones: a handler reading in a loop gets `null` (its current write
-still goes through) and returns. A push-only handler that does not read is
+still goes through) and returns. A connection that has not sent its first message
+yet gets 250 ms more for it. A push-only handler that does not read is
 finished by a forced close once the grace period elapses (2 s). In a pool on one
 port the kernel immediately hands new connections to the siblings, and the process
 exits on its own.
@@ -207,6 +212,7 @@ reports statistics through the master panel (`GET /api/stats`) via the
 - Broadcast is not built in.
 - No per-message timeout: the bounds are the idle timeout, `writeTimeoutMs`, the
   keepalive ping and the graceful stop.
-- `permessage-deflate` (compression) and TLS are not yet enabled.
+- No `permessage-deflate` (compression): `fastwebsockets` does not support it.
+- No TLS: terminate it in front, as for the HTTP server.
 - The library's general limits are in the
   [README](../README.md#use-and-limitations).

@@ -2,7 +2,8 @@ English | [Русский](pgsql.ru.md)
 
 # PostgreSQL (on top of the universal SQL feature)
 
-PgSQL is the second driver of the same SQL feature, sqlx's PostgreSQL one. The
+PgSQL is the second driver of the same SQL feature (an extension module with a PHP
+API), sqlx's PostgreSQL one. The
 core (`SConcur\Features\Sql`) is shared with MySQL, and
 `SConcur\Features\Pgsql\Connection` is a thin facade that sets the driver.
 Streaming, pool, transactions and concurrency behave identically — see
@@ -40,7 +41,10 @@ echo $result->affectedRows;
   $id = $rows[0]['id'];
   ```
 - `BOOLEAN` is a real type and comes back as a PHP `bool`, not `0/1` (in MySQL it
-  is `TINYINT(1)` → `int`). `NUMERIC`/`DECIMAL` is a string, as in MySQL.
+  is `TINYINT(1)` → `int`).
+- `begin(isolationLevel:)` is applied here: the level goes into
+  `BEGIN ISOLATION LEVEL …` (values in [Transactions](mysql.md#transactions)), with
+  `READ ONLY` added when `readOnly` is set.
 - A parameterised statement is sent as a `PREPARE`/`EXECUTE`/`DEALLOCATE` batch in one
   round trip: your SQL goes into the `PREPARE` untouched, the parameters are
   dollar-quoted literals in the `EXECUTE`, and the server infers each parameter's type
@@ -55,9 +59,12 @@ echo $result->affectedRows;
 
 ## Limits
 
-A `TEXT` binding cannot carry a NUL byte — PostgreSQL holds none in a text value — and
-one is refused before the statement runs, with an error naming the binding's position.
-Bind such a value to a `BYTEA` parameter, which takes arbitrary bytes.
+A PHP string that is valid UTF-8 is sent as a text literal, and PostgreSQL holds no NUL
+byte in text, so such a string containing a NUL byte is refused before the statement
+runs, with an error naming the binding's position — whatever the parameter's type,
+`BYTEA` included. A string that is not valid UTF-8 is sent as a `bytea` literal and
+arrives byte for byte. To store bytes that may include NUL, encode them on the PHP side
+(for example `bin2hex()` with `decode($1, 'hex')` in the SQL).
 
 ## Value types
 
@@ -97,6 +104,3 @@ guess wrong:
 There is no list of unsupported types, and no type needs registering: enum,
 composite and domain types you define yourself read the same way, and so do the
 `reg*` types and `ACLITEM`, which have no usable binary form at all.
-
-Other limits and internals (pool, streaming, cancellation) are shared with
-[MySQL](mysql.md).

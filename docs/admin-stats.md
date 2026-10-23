@@ -26,8 +26,9 @@ Each worker is a separate process with its own counters, and a connection to the
 shared port (a [`SO_REUSEPORT`](http-server.md#scaling-across-cores-so_reuseport)
 socket per worker or the master's `listen` socket) lands in one of them — so
 statistics cannot be collected by polling a single socket. Instead each worker
-connects at startup to the collector's unix socket (brought up by the master in
-`runtimeDir`) and sends its snapshot there once a second as a length-prefix frame. The
+connects to the collector's unix socket (brought up by the master in
+`runtimeDir`) on its first push, one interval after it starts (and again after a
+failed write), and sends its snapshot there once a second as a length-prefix frame. The
 master is the sole consumer: it holds the last snapshot of each worker in memory
 (keyed by connection) and serves the pool sum on a separate port.
 
@@ -159,7 +160,7 @@ running unlike pools shows each of them beside the others.
 | `requests.inFlight` | in progress right now | registry of the requests being handled |
 | `requests.inFlight1to5s` / `inFlight5to15s` / `inFlightOver15s` | of those, by age [1s,5s) / [5s,15s) / ≥15s | age of the requests being handled |
 | `connections.active` / `totalAccepted` | connections open now / accepted over all time | counter |
-| `consumers.coroutines` | consumers open — one per coroutine, so the capacity in use | consumer registry |
+| `consumers.coroutines` | consumers open — one per coroutine (a handler running in a PHP Fiber of its own), so the capacity in use | consumer registry |
 | `consumers.delivered` | deliveries handed to PHP (queue consumer) | counter |
 | `consumers.acked` / `refused` | deliveries acknowledged / nacked or rejected, counted as deliveries rather than as commands | the `ack`, `nack` and `reject` commands themselves |
 | `consumers.timed` | of those, how many had a handler time to measure (an auto-acknowledged delivery has none) | registry of the deliveries being handled |
@@ -268,11 +269,11 @@ metrics `sconcur_master_*`, the per-pool `sconcur_group_*` and the per-worker
 # TYPE sconcur_pool_requests_completed_total counter
 sconcur_pool_requests_completed_total{name="sconcur-servers"} 843210
 sconcur_pool_deliveries_total{name="sconcur-servers"} 51204
-sconcur_master_start_time_seconds{name="sconcur-servers"} 1750762800
+sconcur_master_start_time_seconds{name="sconcur-servers"} 1782298800
 sconcur_master_memory_rss_bytes{name="sconcur-servers"} 16777216
-sconcur_group_workers{name="sconcur-servers",group="http"} 3
-sconcur_group_memory_rss_bytes{name="sconcur-servers",group="http"} 125829120
-sconcur_worker_start_time_seconds{name="sconcur-servers",pid="12346",group="http"} 1750766087
+sconcur_group_workers{name="sconcur-servers",group="http"} 8
+sconcur_group_memory_rss_bytes{name="sconcur-servers",group="http"} 335544320
+sconcur_worker_start_time_seconds{name="sconcur-servers",pid="12346",group="http"} 1782302087
 sconcur_worker_requests_completed_total{name="sconcur-servers",pid="12346"} 105432
 ```
 
@@ -280,7 +281,7 @@ Four scopes, told apart by their prefix and their labels:
 
 | Family | Scope | Labels |
 | --- | --- | --- |
-| `sconcur_pool_*` | every worker of the master together — `requests`, `connections` and `deliveries` (the queue workload) | `name` |
+| `sconcur_pool_*` | every worker of the master together: worker and hung counts, watchdog kills, CPU, RSS, runtime tasks, and the workload — `requests`, `connections`, `deliveries` (the queue workload) | `name` |
 | `sconcur_group_*` | one pool: its worker count, hung count, watchdog kills, CPU, RSS and runtime tasks | `name`, `group` |
 | `sconcur_master_*` | the master process itself | `name` |
 | `sconcur_worker_*` | one worker | `name`, `pid`; `group` on the process metrics only |
@@ -310,8 +311,9 @@ third-party supervisor too:
   `name` (the label), `pid`, `startedAtMs` and `updatedAtMs` (epoch ms) and the
   worker fields of the [metrics](#metrics) table — the collector renders `startedAt`
   from `startedAtMs` and ages the snapshot by its own clock;
-- semantics: best-effort, at-most-once, no ack; the collector holds last-value per
-  connection, and closing the connection means the worker is gone;
+- semantics: best-effort, at-most-once (a lost frame is not resent), no ack; the
+  collector holds last-value per connection, and closing the connection means the
+  worker is gone;
 - one connection per worker process: a snapshot carries every section that process
   has, and the same pid never arrives on two connections.
 

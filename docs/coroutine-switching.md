@@ -2,8 +2,9 @@ English | [Русский](coroutine-switching.ru.md)
 
 # Coroutine switching: `Scheduler::switch()` and automatic preemption
 
-The PHP thread is one, and coroutines switch cooperatively — normally at feature
-calls, where a fiber suspends while the extension does the I/O. CPU-bound code has no such
+The PHP thread is one, and coroutines (closures run in their own PHP Fibers) switch
+cooperatively — normally at feature calls, where a fiber suspends while the extension
+does the I/O. CPU-bound code has no such
 points: a handler busy with computation blocks every other coroutine of its
 process until it finishes. Switching addresses that in two forms:
 `Scheduler::switch()` — an explicit switch point you put into your own hot loops
@@ -75,9 +76,9 @@ handlers read as their own is shared by the whole process — see
    with the quantum elapsed. It skips the states listed under
    [Safety guards](#safety-guards). When the work ends the timer is disarmed.
 4. While the PHP thread is parked inside a blocking wait call (an idle server
-   waiting for the next request), the timer pauses: no PHP code is running, so
-   an interrupt could not be serviced anyway. It resumes as soon as the wait
-   returns, so an idle worker costs no timer wakeups.
+   waiting for the next request), the timer requests no interrupts: no PHP code
+   is running, so one could not be serviced anyway. An idle worker takes no VM
+   interrupts; the timer thread itself still wakes every quantum.
 
 ```mermaid
 flowchart TB
@@ -178,13 +179,13 @@ switch would corrupt engine or scheduler bookkeeping:
 - while an autoload is in progress (`EG(in_autoload)` non-empty) — parking there
   would make every other coroutine requesting the same class fail with "class
   not found";
-- while an exception is being handled (`EG(exception)`) or the execution timeout
+- while an exception is propagating (`EG(exception)` set) or the execution timeout
   fired;
 - inside a suspend transition — between announcing a suspend (registering a
   nested-group waiter, handing a task to the scheduler) and the `Fiber::suspend`
   itself, where parking would desynchronize result routing;
 - outside tracked coroutines: the scheduler loop and synchronous code are never
-  interrupted.
+  parked.
 
 ## Semantics to be aware of
 
@@ -238,14 +239,11 @@ of another request in it. Handlers are one stack too: a warning raised by a
 neighbour goes to a handler set by someone else, and two interleaved
 `set`/`restore` pairs pop each other's handler.
 
-The `@` operator did not leak in the same measurement: a neighbour running while a
-coroutine is inside `@call()` still saw its own `error_reporting()`.
+The `@` operator does not leak: a neighbour running while a coroutine is inside
+`@call()` still sees its own `error_reporting()`.
 
-None of this is new: the same interleaving already happens across any feature
-call. Preemption makes the switch points invisible, so code that never makes a
-feature call between the two lines — including third-party libraries — is exposed
-too. That is why preemption is off by default. Turn it on for a worker whose
-handlers and their libraries do not rely on the state above.
+Turn preemption on only for a worker whose handlers and their libraries do not rely
+on the state above.
 
 ## See also
 

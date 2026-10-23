@@ -67,10 +67,12 @@ deadline), a server has its own:
    out (`504`); in `SocketServer` and `WsServer` every connection task also selects
    on the token and ends at once.
    **No request may outlive the server's stop by more than its handler timeout.**
-2. A per-request limit, not only a per-server one. Each handler is bounded by
-   `handlerTimeoutMs` inside the extension (a timer in the connection task, firing
-   independently of PHP): before the first write the client gets a `504`, after
-   the stream has started the response is aborted.
+2. A per-request limit, not only a per-server one. In `HttpServer` each handler is
+   also bounded by `handlerTimeoutMs` inside the extension (a timer in the
+   connection task, firing independently of PHP): before the first write the client
+   gets a `504`, after the stream has started the response is aborted. A server
+   without requests (socket, WS) bounds a connection handler only through
+   `Scheduler::serve(handlerTimeoutMs:)` on the PHP side.
 3. Graceful shutdown and orphaned workers. A server must be able to stop
    accepting new connections without touching the ones already accepted, so the
    other workers on the port take the new ones, and to self-terminate if its
@@ -130,8 +132,8 @@ extracted into the stateless `SConcur\Features\Server\ServerRuntimeSupportTrait`
   startup line names it: the address, or `fd N` for a socket the server was handed.
 
 The stop check is `SConcur\Features\Server\StopRequest`.
-`StopRequest::watch(?int $masterPid)` starts watching SIGTERM/SIGINT and answers the
-request the serve loop's `shouldStop` reads (`$stopRequest->isRequested(...)`); it
+`StopRequest::watch(?int $masterPid)` starts watching SIGTERM/SIGINT and returns the
+object whose `isRequested(...)` is passed as the serve loop's `shouldStop`; it
 also says yes once the master is no longer the parent, which survives PID reuse
 because the kernel reparents the process once the master dies. Release it in
 `finally`. It needs nothing but this extension — no ext-pcntl, no ext-posix — and
@@ -193,13 +195,13 @@ layer: publishing a result waits on the shared results buffer, the requests
 channel buffers accepts, and beyond that the connection task itself waits.
 
 The accept loop (`accept_loop()` in `server.rs`) spawns a task per connection. Its
-per-request service (`serve_request()`) takes a `maxConcurrency` permit before
-reading the body — so a request waiting for a slot does not hold a body buffer —
-registers the request in `pending_requests`, sends a `RequestEvent` into the
-requests channel and waits for write commands from PHP, applying them to the
-socket. On the handler timeout or a disconnect it drops the pending entry
-(`PendingGuard`), so a late response does not hang forever, and it writes the
-access-log line on the extension side.
+per-request service (the `service_fn` closure there) takes a `maxConcurrency` permit,
+and `serve_request()` then reads the body — so a request waiting for a slot does not
+hold a body buffer —, registers the request in `pending_requests`, sends a
+`RequestEvent` into the requests channel and waits for write commands from PHP,
+applying them to the socket. On the handler timeout or a disconnect it drops the
+pending entry (`PendingGuard`), so a late response does not hang forever, and it
+writes the access-log line on the extension side.
 
 `respond()` decodes the whole `RespondPayload`; if that fails, it decodes only the
 `requestId` (`RespondRequestId`) and answers that connection with a `500`, so a
@@ -255,12 +257,13 @@ A server becomes a server-agnostic worker for `bin/sconcur-server` for free if i
 honours the contract: the worker script builds the server from argv
 (`MyServer::fromArgs($_SERVER['argv'])`) and serves; the master expands the `server`
 block of the JSON config into `--key=value` argv and appends `--masterPid` (its own
-pid, or under the default `fork` launch the pid of the group's fork server).
-Several workers share the port through `reusePort: true` in `server` or the
-group's `listen`, which the master binds and hands over as `--listenFd`, so the
-server's constructor takes both. The master then brings up a pool of processes and
-`reload` restarts them one by one with no downtime. Details in
-[Worker master](worker-master.md).
+pid, or under the default `fork` launch the pid of the group's fork server). Several
+workers share the port through `reusePort: true` in `server` or the group's `listen`,
+which the master binds and hands over as `--listenFd`, so the server's constructor
+takes both. The master then brings up a pool of processes and `reload` restarts them
+one by one with the port open throughout (under load a reload still loses a request or
+two, see [graceful shutdown](http-server.md#graceful-shutdown)). Details in [Worker
+master](worker-master.md).
 
 ## Statistics
 
@@ -332,8 +335,9 @@ Rust:
 - [ ] The server-state and pending-request registries; `stop_accepting(flow_key)`;
       `httpserver::listen::open()` for `SO_REUSEPORT` and `listenFd`, the one
       listener every server opens.
-- [ ] The flow's cancellation token honoured; `handlerTimeoutMs`; the access log
-      written on the extension side.
+- [ ] The flow's cancellation token honoured; for a request-based server,
+      `handlerTimeoutMs` in the connection task and the access log written on the
+      extension side.
 - [ ] Statistics: a workload counter, a `stats::Pusher` started with the server
       state and dropped with it.
 - [ ] Registration in `ext/src/features/mod.rs` (one arm for both methods).

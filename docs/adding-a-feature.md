@@ -30,9 +30,10 @@ breaks `WaitGroup` behaviour.
 2. The execution deadline. The payload pushed from PHP must carry the
    execution deadline, and the extension must bound the operation with it — a task
    must not run indefinitely. How it is applied varies: sometimes the time is the
-   essence of the operation (`Sleeper`); sometimes the driver takes it (the
-   MongoDB client is keyed by `serverSelectionTimeoutMs`); the generic way is
-   `tokio::time::timeout(Duration::from_millis(timeout_ms), work)`.
+   essence of the operation (`Sleeper`); sometimes part of it is a driver option
+   (MongoDB passes `serverSelectionTimeoutMs` to the driver as its
+   server-selection timeout); the generic way, which MongoDB and SQL use for the
+   call itself, is `tokio::time::timeout(Duration::from_millis(timeout_ms), work)`.
 
    (`executionMs` in the result is the actual work time, measured by
    `calc_execution_ms` — not the timeout.)
@@ -74,10 +75,8 @@ A feature with many commands whose parameters are flat maps of short keys can
 skip the class-per-command entirely: `Amqp` has one
 `AmqpPayload(AmqpCommandEnum $command, array $data)` (Rust `payloads::Envelope`),
 the callers write the keys where the values are, and the docblock of each
-`AmqpCommandEnum` case names the struct its `p` is decoded into. Two dozen
-near-identical classes buy nothing a named argument at the call site does not
-already give. Prefer that shape when the parameters carry no logic, and a class per
-command when they do.
+`AmqpCommandEnum` case names the struct its `p` is decoded into. Prefer that shape
+when the parameters carry no logic, and a class per command when they do.
 
 The PHP payload is `readonly`, its fields are typed, and the names are not
 abbreviated.
@@ -134,10 +133,13 @@ Rust:
 
 1. `ext/src/types/method.rs` — the same constant: a `Method::Foo` variant, plus an
    arm in each of `from_wire()` (`b"foo"`), `as_wire()` (`"foo"`) and
-   `as_php_case()` (`c"Foo"`, the PHP case name the glue's result builder fetches
-   the enum case by).
+   `as_php_case()` (`c"Foo"`, the PHP case name the result builder in
+   `ext/sconcur.c` fetches the enum case by).
 
-2. The feature module `ext/src/features/foo/mod.rs` implementing `Feature`
+2. `ext/src/features/foo/payloads.rs` — `FooPayload` with `#[serde(rename = "p")]`
+   and `#[serde(rename = "to")]` fields and the `/// PHP: …` cross-reference.
+
+3. The feature module `ext/src/features/foo/mod.rs` implementing `Feature`
    (`handle(&self, task: Task) -> BoxFuture`): decode `message.payload`, do the
    work under `task.context()`, and answer with a result.
 
@@ -160,7 +162,8 @@ Rust:
                    }
                };
 
-               // The flow's token cancels this on stop; the timeout bounds it.
+               // The flow's token cancels this on stop; do_foo bounds itself with
+               // payload.timeout_ms (requirement 2).
                tokio::select! {
                    _ = task.context().cancelled() => {
                        task.add_result(Result::error(
@@ -194,17 +197,19 @@ Rust:
    The singleton itself holds nothing. What the feature keeps for the life of the
    process — connections, pools, open handles, a flag that a background task is
    running — goes into the feature's `Registries` struct, a field of `Core` in
-   `ext/src/core.rs` reached through its accessor (`crate::core::get().sql()`),
-   and never into a `static`. After a `fork` the child rebuilds the core and
-   everything on it; a `static` would hand the child the parent's connections, a
-   flag for a task that runs in a runtime the child does not have, or a mutex
-   another thread held at the moment of the fork.
-   A task started on first use is armed by a flag on the registry for the same
-   reason (`sweeping` in `ext/src/features/sql/pools.rs`). Counters that only
-   number ids may stay `static`: a child that carries on the parent's numbering
-   breaks nothing.
+   `ext/src/core.rs` — declared in the struct, built in its constructor, reached
+   through an accessor (`crate::core::get().sql()`) — and never into a `static`. After
+   a `fork` the child rebuilds the core and everything on it; a `static` would hand
+   the child the parent's connections, a flag for a task that runs in a runtime the
+   child does not have, or a mutex another thread held at the moment of the fork. A
+   task started on first use is armed by a flag on the registry for the same reason
+   (`sweeping` in `ext/src/features/sql/pools.rs`). Counters that only number ids may
+   stay `static`: a child that carries on the parent's numbering breaks nothing.
 
-3. Registration in `ext/src/features/mod.rs` — an arm in `detect_message_handler`:
+4. Registration in `ext/src/features/mod.rs`: `pub mod foo;` among the module
+   declarations, an arm in `detect_message_handler`, and, if the feature holds
+   connections or handles, a call to its own `shutdown()` inside `shutdown()`, which
+   `destroy` runs:
 
    ```rust
    Method::Foo => Ok(foo::get()),
@@ -228,10 +233,10 @@ the shape of its batches.)
 /**
  * @return Iterator<int, mixed>
  */
-public function doFoo(int $someParam): Iterator
+public function doFoo(int $someParam, int $timeoutMs): Iterator
 {
     return new IteratorResult(
-        payload: new FooPayload(someParam: $someParam),
+        payload: new FooPayload(someParam: $someParam, timeoutMs: $timeoutMs),
     );
 }
 ```
@@ -293,7 +298,8 @@ the flow, its cancellation token fires, and the state registry hook calls
 
 The hook ends with the state as well: a stream read to the end, or deleted by the
 feature, takes its hook with it. This matters because a flow can live as long as the
-process — a coroutine that loops forever, such as a task-pool task, keeps one flow for
+process — a coroutine (a PHP fiber the scheduler suspends) that loops forever, such
+as a task-pool task, keeps one flow for
 every stream it ever opens. A state that cannot be started, because its first batch
 is not ready yet (a transaction, a subscription, a streamed upload), is registered
 with `states::get().register_with_flow()`, which hooks it the same way. Do not spawn
@@ -340,7 +346,8 @@ Rust:
       `StateContract` state whose `close()` is awaited.
 - [ ] Whatever the feature keeps for the life of the process sits in its
       `Registries` on `Core`, not in a `static`.
-- [ ] Registration in `ext/src/features/mod.rs`.
+- [ ] Registration in `ext/src/features/mod.rs` (`pub mod`, the
+      `detect_message_handler` arm, `shutdown()` if it holds resources).
 - [ ] (opt.) unit tests in the extension.
 
 Verification: `make check` (runs `cs-fixer-check`, `php-stan`, `ext-build`,

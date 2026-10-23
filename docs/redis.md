@@ -53,16 +53,14 @@ new Connection(
 
 | Parameter | Meaning |
 | --- | --- |
-| `dsn` | `redis://[user:password@]host:port/db`, `rediss://…` for TLS, `unix:///path/to.sock` for a socket |
+| `dsn` | `redis://[user:password@]host:port/db`, `rediss://…` for TLS, `unix:///path/to.sock` (or `redis+unix://`) for a socket |
 | `timeoutMs` | deadline for one command, 30000 by default; `0` means no deadline |
 | `poolSize` | multiplexed connections per process for this dsn; 4 by default, 64 at most |
 | `connMaxLifetimeMs` | how long a pooled connection is kept before it is replaced; `0` keeps it for the life of the process |
 
 The only query parameter a TCP dsn takes is `protocol`; a unix-socket dsn also
 takes `db`, `user` and `pass`, which have nowhere else to go there. Any other
-parameter is refused with `InvalidRedisDsnException` rather than ignored — a
-parameter read by nothing means the connection does not behave the way the
-configuration says it does.
+parameter is refused with `InvalidRedisDsnException` rather than ignored.
 
 `protocol=3` (RESP3) is refused too. It changes the reply shape of several
 commands — `HGETALL` answers a map rather than a flat list, a scored range
@@ -80,10 +78,11 @@ per-command timeout is turned off: its default of 500 ms would cut off every
 blocking command by design and every slow one by accident.
 
 Dialling is bounded separately, at five seconds: the reconnect that runs behind
-the commands has no caller's deadline over it. A connection that cannot be made
-is tried twice more and then reported: a wrong password or a closed port arrives
-as `RedisConnectionException`, not as a timeout that says nothing about what is
-wrong.
+the commands has no caller's deadline over it. A pooled connection that cannot be
+made is tried twice more and then reported; the connection of a blocking command
+or a subscription is dialled once. Either way a wrong password or a closed port
+arrives as `RedisConnectionException`, not as a timeout that says nothing about
+what is wrong.
 
 ## Values are bytes
 
@@ -164,8 +163,9 @@ A failed command does not fail the batch: the server ran the others. The failure
 takes its own place in the list as a `Dto\ErrorReply` with `code` and
 `message`.
 
-A send that never reached the server leaves the pipeline as it was, so retrying
-it is retrying the same commands.
+A pipeline whose `execute()` throws keeps its commands, so calling it again
+resends the same batch — after a timeout or a dropped connection the server may
+already have run it.
 
 ```php
 $replies = $redis->transaction(static function (Pipeline $transaction): void {
@@ -184,13 +184,8 @@ A command the server refuses while queueing aborts the whole transaction:
 `EXEC` answers `EXECABORT` and none of it runs. That is the difference from a
 plain pipeline, where the other commands run around the bad one.
 
-Commands are written raw inside a pipeline, with `command()` alone. The typed
-methods reshape the reply of the command they name, and a pipeline hands back a
-plain list; tying the shaping to a position in that list is exactly where a
-mistake would not be visible.
-
-Optimistic locking with `WATCH` needs a connection pinned across round trips and
-is not supported.
+Inside a pipeline commands are added with `command()` only: the typed methods
+reshape their reply, and a pipeline answers a plain list.
 
 ## Blocking commands
 
@@ -256,8 +251,9 @@ yield the elements.
 least once, one added or removed along the way may or may not appear, and
 duplicates are possible. That is Redis, not this feature.
 
-Abandoning the iterator early is safe — the flow ends, and the cursor and its
-connection are released with it. Iterating the same result a second time inside a
+Abandoning the iterator early is safe: the cursor and its connection are released
+when the flow ends — at once outside a coroutine, when the `WaitGroup` finishes
+inside one. Iterating the same result a second time inside a
 coroutine opens a second cursor and leaves the first to that release, so a loop
 that re-scans repeatedly should call `scan()` again instead.
 
@@ -289,9 +285,6 @@ subscription).
 loop. `close()` releases the connection, and so does the flow ending — the
 subscription does not have to be closed by hand, and closing it twice is not an
 error.
-
-Sharded channels (`SSUBSCRIBE`) are not supported: they matter in a cluster,
-which is not supported either.
 
 ## Failures
 
@@ -365,8 +358,8 @@ allowed for the same reason and stall the whole server while they run.
   coroutine, so a `WATCH` on it would be watching on their behalf too. Supporting
   it means pinning one connection across several round trips, the way the SQL
   feature pins one for a transaction.
-- No consumer groups over streams. `XREAD` and `XREADGROUP` work as commands
-  (with `blocking: true` where the arguments carry `BLOCK`). What is missing is
+- No consumer groups over streams. `XREAD` and `XREADGROUP` work as commands,
+  `BLOCK` included. What is missing is
   the supervised consumer AMQP has — a worker the scheduler drives, with
   acknowledgement and a stop that finishes the messages already taken — which is
   a subsystem rather than a command.
@@ -382,5 +375,4 @@ allowed for the same reason and stall the whole server while they run.
   the servers' and the queue consumer's (see [the panel](admin-stats.md)); redis
   adds none of its own, so a worker busy with nothing but redis shows its process
   metrics and nothing about the commands it ran.
-- RESP2 only. See the dsn section.
 - The library's general limits are in the [README](../README.md).

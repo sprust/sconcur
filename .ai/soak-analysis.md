@@ -16,8 +16,9 @@ through it".
 | `tests/mem-leak/worker-exit-timing.php` | `make mem-leak-worker-exit-timing launch=<one> seconds=<n>` | how long each step of a worker's death by `exit()` takes, beside the requests it cost |
 
 Save a run's output (`> .bench-runs/<name>.txt`, gitignored): the soak prints its verdicts
-only at the end, and a run of everything takes an hour and a half. The outputs of the
-0.17.0 checks are in `.bench-runs/soak-2026-10-22/`.
+only at the end, and a run of everything takes an hour and a half. (The 0.17.0 checks'
+outputs were kept locally under `.bench-runs/soak-2026-10-22/` and are not in the
+repository; their findings are recorded in the release plan.)
 
 ## Memory: a leak or a warm-up
 
@@ -28,8 +29,9 @@ only at the end, and a run of everything takes an hour and a half. The outputs o
   `memory_get_usage(true)` what it took from the system. A heap flat after the first
   minute while the process's memory still creeps is pages being touched for the first
   time (allocator arenas, OPcache, the runtime's buffers), not a leak. In the hour-long
-  run the heap did not move after the first minute and `real` stayed at one value; the
-  rest grew 0.6 MiB for the pool over the last half hour and was fading.
+  run the heap did not move after the first minute and `memory_get_usage(true)` stayed
+  at one value; anonymous memory grew 0.6 MiB for the whole pool over the last half
+  hour, and the growth was fading.
 - Judge a slope over the last half of the run, not from the start: the first minutes
   carry the warm-up.
 
@@ -39,8 +41,8 @@ only at the end, and a run of everything takes an hour and a half. The outputs o
   stderr, heartbeat). Count descriptors beyond those ("own"), or every restart looks
   like growth.
 - A read can land while a worker is being spawned or reaped, and the own count then
-  swings either way: a worker the read found whose pipes are already closed, a child
-  forked whose pipes are open but which the read did not find. Under a crash loop it
+  swings either way: the read may find a worker whose pipes are already closed, or miss
+  a just-forked child whose pipes are already open. Under a crash loop it
   swung between 6 and 18 around a steady total. So growth is the least value of the
   second half of the reads over the most of the first, not first-against-last, and a
   SUSPECT on descriptors is checked against the raw total (`scenario=` in the summary).
@@ -61,9 +63,11 @@ only at the end, and a run of everything takes an hour and a half. The outputs o
 - Count losses per death (failed requests ÷ worker exits) or per event, not in total:
   scenarios differ in how many events they make.
 - Compare deaths that differ in one thing. SIGKILL closes everything at once and cost
-  0.6 requests a death; `oom`, `fatal` and, in a forked worker, `exit` cost 6.5–7: the
-  worker's runtime goes on accepting while PHP dies from inside. `exit` in exec cost
-  0.3 — the step it does and the other does not was the lead.
+  0.6 requests a death; `oom`, `fatal` and, before the fix, `exit` in a forked worker
+  cost 6.5–7: the worker's runtime goes on accepting while PHP dies from inside. `exit`
+  in exec cost 0.3, because exec runs the extension's teardown, which stops the server
+  accepting, and the forked worker skipped it; that difference was the lead. After the
+  fix a forked `exit` costs 0.5.
 
 ## Taking apart a difference between two launches
 
@@ -91,12 +95,13 @@ is slow or skipped:
   `exit()` fix were not: the access log writer writes as soon as a line arrives (a
   missing flush loses nothing in practice), and a request already handed to PHP is
   dropped on `exit()` in exec too. What held was the mechanism itself: the forked worker
-  has an extension handle of its own.
+  has an extension handle of its own
+  (`ForkedWorkerTest::testAForkedWorkerMakesAnExtensionHandleOfItsOwn`).
 
 ## Noise
 
 - The host swaps and runs other loads; check `uptime` and swap before measuring.
   Throughput numbers from a noisy host are not re-measured into the docs; leak verdicts
   (slopes, floors, the same zombie twice) survive noise, rates do not.
-- A test that fails once in a full suite and passes alone three times, and in a second
-  full run, is noise on a busy host; one that fails again is not.
+- A test that fails once in a full suite but passes three times alone and again in a
+  second full run is noise on a busy host; one that fails again is not.

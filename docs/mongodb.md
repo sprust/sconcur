@@ -9,11 +9,6 @@ the coroutine (a PHP fiber the scheduler suspends while the extension works) wai
 inside a `WaitGroup` operations run in parallel and the total time is bounded by the
 slowest one. Outside a `WaitGroup` the same API works synchronously.
 
-Documents cross to the extension as the PHP arrays they are, and come back as
-arrays the extension builds. BSON values that a PHP array cannot express arrive as
-`SConcur\Bson\*` objects (`ObjectId`, `UTCDateTime`, `Decimal128`, …); documents
-and arrays arrive as plain PHP arrays.
-
 > `SConcur\Bson\*` reproduces the `MongoDB\BSON\*` API one for one — the same
 > constructors, getters, string and JSON forms — so moving an application from the
 > native driver is a change of `use` lines. The feature needs no PHP extension
@@ -97,7 +92,7 @@ $document['tags'];      // ['a', 'b']
 
 An empty document reads back as an empty array — PHP has one type for `{}` and
 `[]`, so the two are told apart only by what is inside them. Writing that array
-back stores an empty array, exactly as the `ext-mongodb` path did.
+back stores an empty BSON array, not an empty document.
 
 A plain object is accepted where a document is expected — `(object) [...]`, or what
 `json_decode()` returns without `associative: true` — and stores as a sub-document.
@@ -110,6 +105,10 @@ Each class carries the same methods as its `MongoDB\BSON\*` counterpart —
 `jsonSerialize()` everywhere the driver has them. `int64` is wrapped for the same
 reason the driver wraps it: without the wrapper the type would not survive a read
 followed by a write, because a value that fits in an int32 would come back as one.
+
+A PHP `int` is stored as int32 when it fits and as int64 otherwise; pass an `Int64`
+to store int64 regardless. A PHP string that is not valid UTF-8 is stored as generic
+binary and reads back as `Binary`.
 
 ## Collection operations
 
@@ -279,8 +278,6 @@ driver still wins) is in the [benchmarks](benchmarks.md#mongodb).
 
 ## Internals
 
-- All operations are run by the Rust `mongodb` driver in a runtime task; the
-  driver is async, so the concurrency is the runtime's.
 - Client registry (`ext/src/features/mongodb/clients.rs`) — one `mongodb::Client`
   per key `uri + serverSelectionTimeoutMs`, shared by every task that names it.
   The driver's own `Client` is already a pooled handle, so this layer only keeps
@@ -298,8 +295,6 @@ driver still wins) is in the [benchmarks](benchmarks.md#mongodb).
 
 ## Limits
 
-- A `find`/`aggregate` cursor should be read to the end or interrupted (`break`) —
-  it holds a resource on the server until closed.
 - Of the BSON types the specification deprecates, `symbol` is read as a string and
   `undefined` as `null`; `dbPointer` is read as `null`, its contents
   dropped. They only occur in data written by very old drivers.
@@ -307,27 +302,18 @@ driver still wins) is in the [benchmarks](benchmarks.md#mongodb).
 
 ## Object conversion
 
-BSON values a PHP array cannot express — an id, a date, a decimal — cross the
-boundary as PHP objects, and nothing serializes them; the mechanism itself is in
-[Values across the boundary](value-conversion.md). On the way in the extension
-reads an instance's class name and public properties off the object it was given
-(`ext/src/features/mongodb/serializer/from_value.rs`, one arm per class); on the way
-out it creates the instance itself, without calling the constructor, and writes the
-declared properties in place (`serializer/to_value.rs`). The constructor therefore
-guards user code only, and what arrives from the extension is validated on its side.
+Values a PHP array cannot express cross as `SConcur\Bson\*` objects; the mechanism
+and its constraints (public properties, `readonly`, no constructor call on the way
+out, a short class name) are in
+[Values across the boundary](value-conversion.md#value-classes). MongoDB's two arms
+are `bson_from_object` in `ext/src/features/mongodb/serializer/from_value.rs`, which
+reads properties with the `property_*` helpers that fail on a missing or mistyped
+property, and `bson_value` in `serializer/to_value.rs`.
 
-Two constraints follow for a class in `src/Bson/`: its properties are public, because
-the extension reads and writes them by name, and the class is `readonly`, so the
-value object stays immutable anyway. Keep the class name short: it travels with
-every value.
-
-Adding a type is three places: the PHP class in `src/Bson/`, mirroring its
-`MongoDB\BSON\*` counterpart exactly (same constructor, getters, `__toString()` and
-`jsonSerialize()`); an arm in `from_value.rs` reading the properties with the
-`property_*` helpers, which fail on a missing or mistyped property rather than
-substitute a zero; and an arm in `to_value.rs` building `Value::object(class,
-properties)` in declaration order. The tests to extend are the serializer's own unit
-tests on both arms, `tests/feature/Features/Mongodb/Bson/BsonDriverParityTest.php`
-(the value object against its `MongoDB\BSON\*` counterpart) and
+A new type is a class in `src/Bson/` mirroring its `MongoDB\BSON\*` counterpart
+exactly (constructor, getters, `__toString()`, `jsonSerialize()`) plus an arm in
+each; extend the serializer's unit tests on both arms,
+`tests/feature/Features/Mongodb/Bson/BsonDriverParityTest.php` (against the
+`MongoDB\BSON\*` counterpart) and
 `tests/feature/Features/Mongodb/Serialization/MongodbDocumentSerializerTest.php`
 (a round trip through a live MongoDB).
