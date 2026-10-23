@@ -52,7 +52,7 @@ class HttpServerLifecycleLogTest extends TestCase
         }
     }
 
-    private function waitForOutput(TestHttpServer $server, string $needle): string
+    protected function waitForOutput(TestHttpServer $server, string $needle): string
     {
         $deadline = microtime(true) + 5.0;
 

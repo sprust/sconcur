@@ -19,17 +19,17 @@ use Throwable;
  */
 class SocketClientConcurrencyTest extends BaseAsyncTestCase
 {
-    private const int SLEEP_MS = 60;
+    protected const int SLEEP_MS = 60;
 
-    private static ?TestSocketServer $server = null;
+    protected static ?TestSocketServer $server = null;
 
-    private SocketClient $client;
+    protected SocketClient $client;
 
-    private ?Connection $connectionOne = null;
-    private ?Connection $connectionTwo = null;
+    protected ?Connection $connectionOne = null;
+    protected ?Connection $connectionTwo = null;
 
-    private float $startTime = 0;
-    private float $endTime   = 0;
+    protected float $startTime = 0;
+    protected float $endTime   = 0;
 
     public static function setUpBeforeClass(): void
     {
@@ -131,19 +131,19 @@ class SocketClientConcurrencyTest extends BaseAsyncTestCase
         );
     }
 
-    private function sleepRoundTrip(Connection $connection): void
+    protected function sleepRoundTrip(Connection $connection): void
     {
         $connection->write('msleep:' . self::SLEEP_MS);
 
         self::assertSame('slept', $connection->read());
     }
 
-    private function address(): string
+    protected function address(): string
     {
         return self::server()->host() . ':' . self::server()->port();
     }
 
-    private static function server(): TestSocketServer
+    protected static function server(): TestSocketServer
     {
         if (self::$server === null) {
             self::fail('Test socket server is not started.');
@@ -152,7 +152,7 @@ class SocketClientConcurrencyTest extends BaseAsyncTestCase
         return self::$server;
     }
 
-    private static function connection(?Connection $connection): Connection
+    protected static function connection(?Connection $connection): Connection
     {
         if ($connection === null) {
             self::fail('Connection is not open.');

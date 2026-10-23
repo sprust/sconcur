@@ -21,14 +21,14 @@ use RuntimeException;
 class GeneratorStream implements StreamInterface
 {
     /** Bytes pulled from the generator but not yet returned by read(). */
-    private string $buffer = '';
+    protected string $buffer = '';
 
-    private bool $started = false;
+    protected bool $started = false;
 
-    private bool $finished = false;
+    protected bool $finished = false;
 
     public function __construct(
-        private readonly Generator $chunks,
+        protected readonly Generator $chunks,
     ) {
     }
 
@@ -152,7 +152,7 @@ class GeneratorStream implements StreamInterface
      * yields (e.g. a Sleeper sleep) executes here, after the previous chunk has been
      * flushed — so async work happens between flushes, not before the first.
      */
-    private function fillBuffer(): void
+    protected function fillBuffer(): void
     {
         if ($this->buffer !== '' || $this->finished) {
             return;

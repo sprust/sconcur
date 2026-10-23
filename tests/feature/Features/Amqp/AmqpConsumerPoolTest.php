@@ -39,7 +39,6 @@ class AmqpConsumerPoolTest extends AmqpTestCase
                                 ['name' => $emails->name(), 'coroutineCount' => 1],
                             ],
                             'prefetchCount' => 1,
-                            'maxMessages'   => 6,
                         ],
                     ],
                 ],
@@ -65,13 +64,18 @@ class AmqpConsumerPoolTest extends AmqpTestCase
                 $handled,
             );
 
-            // maxMessages ends the run, and with restartPolicy=never the master follows.
-            // The line lands after the last delivery, so it is waited for rather than
-            // read off the journal the moment the sixth message shows up.
+            // Stopped from outside rather than by maxMessages: under a master the limit is
+            // spread over up to half again as many messages, so it would not end the run
+            // at six. A stop ends it the way a deploy does, and the tally says nothing was
+            // left half-done.
+            $master->signal(SIGTERM);
+
             self::assertTrue(
                 $this->waitForLine($master, 'consumer finished handled=6'),
                 'the worker must report its tally and exit: ' . $master->logText(),
             );
+
+            self::assertSame(0, $master->waitForExit(10.0), 'the master must stop cleanly');
         } finally {
             $master->stop();
         }

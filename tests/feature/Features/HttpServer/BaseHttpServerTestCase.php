@@ -15,7 +15,7 @@ use SConcur\Tests\Impl\HttpServer\TestHttpServer;
  */
 abstract class BaseHttpServerTestCase extends TestCase
 {
-    private static ?TestHttpServer $server = null;
+    protected static ?TestHttpServer $server = null;
 
     public static function setUpBeforeClass(): void
     {

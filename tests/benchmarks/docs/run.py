@@ -3,8 +3,8 @@
 Takes every measurement the benchmark docs are built from, in one session.
 
 docs/benchmarks.md, docs/load-testing.md, docs/positioning.md, the README tables
-and the measured parts of docs/coroutine-switching.md and docs/http-server.md
-quote numbers that have to come from one session on one machine. This runs the
+and the measured parts of docs/coroutine-switching.md, docs/http-server.md and
+docs/worker-master.md quote numbers that have to come from one session on one machine. This runs the
 existing harnesses for each of them (the bench scripts in the php container, the
 HTTP load scripts on the host), repeats what the docs report as a median, and
 writes what it measured to disk. It does not touch the docs: reading the results
@@ -562,6 +562,78 @@ def section_spread():
                                    for connections in ('256', '32')])
 
 
+def section_shared_socket():
+    """One socket shared by 12 workers against a SO_REUSEPORT socket each, on four
+    profiles, with the per-worker spread."""
+    base = {'SERVERS': '12', 'PIN_SERVERS': 'group', 'ROUTE': '/', 'WORKER_LOGS': '1'}
+    profiles = [
+        ('256 connections', {}),
+        ('32 connections', {'CONNECTIONS': '32'}),
+        ('connection per request', {'CONNECTION_CLOSE': '1'}),
+        ('mixed', {'WRK_SCRIPT': f'{HTTP}/mixed-profile.lua', 'HEAVY_PATH': '/cpu/20000', 'HEAVY_RATIO': '0.10',
+                   'WRK_TIMEOUT': '10s'}),
+    ]
+    measure_interleaved('shared-socket', [
+        (f'{accepting} {profile}', 'sconcur', {**base, **env, **accepting_env}, None)
+        for profile, env in profiles
+        for accepting, accepting_env in (('SO_REUSEPORT', {}), ('shared socket', {'SHARED_SOCKET': '1'}))
+    ])
+
+
+def section_worker_memory():
+    """What 12 workers take in memory by how they start: exec, fork, and fork from a master
+    that loaded the application first. Deterministic to 0.1 MiB, so one run."""
+    output = php('tests/benchmarks/worker/memory.php', env={'WORKERS': '12', 'REQUESTS': '5000'})
+    save_raw('worker-memory', 'memory', output)
+    pattern = r'^(\w+)\s+served\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB'
+    for arm, pss, rss, private_dirty, per_worker in re.findall(pattern, output, re.M):
+        summary = {'pss_mib': float(pss), 'rss_mib': float(rss), 'private_dirty_mib': float(private_dirty),
+                   'pss_per_worker_mib': float(per_worker)}
+        record('worker-memory', arm, {'workers': 12, 'requests': 5000}, [summary], summary)
+        say(f'[worker-memory] {arm}: Pss {pss} MiB, {per_worker} MiB per worker, Private_Dirty {private_dirty} MiB')
+
+
+
+def section_worker_memory_soak():
+    """The same pools under a long run on /work, with and without OPcache: whether the forked
+    arms' Pss creeps towards exec's as the workers touch the pages their fork server loaded,
+    and whether PHP's heap in the workers keeps still meanwhile. 15 minutes an arm, six arms."""
+    trend_pattern = (r'^(\w+)\s+t=(\d+)s\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB\s+[\d.]+ MiB'
+                     r'\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB')
+    soak_pattern = (r'^(\w+)\s+soak: (\d+) answered, (\d+) failed \((\d+) rps\);'
+                    r' heap used sum ([\d.]+) -> ([\d.]+) MiB \(([+-][\d.]+) MiB\), slope after 2 min (\S+)(?: MiB/min)?;'
+                    r' Pss\+SwapPss sum ([\d.]+) -> ([\d.]+) MiB'
+                    r' \(([+-][\d.]+) MiB\); slope after 2 min (\S+)(?: MiB/min)? -> (.+)$')
+    for opcache in ('0', '1'):
+        params = {'workers': 12, 'requests': 5000, 'soak_seconds': 900, 'sample_seconds': 60, 'opcache': opcache}
+        output = php('tests/benchmarks/worker/memory.php',
+                     env={'WORKERS': '12', 'REQUESTS': '5000', 'SOAK_SECONDS': '900', 'SAMPLE_SECONDS': '60',
+                          'OPCACHE': opcache})
+        save_raw('worker-memory-soak', f'opcache-{opcache}', output)
+        trends = {}
+        for (arm, elapsed, pss, rss, private_dirty, swap_pss, swap, heap_used, heap_used_max,
+             heap_real) in re.findall(trend_pattern, output, re.M):
+            trends.setdefault(arm, []).append({'seconds': int(elapsed), 'pss_mib': float(pss), 'rss_mib': float(rss),
+                                               'private_dirty_mib': float(private_dirty),
+                                               'swap_pss_mib': float(swap_pss), 'swap_mib': float(swap),
+                                               'heap_used_mib': float(heap_used),
+                                               'heap_used_max_mib': float(heap_used_max),
+                                               'heap_real_mib': float(heap_real)})
+        for (arm, answered, failed, rps, heap_before, heap_after, heap_grown, heap_slope, before, after, grown, slope,
+             verdict) in re.findall(soak_pattern, output, re.M):
+            summary = {'answered': int(answered), 'failed': int(failed), 'rps': int(rps),
+                       'heap_used_served_mib': float(heap_before), 'heap_used_last_mib': float(heap_after),
+                       'heap_used_grown_mib': float(heap_grown),
+                       'heap_slope_mib_per_min': None if heap_slope == 'n/a' else float(heap_slope),
+                       'footprint_served_mib': float(before), 'footprint_last_mib': float(after),
+                       'footprint_grown_mib': float(grown),
+                       'slope_mib_per_min': None if slope == 'n/a' else float(slope), 'verdict': verdict,
+                       'trend': trends.get(arm, [])}
+            record('worker-memory-soak', f'{arm} opcache={opcache}', params, [summary], summary)
+            say(f'[worker-memory-soak] {arm} opcache={opcache}: heap used {heap_before} -> {heap_after} MiB '
+                f'({heap_grown}, slope {heap_slope}); Pss+SwapPss {before} -> {after} MiB ({grown}), '
+                f'slope {slope}, {verdict}, {rps} rps, {failed} failed')
+
 # ---------------------------------------------------------------------------
 
 
@@ -584,6 +656,9 @@ SECTIONS = {
     'preemption': (section_preemption, False, 'coroutine-switching: cost under load; http-server: maxConcurrency'),
     'proxy': (section_proxy, False, 'http-server: a proxy in front of the pool'),
     'spread': (section_spread, False, 'http-server: how evenly the kernel spreads'),
+    'shared-socket': (section_shared_socket, False, 'load-testing, http-server: one socket for the whole pool'),
+    'worker-memory': (section_worker_memory, False, 'worker-master: loading the application in the master'),
+    'worker-memory-soak': (section_worker_memory_soak, False, 'worker-master: the memory of a pool over a 15-minute run'),
 }
 
 

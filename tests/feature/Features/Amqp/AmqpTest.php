@@ -19,7 +19,7 @@ use Throwable;
 class AmqpTest extends BaseAsyncTestCase
 {
     /** How long each coroutine waits before publishing, so the two overlap measurably. */
-    private const int PUBLISH_DELAY_MS = 100;
+    protected const int PUBLISH_DELAY_MS = 100;
 
     protected ?Connection $connection = null;
 
@@ -145,7 +145,7 @@ class AmqpTest extends BaseAsyncTestCase
      * Publishes one message straight to the coroutine's own queue, on its own channel,
      * after a delay the other coroutine is free to use.
      */
-    private function publish(int $index, string $body): void
+    protected function publish(int $index, string $body): void
     {
         Sleeper::usleep(microseconds: self::PUBLISH_DELAY_MS * 1000);
 
@@ -160,7 +160,7 @@ class AmqpTest extends BaseAsyncTestCase
      * Consumes exactly one message from the coroutine's queue, suspending it until the
      * message arrives.
      */
-    private function consumeOne(int $index): string
+    protected function consumeOne(int $index): string
     {
         $channel = $this->connection?->channel();
 

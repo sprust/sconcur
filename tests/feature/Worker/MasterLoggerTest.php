@@ -12,7 +12,7 @@ use SConcur\Worker\MasterLogger;
  */
 class MasterLoggerTest extends TestCase
 {
-    private string $directory;
+    protected string $directory;
 
     protected function setUp(): void
     {
@@ -86,7 +86,7 @@ class MasterLoggerTest extends TestCase
         self::assertFileExists($this->directory . '/sconcur-http-server-' . date('Y-m-d') . '.log');
     }
 
-    private function todayLog(): string
+    protected function todayLog(): string
     {
         return (string) file_get_contents(
             $this->directory . '/sconcur-http-server-' . date('Y-m-d') . '.log',

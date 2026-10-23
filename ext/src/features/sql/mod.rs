@@ -118,7 +118,7 @@ impl Feature for SqlFeature {
 
             // The sweeper needs a runtime, so it is armed on first use rather
             // than when the registry is built.
-            pools::start_sweeper();
+            pools::get().start_sweeper();
 
             match envelope.command.as_str() {
                 "qry" => feature.handle_query(&task, &envelope).await,

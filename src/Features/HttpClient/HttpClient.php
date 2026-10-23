@@ -40,7 +40,7 @@ readonly class HttpClient implements ClientInterface
     protected const string NETWORK_MARKER = 'net:';
     protected const string REQUEST_MARKER = 'req:';
 
-    /** Default copy buffer size for download() (64 KiB), tunable per call. */
+    /** What download() sends as $bufferSizeBytes when none is given; the extension ignores it. */
     protected const int DEFAULT_DOWNLOAD_BUFFER_SIZE_BYTES = 65_536;
 
     public function __construct(
@@ -80,9 +80,10 @@ readonly class HttpClient implements ClientInterface
      *
      * Only a 2xx response is written. A non-2xx response, or a transport/file error,
      * throws a DownloadException (its getStatusCode() carries the status for a
-     * non-2xx). $bufferSize tunes the copy granularity on the extension side.
+     * non-2xx). $bufferSizeBytes is accepted and not applied: the body arrives as
+     * buffers the transport has already sized.
      *
-     * The downloaded size is DownloadResult::$filesize (the bytes actually written);
+     * The downloaded size is DownloadResult::$filesizeBytes (the bytes actually written);
      * the returned headers are exactly what the server sent.
      */
     public function download(

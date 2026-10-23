@@ -16,7 +16,7 @@ use SConcur\Tests\Impl\SocketServer\TestSocketServer;
  */
 abstract class BaseSocketServerTestCase extends TestCase
 {
-    private static ?TestSocketServer $server = null;
+    protected static ?TestSocketServer $server = null;
 
     public static function setUpBeforeClass(): void
     {

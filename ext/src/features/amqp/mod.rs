@@ -82,6 +82,7 @@ pub struct Registries {
     pub connections: Connections,
     pub channels: Channels,
     pub consume_serve: consume_serve::Streams,
+    pub telemetry: consumerstats::Telemetry,
 }
 
 impl Registries {
@@ -90,6 +91,7 @@ impl Registries {
             connections: Connections::new(),
             channels: Channels::new(),
             consume_serve: consume_serve::Streams::new(),
+            telemetry: consumerstats::Telemetry::new(),
         }
     }
 }

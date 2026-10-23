@@ -9,15 +9,15 @@ use SConcur\WaitGroup;
 
 class MemLeakTest extends BaseTestCase
 {
-    private const int WARMUP_ITERATIONS   = 50;
-    private const int MEASURED_ITERATIONS = 150;
+    protected const int WARMUP_ITERATIONS   = 50;
+    protected const int MEASURED_ITERATIONS = 150;
 
     /**
      * Allowed memory growth between the post-warmup baseline and the end of the
      * measured run. A real leak grows unbounded, so a small constant budget is
      * enough to tell a leak apart from allocator/GC jitter.
      */
-    private const int MAX_GROWTH_BYTES = 512 * 1024;
+    protected const int MAX_GROWTH_BYTES = 512 * 1024;
 
     /**
      * Ported from tests/mem-leak/endless-add.php: a single long-living flow that
@@ -91,7 +91,7 @@ class MemLeakTest extends BaseTestCase
         $this->assertMemoryStable($baseline);
     }
 
-    private function assertMemoryStable(int $baseline): void
+    protected function assertMemoryStable(int $baseline): void
     {
         $growth = memory_get_usage() - $baseline;
 

@@ -271,7 +271,7 @@ bench-reset:
 
 # Benchmark scripts live in tests/benchmarks/, grouped by the technology they
 # measure: mongodb/, mysql/, pgsql/, http/, socket/, ws/, amqp/, db/ (whole-session
-# DB runs), runtime/ (scheduler and PHP<->Go boundary) and lib/ (shared harness).
+# DB runs), runtime/ (scheduler and PHP<->extension boundary) and lib/ (shared harness).
 bench-all:
 	make bench-sleeper
 	make bench-mongodb-insertOne
@@ -423,6 +423,37 @@ mem-leak-files:
 		php -d extension=$(SCONCUR_EXT) \
 		tests/mem-leak/files-soak.php $(or $(scenario),read-large) $(or $(seconds),120)
 
+# Soak test for the worker master under failures: one master per scenario, with workers and
+# requests failing over and over around steady load, reporting what the master, the fork
+# server and the surviving workers hold — memory, descriptors, threads, zombies, the PHP
+# heap and the runtime's tasks — and a verdict per scenario. Scenarios: oom, kill, exit,
+# fatal, spin, block, recycle, crash-at-start, fork-server-kill, reload, reload-broken,
+# sigterm, throw, disconnect, slowloris, bad-http, orphan, handler-timeout, external,
+# preempt; all of them, four minutes each, by default (about an hour and a half). The verdict
+# reads only past warmup= seconds (60 by default), so a short run needs a shorter one.
+# e.g.: make mem-leak-worker scenario=oom,reload seconds=600 launch=exec,bootstrap
+mem-leak-worker:
+	$(DOCKER_COMPOSE) exec -e LAUNCH=$(or $(launch),bootstrap) -e WARMUP_SECONDS=$(or $(warmup),60) php \
+		php -d extension=$(SCONCUR_EXT) \
+		tests/mem-leak/worker-soak.php $(or $(scenario),all) $(or $(seconds),240)
+
+# What mem-leak-worker printed, saved to a file, laid out: the first read after the warm-up
+# against the last and the requests lost per worker death, a line per scenario; with
+# scenario=, every read of that one (zombies, fork server descriptors) to tell a SUSPECT from
+# a read that caught a worker being spawned or reaped.
+# e.g.: make mem-leak-worker-summary file=.bench-runs/soak.txt scenario="bootstrap crash-at-start"
+mem-leak-worker-summary:
+	$(DOCKER_COMPOSE) exec php php tests/mem-leak/worker-soak-summary.php $(file) "$(scenario)"
+
+# How a worker dies of exit() in a request, step by step: the exit scenario with its workers
+# tracing exit() and their shutdown functions, and /proc polled for when each one is dead.
+# Medians of each step beside the requests lost per death; run it for two launches.
+# e.g.: make mem-leak-worker-exit-timing launch=bootstrap seconds=30
+mem-leak-worker-exit-timing:
+	$(DOCKER_COMPOSE) exec -e LAUNCH=$(or $(launch),bootstrap) php \
+		php -d extension=$(SCONCUR_EXT) \
+		tests/mem-leak/worker-exit-timing.php $(or $(seconds),30)
+
 bench-redis-get:
 	$(PHP_EXT) tests/benchmarks/redis/get.php ${c}
 
@@ -501,9 +532,9 @@ bench-push:
 	$(PHP_EXT) tests/benchmarks/runtime/push-profile.php
 
 # What a member of a nested fan-out costs — a WaitGroup created inside a
-# coroutine, the only shape whose pushes come off a coroutine's own stack and so
-# the only one that feeds Scheduler::$pendingDispatches. Every other runtime
-# bench here is flat, which is why that path had never been measured.
+# coroutine, the only shape whose pushes come off a coroutine's own stack (the
+# path the since-removed deferred-dispatch queue used to serve). Every other
+# runtime bench here is flat, which is why that path had never been measured.
 bench-nested-fan-out:
 	$(PHP_EXT) tests/benchmarks/runtime/nested-fan-out.php
 
@@ -689,11 +720,28 @@ bench-http-load-stats:
 bench-http-load-soak:
 	MODE=soak tests/benchmarks/http/load-stats.sh
 
+# What a pool of workers costs in memory by how its workers start: exec, fork, and
+# fork from a master that loaded the application first (Pss and Private_Dirty from
+# smaps_rollup). Override via env, e.g.: make bench-worker-memory WORKERS=16
+bench-worker-memory:
+	$(DOCKER_COMPOSE) exec -e WORKERS=$${WORKERS:-12} -e REQUESTS=$${REQUESTS:-5000} php \
+		php -d extension=$(SCONCUR_EXT) tests/benchmarks/worker/memory.php
+
+# The same pools under a long run on /work (SOAK_SECONDS an arm, 15 minutes by default),
+# without OPcache and with it: six arms, an hour and a half.
+bench-worker-memory-soak:
+	for opcache in 0 1; do \
+		$(DOCKER_COMPOSE) exec -e WORKERS=$${WORKERS:-12} -e REQUESTS=$${REQUESTS:-5000} \
+			-e SOAK_SECONDS=$${SOAK_SECONDS:-900} -e SAMPLE_SECONDS=$${SAMPLE_SECONDS:-60} -e OPCACHE=$$opcache php \
+			php -d extension=$(SCONCUR_EXT) tests/benchmarks/worker/memory.php || exit 1; \
+	done
+
 # Baseline variant: same harness against the bare "/" route (no I/O fan-out) —
 # measures the pure HTTP + framework ceiling, the floor under the /all numbers.
 # Placement defaults to group, the one the docs/benchmarks.md numbers are taken
-# with: the harness's own default (1) runs ~20% slower on this route, which reads
-# as a regression next to them. Override via env, e.g. PIN_SERVERS=1.
+# with: the harness's own default (1) runs ~6.5% slower on this route (the
+# pinning section of docs/load-testing.md), which reads as a regression next to
+# them. Override via env, e.g. PIN_SERVERS=1.
 bench-http-load-stats-empty:
 	ROUTE=/ PIN_SERVERS=$${PIN_SERVERS:-group} tests/benchmarks/http/load-stats.sh
 
@@ -754,8 +802,9 @@ bench-swoole-load-stats-empty:
 	ROUTE=/ tests/benchmarks/http/swoole-load-stats.sh
 
 # WebSocket load test: spawn a ws-server pool (SO_REUSEPORT, one per core) and drive
-# it with the Go ws-load generator on the "all" message (fans out across EVERY async
-# I/O feature per message), sampling CPU/memory + per-worker RSS (leak check). Both
+# it with the ws-load generator (a Rust crate, tests/benchmarks/ws/ws-load) on the
+# "all" message (fans out across EVERY async I/O feature per message), sampling
+# CPU/memory + per-worker RSS (leak check). Both
 # the pool and the generator run in the php container (no host tooling needed).
 # Tunables via env, e.g.: make bench-ws-load-stats SERVERS=12 DURATION=30
 bench-ws-load-stats:

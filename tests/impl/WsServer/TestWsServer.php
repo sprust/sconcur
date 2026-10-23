@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Impl\WsServer;
 
 use RuntimeException;
+use SConcur\Tests\Impl\FreePort;
 
 /**
  * Spawns the demo WebSocket server (tests/servers/ws/ws-server.php) as its own process
@@ -21,27 +22,27 @@ use RuntimeException;
  */
 class TestWsServer
 {
-    private const string HOST = '127.0.0.1';
+    protected const string HOST = '127.0.0.1';
 
     /** The fixed GUID appended to the client key to form Sec-WebSocket-Accept (RFC 6455). */
-    private const string ACCEPT_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+    protected const string ACCEPT_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
-    private const int OPCODE_TEXT   = 0x1;
-    private const int OPCODE_BINARY = 0x2;
-    private const int OPCODE_CLOSE  = 0x8;
+    protected const int OPCODE_TEXT   = 0x1;
+    protected const int OPCODE_BINARY = 0x2;
+    protected const int OPCODE_CLOSE  = 0x8;
 
     /** @var resource */
-    private $process;
+    protected $process;
 
-    private bool $closed = false;
+    protected bool $closed = false;
 
     /**
      * @param resource $process
      */
-    private function __construct(
+    protected function __construct(
         $process,
-        private readonly int $port,
-        private readonly string $stdoutFile,
+        protected readonly int $port,
+        protected readonly string $stdoutFile,
     ) {
         $this->process = $process;
     }
@@ -65,7 +66,7 @@ class TestWsServer
             throw new RuntimeException('The "address" option is not supported in tests. Use "port" instead.');
         }
 
-        $port ??= self::freePort();
+        $port ??= FreePort::find();
         $options['address'] = self::HOST . ':' . $port;
 
         $root      = dirname(__DIR__, 3);
@@ -327,7 +328,7 @@ class TestWsServer
      *
      * @param resource $connection
      */
-    private function handshake(mixed $connection, string $path): void
+    protected function handshake(mixed $connection, string $path): void
     {
         $key = base64_encode(random_bytes(16));
 
@@ -359,7 +360,7 @@ class TestWsServer
     /**
      * Encodes one masked client frame (FIN set, single frame) for the given opcode.
      */
-    private static function encodeClientFrame(int $opcode, string $data): string
+    protected static function encodeClientFrame(int $opcode, string $data): string
     {
         $frame  = chr(0x80 | $opcode);
         $length = strlen($data);
@@ -382,7 +383,7 @@ class TestWsServer
     /**
      * XORs the payload with the 4-byte masking key (its own inverse, used both ways).
      */
-    private static function applyMask(string $data, string $maskKey): string
+    protected static function applyMask(string $data, string $maskKey): string
     {
         $masked = '';
 
@@ -399,7 +400,7 @@ class TestWsServer
      *
      * @param resource $connection
      */
-    private static function readExactly(mixed $connection, int $length): ?string
+    protected static function readExactly(mixed $connection, int $length): ?string
     {
         $buffer = '';
 
@@ -430,7 +431,7 @@ class TestWsServer
      *
      * @param resource $connection
      */
-    private static function readUntil(mixed $connection, string $marker): ?string
+    protected static function readUntil(mixed $connection, string $marker): ?string
     {
         $buffer = '';
 
@@ -455,7 +456,7 @@ class TestWsServer
         return $buffer;
     }
 
-    private function waitUntilReachable(): bool
+    protected function waitUntilReachable(): bool
     {
         $deadline = microtime(true) + 5.0;
 
@@ -476,20 +477,5 @@ class TestWsServer
         }
 
         return false;
-    }
-
-    private static function freePort(): int
-    {
-        $socket = stream_socket_server('tcp://' . self::HOST . ':0', $errno, $errstr);
-
-        if ($socket === false) {
-            throw new RuntimeException("Could not allocate a port: $errstr");
-        }
-
-        $name = (string) stream_socket_get_name($socket, false);
-
-        fclose($socket);
-
-        return (int) substr($name, (int) strrpos($name, ':') + 1);
     }
 }

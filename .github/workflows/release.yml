@@ -95,9 +95,10 @@ jobs:
           # Published version tags are immutable: moving a tag that Packagist (and
           # consumers) already resolved changes a released version's source reference,
           # which Packagist blocks. If the tag already exists on origin, this version was
-          # already released — skip. To ship again, bump the version (the version lives in
-          # one place and VersionConsistencyTest keeps the three copies in lockstep), which
-          # produces a new tag on the next push.
+          # already released — skip. To ship again, bump the version (its four sources —
+          # ext/src/lib.rs, ext/Cargo.toml, src/Connection/Extension.php, composer.json — move
+          # together, and VersionConsistencyTest keeps them in lockstep), which produces a
+          # new tag on the next push.
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
             echo "::notice::$tag already released; skipping. Bump the version to release again."
             exit 0

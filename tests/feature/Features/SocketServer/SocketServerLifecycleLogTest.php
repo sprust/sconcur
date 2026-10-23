@@ -52,7 +52,7 @@ class SocketServerLifecycleLogTest extends TestCase
         }
     }
 
-    private function waitForOutput(TestSocketServer $server, string $needle): string
+    protected function waitForOutput(TestSocketServer $server, string $needle): string
     {
         $deadline = microtime(true) + 5.0;
 

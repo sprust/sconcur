@@ -5,12 +5,11 @@ declare(strict_types=1);
 namespace SConcur\Features\HttpClient;
 
 /**
- * Per-request tuning for the HTTP client. All timeouts are in milliseconds; the
- * PHP defaults mirror the extension's defaults. A single instance is shared by every
- * request a HttpClient sends.
+ * Per-request tuning for the HTTP client. All timeouts are in milliseconds. A single
+ * instance is shared by every request a HttpClient sends.
  *
  * requestTimeoutMs is the mandatory hard limit for the whole operation (connect +
- * send + reading the entire body), enforced on the extension side as a context deadline.
+ * send + reading the entire body), enforced on the extension side.
  */
 readonly class HttpClientOptions
 {
@@ -24,10 +23,10 @@ readonly class HttpClientOptions
      * @param int  $maxRedirects            max redirect hops when $followRedirects is true
      * @param int  $chunkSize               response-body read granularity (inline first chunk + each streamed chunk)
      * @param bool $verifyTls               verify TLS certificates (set false only for self-signed in dev)
-     * @param int  $maxIdleConns            total idle keep-alive connections kept in the pool
+     * @param int  $maxIdleConns            accepted and not applied: the pool is sized per host
      * @param int  $maxIdleConnsPerHost     idle keep-alive connections kept per host
      * @param int  $idleConnTimeoutMs       how long an idle keep-alive connection is kept before closing
-     * @param int  $tlsHandshakeTimeoutMs   TLS handshake limit
+     * @param int  $tlsHandshakeTimeoutMs   accepted and not applied: connectTimeoutMs bounds the handshake
      * @param bool $streamRequestBody       stream the request body to the extension in chunks (chunkSize
      *                                      granularity) instead of buffering it whole; gives write-backpressure
      *                                      for large uploads. Off by default (v1 buffered behaviour).

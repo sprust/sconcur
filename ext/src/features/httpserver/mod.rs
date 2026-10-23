@@ -1,5 +1,7 @@
 //! The HTTP server feature: the command dispatch behind serve and respond.
 
+#[cfg(target_os = "linux")]
+mod exclusive;
 pub mod listen;
 pub mod payloads;
 pub mod requeststats;
@@ -90,7 +92,7 @@ async fn handle_serve(task: Task) {
         }
     };
 
-    let listener = match listen::listen(&payload.address, payload.reuse_port) {
+    let listener = match listen::open(&payload.address, payload.reuse_port, payload.listen_fd) {
         Ok(listener) => listener,
         Err(error) => {
             task.add_result(Result::error(message, ERR_FACTORY.by_err("listen", error))).await;

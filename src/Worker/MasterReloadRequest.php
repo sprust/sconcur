@@ -18,11 +18,14 @@ readonly class MasterReloadRequest
      * @param string $group      the single group to roll, or an empty string for all
      * @param string $signature  identifies this request, so the clear that ends it does
      *                           not delete a later one written while it was rolling
+     * @param string $nonce      the token the requesting CLI wrote, which it finds the
+     *                           outcome under; empty for a trigger written by hand
      */
     public function __construct(
         public string $configPath,
         public string $group,
         public string $signature,
+        public string $nonce = '',
     ) {
     }
 }

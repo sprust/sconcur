@@ -18,8 +18,9 @@ use Throwable;
  * reload trigger file — the master rolls its workers one by one, zero-downtime with
  * SO_REUSEPORT).
  *
- * The consumer writes their worker script, points config.workerScript at it, and puts
- * the server params under config.server.
+ * The consumer writes their worker script, points a group's workerScript at it, and puts
+ * the server params under that group's server block. A pool's keys live in an entry of
+ * the config's "groups" list; the flat form, with them at the top level, is refused.
  *
  * Exit codes: 0 ok; 1 error (start failed at runtime, or reload timed out/failed);
  * 2 usage (missing/unknown command or invalid config); 3 not-running (`status`, or
@@ -248,8 +249,13 @@ class MasterCli
 
         $reloadFile = $this->reloadFile($config);
 
-        if (!$reloadFile->request(configPath: $resolvedPath, group: $group)) {
-            return $this->fail('cannot write reload trigger: ' . $reloadFile->path(), self::EXIT_ERROR);
+        $nonce = $reloadFile->request(configPath: $resolvedPath, group: $group);
+
+        if ($nonce === null) {
+            return $this->fail(
+                message: 'cannot write reload trigger: ' . $reloadFile->path(),
+                code: self::EXIT_ERROR,
+            );
         }
 
         $timeoutMs = $this->reloadTimeoutMs(
@@ -269,6 +275,15 @@ class MasterCli
             }
 
             if (!$reloadFile->requested()) {
+                $failure = $reloadFile->failure($nonce);
+
+                if ($failure !== null) {
+                    return $this->fail(
+                        message: 'reload failed: ' . $failure,
+                        code: self::EXIT_ERROR,
+                    );
+                }
+
                 $this->writeOut('reloaded');
 
                 return self::EXIT_OK;
@@ -284,23 +299,34 @@ class MasterCli
     }
 
     /**
-     * A generous bound on how long the rolling reload may take: each worker may drain
-     * for up to the master's shutdownTimeoutMs before it is killed, and they roll one
-     * at a time.
+     * A generous bound on how long the rolling reload may take: each replacement may take
+     * up to its group's readyTimeoutMs to come up, each worker it replaces up to
+     * shutdownTimeoutMs to drain before it is killed, and they roll one at a time. A fork
+     * group first waits up to readyTimeoutMs for its next fork server to load, and gives a
+     * worker it lets go of ForkServerGroup::RELEASE_GRACE_MS more to be reported gone.
      */
     protected function reloadTimeoutMs(MasterConfig $config, string $group = ''): int
     {
-        // Workers roll one at a time, so the wait is the sum of their drains rather than
-        // the longest of them. A scoped reload waits for its group alone.
-        foreach ($config->groups() as $configured) {
-            if ($group !== '' && $configured->name === $group) {
-                $workers = $configured->workerCount > 0 ? $configured->workerCount : Cpu::count();
+        // Workers roll one at a time, so the wait is the sum of their steps rather than the
+        // longest of them. A scoped reload waits for its group alone.
+        $timeoutMs = 5_000;
 
-                return $workers * ($configured->shutdownTimeoutMs + 2_000) + 5_000;
+        foreach ($config->groups() as $configured) {
+            if ($group !== '' && $configured->name !== $group) {
+                continue;
             }
+
+            $stepMs = $configured->readyTimeoutMs + $configured->shutdownTimeoutMs + 2_000;
+
+            if ($configured->launch === LaunchMode::Fork) {
+                $timeoutMs += $configured->readyTimeoutMs;
+                $stepMs += ForkServerGroup::RELEASE_GRACE_MS;
+            }
+
+            $timeoutMs += $configured->resolvedWorkerCount() * $stepMs;
         }
 
-        return $config->totalWorkerCount() * ($config->maxShutdownTimeoutMs() + 2_000) + 5_000;
+        return $timeoutMs;
     }
 
     protected function reloadFile(MasterConfig $config): MasterReloadFile
@@ -417,11 +443,13 @@ class MasterCli
 
             The JSON holds the master-wide settings (runtimeDir, logDir, name,
             rotateDays, logTo, panelPort, adminToken) plus the defaults its groups
-            inherit (phpBinary, phpArgs, env, restartPolicy, shutdownTimeoutMs,
-            restartBackoffMs, maxRestartBackoffMs), and a "groups" list of pools. A
-            group names its workerScript and workerCount, and its nested "server"
-            object becomes the workers' "--key=value" argv flags (booleans render as
-            1/0, a list or an object as JSON). Unspecified values use their defaults.
+            inherit (launch, phpBinary, phpArgs, env, restartPolicy, shutdownTimeoutMs,
+            restartBackoffMs, maxRestartBackoffMs, watchdogTimeoutMs, readyTimeoutMs,
+            accessLog), and a "groups" list of pools. A group takes a name and a
+            workerScript (both required), workerCount, workerArgs, listen, bootstrap,
+            server and any of the inherited keys; its nested "server" object becomes
+            the workers' "--key=value" argv flags (booleans render as 1/0, a list or an
+            object as JSON). Unspecified values use their defaults.
 
             start   run the supervisor (foreground)
             status  report whether a master is running (exit 0 running, 3 stopped/stale)

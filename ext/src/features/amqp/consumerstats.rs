@@ -8,7 +8,7 @@
 //! already travel.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::stats::{self, Consumers, Workload, WorkloadProvider};
@@ -56,31 +56,42 @@ pub struct ConsumerStats {
     counters: Mutex<Counters>,
 }
 
-/// Built eagerly, unlike the registries around it: it is two empty maps and no
-/// task, and every channel close reports into it whether or not this process
-/// ever consumed.
-///
-/// An `Arc` rather than a plain static because the pusher takes its provider as
-/// one, and it is the same instance either way.
-static INSTANCE: OnceLock<Arc<ConsumerStats>> = OnceLock::new();
-
-pub fn stats() -> &'static Arc<ConsumerStats> {
-    INSTANCE.get_or_init(|| {
-        Arc::new(ConsumerStats {
-            counters: Mutex::new(Counters::default()),
-        })
-    })
+/// The counters and the one pusher of this process. Part of the feature's
+/// registries on the Core, so a fork discards them: a child must neither count on
+/// from the parent's numbers nor find a pusher in the slot and start none of its
+/// own.
+pub struct Telemetry {
+    /// Built with the registries, eagerly: it is two empty maps and no task, and
+    /// every channel close reports into it whether or not this process ever
+    /// consumed.
+    ///
+    /// An `Arc` because the pusher takes its provider as one.
+    stats: Arc<ConsumerStats>,
+    /// `None` until a consumer opens.
+    pusher: Mutex<Option<stats::Pusher>>,
 }
 
-/// Guards the one pusher this process runs. `None` until a consumer opens.
-static PUSHER: Mutex<Option<stats::Pusher>> = Mutex::new(None);
+impl Telemetry {
+    pub fn new() -> Self {
+        Telemetry {
+            stats: Arc::new(ConsumerStats {
+                counters: Mutex::new(Counters::default()),
+            }),
+            pusher: Mutex::new(None),
+        }
+    }
+}
+
+pub fn stats() -> &'static Arc<ConsumerStats> {
+    &super::registries().telemetry.stats
+}
 
 /// Brings up the worker's pusher the first time a consumer opens, and never
 /// again — one pusher per process, like one per server. The collector address
 /// and the pool name come from the environment the master gives every worker,
 /// so nothing about this crosses the PHP boundary.
 pub fn start_telemetry() {
-    let mut slot = PUSHER.lock().unwrap();
+    let mut slot = super::registries().telemetry.pusher.lock().unwrap();
 
     if slot.is_some() {
         return;
@@ -122,7 +133,7 @@ pub fn start_telemetry() {
 /// pusher stopped here can be started again: `destroy()` leaves the handler
 /// usable, and a consumer opened after it must report like any other.
 pub fn stop_telemetry() {
-    PUSHER.lock().unwrap().take();
+    super::registries().telemetry.pusher.lock().unwrap().take();
 }
 
 impl ConsumerStats {

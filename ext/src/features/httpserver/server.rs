@@ -11,10 +11,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::features::httpserver::listen::Listener;
 use crate::features::httpserver::payloads::RequestEvent;
 use crate::features::httpserver::requeststats::RequestStats;
 use crate::stats::Pusher;
@@ -168,7 +168,7 @@ pub struct ServerState {
 #[allow(clippy::too_many_arguments)]
 pub async fn accept_loop(
     registries: &'static Registries,
-    listener: TcpListener,
+    mut listener: Listener,
     flow_key: String,
     requests: mpsc::Sender<RequestEvent>,
     handler_timeout_ms: i64,
@@ -332,7 +332,7 @@ async fn serve_request(
     if bench_ladder_l0() {
         let response = text_response(StatusCode::OK, "ok");
 
-        crate::logger::write(access_line(
+        crate::logger::access(access_line(
             started_at,
             started.elapsed(),
             request.method().as_str(),
@@ -443,7 +443,7 @@ async fn serve_request(
         }
     };
 
-    crate::logger::write(access_line(
+    crate::logger::access(access_line(
         started_at,
         started.elapsed(),
         &log_method,
@@ -552,7 +552,7 @@ fn oversize_response(
 ) -> Response<ResponseBody> {
     let response = text_response(StatusCode::PAYLOAD_TOO_LARGE, "Payload Too Large");
 
-    crate::logger::write(access_line(
+    crate::logger::access(access_line(
         started_at,
         started.elapsed(),
         method,

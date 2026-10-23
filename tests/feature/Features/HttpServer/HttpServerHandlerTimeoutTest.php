@@ -142,7 +142,7 @@ class HttpServerHandlerTimeoutTest extends BaseHttpServerTestCase
      *
      * @return array{int, string}
      */
-    private function captureStream(string $url): array
+    protected function captureStream(string $url): array
     {
         $received = '';
 

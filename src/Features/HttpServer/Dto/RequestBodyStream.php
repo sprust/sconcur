@@ -9,14 +9,12 @@ use SConcur\Exceptions\HttpServer\RequestBodyStreamException;
 use Throwable;
 
 /**
- * The request body as a PSR-7 stream, wrapping the streaming RequestBody. It is
- * never buffered whole in the extension: the inline first chunk arrives with the
- * request, the rest is pulled on demand from the extension. So the handler receives an
- * ordinary ServerRequestInterface whose getBody() streams.
+ * The request body as a PSR-7 stream, wrapping RequestBody. The extension reads the
+ * whole body before the request reaches PHP, so read() slices what is already in
+ * memory and does not suspend; a slow uploader never reaches PHP until its body is in.
  *
  * One-directional, read-only and not seekable: seek/rewind/write throw, as PSR-7
- * allows for non-rewindable streams. Inside a coroutine read() suspends it while a
- * chunk is fetched, so a slow client never blocks the other requests. A body that
+ * allows for non-rewindable streams. A body that
  * exceeds the server limit surfaces as RequestBodyTooLargeException out of read()/
  * getContents() (the handler may let it bubble up — the framework maps it to 413).
  */
@@ -59,7 +57,7 @@ class RequestBodyStream implements StreamInterface
         return null;
     }
 
-    /** The body length is unknown up front (it is streamed), so the size is null. */
+    /** The size is not reported (RequestBody exposes none), so it is null. */
     public function getSize(): ?int
     {
         return null;

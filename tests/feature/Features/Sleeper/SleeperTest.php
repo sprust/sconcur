@@ -10,8 +10,8 @@ use Throwable;
 
 class SleeperTest extends BaseAsyncTestCase
 {
-    private float $startTime = 0;
-    private float $endTime   = 0;
+    protected float $startTime = 0;
+    protected float $endTime   = 0;
 
     protected function on_1_start(): void
     {

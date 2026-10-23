@@ -50,7 +50,8 @@ RUN curl -sS https://getcomposer.org/installer \
 
 COPY --from=ghcr.io/php/pie:bin /pie /usr/local/bin/pie
 
-# pcntl — the signal handling of the worker master and of every long-lived worker;
+# pcntl — for the test suite only: its SIG* constants and the signal handlers of some
+# demo workers. The library takes and sends its signals through the extension;
 # pdo_mysql and pdo_pgsql — the native baselines the SQL feature tests seed and compare
 # against; sockets — a platform requirement of spiral/goridge, which composer pulls in
 # with the dev dependencies whether or not RoadRunner is ever run.

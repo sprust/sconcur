@@ -10,6 +10,10 @@ namespace SConcur\Worker;
  * deletes it once the rolling restart completes. File-based like the stop signal
  * (state-file removal), so no signal — and therefore no PID-reuse risk — is involved.
  *
+ * A reload the master refuses or gives up leaves its reason in a second file beside this
+ * one (failed()), under the nonce of the request, so the CLI that asked reports the
+ * failure instead of reading the trigger's removal as success.
+ *
  * The file carries the config path the requesting CLI was given, because the master is
  * handed its groups as objects and has no path of its own to go back to, and the group
  * to roll when the request named one. It is JSON, but a file holding a bare path (or
@@ -30,21 +34,28 @@ class MasterReloadFile
 
     /**
      * Requests a reload by creating the trigger file, naming the config to re-read and,
-     * optionally, the single group to roll. Returns false when it could not be written.
+     * optionally, the single group to roll. Returns the request's nonce, which its outcome
+     * is found under (failure()), or null when the file could not be written.
      */
-    public function request(string $configPath = '', string $group = ''): bool
+    public function request(string $configPath = '', string $group = ''): ?string
     {
+        // What tells this request from an identical one. The signature is taken from the
+        // file's contents and its mtime, and mtime counts whole seconds: asking twice for
+        // the same group inside one second produced the same signature, and the clear that
+        // ended the first request then deleted the second unread.
+        $nonce = bin2hex(random_bytes(8));
+
         $request = (string) json_encode([
             'configPath' => $configPath,
             'group'      => $group,
-            // What tells this request from an identical one. The signature is taken from
-            // the file's contents and its mtime, and mtime counts whole seconds: asking
-            // twice for the same group inside one second produced the same signature, and
-            // the clear that ended the first request then deleted the second unread.
-            'nonce'      => bin2hex(random_bytes(8)),
+            'nonce'      => $nonce,
         ]);
 
-        return file_put_contents($this->path, $request . "\n") !== false;
+        if (file_put_contents($this->path, $request . "\n") === false) {
+            return null;
+        }
+
+        return $nonce;
     }
 
     /**
@@ -79,12 +90,53 @@ class MasterReloadFile
             // nonce and differ on their own; the mtime is what separates two hand-written
             // files holding the same words.
             signature: hash('xxh128', $contents . '|' . (string) @filemtime($this->path)),
+            nonce: (string) ($decoded['nonce'] ?? ''),
         );
     }
 
     public function requested(): bool
     {
         return is_file($this->path);
+    }
+
+    /**
+     * Ends a request that was refused or given up: its reason is written down for the CLI
+     * that asked, and then the trigger is removed as for one that succeeded. In that
+     * order, because the CLI reads the outcome the moment the trigger is gone.
+     */
+    public function fail(MasterReloadRequest $request, string $reason): void
+    {
+        if ($request->nonce !== '') {
+            @file_put_contents(
+                $this->failurePath(),
+                json_encode(['nonce' => $request->nonce, 'reason' => $reason]) . "\n",
+            );
+        }
+
+        $this->clear($request->signature);
+    }
+
+    /**
+     * Why the request with this nonce failed, or null when it did not. Read once: the file
+     * is removed when it answers.
+     */
+    public function failure(string $nonce): ?string
+    {
+        $contents = @file_get_contents($this->failurePath());
+
+        if ($contents === false) {
+            return null;
+        }
+
+        $decoded = json_decode($contents, true);
+
+        if (!is_array($decoded) || ($decoded['nonce'] ?? null) !== $nonce) {
+            return null;
+        }
+
+        @unlink($this->failurePath());
+
+        return (string) ($decoded['reason'] ?? '');
     }
 
     /**
@@ -109,5 +161,10 @@ class MasterReloadFile
         }
 
         @unlink($this->path);
+    }
+
+    protected function failurePath(): string
+    {
+        return $this->path . '.failed';
     }
 }

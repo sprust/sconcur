@@ -52,7 +52,7 @@ class WsServerLifecycleLogTest extends TestCase
         }
     }
 
-    private function waitForOutput(TestWsServer $server, string $needle): string
+    protected function waitForOutput(TestWsServer $server, string $needle): string
     {
         $deadline = microtime(true) + 5.0;
 

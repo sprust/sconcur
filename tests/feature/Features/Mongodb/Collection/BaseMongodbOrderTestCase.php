@@ -21,7 +21,7 @@ abstract class BaseMongodbOrderTestCase extends BaseTestCase
     /**
      * @var string[]
      */
-    private array $keys;
+    protected array $keys;
 
     abstract protected function getCollectionName(): string;
 

@@ -19,17 +19,17 @@ use Throwable;
  */
 class WsClientConcurrencyTest extends BaseAsyncTestCase
 {
-    private const int SLEEP_MS = 60;
+    protected const int SLEEP_MS = 60;
 
-    private static ?TestWsServer $server = null;
+    protected static ?TestWsServer $server = null;
 
-    private WsClient $client;
+    protected WsClient $client;
 
-    private ?Connection $connectionOne = null;
-    private ?Connection $connectionTwo = null;
+    protected ?Connection $connectionOne = null;
+    protected ?Connection $connectionTwo = null;
 
-    private float $startTime = 0;
-    private float $endTime   = 0;
+    protected float $startTime = 0;
+    protected float $endTime   = 0;
 
     public static function setUpBeforeClass(): void
     {
@@ -131,19 +131,19 @@ class WsClientConcurrencyTest extends BaseAsyncTestCase
         );
     }
 
-    private function sleepRoundTrip(Connection $connection): void
+    protected function sleepRoundTrip(Connection $connection): void
     {
         $connection->write('msleep:' . self::SLEEP_MS);
 
         self::assertSame('slept', $connection->read());
     }
 
-    private function url(): string
+    protected function url(): string
     {
         return 'ws://' . self::server()->host() . ':' . self::server()->port() . '/';
     }
 
-    private static function server(): TestWsServer
+    protected static function server(): TestWsServer
     {
         if (self::$server === null) {
             self::fail('Test ws server is not started.');
@@ -152,7 +152,7 @@ class WsClientConcurrencyTest extends BaseAsyncTestCase
         return self::$server;
     }
 
-    private static function connection(?Connection $connection): Connection
+    protected static function connection(?Connection $connection): Connection
     {
         if ($connection === null) {
             self::fail('Connection is not open.');

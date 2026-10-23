@@ -26,12 +26,22 @@ readonly class MasterConfig
 {
     /**
      * The shortest watchdog threshold that can be honoured. A worker marks itself alive at
-     * most twice a second (Heartbeat), so anything near that reads an ordinary gap between
-     * two marks as a hang and kills every worker of the group on sight — including the
-     * replacements, forever. Ten marks' worth leaves room for a GC pause, a descheduled
-     * process and the master's own tick.
+     * most twice a second (Scheduler::markAlive), so anything near that reads an ordinary
+     * gap between two marks as a hang and kills every worker of the group on sight —
+     * including the replacements, forever. Ten marks' worth leaves room for a GC pause, a
+     * descheduled process and the master's own tick.
      */
     public const int MIN_WATCHDOG_TIMEOUT_MS = 5_000;
+
+    /** How long a rolling reload waits for a replacement to say it is up, unless told otherwise. */
+    public const int DEFAULT_READY_TIMEOUT_MS = 30_000;
+
+    /**
+     * The shortest wait for a replacement that is accepted. A serve loop says it is up after
+     * its first wait for work, which may take a quarter of a second on an idle server, and
+     * the process has to start and load before that.
+     */
+    public const int MIN_READY_TIMEOUT_MS = 1_000;
 
     /** The keys the top level accepts. */
     protected const array KNOWN_KEYS = [
@@ -50,6 +60,9 @@ readonly class MasterConfig
         'restartBackoffMs',
         'maxRestartBackoffMs',
         'watchdogTimeoutMs',
+        'readyTimeoutMs',
+        'accessLog',
+        'launch',
         'groups',
     ];
 
@@ -144,6 +157,14 @@ readonly class MasterConfig
             );
         }
 
+        $launch = LaunchMode::tryFrom((string) ($data['launch'] ?? LaunchMode::Fork->value));
+
+        if ($launch === null) {
+            throw new InvalidConfigException(
+                message: 'config: "launch" must be exec|fork',
+            );
+        }
+
         $defaults = new MasterDefaults(
             phpBinary: (string) ($data['phpBinary'] ?? PHP_BINARY),
             phpArgs: self::stringList($data['phpArgs'] ?? []),
@@ -153,6 +174,9 @@ readonly class MasterConfig
             restartBackoffMs: self::nonNegativeInt($data, 'restartBackoffMs', 200),
             maxRestartBackoffMs: self::nonNegativeInt($data, 'maxRestartBackoffMs', 30_000),
             watchdogTimeoutMs: self::watchdogTimeoutMs($data, 60_000),
+            launch: $launch,
+            readyTimeoutMs: self::readyTimeoutMs($data, self::DEFAULT_READY_TIMEOUT_MS),
+            accessLog: self::accessLog($data, AccessLogTarget::Stdout),
         );
 
         return new self(
@@ -191,7 +215,7 @@ readonly class MasterConfig
         $total = 0;
 
         foreach ($this->groups as $group) {
-            $total += $group->workerCount > 0 ? $group->workerCount : Cpu::count();
+            $total += $group->resolvedWorkerCount();
         }
 
         return $total;
@@ -211,8 +235,7 @@ readonly class MasterConfig
 
     /**
      * Builds the supervisor.
-     */
-    /**
+     *
      * @param null|Closure(WatchdogEvent): void $onWatchdogEvent notified when the watchdog
      *                                                           acts on a worker — see docs/worker-master.md
      */
@@ -295,6 +318,52 @@ readonly class MasterConfig
                     'config: group "%s": "watchdogTimeoutMs" must be 0 (off) or at least %dms',
                     $groupName,
                     self::MIN_WATCHDOG_TIMEOUT_MS,
+                ),
+        );
+    }
+
+    /**
+     * `accessLog`: stdout, file or off.
+     *
+     * @param array<string, mixed> $data
+     */
+    public static function accessLog(array $data, AccessLogTarget $default, string $groupName = ''): AccessLogTarget
+    {
+        $target = AccessLogTarget::tryFrom((string) ($data['accessLog'] ?? $default->value));
+
+        if ($target !== null) {
+            return $target;
+        }
+
+        throw new InvalidConfigException(
+            message: $groupName === ''
+                ? 'config: "accessLog" must be stdout|file|off'
+                : sprintf('config: group "%s": "accessLog" must be stdout|file|off', $groupName),
+        );
+    }
+
+    /**
+     * `readyTimeoutMs`, refusing one below MIN_READY_TIMEOUT_MS. There is no "off": a
+     * reload that does not wait for its replacements is the one this setting exists to
+     * prevent, so a value that cannot be met is a mistake to report, not a switch.
+     *
+     * @param array<string, mixed> $data
+     */
+    public static function readyTimeoutMs(array $data, int $default, string $groupName = ''): int
+    {
+        $value = self::nonNegativeInt($data, 'readyTimeoutMs', $default, $groupName);
+
+        if ($value >= self::MIN_READY_TIMEOUT_MS) {
+            return $value;
+        }
+
+        throw new InvalidConfigException(
+            message: $groupName === ''
+                ? sprintf('config: "readyTimeoutMs" must be at least %dms', self::MIN_READY_TIMEOUT_MS)
+                : sprintf(
+                    'config: group "%s": "readyTimeoutMs" must be at least %dms',
+                    $groupName,
+                    self::MIN_READY_TIMEOUT_MS,
                 ),
         );
     }
