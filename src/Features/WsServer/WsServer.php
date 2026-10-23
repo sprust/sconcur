@@ -28,7 +28,8 @@ readonly class WsServer
 
     /**
      * @param string                                    $address             host:port to bind, e.g. "0.0.0.0:9200".
-     * @param int                                       $handshakeTimeoutMs  max time to read the upgrade request headers.
+     * @param int                                       $handshakeTimeoutMs  accepted and passed to the extension, which does not apply
+     *                                                                       it: nothing bounds reading the upgrade request.
      * @param int                                       $idleTimeoutMs       idle timeout while reading the next inbound message
      *                                                                       (0 = disabled). A push-only connection is kept alive by the
      *                                                                       server ping instead.

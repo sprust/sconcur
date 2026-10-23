@@ -2,7 +2,7 @@
 //!
 //! Registered with the runtime like a socket of its own, a shared socket wakes
 //! every worker holding it on every connection, and whoever runs first takes
-//! what is queued: across 12 workers the busiest then served 7–8× the requests
+//! what is queued: across 12 workers the busiest then served 7–9× the requests
 //! of the idlest, and with a handful of keep-alive connections some served none.
 //! Here a server accepts on a thread of its own that waits with EPOLLEXCLUSIVE,
 //! so a connection wakes one waiting worker instead of all of them, and that

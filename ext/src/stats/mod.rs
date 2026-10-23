@@ -1,4 +1,4 @@
-//! Mirrors ext/internal/stats: one worker's statistics snapshot, pushed framed
+//! One worker's statistics snapshot, pushed framed
 //! over a unix socket to an external collector (the PHP worker master, or any
 //! other supervisor speaking the same contract). Aggregation, the live panel and
 //! the /api/stats endpoint live in the collector, not here — this module only

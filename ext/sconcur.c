@@ -15,8 +15,9 @@
 /*
  * Preemption plumbing: what turns a CPU-bound handler into one that yields.
  *
- * A ticker task in the core's runtime periodically requests a VM interrupt; on
- * the next opcode boundary the engine calls sconcur_interrupt_function on the
+ * A ticker thread the core starts (a plain OS thread, not a runtime task, so it
+ * keeps ticking while the runtime is idle) periodically requests a VM interrupt;
+ * on the next opcode boundary the engine calls sconcur_interrupt_function on the
  * PHP thread, which invokes the PHP callback registered by armPreemption() (the
  * Scheduler's preempt hook that parks the current coroutine). The original
  * interrupt handler is always chained so pcntl signal dispatch keeps working,

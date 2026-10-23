@@ -163,8 +163,9 @@ readonly class QueueSpecParser
 
     /**
      * A consumer is a channel, and a connection runs out of channel numbers at
-     * ConnectionOptions::MAX_CHANNELS. Diagnosed here rather than as the broker's "504 channel
-     * id space exhausted" on whichever consumer happened to start last.
+     * ConnectionOptions::MAX_CHANNELS. Diagnosed here rather than as a refused channel open
+     * ("the maximum number of channels for this connection has been reached") on whichever
+     * consumer happened to start last.
      *
      * @param list<QueueSpec> $specs
      */

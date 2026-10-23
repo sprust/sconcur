@@ -218,9 +218,8 @@ fn build(
     max_idle_conns: i64,
     conn_max_lifetime_ms: i64,
 ) -> std::result::Result<Driver, String> {
-    // sqlx wants a minimum too, and defaults it to the maximum — which would
-    // hold open as many connections as the cap allows for the life of the
-    // process. The pool starts empty and grows, so the floor is zero here.
+    // The pool starts empty and grows on demand: the floor is zero, which is
+    // sqlx's own default and is stated below so the pool does not rest on it.
     let max_connections = if max_open_conns > 0 {
         max_open_conns as u32
     } else {
@@ -233,10 +232,12 @@ fn build(
         DEFAULT_MAX_CONNECTIONS
     };
 
-    // The pool starts empty and grows on demand; sqlx would otherwise default
-    // its minimum to the maximum and hold that many connections open for the
-    // life of the process. max_idle_conns has no direct counterpart — sqlx keeps
-    // every idle connection up to the maximum — so it is accepted and unused.
+    // max_idle_conns has no counterpart: sqlx puts no cap on idle connections.
+    // It keeps them up to the maximum and closes each one that has sat idle for
+    // its idle timeout (10 minutes by default, left as it is), so the value is
+    // accepted and unused. The same defaults give up on an acquire, opening a
+    // connection included, after 30 seconds — begin() included, which nothing
+    // else bounds; docs/mysql.md describes both.
     let _ = max_idle_conns;
 
     let max_lifetime = if conn_max_lifetime_ms > 0 {

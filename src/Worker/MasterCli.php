@@ -18,8 +18,9 @@ use Throwable;
  * reload trigger file — the master rolls its workers one by one, zero-downtime with
  * SO_REUSEPORT).
  *
- * The consumer writes their worker script, points config.workerScript at it, and puts
- * the server params under config.server.
+ * The consumer writes their worker script, points a group's workerScript at it, and puts
+ * the server params under that group's server block. A pool's keys live in an entry of
+ * the config's "groups" list; the flat form, with them at the top level, is refused.
  *
  * Exit codes: 0 ok; 1 error (start failed at runtime, or reload timed out/failed);
  * 2 usage (missing/unknown command or invalid config); 3 not-running (`status`, or
@@ -442,11 +443,13 @@ class MasterCli
 
             The JSON holds the master-wide settings (runtimeDir, logDir, name,
             rotateDays, logTo, panelPort, adminToken) plus the defaults its groups
-            inherit (phpBinary, phpArgs, env, restartPolicy, shutdownTimeoutMs,
-            restartBackoffMs, maxRestartBackoffMs), and a "groups" list of pools. A
-            group names its workerScript and workerCount, and its nested "server"
-            object becomes the workers' "--key=value" argv flags (booleans render as
-            1/0, a list or an object as JSON). Unspecified values use their defaults.
+            inherit (launch, phpBinary, phpArgs, env, restartPolicy, shutdownTimeoutMs,
+            restartBackoffMs, maxRestartBackoffMs, watchdogTimeoutMs, readyTimeoutMs,
+            accessLog), and a "groups" list of pools. A group takes a name and a
+            workerScript (both required), workerCount, workerArgs, listen, bootstrap,
+            server and any of the inherited keys; its nested "server" object becomes
+            the workers' "--key=value" argv flags (booleans render as 1/0, a list or an
+            object as JSON). Unspecified values use their defaults.
 
             start   run the supervisor (foreground)
             status  report whether a master is running (exit 0 running, 3 stopped/stale)

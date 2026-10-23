@@ -365,8 +365,8 @@ readonly class HttpServer
     /**
      * Turns the request event the extension's server emits (payloads.RequestEvent) into
      * a PSR-7 ServerRequestInterface, returning it together with the request id used
-     * to address the response. The body is wrapped in a lazy RequestBodyStream so it
-     * is never buffered whole.
+     * to address the response. The body, which the extension already read whole, is
+     * wrapped in a one-shot RequestBodyStream.
      *
      * @param array<string, mixed> $data the request event the core built
      *

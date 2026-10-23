@@ -8,10 +8,10 @@ namespace SConcur\Features\Amqp;
  * A message on its way to the broker: the body and the properties that travel with it.
  *
  * The properties are named constructor arguments rather than a string-keyed array, so a
- * misspelled one is a TypeError at the call site instead of a property the broker never
- * receives. `persistent` stands in for the delivery mode: asking for a message to survive
- * a broker restart is the common case, and it should not require knowing that the number
- * for it is two.
+ * misspelled one is an Error ("Unknown named parameter") at the call site instead of a
+ * property the broker never receives. `persistent` stands in for the delivery mode: asking
+ * for a message to survive a broker restart is the common case, and it should not require
+ * knowing that the number for it is two.
  *
  * Publishing a plain string is enough where no properties are needed —
  * `Channel::publish()` takes either.

@@ -84,9 +84,8 @@ readonly class Connection
      * reshaping or whose argument order is easy to get wrong.
      *
      * @param list<mixed> $arguments strings, ints and floats; anything else is refused
-     * @param bool|null   $blocking  null lets the core decide by command name, which is
-     *                               right for everything except XREAD/XREADGROUP, where
-     *                               only the arguments say whether the command waits
+     * @param bool|null   $blocking  null lets the core decide: by command name, and for
+     *                               XREAD/XREADGROUP by the BLOCK option in the arguments
      */
     public function command(
         string $name,

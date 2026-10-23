@@ -37,20 +37,20 @@ class Scheduler
      * How long the server loop blocks on one waitAny before looping to re-check
      * for a shutdown signal. Bounds the shutdown latency of an idle server.
      */
-    private const int SERVE_POLL_INTERVAL_MS = 250;
+    protected const int SERVE_POLL_INTERVAL_MS = 250;
 
     /** How often a stalled graceful drain reports what it is still waiting for. */
-    private const int DRAIN_DIAGNOSTIC_INTERVAL_SECONDS = 5;
+    protected const int DRAIN_DIAGNOSTIC_INTERVAL_SECONDS = 5;
 
     /** How many coroutines that report names, so the line stays a log line. */
-    private const int DRAIN_DIAGNOSTIC_MAX_COROUTINES = 8;
+    protected const int DRAIN_DIAGNOSTIC_MAX_COROUTINES = 8;
 
     /**
      * Default quantum of switch(): a coroutine yields at most once per this many
      * milliseconds, so the call can sit inside a hot loop and cost one hrtime()
      * comparison in the common case.
      */
-    private const int DEFAULT_SWITCH_QUANTUM_MS = 5;
+    protected const int DEFAULT_SWITCH_QUANTUM_MS = 5;
 
     /**
      * How many ready results one waitAnyBatch crossing may drain. Bounds the
@@ -58,14 +58,14 @@ class Scheduler
      * shouldStop() checks; a batch never waits to fill up, so the value only
      * caps a burst.
      */
-    private const int WAIT_BATCH_SIZE = 64;
+    protected const int WAIT_BATCH_SIZE = 64;
 
     /**
      * The shortest gap between two alive marks. The serve loop passes its top many times a
      * second on a busy server, and the watchdog's threshold is in tens of seconds, so
      * marking more often would only cost syscalls.
      */
-    private const int ALIVE_MARK_INTERVAL_MS = 500;
+    protected const int ALIVE_MARK_INTERVAL_MS = 500;
 
     protected static ?Scheduler $instance = null;
 
@@ -754,7 +754,7 @@ class Scheduler
      * drain once it has dispatched that many requests — a built-in mitigation for
      * handler memory leaks, letting a supervisor respawn a fresh process. The
      * limiting request is dispatched and drained like any in-flight one, and the
-     * listener is closed before draining, so no accepted request is bounced. Under a
+     * listener is closed before draining so new connections go elsewhere. Under a
      * master the limit is spread (spreadLimit) and the master is told why the worker is
      * leaving, so it replaces it at once and does not count the exit as a failure.
      *
@@ -925,9 +925,10 @@ class Scheduler
                         break;
                     }
 
-                    // While draining, refuse new requests: leave them unhandled so
-                    // the extension side answers them 503 when the server flow is stopped
-                    // below, instead of running their handlers.
+                    // While draining, new requests are not handled. Their connections
+                    // already handed the event over and wait for an answer that does not
+                    // come, so they are closed when the worker exits; only a request that
+                    // reaches the extension after the server flow is stopped gets a 503.
                     if ($draining) {
                         continue;
                     }
