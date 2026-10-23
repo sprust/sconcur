@@ -167,8 +167,9 @@ where a prepared statement takes exactly one. Two consequences:
   and `lastInsertId` comes from the last one. `query()` refuses a second result
   set — a cursor carries one column list for its whole stream, so rows of a
   second `SELECT` could only reach PHP labelled with the first one's column
-  names. Run one `SELECT` per query, and call a procedure that returns several
-  result sets from something else.
+  names. A statement that returns no rows (an `INSERT`, a `SET`) is not a result
+  set, so one `SELECT` after it is served. Run one `SELECT` per query, and call a
+  procedure that returns several result sets from something else.
 
 ### Table locks
 

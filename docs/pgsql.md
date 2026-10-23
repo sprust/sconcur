@@ -56,6 +56,10 @@ echo $result->affectedRows;
   transaction to a savepoint taken before the failure and lets it carry on. Nested
   transactions are savepoints here as they are on MySQL, see
   [docs/mysql.md](mysql.md#nested-transactions).
+- A string holding several statements separated by `;` runs all of them, bindings or
+  not: the statement goes over the simple protocol, which takes a batch.
+  `query()` refuses a second result set as MySQL does, see
+  [several statements in one call](mysql.md#several-statements-in-one-call).
 
 ## Limits
 
