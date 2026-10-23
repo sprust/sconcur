@@ -11,7 +11,7 @@ through it".
 | What | Run | Answers |
 |---|---|---|
 | `tests/benchmarks/worker/memory.php` | `make bench-worker-memory`, `make bench-worker-memory-soak` | what a pool costs by launch (exec, fork, bootstrap) and how it moves under a long load; reads every worker's PHP heap through `/memory` |
-| `tests/mem-leak/worker-soak.php` | `make mem-leak-worker scenario=<list> seconds=<n> launch=<list>` | whether the master, the fork server or the surviving workers keep a piece of failures repeated for minutes; why each failed background request failed |
+| `tests/mem-leak/worker-soak.php` | `make mem-leak-worker scenario=<list> seconds=<n> launch=<list> [warmup=<n>]` | whether the master, the fork server or the surviving workers keep a piece of failures repeated for minutes; why each failed background request failed |
 | `tests/mem-leak/worker-soak-summary.php` | `make mem-leak-worker-summary file=<output> [scenario=...]` | the soak's output laid out: first read after the warm-up against the last, losses per death; every read of one scenario |
 | `tests/mem-leak/worker-exit-timing.php` | `make mem-leak-worker-exit-timing launch=<one> seconds=<n>` | how long each step of a worker's death by `exit()` takes, beside the requests it cost |
 
@@ -84,8 +84,8 @@ is slow or skipped:
    destroyed — `sconcur_after_fork_in_child()` — so a singleton the fork server created
    never destructs in a worker), shutdown functions registered before the fork, `_exit`
    paths that skip PHP's shutdown.
-3. Fix, rerun the one scenario for both launches (`scenario=exit,fatal seconds=40` with
-   `WARMUP_SECONDS=10`), compare losses per death.
+3. Fix, rerun the one scenario for both launches (`make mem-leak-worker scenario=exit,fatal
+   seconds=40 warmup=10 launch=exec,bootstrap`), compare losses per death.
 
 ## Proving the test catches it
 

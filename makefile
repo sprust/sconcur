@@ -429,10 +429,11 @@ mem-leak-files:
 # heap and the runtime's tasks — and a verdict per scenario. Scenarios: oom, kill, exit,
 # fatal, spin, block, recycle, crash-at-start, fork-server-kill, reload, reload-broken,
 # sigterm, throw, disconnect, slowloris, bad-http, orphan, handler-timeout, external,
-# preempt; all of them, four minutes each, by default (about an hour and a half).
+# preempt; all of them, four minutes each, by default (about an hour and a half). The verdict
+# reads only past warmup= seconds (60 by default), so a short run needs a shorter one.
 # e.g.: make mem-leak-worker scenario=oom,reload seconds=600 launch=exec,bootstrap
 mem-leak-worker:
-	$(DOCKER_COMPOSE) exec -e LAUNCH=$(or $(launch),bootstrap) php \
+	$(DOCKER_COMPOSE) exec -e LAUNCH=$(or $(launch),bootstrap) -e WARMUP_SECONDS=$(or $(warmup),60) php \
 		php -d extension=$(SCONCUR_EXT) \
 		tests/mem-leak/worker-soak.php $(or $(scenario),all) $(or $(seconds),240)
 

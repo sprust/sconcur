@@ -467,9 +467,10 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
     what a file stream holds is native memory. `abandoned` is the one that earns
     its keep: streams broken out of halfway and a writer dropped without a close
     are released by nothing but the flow ending.
-  - `make mem-leak-worker scenario=<list> seconds=<n> launch=<list>` — the worker
-    master under failure, `launch` being any of exec, fork, bootstrap
-    (comma-separated; bootstrap by default). Twenty scenarios in which workers die
+  - `make mem-leak-worker scenario=<list> seconds=<n> launch=<list> [warmup=<n>]` —
+    the worker master under failure, `launch` being any of exec, fork, bootstrap
+    (comma-separated; bootstrap by default), the verdict reading only past `warmup`
+    seconds (60 by default). Twenty scenarios in which workers die
     (out of memory, exit(), a fatal error, killed, hung and killed by the watchdog,
     stopped by SIGTERM, at their limit, at startup, with their fork server, by
     reload) or requests fail (thrown, cut off by a deadline or preemption,
