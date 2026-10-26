@@ -1,9 +1,10 @@
 # Reading a soak
 
-> The worker soaks this describes (`make mem-leak-worker*`, `make bench-worker-memory*`)
-> ran on the fork server design and were taken out with it; they come back for the
-> master built in the application's process — step 6 of
-> [plans/master-v2.md](plans/master-v2.md). The methods stand.
+> The failure soaks this describes (`make mem-leak-worker*`) ran on the fork server design
+> and were taken out with it; they come back for the master built in the application's
+> process — step 6 of [plans/master-v2.md](plans/master-v2.md). The memory bench
+> (`make bench-worker-memory*`) is back, with the arms exec, fork and preload. The methods
+> stand.
 
 How the worker master's memory and failure soaks are run, read and taken apart, and the
 traps each reading has. Written after the 0.17.0 checks: an hour-long memory soak, 38
@@ -15,7 +16,7 @@ through it".
 
 | What | Run | Answers |
 |---|---|---|
-| `tests/benchmarks/worker/memory.php` | `make bench-worker-memory`, `make bench-worker-memory-soak` | what a pool costs by launch (exec, fork, bootstrap) and how it moves under a long load; reads every worker's PHP heap through `/memory` |
+| `tests/benchmarks/worker/memory.php` | `make bench-worker-memory`, `make bench-worker-memory-soak` | what a pool costs by how its workers start (a php each, forks of a master, forks of a master that loaded the application first) and how it moves under a long load; reads every worker's PHP heap through `/memory` |
 | `tests/mem-leak/worker-soak.php` | `make mem-leak-worker scenario=<list> seconds=<n> launch=<list> [warmup=<n>]` | whether the master, the fork server or the surviving workers keep a piece of failures repeated for minutes; why each failed background request failed |
 | `tests/mem-leak/worker-soak-summary.php` | `make mem-leak-worker-summary file=<output> [scenario=...]` | the soak's output laid out: first read after the warm-up against the last, losses per death; every read of one scenario |
 | `tests/mem-leak/worker-exit-timing.php` | `make mem-leak-worker-exit-timing launch=<one> seconds=<n>` | how long each step of a worker's death by `exit()` takes, beside the requests it cost |

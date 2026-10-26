@@ -661,6 +661,21 @@ bench-http-load-stats:
 bench-http-load-soak:
 	MODE=soak tests/benchmarks/http/load-stats.sh
 
+# What a pool of workers costs in memory by how its workers start: a php per worker,
+# forks of a master, and forks of a master that loaded the application first (Pss and
+# Private_Dirty from smaps_rollup). Override via env, e.g.: make bench-worker-memory WORKERS=16
+bench-worker-memory:
+	$(DOCKER_COMPOSE) exec -e WORKERS=$${WORKERS:-12} -e REQUESTS=$${REQUESTS:-5000} \
+		-e SOAK_SECONDS=$${SOAK_SECONDS:-0} -e SAMPLE_SECONDS=$${SAMPLE_SECONDS:-60} -e OPCACHE=$${OPCACHE:-0} -e ARMS=$${ARMS:-} php \
+		php -d extension=$(SCONCUR_EXT) tests/benchmarks/worker/memory.php
+
+# The same pools under a long run on /work (SOAK_SECONDS an arm, 15 minutes by default),
+# without OPcache and with it: six arms, an hour and a half.
+bench-worker-memory-soak:
+	for opcache in 0 1; do \
+		$(MAKE) bench-worker-memory SOAK_SECONDS=$${SOAK_SECONDS:-900} OPCACHE=$$opcache || exit 1; \
+	done
+
 # Baseline variant: same harness against the bare "/" route (no I/O fan-out) —
 # measures the pure HTTP + framework ceiling, the floor under the /all numbers.
 # The pool runs the way production runs it: a worker master that loaded the
