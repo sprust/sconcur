@@ -119,20 +119,20 @@ Broadcast в другие соединения не встроен — прил�
 | `maxConnections` | `0` (без лимита) | остановить сервер после N обслуженных соединений (защита от утечек); под мастером разбрасывается, см. [политику перезапуска](worker-master.ru.md#политика-перезапуска-и-maxrequests) |
 | `shutdownTimeoutMs` | `10000` | принимается и не применяется: завершение уже принятых соединений ограничено льготным периодом ниже, а не собственными часами |
 | `reusePort` | `false` | `SO_REUSEPORT` — пул процессов на одном порту (Linux) |
-| `listenFd` | `null` | Слушающий сокет, связанный кем-то другим, — на нём принимать вместо `address`; см. [один сокет на весь пул](http-server.ru.md#один-сокет-на-весь-пул) |
+| `listenFd` | `null` | Слушающий сокет, связанный кем-то другим (например, socket activation systemd), — на нём принимать вместо `address`; см. [один сокет на весь пул](http-server.ru.md#один-сокет-на-весь-пул) |
 | `path` | `/` | путь, на котором принимается апгрейд (пустая строка — любой путь); другой путь → `404` |
 | `allowedOrigins` | `[]` | хосты, которые может называть заголовок `Origin`, вместе с портом, без учёта регистра; `*` — любой (пусто — проверка пропускается; запрос без `Origin` проходит всегда) |
 | `subprotocols` | `[]` | согласуемые субпротоколы WebSocket; выбирается первый из этого списка, который предлагает клиент |
 | `onError` | `null` | хук ошибки обработчика |
-| `masterPid` | `null` | проверка на сироту под мастером |
-| `telemetrySocket` | `''` (выкл.) | unix-сокет для снапшотов статистики, передаётся мастером ([статистика](admin-stats.ru.md)) |
-| `serverName` | `'sconcur-server'` | имя воркера в снапшотах статистики |
+| `masterPid` | `null` | проверка на сироту: `null` — мастер, форкнувший этот воркер (`WorkerContext`), а вне мастера проверки нет |
+| `telemetrySocket` | `''` (выкл.) | unix-сокет для снапшотов статистики ([статистика](admin-stats.ru.md)); пусто — `SCONCUR_TELEMETRY_SOCKET`, который мастер ставит своим воркерам |
+| `serverName` | `'sconcur-server'` | имя воркера в снапшотах статистики; если по умолчанию — `SCONCUR_SERVER_NAME`, который ставит мастер |
 | `telemetryIntervalMs` | `0` | период снапшотов (`0` — значение по умолчанию у отправителя, 1000 мс) |
 | `preemptionQuantumMs` | `0` | квант автоматической преемпции (`0` — выкл.); перед включением прочитайте про [состояние процесса](coroutine-switching.ru.md#состояние-процесса) |
 
 `allowedOrigins`/`subprotocols` — массивы, а `fromArgs()` берёт из argv только
 скалярные параметры: флаг `--allowedOrigins=…` отклоняется как неизвестный.
-Задавайте их в коде воркер-скрипта.
+Задавайте их в конструкторе.
 
 ## Конкурентность, keepalive и ошибки
 
@@ -183,26 +183,29 @@ push-соединение, в которое клиент ничего не шл
 
 ## Запуск под мастером воркеров
 
-Сервер — обычный воркер для `bin/sconcur-server`, о котором мастер ничего не
-знает; пример конфига — группа `ws` в `config/sconcur.servers.config.json`.
+Роль группы строит сервер и запускает его; мастеру ничего о нём знать не нужно.
 
 ```php
-$server = WsServer::fromArgs($_SERVER['argv']);
-
-$server->serve(static function (Connection $connection): void {
-    while (($message = $connection->read()) !== null) {
-        $connection->write($message);
-    }
-});
+new WorkerGroupConfig(
+    name: 'ws',
+    role: static function (): void {
+        new WsServer(address: '0.0.0.0:9200', reusePort: true)
+            ->serve(static function (Connection $connection): void {
+                while (($message = $connection->read()) !== null) {
+                    $connection->write($message);
+                }
+            });
+    },
+    workerCount: 4,
+);
 ```
 
-Мастер разворачивает блок `server` в argv `--key=value` и передаёт свой pid через
-`--masterPid`; `reusePort: true` в `server` или `listen` у группы позволяют воркерам
-делить порт (см. [как делить порт](worker-master.ru.md#как-делить-порт-reuseport-или-listen)).
-Пул отдаёт статистику через
-панель мастера (`GET /api/stats`) секцией `connections`, как у сокет-сервера — см.
-[мастер воркеров](worker-master.ru.md) и
-[статистику сервера](admin-stats.ru.md).
+Под мастером сервер сам следит за ним (`WorkerContext`); `reusePort: true` позволяет
+воркерам делить порт. Пул отдаёт статистику через панель мастера (`GET /api/stats`)
+секцией `connections`, как у сокет-сервера, — см. [мастер воркеров](worker-master.ru.md)
+и [статистику сервера](admin-stats.ru.md). `WsServer::fromArgs($_SERVER['argv'])`
+собирает тот же сервер из флагов `--key=value` — для скрипта, который запускает один
+сервер сам по себе.
 
 ## Ограничения
 

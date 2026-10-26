@@ -1,5 +1,10 @@
 # Reading a soak
 
+> The worker soaks this describes (`make mem-leak-worker*`, `make bench-worker-memory*`)
+> ran on the fork server design and were taken out with it; they come back for the
+> master built in the application's process — step 6 of
+> [plans/master-v2.md](plans/master-v2.md). The methods stand.
+
 How the worker master's memory and failure soaks are run, read and taken apart, and the
 traps each reading has. Written after the 0.17.0 checks: an hour-long memory soak, 38
 failure scenarios, one bug of the branch found by comparing two launches. The same methods

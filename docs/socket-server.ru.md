@@ -96,11 +96,11 @@ $server->serve(static function (Connection $connection): void {
 | `maxConnections` | `0` (без лимита) | остановить сервер после N обслуженных соединений (защита от утечек); под мастером разбрасывается, см. [политику перезапуска](worker-master.ru.md#политика-перезапуска-и-maxrequests) |
 | `shutdownTimeoutMs` | `10000` | принимается и не применяется: завершение уже принятых соединений ограничено льготным периодом ниже, а не собственными часами |
 | `reusePort` | `false` | `SO_REUSEPORT` — пул процессов на одном порту (Linux) |
-| `listenFd` | `null` | Слушающий сокет, связанный кем-то другим, — на нём принимать вместо `address`; см. [один сокет на весь пул](http-server.ru.md#один-сокет-на-весь-пул) |
+| `listenFd` | `null` | Слушающий сокет, связанный кем-то другим (например, socket activation systemd), — на нём принимать вместо `address`; см. [один сокет на весь пул](http-server.ru.md#один-сокет-на-весь-пул) |
 | `onError` | `null` | хук ошибки обработчика |
-| `masterPid` | `null` | проверка на сироту под мастером |
-| `telemetrySocket` | `''` (выкл.) | unix-сокет для снапшотов статистики, передаётся мастером ([статистика](admin-stats.ru.md)) |
-| `serverName` | `'sconcur-server'` | имя воркера в снапшотах статистики |
+| `masterPid` | `null` | проверка на сироту: `null` — мастер, форкнувший этот воркер (`WorkerContext`), а вне мастера проверки нет |
+| `telemetrySocket` | `''` (выкл.) | unix-сокет для снапшотов статистики ([статистика](admin-stats.ru.md)); пусто — `SCONCUR_TELEMETRY_SOCKET`, который мастер ставит своим воркерам |
+| `serverName` | `'sconcur-server'` | имя воркера в снапшотах статистики; если по умолчанию — `SCONCUR_SERVER_NAME`, который ставит мастер |
 | `telemetryIntervalMs` | `0` | период снапшотов (`0` — значение по умолчанию у отправителя, 1000 мс) |
 | `preemptionQuantumMs` | `0` | квант автоматической преемпции (`0` — выкл.); перед включением прочитайте про [состояние процесса](coroutine-switching.ru.md#состояние-процесса) |
 
@@ -148,8 +148,8 @@ $server = new SocketServer(
 управление. Соединению, которое ещё не прислало первый кадр, на него даётся ещё 250
 мс. Push-обработчик, который не читает, EOF не замечает, и его добивает принудительное
 закрытие после льготного периода (2 c). В пуле на одном порту ядро сразу отдаёт новые
-соединения соседям, и процесс выходит сам. Пул делит порт через `reusePort: true` или
-общий `listenFd`, как HTTP-сервер, — см. [масштабирование на
+соединения соседям, и процесс выходит сам. Пул делит порт через `reusePort: true`, как
+HTTP-сервер, — см. [масштабирование на
 ядра](http-server.ru.md#масштабирование-на-ядра-so_reuseport).
 
 Строки жизненного цикла идут в `STDOUT` — рядом с access-логом на соединение,
@@ -177,22 +177,27 @@ access-строки можно вместо этого писать в файл 
 
 ## Запуск под мастером воркеров
 
-Сервер — обычный воркер для `bin/sconcur-server`, о котором мастер ничего не
-знает; пример конфига —
-группа `socket` в `config/sconcur.servers.config.json`. Мастер разворачивает блок `server`
-этого конфига в argv `--key=value` (их парсит `fromArgs`) и передаёт свой pid как
-`--masterPid` для проверки на сироту — детали в
-[мастере воркеров](worker-master.ru.md).
+Роль группы строит сервер и запускает его; мастеру ничего о нём знать не нужно. Под
+мастером сервер сам следит за ним (`WorkerContext`) и отчитывается на его панель —
+детали в [мастере воркеров](worker-master.ru.md).
 
 ```php
-$server = SocketServer::fromArgs($_SERVER['argv']);
-
-$server->serve(static function (Connection $connection): void {
-    while (($frame = $connection->read()) !== null) {
-        $connection->write($frame);
-    }
-});
+new WorkerGroupConfig(
+    name: 'socket',
+    role: static function (): void {
+        new SocketServer(address: '0.0.0.0:9100', reusePort: true)
+            ->serve(static function (Connection $connection): void {
+                while (($frame = $connection->read()) !== null) {
+                    $connection->write($frame);
+                }
+            });
+    },
+    workerCount: 4,
+);
 ```
+
+`SocketServer::fromArgs($_SERVER['argv'])` собирает тот же сервер из флагов
+`--key=value` — для скрипта, который запускает один сервер сам по себе.
 
 ## Ограничения
 

@@ -24,7 +24,7 @@ panel are pure PHP in the master, which never starts the extension's runtime.
 
 Each worker is a separate process with its own counters, and a connection to the
 shared port (a [`SO_REUSEPORT`](http-server.md#scaling-across-cores-so_reuseport)
-socket per worker or the master's `listen` socket) lands in one of them — so
+socket per worker) lands in one of them — so
 statistics cannot be collected by polling a single socket. Instead each worker
 connects to the collector's unix socket (brought up by the master in
 `runtimeDir`) on its first push, one interval after it starts (and again after a
@@ -65,24 +65,16 @@ Statistics turn on when both master settings are set: `panelPort` and `adminToke
 The master brings up the collector and panel itself and injects the socket path
 into the workers — nothing to configure on the worker side.
 
-```json
-{
-  "runtimeDir": "/run/sconcur",
-  "name": "sconcur-servers",
-  "panelPort": 8081,
-  "adminToken": "23c30b40...9894c3ec",
-  "groups": [
-    {
-      "name": "http",
-      "workerScript": "/app/worker.php",
-      "workerCount": 8,
-      "server": {
-        "address": "0.0.0.0:8080",
-        "reusePort": true
-      }
-    }
-  ]
-}
+```php
+$master = new WorkerMaster(
+    runtimeDir: '/run/sconcur',
+    groups: [
+        new WorkerGroupConfig(name: 'http', role: $httpRole, workerCount: 8),
+    ],
+    name: 'sconcur-servers',
+    panelPort: 8081,
+    adminToken: '23c30b40...9894c3ec',
+);
 ```
 
 ```sh
@@ -90,8 +82,8 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
   http://localhost:8081/api/stats
 ```
 
-The worker script stays as it is — `HttpServer::fromArgs(...)` (or
-`SocketServer`/`WsServer`) picks up the env injected by the master on its own. The
+The role stays as it is — `HttpServer` (or `SocketServer`/`WsServer`, or the AMQP
+consumer) picks up the env the master sets on its own. The
 socket and WebSocket pools serve the same endpoint, only with a `connections`
 section instead of `requests`.
 
@@ -115,14 +107,14 @@ Everything is on the master's `panelPort`.
 
 ## Configuration
 
-Under the master two keys are enough; the rest is derived from `runtimeDir`/`name`.
+Under the master two parameters are enough; the rest is derived from `runtimeDir`/`name`.
 
-| Master config key | Purpose | Default |
+| `WorkerMaster` parameter | Purpose | Default |
 |---|---|---|
 | `panelPort` | panel/endpoint port; needed together with the token | `0` (off) |
 | `adminToken` | endpoint token; needed together with the port | empty (off) |
 
-The worker reads its part from env (the master injects it; set it by hand only when
+The worker reads its part from env (the master sets it; set it by hand only when
 running without a master):
 
 | Worker variable | Purpose | Default |
@@ -131,11 +123,9 @@ running without a master):
 | `SCONCUR_SERVER_NAME` | snapshot label; the master sets `<group>:<slot>` | `sconcur-server` |
 | `SCONCUR_TELEMETRY_INTERVAL_MS` | snapshot sample/push cadence | `1000` |
 
-Under the master the socket is `<runtimeDir>/<name>.telemetry.sock`, injected only
-when telemetry is enabled. The same values can be set programmatically: on a
-server via its constructor (`telemetrySocket`, `serverName`,
-`telemetryIntervalMs`), on the master via the `WorkerMaster` constructor
-(`panelPort`, `adminToken`). A queue consumer has no such parameters — the
+Under the master the socket is `<runtimeDir>/<name>.telemetry.sock`, set only when
+telemetry is enabled. A server's own constructor parameters (`telemetrySocket`,
+`serverName`, `telemetryIntervalMs`) win over the environment when they are set. A queue consumer has no such parameters — the
 extension reads the socket and the pool name from the environment, and labels its
 snapshots `<group>:<slot>` from what the master set. Several masters on one machine
 need different `panelPort`s and a different `runtimeDir` or `name`.

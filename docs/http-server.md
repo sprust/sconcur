@@ -122,18 +122,18 @@ timeouts are in milliseconds.
 | `readTimeoutMs` | `30000` | Accepted and not applied. |
 | `writeTimeoutMs` | `30000` | Accepted and not applied. |
 | `idleTimeoutMs` | `60000` | Accepted and not applied. |
-| `shutdownTimeoutMs` | `10000` | Accepted and not applied. |
+| `shutdownTimeoutMs` | `10000` | How long a stopping server waits for its connections to finish their last responses and close, see [graceful shutdown](#graceful-shutdown). `0` — as long as they take. |
 | `maxRequestBody` | `10485760` (10 MiB) | Request body limit; exceeding it → `413`. |
 | `maxConcurrency` | `0` (no limit) | Requests handled at once, see [limits](#concurrency-and-limits). |
 | `handlerTimeoutMs` | `60000` | Max total handling time including streaming, otherwise `504`/abort. `0` — the PHP handler is not unwound; the extension still answers `504` after 60 s. |
 | `maxRequests` | `0` (no limit) | Stop the server after this many requests, see [below](#stopping-after-n-requests). |
 | `reusePort` | `false` | `SO_REUSEPORT` — several processes on one port. |
-| `listenFd` | `null` | A listening socket bound elsewhere to accept on instead of binding `address` (`address` and `reusePort` are then not used) — a [worker master](worker-master.md) group's shared socket or systemd socket activation; see [one socket for the whole pool](#one-socket-for-the-whole-pool). |
+| `listenFd` | `null` | A listening socket bound elsewhere to accept on instead of binding `address` (`address` and `reusePort` are then not used) — systemd socket activation, say; see [one socket for the whole pool](#one-socket-for-the-whole-pool). |
 | `onError` | `null` | `Closure(Throwable, ServerRequestInterface): ?ResponseInterface`. |
-| `masterPid` | `null` | Stop gracefully once this pid is no longer the parent (the [master](worker-master.md) died); set from `--masterPid` by `fromArgs()`. |
-| `telemetrySocket` | `''` (off) | Unix socket for stats snapshots, injected by the master ([stats](admin-stats.md)). |
-| `serverName` | `'sconcur-server'` | Worker name in the stats snapshots. |
-| `telemetryIntervalMs` | `0` | Snapshot cadence; `0` — the default of the component that sends them (1000 ms). |
+| `masterPid` | `null` | Stop gracefully once this pid is no longer the parent. `null` — the master that forked this worker (`WorkerContext`, see the [worker master](worker-master.md#self-termination-of-orphaned-workers)), or no check outside one. |
+| `telemetrySocket` | `''` (off) | Unix socket for stats snapshots ([stats](admin-stats.md)). Empty — `SCONCUR_TELEMETRY_SOCKET` from the environment, which the master sets for its workers. |
+| `serverName` | `'sconcur-server'` | Worker name in the stats snapshots. Left at the default — `SCONCUR_SERVER_NAME` from the environment, which the master sets as `<group>:<slot>`. |
+| `telemetryIntervalMs` | `0` | Snapshot cadence; `0` — `SCONCUR_TELEMETRY_INTERVAL_MS` from the environment, or the default of the component that sends them (1000 ms). |
 | `preemptionQuantumMs` | `0` | Automatic-preemption quantum while serving; `0` — off. Read [process-wide state](coroutine-switching.md#process-wide-state) before turning it on. |
 
 ### Building the server from argv
@@ -141,7 +141,8 @@ timeouts are in milliseconds.
 `HttpServer::fromArgs()` assembles the server from `argv`: every `--name=value` is
 matched to the constructor's scalar parameter of the same name (type-checked), an
 unknown flag throws. PSR-17 factories cannot travel on argv, so they stay
-arguments. This is what a worker script under the [master](worker-master.md) uses:
+arguments. It is for a script that runs one server on its own — a
+[worker master](worker-master.md)'s role builds its server with the constructor:
 
 ```php
 $server = HttpServer::fromArgs(
@@ -153,13 +154,12 @@ $server = HttpServer::fromArgs(
 
 ### Connection timeouts
 
-The four connection deadlines and `shutdownTimeoutMs` cross the boundary and are
-not acted on: the extension bounds a request by `handlerTimeoutMs` and nothing
-else. A slow client therefore holds its connection for as long as it likes, and
-a shutdown waits for the handlers already accepted to finish rather than for a
-clock — bounded in practice by `handlerTimeoutMs`. At `0` a stuck handler is never
-unwound and the shutdown waits for it. Terminate slow clients in the reverse proxy in
-front.
+The four connection deadlines cross the boundary and are not acted on: the extension
+bounds a request by `handlerTimeoutMs` and nothing else. A slow client therefore holds
+its connection for as long as it likes while the server runs. A stopping server waits
+for its connections up to `shutdownTimeoutMs` (see [graceful shutdown](#graceful-shutdown))
+and then leaves; a handler still running then is unwound. Terminate slow clients in the
+reverse proxy in front.
 
 ## Request and response (PSR-7)
 
@@ -331,8 +331,8 @@ An `onError` that itself throws is safely swallowed — the client still gets `5
 
 Access log — one line per request to `STDOUT` (under a worker master, wherever its
 [`accessLog`](worker-master.md#access-lines) says), including the answers the
-extension gives on its own (`503` on shutdown, `504` on handler timeout, `413` on
-body overflow). A request whose client disconnects before the answer leaves no line:
+extension gives on its own (`504` on handler timeout, `413` on body overflow, `503` to a
+request that reaches a server whose stop has run past `shutdownTimeoutMs`). A request whose client disconnects before the answer leaves no line:
 
 ```
 2026-06-14T17:36:26.123456 GET / 200 2.59ms
@@ -463,35 +463,23 @@ Caveats:
   requests of one connection land in the same process. Few long-lived connections
   distribute unevenly.
 - Limits are per process: the total is value × number of processes.
-- Graceful shutdown is per process; under load it still loses a request or two per
-  restart — see below.
+- Graceful shutdown is per process — see below.
 - `SO_REUSEPORT` lets another process with the same UID bind the port and
   intercept part of the connections; keep that in mind in a multi-tenant
   environment.
 
 ### One socket for the whole pool
 
-Instead of every process binding a `SO_REUSEPORT` socket of its own, one socket can be
-bound once and handed to all of them: `listenFd` takes the descriptor of a listening
-socket, and the server accepts on it instead of binding `address`. The
-[worker master](worker-master.md#sharing-the-port-reuseport-or-listen) does this for a
-group with `listen`, and systemd's socket activation hands over a descriptor the same
-way.
+Instead of binding `address`, a server can accept on a listening socket bound elsewhere:
+`listenFd` takes its descriptor — the one systemd's socket activation hands over, say.
+The server takes over a copy of the descriptor, so stopping it closes the copy and
+leaves the socket to whoever else holds it, and a stopping server leaves what is queued
+on the socket to them.
 
-All the workers then take connections from one queue. A worker that stops leaves what
-is waiting in it to the others, and the port stays open through every restart and
-rolling reload. The server takes over a copy of the descriptor, so stopping it closes
-the copy and leaves the socket to whoever else holds it.
-
-On Linux a server accepts on a shared socket from a thread of its own, one more thread
-per server. The thread waits with `EPOLLEXCLUSIVE`, and only while the server asks for
-a connection, so a connection wakes one waiting worker and the workers take turns.
-Without it every worker wakes for every connection and the first to run takes what is
-queued: across 12 workers the busiest served 7–9 times as many requests as the idlest,
-and on other systems a shared socket is still accepted that way. With the thread, on
-the same 12 workers, the rps stayed within 2% of `SO_REUSEPORT` and the requests were
-spread at least as evenly. With a connection per request it costs about 10% more CPU
-per request ([the measurements](load-testing.md#shared-socket-vs-so_reuseport)).
+Several processes accepting on one socket all wake for every connection, and the first
+to run takes what is queued: across 12 workers the busiest served 7–9 times as many
+requests as the idlest. A pool of processes on one port is better served by
+`SO_REUSEPORT`.
 
 ### A proxy in front of the pool
 
@@ -580,7 +568,8 @@ $server = new HttpServer(
 
 The limit is per process (the total budget until restart is `maxRequests` × the
 number of workers). Dispatched requests are counted — the limit request itself
-is not aborted, and requests rejected while the server is stopping do not count.
+is not aborted, and a request that arrives on an open connection while the server
+stops is still answered, past the limit.
 Under the worker master each worker stops somewhere between `maxRequests` and half
 again as many, so the pool does not restart all at once, and its replacement is started
 before it finishes — see [restart policy and
@@ -588,32 +577,40 @@ before it finishes — see [restart policy and
 
 ## Graceful shutdown
 
-On `SIGTERM`/`SIGINT` (or a lost master, or the `maxRequests` limit) the server
-closes the listening socket immediately — the accept loop stops, the connections
-already accepted are not cancelled — waits for the running handlers, and exits.
-Each step is logged, see [Logs](#logs).
+On `SIGTERM`/`SIGINT` (or a lost master, or the `maxRequests` limit) the server stops
+accepting and closes its listening socket, so with `SO_REUSEPORT` the kernel sends new
+connections to its neighbours. Then:
 
-Closing the socket first matters for `SO_REUSEPORT`: the terminating worker
-leaves the reuseport group, so the kernel routes new connections to its
-neighbours.
+1. The connections the kernel had already queued on the socket, and the server had not
+   accepted yet, are taken and served rather than reset with the socket. (Not for a
+   socket handed over as `listenFd`: whoever else holds it goes on taking from its
+   queue.)
+2. Every response from now on goes out with `Connection: close`, and the connection
+   closes after it: the client sends its next request to a neighbour. A request already
+   on its way on a keep-alive connection is answered, not dropped.
+3. A connection that sends nothing for a second is closed — an idle keep-alive one, or
+   a client that connected and never sent a request.
+4. The server leaves once every connection has finished its last response and closed —
+   including the requests that arrived meanwhile — or once `shutdownTimeoutMs` has
+   passed since it stopped accepting; a handler still running then is unwound.
 
-Under load the stop is not yet lossless. A request that arrives on an already open
-connection after the stop begins is not handled: it waits unanswered and is closed
-when the worker exits, or gets `503` if it arrives after the listener task has ended.
-A soak with 8 concurrent requests against 4 workers lost about two requests per worker
-leaving at `maxRequests`, about one per `SIGTERM` and about two per reload of the
-whole pool, mostly as a connection closed with no response, the rest as `503`; the
-same with the master's shared socket and with `SO_REUSEPORT`. A client that retries an
-idempotent request on a dropped connection does not notice it.
+Each step is logged, see [Logs](#logs). A connection that arrives between the last
+accept from the queue and the close of the socket is still reset; Linux 5.14+ hands
+those to a sibling `SO_REUSEPORT` socket when `net.ipv4.tcp_migrate_req` is `1` — an
+administrator's setting, off by default.
+
+Measured with a pool of 12 workers under a [master](worker-master.md) on the empty
+endpoint, each worker leaving at its `maxRequests` and replaced, single 10 s runs of
+`wrk`: with 256 keep-alive connections (`maxRequests` 50 000), 48 restarts cost 3 failed
+requests, against 708 when idle connections were closed at once; with a connection per
+request (`maxRequests` 10 000), about 60 restarts cost 6–7, against 23–29 when the queue
+was left to be reset.
 
 - Signal handlers are installed before the listener starts and restored on exit.
 - The signals are taken through the extension: neither `ext-pcntl` nor
   `ext-posix` is needed.
 - On an idle server shutdown fires within ~250 ms — the `serve()` loop polls
   `waitAnyTimeoutBatch` at that interval and notices the signal without traffic.
-- The final response write is fire-and-forget: a handler finishes once its
-  response is handed to the connection, and nothing waits for the write to complete
-  before the worker exits.
 
 ## Internals
 
@@ -651,9 +648,9 @@ holds the registries `pending_requests` (`requestId →` the channel the
 connection reads the handler's writes from) and `server_states` (`flowKey →`
 server state, for `StopAccepting`). It is also the accept loop and the
 per-request service over `hyper`, handling the concurrency semaphore, the
-handler timeout, 503/504 and the graceful stop. `listen.rs` is the TCP listener
-and `SO_REUSEPORT`; `exclusive.rs` is the accept thread for a shared socket
-(`listenFd`, Linux).
+handler timeout, 503/504 and the graceful stop of the connections. `listen.rs` is the
+TCP listener, `SO_REUSEPORT`, a socket handed over as `listenFd`, and taking what is
+queued on the socket when the server stops.
 
 The listener is a self-pumping stream: an extension-side runtime task publishes every
 accepted request as the next batch result (`HasNext=true`), so PHP pays no
@@ -670,7 +667,8 @@ commands are acknowledged only after they are applied — that is what keeps a
 handler from outrunning the client. The one-shot `full` write is
 fire-and-forget: the coroutine ends right after handing it over (a failure of
 the final write is not observable to the handler), and the handover itself is
-bounded by the connection-side guards (`abandoned`, handler timeout). On the
+bounded by the connection-side guards (`abandoned`, handler timeout). A stopping
+server still waits for the write: it leaves once its connections have closed. On the
 streaming path, if the connection dropped or the timeout fired, the handler gets
 an `abandoned` error and unwinds cleanly instead of hanging.
 
@@ -698,16 +696,11 @@ graceful shutdown.
 ## Running in Docker and testing
 
 `docker-compose.yml` has a `servers` service: under supervisor it brings up one master
-via `bin/sconcur-server`, holding the HTTP, socket and WebSocket pools and the RabbitMQ
-consumers as a group each. Ports are hard-coded in compose (HTTP — `28080:8080`), since
-the master's JSON config cannot use environment variables. `make servers-restart`
-rebuilds the extension and recreates the container.
-
-`make servers-{status,stop,reload}` takes the whole master;
-`make http-server-{status,reload}` (and `socket-server-*`, `ws-server-*`,
-`rabbitmq-*`) narrows the command to one group with `--group`. There is no per-group
-`stop`: one master means one lock and one state file, so one group cannot be stopped
-on its own.
+(`tests/servers/worker/master.php`, built from `config/sconcur.servers.config.json`),
+holding the HTTP, socket and WebSocket pools and the RabbitMQ consumers as a group each.
+Ports are hard-coded in compose (HTTP — `28080:8080`). `make servers-restart` rebuilds
+the extension and recreates the container; `make servers-status` and
+`make servers-stop` reach the master through `MasterControl`.
 
 The tests do not depend on that service: they start the server as a separate
 process via `SConcur\Tests\Impl\HttpServer\TestHttpServer`, whose launch options

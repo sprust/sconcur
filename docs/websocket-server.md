@@ -120,20 +120,20 @@ The `WsServer` constructor; the PHP defaults mirror the extension's.
 | `maxConnections` | `0` (no limit) | stop the server after N served connections (a leak guard); spread under the master, see [restart policy](worker-master.md#restart-policy-and-maxrequests) |
 | `shutdownTimeoutMs` | `10000` | accepted and not applied: finishing the connections already accepted is bounded by the grace period below, not by a clock of its own |
 | `reusePort` | `false` | `SO_REUSEPORT` — a pool of processes on one port (Linux) |
-| `listenFd` | `null` | A listening socket bound elsewhere, accepted on instead of `address` — see [one socket for the whole pool](http-server.md#one-socket-for-the-whole-pool) |
+| `listenFd` | `null` | A listening socket bound elsewhere (systemd socket activation, say), accepted on instead of `address` — see [one socket for the whole pool](http-server.md#one-socket-for-the-whole-pool) |
 | `path` | `/` | the path on which the upgrade is accepted (empty string — any path); another path → `404` |
 | `allowedOrigins` | `[]` | hosts the `Origin` header may name, port included, compared ignoring case; `*` — any (empty — the check is skipped; a request without `Origin` always passes) |
 | `subprotocols` | `[]` | negotiable WebSocket subprotocols; the first one in this list that the client offers wins |
 | `onError` | `null` | handler-error hook |
-| `masterPid` | `null` | orphan check under the master |
-| `telemetrySocket` | `''` (off) | unix socket for stats snapshots, injected by the master ([stats](admin-stats.md)) |
-| `serverName` | `'sconcur-server'` | worker name in the stats snapshots |
+| `masterPid` | `null` | orphan check: `null` — the master that forked this worker (`WorkerContext`), or none outside one |
+| `telemetrySocket` | `''` (off) | unix socket for stats snapshots ([stats](admin-stats.md)); empty — `SCONCUR_TELEMETRY_SOCKET`, which the master sets for its workers |
+| `serverName` | `'sconcur-server'` | worker name in the stats snapshots; left at the default — `SCONCUR_SERVER_NAME`, which the master sets |
 | `telemetryIntervalMs` | `0` | snapshot cadence (`0` — the default of the component that sends them, 1000 ms) |
 | `preemptionQuantumMs` | `0` | automatic-preemption quantum (`0` — off); read [process-wide state](coroutine-switching.md#process-wide-state) before turning it on |
 
 `allowedOrigins`/`subprotocols` are arrays, and `fromArgs()` takes only scalar
 parameters from argv: a `--allowedOrigins=…` flag is rejected as unknown. Set them in
-the worker script.
+the constructor.
 
 ## Concurrency, keepalive and errors
 
@@ -182,27 +182,29 @@ Lifecycle lines go to `STDOUT`. The WebSocket server writes no access lines:
 
 ## Running under the worker master
 
-The server is an ordinary worker for `bin/sconcur-server`, which needs to know nothing
-about it; an example config is the `ws` group of
-`config/sconcur.servers.config.json`.
+A group's role builds the server and serves; the master needs to know nothing about it.
 
 ```php
-$server = WsServer::fromArgs($_SERVER['argv']);
-
-$server->serve(static function (Connection $connection): void {
-    while (($message = $connection->read()) !== null) {
-        $connection->write($message);
-    }
-});
+new WorkerGroupConfig(
+    name: 'ws',
+    role: static function (): void {
+        new WsServer(address: '0.0.0.0:9200', reusePort: true)
+            ->serve(static function (Connection $connection): void {
+                while (($message = $connection->read()) !== null) {
+                    $connection->write($message);
+                }
+            });
+    },
+    workerCount: 4,
+);
 ```
 
-The master expands the `server` block into `--key=value` argv and injects its own
-pid via `--masterPid`; `reusePort: true` in `server` or `listen` on the group lets the
-workers share the port (see
-[sharing the port](worker-master.md#sharing-the-port-reuseport-or-listen)). The pool
-reports statistics through the master panel (`GET /api/stats`) via the
-`connections` section, as in the socket server — see
+Under a master the server watches it on its own (`WorkerContext`); `reusePort: true` lets
+the workers share the port. The pool reports statistics through the master panel
+(`GET /api/stats`) via the `connections` section, as in the socket server — see
 [worker master](worker-master.md) and [server statistics](admin-stats.md).
+`WsServer::fromArgs($_SERVER['argv'])` builds the same server from `--key=value` flags,
+for a script that runs one on its own.
 
 ## Limits
 

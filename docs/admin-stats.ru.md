@@ -24,7 +24,7 @@
 
 Каждый воркер — отдельный процесс со своими счётчиками, а соединение на общий порт
 (свой [`SO_REUSEPORT`](http-server.ru.md#масштабирование-на-ядра-so_reuseport)-сокет у
-каждого воркера или сокет `listen` мастера) попадает в один из них, поэтому статистику
+каждого воркера) попадает в один из них, поэтому статистику
 нельзя собрать опросом одного сокета. Вместо этого каждый воркер подключается к
 unix-сокету коллектора (поднимает мастер в `runtimeDir`) при первой отправке,
 через интервал после старта (и заново после неудачной записи), и раз в секунду
@@ -65,24 +65,16 @@ flowchart TB
 `adminToken`. Мастер сам поднимает коллектор и панель и передаёт путь сокета
 воркерам — на стороне воркера настраивать нечего.
 
-```json
-{
-  "runtimeDir": "/run/sconcur",
-  "name": "sconcur-servers",
-  "panelPort": 8081,
-  "adminToken": "23c30b40...9894c3ec",
-  "groups": [
-    {
-      "name": "http",
-      "workerScript": "/app/worker.php",
-      "workerCount": 8,
-      "server": {
-        "address": "0.0.0.0:8080",
-        "reusePort": true
-      }
-    }
-  ]
-}
+```php
+$master = new WorkerMaster(
+    runtimeDir: '/run/sconcur',
+    groups: [
+        new WorkerGroupConfig(name: 'http', role: $httpRole, workerCount: 8),
+    ],
+    name: 'sconcur-servers',
+    panelPort: 8081,
+    adminToken: '23c30b40...9894c3ec',
+);
 ```
 
 ```sh
@@ -90,8 +82,8 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
   http://localhost:8081/api/stats
 ```
 
-Воркер-скрипт остаётся прежним — `HttpServer::fromArgs(...)` (или
-`SocketServer`/`WsServer`) сам подхватывает env, который передал мастер. Пулы
+Роль остаётся прежней — `HttpServer` (или `SocketServer`/`WsServer`, или
+AMQP-консьюмер) сам подхватывает env, который ставит мастер. Пулы
 сокет- и WebSocket-серверов отдают тот же эндпоинт, только с секцией
 `connections` вместо `requests`.
 
@@ -113,9 +105,9 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 
 ## Конфигурация
 
-Под мастером хватает двух ключей; остальное выводится из `runtimeDir`/`name`.
+Под мастером хватает двух параметров; остальное выводится из `runtimeDir`/`name`.
 
-| Ключ конфига мастера | Назначение | По умолчанию |
+| Параметр `WorkerMaster` | Назначение | По умолчанию |
 |---|---|---|
 | `panelPort` | порт панели и эндпоинта; нужен вместе с токеном | `0` (выкл.) |
 | `adminToken` | токен эндпоинта; нужен вместе с портом | пусто (выкл.) |
@@ -129,10 +121,9 @@ curl -H "Authorization: Bearer 23c30b40...9894c3ec" \
 | `SCONCUR_SERVER_NAME` | метка снапшота; мастер ставит `<группа>:<слот>` | `sconcur-server` |
 | `SCONCUR_TELEMETRY_INTERVAL_MS` | период снятия и отправки снапшота | `1000` |
 
-Под мастером сокет — `<runtimeDir>/<name>.telemetry.sock`, передаётся только при
-включённой телеметрии. Те же значения задаются программно: на сервере — через
-его конструктор (`telemetrySocket`, `serverName`, `telemetryIntervalMs`), на
-мастере — через конструктор `WorkerMaster` (`panelPort`, `adminToken`). У
+Под мастером сокет — `<runtimeDir>/<name>.telemetry.sock`, ставится только при
+включённой телеметрии. Собственные параметры конструктора сервера (`telemetrySocket`,
+`serverName`, `telemetryIntervalMs`), если заданы, важнее окружения. У
 консьюмера очереди таких параметров нет: расширение берёт сокет и имя пула из
 окружения и помечает снапшоты как `<группа>:<слот>` тем, что поставил мастер.
 Нескольким мастерам на одной машине нужны разные `panelPort` и разный `runtimeDir`

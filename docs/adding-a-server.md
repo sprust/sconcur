@@ -76,7 +76,7 @@ deadline), a server has its own:
 3. Graceful shutdown and orphaned workers. A server must be able to stop
    accepting new connections without touching the ones already accepted, so the
    other workers on the port take the new ones, and to self-terminate if its
-   master died (`--masterPid`).
+   master died (`masterPid`, or the master of `WorkerContext`).
 
 ## Payloads
 
@@ -122,7 +122,9 @@ extracted into the stateless `SConcur\Features\Server\ServerRuntimeSupportTrait`
 - `parseArgs(array $argv): array` — collect the scalar (`int`/`bool`/`float`/
   `string`) constructor parameters by reflection, coerce each `--name=value` string
   to the type and throw `InvalidServerArgumentException` on an unknown argument;
-- `applyTelemetryEnvironment(array $overrides): array` — read the telemetry env;
+- `fromEnvironment(string $value, string $name, string $unset = ''): string` — a
+  telemetry setting as the server runs with it: its own, or the environment's when it
+  was left at `$unset` (the master puts the socket and the pool's name there);
 - `withPreemption(int $quantumMs, Closure $callback): mixed` — run the callback with
   automatic preemption armed and disarm it afterwards. A server passes its quantum to
   `Scheduler::serve()` instead and needs this only if it has no serve loop of its own;
@@ -134,14 +136,16 @@ extracted into the stateless `SConcur\Features\Server\ServerRuntimeSupportTrait`
 The stop check is `SConcur\Features\Server\StopRequest`.
 `StopRequest::watch(?int $masterPid)` starts watching SIGTERM/SIGINT and returns the
 object whose `isRequested(...)` is passed as the serve loop's `shouldStop`; it
-also says yes once the master is no longer the parent, which survives PID reuse
+also says yes once the master is no longer the parent — the `masterPid` given, or the
+master of `WorkerContext::current()` under one — which survives PID reuse
 because the kernel reparents the process once the master dies. Release it in
 `finally`. It needs nothing but this extension — no ext-pcntl, no ext-posix — and
 asks it at most every 100 ms.
 
-A new server just uses the trait, and to be launchable under `bin/sconcur-server`
-it adds a static `fromArgs()` modelled on `HttpServer::fromArgs()`: call
-`self::parseArgs($argv)`, add `onError` if present, unpack into the constructor.
+A new server just uses the trait. To be runnable from a script on its own it adds a
+static `fromArgs()` modelled on `HttpServer::fromArgs()`: call `self::parseArgs($argv)`,
+add `onError` if present, unpack into the constructor. A master's role uses the
+constructor.
 
 The public `serve(Closure $handler)` then generates a `flowKey`, starts
 `StopRequest::watch()` (released in `finally`), starts the listener with
@@ -165,7 +169,13 @@ batches are the incoming requests — and hands control to the shared
   [coroutine switching](coroutine-switching.md);
 - `handlerTimeoutMs` — how long one handler coroutine may run before it is unwound where
   it stands (`0` disables), see [coroutine timeout](coroutine-timeout.md). Preemption is
-  what lets that deadline reach a handler that never waits.
+  what lets that deadline reach a handler that never waits;
+- `drainsToStreamEnd` — whether the stop lasts until the server's stream ends rather
+  than until no handler is in flight. The HTTP server passes `true`: its core ends the
+  stream once every connection has written its last response and closed (or
+  `shutdownTimeoutMs` has passed), and meanwhile the loop handles what still arrives on
+  them, so the worker never leaves with a response on its way out. A server whose core
+  does not end the stream on its own leaves it at `false`.
 
 `Scheduler::serve` itself multiplexes the incoming requests and the async work
 of their handlers in a single wait loop (`waitAnyTimeoutBatch`) and on shutdown
@@ -242,7 +252,11 @@ The feature's `stop_accepting(flow_key)` finds the `ServerState` in
 and nothing else — the requests already accepted are untouched. In a `SO_REUSEPORT`
 pool the kernel immediately hands new connections to the other workers, and on a
 shared `listenFd` socket the other workers keep accepting from it, while this
-process finishes its own.
+process finishes its own. The HTTP server goes further: once accepting stops it takes
+what is queued on its own socket (`Listener::take_queued()`), answers every request
+with `Connection: close` and shuts a connection down once it has sent nothing for a
+second (`serve_connection()` in `server.rs`) — see
+[graceful shutdown](http-server.md#graceful-shutdown).
 
 This is a protocol change, so the extension-version rule applies (bump at most once
 per branch, see [.ai/README.md](../.ai/README.md)).
@@ -253,17 +267,12 @@ per branch, see [.ai/README.md](../.ai/README.md)).
 
 ## Integration with the worker master
 
-A server becomes a server-agnostic worker for `bin/sconcur-server` for free if it
-honours the contract: the worker script builds the server from argv
-(`MyServer::fromArgs($_SERVER['argv'])`) and serves; the master expands the `server`
-block of the JSON config into `--key=value` argv and appends `--masterPid` (its own
-pid, or under the default `fork` launch the pid of the group's fork server). Several
-workers share the port through `reusePort: true` in `server` or the group's `listen`,
-which the master binds and hands over as `--listenFd`, so the server's constructor
-takes both. The master then brings up a pool of processes and `reload` restarts them
-one by one with the port open throughout (under load a reload still loses a request or
-two, see [graceful shutdown](http-server.md#graceful-shutdown)). Details in [Worker
-master](worker-master.md).
+A server runs under the worker master for free if it honours the contract: a group's
+role builds it and calls `serve()`; the server watches the master through
+`StopRequest::watch()` (which falls back to `WorkerContext`), reads its telemetry
+settings from the environment the master sets, and says it is up from its serve loop
+(`Scheduler::serve()` does that). Several workers share the port through
+`reusePort: true`. Details in [Worker master](worker-master.md).
 
 ## Statistics
 
@@ -273,9 +282,9 @@ that sends snapshots to the master's collector; aggregation and the panel are th
 master's job (`src/Telemetry`), see [Server statistics](admin-stats.md).
 
 PHP side: `ServePayload` += `telemetrySocket`/`serverName`/`telemetryIntervalMs`
-(keys `ts`/`sn`/`ti`), the constructor += the same three parameters, and
-`fromArgs()` calls `self::applyTelemetryEnvironment($overrides)`, which reads the
-env the master injects when telemetry is enabled.
+(keys `ts`/`sn`/`ti`), the constructor += the same three parameters, and `serve()`
+passes each through `self::fromEnvironment()`, which falls back on the env the master
+sets when telemetry is enabled.
 
 Extension side: add a workload counter implementing `stats::WorkloadProvider`
 (`RequestStats` for HTTP, `ConnectionStats` for the socket and WebSocket pairs)
@@ -309,16 +318,16 @@ PHP:
       `Rust: payloads::<Type>`).
 - [ ] Request/response shape: your own DTOs or PSR-7 outward.
 - [ ] `use ServerRuntimeSupportTrait;` —
-      `parseArgs`/`logServerEvent`/`describeListener`; `StopRequest::watch()` for
-      `shouldStop`.
+      `parseArgs`/`fromEnvironment`/`logServerEvent`/`describeListener`;
+      `StopRequest::watch()` for `shouldStop`.
 - [ ] `fromArgs()` via `self::parseArgs($argv)`, accepting `--masterPid` and
-      `--listenFd`.
+      `--listenFd`, for a script that runs the server on its own.
 - [ ] `serve()`: start the listener via `push(ServePayload)` plus
       `Scheduler::serve(...)` with `onRequest`/`shouldStop`/`onDrainStart`/
       `onShutdownStep`, and the `preemptionQuantumMs`/`handlerTimeoutMs` the
       constructor took.
 - [ ] Statistics: `ServePayload` += `ts`/`sn`/`ti`, constructor += 3 parameters,
-      `self::applyTelemetryEnvironment()` in `fromArgs()`.
+      each passed through `self::fromEnvironment()` in `serve()`.
 - [ ] Tests from a `BaseHttpServerTestCase` analogue (a real process + `curl`).
 
 Rust:

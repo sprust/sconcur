@@ -266,8 +266,7 @@ $collection->insertOne(['name' => 'example']);
 
 ## Документация
 
-- [Консольные команды](docs/cli.ru.md) — `sconcur-load`, `sconcur-status`,
-  `sconcur-server`.
+- [Консольные команды](docs/cli.ru.md) — `sconcur-load`, `sconcur-status`.
 - [Архитектура](docs/architecture.ru.md) — Fiber ↔ задача рантайма, планировщик, слои,
   жизненный цикл задачи.
 - [Переключение корутин](docs/coroutine-switching.ru.md) — `Scheduler::switch()`
@@ -298,8 +297,8 @@ $collection->insertOne(['name' => 'example']);
   команды, курсоры, pub/sub.
 - [Files](docs/files.ru.md) — файловые операции вне PHP-потока: чтение и запись,
   метаданные, каталоги, стримы и писатель чанками.
-- [Мастер воркеров](docs/worker-master.ru.md) — супервизор пула воркеров
-  (`bin/sconcur-server`).
+- [Мастер воркеров](docs/worker-master.ru.md) — супервизор пулов воркеров, собранный в
+  процессе, который загрузил приложение; каждый воркер — его форк.
 - [Статистика сервера](docs/admin-stats.ru.md) — `GET /api/stats`, живая панель,
   SSE, Prometheus.
 - [Как добавить новую фичу](docs/adding-a-feature.ru.md) — пошагово, со

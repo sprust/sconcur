@@ -872,24 +872,35 @@ acknowledgements of the handlers still running land, and the flow ending closes
 them.
 
 ```php
-// consumer.php
 use SConcur\Features\Amqp\Connection;
 use SConcur\Features\Amqp\Consumer\QueueConsumer;
 use SConcur\Features\Amqp\Delivery;
+use SConcur\Worker\WorkerGroupConfig;
 
-require __DIR__ . '/vendor/autoload.php';
+$orders = new WorkerGroupConfig(
+    name: 'orders',
+    role: static function (): void {
+        $queueConsumer = new QueueConsumer(
+            queues: json_encode([
+                ['name' => 'orders', 'coroutineCount' => 8],
+                ['name' => 'invoices', 'coroutineCount' => 2, 'prefetchCount' => 5],
+            ]),
+            prefetchCount: 1,
+            maxMessages: 10_000,
+        );
 
-// Everything about the queues comes from argv, which is how a master configures
-// its workers. The credentials do not: a password in argv is visible in `ps`.
-$queueConsumer = QueueConsumer::fromArgs($_SERVER['argv']);
+        // Opened in the worker, never before the master forks: a connection is not
+        // something workers can share.
+        $connection = new Connection(getenv('RABBITMQ_DSN'));
 
-$connection = new Connection(getenv('RABBITMQ_DSN'));
-
-$queueConsumer->consume(
-    connection: $connection,
-    handler: static function (Delivery $delivery): void {
-        handle($delivery->body);
+        $queueConsumer->consume(
+            connection: $connection,
+            handler: static function (Delivery $delivery): void {
+                handle($delivery->body);
+            },
+        );
     },
+    workerCount: 2,
 );
 ```
 
@@ -902,27 +913,12 @@ A handler that throws is reported through the optional `onError` callback (witho
 one, it is logged) and costs one message, not the worker: the runtime refuses the
 delivery and the next message is handled as usual.
 
-The group that runs it:
+The constructor's parameters; `QueueConsumer::fromArgs($argv)` takes the same as
+`--name=value` flags, for a script that runs one consumer on its own:
 
-```json
-{
-  "name": "orders",
-  "workerScript": "/app/consumer.php",
-  "workerCount": 2,
-  "server": {
-    "queues": [
-      { "name": "orders", "coroutineCount": 8 },
-      { "name": "invoices", "coroutineCount": 2, "prefetchCount": 5 }
-    ],
-    "prefetchCount": 1,
-    "maxMessages": 10000
-  }
-}
-```
-
-| Flag | Default | Purpose |
+| Parameter | Default | Purpose |
 | --- | --- | --- |
-| `queues` | — (required) | The queues and their weights. A list of objects: `name`, `coroutineCount` (default 1), optional `prefetchCount`. |
+| `queues` | — (required) | The queues and their weights, as JSON: a list of objects with `name`, `coroutineCount` (default 1) and an optional `prefetchCount`. |
 | `prefetchCount` | `1` | Unacknowledged messages one consumer may hold, unless its queue names its own. It is also what bounds how many handlers run at once: a message stays unacknowledged for as long as its handler runs. |
 | `handlerTimeoutMs` | `0` (no limit) | How long one message may spend in the handler. A job that runs past it is cut and refused like any other failure; the worker takes the next message — see [bounding one job](#bounding-one-job). |
 | `requeueOnFailure` | `false` | What happens to a message whose handler threw: dead-lettered or dropped by default, put back when true. A policy with attempts and delays belongs to the handler — see [retries and delays](#retries-and-delays). |
@@ -930,7 +926,7 @@ The group that runs it:
 | `maxRuntimeSeconds` | `0` (no limit) | Finish the running handlers and exit after this long. |
 | `maxMemoryBytes` | `0` (no limit) | Finish the running handlers and exit once the PHP heap passes this. A guard against creep, not against a spike. |
 | `preemptionQuantumMs` | `0` (off) | Automatic-preemption quantum while consuming. It is what lets `handlerTimeoutMs` reach a handler busy with computation, and keeps such a handler from holding off the loop. Read [process-wide state](coroutine-switching.md#process-wide-state) before turning it on. |
-| `masterPid` | none | Injected by the master; the worker stops, finishing the running handlers, as soon as it is orphaned. |
+| `masterPid` | none | The master to watch; none — the master that forked this worker (`WorkerContext`). The worker stops, finishing the running handlers, as soon as it is orphaned. |
 
 `coroutineCount` is a queue's weight: how many consumers it gets, each on a channel
 of its own. Despite the name it counts consumers; each message still runs in a
@@ -956,7 +952,7 @@ instead of failing to open a channel under load.
 
 What it does not do: declare anything. Topology belongs to whoever owns it, and a
 consumer that redeclared a queue with the wrong flags would take the channel down
-with a `406` instead of consuming — so the worker script declares what it owns
+with a `406` instead of consuming — so the role declares what it owns
 before handing over, and `queueSpecs()` tells it what that is. Otherwise a pool
 started before its queue exists would exit on a `404` and be restarted over and over.
 Nor does it count attempts or wait between them: a retry policy is the handler's,

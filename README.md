@@ -266,8 +266,7 @@ The crates the core is built on:
 
 ## Documentation
 
-- [Console commands](docs/cli.md) — `sconcur-load`, `sconcur-status`,
-  `sconcur-server`.
+- [Console commands](docs/cli.md) — `sconcur-load`, `sconcur-status`.
 - [Architecture](docs/architecture.md) — Fiber ↔ runtime task, the scheduler, the
   layers, the task lifecycle.
 - [Coroutine switching](docs/coroutine-switching.md) — `Scheduler::switch()` and
@@ -296,8 +295,8 @@ The crates the core is built on:
   commands, cursors, pub/sub.
 - [Files](docs/files.md) — file operations off the PHP thread: reads and writes,
   metadata, directories, streams and a chunked writer.
-- [Worker master](docs/worker-master.md) — a supervisor for a pool of workers
-  (`bin/sconcur-server`).
+- [Worker master](docs/worker-master.md) — a supervisor for pools of workers, built in
+  the process that loaded the application; every worker is a fork of it.
 - [Server statistics](docs/admin-stats.md) — `GET /api/stats`, live panel, SSE,
   Prometheus.
 - [How to add a new feature](docs/adding-a-feature.md) — step by step, with and

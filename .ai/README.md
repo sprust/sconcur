@@ -31,8 +31,7 @@ User-facing documentation (each doc also exists in Russian as `*.ru.md`):
 - [README.md](../README.md) — overview and usage
 - [docs/architecture.md](../docs/architecture.md) — Fiber ↔ runtime task, the
   scheduler, the layers, the task lifecycle
-- [docs/cli.md](../docs/cli.md) — `sconcur-load`, `sconcur-status`,
-  `sconcur-server`
+- [docs/cli.md](../docs/cli.md) — `sconcur-load`, `sconcur-status`
 - [docs/coroutine-context.md](../docs/coroutine-context.md),
   [docs/coroutine-switching.md](../docs/coroutine-switching.md),
   [docs/coroutine-timeout.md](../docs/coroutine-timeout.md) — per-coroutine context;
@@ -262,41 +261,35 @@ feature's doc. Key PHP classes not covered there:
 - `Features/Socket/Dto/AbstractConnection` — shared base for the socket and
   WebSocket `Connection` DTOs (server accept-side and client dial-side); keeps the
   features decoupled, since all depend on the neutral base rather than each other.
-- `Worker/` — the worker master, a process supervisor that loads the extension for
-  process control only (signals, kill, fork) and never starts its runtime:
-  `WorkerMaster`, `MasterConfig`, `MasterCli`, plus `Cpu`, `MasterLock`,
-  `MasterState`/`MasterGroupState`/`MasterStateFile`, `MasterLogger`,
-  `RestartPolicy`. One master supervises several **groups**, each configured by a
-  `WorkerGroupConfig` (`MasterDefaults` for what it inherits). Groups are generic:
-  everything a worker needs rides in the group's `server` block, forwarded to its
-  argv untouched, so the master stays worker-agnostic. `LaunchMode` picks how a
-  group's workers start; both kinds extend the abstract `WorkerProcess` (journal
-  pipes, heartbeat, outcome). `ExecWorkerProcess` is a `proc_open` of a php of its
-  own, run by a `WorkerGroup` (live slots, backoff, rolling reload).
-  `ForkedWorkerProcess` (the default) is run by a `ForkServerGroup`; both group
-  kinds are `SupervisedGroup`s. A fork group gets a fork server per generation
-  (`ForkServer`, started as a php of its own through `bin/sconcur-fork-server` by
-  `ForkServerProcess`), which loads the group's `bootstrap` once and runs its own
-  `WorkerGroup`; its child half is `ForkedWorker` (environment, argv, `require` of
-  the script, `_exit`, never a return into the parent's frames). The master never
-  forks. A reload starts the next generation's fork server and moves the slots
-  across one at a time (`ForkServerGeneration`), moving them back if it is given
-  up.
+- `Worker/` — the worker master, a process supervisor built in PHP in the process that
+  loaded the application, which loads the extension for process control only
+  (signals, kill, fork) and never starts its runtime: `run()` marks the process as the
+  master's (`ProcessControl::markMaster()`), after which the extension refuses an
+  asynchronous call in it. `WorkerMaster` takes a list of `WorkerGroupConfig` — a
+  name, a role (a closure the worker calls right after its fork, with a
+  `WorkerContext`: group, slot, master pid; also `WorkerContext::current()`), a count
+  and the supervision settings, validated in the constructors. Each group is a
+  `WorkerGroup` (live slots, backoff, watchdog, `maxRequests` recycling with the
+  replacement forked first, the leaving worker finishing as a `DrainingWorker`). Every
+  worker is a `ForkedWorkerProcess` (a `WorkerProcess`: journal pipes, heartbeat,
+  outcome); its child half is `ForkedWorker` (environment, the application's error
+  handlers back, `WorkerContext::enter()`, the role, `_exit` — never a return into the
+  master's frames). The descriptors open when `run()` is called are the application's
+  and stay with the workers; the rest of the master's are pointed at /dev/null in
+  them. There is no reload: new code is a new master. `MasterControl` reaches a running
+  master from another process by `runtimeDir` and `name` (`isRunning()`, `state()`,
+  `stop()`), plus `Cpu`, `MasterLock`, `MasterState`/`MasterGroupState`/
+  `MasterStateFile`, `MasterLogger`, `RestartPolicy`.
 
-  The worker writes one byte at a time (`Process/HeartbeatMarkEnum`) on a pipe the
-  master opens for it: alive (a scheduler pass; the watchdog times it, and it is
-  the only signal that the worker's PHP thread, not just the extension's runtime,
-  is still moving), ready (`Scheduler::markReady()`, said by `serve()` itself) and
-  recycling (a server's own limit reached). The extension holds the worker's end
-  (see `process/` below). `Scheduler` asks once whether there is one, throttles
-  alive to every 500 ms and says ready once; `ForkedWorker` makes it ask afresh
-  (`Scheduler::forgetSupervision()`).
-
-  A rolling reload starts each replacement beside its worker and stops the worker
-  only once the replacement is ready, giving the reload up when it is not. A worker
-  that left its slot (replaced, or recycling with its replacement already started)
-  finishes as a `DrainingWorker`. A group the master started with that never comes
-  up ends the master with `WorkerMaster::EXIT_NEVER_CAME_UP` (70).
+  The worker writes one byte at a time (`Process/HeartbeatMarkEnum`) on a pipe its
+  fork made: alive (a scheduler pass; the watchdog times it, and it is the only
+  signal that the worker's PHP thread, not just the extension's runtime, is still
+  moving), ready (`Scheduler::markReady()`, said by `serve()` itself) and recycling
+  (a server's own limit reached). The extension holds the worker's end (see
+  `process/` below). `Scheduler` asks once whether there is one, throttles alive to
+  every 500 ms and says ready once; `ForkedWorker` makes it ask afresh
+  (`Scheduler::forgetSupervision()`). A group that never comes up ends the master with
+  `WorkerMaster::EXIT_NEVER_CAME_UP` (70).
 - `Process/ProcessControl` — process control for the worker master and the
   long-lived workers it runs, over the `process` export, in place of ext-pcntl and
   ext-posix, and the worker's heartbeat marks; `@internal`. Commands are
@@ -312,8 +305,7 @@ The core (`ext/src/`), module by module:
   `waitAny`, `waitAnyTimeout`, `waitAnyBatch`, `waitAnyTimeoutBatch`,
   `tasksCount`, `stopFlow`, `httpStopAccepting`, `socketStopAccepting`,
   `wsStopAccepting`, `preemptionArm`, `preemptionDisarm`, `amqpStopConsuming`,
-  `amqpReopenConsumer`, `destroy`, `version`, `process`, and `processStartup` and
-  `processRequestStartup`, which MINIT and RINIT call)
+  `amqpReopenConsumer`, `destroy`, `version`, `process`)
 - `core.rs` — the process-wide state and what it takes to survive a `fork`:
   nothing starts until the first push (the exports that only act on running work —
   `destroy`, `stopFlow`, `tasksCount`, the `*StopAccepting` ones,
@@ -326,18 +318,14 @@ The core (`ext/src/`), module by module:
   prepared before PHP runs in it (stdio onto pipes, the parent's other descriptors
   onto /dev/null, signal watching undone, and through the glue the random
   generators unseeded and the parent's objects marked destroyed), `_exit`, `kill`,
-  `waitpid`, `getppid`, signals recorded by a handler that only sets a bit. It also
-  holds the worker's end of its heartbeat pipe (`heartbeat.rs`) and a fork server's
-  end of its events pipe (`events.rs`), written by the extension and never through
-  a PHP stream (`php://fd` opens a copy without close-on-exec, which everything the
-  process runs would inherit). An exec'd worker and a fork server claim theirs as
-  the module starts (`claim.rs`): the descriptor the variable names
-  (`SCONCUR_HEARTBEAT_FD`, descriptor 3, for the heartbeat), made close-on-exec,
-  with the variable taken out of the environment. A forked worker's is the one its
-  fork made. In a process a master started, every descriptor above stderr is made
-  close-on-exec as the request starts (RINIT, `processRequestStartup`), and a
-  fork's placeholders on /dev/null are close-on-exec too: a program a worker starts
-  gets its stdio and nothing else (`WorkerDescriptorsTest`)
+  `waitpid`, `getppid`, signals recorded by a handler that only sets a bit, and the
+  master's mark (`mst`, cleared in a fork's child), which `push` checks before it
+  starts the runtime. It also holds the worker's end of its heartbeat pipe
+  (`heartbeat.rs`), the one the fork made, written by the extension and never
+  through a PHP stream (`php://fd` opens a copy without close-on-exec, which
+  everything the process runs would inherit). In a fork's child the descriptors it
+  keeps and its placeholders on /dev/null are close-on-exec: a program a worker
+  starts gets its stdio and nothing else (`WorkerDescriptorsTest`)
 - `handler/` — the singleton orchestrator routing messages to flows
 - `flows/`, `tasks/` — concurrent `Flow` instances holding tasks and the shared
   result sink; a task carries the flow's cancellation token directly
@@ -431,9 +419,7 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
   benches plus, for the protocols, the server benches and the load scripts), `db/`
   (a whole DB session: repeated runs and their aggregation into the markdown rows
   of `docs/benchmarks.md`),
-  `runtime/` (scheduler and the boundary, no backend involved), `worker/` (what a
-  worker master's pool costs in memory — the PSS of its workers exec'd, forked, and
-  forked from a fork server that loaded the application once — `bench-worker-memory`),
+  `runtime/` (scheduler and the boundary, no backend involved),
   `docs/` (`run.py`, the `bench-docs` driver) and `lib/` (the shared harness the
   benches include). A new bench goes into its
   technology's directory, named after the operation (`mysql/select-one.php`), and
@@ -467,24 +453,6 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
     what a file stream holds is native memory. `abandoned` is the one that earns
     its keep: streams broken out of halfway and a writer dropped without a close
     are released by nothing but the flow ending.
-  - `make mem-leak-worker scenario=<list> seconds=<n> launch=<list> [warmup=<n>]` —
-    the worker master under failure, `launch` being any of exec, fork, bootstrap
-    (comma-separated; bootstrap by default), the verdict reading only past `warmup`
-    seconds (60 by default). Twenty scenarios in which workers die
-    (out of memory, exit(), a fatal error, killed, hung and killed by the watchdog,
-    stopped by SIGTERM, at their limit, at startup, with their fork server, by
-    reload) or requests fail (thrown, cut off by a deadline or preemption,
-    malformed, clients hanging up, outgoing requests refused, abandoned with
-    coroutines in flight), each on a master of its own under steady load; the list
-    with each one's pacing is in the header of `tests/mem-leak/worker-soak.php`.
-    What it watches is what survives — the master's and the fork server's memory,
-    descriptors and threads, zombies, and the surviving workers' heap and runtime
-    tasks — and it says why each failed request on the load failed.
-    `make mem-leak-worker-summary file=<saved output>` lays a run out (losses per
-    death, every read of one scenario), and
-    `make mem-leak-worker-exit-timing launch=<one>` times each step of a worker's
-    death by `exit()`. How to read them, and the traps:
-    [soak-analysis.md](soak-analysis.md).
 
 Tests use PHPUnit 11. Add feature tests in `tests/feature/...` with `*Test.php`
 suffixes; async flow tests commonly extend `BaseAsyncTestCase`,

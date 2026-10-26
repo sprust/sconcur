@@ -288,7 +288,12 @@ fork ни в одну сторону не видны, общение между 
    воркера — fork без повторной загрузки.
 4. ~~`bin/sconcur-server` и JSON-конфиг~~ — удалены в шаге 3.
 5. Доки EN и RU: `worker-master` заново, правки в `http-server`, `socket-server`,
-   `websocket-server`, `amqp`, `adding-a-server`, README.
+   `websocket-server`, `amqp`, `adding-a-server`, README. Сделано 2026-10-26:
+   `worker-master` заново (PHP-API, роли, загрузка до мастера, `MasterControl`), правки в
+   `http-server` (остановка: очередь, `Connection: close`, `STOP_GRACE`,
+   `shutdownTimeoutMs`, `tcp_migrate_req`), `socket-server`, `websocket-server`,
+   `adding-a-server`, `admin-stats`, `amqp`, `cli`, `load-testing` (`LAUNCH=master`,
+   раздел про общий сокет убран), README, `.ai/README.md`.
 6. Замеры памяти и soak на новой схеме: стенды из исходной ветки, переделанные под роли.
 7. Пакет Laravel: бинарник, `beforeFork`, удаление artisan-команд мастера и серверов,
    переход на 0.17.0 (убрать msgpack из Dockerfile и `config.platform`, прогнать тесты

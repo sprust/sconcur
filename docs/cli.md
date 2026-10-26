@@ -2,11 +2,11 @@ English | [Русский](cli.ru.md)
 
 # CLI commands
 
-The package installs three executables into `vendor/bin` (the `bin` section of
-`composer.json`): `sconcur-load`, `sconcur-status`, `sconcur-server`. From the
-repository they run as `bin/<command>`, from a consumer application as
-`vendor/bin/<command>`. `bin/` also holds `sconcur-fork-server`, which the worker master
-starts for each fork group; it is not installed into `vendor/bin` and is not run by hand.
+The package installs two executables into `vendor/bin` (the `bin` section of
+`composer.json`): `sconcur-load` and `sconcur-status`. From the repository they run as
+`bin/<command>`, from a consumer application as `vendor/bin/<command>`. The worker
+master has no command of its own: it is built in PHP, in the process that loaded the
+application — see [Worker master](worker-master.md).
 
 ## sconcur-load — download the extension
 
@@ -112,21 +112,3 @@ branch without parsing the output. The release CI is built on this: it lets the
 build through only when `ready` is true, and tags the release as
 `v<extension_version>`.
 
-## sconcur-server — worker master
-
-Starts and supervises pools of worker processes: the workers of a pool share one
-port (each with its own `SO_REUSEPORT` socket, or all on one socket the master
-binds), a crashed worker is restarted, and a stop finishes the requests already
-accepted (under load a request or two can still be lost, see
-[Worker master](worker-master.md#graceful-shutdown)). Commands
-`start` / `status` / `stop` / `reload`, all taking a `--configPath` flag pointing to the
-master's JSON config; `--group=NAME` narrows `status` and `reload` to one pool
-(`start` and `stop` accept it and check the name, but serve the whole config):
-
-```sh
-vendor/bin/sconcur-server start --configPath=/app/master.json
-```
-
-Details — config parameters, the `fork` and `exec` launches, restart policy,
-logging and graceful shutdown — are in
-[Worker master](worker-master.md).
