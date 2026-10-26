@@ -18,9 +18,11 @@ readonly class TlsOptions
      *                        against; null uses the system trust store
      * @param ?string $cert   path to the client certificate, for SASL EXTERNAL
      * @param ?string $key    path to the client certificate's private key
-     * @param bool    $verify whether the broker's certificate and host name are checked;
-     *                        false is for a self-signed broker in development and turns
-     *                        the connection into an unauthenticated one
+     * @param bool    $verify whether the broker's certificate and host name are checked.
+     *                        false is refused: the dial fails with a ConnectionException,
+     *                        because the TLS layer cannot accept a certificate it does not
+     *                        check. Point $caCert at the authority that signed a
+     *                        self-signed broker's certificate instead
      */
     public function __construct(
         public ?string $caCert = null,

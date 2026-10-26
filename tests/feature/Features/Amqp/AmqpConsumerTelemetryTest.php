@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Feature\Features\Amqp;
 
+use SConcur\Telemetry\FrameCodec;
+use SConcur\Tests\Impl\FreePort;
+use SConcur\Tests\Impl\PhpScript;
 use SConcur\Tests\Impl\Worker\TestWorkerMaster;
 
 /**
@@ -27,7 +30,7 @@ class AmqpConsumerTelemetryTest extends AmqpTestCase
         // One message is refused, so the refused counter is not just zero on both sides.
         $this->publishToQueue($channel, $queue->name(), 'reject');
 
-        $panelPort  = $this->freePort();
+        $panelPort  = FreePort::find();
         $adminToken = bin2hex(random_bytes(16));
 
         $master = TestWorkerMaster::start(
@@ -37,7 +40,7 @@ class AmqpConsumerTelemetryTest extends AmqpTestCase
                 'groups'     => [
                     [
                         'name'         => 'consumers',
-                        'workerScript' => dirname(__DIR__, 3) . '/consumers/amqp/amqp-consumer.php',
+                        'workerScript' => PhpScript::projectRoot() . '/tests/consumers/amqp/amqp-consumer.php',
                         'workerCount'  => 1,
                         // No maxMessages: the counters live in the worker process, so a
                         // worker that finished and was replaced would report the empty
@@ -70,6 +73,188 @@ class AmqpConsumerTelemetryTest extends AmqpTestCase
         } finally {
             $master->stop();
         }
+    }
+
+    /**
+     * Telemetry after a fork from a process whose pusher was still up — a consumer's stays
+     * for the life of the process. The child found the inherited pusher in its slot,
+     * started none of its own, and reported nothing.
+     */
+    public function testAChildForkedAfterTheParentPushedReportsUnderItsOwnPid(): void
+    {
+        $socketPath = sys_get_temp_dir() . '/sconcur-fork-telemetry-' . bin2hex(random_bytes(4)) . '.sock';
+
+        $listener = stream_socket_server('unix://' . $socketPath, $errorCode, $errorMessage);
+
+        self::assertNotFalse($listener, "could not listen on $socketPath: $errorMessage");
+
+        stream_set_blocking($listener, false);
+
+        $code = <<<'PHP'
+        require $argv[1] . '/vendor/autoload.php';
+
+        use SConcur\Connection\Extension;
+        use SConcur\Features\Sleeper\Sleeper;
+        use SConcur\Tests\Impl\TestAmqpResolver;
+        use SConcur\Tests\Impl\TestApplication;
+
+        TestApplication::init();
+
+        // Read when the first consumer of the process opens.
+        putenv('SCONCUR_TELEMETRY_SOCKET=' . $argv[2]);
+        putenv('SCONCUR_TELEMETRY_INTERVAL_MS=50');
+
+        function consumeOne(): void
+        {
+            $connection = TestAmqpResolver::getConnection(readTimeoutSeconds: 5.0);
+
+            $queue = $connection->channel()->queue(TestAmqpResolver::uniqueName('fork'));
+
+            $queue->declare(exclusive: true);
+            $queue->publish('ping');
+
+            foreach ($queue->consume(autoAck: true) as $delivery) {
+                break;
+            }
+
+            // A few intervals, so the push loop has something to send.
+            Sleeper::usleep(microseconds: 300_000);
+
+            $connection->close();
+        }
+
+        consumeOne();
+
+        $pid = pcntl_fork();
+
+        if ($pid === 0) {
+            consumeOne();
+
+            echo 'CHILD:', getmypid(), PHP_EOL;
+
+            Extension::get()->destroy();
+
+            exit(0);
+        }
+
+        pcntl_waitpid($pid, $status);
+
+        Extension::get()->destroy();
+        PHP;
+
+        $process = proc_open(
+            command: [
+                PHP_BINARY,
+                '-d',
+                'extension=' . PhpScript::extensionPath(),
+                '-r',
+                $code,
+                PhpScript::projectRoot(),
+                $socketPath,
+            ],
+            descriptor_spec: [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            pipes: $pipes,
+        );
+
+        self::assertIsResource($process);
+
+        try {
+            $pushedPids = $this->collectPushedPids(
+                listener: $listener,
+                process: $process,
+            );
+
+            $output = stream_get_contents($pipes[1]) . stream_get_contents($pipes[2]);
+        } finally {
+            proc_close($process);
+            fclose($listener);
+            @unlink($socketPath);
+        }
+
+        self::assertSame(1, preg_match('~CHILD:(\d+)~', $output, $matches), 'the child did not finish: ' . $output);
+
+        self::assertContains(
+            (int) $matches[1],
+            $pushedPids,
+            'the child pushed no snapshot of its own; pids seen: ' . implode(', ', $pushedPids),
+        );
+    }
+
+    /**
+     * Reads the snapshot frames pushed to the listener until the process exits, and
+     * answers the pids they came from.
+     *
+     * @param resource $listener
+     * @param resource $process
+     *
+     * @return list<int>
+     */
+    protected function collectPushedPids(mixed $listener, mixed $process): array
+    {
+        $connections = [];
+        $buffers     = [];
+        $pids        = [];
+
+        $deadline = microtime(true) + 30.0;
+
+        while (microtime(true) < $deadline && proc_get_status($process)['running']) {
+            $read   = [$listener, ...$connections];
+            $write  = null;
+            $except = null;
+
+            if ((int) @stream_select($read, $write, $except, 0, 100_000) === 0) {
+                continue;
+            }
+
+            foreach ($read as $stream) {
+                if ($stream === $listener) {
+                    $connection = @stream_socket_accept($listener, 0);
+
+                    if (is_resource($connection)) {
+                        stream_set_blocking($connection, false);
+
+                        $connections[(int) $connection] = $connection;
+                        $buffers[(int) $connection]     = '';
+                    }
+
+                    continue;
+                }
+
+                $chunk = (string) fread($stream, 65_536);
+
+                if ($chunk === '') {
+                    if (feof($stream)) {
+                        unset($connections[(int) $stream]);
+
+                        fclose($stream);
+                    }
+
+                    continue;
+                }
+
+                [$frames, $buffers[(int) $stream]] = FrameCodec::extractFrames(
+                    buffer: $buffers[(int) $stream] . $chunk,
+                    maxFrameBytes: 65_536,
+                );
+
+                foreach ($frames as $frame) {
+                    $pid = json_decode($frame, true)['s']['pid'] ?? null;
+
+                    if (is_int($pid)) {
+                        $pids[$pid] = $pid;
+                    }
+                }
+            }
+        }
+
+        foreach ($connections as $connection) {
+            fclose($connection);
+        }
+
+        return array_values($pids);
     }
 
     /**
@@ -119,18 +304,5 @@ class AmqpConsumerTelemetryTest extends AmqpTestCase
         $decoded = json_decode($body, true);
 
         return is_array($decoded) ? $decoded : [];
-    }
-
-    protected function freePort(): int
-    {
-        $socket = stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
-
-        self::assertNotFalse($socket, "could not allocate a port: $errstr");
-
-        $name = (string) stream_socket_get_name($socket, false);
-
-        fclose($socket);
-
-        return (int) substr($name, (int) strrpos($name, ':') + 1);
     }
 }

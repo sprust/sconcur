@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 use crate::dto::Result;
@@ -40,15 +40,19 @@ struct Entry {
     released: Option<CancellationToken>,
 }
 
-static INSTANCE: OnceLock<States> = OnceLock::new();
-
+/// The registry lives on the Core, so a fork discards it: every state in it reads
+/// from a connection the parent opened, and a child must start with none.
 pub fn get() -> &'static States {
-    INSTANCE.get_or_init(|| States {
-        states: Mutex::new(HashMap::new()),
-    })
+    crate::core::get().states()
 }
 
 impl States {
+    pub fn new() -> Self {
+        States {
+            states: Mutex::new(HashMap::new()),
+        }
+    }
+
     /// Registers a state, hooks its cleanup to the flow, and reads its first
     /// batch.
     ///

@@ -26,7 +26,7 @@ use Throwable;
 class AmqpBehaviourParityTest extends AmqpTestCase
 {
     /** The properties both implementations are asked to publish. */
-    private const array HEADERS = [
+    protected const array HEADERS = [
         'x-attempt' => 3,
         'x-flag'    => true,
         'x-name'    => 'parity',
@@ -184,7 +184,7 @@ class AmqpBehaviourParityTest extends AmqpTestCase
      *
      * @return array<string, mixed>
      */
-    private function expectedFields(string $queueName): array
+    protected function expectedFields(string $queueName): array
     {
         $headers = self::HEADERS;
 
@@ -212,7 +212,7 @@ class AmqpBehaviourParityTest extends AmqpTestCase
     /**
      * @return array<string, mixed>
      */
-    private function fieldsOfDelivery(Delivery $delivery): array
+    protected function fieldsOfDelivery(Delivery $delivery): array
     {
         $properties = $delivery->properties;
 
@@ -242,7 +242,7 @@ class AmqpBehaviourParityTest extends AmqpTestCase
     /**
      * @return array<string, mixed>
      */
-    private function fieldsOfEnvelope(NativeEnvelope $envelope): array
+    protected function fieldsOfEnvelope(NativeEnvelope $envelope): array
     {
         $headers = $envelope->getHeaders();
 
@@ -267,7 +267,7 @@ class AmqpBehaviourParityTest extends AmqpTestCase
         ];
     }
 
-    private function nativeChannel(): NativeChannel
+    protected function nativeChannel(): NativeChannel
     {
         if ($this->nativeChannel !== null) {
             return $this->nativeChannel;
@@ -280,7 +280,7 @@ class AmqpBehaviourParityTest extends AmqpTestCase
         return $this->nativeChannel = new NativeChannel($this->nativeConnection);
     }
 
-    private function waitForNativeMessage(string $queueName): ?NativeEnvelope
+    protected function waitForNativeMessage(string $queueName): ?NativeEnvelope
     {
         $queue = new NativeQueue($this->nativeChannel());
 

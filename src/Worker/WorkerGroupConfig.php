@@ -32,6 +32,11 @@ readonly class WorkerGroupConfig
         'restartBackoffMs',
         'maxRestartBackoffMs',
         'watchdogTimeoutMs',
+        'readyTimeoutMs',
+        'accessLog',
+        'launch',
+        'listen',
+        'bootstrap',
         'server',
     ];
 
@@ -40,6 +45,9 @@ readonly class WorkerGroupConfig
      * @param list<string>          $phpArgs    interpreter flags for this group's workers
      * @param list<string>          $workerArgs extra raw worker argv flags
      * @param array<string, string> $env        extra env merged over the inherited one
+     * @param string                $bootstrap  a file the group's fork server loads once per generation, in
+     *                                          the global scope, before it forks the workers (fork only)
+     * @param AccessLogTarget       $accessLog  where the workers write their access lines
      */
     public function __construct(
         public string $name,
@@ -55,6 +63,11 @@ readonly class WorkerGroupConfig
         public int $maxRestartBackoffMs,
         public int $watchdogTimeoutMs,
         public array $server,
+        public LaunchMode $launch = LaunchMode::Fork,
+        public string $listen = '',
+        public int $readyTimeoutMs = MasterConfig::DEFAULT_READY_TIMEOUT_MS,
+        public string $bootstrap = '',
+        public AccessLogTarget $accessLog = AccessLogTarget::Stdout,
     ) {
     }
 
@@ -124,40 +137,207 @@ readonly class WorkerGroupConfig
             );
         }
 
+        $launch = LaunchMode::tryFrom((string) ($data['launch'] ?? $defaults->launch->value));
+
+        if ($launch === null) {
+            throw new InvalidConfigException(
+                message: sprintf('config: group "%s" launch must be exec|fork', $name),
+            );
+        }
+
+        $phpBinary = (string) ($data['phpBinary'] ?? $defaults->phpBinary);
+        $phpArgs   = isset($data['phpArgs']) ? MasterConfig::stringList($data['phpArgs']) : $defaults->phpArgs;
+        $bootstrap = (string) ($data['bootstrap'] ?? '');
+
+        // Loaded by the fork server a fork group's workers are copies of; an exec'd worker is a php
+        // of its own and loads whatever it needs in its script.
+        if ($bootstrap !== '' && $launch !== LaunchMode::Fork) {
+            throw new InvalidConfigException(
+                message: sprintf('config: group "%s" has "bootstrap", which needs launch=fork', $name),
+            );
+        }
+
+        $server = MasterConfig::serverParams(
+            value: $data['server'] ?? null,
+            groupName: $name,
+        );
+        $listen = (string) ($data['listen'] ?? '');
+
+        // One socket the master binds and a socket each worker binds for itself are two
+        // ways of sharing a port; a worker told both would bind its own and leave the
+        // master's unused.
+        if ($listen !== '' && (($server['reusePort'] ?? false) || isset($server['listenFd']))) {
+            throw new InvalidConfigException(
+                message: sprintf(
+                    'config: group "%s" has "listen", so its workers accept on the master\'s socket;'
+                    . ' drop "reusePort" and "listenFd" from its "server"',
+                    $name,
+                ),
+            );
+        }
+
         return new self(
             name: $name,
             workerScript: $workerScript,
             workerCount: $workerCount,
-            phpBinary: (string) ($data['phpBinary'] ?? $defaults->phpBinary),
-            phpArgs: isset($data['phpArgs']) ? MasterConfig::stringList($data['phpArgs']) : $defaults->phpArgs,
+            phpBinary: $phpBinary,
+            phpArgs: $phpArgs,
             workerArgs: MasterConfig::stringList($data['workerArgs'] ?? []),
             env: array_merge($defaults->env, MasterConfig::stringMap($data['env'] ?? [])),
             restartPolicy: $restartPolicy,
             shutdownTimeoutMs: MasterConfig::nonNegativeInt(
-                $data,
-                'shutdownTimeoutMs',
-                $defaults->shutdownTimeoutMs,
-                $name,
+                data: $data,
+                key: 'shutdownTimeoutMs',
+                default: $defaults->shutdownTimeoutMs,
+                groupName: $name,
             ),
             restartBackoffMs: MasterConfig::nonNegativeInt(
-                $data,
-                'restartBackoffMs',
-                $defaults->restartBackoffMs,
-                $name,
+                data: $data,
+                key: 'restartBackoffMs',
+                default: $defaults->restartBackoffMs,
+                groupName: $name,
             ),
             maxRestartBackoffMs: MasterConfig::nonNegativeInt(
-                $data,
-                'maxRestartBackoffMs',
-                $defaults->maxRestartBackoffMs,
-                $name,
+                data: $data,
+                key: 'maxRestartBackoffMs',
+                default: $defaults->maxRestartBackoffMs,
+                groupName: $name,
             ),
             watchdogTimeoutMs: MasterConfig::watchdogTimeoutMs(
-                $data,
-                $defaults->watchdogTimeoutMs,
-                $name,
+                data: $data,
+                default: $defaults->watchdogTimeoutMs,
+                groupName: $name,
             ),
-            server: MasterConfig::serverParams($data['server'] ?? null, $name),
+            server: $server,
+            launch: $launch,
+            listen: $listen,
+            readyTimeoutMs: MasterConfig::readyTimeoutMs(
+                data: $data,
+                default: $defaults->readyTimeoutMs,
+                groupName: $name,
+            ),
+            bootstrap: $bootstrap,
+            accessLog: MasterConfig::accessLog(
+                data: $data,
+                default: $defaults->accessLog,
+                groupName: $name,
+            ),
         );
+    }
+
+    /**
+     * Reads what toArray() wrote: every setting there and already resolved, so nothing falls
+     * back to a default. How the fork server takes its group from the master. A key that is
+     * missing means the fork server runs another release of this library than the master
+     * that wrote it, and is refused rather than guessed.
+     *
+     * @param array<string, mixed> $data
+     */
+    public static function fromResolvedArray(array $data): self
+    {
+        $name    = (string) ($data['name'] ?? '');
+        $missing = array_diff(self::KNOWN_KEYS, array_keys($data));
+
+        if ($missing !== []) {
+            throw new InvalidConfigException(
+                message: sprintf(
+                    'group "%s" was handed over without %s; the master and the fork server run'
+                    . ' different releases of the library, restart the master',
+                    $name,
+                    implode(', ', $missing),
+                ),
+            );
+        }
+
+        $restartPolicy = RestartPolicy::tryFrom((string) $data['restartPolicy']);
+        $launch        = LaunchMode::tryFrom((string) $data['launch']);
+        $accessLog     = AccessLogTarget::tryFrom((string) $data['accessLog']);
+
+        if ($restartPolicy === null || $launch === null || $accessLog === null) {
+            throw new InvalidConfigException(
+                message: sprintf(
+                    'group "%s" was handed over with an unknown restartPolicy, launch or accessLog',
+                    $name,
+                ),
+            );
+        }
+
+        return new self(
+            name: $name,
+            workerScript: (string) $data['workerScript'],
+            workerCount: (int) $data['workerCount'],
+            phpBinary: (string) $data['phpBinary'],
+            phpArgs: MasterConfig::stringList($data['phpArgs']),
+            workerArgs: MasterConfig::stringList($data['workerArgs']),
+            env: MasterConfig::stringMap($data['env']),
+            restartPolicy: $restartPolicy,
+            shutdownTimeoutMs: (int) $data['shutdownTimeoutMs'],
+            restartBackoffMs: (int) $data['restartBackoffMs'],
+            maxRestartBackoffMs: (int) $data['maxRestartBackoffMs'],
+            watchdogTimeoutMs: (int) $data['watchdogTimeoutMs'],
+            server: MasterConfig::serverParams(
+                value: $data['server'],
+                groupName: $name,
+            ),
+            launch: $launch,
+            listen: (string) $data['listen'],
+            readyTimeoutMs: (int) $data['readyTimeoutMs'],
+            bootstrap: (string) $data['bootstrap'],
+            accessLog: $accessLog,
+        );
+    }
+
+    /** How many workers the group keeps: workerCount, or one per core when that is 0. */
+    public function resolvedWorkerCount(): int
+    {
+        return $this->workerCount > 0 ? $this->workerCount : Cpu::count();
+    }
+
+    /**
+     * How long to wait before a restart that follows this many fast failures in a row: not
+     * at all after none, then restartBackoffMs, doubled with each further one, up to
+     * maxRestartBackoffMs. Keeps a crash loop from spinning.
+     */
+    public function backoffMs(int $consecutiveFastFails): int
+    {
+        if ($consecutiveFastFails <= 0) {
+            return 0;
+        }
+
+        return (int) min(
+            $this->restartBackoffMs * (2 ** ($consecutiveFastFails - 1)),
+            $this->maxRestartBackoffMs,
+        );
+    }
+
+    /**
+     * Every setting, defaults resolved, in the shape fromResolvedArray() reads: how the master
+     * hands a group to the fork server it starts for it, which is a php process of its own.
+     *
+     * @return array<string, mixed>
+     */
+    public function toArray(): array
+    {
+        return [
+            'name'                => $this->name,
+            'workerScript'        => $this->workerScript,
+            'workerCount'         => $this->workerCount,
+            'phpBinary'           => $this->phpBinary,
+            'phpArgs'             => $this->phpArgs,
+            'workerArgs'          => $this->workerArgs,
+            'env'                 => (object) $this->env,
+            'restartPolicy'       => $this->restartPolicy->value,
+            'shutdownTimeoutMs'   => $this->shutdownTimeoutMs,
+            'restartBackoffMs'    => $this->restartBackoffMs,
+            'maxRestartBackoffMs' => $this->maxRestartBackoffMs,
+            'watchdogTimeoutMs'   => $this->watchdogTimeoutMs,
+            'readyTimeoutMs'      => $this->readyTimeoutMs,
+            'launch'              => $this->launch->value,
+            'listen'              => $this->listen,
+            'bootstrap'           => $this->bootstrap,
+            'accessLog'           => $this->accessLog->value,
+            'server'              => (object) $this->server,
+        ];
     }
 
     /**

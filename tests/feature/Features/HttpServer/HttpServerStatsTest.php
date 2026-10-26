@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\HttpServer;
 
 use PHPUnit\Framework\TestCase;
+use SConcur\Tests\Impl\FreePort;
 use SConcur\Tests\Impl\Worker\TestWorkerMaster;
 
 /**
@@ -16,12 +17,12 @@ use SConcur\Tests\Impl\Worker\TestWorkerMaster;
  */
 class HttpServerStatsTest extends TestCase
 {
-    private const string TOKEN = 'test-admin-token-12345';
-    private const string PATH  = '/api/stats';
+    protected const string TOKEN = 'test-admin-token-12345';
+    protected const string PATH  = '/api/stats';
 
     public function testServesAggregatedHttpStatistics(): void
     {
-        $panelPort = self::freePort();
+        $panelPort = FreePort::find();
 
         $master = TestWorkerMaster::start(
             options: ['panelPort' => $panelPort, 'adminToken' => self::TOKEN],
@@ -75,7 +76,7 @@ class HttpServerStatsTest extends TestCase
 
     public function testRejectsMissingOrWrongTokenWith404(): void
     {
-        $panelPort = self::freePort();
+        $panelPort = FreePort::find();
 
         $master = TestWorkerMaster::start(
             options: ['panelPort' => $panelPort, 'adminToken' => self::TOKEN],
@@ -109,7 +110,7 @@ class HttpServerStatsTest extends TestCase
      *
      * @return array{int, string}
      */
-    private function getStats(int $port, string $authorization): array
+    protected function getStats(int $port, string $authorization): array
     {
         $deadline = microtime(true) + 10.0;
 
@@ -143,7 +144,7 @@ class HttpServerStatsTest extends TestCase
      *
      * @return array{int, string}
      */
-    private function request(string $url, array $headers, string $method = 'GET'): array
+    protected function request(string $url, array $headers, string $method = 'GET'): array
     {
         $curl = curl_init($url);
 
@@ -168,20 +169,5 @@ class HttpServerStatsTest extends TestCase
         curl_close($curl);
 
         return [$status, is_string($body) ? $body : ''];
-    }
-
-    private static function freePort(): int
-    {
-        $socket = stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
-
-        if ($socket === false) {
-            self::fail("Could not allocate a port: {$errstr}");
-        }
-
-        $name = (string) stream_socket_get_name($socket, false);
-
-        fclose($socket);
-
-        return (int) substr($name, (int) strrpos($name, ':') + 1);
     }
 }

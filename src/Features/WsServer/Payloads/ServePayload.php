@@ -31,6 +31,7 @@ readonly class ServePayload implements PayloadInterface
         private int $maxConcurrency,
         private int $shutdownTimeoutMs,
         private bool $reusePort,
+        protected ?int $listenFd,
         private string $path,
         private array $allowedOrigins,
         private array $subprotocols,
@@ -46,7 +47,7 @@ readonly class ServePayload implements PayloadInterface
     }
 
     /**
-     * @return array<string, int|string|bool|list<string>>
+     * @return array<string, int|string|bool|list<string>|null>
      */
     public function getData(): array
     {
@@ -60,6 +61,7 @@ readonly class ServePayload implements PayloadInterface
             'mc'  => $this->maxConcurrency,
             'sht' => $this->shutdownTimeoutMs,
             'rp'  => $this->reusePort,
+            'lfd' => $this->listenFd,
             'pt'  => $this->path,
             'ao'  => $this->allowedOrigins,
             'sp'  => $this->subprotocols,

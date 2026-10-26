@@ -48,7 +48,7 @@ class HttpServerCpuSwitchTest extends BaseHttpServerTestCase
      *
      * @return array<string, array{int, float}>
      */
-    private function concurrentGetTimings(array $paths): array
+    protected function concurrentGetTimings(array $paths): array
     {
         $multi   = curl_multi_init();
         $handles = [];

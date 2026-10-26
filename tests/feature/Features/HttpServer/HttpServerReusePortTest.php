@@ -56,7 +56,7 @@ class HttpServerReusePortTest extends TestCase
     /**
      * @return array{int, string} [status, body]
      */
-    private function get(string $url): array
+    protected function get(string $url): array
     {
         $curl = curl_init($url);
 

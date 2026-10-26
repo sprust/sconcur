@@ -2,17 +2,20 @@ English | [Русский](benchmarks.ru.md)
 
 # Feature benchmarks
 
-Per-feature measurements (except `Sleeper`): what a call across the PHP↔extension
-boundary costs against the native driver, and what running several such calls at
-the same time gains. Reference numbers, not a guarantee — they depend on
-hardware, DB settings and load. The workload-matching verdict table is in
+Measurements per feature — a feature is one of the library's integrations in
+`src/Features/` (MongoDB, MySQL, Redis, the HTTP client and so on); all of them
+except `Sleeper` are here. What a call across the PHP↔extension boundary costs
+against the native driver, and what running several such calls at the same time
+gains. Reference numbers, not a guarantee — they depend on hardware, DB settings
+and load. The workload-matching verdict table is in
 [positioning](positioning.md#is-sconcur-for-you).
 
 > The `sync` column carries a fixed overhead that is not inherent to the approach:
-> a synchronous call (outside a `WaitGroup` and outside the servers) still goes
-> through the scheduler and the Fiber machinery. Cutting that is on the
-> [roadmap](../README.md#roadmap). Until then the meaningful comparison is
-> `native` vs `async`.
+> a synchronous call (outside a `WaitGroup` and outside the servers) opens a
+> one-off task group in the extension for every call, so one operation costs three
+> calls into the extension — `push`, `wait`, `stopFlow`. Optimizing that path is
+> deferred (see the [roadmap](../README.md#roadmap)). Until then the meaningful
+> comparison is `native` vs `async`.
 
 ## Contents
 
@@ -40,9 +43,10 @@ hardware, DB settings and load. The workload-matching verdict table is in
 Intel Core i7-13620H: 6 performance cores with two threads each (CPU 0–11) and 4
 efficiency cores (CPU 12–15). At 12 workers the HTTP harnesses put the servers
 on 0–11 and `wrk` on 12–15. 15 GiB RAM, NVMe SSD (Samsung, 1 TB), Ubuntu 26.04
-with kernel 7.0, Docker 29.1, power profile Performance. Everything runs in
-Docker: the benchmarks from the `php` container (`make bench-*`), the server
-pools from the `servers` container (2 workers per group, `SO_REUSEPORT`).
+with kernel 7.0, Docker 29.1, power profile Performance. The feature benchmarks
+run in the `php` container (`make bench-*`) against the `servers` container's
+pools (2 workers per group, `SO_REUSEPORT`); the HTTP load harnesses start their
+own pools in the `php` container and run `wrk` on the host.
 Component versions — see [Tested versions](../README.md#tested-versions).
 
 DB data lives on the host disk (SSD), as in a real deployment: writes pay a real
@@ -51,8 +55,9 @@ data in `tmpfs`; for a benchmark session the named volumes are uncommented inste
 and the state is reset with `make bench-reset` — without it writes accumulate
 between runs and the numbers drift.
 
-Skipping that swap does more than drift the numbers. Each `tmpfs` mount is capped
-at 1 GiB and a sustained `/all` run fills it well inside an hour — mostly with
+Skipping that swap does more than drift the numbers. The MongoDB, MySQL and
+PostgreSQL data mounts are capped at 1 GiB each, and a sustained `/all` run fills
+them well inside an hour — mostly with
 `pg_wal` and the MySQL binary log, which no table truncation reclaims. Past the cap
 PostgreSQL answers `SQLSTATE 53100` and MySQL can no longer build its internal
 temporary tables, so the demo handler returns `500` for every request while the
@@ -84,7 +89,9 @@ total.
 Three modes per feature: `native` — the baseline without SConcur
 (`mongodb/mongodb`, `PDO`, stream wrappers, raw sockets), sequential; `sync` —
 SConcur outside a `WaitGroup` (the `Extension::wait` path), also sequential;
-`async` — SConcur inside a `WaitGroup`, N coroutines running at the same time.
+`async` — SConcur inside a `WaitGroup`, N coroutines running at the same time (a
+coroutine is a closure the `WaitGroup` runs in a PHP Fiber, suspended while its
+operation waits in the extension).
 
 Each DB benchmark ran 5 times, each client/server benchmark 3 times; the tables
 show the median. Every DB run starts cold — the table/collection is dropped and
@@ -94,41 +101,38 @@ cannot force the concurrent calls to run one after another. A discarded warm-up
 precedes each measurement, otherwise the concurrent calls would pay for spinning
 up the connection pool inside the measured phase; the SQL pools are
 `maxOpenConns: 50`. Memory is
-the peak RSS of the PHP process per mode.
+the peak of `memory_get_peak_usage(true)` per mode: what PHP's allocator took,
+not counting what the extension allocates on its own side.
 
-Calls per mode: 100 by default, 50 for client I/O benchmarks. Three MongoDB
-benchmarks are bounded by the operation's nature: `createIndex` and `bulkWrite`
-20, `updateMany` 10. Single runs: `make bench-<name> c=<count>`; the whole DB
-session is `make bench-db-runs`, and every measurement on this page and the ones
-that quote it is `make bench-docs`, which writes the raw results of one session
-to `.bench-runs/docs/`. The scripts live in `tests/benchmarks/`, one directory
-per measured technology (`mongodb/`, `mysql/`, `pgsql/`, `http/`, `socket/`,
-`ws/`, `amqp/`, `redis/`, `files/`), so `make bench-mysql-selectOne` runs
+Calls per mode are given in each table's `count` column or in the section's text: 100
+for most DB rows, 50 for the clients. Three MongoDB benchmarks are bounded by the
+operation's nature: `createIndex` and `bulkWrite` 20, `updateMany` 10. Single runs:
+`make bench-<name> c=<count>` (without `c` a script makes 5 calls); the whole DB
+session is `make bench-db-runs`, and every table on this page and on the pages that
+quote it is `make bench-docs`, which writes the raw results of one session to
+`.bench-runs/docs/`. The scripts live in `tests/benchmarks/`, one directory per
+measured technology (`mongodb/`, `mysql/`, `pgsql/`, `http/`, `socket/`, `ws/`,
+`amqp/`, `redis/`, `files/`), so `make bench-mysql-selectOne` runs
 `tests/benchmarks/mysql/select-one.php`.
 
 `async vs native` is the signed percent `(native − async) / native`, ✅ when
 `async` is faster; in the DB tables each of the median, min and max columns
 carries its own, which shows the spread across runs. In the server comparison
-the `vs RoadRunner`/`vs Swoole` columns compare throughput against that stack's
-row for the same endpoint. Sub-50 ms rows are noise-sensitive — a sign flip
-between a row's `min` and `max` marks exactly that.
+the `rps vs RoadRunner`/`rps vs Swoole` columns compare throughput against that
+stack's row for the same endpoint. Sub-50 ms rows are noise-sensitive — a sign
+flip between a row's `min` and `max` marks exactly that.
 
 The server rows are taken with the workers and the load generator on
-non-overlapping cores, because that is what makes a run comparable to the next
-one. Production does not pin, and the difference is not zero — see
-[CPU pinning](load-testing.md#cpu-pinning) for the measurements.
-
-Two things have to be equal before the stacks can be compared, and neither is
-by default. **Placement**: `load-stats.sh` defaults to `PIN_SERVERS=1`, one
-worker per logical CPU, while `rr-load-stats.sh` and `swoole-load-stats.sh` can
-only `taskset` the master and let it fork — the `group` placement. The core
-budget is the same either way, the placement is not, and it is worth 6.5% on the
-empty endpoint. Every server row below runs `group`; what `pin=1` costs is
-measured separately in [CPU pinning](load-testing.md#cpu-pinning). **Table
-state**: the three stacks share `load_all` and `bench_rw`, and only
-`load-stats.sh` empties the first while nothing empties the second, so whichever
-stack ran later inherited a bigger table. The rows below were taken with both
-truncated before every single run.
+non-overlapping cores, which is what makes a run comparable to the next one;
+production does not pin. Two things have to be equal before the stacks can be
+compared, and neither is by default. Placement: `load-stats.sh` defaults to
+`PIN_SERVERS=1`, one worker per logical CPU, while `rr-load-stats.sh` and
+`swoole-load-stats.sh` can only `taskset` the master and let it fork — the
+`group` placement, worth 6.5% on the empty endpoint. Every server row below runs
+`group`; [CPU pinning](load-testing.md#cpu-pinning) has the measurements. Table
+state: `/db-rw` grows the `bench_rw` table the three stacks share, and none of
+the three load scripts empties it, so whichever stack ran later inherited a
+bigger table; `make bench-docs` truncates it before every `/db-rw` run.
 
 Re-measure all three stacks in one session: cross-session drift alone reaches
 ±20%, and a reference row carried over from an older session is what made the
@@ -166,8 +170,7 @@ async wins biggest where a call makes the server chew through the dataset —
 every `count` scans all 100k documents, every `updateMany` rewrites them, the
 unindexed `bulkWrite` filters scan the collection several times per call.
 
-Single-document operations gain as well: `findOne` +43%, `updateOne` +57%,
-`deleteOne` +68%, `insertOne` +36%. MongoDB pays no per-operation fsync on the
+Single-document operations gain as well. MongoDB pays no per-operation fsync on the
 default write concern, so there is no I/O wait to hide other work behind; what
 the concurrent mode overlaps here is the round-trip to the server, and that is
 worth more than the boundary conversion costs. `insertMany` is the exception —
@@ -205,11 +208,11 @@ PDO.
 | delete | 100 | 103 / 122 / 6.0 (+94% ✅) | 101 / 118 / 5.1 (+95% ✅) | 122 / 133 / 6.3 (+95% ✅) | 6 / 6 / 6 |
 | transaction | 100 | 106 / 132 / 8.4 (+92% ✅) | 102 / 125 / 8.0 (+92% ✅) | 107 / 141 / 12.0 (+89% ✅) | 6 / 6 / 6 |
 
-The disk flips the SQL picture on writes: every committed write pays an fsync,
-the sequential modes sum it over all 100 calls, and `async` waits for all of
-them in parallel. `count` over the 100 000-row table also goes to async (pgsql's
-`COUNT(*)` scans the heap): a read that makes the server work is worth running
-concurrently too. What stays with native are cheap cached point reads
+The disk flips the SQL picture on writes: every committed write pays an fsync, the
+sequential modes sum it over all 100 calls, and `async` waits for all of them in
+parallel. `count` over the 100 000-row table also goes to async (PostgreSQL's
+`COUNT(*)` reads every row of the table): a read that makes the server work is worth
+running concurrently too. What stays with native are cheap cached point reads
 (`selectOne`) and `selectMany`, where the row-set conversion at the boundary
 dominates.
 
@@ -264,14 +267,14 @@ Payload 1 MB, 50 calls:
 
 1. Writes: concurrency wins while fsync dominates, but the margin shrinks as the
    payload grows — pgsql insert goes +94% → +83% → +38% at 1 MB, because
-   PostgreSQL commits a large row cheaply via TOAST and the transfer cost
-   catches up.
+   PostgreSQL stores a large value out of line (TOAST) and commits it cheaply,
+   and the transfer cost catches up.
 2. Reads split by driver. MongoDB gains at every size (+50% at 1 KB, +62% at
    64 KB, +65% at 1 MB); `mysql selectOne` loses at every size, and
    `pgsql selectOne` loses at 1 KB and gains from 64 KB on. A point read has
    no waiting time to hide other work behind, and the payload pays the boundary
    both ways.
-3. **Memory is the main finding.** The async column at 1 MB reads 106–112 MB
+3. Memory is the main finding. The async column at 1 MB reads 106–112 MB
    against 8–12 MB for native: 50 concurrent 1 MB reads hold all 50 results in
    memory at once. It already shows at 64 KB, where the async reads sit at
    12 MB against 6. Limit how many such operations run at the same time
@@ -282,8 +285,8 @@ Payload 1 MB, 50 calls:
 ## AMQP (RabbitMQ)
 
 Publishing is where the native extension wins and nothing can be done about it;
-`basic.get` run concurrently lands around it; consuming a queue that is already
-full is the extension's too. The gain is elsewhere — see below the tables.
+`basic.get` and consuming a pre-filled queue, run concurrently, land around it.
+The gain is elsewhere — see below the tables.
 
 Median of 5 runs, 1000 calls per mode, columns as for MongoDB. The concurrent mode
 spreads its calls over 50 channels, because a channel is serialized on the broker;
@@ -321,7 +324,7 @@ single-queue benchmark cannot show.
 ## Redis
 
 phpredis wins every shape measured here, and the reason is the latency it is
-measured against: a `GET` on a Redis in the same container answers in about 11 µs,
+measured against: a `GET` on a Redis in a neighbouring container answers in about 11 µs,
 which is less than one crossing of the PHP ↔ extension boundary costs. There is
 no server wait to overlap, so the concurrency has nothing to recover and the
 crossing is the whole difference.
@@ -353,7 +356,8 @@ the job: 500 of them running at once hold 140 MB against the native driver's
 16, because every result exists in the extension and in PHP at the same time.
 Read blobs one at a time, or through a path that never crosses the boundary.
 
-`poolSize`, 2000 concurrent `GET` calls, single run: 1 → 51.3 ms, 2 → 45.6 ms,
+`poolSize`, 2000 concurrent `GET` calls, single run
+(`make bench-redis-pool-size c="2000 0 <poolSize>"`): 1 → 51.3 ms, 2 → 45.6 ms,
 4 → 45.1 ms, 8 → 44.9 ms. One multiplexed connection already carries every
 concurrent command; a second one buys the last 11%, and past two the line is
 flat. The default is 4, which is that flat part with room for a large value in
@@ -371,20 +375,19 @@ localhost.
 ## Files
 
 The Files tables share the session of the feature tables. Their files live in the
-container's own filesystem
-(`sys_get_temp_dir()` inside the `php` service), not on the disk-backed volumes
-the database rows use — which for a file benchmark is the decisive fact about
-the environment, and the reason the page gives every size from a kilobyte to
-64 MiB rather than one.
+container's own filesystem (`sys_get_temp_dir()` inside the `php` service), not
+on the disk-backed volumes the database rows use. This is the only feature whose
+verdict turns on a number the caller picks, the size of the file: on a kilobyte
+with a warm page cache the boundary crossing is the whole measurement, on 64 MiB
+it is a rounding error next to the disk. So each operation is given at a small
+and a large size.
 
-The only feature here whose verdict turns on a number the caller picks: the size
-of the file. On a kilobyte with a warm page cache the boundary crossing is the
-whole measurement; on sixty-four megabytes it is a rounding error next to the
-disk. So every row below is given at both ends rather than at one.
-
-Single run each: `c="20 0"` at 1 KiB, `c="30 0"` at 1 MiB and 10 MiB, `c="6 0"`
-at 64 MiB. Each mode works on files of its own, so the page cache is not handed
-from the column that ran first to the ones after it.
+Single run each, `c="<calls> 0"` (the `0` keeps the per-call log off): 20 calls
+at 1 KiB, 30 at 1 MiB and 10 MiB, 6 at 64 MiB; the size in bytes as `bytes=`
+(`make bench-files-read bytes=1024 c="20 0"`), the listing's entry count as
+`entries=`. Each mode works on files of its
+own, so the page cache is not handed from the column that ran first to the ones
+after it.
 
 | Operation | Size | count | native / sync / async, ms | Memory n/s/a, MB |
 | --- | --- | ---: | ---: | --- |
@@ -443,16 +446,14 @@ throughput number, and it does not show up in a loop that runs one call at a tim
 ## Clients (HTTP / Socket / WebSocket)
 
 Network waits overlap almost perfectly: the `msleep` endpoint holds the
-connection for 100 ms, so 50 sequential calls take ≈5 s while the same 50 run
-concurrently in the time of about one call.
+connection for 100 ms, so 50 sequential calls take ≈5.1 s while the same 50 run
+concurrently take ≈0.10 s, ~49× less.
 
 | Benchmark | count | native, ms | sync, ms | async, ms | Memory n/s/a, MB | async vs native |
 | --- | ---: | ---: | ---: | ---: | --- | :---: |
 | http-client (`/msleep/100`) | 50 | 5106 | 5106 | 104 | 4 / 4 / 4 | +98% ✅ |
 | socket-client (`msleep:100`) | 50 | 5105 | 5115 | 103 | 4 / 4 / 4 | +98% ✅ |
 | ws-client (`msleep:100`) | 50 | 5104 | 5126 | 105 | 4 / 4 / 4 | +98% ✅ |
-
-On I/O latency async gives ~49× (5.1 s → 0.10 s).
 
 `http-client-download` is unmeasured because of an open bug: at 50 concurrent
 downloads of a 4 MiB body against a multi-worker pool the server answers `500`
@@ -481,9 +482,8 @@ responses successful.
 | ws-server-cpu | 100 × `cpu:100000` round-trip | 0.72 | — |
 | ws-throughput | 50 conn × 2000 × `ping` | 0.36 | ≈278 715 rt/s |
 
-100 handlers each sleeping 1 s asynchronously finish in ≈one sleep regardless of
-the worker count — a single cooperative process already holds all those waits at
-once. Throughput measures the pure round-trip price under concurrency. Behaviour
+The `-io` rows finish in ≈one sleep regardless of the worker count; the
+throughput rows measure the pure round-trip price under concurrency. Behaviour
 under sustained load is in [load testing](load-testing.md).
 
 The `-cpu` rows scale with the worker count and nothing else: the sha256 loop
@@ -503,38 +503,30 @@ nothing else.
 | --- | ---: | --- | --- | ---: |
 | `/` (empty) | ≈248 303 | 0.84 / 2.1 / 4.2 ms | ~1102% / ~1184% | ~196 MiB |
 
-The pool ceiling is 12 cores (~1200%), and the empty endpoint reaches it. The
-median is under a millisecond and the tail stays within five times it: 256
-connections are multiplexed onto 12 cooperative processes, so a request that
-arrives behind a queue waits for it, and the queue is short. How that holds
-across pool sizes is in the
+The pool ceiling is 12 cores (~1200%), and the empty endpoint reaches it; the
+latency shape is discussed under the
+[comparison](#comparison-with-roadrunner-and-swoole) and across pool sizes in the
 [worker ladder](#empty-endpoint-the-worker-count-ladder).
 
 ### Comparison with RoadRunner and Swoole
 
-Three execution models on the same endpoint. On an empty response the ranking is
-the price of each transport, and Swoole's C event loop is ahead of everything.
-
-Two reference stacks are measured next to SConcur, both on native drivers and
-both committed (`tests/servers/roadrunner/`, `tests/servers/swoole/`) with load
-scripts that are copies of `tests/benchmarks/http/load-stats.sh`:
-[RoadRunner](https://roadrunner.dev) 2025.1.15 (a request occupies a worker for
-its whole duration) and [Swoole](https://swoole.com) 6.2.2 (a coroutine worker
-serves many requests at once, blocking drivers become non-blocking via
-`hook_flags => SWOOLE_HOOK_ALL`). Conditions are identical: the same `php`
-container, 12 workers, `wrk` 4 threads / 256 connections / 20 s, 3 runs
-(median), all three in one session (2026-10-18) in the `group` placement — only
-in-session numbers are comparable, cross-session drift reaches ±20%.
-
-`/` returns `200 "ok"` in all three; only the driver stack and the execution
-model differ.
+Three execution models on the same endpoint. Two reference stacks are measured next to
+SConcur, both on native drivers and both committed (`tests/servers/roadrunner/`,
+`tests/servers/swoole/`) with load scripts that are copies of
+`tests/benchmarks/http/load-stats.sh`: [RoadRunner](https://roadrunner.dev) 2025.1.15
+(a request occupies a worker for its whole duration) and [Swoole](https://swoole.com)
+6.2.2 (a coroutine worker serves many requests at once, blocking drivers become
+non-blocking via `hook_flags => SWOOLE_HOOK_ALL`). Conditions are identical: the same
+`php` container, 12 workers, `wrk` 4 threads / 256 connections / 20 s, 3 runs
+(median), all three in one session (2026-10-18) in the `group` placement, `/`
+returning `200 "ok"` in each.
 
 Honesty checks: every response was `200`. Swoole's row was checked against the
 load generator: with 8 generator threads instead of 4 the same endpoint answered
 ≈490 300 rps, the same figure, so it is the server's ceiling and not the
 generator's.
 
-| Server | Requests/sec | p50 / p90 / p99 | CPU avg / peak | MEM peak | vs RoadRunner | vs Swoole |
+| Server | Requests/sec | p50 / p90 / p99 | CPU avg / peak | MEM peak | rps vs RoadRunner | rps vs Swoole |
 | --- | ---: | --- | --- | ---: | :---: | :---: |
 | Swoole | ≈490 461 | 0.25 / 0.49 / 0.62 ms | ~292% / ~302% | ~83 MiB | +843% ✅ | — |
 | SConcur | ≈248 303 | 0.84 / 2.1 / 4.2 ms | ~1102% / ~1184% | ~196 MiB | +378% ✅ | −49% ❌ |
@@ -558,11 +550,11 @@ generator's.
 The three stacks on `/` (200 "ok", no I/O) across worker counts — the pure price
 of each server layer as it scales over cores. Same wrk harness (4 threads / 256
 connections / 20 s, median of 3), all three stacks in one session (2026-10-18).
-The script pins workers to the first N cores and wrk to the rest, so at 16
-workers the generator shares cores with the server — that is what caps the
-16-worker row of Swoole and SConcur alike, not the servers themselves.
+The scripts confine each pool to the first N cores and `wrk` to the rest; at 16
+workers there is no rest, `wrk` runs on 12–15 beside the server, and that is what
+caps the 16-worker row of Swoole and SConcur alike, not the servers themselves.
 
-| Workers | RoadRunner rps / p50 / p99 | SConcur rps / p50 / p99 | Swoole rps / p50 / p99 | SConcur vs RR | SConcur vs Swoole |
+| Workers | RoadRunner rps / p50 / p99 | SConcur rps / p50 / p99 | Swoole rps / p50 / p99 | SConcur rps vs RR | SConcur rps vs Swoole |
 | ---: | --- | --- | --- | :---: | :---: |
 | 1 | 10 071 / 24.9 ms / 30.1 ms | 54 807 / 4.6 ms / 6.8 ms | 196 052 / 1.3 ms / 1.6 ms | +444% ✅ | −72% ❌ |
 | 3 | 18 074 / 13.9 ms / 18.7 ms | 93 424 / 2.0 ms / 5.0 ms | 500 516 / 0.51 ms / 1.1 ms | +417% ✅ | −81% ❌ |
@@ -588,7 +580,7 @@ Disk-backed MySQL, default `max_connections = 151`; the per-process pool of
 SConcur and Swoole is sized to fit that limit, RoadRunner holds one connection
 per worker. Same wrk setup, one session.
 
-| Workers | RoadRunner rps / p50 / p99 | SConcur rps / p50 / p99 (pool) | Swoole rps / p50 / p99 (pool) | SConcur vs RR | SConcur vs Swoole |
+| Workers | RoadRunner rps / p50 / p99 | SConcur rps / p50 / p99 (pool) | Swoole rps / p50 / p99 (pool) | SConcur rps vs RR | SConcur rps vs Swoole |
 | ---: | --- | --- | --- | :---: | :---: |
 | 1 | 6 491 / 37.4 ms / 65.5 ms | 16 229 / 15.7 ms / 21.3 ms (150) | 53 223 / 4.6 ms / 7.2 ms (150) | +150% ✅ | −70% ❌ |
 | 3 | 12 745 / 19.3 ms / 28.3 ms | 35 901 / 6.7 ms / 217 ms (50×3) | 111 550 / 2.4 ms / 4.6 ms (50×3) | +182% ✅ | −68% ❌ |
@@ -598,13 +590,12 @@ per worker. Same wrk setup, one session.
 - Against RoadRunner the SConcur advantage tapers with pool size — +150% on a
   single worker, +38% at the full per-core pool, where both approach the shared
   hardware ceiling (MySQL plus total CPU). SConcur peaks at 8 workers.
-- Swoole is 2.6–3.3× ahead of SConcur and 4–9× ahead of RoadRunner, and this is
-  where SConcur's price is most visible. Both saturate one PHP thread on a
-  single worker (~101% CPU), but that thread buys ≈16k rps for SConcur (~62 µs
-  of CPU per request) against ≈53k for Swoole (~19 µs): the hooked `mysqlnd`
-  never leaves the process. The work moves to the database accordingly — at one
-  worker the mysql container burns ~183% CPU under Swoole against ~89% under
-  SConcur.
+- Swoole is 2.6–3.3× ahead of SConcur and 4–9× ahead of RoadRunner, and this is where
+  SConcur's price is most visible. Both saturate one PHP thread on a single worker
+  (~101% CPU), but that thread buys ≈16k rps for SConcur (~62 µs of CPU per request)
+  against ≈53k for Swoole (~19 µs): `mysqlnd`, made non-blocking by Swoole's hooks,
+  never leaves the process. The work moves to the database accordingly — at one worker
+  the mysql container burns ~183% CPU under Swoole against ~89% under SConcur.
 - Tails: RoadRunner stays tight throughout (p99 under 2× its p50); Swoole under
   9 ms everywhere; SConcur holds p99 16–21 ms except on the three-worker rung,
   where an unexplained tail puts it at 217 ms — the one tail on this page that
@@ -630,7 +621,7 @@ stacks. The `bench_rw` table is reset to its 10 000 seed rows before each run;
 during a run it grows with the inserts, so the faster stack makes its own COUNT(*)
 heavier — the comparison is conservative.
 
-| Workers | RoadRunner rps / p50 / p99 | SConcur rps / p50 / p99 (pool) | Swoole rps / p50 / p99 (pool) | SConcur vs RR | SConcur vs Swoole |
+| Workers | RoadRunner rps / p50 / p99 | SConcur rps / p50 / p99 (pool) | Swoole rps / p50 / p99 (pool) | SConcur rps vs RR | SConcur rps vs Swoole |
 | ---: | --- | --- | --- | :---: | :---: |
 | 1 | 162 / 1.57 s / 1.61 s | 2 792 / 82.7 ms / 300 ms (150) | 2 882 / 79.2 ms / 311 ms (150) | ×17 ✅ | −3% ❌ |
 | 3 | 266 / 956 ms / 1.03 s | 2 745 / 83.4 ms / 382 ms (50×3) | 2 888 / 81.8 ms / 313 ms (50×3) | ×10 ✅ | −5% ❌ |
@@ -664,8 +655,6 @@ heavier — the comparison is conservative.
   those prices are paid in parallel instead of being summed: on disk-backed SQL
   every write wins, as do heavy reads on the 100k dataset, and 100 ms network
   waits run ~49× faster together. Cheap point operations stay with native.
-- The connection pool is decisive: a cold pool cost the concurrent runs 3–15×,
-  which is why the methodology includes a warm-up.
 - The boundary itself is cheap under concurrency: socket/ws throughput ~245–279k
   round-trips/s, the empty HTTP endpoint ~248k rps (~4.8× RoadRunner).
 - Against RoadRunner and Swoole: on a write-and-read request all three stand on

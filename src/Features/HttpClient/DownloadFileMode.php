@@ -6,10 +6,8 @@ namespace SConcur\Features\HttpClient;
 
 /**
  * How HttpClient::download() opens the destination file. Human-readable names over
- * the fopen-style flags; the actual open flags are mapped on the extension side
- * (httpclient_feature.downloadModeToFlags).
- *
- * Rust: the values sink_options() matches (ext/src/features/httpclient/mod.rs).
+ * the fopen-style flags; the actual open flags are mapped on the extension side, by
+ * sink_options() in ext/src/features/httpclient/mod.rs.
  */
 enum DownloadFileMode: string
 {

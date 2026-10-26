@@ -22,6 +22,7 @@ use SConcur\Features\Amqp\Payloads\AmqpPayload;
 use SConcur\Features\Amqp\Support\AmqpFailure;
 use SConcur\Features\Amqp\Support\DeliveryCodec;
 use SConcur\Features\Server\ServerRuntimeSupportTrait;
+use SConcur\Features\Server\StopRequest;
 use SConcur\Scheduler\Scheduler;
 use Throwable;
 use WeakReference;
@@ -113,7 +114,11 @@ class QueueConsumer
      *                                    dead-letters it, or drops it where the queue names
      *                                    no exchange; true puts it back, which loops forever
      *                                    on a message that always fails
-     * @param int    $maxMessages         drain and stop after this many
+     * @param int    $maxMessages         drain and stop after this many. Under a worker
+     *                                    master each worker stops at a number drawn
+     *                                    between it and half again as many, so a pool does
+     *                                    not restart as one (Scheduler::spreadLimit(),
+     *                                    docs/worker-master.md)
      * @param int    $maxRuntimeSeconds   drain and stop after this long
      * @param int    $maxMemoryBytes      drain and stop once the PHP heap passes this
      * @param int    $preemptionQuantumMs what lets $handlerTimeoutMs and a stop reach a
@@ -186,11 +191,9 @@ class QueueConsumer
             $connection->connect();
         }
 
-        $stopRequested = false;
-
-        // Installed before the stream opens, so a signal arriving during startup is not the
+        // Watched before the stream opens, so a signal arriving during startup is not the
         // one that gets lost.
-        $restoreSignals = $this->installSignalHandlers($stopRequested);
+        $stopRequest = StopRequest::watch($this->masterPid);
 
         $flowKey   = uniqid('amqp_', more_entropy: true);
         $startedAt = microtime(true);
@@ -235,8 +238,6 @@ class QueueConsumer
                 $this->maxMessages,
             ));
 
-            $masterPid = $this->masterPid;
-
             // The stream's own failure carries the scope the extension side put on it and reaches
             // here as the generic task failure every feature gets. Left that way, a worker
             // whose broker went down would report a task error instead of a
@@ -267,10 +268,8 @@ class QueueConsumer
                             handled: $handled,
                         );
                     },
-                    shouldStop: function () use (&$stopRequested, $masterPid, $startedAt): bool {
-                        return $stopRequested
-                            || ($masterPid !== null && static::isOrphaned($masterPid))
-                            || $this->limitReached($startedAt);
+                    shouldStop: function () use ($stopRequest, $startedAt): bool {
+                        return $stopRequest->isRequested() || $this->limitReached($startedAt);
                     },
                     onDrainStart: static function () use ($flowKey): void {
                         // Cancel the consumers and keep their channels: the handlers still
@@ -291,7 +290,7 @@ class QueueConsumer
                 );
             }
         } finally {
-            $restoreSignals();
+            $stopRequest->release();
 
             $publishChannels->close();
 

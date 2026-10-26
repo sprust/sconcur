@@ -2,17 +2,19 @@ English | [Русский](load-testing.ru.md)
 
 # Load testing: server behaviour under load
 
-How to load the HTTP server with all async-I/O features at once while capturing
-memory and CPU, plus the results of a reference run.
+How to load the HTTP server with all async-I/O features at once (a feature is one
+of the library's integrations in `src/Features/`) while capturing memory and CPU,
+plus the results of a reference run.
 
 Tools:
 
 - `/all` of the demo server (`tests/servers/http/http-server.php`) — per request
-  it runs six operations at the same time (a nested `WaitGroup`): MongoDB
-  (insert + findOne), MySQL (`INSERT` + `SELECT 1`) and PostgreSQL (`INSERT` +
-  `SELECT 1`). The HTTP client is deliberately excluded: its self-hit into the
-  server's own `/` would make every `/all` serve a second request and skew the
-  rps. Connections are created lazily, once per worker;
+  it runs three blocks at the same time (a nested `WaitGroup`), each making its
+  two calls one after another: MongoDB (insert + findOne), MySQL (`INSERT` +
+  `SELECT 1`) and PostgreSQL (`INSERT` + `SELECT 1`). The HTTP client is
+  deliberately excluded: its self-hit into the server's own `/` would make every
+  `/all` serve a second request and skew the rps. Connections are created
+  lazily, once per worker;
 - `/all-nowg` — the same six operations one after another, with no `WaitGroup`,
   so the only concurrency left is between different requests. Run it via
   `ROUTE=/all-nowg tests/benchmarks/http/load-stats.sh`;
@@ -24,7 +26,7 @@ Tools:
   `make bench-swoole-load-stats`) — the same test rig against the RoadRunner and
   Swoole reference stacks on native drivers, with `ROUTE=/all-coro`
   (`make bench-swoole-coro-load-stats`) for the variant where Swoole runs the
-  six operations concurrently in its own coroutines.
+  three blocks concurrently in its own coroutines.
 
 ## How to run
 
@@ -43,7 +45,25 @@ make bench-http-load-stats-empty
 # soak mode: a long run with an RSS trend and slope (MiB/min) for slow-leak detection
 make bench-http-load-soak               # 10 minutes by default
 DURATION=3600 make bench-http-load-soak # hour-long soak
+
+# one shared socket instead of SO_REUSEPORT, a connection per request,
+# requests counted per worker
+SHARED_SOCKET=1 CONNECTION_CLOSE=1 WORKER_LOGS=1 ROUTE=/ PIN_SERVERS=group \
+    tests/benchmarks/http/load-stats.sh
+
+# the workers as forks of one php, the way a worker master with launch=fork starts them
+LAUNCH=fork make bench-http-load-stats-empty
 ```
+
+`LAUNCH` says how the workers start: `exec` (the default) runs a `php` of its own per
+worker, `fork` makes every worker a fork of one `php` that loaded the library
+(`tests/benchmarks/http/fork-pool.php`, through the same `ForkedWorker` a
+[worker master](worker-master.md#launch-exec-or-fork) group uses). Placement, ports
+and output are the same in both, so a pair of runs differs in the launch alone. A
+forked worker pinned to its own CPUs gets them before its threads exist: the parent
+sets its own affinity before each fork. The workers' output goes to `/dev/null` in
+both, not through a master's journal. `WORKER_LOGS=1` needs `exec`, since forks of one
+process share its stdout.
 
 `MODE=soak` additionally prints a `trend (elapsed → RSS)` table, and the
 least-squares slope in MiB/min gets a verdict: `stable` / `growing — possible leak` /
@@ -96,11 +116,11 @@ The empty endpoint, 12 workers, the same `cpu0-11` budget in every arm, `wrk` on
 | placement | rps | p50 | p90 | p99 |
 |---|---:|---:|---:|---:|
 | `1` — one logical CPU each | 232 864 | 1.01 ms | 1.60 ms | 3.86 ms |
-| `group` — the scheduler places them | **248 002** | 0.86 ms | 2.09 ms | 4.19 ms |
+| `group` — the scheduler places them | 248 002 | 0.86 ms | 2.09 ms | 4.19 ms |
 
-`group` is 6.5% ahead on throughput and median; the pinned arm has the slightly
-shorter tail (p90 1.6 against 2.1 ms, p99 within 0.3 ms). `physical` lands on
-`1` rather than between the two — in an arm of its own it holds 228 720 rps
+`group` is 6.5% ahead on throughput and 0.15 ms lower on the median; the pinned arm
+has the slightly shorter tail (p90 1.6 against 2.1 ms, p99 within 0.3 ms). `physical`
+lands on `1` rather than between the two — in an arm of its own it holds 228 720 rps
 against 229 267 for `1`.
 
 The gap is not a detail of naive pinning that a smarter placement would fix; it
@@ -155,23 +175,25 @@ services in Docker on disk-backed volumes, 12 servers / 4 wrk cores, 256 connect
 CPU — the ceiling of the HTTP-server + framework pairing, and the floor on top
 of which the cost of the `/all` feature calls is added.
 
-| Metric | `/` (empty) | `/all` (all features) |
-|---|---|---|
-| Throughput | ≈252 800 req/sec | ≈2 950 req/sec |
-| Latency | p50 0.83 · p90 2.1 · p99 4.2 ms | p50 83 · p90 120 · p99 190 ms |
-| Servers CPU (`php`) | avg ~1184 % | avg ~205 % |
-| Worker RSS (sum of 12) | ~450 MiB (flat) | ~549 MiB |
+| Metric | `/` (empty) |
+|---|---|
+| Throughput | ≈252 800 req/sec |
+| Latency | p50 0.83 · p90 2.1 · p99 4.2 ms |
+| Servers CPU (`php`) | avg ~1184 % |
+| Worker RSS (sum of 12) | ~450 MiB (flat) |
 
-The runs held ~250k req/sec with 0 errors. The ~85× gap is the price of the
-feature calls: `/all` crosses the PHP↔extension boundary for three feature blocks
-at once and pays the fsync of 3 disk writes per request. Throughput hits exactly
-that, not the cheap DB read. The empty endpoint has none of it and is CPU-bound
-at ~1200 %.
+The runs held ~250k req/sec with 0 errors. The pinning table's 248 002 and the 248 303
+in [benchmarks](benchmarks.md#comparison-with-roadrunner-and-swoole) are the same
+configuration measured as separate arms of one session. The ~85× gap to `/all`
+([reference run](#reference-run)) is the price of the feature calls: `/all` crosses
+the PHP↔extension boundary for three feature blocks at once and pays the fsync of 3
+disk writes per request. Throughput hits exactly that, not the cheap DB read. The
+empty endpoint has none of it and is CPU-bound at ~1200 %.
 
 ## Reference run
 
-Same machine and parameters, `wrk` against `/all` — 6 DB operations running at
-the same time in three feature blocks, 3 of them disk writes.
+Same machine and parameters, `wrk` against `/all` — 6 DB operations in three
+feature blocks running at the same time, 3 of them disk writes.
 
 | Metric | Value |
 |---|---|
@@ -188,7 +210,7 @@ the soak below.
 ## Soak run (10 minutes)
 
 The same environment, a sustained load of 128 connections for 600 s — 1 431 343
-requests (~4.3M feature operations).
+requests (~4.3M feature blocks, 8.6M DB operations).
 
 | Metric | Value |
 |---|---|
@@ -202,37 +224,36 @@ there is no slow leak. The `mongodb` container's MEM meanwhile grew to ~234 MiB
 because of the unbounded inserts of `/all` into the `load_all` collection, while
 the worker RSS did not budge: the data is accumulated by the DB, not by SConcur.
 
-The harness empties those tables around every run, and that is not tidiness. The
-three databases keep their data on a 1 GiB tmpfs (`docker-compose.yml`), which a
-ten-minute soak at a few thousand rps fills — after which everything that needs
-space fails with "the table is full". What breaks then is not the next benchmark
-but the next test run, with an error that points nowhere near the benchmark that
-caused it.
+The harness empties those tables around every run: by default the databases keep
+their data on a 1 GiB tmpfs (`docker-compose.yml`), which a ten-minute soak fills,
+and what breaks then is the next test run, with "the table is full" pointing
+nowhere near the benchmark.
 
 ## Concurrent vs sequential calls (`/all` vs `/all-nowg`)
 
-Same machine and parameters, disk-backed backends, state reset
-(`make bench-reset`) between runs.
+Same machine and parameters, disk-backed backends, the `load_all` tables emptied
+by the harness before every run.
 
 | Metric | `/all` (concurrent) | `/all-nowg` (sequential) |
 |---|---|---|
-| Throughput | 2 950 req/sec | 2 768 req/sec (−6 %) |
+| Throughput | 2 950 req/sec | 2 768 req/sec (−6 % vs `/all`) |
 | Latency | p50 83.1 · p90 120.0 · p99 189.7 ms | p50 91.8 · p90 123.5 · p99 161.6 ms |
-| Servers CPU (`php`) | avg 205 % | avg 136 % (−34 %) |
+| Servers CPU (`php`) | avg 205 % | avg 136 % (−34 % vs `/all`) |
 | Worker RSS drift (20 s) | +1.6 MiB | +1.4 MiB |
 
 Single connection (1 server / 1 wrk thread / 1 connection / 5 s):
 
 | Metric | `/all` (concurrent) | `/all-nowg` (sequential) |
 |---|---|---|
-| Latency avg | 6.3 ms | 7.6 ms (+20 %) |
+| Latency avg | 6.3 ms | 7.6 ms (+20 % vs `/all`) |
 | Throughput | 158 req/sec | 132 req/sec |
 
 1. Under saturation the throughput is nearly the same: the ceiling is the
-   backends' disk commits, and the 256 request coroutines being served keep them busy even
-   without running the calls of a single request concurrently — a feature called
-   outside a `WaitGroup` still suspends its coroutine, and the process serves
-   other requests in the meantime.
+   backends' disk commits, and the 256 requests being served keep them busy even
+   without running the calls of a single request concurrently. The server runs
+   every request in a coroutine of its own (a PHP Fiber suspended while it waits
+   on the extension), so a feature called outside a `WaitGroup` still suspends
+   only that coroutine, and the process serves other requests in the meantime.
 2. What running them concurrently improves is per-request latency — 6.3 vs
    7.6 ms at a single connection, where the three feature blocks wait for their disk
    commits at the same time.
@@ -246,9 +267,81 @@ Single connection (1 server / 1 wrk thread / 1 connection / 5 s):
    (0.46 vs 0.66 ms). Run the calls of one request concurrently when it has
    genuinely slow I/O to wait for.
 
+## Shared socket vs `SO_REUSEPORT`
+
+`SHARED_SOCKET=1` runs the same pool on one socket, bound once and inherited by
+every worker as `--listenFd`, the way a [worker master](worker-master.md) group
+with `listen` runs it: `tests/benchmarks/http/shared-socket.php` binds the socket
+and runs the spawn loop under it. `CONNECTION_CLOSE=1` sends `Connection: close`,
+so every request opens a connection of its own and goes through `accept`.
+
+12 workers with `PIN_SERVERS=group`, `wrk` with 4 threads on the other cores, the
+empty endpoint `/`, three runs of each arm with the arms
+alternating, the medians below. The spread is the requests served by the busiest
+worker over those of the idlest (`WORKER_LOGS=1`); CPU per request is the average
+CPU of the `php` container over the rps. Profiles: 256 and 32 keep-alive
+connections, a connection per request, and the mixed one of
+`mixed-profile.lua` (10% of the requests on `/cpu/20000`, 256 connections).
+
+Three ways of accepting:
+
+1. `SO_REUSEPORT`: a socket per worker, the kernel picks one by a hash of the
+   client's address and port.
+2. A shared socket accepted on the runtime, like a socket of its own: every
+   worker wakes for every connection, and the first to run takes whatever is
+   queued. The first version did this.
+3. A shared socket accepted by a thread of the server (Linux): the thread waits
+   with `EPOLLEXCLUSIVE`, and only while the server asks for a connection, so a
+   connection wakes one waiting worker and the workers take turns.
+
+Accepting on the runtime, against `SO_REUSEPORT` in the same series:
+
+| Profile | Accepting | rps | p99 | CPU per request | Spread |
+|---|---|---:|---:|---:|---|
+| 256 connections | `SO_REUSEPORT` | 239 848 | 4.6 ms | 46 µs | 1.36–1.71× |
+| 256 connections | shared, runtime | 233 877 | 4.2 ms | 45 µs | 7.4–9.0×, 2 workers idle in one run |
+| 32 connections | `SO_REUSEPORT` | 180 143 | 1.2 ms | 59 µs | 6.1–6.5×, 2 workers idle in one run |
+| 32 connections | shared, runtime | 176 957 | 0.5 ms | 52 µs | 6 to 9 of 12 workers idle |
+| connection per request | `SO_REUSEPORT` | 67 936 | 3.8 ms | 97 µs | 1.08–1.10× |
+| connection per request | shared, runtime | 62 942 | 3.9 ms | 105 µs | 8.2–9.6× |
+| mixed | `SO_REUSEPORT` | 21 530 | 33.6 ms | 550 µs | 1.06–1.09× |
+| mixed | shared, runtime | 21 312 | 46.6 ms | 552 µs | 1.16–1.23×, 1 worker idle in one run |
+
+The accept thread, against `SO_REUSEPORT` in a second series:
+
+| Profile | Accepting | rps | p99 | CPU per request | Spread |
+|---|---|---:|---:|---:|---|
+| 256 connections | `SO_REUSEPORT` | 244 515 | 4.4 ms | 45 µs | 1.41–1.60× |
+| 256 connections | shared, thread | 247 418 | 4.3 ms | 45 µs | 1.22–1.53× |
+| 32 connections | `SO_REUSEPORT` | 189 918 | 1.2 ms | 59 µs | 6.3×, 1 worker idle in two runs |
+| 32 connections | shared, thread | 182 740 | 1.1 ms | 63 µs | 2.9–6.7× |
+| connection per request | `SO_REUSEPORT` | 68 765 | 3.3 ms | 93 µs | 1.08–1.11× |
+| connection per request | shared, thread | 67 455 | 3.6 ms | 103 µs | 1.02× |
+| mixed | `SO_REUSEPORT` | 21 500 | 34.2 ms | 559 µs | 1.08–1.16× |
+| mixed | shared, thread | 21 602 | 35.5 ms | 558 µs | 1.06–1.15× |
+
+1. Accepting a shared socket on the runtime does not work. The workers that wake
+   first take the connections: 7–9× between the busiest and the idlest at 256
+   connections, half the pool or more idle at 32. With a connection per request
+   every worker wakes for every connection, which costs 7% of the rps and 8%
+   more CPU per request, and in the mixed profile the p99 is 40% worse.
+2. With the accept thread a shared socket keeps up with `SO_REUSEPORT`: the rps
+   within 2% at 256 connections, with a connection per request and in the mixed
+   profile, the spread no worse. With a connection per request it is nearly
+   exactly even, 1.02×, where the hash of `SO_REUSEPORT` gives 1.08–1.11×.
+3. The price is CPU when connections are short: with a connection per request
+   about 10% more per request, most likely the hand-off of every connection from
+   the thread to the runtime. With keep-alive connections it does not show.
+4. Neither spreads 32 connections evenly over 12 workers. The kernel hands out
+   connections, not requests, and wrk opens all of them at once. `SO_REUSEPORT`
+   left a worker without a connection in two runs of three. The shared socket
+   gave every worker at least one, at 2.9–6.7× and 4% fewer rps. For a handful
+   of long-lived connections the answer is a proxy, see
+   [a proxy in front of the pool](http-server.md#a-proxy-in-front-of-the-pool).
+
 ## Conclusions
 
-1. Memory is stable — the main result. ~45 MiB RSS per worker, and a 10-minute
+1. Memory is stable — the main result. ~46 MiB RSS per worker, and a 10-minute
    soak (1.43M requests) held RSS flat at +0.06 MiB/min (= noise). For a
    long-lived server this is the key signal: the extension's runtime + PHP fibers +
    connection pools + PHP↔extension boundary pairing accumulates nothing. Consistent

@@ -17,7 +17,7 @@ use SConcur\Tests\Impl\WsServer\TestWsServer;
  */
 class WsClientSubprotocolTest extends BaseTestCase
 {
-    private static ?TestWsServer $server = null;
+    protected static ?TestWsServer $server = null;
 
     public static function setUpBeforeClass(): void
     {
@@ -83,17 +83,17 @@ class WsClientSubprotocolTest extends BaseTestCase
     /**
      * @param list<string> $subprotocols
      */
-    private function client(array $subprotocols): WsClient
+    protected function client(array $subprotocols): WsClient
     {
         return new WsClient(new WsClientOptions(subprotocols: $subprotocols));
     }
 
-    private function url(): string
+    protected function url(): string
     {
         return 'ws://' . self::server()->host() . ':' . self::server()->port() . '/';
     }
 
-    private static function server(): TestWsServer
+    protected static function server(): TestWsServer
     {
         if (self::$server === null) {
             self::fail('Test ws server is not started.');

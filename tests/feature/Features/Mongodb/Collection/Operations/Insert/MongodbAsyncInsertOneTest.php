@@ -14,8 +14,8 @@ class MongodbAsyncInsertOneTest extends BaseMongodbAsyncTestCase
 {
     protected DriverUTCDateTime $driverDateTime;
 
-    private string $fieldName;
-    private UTCDateTime $fieldValue;
+    protected string $fieldName;
+    protected UTCDateTime $fieldValue;
 
     protected function setUp(): void
     {

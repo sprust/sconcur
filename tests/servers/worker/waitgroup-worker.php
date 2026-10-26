@@ -5,13 +5,15 @@ declare(strict_types=1);
 require dirname(__DIR__, 3) . '/vendor/autoload.php';
 
 use SConcur\Features\Sleeper\Sleeper;
+use SConcur\Scheduler\Scheduler;
 use SConcur\WaitGroup;
 
 /**
  * A supervised worker that runs no server: it drives the scheduler through an ordinary
  * WaitGroup, the way a pool of periodic tasks does. It exists to prove that such a worker
  * marks itself alive for the master's watchdog like a server does, and is killed like one
- * when its PHP thread stops coming back.
+ * when its PHP thread stops coming back — and that it says it is up the way such a script
+ * has to, with Scheduler::markReady(), so a reload can replace it.
  *
  * Arguments (everything else in argv is ignored — the master forwards its `server` block
  * to every worker it supervises, and none of it means anything here):
@@ -51,6 +53,11 @@ while (!$stopRequested) {
     });
 
     $waitGroup->waitResults();
+
+    // Up once the loop has gone round once. No serve loop says it for this worker, and a
+    // rolling reload waits for it before stopping the worker this one replaces; only the
+    // first call says anything, so it can sit in the loop.
+    Scheduler::get()->markReady();
 
     if ($hangAfterMs > 0 && (microtime(true) - $startedAt) * 1000 >= $hangAfterMs) {
         echo 'waitgroup worker freezing' . PHP_EOL;

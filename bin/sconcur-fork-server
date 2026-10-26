@@ -1,0 +1,36 @@
+#!/usr/bin/env php
+<?php
+
+/**
+ * The fork server of a fork group, started by the worker master — not a command to run by
+ * hand. See SConcur\Worker\ForkServer.
+ *
+ * Nothing of the library is touched before the application is loaded. The group's
+ * bootstrap is required first, in the global scope, and it loads Composer's autoloader
+ * itself: through the path the config gives, so a deploy that switches a symlink to a new
+ * release loads the new release — the application and this library both. A group without
+ * a bootstrap loads the autoloader the master loaded.
+ */
+
+declare(strict_types=1);
+
+$sconcurForkServerSpec = json_decode((string) getenv('SCONCUR_FORK_SERVER_SPEC'), true);
+
+if (!is_array($sconcurForkServerSpec)) {
+    fwrite(STDERR, 'sconcur-fork-server: started without a spec; the worker master starts it' . PHP_EOL);
+
+    exit(1);
+}
+
+// The workers are copies of this process: none of them should find the spec.
+putenv('SCONCUR_FORK_SERVER_SPEC');
+
+unset($_ENV['SCONCUR_FORK_SERVER_SPEC'], $_SERVER['SCONCUR_FORK_SERVER_SPEC']);
+
+if (($sconcurForkServerSpec['group']['bootstrap'] ?? '') !== '') {
+    require $sconcurForkServerSpec['group']['bootstrap'];
+} else {
+    require $sconcurForkServerSpec['autoload'];
+}
+
+exit(SConcur\Worker\ForkServer::run($sconcurForkServerSpec));

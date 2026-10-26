@@ -16,10 +16,10 @@ use SConcur\Worker\MasterLock;
 class MasterCliTest extends TestCase
 {
     /** @var list<string> */
-    private array $tempFiles = [];
+    protected array $tempFiles = [];
 
     /** @var list<string> */
-    private array $tempDirs = [];
+    protected array $tempDirs = [];
 
     protected function tearDown(): void
     {
@@ -218,7 +218,7 @@ class MasterCliTest extends TestCase
      *
      * @param array<string, mixed> $config
      */
-    private function writeConfig(array $config): string
+    protected function writeConfig(array $config): string
     {
         if (!isset($config['groups'])) {
             $group = ['name' => 'default'];
@@ -243,7 +243,7 @@ class MasterCliTest extends TestCase
         return $path;
     }
 
-    private function makeDir(): string
+    protected function makeDir(): string
     {
         $directory = sys_get_temp_dir() . '/sc-cli-' . uniqid('', true);
 
@@ -259,7 +259,7 @@ class MasterCliTest extends TestCase
      *
      * @return array{int, string, string}
      */
-    private function runCli(array $args): array
+    protected function runCli(array $args): array
     {
         $stdout = fopen('php://memory', 'rw');
         $stderr = fopen('php://memory', 'rw');

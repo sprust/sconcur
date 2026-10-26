@@ -5,27 +5,35 @@ declare(strict_types=1);
 namespace SConcur\Worker;
 
 use Closure;
+use SConcur\Connection\Extension;
+use SConcur\Exceptions\ExtensionNotLoadedException;
+use SConcur\Exceptions\Process\ProcessException;
 use SConcur\Exceptions\Worker\InvalidConfigException;
 use SConcur\Exceptions\Worker\InvalidWorkerCountException;
-use SConcur\Exceptions\Worker\MissingPcntlException;
 use SConcur\Exceptions\Worker\RuntimePathException;
+use SConcur\Process\ProcessControl;
+use SConcur\Process\ProcessSignalEnum;
 use SConcur\Telemetry\TelemetryRuntime;
+use Throwable;
 
 /**
- * Supervises a pool of worker processes (one per slot), each a separate `php
- * workerScript` process spawned via proc_open (pcntl_fork after loading the
- * extension is forbidden). The master is server-agnostic — it supervises any worker
- * script; with an SO_REUSEPORT-based server, for example, the workers bind one port
- * and the kernel load-balances connections across them.
+ * Supervises pools of worker processes (one per slot). An exec group's workers are php
+ * processes of their own the master starts via proc_open; a fork group's are forks of a
+ * fork server the master starts for each generation of the group (ForkServerGroup), which loads
+ * the application once. The master is server-agnostic — it supervises any worker script;
+ * with an SO_REUSEPORT-based server, for example, the workers bind one port and the
+ * kernel load-balances connections across them.
  *
- * Lifecycle of run(): acquire a single-instance lock, write the state file, install
- * signal handlers, spawn the workers, then loop — draining each worker's output into
- * the log, restarting exited workers per RestartPolicy (with crash-loop backoff),
+ * Lifecycle of run(): acquire a single-instance lock, write the state file, start
+ * watching for signals, spawn the workers, then loop — draining each worker's output
+ * into the log, restarting exited workers per RestartPolicy (with crash-loop backoff),
  * and on SIGTERM/SIGINT forwarding the signal, draining in-flight workers within
  * shutdownTimeoutMs (SIGKILL stragglers), and exiting cleanly.
  *
- * The master itself does NOT load the sconcur extension — it is a plain supervisor.
- * See docs/worker-master.md.
+ * The master loads the sconcur extension and takes its signals and signals its
+ * workers through it (SConcur\Process\ProcessControl), so it needs neither ext-pcntl
+ * nor ext-posix. It never forks and never starts the extension's runtime. See
+ * docs/worker-master.md.
  */
 class WorkerMaster
 {
@@ -36,6 +44,14 @@ class WorkerMaster
      * worker script (the bundled HttpServer wires it into its orphan check).
      */
     public const string MASTER_PID_ARG = '--masterPid';
+
+    /**
+     * What run() returns when a group the master started with never came up: as many of
+     * its workers as it has slots died before any of them said it was up. EX_SOFTWARE from
+     * sysexits.h, the code Rapira uses for the same case, so systemd or an orchestrator
+     * sees a broken deploy rather than a master respawning into it forever.
+     */
+    public const int EXIT_NEVER_CAME_UP = 70;
 
     protected const int TICK_MICROSECONDS = 100_000; // 100 ms supervision tick
 
@@ -55,17 +71,28 @@ class WorkerMaster
 
     protected string $cwd = '.';
 
-    /** @var array<string, WorkerGroup> live pools by group name */
+    /** @var array<string, SupervisedGroup> live pools by group name */
     protected array $pools = [];
+
+    /**
+     * @var array<string, int> the listening socket of each group with `listen`, by group
+     *                         name: bound once and held for as long as the group runs, so
+     *                         the port stays open through every worker's restart and every
+     *                         rolling reload
+     */
+    protected array $listeners = [];
 
     protected bool $stopping = false;
 
+    /** What run() returns: 0, or EXIT_NEVER_CAME_UP once a group has failed to start. */
+    protected int $exitCode = 0;
+
     /**
-     * The signature of the reload request currently being rolled, empty when none is.
-     * It is what keeps the clear at the end of a roll from deleting a second request an
-     * operator wrote while the first was still going.
+     * The reload request currently being rolled, null when none is. Its signature is what
+     * keeps the clear at the end of a roll from deleting a second request an operator
+     * wrote while the first was still going.
      */
-    protected string $servedReloadSignature = '';
+    protected ?MasterReloadRequest $servedReloadRequest = null;
 
     protected bool $termSent = false;
 
@@ -106,10 +133,31 @@ class WorkerMaster
     /**
      * Runs the supervisor until a shutdown signal drains all workers. Returns the
      * process exit code (0 on clean shutdown).
+     *
+     * The process may have loaded an application before calling this — a framework's
+     * command that starts the master. Its error handler is kept out of the master's loop
+     * for as long as this runs: a handler that turns warnings into exceptions, as
+     * frameworks install, would end the master at the first warning it silences, and the
+     * master silences one on every tick. Nothing loaded here reaches a worker: fork groups
+     * load their application in their fork server (the group's bootstrap).
      */
     public function run(): int
     {
-        $this->assertPcntl();
+        // Returning false hands every error on to PHP's own handling, which respects @ and
+        // error_reporting — the master behaves as if nothing had been installed.
+        set_error_handler(static fn(): bool => false);
+
+        try {
+            return $this->runSupervisor();
+        } finally {
+            restore_error_handler();
+        }
+    }
+
+    protected function runSupervisor(): int
+    {
+        $this->assertExtension();
+
         $this->ensureDirectories();
 
         $this->masterPid = (int) getmypid();
@@ -185,20 +233,33 @@ class WorkerMaster
             $this->stateFile->clear();
             $this->lock->release();
 
-            $this->logger->master(MasterLogger::INFO, 'stopped');
+            $this->logger->master(
+                level: MasterLogger::INFO,
+                message: 'stopped',
+            );
+
             $this->logger->close();
         }
 
-        return 0;
+        return $this->exitCode;
     }
 
-    protected function assertPcntl(): void
+    /**
+     * The master takes its signals and signals its workers through the extension, so it
+     * has to be loaded here too, not only in the workers. Extension::get() then checks
+     * that it is the version this package expects.
+     */
+    protected function assertExtension(): void
     {
-        if (!function_exists('pcntl_async_signals') || !function_exists('posix_kill')) {
-            throw new MissingPcntlException(
-                message: 'WorkerMaster requires ext-pcntl and ext-posix for signal-driven supervision.',
+        if (!extension_loaded('sconcur')) {
+            throw new ExtensionNotLoadedException(
+                message: 'The worker master needs the "sconcur" extension loaded: start it as'
+                    . ' php -d extension=/path/to/sconcur.so bin/sconcur-server start ..., or enable the'
+                    . ' extension in php.ini.',
             );
         }
+
+        Extension::get();
     }
 
     /**
@@ -209,21 +270,129 @@ class WorkerMaster
     {
         $this->pools = [];
 
+        $this->bindListeners($this->groups);
+
         foreach ($this->groups as $group) {
-            $this->pools[$group->name] = new WorkerGroup(
+            $this->pools[$group->name] = $this->newPool(
+                group: $group,
+                guardsStartup: true,
+            );
+        }
+    }
+
+    /**
+     * @param bool $guardsStartup whether the group failing to start stops the master — only
+     *                            for the groups it starts with: one a reload adds must not
+     *                            take a running pool down
+     */
+    protected function newPool(WorkerGroupConfig $group, bool $guardsStartup = false): SupervisedGroup
+    {
+        if ($group->launch === LaunchMode::Fork) {
+            return new ForkServerGroup(
                 config: $group,
                 logger: $this->logger,
                 masterPid: $this->masterPid,
                 cwd: $this->cwd,
+                logDir: $this->logDir ?? $this->runtimeDir,
+                name: $this->name,
+                rotateDays: $this->rotateDays,
+                logTo: $this->logTo,
                 telemetrySocket: $this->telemetrySocket(),
                 onWatchdogEvent: $this->watchdogReporter(),
+                listenFd: $this->listeners[$group->name] ?? null,
+                guardsStartup: $guardsStartup,
+            );
+        }
+
+        return new WorkerGroup(
+            config: $group,
+            logger: $this->logger,
+            masterPid: $this->masterPid,
+            cwd: $this->cwd,
+            telemetrySocket: $this->telemetrySocket(),
+            onWatchdogEvent: $this->watchdogReporter(),
+            listenFd: $this->listeners[$group->name] ?? null,
+            guardsStartup: $guardsStartup,
+            accessLogPrefix: MasterLogger::accessLogPrefix(
+                logDir: $this->logDir ?? $this->runtimeDir,
+                name: $this->name,
+            ),
+        );
+    }
+
+    /**
+     * Binds the listening socket of every group with `listen` that has none yet. All or
+     * nothing: a bind that fails closes the ones this call made before it and refuses the
+     * lot, so neither a start nor a reload is left holding half its ports.
+     *
+     * @param list<WorkerGroupConfig> $groups
+     */
+    protected function bindListeners(array $groups): void
+    {
+        $bound = [];
+
+        foreach ($groups as $group) {
+            if ($group->listen === '' || isset($this->listeners[$group->name])) {
+                continue;
+            }
+
+            try {
+                $bound[$group->name] = ProcessControl::bind($group->listen);
+            } catch (ProcessException $exception) {
+                foreach ($bound as $descriptor) {
+                    ProcessControl::close($descriptor);
+                }
+
+                throw new InvalidConfigException(
+                    message: sprintf(
+                        'config: group "%s" cannot listen on %s: %s',
+                        $group->name,
+                        $group->listen,
+                        $exception->getMessage(),
+                    ),
+                    previous: $exception,
+                );
+            }
+        }
+
+        $this->listeners = [...$this->listeners, ...$bound];
+    }
+
+    /**
+     * Refuses a reload that moves the listening socket of a group already running. The
+     * workers serving now accept on the socket the master bound at the start; moving the
+     * port means a socket the running workers do not have, and a gap while it changes
+     * hands — a restart of the master is the honest way to do that.
+     *
+     * @param list<WorkerGroupConfig> $groups
+     */
+    protected function assertListenersUnchanged(array $groups): void
+    {
+        foreach ($groups as $group) {
+            $pool = $this->pools[$group->name] ?? null;
+
+            if ($pool === null || $pool->config()->listen === $group->listen) {
+                continue;
+            }
+
+            throw new InvalidConfigException(
+                message: sprintf(
+                    'config: group "%s" listens on %s and the config says %s; a listening socket'
+                    . ' does not move on a reload, restart the master to change it',
+                    $group->name,
+                    $pool->config()->listen === '' ? 'no socket of the master\'s' : $pool->config()->listen,
+                    $group->listen === '' ? 'none' : $group->listen,
+                ),
             );
         }
     }
 
     /**
      * What the pools call when the watchdog acts: counts the kill for the panel and then
-     * hands the event on to the application's own handler, if it gave one.
+     * hands the event on to the application's own handler, if it gave one. Anything that
+     * handler throws is written to the journal and dropped here, where the events of exec
+     * and fork groups alike arrive: an application's alerting must not be able to stop the
+     * supervisor from supervising.
      *
      * @return Closure(WatchdogEvent): void
      */
@@ -238,7 +407,17 @@ class WorkerMaster
                 return;
             }
 
-            ($this->onWatchdogEvent)($event);
+            try {
+                ($this->onWatchdogEvent)($event);
+            } catch (Throwable $exception) {
+                $this->logger->worker(
+                    level: MasterLogger::ERROR,
+                    workerPid: $event->pid,
+                    workerIndex: $event->slot,
+                    message: sprintf('watchdog handler failed: %s', $exception->getMessage()),
+                    group: $event->group,
+                );
+            }
         };
     }
 
@@ -271,7 +450,7 @@ class WorkerMaster
     }
 
     /**
-     * Refuses a set of groups naming a script that is not there.
+     * Refuses a set of groups naming a script — or a bootstrap — that is not there.
      *
      * Run on every reload as well as at startup: a config that parses but points at a
      * path that does not exist would otherwise roll every worker of the group — SIGTERM
@@ -286,6 +465,12 @@ class WorkerMaster
             if (!is_file($group->workerScript)) {
                 throw new RuntimePathException(
                     message: sprintf('Worker script not found for group "%s": %s', $group->name, $group->workerScript),
+                );
+            }
+
+            if ($group->bootstrap !== '' && !is_file($group->bootstrap)) {
+                throw new RuntimePathException(
+                    message: sprintf('Bootstrap not found for group "%s": %s', $group->name, $group->bootstrap),
                 );
             }
         }
@@ -307,41 +492,31 @@ class WorkerMaster
     }
 
     /**
-     * Installs SIGTERM/SIGINT handlers that request a graceful stop and returns a
-     * restorer that puts the previous handlers (and async-signals mode) back.
+     * Starts watching SIGTERM/SIGINT and returns a restorer that puts the previous
+     * handlers back. What arrived is taken once per tick (checkStopSignals): no PHP code
+     * runs inside a signal handler, and a tick is the soonest the loop could act on one
+     * anyway.
      *
      * @return Closure(): void
      */
     protected function installSignalHandlers(): Closure
     {
-        $signals = [SIGTERM, SIGINT];
+        ProcessControl::watchSignals([
+            ProcessSignalEnum::Terminate,
+            ProcessSignalEnum::Interrupt,
+        ]);
 
-        $previousAsync = pcntl_async_signals();
+        return static function (): void {
+            ProcessControl::restoreSignals();
+        };
+    }
 
-        /** @var array<int, callable|int> $previousHandlers */
-        $previousHandlers = [];
-
-        foreach ($signals as $signal) {
-            $previousHandlers[$signal] = pcntl_signal_get_handler($signal);
-        }
-
-        pcntl_async_signals(true);
-
-        $handler = function (): void {
+    /** Turns a SIGTERM or SIGINT that arrived since the last tick into a graceful stop. */
+    protected function checkStopSignals(): void
+    {
+        if (ProcessControl::takeSignals() !== []) {
             $this->stopping = true;
-        };
-
-        foreach ($signals as $signal) {
-            pcntl_signal($signal, $handler);
         }
-
-        return static function () use ($signals, $previousHandlers, $previousAsync): void {
-            foreach ($signals as $signal) {
-                pcntl_signal($signal, $previousHandlers[$signal]);
-            }
-
-            pcntl_async_signals($previousAsync);
-        };
     }
 
     protected function writeState(): void
@@ -389,7 +564,10 @@ class WorkerMaster
         }
 
         if (!is_file($this->stateFile->path())) {
-            $this->logger->master(MasterLogger::WARN, 'state file removed; shutting down gracefully');
+            $this->logger->master(
+                level: MasterLogger::WARN,
+                message: 'state file removed; shutting down gracefully',
+            );
 
             $this->stopping = true;
         }
@@ -404,6 +582,7 @@ class WorkerMaster
                 $pool->reapAndLog($this->stopping);
             }
 
+            $this->checkStopSignals();
             $this->checkStateFileStopSignal();
 
             if ($this->stopping) {
@@ -432,21 +611,27 @@ class WorkerMaster
                 foreach ($this->pools as $pool) {
                     $reloading = $pool->driveReload() || $reloading;
 
-                    $pool->driveWatchdog();
-
-                    $pool->respawnDue();
+                    $pool->tick();
                 }
 
                 $this->retireDrainedPools();
 
                 $this->finishReload($reloading);
 
+                // Before the check below: a group whose workers all failed to start, under
+                // a policy that does not restart them, is a failed start too, not a pool
+                // that finished its work. The drain begins on the next tick.
+                $this->checkNeverCameUp();
+
                 // RestartPolicy::Never (or a clean exit under OnFailure): once every
                 // worker has finished and nothing is pending, there is nothing left
                 // to supervise. A reload in progress keeps the master alive even when a
                 // slot is momentarily empty between the drain and its replacement.
-                if (!$reloading && $this->allSlotsEmpty() && !$this->hasPendingRespawns()) {
-                    $this->logger->master(MasterLogger::INFO, 'all workers finished; exiting');
+                if (!$this->stopping && !$reloading && $this->allSlotsEmpty() && !$this->hasPendingRespawns()) {
+                    $this->logger->master(
+                        level: MasterLogger::INFO,
+                        message: 'all workers finished; exiting',
+                    );
 
                     break;
                 }
@@ -477,7 +662,12 @@ class WorkerMaster
      */
     protected function checkReloadSignal(): void
     {
-        if ($this->anyPoolReloading()) {
+        // The one guard against a reload starting while another is under way: a group's
+        // reconfigure() and retire() take it that none is, and do not check for one
+        // themselves. A request still being served is also still in the trigger file: a roll
+        // given up while its pool was reaped ends before finishReload() has cleared it, and
+        // reading it here again would start the same failing roll once a tick, for ever.
+        if ($this->servedReloadRequest !== null || $this->anyPoolReloading()) {
             return;
         }
 
@@ -497,15 +687,11 @@ class WorkerMaster
         $groups = $this->reloadedGroups($request);
 
         if ($groups === null) {
-            $this->reloadFile->clear($request->signature);
-
             return;
         }
 
         if ($request->group !== '') {
-            if (!$this->applyOneGroup(groups: $groups, name: $request->group)) {
-                $this->reloadFile->clear($request->signature);
-
+            if (!$this->applyOneGroup(groups: $groups, request: $request)) {
                 return;
             }
         } else {
@@ -514,12 +700,29 @@ class WorkerMaster
             $this->applyGroups();
         }
 
-        // Written down only once the reload was applied. A refused one clears its own
-        // request above and leaves nothing behind — recording it here would have
+        // Written down only once the reload was applied. A refused one ends its own
+        // request (refuseReload) and leaves nothing behind — recording it here would have
         // finishReload log "reload complete" on the tick after "reload refused".
-        $this->servedReloadSignature = $request->signature;
+        $this->servedReloadRequest = $request;
 
         $this->refreshState();
+    }
+
+    /**
+     * Ends a reload request the master will not honour: says why in the journal and to the
+     * CLI that asked, and keeps the config it has.
+     */
+    protected function refuseReload(MasterReloadRequest $request, string $reason): void
+    {
+        $this->logger->master(
+            level: MasterLogger::ERROR,
+            message: $reason,
+        );
+
+        $this->reloadFile->fail(
+            request: $request,
+            reason: $reason,
+        );
     }
 
     /**
@@ -539,9 +742,9 @@ class WorkerMaster
             // The CLI resolves the path before writing it, so this is a trigger written
             // by something else — or a config that has since been moved. Saying so beats
             // rolling the workers onto the old config while reporting a reload.
-            $this->logger->master(
-                level: MasterLogger::ERROR,
-                message: sprintf('reload refused: no config file at %s', $request->configPath),
+            $this->refuseReload(
+                request: $request,
+                reason: sprintf('reload refused: no config file at %s', $request->configPath),
             );
 
             return null;
@@ -552,11 +755,19 @@ class WorkerMaster
 
             static::assertWorkerScripts($groups);
 
+            $this->assertListenersUnchanged($groups);
+
+            // Last, so nothing is bound for a reload refused for another reason. A reload
+            // narrowed to one group adds no group, so it binds nothing either.
+            if ($request->group === '') {
+                $this->bindListeners($groups);
+            }
+
             return $groups;
         } catch (InvalidConfigException | RuntimePathException $exception) {
-            $this->logger->master(
-                level: MasterLogger::ERROR,
-                message: 'reload refused, keeping the running config: ' . $exception->getMessage(),
+            $this->refuseReload(
+                request: $request,
+                reason: 'reload refused, keeping the running config: ' . $exception->getMessage(),
             );
 
             return null;
@@ -572,7 +783,10 @@ class WorkerMaster
     protected function refreshState(): void
     {
         if (!is_file($this->stateFile->path())) {
-            $this->logger->master(MasterLogger::WARN, 'state file removed; shutting down gracefully');
+            $this->logger->master(
+                level: MasterLogger::WARN,
+                message: 'state file removed; shutting down gracefully',
+            );
 
             $this->stopping = true;
 
@@ -590,8 +804,10 @@ class WorkerMaster
      *
      * @param list<WorkerGroupConfig> $groups
      */
-    protected function applyOneGroup(array $groups, string $name): bool
+    protected function applyOneGroup(array $groups, MasterReloadRequest $request): bool
     {
+        $name = $request->group;
+
         foreach ($groups as $group) {
             if ($group->name !== $name) {
                 continue;
@@ -603,9 +819,9 @@ class WorkerMaster
             // is a request it cannot honour, and recording its settings anyway would let
             // the next plain reload bring up a pool nobody asked for.
             if ($pool === null) {
-                $this->logger->master(
-                    level: MasterLogger::ERROR,
-                    message: sprintf('reload --group=%s: the master is not running that group', $name),
+                $this->refuseReload(
+                    request: $request,
+                    reason: sprintf('reload --group=%s: the master is not running that group', $name),
                 );
 
                 return false;
@@ -640,9 +856,9 @@ class WorkerMaster
             return true;
         }
 
-        $this->logger->master(
-            level: MasterLogger::ERROR,
-            message: sprintf('reload --group=%s: the config describes no such group', $name),
+        $this->refuseReload(
+            request: $request,
+            reason: sprintf('reload --group=%s: the config describes no such group', $name),
         );
 
         return false;
@@ -667,14 +883,7 @@ class WorkerMaster
                     message: sprintf('group %s: added by the reload', $group->name),
                 );
 
-                $pool = new WorkerGroup(
-                    config: $group,
-                    logger: $this->logger,
-                    masterPid: $this->masterPid,
-                    cwd: $this->cwd,
-                    telemetrySocket: $this->telemetrySocket(),
-                    onWatchdogEvent: $this->watchdogReporter(),
-                );
+                $pool = $this->newPool($group);
 
                 $this->pools[$group->name] = $pool;
 
@@ -744,6 +953,14 @@ class WorkerMaster
             if ($pool->isRetiring() && $pool->allSlotsEmpty()) {
                 unset($this->pools[$name]);
 
+                // Its workers are gone, so nobody accepts on its socket any more: closed
+                // here, the port is free for a group that may come back with it.
+                if (isset($this->listeners[$name])) {
+                    ProcessControl::close($this->listeners[$name]);
+
+                    unset($this->listeners[$name]);
+                }
+
                 $this->logger->master(
                     level: MasterLogger::INFO,
                     message: sprintf('group %s: drained and removed', $name),
@@ -753,25 +970,84 @@ class WorkerMaster
     }
 
     /**
-     * Clears the trigger file once every pool has finished rolling, which is what the
-     * waiting CLI is polling for.
+     * Ends the reload request once every pool has finished rolling, which is what the
+     * waiting CLI is polling for. A pool that gave its roll up has put its previous
+     * settings back, and the master's group list follows it, so the next reload — and a
+     * hand-written trigger that rolls the config already loaded — starts from what is
+     * running.
      */
     protected function finishReload(bool $reloading): void
     {
-        if ($reloading || $this->servedReloadSignature === '') {
+        if ($reloading || $this->servedReloadRequest === null) {
             return;
         }
 
-        $signature = $this->servedReloadSignature;
+        $request = $this->servedReloadRequest;
 
-        $this->servedReloadSignature = '';
+        $this->servedReloadRequest = null;
+
+        $failures = [];
+
+        foreach ($this->pools as $pool) {
+            $failure = $pool->takeReloadFailure();
+
+            if ($failure === '') {
+                continue;
+            }
+
+            $failures[] = $failure;
+
+            $this->groups = $this->withGroupReplaced(
+                groups: $this->groups,
+                group: $pool->config(),
+            );
+        }
 
         // Only the request that was actually rolled is cleared. An operator who asked for
         // a second reload while the first was still going would otherwise have it deleted
         // unread, and the change would never reach the workers.
-        $this->reloadFile->clear($signature);
+        if ($failures === []) {
+            $this->reloadFile->clear($request->signature);
 
-        $this->logger->master(MasterLogger::INFO, 'reload complete');
+            $this->logger->master(
+                level: MasterLogger::INFO,
+                message: 'reload complete',
+            );
+
+            return;
+        }
+
+        $this->refreshState();
+
+        $this->refuseReload(
+            request: $request,
+            reason: 'reload given up: ' . implode('; ', $failures),
+        );
+    }
+
+    /** Stops the master, with EXIT_NEVER_CAME_UP, when a group it started with never came up. */
+    protected function checkNeverCameUp(): void
+    {
+        foreach ($this->pools as $pool) {
+            if (!$pool->neverCameUp()) {
+                continue;
+            }
+
+            $this->logger->master(
+                level: MasterLogger::ERROR,
+                message: sprintf(
+                    'group %s: no worker came up — %s; stopping with code %d',
+                    $pool->name(),
+                    $pool->neverCameUpReason(),
+                    self::EXIT_NEVER_CAME_UP,
+                ),
+            );
+
+            $this->stopping = true;
+            $this->exitCode = self::EXIT_NEVER_CAME_UP;
+
+            return;
+        }
     }
 
     protected function anyPoolReloading(): bool
@@ -824,7 +1100,10 @@ class WorkerMaster
             name: $this->name,
             masterStartedAtMs: (int) ($this->startedAt * 1000),
             logError: static function (string $message) use ($logger): void {
-                $logger->master(MasterLogger::ERROR, $message);
+                $logger->master(
+                    level: MasterLogger::ERROR,
+                    message: $message,
+                );
             },
         );
 
@@ -847,23 +1126,26 @@ class WorkerMaster
             $this->termSent       = true;
             $this->stopDeadlineNs = $nowNs + $this->maxShutdownTimeoutMs() * 1_000_000;
 
-            $this->logger->master(MasterLogger::INFO, 'shutdown requested; forwarding SIGTERM to workers');
+            $this->logger->master(
+                level: MasterLogger::INFO,
+                message: 'shutdown requested; forwarding SIGTERM to workers',
+            );
 
-            $this->signalAll(SIGTERM);
+            $this->signalAll(ProcessSignalEnum::Terminate);
 
             return;
         }
 
         if (!$this->killSent && $nowNs > $this->stopDeadlineNs) {
-            $alive = $this->aliveSlotCount();
-
-            if ($alive > 0) {
+            // Asked of the groups rather than read off the count: a fork server left with no
+            // worker is still a process to kill.
+            if (!$this->allSlotsEmpty()) {
                 $this->logger->master(
                     level: MasterLogger::WARN,
-                    message: sprintf('shutdown timeout; sending SIGKILL to %d worker(s)', $alive),
+                    message: sprintf('shutdown timeout; sending SIGKILL to %d worker(s)', $this->aliveSlotCount()),
                 );
 
-                $this->signalAll(SIGKILL);
+                $this->signalAll(ProcessSignalEnum::Kill);
             }
 
             $this->killSent       = true;
@@ -882,7 +1164,7 @@ class WorkerMaster
         return $timeoutMs;
     }
 
-    protected function signalAll(int $signal): void
+    protected function signalAll(ProcessSignalEnum $signal): void
     {
         foreach ($this->pools as $pool) {
             $pool->signalAll($signal);

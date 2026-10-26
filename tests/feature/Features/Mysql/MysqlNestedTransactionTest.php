@@ -273,6 +273,20 @@ class MysqlNestedTransactionTest extends BaseTestCase
     }
 
     /**
+     * A statement that sends no rows closes no result set, so the one SELECT
+     * after it is served rather than refused.
+     */
+    public function testASingleSelectAfterOtherStatementsIsServed(): void
+    {
+        $rows = $this->connection->fetchAll(
+            sql: "INSERT INTO {$this->table} (name) VALUES ('seven'); "
+                . "SELECT name FROM {$this->table} WHERE name = 'seven'",
+        );
+
+        self::assertSame([['name' => 'seven']], $rows);
+    }
+
+    /**
      * The same statement pair through exec(), which has one number to answer
      * with and answers for the batch.
      */

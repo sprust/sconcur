@@ -2,27 +2,42 @@ English | [Русский](worker-master.ru.md)
 
 # Worker master
 
-A supervisor that starts and watches over a pool of worker processes running one
-script. It is the counterpart to [`SO_REUSEPORT`](http-server.md): the workers bind
-one port and the kernel balances connections across them, scaling the server across
-all cores without an external load balancer. Implementation: `src/Worker/` plus the
-universal CLI `bin/sconcur-server`.
+A supervisor that starts and watches over pools of worker processes, each pool running
+one script. The workers of a pool share one port — each with a
+[`SO_REUSEPORT`](http-server.md#scaling-across-cores-so_reuseport) socket of its own, or
+all on one socket the master binds — so a server scales across all cores without a load
+balancer in front. Implementation: `src/Worker/` plus the universal CLI
+`bin/sconcur-server`.
 
-Each worker is a separate process started via `proc_open`. The master itself
-does not load the extension: it is a pure supervisor on `pcntl`/`posix` (both
-are required, otherwise it throws `MissingPcntlException`).
+Each worker is a separate process: by default a copy of a fork server the master starts
+for the group, which loads the application once, or a `php` of its own started via
+`proc_open` (see [Launch: exec or fork](#launch-exec-or-fork)). The master loads the
+extension too and takes and sends its signals through it, so neither `pcntl` nor `posix`
+is needed; `start` without the extension fails with `ExtensionNotLoadedException`. It
+never forks and never starts the extension's runtime: the master does no asynchronous
+work of its own.
 
-A worker gets its stdin/stdout/stderr and nothing else: `proc_open` would otherwise
-leave every descriptor the master holds open in the child — the telemetry sockets,
-the panel's connections, the lock and the log — so the spawn points all of them at
-`/dev/null` instead.
+A worker gets its stdin, stdout and stderr and none of the master's other descriptors:
+the telemetry sockets, the panel's connections, the lock and the log are pointed at
+`/dev/null` in it. A group with `listen` hands over its listening socket as well, and a
+forked worker keeps what its group's bootstrap opened (see
+[Loading the application once](#loading-the-application-once-bootstrap)). Everything the
+master hands a worker is close-on-exec by the time its script runs. So a program the
+worker starts — `shell_exec`, `proc_open`, a sidecar — gets its own stdio and nothing
+else: not the placeholders, not the [heartbeat pipe](#stuck-worker), not the listening
+socket. A program that outlives the worker therefore cannot keep the port bound after the
+pool has stopped. What the application opens itself is left as it opened it.
 
 ## Table of contents
 
 - [Quick start](#quick-start)
 - [Commands](#commands)
 - [Parameters](#parameters)
+- [Launch: exec or fork](#launch-exec-or-fork)
+- [Readiness](#readiness)
 - [Restart policy and `maxRequests`](#restart-policy-and-maxrequests)
+- [A group that never comes up](#a-group-that-never-comes-up)
+- [Database connections](#database-connections)
 - [Self-termination of orphaned workers](#self-termination-of-orphaned-workers)
 - [Stuck worker](#stuck-worker)
 - [Logging](#logging)
@@ -45,8 +60,9 @@ require __DIR__ . '/vendor/autoload.php';
 
 $factory = new Psr17Factory();
 
-// fromArgs() assembles the server from argv: the master passes the keys of the
-// `server` block as --key=value flags and its own pid as --masterPid.
+// fromArgs() assembles the server from argv: the keys of the group's `server` block
+// arrive as --key=value flags, and the pid of the worker's parent (the fork server,
+// or the master under exec) as --masterPid.
 $server = HttpServer::fromArgs(
     argv: $_SERVER['argv'],
     serverRequestFactory: $factory,
@@ -57,8 +73,9 @@ $server->serve(static fn (ServerRequestInterface $request): ResponseInterface =>
     $factory->createResponse(200)->withBody($factory->createStream('ok')));
 ```
 
-> **`reusePort: true` must be set in the config's `server` block — otherwise the
-> 2nd worker gets `EADDRINUSE`.**
+> **Several workers on one port need `reusePort: true` in the group's `server` block, or
+> the group's `listen` — otherwise the second worker gets `EADDRINUSE`.** See
+> [sharing the port](#sharing-the-port-reuseport-or-listen).
 
 ```json
 {
@@ -116,8 +133,13 @@ over means wrapping what was at the top level in a single entry of `groups` and
 giving it a `name`.
 
 ```sh
-vendor/bin/sconcur-server start --configPath=/app/master.json
+php -d extension=/app/ext/build/sconcur.so vendor/bin/sconcur-server start --configPath=/app/master.json
 ```
+
+The master loads the extension itself — here with `-d`, or through `php.ini`. The
+workers load it too, through `phpArgs` or their `php.ini`: an exec'd worker is a `php`
+of its own, and a forked one is a copy of its group's fork server, which is started the
+same way.
 
 `start` blocks in the foreground and supervises the pool until `SIGTERM`/`SIGINT`,
 until the state file is removed, or until every worker has finished with nothing
@@ -134,53 +156,89 @@ what `MasterConfig` builds from the file.
 
 ## Commands
 
-Every command takes `--configPath`; `--group` narrows `status` and `reload` to one
-pool. `start` and `stop` accept it too and refuse a name the config does not
-describe, but they serve the whole config either way. The
-same config across all commands guarantees consistent `runtimeDir`/`name`, so
-`status`/`stop`/`reload` find the lock, state and trigger files.
+Every command takes `--configPath`; the same config across all commands is what lets
+`status`, `stop` and `reload` find the lock, state and trigger files (through
+`runtimeDir` and `name`). `--group=NAME` narrows `status` to one pool and `reload` to
+rolling one, leaving its neighbours where they are. `start` and `stop` accept it but
+serve the whole master, since there is one lock and one state file. A name the config
+does not define is a usage error (exit `2`).
 
 ```sh
 vendor/bin/sconcur-server start   --configPath=/app/master.json  # bring up the pools (foreground)
-vendor/bin/sconcur-server status  --configPath=/app/master.json  # running: pid=12345 workers=8 groups=2
+vendor/bin/sconcur-server status  --configPath=/app/master.json  # running: pid=12345 workers=10 groups=2
 vendor/bin/sconcur-server stop    --configPath=/app/master.json  # remove the state file and wait for exit
 vendor/bin/sconcur-server reload  --configPath=/app/master.json  # re-read the config and roll the workers
 vendor/bin/sconcur-server reload  --configPath=/app/master.json --group=orders  # roll one pool
 ```
 
-`--group=NAME` narrows `status` to one pool and `reload` to rolling one, leaving
-its neighbours where they are. A name the config does not define is a usage error
-(exit `2`). `stop` takes the whole master — there is one lock and one state file,
-and stopping half of it is not a thing.
-
-Exit codes: `start` — the master's own; `status` — `0` running / `3`
-stopped-or-stale; `stop` — `0` once stopped (or none was running), `1` on timeout;
-`reload` — `0` on completion, `3` if the master is not running, `1` on
-timeout/error.
+Exit codes: `start` — the master's own: `0` after a stop, `70` when a group never came
+up (see [below](#a-group-that-never-comes-up)), `1` when it could not start; `status`
+— `0` running / `3` stopped-or-stale; `stop` — `0` once stopped (or none was running),
+`1` if the master has not exited within 15 s (it goes on stopping, so with a longer
+`shutdownTimeoutMs` check `status` afterwards); `reload` — `0` on completion, `3` if the
+master is not running, `1` on timeout, or when the master refused the reload or gave it
+up — the reason is printed (`reload failed: …`) and is in the journal too.
 
 `status` prints the totals and then one line per group.
 
 `reload` re-reads the config and rolls the workers onto it. The command creates
 the trigger file `<runtimeDir>/<name>.reload` naming the config; the master reads
-it, then rolls each group's workers one by one, sending each `SIGTERM` (which
-leaves the `SO_REUSEPORT` group early and finishes the requests it has already
-accepted), waiting up to `shutdownTimeoutMs` (otherwise `SIGKILL`) and spawning a
-replacement. While one worker finishes up, the rest hold traffic — so with N>1
-the restart is downtime-free, and a fresh `php worker.php` picks up new code from
-disk.
+it and rolls the groups side by side, each one worker at a time, the new one first:
+
+1. It starts a replacement beside the worker of the slot.
+2. It waits for the replacement to say it is up (see [readiness](#readiness)), at most
+   `readyTimeoutMs`.
+3. The replacement takes the slot, and the old worker gets `SIGTERM`: it stops
+   accepting, finishes the requests it has already accepted and exits; past
+   `shutdownTimeoutMs` it gets `SIGKILL`.
+4. Once the old worker is gone, the next slot.
+
+The group never runs below its `workerCount` while it rolls, and at most one process
+above it. A fresh `php worker.php` picks up new code from disk. A
+[fork](#launch-exec-or-fork) group rolls onto a new generation: the master starts a new
+fork server, which loads the bootstrap — the application, this library, the extension —
+from disk afresh, and moves the slots onto it one at a time as above, the old fork
+server letting go of each; when it has none left it is stopped. A new fork server that
+does not load gives the reload up before any worker is touched.
+
+The old worker and its replacement run side by side for a moment, so they must be able
+to share the port: `reusePort: true` in `server`, or the group's `listen`. A worker that
+binds its address alone cannot be replaced this way — its replacement fails to bind
+and the reload is given up.
+
+A replacement that exits before it is up, or is not up within `readyTimeoutMs`, gives
+the reload up:
+
+- the replacement is stopped, and the slots the reload had not reached keep the
+  workers they have;
+- for an exec group, the slots it had already rolled keep their new workers: those came
+  up; a fork group moves them back onto the old generation the same way, and stops the
+  new fork server, so the group stays one generation;
+- the group's previous settings are put back, so a worker that crashes later is
+  respawned on what was running, not on what failed;
+- the journal says `group <name>: reload given up: <reason>`, and `reload` exits with
+  `1` and the same reason.
+
+A version that crashes on startup therefore costs one replacement, not the pool.
 
 What a reload may change: the set of groups (one added is spawned, one removed
 has its workers finish their work and is not replaced), and each group's
-`workerCount`, `workerScript`, `workerArgs`, `server`, `env`, `phpBinary`,
-`phpArgs`, `restartPolicy`, timeouts and backoffs. Scaling a pool is therefore
-an edit plus a `reload`, not a restart.
+`workerCount`, `workerScript`, `workerArgs`, `server`, `env`, `launch`, `bootstrap`,
+`phpBinary`, `phpArgs`, `restartPolicy`, `accessLog`, timeouts and backoffs. Scaling a
+pool is therefore an edit plus a `reload`, not a restart.
 
-What it may not: `runtimeDir` and `name` identify the running instance, and
-`panelPort`, `adminToken` and `logDir` are bound at startup. A reload reads the new
-values and ignores them without a word — a full restart is what applies them.
+What it may not: `runtimeDir` and `name` identify the running instance, and the rest of
+the master's own keys — `logDir`, `logTo`, `rotateDays`, `panelPort`, `adminToken` — are
+bound at startup. A reload reads the new
+values and ignores them without a word — a full restart is what applies them. A
+group's `listen` is the one exception that is refused rather than ignored: its
+workers accept on the socket the master bound at the start, so a reload that moves it
+is turned down with the reason in the journal. A group added by a reload gets its
+socket then, and one removed closes its socket once its workers have finished; a
+`start` whose `listen` address is taken fails before any worker runs.
 
-A config that does not parse, or that names a `workerScript` that is not there, is
-refused and the master keeps running on the one it has. A typo must never take a
+A config that does not parse, or that names a `workerScript` or a `bootstrap` that is not
+there, is refused and the master keeps running on the one it has. A typo must never take a
 working pool down; the refusal and its reason go to the journal. The same goes for a
 trigger naming a config file the master cannot find — which is why the CLI resolves the
 path to an absolute one before writing it, the master reading it from its own working
@@ -202,32 +260,38 @@ glob and a `--group` value), and every timeout, count and day retention must be
 | `runtimeDir` | temp dir | Directory of the lock and state files (local FS). |
 | `logDir` | `runtimeDir` | Log directory. |
 | `name` | `sconcur-server` | Prefix for the log and state file names. |
-| `rotateDays` | `3` | How many days to keep log files. |
+| `rotateDays` | `3` | How many days to keep log files, access-line files included; `0` keeps them all. |
 | `logTo` | `file` | `file` \| `stdout` \| `both` (for `docker logs` — `stdout`/`both`). |
 | `panelPort` | `0` (off) | Port of the built-in [telemetry panel](admin-stats.md); needs `adminToken`. |
 | `adminToken` | empty (off) | Panel Bearer token; needs `panelPort`. |
 
 The next keys are the defaults every group inherits unless it names its own:
-`phpBinary`, `phpArgs`, `env`, `restartPolicy`, `shutdownTimeoutMs`,
-`restartBackoffMs`, `maxRestartBackoffMs`, `watchdogTimeoutMs`.
+`launch`, `phpBinary`, `phpArgs`, `env`, `restartPolicy`, `shutdownTimeoutMs`,
+`restartBackoffMs`, `maxRestartBackoffMs`, `watchdogTimeoutMs`, `readyTimeoutMs`,
+`accessLog`.
 
 ### A group
 
 | Key | Default | Purpose |
 |---|---|---|
 | `name` | — (required) | Identifies the pool in the journal, in `status` and in `--group`. Unique. |
-| `workerScript` | — (required) | The script each of its workers runs. |
+| `workerScript` | — (required) | The script each of its workers runs. A relative path is taken from the master's working directory — see [paths and symlinks](#paths-and-symlinks). |
 | `workerCount` | `0` (= logical CPUs, what `nproc` reports — twice the core count where hyperthreading is on) | How many workers to bring up. |
 | `server` | `{}` | Worker parameters → expanded into the worker's `argv`. |
 | `workerArgs` | `[]` | Extra raw worker `argv` flags, appended after `server`. |
-| `phpBinary` | the master's | Interpreter for this group's workers. |
-| `phpArgs` | the master's | Interpreter flags, e.g. `["-d", "extension=…"]`. |
+| `listen` | empty | An address the master binds once and hands to every worker of the group as `--listenFd` — [one socket for the whole pool](http-server.md#one-socket-for-the-whole-pool) instead of `SO_REUSEPORT`. Excludes `reusePort` and `listenFd` in `server`. |
+| `launch` | the master's (`fork`) | `fork` — a copy of the group's fork server; `exec` — a `php` of its own on the script. See [Launch: exec or fork](#launch-exec-or-fork). |
+| `phpBinary` | the master's (the `php` running the master) | Interpreter for this group's workers — under `fork`, for its fork server, which they are copies of. |
+| `phpArgs` | the master's | Interpreter flags, e.g. `["-d", "extension=…"]`; under `fork`, the fork server's. |
+| `bootstrap` | empty | A file the fork server of a `fork` group loads once per generation, before it forks the workers — see [loading the application once](#loading-the-application-once-bootstrap). A relative path is taken from the master's working directory. Refused with `launch: exec`. |
 | `env` | the master's | Extra worker env, merged over the master's and the inherited one. |
-| `restartPolicy` | the master's | `always` \| `on-failure` \| `never`. |
-| `shutdownTimeoutMs` | the master's | How long to wait for a worker to finish before `SIGKILL`. |
-| `restartBackoffMs` | the master's | Exponential backoff base in a crash loop. |
-| `maxRestartBackoffMs` | the master's | Backoff ceiling. |
+| `restartPolicy` | the master's (`always`) | `always` \| `on-failure` \| `never`. |
+| `shutdownTimeoutMs` | the master's (`10000`) | How long to wait for a worker to finish before `SIGKILL`. |
+| `restartBackoffMs` | the master's (`200`) | First delay before restarting a worker that keeps crashing at startup; doubled with each such crash. |
+| `maxRestartBackoffMs` | the master's (`30000`) | Ceiling of that delay. |
 | `watchdogTimeoutMs` | the master's (`60000`) | How long a worker may stop signalling it is alive before it is killed and replaced — see [stuck worker](#stuck-worker). `0` switches the watch off; anything else must be at least 5000. |
+| `readyTimeoutMs` | the master's (`30000`) | How long a `reload` waits for each replacement to say it is up before it gives the reload up — see [readiness](#readiness). It also bounds how long a fork group's new fork server may take to load on a reload. At least 1000; there is no "off". |
+| `accessLog` | the master's (`stdout`) | Where the workers write their access lines: `stdout` — into the journal, through the master or the fork server, which under heavy load drops some of them; `file` — each worker to a file of the day itself; `off` — nowhere. See [access lines](#access-lines). |
 
 The `server` block is pure forwarding: each key becomes a `--key=value` flag. A
 scalar travels as it is (booleans → `1`/`0`); a list or an object travels as JSON
@@ -239,41 +303,450 @@ just characters.
 The master does not inspect or hardcode the key names, so the same supervisor fits
 any worker that parses `--key=value` argv — which keys a worker understands is
 defined by the worker itself ([HTTP](http-server.md), [socket](socket-server.md),
-[WebSocket](websocket-server.md), [AMQP consumer](amqp.md)). On top of them the
-master appends `--masterPid=<pid>`; how the worker uses it is up to the worker
-script (typically the orphan check below).
+[WebSocket](websocket-server.md), [AMQP consumer](amqp.md)). On top of them goes
+`--masterPid=<pid>`, the pid of the worker's parent — the master's under `exec`, the
+fork server's under `fork`; how the worker uses it is up to the worker script
+(typically the orphan check below).
 
 Slot indices are local to a group, so the journal names both — `worker: 4711
 orders #2` is slot 2 of the `orders` pool.
+
+## Launch: exec or fork
+
+There are two launches, set per group by `launch`. The worker script is the same either
+way.
+
+```mermaid
+flowchart TB
+    master["master"]
+    master -->|"proc_open, launch: exec"| execWorker["worker: a php of its own"]
+    master -->|"proc_open, launch: fork"| forkServer["fork server: a php of its own, runs the bootstrap if there is one"]
+    forkServer -->|"ProcessControl::fork"| forkWorker["worker: a copy of the fork server"]
+```
+
+- `exec`: the master starts each worker as `php <phpArgs> workerScript <argv>` and
+  watches it.
+- `fork`, the default: the master starts one fork server for the group — a `php` of its
+  own, with the group's `phpBinary` and `phpArgs` — and watches it. The fork server
+  forks the workers from itself and watches them — restarts, the
+  [watchdog](#stuck-worker), the journal lines — the way the master watches an exec
+  group's. A worker is a copy of the fork server that sets up its environment and argv
+  and `require`s `workerScript`. The master itself never forks.
+
+A fork group may also have a `bootstrap`: a file the fork server runs before it forks
+any worker. It is not a third launch. It only decides what is in the fork server's
+memory when a worker is forked from it:
+
+- without a bootstrap, the fork server has loaded Composer's autoloader and this library,
+  nothing of the application; every worker loads the application itself, in its worker
+  script, after the fork;
+- with one, the fork server has loaded the application, and every worker starts with it
+  in memory and shares its pages — see
+  [loading the application once](#loading-the-application-once-bootstrap).
+
+The script runs inside a function, so its top-level variables are that function's
+locals. `$argv`, `$argc` and `$_SERVER['argv']` hold what a `php` started on the
+script would have had. A script that relies on `global` or on `$GLOBALS` holding its
+top-level variables needs `exec`.
+
+The child is prepared before PHP runs in it: stdin from `/dev/null`, stdout and stderr
+onto the fork server's pipes, so the journal reads as with `exec`, and every descriptor
+the fork server opened itself pointed at `/dev/null`. The fork server's signal handlers
+are put back to PHP's own, the random generators are reseeded, and the fork server's
+objects are marked as destroyed so their destructors never run in a worker — all but
+the extension's own object, which the worker makes anew, so that `exit()` in a worker
+stops its server, cancels what it was running and flushes its access lines, as with
+`exec`. An uncaught
+exception goes to the exception handler, if one is set, and is otherwise reported on
+stderr the way PHP reports it; the worker exits with `255`, and `exit()` works as usual.
+In `ps` a forked worker shows as `sconcur-server: <group> #<slot>`. Telemetry, the
+watchdog and `--masterPid` work as with `exec`; `--masterPid` is the fork server's pid,
+the process the worker is a child of.
+
+A fork server that dies takes its workers with it: they find themselves orphaned and stop,
+and the master stops the ones it still knows of. The master then starts a new
+generation, after a backoff (the group's `restartBackoffMs`, doubled up to
+`maxRestartBackoffMs`) if the fork servers keep dying before they load or within ~1 s of
+it.
+
+### Which to choose
+
+The timings are from the demo server (median of 7). The memory is measured with
+`make bench-worker-memory`: 12 workers, a stand-in application of about 1 250 classes
+(Composer's classmap, some 11 MiB of compiled code), OPcache off in the CLI, after 5 000
+requests; three runs within 0.2 MiB of each other. Pss counts each shared page in shares,
+so its sum is what the pool takes from the machine. `fork` has two columns because the
+bootstrap only changes what its fork server has loaded.
+
+The rows after 15 minutes come from `make bench-worker-memory-soak`: 32 requests in
+flight, about 14 000 a second, each running a request's worth of the application (a value
+exported, two texts diffed, two values compared), read once a minute; one run per column,
+counted as Pss plus SwapPss because the host moved cold pages to swap. Every pool grows by
+about 20 MiB, almost all of it in the first minute and `exec` included: the workers' own
+memory warming up, not shared pages being lost. A bootstrap's workers add about 5 MiB for
+the whole pool on top, copying pages of their fork server's because PHP updates reference
+counts even when it only reads. The growth then fades and is not a leak: in an hour of the
+same load on `exec` and the bootstrap, PHP's heap in the workers (`memory_get_usage()`)
+did not move after the first minute, and what `exec`'s workers hold alone, swap included,
+grew by 0.6 MiB for the whole pool over the last half hour. OPcache helps a fork group and
+costs an exec one: its shared memory is created as `php` starts, so the workers of a fork
+server share it, and every exec'd worker has its own.
+
+| | `exec` | `fork`, without a bootstrap | `fork`, with a bootstrap |
+|---|---|---|---|
+| A worker is | a `php` of its own | a copy of the fork server | a copy of the fork server |
+| The application is loaded | by every worker | by every worker, after its fork | once per generation, in the fork server |
+| Pss, all 12 workers | 279.1 MiB | 191.0 MiB | 59.8 MiB |
+| Pss, all 12 workers, after 15 minutes of load | 300.8 MiB | 208.6 MiB | 84.9 MiB |
+| The same with OPcache in the CLI: after 5 000 requests, after 15 minutes | 366.2, 384.5 MiB | 93.9, 111.2 MiB | 42.7, 63.6 MiB |
+| Pss per worker | 23.3 MiB | 15.9 MiB | 5.0 MiB |
+| Private_Dirty, all workers | 260.2 MiB | 176.4 MiB | 34.3 MiB |
+| Supervising processes | the master: 10.8 MiB | the master and a fork server per group: 17–19 MiB together | the same as without |
+| Master start to the first answer of one worker | 40 ms | 45 ms — the fork server starts first | 45 ms plus the application's load, once |
+| A killed worker to its replacement's first answer | 103 ms | 103 ms | 103 ms — all three wait for a 100 ms supervision tick |
+| If the fork server crashes | there is none | its workers stop with it, and a new generation is started | the same as without |
+| What a `reload` picks up | everything | everything, but after a deploy that switched a symlink to a new release the master's autoloader keeps the old release's paths | everything, the release a switched symlink points to included |
+| A `reload` holds in memory | one more worker at a time | one more worker and a second fork server | one more worker, a second fork server and the application loaded twice, for the length of the roll |
+| Shared between the workers | nothing | this library's code | this library's code, the application, and whatever it opened or computed while loading |
+| Scope the worker script runs in | global | a function's | a function's |
+| `phpBinary`, `phpArgs`, `php.ini` | the worker's | the fork server's, and so its workers' | the same as without |
+
+#### `exec` or `fork`?
+
+`fork`, the default, fits almost every group: the workers share
+the library's code at the least. `exec` is for a worker that must have nothing of its
+siblings': a worker script that relies on the global scope; an extension that starts
+threads of its own when `php` starts — an APM agent, say — which leaves a process that
+cannot fork, so the fork server refuses with the reason; or a group that must not depend
+on one more process, since a fork server that crashes takes its generation with it.
+
+#### A bootstrap for a fork group?
+
+Yes for an application of any size — a framework, a
+container built on boot: it loads once per generation instead of once per worker, its
+memory is shared, and a `reload` loads it afresh and follows a deploy that switches a
+`current` symlink. What it asks of the application is in
+[loading the application once](#loading-the-application-once-bootstrap): nothing
+asynchronous and no connection while loading. Leave it out for a worker script that
+loads what it needs itself — a small script, or an application that cannot be loaded
+without opening connections it cannot close again — unless deploys switch a symlink,
+which needs a one-line bootstrap (see [below](#loading-the-application-once-bootstrap)).
+
+#### Sharing the port: `reusePort` or `listen`?
+
+The workers of a group share one port either way. With `reusePort: true` in `server`
+each worker binds a socket of its own and the kernel spreads the connections over them;
+with `listen` on the group the master binds one socket and hands it to every worker.
+Neither is set by default, and a group of several workers with neither starts workers
+that cannot all bind the port.
+
+| | `reusePort` | `listen` |
+|---|---|---|
+| rps (12 workers, `/`) | the reference | within 2% |
+| How evenly the requests are spread — the busiest worker's count over the idlest's | 1.4–1.6 times; 1.08–1.11 times with a connection per request | 1.2–1.5 times; 1.02 times with a connection per request |
+| CPU per request with a connection per request | the reference | about 10% more, and a thread more per server |
+| What a stopping worker had queued | reset when its socket closes | left in the shared queue for the others |
+| The port during restarts and reloads | held by the workers | held by the master throughout |
+| Platforms | spreads evenly on Linux | spreads evenly on Linux only, where a thread accepts with `EPOLLEXCLUSIVE`; elsewhere every worker wakes for every connection, and in that mode the busiest worker served 7–10 times as many requests as the idlest |
+
+On Linux, `listen` is the one for a pool that restarts its workers often — `maxRequests`,
+frequent reloads — where the connections queued on a stopping worker would otherwise be
+reset; `reusePort` where every request opens a connection and the CPU per request counts.
+Off Linux, keep `reusePort`. The measurements are in
+[load testing](load-testing.md#shared-socket-vs-so_reuseport), the mechanics in
+[one socket for the whole pool](http-server.md#one-socket-for-the-whole-pool).
+
+### Loading the application once: bootstrap
+
+A group with `launch: fork` and a `bootstrap` has its application loaded once per
+generation, in the fork server, before any worker is forked. Every worker starts with it
+in memory, and the pages stay shared until a worker writes to them:
+
+```json
+{
+  "name": "http",
+  "launch": "fork",
+  "bootstrap": "/app/current/sconcur-bootstrap.php",
+  "workerScript": "/app/current/worker.php",
+  "server": { "address": "0.0.0.0:8080", "reusePort": true }
+}
+```
+
+The bootstrap runs once per generation, in the fork server, in the global scope. It
+loads Composer's autoloader first, then builds whatever every worker needs and none of
+them changes — the configuration, the routes, a container with its services defined —
+and leaves it where the worker script can reach it: in `$GLOBALS` or a static property.
+
+```php
+<?php
+// sconcur-bootstrap.php: runs in the fork server, before any worker is forked
+
+declare(strict_types=1);
+
+// First, and by this file's own path: the fork server has loaded nothing of the
+// library yet, and a deploy that switched the symlink is followed from here.
+require __DIR__ . '/vendor/autoload.php';
+
+use App\Kernel;
+
+$kernel = new Kernel(environment: 'production');
+
+// Configuration, routes, the container's definitions: built once, shared by every
+// worker. No connection is opened and nothing asynchronous is called here.
+$kernel->boot();
+
+$GLOBALS['kernel'] = $kernel;
+```
+
+The worker script runs in every worker, after the fork. What the bootstrap built is
+already in memory: the script takes it from `$GLOBALS` instead of building it again,
+opens what is the worker's own — connections — and serves:
+
+```php
+<?php
+// worker.php: runs in each worker, a copy of the fork server
+
+declare(strict_types=1);
+
+use App\Kernel;
+use Nyholm\Psr7\Factory\Psr17Factory;
+use Psr\Http\Message\ServerRequestInterface;
+use SConcur\Features\HttpServer\HttpServer;
+
+// The script runs inside a function: what the bootstrap left in the global scope is
+// reached through $GLOBALS, not as a variable of its own.
+/** @var Kernel $kernel */
+$kernel = $GLOBALS['kernel'];
+
+$factory = new Psr17Factory();
+
+$server = HttpServer::fromArgs(
+    argv: $argv,
+    serverRequestFactory: $factory,
+    responseFactory: $factory,
+);
+
+// A connection is opened by the worker that uses it — lazily, on its first query, or
+// here — never by the bootstrap, whose objects every worker shares.
+$server->serve(static fn(ServerRequestInterface $request) => $kernel->handle($request));
+```
+
+A worker script meant to run with and without a bootstrap can still
+`require_once __DIR__ . '/vendor/autoload.php';` and load the application when
+`$GLOBALS['kernel']` is not set: with a bootstrap both are already done.
+
+A static property works the same way and reads better in a framework that has a place
+for it — `App\Runtime::$kernel = $kernel;` in the bootstrap, `App\Runtime::$kernel` in the
+worker script. Either is set once in the fork server and copied into every worker with
+the rest of its memory.
+
+The bootstrap has to load Composer's autoloader itself: the fork server touches none of
+the library before the bootstrap has run. That is what makes a deploy that switches a
+`current` symlink to a new release work — a process that loaded through the symlink keeps
+the paths of the release it found, Composer's autoloader included, and the next
+generation is a new process that follows the symlink to the new release, the application
+and this library both. A group without a bootstrap loads the autoloader the master
+loaded, and keeps that release's paths until the master restarts; give it a bootstrap of
+one line (`require __DIR__ . '/vendor/autoload.php';`) when deploys switch a symlink.
+
+The memory this saves is in [which to choose](#which-to-choose).
+
+What the fork server takes care of:
+
+- Descriptors the bootstrap opened stay open in the workers: a log file a logger opened
+  while the application loaded is written from every worker. Only the descriptors the
+  fork server opens itself are pointed at `/dev/null`.
+- The application's error handler is kept out of the fork server's loop: a handler that
+  turns warnings into exceptions would otherwise end the fork server at the first
+  warning it silences, and it silences one on every tick. Every worker runs under the
+  handler again, and an exception that escapes the worker script goes to the
+  application's exception handler, as it would in a `php` of its own.
+- A scheduler built while the application loaded marks the worker alive for the
+  watchdog, not the fork server.
+
+What is left to the application:
+
+- No asynchronous call in the bootstrap. It starts the extension's runtime, a process
+  with the runtime running cannot fork, and the fork server refuses with the reason: the
+  group does not come up, and on a `reload` the reload is given up.
+- No connection opened in the bootstrap. A fork does not copy a connection, it shares
+  it: every worker holds the same socket, and each takes it for its own. Two workers
+  sending at once interleave their bytes on one stream, and the database answers with a
+  protocol error (`Packets out of order`, `server has gone away`). A response goes to
+  whichever worker reads first, so one request can get the rows of another's query. And
+  a worker that closes the connection closes it for all. Most clients connect on the
+  first query, as Laravel's do, and those are fine; a connection made while loading is
+  to be closed at the end of the bootstrap (`DB::disconnect()`). A listening socket and
+  a datagram one (syslog, statsd) are safe to share.
+- Whatever the bootstrap computes is the same in every worker: an id generated while
+  loading, a pid a logger remembered, a timestamp taken then. PHP's own random
+  generators are reseeded in each worker; anything else that has to differ between
+  workers is made in the worker script.
+- The server is built in the worker script. Its flags (`server`, `--listenFd`,
+  `--masterPid`) reach the worker's argv.
+
+An application loaded before the master starts — a framework command that loads
+everything and then runs `MasterCli` — reaches no worker: the master never forks, and
+each fork server is a `php` of its own. Load it in the bootstrap instead.
+
+#### Paths and symlinks
+
+`bootstrap` and `workerScript` may be relative. They are taken from the master's working
+directory — where `start` was run — which is also where the fork server and every worker
+run. But the master holds that directory as the operating system gives it: with every
+symlink resolved. Started in `/app/current`, a link to `/app/releases/1`, it works in
+`/app/releases/1`, and a relative `bootstrap` stays in that release after the link is
+switched: the next generation loads the old application again. A deploy that switches a
+symlink needs absolute paths through it — `/app/current/sconcur-bootstrap.php`, as in
+the example above. Relative paths are fine where the code is replaced in place.
+
+## Readiness
+
+A worker tells the master it is up: it is running and doing its work. A `reload` waits
+for that from every replacement before it stops the worker the replacement takes over
+from, and the master uses it to tell a group that [never came
+up](#a-group-that-never-comes-up).
+
+The three servers and the [AMQP consumer](amqp.md#a-supervised-consumer) say it on
+their own. Their serve loop does, once its first wait for work comes back with anything
+but the server's own failure. A server binds its socket before anything else, so a
+socket it cannot have is that failure, and such a worker is never up.
+
+A worker script that does its work in a loop of its own — a `WaitGroup` loop, a
+consumer built on `Queue::consume()`, a Redis subscription — says it itself, once the
+loop is running:
+
+```php
+use SConcur\Scheduler\Scheduler;
+
+while (!$stopRequested) {
+    // ... one round of work ...
+
+    Scheduler::get()->markReady(); // only the first call says anything
+}
+```
+
+`markReady()` does nothing outside a worker started by a master. A script that never
+calls it is never up: it runs and is restarted like any worker, but a `reload` gives
+up on its first replacement after `readyTimeoutMs`. The master cannot tell such a
+script from one that hangs while it loads, and it does not guess.
+
+How it travels: the same pipe the [watchdog](#stuck-worker) reads, one byte for "up".
+Its supervisor — the master, or a fork group's fork server — opens it for every worker,
+with the watchdog off too.
 
 ## Restart policy and `maxRequests`
 
 | Policy | Behaviour |
 |---|---|
 | `always` (default) | Restart on any exit — clean or abnormal. |
-| `on-failure` | Restart only on a non-zero code or death by signal. |
+| `on-failure` | Restart on a non-zero code, on death by signal, and when the worker reached its own limit. |
 | `never` | One-shot. |
 
-`always` is the default for a reason: [`maxRequests`](http-server.md#stopping-after-n-requests)
-shuts a worker down cleanly with code 0, and only `always` brings up a replacement.
-Together with the worker's early listener close and `SO_REUSEPORT` this gives a
-rolling restart without traffic loss.
+A server's [`maxRequests`](http-server.md#stopping-after-n-requests) (`maxConnections` for
+the socket and WebSocket servers, `maxMessages` for the AMQP consumer) stops a worker
+once it has handled that much, as a guard against leaks in a long-lived process. Under a
+master:
+
+- The worker says why it is stopping, before it finishes its last requests. The master
+  starts its replacement at once, without the crash backoff and without counting it as
+  a failure, so the slot is not empty for the length of a finish and a start. That is a
+  replacement under `always` and `on-failure`; under `never` the worker is let go.
+- The limit is spread. Each worker stops at a number drawn between the limit and half
+  again as many (`10000` becomes something from `10000` to `15000`). The workers of a
+  pool start together and share the load evenly, so with one number they would all
+  reach it within the same second and the pool would restart as one. Spread, they come
+  apart, and further with each generation. The number drawn is in the worker's
+  shutdown line: `stop accepting (reason=limit, limit=12408)`.
+
+Without a master the limit is exact: a one-off consumer told to take `maxMessages: 100`
+takes 100.
 
 Crash-loop protection: a worker that crashes right at startup gets a per-slot
 exponential backoff (base `restartBackoffMs`, doubled on each fast crash, ceiling
 `maxRestartBackoffMs`). A worker that has lived longer than ~1 s is considered
 healthy and the backoff is reset.
 
+## A group that never comes up
+
+When as many workers of a group as it has slots die before any of them is up — exit
+with an error or by a signal, or cannot be started at all — the master stops all its
+groups and exits with code `70` (`EX_SOFTWARE`):
+
+```
+group http: no worker came up — 8 failed before any said it was up; stopping with code 70
+```
+
+That is a broken deploy, and systemd or an orchestrator sees it as one, instead of a
+master respawning into the same failure with growing delays for as long as nobody reads
+the journal.
+
+A worker counts as up once it [says so](#readiness), or once it has run for longer than
+`readyTimeoutMs` — so a script that never calls `markReady()` is not taken for a
+failure, as long as it does not crash at startup. A clean exit is not a failure. Only
+the groups the master started with are checked: one a `reload` added must not take a
+running pool down, and its failures are left to the backoff.
+
+For a fork group, a fork server that dies before it has loaded — a bootstrap that throws,
+or one that started the extension's runtime — or cannot be started at all is a failed
+start of the whole group, and the line says what became of it instead of counting
+workers:
+
+```
+group http: no worker came up — the fork server of generation 1 exited code=255 before it loaded; stopping with code 70
+```
+
+## Database connections
+
+Every connection pool lives in a worker: each worker opens its own connections, and
+nothing is shared between workers. A connection is not just a socket but state in the
+process that opened it — TLS keys, protocol sequence numbers, an open transaction — so it
+cannot be handed to another process. The master opens none. What a database sees is
+therefore the sum over the workers:
+
+| Feature | Per worker, per connection pool | Set by |
+|---|---|---|
+| MySQL, PostgreSQL | up to `maxOpenConns`, 32 when it is `0`; opened on demand, and a pool unused for 5 minutes is closed | `maxOpenConns` of the `Connection` ([MySQL](mysql.md#connection-pool-and-concurrency)) |
+| Redis | `poolSize` shared connections (4 by default, 64 at most), plus one for each blocking command in flight and one for each subscription | `poolSize`; the rest by how many run at once ([Redis](redis.md#blocking-commands)) |
+| MongoDB | the driver's pool for each server of the deployment, 10 by default | `maxPoolSize` in the URI |
+
+A MySQL or PostgreSQL pool is keyed by the driver, the DSN, the sizes and
+`connMaxLifetimeMs`, so two `Connection`s that differ in any of them are two pools
+in the same worker.
+
+The defaults add up fast: 16 workers × 32 is 512 connections to MySQL or PostgreSQL,
+against a `max_connections` of 151 in MySQL and 100 in PostgreSQL by default. Divide the
+budget the server gives you, minus what else connects to it (migrations, cron jobs,
+consoles), by the number of workers: 90 connections of PostgreSQL's 100 over 16 workers
+is `maxOpenConns: 5`. With `workerCount: 0` the count is the number of logical CPUs, so
+the same config needs a smaller cap on a bigger machine.
+
+Leave room for a worker or two above `workerCount`. A [reload](#commands) runs each
+replacement beside the worker it replaces, and a worker that reached its limit finishes
+its last requests while its replacement starts — for that moment both hold their pools.
+
+When the cap per worker comes out smaller than the concurrency a worker needs, put a
+connection pooler in front of the server: PgBouncer for PostgreSQL, ProxySQL for MySQL.
+The workers hold connections to the pooler, and it shares fewer server connections
+between them. In PgBouncer's transaction mode a server connection changes hands between
+transactions, so nothing tied to the session survives outside one: a `SET`, a temporary
+table, an advisory lock, `LISTEN`. Whether this library's statements work through such a
+pooler has not been tested.
+
+A connection opened in a bootstrap is a different problem — one socket shared by every
+forked worker; see [loading the application once](#loading-the-application-once-bootstrap).
+
 ## Self-termination of orphaned workers
 
 If the master dies suddenly (crash, `SIGKILL`, OOM), the workers would otherwise
-keep living and holding the port. To prevent that the master passes its pid via
-`--masterPid`, and on every tick of the serve loop the server compares
-`posix_getppid()` against it: after the master's death the kernel reparents the
-process, `getppid()` stops matching (immune to PID reuse), and the server starts
-its own graceful shutdown — finishing the requests it has already accepted — and
-exits, freeing the port. Outside the master there is no flag, so the check is
-disabled.
+keep living and holding the port. To prevent that each worker is given its parent's pid
+as `--masterPid` — the master's under `exec`, its fork server's under `fork` — and the
+serve loop compares its parent pid against it, asking the extension at most every
+100 ms: after the parent's death the kernel reparents the process, the parent pid stops
+matching (immune to PID reuse), and the server stops itself — finishing the requests it
+has already accepted — and exits, freeing the port. A fork server checks its own parent
+the same way and stops its workers when the master is gone. Outside the master there is
+no flag, so the check is disabled.
 
 ## Stuck worker
 
@@ -286,12 +759,16 @@ itself stays `running` and silently drops out of service. Neither `maxRequests` 
 the orphan check helps: a stuck worker does not *finish* a request, and the master
 is alive.
 
-The master finds such a worker by itself and replaces it. A worker writes a byte to
-an extra pipe (descriptor 3, opened by `proc_open` beside stdout and stderr) every
-time its PHP thread comes back to the scheduler, at most twice a second; the master
-reads that pipe on every supervision tick and times the last byte by its own clock.
-Stop coming back and the bytes stop, which is what "stuck" means here. It costs one
-clock read per pass, and nothing at all in a worker running without a master.
+The master — for a fork group, its fork server — finds such a worker by itself and
+replaces it. A worker writes a byte to an extra pipe (descriptor 3, opened by
+`proc_open` beside stdout and stderr; a forked worker is handed it) every time its PHP
+thread comes back to the scheduler, at most twice a second; its supervisor reads that
+pipe on every tick and times the last byte by its own clock. Stop coming back and the
+bytes stop, which is what "stuck" means here. It costs one clock read per pass, and
+nothing at all in a worker running without a master. Programs the worker starts
+(`shell_exec`, `proc_open`) get neither the pipe nor the `SCONCUR_HEARTBEAT_FD` variable
+an exec'd worker finds it by, so none of them can mark the worker alive in its place. The
+same pipe carries the worker's [readiness](#readiness) and its "stopping at my limit".
 
 That covers a server's serve loop and equally any loop driving an ordinary
 `WaitGroup` — a pool of periodic jobs, a consumer written by hand. A worker whose
@@ -315,6 +792,16 @@ uninterruptible I/O — and the second one takes no signal at all, so if the slo
 still occupied two seconds after the kill the journal says so and the slot stays down
 until the kernel releases it.
 
+Until the watchdog acts, a hung worker keeps accepting. Its accept loop runs on the
+extension's runtime, not on the stuck PHP thread, so it goes on taking its share of new
+connections — with the shared socket and with `SO_REUSEPORT` alike — and those requests
+wait with it and die with it. A pool under open traffic loses at least that share for
+as long as the worker hangs; clients that wait for each answer before sending the next
+end up nearly all stuck in it (a soak, `make mem-leak-worker`, with 8 such clients
+against 4 workers got from a few hundred to twenty thousand answers in three minutes of
+repeated hangs, against two and a half million without them). Keep `watchdogTimeoutMs`
+as short as the slowest legitimate blocking handler allows.
+
 A worker that hung at startup is replaced after a backoff rather than at once: the
 threshold is what it lived through, not work it did, and when the cause is shared — a
 wedged upstream every worker calls synchronously — the replacement hangs the same
@@ -322,10 +809,9 @@ way, so without the backoff the pool would recycle itself forever. A worker that
 served for an hour before hanging is not treated that way: what counts is how long it
 kept marking itself alive, not how long it existed.
 
-`watchdogTimeoutMs` is either `0` or at least 5000. A worker marks itself alive at
-most twice a second, so a threshold near that reads the ordinary gap between two
-marks as a hang and kills every worker of the group, replacements included; a smaller
-value is refused when the config is read rather than quietly raised.
+The 5000 ms floor exists because a worker marks itself at most twice a second: a
+threshold near that would read the ordinary gap between two marks as a hang and kill
+every worker of the group, replacements included.
 
 Why a mark from PHP and not the telemetry snapshot: snapshots are pushed by a loop
 inside the extension, on a runtime thread of its own, so a worker whose PHP thread is
@@ -336,40 +822,33 @@ question, answered by a different thread.
 What the watch leaves alone:
 
 - A worker that has never marked itself alive — one that neither drives the scheduler
-  nor calls `markAlive()`, so nothing about its PHP thread is known. The watchdog acts
-  on evidence of a hang, not on its absence, so such a worker is supervised exactly as
-  it was before.
-- A CPU-bound handler under [preemption](coroutine-switching.md), when the worker
-  arms it (`preemptionQuantumMs` above `0`): the scheduler parks its coroutine and goes back round the loop, so
-  the marks keep coming while it computes. Everything that waits on I/O keeps them
-  coming too, preemption or not — a suspended coroutine hands control back to the
-  loop, and so does an idle server's poll, which wakes every 250 ms with nothing to
-  do, so a worker that serves no request at all still marks itself. I/O here means I/O
-  through SConcur — a native `sleep`, a PDO query or a `curl` call blocks the PHP
-  thread and marks nothing, which is the case the watchdog exists for. Only a handler
-  that returns control to nobody stops the marks. With preemption off (the default,
-  `preemptionQuantumMs: 0`), a handler that computes for longer than the threshold
-  leaves its worker unservable for that whole time, and the worker will be replaced —
-  raise `watchdogTimeoutMs` past the longest such handler, or set it to `0` for that
-  group.
-- The one worker a rolling `reload` is currently unwinding: its `SIGTERM` is
-  sent and its deadline for finishing the work it has is running. The slots
-  still queued behind it are watched as usual. A group being retired after a
-  reload removed it from the config is watched too, and deliberately: `retire()`
-  has no deadline of its own, so a hung worker would otherwise hold the retiring
-  group open forever.
-- A worker that is stopping but never finishes — `maxRequests` reached or
-  `SIGTERM` taken, with one handler waiting on a result that will not arrive.
-  Its serve loop keeps turning, so it keeps marking itself alive while serving
-  nothing. Give such handlers a `handlerTimeoutMs`; the watchdog cannot see this
-  one.
+  nor calls `markAlive()`, so nothing about its PHP thread is known, and the watchdog
+  acts only on evidence of a hang.
+- A CPU-bound handler under [preemption](coroutine-switching.md)
+  (`preemptionQuantumMs` above `0`): the scheduler parks its coroutine and goes back
+  round the loop, so the marks keep coming. Anything waiting on I/O through SConcur keeps
+  them coming too, and an idle server's poll wakes every 250 ms, so a worker with no
+  requests still marks itself. A native `sleep`, PDO query or `curl` call blocks the PHP
+  thread and marks nothing; that is the case the watchdog exists for. With preemption off
+  (the default), a handler that computes for longer than the threshold leaves its worker
+  unservable that long and gets it replaced: raise `watchdogTimeoutMs` past the longest
+  such handler, or set it to `0` for that group.
+- A worker that has left its slot: one a `reload` replaced, or one that reached its
+  limit after its replacement was started. It has `shutdownTimeoutMs` to finish and gets
+  `SIGKILL` past that, hung or not. In an exec group the replacement a `reload` is
+  waiting on is not watched either: `readyTimeoutMs` bounds it; in a fork group it is a
+  worker of the next fork server, watched by it like any other. A group being retired
+  after a reload removed it from the config is watched, and deliberately: a retiring
+  group has no deadline of its own, so a hung worker would otherwise hold it open
+  forever.
+- A worker that is stopping but never finishes — `SIGTERM` taken, with one handler
+  waiting on a result that will not arrive. Its serve loop keeps turning, so it keeps
+  marking itself alive while serving nothing. Give such handlers a `handlerTimeoutMs`;
+  the watchdog cannot see this one.
 - A worker that hangs before it reaches its serve loop — in a synchronous call made
-  during bootstrap. It has never marked itself alive, and nothing tells that apart
-  from a worker script that has no serve loop at all, so such a slot stays what it
-  was before the watchdog existed: `running`, and not refilled.
-
-Killing one by hand still works as before: `kill -9 <pid>`, and under `always` the
-master brings up a replacement.
+  while its script loads. It has never marked itself alive, and nothing tells that apart
+  from a worker script that has no serve loop at all, so the slot stays `running` and is
+  not refilled.
 
 ### Seeing it happen
 
@@ -380,9 +859,8 @@ Three places, in order of how far the news travels:
   SIGKILL` if even that did not free the slot.
 - `watchdogKills` per pool in [server statistics](admin-stats.md), and
   `sconcur_pool_watchdog_kills_total` / `sconcur_group_watchdog_kills_total` in the
-  Prometheus scrape. Note that the older `workersHung` answers a different question —
-  it means the extension's runtime stopped sending snapshots, and a worker killed by
-  the watchdog usually never looked `hung` at all.
+  Prometheus scrape — not `workersHung`, which counts workers whose snapshots stopped
+  (see above).
 - A handler of your own, wherever the master is started from your code. Through the
   CLI, which is what an application embedding `sconcur-server` drives:
 
@@ -411,19 +889,13 @@ The handler runs inside the supervision tick, so keep it short — and whatever 
 throws is written to the journal and dropped, because alerting must not be able to
 stop the supervisor from supervising.
 
-The watch is on by default, including for a config written before it existed. If any
-of your handlers legitimately holds the PHP thread longer than 60 s — a native
-`file_get_contents` off a slow volume, a synchronous call to a slow upstream, a long
-native computation — raise `watchdogTimeoutMs` past the longest of them or set it to
-`0` for that group.
-
 Think of it per process rather than per request. One handler blocked in a native call
 for a minute is not one slow request: for that minute the worker answers nobody, the
 requests it had already accepted included. That is why the default treats it as a
 hang. The replacement is not free either — `SIGTERM` is only serviced once the native
 call returns, so if it runs past `shutdownTimeoutMs` the worker is `SIGKILL`ed and the
 requests it was holding die with it. The way out that costs nothing is not to block
-the thread: put such a read behind something that suspends a coroutine instead of the
+the thread: put such a call behind something that suspends a coroutine instead of the
 process, or move it out of the request path.
 
 ## Logging
@@ -432,26 +904,77 @@ The master writes to a single daily file in `logDir`
 (`sconcur-server-2026-06-18.log`); at the day boundary a new file is opened and
 files older than `rotateDays` are deleted. The line format is
 `[Y-m-d H:i:s.uuuuuu] LEVEL [<scope>]: <message> [<context>]`, where `<scope>` is
-`master: <pid>` or `worker: <pid> <group> #<index>` — the group is part of it because a
-slot index only names a worker together with its pool:
+`master: <pid>`, `fork-server: <pid> <group>` or `worker: <pid> <group> #<index>` — the
+group is part of it because a slot index only names a worker together with its pool:
 
 ```
 [2026-06-18 12:00:00.180210] INFO [worker: 12346 http #0]: spawned []
 [2026-06-18 12:01:00.012044] ERROR [worker: 12346 http #0]: exited code=1 uptime=0.3s; restarting in 200ms []
 ```
 
-The master intercepts the workers' `stdout`/`stderr` and rewrites them into the
-same log (stderr → `ERROR`, stdout → `INFO`), so crash output and the worker's
-access log are preserved next to the exit record. It also forces
-`-d display_errors=stderr` into every worker command (ahead of `phpArgs`), so PHP's
-own errors always reach the journal even when the deployment `php.ini` sets
-`display_errors=Off`; a later `-d` wins, so `phpArgs` can override this
+The master intercepts the workers' `stdout`/`stderr` and rewrites them into the same log
+(stderr → `ERROR`, stdout → `INFO`), so crash output and the worker's access log are
+preserved next to the exit record. For a fork group the fork server does that for its
+workers, writing into the same file and to the same stdout as the master, one write per
+line, so the lines of the two never cut into each other; what the fork server itself
+writes to its stdout or stderr — a bootstrap that does not load, say — the master logs as
+`group <name>: fork server <pid>: …`.
+
+Every `php` the master starts — an exec'd worker, a fork server — gets
+`-d display_errors=stderr` ahead of the group's `phpArgs`, and a forked worker sets it on
+itself, so PHP's own errors always reach the journal even when the deployment `php.ini`
+says `display_errors=Off`; a later `-d` in `phpArgs` wins, so it can be overridden
 deliberately.
 
-`logTo` sets the sink: `file` (default), `stdout` (collected by
-`docker logs`/journald) or `both` — under `docker logs` you need one of the
-latter two. This does not affect performance: records are buffered and flushed
-once per supervision tick (~100 ms), not per line.
+Records are buffered and flushed once per supervision tick (~100 ms), not per line;
+where they go is `logTo` (`stdout` or `both` for `docker logs` and journald).
+
+### Access lines
+
+The HTTP and socket servers write a line per request or connection. A group's
+`accessLog` says where:
+
+| `accessLog` | Where the lines go |
+|---|---|
+| `stdout` (default) | the worker's stdout, which the master — or the group's fork server — reads and writes into the journal with the rest of the worker's output. Under heavy load lines are lost |
+| `file` | each worker writes them itself to `<logDir>/<name>-access-YYYY-MM-DD.log`, opened for appending and reopened when the date changes; the journal's `rotateDays` removes the old ones with its own |
+| `off` | nowhere |
+
+With `stdout` every line of every worker of a group passes through one PHP process — the
+master for an exec group, the fork server for a fork group — which reads the pipes once
+a tick and writes the lines out. Under load that process falls behind. It spends CPU on
+the lines, and a worker whose pipe is full drops what its log queue cannot hold: in the
+measurement below, at about 11 000 requests a second per worker, almost half of the
+lines never reached the journal. A busy
+server that needs every access line wants `file`, which takes the reader out of the way:
+a worker hands a burst of lines to the kernel in one write. Several workers share the
+file, so each line ends with the worker's place in its pool and its pid:
+
+```
+2026-10-20T12:00:00.123456 GET / 200 0.12ms http#0 pid=4711
+```
+
+A line goes to the file in one write together with the others of its burst, whole lines
+only, and appending writes do not cut into each other, so the lines of different workers
+never mix. A file that cannot be opened is said in the journal, and the lines go to
+stdout instead. Lines the worker's queue had no room for are counted, and the count is
+written to the journal at most once a minute (`log: N line(s) dropped in the last
+minute`), whatever the target.
+
+Measured on a fork group of 16 workers under a master, the empty endpoint `/`, 256
+connections, 20 s, master and workers on cores 0–15 and `wrk` on the other four, runs
+of the two targets alternating — the medians of 3 runs with `stdout` and 5 with `file`:
+
+| `accessLog` | rps | p99 | CPU of the master and the fork server | Access lines written |
+|---|---:|---:|---:|---:|
+| `stdout` | 172 422 | 14.9 ms | 0.56 of a core | 52.4% — the rest dropped in the workers |
+| `file` | 176 760 | 21.1 ms | none | 100% |
+
+The p99 with `file` is the p99 with no access lines at all: two runs with `off` gave
+20.6 and 20.9 ms. What keeps it lower with `stdout` is not known; it is not the lines
+written, which are twice as many with `file`.
+
+A server started without a master writes its access lines to its stdout.
 
 ## Single instance and state
 
@@ -478,35 +1001,50 @@ vendor/bin/sconcur-server status --configPath=/app/master.json >/dev/null \
   || vendor/bin/sconcur-server start --configPath=/app/master.json
 ```
 
-Note that this model restarts the master even after a deliberate `stop` — if you
-need a deliberate off switch, use a separate marker or manage it through systemd.
-An external supervisor is a valid alternative overall; the built-in master is
-convenient when you want to start a pool with one command, have a single graceful
-shutdown, a common log and a consistent rolling restart within one process tree,
-and tight coupling with the library's features (`maxRequests`, the `masterPid`
-guard).
+This model restarts the master even after a deliberate `stop`; for a deliberate off
+switch use a separate marker or systemd. An external supervisor can replace the master
+altogether: under systemd, a container's restart policy or another supervisor, several
+server processes share the port with `reusePort` or a socket handed over as `listenFd`
+(see [scaling across cores](http-server.md#scaling-across-cores-so_reuseport)). What the
+master adds is one command for the whole pool, the rolling reload with readiness, the
+watchdog, the restart policy, the spread `maxRequests`, the `masterPid` orphan check, one
+graceful shutdown and one journal.
 
 ## Graceful shutdown
 
 The stop triggers are `SIGTERM`/`SIGINT` or removal of the state file. In either
-case the master stops restarting workers, forwards `SIGTERM` to all live ones
-(each finishes the requests it has already accepted, see
-[the HTTP server](http-server.md#graceful-shutdown)), waits for them up to
-`shutdownTimeoutMs` finishing off survivors with `SIGKILL`, then cleans up the
-state file, releases the lock and exits with code `0`.
+case the master stops restarting workers and forwards `SIGTERM` to every process it
+started — the exec'd workers and the fork servers, which forward it to theirs. Each
+worker finishes the requests it has already accepted (see
+[the HTTP server](http-server.md#graceful-shutdown)). The master waits up to the longest
+`shutdownTimeoutMs` of its groups, finishes off survivors with `SIGKILL`, then cleans up
+the state file, releases the lock and exits with code `0` — or `70`, when the stop came
+from a group that [never came up](#a-group-that-never-comes-up).
+
+Under load a stop is not yet lossless — about one request per `SIGTERM` and about two per
+reload of the whole pool; see [the HTTP server](http-server.md#graceful-shutdown).
 
 ## Testing
 
 The tests do not depend on a docker service:
-`SConcur\Tests\Impl\Worker\TestWorkerMaster` runs `bin/sconcur-server` as a
-separate process on a loopback port, with the shared demo server as the worker.
-Coverage (`tests/feature/Worker/` + `tests/feature/Features/HttpServer/`):
-supervision (spawning N workers, restarting a killed one, self-exit on
-`maxRequests` → restart, the `on-failure` and `never` policies), stopping
-(graceful shutdown on `SIGTERM` and on removal of the state file), singleness
-and state (rejection of a second instance, `status`/`stop`, `status` after a
-crash), resilience (crash-loop backoff, config validation, orphan
-self-termination) and the logger (line format, context JSON, daily rotation).
+`SConcur\Tests\Impl\Worker\TestWorkerMaster` runs `bin/sconcur-server` as a separate
+process on a loopback port, with the shared demo server as the worker. Coverage
+(`tests/feature/Worker/` + `tests/feature/Features/HttpServer/`): supervision (spawning
+N workers, restarting a killed one, self-exit on `maxRequests` → restart, the
+`on-failure` and `never` policies), reload (each replacement up before the old worker
+stops, given up on a replacement that dies or never says it is up, a script with
+`markReady()`), a group that never comes up (exit `70`), stopping (graceful shutdown on
+`SIGTERM` and on removal of the state file), singleness and state (rejection of a second
+instance, `status`/`stop`, `status` after a crash), resilience (crash-loop backoff,
+config validation, orphan self-termination), the logger (line format, context JSON,
+daily rotation) and the access lines (`accessLog: file` and `off`).
+`WorkerDescriptorsTest` checks that a program a worker starts gets its stdio and nothing
+else, and `ForkedWorkerTest` that `exit()` in a forked worker stops its server.
+`ForkedWorkerMasterTest` runs every one of those scenarios once more with the workers
+launched by fork, through fork servers. `BootstrapWorkerMasterTest` gives a fork group a
+bootstrap and checks what reaches its workers, that a reload loads the application again
+— after a symlink switch to a new release too — and what a bootstrap that does not load
+does to a start and to a reload.
 
 ---
 

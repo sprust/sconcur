@@ -76,16 +76,31 @@ class WatchdogEventTest extends TestCase
         self::assertSame(30_000, $event->watchdogTimeoutMs);
     }
 
+    /**
+     * Caught by the master's reporter, which the events of exec and fork groups alike pass
+     * through on their way to the application's handler; a group hands the event on as it is.
+     */
     public function testAHandlerThatThrowsIsLoggedAndDoesNotEscape(): void
     {
         $logger = $this->logger();
 
+        $handler = static function (): void {
+            throw new RuntimeException('the alerting backend is down');
+        };
+
+        $master = new class(runtimeDir: $this->directory, onWatchdogEvent: $handler) extends WorkerMaster {
+            public function reporterLoggingTo(MasterLogger $logger): Closure
+            {
+                $this->logger = $logger;
+
+                return $this->watchdogReporter();
+            }
+        };
+
         $group = ReportingWorkerGroup::make(
             logger: $logger,
             watchdogTimeoutMs: 30_000,
-            onWatchdogEvent: static function (): void {
-                throw new RuntimeException('the alerting backend is down');
-            },
+            onWatchdogEvent: $master->reporterLoggingTo($logger),
         );
 
         // No exception: an application's alerting must not be able to stop the supervisor.

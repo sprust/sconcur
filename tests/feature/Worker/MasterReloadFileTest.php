@@ -13,7 +13,7 @@ use SConcur\Worker\MasterReloadFile;
  */
 class MasterReloadFileTest extends TestCase
 {
-    private string $path;
+    protected string $path;
 
     protected function setUp(): void
     {
@@ -26,6 +26,7 @@ class MasterReloadFileTest extends TestCase
     protected function tearDown(): void
     {
         @unlink($this->path);
+        @unlink($this->path . '.failed');
     }
 
     public function testRequestCreatesTheTriggerAndClearRemovesIt(): void
@@ -34,7 +35,7 @@ class MasterReloadFileTest extends TestCase
 
         self::assertFalse($reloadFile->requested(), 'no trigger before a request');
 
-        self::assertTrue($reloadFile->request());
+        self::assertNotNull($reloadFile->request());
         self::assertTrue($reloadFile->requested(), 'request must create the trigger');
         self::assertFileExists($this->path);
 
@@ -55,11 +56,11 @@ class MasterReloadFileTest extends TestCase
     {
         $reloadFile = new MasterReloadFile($this->path);
 
-        self::assertTrue($reloadFile->request(configPath: '/etc/sconcur.json', group: 'api'));
+        self::assertNotNull($reloadFile->request(configPath: '/etc/sconcur.json', group: 'api'));
 
         $first = $reloadFile->pending();
 
-        self::assertTrue($reloadFile->request(configPath: '/etc/sconcur.json', group: 'api'));
+        self::assertNotNull($reloadFile->request(configPath: '/etc/sconcur.json', group: 'api'));
 
         $second = $reloadFile->pending();
 
@@ -75,6 +76,55 @@ class MasterReloadFileTest extends TestCase
         $reloadFile->clear($first->signature);
 
         self::assertTrue($reloadFile->requested(), 'the second request must survive the first clear');
+    }
+
+    /**
+     * A reload the master refuses or gives up removes the trigger as a finished one does,
+     * and the CLI reads the trigger's removal as the end of it. The reason is what tells
+     * the two apart, and only the CLI that asked finds it.
+     */
+    public function testAFailedRequestLeavesItsReasonForTheCliThatAsked(): void
+    {
+        $reloadFile = new MasterReloadFile($this->path);
+
+        $nonce = $reloadFile->request(configPath: '/etc/sconcur.json');
+
+        self::assertNotNull($nonce);
+
+        $pending = $reloadFile->pending();
+
+        self::assertNotNull($pending);
+        self::assertSame($nonce, $pending->nonce);
+
+        $reloadFile->fail(
+            request: $pending,
+            reason: 'reload given up: group api: the replacement did not come up',
+        );
+
+        self::assertFalse($reloadFile->requested(), 'a failed request is ended like any other');
+        self::assertNull($reloadFile->failure('someone-else'), 'another request finds nothing');
+        self::assertSame(
+            'reload given up: group api: the replacement did not come up',
+            $reloadFile->failure($nonce),
+        );
+        self::assertNull($reloadFile->failure($nonce), 'the reason is read once');
+    }
+
+    public function testASucceededRequestLeavesNoReason(): void
+    {
+        $reloadFile = new MasterReloadFile($this->path);
+
+        $nonce = $reloadFile->request();
+
+        self::assertNotNull($nonce);
+
+        $pending = $reloadFile->pending();
+
+        self::assertNotNull($pending);
+
+        $reloadFile->clear($pending->signature);
+
+        self::assertNull($reloadFile->failure($nonce));
     }
 
     public function testClearIsIdempotentWhenAbsent(): void

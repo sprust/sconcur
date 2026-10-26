@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Features\SocketServer;
 
 use PHPUnit\Framework\TestCase;
+use SConcur\Tests\Impl\FreePort;
 use SConcur\Tests\Impl\Worker\TestWorkerMaster;
 
 /**
@@ -15,12 +16,12 @@ use SConcur\Tests\Impl\Worker\TestWorkerMaster;
  */
 class SocketServerStatsTest extends TestCase
 {
-    private const string TOKEN = 'socket-stats-token-67890';
-    private const string PATH  = '/api/stats';
+    protected const string TOKEN = 'socket-stats-token-67890';
+    protected const string PATH  = '/api/stats';
 
     public function testServesAggregatedSocketStatistics(): void
     {
-        $panelPort = self::freePort();
+        $panelPort = FreePort::find();
 
         $master = TestWorkerMaster::start(
             options: [
@@ -56,7 +57,7 @@ class SocketServerStatsTest extends TestCase
         }
     }
 
-    private static function socketWorkerScript(): string
+    protected static function socketWorkerScript(): string
     {
         return dirname(__DIR__, 4) . '/tests/servers/socket/socket-server.php';
     }
@@ -67,7 +68,7 @@ class SocketServerStatsTest extends TestCase
      *
      * @return array{int, string}
      */
-    private function getStats(int $port, string $authorization): array
+    protected function getStats(int $port, string $authorization): array
     {
         $deadline = microtime(true) + 10.0;
 
@@ -98,7 +99,7 @@ class SocketServerStatsTest extends TestCase
      *
      * @return array{int, string}
      */
-    private function request(string $url, array $headers): array
+    protected function request(string $url, array $headers): array
     {
         $curl = curl_init($url);
 
@@ -117,20 +118,5 @@ class SocketServerStatsTest extends TestCase
         curl_close($curl);
 
         return [$status, is_string($body) ? $body : ''];
-    }
-
-    private static function freePort(): int
-    {
-        $socket = stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
-
-        if ($socket === false) {
-            self::fail("Could not allocate a port: {$errstr}");
-        }
-
-        $name = (string) stream_socket_get_name($socket, false);
-
-        fclose($socket);
-
-        return (int) substr($name, (int) strrpos($name, ':') + 1);
     }
 }

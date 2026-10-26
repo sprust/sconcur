@@ -3,14 +3,15 @@ English | [Русский](mysql.ru.md)
 # MySQL (universal SQL feature)
 
 Asynchronous work with a relational database on top of sqlx. Every
-query goes into the extension and runs in a runtime task while the coroutine is
-suspended, so dozens of queries proceed in parallel. Outside a `WaitGroup` the same
-API works synchronously.
+query goes into the extension and runs in a runtime task while the calling
+coroutine (a PHP fiber the scheduler suspends while the extension works) waits, so
+dozens of queries proceed in parallel. Outside a `WaitGroup` the same API works
+synchronously.
 
-The feature is driver-agnostic: the `SConcur\Features\Sql` core knows nothing about
-a specific database, and `SConcur\Features\Mysql\Connection` is a thin facade that
-sets the MySQL driver (`MethodEnum::Mysql`). [PostgreSQL](pgsql.md) is a mirror
-facade over the same core.
+The feature (an extension module with a PHP API) is driver-agnostic: the
+`SConcur\Features\Sql` core knows nothing about a specific database, and
+`SConcur\Features\Mysql\Connection` is a thin facade that sets the MySQL driver
+(`MethodEnum::Mysql`). [PostgreSQL](pgsql.md) is a mirror facade over the same core.
 
 ## Quick start
 
@@ -37,14 +38,16 @@ Inside `WaitGroup::add(...)` the same calls run concurrently.
 
 ## DSN and bindings
 
-- The DSN shape is `user:pass@tcp(host:port)/dbname`;
+- The DSN is in the format of the Go driver go-sql-driver/mysql:
+  `user:pass@tcp(host:port)/dbname`;
   `user:pass@unix(/var/run/mysqld/mysqld.sock)/dbname` connects over a Unix
-  socket, and a `mysql://` URL is accepted too.
+  socket. A `mysql://` URL is accepted too, in which case its query parameters
+  are sqlx's own and the rules below do not apply.
 - Applied parameters: `charset`, `collation`, `time_zone` and `tls`. `tls` takes
   `false`, `preferred`, `skip-verify` (encrypt without checking the certificate)
-  or `true` (verify the certificate and the host name), plus the `1`/`0`/`t`/`f`
-  spellings of the first two; a named TLS configuration has no counterpart here
-  and is refused rather than silently downgraded.
+  or `true` (verify the certificate and the host name), plus the `1`/`t` and
+  `0`/`f` spellings of `true` and `false`; a named TLS configuration has no
+  counterpart here and is refused rather than silently downgraded.
 - Any other parameter is a session system variable, exactly as this DSN format
   defines it: it is issued as `SET name=value` on every connection the pool
   opens, after the driver's own session setup, so it wins over that. This is how
@@ -55,8 +58,8 @@ Inside `WaitGroup::add(...)` the same calls run concurrently.
   this format writes one: `time_zone=%27%2B00%3A00%27` → `+00:00`,
   `sql_mode=%27TRADITIONAL%27`. Unlike a URL query string, a literal `+` stays a
   `+` rather than becoming a space.
-- Accepted and doing nothing, because they configured that Go client rather than
-  the server: `parseTime`, `loc`, `timeTruncate`, `interpolateParams`,
+- Accepted and doing nothing, because they configured the Go driver itself rather
+  than the server: `parseTime`, `loc`, `timeTruncate`, `interpolateParams`,
   `columnsWithAlias`, `allowNativePasswords`, `allowOldPasswords`,
   `allowCleartextPasswords`, `allowAllFiles`, `allowFallbackToPlaintext`,
   `checkConnLiveness`, `compress`, `connectionAttributes`, `maxAllowedPacket`,
@@ -82,7 +85,7 @@ a PDO one against the same server:
 | `sql_mode` | appends `NO_ENGINE_SUBSTITUTION` to whatever the server's default is | `sql_mode` in the DSN, which is applied after and replaces the lot |
 | `IGNORE_SPACE` | asked for in the handshake capabilities, so it shows up in `@@sql_mode` too (it allows a space between a built-in function name and its `(`) | not from this side |
 | matched vs changed rows | asks for `CLIENT_FOUND_ROWS`, so `exec()->affectedRows` counts the rows a statement matched, where PDO counts the rows it changed — an `UPDATE` writing the value already there answers 1 here and 0 there | not from this side |
-| multiple statements | asks for `CLIENT_MULTI_STATEMENTS`, so a text statement may hold several separated by `;` — see [Nested transactions](#nested-transactions) | not from this side |
+| multiple statements | asks for `CLIENT_MULTI_STATEMENTS`, so a text statement may hold several separated by `;` — see [Several statements in one call](#several-statements-in-one-call) | not from this side |
 | `time_zone` | set to `+00:00`, so a `TIMESTAMP` is written and read as UTC | `time_zone` in the DSN |
 | character set | `SET NAMES utf8mb4`, with the collation left to the server (`utf8mb4_0900_ai_ci` on MySQL 8) | `charset` and `collation` in the DSN |
 | TLS | attempted whenever the server offers it and dropped when it does not, where this DSN format defaults to no TLS at all | `tls` in the DSN |
@@ -109,11 +112,11 @@ try {
 }
 ```
 
-`begin(int $isolationLevel = 0, bool $readOnly = false)` takes an isolation level
-(the numeric values the API was first written against; `0` — the
-server's default) and a read-only flag.
-On MySQL the isolation level is refused — see [Limits](#limits). `Transaction` has
-the same `query`/`fetchAll`/`exec` as the connection.
+`begin(int $isolationLevel = 0, bool $readOnly = false)` takes an isolation level —
+`1` READ UNCOMMITTED, `2` READ COMMITTED, `4` REPEATABLE READ, `6` SERIALIZABLE;
+`0` or any other value leaves the server's default — and a read-only flag. MySQL
+refuses the four levels — see [Limits](#limits); PostgreSQL applies them.
+`Transaction` has the same `query`/`fetchAll`/`exec` as the connection.
 
 If a transaction is abandoned without `commit()`/`rollback()` (an exception, an
 early exit, a `WaitGroup` stop), the extension rolls it back automatically: the
@@ -141,8 +144,8 @@ $transaction->exec('ROLLBACK TO SAVEPOINT sp1');   // only the inner row goes
 $transaction->commit();
 ```
 
-A savepoint belongs to the connection, and a transaction owns one for its whole
-life, so concurrent coroutines can each use the same savepoint names without
+A savepoint belongs to the connection, and a transaction holds its connection for its
+whole life, so concurrent coroutines can each use the same savepoint names without
 colliding.
 
 MySQL refuses a set of commands in the prepared-statement protocol with error
@@ -152,9 +155,25 @@ MySQL refuses a set of commands in the prepared-statement protocol with error
 text, which those commands accept; a statement with bindings stays prepared, so
 values still travel as parameters.
 
+### Several statements in one call
+
+The text protocol also runs several statements separated by `;` in one call,
+where a prepared statement takes exactly one. Two consequences:
+
+- Build such a string only from values you control. A statement assembled out of
+  user input and no bindings can be made to carry a second statement, while the
+  same input passed as a binding cannot.
+- `exec()` runs them all and answers for the batch: `affectedRows` is their sum
+  and `lastInsertId` comes from the last one. `query()` refuses a second result
+  set — a cursor carries one column list for its whole stream, so rows of a
+  second `SELECT` could only reach PHP labelled with the first one's column
+  names. A statement that returns no rows (an `INSERT`, a `SET`) is not a result
+  set, so one `SELECT` after it is served. Run one `SELECT` per query, and call a
+  procedure that returns several result sets from something else.
+
 ### Table locks
 
-`LOCK TABLES` is in that same 1295 list and works for the same reason, but it
+`LOCK TABLES` is in the 1295 list above and works for the same reason, but it
 needs care a pool makes sharper.
 
 It commits any open transaction — MySQL does that itself, before the client
@@ -169,11 +188,11 @@ pool hands out whichever is free. `begin()` is what pins one: the `Transaction`
 keeps its connection even after the lock has committed the transaction out from
 under it, so the pair lands together whatever the pool size.
 
-**A lock left behind poisons the pool.** Neither `commit()` nor `rollback()`
-releases a table lock, so a connection returned to the pool still holding one
-blocks every later query that touches the table — for up to the pool's five idle
-minutes, on a connection nothing in the calling code still points at. `UNLOCK
-TABLES` therefore belongs in a `finally`:
+**A lock left behind stays on the pooled connection.** Neither `commit()` nor
+`rollback()` releases a table lock, so a connection returned to the pool still
+holding one blocks every later query that touches the table — for as long as that
+connection stays in the pool, and nothing in the calling code still points at it.
+`UNLOCK TABLES` therefore belongs in a `finally`:
 
 ```php
 $transaction = $connection->begin();   // here only to pin the connection
@@ -187,19 +206,6 @@ try {
 }
 ```
 
-The text protocol also runs several statements separated by `;` in one call,
-where a prepared statement takes exactly one. Two consequences:
-
-- Build such a string only from values you control. A statement assembled out of
-  user input and no bindings can be made to carry a second statement, while the
-  same input passed as a binding cannot.
-- `exec()` runs them all and answers for the batch: `affectedRows` is their sum
-  and `lastInsertId` comes from the last one. `query()` refuses a second result
-  set — a cursor carries one column list for its whole stream, so rows of a
-  second `SELECT` could only reach PHP labelled with the first one's column
-  names. Run one `SELECT` per query, and call a procedure that returns several
-  result sets from something else.
-
 ## Connection parameters
 
 | Parameter | Default | Purpose |
@@ -207,32 +213,37 @@ where a prepared statement takes exactly one. Two consequences:
 | `dsn` | — | driver connection string |
 | `timeoutMs` | 30000 | deadline for one exec; for a query — for the whole cursor lifetime |
 | `maxOpenConns` | 0 → 32 | connection cap of the pool; `0` means the built-in 32, not "unlimited" |
-| `maxIdleConns` | = `maxOpenConns` | accepted and not applied: the pool keeps every idle connection up to the cap. It is still part of the pool key, so two values mean two pools |
+| `maxIdleConns` | = `maxOpenConns` | accepted and not applied: the driver has no cap on idle connections — it keeps them up to `maxOpenConns` and closes one that has been idle for 10 minutes. It is still part of the pool key, so two values mean two pools |
 | `connMaxLifetimeMs` | 0 (no limit) | how long a connection may be reused before the pool retires it |
 
-`timeoutMs` bounds each individual exec; for a query it is carried into the
-streaming cursor and bounds its whole lifetime — every `next()` batch and the
-PHP-side consumption included, so a slow `foreach` over a large result can hit it
-mid-iteration. It does not apply to `begin()`, nor to the lifetime of the
-transaction it opens, which lives until commit/rollback or a flow stop — so a
-`begin()` against a server that accepts the connection and never answers is not
-bounded from here. The statements inside the transaction are bounded as usual.
+For a query `timeoutMs` covers every `next()` batch and the PHP-side consumption,
+so a slow `foreach` over a large result can hit it mid-iteration. It does not apply
+to `begin()`, nor to the lifetime of the transaction it opens, which lives until
+commit/rollback or a flow stop. `begin()` is bounded only by the pool's 30-second
+limit on getting a connection, opening one included (see
+[Connection pool and concurrency](#connection-pool-and-concurrency)); once it has
+one, a server that never answers the `START TRANSACTION` is not bounded from here.
+An `exec()` inside the transaction is bounded as usual; a `query()` on a
+transaction is not.
 
 ## Connection pool and concurrency
 
 Every operation runs on a connection from a pool that lives in the
 extension and is reused across tasks and coroutines. The pool is shared by all
-`Connection`s with the same DSN and pool sizes (the key is `driver+dsn+sizes`);
-an unused pool untouched for longer than 5 minutes is closed, and all pools are
-closed when the extension stops. The pool starts empty, grows on demand and keeps
-what it has opened up to the cap, so a batch of concurrent queries does not pay
-the handshakes again on the next batch.
+`Connection`s with the same driver, DSN, `maxOpenConns`, `maxIdleConns` and
+`connMaxLifetimeMs`; an unused pool untouched for longer than 5 minutes is closed,
+and all pools are closed when the extension stops. The pool starts empty, grows on
+demand and keeps an idle connection for up to 10 minutes (the driver's idle
+timeout), so a batch of concurrent queries does not pay the handshakes again on
+the next batch.
 
 In a `WaitGroup` each autocommit operation and each transaction takes a separate
 connection for its duration, so `N` coroutines open up to `maxOpenConns`
 connections at once. The cap is per process: with a pool of servers, multiply it
 by their number before comparing against `max_connections`, or the server answers
-`1040 Too many connections`. Set `maxOpenConns` to the parallelism you expect:
+`1040 Too many connections` — how to split the budget across a worker pool is in
+[database connections](worker-master.md#database-connections). Set `maxOpenConns` to
+the parallelism you expect:
 
 ```php
 $connection = new \SConcur\Features\Mysql\Connection(
@@ -241,20 +252,24 @@ $connection = new \SConcur\Features\Mysql\Connection(
 );
 ```
 
-When the pool is saturated, autocommit queries wait for a connection to free up
-rather than failing. Transactions hold a connection
-for their whole life, so with `maxOpenConns` less than the number of coroutines
-the extra `begin()` calls block and the transactions proceed in waves — keep the
-pool no smaller than the expected number of concurrent transactions.
+When the pool is saturated, an autocommit query waits for a connection to free up:
+for at most `timeoutMs`, and at most 30 seconds, the pool's own limit on getting a
+connection. At the pool's limit the call fails with a `TaskErrorException` whose
+message ends in `pool timed out while waiting for an open connection` (inside a
+`WaitGroup` it arrives wrapped in a `CallbackExecutionException`). Transactions
+hold a connection for their whole life, so with `maxOpenConns` less than the number
+of coroutines the extra `begin()` calls wait and the transactions proceed in waves;
+a `begin()` that waits longer than 30 seconds fails the same way. Keep the pool no
+smaller than the expected number of concurrent transactions.
 
 ## Internals
 
-- Pool registry (`ext/src/features/sql/pools.rs`) — `sqlx::MySqlPool`/`PgPool` keyed by the
-  `driver+dsn+pool sizes` struct, with a refcount so a pool in use is never swept
-  and eviction of idle ones after 5 minutes. The sweeper walks the registry once a
-  minute.
-- SELECT streaming (`rows_state.rs`) — `RowsState` holds the live sqlx stream and gives
-  out rows in batches (`batchSize` comes from the PHP side, default 50; `<= 0` —
+- Pool registry (`ext/src/features/sql/pools.rs`) — one `sqlx::MySqlPool`/`PgPool`
+  per key, refcounted so a pool in use is never swept; the sweeper walks the
+  registry once a minute.
+- SELECT streaming (`rows_state.rs`) — the sqlx stream runs in a task of its own
+  and hands rows over a bounded channel; `RowsState` reads them and gives out rows
+  in batches (`query()`'s `batchSize` argument, default 50; `<= 0` —
   one unbounded batch) with a one-row look-ahead to detect whether a next batch
   exists. It is closed on exhaustion, an early `break` or a flow stop.
 - Transactions (`transactions.rs`) — `begin` puts a `TransactionSession` (holding the
@@ -265,21 +280,22 @@ pool no smaller than the expected number of concurrent transactions.
 
 ## Limits
 
-- Value types. Integers → `int`, `FLOAT`/`DOUBLE` → `float`, `VARCHAR`/`TEXT`/`CHAR`
-  and every binary type (`BLOB`/`BINARY`/`JSON`/`BIT`/`GEOMETRY`) → string, byte for
-  byte, `DECIMAL` → string (to avoid losing precision), `DATE`/`DATETIME`/`TIMESTAMP`
-  → an RFC3339 string with the fractional second trimmed of trailing zeroes
-  (`2026-12-06T14:30:00.25Z`), `TIME` → `HH:MM:SS` padded to the column's declared
-  precision (`14:30:00.500000`), with a leading `-` for a negative span, `NULL` →
-  `null`.
-  `TINYINT(1)` is an `int`, not a `bool`.
+- Value types. Integers → `int`, `FLOAT`/`DOUBLE` → `float`,
+  `VARCHAR`/`TEXT`/`CHAR`/`ENUM`/`SET` and `BLOB`/`BINARY`/`JSON`/`BIT`/`GEOMETRY` →
+  string, byte for byte, `DECIMAL` → string (to avoid losing precision),
+  `DATE`/`DATETIME`/`TIMESTAMP` → an RFC3339 string with the fractional second trimmed
+  of trailing zeroes (`2026-12-06T14:30:00.25Z`, a `DATE` at midnight UTC), `TIME` →
+  `HH:MM:SS` with a six-digit fraction when it is not zero (`14:30:00.500000`) and a
+  leading `-` for a negative span, `NULL` → `null`. `TINYINT(1)` is an `int`, not a
+  `bool`.
 - An unsigned `BIGINT` larger than `PHP_INT_MAX` arrives as its decimal string,
   because it does not fit a signed 64-bit int. Compare and store such values as
   strings.
-- `begin(isolationLevel:)` is refused on MySQL. The level has to be set by a
-  separate statement before the transaction starts, on the same connection, and
-  the driver hands out a transaction that already owns its pooled connection —
-  there is no moment in between. Set it on the session or on the server instead.
+- `begin(isolationLevel:)` with any of those four levels is refused on MySQL. The
+  level has to be set by a separate statement before the transaction starts, on
+  the same connection, and the driver hands out a transaction that already owns
+  its pooled connection — there is no moment in between. Set it on the session
+  instead (`transaction_isolation` in the DSN) or on the server.
   `begin(readOnly:)` works: it rides in `START TRANSACTION`.
 - A cursor inside a transaction must either be read to the end or replaced with
   `fetchAll` before running the next command of the same transaction — otherwise

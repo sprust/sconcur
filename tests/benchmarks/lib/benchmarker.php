@@ -12,11 +12,11 @@ TestApplication::init();
 
 readonly class Benchmarker
 {
-    private int $total;
-    private bool $logProcess;
-    private int $datasetRows;
+    protected int $total;
+    protected bool $logProcess;
+    protected int $datasetRows;
 
-    public function __construct(private string $name)
+    public function __construct(protected string $name)
     {
         $this->total       = (int) ($_SERVER['argv'][1] ?? 5);
         $this->logProcess  = (bool) ((int) ($_SERVER['argv'][2] ?? 0));
@@ -236,7 +236,7 @@ readonly class Benchmarker
         echo str_repeat('-', 80) . "\n";
     }
 
-    private function logProcess(string $message): void
+    protected function logProcess(string $message): void
     {
         if (!$this->logProcess) {
             return;

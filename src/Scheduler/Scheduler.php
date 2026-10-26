@@ -18,9 +18,10 @@ use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Exceptions\InvalidCoroutineTimeoutException;
 use SConcur\Exceptions\TaskErrorException;
 use SConcur\Flow\CurrentFlow;
+use SConcur\Process\HeartbeatMarkEnum;
+use SConcur\Process\ProcessControl;
 use SConcur\State;
 use SConcur\WaitGroup;
-use SConcur\Worker\Heartbeat;
 use Throwable;
 
 /**
@@ -36,20 +37,20 @@ class Scheduler
      * How long the server loop blocks on one waitAny before looping to re-check
      * for a shutdown signal. Bounds the shutdown latency of an idle server.
      */
-    private const int SERVE_POLL_INTERVAL_MS = 250;
+    protected const int SERVE_POLL_INTERVAL_MS = 250;
 
     /** How often a stalled graceful drain reports what it is still waiting for. */
-    private const int DRAIN_DIAGNOSTIC_INTERVAL_SECONDS = 5;
+    protected const int DRAIN_DIAGNOSTIC_INTERVAL_SECONDS = 5;
 
     /** How many coroutines that report names, so the line stays a log line. */
-    private const int DRAIN_DIAGNOSTIC_MAX_COROUTINES = 8;
+    protected const int DRAIN_DIAGNOSTIC_MAX_COROUTINES = 8;
 
     /**
      * Default quantum of switch(): a coroutine yields at most once per this many
      * milliseconds, so the call can sit inside a hot loop and cost one hrtime()
      * comparison in the common case.
      */
-    private const int DEFAULT_SWITCH_QUANTUM_MS = 5;
+    protected const int DEFAULT_SWITCH_QUANTUM_MS = 5;
 
     /**
      * How many ready results one waitAnyBatch crossing may drain. Bounds the
@@ -57,9 +58,31 @@ class Scheduler
      * shouldStop() checks; a batch never waits to fill up, so the value only
      * caps a burst.
      */
-    private const int WAIT_BATCH_SIZE = 64;
+    protected const int WAIT_BATCH_SIZE = 64;
+
+    /**
+     * The shortest gap between two alive marks. The serve loop passes its top many times a
+     * second on a busy server, and the watchdog's threshold is in tens of seconds, so
+     * marking more often would only cost syscalls.
+     */
+    protected const int ALIVE_MARK_INTERVAL_MS = 500;
 
     protected static ?Scheduler $instance = null;
+
+    /**
+     * Whether a master supervises this process — whether it has a heartbeat pipe to mark
+     * itself on. Asked of the extension once and kept, because every pass of every
+     * scheduler loop marks alive and none of them may cross into the extension for it; null
+     * until asked. Per process rather than per scheduler: a second scheduler built in the
+     * same worker marks the same pipe.
+     */
+    protected static ?bool $supervised = null;
+
+    /** hrtime of the last alive mark; 0 before the first one. */
+    protected static int $lastAliveMarkNs = 0;
+
+    /** Whether the ready mark was written. */
+    protected static bool $readyMarked = false;
 
     /**
      * Recycles the fibers of spawned coroutines: a request handler runs on a
@@ -167,17 +190,9 @@ class Scheduler
      */
     protected int $spawnCounter = 0;
 
-    /**
-     * The mark this worker leaves for its master's watchdog, or null when it runs without
-     * a master. Taken once here rather than per loop: every loop that drives the scheduler
-     * writes it, so there is no one loop that owns it.
-     */
-    protected ?Heartbeat $heartbeat;
-
     public function __construct()
     {
         $this->fiberPool = new FiberPool();
-        $this->heartbeat = Heartbeat::fromEnvironment();
     }
 
     /**
@@ -186,12 +201,60 @@ class Scheduler
      * synchronous work between SConcur calls. Every loop that does drive the scheduler
      * marks itself already, so this is for the ones that do not.
      *
-     * A no-op outside a worker started by a master with its watchdog on, and throttled, so
-     * calling it often costs a clock read. See docs/worker-master.md, "Stuck worker".
+     * A no-op outside a worker started by a master, and throttled, so calling it often
+     * costs a clock read. See docs/worker-master.md, "Stuck worker".
      */
     public function markAlive(): void
     {
-        $this->heartbeat?->touch();
+        $nowNs = hrtime(true);
+
+        if (
+            static::$lastAliveMarkNs !== 0
+            && ($nowNs - static::$lastAliveMarkNs) < (self::ALIVE_MARK_INTERVAL_MS * 1_000_000)
+        ) {
+            return;
+        }
+
+        static::$lastAliveMarkNs = $nowNs;
+
+        static::markHeartbeat(HeartbeatMarkEnum::Alive);
+    }
+
+    /**
+     * Tells this worker's master that the worker is up and doing its work. A rolling
+     * reload waits for it from every replacement before it stops the worker that
+     * replacement takes over from, and gives up on the reload when it does not come.
+     *
+     * serve() calls it for the servers and the AMQP consumer, so only a worker script
+     * that does its work in a loop of its own needs it — called once that loop is
+     * running. Such a script that never calls it cannot be reloaded. A no-op outside a
+     * worker started by a master, and only the first call says anything: a worker that
+     * serves twice (a script that starts a second server after the first one ended) was
+     * ready the first time. See docs/worker-master.md, "Readiness".
+     */
+    public function markReady(): void
+    {
+        if (static::$readyMarked) {
+            return;
+        }
+
+        static::$readyMarked = true;
+
+        static::markHeartbeat(HeartbeatMarkEnum::Ready);
+    }
+
+    /**
+     * Forgets what this process knew of its master, for a process that was just forked into
+     * a worker: the process it was forked from asked for itself, and its answer, its last
+     * alive mark and its ready mark are not the worker's.
+     *
+     * @internal for ForkedWorker
+     */
+    public static function forgetSupervision(): void
+    {
+        static::$supervised      = null;
+        static::$lastAliveMarkNs = 0;
+        static::$readyMarked     = false;
     }
 
     public static function get(): Scheduler
@@ -691,9 +754,12 @@ class Scheduler
      * drain once it has dispatched that many requests — a built-in mitigation for
      * handler memory leaks, letting a supervisor respawn a fresh process. The
      * limiting request is dispatched and drained like any in-flight one, and the
-     * listener is closed before draining, so no accepted request is bounced.
+     * listener is closed before draining so new connections go elsewhere. Under a
+     * master the limit is spread (spreadLimit) and the master is told why the worker is
+     * leaving, so it replaces it at once and does not count the exit as a failure.
      *
-     * @param int                                 $maxRequests         stop after dispatching this many requests (0 = unlimited)
+     * @param int                                 $maxRequests         stop after dispatching this many requests (0 = unlimited;
+     *                                                                 spread up to half again under a master)
      * @param Closure(array<string, mixed>): void $onRequest           receives the request event the core built
      * @param Closure(): bool                     $shouldStop          true once a shutdown was requested
      * @param Closure(): void                     $onDrainStart        called once when draining begins, before
@@ -739,6 +805,10 @@ class Scheduler
 
         $dispatchedCount = 0;
 
+        $limit = static::spreadLimit($maxRequests);
+
+        $ready = false;
+
         if ($preemptionQuantumMs > 0) {
             $this->enablePreemption(quantumMs: $preemptionQuantumMs);
         }
@@ -748,17 +818,29 @@ class Scheduler
         // it does not leak for the process lifetime.
         try {
             while (true) {
-                if (!$draining && ($shouldStop() || ($maxRequests > 0 && $dispatchedCount >= $maxRequests))) {
+                $limitReached = $limit > 0 && $dispatchedCount >= $limit;
+
+                if (!$draining && ($shouldStop() || $limitReached)) {
                     // Stop accepting new requests; keep draining in-flight handlers.
                     $draining = true;
 
                     $lastDrainDiagnosticAt = microtime(true);
 
-                    $reason = ($maxRequests > 0 && $dispatchedCount >= $maxRequests) ? 'limit' : 'signal';
-
                     $onShutdownStep(
-                        sprintf('stop accepting (reason=%s), draining %d in-flight', $reason, $this->spawnedCount),
+                        $limitReached
+                            ? sprintf(
+                                'stop accepting (reason=limit, limit=%d), draining %d in-flight',
+                                $limit,
+                                $this->spawnedCount,
+                            )
+                            : sprintf('stop accepting (reason=signal), draining %d in-flight', $this->spawnedCount),
                     );
+
+                    // Said before the drain rather than at the exit: the master brings the
+                    // replacement up while this one is still finishing its last requests.
+                    if ($limitReached) {
+                        static::markHeartbeat(HeartbeatMarkEnum::Recycling);
+                    }
 
                     // Close the listener up front so the kernel reroutes new
                     // connections to SO_REUSEPORT siblings while we drain.
@@ -790,6 +872,23 @@ class Scheduler
                         $this->switchedCoroutines === [] ? self::SERVE_POLL_INTERVAL_MS : 0,
                     ),
                 );
+
+                // A server task binds its listener before it does anything else, so a
+                // socket that cannot be had is what the first wait hands back. A first wait
+                // that brings anything else — a request, another flow's result, or nothing
+                // within the poll — finds the worker up.
+                if (!$ready) {
+                    $failed = $result !== null
+                        && $result->flowKey === $serverFlowKey
+                        && $result->key === $serverTaskKey
+                        && $result->isError;
+
+                    if (!$failed) {
+                        $ready = true;
+
+                        $this->markReady();
+                    }
+                }
 
                 if ($result === null) {
                     // A stalled drain is otherwise silent: report what the loop
@@ -826,9 +925,10 @@ class Scheduler
                         break;
                     }
 
-                    // While draining, refuse new requests: leave them unhandled so
-                    // the extension side answers them 503 when the server flow is stopped
-                    // below, instead of running their handlers.
+                    // While draining, new requests are not handled. Their connections
+                    // already handed the event over and wait for an answer that does not
+                    // come, so they are closed when the worker exits; only a request that
+                    // reaches the extension after the server flow is stopped gets a 503.
                     if ($draining) {
                         continue;
                     }
@@ -1012,6 +1112,58 @@ class Scheduler
             throw new InvalidCoroutineTimeoutException(
                 message: "A coroutine timeout cannot be negative, got $timeoutMs ms.",
             );
+        }
+    }
+
+    /**
+     * The limit serve() actually stops at: the one asked for, or — in a worker started by
+     * a master — a number picked at random from it up to half again as many.
+     *
+     * The workers of a pool start together and share the load evenly, so with one limit
+     * they all reach it within the same second and the pool restarts as one: nobody
+     * accepts while they drain, and every worker loads again at once. Spread, they come
+     * apart, and a little further each generation. A worker of its own — a one-off
+     * consumer told to take N messages — has nobody to come apart from and stops at
+     * exactly N.
+     */
+    protected static function spreadLimit(int $limit): int
+    {
+        if ($limit <= 0 || !static::isSupervised()) {
+            return $limit;
+        }
+
+        // random_int reads the system's generator: nothing a fork copies from the master
+        // decides the number, so forked workers draw apart as surely as exec'd ones.
+        return random_int($limit, $limit + intdiv($limit, 2));
+    }
+
+    /**
+     * Whether a master supervises this process, asked of the extension the first time.
+     *
+     * The extension took the variable naming the pipe out of the environment as it loaded,
+     * which is before PHP builds $_ENV and $_SERVER from it — unless it was loaded at run
+     * time. They are cleaned here for that case, so that a program started with either as
+     * its environment does not find the variable.
+     */
+    protected static function isSupervised(): bool
+    {
+        if (static::$supervised === null) {
+            static::$supervised = ProcessControl::hasHeartbeat();
+
+            unset(
+                $_ENV[ProcessControl::HEARTBEAT_FD_ENVIRONMENT_NAME],
+                $_SERVER[ProcessControl::HEARTBEAT_FD_ENVIRONMENT_NAME],
+            );
+        }
+
+        return static::$supervised;
+    }
+
+    /** Puts a mark on the heartbeat pipe, in a process that has one. */
+    protected static function markHeartbeat(HeartbeatMarkEnum $mark): void
+    {
+        if (static::isSupervised()) {
+            ProcessControl::markHeartbeat($mark);
         }
     }
 
@@ -1267,8 +1419,8 @@ class Scheduler
     {
         // Every loop that drives the scheduler comes through here — a server's serve(),
         // and run() under any WaitGroup — so this is where the worker says its PHP thread
-        // is still moving. Throttled inside touch(), so the cost is one clock read.
-        $this->heartbeat?->touch();
+        // is still moving. Throttled, so the cost is one clock read.
+        $this->markAlive();
 
         if ($this->readyResults !== []) {
             return array_shift($this->readyResults);

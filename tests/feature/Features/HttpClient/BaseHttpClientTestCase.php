@@ -19,7 +19,7 @@ use SConcur\Tests\Impl\HttpServer\TestHttpServer;
  */
 abstract class BaseHttpClientTestCase extends BaseTestCase
 {
-    private static ?TestHttpServer $server = null;
+    protected static ?TestHttpServer $server = null;
 
     protected Psr17Factory $factory;
 

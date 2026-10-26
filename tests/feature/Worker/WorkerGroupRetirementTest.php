@@ -9,6 +9,7 @@ use ReflectionProperty;
 use SConcur\Tests\Feature\BaseTestCase;
 use SConcur\Worker\LogTarget;
 use SConcur\Worker\MasterLogger;
+use SConcur\Worker\MasterReloadRequest;
 use SConcur\Worker\RestartPolicy;
 use SConcur\Worker\WorkerGroup;
 use SConcur\Worker\WorkerGroupConfig;
@@ -94,7 +95,15 @@ class WorkerGroupRetirementTest extends BaseTestCase
         $applyOneGroup = new ReflectionMethod(WorkerMaster::class, 'applyOneGroup');
 
         self::assertTrue(
-            $applyOneGroup->invoke($master, [$config], $config->name),
+            $applyOneGroup->invoke(
+                $master,
+                [$config],
+                new MasterReloadRequest(
+                    configPath: '',
+                    group: $config->name,
+                    signature: 'scoped',
+                ),
+            ),
             'the master runs that group, so the reload is one it can honour',
         );
 

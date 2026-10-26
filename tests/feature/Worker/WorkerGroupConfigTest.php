@@ -6,6 +6,8 @@ namespace SConcur\Tests\Feature\Worker;
 
 use PHPUnit\Framework\TestCase;
 use SConcur\Exceptions\Worker\InvalidConfigException;
+use SConcur\Worker\AccessLogTarget;
+use SConcur\Worker\LaunchMode;
 use SConcur\Worker\MasterConfig;
 use SConcur\Worker\RestartPolicy;
 use SConcur\Worker\WorkerGroupConfig;
@@ -19,6 +21,8 @@ class WorkerGroupConfigTest extends TestCase
     public function testAGroupInheritsTheMasterWideDefaults(): void
     {
         $config = MasterConfig::fromArray([
+            // An interpreter of its own takes exec: a forked worker runs on the master's.
+            'launch'            => 'exec',
             'phpBinary'         => '/usr/bin/php8.4',
             'phpArgs'           => ['-d', 'extension=x.so'],
             'env'               => ['SHARED' => '1'],
@@ -60,6 +64,142 @@ class WorkerGroupConfigTest extends TestCase
         self::assertSame(RestartPolicy::Never, $group->restartPolicy);
         self::assertSame(9000, $group->shutdownTimeoutMs);
         self::assertSame(['SHARED' => '1', 'OWN' => '2'], $group->env);
+    }
+
+    /**
+     * Fork is what a config that says nothing gets; a top-level launch is the default of
+     * every group, and a group's own wins.
+     */
+    public function testLaunchIsForkUnlessTheConfigSaysOtherwise(): void
+    {
+        self::assertSame(LaunchMode::Fork, $this->group([])->launch);
+
+        $config = MasterConfig::fromArray([
+            'launch' => 'exec',
+            'groups' => [
+                ['name' => 'inherits', 'workerScript' => '/app/x.php'],
+                ['name' => 'overrides', 'workerScript' => '/app/x.php', 'launch' => 'fork'],
+            ],
+        ]);
+
+        self::assertSame(LaunchMode::Exec, $config->groups()[0]->launch);
+        self::assertSame(LaunchMode::Fork, $config->groups()[1]->launch);
+    }
+
+    public function testAnUnknownLaunchIsRefused(): void
+    {
+        $this->expectException(InvalidConfigException::class);
+        $this->expectExceptionMessage('launch must be exec|fork');
+
+        $this->group(['launch' => 'spawn']);
+    }
+
+    /**
+     * A fork group's workers are copies of its fork server, which the master starts like an
+     * exec'd worker: any interpreter and any flags are honoured, as for exec.
+     */
+    public function testAForkGroupRunsOnAnyPhpWithAnyFlags(): void
+    {
+        $group = $this->group([
+            'launch'    => 'fork',
+            'phpBinary' => '/usr/bin/php8.3',
+            'phpArgs'   => ['-c', '/etc/php.ini', '-n'],
+        ]);
+
+        self::assertSame('/usr/bin/php8.3', $group->phpBinary);
+        self::assertSame(['-c', '/etc/php.ini', '-n'], $group->phpArgs);
+    }
+
+    /**
+     * The bootstrap is loaded by a fork server, which only a fork group has; an exec'd worker
+     * loads what it needs in its script.
+     */
+    public function testABootstrapNeedsLaunchFork(): void
+    {
+        self::assertSame('/app/bootstrap.php', $this->group(['bootstrap' => '/app/bootstrap.php'])->bootstrap);
+
+        $this->expectException(InvalidConfigException::class);
+        $this->expectExceptionMessage('"bootstrap", which needs launch=fork');
+
+        $this->group([
+            'launch'    => 'exec',
+            'bootstrap' => '/app/bootstrap.php',
+        ]);
+    }
+
+    /**
+     * The master hands a group to its fork server as toArray(), and the fork server reads it back
+     * with fromResolvedArray(): every setting has to make the trip, defaults it did not write
+     * included.
+     */
+    public function testAGroupMakesTheTripToItsForkServerWhole(): void
+    {
+        $group = MasterConfig::fromArray([
+            'shutdownTimeoutMs' => 4000,
+            'env'               => ['SHARED' => '1'],
+            'groups'            => [
+                [
+                    'name'           => 'http',
+                    'workerScript'   => '/app/worker.php',
+                    'workerCount'    => 3,
+                    'phpArgs'        => ['-d', 'memory_limit=1G'],
+                    'workerArgs'     => ['--flag=1'],
+                    'restartPolicy'  => 'on-failure',
+                    'readyTimeoutMs' => 9000,
+                    'listen'         => '0.0.0.0:8080',
+                    'bootstrap'      => '/app/bootstrap.php',
+                    'accessLog'      => 'file',
+                    'server'         => ['queues' => [['name' => 'orders']], 'maxRequests' => 10],
+                ],
+            ],
+        ])->groups()[0];
+
+        $decoded = json_decode((string) json_encode($group->toArray()), true);
+
+        self::assertIsArray($decoded);
+
+        $copy = WorkerGroupConfig::fromResolvedArray($decoded);
+
+        self::assertEquals($group, $copy);
+    }
+
+    /**
+     * A setting missing from what the fork server is handed means it runs another release of
+     * the library than the master; it is refused by name rather than filled with a guess.
+     */
+    public function testAGroupHandedOverWithoutASettingIsRefused(): void
+    {
+        $handed = $this->group([])->toArray();
+
+        unset($handed['readyTimeoutMs']);
+
+        $this->expectException(InvalidConfigException::class);
+        $this->expectExceptionMessage('without readyTimeoutMs');
+
+        WorkerGroupConfig::fromResolvedArray($handed);
+    }
+
+    /**
+     * The master's socket and a socket of each worker's are two ways to share a port; a
+     * group asking for both would leave the master's unused.
+     */
+    public function testListenRefusesAServerThatBindsItsOwnSocket(): void
+    {
+        foreach ([['reusePort' => true], ['listenFd' => 5]] as $server) {
+            try {
+                $this->group([
+                    'listen' => '0.0.0.0:8080',
+                    'server' => $server,
+                ]);
+
+                self::fail('server ' . json_encode($server) . ' should have been refused next to listen');
+            } catch (InvalidConfigException $exception) {
+                self::assertStringContainsString('accept on the master\'s socket', $exception->getMessage());
+            }
+        }
+
+        self::assertSame('0.0.0.0:8080', $this->group(['listen' => '0.0.0.0:8080'])->listen);
+        self::assertSame('', $this->group([])->listen);
     }
 
     public function testTheServerBlockBecomesWorkerFlags(): void
@@ -162,6 +302,71 @@ class WorkerGroupConfigTest extends TestCase
         self::assertSame(0, $orders->watchdogTimeoutMs, 'zero switches the watch off for one pool');
     }
 
+    public function testTheReadyTimeoutDefaultsAndIsInheritedOrOverridden(): void
+    {
+        $defaulted = MasterConfig::fromArray([
+            'groups' => [
+                ['name' => 'http', 'workerScript' => '/app/worker.php'],
+            ],
+        ]);
+
+        self::assertSame(MasterConfig::DEFAULT_READY_TIMEOUT_MS, $defaulted->groups()[0]->readyTimeoutMs);
+        self::assertSame(30_000, MasterConfig::DEFAULT_READY_TIMEOUT_MS);
+
+        $config = MasterConfig::fromArray([
+            'readyTimeoutMs' => 45_000,
+            'groups'         => [
+                ['name' => 'http', 'workerScript' => '/app/worker.php'],
+                ['name' => 'orders', 'workerScript' => '/app/consumer.php', 'readyTimeoutMs' => 120_000],
+            ],
+        ]);
+
+        [$http, $orders] = $config->groups();
+
+        self::assertSame(45_000, $http->readyTimeoutMs, 'a group inherits the master-wide wait');
+        self::assertSame(120_000, $orders->readyTimeoutMs, 'and may set its own');
+    }
+
+    public function testAReadyTimeoutBelowTheFloorIsRefused(): void
+    {
+        // There is no "off": a zero would be a reload that never waits, which is the one
+        // this setting exists to prevent.
+        $this->expectException(InvalidConfigException::class);
+        $this->expectExceptionMessage('config: group "orders": "readyTimeoutMs" must be at least 1000ms');
+
+        MasterConfig::fromArray([
+            'groups' => [
+                ['name' => 'orders', 'workerScript' => '/app/consumer.php', 'readyTimeoutMs' => 0],
+            ],
+        ]);
+    }
+
+    public function testTheAccessLogDefaultsToStdoutAndIsInheritedOrOverridden(): void
+    {
+        self::assertSame(AccessLogTarget::Stdout, $this->group([])->accessLog);
+
+        $config = MasterConfig::fromArray([
+            'accessLog' => 'file',
+            'groups'    => [
+                ['name' => 'http', 'workerScript' => '/app/worker.php'],
+                ['name' => 'orders', 'workerScript' => '/app/consumer.php', 'accessLog' => 'off'],
+            ],
+        ]);
+
+        [$http, $orders] = $config->groups();
+
+        self::assertSame(AccessLogTarget::File, $http->accessLog, 'a group inherits the master-wide target');
+        self::assertSame(AccessLogTarget::Off, $orders->accessLog, 'and may name its own');
+    }
+
+    public function testAnUnknownAccessLogIsRefused(): void
+    {
+        $this->expectException(InvalidConfigException::class);
+        $this->expectExceptionMessage('config: group "group": "accessLog" must be stdout|file|off');
+
+        $this->group(['accessLog' => 'journal']);
+    }
+
     public function testAGroupWithoutANameIsRefused(): void
     {
         $this->expectException(InvalidConfigException::class);
@@ -248,7 +453,7 @@ class WorkerGroupConfigTest extends TestCase
     /**
      * @param array<string, mixed> $overrides
      */
-    private function group(array $overrides): WorkerGroupConfig
+    protected function group(array $overrides): WorkerGroupConfig
     {
         return MasterConfig::fromArray([
             'groups' => [

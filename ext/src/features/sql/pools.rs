@@ -7,7 +7,8 @@
 
 use sqlx::{AssertSqlSafe, Executor};
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use super::dsn;
@@ -45,12 +46,17 @@ struct Entry {
 
 pub struct Pools {
     entries: Mutex<HashMap<PoolKey, Entry>>,
+    /// Whether the idle sweeper runs. On the pools rather than in a static, so a
+    /// child forked after the parent used them — and given fresh pools with the
+    /// fresh core — starts a sweeper of its own on its own runtime.
+    sweeping: AtomicBool,
 }
 
 impl Pools {
     pub fn new() -> Self {
         Pools {
             entries: Mutex::new(HashMap::new()),
+            sweeping: AtomicBool::new(false),
         }
     }
 }
@@ -81,25 +87,25 @@ pub fn get() -> &'static Pools {
     crate::core::get().sql().pools()
 }
 
-/// Starts the idle sweeper. Called once the runtime exists (a spawn needs one),
-/// not from the registry's constructor.
-pub fn start_sweeper() {
-    static STARTED: OnceLock<()> = OnceLock::new();
+impl Pools {
+    /// Starts the idle sweeper the first time it is asked to. Called once the
+    /// runtime exists (a spawn needs one), not from the constructor.
+    pub fn start_sweeper(&'static self) {
+        if self.sweeping.swap(true, Ordering::SeqCst) {
+            return;
+        }
 
-    STARTED.get_or_init(|| {
-        tokio::spawn(async {
+        tokio::spawn(async move {
             let mut ticker = tokio::time::interval(POOL_SWEEP_INTERVAL);
 
             loop {
                 ticker.tick().await;
 
-                get().sweep();
+                self.sweep();
             }
         });
-    });
-}
+    }
 
-impl Pools {
     /// Returns the pool for driver+dsn+sizing, opening it on first use, and
     /// marks it held. Like `sql.Open`, this does not connect: the first query
     /// connects under its own deadline, so a connect timeout still applies.
@@ -212,9 +218,8 @@ fn build(
     max_idle_conns: i64,
     conn_max_lifetime_ms: i64,
 ) -> std::result::Result<Driver, String> {
-    // sqlx wants a minimum too, and defaults it to the maximum — which would
-    // hold open as many connections as the cap allows for the life of the
-    // process. The pool starts empty and grows, so the floor is zero here.
+    // The pool starts empty and grows on demand: the floor is zero, which is
+    // sqlx's own default and is stated below so the pool does not rest on it.
     let max_connections = if max_open_conns > 0 {
         max_open_conns as u32
     } else {
@@ -227,10 +232,12 @@ fn build(
         DEFAULT_MAX_CONNECTIONS
     };
 
-    // The pool starts empty and grows on demand; sqlx would otherwise default
-    // its minimum to the maximum and hold that many connections open for the
-    // life of the process. max_idle_conns has no direct counterpart — sqlx keeps
-    // every idle connection up to the maximum — so it is accepted and unused.
+    // max_idle_conns has no counterpart: sqlx puts no cap on idle connections.
+    // It keeps them up to the maximum and closes each one that has sat idle for
+    // its idle timeout (10 minutes by default, left as it is), so the value is
+    // accepted and unused. The same defaults give up on an acquire, opening a
+    // connection included, after 30 seconds — begin() included, which nothing
+    // else bounds; docs/mysql.md describes both.
     let _ = max_idle_conns;
 
     let max_lifetime = if conn_max_lifetime_ms > 0 {
