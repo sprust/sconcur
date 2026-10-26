@@ -51,22 +51,24 @@ readonly class SocketServer
      *                                                                       the kernel load-balances connections across them (run one process
      *                                                                       per core). Linux only; each process must set it.
      * @param null|int                                  $listenFd            a listening socket bound elsewhere to accept on instead of binding
-     *                                                                       the address: the shared socket of a WorkerMaster group with `listen`,
-     *                                                                       or one handed over by systemd socket activation. `address` and
-     *                                                                       `reusePort` are then not used. Null (default) binds the address.
+     *                                                                       the address: one handed over by systemd socket activation, say.
+     *                                                                       `address` and `reusePort` are then not used. Null (default) binds
+     *                                                                       the address.
      * @param null|Closure(Throwable, Connection): void $onError             observes an uncaught handler failure (for logging/tracing); the
      *                                                                       connection is closed afterwards. The hook may itself write a final
      *                                                                       frame to the connection before it is closed.
      * @param null|int                                  $masterPid           if set, the server self-terminates (graceful shutdown) once it is
-     *                                                                       no longer a child of this pid — i.e. its WorkerMaster died. Under
-     *                                                                       WorkerMaster this is set automatically from the injected
-     *                                                                       --masterPid flag via fromArgs(); null (default) off.
+     *                                                                       no longer a child of this pid — i.e. its WorkerMaster died — so an
+     *                                                                       orphaned worker drains and exits instead of holding the port. Null
+     *                                                                       (default): the master that forked this worker (WorkerContext), or
+     *                                                                       none outside a master.
      * @param string                                    $telemetrySocket     unix socket of the stats collector the worker pushes snapshots
      *                                                                       to (empty = push off). Best-effort and lossy: an absent collector
-     *                                                                       never affects serving. fromArgs() reads it from
-     *                                                                       SCONCUR_TELEMETRY_SOCKET (the master injects it from runtimeDir/name).
+     *                                                                       never affects serving. Left empty, it is read from
+     *                                                                       SCONCUR_TELEMETRY_SOCKET, which a WorkerMaster sets for its workers.
      * @param string                                    $serverName          labels the pushed snapshot — the pool scope the collector
-     *                                                                       aggregates by (default "sconcur-server").
+     *                                                                       aggregates by. Left at "sconcur-server", it is read from
+     *                                                                       SCONCUR_SERVER_NAME, which a WorkerMaster sets for its workers.
      * @param int                                       $telemetryIntervalMs snapshot sample/push cadence in ms (0 = default).
      * @param int                                       $preemptionQuantumMs automatic-preemption quantum: while serving, the
      *                                                                       extension interrupts the VM every quantum and parks the
@@ -100,8 +102,7 @@ readonly class SocketServer
 
     /**
      * Create a new server from command line arguments (scalar constructor params as
-     * --name=value). Under WorkerMaster the injected --masterPid wires the orphan
-     * check.
+     * --name=value), for a script that runs one on its own.
      *
      * @param array<int, string>                        $argv
      * @param null|Closure(Throwable, Connection): void $onError
@@ -113,8 +114,6 @@ readonly class SocketServer
         if ($onError !== null) {
             $overrides['onError'] = $onError;
         }
-
-        $overrides = self::applyTelemetryEnvironment($overrides);
 
         return new SocketServer(...$overrides);
     }
@@ -148,9 +147,13 @@ readonly class SocketServer
                     shutdownTimeoutMs: $this->shutdownTimeoutMs,
                     reusePort: $this->reusePort,
                     listenFd: $this->listenFd,
-                    telemetrySocket: $this->telemetrySocket,
-                    serverName: $this->serverName,
-                    telemetryIntervalMs: $this->telemetryIntervalMs,
+                    telemetrySocket: self::fromEnvironment($this->telemetrySocket, 'SCONCUR_TELEMETRY_SOCKET'),
+                    serverName: self::fromEnvironment($this->serverName, 'SCONCUR_SERVER_NAME', 'sconcur-server'),
+                    telemetryIntervalMs: (int) self::fromEnvironment(
+                        value: (string) $this->telemetryIntervalMs,
+                        name: 'SCONCUR_TELEMETRY_INTERVAL_MS',
+                        unset: '0',
+                    ),
                 ),
             );
 

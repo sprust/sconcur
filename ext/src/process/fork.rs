@@ -145,8 +145,7 @@ fn prepare_child(keep: &[i64], output: Option<(Pipe, Pipe)>, heartbeat: Option<P
 
     // What the child keeps is the child's own — the application's descriptors, which
     // the parent may have been handed without the flag by whatever started it — and
-    // not a program's it starts: an exec'd worker gets the same at its request start
-    // (`close_on_exec_above_stderr`).
+    // not a program's it starts.
     close_on_exec_all(keep.iter().filter_map(|descriptor| RawFd::try_from(*descriptor).ok()).collect());
 
     if null > 2 {
@@ -156,6 +155,8 @@ fn prepare_child(keep: &[i64], output: Option<(Pipe, Pipe)>, heartbeat: Option<P
     if !heartbeat::reset_in_child(heartbeat) {
         abandon(b"fcntl of the heartbeat pipe");
     }
+
+    super::forget_master();
 
     unsafe { crate::sconcur_after_fork_in_child() };
 
@@ -204,16 +205,6 @@ fn point_at_null(null: RawFd, descriptor: RawFd) -> bool {
     {
         unsafe { libc::dup2(null, descriptor) >= 0 && libc::fcntl(descriptor, libc::F_SETFD, libc::FD_CLOEXEC) == 0 }
     }
-}
-
-/// Makes every descriptor above stderr close-on-exec. For a process its master
-/// started (see `super::request_startup`): what the master handed it is the
-/// extension's to write (the heartbeat), a server's to
-/// copy (a listening socket, which it takes over as a close-on-exec copy) or a
-/// placeholder on /dev/null, and none of it is for a program the process starts.
-/// The flag changes nothing in the process itself, nor in a fork of it.
-pub fn close_on_exec_above_stderr() {
-    close_on_exec_all(open_descriptors().unwrap_or_default());
 }
 
 /// Makes each of `descriptors` above stderr close-on-exec; one that is not open

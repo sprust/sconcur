@@ -91,54 +91,21 @@ trait ServerRuntimeSupportTrait
     }
 
     /**
-     * Fills the telemetry-related constructor overrides from the environment, unless
-     * an explicit --flag already set them: the collector socket, the pool name and
-     * the two sampling cadences. Shared by the servers' fromArgs(). Via env (not
-     * argv) so the server-agnostic WorkerMaster can supply telemetry config without
-     * feeding a non-matching worker an unknown --flag. The master injects
-     * SCONCUR_TELEMETRY_SOCKET/SCONCUR_SERVER_NAME from its runtimeDir/name; the
-     * operator may set the cadences.
-     *
-     * @param array<string, int|bool|float|string> $overrides
-     *
-     * @return array<string, int|bool|float|string>
+     * A telemetry setting as the server runs with it: its own, or — where it was left
+     * unset — what the environment says. A worker master puts the collector socket and
+     * the pool's name there (SCONCUR_TELEMETRY_SOCKET, SCONCUR_SERVER_NAME); the operator
+     * may set the cadence (SCONCUR_TELEMETRY_INTERVAL_MS). Through the environment, so a
+     * server built in a worker's role reports to its master without being told to.
      */
-    protected static function applyTelemetryEnvironment(array $overrides): array
+    protected static function fromEnvironment(string $value, string $name, string $unset = ''): string
     {
-        $stringDefaults = [
-            'telemetrySocket' => 'SCONCUR_TELEMETRY_SOCKET',
-            'serverName'      => 'SCONCUR_SERVER_NAME',
-        ];
-
-        foreach ($stringDefaults as $parameter => $environmentName) {
-            if (isset($overrides[$parameter])) {
-                continue;
-            }
-
-            $environmentValue = getenv($environmentName);
-
-            if (is_string($environmentValue) && $environmentValue !== '') {
-                $overrides[$parameter] = $environmentValue;
-            }
+        if ($value !== $unset) {
+            return $value;
         }
 
-        $integerDefaults = [
-            'telemetryIntervalMs' => 'SCONCUR_TELEMETRY_INTERVAL_MS',
-        ];
+        $environmentValue = getenv($name);
 
-        foreach ($integerDefaults as $parameter => $environmentName) {
-            if (isset($overrides[$parameter])) {
-                continue;
-            }
-
-            $environmentValue = getenv($environmentName);
-
-            if (is_string($environmentValue) && $environmentValue !== '') {
-                $overrides[$parameter] = (int) $environmentValue;
-            }
-        }
-
-        return $overrides;
+        return is_string($environmentValue) && $environmentValue !== '' ? $environmentValue : $value;
     }
 
     /**

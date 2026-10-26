@@ -72,6 +72,59 @@ class ProcessControlTest extends BaseTestCase
     }
 
     /**
+     * A master forks every worker from itself, so once it is marked as one an asynchronous
+     * call in it is refused before it starts the runtime — and the master can still fork.
+     * The child is a worker, not a master: it makes the same call.
+     */
+    public function testAMastersProcessRefusesAsynchronousWorkAndItsChildDoesNot(): void
+    {
+        $answer = $this->runScenario(
+            <<<'PHP'
+            use SConcur\Features\Sleeper\Sleeper;
+            use SConcur\WaitGroup;
+
+            $sleep = static function (): string {
+                try {
+                    $group = WaitGroup::create();
+
+                    $group->add(static fn() => Sleeper::usleep(microseconds: 1_000));
+
+                    $group->waitAll();
+
+                    return 'slept';
+                } catch (Throwable $exception) {
+                    return $exception->getMessage();
+                }
+            };
+
+            ProcessControl::markMaster();
+
+            $inMaster = $sleep();
+
+            $fork = ProcessControl::fork();
+
+            if ($fork->isChild()) {
+                echo $sleep();
+
+                ProcessControl::exit(0);
+            }
+
+            $exit = waitFor($fork->pid);
+
+            echo json_encode([
+                'master' => $inMaster,
+                'child'  => stream_get_contents($fork->stdout) . stream_get_contents($fork->stderr),
+                'code'   => $exit->exitCode,
+            ]);
+            PHP,
+        );
+
+        self::assertStringContainsString('worker master\'s process', $answer['master']);
+        self::assertSame('slept', $answer['child'], 'the child is no master');
+        self::assertSame(0, $answer['code']);
+    }
+
+    /**
      * The child's stdout and stderr are pipes the parent reads — `fwrite(STDOUT)` as well
      * as echo, because the pipe is put on fd 1 itself rather than STDOUT being reopened —
      * and its exit code comes back through the reap.

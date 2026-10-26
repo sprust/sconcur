@@ -8,11 +8,12 @@ use RuntimeException;
 use SConcur\Tests\Impl\FreePort;
 
 /**
- * Spawns the universal master CLI (bin/sconcur-server) as its own process,
- * supervising the demo HTTP server (tests/servers/http/http-server.php) on a
- * loopback port, so tests drive a real master they fully control (start it, signal
- * it, read its log/state). The master launches workers with the built extension
- * loaded and reusePort on (several workers behind one port).
+ * Spawns a worker master as its own process (tests/servers/worker/master.php, built from a
+ * JSON config the test writes), supervising the demo HTTP server
+ * (tests/servers/http/http-server.php) on a loopback port, so tests drive a real master
+ * they fully control (start it, signal it, read its log/state). The master runs with the
+ * built extension loaded, and its workers — forks of it — serve with reusePort on (several
+ * workers behind one port).
  */
 class TestWorkerMaster
 {
@@ -27,13 +28,6 @@ class TestWorkerMaster
 
     /** The flat option keys that describe a pool rather than the master. */
     protected const array GROUP_KEYS = ['workerScript', 'workerCount', 'workerArgs', 'server'];
-
-    /**
-     * The launch every master started from here gets unless the test names one itself:
-     * null leaves it to the config default (fork). Set by a test class that runs the same
-     * scenarios under fork.
-     */
-    protected static ?string $launch = null;
 
     /** @var resource */
     protected mixed $process;
@@ -55,18 +49,9 @@ class TestWorkerMaster
     }
 
     /**
-     * Makes every master started from here launch its workers this way, until reset with
-     * null.
-     */
-    public static function launchWith(?string $launch): void
-    {
-        static::$launch = $launch;
-    }
-
-    /**
      * Starts a master supervising $workers demo workers on a loopback port. The
-     * master is driven by a JSON config file (--configPath); $options set master-level
-     * keys, $server sets the nested server block, $workerArgs are extra raw worker argv.
+     * master is driven by a JSON config file; $options set master-level keys, $server
+     * sets the nested server block, $workerArgs are extra raw worker argv.
      *
      * @param array<string, mixed>      $options       master-level config keys (override defaults)
      * @param array<string, int|string>               $env           extra env for the master (inherited by workers)
@@ -74,8 +59,9 @@ class TestWorkerMaster
      * @param int|null                  $port          bind this exact port (default: a free one)
      * @param bool                      $waitReachable wait until a worker answers before returning
      * @param string|null               $masterScript  the script the master runs as, in place of
-     *                                                 bin/sconcur-server: one that loads an
-     *                                                 application before it starts the master
+     *                                                 tests/servers/worker/master.php: one that
+     *                                                 loads an application before it starts the
+     *                                                 master, say; it is given the config path
      */
     public static function start(
         array $options = [],
@@ -111,12 +97,9 @@ class TestWorkerMaster
                 'runtimeDir'   => $runtimeDir,
                 'logDir'       => $runtimeDir,
                 'name'         => $name,
-                // Workers load the built extension too: an exec'd worker is a php of its own.
-                'phpArgs'      => ['-d', 'extension=' . self::extensionPath()],
                 // Several workers behind one port: each must enable SO_REUSEPORT.
                 'server'       => ['address' => $address, 'reusePort' => true],
                 'workerArgs'   => array_values($workerArgs),
-                ...static::launchOption(),
                 ...$options,
             ]),
             JSON_PRETTY_PRINT,
@@ -124,7 +107,7 @@ class TestWorkerMaster
 
         $outputFile = (string) tempnam(sys_get_temp_dir(), 'sc-master-out-');
 
-        $process = self::open(['start', '--configPath=' . $configPath], $env, $outputFile, $masterScript);
+        $process = self::open([$configPath], $env, $outputFile, $masterScript ?? self::masterScript());
 
         $server = new self(
             process: $process,
@@ -165,9 +148,7 @@ class TestWorkerMaster
             'workerScript' => self::workerScript(),
             'workerCount'  => 1,
             'runtimeDir'   => sys_get_temp_dir(),
-            'phpArgs'      => ['-d', 'extension=' . self::extensionPath()],
             'server'       => ['address' => self::HOST . ':0', 'reusePort' => true],
-            ...static::launchOption(),
             ...$overrides,
         ];
 
@@ -219,37 +200,34 @@ class TestWorkerMaster
     }
 
     /**
-     * Runs a one-shot subcommand (start/status/stop) against the given config file to
-     * completion and returns [exitCode, combined-output].
+     * How long a one-shot command may take before the wait gives up.
+     *
+     * Sized above what MasterControl allows a stop to take (15 s), so a
+     * slow-but-legitimate stop is never killed. Everything measured is far under it.
+     * The number is a hang detector, and a hang costs 20 s rather than a run that
+     * never ends.
+     */
+    protected const float COMMAND_TIMEOUT_SECONDS = 20.0;
+
+    /**
+     * Runs a one-shot command against the given config file to completion and returns
+     * [exitCode, combined-output]: `start` runs the master (one that fails to start, or
+     * refuses), `status` and `stop` go through MasterControl (tests/servers/worker/control.php).
      *
      * @param array<string, string> $env
-     * @param list<string>          $argv extra flags after --configPath (e.g. --group=NAME)
      *
      * @return array{int, string}
      */
-    /**
-     * How long a one-shot subcommand may take before the wait gives up.
-     *
-     * Sized above what the CLI itself allows a stop to take with this config —
-     * workers × (shutdownTimeoutMs + 2 s) + 5 s, i.e. 2 × 3.5 + 5 = 12 s — so a
-     * slow-but-legitimate stop is never killed. Everything measured is far under
-     * it: the whole Worker suite is 68 tests in 11 s, its slowest single test 2 s.
-     * The number is a hang detector, and a hang costs 15 s rather than a run that
-     * never ends.
-     */
-    protected const float COMMAND_TIMEOUT_SECONDS = 15.0;
-
     public static function runCommand(
         string $subcommand,
         string $configPath,
         array $env = [],
-        array $argv = [],
     ): array {
-        $argv = [$subcommand, '--configPath=' . $configPath, ...$argv];
-
         $outputFile = (string) tempnam(sys_get_temp_dir(), 'sc-master-cmd-');
 
-        $process = self::open($argv, $env, $outputFile);
+        $process = $subcommand === 'start'
+            ? self::open([$configPath], $env, $outputFile, self::masterScript())
+            : self::open([$subcommand, $configPath], $env, $outputFile, self::controlScript());
 
         // Bounded, because these are one-shot subcommands: start, status, stop.
         // A wait without a deadline turns a subcommand that hangs — a master that
@@ -285,7 +263,7 @@ class TestWorkerMaster
 
         if (isset($timedOut)) {
             throw new RuntimeException(sprintf(
-                'sconcur-master %s did not finish in %.1fs; killed. Output so far: %s',
+                'the test master command %s did not finish in %.1fs; killed. Output so far: %s',
                 $subcommand,
                 self::COMMAND_TIMEOUT_SECONDS,
                 $output === '' ? '<empty>' : trim($output),
@@ -501,17 +479,17 @@ class TestWorkerMaster
     }
 
     /**
-     * @param list<string>          $argv         full argv after the bin path
-     * @param array<string, string> $env          extra env merged over the inherited one
-     * @param string|null           $masterScript what to run in place of bin/sconcur-server
+     * @param list<string>          $argv   argv after the script
+     * @param array<string, string> $env    extra env merged over the inherited one
+     * @param string                $script the script php runs
      *
      * @return resource
      */
-    protected static function open(array $argv, array $env, string $outputFile, ?string $masterScript = null): mixed
+    protected static function open(array $argv, array $env, string $outputFile, string $script): mixed
     {
-        // The master takes and sends its signals through the extension, so it loads the
-        // build under test as well as the workers.
-        $command = [PHP_BINARY, '-d', 'extension=' . self::extensionPath(), $masterScript ?? self::binPath(), ...$argv];
+        // The master takes and sends its signals through the extension, and its workers are
+        // forks of it, so it loads the build under test.
+        $command = [PHP_BINARY, '-d', 'extension=' . self::extensionPath(), $script, ...$argv];
 
         $descriptors = [
             0 => ['pipe', 'r'],
@@ -534,25 +512,19 @@ class TestWorkerMaster
         return $process;
     }
 
-    /**
-     * The top-level launch default, when a test class asked for one: it applies to every
-     * group of the config, the single shorthand one and those a test writes itself.
-     *
-     * @return array<string, string>
-     */
-    protected static function launchOption(): array
-    {
-        return static::$launch === null ? [] : ['launch' => static::$launch];
-    }
-
     protected static function root(): string
     {
         return dirname(__DIR__, 3);
     }
 
-    protected static function binPath(): string
+    protected static function masterScript(): string
     {
-        return self::root() . '/bin/sconcur-server';
+        return self::root() . '/tests/servers/worker/master.php';
+    }
+
+    protected static function controlScript(): string
+    {
+        return self::root() . '/tests/servers/worker/control.php';
     }
 
     protected static function workerScript(): string

@@ -5,10 +5,10 @@ declare(strict_types=1);
 namespace SConcur\Tests\Impl\Worker;
 
 use Closure;
-use SConcur\Worker\MasterConfig;
 use SConcur\Worker\MasterLogger;
 use SConcur\Worker\WatchdogEventEnum;
 use SConcur\Worker\WorkerGroup;
+use SConcur\Worker\WorkerGroupConfig;
 
 /**
  * A WorkerGroup that lets a test fire a watchdog event without a live worker behind it:
@@ -22,15 +22,13 @@ class ReportingWorkerGroup extends WorkerGroup
         int $watchdogTimeoutMs,
         ?Closure $onWatchdogEvent,
     ): self {
-        $config = MasterConfig::fromArray([
-            'watchdogTimeoutMs' => $watchdogTimeoutMs,
-            'groups'            => [
-                ['name' => 'http', 'workerScript' => __FILE__],
-            ],
-        ]);
-
         return new self(
-            config: $config->groups()[0],
+            config: new WorkerGroupConfig(
+                name: 'http',
+                role: static function (): void {
+                },
+                watchdogTimeoutMs: $watchdogTimeoutMs,
+            ),
             logger: $logger,
             masterPid: 12345,
             cwd: sys_get_temp_dir(),

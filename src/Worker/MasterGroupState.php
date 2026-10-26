@@ -5,16 +5,14 @@ declare(strict_types=1);
 namespace SConcur\Worker;
 
 /**
- * One pool as the state file reports it: what it is called, how many workers it keeps
- * up and which script they run. Read by `status` and by anything watching the master
- * from outside.
+ * One pool as the state file reports it: what it is called and how many workers it keeps
+ * up. Read by MasterControl and by anything watching the master from outside.
  */
 readonly class MasterGroupState
 {
     public function __construct(
         public string $name,
         public int $workerCount,
-        public string $workerScript,
     ) {
     }
 
@@ -24,9 +22,8 @@ readonly class MasterGroupState
     public function toArray(): array
     {
         return [
-            'name'         => $this->name,
-            'workerCount'  => $this->workerCount,
-            'workerScript' => $this->workerScript,
+            'name'        => $this->name,
+            'workerCount' => $this->workerCount,
         ];
     }
 
@@ -38,7 +35,6 @@ readonly class MasterGroupState
         return new self(
             name: (string) ($data['name'] ?? ''),
             workerCount: (int) ($data['workerCount'] ?? 0),
-            workerScript: (string) ($data['workerScript'] ?? ''),
         );
     }
 }

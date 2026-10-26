@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Worker;
 
 use Closure;
-use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use SConcur\Tests\Impl\Worker\TestWorkerMaster;
 
@@ -35,19 +34,7 @@ class WorkerDescriptorsTest extends TestCase
         exec('rm -rf ' . escapeshellarg($this->directory));
     }
 
-    /**
-     * @return array<string, array{string}>
-     */
-    public static function launches(): array
-    {
-        return [
-            'exec' => ['exec'],
-            'fork' => ['fork'],
-        ];
-    }
-
-    #[DataProvider('launches')]
-    public function testAProgramAWorkerStartsGetsNothingButItsStdio(string $launch): void
+    public function testAProgramAWorkerStartsGetsNothingButItsStdio(): void
     {
         $root = dirname(__DIR__, 3);
         $port = TestWorkerMaster::freePort();
@@ -61,7 +48,6 @@ class WorkerDescriptorsTest extends TestCase
         );
 
         $options = [
-            'launch'       => $launch,
             'workerCount'  => 1,
             'workerScript' => $worker,
             'accessLog'    => 'off',

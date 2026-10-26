@@ -6,7 +6,6 @@ namespace SConcur\Worker;
 
 use Closure;
 use SConcur\Exceptions\Worker\WorkerSpawnException;
-use SConcur\Process\ProcessControl;
 use SConcur\Process\ProcessSignalEnum;
 
 /**
@@ -575,7 +574,7 @@ class WorkerGroup
         $this->forgetWatchdog($index);
 
         try {
-            $process = $this->launch($index);
+            $process = $this->fork($index);
         } catch (WorkerSpawnException $exception) {
             $this->noteFailedStart();
 
@@ -611,19 +610,6 @@ class WorkerGroup
             index: $index,
             message: 'spawned',
         );
-    }
-
-    /** Starts the worker of a slot, the way its group is launched. */
-    protected function launch(int $index): WorkerProcess
-    {
-        return match ($this->config->launch) {
-            LaunchMode::Exec => new ExecWorkerProcess(
-                command: $this->buildCommand(),
-                cwd: $this->cwd,
-                env: $this->buildEnv($index),
-            ),
-            LaunchMode::Fork => $this->fork($index),
-        };
     }
 
     protected function handleExit(int $index, WorkerProcess $process, bool $stopping): void
@@ -779,94 +765,33 @@ class WorkerGroup
         $title       = sprintf('sconcur-server: %s #%d', $this->config->name, $index);
         $cwd         = $this->cwd;
         $environment = $this->workerEnvironment($index);
-        $argv        = $this->workerArgv();
+        $role        = $this->config->role;
+        $context     = new WorkerContext(
+            group: $this->config->name,
+            slot: $index,
+            masterPid: $this->masterPid,
+        );
 
         return new ForkedWorkerProcess(
             // A forked worker is the master's copy, the application loaded before the master
             // started included, and keeps what that application had open — a log file a
             // logger opened while loading would otherwise write to /dev/null in every worker.
-            // An exec'd worker is a php of its own and loads its own.
             keepDescriptors: $this->inheritedDescriptors,
-            child: static function () use ($title, $cwd, $environment, $argv): never {
+            child: static function () use ($title, $cwd, $environment, $role, $context): never {
                 ForkedWorker::run(
                     title: $title,
                     cwd: $cwd,
                     environment: $environment,
-                    argv: $argv,
+                    role: $role,
+                    context: $context,
                 );
             },
         );
     }
 
     /**
-     * Builds the worker command for a group launched by exec: the interpreter, its flags
-     * and the worker's argv (workerArgv).
-     *
-     * `display_errors=stderr` is forced ahead of the group's phpArgs so a dying worker
-     * always explains itself: with the production-ini `display_errors=Off` a fatal
-     * (parse error, missing extension, OOM) would leave nothing in the journal but
-     * "exited code=255", and with the CLI default (`On` = stdout) the error text would
-     * be logged as INFO instead of ERROR. A later `-d` wins, so phpArgs can still
-     * override this deliberately.
-     *
-     * @return list<string>
-     */
-    protected function buildCommand(): array
-    {
-        return [
-            $this->config->phpBinary,
-            '-d',
-            'display_errors=stderr',
-            ...$this->config->phpArgs,
-            ...$this->workerArgv(),
-        ];
-    }
-
-    /**
-     * The worker's argv, whichever way it is launched: the script, the expanded `server`
-     * flags, the group's workerArgs, and the master's pid as the `--masterPid` flag — the
-     * same channel as the rest, no environment involved — for the worker to use as it
-     * sees fit.
-     *
-     * @return list<string>
-     */
-    protected function workerArgv(): array
-    {
-        return [
-            $this->config->workerScript,
-            ...$this->config->argumentFlags(),
-            ...$this->config->workerArgs,
-            WorkerMaster::MASTER_PID_ARG . '=' . $this->masterPid,
-        ];
-    }
-
-    /**
-     * The environment of a worker launched by exec: the inherited one, the marks pipe's
-     * descriptor, then workerEnvironment() over both. No master metadata is injected here
-     * — that goes via argv (see workerArgv).
-     *
-     * @return array<string, string>
-     */
-    protected function buildEnv(int $index): array
-    {
-        $env = getenv();
-
-        // Tells the worker which descriptor its master opened for the pipe it marks itself
-        // on. Always there: the watchdog reads it when it is on, and the master reads the
-        // mark that says a worker is up. A forked worker is handed the pipe itself and needs
-        // no such variable.
-        $env[ProcessControl::HEARTBEAT_FD_ENVIRONMENT_NAME] = (string) ProcessControl::HEARTBEAT_FD;
-
-        foreach ($this->workerEnvironment($index) as $key => $value) {
-            $env[$key] = $value;
-        }
-
-        return $env;
-    }
-
-    /**
-     * What a worker's environment adds to the master's, whichever way it is launched: the
-     * pool label, then the group's own env over it.
+     * What a worker's environment adds to the master's: the pool label, then the group's
+     * own env over it.
      *
      * The label is "<group>:<slot>", which is what the worker puts on the snapshots it
      * pushes. It carries the slot so two workers of one pool are told apart, and the

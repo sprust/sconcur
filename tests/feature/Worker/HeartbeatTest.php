@@ -5,16 +5,13 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Worker;
 
 use PHPUnit\Framework\TestCase;
-use SConcur\Process\ProcessControl;
 use SConcur\Tests\Impl\PhpScript;
 use SConcur\Tests\Impl\Worker\SupervisedScript;
-use SConcur\Worker\ExecWorkerProcess;
 
 /**
  * The worker's half of the channel to its master: the marks Scheduler::markAlive() and
  * markReady() write through the extension, which holds the worker's end of the pipe. Each
- * scenario is a worker of its own — exec'd, the way a master starts one, or forked — since
- * the pipe is found as a process starts, or handed over by its fork.
+ * scenario is a worker of its own, forked, since the pipe is handed over by its fork.
  */
 class HeartbeatTest extends TestCase
 {
@@ -29,52 +26,56 @@ class HeartbeatTest extends TestCase
     PHP;
 
     /**
-     * What the master's end reads from a worker it exec'd: the pipe on HEARTBEAT_FD, its
-     * number in the environment, as WorkerGroup starts one.
+     * What the master's end reads from a worker it forked: the pipe the fork made, read by
+     * ForkedWorkerProcess as WorkerGroup reads it. The master side runs in a php of its own:
+     * a test process runs the runtime, and cannot fork.
      */
-    public function testTheMasterReadsTheMarksOfAWorkerItExecd(): void
+    public function testTheMasterReadsTheMarksOfAWorkerItForked(): void
     {
-        $process = new ExecWorkerProcess(
-            command: [
-                PHP_BINARY,
-                '-d',
-                'extension=' . PhpScript::extensionPath(),
-                '-r',
-                self::PRELUDE . <<<'PHP'
-                Scheduler::get()->markAlive();
-                Scheduler::get()->markReady();
+        $answer = $this->decode(
+            PhpScript::run(
+                code: self::PRELUDE . <<<'PHP'
+                use SConcur\Worker\ForkedWorkerProcess;
 
-                usleep(200_000);
+                $process = new ForkedWorkerProcess(
+                    child: static function (): never {
+                        Scheduler::forgetSupervision();
+                        Scheduler::get()->markAlive();
+                        Scheduler::get()->markReady();
+
+                        usleep(200_000);
+
+                        ProcessControl::exit(0);
+                    },
+                );
+
+                $deadline = microtime(true) + 5.0;
+
+                while (microtime(true) < $deadline && !$process->isReady()) {
+                    $process->drainHeartbeat();
+
+                    usleep(20_000);
+                }
+
+                echo json_encode([
+                    'ready' => $process->isReady(),
+                    'alive' => $process->heartbeatAgeSeconds() !== null,
+                ]);
+
+                $deadline = microtime(true) + 5.0;
+
+                while (microtime(true) < $deadline && $process->isRunning()) {
+                    usleep(20_000);
+                }
+
+                $process->close();
                 PHP,
-                PhpScript::projectRoot(),
-            ],
-            cwd: sys_get_temp_dir(),
-            env: [
-                ...getenv(),
-                ProcessControl::HEARTBEAT_FD_ENVIRONMENT_NAME => (string) ProcessControl::HEARTBEAT_FD,
-            ],
+                arguments: [PhpScript::projectRoot()],
+            ),
         );
 
-        try {
-            $deadline = microtime(true) + 5.0;
-
-            while (microtime(true) < $deadline && !$process->isReady()) {
-                $process->drainHeartbeat();
-
-                usleep(20_000);
-            }
-
-            self::assertTrue($process->isReady(), 'the worker said it is up');
-            self::assertNotNull($process->heartbeatAgeSeconds(), 'the worker said its thread is alive');
-        } finally {
-            $deadline = microtime(true) + 5.0;
-
-            while (microtime(true) < $deadline && $process->isRunning()) {
-                usleep(20_000);
-            }
-
-            $process->close();
-        }
+        self::assertTrue($answer['ready'], 'the worker said it is up');
+        self::assertTrue($answer['alive'], 'the worker said its thread is alive');
     }
 
     /**
@@ -93,16 +94,6 @@ class HeartbeatTest extends TestCase
                 // and an alive mark that would throttle the worker's first one.
                 Scheduler::get()->markAlive();
 
-                $script = (string) tempnam(sys_get_temp_dir(), 'heartbeat-worker-');
-
-                file_put_contents($script, <<<'WORKER'
-                <?php
-                SConcur\Scheduler\Scheduler::get()->markAlive();
-                SConcur\Scheduler\Scheduler::get()->markReady();
-
-                echo json_encode(SConcur\Process\ProcessControl::hasHeartbeat());
-                WORKER);
-
                 $fork = ProcessControl::fork(heartbeat: true);
 
                 if ($fork->isChild()) {
@@ -110,7 +101,13 @@ class HeartbeatTest extends TestCase
                         title: 'heartbeat-test-worker',
                         cwd: sys_get_temp_dir(),
                         environment: [],
-                        argv: [$script],
+                        role: static function (): void {
+                            Scheduler::get()->markAlive();
+                            Scheduler::get()->markReady();
+
+                            echo json_encode(ProcessControl::hasHeartbeat());
+                        },
+                        context: new SConcur\Worker\WorkerContext(group: 'test', slot: 0, masterPid: getmypid()),
                     );
                 }
 
@@ -119,8 +116,6 @@ class HeartbeatTest extends TestCase
                 while (ProcessControl::reap([$fork->pid]) === [] && microtime(true) < $deadline) {
                     usleep(10_000);
                 }
-
-                unlink($script);
 
                 echo json_encode([
                     'parentHasHeartbeat' => ProcessControl::hasHeartbeat(),
@@ -210,8 +205,7 @@ class HeartbeatTest extends TestCase
 
     /**
      * The pipe is the process's, not a scheduler's: a second one built in the same worker
-     * marks it too, and so does one that asks again long after the variable that named the
-     * pipe left the environment — what a process that rebuilt its scheduler used to lose.
+     * marks it too, and so does one that asks again after forgetting what it was told.
      */
     public function testEverySchedulerOfAWorkerMarksItsPipe(): void
     {
@@ -223,14 +217,11 @@ class HeartbeatTest extends TestCase
             Scheduler::forgetSupervision();
 
             new Scheduler()->markAlive();
-
-            echo json_encode(getenv(ProcessControl::HEARTBEAT_FD_ENVIRONMENT_NAME));
             PHP,
             arguments: [PhpScript::projectRoot()],
         );
 
         self::assertSame("\x01\x02\x01", $run['marks'], $run['output']);
-        self::assertSame('false', $run['output'], 'the variable is still in the environment');
     }
 
     /**
@@ -262,58 +253,25 @@ class HeartbeatTest extends TestCase
     }
 
     /**
-     * A variable naming a descriptor that is not a pipe open for writing did not come from a
-     * master: nothing is written there, and the variable is consumed all the same.
-     */
-    public function testAVariableNamingNoPipeIsRefused(): void
-    {
-        $run = SupervisedScript::run(
-            code: self::PRELUDE . <<<'PHP'
-            Scheduler::get()->markAlive();
-
-            echo json_encode([
-                'hasHeartbeat' => ProcessControl::hasHeartbeat(),
-                'variable'     => getenv(ProcessControl::HEARTBEAT_FD_ENVIRONMENT_NAME),
-                'server'       => $_SERVER[ProcessControl::HEARTBEAT_FD_ENVIRONMENT_NAME] ?? null,
-            ]);
-            PHP,
-            arguments: [PhpScript::projectRoot()],
-            heartbeat: false,
-            environment: [ProcessControl::HEARTBEAT_FD_ENVIRONMENT_NAME => (string) ProcessControl::HEARTBEAT_FD],
-        );
-
-        self::assertSame(
-            [
-                'hasHeartbeat' => false,
-                'variable'     => false,
-                'server'       => null,
-            ],
-            $this->decode($run['output']),
-        );
-    }
-
-    /**
-     * Nothing a worker starts inherits its heartbeat: neither the pipe nor the variable
-     * naming it, from the worker's first line on, before the worker has marked anything. Either would let a SConcur program among them
-     * mark the worker alive, the one reading a watchdog must have from the worker itself.
+     * Nothing a worker starts inherits its heartbeat. A SConcur program among them would
+     * otherwise mark the worker alive, the one reading a watchdog must have from the worker
+     * itself. The pipe the fork made is close-on-exec, so a program the worker starts holds
+     * its stdio and nothing else.
      */
     public function testNothingAWorkerStartsInheritsItsHeartbeat(): void
     {
         $run = SupervisedScript::run(
-            code: <<<'PHP'
-            $heartbeat = (string) readlink('/proc/self/fd/3');
-
+            code: self::PRELUDE . <<<'PHP'
             $listing = <<<'LISTING'
             $descriptors = [];
 
             foreach (scandir('/proc/self/fd') as $entry) {
-                $descriptors[] = (string) @readlink('/proc/self/fd/' . $entry);
+                if ($entry !== '.' && $entry !== '..' && (int) $entry > 2) {
+                    $descriptors[] = $entry . ' -> ' . (string) @readlink('/proc/self/fd/' . $entry);
+                }
             }
 
-            echo json_encode([
-                'descriptors' => $descriptors,
-                'variable'    => getenv('SCONCUR_HEARTBEAT_FD'),
-            ]);
+            echo json_encode($descriptors);
             LISTING;
 
             $started = json_decode(
@@ -321,14 +279,12 @@ class HeartbeatTest extends TestCase
                 true,
             );
 
-            require $argv[1] . '/vendor/autoload.php';
-
             // The pipe still works for the worker itself.
-            SConcur\Scheduler\Scheduler::get()->markAlive();
+            Scheduler::get()->markAlive();
 
             echo json_encode([
-                'heartbeat' => $heartbeat,
-                'started'   => $started,
+                'hasHeartbeat' => ProcessControl::hasHeartbeat(),
+                'started'      => $started,
             ]);
             PHP,
             arguments: [PhpScript::projectRoot()],
@@ -336,17 +292,11 @@ class HeartbeatTest extends TestCase
 
         $answer = $this->decode($run['output']);
 
-        self::assertStringStartsWith('pipe:[', $answer['heartbeat'], 'the worker was given no pipe');
-        self::assertNotEmpty($answer['started']['descriptors'], 'the started program listed nothing');
-        self::assertNotContains(
-            $answer['heartbeat'],
-            $answer['started']['descriptors'],
-            'a program the worker started holds its heartbeat pipe',
-        );
-        self::assertFalse(
-            $answer['started']['variable'],
-            'a program the worker started finds the variable naming its heartbeat',
-        );
+        self::assertTrue($answer['hasHeartbeat'], 'the worker was given no pipe');
+        self::assertIsArray($answer['started'], 'the started program listed nothing');
+
+        // Its own listing of /proc/self/fd is the one descriptor above stderr it holds.
+        self::assertCount(1, $answer['started'], 'a program the worker started holds more than its stdio: ' . $run['output']);
         self::assertSame("\x01", $run['marks']);
     }
 

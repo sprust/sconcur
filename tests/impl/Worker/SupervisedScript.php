@@ -4,26 +4,20 @@ declare(strict_types=1);
 
 namespace SConcur\Tests\Impl\Worker;
 
-use SConcur\Process\ProcessControl;
 use SConcur\Tests\Impl\PhpScript;
 
 /**
- * Runs PHP code the way a worker master runs an exec'd worker: a php of its own with the
- * extension loaded, a pipe on ProcessControl::HEARTBEAT_FD and its number in the
- * environment. Answers what the code printed, stderr included, and the marks it put on the
- * pipe — the bytes as they came, in order, which a master's WorkerProcess does not keep.
- *
- * PHP cannot learn the number of a descriptor it holds, so a pipe of the test's own cannot
- * be handed to the extension in this process; a child that finds it on descriptor 3, as a
- * worker does, is how it gets there.
+ * Runs PHP code the way a worker master runs a worker: in a fork, with the heartbeat pipe
+ * the fork made for it (tests/servers/worker/supervised.php). Answers what the code
+ * printed, stderr included, and the marks it put on the pipe — the bytes as they came, in
+ * order, which a master's WorkerProcess does not keep.
  */
 class SupervisedScript
 {
     /**
      * @param list<string>          $arguments   $argv[1] onwards
-     * @param bool                  $heartbeat   false starts it as no master would: descriptor 3
-     *                                           on /dev/null and no variable naming it, unless
-     *                                           $environment sets one
+     * @param bool                  $heartbeat   false forks it as no master would: without a
+     *                                           heartbeat pipe
      * @param array<string, string> $environment what the environment adds
      *
      * @return array{output: string, marks: string}
@@ -35,18 +29,15 @@ class SupervisedScript
         array $environment = [],
         int $timeoutSeconds = 30,
     ): array {
-        $inherited = getenv();
+        $codeFile = (string) tempnam(sys_get_temp_dir(), 'sc-supervised-');
 
-        unset($inherited[ProcessControl::HEARTBEAT_FD_ENVIRONMENT_NAME]);
-
-        if ($heartbeat) {
-            $inherited[ProcessControl::HEARTBEAT_FD_ENVIRONMENT_NAME] = (string) ProcessControl::HEARTBEAT_FD;
-        }
+        file_put_contents($codeFile, $code);
 
         $pipes = [];
 
         // timeout -k: a scenario running a server takes the SIGTERM timeout sends as a
-        // graceful stop and may carry on, so a SIGKILL follows it.
+        // graceful stop and may carry on, so a SIGKILL follows it. timeout signals its whole
+        // process group, the forked code included.
         $process = proc_open(
             command: [
                 'timeout',
@@ -56,43 +47,49 @@ class SupervisedScript
                 PHP_BINARY,
                 '-d',
                 'extension=' . PhpScript::extensionPath(),
-                '-r',
-                $code,
+                PhpScript::projectRoot() . '/tests/servers/worker/supervised.php',
+                $codeFile,
+                $heartbeat ? '1' : '0',
                 ...$arguments,
             ],
             descriptor_spec: [
-                0                            => ['file', '/dev/null', 'r'],
-                1                            => ['pipe', 'w'],
-                2                            => ['redirect', 1],
-                ProcessControl::HEARTBEAT_FD => $heartbeat ? ['pipe', 'w'] : ['file', '/dev/null', 'w'],
+                0 => ['file', '/dev/null', 'r'],
+                1 => ['pipe', 'w'],
+                2 => ['redirect', 1],
             ],
             pipes: $pipes,
-            env_vars: [...$inherited, ...$environment],
+            env_vars: [...getenv(), ...$environment],
         );
 
         if (!is_resource($process)) {
+            @unlink($codeFile);
+
             return [
                 'output' => 'the script could not be started',
                 'marks'  => '',
             ];
         }
 
-        // Its output to the end first: the marks are a few bytes, and the pipe holds them
-        // until the script is gone.
-        $output = (string) stream_get_contents($pipes[1]);
-        $marks  = isset($pipes[ProcessControl::HEARTBEAT_FD])
-            ? (string) stream_get_contents($pipes[ProcessControl::HEARTBEAT_FD])
-            : '';
+        $printed = (string) stream_get_contents($pipes[1]);
 
-        foreach ($pipes as $pipe) {
-            fclose($pipe);
-        }
+        fclose($pipes[1]);
 
         proc_close($process);
 
+        @unlink($codeFile);
+
+        $answer = json_decode($printed, true);
+
+        if (!is_array($answer)) {
+            return [
+                'output' => $printed,
+                'marks'  => '',
+            ];
+        }
+
         return [
-            'output' => $output,
-            'marks'  => $marks,
+            'output' => (string) $answer['output'],
+            'marks'  => (string) hex2bin((string) $answer['marks']),
         ];
     }
 }

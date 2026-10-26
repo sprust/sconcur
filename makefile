@@ -24,10 +24,10 @@ PHP_CLI_EXT = $(DOCKER_COMPOSE) exec -e SCONCUR_EXT=$(SCONCUR_EXT) php
 PHP_EXT = $(PHP_CLI_EXT) php -d extension=$(SCONCUR_EXT)
 
 # Master control inside the `servers` container: one master runs there under
-# supervisor, holding the three servers and the RabbitMQ consumers as a group
-# each. A command names it by its config and, for a single pool, the group by
-# --group.
-SERVERS_CLI = $(DOCKER_COMPOSE) exec servers php /sconcur/bin/sconcur-server
+# supervisor (tests/servers/worker/master.php), holding the three servers and the
+# RabbitMQ consumers as a group each. A command names it by its config, through
+# MasterControl (tests/servers/worker/control.php).
+SERVERS_CONTROL = $(DOCKER_COMPOSE) exec servers php /sconcur/tests/servers/worker/control.php
 SERVERS_CONFIG = /sconcur/config/sconcur.servers.config.json
 
 env-copy:
@@ -62,22 +62,10 @@ servers-restart:
 	$(DOCKER_COMPOSE) up -d --build --force-recreate servers
 
 servers-status:
-	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG)
+	$(SERVERS_CONTROL) status $(SERVERS_CONFIG)
 
 servers-stop:
-	$(SERVERS_CLI) stop --configPath=$(SERVERS_CONFIG)
-
-http-server-status:
-	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG) --group=http
-
-socket-server-status:
-	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG) --group=socket
-
-ws-server-status:
-	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG) --group=ws
-
-rabbitmq-status:
-	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG) --group=rabbitmq
+	$(SERVERS_CONTROL) stop $(SERVERS_CONFIG)
 
 bash-php:
 	$(DOCKER_COMPOSE) exec php bash

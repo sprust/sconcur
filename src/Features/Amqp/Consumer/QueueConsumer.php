@@ -44,9 +44,9 @@ use WeakReference;
  * that publishes is lent a channel nobody else holds (PublishChannelPool); what it does
  * there cannot reach its neighbours, whatever the prefetch.
  *
- * Built to be supervised: the constructor takes scalars so fromArgs() can fill them from the
- * argv a WorkerMaster hands its workers, and the run ends on SIGTERM, on a life limit or on
- * losing the master.
+ * Built to be supervised: a WorkerMaster group's role builds and runs it, and the run ends on
+ * SIGTERM, on a life limit or on losing the master. The constructor takes scalars, so
+ * fromArgs() can fill them from argv for a script that runs one on its own.
  *
  * It declares nothing. Topology belongs to whoever owns it, and a consumer that redeclared a
  * queue with the wrong flags would take the channel down with a 406.
@@ -129,7 +129,8 @@ class QueueConsumer
      *                                    stops being the handler's own (see
      *                                    docs/coroutine-switching.md)
      * @param ?int   $masterPid           when set, the worker drains as soon as it is
-     *                                    orphaned; the master injects it as --masterPid
+     *                                    orphaned; null is the master that forked this
+     *                                    worker (WorkerContext), or none outside a master
      */
     public function __construct(
         protected string $queues = '',
@@ -156,8 +157,8 @@ class QueueConsumer
     }
 
     /**
-     * Builds a consumer from the worker's argv (`--queues=…`, `--prefetchCount=…`, and
-     * the `--masterPid` the master appends).
+     * Builds a consumer from argv (`--queues=…`, `--prefetchCount=…`, `--masterPid=…`), for
+     * a script that runs one on its own.
      *
      * @param array<int, string> $argv
      */

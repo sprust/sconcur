@@ -1,0 +1,120 @@
+<?php
+
+/**
+ * The worker master the tests start: reads the JSON a test wrote (TestWorkerMaster), builds
+ * a WorkerMaster from it and runs it.
+ *
+ * Usage: php -d extension=sconcur.so tests/servers/worker/master.php <config.json>
+ *
+ * The JSON keeps the shape the tests have always written: master settings at the top, the
+ * group settings beside them as defaults, and a "groups" list. A group names a test worker
+ * script, its argv flags (`server`, `workerArgs`) and the settings of a WorkerGroupConfig.
+ * Its role sets up argv the way a php started on the script would see it — the flags, then
+ * `--masterPid` — and requires the script; the script builds its server from argv as it
+ * would on its own.
+ *
+ * Exit codes: what WorkerMaster::run() returns; 1 when it throws, the reason on stderr.
+ */
+
+declare(strict_types=1);
+
+use SConcur\Worker\AccessLogTarget;
+use SConcur\Worker\LogTarget;
+use SConcur\Worker\RestartPolicy;
+use SConcur\Worker\WorkerContext;
+use SConcur\Worker\WorkerGroupConfig;
+use SConcur\Worker\WorkerMaster;
+
+require dirname(__DIR__, 3) . '/vendor/autoload.php';
+
+/**
+ * A group's `server` block as argv flags: a boolean as 1/0, a list or an object as JSON.
+ *
+ * @param array<string, mixed> $server
+ *
+ * @return list<string>
+ */
+function testMasterServerFlags(array $server): array
+{
+    $flags = [];
+
+    foreach ($server as $key => $value) {
+        $flags[] = '--' . $key . '=' . match (true) {
+            is_bool($value)   => $value ? '1' : '0',
+            is_scalar($value) => (string) $value,
+            default           => (string) json_encode($value, JSON_UNESCAPED_SLASHES),
+        };
+    }
+
+    return $flags;
+}
+
+/**
+ * @param array<string, mixed> $group    the group's own keys
+ * @param array<string, mixed> $defaults the master-wide keys it falls back on
+ */
+function testMasterGroup(array $group, array $defaults): WorkerGroupConfig
+{
+    $setting = static fn(string $key, mixed $default): mixed => $group[$key] ?? $defaults[$key] ?? $default;
+
+    $script = (string) $group['workerScript'];
+    $flags  = [
+        ...testMasterServerFlags((array) ($group['server'] ?? [])),
+        ...array_map(strval(...), (array) ($group['workerArgs'] ?? [])),
+    ];
+
+    return new WorkerGroupConfig(
+        name: (string) ($group['name'] ?? 'default'),
+        role: static function (WorkerContext $context) use ($script, $flags): void {
+            $argv = [$script, ...$flags, '--masterPid=' . $context->masterPid];
+            $argc = count($argv);
+
+            $_SERVER['argv'] = $argv;
+            $_SERVER['argc'] = $argc;
+
+            $GLOBALS['argv'] = $argv;
+            $GLOBALS['argc'] = $argc;
+
+            require $script;
+        },
+        workerCount: (int) ($group['workerCount'] ?? 0),
+        restartPolicy: RestartPolicy::from((string) $setting('restartPolicy', 'always')),
+        shutdownTimeoutMs: (int) $setting('shutdownTimeoutMs', 10_000),
+        restartBackoffMs: (int) $setting('restartBackoffMs', 200),
+        maxRestartBackoffMs: (int) $setting('maxRestartBackoffMs', 30_000),
+        watchdogTimeoutMs: (int) $setting('watchdogTimeoutMs', 60_000),
+        readyTimeoutMs: (int) $setting('readyTimeoutMs', 30_000),
+        accessLog: AccessLogTarget::from((string) $setting('accessLog', 'stdout')),
+        env: array_map(strval(...), [...(array) ($defaults['env'] ?? []), ...(array) ($group['env'] ?? [])]),
+    );
+}
+
+try {
+    $config = json_decode((string) file_get_contents((string) ($argv[1] ?? '')), true, flags: JSON_THROW_ON_ERROR);
+
+    $groups = [];
+
+    foreach ((array) $config['groups'] as $group) {
+        $groups[] = testMasterGroup(
+            group: (array) $group,
+            defaults: $config,
+        );
+    }
+
+    $master = new WorkerMaster(
+        runtimeDir: (string) $config['runtimeDir'],
+        groups: $groups,
+        logDir: isset($config['logDir']) ? (string) $config['logDir'] : null,
+        name: (string) ($config['name'] ?? WorkerMaster::DEFAULT_NAME),
+        rotateDays: (int) ($config['rotateDays'] ?? 3),
+        logTo: LogTarget::from((string) ($config['logTo'] ?? 'file')),
+        panelPort: (int) ($config['panelPort'] ?? 0),
+        adminToken: (string) ($config['adminToken'] ?? ''),
+    );
+
+    exit($master->run());
+} catch (Throwable $exception) {
+    fwrite(STDERR, $exception->getMessage() . PHP_EOL);
+
+    exit(1);
+}

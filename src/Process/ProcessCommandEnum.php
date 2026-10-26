@@ -64,4 +64,7 @@ enum ProcessCommandEnum: string
 
     /** Writes one mark on the heartbeat pipe. Rust: payloads::MarkParams. */
     case MarkHeartbeat = 'hbw';
+
+    /** Marks this process as a worker master's, which runs nothing asynchronous. No parameters. */
+    case MarkMaster = 'mst';
 }

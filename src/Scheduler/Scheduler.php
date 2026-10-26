@@ -1133,30 +1133,14 @@ class Scheduler
         }
 
         // random_int reads the system's generator: nothing a fork copies from the master
-        // decides the number, so forked workers draw apart as surely as exec'd ones.
+        // decides the number, so the workers of one master draw apart.
         return random_int($limit, $limit + intdiv($limit, 2));
     }
 
-    /**
-     * Whether a master supervises this process, asked of the extension the first time.
-     *
-     * The extension took the variable naming the pipe out of the environment as it loaded,
-     * which is before PHP builds $_ENV and $_SERVER from it — unless it was loaded at run
-     * time. They are cleaned here for that case, so that a program started with either as
-     * its environment does not find the variable.
-     */
+    /** Whether a master supervises this process, asked of the extension the first time. */
     protected static function isSupervised(): bool
     {
-        if (static::$supervised === null) {
-            static::$supervised = ProcessControl::hasHeartbeat();
-
-            unset(
-                $_ENV[ProcessControl::HEARTBEAT_FD_ENVIRONMENT_NAME],
-                $_SERVER[ProcessControl::HEARTBEAT_FD_ENVIRONMENT_NAME],
-            );
-        }
-
-        return static::$supervised;
+        return static::$supervised ??= ProcessControl::hasHeartbeat();
     }
 
     /** Puts a mark on the heartbeat pipe, in a process that has one. */

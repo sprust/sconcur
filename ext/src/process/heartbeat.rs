@@ -3,29 +3,23 @@
 //! that it is leaving at its own limit — one byte each (`Mark`).
 //!
 //! Held here rather than by a PHP stream. php://fd opens a copy made by
-//! dup(2), which leaves close-on-exec behind, so a stream on the pipe was
-//! inherited by everything the worker ran; a SConcur program among them would
-//! also find the variable naming it and mark its parent alive, which is the one
-//! reading a watchdog must never be handed by anyone else. Here the descriptor
-//! keeps the flag, the variable leaves the environment, and PHP only asks
+//! dup(2), which leaves close-on-exec behind, so a stream on the pipe would be
+//! inherited by everything the worker ran, and a SConcur program among them
+//! could mark its parent alive — the one reading a watchdog must never be
+//! handed by anyone else. Here the descriptor keeps the flag, and PHP only asks
 //! whether there is a heartbeat and hands over the marks.
 //!
 //! Process-level state, like the signals being watched: one descriptor or
-//! none. An exec'd worker finds it in its environment as the module starts
-//! (`settle`, through `claim`); a forked one is handed the end its fork made
-//! (`reset_in_child`) and never keeps the one its parent held.
+//! none. A forked worker is handed the end its fork made (`reset_in_child`) and
+//! never keeps the one its parent held.
 
 use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use libc::c_int;
 
-use super::{Error, claim};
+use super::Error;
 use crate::dto::Value;
-
-/// The variable an exec'd worker finds the number of its heartbeat descriptor
-/// in. PHP: SConcur\Process\ProcessControl::HEARTBEAT_FD_ENVIRONMENT_NAME.
-const ENVIRONMENT_NAME: &str = "SCONCUR_HEARTBEAT_FD";
 
 /// What a worker tells its master, one byte each.
 /// PHP: SConcur\Process\HeartbeatMarkEnum.
@@ -50,33 +44,22 @@ impl Mark {
     }
 }
 
-/// Not looked for yet.
-const UNSETTLED: c_int = -2;
-
-/// Looked for, and there is none: a process no master started.
+/// There is none: a process no master forked.
 const NONE: c_int = -1;
 
-/// The descriptor the marks go to, NONE or UNSETTLED. Only the PHP thread
-/// touches it.
-static DESCRIPTOR: AtomicI32 = AtomicI32::new(UNSETTLED);
+/// The descriptor the marks go to, or NONE. Only the PHP thread touches it.
+static DESCRIPTOR: AtomicI32 = AtomicI32::new(NONE);
 
-/// The heartbeat of this process: looked for in the environment the first time
-/// (see `claim`), and the same answer from then on.
-pub fn settle() -> Option<RawFd> {
-    let mut descriptor = DESCRIPTOR.load(Ordering::Relaxed);
-
-    if descriptor == UNSETTLED {
-        descriptor = claim::writable_pipe(ENVIRONMENT_NAME, true).unwrap_or(NONE);
-
-        DESCRIPTOR.store(descriptor, Ordering::Relaxed);
-    }
+/// The heartbeat of this process, if a master forked it with one.
+fn descriptor() -> Option<RawFd> {
+    let descriptor = DESCRIPTOR.load(Ordering::Relaxed);
 
     (descriptor >= 0).then_some(descriptor)
 }
 
 /// Whether this process has a heartbeat: whether a master supervises it.
 pub fn present() -> Value {
-    Value::Bool(settle().is_some())
+    Value::Bool(descriptor().is_some())
 }
 
 /// Writes one mark, and answers whether it was written. Not written is not an
@@ -87,7 +70,7 @@ pub fn present() -> Value {
 pub fn mark(number: i64) -> Result<Value, Error> {
     let mark = Mark::from_number(number).ok_or_else(|| Error::Failed(format!("unknown heartbeat mark {number}")))?;
 
-    let Some(descriptor) = settle() else {
+    let Some(descriptor) = descriptor() else {
         return Ok(Value::Bool(false));
     };
 
@@ -107,13 +90,20 @@ pub fn reset_in_child(descriptor: Option<RawFd>) -> bool {
 
     // A master that stopped reading must slow nothing down: a full pipe drops
     // the mark instead.
-    if !claim::add_flag(descriptor, libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK) {
+    if !add_flag(descriptor, libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK) {
         return false;
     }
 
     DESCRIPTOR.store(descriptor, Ordering::Relaxed);
 
     true
+}
+
+/// Adds a flag through the fcntl pair that reads and sets it.
+fn add_flag(descriptor: RawFd, get: c_int, set: c_int, flag: c_int) -> bool {
+    let flags = unsafe { libc::fcntl(descriptor, get) };
+
+    flags >= 0 && unsafe { libc::fcntl(descriptor, set, flags | flag) } == 0
 }
 
 fn write_mark(descriptor: RawFd, mark: Mark) -> Result<bool, Error> {
@@ -142,25 +132,33 @@ fn write_mark(descriptor: RawFd, mark: Mark) -> Result<bool, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::claim::test_pipes::*;
     use super::*;
 
-    /// What an exec'd worker's master opened is taken: close-on-exec, so nothing
-    /// the worker starts inherits it, non-blocking, and out of the environment.
-    #[test]
-    fn the_pipe_an_exec_d_worker_is_handed_is_claimed_from_its_environment() {
-        let (read, write) = plain_pipe();
+    /// A pipe without close-on-exec or O_NONBLOCK.
+    fn plain_pipe() -> (RawFd, RawFd) {
+        let mut ends: [c_int; 2] = [-1, -1];
 
-        let claimed = claim_named("SCONCUR_TEST_HEARTBEAT_CLAIMED", &write.to_string(), true);
+        assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
 
-        assert_eq!(claimed, Some(write));
-        assert!(has_flag(write, libc::F_GETFD, libc::FD_CLOEXEC), "a program the worker starts inherits it");
-        assert!(has_flag(write, libc::F_GETFL, libc::O_NONBLOCK), "a full pipe would stall the worker");
+        (ends[0], ends[1])
+    }
 
-        assert_eq!(write_mark(write, Mark::Ready).ok(), Some(true));
-        assert_eq!(read_available(read), vec![2]);
+    fn has_flag(descriptor: RawFd, get: c_int, flag: c_int) -> bool {
+        unsafe { libc::fcntl(descriptor, get) & flag != 0 }
+    }
 
-        close(&[read, write]);
+    fn read_available(descriptor: RawFd) -> Vec<u8> {
+        let mut buffer = [0_u8; 256];
+
+        let read = unsafe { libc::read(descriptor, buffer.as_mut_ptr().cast(), buffer.len()) };
+
+        buffer[..read.max(0) as usize].to_vec()
+    }
+
+    fn close(descriptors: &[RawFd]) {
+        for &descriptor in descriptors {
+            unsafe { libc::close(descriptor) };
+        }
     }
 
     /// A pipe the master stopped reading drops the mark rather than block.
@@ -168,7 +166,7 @@ mod tests {
     fn a_full_pipe_drops_the_mark() {
         let (read, write) = plain_pipe();
 
-        assert!(claim::add_flag(write, libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK));
+        assert!(add_flag(write, libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK));
 
         let chunk = [0_u8; 4096];
 
@@ -210,14 +208,14 @@ mod tests {
     fn the_heartbeat_a_fork_hands_over_is_the_one_marked() {
         assert!(reset_in_child(None));
 
-        assert_eq!(settle(), None);
+        assert_eq!(descriptor(), None);
         assert!(matches!(mark(1), Ok(Value::Bool(false))), "marked with no heartbeat");
 
         let (read, write) = plain_pipe();
 
         assert!(reset_in_child(Some(write)));
 
-        assert_eq!(settle(), Some(write));
+        assert_eq!(descriptor(), Some(write));
         assert!(has_flag(write, libc::F_GETFL, libc::O_NONBLOCK), "a full pipe would stall the worker");
         assert!(matches!(present(), Value::Bool(true)));
 
@@ -227,7 +225,7 @@ mod tests {
 
         assert_eq!(read_available(read), vec![1, 3]);
 
-        // Back to what a process no master started has, for whatever runs next.
+        // Back to what a process no master forked has, for whatever runs next.
         assert!(reset_in_child(None));
 
         close(&[read, write]);

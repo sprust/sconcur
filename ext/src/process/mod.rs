@@ -9,7 +9,6 @@
 //! parameter map, decoded into the structs of `payloads` — so a new one is a
 //! match arm here, not a new C symbol.
 
-mod claim;
 mod fork;
 mod heartbeat;
 mod payloads;
@@ -64,6 +63,11 @@ pub fn run(command: &[u8], payload: &Value) -> Result<Value, Error> {
         }
         b"bnd" => bind(decode(payload)?),
         b"cfk" => fork::refuse_unless_alone().map(|_| Value::Nil),
+        b"mst" => {
+            MASTER.store(true, Ordering::Relaxed);
+
+            Ok(Value::Nil)
+        }
         b"fds" => Ok(fork::inherited_descriptors()),
         b"hbq" => Ok(heartbeat::present()),
         b"hbw" => {
@@ -78,35 +82,21 @@ pub fn run(command: &[u8], payload: &Value) -> Result<Value, Error> {
     }
 }
 
-/// What the module start does for the process, before PHP runs a line of the
-/// script and before any thread exists: an exec'd worker claims the heartbeat
-/// its master opened (`heartbeat::settle`). Then, rather than at the first
-/// write, nothing the process starts inherits the pipe or the variable naming
-/// it, and the variable leaves an environment no other thread can be reading
-/// yet.
-pub fn startup() {
-    let heartbeat = heartbeat::settle();
+/// Whether this process is a worker master's (`mst`). Set once the master starts
+/// and never cleared in it; a fork clears it in the child (`fork::prepare_child`).
+static MASTER: AtomicBool = AtomicBool::new(false);
 
-    STARTED_BY_MASTER.store(heartbeat.is_some(), Ordering::Relaxed);
+/// Whether this process is a worker master's, which must never start the
+/// runtime: every worker is a fork of it, and a process running threads cannot
+/// fork. Asked before an asynchronous call starts one.
+pub fn is_master() -> bool {
+    MASTER.load(Ordering::Relaxed)
 }
 
-/// Whether this process found a pipe from a worker master as it started: an
-/// exec'd worker its heartbeat.
-static STARTED_BY_MASTER: AtomicBool = AtomicBool::new(false);
-
-/// Whether the request start has marked what the master handed over.
-static HANDED_OVER_MARKED: AtomicBool = AtomicBool::new(false);
-
-/// What the request start does (RINIT), once per process and only in one its
-/// master started: every descriptor above stderr becomes close-on-exec
-/// (`fork::close_on_exec_above_stderr`). By then PHP CLI has opened the script it
-/// runs, and the application has opened nothing; so a program the worker starts
-/// inherits neither the master's placeholders nor the script,
-/// and what the application opens later stays its own business.
-pub fn request_startup() {
-    if STARTED_BY_MASTER.load(Ordering::Relaxed) && !HANDED_OVER_MARKED.swap(true, Ordering::Relaxed) {
-        fork::close_on_exec_above_stderr();
-    }
+/// In a freshly forked child: the child is a worker, not the master it is a copy
+/// of.
+pub(super) fn forget_master() {
+    MASTER.store(false, Ordering::Relaxed);
 }
 
 fn decode<'a, T: Deserialize<'a>>(payload: &'a Value) -> Result<T, Error> {

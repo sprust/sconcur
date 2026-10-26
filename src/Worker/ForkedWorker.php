@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SConcur\Worker;
 
+use Closure;
 use SConcur\Connection\Extension;
 use SConcur\Process\ProcessControl;
 use SConcur\Scheduler\Scheduler;
@@ -11,33 +12,34 @@ use Throwable;
 
 /**
  * The child half of a forked worker: turns the fresh copy of its parent — the master — into
- * the worker the group describes, runs the worker script and leaves.
+ * the worker the group describes, runs the group's role and leaves.
  *
  * It never returns. The parent's call stack is still below it, and an exception that
  * reached those frames would run the parent's finally blocks and its supervision loop in
- * the worker. So the script runs inside a catch-all, and the worker leaves through
- * ProcessControl::exit() however it ends. An exit() inside the script leaves through
+ * the worker. So the role runs inside a catch-all, and the worker leaves through
+ * ProcessControl::exit() however it ends. An exit() inside the role leaves through
  * PHP's own shutdown instead, which skips finally blocks and is safe.
  *
  * The worker runs under the error and exception handlers of the application the process
- * loaded before it started the master, as a php started on the script would run under its
- * own: the master keeps its error handler out of its loop (WorkerMaster::run), and it is
- * given back here.
+ * loaded before it started the master: the master keeps its error handler out of its loop
+ * (WorkerMaster::run), and it is given back here.
  */
 class ForkedWorker
 {
     /**
-     * @param string                $title       what `ps` shows for the worker
-     * @param string                $cwd         the directory the worker runs in
-     * @param array<string, string> $environment what the worker's environment adds to the
-     *                                           parent's
-     * @param list<string>          $argv        the argv the script sees, its own path first
+     * @param string                       $title       what `ps` shows for the worker
+     * @param string                       $cwd         the directory the worker runs in
+     * @param array<string, string>        $environment what the worker's environment adds to
+     *                                                  the parent's
+     * @param Closure(WorkerContext): void $role        what the worker runs; it leaves when
+     *                                                  this returns
      */
     public static function run(
         string $title,
         string $cwd,
         array $environment,
-        array $argv,
+        Closure $role,
+        WorkerContext $context,
     ): never {
         $exitCode = 255;
 
@@ -48,7 +50,9 @@ class ForkedWorker
                 environment: $environment,
             );
 
-            static::runScript($argv);
+            WorkerContext::enter($context);
+
+            $role($context);
 
             $exitCode = 0;
         } catch (Throwable $exception) {
@@ -95,7 +99,7 @@ class ForkedWorker
         chdir($cwd);
 
         // putenv for getenv() and whatever the worker starts; $_ENV and $_SERVER because a
-        // php started on the script would have found the same values there.
+        // php started with them would have found the same values there.
         foreach ($environment as $name => $value) {
             putenv($name . '=' . $value);
 
@@ -103,8 +107,8 @@ class ForkedWorker
             $_SERVER[$name] = $value;
         }
 
-        // What an exec worker gets as `-d display_errors=stderr`: a worker dying on
-        // startup explains itself in the journal, at ERROR, whatever php.ini says.
+        // A worker dying on startup explains itself in the journal, at ERROR, whatever
+        // php.ini says.
         ini_set('display_errors', 'stderr');
 
         // What the master's process knew of supervision is not this worker's: the fork
@@ -112,35 +116,12 @@ class ForkedWorker
         Scheduler::forgetSupervision();
 
         // The master's handle on the extension is marked destroyed here, and an exit()
-        // in the script would leave without the teardown its destructor does: the worker
+        // in the role would leave without the teardown its destructor does: the worker
         // gets one of its own.
         Extension::forgetInherited();
 
         // Last, so what is silenced above stays out of it: the master's own handler, which
         // WorkerMaster::run() put over the application's, comes off.
         restore_error_handler();
-    }
-
-    /**
-     * Runs the script with the argv a php started on it would have had. It is required
-     * from here, so it runs in this function's scope rather than the global one: its
-     * top-level variables are locals of this call, and $argv and $argc are set as both.
-     *
-     * @param list<string> $argv
-     */
-    protected static function runScript(array $argv): void
-    {
-        $argc = count($argv);
-
-        $_SERVER['argv']            = $argv;
-        $_SERVER['argc']            = $argc;
-        $_SERVER['SCRIPT_FILENAME'] = $argv[0];
-        $_SERVER['SCRIPT_NAME']     = $argv[0];
-        $_SERVER['PHP_SELF']        = $argv[0];
-
-        $GLOBALS['argv'] = $argv;
-        $GLOBALS['argc'] = $argc;
-
-        require $argv[0];
     }
 }

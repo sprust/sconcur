@@ -6,35 +6,17 @@ namespace SConcur\Tests\Feature\Worker;
 
 use Closure;
 use PHPUnit\Framework\TestCase;
-use SConcur\Worker\MasterCli;
 use SConcur\Worker\WorkerMaster;
 use SConcur\Tests\Impl\Worker\TestWorkerMaster;
 
 /**
- * End-to-end coverage of WorkerMaster via the bin/sconcur-server CLI, with the workers
- * launched by exec: the master spawns demo workers (HttpServer + SO_REUSEPORT +
- * masterPid) and we observe supervision, restarts, graceful shutdown, single-instance,
- * status/stop, orphan self-termination and crash-loop backoff. Each test manages its
- * own master.
+ * End-to-end coverage of WorkerMaster through a master of its own (TestWorkerMaster): the
+ * master forks demo workers (HttpServer + SO_REUSEPORT + masterPid) and we observe
+ * supervision, restarts, graceful shutdown, single-instance, status/stop, orphan
+ * self-termination and crash-loop backoff. Each test manages its own master.
  */
 class WorkerMasterTest extends TestCase
 {
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        // Named rather than left to the default, which is fork: ForkedWorkerMasterTest
-        // runs every scenario again under fork, and this class is the exec half.
-        TestWorkerMaster::launchWith('exec');
-    }
-
-    protected function tearDown(): void
-    {
-        TestWorkerMaster::launchWith(null);
-
-        parent::tearDown();
-    }
-
     public function testSpawnsWorkersAndAllServe(): void
     {
         $master = TestWorkerMaster::start(['workerCount' => 2]);
@@ -452,7 +434,7 @@ class WorkerMasterTest extends TestCase
             // stopped — immune to PID reuse of the dead master's pid.
             [$code, $output] = TestWorkerMaster::runCommand('status', $master->configPath());
 
-            self::assertSame(MasterCli::EXIT_NOT_RUNNING, $code);
+            self::assertSame(3, $code);
             self::assertStringContainsString('stopped', $output);
         } finally {
             $master->stop();
@@ -515,24 +497,27 @@ class WorkerMasterTest extends TestCase
         }
     }
 
-    public function testStartFailsForMissingWorkerScript(): void
+    /**
+     * A role that fails as the worker starts — here, a script it requires that is not there —
+     * fails every worker before any is up: the master stops with EXIT_NEVER_CAME_UP.
+     */
+    public function testARoleThatFailsAtOnceStopsTheMaster(): void
     {
         $configPath = TestWorkerMaster::writeConfig(['workerScript' => '/no/such/worker.php']);
 
-        [$code, $output] = TestWorkerMaster::runCommand('start', $configPath);
+        [$code] = TestWorkerMaster::runCommand('start', $configPath);
 
-        self::assertSame(MasterCli::EXIT_ERROR, $code);
-        self::assertStringContainsString('not found', $output);
+        self::assertSame(WorkerMaster::EXIT_NEVER_CAME_UP, $code);
     }
 
     public function testStartFailsForNegativeWorkerCount(): void
     {
-        // Caught while the config is read, not once the master is up: a usage error.
+        // Caught as the group is built, before a master starts.
         $configPath = TestWorkerMaster::writeConfig(['workerCount' => -1]);
 
         [$code, $output] = TestWorkerMaster::runCommand('start', $configPath);
 
-        self::assertSame(MasterCli::EXIT_USAGE, $code);
+        self::assertSame(1, $code);
         self::assertStringContainsString('workerCount', $output);
     }
 
@@ -633,7 +618,7 @@ class WorkerMasterTest extends TestCase
 
             [$code, $output] = TestWorkerMaster::runCommand('start', $configPath);
 
-            self::assertSame(MasterCli::EXIT_ERROR, $code);
+            self::assertSame(1, $code);
             self::assertStringContainsString('lock', $output);
             self::assertTrue($master->isRunning(), 'the first master must keep running');
         } finally {
@@ -674,19 +659,19 @@ class WorkerMasterTest extends TestCase
         try {
             [$statusCode, $statusOut] = TestWorkerMaster::runCommand('status', $configPath);
 
-            self::assertSame(MasterCli::EXIT_OK, $statusCode);
+            self::assertSame(0, $statusCode);
             self::assertStringContainsString('running', $statusOut);
 
             [$stopCode, $stopOut] = TestWorkerMaster::runCommand('stop', $configPath);
 
-            self::assertSame(MasterCli::EXIT_OK, $stopCode);
+            self::assertSame(0, $stopCode);
             self::assertStringContainsString('stopped', $stopOut);
 
             self::assertSame(0, $master->waitForExit(8.0), 'stop should let the master exit cleanly');
 
             [$afterCode, $afterOut] = TestWorkerMaster::runCommand('status', $configPath);
 
-            self::assertSame(MasterCli::EXIT_NOT_RUNNING, $afterCode);
+            self::assertSame(3, $afterCode);
             self::assertStringContainsString('stopped', $afterOut);
         } finally {
             $master->stop();
@@ -740,43 +725,51 @@ class WorkerMasterTest extends TestCase
         }
     }
 
+    /**
+     * A worker dying on startup must leave its reason in the journal even when the php.ini
+     * says display_errors=Off (the production recommendation). A worker runs on its
+     * master's php.ini, so display_errors=Off goes there; the worker forces
+     * display_errors=stderr on itself. The fatal is a real one —
+     * an exhausted memory limit — because an uncaught exception would be reported by the
+     * worker's own catch whatever display_errors says.
+     */
     public function testWorkerFatalErrorTextIsLoggedEvenWithDisplayErrorsOff(): void
     {
-        // A worker dying on startup must leave its reason in the journal even when
-        // the deployment php.ini says display_errors=Off (the production
-        // recommendation): the master forces display_errors=stderr into the worker
-        // command, so the fatal text arrives on stderr and is logged at ERROR.
+        $iniDirectory = sys_get_temp_dir() . '/sc-master-ini-' . uniqid('', true);
         $workerScript = (string) tempnam(sys_get_temp_dir(), 'sc-fatal-worker-');
-        $iniPath      = (string) tempnam(sys_get_temp_dir(), 'sc-worker-ini-');
 
-        file_put_contents($workerScript, "<?php\nthrow new RuntimeException('boom on worker startup');\n");
-        file_put_contents($iniPath, "display_errors=Off\n");
+        mkdir($iniDirectory);
+
+        file_put_contents($iniDirectory . '/display-errors.ini', "display_errors=Off\n");
+        file_put_contents(
+            $workerScript,
+            // The limit sits above what the copy of the master already holds — a lower one
+            // is refused outright — and the string is well past it.
+            "<?php\nini_set('memory_limit', (string) (memory_get_usage(true) + 8 * 1024 * 1024));\n"
+            . "\$filler = str_repeat('x', 32 * 1024 * 1024);\n",
+        );
 
         $master = TestWorkerMaster::start(
             options: [
                 'workerScript'  => $workerScript,
                 'workerCount'   => 1,
                 'restartPolicy' => 'never',
-                'phpArgs'       => [
-                    '-c',
-                    $iniPath,
-                ],
             ],
+            // Appended to the scan directory rather than replacing it, which the leading
+            // separator says: the image's own ini files still load.
+            env: ['PHP_INI_SCAN_DIR' => ':' . $iniDirectory],
             waitReachable: false,
         );
 
         try {
-            // The only worker died before it was up: the group never came up, and the
-            // master says so with its exit code instead of finishing as if all was well.
             $exitCode = $master->waitForExit(8.0);
 
             $logText = $master->logText();
 
             self::assertSame(WorkerMaster::EXIT_NEVER_CAME_UP, $exitCode, 'the master should stop: ' . $logText);
             self::assertStringContainsString('no worker came up', $logText);
-            self::assertStringContainsString('boom on worker startup', $logText);
             self::assertMatchesRegularExpression(
-                '/ERROR \[worker: \d+ \S+ #0\]: [^\n]*boom on worker startup/',
+                '/ERROR \[worker: \d+ \S+ #0\]: [^\n]*Allowed memory size/',
                 $logText,
                 'the fatal text must be logged at ERROR (stderr), not INFO',
             );
@@ -784,31 +777,8 @@ class WorkerMasterTest extends TestCase
             $master->stop();
 
             @unlink($workerScript);
-            @unlink($iniPath);
-        }
-    }
-
-    /**
-     * An exec group's workers run on the php its config names, with its phpArgs. One whose
-     * phpArgs do not load the extension cannot run a server; it never comes up, and the
-     * journal says why.
-     */
-    public function testAGroupWhosePhpArgsDoNotLoadTheExtensionNeverComesUp(): void
-    {
-        $master = TestWorkerMaster::start(
-            options: [
-                'workerCount' => 1,
-                'phpArgs'     => [],
-            ],
-            waitReachable: false,
-        );
-
-        try {
-            self::assertSame(WorkerMaster::EXIT_NEVER_CAME_UP, $master->waitForExit(10.0), $master->logText());
-            self::assertStringContainsString('sconcur', $master->logText());
-            self::assertStringContainsString('no worker came up', $master->logText());
-        } finally {
-            $master->stop();
+            @unlink($iniDirectory . '/display-errors.ini');
+            @rmdir($iniDirectory);
         }
     }
 

@@ -6,8 +6,8 @@ namespace SConcur\Worker;
 
 /**
  * Observable state of a running master, persisted as JSON next to the lock. Read by
- * the `status`/`stop` CLI commands and by external guards (cron/systemd) to decide
- * whether the master needs (re)starting.
+ * MasterControl and by external guards (cron/systemd) to decide whether the master needs
+ * (re)starting.
  *
  * `workerCount` is the total across every pool; the per-pool breakdown is in `groups`.
  */

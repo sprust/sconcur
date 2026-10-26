@@ -11,7 +11,7 @@ use SConcur\Exceptions\Worker\WorkerSpawnException;
 use SConcur\Process\ProcessControl;
 
 /**
- * A worker launched by forking the master (LaunchMode::Fork).
+ * A worker launched by forking the master.
  *
  * The fork returns twice. In the master this object is built around the child's pid and
  * pipes; in the child the constructor hands over to $child, which turns the copy into the

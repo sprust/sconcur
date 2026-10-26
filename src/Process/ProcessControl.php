@@ -30,19 +30,6 @@ use SConcur\Process\Dto\ProcessExit;
 class ProcessControl
 {
     /**
-     * The environment variable an exec'd worker finds its heartbeat descriptor's number in
-     * — env rather than argv, for the same reason the telemetry socket travels that way: the
-     * master supervises any worker script and must not feed one an argv flag it does not
-     * know. The extension takes it out of the environment as it loads.
-     *
-     * Rust: ENVIRONMENT_NAME in ext/src/process/heartbeat.rs.
-     */
-    public const string HEARTBEAT_FD_ENVIRONMENT_NAME = 'SCONCUR_HEARTBEAT_FD';
-
-    /** The descriptor a master puts an exec'd worker's heartbeat pipe on, past stdin/stdout/stderr. */
-    public const int HEARTBEAT_FD = 3;
-
-    /**
      * Forks this process. The answer comes back twice: in the parent with the child's pid
      * and pipes, in the child with a pid of 0. The child continues from here and leaves
      * through exit().
@@ -92,13 +79,23 @@ class ProcessControl
     }
 
     /**
-     * Whether this process has a heartbeat pipe to a master: an exec'd worker its master
-     * opened one for, or a child of fork(heartbeat: true). The extension settles it once —
-     * an exec'd worker's as it loads, a forked one's in the fork — and the answer stands.
+     * Whether this process has a heartbeat pipe to a master: whether it is a child of
+     * fork(heartbeat: true). The extension settles it in the fork, and the answer stands.
      */
     public static function hasHeartbeat(): bool
     {
         return (bool) Extension::get()->process(command: ProcessCommandEnum::HasHeartbeat);
+    }
+
+    /**
+     * Marks this process as a worker master's. From here on an asynchronous call in it is
+     * refused before it starts the extension's runtime: every worker is a fork of the
+     * master, and a process running the runtime's threads cannot fork. A fork's child is
+     * no master.
+     */
+    public static function markMaster(): void
+    {
+        Extension::get()->process(command: ProcessCommandEnum::MarkMaster);
     }
 
     /**

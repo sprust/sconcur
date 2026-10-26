@@ -1297,19 +1297,6 @@ PHP_MINIT_FUNCTION(sconcur)
     sconcur_original_interrupt_function = zend_interrupt_function;
     zend_interrupt_function             = sconcur_interrupt_function;
 
-    processStartup();
-
-    return SUCCESS;
-}
-
-/*
- * What a process a worker master started hands no program it runs: see
- * processRequestStartup.
- */
-PHP_RINIT_FUNCTION(sconcur)
-{
-    processRequestStartup();
-
     return SUCCESS;
 }
 
@@ -1353,7 +1340,7 @@ zend_module_entry sconcur_module_entry = {
     sconcur_functions,
     PHP_MINIT(sconcur),
     PHP_MSHUTDOWN(sconcur),
-    PHP_RINIT(sconcur),
+    NULL,  // RINIT
     PHP_RSHUTDOWN(sconcur),
     NULL,  // MINFO
     NO_VERSION_YET,

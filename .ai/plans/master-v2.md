@@ -71,36 +71,43 @@ php vendor/bin/sconcur-laravel start   (или свой entry-скрипт бе�
 
 ## Библиотека
 
-Набросок API, имена не окончательные:
+Сделано в шаге 3 (2026-10-26):
 
 ```php
-$config = new MasterConfig(
-    name: 'app',
-    runtimeDir: ...,
-    logDir: ...,
+$master = new WorkerMaster(
+    runtimeDir: '/app/storage/sconcur',
     groups: [
-        new WorkerGroupConfig(name: 'http', workerCount: 4, role: 'http', ...),
-        new WorkerGroupConfig(name: 'tasks', workerCount: 1, role: 'tasks', restartPolicy: ...),
+        new WorkerGroupConfig(
+            name: 'http',
+            role: static function (WorkerContext $context) use ($app): void {
+                (new HttpServer(address: '0.0.0.0:8080', reusePort: true, ...))->serve($handler);
+            },
+            workerCount: 4,
+        ),
+        new WorkerGroupConfig(name: 'tasks', role: ..., workerCount: 1, restartPolicy: RestartPolicy::OnFailure),
     ],
+    // name, logDir, logTo, panelPort, adminToken, onWatchdogEvent
 );
 
-exit(WorkerMaster::run(
-    config: $config,
-    roles: [
-        'http'  => static fn(GroupContext $context) => HttpServer::fromConfig($context->server, ...)->serve(...),
-        'tasks' => static fn(GroupContext $context) => ...,
-    ],
-));
+exit($master->run());
 ```
 
-- Конфиг — объекты, без JSON и без argv. `GroupContext` даёт роли номер слота, pid мастера,
-  `listenFd` группы и её блок `server` как объект.
-- Остаются из ветки: супервизия слотов в `WorkerGroup` (бэкофф, restart policy, watchdog,
-  `maxRequests` с разбросом и `Recycling`), `ForkedWorker` (подготовка ребёнка), экспорт
-  `process`, heartbeat у расширения, телеметрия на PHP-стримах (потоков не заводит, fork не
-  мешает), lock- и state-файлы, `stop` и `status` из другого процесса.
-- `MasterCli` теряет `start` с `--configPath` и `reload`. Что делать с
-  `bin/sconcur-server` — [открытый вопрос](#открытые-вопросы).
+- Конфиг — объекты, проверки в конструкторах (`InvalidConfigException`). JSON, argv и
+  worker script нет; `bin/sconcur-server`, `MasterCli`, `MasterConfig`, `MasterDefaults`,
+  `LaunchMode`, `ExecWorkerProcess` удалены (решение 2026-10-26: только PHP-API).
+- `WorkerContext` (группа, слот, pid мастера) роль получает аргументом, он же
+  `WorkerContext::current()`. Серверы и консьюмер без своего `masterPid` берут его оттуда
+  (`StopRequest::watch`); телеметрию (`SCONCUR_TELEMETRY_SOCKET`, `SCONCUR_SERVER_NAME`) —
+  из окружения, которое мастер выставляет воркеру, и в конструкторе, и в `fromArgs()`.
+- `MasterControl` (`isRunning()`, `state()`, `stop()`) — управление из другого процесса по
+  `runtimeDir` и `name`, через те же lock- и state-файлы.
+- `fromArgs()` у серверов остался — для отдельных скриптов без мастера (стенды, тестовые
+  серверы).
+- Из расширения ушёл путь exec: захват heartbeat из переменной окружения на MINIT
+  (`claim.rs`) и пометка дескрипторов на RINIT. Heartbeat бывает только от fork.
+- Тестовый мастер — `tests/servers/worker/master.php` (JSON теста → `WorkerMaster`, роль
+  выставляет argv и подключает тестовый worker script), управление — `control.php`. Им же
+  поднимается стенд `servers` (supervisord).
 
 ## Пакет Laravel
 
@@ -279,7 +286,7 @@ fork ни в одну сторону не видны, общение между 
    приложения на входе в `run()`. Тесты на каждое: роль вызвана в ребёнке, ребёнок не
    возвращается в кадры мастера, асинхронный вызов в мастере отказывает, перезапуск
    воркера — fork без повторной загрузки.
-4. `bin/sconcur-server` и JSON-конфиг — по ответу на открытый вопрос 1.
+4. ~~`bin/sconcur-server` и JSON-конфиг~~ — удалены в шаге 3.
 5. Доки EN и RU: `worker-master` заново, правки в `http-server`, `socket-server`,
    `websocket-server`, `amqp`, `adding-a-server`, README.
 6. Замеры памяти и soak на новой схеме: стенды из исходной ветки, переделанные под роли.
@@ -294,6 +301,7 @@ fork ни в одну сторону не видны, общение между 
 
 - Расширения с потоками (APM) не поддерживаются: мастер с ними отказывается стартовать
   (`assertForkable` на входе в `run()`), запасного пути через exec нет.
+- Только PHP-API: `bin/sconcur-server` и JSON-конфиг удалены.
 - `listen` у группы и поток приёма с `EPOLLEXCLUSIVE` выброшены: против `reusePort` они
   давали ±2% rps и +10% CPU при соединении на запрос. `listenFd` у серверов остаётся.
 - Журнал доступа в файл дня остаётся.
@@ -301,8 +309,6 @@ fork ни в одну сторону не видны, общение между 
 
 ## Открытые вопросы
 
-1. `bin/sconcur-server` с JSON-конфигом для проектов без фреймворка: оставить тонкой
-   обёрткой, где роль — `require` скрипта в ребёнке, или только PHP-API.
-2. Мягкая остановка keep-alive соединений при остановке воркера (`Connection: close`,
+1. Мягкая остановка keep-alive соединений при остановке воркера (`Connection: close`,
    `graceful_shutdown` hyper, `tcp_migrate_req`) — отложена 2026-10-26, к схеме не
    относится.

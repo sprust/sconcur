@@ -706,6 +706,15 @@ pub extern "C" fn push(
             Err(error) => return malloc_cstring(&format!("error: push: {error}")),
         };
 
+        // A worker master forks every worker from itself, and a process running
+        // the runtime's threads cannot fork: refused before the runtime starts.
+        if process::is_master() {
+            return malloc_cstring(
+                "error: push: this is a worker master's process, which runs nothing asynchronous — its workers are \
+                 forks of it, and a process running the runtime's threads cannot fork; make the call in a worker's role",
+            );
+        }
+
         let message = Message {
             flow_key: unsafe { owned_string(flow_key, flow_key_len) },
             // Resolved through a view: the method set is fixed, so nothing is
@@ -1062,19 +1071,6 @@ pub extern "C" fn process(
             Err(process::Error::Failed(message)) => throw_process_error(PROCESS_EXCEPTION, &message),
         }
     })
-}
-
-/// Run once as the module starts (MINIT), before PHP runs a line of the script
-/// and before any thread exists. See `process::startup`.
-#[unsafe(no_mangle)]
-pub extern "C" fn processStartup() {
-    guarded(|| (), process::startup)
-}
-
-/// Run as each request starts (RINIT). See `process::request_startup`.
-#[unsafe(no_mangle)]
-pub extern "C" fn processRequestStartup() {
-    guarded(|| (), process::request_startup)
 }
 
 #[unsafe(no_mangle)]

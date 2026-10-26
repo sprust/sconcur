@@ -6,6 +6,7 @@ namespace SConcur\Features\Server;
 
 use SConcur\Process\ProcessControl;
 use SConcur\Process\ProcessSignalEnum;
+use SConcur\Worker\WorkerContext;
 
 /**
  * Whether a long-lived worker has been asked to stop: by SIGTERM or SIGINT, or by its
@@ -39,7 +40,8 @@ class StopRequest
 
     /**
      * Starts watching SIGTERM and SIGINT. Called before the listener opens, so a signal
-     * that arrives while it does is not lost.
+     * that arrives while it does is not lost. Without a master pid of its own, a worker a
+     * master forked watches that master (WorkerContext).
      */
     public static function watch(?int $masterPid): self
     {
@@ -48,7 +50,7 @@ class StopRequest
             ProcessSignalEnum::Interrupt,
         ]);
 
-        return new self($masterPid);
+        return new self($masterPid ?? WorkerContext::current()?->masterPid);
     }
 
     public function isRequested(): bool

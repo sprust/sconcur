@@ -31,7 +31,6 @@
     },
     "bin": [
         "bin/sconcur-load",
-        "bin/sconcur-server",
         "bin/sconcur-status"
     ],
     "autoload": {

@@ -7,7 +7,7 @@ namespace SConcur\Worker;
 use Closure;
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\ExtensionNotLoadedException;
-use SConcur\Exceptions\Worker\InvalidWorkerCountException;
+use SConcur\Exceptions\Worker\InvalidConfigException;
 use SConcur\Exceptions\Worker\RuntimePathException;
 use SConcur\Process\ProcessControl;
 use SConcur\Process\ProcessSignalEnum;
@@ -15,13 +15,13 @@ use SConcur\Telemetry\TelemetryRuntime;
 use Throwable;
 
 /**
- * Supervises pools of worker processes (one per slot). An exec group's workers are php
- * processes of their own the master starts via proc_open; a fork group's are forks of the
- * master itself, so whatever the process loaded before it started the master — an
- * application — is in every worker's memory and shared with it. The master is
- * server-agnostic — it supervises any worker script; with an SO_REUSEPORT-based server,
- * for example, the workers bind one port and the kernel load-balances connections across
- * them.
+ * Supervises pools of worker processes (one per slot). Every worker is a fork of the
+ * master, so whatever the process loaded before it started the master — an application —
+ * is in every worker's memory and shared with it, and a worker that dies is replaced by
+ * another fork rather than by loading the application again. A worker runs its group's
+ * role (WorkerGroupConfig) and leaves when the role returns; the master does not know what
+ * the role does — with an SO_REUSEPORT-based server, for example, the workers bind one
+ * port and the kernel load-balances connections across them.
  *
  * Lifecycle of run(): acquire a single-instance lock, write the state file, start
  * watching for signals, spawn the workers, then loop — draining each worker's output
@@ -32,17 +32,13 @@ use Throwable;
  * The master loads the sconcur extension and takes its signals and signals its
  * workers through it (SConcur\Process\ProcessControl), so it needs neither ext-pcntl
  * nor ext-posix. It never starts the extension's runtime: a process running it could
- * not fork. See docs/worker-master.md.
+ * not fork, and the extension refuses an asynchronous call in it once run() has begun.
+ * See docs/worker-master.md.
  */
 class WorkerMaster
 {
-    /**
-     * The master injects its pid as this worker argv flag (alongside the expanded
-     * `server` flags) so a worker can self-terminate when orphaned. It is just another
-     * `--key=value` argv entry; how — or whether — a worker uses it is up to the
-     * worker script (the bundled HttpServer wires it into its orphan check).
-     */
-    public const string MASTER_PID_ARG = '--masterPid';
+    /** What the lock, state and log files are named after unless the master is named. */
+    public const string DEFAULT_NAME = 'sconcur-server';
 
     /**
      * What run() returns when a group the master started with never came up: as many of
@@ -94,29 +90,59 @@ class WorkerMaster
     protected ?TelemetryRuntime $telemetry = null;
 
     /**
-     * @param string                  $runtimeDir holds the lock and state file (local fs)
-     * @param null|string             $logDir     log directory (defaults to runtimeDir)
-     * @param string                  $name       prefix for the log and state file names
-     * @param int                     $rotateDays keep this many days of daily log files
-     * @param list<WorkerGroupConfig> $groups     the pools to supervise
-     * @param LogTarget               $logTo      where the master writes its journal (file/stdout/both)
-     * @param int                     $panelPort  port for the embedded telemetry panel (0 = telemetry off). With a
-     *                                            token set, the master collects worker snapshots over a unix socket
-     *                                            and serves GET /api/stats and the live panel on this port.
-     * @param string                  $adminToken Bearer token gating the telemetry panel; required (with panelPort)
-     *                                            to enable telemetry. Empty = off.
+     * @param string                            $runtimeDir      holds the lock and state file (local fs)
+     * @param null|string                       $logDir          log directory (defaults to runtimeDir)
+     * @param string                            $name            prefix for the log and state file names
+     * @param int                               $rotateDays      keep this many days of daily log files
+     * @param list<WorkerGroupConfig>           $groups          the pools to supervise
+     * @param LogTarget                         $logTo           where the master writes its journal (file/stdout/both)
+     * @param int                               $panelPort       port for the embedded telemetry panel (0 = telemetry off). With a
+     *                                                           token set, the master collects worker snapshots over a unix socket
+     *                                                           and serves GET /api/stats and the live panel on this port.
+     * @param string                            $adminToken      Bearer token gating the telemetry panel; required (with panelPort)
+     *                                                           to enable telemetry. Empty = off.
+     * @param null|Closure(WatchdogEvent): void $onWatchdogEvent notified whenever the watchdog acts on a
+     *                                                           worker: an application turns that into an
+     *                                                           alert, an error report or a counter of its
+     *                                                           own. Called in the master, so it must make
+     *                                                           no asynchronous call. See docs/worker-master.md
      */
     public function __construct(
         protected readonly string $runtimeDir,
+        protected readonly array $groups,
         protected readonly ?string $logDir = null,
-        protected readonly string $name = 'sconcur-server',
+        protected readonly string $name = self::DEFAULT_NAME,
         protected readonly int $rotateDays = 3,
-        protected array $groups = [],
         protected readonly LogTarget $logTo = LogTarget::File,
         protected readonly int $panelPort = 0,
         protected readonly string $adminToken = '',
         protected readonly ?Closure $onWatchdogEvent = null,
     ) {
+        // The name is a path component (lock/state/log file prefix) and a glob pattern for
+        // log pruning, so it is kept to a safe charset — no "/", no glob meta.
+        if (preg_match('/^[A-Za-z0-9._-]+$/', $name) !== 1) {
+            throw new InvalidConfigException(
+                message: sprintf('master "%s": the name may contain only letters, digits, ".", "_" and "-"', $name),
+            );
+        }
+
+        if ($groups === []) {
+            throw new InvalidConfigException(
+                message: 'WorkerMaster needs at least one group to supervise',
+            );
+        }
+
+        $names = [];
+
+        foreach ($groups as $group) {
+            if (isset($names[$group->name])) {
+                throw new InvalidConfigException(
+                    message: sprintf('group "%s" is named twice', $group->name),
+                );
+            }
+
+            $names[$group->name] = true;
+        }
     }
 
     /**
@@ -153,8 +179,14 @@ class WorkerMaster
 
         $this->ensureDirectories();
 
-        // After the config is checked, so a mistake in it is what is reported first.
-        $this->assertForkable();
+        // Every worker is a fork of this process: one that cannot fork — an extension
+        // started threads when php did, say an APM agent — is refused here, with the
+        // reason, rather than at the first worker.
+        ProcessControl::assertForkable();
+
+        // From here on an asynchronous call in this process is refused before it starts
+        // the runtime, which would leave the master unable to fork the next worker.
+        ProcessControl::markMaster();
 
         $this->masterPid = (int) getmypid();
         $this->startedAt = microtime(true);
@@ -170,12 +202,18 @@ class WorkerMaster
             logTo: $this->logTo,
         );
 
+        // Where MasterControl looks for them, by the same runtime directory and name.
+        $control = new MasterControl(
+            runtimeDir: $this->runtimeDir,
+            name: $this->name,
+        );
+
         $this->lock = new MasterLock(
-            path: $this->runtimeDir . '/' . $this->name . '.lock',
+            path: $control->lockPath(),
         );
 
         $this->stateFile = new MasterStateFile(
-            path: $this->runtimeDir . '/' . $this->name . '-state.json',
+            path: $control->stateFilePath(),
         );
 
         // Acquire the single-instance lock first: a second master fails fast here.
@@ -241,9 +279,8 @@ class WorkerMaster
     {
         if (!extension_loaded('sconcur')) {
             throw new ExtensionNotLoadedException(
-                message: 'The worker master needs the "sconcur" extension loaded: start it as'
-                    . ' php -d extension=/path/to/sconcur.so bin/sconcur-server start ..., or enable the'
-                    . ' extension in php.ini.',
+                message: 'The worker master needs the "sconcur" extension loaded: start its process as'
+                    . ' php -d extension=/path/to/sconcur.so ..., or enable the extension in php.ini.',
             );
         }
 
@@ -272,23 +309,6 @@ class WorkerMaster
                     name: $this->name,
                 ),
             );
-        }
-    }
-
-    /**
-     * Refuses up front, with the reason, a fork group in a process that cannot fork: one
-     * that already runs the extension's runtime, or threads of another extension (an APM
-     * agent started when php did). Every respawn is a fork from here, so the refusal would
-     * otherwise come with the first worker.
-     */
-    protected function assertForkable(): void
-    {
-        foreach ($this->groups as $group) {
-            if ($group->launch === LaunchMode::Fork) {
-                ProcessControl::assertForkable();
-
-                return;
-            }
         }
     }
 
@@ -363,35 +383,10 @@ class WorkerMaster
 
     protected function ensureDirectories(): void
     {
-        if ($this->groups === []) {
-            throw new InvalidWorkerCountException(
-                message: 'WorkerMaster needs at least one group to supervise.',
-            );
-        }
-
-        static::assertWorkerScripts($this->groups);
-
         $directories = array_unique([$this->runtimeDir, $this->logDir ?? $this->runtimeDir]);
 
         foreach ($directories as $directory) {
             $this->ensureWritableDir($directory);
-        }
-    }
-
-    /**
-     * Refuses a set of groups naming a script that is not there, before any worker is
-     * started: a typo is a refused start rather than a pool in a crash loop.
-     *
-     * @param list<WorkerGroupConfig> $groups
-     */
-    protected static function assertWorkerScripts(array $groups): void
-    {
-        foreach ($groups as $group) {
-            if (!is_file($group->workerScript)) {
-                throw new RuntimePathException(
-                    message: sprintf('Worker script not found for group "%s": %s', $group->name, $group->workerScript),
-                );
-            }
         }
     }
 
@@ -446,7 +441,6 @@ class WorkerMaster
             $groups[] = new MasterGroupState(
                 name: $pool->name(),
                 workerCount: $pool->workerCount(),
-                workerScript: $pool->config()->workerScript,
             );
         }
 
@@ -470,7 +464,7 @@ class WorkerMaster
     }
 
     /**
-     * The state file doubles as the control file: removing it (via the `stop` command
+     * The state file doubles as the control file: removing it (MasterControl::stop(),
      * or by hand) is the signal to shut the whole pool down gracefully. Detect its
      * disappearance and start the same drain as a SIGTERM. A wiped runtime dir (e.g. a
      * /tmp cleaner) therefore stops the master too — an external supervisor then

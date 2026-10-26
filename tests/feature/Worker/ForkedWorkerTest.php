@@ -15,10 +15,10 @@ class ForkedWorkerTest extends BaseTestCase
 {
     /**
      * The fork marks the master's objects destroyed in the worker, its handle on the
-     * extension among them, and an exit() in the worker script would leave without the
+     * extension among them, and an exit() in the worker's role would leave without the
      * teardown that handle's destructor does — the servers stop accepting, the flows end,
      * the access log is flushed. So the worker lets the inherited handle go and makes one of
-     * its own, as a php started on the script would.
+     * its own.
      */
     public function testAForkedWorkerMakesAnExtensionHandleOfItsOwn(): void
     {
@@ -29,18 +29,9 @@ class ForkedWorkerTest extends BaseTestCase
             use SConcur\Connection\Extension;
             use SConcur\Process\ProcessControl;
             use SConcur\Worker\ForkedWorker;
+            use SConcur\Worker\WorkerContext;
 
             $inherited = Extension::get();
-
-            $script = (string) tempnam(sys_get_temp_dir(), 'forked-worker-');
-
-            file_put_contents($script, <<<'WORKER'
-            <?php
-            echo json_encode([
-                'same'   => SConcur\Connection\Extension::get() === $GLOBALS['inherited'],
-                'stable' => SConcur\Connection\Extension::get() === SConcur\Connection\Extension::get(),
-            ]);
-            WORKER);
 
             $fork = ProcessControl::fork();
 
@@ -49,7 +40,13 @@ class ForkedWorkerTest extends BaseTestCase
                     title: 'forked-worker-test',
                     cwd: sys_get_temp_dir(),
                     environment: [],
-                    argv: [$script],
+                    role: static function () use ($inherited): void {
+                        echo json_encode([
+                            'same'   => Extension::get() === $inherited,
+                            'stable' => Extension::get() === Extension::get(),
+                        ]);
+                    },
+                    context: new WorkerContext(group: 'test', slot: 0, masterPid: getmypid()),
                 );
             }
 
@@ -58,8 +55,6 @@ class ForkedWorkerTest extends BaseTestCase
             while (ProcessControl::reap([$fork->pid]) === [] && microtime(true) < $deadline) {
                 usleep(10_000);
             }
-
-            unlink($script);
 
             echo stream_get_contents($fork->stdout);
             PHP,

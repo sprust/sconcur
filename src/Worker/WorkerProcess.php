@@ -9,13 +9,11 @@ use SConcur\Process\ProcessControl;
 use SConcur\Process\ProcessSignalEnum;
 
 /**
- * One supervised worker process, whichever way it was launched: ExecWorkerProcess runs a
- * php of its own on the script (for an exec group), ForkedWorkerProcess forks the master
- * (for a fork group). What the supervisor does with
- * a worker is the same either way and lives here — its stdout and stderr are non-blocking
- * pipes drained line by line into the journal (drainOutput), so a crash's output is kept
- * in one place; the liveness pipe feeds the watchdog and says when the worker is up;
- * signals go by pid.
+ * One supervised worker process: what the supervisor does with a worker, apart from how
+ * it was started (ForkedWorkerProcess). Its stdout and stderr are non-blocking pipes
+ * drained line by line into the journal (drainOutput), so a crash's output is kept in one
+ * place; the liveness pipe feeds the watchdog and says when the worker is up; signals go
+ * by pid.
  */
 abstract class WorkerProcess
 {

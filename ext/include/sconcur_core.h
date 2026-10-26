@@ -207,20 +207,6 @@ extern char *version(void);
  */
 extern int process(char *command, int commandLen, zval *payload, zval *returnValue);
 
-/*
- * What the process export settles for the process as the module starts, from
- * MINIT: before the script runs and before any thread exists, an exec'd worker
- * claims the heartbeat pipe its master opened.
- */
-extern void processStartup(void);
-
-/*
- * What the process export does as each request starts, from RINIT: in a process
- * a worker master started, once, every descriptor above stderr becomes
- * close-on-exec, the script PHP CLI has opened by then among them.
- */
-extern void processRequestStartup(void);
-
 #ifdef __cplusplus
 }
 #endif
