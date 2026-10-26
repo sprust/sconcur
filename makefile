@@ -663,12 +663,15 @@ bench-http-load-soak:
 
 # Baseline variant: same harness against the bare "/" route (no I/O fan-out) —
 # measures the pure HTTP + framework ceiling, the floor under the /all numbers.
-# Placement defaults to group, the one the docs/benchmarks.md numbers are taken
-# with: the harness's own default (1) runs ~6.5% slower on this route (the
-# pinning section of docs/load-testing.md), which reads as a regression next to
-# them. Override via env, e.g. PIN_SERVERS=1.
+# The pool runs the way production runs it: a worker master that loaded the
+# server's code first and forks the workers (LAUNCH=master). Placement defaults to
+# group, the one the docs/benchmarks.md numbers are taken with: the harness's own
+# default (1) runs ~6.5% slower on this route (the pinning section of
+# docs/load-testing.md), which reads as a regression next to them. Those numbers
+# were taken with a php per worker, which LAUNCH=exec reproduces; per-worker pinning
+# (PIN_SERVERS=1) needs it too.
 bench-http-load-stats-empty:
-	ROUTE=/ PIN_SERVERS=$${PIN_SERVERS:-group} tests/benchmarks/http/load-stats.sh
+	ROUTE=/ LAUNCH=$${LAUNCH:-master} PIN_SERVERS=$${PIN_SERVERS:-group} tests/benchmarks/http/load-stats.sh
 
 # Response-size variant: the same harness against /big/N, whose handler answers N
 # bytes and does no I/O. It is what /  and /all cannot see — everything they

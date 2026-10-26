@@ -21,6 +21,10 @@
 #   after SIGTERM before it is killed and named, default 30), SERVER_ENV (extra VAR=value
 #   assignments for the worker environment, space-separated), SERVER_ARGS (extra
 #   --flags appended to the server command line, e.g. --ladder=l1),
+#   LAUNCH: exec = a php of its own per worker, started here (the default);
+#   master = a worker master (tests/servers/http/load-master.php) that loaded the
+#   server's code first and forks the workers, the way a pool runs in production —
+#   it takes PIN_SERVERS=0 or group only, and neither DISTINCT_PORTS nor WORKER_LOGS,
 #   PIN_SERVERS: 1 = pin each worker to one logical CPU, as throughput.sh does —
 #   on an SMT machine that puts a worker's PHP thread and its runtime thread on
 #   the same logical CPU, which they are not meant to share;
@@ -83,6 +87,7 @@ WORKER_LOGS=${WORKER_LOGS:-0}
 # WRK_SCRIPT: a wrk Lua script (host path) for mixed load profiles; the URL still
 # selects host/port, the script selects the paths.
 WRK_SCRIPT=${WRK_SCRIPT:-}
+LAUNCH=${LAUNCH:-exec}
 
 # Which extension the workers load. Overridable so the same harness can drive an
 # alternative build (the Rust core spike) without a second copy of this script;
@@ -94,9 +99,22 @@ SCRIPT=/sconcur/tests/servers/http/http-server.php
 PIDFILE=/tmp/sc-http-load-$PORT.pids
 STDERRLOG=/tmp/sc-http-load-$PORT.err
 WORKERLOGPREFIX=/tmp/sc-http-load-$PORT-w
+# LAUNCH=master: the master's config and runtime directory, and the title its
+# workers show (`sconcur-server: <group> #<slot>`), by which they are found.
+MASTER_CONFIG=/tmp/sc-http-load-$PORT.master.json
+MASTER_RUNTIME=/tmp/sc-http-load-$PORT.master
+MASTER_GROUP=load-$PORT
 
 command -v wrk >/dev/null || { echo "wrk not found on host (apt-get install wrk)"; exit 1; }
 [ -z "$WRK_SCRIPT" ] || [ -f "$WRK_SCRIPT" ] || { echo "WRK_SCRIPT not found: $WRK_SCRIPT"; exit 1; }
+case "$LAUNCH" in exec|master) ;; *) echo "LAUNCH must be exec or master"; exit 1 ;; esac
+if [ "$LAUNCH" = "master" ]; then
+    # Forks inherit the master's placement and its stdout: a CPU of their own, a port of
+    # their own or a log file of their own per worker would need a master of each.
+    case "$PIN_SERVERS" in 0|group) ;; *) echo "LAUNCH=master takes PIN_SERVERS=0 or group: the workers are forks of one process"; exit 1 ;; esac
+    (( DISTINCT_PORTS == 0 )) || { echo "LAUNCH=master takes no DISTINCT_PORTS: every worker serves the group's one address"; exit 1; }
+    [ "$WORKER_LOGS" = "0" ] || { echo "LAUNCH=master takes no WORKER_LOGS: the master journals its workers' output"; exit 1; }
+fi
 
 CORES=$(nproc)
 : "${SERVERS:=$(( CORES - WRK_THREADS ))}"
@@ -191,10 +209,10 @@ kill_stray() {
             pid=${d#/proc/}
             [ "$pid" = "$self" ] && continue
             cmd=$(tr "\\0" " " < "$d/cmdline" 2>/dev/null) || continue
-            case "$cmd" in php\ *) ;; *) continue ;; esac
+            case "$cmd" in php\ *|sconcur-server:\ *) ;; *) continue ;; esac
             for port in $ports; do
                 case "$cmd" in
-                    *"--address=0.0.0.0:$port "*)
+                    *"--address=0.0.0.0:$port "*|*"sc-http-load-$port.master.json"*|"sconcur-server: load-$port #"*)
                         echo "WARNING: stray server $pid on port $port from an earlier run; killed" >&2
                         kill -9 "$pid" 2>/dev/null || true
                         ;;
@@ -300,6 +318,11 @@ if (( DISTINCT_PORTS == 1 )); then
 else
     echo "   server procs    : $SERVERS  (reusePort)"
 fi
+if [ "$LAUNCH" = "master" ]; then
+    echo "   launch          : master (workers are forks of a master that loaded the server's code)"
+else
+    echo "   launch          : exec (a php of its own per worker)"
+fi
 echo "   placement       : $placement  (PIN_SERVERS=$PIN_SERVERS)"
 echo "   wrk threads     : $WRK_THREADS (pinned to cores $WRK_CPULIST)"
 echo "   connections     : $CONNECTIONS"
@@ -318,6 +341,67 @@ echo "=================================================================="
 stop_servers
 kill_stray
 
+# LAUNCH=master: one group of SERVERS workers on the port, with what an exec'd worker
+# gets on its command line in its server block and environment, and no access lines (an
+# exec'd worker's go to /dev/null as well). The master's pid goes to the pidfile: SIGTERM
+# to it drains the whole pool, and its workers die with it.
+start_master() {
+    python3 - "$MASTER_RUNTIME" "$MASTER_GROUP" "$SCRIPT" "$SERVERS" "$PORT" "$MAXCONCURRENCY" \
+        "$DB_POOL_SIZE" "${SERVER_ENV:-}" "${SERVER_ARGS:-}" <<'PY' |
+import json, shlex, sys
+runtime, group, script, servers, port, max_concurrency, pool, server_env, server_args = sys.argv[1:]
+env = {'SCONCUR_DB_POOL_SIZE': pool}
+for assignment in shlex.split(server_env):
+    name, _, value = assignment.partition('=')
+    env[name] = value
+print(json.dumps({
+    'runtimeDir': runtime,
+    'logDir': runtime,
+    'name': group,
+    'logTo': 'file',
+    'groups': [{
+        'name': group,
+        'workerScript': script,
+        'workerCount': int(servers),
+        'workerArgs': shlex.split(server_args),
+        'server': {'address': '0.0.0.0:' + port, 'reusePort': True, 'maxConcurrency': int(max_concurrency)},
+        'accessLog': 'off',
+        'env': env,
+    }],
+}, indent=2))
+PY
+        $DOCKER_COMPOSE exec -T php sh -c 'cat > "'"$MASTER_CONFIG"'"'
+
+    pin=""
+    [ "$PIN_SERVERS" = "group" ] && pin="taskset -c 0-$(( SERVERS - 1 ))"
+
+    $DOCKER_COMPOSE exec -T php sh -c '
+        : > "'"$STDERRLOG"'"
+        rm -rf "'"$MASTER_RUNTIME"'"
+        mkdir -p "'"$MASTER_RUNTIME"'"
+        '"$pin"' php -d extension='"$EXTENSION"' /sconcur/tests/servers/http/load-master.php "'"$MASTER_CONFIG"'" \
+            >/dev/null 2>>"'"$STDERRLOG"'" &
+        echo $! > "'"$PIDFILE"'"
+    '
+}
+
+# The pids whose memory is summed: the workers, by their title under a master; the
+# servers this script started otherwise.
+WORKER_PIDS='
+    if [ "'"$LAUNCH"'" = "master" ]; then
+        for d in /proc/[0-9]*; do
+            case "$(tr "\0" " " < "$d/cmdline" 2>/dev/null)" in
+                "sconcur-server: '"$MASTER_GROUP"' #"*) echo "${d#/proc/}" ;;
+            esac
+        done
+    else
+        cat "'"$PIDFILE"'"
+    fi
+'
+
+if [ "$LAUNCH" = "master" ]; then
+    start_master
+else
 # Spawn one server per core (synchronous exec so the pidfile is fully written).
 # With DISTINCT_PORTS each worker gets its own port and no SO_REUSEPORT, so a
 # proxy in front decides the placement instead of the kernel.
@@ -358,6 +442,7 @@ $DOCKER_COMPOSE exec -T php sh -c '
         i=$(( i + 1 ))
     done
 '
+fi
 
 # Wait until /all answers (the lazy feature init + backend connects happen here).
 ready=0
@@ -368,6 +453,8 @@ done
 if (( ready != 1 )); then
     echo "servers did not become reachable / $ROUTE did not answer on $IP:$PROBE_PORT" >&2
     $DOCKER_COMPOSE exec -T php sh -c 'tail -n 20 "'"$STDERRLOG"'" 2>/dev/null' >&2 || true
+    # Under a master the workers' output is in its journal.
+    [ "$LAUNCH" = "master" ] && { $DOCKER_COMPOSE exec -T php sh -c 'tail -n 20 "'"$MASTER_RUNTIME"'"/*.log 2>/dev/null' >&2 || true; }
     exit 1
 fi
 echo "servers up; $ROUTE answers. starting load + sampling..."
@@ -388,10 +475,10 @@ SAMPLE_START=$(date +%s)
         elapsed=$(( $(date +%s) - SAMPLE_START ))
         total_kb=$($DOCKER_COMPOSE exec -T php sh -c '
             total=0
-            while read -r pid; do
+            for pid in $('"$WORKER_PIDS"'); do
                 kb=$(awk "/^VmRSS:/{print \$2}" "/proc/$pid/status" 2>/dev/null)
                 [ -n "$kb" ] && total=$(( total + kb ))
-            done < "'"$PIDFILE"'"
+            done
             echo "$total"
         ' 2>/dev/null | tr -d "[:space:]") || true
         [ -n "$total_kb" ] && echo "$elapsed $total_kb" >> "$RSS"
