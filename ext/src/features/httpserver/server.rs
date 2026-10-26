@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 use crate::features::httpserver::listen::Listener;
 use crate::features::httpserver::payloads::RequestEvent;
@@ -164,7 +165,14 @@ pub struct ServerState {
 }
 
 /// Runs the accept loop until the flow is cancelled or accepting is stopped.
-/// Each accepted connection is served by its own task on the shared runtime.
+/// Each accepted connection is served by its own task on the shared runtime,
+/// tracked by `connections`, which is closed once the loop ends: its wait() then
+/// says when the last connection is gone.
+///
+/// Once accepting stops, every connection is shut down gracefully: one serving a
+/// request finishes it — its response goes out with `Connection: close` — and
+/// closes; an idle keep-alive one closes at once. A client that would have sent its
+/// next request on it connects again, to whoever still accepts.
 #[allow(clippy::too_many_arguments)]
 pub async fn accept_loop(
     registries: &'static Registries,
@@ -177,6 +185,7 @@ pub async fn accept_loop(
     stats: Option<Arc<RequestStats>>,
     flow_ctx: CancellationToken,
     stop_accepting: CancellationToken,
+    connections: TaskTracker,
 ) {
     // Caps requests in flight, which bounds buffered bodies as much as it bounds
     // work: the permit is taken before the body is read.
@@ -197,8 +206,8 @@ pub async fn accept_loop(
         let accepted = tokio::select! {
             biased;
 
-            _ = flow_ctx.cancelled() => return,
-            _ = stop_accepting.cancelled() => return,
+            _ = flow_ctx.cancelled() => break,
+            _ = stop_accepting.cancelled() => break,
             accepted = listener.accept() => accepted,
         };
 
@@ -214,8 +223,9 @@ pub async fn accept_loop(
         let requests = requests.clone();
         let slots = slots.clone();
         let stats = stats.clone();
+        let stopping = stop_accepting.clone();
 
-        tokio::spawn(async move {
+        connections.spawn(async move {
             let service = service_fn(move |request: Request<hyper::body::Incoming>| {
                 let flow_key = flow_key.clone();
                 let requests = requests.clone();
@@ -244,11 +254,23 @@ pub async fn accept_loop(
                 }
             });
 
-            let _ = hyper::server::conn::http1::Builder::new()
-                .serve_connection(TokioIo::new(stream), service)
-                .await;
+            let connection = hyper::server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), service);
+
+            tokio::pin!(connection);
+
+            tokio::select! {
+                _ = connection.as_mut() => {}
+                _ = stopping.cancelled() => {
+                    connection.as_mut().graceful_shutdown();
+
+                    let _ = connection.await;
+                }
+            }
         });
     }
+
+    connections.close();
 }
 
 /// A response body is either one buffer or a stream of chunks, so it is boxed.

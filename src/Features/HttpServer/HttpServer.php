@@ -65,8 +65,8 @@ readonly class HttpServer
      *                                                                                                  listener first, drains in-flight, exits cleanly) so a master /
      *                                                                                                  supervisor can respawn a fresh process. Reuses the graceful-
      *                                                                                                  shutdown path: the limiting request is dispatched and drained
-     *                                                                                                  like any in-flight one, while a request accepted during the
-     *                                                                                                  drain is answered 503 (see docs/http-server.md). Under a worker
+     *                                                                                                  like any in-flight one, and so is one that reaches an open
+     *                                                                                                  connection during the drain (see docs/http-server.md). Under a worker
      *                                                                                                  master each worker stops at a number drawn between it and half
      *                                                                                                  again as many, so a pool does not restart as one
      *                                                                                                  (Scheduler::spreadLimit(), docs/worker-master.md).
@@ -245,6 +245,10 @@ readonly class HttpServer
                 },
                 preemptionQuantumMs: $this->preemptionQuantumMs,
                 handlerTimeoutMs: $this->handlerTimeoutMs,
+                // The core ends the stream once every connection has written its last
+                // response and closed (or shutdownTimeoutMs has passed), so the worker
+                // does not leave while a response is still on its way out.
+                drainsToStreamEnd: true,
             );
         } finally {
             $stopRequest->release();

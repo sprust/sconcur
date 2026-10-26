@@ -481,17 +481,90 @@ class WorkerMasterTest extends TestCase
 
             $status = (int) curl_getinfo($slow, CURLINFO_HTTP_CODE);
             $body   = (string) curl_multi_getcontent($slow);
+            $error  = curl_error($slow);
 
             curl_multi_remove_handle($multi, $slow);
             curl_close($slow);
             curl_multi_close($multi);
 
-            self::assertSame(200, $status, 'the in-flight request must drain, not be dropped');
+            $master->waitForExit(8.0);
+
+            self::assertSame(
+                200,
+                $status,
+                'the in-flight request must drain, not be dropped: ' . $error . "\n" . $master->logText(),
+            );
             self::assertSame('slept', $body);
 
             self::assertSame(0, $master->waitForExit(8.0), 'removing the state file must gracefully stop the master');
             self::assertSame(0, $master->workerPid(), 'all workers must be stopped with the master');
             self::assertStringContainsString('state file removed', $master->logText());
+        } finally {
+            $master->stop();
+        }
+    }
+
+    /**
+     * A response the worker is still writing when it is told to stop goes out whole: the
+     * server drains until its connections have written their last responses and closed,
+     * not only until no handler is in flight. The client reads slowly, so the body is still
+     * on its way when the stop arrives; a worker that left as soon as its handler returned
+     * cut it off.
+     */
+    public function testAResponseStillBeingWrittenGoesOutWholeWhenTheWorkerStops(): void
+    {
+        // Well past what the loopback socket buffers take, or the kernel would hold the
+        // whole body before the stop and there would be nothing left to cut off.
+        $bytes  = 16_000_000;
+        $master = TestWorkerMaster::start([
+            'workerCount'       => 1,
+            // Room for the second the body takes, before the master kills the worker.
+            'shutdownTimeoutMs' => 5_000,
+        ]);
+
+        try {
+            $multi = curl_multi_init();
+            $slow  = curl_init($master->baseUrl() . '/big/' . $bytes);
+
+            curl_setopt_array($slow, [
+                CURLOPT_RETURNTRANSFER        => true,
+                CURLOPT_TIMEOUT               => 8,
+                // A second's worth: the socket buffers fill and the rest waits on the
+                // client.
+                CURLOPT_MAX_RECV_SPEED_LARGE  => $bytes,
+            ]);
+
+            curl_multi_add_handle($multi, $slow);
+
+            $running = null;
+
+            // Until the body has started to arrive: the handler has answered.
+            do {
+                curl_multi_exec($multi, $running);
+                curl_multi_select($multi, 0.05);
+            } while ($running > 0 && curl_getinfo($slow, CURLINFO_SIZE_DOWNLOAD) <= 0);
+
+            unlink($master->stateFilePath());
+
+            do {
+                curl_multi_exec($multi, $running);
+
+                if ($running > 0) {
+                    curl_multi_select($multi, 1.0);
+                }
+            } while ($running > 0);
+
+            $status = (int) curl_getinfo($slow, CURLINFO_HTTP_CODE);
+            $length = strlen((string) curl_multi_getcontent($slow));
+
+            curl_multi_remove_handle($multi, $slow);
+            curl_close($slow);
+            curl_multi_close($multi);
+
+            $master->waitForExit(8.0);
+
+            self::assertSame(200, $status, $master->logText());
+            self::assertSame($bytes, $length, 'the body was cut off: ' . $master->logText());
         } finally {
             $master->stop();
         }

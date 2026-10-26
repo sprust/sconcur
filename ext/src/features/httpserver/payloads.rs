@@ -12,9 +12,9 @@ use crate::dto::{Map, Value};
 /// PHP: SConcur\Features\HttpServer\Payloads\ServePayload.
 ///
 /// Every field of the wire payload is decoded. The core acts on `address`,
-/// `reuse_port`, `listen_fd`, `handler_timeout_ms`, the body limit,
-/// `max_concurrency` and the telemetry block; the read-header/read/write/idle/shutdown timeouts are
-/// accepted and not applied.
+/// `reuse_port`, `listen_fd`, `handler_timeout_ms`, `shutdown_timeout_ms`, the body
+/// limit, `max_concurrency` and the telemetry block; the read-header/read/write/idle
+/// timeouts are accepted and not applied.
 #[allow(dead_code)]
 #[derive(Deserialize, Default)]
 pub struct ServePayload {

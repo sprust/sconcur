@@ -782,6 +782,14 @@ class Scheduler
      *                                                                 Preemption is what lets it reach a handler
      *                                                                 that never waits, so the two options work
      *                                                                 together
+     * @param bool                                $drainsToStreamEnd   whether the drain lasts until the server's
+     *                                                                 stream ends rather than until no handler is
+     *                                                                 in flight: for a server whose core ends the
+     *                                                                 stream once its connections have written
+     *                                                                 their last responses and closed, so the
+     *                                                                 process does not leave while one is being
+     *                                                                 written. What arrives meanwhile is handled,
+     *                                                                 since a connection waits for its answer
      */
     public function serve(
         string $serverFlowKey,
@@ -793,6 +801,7 @@ class Scheduler
         Closure $onShutdownStep,
         int $preemptionQuantumMs = 0,
         int $handlerTimeoutMs = 0,
+        bool $drainsToStreamEnd = false,
     ): void {
         // Screened here rather than at the first request: the servers take it from argv,
         // where a negative one is only a typo, and the extension side clamps it to zero. Left to
@@ -800,6 +809,9 @@ class Scheduler
         static::assertTimeout($handlerTimeoutMs);
 
         $draining = false;
+
+        // Whether the server's stream has ended while handlers were still in flight.
+        $streamEnded = false;
 
         $lastDrainDiagnosticAt = 0.0;
 
@@ -847,7 +859,7 @@ class Scheduler
                     $onDrainStart();
                 }
 
-                if ($draining && $this->spawnedCount === 0) {
+                if ($draining && $this->spawnedCount === 0 && (!$drainsToStreamEnd || $streamEnded)) {
                     $onShutdownStep('drained all in-flight');
 
                     break;
@@ -922,14 +934,30 @@ class Scheduler
                             );
                         }
 
+                        // The core ended it once its connections closed. A handler that has
+                        // written its last response may still be finishing what it does
+                        // after it, so the drain goes on until none is left.
+                        if ($drainsToStreamEnd && $draining && $this->spawnedCount > 0) {
+                            $streamEnded = true;
+
+                            continue;
+                        }
+
+                        if ($drainsToStreamEnd && $draining) {
+                            $onShutdownStep('drained all in-flight');
+                        }
+
                         break;
                     }
 
-                    // While draining, new requests are not handled. Their connections
-                    // already handed the event over and wait for an answer that does not
-                    // come, so they are closed when the worker exits; only a request that
-                    // reaches the extension after the server flow is stopped gets a 503.
-                    if ($draining) {
+                    // While draining, a server whose stream ends on its own still handles
+                    // what arrives: its connection waits for the answer, and keeps the
+                    // stream from ending until it has one. Otherwise new requests are not
+                    // handled; their connections already handed the event over and wait
+                    // for an answer that does not come, so they are closed when the worker
+                    // exits, and a request that reaches the extension after the server flow
+                    // is stopped gets a 503.
+                    if ($draining && !$drainsToStreamEnd) {
                         continue;
                     }
 

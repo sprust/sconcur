@@ -12,6 +12,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 use crate::dto::{Result, Value};
 use crate::errs::Factory;
@@ -73,7 +74,11 @@ impl Feature for HttpFeature {
 /// task) per request. Backpressure is layered: add_result blocks on the shared
 /// results buffer, the requests channel buffers accepts, and beyond that the
 /// connection task blocks on its send. The stream ends with the first no-next
-/// result (server stopped).
+/// result: once accepting has stopped and every connection has closed — each one
+/// finishes the response it is writing first (see `server::accept_loop`) — or
+/// shutdown_timeout_ms after accepting stopped, whichever is first. PHP keeps
+/// handling what arrives until then, so no response is left half-way when the
+/// process leaves.
 async fn handle_serve(task: Task) {
     let message = task.message();
     let start_time = Instant::now();
@@ -136,6 +141,8 @@ async fn handle_serve(task: Task) {
     // requests are still in flight and the PHP serve loop unwinds them.
     let _stream_open = requests_tx.clone();
 
+    let connections = TaskTracker::new();
+
     tokio::spawn(server::accept_loop(
         registries(),
         listener,
@@ -146,8 +153,27 @@ async fn handle_serve(task: Task) {
         payload.max_concurrency,
         request_stats,
         task.context().clone(),
-        stop_accepting,
+        stop_accepting.clone(),
+        connections.clone(),
     ));
+
+    // Accepting stopped, and the connections are gone or have had their time. Zero
+    // waits for all of them.
+    let shutdown_timeout = (payload.shutdown_timeout_ms > 0)
+        .then(|| std::time::Duration::from_millis(payload.shutdown_timeout_ms as u64));
+
+    let drained = async {
+        stop_accepting.cancelled().await;
+
+        match shutdown_timeout {
+            Some(timeout) => {
+                let _ = tokio::time::timeout(timeout, connections.wait()).await;
+            }
+            None => connections.wait().await,
+        }
+    };
+
+    tokio::pin!(drained);
 
     // The pump runs as this task's own body rather than in a second spawn: the
     // serve task has nothing else to do, and keeping it here means the stream
@@ -165,6 +191,9 @@ async fn handle_serve(task: Task) {
                 return;
             }
             received = requests_rx.recv() => received,
+            // After what is queued: a request handed over before its connection
+            // closed — its client gone — is still PHP's to see.
+            _ = &mut drained => None,
         };
 
         match received {

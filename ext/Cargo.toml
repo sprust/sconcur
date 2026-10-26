@@ -25,7 +25,7 @@ serde      = { version = "1", features = ["derive"] }
 # is built on tokio::fs, and until it was added this crate compiled against it
 # only because a dependency happened to switch it on.
 tokio      = { version = "1", features = ["rt", "rt-multi-thread", "net", "time", "sync", "io-util", "macros", "fs"] }
-tokio-util = "0.7"
+tokio-util = { version = "0.7", features = ["rt"] }
 hyper       = { version = "1", features = ["server", "http1"] }
 hyper-util  = { version = "0.1", features = ["tokio", "server"] }
 http-body-util = "0.1"
