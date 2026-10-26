@@ -571,6 +571,49 @@ class WorkerMasterTest extends TestCase
     }
 
     /**
+     * A client that connected before the stop and has not sent its request yet is still
+     * answered: the worker gives the connection a moment for its first request, answers it
+     * with `Connection: close` and only then closes it. The request goes out once the
+     * worker has stopped accepting, so a worker that closed every idle connection at that
+     * point turned the client away with nothing.
+     */
+    public function testAClientThatConnectedBeforeTheStopIsAnswered(): void
+    {
+        $master = TestWorkerMaster::start([
+            'workerCount'       => 1,
+            'shutdownTimeoutMs' => 5_000,
+        ]);
+
+        try {
+            $client = stream_socket_client('tcp://127.0.0.1:' . $master->port(), $errorCode, $errorMessage, 2.0);
+
+            self::assertIsResource($client, 'could not connect: ' . $errorMessage);
+
+            unlink($master->stateFilePath());
+
+            $stopped = $this->waitFor(
+                static fn(): bool => str_contains($master->logText(), 'stop accepting'),
+                timeoutSeconds: 5.0,
+            );
+
+            self::assertTrue($stopped, 'the worker should stop accepting: ' . $master->logText());
+
+            fwrite($client, "GET /pid HTTP/1.1\r\nHost: localhost\r\n\r\n");
+
+            stream_set_timeout($client, 5);
+
+            $response = (string) stream_get_contents($client);
+
+            fclose($client);
+
+            self::assertStringStartsWith('HTTP/1.1 200', $response, 'the client was turned away: ' . $master->logText());
+            self::assertMatchesRegularExpression('/^connection: close\r$/mi', $response);
+        } finally {
+            $master->stop();
+        }
+    }
+
+    /**
      * A role that fails as the worker starts — here, a script it requires that is not there —
      * fails every worker before any is up: the master stops with EXIT_NEVER_CAME_UP.
      */

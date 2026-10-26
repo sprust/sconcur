@@ -11,13 +11,59 @@ use tokio::net::{TcpListener, TcpStream};
 pub const LISTEN_BACKLOG: i32 = 4096;
 
 /// What a server accepts from.
-pub struct Listener(TcpListener);
+pub struct Listener {
+    socket: TcpListener,
+    /// Taken over from a descriptor someone else bound: the processes that hold it
+    /// go on accepting from its queue after this one stops.
+    shared: bool,
+}
 
 impl Listener {
     /// The next connection. Safe to drop half way, as a select! does: a
     /// connection is never lost to an accept that did not finish.
     pub async fn accept(&mut self) -> std::io::Result<(TcpStream, SocketAddr)> {
-        self.0.accept().await
+        self.socket.accept().await
+    }
+
+    /// The connections the kernel has queued on this socket and nobody has accepted
+    /// yet, taken now, for a server that is about to close it. Closing a listening
+    /// socket resets what is in its queue, and on an SO_REUSEPORT socket nothing
+    /// moves it to a sibling — those are clients the kernel already sent to this
+    /// process. None for a shared socket, whose queue the others still accept from.
+    ///
+    /// Taken with plain non-blocking accepts until the queue is empty, rather than
+    /// through the runtime, whose readiness may not have caught up with the last
+    /// arrivals. A connection that arrives between the last of them and the close is
+    /// still reset; net.ipv4.tcp_migrate_req (Linux 5.14) is what hands those to a
+    /// sibling.
+    pub fn take_queued(&self) -> Vec<(TcpStream, SocketAddr)> {
+        let mut queued = Vec::new();
+
+        if self.shared {
+            return queued;
+        }
+
+        let socket = socket2::SockRef::from(&self.socket);
+
+        // The socket is non-blocking, as the runtime needs it: an empty queue is
+        // WouldBlock. Anything else ends the taking as well.
+        while let Ok((accepted, address)) = socket.accept() {
+            let Some(address) = address.as_socket() else {
+                continue;
+            };
+
+            let stream = std::net::TcpStream::from(accepted);
+
+            if stream.set_nonblocking(true).is_err() {
+                continue;
+            }
+
+            if let Ok(stream) = TcpStream::from_std(stream) {
+                queued.push((stream, address));
+            }
+        }
+
+        queued
     }
 }
 
@@ -26,7 +72,10 @@ impl Listener {
 pub fn open(address: &str, reuse_port: bool, listen_fd: Option<i64>) -> std::io::Result<Listener> {
     match listen_fd {
         Some(descriptor) => adopt(descriptor),
-        None => Ok(Listener(listen(address, reuse_port)?)),
+        None => Ok(Listener {
+            socket: listen(address, reuse_port)?,
+            shared: false,
+        }),
     }
 }
 
@@ -102,5 +151,38 @@ fn adopt(descriptor: i64) -> std::io::Result<Listener> {
 
     socket.set_nonblocking(true)?;
 
-    Ok(Listener(TcpListener::from_std(socket.into())?))
+    Ok(Listener {
+        socket: TcpListener::from_std(socket.into())?,
+        shared: true,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What the kernel queued before the server took it is all there, and the socket
+    /// is still the runtime's to accept from afterwards.
+    #[tokio::test]
+    async fn the_connections_queued_before_a_stop_are_taken_whole() {
+        let listener = open("127.0.0.1:0", false, None).unwrap();
+        let address = listener.socket.local_addr().unwrap();
+
+        // Connected, and never accepted: the handshake completes in the kernel, which
+        // queues them on the socket.
+        let clients: Vec<_> = (0..5).map(|_| std::net::TcpStream::connect(address).unwrap()).collect();
+
+        let queued = listener.take_queued();
+
+        assert_eq!(queued.len(), clients.len(), "the queue was not taken whole");
+
+        let mut peers: Vec<_> = queued.iter().map(|(_, peer)| *peer).collect();
+        let mut locals: Vec<_> = clients.iter().map(|client| client.local_addr().unwrap()).collect();
+
+        peers.sort();
+        locals.sort();
+
+        assert_eq!(peers, locals, "a taken connection is not one of the clients");
+        assert!(listener.take_queued().is_empty(), "an empty queue gave something");
+    }
 }
