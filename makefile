@@ -395,6 +395,37 @@ mem-leak-files:
 		php -d extension=$(SCONCUR_EXT) \
 		tests/mem-leak/files-soak.php $(or $(scenario),read-large) $(or $(seconds),120)
 
+# Soak test for the worker master under failures: one master per scenario, with workers and
+# requests failing over and over around steady load, reporting what the master and the
+# surviving workers hold — memory, descriptors, threads, zombies, the PHP heap and the
+# runtime's tasks — and a verdict per scenario. Scenarios: oom, kill, exit, fatal, spin,
+# block, recycle, crash-at-start, sigterm, throw, disconnect, slowloris, bad-http, orphan,
+# handler-timeout, external, preempt; all of them, four minutes each, by default (about an
+# hour and ten minutes). launch= is fork or preload (the default), or both. The verdict
+# reads only past warmup= seconds (60 by default), so a short run needs a shorter one.
+# e.g.: make mem-leak-worker scenario=oom,exit seconds=600 launch=fork,preload
+mem-leak-worker:
+	$(DOCKER_COMPOSE) exec -e LAUNCH=$(or $(launch),preload) -e WARMUP_SECONDS=$(or $(warmup),60) php \
+		php -d extension=$(SCONCUR_EXT) \
+		tests/mem-leak/worker-soak.php $(or $(scenario),all) $(or $(seconds),240)
+
+# What mem-leak-worker printed, saved to a file, laid out: the first read after the warm-up
+# against the last and the requests lost per worker death, a line per scenario; with
+# scenario=, every read of that one (zombies, the master's descriptors) to tell a SUSPECT
+# from a read that caught a worker being spawned or reaped.
+# e.g.: make mem-leak-worker-summary file=.bench-runs/soak.txt scenario="preload crash-at-start"
+mem-leak-worker-summary:
+	$(DOCKER_COMPOSE) exec php php tests/mem-leak/worker-soak-summary.php $(file) "$(scenario)"
+
+# How a worker dies of exit() in a request, step by step: the exit scenario with its workers
+# tracing exit() and their shutdown functions, and /proc polled for when each one is dead.
+# Medians of each step beside the requests lost per death; run it for both launches.
+# e.g.: make mem-leak-worker-exit-timing launch=preload seconds=30
+mem-leak-worker-exit-timing:
+	$(DOCKER_COMPOSE) exec -e LAUNCH=$(or $(launch),preload) php \
+		php -d extension=$(SCONCUR_EXT) \
+		tests/mem-leak/worker-exit-timing.php $(or $(seconds),30)
+
 bench-redis-get:
 	$(PHP_EXT) tests/benchmarks/redis/get.php ${c}
 

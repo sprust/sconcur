@@ -1,9 +1,10 @@
 # Reading a soak
 
-> The failure soaks this describes (`make mem-leak-worker*`) ran on the fork server design
-> and were taken out with it; they come back for the master built in the application's
-> process — step 6 of [plans/master-v2.md](plans/master-v2.md). The memory bench
-> (`make bench-worker-memory*`) is back, with the arms exec, fork and preload. The methods
+> The numbers below come from the 0.17.0 checks on the fork server design (launches exec,
+> fork and bootstrap). The tools now run on the master built in the application's process:
+> the memory bench's arms are exec (a php per worker, no master), fork and preload; the
+> failure soak's launches are fork and preload (the master loaded the application before
+> `run()`), and the fork server and reload scenarios are gone with the design. The methods
 > stand.
 
 How the worker master's memory and failure soaks are run, read and taken apart, and the
@@ -17,12 +18,12 @@ through it".
 | What | Run | Answers |
 |---|---|---|
 | `tests/benchmarks/worker/memory.php` | `make bench-worker-memory`, `make bench-worker-memory-soak` | what a pool costs by how its workers start (a php each, forks of a master, forks of a master that loaded the application first) and how it moves under a long load; reads every worker's PHP heap through `/memory` |
-| `tests/mem-leak/worker-soak.php` | `make mem-leak-worker scenario=<list> seconds=<n> launch=<list> [warmup=<n>]` | whether the master, the fork server or the surviving workers keep a piece of failures repeated for minutes; why each failed background request failed |
+| `tests/mem-leak/worker-soak.php` | `make mem-leak-worker scenario=<list> seconds=<n> launch=<list> [warmup=<n>]` | whether the master or the surviving workers keep a piece of failures repeated for minutes; why each failed background request failed |
 | `tests/mem-leak/worker-soak-summary.php` | `make mem-leak-worker-summary file=<output> [scenario=...]` | the soak's output laid out: first read after the warm-up against the last, losses per death; every read of one scenario |
 | `tests/mem-leak/worker-exit-timing.php` | `make mem-leak-worker-exit-timing launch=<one> seconds=<n>` | how long each step of a worker's death by `exit()` takes, beside the requests it cost |
 
 Save a run's output (`> .bench-runs/<name>.txt`, gitignored): the soak prints its verdicts
-only at the end, and a run of everything takes an hour and a half. (The 0.17.0 checks'
+only at the end, and a run of everything takes over an hour. (The 0.17.0 checks'
 outputs were kept locally under `.bench-runs/soak-2026-10-22/` and are not in the
 repository; their findings are recorded in the release plan.)
 
@@ -43,8 +44,7 @@ repository; their findings are recorded in the release plan.)
 
 ## Descriptors, threads, zombies
 
-- A master of an exec group and a fork server hold three pipes per worker (stdout,
-  stderr, heartbeat). Count descriptors beyond those ("own"), or every restart looks
+- The master holds three pipes per worker (stdout, stderr, heartbeat). Count descriptors beyond those ("own"), or every restart looks
   like growth.
 - A read can land while a worker is being spawned or reaped, and the own count then
   swings either way: the read may find a worker whose pipes are already closed, or miss
@@ -54,7 +54,6 @@ repository; their findings are recorded in the release plan.)
   SUSPECT on descriptors is checked against the raw total (`scenario=` in the summary).
 - A zombie is a leak only when the same pid is there in two reads in a row. A new pid in
   every read is a death not yet reaped.
-- A fork server read at 0 MiB is one caught right after it was replaced.
 
 ## Losses: the requests a failure costs
 
@@ -87,11 +86,11 @@ is slow or skipped:
    their shutdown functions in ~0.1 ms and died in 3 and 5 ms: nothing was slow.
 2. Equal times and unequal losses mean a step was skipped. Look for what runs at the end
    of one process and not the other: destructors (a fork marks the parent's objects
-   destroyed — `sconcur_after_fork_in_child()` — so a singleton the fork server created
+   destroyed — `sconcur_after_fork_in_child()` — so a singleton the master created
    never destructs in a worker), shutdown functions registered before the fork, `_exit`
    paths that skip PHP's shutdown.
 3. Fix, rerun the one scenario for both launches (`make mem-leak-worker scenario=exit,fatal
-   seconds=40 warmup=10 launch=exec,bootstrap`), compare losses per death.
+   seconds=40 warmup=10 launch=fork,preload`), compare losses per death.
 
 ## Proving the test catches it
 

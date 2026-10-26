@@ -562,6 +562,60 @@ def section_spread():
                                    for connections in ('256', '32')])
 
 
+def section_worker_memory():
+    """What 12 workers take in memory by how they start: a php each, forks of a master, and
+    forks of a master that loaded the application first. Deterministic to 0.1 MiB, so one run."""
+    output = php('tests/benchmarks/worker/memory.php', env={'WORKERS': '12', 'REQUESTS': '5000'})
+    save_raw('worker-memory', 'memory', output)
+    pattern = r'^(\w+)\s+served\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB'
+    for arm, pss, rss, private_dirty, per_worker in re.findall(pattern, output, re.M):
+        summary = {'pss_mib': float(pss), 'rss_mib': float(rss), 'private_dirty_mib': float(private_dirty),
+                   'pss_per_worker_mib': float(per_worker)}
+        record('worker-memory', arm, {'workers': 12, 'requests': 5000}, [summary], summary)
+        say(f'[worker-memory] {arm}: Pss {pss} MiB, {per_worker} MiB per worker, Private_Dirty {private_dirty} MiB')
+
+
+def section_worker_memory_soak():
+    """The same pools under a long run on /work, with and without OPcache: whether preload's
+    Pss creeps towards exec's as the workers touch the pages their master loaded,
+    and whether PHP's heap in the workers keeps still meanwhile. 15 minutes an arm, six arms."""
+    trend_pattern = (r'^(\w+)\s+t=(\d+)s\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB\s+[\d.]+ MiB'
+                     r'\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB\s+([\d.]+) MiB')
+    soak_pattern = (r'^(\w+)\s+soak: (\d+) answered, (\d+) failed \((\d+) rps\);'
+                    r' heap used sum ([\d.]+) -> ([\d.]+) MiB \(([+-][\d.]+) MiB\), slope after 2 min (\S+)(?: MiB/min)?;'
+                    r' Pss\+SwapPss sum ([\d.]+) -> ([\d.]+) MiB'
+                    r' \(([+-][\d.]+) MiB\); slope after 2 min (\S+)(?: MiB/min)? -> (.+)$')
+    for opcache in ('0', '1'):
+        params = {'workers': 12, 'requests': 5000, 'soak_seconds': 900, 'sample_seconds': 60, 'opcache': opcache}
+        output = php('tests/benchmarks/worker/memory.php',
+                     env={'WORKERS': '12', 'REQUESTS': '5000', 'SOAK_SECONDS': '900', 'SAMPLE_SECONDS': '60',
+                          'OPCACHE': opcache})
+        save_raw('worker-memory-soak', f'opcache-{opcache}', output)
+        trends = {}
+        for (arm, elapsed, pss, rss, private_dirty, swap_pss, swap, heap_used, heap_used_max,
+             heap_real) in re.findall(trend_pattern, output, re.M):
+            trends.setdefault(arm, []).append({'seconds': int(elapsed), 'pss_mib': float(pss), 'rss_mib': float(rss),
+                                               'private_dirty_mib': float(private_dirty),
+                                               'swap_pss_mib': float(swap_pss), 'swap_mib': float(swap),
+                                               'heap_used_mib': float(heap_used),
+                                               'heap_used_max_mib': float(heap_used_max),
+                                               'heap_real_mib': float(heap_real)})
+        for (arm, answered, failed, rps, heap_before, heap_after, heap_grown, heap_slope, before, after, grown, slope,
+             verdict) in re.findall(soak_pattern, output, re.M):
+            summary = {'answered': int(answered), 'failed': int(failed), 'rps': int(rps),
+                       'heap_used_served_mib': float(heap_before), 'heap_used_last_mib': float(heap_after),
+                       'heap_used_grown_mib': float(heap_grown),
+                       'heap_slope_mib_per_min': None if heap_slope == 'n/a' else float(heap_slope),
+                       'footprint_served_mib': float(before), 'footprint_last_mib': float(after),
+                       'footprint_grown_mib': float(grown),
+                       'slope_mib_per_min': None if slope == 'n/a' else float(slope), 'verdict': verdict,
+                       'trend': trends.get(arm, [])}
+            record('worker-memory-soak', f'{arm} opcache={opcache}', params, [summary], summary)
+            say(f'[worker-memory-soak] {arm} opcache={opcache}: heap used {heap_before} -> {heap_after} MiB '
+                f'({heap_grown}, slope {heap_slope}); Pss+SwapPss {before} -> {after} MiB ({grown}), '
+                f'slope {slope}, {verdict}, {rps} rps, {failed} failed')
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -584,6 +638,8 @@ SECTIONS = {
     'preemption': (section_preemption, False, 'coroutine-switching: cost under load; http-server: maxConcurrency'),
     'proxy': (section_proxy, False, 'http-server: a proxy in front of the pool'),
     'spread': (section_spread, False, 'http-server: how evenly the kernel spreads'),
+    'worker-memory': (section_worker_memory, False, 'worker-master: loading the application before the master'),
+    'worker-memory-soak': (section_worker_memory_soak, False, 'worker-master: the memory of a pool over a 15-minute run'),
 }
 
 

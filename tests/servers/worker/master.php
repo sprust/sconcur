@@ -11,7 +11,9 @@
  * script, its argv flags (`server`, `workerArgs`) and the settings of a WorkerGroupConfig.
  * Its role sets up argv the way a php started on the script would see it — the flags, then
  * `--masterPid` — and requires the script; the script builds its server from argv as it
- * would on its own.
+ * would on its own. A top-level "preload" lists files the master requires before it builds
+ * the WorkerMaster, the way an application loads before its master: every worker is a fork
+ * that begins with them loaded.
  *
  * Exit codes: what WorkerMaster::run() returns; 1 when it throws, the reason on stderr.
  */
@@ -91,6 +93,10 @@ function testMasterGroup(array $group, array $defaults): WorkerGroupConfig
 
 try {
     $config = json_decode((string) file_get_contents((string) ($argv[1] ?? '')), true, flags: JSON_THROW_ON_ERROR);
+
+    foreach ((array) ($config['preload'] ?? []) as $file) {
+        require_once (string) $file;
+    }
 
     $groups = [];
 
