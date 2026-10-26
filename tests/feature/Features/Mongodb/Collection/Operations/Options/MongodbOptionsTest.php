@@ -13,9 +13,9 @@ use Throwable;
 class MongodbOptionsTest extends BaseTestCase
 {
     /** @var array<string, mixed> */
-    private const array CASE_INSENSITIVE = ['locale' => 'en', 'strength' => 2];
+    protected const array CASE_INSENSITIVE = ['locale' => 'en', 'strength' => 2];
 
-    private Collection $collection;
+    protected Collection $collection;
 
     protected function setUp(): void
     {

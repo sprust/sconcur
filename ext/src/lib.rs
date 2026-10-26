@@ -19,6 +19,7 @@ mod stats;
 mod ws;
 mod helpers;
 mod logger;
+mod process;
 mod states;
 mod tasks;
 mod types;
@@ -34,13 +35,16 @@ use types::method::Method;
 
 /// The extension version the PHP package pins
 /// (Extension::REQUIRED_EXTENSION_VERSION); the package refuses any other.
-const VERSION: &str = "0.16.0";
+const VERSION: &str = "0.17.0";
 
 // Defined in sconcur.c: the VM interrupt request of the preemption ticker, the
-// result builder the wait exports hand their results to, and the value builder
-// that turns a result's value tree into zvals.
+// result builder the wait exports hand their results to, the value builder that
+// turns a result's value tree into zvals, and the two steps of the process export
+// that only PHP can take.
 unsafe extern "C" {
     fn sconcur_request_vm_interrupt();
+    fn sconcur_after_fork_in_child();
+    fn sconcur_flush_output();
     fn sconcur_result_into(destination: *mut c_void, result: *const ResultFields) -> *mut c_void;
     fn sconcur_result_append(list: *mut c_void, result: *const ResultFields) -> *mut c_void;
     fn sconcur_throw(class_name: *const c_char, message: *const c_char);
@@ -433,6 +437,12 @@ mod glue_stubs {
     pub extern "C" fn sconcur_request_vm_interrupt() {}
 
     #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_after_fork_in_child() {}
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn sconcur_flush_output() {}
+
+    #[unsafe(no_mangle)]
     pub extern "C" fn sconcur_result_into(_destination: *mut c_void, _result: *const super::ResultFields) -> *mut c_void {
         std::ptr::null_mut()
     }
@@ -572,10 +582,6 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 
 fn handler() -> Arc<Handler> {
     core::get().handler()
-}
-
-fn replace_handler() {
-    core::get().replace_handler();
 }
 
 // ---------------------------------------------------------------------------
@@ -851,25 +857,42 @@ fn elapsed_ms(started: Instant) -> u64 {
     started.elapsed().as_millis() as u64
 }
 
+// The exports from here to destroy() only act on work already running. In a
+// process that has built no core there is none, so they answer at once instead
+// of building one to find that out: a core is a runtime with threads, and a
+// process that may be about to fork must not grow them as a side effect of
+// asking, stopping or tearing down.
+
 #[unsafe(no_mangle)]
 pub extern "C" fn tasksCount() -> c_int {
-    guarded(|| 0, || handler().tasks_count() as c_int)
+    guarded(|| 0, || match core::built() {
+        Some(core) => core.handler().tasks_count() as c_int,
+        None => 0,
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn stopFlow(flow_key: *const c_char, flow_key_len: c_int) {
     guarded(|| (), || {
+        let Some(core) = core::built() else {
+            return;
+        };
+
         // The length comes from the C side, which already has it from
         // zend_parse_parameters — no strlen scan per stop.
         let flow_key = unsafe { owned_string(flow_key, flow_key_len) };
 
-        handler().stop_flow(&flow_key);
+        core.handler().stop_flow(&flow_key);
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn httpStopAccepting(flow_key: *const c_char) {
     guarded(|| (), || {
+        if core::built().is_none() {
+            return;
+        }
+
         features::httpserver::stop_accepting(&unsafe { owned_string_nul(flow_key) });
     })
 }
@@ -877,6 +900,10 @@ pub extern "C" fn httpStopAccepting(flow_key: *const c_char) {
 #[unsafe(no_mangle)]
 pub extern "C" fn socketStopAccepting(flow_key: *const c_char) {
     guarded(|| (), || {
+        if core::built().is_none() {
+            return;
+        }
+
         features::socketserver::stop_accepting(&unsafe { owned_string_nul(flow_key) });
     })
 }
@@ -884,6 +911,10 @@ pub extern "C" fn socketStopAccepting(flow_key: *const c_char) {
 #[unsafe(no_mangle)]
 pub extern "C" fn wsStopAccepting(flow_key: *const c_char) {
     guarded(|| (), || {
+        if core::built().is_none() {
+            return;
+        }
+
         features::wsserver::stop_accepting(&unsafe { owned_string_nul(flow_key) });
     })
 }
@@ -895,6 +926,10 @@ pub extern "C" fn wsStopAccepting(flow_key: *const c_char) {
 #[unsafe(no_mangle)]
 pub extern "C" fn amqpStopConsuming(flow_key: *const c_char) {
     guarded(|| (), || {
+        if core::built().is_none() {
+            return;
+        }
+
         features::amqp::consume_serve::stop_consuming(&unsafe { owned_string_nul(flow_key) });
     })
 }
@@ -907,6 +942,10 @@ pub extern "C" fn amqpStopConsuming(flow_key: *const c_char) {
 #[unsafe(no_mangle)]
 pub extern "C" fn amqpReopenConsumer(flow_key: *const c_char, channel_id: *const c_char) {
     guarded(|| (), || {
+        if core::built().is_none() {
+            return;
+        }
+
         features::amqp::consume_serve::reopen_consumer(
             &unsafe { owned_string_nul(flow_key) },
             &unsafe { owned_string_nul(channel_id) },
@@ -964,14 +1003,78 @@ pub extern "C" fn destroy() {
     guarded(|| (), || {
         preemptionDisarm();
 
+        // Extension::__destruct calls this in every process that touched the
+        // package, the ones that never pushed anything included.
+        let Some(core) = core::built() else {
+            return;
+        };
+
         // Flush the buffered access lines before the runtime goes: a process
         // that exits right after must still show its last ones.
-        logger::flush();
+        core.logger().flush();
 
-        handler().destroy();
+        core.handler().destroy();
 
-        replace_handler();
+        core.replace_handler();
     })
+}
+
+/// The exceptions the process export throws, the PHP package's own: a refused
+/// fork is a misuse the caller has to fix, anything else the system saying no.
+const PROCESS_EXCEPTION: &CStr = c"SConcur\\Exceptions\\Process\\ProcessException";
+const FORK_REFUSED_EXCEPTION: &CStr = c"SConcur\\Exceptions\\Process\\ForkRefusedException";
+
+fn throw_process_error(class_name: &CStr, message: &str) -> c_int {
+    let message = CString::new(format!("process: {message}").replace('\0', " ")).unwrap_or_default();
+
+    unsafe { sconcur_throw(class_name.as_ptr(), message.as_ptr()) };
+
+    WAIT_FAILED
+}
+
+/// Process control, for the worker master: one command, named by `command`,
+/// with its parameters in `payload`; the answer is written into `return_value`.
+/// Synchronous and runtime-free — see the `process` module for why — and the
+/// only export a fork can return through twice: once in the parent, once in the
+/// child.
+#[unsafe(no_mangle)]
+pub extern "C" fn process(
+    command: *const c_char,
+    command_len: c_int,
+    payload: *const c_void,
+    return_value: *mut c_void,
+) -> c_int {
+    guarded(|| throw_process_error(PROCESS_EXCEPTION, "panic"), || {
+        let payload = match read_value(payload, 0) {
+            Ok(payload) => payload,
+            Err(error) => return throw_process_error(PROCESS_EXCEPTION, &error),
+        };
+
+        match process::run(unsafe { byte_view(command, command_len) }, &payload) {
+            Ok(answer) => {
+                if write_value(return_value, &answer) {
+                    WAIT_READY
+                } else {
+                    WAIT_FAILED
+                }
+            }
+            Err(process::Error::Refused(message)) => throw_process_error(FORK_REFUSED_EXCEPTION, &message),
+            Err(process::Error::Failed(message)) => throw_process_error(PROCESS_EXCEPTION, &message),
+        }
+    })
+}
+
+/// Run once as the module starts (MINIT), before PHP runs a line of the script
+/// and before any thread exists. See `process::startup`.
+#[unsafe(no_mangle)]
+pub extern "C" fn processStartup() {
+    guarded(|| (), process::startup)
+}
+
+/// Run as each request starts (RINIT). See `process::request_startup`.
+#[unsafe(no_mangle)]
+pub extern "C" fn processRequestStartup() {
+    guarded(|| (), process::request_startup)
 }
 
 #[unsafe(no_mangle)]

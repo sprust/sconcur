@@ -191,6 +191,64 @@ class PgsqlErrorTest extends BaseTestCase
         $this->assertSqlException($exception);
     }
 
+    /**
+     * The simple protocol runs every statement the string holds, and a cursor
+     * carries one column list for its whole stream, so the rows of a second
+     * SELECT could only reach PHP labelled with the first one's column names.
+     */
+    public function testAStackedSelectIsRefused(): void
+    {
+        $exception = $this->catch(function (): void {
+            $this->connection->fetchAll(sql: 'SELECT 1 AS a; SELECT 2 AS b');
+        });
+
+        self::assertNotNull($exception, 'A statement with two result sets should be refused');
+        self::assertStringContainsString('more than one result set', $exception->getMessage());
+    }
+
+    /**
+     * Bindings become literals before the statement is sent, so a stacked
+     * SELECT carrying them is refused the same way.
+     */
+    public function testAStackedSelectWithBindingsIsRefused(): void
+    {
+        $exception = $this->catch(function (): void {
+            $this->connection->fetchAll(
+                sql: 'SELECT $1::int AS a; SELECT 2 AS b',
+                bindings: [1],
+            );
+        });
+
+        self::assertNotNull($exception, 'A statement with two result sets should be refused');
+        self::assertStringContainsString('more than one result set', $exception->getMessage());
+    }
+
+    public function testAStackedSelectIsRefusedInsideATransaction(): void
+    {
+        $transaction = $this->connection->begin();
+
+        try {
+            $exception = $this->catch(function () use ($transaction): void {
+                $transaction->fetchAll(sql: 'SELECT 1 AS a; SELECT 2 AS b');
+            });
+        } finally {
+            $transaction->rollback();
+        }
+
+        self::assertNotNull($exception, 'A statement with two result sets should be refused');
+        self::assertStringContainsString('more than one result set', $exception->getMessage());
+    }
+
+    public function testASingleSelectAfterOtherStatementsIsServed(): void
+    {
+        $rows = $this->connection->fetchAll(
+            sql: "INSERT INTO {$this->table} (id, name) VALUES (7, 'seven'); "
+                . "SELECT name FROM {$this->table} WHERE id = 7",
+        );
+
+        self::assertSame([['name' => 'seven']], $rows);
+    }
+
     protected function catch(callable $callback): ?Throwable
     {
         try {

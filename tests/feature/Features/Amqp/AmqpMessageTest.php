@@ -590,7 +590,7 @@ class AmqpMessageTest extends AmqpTestCase
      * Closes the channel and counts what is left in the queue on a fresh one — everything
      * the closed channel held unacknowledged comes back first.
      */
-    private function countAfterTheChannelIsGone(Channel $channel, string $queueName): int
+    protected function countAfterTheChannelIsGone(Channel $channel, string $queueName): int
     {
         $channel->close();
 

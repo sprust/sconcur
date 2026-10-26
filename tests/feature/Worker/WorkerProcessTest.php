@@ -5,11 +5,12 @@ declare(strict_types=1);
 namespace SConcur\Tests\Feature\Worker;
 
 use PHPUnit\Framework\TestCase;
+use SConcur\Process\ProcessSignalEnum;
 use SConcur\Worker\WorkerOutputLine;
-use SConcur\Worker\WorkerProcess;
+use SConcur\Worker\ExecWorkerProcess;
 
 /**
- * Unit coverage of WorkerProcess: it spawns a short `php -r` script (no extension
+ * Unit coverage of ExecWorkerProcess: it spawns a short `php -r` script (no extension
  * needed), so a real child process exercises liveness, the cached exit outcome,
  * signal delivery (the pid is php itself, not a shell) and line-buffered output
  * draining including the no-newline tail flushed on exit.
@@ -70,7 +71,7 @@ class WorkerProcessTest extends TestCase
         try {
             self::assertTrue($process->isRunning());
 
-            $process->signal(SIGTERM);
+            $process->signal(ProcessSignalEnum::Terminate);
 
             self::assertTrue($this->waitForExit($process), 'the signalled worker should terminate');
 
@@ -220,16 +221,66 @@ class WorkerProcessTest extends TestCase
         }
     }
 
-    private function spawn(string $code): WorkerProcess
+    /**
+     * The master reads what the worker says about itself off the pipe at
+     * ProcessControl::HEARTBEAT_FD: any byte is the PHP thread alive, and two of them say more.
+     */
+    public function testReadsTheMarksTheWorkerPutsOnItsPipe(): void
     {
-        return new WorkerProcess(
+        $process = $this->spawn(
+            '$pipe = fopen("php://fd/3", "w");'
+            . ' fwrite($pipe, "\x01\x02"); usleep(200000);'
+            . ' fwrite($pipe, "\x03"); usleep(200000);',
+        );
+
+        try {
+            self::assertFalse($process->isReady(), 'nothing is read before the master drains the pipe');
+
+            $deadline = microtime(true) + 5.0;
+
+            while (microtime(true) < $deadline && !$process->isRecycling()) {
+                $process->drainHeartbeat();
+
+                usleep(20_000);
+            }
+
+            self::assertTrue($process->isReady(), 'the worker said it is up');
+            self::assertTrue($process->isRecycling(), 'the worker said it is leaving at its limit');
+            self::assertNotNull($process->heartbeatAgeSeconds(), 'every mark says the thread is alive');
+        } finally {
+            $this->waitForExit($process);
+
+            $process->close();
+        }
+    }
+
+    public function testAWorkerThatOnlyMarksItselfAliveIsNotUp(): void
+    {
+        $process = $this->spawn('fwrite(fopen("php://fd/3", "w"), "\x01"); usleep(200000);');
+
+        try {
+            self::assertTrue($this->waitForExit($process));
+
+            $process->drainHeartbeat();
+
+            self::assertNotNull($process->heartbeatAgeSeconds());
+            self::assertFalse($process->isReady());
+            self::assertFalse($process->isRecycling());
+        } finally {
+            $process->close();
+        }
+    }
+
+    protected function spawn(string $code): ExecWorkerProcess
+    {
+        return new ExecWorkerProcess(
             command: [PHP_BINARY, '-r', $code],
             cwd: sys_get_temp_dir(),
             env: getenv(),
         );
     }
 
-    private function waitForExit(WorkerProcess $process, float $timeoutSeconds = 5.0): bool
+    protected function waitForExit(ExecWorkerProcess $process, float $timeoutSeconds = 5.0): bool
     {
         $deadline = microtime(true) + $timeoutSeconds;
 

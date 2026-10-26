@@ -68,7 +68,7 @@ class HttpServerAccessLogTest extends TestCase
         }
     }
 
-    private function get(string $url, bool $pathAsIs = false): void
+    protected function get(string $url, bool $pathAsIs = false): void
     {
         $curl = curl_init($url);
 

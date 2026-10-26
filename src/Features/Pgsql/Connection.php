@@ -8,8 +8,8 @@ use SConcur\Features\MethodEnum;
 use SConcur\Features\Sql\Connection as SqlConnection;
 
 /**
- * PostgreSQL connection facade over the shared SQL feature. The DSN is the
- * pgx/libpq format, which both cores take, e.g.:
+ * PostgreSQL connection facade over the shared SQL feature. The DSN is a
+ * PostgreSQL URL (the keyword/value form is refused), e.g.:
  *
  *     postgres://user:pass@127.0.0.1:5432/dbname?sslmode=disable
  *

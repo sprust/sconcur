@@ -162,7 +162,7 @@ class SchedulerPreemptionStressTest extends BaseTestCase
         $this->assertNoTasksCount();
     }
 
-    private static function crunch(string $seed, int $iterations): string
+    protected static function crunch(string $seed, int $iterations): string
     {
         $digest = $seed;
 

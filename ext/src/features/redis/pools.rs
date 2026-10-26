@@ -15,8 +15,8 @@
 //!   connection itself into subscriber mode.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use redis::aio::{ConnectionManager, ConnectionManagerConfig, MultiplexedConnection};
@@ -137,6 +137,10 @@ impl DedicatedPool {
 pub struct Pools {
     entries: Mutex<HashMap<PoolKey, Entry>>,
     dedicated: Mutex<HashMap<String, DedicatedPool>>,
+    /// Whether the idle sweeper runs. On the pools rather than in a static, so a
+    /// child forked after the parent used them — and given fresh pools with the
+    /// fresh core — starts a sweeper of its own on its own runtime.
+    sweeping: AtomicBool,
 }
 
 impl Pools {
@@ -144,6 +148,7 @@ impl Pools {
         Pools {
             entries: Mutex::new(HashMap::new()),
             dedicated: Mutex::new(HashMap::new()),
+            sweeping: AtomicBool::new(false),
         }
     }
 }
@@ -244,26 +249,26 @@ pub fn get() -> &'static Pools {
     crate::core::get().redis().pools()
 }
 
-/// Starts the idle sweeper. Called once the runtime exists (a spawn needs one),
-/// not from the registry's constructor.
-pub fn start_sweeper() {
-    static STARTED: OnceLock<()> = OnceLock::new();
+impl Pools {
+    /// Starts the idle sweeper the first time it is asked to. Called once the
+    /// runtime exists (a spawn needs one), not from the constructor.
+    pub fn start_sweeper(&'static self) {
+        if self.sweeping.swap(true, Ordering::SeqCst) {
+            return;
+        }
 
-    STARTED.get_or_init(|| {
-        tokio::spawn(async {
+        tokio::spawn(async move {
             let mut ticker = tokio::time::interval(POOL_SWEEP_INTERVAL);
 
             loop {
                 ticker.tick().await;
 
-                get().sweep();
-                get().sweep_dedicated();
+                self.sweep();
+                self.sweep_dedicated();
             }
         });
-    });
-}
+    }
 
-impl Pools {
     /// Returns one of the pool's multiplexed connections, opening the pool on
     /// first use, and marks it held. Like sql's pools this does not connect:
     /// the manager is lazy and the first command dials under its own deadline.

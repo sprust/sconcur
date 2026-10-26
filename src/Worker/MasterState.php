@@ -10,8 +10,6 @@ namespace SConcur\Worker;
  * whether the master needs (re)starting.
  *
  * `workerCount` is the total across every pool; the per-pool breakdown is in `groups`.
- * The state is rewritten on a reload, so a guard reading it sees the pools that are
- * actually up rather than the ones the master started with.
  */
 readonly class MasterState
 {

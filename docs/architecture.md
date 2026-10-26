@@ -8,7 +8,8 @@ of one task. See also the [README](../README.md).
 ## How it works
 
 `WaitGroup` is the public API of a coroutine group built on PHP Fibers. Each
-task closure is wrapped in a `Fiber`; when an async feature is called inside a
+task closure is wrapped in a `Fiber` and runs as a coroutine; when an async feature
+(an operation the extension runs, such as `Sleeper::sleep()`) is called inside a
 coroutine, the coroutine suspends and hands out a deferred task
 (`Fiber::suspend(PendingPushDto)`). The push to the extension is done by whoever took over
 control — `WaitGroup::launch` or the scheduler — through
@@ -98,12 +99,12 @@ flowchart TB
         SCH["Scheduler (waitAnyBatch + resume loop)"]
         ST["State (Fiber ↔ flow registry)"]
 
-        WG -->|"coroutine body calls a feature"| F
+        WG -->|"callback calls Sleeper::sleep() / insertOne() / …"| F
         F -->|"exec / next"| FE
         FE -->|"Fiber::suspend(PendingPushDto / PendingNextDto)"| SCH
         SCH -->|"dispatchPendingTask: push the task"| EXT
-        WG -.->|"delegates waiting"| SCH
-        SCH -.->|"releases the Fiber's flow on completion"| ST
+        WG -.->|"run / awaitGroup"| SCH
+        SCH -.->|"unRegisterFiber"| ST
     end
 
     EXT <-->|"boundary: push (payload array) / waitAnyBatch (TaskResultDto) / next"| LIB
@@ -118,9 +119,9 @@ flowchart TB
 
         LIB -->|"push"| H
         H -->|"init_flow"| FLOWS
-        FLOWS --> FLOW
-        FLOW -->|"spawn(handler)"| TASK
-        TASK -.->|"shared results channel"| H
+        FLOWS -->|"handle_message"| FLOW
+        FLOW -->|"tokio::spawn(run_task_protected)"| TASK
+        TASK -.->|"shared results channel, read by wait_any_batch"| H
     end
 ```
 
@@ -130,12 +131,10 @@ Key entities:
   owns a unique `flowKey` and hands out its coroutines' results as they become
   ready. `create(maxConcurrency: N)` caps the number of simultaneously live
   coroutines (0 = no limit, the default); extra `add()`s wait in a queue.
-- `Scheduler` (`src/Scheduler/`) — the process-wide singleton: the coroutine
-  registry (`Coroutine`), one `waitAnyBatch` loop, resuming by the result's owner id,
-  waking nested-group waiters (`awaitGroup`), dispatching deferred tasks to the
-  extension (`dispatchPendingTask`). Spawned coroutines (`spawn` — one per server request)
-  run on recycled fibers from `FiberPool`: the fiber's callback is an infinite
-  worker loop that parks on `Fiber::suspend()` between jobs instead of
+- `Scheduler` (`src/Scheduler/`) — the process-wide singleton described above; it
+  keeps the coroutine registry (`Coroutine`). Spawned coroutines (`spawn` — one per
+  server request) run on recycled fibers from `FiberPool`: the fiber's callback is an
+  infinite worker loop that parks on `Fiber::suspend()` between jobs instead of
   terminating, so the fiber stack is mapped once, not per request.
 - `State` (`src/State.php`) — the static registry of `Fiber ↔ flow` links (result
   routing needs no task map: the owner travels in the result).
@@ -145,12 +144,10 @@ Key entities:
   the boundary itself.
 - `Connection\Extension` — a singleton over the extension's exported C functions
   (`push`, `waitAnyBatch`, `wait`, `next`, `stopFlow`, `destroy`, …).
-- Extension: `Handler → Flows → Flow → Task`. Each task runs on the runtime;
-  results of all flows go into one shared bounded channel, from which
-  `Handler::wait_any_batch()` hands out up to a batch of the ready ones; the
-  scheduler takes them that way (`wait(flow_key)` remains for the synchronous
-  path). A stopped flow's result still in the buffer is
-  dropped on receipt.
+- Extension: `Handler → Flows → Flow → Task`, each task on the runtime.
+  `Handler::wait_any_batch()` serves the scheduler and `wait(flow_key)` the
+  synchronous path; a result of a stopped flow still in the buffer is dropped on
+  receipt.
 
 ## Lifecycle of a single task
 
@@ -170,10 +167,11 @@ Key entities:
    registry.
 4. Inside the extension `push → Handler::push → Flows::init_flow →
    Flow::handle_message` creates a `Task` and spawns it with the feature handler.
-   The result goes into the shared bounded channel, and the task finishes without
-   waiting for PHP to pick it up.
+   The result goes into the shared bounded channel (1024 results deep), and the
+   task finishes without waiting for PHP to pick it up, unless the channel is
+   full; then it waits for a free slot.
 5. `WaitGroup::iterate()` hands out ready results and delegates waiting: at the
-   top level it spins `Scheduler::run()` (the `waitAnyBatch` loop), while a
+   top level it runs `Scheduler::run()` (the `waitAnyBatch` loop), while a
    nested `iterate()` cooperatively suspends via `Scheduler::awaitGroup()`.
 6. The result carries the owner id back; the scheduler checks the
    coroutine still awaits exactly this flow/task (ids are reused once a fiber is

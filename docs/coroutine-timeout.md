@@ -2,8 +2,9 @@ English | [Русский](coroutine-timeout.ru.md)
 
 # Coroutine timeout
 
-Work can be given a deadline. Past it the scheduler unwinds the coroutine where it
-stands, by throwing `CoroutineTimeoutException` into it, and the code decides what
+Work running in a coroutine (a closure a `WaitGroup` or the scheduler runs in its own
+PHP Fiber) can be given a deadline. Past it the scheduler unwinds the coroutine where
+it stands, by throwing `CoroutineTimeoutException` into it, and the code decides what
 that means.
 
 ```php
@@ -20,9 +21,10 @@ try {
 The deadline belongs to the coroutine that is running, so this works anywhere one
 does: inside a `WaitGroup` member, inside a server handler, inside a nested group.
 
-The long-lived workers set it for you: `handlerTimeoutMs` on the HTTP, socket and
+The long-lived workers take it as an option: `handlerTimeoutMs` on the HTTP, socket and
 WebSocket servers and on the [AMQP queue consumer](amqp.md#a-supervised-consumer) is this
-deadline on the coroutine each request, connection or message is handled in.
+deadline on the coroutine each request, connection or message is handled in. The HTTP
+server sets 60 s by default; the others default to `0`, no deadline.
 
 The shorthand for "the whole callback gets a second" is an argument on `add()`:
 
@@ -39,7 +41,7 @@ $waitGroup->add(
 );
 ```
 
-The two are the same mechanism. `Deadline::run()` bounds a piece of work and composes;
+The two are the same mechanism. `Deadline::run()` bounds a piece of work and nests;
 `add(timeoutMs: …)` bounds a callback from its first line, which is what you want when
 the caller — not the callback — decides how long it may take. Both take `0` to mean no
 deadline, and refuse a negative one.
@@ -109,7 +111,7 @@ started.
 project's signal for a deliberate unwind. Three consequences:
 
 - everything that already re-throws a stop as-is keeps working unchanged — the
-  feature executor, the AMQP channel, the consumer runtime;
+  feature executor, the AMQP publish-channel pool, the consumer runtime;
 - `catch (FlowStoppedException)` catches a timeout too, so cleanup written for one
   covers the other;
 - it reaches its group unwrapped, wherever it escaped from — a coroutine that was
@@ -128,9 +130,9 @@ counting from `add()` would hand it an allowance already spent waiting for its
 turn, and a busy group would time out callbacks that never ran a line.
 
 One more thing counts against the allowance of a coroutine started from inside another
-one: its first call is handed to the scheduler rather than sent from the fiber's own
-stack, so it goes out on the scheduler's next turn. Whatever the parent does before it
-suspends is time the child has already been given.
+one: its first call goes out at once, from the parent's stack, but its result can resume
+it only after the parent suspends. Whatever the parent does before it suspends is time
+the child has already been given.
 
 ## Where the deadline can reach
 
@@ -142,25 +144,28 @@ The scheduler enforces it at the points where it already takes control:
 | parked by `Scheduler::switch()` | unwound before it would have been resumed |
 | running PHP, with preemption armed | unwound by the preemption hook, between two opcodes |
 | running PHP, without preemption | unwound at its next suspension point |
-| inside a boundary call | **not** unwound until the call returns |
+| inside a boundary call | not unwound until the call returns |
 
-The last two rows are the honest limits.
+The last two rows are the limits.
 
-**Without preemption** the deadline is cooperative. Preemption is off by default
-everywhere. The servers and the AMQP queue consumer arm it while they run when the
-`preemptionQuantumMs` option is above `0`; a CLI script or library code has to ask —
-`Scheduler::get()->enablePreemption()`, see [coroutine switching](coroutine-switching.md). Without it a loop that computes
-and never waits runs to its end, and the timeout is delivered afterwards.
+### Without preemption
 
-**Inside a boundary call** no PHP runs at all, so nothing can be delivered. A query, a
-request or a publish that hangs is bounded by that feature's own timeout on the extension
-side — `rpcTimeoutSeconds` and `readTimeoutSeconds` on an AMQP connection, the
-HTTP client's own deadlines — and not by this one. A coroutine deadline bounds the
+Without preemption the deadline is cooperative: a loop that computes and never waits
+runs to its end, and the timeout is delivered afterwards. Preemption is off by default;
+how to turn it on is in [coroutine switching](coroutine-switching.md#automatic-preemption).
+
+### Inside a boundary call
+
+No PHP runs at all, so nothing can be delivered. A query, a request or a publish that
+hangs is bounded by that feature's own timeout on the extension side — `timeoutMs` on
+an SQL connection, `writeTimeoutSeconds` and `rpcTimeoutSeconds` on an AMQP connection,
+the HTTP client's own deadlines — and not by this one. A coroutine deadline bounds the
 PHP coroutine, which is not the same as bounding everything it can wait for.
 
-Outside a coroutine there is nothing to unwind, so `Deadline::run()` runs the
-callback unbounded — the same rule the rest of the library follows for code that is
-not in a concurrent context.
+### Outside a coroutine
+
+There is nothing to unwind, so `Deadline::run()` runs the callback unbounded — the
+same rule the rest of the library follows for code that is not in a concurrent context.
 
 ## What it does not release
 
@@ -170,6 +175,9 @@ its objects in a reference cycle, so the release lands when the garbage collecto
 reaches them rather than at the moment of the timeout. Where that matters — an AMQP
 delivery stays owed to the broker until its channel closes — the feature releases
 what it holds itself; where it does not, the difference is invisible.
+
+Nor does it cancel the task the coroutine was waiting for: that runs to its end in the
+extension, and its result is dropped.
 
 ## Cost
 

@@ -67,33 +67,17 @@ servers-status:
 servers-stop:
 	$(SERVERS_CLI) stop --configPath=$(SERVERS_CONFIG)
 
-# Rolls every pool of the servers master. One pool alone: make http-server-reload.
-servers-reload:
-	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG)
-
 http-server-status:
 	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG) --group=http
-
-http-server-reload:
-	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG) --group=http
 
 socket-server-status:
 	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG) --group=socket
 
-socket-server-reload:
-	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG) --group=socket
-
 ws-server-status:
 	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG) --group=ws
 
-ws-server-reload:
-	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG) --group=ws
-
 rabbitmq-status:
 	$(SERVERS_CLI) status --configPath=$(SERVERS_CONFIG) --group=rabbitmq
-
-rabbitmq-reload:
-	$(SERVERS_CLI) reload --configPath=$(SERVERS_CONFIG) --group=rabbitmq
 
 bash-php:
 	$(DOCKER_COMPOSE) exec php bash
@@ -271,7 +255,7 @@ bench-reset:
 
 # Benchmark scripts live in tests/benchmarks/, grouped by the technology they
 # measure: mongodb/, mysql/, pgsql/, http/, socket/, ws/, amqp/, db/ (whole-session
-# DB runs), runtime/ (scheduler and PHP<->Go boundary) and lib/ (shared harness).
+# DB runs), runtime/ (scheduler and PHP<->extension boundary) and lib/ (shared harness).
 bench-all:
 	make bench-sleeper
 	make bench-mongodb-insertOne
@@ -501,9 +485,9 @@ bench-push:
 	$(PHP_EXT) tests/benchmarks/runtime/push-profile.php
 
 # What a member of a nested fan-out costs — a WaitGroup created inside a
-# coroutine, the only shape whose pushes come off a coroutine's own stack and so
-# the only one that feeds Scheduler::$pendingDispatches. Every other runtime
-# bench here is flat, which is why that path had never been measured.
+# coroutine, the only shape whose pushes come off a coroutine's own stack (the
+# path the since-removed deferred-dispatch queue used to serve). Every other
+# runtime bench here is flat, which is why that path had never been measured.
 bench-nested-fan-out:
 	$(PHP_EXT) tests/benchmarks/runtime/nested-fan-out.php
 
@@ -692,8 +676,9 @@ bench-http-load-soak:
 # Baseline variant: same harness against the bare "/" route (no I/O fan-out) —
 # measures the pure HTTP + framework ceiling, the floor under the /all numbers.
 # Placement defaults to group, the one the docs/benchmarks.md numbers are taken
-# with: the harness's own default (1) runs ~20% slower on this route, which reads
-# as a regression next to them. Override via env, e.g. PIN_SERVERS=1.
+# with: the harness's own default (1) runs ~6.5% slower on this route (the
+# pinning section of docs/load-testing.md), which reads as a regression next to
+# them. Override via env, e.g. PIN_SERVERS=1.
 bench-http-load-stats-empty:
 	ROUTE=/ PIN_SERVERS=$${PIN_SERVERS:-group} tests/benchmarks/http/load-stats.sh
 
@@ -754,8 +739,9 @@ bench-swoole-load-stats-empty:
 	ROUTE=/ tests/benchmarks/http/swoole-load-stats.sh
 
 # WebSocket load test: spawn a ws-server pool (SO_REUSEPORT, one per core) and drive
-# it with the Go ws-load generator on the "all" message (fans out across EVERY async
-# I/O feature per message), sampling CPU/memory + per-worker RSS (leak check). Both
+# it with the ws-load generator (a Rust crate, tests/benchmarks/ws/ws-load) on the
+# "all" message (fans out across EVERY async I/O feature per message), sampling
+# CPU/memory + per-worker RSS (leak check). Both
 # the pool and the generator run in the php container (no host tooling needed).
 # Tunables via env, e.g.: make bench-ws-load-stats SERVERS=12 DURATION=30
 bench-ws-load-stats:

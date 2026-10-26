@@ -8,6 +8,7 @@ use Closure;
 use SConcur\Connection\Extension;
 use SConcur\Exceptions\FlowStoppedException;
 use SConcur\Features\Server\ServerRuntimeSupportTrait;
+use SConcur\Features\Server\StopRequest;
 use SConcur\Features\SocketServer\Dto\Connection;
 use SConcur\Features\SocketServer\Payloads\ServePayload;
 use SConcur\Scheduler\Scheduler;
@@ -42,10 +43,17 @@ readonly class SocketServer
      * @param int                                       $maxConnections      stop the server after it has handled this many connections
      *                                                                       (0 = unlimited). Meant against handler memory leaks: once reached
      *                                                                       the server shuts down gracefully so a master can respawn a fresh
-     *                                                                       process. Reuses the graceful-shutdown path.
+     *                                                                       process. Reuses the graceful-shutdown path. Under a worker master
+     *                                                                       each worker stops at a number drawn between it and half again as
+     *                                                                       many, so a pool does not restart as one (Scheduler::spreadLimit(),
+     *                                                                       docs/worker-master.md).
      * @param bool                                      $reusePort           set SO_REUSEPORT so several processes can bind this same address;
      *                                                                       the kernel load-balances connections across them (run one process
      *                                                                       per core). Linux only; each process must set it.
+     * @param null|int                                  $listenFd            a listening socket bound elsewhere to accept on instead of binding
+     *                                                                       the address: the shared socket of a WorkerMaster group with `listen`,
+     *                                                                       or one handed over by systemd socket activation. `address` and
+     *                                                                       `reusePort` are then not used. Null (default) binds the address.
      * @param null|Closure(Throwable, Connection): void $onError             observes an uncaught handler failure (for logging/tracing); the
      *                                                                       connection is closed afterwards. The hook may itself write a final
      *                                                                       frame to the connection before it is closed.
@@ -80,6 +88,7 @@ readonly class SocketServer
         protected int $maxConnections = 0,
         protected int $shutdownTimeoutMs = 10_000,
         protected bool $reusePort = false,
+        protected ?int $listenFd = null,
         protected ?Closure $onError = null,
         protected ?int $masterPid = null,
         protected string $telemetrySocket = '',
@@ -123,11 +132,9 @@ readonly class SocketServer
     {
         $flowKey = uniqid('sock_', more_entropy: true);
 
-        $stopRequested = false;
-
-        // Install handlers before starting the listener so a signal arriving during
-        // startup is not missed, and restore the previous ones when serving ends.
-        $restoreSignals = $this->installSignalHandlers($stopRequested);
+        // Watched before the listener opens, so a signal arriving during startup is not the
+        // one that gets lost.
+        $stopRequest = StopRequest::watch($this->masterPid);
 
         try {
             $runningTask = Extension::get()->push(
@@ -140,6 +147,7 @@ readonly class SocketServer
                     maxConcurrency: $this->maxConcurrency,
                     shutdownTimeoutMs: $this->shutdownTimeoutMs,
                     reusePort: $this->reusePort,
+                    listenFd: $this->listenFd,
                     telemetrySocket: $this->telemetrySocket,
                     serverName: $this->serverName,
                     telemetryIntervalMs: $this->telemetryIntervalMs,
@@ -149,7 +157,10 @@ readonly class SocketServer
             self::logServerEvent(
                 sprintf(
                     'sconcur socket server listening on %s pid=%d version=%s maxConcurrency=%d maxConnections=%d reusePort=%d',
-                    $this->address,
+                    self::describeListener(
+                        address: $this->address,
+                        listenFd: $this->listenFd,
+                    ),
                     getmypid(),
                     Extension::REQUIRED_EXTENSION_VERSION,
                     $this->maxConcurrency,
@@ -158,8 +169,7 @@ readonly class SocketServer
                 ),
             );
 
-            $onError   = $this->onError;
-            $masterPid = $this->masterPid;
+            $onError = $this->onError;
 
             Scheduler::get()->serve(
                 serverFlowKey: $flowKey,
@@ -172,11 +182,8 @@ readonly class SocketServer
                         event: $payload,
                     );
                 },
-                shouldStop: static function () use (&$stopRequested, $masterPid): bool {
-                    // Stop on a shutdown signal, or when this worker has been orphaned
-                    // — its WorkerMaster (parent pid) is gone.
-                    return $stopRequested || ($masterPid !== null && self::isOrphaned($masterPid));
-                },
+                // A shutdown signal, or this worker orphaned: its WorkerMaster is gone.
+                shouldStop: $stopRequest->isRequested(...),
                 onDrainStart: static function () use ($flowKey): void {
                     // Leave the SO_REUSEPORT group early: stop accepting and drain
                     // in-flight connections so new connections go to siblings.
@@ -189,7 +196,7 @@ readonly class SocketServer
                 handlerTimeoutMs: $this->handlerTimeoutMs,
             );
         } finally {
-            $restoreSignals();
+            $stopRequest->release();
         }
     }
 

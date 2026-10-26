@@ -20,6 +20,7 @@ use SConcur\Features\HttpServer\Dto\RequestBodyStream;
 use SConcur\Features\HttpServer\Payloads\RespondPayload;
 use SConcur\Features\HttpServer\Payloads\ServePayload;
 use SConcur\Features\Server\ServerRuntimeSupportTrait;
+use SConcur\Features\Server\StopRequest;
 use SConcur\Scheduler\Scheduler;
 use Throwable;
 
@@ -65,10 +66,17 @@ readonly class HttpServer
      *                                                                                                  supervisor can respawn a fresh process. Reuses the graceful-
      *                                                                                                  shutdown path: the limiting request is dispatched and drained
      *                                                                                                  like any in-flight one, while a request accepted during the
-     *                                                                                                  drain is answered 503 (see docs/http-server.md).
+     *                                                                                                  drain is answered 503 (see docs/http-server.md). Under a worker
+     *                                                                                                  master each worker stops at a number drawn between it and half
+     *                                                                                                  again as many, so a pool does not restart as one
+     *                                                                                                  (Scheduler::spreadLimit(), docs/worker-master.md).
      * @param bool                                                                $reusePort            set SO_REUSEPORT so several processes can bind this same
      *                                                                                                  address; the kernel load-balances connections across them
      *                                                                                                  (run one process per core). Linux only; each process must set it.
+     * @param null|int                                                            $listenFd             a listening socket bound elsewhere to accept on instead of binding
+     *                                                                                                  the address: the shared socket of a WorkerMaster group with `listen`,
+     *                                                                                                  or one handed over by systemd socket activation. `address` and
+     *                                                                                                  `reusePort` are then not used. Null (default) binds the address.
      * @param null|Closure(Throwable, ServerRequestInterface): ?ResponseInterface $onError              observes a handler
      *                                                                                                  failure (exception or a non-ResponseInterface return). It may return a
      *                                                                                                  ResponseInterface to send instead of the default 500; returning null (or
@@ -111,6 +119,7 @@ readonly class HttpServer
         protected int $handlerTimeoutMs = 60_000,
         protected int $maxRequests = 0,
         protected bool $reusePort = false,
+        protected ?int $listenFd = null,
         protected ?Closure $onError = null,
         protected ?int $masterPid = null,
         protected string $telemetrySocket = '',
@@ -159,11 +168,9 @@ readonly class HttpServer
     {
         $flowKey = uniqid('http_', more_entropy: true);
 
-        $stopRequested = false;
-
-        // Install handlers before starting the listener so a signal arriving during
-        // startup is not missed, and restore the previous ones when serving ends.
-        $restoreSignals = $this->installSignalHandlers($stopRequested);
+        // Watched before the listener opens, so a signal arriving during startup is not the
+        // one that gets lost.
+        $stopRequest = StopRequest::watch($this->masterPid);
 
         try {
             $runningTask = Extension::get()->push(
@@ -179,6 +186,7 @@ readonly class HttpServer
                     maxConcurrency: $this->maxConcurrency,
                     handlerTimeoutMs: $this->handlerTimeoutMs,
                     reusePort: $this->reusePort,
+                    listenFd: $this->listenFd,
                     telemetrySocket: $this->telemetrySocket,
                     serverName: $this->serverName,
                     telemetryIntervalMs: $this->telemetryIntervalMs,
@@ -188,7 +196,10 @@ readonly class HttpServer
             self::logServerEvent(
                 sprintf(
                     'sconcur http server listening on %s pid=%d version=%s maxConcurrency=%d maxRequests=%d reusePort=%d',
-                    $this->address,
+                    self::describeListener(
+                        address: $this->address,
+                        listenFd: $this->listenFd,
+                    ),
                     getmypid(),
                     Extension::REQUIRED_EXTENSION_VERSION,
                     $this->maxConcurrency,
@@ -198,7 +209,6 @@ readonly class HttpServer
             );
 
             $onError              = $this->onError;
-            $masterPid            = $this->masterPid;
             $serverRequestFactory = $this->serverRequestFactory;
             $responseFactory      = $this->responseFactory;
 
@@ -220,11 +230,8 @@ readonly class HttpServer
                         data: $payload,
                     );
                 },
-                shouldStop: static function () use (&$stopRequested, $masterPid): bool {
-                    // Stop on a shutdown signal, or when this worker has been orphaned
-                    // — its WorkerMaster (parent pid) is gone.
-                    return $stopRequested || ($masterPid !== null && self::isOrphaned($masterPid));
-                },
+                // A shutdown signal, or this worker orphaned: its WorkerMaster is gone.
+                shouldStop: $stopRequest->isRequested(...),
                 onDrainStart: static function () use ($flowKey): void {
                     // Leave the SO_REUSEPORT group early: stop accepting so new
                     // connections go to sibling processes, then drain in-flight.
@@ -237,7 +244,7 @@ readonly class HttpServer
                 handlerTimeoutMs: $this->handlerTimeoutMs,
             );
         } finally {
-            $restoreSignals();
+            $stopRequest->release();
         }
     }
 
@@ -358,8 +365,8 @@ readonly class HttpServer
     /**
      * Turns the request event the extension's server emits (payloads.RequestEvent) into
      * a PSR-7 ServerRequestInterface, returning it together with the request id used
-     * to address the response. The body is wrapped in a lazy RequestBodyStream so it
-     * is never buffered whole.
+     * to address the response. The body, which the extension already read whole, is
+     * wrapped in a one-shot RequestBodyStream.
      *
      * @param array<string, mixed> $data the request event the core built
      *

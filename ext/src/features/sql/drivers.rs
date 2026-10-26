@@ -70,11 +70,13 @@ fn mysql_is_textual(bindings: &[Binding]) -> bool {
     bindings.is_empty()
 }
 
-/// What a stacked SELECT is refused with. A cursor describes one result set —
-/// one column list for the whole stream — so rows of a second one would reach
-/// PHP keyed by the first one's column names, which is silent nonsense rather
-/// than a shortfall. `fetch_many` marks the end of each statement, so the
-/// boundary is visible and this says so out loud.
+/// What a stacked SELECT is refused with, on either driver. A cursor describes
+/// one result set — one column list for the whole stream — so rows of a second
+/// one would reach PHP keyed by the first one's column names, which is silent
+/// nonsense rather than a shortfall. `fetch_many` marks the end of each
+/// statement, so the boundary is visible and this says so out loud. Only a
+/// statement that sent rows closes a result set: one that sent none (an INSERT,
+/// a SET) leaves no column list behind, so the SELECT after it is served.
 const MULTI_RESULT_SET: &str =
     "query error: the statement returned more than one result set; run one select per query";
 
@@ -95,6 +97,34 @@ async fn send_mysql_row(
     }
 
     match read_mysql_row(row) {
+        Ok(values) => match sender.send(RowMessage::Row(values)).await {
+            Ok(()) => Ok(()),
+            Err(_) => Err(()),
+        },
+        Err(error) => {
+            let _ = sender.send(RowMessage::Error(format!("scan error: {error}"))).await;
+
+            Err(())
+        }
+    }
+}
+
+/// Sends one PostgreSQL row, preceded by the column list on the first row; the
+/// same contract as `send_mysql_row`.
+async fn send_pg_row(
+    row: &sqlx::postgres::PgRow,
+    sent_columns: &mut bool,
+    sender: &mpsc::Sender<RowMessage>,
+) -> std::result::Result<(), ()> {
+    if !*sent_columns {
+        *sent_columns = true;
+
+        if sender.send(RowMessage::Columns(column_names(row))).await.is_err() {
+            return Err(());
+        }
+    }
+
+    match read_pg_row(row) {
         Ok(values) => match sender.send(RowMessage::Row(values)).await {
             Ok(()) => Ok(()),
             Err(_) => Err(()),
@@ -144,13 +174,13 @@ async fn pump(driver: Driver, sql: &str, bindings: &[Binding], sender: &mpsc::Se
 
             if mysql_is_textual(bindings) {
                 let mut stream = pool.fetch_many(sqlx::raw_sql(AssertSqlSafe(sql)));
-                let mut statement_ended = false;
+                let mut result_set_ended = false;
 
                 while let Some(item) = stream.next().await {
                     match item {
-                        Ok(Either::Left(_)) => statement_ended = true,
+                        Ok(Either::Left(_)) => result_set_ended = sent_columns,
                         Ok(Either::Right(row)) => {
-                            if statement_ended {
+                            if result_set_ended {
                                 let _ = sender.send(RowMessage::Error(MULTI_RESULT_SET.to_string())).await;
 
                                 return;
@@ -202,31 +232,25 @@ async fn pump(driver: Driver, sql: &str, bindings: &[Binding], sender: &mpsc::Se
                 }
             };
 
-            let mut stream = pool.fetch(sqlx::raw_sql(AssertSqlSafe(statement.as_str())));
+            // The simple protocol runs every statement the string holds, bindings or
+            // not (they are literals by now), so the end of each one is watched
+            // for here exactly as on MySQL's text protocol.
+            let mut stream = pool.fetch_many(sqlx::raw_sql(AssertSqlSafe(statement.as_str())));
             let mut sent_columns = false;
+            let mut result_set_ended = false;
 
             while let Some(item) = stream.next().await {
                 match item {
-                    Ok(row) => {
-                        if !sent_columns {
-                            sent_columns = true;
+                    Ok(Either::Left(_)) => result_set_ended = sent_columns,
+                    Ok(Either::Right(row)) => {
+                        if result_set_ended {
+                            let _ = sender.send(RowMessage::Error(MULTI_RESULT_SET.to_string())).await;
 
-                            if sender.send(RowMessage::Columns(column_names(&row))).await.is_err() {
-                                return;
-                            }
+                            return;
                         }
 
-                        match read_pg_row(&row) {
-                            Ok(values) => {
-                                if sender.send(RowMessage::Row(values)).await.is_err() {
-                                    return;
-                                }
-                            }
-                            Err(error) => {
-                                let _ = sender.send(RowMessage::Error(format!("scan error: {error}"))).await;
-
-                                return;
-                            }
+                        if send_pg_row(&row, &mut sent_columns, sender).await.is_err() {
+                            return;
                         }
                     }
                     Err(error) => {
@@ -291,13 +315,13 @@ async fn pump_transaction(
         TxHandle::Mysql(transaction) => {
             if mysql_is_textual(bindings) {
                 let mut stream = (&mut **transaction).fetch_many(sqlx::raw_sql(AssertSqlSafe(sql)));
-                let mut statement_ended = false;
+                let mut result_set_ended = false;
 
                 while let Some(item) = stream.next().await {
                     match item {
-                        Ok(Either::Left(_)) => statement_ended = true,
+                        Ok(Either::Left(_)) => result_set_ended = sent_columns,
                         Ok(Either::Right(row)) => {
-                            if statement_ended {
+                            if result_set_ended {
                                 let _ = sender.send(RowMessage::Error(MULTI_RESULT_SET.to_string())).await;
 
                                 return;
@@ -344,30 +368,22 @@ async fn pump_transaction(
                 }
             };
 
-            let mut stream = (&mut **transaction).fetch(sqlx::raw_sql(AssertSqlSafe(statement.as_str())));
+            let mut stream =
+                (&mut **transaction).fetch_many(sqlx::raw_sql(AssertSqlSafe(statement.as_str())));
+            let mut result_set_ended = false;
 
             while let Some(item) = stream.next().await {
                 match item {
-                    Ok(row) => {
-                        if !sent_columns {
-                            sent_columns = true;
+                    Ok(Either::Left(_)) => result_set_ended = sent_columns,
+                    Ok(Either::Right(row)) => {
+                        if result_set_ended {
+                            let _ = sender.send(RowMessage::Error(MULTI_RESULT_SET.to_string())).await;
 
-                            if sender.send(RowMessage::Columns(column_names(&row))).await.is_err() {
-                                return;
-                            }
+                            return;
                         }
 
-                        match read_pg_row(&row) {
-                            Ok(values) => {
-                                if sender.send(RowMessage::Row(values)).await.is_err() {
-                                    return;
-                                }
-                            }
-                            Err(error) => {
-                                let _ = sender.send(RowMessage::Error(format!("scan error: {error}"))).await;
-
-                                return;
-                            }
+                        if send_pg_row(&row, &mut sent_columns, sender).await.is_err() {
+                            return;
                         }
                     }
                     Err(error) => {

@@ -117,8 +117,8 @@ class QueueSpecParserTest extends TestCase
 
     public function testMoreCoroutinesThanOneConnectionHasChannelsIsRefused(): void
     {
-        // A coroutine is a channel, and the 257th on a connection is refused by the
-        // broker. Diagnosed here rather than as "504 channel id space exhausted" on
+        // A coroutine is a channel, and a connection carries 255 of them: the next
+        // open is refused. Diagnosed here rather than as a failed channel open on
         // whichever coroutine happened to start last.
         $this->expectException(InvalidQueueSpecException::class);
         $this->expectExceptionMessage('one connection carries');

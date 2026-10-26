@@ -40,6 +40,17 @@ class MasterLogger
     }
 
     /**
+     * Where the access lines of workers with `accessLog: file` go: this prefix with
+     * "-YYYY-MM-DD.log" after it, a file of the day the extension's logger opens in each
+     * worker. Beside the journal and named after it, so pruneOldFiles() takes the old
+     * ones with the journal's.
+     */
+    public static function accessLogPrefix(string $logDir, string $name): string
+    {
+        return $logDir . '/' . $name . '-access';
+    }
+
+    /**
      * Logs a master-scoped event.
      *
      * @param array<string, mixed> $context rendered as the trailing context array

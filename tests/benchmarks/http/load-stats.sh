@@ -2,8 +2,8 @@
 #
 # All-features load + resource benchmark. Spawns N demo HTTP-server processes
 # (SO_REUSEPORT, one per core) in the `php` container, drives them with wrk on the
-# /all route (which fans out across EVERY async I/O feature — Sleeper, MongoDB,
-# MySQL, PostgreSQL, HTTP-client — concurrently per request), and samples CPU/memory
+# /all route (MongoDB, MySQL and PostgreSQL, two calls each, the three blocks run
+# concurrently per request), and samples CPU/memory
 # of the server and backend containers throughout, plus per-worker RSS (leak check).
 #
 # Same honesty rules as throughput.sh: servers and the load generator are pinned

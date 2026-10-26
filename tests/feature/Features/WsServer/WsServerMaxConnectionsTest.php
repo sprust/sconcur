@@ -39,7 +39,7 @@ class WsServerMaxConnectionsTest extends TestCase
         }
     }
 
-    private function roundtripWithRetry(TestWsServer $server, string $data): ?string
+    protected function roundtripWithRetry(TestWsServer $server, string $data): ?string
     {
         $deadline = microtime(true) + 5.0;
 

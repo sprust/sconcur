@@ -2,19 +2,18 @@
 #
 # Does the core work under PHP-FPM?
 #
-# FPM is the shape the Go build cannot take: the extension is loaded in the
+# FPM is the shape that tests surviving a fork: the extension is loaded in the
 # master at MINIT, and every worker that actually serves a request is a process
 # forked from it afterwards. This starts a real php-fpm pool (4 static workers)
 # with the given extension and drives requests straight at it with cgi-fcgi —
 # no HTTP server in front, nothing to blame but the SAPI.
 #
-# Each request runs a fan-out of twelve 100ms coroutines and reports OK only if
+# Each request runs twelve 100ms coroutines at once and reports OK only if
 # they ran concurrently, so a worker whose runtime did not survive the fork
 # fails loudly instead of quietly serializing.
 #
 # Usage (from the host):
-#   ext/check/fpm-check.sh                     # the Rust core
-#   ext/check/fpm-check.sh go                  # the Go core, as the control
+#   ext/check/fpm-check.sh                     # SCONCUR_EXT picks another .so
 set -uo pipefail
 
 cd "$(dirname "$0")/../.."

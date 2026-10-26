@@ -6,11 +6,14 @@ How a PHP value reaches the Rust core and how a Rust value reaches PHP. Nothing
 is serialized in either direction: the core reads the PHP array a task is given
 and builds the PHP values of a result itself, both on the PHP thread. This
 document is the reference for that mechanism — the value tree, the mapping of
-every PHP type, objects, how a feature uses it, and how to add a value class.
+every PHP type, objects, how a feature (an extension module with a PHP API) uses
+it, and how to add a value class.
 See [architecture](architecture.md) for where the crossing sits in the task
 lifecycle.
 
 ## The two directions
+
+The glue is `ext/sconcur.c`: the C layer PHP calls, which in turn calls the Rust core.
 
 | Direction | Where | What happens |
 |---|---|---|
@@ -34,7 +37,7 @@ zval; it sees the tree.
 | `Value::Str(Vec<u8>)` | `string`, text or bytes alike: PHP has one type for both |
 | `Value::List(Vec<Value>)` | an array whose keys are `0..n` in order |
 | `Value::Map(Vec<(Key, Value)>)` | any other array, in insertion order; `Key` is `Int` or `Str` |
-| `Value::Object { class, properties }` | an instance of a userland class: its fully qualified name and its public properties in declaration order |
+| `Value::Object(Object)`, `Object { class, properties }` | an object of any other class (not `stdClass`, a `Closure` or an enum case): its fully qualified name and its public properties |
 
 A `Map` is built with `Map::new().set("key", value)`; scalars, strings, byte
 vectors, `Vec<Value>` and `Option` convert into a `Value` with `.into()`.
@@ -50,7 +53,7 @@ core back per entry. The reading rules:
 
 - a reference is read through; an uninitialized typed property is skipped;
 - an array is a `List` when PHP says its keys are `0..n`, a `Map` otherwise, and
-  **an empty array is an empty `List`**;
+  an empty array is an empty `List`;
 - a `stdClass` is read as a `Map` of its properties;
 - any other object is read as `Value::Object` with its class name and its public
   properties; a protected or private property is not part of the value;
@@ -72,8 +75,8 @@ and it follows PHP rather than a wire format:
 | `f64` | a float, or an int |
 | `bool` | a bool |
 | `Option<T>` | `null` or a `T` |
-| `Vec<T>` | a list; **a string never stands in for a list** |
-| `HashMap<String, T>`, a struct | a map, or an empty array; an integer key reads as its decimal text |
+| `Vec<T>` | a list; a string never stands in for a list |
+| `HashMap<String, T>`, a struct | a map, an empty array, or an object's public properties; an integer key reads as its decimal text |
 | `Value` | the subtree as it stands, an object's class included |
 | `Borrowed<'a>` with `#[serde(borrow)]` | a reference into the message instead of a copy — for the untyped command body a sub-operation decodes later |
 
@@ -104,9 +107,9 @@ next sibling's slot is asked for, because adding to a PHP array may move what it
 holds.
 
 The result itself is an instance of `SConcur\Dto\TaskResultDto`, built the same
-way by the result builder: the property names and order declared in
-`src/Dto/TaskResultDto.php` are what the builder writes, so a change to that class
-is a change to `ext/sconcur.c` in the same commit.
+way by the result builder: the property names declared in
+`src/Dto/TaskResultDto.php` are what the builder looks up, so renaming or adding
+one is a change to `ext/sconcur.c` in the same commit.
 
 ## Value classes
 
@@ -134,8 +137,8 @@ Keep the class name short: it travels with every value.
    reading the properties with `Object::property(name)` — for MongoDB,
    `bson_from_object` in `ext/src/features/mongodb/serializer/from_value.rs`.
 3. The way out: an arm building `Value::object(class, properties)` with the
-   properties in declaration order — for MongoDB, `bson_value` in
-   `serializer/to_value.rs`.
+   properties in declaration order (by convention; the builder finds each slot by
+   name) — for MongoDB, `bson_value` in `serializer/to_value.rs`.
 4. Tests: the converter's own unit tests on both arms (build the `Value` a PHP
    instance is read as and assert the result; build the result and assert class,
    property names and order), plus the feature's PHP test that writes the value
@@ -154,7 +157,8 @@ Every crossing converts once at the edge: the read happens inside `push`, the
 build inside the wait, and a feature's task works on the tree or on its own
 types in between. `tests/benchmarks/runtime/boundary-profile.php` prices taking a
 result, `push-profile.php` pushing a task, and `request-profile.php` what the HTTP
-server does with a request event; see [benchmarks](benchmarks.md).
+server does with a request event; see
+[benchmarks](benchmarks.md#conversion-overhead-the-phpextension-boundary).
 
 ## Gotchas
 
@@ -164,6 +168,4 @@ server does with a request event; see [benchmarks](benchmarks.md).
 | A string where a list is expected | refused, not read as a list of its bytes |
 | A plain `Vec<u8>` field without the `bytes` attribute | compiles, but a string is refused for it: annotate the field |
 | An integer past `i64` | cannot arrive: PHP ints are 64-bit; on the way out `Value::uint` makes a float of it |
-| A `stdClass` | arrives as a `Map`, so a feature never sees an `Object` of that class |
-| A value class with a protected property | the property does not cross: make it public |
 | Two references to the same instance in one array | read twice; there is no sharing on the other side |

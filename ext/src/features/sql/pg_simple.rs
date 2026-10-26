@@ -92,12 +92,14 @@ fn literal(binding: &Binding, index: usize) -> Result<String, String> {
         // Refused here rather than on the wire. Postgres holds no NUL in a text
         // value at all, and a statement carrying one comes back as "invalid
         // message format", which names neither the parameter nor the reason.
-        // Binding the same bytes to a bytea parameter works, and is what the
-        // error points at.
+        // A UTF-8 PHP string becomes a text literal whatever the parameter's
+        // type, so binding it to a bytea parameter does not help either: the
+        // way out is encoding the bytes on the PHP side, and the error says so.
         Binding::Text(text) => match text.contains('\0') {
             true => {
                 return Err(format!(
-                    "binding {}: a text value cannot hold a NUL byte; bind it to a bytea column instead",
+                    "binding {}: a UTF-8 string is sent as text, which cannot hold a NUL byte, \
+                     whatever the parameter's type; encode the bytes (for example hex with decode($n, 'hex'))",
                     index + 1,
                 ));
             }

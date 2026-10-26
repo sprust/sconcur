@@ -94,6 +94,15 @@ extern void sconcur_throw(const char *className, const char *message);
 /* Defined in sconcur.c, called from the core's preemption ticker thread. */
 extern void sconcur_request_vm_interrupt(void);
 
+/*
+ * Defined in sconcur.c, called by the process export on the PHP thread: the two
+ * steps of a worker's life only PHP can take. The first runs in a freshly forked
+ * child before it is handed back to PHP, the second right before a worker leaves
+ * through _exit.
+ */
+extern void sconcur_after_fork_in_child(void);
+extern void sconcur_flush_output(void);
+
 extern char *ping(char *name);
 
 /*
@@ -187,6 +196,30 @@ extern void preemptionDisarm(void);
 
 extern void destroy(void);
 extern char *version(void);
+
+/*
+ * Process control (src/process/): one export for everything a worker master asks
+ * of the operating system, the command named by command and its parameters read
+ * from payload through the value readers. Synchronous and runtime-free, because
+ * the process that forks must not run threads. Writes the answer into returnValue
+ * and answers SCONCUR_WAIT_READY, or SCONCUR_WAIT_FAILED with the exception
+ * already thrown. A fork returns through it twice: in the parent and in the child.
+ */
+extern int process(char *command, int commandLen, zval *payload, zval *returnValue);
+
+/*
+ * What the process export settles for the process as the module starts, from
+ * MINIT: before the script runs and before any thread exists, an exec'd worker
+ * claims the heartbeat pipe its master opened.
+ */
+extern void processStartup(void);
+
+/*
+ * What the process export does as each request starts, from RINIT: in a process
+ * a worker master started, once, every descriptor above stderr becomes
+ * close-on-exec, the script PHP CLI has opened by then among them.
+ */
+extern void processRequestStartup(void);
 
 #ifdef __cplusplus
 }

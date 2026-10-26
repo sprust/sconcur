@@ -29,15 +29,15 @@ default `replace: false` does not overwrite an existing local key.
 
 ## Semantics
 
-Binding goes by `Fiber::getCurrent()` — the same marker by which
-`State::getCurrentFlow()` resolves the flow — so every coroutine (a spawned request
+Binding goes by `Fiber::getCurrent()`, so every coroutine (a spawned request
 handler, each `WaitGroup` coroutine) has its own local map. Reads are read-through
 up the parent chain: the own map first, then the parent, up to the process root.
 Writes are always local, so a child may shadow a parent key without touching the
 parent or its siblings.
 
-The parent is fixed at coroutine creation — whoever called `Scheduler::spawn` or
-`WaitGroup::add`. A coroutine created outside any fiber inherits from the root
+The parent is fixed when `Scheduler::spawn` or `WaitGroup::add` is called: it is the
+coroutine that made the call, even if a concurrency limit makes the member start
+later. A coroutine created outside any fiber inherits from the root
 context, which is shared per process; outside a fiber `Context::current()` returns
 that root rather than throwing, so bootstrap code works as usual.
 
@@ -63,5 +63,4 @@ the root context is not removed.
 
 The environment is cooperative and single-threaded, so there are no locks.
 `find`/`has`/`set` are O(1) over the own map plus the walk up the parent chain,
-whose depth is usually 1–2. The size of the values is the caller's business — the
-library does not interpret them, but guarantees they are freed with the coroutine.
+whose depth is usually 1–2.

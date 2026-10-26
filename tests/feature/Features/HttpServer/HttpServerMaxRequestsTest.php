@@ -124,7 +124,7 @@ class HttpServerMaxRequestsTest extends TestCase
      *
      * @return array{int, string}
      */
-    private function get(string $url): array
+    protected function get(string $url): array
     {
         $curl = curl_init($url);
 
@@ -145,7 +145,7 @@ class HttpServerMaxRequestsTest extends TestCase
      * Returns the HTTP status of a quick request, or 0 if the connection could not
      * be made (e.g. the listener is closed).
      */
-    private function connectStatus(string $url): int
+    protected function connectStatus(string $url): int
     {
         $curl = curl_init($url);
 

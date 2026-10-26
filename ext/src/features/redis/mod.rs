@@ -101,7 +101,7 @@ impl Feature for RedisFeature {
 
             // The sweeper needs a runtime, so it is armed on first use rather
             // than when the registry is built.
-            pools::start_sweeper();
+            pools::get().start_sweeper();
 
             let feature = get();
 

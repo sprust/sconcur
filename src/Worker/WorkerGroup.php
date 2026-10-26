@@ -6,20 +6,25 @@ namespace SConcur\Worker;
 
 use Closure;
 use SConcur\Exceptions\Worker\WorkerSpawnException;
-use Throwable;
+use SConcur\Process\ProcessControl;
+use SConcur\Process\ProcessSignalEnum;
 
 /**
  * One live pool inside a master: the processes of a single WorkerGroupConfig, plus the
  * bookkeeping that keeps them up — the slots, the crash-loop backoff per slot and the
- * rolling reload in progress.
+ * watchdog.
  *
  * The master owns what is process-wide (the lock, the state file, signals, telemetry)
- * and asks each group to reap, respawn and roll itself. Slot indices are local to a
- * group, so "worker 0" is always read together with the group it belongs to.
+ * and asks each group to reap and respawn itself. Slot indices are local to a group, so
+ * "worker 0" is always read together with the group it belongs to.
+ *
+ * A worker that gives up its slot while still running — leaving at its own limit with its
+ * replacement already started — finishes outside the slots, in the draining list, so the
+ * slot belongs to the worker that serves from it.
  */
 class WorkerGroup
 {
-    protected const float HEALTHY_UPTIME_SECONDS = 1.0; // shorter run counts as a fast fail
+    public const float HEALTHY_UPTIME_SECONDS = 1.0; // shorter run counts as a fast fail
 
     /** How long past its SIGKILL a worker has to still be there before that is reported. */
     protected const float SIGKILL_REPORT_AFTER_SECONDS = 2.0;
@@ -35,20 +40,18 @@ class WorkerGroup
 
     protected int $workers = 0;
 
-    protected bool $reloading = false;
+    /** @var list<DrainingWorker> workers out of their slots, finishing before they exit */
+    protected array $draining = [];
 
-    /** @var list<int> slot indices still to roll in the current rolling reload */
-    protected array $reloadQueue = [];
+    /**
+     * Whether a worker of this group has been up since the master started it: said so, or
+     * kept running for longer than readyTimeoutMs. Until then a failure to start counts
+     * towards neverCameUp().
+     */
+    protected bool $cameUp = false;
 
-    /** slot currently draining for reload (SIGTERM sent, awaiting exit), or -1 if none */
-    protected int $reloadingIndex = -1;
-
-    protected int $reloadDeadlineNs = 0;
-
-    protected bool $reloadKillSent = false;
-
-    /** Set while the group is being retired: its workers are drained and not replaced. */
-    protected bool $retiring = false;
+    /** Workers that failed before the group ever came up. */
+    protected int $failedStarts = 0;
 
     /** @var array<int, int> slot index => hrtime at which the watchdog escalates to SIGKILL */
     protected array $watchdogDeadlineNs = [];
@@ -69,15 +72,21 @@ class WorkerGroup
     protected array $watchdogServedSeconds = [];
 
     /**
-     * @param string                            $telemetrySocket the collector socket the master listens on, empty
-     *                                                           when telemetry is off. It reaches the workers through
-     *                                                           their environment rather than their argv, so the
-     *                                                           worker-agnostic master never feeds a non-matching
-     *                                                           worker an unknown --flag
-     * @param null|Closure(WatchdogEvent): void $onWatchdogEvent called when the watchdog
-     *                                                           acts on a worker of this pool. Failures in it are
-     *                                                           logged and swallowed: watching must not be able to
-     *                                                           take the supervisor down
+     * @param string                            $telemetrySocket      the collector socket the master listens on, empty
+     *                                                                when telemetry is off. It reaches the workers through
+     *                                                                their environment rather than their argv, so the
+     *                                                                worker-agnostic master never feeds a non-matching
+     *                                                                worker an unknown --flag
+     * @param null|Closure(WatchdogEvent): void $onWatchdogEvent      called when the watchdog
+     *                                                                acts on a worker of this pool. It must not throw:
+     *                                                                the master's (WorkerMaster::watchdogReporter) logs
+     *                                                                and drops what the application's handler throws
+     * @param list<int>                         $inheritedDescriptors the descriptors the master's process had open
+     *                                                                before the master started — the application's —
+     *                                                                which a forked worker keeps
+     * @param string                            $accessLogPrefix      where the workers write their access lines when
+     *                                                                the group says `accessLog: file`, see
+     *                                                                MasterLogger::accessLogPrefix
      */
     public function __construct(
         protected WorkerGroupConfig $config,
@@ -86,8 +95,10 @@ class WorkerGroup
         protected string $cwd,
         protected string $telemetrySocket = '',
         protected ?Closure $onWatchdogEvent = null,
+        protected array $inheritedDescriptors = [],
+        protected string $accessLogPrefix = '',
     ) {
-        $this->workers = $config->workerCount > 0 ? $config->workerCount : Cpu::count();
+        $this->workers = $config->resolvedWorkerCount();
     }
 
     public function name(): string
@@ -110,41 +121,21 @@ class WorkerGroup
         return $this->config->shutdownTimeoutMs;
     }
 
-    public function isReloading(): bool
-    {
-        return $this->reloading;
-    }
-
-    public function isRetiring(): bool
-    {
-        return $this->retiring;
-    }
-
-    /** @return array<int, WorkerProcess|null> */
-    public function slots(): array
-    {
-        return $this->slots;
-    }
-
     public function hasPendingRespawns(): bool
     {
         return $this->respawnAtNs !== [];
     }
 
+    /** Whether no process of the group is left: none in a slot, draining or starting. */
     public function allSlotsEmpty(): bool
     {
-        foreach ($this->slots as $process) {
-            if ($process !== null) {
-                return false;
-            }
-        }
-
-        return true;
+        return $this->aliveSlotCount() === 0;
     }
 
+    /** Every process of the group still running: in a slot or draining. */
     public function aliveSlotCount(): int
     {
-        $alive = 0;
+        $alive = count($this->draining);
 
         foreach ($this->slots as $process) {
             if ($process !== null) {
@@ -153,6 +144,22 @@ class WorkerGroup
         }
 
         return $alive;
+    }
+
+    /**
+     * Whether the group failed to start: as many of its workers as it has slots died
+     * before any of them came up. A broken deploy then ends the master with an exit code
+     * that systemd or an orchestrator acts on, instead of respawning into the same failure
+     * with growing delays for as long as nobody reads the journal.
+     */
+    public function neverCameUp(): bool
+    {
+        return !$this->cameUp && $this->failedStarts >= $this->workers;
+    }
+
+    public function neverCameUpReason(): string
+    {
+        return sprintf('%d failed before any said it was up', $this->workers);
     }
 
     public function spawnAll(): void
@@ -164,16 +171,22 @@ class WorkerGroup
         }
     }
 
-    public function signalAll(int $signal): void
+    public function signalAll(ProcessSignalEnum $signal): void
     {
         foreach ($this->slots as $process) {
             $process?->signal($signal);
+        }
+
+        foreach ($this->draining as $draining) {
+            $draining->process->signal($signal);
         }
     }
 
     /**
      * Drains each live worker's output into the log and handles any that have exited.
      * $stopping suppresses the restart policy: the whole master is going away.
+     *
+     * The same for the workers draining out of their slots.
      */
     public function reapAndLog(bool $stopping): void
     {
@@ -192,17 +205,43 @@ class WorkerGroup
             // fill the pipe and block the worker on its next mark.
             $process->drainHeartbeat();
 
+            $this->noteCameUp($process);
+
             if (!$process->isRunning()) {
                 $this->handleExit(
                     index: $index,
                     process: $process,
                     stopping: $stopping,
                 );
+
+                continue;
+            }
+
+            if ($process->isRecycling() && !$stopping) {
+                $this->recycle(
+                    index: $index,
+                    process: $process,
+                );
             }
         }
+
+        $this->reapDraining();
     }
 
-    public function respawnDue(): void
+    /**
+     * What the group does once a tick besides reaping: kills the draining
+     * workers that overstayed, runs the watchdog and respawns the slots that are due.
+     */
+    public function tick(): void
+    {
+        $this->driveDraining();
+
+        $this->driveWatchdog();
+
+        $this->respawnDue();
+    }
+
+    protected function respawnDue(): void
     {
         $nowNs = hrtime(true);
 
@@ -216,204 +255,51 @@ class WorkerGroup
     }
 
     /**
-     * Starts a rolling restart of every slot. Rolling one at a time is what keeps the
-     * pool serving while it happens.
+     * Kills the draining workers that overstayed their deadline: a worker leaving at its
+     * limit that takes longer than the group's shutdownTimeoutMs to finish.
      */
-    public function startReload(): void
+    protected function driveDraining(): void
     {
-        if ($this->reloading) {
-            return;
-        }
+        $nowNs = hrtime(true);
 
-        $this->reloading      = true;
-        $this->reloadQueue    = array_keys($this->slots);
-        $this->reloadingIndex = -1;
-        $this->reloadKillSent = false;
-
-        $this->logger->master(
-            level: MasterLogger::INFO,
-            message: sprintf('group %s: rolling %d worker(s)', $this->config->name, count($this->reloadQueue)),
-        );
-    }
-
-    /**
-     * Replaces the group's settings and rolls its workers onto them, one slot at a time,
-     * so the group keeps serving throughout. A slot count that grew is filled as the roll
-     * reaches it, and the slots that no longer fit are drained by the roll and not
-     * replaced — so a resize is complete when the roll is, not the moment the config is
-     * read.
-     */
-    public function reconfigure(WorkerGroupConfig $config): void
-    {
-        $this->config = $config;
-
-        $this->workers = $config->workerCount > 0 ? $config->workerCount : Cpu::count();
-
-        // A roll already under way was queued against the previous settings, and the
-        // slots it has replaced are running them. Requeue every slot so none is left
-        // behind on a config the operator has already replaced; startReload() alone
-        // returns without doing anything while a roll is in flight.
-        if ($this->reloading) {
-            $this->reloadQueue = array_keys($this->slots);
-
-            return;
-        }
-
-        $this->startReload();
-    }
-
-    /**
-     * Takes the group back out of retirement, for one that reappeared in the config while
-     * it was still draining. Its slots are refilled by the reconfigure that follows.
-     */
-    public function unretire(): void
-    {
-        $this->retiring = false;
-    }
-
-    /** Drains the group for good: its workers are asked to stop and never replaced. */
-    public function retire(): void
-    {
-        if ($this->retiring) {
-            return;
-        }
-
-        $this->retiring    = true;
-        $this->respawnAtNs = [];
-
-        $this->logger->master(
-            level: MasterLogger::INFO,
-            message: sprintf('group %s: removed from the config; draining', $this->config->name),
-        );
-
-        $this->signalAll(SIGTERM);
-    }
-
-    /**
-     * Drives the rolling reload: for the current slot send SIGTERM, wait up to
-     * shutdownTimeoutMs for it to drain (SIGKILL past that), then spawn a fresh
-     * replacement and advance. Answers whether the reload is still running.
-     */
-    public function driveReload(): bool
-    {
-        if (!$this->reloading) {
-            return false;
-        }
-
-        // A slot is mid-roll: wait for the worker to drain and exit (reapAndLog reaps it
-        // into a null slot), escalating to SIGKILL once its drain deadline passes.
-        if ($this->reloadingIndex !== -1) {
-            $process = $this->slots[$this->reloadingIndex] ?? null;
-
-            if ($process !== null) {
-                if (!$this->reloadKillSent && hrtime(true) > $this->reloadDeadlineNs) {
-                    $this->logWorker(
-                        level: MasterLogger::WARN,
-                        pid: $process->pid(),
-                        index: $this->reloadingIndex,
-                        message: 'reload drain timeout; sending SIGKILL',
-                    );
-
-                    $process->signal(SIGKILL);
-
-                    $this->reloadKillSent = true;
-                }
-
-                return true;
+        foreach ($this->draining as $draining) {
+            if ($draining->killSent || $nowNs <= $draining->deadlineNs) {
+                continue;
             }
 
-            $index = $this->reloadingIndex;
+            $draining->killSent = true;
 
-            $this->reloadingIndex = -1;
-            $this->reloadKillSent = false;
-
-            unset($this->respawnAtNs[$index]);
-
-            // A slot past the (possibly shrunk) worker count is retired rather than
-            // replaced — that is how a smaller workerCount takes effect on a reload.
-            if ($index < $this->workers) {
-                $this->spawn($index);
-            } else {
-                unset($this->slots[$index]);
-            }
-
-            return true;
-        }
-
-        // No slot in flight: finish the reload, or start the next slot in the queue.
-        if ($this->reloadQueue === []) {
-            $this->reloading = false;
-
-            $this->fillMissingSlots();
-
-            $this->logger->master(
-                level: MasterLogger::INFO,
-                message: sprintf('group %s: reload complete', $this->config->name),
+            $this->logWorker(
+                level: MasterLogger::WARN,
+                pid: $draining->process->pid(),
+                index: $draining->index,
+                message: sprintf('drain timeout (%s); sending SIGKILL', $draining->reason),
             );
 
-            return false;
+            $draining->process->signal(ProcessSignalEnum::Kill);
         }
-
-        $index = array_shift($this->reloadQueue);
-
-        $process = $this->slots[$index] ?? null;
-
-        // An already-empty slot (awaiting a crash respawn): just bring up a fresh one.
-        if ($process === null) {
-            unset($this->respawnAtNs[$index]);
-
-            if ($index < $this->workers) {
-                $this->spawn($index);
-            } else {
-                unset($this->slots[$index]);
-            }
-
-            return true;
-        }
-
-        $this->reloadingIndex   = $index;
-        $this->reloadKillSent   = false;
-        $this->reloadDeadlineNs = hrtime(true) + $this->config->shutdownTimeoutMs * 1_000_000;
-
-        $this->logWorker(
-            level: MasterLogger::INFO,
-            pid: $process->pid(),
-            index: $index,
-            message: 'reloading; sending SIGTERM',
-        );
-
-        $process->signal(SIGTERM);
-
-        return true;
     }
 
     /**
      * Kills a worker whose PHP thread stopped turning its serve loop, so its slot can be
      * refilled by the ordinary restart path. The evidence is the worker's own liveness
-     * pipe (Heartbeat), written by that thread and drained by reapAndLog; a worker that
-     * has never written to it is left alone, because a script without a serve loop never
-     * will.
+     * pipe (Scheduler::markAlive), written by that thread and drained by reapAndLog; a worker
+     * that has never written to it is left alone, because a script without a serve loop
+     * never will.
      *
      * SIGTERM first, SIGKILL after the group's shutdownTimeoutMs: a thread stuck in a
      * native call is usually freed by the signal itself (it interrupts the system call)
      * and then shuts down in order, while a CPU loop needs the second one.
      */
-    public function driveWatchdog(): void
+    protected function driveWatchdog(): void
     {
         foreach ($this->slots as $index => $process) {
             if ($process === null) {
                 continue;
             }
 
-            // Already being unwound for a reload: its SIGTERM is sent and its deadline
-            // runs in driveReload(). A second opinion here would only double the signals.
-            if ($this->reloading && $index === $this->reloadingIndex) {
-                continue;
-            }
-
-            // An armed slot is carried to its end whatever the config now says. Returning
-            // early on a watchdog switched off by a reload would strand a worker that has
-            // already been terminated, with the SIGKILL that frees its slot never sent.
+            // An armed slot is carried to its end: the worker has already been terminated,
+            // and the SIGKILL that frees its slot must follow.
             if (isset($this->watchdogDeadlineNs[$index])) {
                 $this->escalateWatchdog(
                     index: $index,
@@ -448,7 +334,7 @@ class WorkerGroup
                 ),
             );
 
-            $process->signal(SIGTERM);
+            $process->signal(ProcessSignalEnum::Terminate);
 
             $this->reportWatchdogEvent(
                 event: WatchdogEventEnum::HeartbeatLost,
@@ -456,6 +342,126 @@ class WorkerGroup
                 pid: $process->pid(),
                 ageSeconds: $ageSeconds,
             );
+        }
+    }
+
+    /** Logs the draining workers and lets go of the ones that are gone. */
+    protected function reapDraining(): void
+    {
+        $remaining = [];
+
+        foreach ($this->draining as $draining) {
+            $process = $draining->process;
+
+            $this->logWorkerLines(
+                index: $draining->index,
+                process: $process,
+                lines: $process->drainOutput(),
+            );
+
+            $process->drainHeartbeat();
+
+            if ($process->isRunning()) {
+                $remaining[] = $draining;
+
+                continue;
+            }
+
+            $this->logWorkerLines(
+                index: $draining->index,
+                process: $process,
+                lines: $process->drainFinalOutput(),
+            );
+
+            $this->logWorker(
+                level: MasterLogger::INFO,
+                pid: $process->pid(),
+                index: $draining->index,
+                message: sprintf(
+                    'exited %s uptime=%.1fs (%s)',
+                    $process->exitReason(),
+                    $process->uptimeSeconds(),
+                    $draining->reason,
+                ),
+            );
+
+            $process->close();
+        }
+
+        $this->draining = $remaining;
+    }
+
+    /**
+     * Takes a worker that is stopping already — one that reached its own limit — out of its
+     * slot to finish outside it. Its deadline is the group's shutdownTimeoutMs, past which
+     * driveDraining() kills it.
+     */
+    protected function drain(int $index, WorkerProcess $process, string $reason): void
+    {
+        $this->draining[] = new DrainingWorker(
+            process: $process,
+            index: $index,
+            deadlineNs: hrtime(true) + $this->config->shutdownTimeoutMs * 1_000_000,
+            reason: $reason,
+        );
+    }
+
+    /**
+     * A worker said it is leaving because it reached its own limit: its replacement is
+     * started now, while it is still finishing its last requests, so the slot is not
+     * empty for the length of a drain and a start. Under Never nothing replaces it, and
+     * it stays in its slot to be reaped there.
+     */
+    protected function recycle(int $index, WorkerProcess $process): void
+    {
+        if (!$this->config->restartPolicy->shouldRestart(cleanExit: true, reachedLimit: true)) {
+            return;
+        }
+
+        $this->slots[$index] = null;
+
+        $this->forgetWatchdog($index);
+
+        $this->drain(
+            index: $index,
+            process: $process,
+            reason: 'reached its limit',
+        );
+
+        $this->logWorker(
+            level: MasterLogger::INFO,
+            pid: $process->pid(),
+            index: $index,
+            message: 'reached its limit; starting its replacement',
+        );
+
+        $this->spawn($index);
+    }
+
+    /**
+     * Notes that the group came up: a worker said it was up, or kept running for longer
+     * than readyTimeoutMs — the second for a worker script that never says so, which is
+     * then judged the way it was before readiness existed.
+     */
+    protected function noteCameUp(WorkerProcess $process): void
+    {
+        if ($this->cameUp) {
+            return;
+        }
+
+        if ($process->isReady() || ($process->uptimeSeconds() * 1000) >= $this->config->readyTimeoutMs) {
+            $this->cameUp = true;
+        }
+    }
+
+    /**
+     * Counts a worker that failed before the group ever came up — exited with an error or
+     * by a signal before it said it was up, or could not be started at all.
+     */
+    protected function noteFailedStart(): void
+    {
+        if (!$this->cameUp) {
+            ++$this->failedStarts;
         }
     }
 
@@ -490,7 +496,7 @@ class WorkerGroup
             message: 'hung worker did not exit on SIGTERM; sending SIGKILL',
         );
 
-        $process->signal(SIGKILL);
+        $process->signal(ProcessSignalEnum::Kill);
 
         $this->reportWatchdogEvent(
             event: WatchdogEventEnum::KillEscalated,
@@ -530,11 +536,7 @@ class WorkerGroup
         );
     }
 
-    /**
-     * Hands the event to the master's handler, if it has one. Anything the handler throws
-     * is written to the journal and dropped: an application's alerting must not be able to
-     * stop the supervisor from supervising.
-     */
+    /** Hands the event to the group's handler, if it has one; see the constructor's $onWatchdogEvent. */
     protected function reportWatchdogEvent(
         WatchdogEventEnum $event,
         int $index,
@@ -545,23 +547,14 @@ class WorkerGroup
             return;
         }
 
-        try {
-            ($this->onWatchdogEvent)(new WatchdogEvent(
-                event: $event,
-                group: $this->config->name,
-                slot: $index,
-                pid: $pid,
-                ageSeconds: $ageSeconds,
-                watchdogTimeoutMs: $this->config->watchdogTimeoutMs,
-            ));
-        } catch (Throwable $exception) {
-            $this->logWorker(
-                level: MasterLogger::ERROR,
-                pid: $pid,
-                index: $index,
-                message: sprintf('watchdog handler failed: %s', $exception->getMessage()),
-            );
-        }
+        ($this->onWatchdogEvent)(new WatchdogEvent(
+            event: $event,
+            group: $this->config->name,
+            slot: $index,
+            pid: $pid,
+            ageSeconds: $ageSeconds,
+            watchdogTimeoutMs: $this->config->watchdogTimeoutMs,
+        ));
     }
 
     /** Drops whatever the watchdog had decided about the worker that held this slot. */
@@ -575,38 +568,17 @@ class WorkerGroup
         );
     }
 
-    /** Brings up the slots a grown workerCount added. */
-    protected function fillMissingSlots(): void
-    {
-        for ($index = 0; $index < $this->workers; ++$index) {
-            if (array_key_exists($index, $this->slots)) {
-                continue;
-            }
-
-            $this->slots[$index] = null;
-
-            $this->spawn($index);
-        }
-    }
-
     protected function spawn(int $index): void
     {
-        if ($this->retiring) {
-            return;
-        }
-
         // The slot starts unjudged: the new worker inherits nothing the watchdog decided
         // about the one before it.
         $this->forgetWatchdog($index);
 
         try {
-            $process = new WorkerProcess(
-                command: $this->buildCommand(),
-                cwd: $this->cwd,
-                env: $this->buildEnv($index),
-                heartbeat: $this->config->watchdogTimeoutMs > 0,
-            );
+            $process = $this->launch($index);
         } catch (WorkerSpawnException $exception) {
+            $this->noteFailedStart();
+
             $backoffMs = $this->nextBackoffMs(
                 index: $index,
                 uptimeSeconds: 0.0,
@@ -641,6 +613,19 @@ class WorkerGroup
         );
     }
 
+    /** Starts the worker of a slot, the way its group is launched. */
+    protected function launch(int $index): WorkerProcess
+    {
+        return match ($this->config->launch) {
+            LaunchMode::Exec => new ExecWorkerProcess(
+                command: $this->buildCommand(),
+                cwd: $this->cwd,
+                env: $this->buildEnv($index),
+            ),
+            LaunchMode::Fork => $this->fork($index),
+        };
+    }
+
     protected function handleExit(int $index, WorkerProcess $process, bool $stopping): void
     {
         $this->logWorkerLines(
@@ -652,10 +637,19 @@ class WorkerGroup
         $pid           = $process->pid();
         $uptimeSeconds = $process->uptimeSeconds();
         $exitedCleanly = $process->exitedCleanly();
+        $reachedLimit  = $process->isRecycling();
+        $reason        = $process->exitReason();
 
-        $reason = $process->termSignal() !== null
-            ? sprintf('signal=%d', $process->termSignal())
-            : sprintf('code=%d', (int) $process->exitCode());
+        // Died before it was up, and before it had run long enough to count as up without
+        // saying so: a failure to start, which is what neverCameUp() is counting.
+        if (
+            !$stopping
+            && !$exitedCleanly
+            && !$process->isReady()
+            && ($uptimeSeconds * 1000) < $this->config->readyTimeoutMs
+        ) {
+            $this->noteFailedStart();
+        }
 
         $process->close();
 
@@ -668,7 +662,7 @@ class WorkerGroup
 
         $this->forgetWatchdog($index);
 
-        if ($stopping || $this->retiring) {
+        if ($stopping) {
             $this->logWorker(
                 level: MasterLogger::INFO,
                 pid: $pid,
@@ -679,20 +673,12 @@ class WorkerGroup
             return;
         }
 
-        // The worker we are rolling for a reload exited on purpose: do not treat it as a
-        // crash (no policy check, no backoff). driveReload() spawns its replacement.
-        if ($this->reloading && $index === $this->reloadingIndex) {
-            $this->logWorker(
-                level: MasterLogger::INFO,
-                pid: $pid,
-                index: $index,
-                message: sprintf('exited %s uptime=%.1fs (reloading)', $reason, $uptimeSeconds),
-            );
+        $shouldRestart = $this->config->restartPolicy->shouldRestart(
+            cleanExit: $exitedCleanly,
+            reachedLimit: $reachedLimit,
+        );
 
-            return;
-        }
-
-        if (!$this->config->restartPolicy->shouldRestart($exitedCleanly)) {
+        if (!$shouldRestart) {
             $this->logWorker(
                 level: MasterLogger::INFO,
                 pid: $pid,
@@ -703,6 +689,22 @@ class WorkerGroup
                     $uptimeSeconds,
                     $this->config->restartPolicy->value,
                 ),
+            );
+
+            return;
+        }
+
+        // It asked to be replaced: at once, and without counting the exit against the slot.
+        // Usually it said so while still draining and recycle() took it out of the slot
+        // then; this is the one that said so and exited within the same tick.
+        if ($reachedLimit) {
+            $this->respawnAtNs[$index] = hrtime(true);
+
+            $this->logWorker(
+                level: MasterLogger::INFO,
+                pid: $pid,
+                index: $index,
+                message: sprintf('exited %s uptime=%.1fs at its limit; restarting', $reason, $uptimeSeconds),
             );
 
             return;
@@ -763,15 +765,42 @@ class WorkerGroup
 
         $this->fastFails[$index] = $fails;
 
-        $backoffMs = $this->config->restartBackoffMs * (2 ** ($fails - 1));
-
-        return (int) min($backoffMs, $this->config->maxRestartBackoffMs);
+        return $this->config->backoffMs($fails);
     }
 
     /**
-     * Builds the worker command. The master's pid rides along as the `--masterPid` argv
-     * flag — the same channel as the expanded `server` flags and the group's workerArgs,
-     * no environment involved — for the worker to use as it sees fit.
+     * Forks this process — the master — into the worker of a slot. The child half
+     * never returns: it becomes the worker in ForkedWorker::run() and leaves from there.
+     * What it needs is taken here, before the fork, so the child reads plain values rather
+     * than this group.
+     */
+    protected function fork(int $index): ForkedWorkerProcess
+    {
+        $title       = sprintf('sconcur-server: %s #%d', $this->config->name, $index);
+        $cwd         = $this->cwd;
+        $environment = $this->workerEnvironment($index);
+        $argv        = $this->workerArgv();
+
+        return new ForkedWorkerProcess(
+            // A forked worker is the master's copy, the application loaded before the master
+            // started included, and keeps what that application had open — a log file a
+            // logger opened while loading would otherwise write to /dev/null in every worker.
+            // An exec'd worker is a php of its own and loads its own.
+            keepDescriptors: $this->inheritedDescriptors,
+            child: static function () use ($title, $cwd, $environment, $argv): never {
+                ForkedWorker::run(
+                    title: $title,
+                    cwd: $cwd,
+                    environment: $environment,
+                    argv: $argv,
+                );
+            },
+        );
+    }
+
+    /**
+     * Builds the worker command for a group launched by exec: the interpreter, its flags
+     * and the worker's argv (workerArgv).
      *
      * `display_errors=stderr` is forced ahead of the group's phpArgs so a dying worker
      * always explains itself: with the production-ini `display_errors=Off` a fatal
@@ -789,6 +818,21 @@ class WorkerGroup
             '-d',
             'display_errors=stderr',
             ...$this->config->phpArgs,
+            ...$this->workerArgv(),
+        ];
+    }
+
+    /**
+     * The worker's argv, whichever way it is launched: the script, the expanded `server`
+     * flags, the group's workerArgs, and the master's pid as the `--masterPid` flag — the
+     * same channel as the rest, no environment involved — for the worker to use as it
+     * sees fit.
+     *
+     * @return list<string>
+     */
+    protected function workerArgv(): array
+    {
+        return [
             $this->config->workerScript,
             ...$this->config->argumentFlags(),
             ...$this->config->workerArgs,
@@ -797,9 +841,32 @@ class WorkerGroup
     }
 
     /**
-     * The worker environment: the inherited environment, the pool label, then the
-     * group's own env over both. No master metadata is injected here — that goes via
-     * argv (see buildCommand).
+     * The environment of a worker launched by exec: the inherited one, the marks pipe's
+     * descriptor, then workerEnvironment() over both. No master metadata is injected here
+     * — that goes via argv (see workerArgv).
+     *
+     * @return array<string, string>
+     */
+    protected function buildEnv(int $index): array
+    {
+        $env = getenv();
+
+        // Tells the worker which descriptor its master opened for the pipe it marks itself
+        // on. Always there: the watchdog reads it when it is on, and the master reads the
+        // mark that says a worker is up. A forked worker is handed the pipe itself and needs
+        // no such variable.
+        $env[ProcessControl::HEARTBEAT_FD_ENVIRONMENT_NAME] = (string) ProcessControl::HEARTBEAT_FD;
+
+        foreach ($this->workerEnvironment($index) as $key => $value) {
+            $env[$key] = $value;
+        }
+
+        return $env;
+    }
+
+    /**
+     * What a worker's environment adds to the master's, whichever way it is launched: the
+     * pool label, then the group's own env over it.
      *
      * The label is "<group>:<slot>", which is what the worker puts on the snapshots it
      * pushes. It carries the slot so two workers of one pool are told apart, and the
@@ -808,31 +875,30 @@ class WorkerGroup
      *
      * @return array<string, string>
      */
-    protected function buildEnv(int $index): array
+    protected function workerEnvironment(int $index): array
     {
-        $env = getenv();
-
         // Labelled per worker and not per master, so the collector can tell the pools of
         // one master apart and aggregate each on its own.
-        $env['SCONCUR_SERVER_NAME'] = $this->config->name . ':' . $index;
+        $environment = ['SCONCUR_SERVER_NAME' => $this->config->name . ':' . $index];
 
         if ($this->telemetrySocket !== '') {
-            $env['SCONCUR_TELEMETRY_SOCKET'] = $this->telemetrySocket;
+            $environment['SCONCUR_TELEMETRY_SOCKET'] = $this->telemetrySocket;
         }
 
-        // Tells the worker which descriptor its master opened for the liveness pipe. Set
-        // only with the watchdog on, so a worker under a master that does not watch does
-        // not look for a pipe that is not there.
-        if ($this->config->watchdogTimeoutMs > 0) {
-            $env[Heartbeat::FD_ENVIRONMENT_NAME] = (string) Heartbeat::FD;
-        }
+        // Read by the extension's logger when the worker writes its first line. Set in
+        // every case, empty for stdout, so a worker never acts on a value it inherited.
+        $environment['SCONCUR_ACCESS_LOG'] = match ($this->config->accessLog) {
+            AccessLogTarget::Stdout => '',
+            AccessLogTarget::File   => $this->accessLogPrefix,
+            AccessLogTarget::Off    => 'off',
+        };
 
         // The group's own env wins on a collision: it is the more specific setting.
         foreach ($this->config->env as $key => $value) {
-            $env[$key] = $value;
+            $environment[$key] = $value;
         }
 
-        return $env;
+        return $environment;
     }
 
     /**

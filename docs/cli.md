@@ -5,7 +5,8 @@ English | [Русский](cli.ru.md)
 The package installs three executables into `vendor/bin` (the `bin` section of
 `composer.json`): `sconcur-load`, `sconcur-status`, `sconcur-server`. From the
 repository they run as `bin/<command>`, from a consumer application as
-`vendor/bin/<command>`.
+`vendor/bin/<command>`. `bin/` also holds `sconcur-fork-server`, which the worker master
+starts for each fork group; it is not installed into `vendor/bin` and is not run by hand.
 
 ## sconcur-load — download the extension
 
@@ -59,9 +60,10 @@ RUN vendor/bin/sconcur-load "$(php-config --extension-dir)/sconcur.so" \
 
 `bin/sconcur-load` is part of the package and appears only after dependencies are
 installed. To place the extension into a system directory at an earlier build stage
-(for layer caching), take the exact version from `composer.lock` — it pins the
-resolved version rather than a constraint — and download the asset directly. Only
-`composer.lock` needs to be copied, `vendor/` is not required:
+(for layer caching), take the exact version from `composer.lock` — unlike
+`composer.json`, it pins the resolved version rather than a constraint — and download
+the asset directly. Only `composer.lock` needs to be copied, `vendor/` is not
+required:
 
 ```dockerfile
 COPY composer.lock ./
@@ -112,8 +114,11 @@ build through only when `ready` is true, and tags the release as
 
 ## sconcur-server — worker master
 
-Starts and supervises a pool of worker processes (scaling across cores via
-`SO_REUSEPORT`, restarting crashed ones, graceful shutdown). Commands
+Starts and supervises pools of worker processes: the workers of a pool share one
+port (each with its own `SO_REUSEPORT` socket, or all on one socket the master
+binds), a crashed worker is restarted, and a stop finishes the requests already
+accepted (under load a request or two can still be lost, see
+[Worker master](worker-master.md#graceful-shutdown)). Commands
 `start` / `status` / `stop` / `reload`, all taking a `--configPath` flag pointing to the
 master's JSON config; `--group=NAME` narrows `status` and `reload` to one pool
 (`start` and `stop` accept it and check the name, but serve the whole config):
@@ -122,5 +127,6 @@ master's JSON config; `--group=NAME` narrows `status` and `reload` to one pool
 vendor/bin/sconcur-server start --configPath=/app/master.json
 ```
 
-Details — config parameters, restart policy, logging and graceful shutdown — are in
+Details — config parameters, the `fork` and `exec` launches, restart policy,
+logging and graceful shutdown — are in
 [Worker master](worker-master.md).

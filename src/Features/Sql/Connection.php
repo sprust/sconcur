@@ -15,14 +15,14 @@ use SConcur\Features\Sql\Results\RowsResult;
 
 /**
  * Shared SQL connection on top of the extension's SQL feature. A driver facade
- * (Mysql\Connection, later Pgsql\Connection) extends this and supplies its
- * MethodEnum; everything else — queries, exec, transactions — is driver-agnostic.
+ * (Mysql\Connection, Pgsql\Connection) extends this and supplies its MethodEnum;
+ * everything else — queries, exec, transactions — is driver-agnostic.
  *
  * Placeholders are the driver's native dialect (`?` for MySQL, `$1` for PgSQL);
- * bindings are always a positional list passed straight to the driver.
+ * bindings are always a positional list, and the SQL itself is never rewritten.
  *
- * Each call runs in the extension while the calling coroutine suspends, so
- * many statements fan out concurrently. Outside a WaitGroup it works synchronously.
+ * Each call runs in the extension while the calling coroutine suspends, so many
+ * statements run at the same time. Outside a WaitGroup it works synchronously.
  */
 abstract readonly class Connection
 {
@@ -37,11 +37,10 @@ abstract readonly class Connection
         ?int $maxIdleConns = null,
         ?int $connMaxLifetimeMs = null,
     ) {
-        // A pool that collapses between fan-outs pays the connection handshakes
-        // again on the next one, which is what a small idle floor under a large
-        // cap costs. So idle defaults to the cap here and the pool stays warm.
-        // The Rust core keeps every idle connection up to the cap anyway and
-        // ignores the value, so the default costs it nothing.
+        // maxIdleConns defaults to the cap. The core does not apply it: sqlx has
+        // no cap on idle connections — it keeps them up to maxOpenConns and closes
+        // each one after 10 idle minutes — so the value only takes part in the
+        // pool key, and the default costs nothing.
         $this->connection = new ConnectionDto(
             dsn: $dsn,
             timeoutMs: $timeoutMs ?: 30000,

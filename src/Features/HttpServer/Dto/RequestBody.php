@@ -10,10 +10,11 @@ use SConcur\Exceptions\TaskErrorException;
 use SConcur\Features\FeatureExecutor;
 
 /**
- * The request body. It is never buffered whole in the extension: the inline first
- * chunk arrives with the request, the rest is pulled on demand. Read it either
- * fully via contents() or piece by piece via read() — use one style per request,
- * since both consume the same one-shot stream.
+ * The request body. The extension reads the whole body (up to maxRequestBody) before
+ * the request reaches PHP and hands it over inline as the first chunk; the pull path
+ * for a streamed remainder (bodyKey) is still accepted, but the core never sets a key.
+ * Read it either fully via contents() or piece by piece via read() — use one style
+ * per request, since both consume the same one-shot stream.
  */
 class RequestBody
 {

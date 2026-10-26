@@ -33,6 +33,10 @@ pub struct ServePayload {
     pub shutdown_timeout_ms: i64,
     #[serde(rename = "rp", default)]
     pub reuse_port: bool,
+    /// A listening socket bound elsewhere, to accept on instead of binding the
+    /// address: one from socket activation, say.
+    #[serde(rename = "lfd", default)]
+    pub listen_fd: Option<i64>,
     /// Restricts the upgrade endpoint to this path (empty = any path).
     #[serde(rename = "pt", default)]
     pub path: String,

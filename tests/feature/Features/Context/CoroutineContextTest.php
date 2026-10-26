@@ -178,7 +178,7 @@ class CoroutineContextTest extends BaseTestCase
         self::assertSame($baselineParent, $this->stateArraySize('fiberContextParent'));
     }
 
-    private function stateArraySize(string $property): int
+    protected function stateArraySize(string $property): int
     {
         $reflectionProperty = new ReflectionProperty(State::class, $property);
 

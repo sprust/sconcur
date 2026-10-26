@@ -32,6 +32,9 @@ readonly class WorkerGroupConfig
         'restartBackoffMs',
         'maxRestartBackoffMs',
         'watchdogTimeoutMs',
+        'readyTimeoutMs',
+        'accessLog',
+        'launch',
         'server',
     ];
 
@@ -40,6 +43,7 @@ readonly class WorkerGroupConfig
      * @param list<string>          $phpArgs    interpreter flags for this group's workers
      * @param list<string>          $workerArgs extra raw worker argv flags
      * @param array<string, string> $env        extra env merged over the inherited one
+     * @param AccessLogTarget       $accessLog  where the workers write their access lines
      */
     public function __construct(
         public string $name,
@@ -55,6 +59,9 @@ readonly class WorkerGroupConfig
         public int $maxRestartBackoffMs,
         public int $watchdogTimeoutMs,
         public array $server,
+        public LaunchMode $launch = LaunchMode::Fork,
+        public int $readyTimeoutMs = MasterConfig::DEFAULT_READY_TIMEOUT_MS,
+        public AccessLogTarget $accessLog = AccessLogTarget::Stdout,
     ) {
     }
 
@@ -124,39 +131,89 @@ readonly class WorkerGroupConfig
             );
         }
 
+        $launch = LaunchMode::tryFrom((string) ($data['launch'] ?? $defaults->launch->value));
+
+        if ($launch === null) {
+            throw new InvalidConfigException(
+                message: sprintf('config: group "%s" launch must be exec|fork', $name),
+            );
+        }
+
+        $phpBinary = (string) ($data['phpBinary'] ?? $defaults->phpBinary);
+        $phpArgs   = isset($data['phpArgs']) ? MasterConfig::stringList($data['phpArgs']) : $defaults->phpArgs;
+
+        $server = MasterConfig::serverParams(
+            value: $data['server'] ?? null,
+            groupName: $name,
+        );
+
         return new self(
             name: $name,
             workerScript: $workerScript,
             workerCount: $workerCount,
-            phpBinary: (string) ($data['phpBinary'] ?? $defaults->phpBinary),
-            phpArgs: isset($data['phpArgs']) ? MasterConfig::stringList($data['phpArgs']) : $defaults->phpArgs,
+            phpBinary: $phpBinary,
+            phpArgs: $phpArgs,
             workerArgs: MasterConfig::stringList($data['workerArgs'] ?? []),
             env: array_merge($defaults->env, MasterConfig::stringMap($data['env'] ?? [])),
             restartPolicy: $restartPolicy,
             shutdownTimeoutMs: MasterConfig::nonNegativeInt(
-                $data,
-                'shutdownTimeoutMs',
-                $defaults->shutdownTimeoutMs,
-                $name,
+                data: $data,
+                key: 'shutdownTimeoutMs',
+                default: $defaults->shutdownTimeoutMs,
+                groupName: $name,
             ),
             restartBackoffMs: MasterConfig::nonNegativeInt(
-                $data,
-                'restartBackoffMs',
-                $defaults->restartBackoffMs,
-                $name,
+                data: $data,
+                key: 'restartBackoffMs',
+                default: $defaults->restartBackoffMs,
+                groupName: $name,
             ),
             maxRestartBackoffMs: MasterConfig::nonNegativeInt(
-                $data,
-                'maxRestartBackoffMs',
-                $defaults->maxRestartBackoffMs,
-                $name,
+                data: $data,
+                key: 'maxRestartBackoffMs',
+                default: $defaults->maxRestartBackoffMs,
+                groupName: $name,
             ),
             watchdogTimeoutMs: MasterConfig::watchdogTimeoutMs(
-                $data,
-                $defaults->watchdogTimeoutMs,
-                $name,
+                data: $data,
+                default: $defaults->watchdogTimeoutMs,
+                groupName: $name,
             ),
-            server: MasterConfig::serverParams($data['server'] ?? null, $name),
+            server: $server,
+            launch: $launch,
+            readyTimeoutMs: MasterConfig::readyTimeoutMs(
+                data: $data,
+                default: $defaults->readyTimeoutMs,
+                groupName: $name,
+            ),
+            accessLog: MasterConfig::accessLog(
+                data: $data,
+                default: $defaults->accessLog,
+                groupName: $name,
+            ),
+        );
+    }
+
+    /** How many workers the group keeps: workerCount, or one per core when that is 0. */
+    public function resolvedWorkerCount(): int
+    {
+        return $this->workerCount > 0 ? $this->workerCount : Cpu::count();
+    }
+
+    /**
+     * How long to wait before a restart that follows this many fast failures in a row: not
+     * at all after none, then restartBackoffMs, doubled with each further one, up to
+     * maxRestartBackoffMs. Keeps a crash loop from spinning.
+     */
+    public function backoffMs(int $consecutiveFastFails): int
+    {
+        if ($consecutiveFastFails <= 0) {
+            return 0;
+        }
+
+        return (int) min(
+            $this->restartBackoffMs * (2 ** ($consecutiveFastFails - 1)),
+            $this->maxRestartBackoffMs,
         );
     }
 
