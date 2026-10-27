@@ -140,13 +140,8 @@ zero.
   (`WaitGroup::create(maxConcurrency: N)`) when the results are big
   ([payload size](benchmarks.md#payload-size)).
 - The gains apply only to code that goes through the SConcur API. Raw PDO and
-  Doctrine gain nothing until their queries are ported. Laravel is the exception:
-  [sconcur/laravel](https://github.com/sprust/sconcur-laravel) serves requests
-  from a concurrent worker whose application state is per coroutine, and points
-  Eloquent, `Cache::`, `Redis::` and the queue at the matching features, so the
-  application's own query code stays as it is. Elsewhere the fit is what it was:
-  new services and hand-written query code, not a drop-in migration of a
-  framework app.
+  Doctrine gain nothing until their queries are ported. The fit is new services and
+  hand-written query code, not a drop-in migration of a framework app.
 
 The technology side is proven by the measurements above; what is left is the
 work around it — installing the extension through PIE, and stopping a single

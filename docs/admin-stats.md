@@ -38,8 +38,9 @@ one snapshot rather than dialing twice — the collector reads a connection as a
 worker, so a second connection would show the same pid as two workers with two
 different start times.
 
-Push is best-effort — with no collector (master not up or restarting) the worker
-drops the frame and keeps serving traffic. Closing the connection means the worker
+Push is best-effort — with no collector (the master's panel or socket failed to bind,
+or `SCONCUR_TELEMETRY_SOCKET` names a socket nobody listens on) the worker drops the
+frame and keeps serving traffic. Closing the connection means the worker
 is gone, so the master removes it from the live pool immediately: no files, no
 liveness probes. A separate port keeps admin traffic away from application traffic
 and gives a statistics endpoint to a socket server that has no HTTP routes; the
@@ -309,9 +310,11 @@ third-party supervisor too:
 
 ## Limits
 
-- Observability is master-only: without the master there are no statistics. A
-  master restart is a blackout of up to one interval (≤1 s), until the workers
-  re-push.
+- Observability is master-only: without the master there are no statistics. The
+  workers are forks of the master and leave with it, so a master restart is a
+  blackout for the whole stop and start — the application loading included — plus
+  up to one interval (≤1 s) until the new workers push, and the counters start from
+  zero.
 - `requests.avgMs` is the average over the worker's whole lifetime, so it smooths
   spikes (percentiles are a possible future improvement).
 - The whole snapshot is sampled once an interval (1 s by default), and no source

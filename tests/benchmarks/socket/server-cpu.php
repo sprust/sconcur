@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 // CPU-bound benchmark: 100 concurrent connections, each sending one cpu:{n} frame
-// (a sha256 loop that does NOT yield) against the running `servers` socket pool (3
+// (a sha256 loop that does NOT yield) against the running `servers` socket pool (2
 // SO_REUSEPORT workers). The kernel spreads the compute across the pool's
 // processes/cores — where one cooperative process is serialised, the pool runs
 // connections in parallel.

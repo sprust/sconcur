@@ -16,7 +16,7 @@ foreach (require dirname(__DIR__, 3) . '/vendor/composer/autoload_classmap.php' 
 /**
  * One request's worth of the application: a value exported, two texts diffed, two values
  * compared, the way a framework's request runs code its bootstrap loaded. It is what makes
- * a worker touch the pages of compiled code and class data the fork server loaded, and so
+ * a worker touch the pages of compiled code and class data the master loaded, and so
  * what a long run measures; a handler that only answered its pid would leave them shared
  * for ever and prove nothing.
  */

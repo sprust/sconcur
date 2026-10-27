@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 /**
  * Helpers for the socket-server benchmarks: resolve the running `servers` container
- * socket pool (3 reusePort workers), check it is reachable, and drive concurrent
+ * socket pool (2 reusePort workers), check it is reachable, and drive concurrent
  * length-prefix-framed round-trips.
  *
  * The pool is the master-supervised server from docker-compose's `servers`

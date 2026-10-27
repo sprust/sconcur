@@ -39,7 +39,7 @@ readonly class WorkerGroupConfig
      *                                                          telemetry call the group: letters, digits,
      *                                                          ".", "_" and "-"
      * @param Closure(WorkerContext): void $role                what a worker of the group runs, see above
-     * @param int                          $workerCount         how many workers to keep up; 0 is one per core
+     * @param int                          $workerCount         how many workers to keep up; 0 is one per logical CPU
      * @param RestartPolicy                $restartPolicy       which exits are followed by a new worker
      * @param int                          $shutdownTimeoutMs   how long a stopping worker may drain before it is
      *                                                          killed
@@ -116,7 +116,7 @@ readonly class WorkerGroupConfig
         }
     }
 
-    /** How many workers the group keeps: workerCount, or one per core when that is 0. */
+    /** How many workers the group keeps: workerCount, or one per logical CPU (Cpu::count) when that is 0. */
     public function resolvedWorkerCount(): int
     {
         return $this->workerCount > 0 ? $this->workerCount : Cpu::count();

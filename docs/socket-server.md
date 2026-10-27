@@ -100,7 +100,7 @@ The `SocketServer` constructor; the PHP defaults mirror the extension's.
 | `masterPid` | `null` | orphan check: `null` — the master that forked this worker (`WorkerContext`), or none outside one |
 | `telemetrySocket` | `''` (off) | unix socket for stats snapshots ([stats](admin-stats.md)); empty — `SCONCUR_TELEMETRY_SOCKET`, which the master sets for its workers |
 | `serverName` | `'sconcur-server'` | worker name in the stats snapshots; left at the default — `SCONCUR_SERVER_NAME`, which the master sets |
-| `telemetryIntervalMs` | `0` | snapshot cadence (`0` — the default of the component that sends them, 1000 ms) |
+| `telemetryIntervalMs` | `0` | snapshot cadence (`0` — `SCONCUR_TELEMETRY_INTERVAL_MS` from the environment, or the default of the component that sends them, 1000 ms) |
 | `preemptionQuantumMs` | `0` | automatic-preemption quantum (`0` — off); read [process-wide state](coroutine-switching.md#process-wide-state) before turning it on |
 
 ## Concurrency

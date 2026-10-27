@@ -78,8 +78,11 @@ This is the part that paid for itself in code rather than in microseconds. The
 deferred-dispatch queue in the scheduler, and the rule that a cgo call is never
 made from a coroutine stack, existed for no other reason than to route around
 this. On a core with no cgo, the queue is not a workaround that got cheaper — it
-is unnecessary, and it has since been deleted. Pushing from a coroutine went from
-forbidden to preferred.
+is unnecessary, and it was deleted. Pushing from a coroutine went from forbidden to
+preferred — for a while: the push later moved off the coroutine's stack again, for a
+different reason. With N live fibers that had each crossed the boundary from their own
+stack, the cost grew quadratically with N, so a coroutine now suspends with its task
+and whoever takes control pushes it ([architecture](architecture.md)).
 
 ## fork and PHP-FPM
 

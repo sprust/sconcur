@@ -837,8 +837,8 @@ $waitGroup->waitAll();
 ```
 
 Processes are the other axis: the [worker master](worker-master.md) supervises a
-pool of them running one script, and a consumer worker needs no listening socket
-to be supervised. Each process runs its own runtime and its own connection
+pool of forked workers that each run the group's role, and a consumer worker needs no
+listening socket to be supervised. Each process runs its own runtime and its own connection
 pool; nothing is shared between them.
 
 What bounds each axis:
@@ -942,8 +942,9 @@ the serve loop from running, so the check never happens. Set it well under
 
 `queues` is a list of objects rather than a delimited string because AMQP allows
 almost any UTF-8 in a queue name, colons included — names like `tenant:1:orders`
-are ordinary, and any separator inside a name would make the parse ambiguous. The
-master JSON-encodes it into the flag; there is no shell on the way.
+are ordinary, and any separator inside a name would make the parse ambiguous. It is
+given as JSON, to the constructor or, for a consumer run on its own through
+`fromArgs()`, as one `--queues` flag.
 
 The list is validated before the first `basic.consume`: a missing or duplicated
 name, a weight below one, and the channel budget — a consumer is a channel, and one
@@ -1023,7 +1024,7 @@ them with the cancel would hand a finished message back for another worker to do
 again.
 
 Finishing the running handlers has no deadline of its own. A handler that never
-ends is what the master's `shutdownTimeoutMs` is for — past it the worker is
+ends is what the group's `shutdownTimeoutMs` (`WorkerGroupConfig`) is for — past it the worker is
 killed, and the messages it was holding go back to the broker unacknowledged,
 exactly as with the servers.
 
@@ -1032,12 +1033,12 @@ exactly as with the servers.
 A handler that hangs holds its coroutine for ever, and with a prefetch of one that
 coroutine will never take another message. `handlerTimeoutMs` puts a deadline on it:
 
-```json
-{
-  "queues": [{ "name": "orders", "coroutineCount": 8 }],
-  "prefetchCount": 1,
-  "handlerTimeoutMs": 30000
-}
+```php
+$queueConsumer = new QueueConsumer(
+    queues: json_encode([['name' => 'orders', 'coroutineCount' => 8]]),
+    prefetchCount: 1,
+    handlerTimeoutMs: 30_000,
+);
 ```
 
 A job that runs past it is unwound where it stands — the handler's `finally` blocks

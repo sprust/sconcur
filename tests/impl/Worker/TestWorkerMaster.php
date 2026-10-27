@@ -88,11 +88,9 @@ class TestWorkerMaster
             self::buildConfig([
                 'workerScript' => self::workerScript(),
                 'workerCount'  => 2,
-                // The production default is 10 s per worker, which the CLI turns
-                // into a stop bound of workers × (drain + 2 s) + 5 s — 29 s for
-                // the two here. Nothing in these tests drains for more than
-                // milliseconds, so the budget is cut to keep both a legitimate
-                // stop and the hang detector below in the seconds.
+                // The production default is 10 s per worker. Nothing in these tests
+                // drains for more than milliseconds, so the budget is cut to keep both
+                // a legitimate stop and the hang detector below in the seconds.
                 'shutdownTimeoutMs' => 1_500,
                 'runtimeDir'   => $runtimeDir,
                 'logDir'       => $runtimeDir,
@@ -314,7 +312,7 @@ class TestWorkerMaster
     }
 
     /**
-     * The master's own stdout/stderr (CLI errors); the lifecycle journal is the log
+     * The master's own stdout/stderr (errors at startup); the lifecycle journal is the log
      * file, see logText().
      */
     public function masterOutput(): string
@@ -557,8 +555,8 @@ class TestWorkerMaster
             return;
         }
 
-        // Recurse: workers write their snapshots into a <runtimeDir>/stats subdir,
-        // so a flat unlink would leave it (and the runtime dir) behind.
+        // Recurse: a test may leave a directory of its own in the runtime dir, and a
+        // flat unlink would leave it (and the runtime dir) behind.
         foreach ((array) glob($dir . '/*') as $entry) {
             if (!is_string($entry)) {
                 continue;

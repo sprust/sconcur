@@ -127,7 +127,7 @@ Broadcast в другие соединения не встроен — прил�
 | `masterPid` | `null` | проверка на сироту: `null` — мастер, форкнувший этот воркер (`WorkerContext`), а вне мастера проверки нет |
 | `telemetrySocket` | `''` (выкл.) | unix-сокет для снапшотов статистики ([статистика](admin-stats.ru.md)); пусто — `SCONCUR_TELEMETRY_SOCKET`, который мастер ставит своим воркерам |
 | `serverName` | `'sconcur-server'` | имя воркера в снапшотах статистики; если по умолчанию — `SCONCUR_SERVER_NAME`, который ставит мастер |
-| `telemetryIntervalMs` | `0` | период снапшотов (`0` — значение по умолчанию у отправителя, 1000 мс) |
+| `telemetryIntervalMs` | `0` | период снапшотов (`0` — `SCONCUR_TELEMETRY_INTERVAL_MS` из окружения или значение по умолчанию у отправителя, 1000 мс) |
 | `preemptionQuantumMs` | `0` | квант автоматической преемпции (`0` — выкл.); перед включением прочитайте про [состояние процесса](coroutine-switching.ru.md#состояние-процесса) |
 
 `allowedOrigins`/`subprotocols` — массивы, а `fromArgs()` берёт из argv только

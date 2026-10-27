@@ -224,14 +224,13 @@ fn outcome(pid: i64, code: Option<i64>, signal: Option<i64>) -> Value {
 }
 
 /// A listening socket for workers to share, answered as its descriptor. Bound
-/// once in the master and inherited by every worker it forks or execs, so all of
-/// them accept from one queue: a stopping worker leaves connections to the others
-/// rather than resetting the ones that queued for it, as a SO_REUSEPORT socket
-/// closing would.
+/// once by the application before it builds its master, it is inherited by every
+/// worker the master forks, so all of them accept from one queue: a stopping
+/// worker leaves connections to the others rather than resetting the ones that
+/// queued for it, as a SO_REUSEPORT socket closing would.
 ///
-/// Close-on-exec like every socket created here: a fork keeps it regardless, an
-/// exec'd worker gets it through the descriptor it is placed on, and anything
-/// else the master execs does not.
+/// Close-on-exec like every socket created here: a fork keeps it regardless, and
+/// no program the process execs does.
 fn bind(params: payloads::BindParams) -> Result<Value, Error> {
     let backlog = if params.backlog > 0 {
         params.backlog.min(i32::MAX as i64) as i32

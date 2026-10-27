@@ -7,8 +7,8 @@ namespace SConcur\Exceptions\Worker;
 use RuntimeException;
 
 /**
- * proc_open failed to start a worker process (bad interpreter path, unreadable
- * script, exhausted resources). Carries the attempted command in the message.
+ * A worker could not be forked: the system refused (exhausted resources) or the master's
+ * process runs threads. The cause is the previous exception.
  */
 class WorkerSpawnException extends RuntimeException
 {

@@ -16,11 +16,11 @@ services:
 
   # Runs one sconcur master under supervisor in this container (reuses the php image
   # build), holding the HTTP, socket and WebSocket pools and the RabbitMQ consumers as
-  # a group each. Ports are hardcoded (host 28080->8080 for HTTP, 29100->9100 for
-  # socket, 29200->9200 for WebSocket) because the JSON master config cannot use env
-  # vars. Rebuild/recreate it with `make servers-restart`; take the whole master with
-  # `make servers-{status,stop,reload}`, or one group with
-  # `make {http,socket,ws}-server-{status,reload}` and `make rabbitmq-{status,reload}`.
+  # a group each, built from config/sconcur.servers.config.json by the test master
+  # (tests/servers/worker/master.php). Ports are hardcoded there (host 28080->8080 for
+  # HTTP, 29100->9100 for socket, 29200->9200 for WebSocket): the JSON takes no env
+  # vars. Rebuild/recreate it with `make servers-restart`; ask the master how it is or
+  # stop it with `make servers-{status,stop}`.
   servers:
     container_name: sc-servers
     restart: unless-stopped

@@ -225,12 +225,11 @@ class Scheduler
      * counts a worker that dies before it says so — and before readyTimeoutMs — as a
      * failed start, and stops when a group's workers all fail that way.
      *
-     * serve() calls it for the servers and the AMQP consumer, so only a worker script
-     * that does its work in a loop of its own needs it — called once that loop is
-     * running. A no-op outside a
-     * worker started by a master, and only the first call says anything: a worker that
-     * serves twice (a script that starts a second server after the first one ended) was
-     * ready the first time. See docs/worker-master.md, "Readiness".
+     * serve() calls it for the servers and the AMQP consumer, so only a role that does its
+     * work in a loop of its own needs it — called once that loop is running. A no-op
+     * outside a worker started by a master, and only the first call says anything: a
+     * worker that serves twice (a role that starts a second server after the first one
+     * ended) was ready the first time. See docs/worker-master.md, "Readiness".
      */
     public function markReady(): void
     {

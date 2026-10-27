@@ -312,9 +312,6 @@ The crates the core is built on:
 - [Positioning](docs/positioning.md) — SConcur vs php-fpm, RoadRunner and Swoole.
 - [The move to Rust](docs/rust-core.md) — why the core was ported from Go, the
   bar it had to clear and what was measured.
-- [SConcur for Laravel](https://github.com/sprust/sconcur-laravel) — a separate
-  package: a concurrent HTTP worker, an application whose state is per coroutine,
-  and Eloquent, cache, queues and WebSocket on top of SConcur's features.
 
 ## Build
 

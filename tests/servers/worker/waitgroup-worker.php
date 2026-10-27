@@ -15,8 +15,8 @@ use SConcur\WaitGroup;
  * when its PHP thread stops coming back — and that it says it is up the way such a script
  * has to, with Scheduler::markReady().
  *
- * Arguments (everything else in argv is ignored — the master forwards its `server` block
- * to every worker it supervises, and none of it means anything here):
+ * Arguments (everything else in argv is ignored — the test master (master.php) forwards
+ * its `server` block to every worker it supervises, and none of it means anything here):
  *   --hangAfterMs=N  freeze the PHP thread in a native call N ms after start (0 = never)
  */
 $hangAfterMs = 0;

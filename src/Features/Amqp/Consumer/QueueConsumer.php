@@ -146,8 +146,9 @@ class QueueConsumer
     }
 
     /**
-     * The queues this consumer will pull, parsed and validated — which is what the worker
-     * script declares before handing over, since the runtime declares nothing.
+     * The queues this consumer will pull, parsed and validated — which is what the role (or
+     * a script running the consumer on its own) declares before handing over, since the
+     * runtime declares nothing.
      *
      * @return list<QueueSpec>
      */

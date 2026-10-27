@@ -9,8 +9,8 @@ use SConcur\Exceptions\Amqp\InvalidQueueSpecException;
 use SConcur\Features\Amqp\ConnectionOptions;
 
 /**
- * Reads the queue list a consumer worker was launched with — one argv flag holding JSON,
- * because a worker is configured through argv and the master JSON-encodes non-scalars:
+ * Reads the queue list a consumer is given — JSON, to the constructor or, for a consumer
+ * run on its own through fromArgs(), as one argv flag:
  *
  *     --queues=[{"name":"orders","coroutineCount":8},{"name":"emails"}]
  *

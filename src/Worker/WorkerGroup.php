@@ -73,9 +73,8 @@ class WorkerGroup
     /**
      * @param string                            $telemetrySocket      the collector socket the master listens on, empty
      *                                                                when telemetry is off. It reaches the workers through
-     *                                                                their environment rather than their argv, so the
-     *                                                                worker-agnostic master never feeds a non-matching
-     *                                                                worker an unknown --flag
+     *                                                                their environment (SCONCUR_TELEMETRY_SOCKET), which a
+     *                                                                server reads as it starts
      * @param null|Closure(WatchdogEvent): void $onWatchdogEvent      called when the watchdog
      *                                                                acts on a worker of this pool. It must not throw:
      *                                                                the master's (WorkerMaster::watchdogReporter) logs
@@ -84,7 +83,7 @@ class WorkerGroup
      *                                                                before the master started — the application's —
      *                                                                which a forked worker keeps
      * @param string                            $accessLogPrefix      where the workers write their access lines when
-     *                                                                the group says `accessLog: file`, see
+     *                                                                the group's accessLog is AccessLogTarget::File, see
      *                                                                MasterLogger::accessLogPrefix
      */
     public function __construct(
@@ -283,7 +282,7 @@ class WorkerGroup
      * Kills a worker whose PHP thread stopped turning its serve loop, so its slot can be
      * refilled by the ordinary restart path. The evidence is the worker's own liveness
      * pipe (Scheduler::markAlive), written by that thread and drained by reapAndLog; a worker
-     * that has never written to it is left alone, because a script without a serve loop
+     * that has never written to it is left alone, because a role without a scheduler loop
      * never will.
      *
      * SIGTERM first, SIGKILL after the group's shutdownTimeoutMs: a thread stuck in a
@@ -443,8 +442,8 @@ class WorkerGroup
 
     /**
      * Notes that the group came up: a worker said it was up, or kept running for longer
-     * than readyTimeoutMs — the second for a worker script that never says so, which is
-     * then judged the way it was before readiness existed.
+     * than readyTimeoutMs — the second for a role that never says so (no markReady()),
+     * which is then judged the way it was before readiness existed.
      */
     protected function noteCameUp(WorkerProcess $process): void
     {

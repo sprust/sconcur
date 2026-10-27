@@ -209,12 +209,12 @@ feature's doc. Key PHP classes not covered there:
   executor still name `Scheduler` — they spawn and serve, which is what it is for;
   what does not belong there is a feature reading its internals.
 - `Features/Amqp/RetryTopology` — the wait queues behind `publish(delayMs:)`, and
-  the only thing in the library that declares topology; it does so only when a
-  worker script calls it. `RetrySchedule` beside it answers how long a refused
+  the only thing in the library that declares topology; it does so only when the
+  application calls it. `RetrySchedule` beside it answers how long a refused
   publish waits before the next attempt.
 - `Features/Amqp/Consumer/` — the supervised consumer runtime: `QueueConsumer`,
-  `QueueSpec`/`QueueSpecParser` (the JSON queue list from argv) and
-  `PublishChannelPool`. A server without a socket: the extension opens the
+  `QueueSpec`/`QueueSpecParser` (the JSON queue list, given to the constructor or as
+  `--queues`) and `PublishChannelPool`. A server without a socket: the extension opens the
   consumers (one channel per unit of a queue's weight) and publishes every delivery
   as one self-pumping stream, which `Scheduler::serve()` drives like the three
   servers — one coroutine per message, one graceful drain, no loop of its own. A
@@ -453,6 +453,13 @@ Key enums (string-backed; the 2-3 letter values cross the boundary):
     what a file stream holds is native memory. `abandoned` is the one that earns
     its keep: streams broken out of halfway and a writer dropped without a close
     are released by nothing but the flow ending.
+  - `make mem-leak-worker scenario=<list> seconds=<n> launch=<fork|preload>` — the
+    worker master under failures (oom, kill, exit, fatal, spin, block, recycle,
+    crash-at-start, sigterm, throw, disconnect, slowloris, bad-http, orphan,
+    handler-timeout, external, preempt): what the master and the surviving workers
+    keep, and the requests a death costs. `make mem-leak-worker-summary` lays out a
+    saved run, `make mem-leak-worker-exit-timing` times a death by `exit()`. How to
+    read them: [soak-analysis.md](soak-analysis.md).
 
 Tests use PHPUnit 11. Add feature tests in `tests/feature/...` with `*Test.php`
 suffixes; async flow tests commonly extend `BaseAsyncTestCase`,

@@ -588,8 +588,9 @@ connections to its neighbours. Then:
 2. Every response from now on goes out with `Connection: close`, and the connection
    closes after it: the client sends its next request to a neighbour. A request already
    on its way on a keep-alive connection is answered, not dropped.
-3. A connection that sends nothing for a second is closed — an idle keep-alive one, or
-   a client that connected and never sent a request.
+3. A connection still open a second after the stop is shut down: an idle one — a
+   keep-alive one between requests, or a client that connected and never sent a
+   request — closes at once, one in the middle of a request after its response.
 4. The server leaves once every connection has finished its last response and closed —
    including the requests that arrived meanwhile — or once `shutdownTimeoutMs` has
    passed since it stopped accepting; a handler still running then is unwound.

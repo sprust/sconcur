@@ -9,9 +9,9 @@ namespace SConcur\Worker;
  *
  * Stdout, the default, is the worker's stdout: under a master it is read by the master and
  * written into the journal with the rest of the worker's output. Under load that reader is
- * one PHP process for every group, and it falls behind. File has every worker write its access lines itself, to a file of the day
- * beside the journal (MasterLogger::accessLogPrefix), which nobody has to relay. Off
- * writes none.
+ * one PHP process for every group, and it falls behind. File has every worker write its
+ * access lines itself, to a file of the day beside the journal
+ * (MasterLogger::accessLogPrefix), which nobody has to relay. Off writes none.
  */
 enum AccessLogTarget: string
 {

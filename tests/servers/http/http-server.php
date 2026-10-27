@@ -146,9 +146,10 @@ if ($ladderMode !== '') {
 $psr17Factory = new Psr17Factory();
 
 // Build the server from argv: each --name=value maps to the matching HttpServer
-// constructor parameter. Under WorkerMaster the injected --masterPid wires the
-// orphan check (the worker self-terminates if its master dies); without it the
-// check is off (standalone run).
+// constructor parameter. Under the test master (tests/servers/worker/master.php)
+// the injected --masterPid wires the orphan check (the worker self-terminates if
+// its master dies); in any fork of a master the check is on without it
+// (WorkerContext), and in a standalone run it is off.
 $server = HttpServer::fromArgs(
     argv: $_SERVER['argv'],
     serverRequestFactory: $psr17Factory,

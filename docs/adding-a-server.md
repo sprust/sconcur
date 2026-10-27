@@ -254,8 +254,8 @@ pool the kernel immediately hands new connections to the other workers, and on a
 shared `listenFd` socket the other workers keep accepting from it, while this
 process finishes its own. The HTTP server goes further: once accepting stops it takes
 what is queued on its own socket (`Listener::take_queued()`), answers every request
-with `Connection: close` and shuts a connection down once it has sent nothing for a
-second (`serve_connection()` in `server.rs`) — see
+with `Connection: close` and shuts down a connection still open a second after the stop
+(`serve_connection()` in `server.rs`) — see
 [graceful shutdown](http-server.md#graceful-shutdown).
 
 This is a protocol change, so the extension-version rule applies (bump at most once

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 /**
  * Helpers for the WebSocket-server benchmarks: resolve the running `servers` container
- * ws pool (3 reusePort workers), check it is reachable, perform the upgrade handshake,
+ * ws pool (2 reusePort workers), check it is reachable, perform the upgrade handshake,
  * and drive concurrent WebSocket round-trips.
  *
  * The pool is the master-supervised server from docker-compose's `servers` container.

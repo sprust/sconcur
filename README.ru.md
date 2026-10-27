@@ -315,9 +315,6 @@ $collection->insertOne(['name' => 'example']);
   RoadRunner и Swoole.
 - [Переезд на Rust](docs/rust-core.ru.md) — зачем ядро перенесли с Go, какой
   порог оно должно было пройти и что показали замеры.
-- [SConcur для Laravel](https://github.com/sprust/sconcur-laravel) — отдельный
-  пакет: конкурентный HTTP-воркер, приложение с состоянием на корутину, а также
-  Eloquent, кеш, очереди и WebSocket поверх фич SConcur.
 
 ## Сборка
 

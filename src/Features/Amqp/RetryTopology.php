@@ -12,8 +12,8 @@ use SConcur\Exceptions\Amqp\InvalidDelayException;
  * AMQP has no delayed publish. What it has is a queue nobody consumes whose messages expire
  * into another queue, so a delay here is a round trip through a queue whose only job is to
  * hold the message for a while. This declares those queues, and it is the one place in the
- * library that declares anything: a worker script calls it once at start-up, alongside the
- * declares it makes for its own topology.
+ * library that declares anything: the application calls it once at start-up, alongside
+ * the declares it makes for its own topology.
  *
  * One queue per delay rather than one queue and a per-message expiration, because a classic
  * queue expires only from its head: a thirty-second message at the front holds a one-second

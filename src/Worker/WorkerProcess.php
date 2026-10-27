@@ -199,9 +199,9 @@ abstract class WorkerProcess
     }
 
     /**
-     * How long ago the worker last marked itself alive, or null when it never has: a
-     * worker script that drives no scheduler loop writes nothing, and one that has not reached its
-     * loop yet has not written yet. Both read as "nothing to judge" — the watchdog acts
+     * How long ago the worker last marked itself alive, or null when it never has: a role
+     * that drives no scheduler loop writes nothing, and one that has not reached its loop
+     * yet has not written yet. Both read as "nothing to judge" — the watchdog acts
      * on evidence of a hang, never on its absence.
      *
      * Monotonic, not wall clock. Both ends of the subtraction are taken in this process,

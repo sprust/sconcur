@@ -256,8 +256,8 @@ pub async fn accept_loop(
 
 /// Serves one connection until it closes. Once the server stops accepting, every
 /// response goes out with `Connection: close` and the connection closes after it, so
-/// its client sends its next request to whoever still accepts. A connection that sends
-/// nothing within STOP_GRACE is then shut down gracefully: one still serving a request
+/// its client sends its next request to whoever still accepts. A connection still open
+/// STOP_GRACE after the stop is then shut down gracefully: one still serving a request
 /// finishes it and closes, an idle one closes at once.
 async fn serve_connection(context: ConnectionContext, stream: tokio::net::TcpStream, remote_addr: std::net::SocketAddr) {
     let _ = stream.set_nodelay(true);

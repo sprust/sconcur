@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 // CPU-bound benchmark: 100 concurrent GET /cpu/{n} (a sha256 loop that does NOT
-// yield) against the running `servers` HTTP pool (3 SO_REUSEPORT workers). The
+// yield) against the running `servers` HTTP pool (2 SO_REUSEPORT workers). The
 // kernel spreads the compute across the pool's processes/cores — where one
 // cooperative process is serialised, the pool runs requests in parallel.
 

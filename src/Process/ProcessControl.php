@@ -232,8 +232,9 @@ class ProcessControl
      * that holds it accepts from the one queue, so a worker that stops leaves the
      * connections waiting there to the others instead of resetting them.
      *
-     * The socket is close-on-exec: a fork keeps it, an exec'd worker gets it only through
-     * the descriptor it is placed on, and nothing else the process execs inherits it.
+     * The socket is close-on-exec: a fork keeps it — bound before the master is built, it is
+     * the application's, and every worker the master forks holds it — and no program the
+     * process execs inherits it.
      *
      * @param int $backlog the queue length asked of the kernel; 0 for the servers' own 4096
      */

@@ -11,8 +11,11 @@ across all cores without a load balancer in front. Implementation: `src/Worker/`
 The master takes and sends its signals through the extension, so neither `pcntl` nor
 `posix` is needed; without the extension `run()` fails with
 `ExtensionNotLoadedException`. The master itself never runs anything asynchronous: a
-process running the extension's runtime cannot fork, and once `run()` has begun the
-extension refuses an asynchronous call in the master's process with the reason.
+process running the extension's runtime cannot fork its workers — the master forks
+through the extension, which refuses in a process that runs threads (a plain
+`pcntl_fork` there is allowed and rebuilds the runtime in the child, see the
+[README](../README.md)) — and once `run()` has begun the extension refuses an
+asynchronous call in the master's process with the reason.
 
 ## Table of contents
 
@@ -178,8 +181,9 @@ What this asks of the application:
 ## Parameters
 
 Both objects check what they are given as they are built and throw
-`InvalidConfigException` on what cannot work: a name outside `[A-Za-z0-9._-]` (it is a
-path component and a rotation glob), a negative count or timeout, a watchdog threshold or
+`InvalidConfigException` on what cannot work: a name outside `[A-Za-z0-9._-]` (the
+master's is a path component and a rotation glob, a group's goes into the journal and
+the process title), a negative count or timeout, a watchdog threshold or
 a ready timeout below its floor, two groups with one name, a master with no group.
 
 ### `WorkerMaster`
@@ -284,7 +288,7 @@ master:
   pool start together and share the load evenly, so with one number they would all
   reach it within the same second and the pool would restart as one. Spread, they come
   apart, and further with each generation. The number drawn is in the worker's
-  shutdown line: `stop accepting (reason=limit, limit=12408)`.
+  shutdown line: `stop accepting (reason=limit, limit=12408), draining 3 in-flight`.
 
 Without a master the limit is exact: a one-off consumer told to take `maxMessages: 100`
 takes 100.
@@ -508,9 +512,9 @@ process, or move it out of the request path.
 The master writes to a single daily file in `logDir`
 (`sconcur-server-2026-06-18.log`); at the day boundary a new file is opened and
 files older than `rotateDays` are deleted. The line format is
-`[Y-m-d H:i:s.uuuuuu] LEVEL [<scope>]: <message> [<context>]`, where `<scope>` is
-`master: <pid>` or `worker: <pid> <group> #<index>` — the group is part of it because a
-slot index only names a worker together with its pool:
+`[Y-m-d H:i:s.uuuuuu] LEVEL [<scope>]: <message> <context>`, where `<context>` is JSON
+(`[]` when empty) and `<scope>` is `master: <pid>` or `worker: <pid> <group> #<index>` —
+the group is part of it because a slot index only names a worker together with its pool:
 
 ```
 [2026-06-18 12:00:00.180210] INFO [worker: 12346 http #0]: spawned []
@@ -624,7 +628,7 @@ N workers, restarting a killed one, self-exit on `maxRequests` → restart, the 
 and `Never` policies), a group that never comes up (exit `70`), stopping (graceful
 shutdown on `SIGTERM` and on removal of the state file, a response still being written,
 a client that connected before the stop), singleness and state (rejection of a second
-instance, `status`/`stop`, `status` after a crash), resilience (crash-loop backoff and
+instance, `MasterControl` state and stop, state after a crash), resilience (crash-loop backoff and
 its reset by a worker that reached its limit, orphan self-termination), the logger (line
 format, context JSON, daily rotation) and the access lines (`File` and `Off`).
 `AppBeforeMasterTest` loads an application before the master and checks that a replaced

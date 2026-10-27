@@ -33,6 +33,8 @@ class ForkedWorker
      *                                                  the parent's
      * @param Closure(WorkerContext): void $role        what the worker runs; it leaves when
      *                                                  this returns
+     * @param WorkerContext                $context     its group, slot and master, which
+     *                                                  the role is given
      */
     public static function run(
         string $title,
@@ -66,7 +68,7 @@ class ForkedWorker
      * What PHP does with an exception nothing caught: hands it to the exception handler if
      * one is set — an application's reporter, installed while it loaded — and otherwise
      * prints it, in the words PHP itself uses, on stderr, so the master logs it at ERROR
-     * the way it logs an exec worker's.
+     * the way it logs any line of a worker's stderr.
      */
     protected static function reportUncaught(Throwable $exception): void
     {

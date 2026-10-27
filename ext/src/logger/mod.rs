@@ -73,7 +73,7 @@ impl Logger {
                 let (sender, receiver) = crossbeam_channel::bounded::<Message>(QUEUE_SIZE);
 
                 // Read when the sink starts, on the PHP thread: by then the worker master's
-                // variables are in this process's environment, whichever way it started.
+                // variables are in this process's environment (ForkedWorker puts them there).
                 let access = AccessTarget::from_environment();
 
                 // A plain OS thread, not a runtime task: the sink must keep working

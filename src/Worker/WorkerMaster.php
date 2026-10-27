@@ -23,8 +23,8 @@ use Throwable;
  * the role does — with an SO_REUSEPORT-based server, for example, the workers bind one
  * port and the kernel load-balances connections across them.
  *
- * Lifecycle of run(): acquire a single-instance lock, write the state file, start
- * watching for signals, spawn the workers, then loop — draining each worker's output
+ * Lifecycle of run(): acquire a single-instance lock, start watching for signals, write
+ * the state file, bring up telemetry when it is configured, spawn the workers, then loop — draining each worker's output
  * into the log, restarting exited workers per RestartPolicy (with crash-loop backoff),
  * and on SIGTERM/SIGINT forwarding the signal, draining in-flight workers within
  * shutdownTimeoutMs (SIGKILL stragglers), and exiting cleanly.
@@ -149,8 +149,8 @@ class WorkerMaster
      * Runs the supervisor until a shutdown signal drains all workers. Returns the
      * process exit code (0 on clean shutdown).
      *
-     * The process may have loaded an application before calling this, and a fork group's
-     * workers start with it in memory. Its error handler is kept out of the master's loop
+     * The process may have loaded an application before calling this, and every worker
+     * starts with it in memory. Its error handler is kept out of the master's loop
      * for as long as this runs: a handler that turns warnings into exceptions, as
      * frameworks install, would end the master at the first warning it silences, and the
      * master silences one on every tick. Every forked worker runs under it again
@@ -288,8 +288,8 @@ class WorkerMaster
     }
 
     /**
-     * Builds one live pool per configured group. Ordered as the config lists them, so
-     * the journal and `status` read the way the file does.
+     * Builds one live pool per configured group, in the order the groups were given, so
+     * the journal and the state file list them that way.
      */
     protected function buildPools(): void
     {

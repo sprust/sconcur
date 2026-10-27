@@ -9,8 +9,8 @@ use SConcur\Features\WsServer\WsServer;
 
 /**
  * Minimal echo WebSocket server that negotiates subprotocols. subprotocols is an
- * array option, which (by design) cannot be passed through the worker-master argv, so
- * it is set here in code. Only the listener address is read from argv. Used by
+ * array option, which (by design) cannot be passed through the argv fromArgs() reads,
+ * so it is set here in code. Only the listener address is read from argv. Used by
  * WsClientSubprotocolTest to cover subprotocol negotiation end-to-end through WsClient.
  *
  * Usage: php -d extension=ext/build/sconcur.so tests/servers/ws/ws-subprotocol-server.php --address=host:port

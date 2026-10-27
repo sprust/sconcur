@@ -11,7 +11,7 @@
 #
 #   make build           # the development image
 #   make profile-build   # this overlay's image
-#   make profile c="tests/benchmarks/runtime/push-profile.php"
+#   make profile-perf c="tests/benchmarks/runtime/push-profile.php"
 #
 # perf needs to read kernel symbols and the process's own maps, which the default
 # container security profile blocks. The two settings below are why this is an

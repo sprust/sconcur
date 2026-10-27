@@ -117,8 +117,8 @@ trait ServerRuntimeSupportTrait
     {
         fwrite(STDOUT, (new DateTimeImmutable())->format('Y-m-d\TH:i:s.u') . ' ' . $message . PHP_EOL);
 
-        // Flush now: when stdout is redirected to a file (a supervised worker) it is block
-        // buffered, so the startup banner would otherwise not surface until the buffer fills
+        // Flush now: when stdout is a pipe or a file (a worker under a master, a server under
+        // a supervisor) it is block buffered, so the startup banner would otherwise not surface until the buffer fills
         // or the process exits.
         fflush(STDOUT);
     }
