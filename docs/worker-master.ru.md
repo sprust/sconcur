@@ -63,7 +63,6 @@ $master = new WorkerMaster(
                     serverRequestFactory: $factory,
                     responseFactory: $factory,
                     address: '0.0.0.0:8080',
-                    reusePort: true,
                     maxRequests: 10_000,
                 );
 
@@ -83,8 +82,10 @@ exit($master->run());
 php -d extension=/app/ext/build/sconcur.so master.php
 ```
 
-> **Нескольким воркерам на одном порту нужен `reusePort: true`** — иначе второй воркер
-> получит `EADDRINUSE`.
+Воркеры группы делят порт без всякой настройки: каждый сервер связывается с
+`SO_REUSEPORT`, и ядро раскладывает соединения между ними. Цена в том, что второй
+процесс на этом порту присоединяется, а не падает на bind, — см. [второй процесс на том
+же порту](http-server.ru.md#второй-процесс-на-том-же-порту).
 
 `run()` блокируется и держит пулы до `SIGTERM`/`SIGINT`, до удаления state-файла
 ([`MasterControl::stop()`](#единственный-инстанс-и-состояние)) или пока все воркеры не

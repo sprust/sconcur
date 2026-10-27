@@ -41,12 +41,6 @@ enum ProcessCommandEnum: string
     /** Puts back what was installed for the watched signals before. No parameters. */
     case RestoreSignals = 'sgr';
 
-    /** Binds a listening socket for the workers of a master to share, answers its descriptor. Rust: payloads::BindParams. */
-    case Bind = 'bnd';
-
-    /** Closes a descriptor the extension handed over. Rust: payloads::CloseParams. */
-    case Close = 'cls';
-
     /**
      * Closes the descriptors a fork handed over once PHP has opened its streams on copies,
      * and makes those copies close-on-exec. Rust: payloads::AdoptedParams.

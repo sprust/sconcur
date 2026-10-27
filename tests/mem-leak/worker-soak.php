@@ -58,7 +58,7 @@
  *
  * LAUNCH is fork (each worker loads the stand-in application after the fork) or preload (the
  * master loads it before run(), so every worker begins with it; the default), a list runs
- * each. Every worker accepts on a socket of its own on the port (reusePort). Run in the php
+ * each. Every worker accepts on a socket of its own on the port (SO_REUSEPORT). Run in the php
  * container:
  *   php -d extension=ext/build/sconcur.so tests/mem-leak/worker-soak.php [scenarios|all] [seconds]
  *   LAUNCH=fork,preload php -d extension=ext/build/sconcur.so tests/mem-leak/worker-soak.php oom,exit 120
@@ -190,7 +190,7 @@ function runScenario(
                 'FAILURES_EXIT_TRACE' => (string) getenv('FAILURES_EXIT_TRACE'),
                 ...($scenario['env'] ?? []),
             ],
-            'server'       => ['address' => '127.0.0.1:' . $port, 'reusePort' => true, ...($scenario['server'] ?? [])],
+            'server'       => ['address' => '127.0.0.1:' . $port, ...($scenario['server'] ?? [])],
             'accessLog'    => 'off',
         ]],
     ], JSON_PRETTY_PRINT));

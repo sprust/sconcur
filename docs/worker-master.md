@@ -64,7 +64,6 @@ $master = new WorkerMaster(
                     serverRequestFactory: $factory,
                     responseFactory: $factory,
                     address: '0.0.0.0:8080',
-                    reusePort: true,
                     maxRequests: 10_000,
                 );
 
@@ -84,8 +83,10 @@ exit($master->run());
 php -d extension=/app/ext/build/sconcur.so master.php
 ```
 
-> **Several workers on one port need `reusePort: true`** — otherwise the second worker
-> gets `EADDRINUSE`.
+The workers of a group share the port with no setting: every server binds with
+`SO_REUSEPORT`, and the kernel spreads the connections over them. The price is that a
+second process on the port joins rather than failing to bind — see
+[a second process on the port](http-server.md#a-second-process-on-the-port).
 
 `run()` blocks and supervises the pools until `SIGTERM`/`SIGINT`, until the state file is
 removed ([`MasterControl::stop()`](#single-instance-and-state)), or until every worker

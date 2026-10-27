@@ -121,42 +121,6 @@ trait ServerRuntimeSupportTrait
     }
 
     /**
-     * The descriptor a server's address hands over, or null for one to bind. "fd://N" is
-     * a listening socket bound elsewhere, accepted on as it is, so there is nothing for
-     * reusePort to set and it is refused beside one rather than silently ignored. The
-     * servers ask it in their constructors as well, so a wrong address is refused where
-     * the server is built, not in every worker that serves it.
-     */
-    protected static function listenerDescriptor(string $address, bool $reusePort): ?int
-    {
-        if (!str_starts_with($address, 'fd://')) {
-            return null;
-        }
-
-        $descriptor = substr($address, strlen('fd://'));
-
-        if (!ctype_digit($descriptor)) {
-            throw new InvalidServerArgumentException(
-                message: sprintf(
-                    'Invalid address %s: a descriptor is given as fd://<number>.',
-                    $address,
-                ),
-            );
-        }
-
-        if ($reusePort) {
-            throw new InvalidServerArgumentException(
-                message: sprintf(
-                    'reusePort does not apply to %s: the socket is bound already.',
-                    $address,
-                ),
-            );
-        }
-
-        return (int) $descriptor;
-    }
-
-    /**
      * Runs a worker's serving loop with automatic preemption armed, so CPU-bound handler
      * code cannot starve the other coroutines — and so a deadline or a stop can reach a
      * handler that never waits for anything.

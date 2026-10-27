@@ -77,7 +77,7 @@ MAXCONCURRENCY=${MAXCONCURRENCY:-0}
 # SERVERS — the worker-count ladder in docs/benchmarks.md walks it).
 DB_POOL_SIZE=${DB_POOL_SIZE:-9}
 # Dispatch experiment. DISTINCT_PORTS=1 binds
-# worker i to PORT+1+i without SO_REUSEPORT, so a proxy (nginx) can sit in front
+# worker i to a port of its own, PORT+1+i, so a proxy (nginx) can sit in front
 # on PORT itself and balance per request; the readiness probe then goes to the
 # first worker, not to PORT. WORKER_LOGS=1 keeps the workers' access lines (one
 # per request, with the handling time and the worker's slot) in the master's access
@@ -287,9 +287,9 @@ case "$PIN_SERVERS" in
 esac
 
 if (( DISTINCT_PORTS == 1 )); then
-    echo "   workers         : $SERVERS  (ports $(( PORT + 1 ))-$(( PORT + SERVERS )), no reusePort)"
+    echo "   workers         : $SERVERS  (ports $(( PORT + 1 ))-$(( PORT + SERVERS )), a port each)"
 else
-    echo "   workers         : $SERVERS  (reusePort)"
+    echo "   workers         : $SERVERS  (SO_REUSEPORT)"
 fi
 echo "   launch          : forks of a worker master that loaded the server's code first"
 echo "   placement       : $placement  (PIN_SERVERS=$PIN_SERVERS)"

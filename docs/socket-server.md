@@ -86,7 +86,7 @@ The `SocketServer` constructor; the PHP defaults mirror the extension's.
 
 | Parameter | Default | Purpose |
 | --- | --- | --- |
-| `address` | `0.0.0.0:9100` | listener address `host:port`, or `fd://N` — a listening socket bound elsewhere (systemd socket activation, say; `reusePort` must then stay off), see [one socket for the whole pool](http-server.md#one-socket-for-the-whole-pool) |
+| `address` | `0.0.0.0:9100` | listener address `host:port`, bound with `SO_REUSEPORT` — see [scaling across cores](http-server.md#scaling-across-cores-so_reuseport) |
 | `readTimeoutMs` | `0` (off) | idle timeout while waiting for an inbound frame in `read()`; on expiry `read()` returns `null`. A push-only handler that never reads is unaffected |
 | `writeTimeoutMs` | `30000` | max time to write one frame to the client |
 | `maxMessageBytes` | `1048576` (1 MiB) | length limit of one inbound frame; exceeding it ends the connection's input |
@@ -94,7 +94,6 @@ The `SocketServer` constructor; the PHP defaults mirror the extension's.
 | `handlerTimeoutMs` | `0` (unlimited) | how long one connection handler may run before it is unwound where it stands — see [coroutine timeout](coroutine-timeout.md) |
 | `maxConnections` | `0` (unlimited) | stop the server after N served connections (a guard against leaks); spread under the master, see [restart policy](worker-master.md#restart-policy-and-maxrequests) |
 | `shutdownTimeoutMs` | `10000` | accepted and not applied: finishing the connections already accepted is bounded by the grace period below, not by a clock of its own |
-| `reusePort` | `false` | `SO_REUSEPORT` — a process pool on one port (Linux) |
 | `onError` | `null` | handler-error hook |
 | `masterPid` | `null` | orphan check: `null` — the master that forked this worker (`WorkerContext`), or none outside one |
 | `telemetrySocket` | `null` | unix socket for stats snapshots ([stats](admin-stats.md)); `''` — off; `null` — `SCONCUR_TELEMETRY_SOCKET`, which the master sets for its workers |
@@ -146,7 +145,7 @@ connection that has not sent its first frame yet gets 250 ms more for it. A push
 handler that never reads does not notice the EOF and is finished off by a forced close
 after the grace period (2 s). In a pool on one port the kernel immediately hands new
 connections to the siblings, and the process exits on its own. The pool shares the
-port with `reusePort: true`, as the HTTP server does — see
+port through `SO_REUSEPORT`, which every server sets, as the HTTP server does — see
 [scaling across cores](http-server.md#scaling-across-cores-so_reuseport).
 
 Lifecycle lines go to `STDOUT`, alongside the per-connection access log that the
@@ -159,7 +158,7 @@ duration:
 ```
 
 ```
-2026-06-28T12:00:00.000000 sconcur socket server listening on 0.0.0.0:9100 pid=12345 version=X.Y.Z maxConcurrency=0 maxConnections=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur socket server listening on 0.0.0.0:9100 pid=12345 version=X.Y.Z maxConcurrency=0 maxConnections=0
 2026-06-28T12:00:01.000000 sconcur socket server shutdown: stop accepting (reason=signal), draining 2 in-flight
 2026-06-28T12:00:01.050000 sconcur socket server shutdown: drained all in-flight
 2026-06-28T12:00:01.060000 sconcur socket server shutdown: stopped
@@ -182,7 +181,7 @@ panel — details in the [worker master](worker-master.md).
 new WorkerGroupConfig(
     name: 'socket',
     role: static function (): void {
-        new SocketServer(address: '0.0.0.0:9100', reusePort: true)
+        new SocketServer(address: '0.0.0.0:9100')
             ->serve(static function (Connection $connection): void {
                 while (($frame = $connection->read()) !== null) {
                     $connection->write($frame);

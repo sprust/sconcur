@@ -70,13 +70,10 @@ readonly class HttpServer
      *                                                                                                  master each worker stops at a number drawn between it and half
      *                                                                                                  again as many, so a pool does not restart as one
      *                                                                                                  (Scheduler::spreadLimit(), docs/worker-master.md).
-     * @param bool                                                                $reusePort            set SO_REUSEPORT so several processes can bind this same
-     *                                                                                                  address; the kernel load-balances connections across them
-     *                                                                                                  (run one process per core). Linux only; each process must set it.
-     * @param string                                                              $address              where to listen: "host:port" to bind, or "fd://N" to accept on a
-     *                                                                                                  listening socket bound elsewhere — one systemd socket activation hands
-     *                                                                                                  over, or one ProcessControl::bind() opened before the master forked.
-     *                                                                                                  With fd:// nothing is bound, and reusePort must stay off.
+     * @param string                                                              $address              "host:port" to listen on. Bound with SO_REUSEPORT, always: the
+     *                                                                                                  workers of a pool each bind the port, and the kernel spreads
+     *                                                                                                  connections over them (Linux). A second process on the port shares it
+     *                                                                                                  rather than failing to bind.
      * @param null|Closure(Throwable, ServerRequestInterface): ?ResponseInterface $onError              observes a handler
      *                                                                                                  failure (exception or a non-ResponseInterface return). It may return a
      *                                                                                                  ResponseInterface to send instead of the default 500; returning null (or
@@ -120,7 +117,6 @@ readonly class HttpServer
         protected int $maxConcurrency = 0,
         protected int $handlerTimeoutMs = 60_000,
         protected int $maxRequests = 0,
-        protected bool $reusePort = false,
         protected ?Closure $onError = null,
         protected ?int $masterPid = null,
         protected ?string $telemetrySocket = null,
@@ -128,7 +124,6 @@ readonly class HttpServer
         protected ?int $telemetryIntervalMs = null,
         protected int $preemptionQuantumMs = 0,
     ) {
-        self::listenerDescriptor($address, $reusePort);
     }
 
     /**
@@ -185,8 +180,6 @@ readonly class HttpServer
                     maxRequestBody: $this->maxRequestBody,
                     maxConcurrency: $this->maxConcurrency,
                     handlerTimeoutMs: $this->handlerTimeoutMs,
-                    reusePort: $this->reusePort,
-                    listenFd: self::listenerDescriptor($this->address, $this->reusePort),
                     telemetrySocket: $this->telemetrySocket ?? self::fromEnvironment('SCONCUR_TELEMETRY_SOCKET'),
                     serverName: $this->serverName ?? self::fromEnvironment('SCONCUR_SERVER_NAME', 'sconcur-server'),
                     telemetryIntervalMs: $this->telemetryIntervalMs
@@ -196,13 +189,12 @@ readonly class HttpServer
 
             self::logServerEvent(
                 sprintf(
-                    'sconcur http server listening on %s pid=%d version=%s maxConcurrency=%d maxRequests=%d reusePort=%d',
+                    'sconcur http server listening on %s pid=%d version=%s maxConcurrency=%d maxRequests=%d',
                     $this->address,
                     getmypid(),
                     Extension::REQUIRED_EXTENSION_VERSION,
                     $this->maxConcurrency,
                     $this->maxRequests,
-                    (int) $this->reusePort,
                 ),
             );
 

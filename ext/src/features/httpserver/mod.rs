@@ -95,7 +95,7 @@ async fn handle_serve(task: Task) {
         }
     };
 
-    let listener = match listen::open(&payload.address, payload.reuse_port, payload.listen_fd) {
+    let listener = match listen::open(&payload.address) {
         Ok(listener) => listener,
         Err(error) => {
             task.add_result(Result::error(message, ERR_FACTORY.by_err("listen", error))).await;

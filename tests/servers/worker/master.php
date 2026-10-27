@@ -18,8 +18,8 @@
  * Two group keys set a worker apart by its slot, for the load harnesses that place the
  * workers themselves: "slotCpus", a list of CPU lists, pins slot i to entry i (wrapping)
  * before it starts anything, the way `taskset -c` would pin a php of its own; and
- * "distinctPorts" gives slot i the port of the `server` address plus 1 + i and no
- * reusePort, so a proxy in front can choose the worker.
+ * "distinctPorts" gives slot i the port of the `server` address plus 1 + i, a port of
+ * its own, so a proxy in front can choose the worker.
  *
  * Exit codes: what WorkerMaster::run() returns; 1 when it throws, the reason on stderr.
  */
@@ -84,8 +84,7 @@ function testMasterGroup(array $group, array $defaults): WorkerGroupConfig
                 $address = (string) $server['address'];
                 $port    = (int) substr($address, (int) strrpos($address, ':') + 1);
 
-                $server['address']   = substr($address, 0, (int) strrpos($address, ':')) . ':' . ($port + 1 + $context->slot);
-                $server['reusePort'] = false;
+                $server['address'] = substr($address, 0, (int) strrpos($address, ':')) . ':' . ($port + 1 + $context->slot);
             }
 
             $argv = [$script, ...testMasterServerFlags($server), ...$workerArgs, '--masterPid=' . $context->masterPid];

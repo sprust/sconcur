@@ -251,40 +251,6 @@ class ProcessControl
     }
 
     /**
-     * Binds a listening TCP socket and answers its descriptor, for workers to share: a
-     * server given it as its address, "fd://N", accepts from it instead of binding its
-     * own. Every worker that holds it accepts from the one queue, so a worker that stops
-     * leaves the connections waiting there to the others instead of resetting them.
-     *
-     * The socket is close-on-exec: a fork keeps it — bound before the master is built, it is
-     * the application's, and every worker the master forks holds it — and no program the
-     * process execs inherits it.
-     *
-     * @param int $backlog the queue length asked of the kernel; 0 for the servers' own 4096
-     */
-    public static function bind(string $address, int $backlog = 0): int
-    {
-        return (int) Extension::get()->process(
-            command: ProcessCommandEnum::Bind,
-            payload: [
-                'ad' => $address,
-                'bl' => $backlog,
-            ],
-        );
-    }
-
-    /**
-     * Closes a descriptor this process holds — one bind() answered, once nothing needs it.
-     */
-    public static function close(int $descriptor): void
-    {
-        Extension::get()->process(
-            command: ProcessCommandEnum::Close,
-            payload: ['fd' => $descriptor],
-        );
-    }
-
-    /**
      * Refuses as fork() would in this process, without forking: a process that already
      * runs the extension's runtime, or threads of anything else, cannot fork. The refusal
      * is a ForkRefusedException, and says how many threads the process runs where the

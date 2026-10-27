@@ -34,7 +34,6 @@ $master = new WorkerMaster(
                 $argv = [
                     __DIR__ . '/app-worker.php',
                     '--address=127.0.0.1:' . $port,
-                    '--reusePort=1',
                     '--masterPid=' . $context->masterPid,
                 ];
 

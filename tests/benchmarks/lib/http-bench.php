@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 /**
  * Helpers for the HTTP-server benchmarks: resolve the running `servers` container
- * HTTP pool (2 reusePort workers), check it is reachable, fire concurrent requests.
+ * HTTP pool (2 workers on SO_REUSEPORT), check it is reachable, fire concurrent requests.
  *
  * The pool is the master-supervised server from docker-compose's `servers`
  * container. Benchmarks run inside the `php` container, so the pool is reachable

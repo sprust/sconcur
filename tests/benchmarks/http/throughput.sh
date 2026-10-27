@@ -127,9 +127,9 @@ echo "=================================================================="
 echo " SO_REUSEPORT throughput benchmark"
 echo "   host cores      : $CORES"
 if [ "$PIN_SERVERS" = "1" ]; then
-    echo "   workers         : $SERVERS  (pinned to cores 0-$(( SERVERS - 1 )), reusePort, forks of a master)"
+    echo "   workers         : $SERVERS  (pinned to cores 0-$(( SERVERS - 1 )), SO_REUSEPORT, forks of a master)"
 else
-    echo "   workers         : $SERVERS  (unpinned, reusePort, forks of a master)"
+    echo "   workers         : $SERVERS  (unpinned, SO_REUSEPORT, forks of a master)"
 fi
 echo "   wrk threads     : $WRK_THREADS (pinned to cores $WRK_CPULIST)"
 echo "   connections     : $CONNECTIONS"

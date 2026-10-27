@@ -19,7 +19,6 @@
       "workerArgs": [],
       "server": {
         "address": "0.0.0.0:8080",
-        "reusePort": true,
         "maxRequests": 0,
         "maxConcurrency": 0,
         "maxRequestBody": 10485760,
@@ -38,7 +37,6 @@
       "workerArgs": [],
       "server": {
         "address": "0.0.0.0:9100",
-        "reusePort": true,
         "maxConnections": 0,
         "maxConcurrency": 0,
         "maxMessageBytes": 1048576,
@@ -54,7 +52,6 @@
       "workerArgs": [],
       "server": {
         "address": "0.0.0.0:9200",
-        "reusePort": true,
         "path": "/",
         "maxConnections": 0,
         "maxConcurrency": 0,

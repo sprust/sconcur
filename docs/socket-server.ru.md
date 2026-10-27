@@ -87,7 +87,7 @@ $server->serve(static function (Connection $connection): void {
 
 | Параметр | По умолчанию | Назначение |
 | --- | --- | --- |
-| `address` | `0.0.0.0:9100` | адрес прослушивания `host:port` или `fd://N` — слушающий сокет, связанный кем-то другим (например, socket activation systemd; `reusePort` тогда должен быть выключен), см. [один сокет на весь пул](http-server.ru.md#один-сокет-на-весь-пул) |
+| `address` | `0.0.0.0:9100` | адрес прослушивания `host:port`, связывается с `SO_REUSEPORT` — см. [масштабирование на ядра](http-server.ru.md#масштабирование-на-ядра-so_reuseport) |
 | `readTimeoutMs` | `0` (выкл.) | таймаут простоя при ожидании входящего кадра в `read()`; по истечении `read()` возвращает `null`. Push-обработчика, который не читает, не касается |
 | `writeTimeoutMs` | `30000` | максимальное время записи одного кадра клиенту |
 | `maxMessageBytes` | `1048576` (1 MiB) | лимит длины одного входящего кадра; превышение завершает вход соединения |
@@ -95,7 +95,6 @@ $server->serve(static function (Connection $connection): void {
 | `handlerTimeoutMs` | `0` (без лимита) | сколько один обработчик соединения может работать, прежде чем его размотают там, где он стоит — см. [таймаут корутины](coroutine-timeout.ru.md) |
 | `maxConnections` | `0` (без лимита) | остановить сервер после N обслуженных соединений (защита от утечек); под мастером разбрасывается, см. [политику перезапуска](worker-master.ru.md#политика-перезапуска-и-maxrequests) |
 | `shutdownTimeoutMs` | `10000` | принимается и не применяется: завершение уже принятых соединений ограничено льготным периодом ниже, а не собственными часами |
-| `reusePort` | `false` | `SO_REUSEPORT` — пул процессов на одном порту (Linux) |
 | `onError` | `null` | хук ошибки обработчика |
 | `masterPid` | `null` | проверка на сироту: `null` — мастер, форкнувший этот воркер (`WorkerContext`), а вне мастера проверки нет |
 | `telemetrySocket` | `null` | unix-сокет для снапшотов статистики ([статистика](admin-stats.ru.md)); `''` — выкл.; `null` — `SCONCUR_TELEMETRY_SOCKET`, который мастер ставит своим воркерам |
@@ -147,8 +146,8 @@ $server = new SocketServer(
 управление. Соединению, которое ещё не прислало первый кадр, на него даётся ещё 250
 мс. Push-обработчик, который не читает, EOF не замечает, и его добивает принудительное
 закрытие после льготного периода (2 c). В пуле на одном порту ядро сразу отдаёт новые
-соединения соседям, и процесс выходит сам. Пул делит порт через `reusePort: true`, как
-HTTP-сервер, — см. [масштабирование на
+соединения соседям, и процесс выходит сам. Пул делит порт через `SO_REUSEPORT`,
+который ставит каждый сервер, как HTTP-сервер, — см. [масштабирование на
 ядра](http-server.ru.md#масштабирование-на-ядра-so_reuseport).
 
 Строки жизненного цикла идут в `STDOUT` — рядом с access-логом на соединение,
@@ -161,7 +160,7 @@ HTTP-сервер, — см. [масштабирование на
 ```
 
 ```
-2026-06-28T12:00:00.000000 sconcur socket server listening on 0.0.0.0:9100 pid=12345 version=X.Y.Z maxConcurrency=0 maxConnections=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur socket server listening on 0.0.0.0:9100 pid=12345 version=X.Y.Z maxConcurrency=0 maxConnections=0
 2026-06-28T12:00:01.000000 sconcur socket server shutdown: stop accepting (reason=signal), draining 2 in-flight
 2026-06-28T12:00:01.050000 sconcur socket server shutdown: drained all in-flight
 2026-06-28T12:00:01.060000 sconcur socket server shutdown: stopped
@@ -184,7 +183,7 @@ access-строки можно вместо этого писать в файл 
 new WorkerGroupConfig(
     name: 'socket',
     role: static function (): void {
-        new SocketServer(address: '0.0.0.0:9100', reusePort: true)
+        new SocketServer(address: '0.0.0.0:9100')
             ->serve(static function (Connection $connection): void {
                 while (($frame = $connection->read()) !== null) {
                     $connection->write($frame);

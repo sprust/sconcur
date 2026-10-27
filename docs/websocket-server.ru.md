@@ -108,7 +108,7 @@ Broadcast в другие соединения не встроен — прил�
 
 | Параметр | По умолчанию | Назначение |
 | --- | --- | --- |
-| `address` | `0.0.0.0:9200` | адрес прослушивания `host:port` или `fd://N` — слушающий сокет, связанный кем-то другим (например, socket activation systemd; `reusePort` тогда должен быть выключен), см. [один сокет на весь пул](http-server.ru.md#один-сокет-на-весь-пул) |
+| `address` | `0.0.0.0:9200` | адрес прослушивания `host:port`, связывается с `SO_REUSEPORT` — см. [масштабирование на ядра](http-server.ru.md#масштабирование-на-ядра-so_reuseport) |
 | `handshakeTimeoutMs` | `10000` | принимается и не применяется |
 | `idleTimeoutMs` | `0` (выкл.) | таймаут простоя между входящими кадрами — сообщениями с данными и pong клиента, поэтому клиент, отвечающий на keepalive-ping, остаётся подключённым |
 | `writeTimeoutMs` | `30000` | максимальное время отправки одного сообщения (и одного ping) |
@@ -118,7 +118,6 @@ Broadcast в другие соединения не встроен — прил�
 | `handlerTimeoutMs` | `0` (без лимита) | сколько один обработчик соединения может работать, прежде чем его размотают там, где он стоит — см. [таймаут корутины](coroutine-timeout.ru.md) |
 | `maxConnections` | `0` (без лимита) | остановить сервер после N обслуженных соединений (защита от утечек); под мастером разбрасывается, см. [политику перезапуска](worker-master.ru.md#политика-перезапуска-и-maxrequests) |
 | `shutdownTimeoutMs` | `10000` | принимается и не применяется: завершение уже принятых соединений ограничено льготным периодом ниже, а не собственными часами |
-| `reusePort` | `false` | `SO_REUSEPORT` — пул процессов на одном порту (Linux) |
 | `path` | `/` | путь, на котором принимается апгрейд (пустая строка — любой путь); другой путь → `404` |
 | `allowedOrigins` | `[]` | хосты, которые может называть заголовок `Origin`, вместе с портом, без учёта регистра; `*` — любой (пусто — проверка пропускается; запрос без `Origin` проходит всегда) |
 | `subprotocols` | `[]` | согласуемые субпротоколы WebSocket; выбирается первый из этого списка, который предлагает клиент |
@@ -174,7 +173,7 @@ push-соединение, в которое клиент ничего не шл
 `accessLog` группы мастера для него ничего не меняет.
 
 ```
-2026-06-28T12:00:00.000000 sconcur ws server listening on 0.0.0.0:9200 pid=12345 version=X.Y.Z maxConcurrency=0 maxConnections=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur ws server listening on 0.0.0.0:9200 pid=12345 version=X.Y.Z maxConcurrency=0 maxConnections=0
 2026-06-28T12:00:01.000000 sconcur ws server shutdown: stop accepting (reason=signal), draining 2 in-flight
 2026-06-28T12:00:01.050000 sconcur ws server shutdown: drained all in-flight
 2026-06-28T12:00:01.060000 sconcur ws server shutdown: stopped
@@ -188,7 +187,7 @@ push-соединение, в которое клиент ничего не шл
 new WorkerGroupConfig(
     name: 'ws',
     role: static function (): void {
-        new WsServer(address: '0.0.0.0:9200', reusePort: true)
+        new WsServer(address: '0.0.0.0:9200')
             ->serve(static function (Connection $connection): void {
                 while (($message = $connection->read()) !== null) {
                     $connection->write($message);
@@ -199,8 +198,8 @@ new WorkerGroupConfig(
 );
 ```
 
-Под мастером сервер сам следит за ним (`WorkerContext`); `reusePort: true` позволяет
-воркерам делить порт. Пул отдаёт статистику через панель мастера (`GET /api/stats`)
+Под мастером сервер сам следит за ним (`WorkerContext`), а воркеры делят порт через
+`SO_REUSEPORT`, который ставит каждый сервер. Пул отдаёт статистику через панель мастера (`GET /api/stats`)
 секцией `connections`, как у сокет-сервера, — см. [мастер воркеров](worker-master.ru.md)
 и [статистику сервера](admin-stats.ru.md). `WsServer::fromArgs($_SERVER['argv'])`
 собирает тот же сервер из флагов `--key=value` — для скрипта, который запускает один

@@ -106,7 +106,7 @@ foreach ($arms as $arm) {
     if ($arm === 'exec') {
         for ($worker = 0; $worker < $workers; ++$worker) {
             $processes[] = proc_open(
-                [...$php, __DIR__ . '/app-worker.php', '--address=127.0.0.1:' . $port, '--reusePort=1'],
+                [...$php, __DIR__ . '/app-worker.php', '--address=127.0.0.1:' . $port],
                 $out,
                 $pipes,
             );

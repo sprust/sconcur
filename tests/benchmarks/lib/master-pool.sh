@@ -20,7 +20,7 @@
 #   POOL_ENV              VAR=value assignments for the workers' environment, space-separated
 #   POOL_SLOT_CPUS        CPU lists, space-separated: slot i is pinned to entry i (wrapping)
 #   POOL_MASTER_CPUS      a CPU list for the master; its forks inherit it
-#   POOL_DISTINCT_PORTS   1: slot i takes the port of ADDRESS plus 1 + i, without reusePort
+#   POOL_DISTINCT_PORTS   1: slot i takes the port of ADDRESS plus 1 + i, a port of its own
 #   POOL_ACCESS_LOG       the group's accessLog: off (default) or file, which writes every
 #                         worker's lines to <runtime>/NAME-access-<date>.log with its slot
 
@@ -53,7 +53,6 @@ print(json.dumps({
         'workerArgs': shlex.split(os.environ.get('POOL_ARGS', '')),
         'server': {
             'address': address,
-            'reusePort': True,
             'maxConcurrency': int(os.environ.get('POOL_MAX_CONCURRENCY', '0') or 0),
         },
         'slotCpus': os.environ.get('POOL_SLOT_CPUS', '').split(),

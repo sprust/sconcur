@@ -85,7 +85,7 @@ const RABBITMQ_MAX_JOBS = 100000;
  * exactly like the HttpServer constructor parameters, passed as --name=value:
  *   --readHeaderTimeoutMs  --readTimeoutMs  --writeTimeoutMs  --idleTimeoutMs
  *   --shutdownTimeoutMs  --maxRequestBody  --maxConcurrency  --handlerTimeoutMs
- *   --maxRequests  --reusePort (0/1)
+ *   --maxRequests
  *
  * Bench-only: --ladder=l1|l2|l2f runs the attribution-ladder loop instead of the
  * normal server (see runLadderServer below).
@@ -1304,16 +1304,11 @@ function statusRoute(Psr17Factory $factory, string $path): ResponseInterface
  */
 function runLadderServer(string $mode, array $argv): void
 {
-    $address   = '0.0.0.0:7832';
-    $reusePort = false;
+    $address = '0.0.0.0:7832';
 
     foreach ($argv as $argument) {
         if (str_starts_with($argument, '--address=')) {
             $address = substr($argument, strlen('--address='));
-        }
-
-        if (str_starts_with($argument, '--reusePort=')) {
-            $reusePort = substr($argument, strlen('--reusePort=')) === '1';
         }
     }
 
@@ -1339,8 +1334,6 @@ function runLadderServer(string $mode, array $argv): void
             maxRequestBody: 10_485_760,
             maxConcurrency: 0,
             handlerTimeoutMs: 60_000,
-            reusePort: $reusePort,
-            listenFd: null,
             telemetrySocket: '',
             serverName: 'sconcur-ladder',
             telemetryIntervalMs: 0,

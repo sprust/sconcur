@@ -108,7 +108,7 @@ trap stop_servers EXIT
 echo "=================================================================="
 echo " All-features WebSocket load + resource benchmark${MODE:+  [$MODE]}"
 echo "   container cores : $CORES"
-echo "   workers         : $SERVERS  (pinned to cores 0-$(( SERVERS - 1 )), reusePort, forks of a master)"
+echo "   workers         : $SERVERS  (pinned to cores 0-$(( SERVERS - 1 )), SO_REUSEPORT, forks of a master)"
 echo "   load generator  : pinned to cores $LOAD_CPULIST"
 echo "   connections     : $CONNECTIONS"
 echo "   duration        : ${DURATION}s   (sampling every ${SAMPLE_INTERVAL}s)"

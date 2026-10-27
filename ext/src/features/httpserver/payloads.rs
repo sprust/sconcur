@@ -12,8 +12,8 @@ use crate::dto::{Map, Value};
 /// PHP: SConcur\Features\HttpServer\Payloads\ServePayload.
 ///
 /// Every field of the wire payload is decoded. The core acts on `address`,
-/// `reuse_port`, `listen_fd`, `handler_timeout_ms`, `shutdown_timeout_ms`, the body
-/// limit, `max_concurrency` and the telemetry block; the read-header/read/write/idle
+/// `handler_timeout_ms`, `shutdown_timeout_ms`, the body limit, `max_concurrency`
+/// and the telemetry block; the read-header/read/write/idle
 /// timeouts are accepted and not applied.
 #[allow(dead_code)]
 #[derive(Deserialize, Default)]
@@ -36,12 +36,6 @@ pub struct ServePayload {
     pub max_concurrency: i64,
     #[serde(rename = "hto", default)]
     pub handler_timeout_ms: i64,
-    #[serde(rename = "rp", default)]
-    pub reuse_port: bool,
-    /// A listening socket bound elsewhere, to accept on instead of binding the
-    /// address: one from socket activation, say.
-    #[serde(rename = "lfd", default)]
-    pub listen_fd: Option<i64>,
     #[serde(rename = "ts", default)]
     pub telemetry_socket: String,
     #[serde(rename = "sn", default)]

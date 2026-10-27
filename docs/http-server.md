@@ -22,7 +22,7 @@ extension; PHP stays a thin orchestration layer. Implementation:
 - [Logs](#logs)
 - [Concurrency and limits](#concurrency-and-limits)
 - [Scaling across cores (SO_REUSEPORT)](#scaling-across-cores-so_reuseport)
-  - [One socket for the whole pool](#one-socket-for-the-whole-pool)
+  - [A second process on the port](#a-second-process-on-the-port)
   - [A proxy in front of the pool](#a-proxy-in-front-of-the-pool)
 - [OPcache and JIT](#opcache-and-jit)
 - [Stopping after N requests](#stopping-after-n-requests)
@@ -117,7 +117,7 @@ timeouts are in milliseconds.
 |---|---|---|
 | `serverRequestFactory` | — (required) | PSR-17 `ServerRequestFactoryInterface` — builds the handler's request. |
 | `responseFactory` | — (required) | PSR-17 `ResponseFactoryInterface` — builds the fallback `413`/`500` responses. |
-| `address` | `0.0.0.0:7832` | Listen address, e.g. `0.0.0.0:8080`, or `fd://N` — a listening socket bound elsewhere to accept on (`reusePort` must then stay off), see [one socket for the whole pool](#one-socket-for-the-whole-pool). |
+| `address` | `0.0.0.0:7832` | Listen address, e.g. `0.0.0.0:8080`. Bound with `SO_REUSEPORT`, see [scaling across cores](#scaling-across-cores-so_reuseport). |
 | `readHeaderTimeoutMs` | `10000` | Accepted and not applied — see [Connection timeouts](#connection-timeouts). |
 | `readTimeoutMs` | `30000` | Accepted and not applied. |
 | `writeTimeoutMs` | `30000` | Accepted and not applied. |
@@ -127,7 +127,6 @@ timeouts are in milliseconds.
 | `maxConcurrency` | `0` (no limit) | Requests handled at once, see [limits](#concurrency-and-limits). |
 | `handlerTimeoutMs` | `60000` | Max total handling time including streaming, otherwise `504`/abort. `0` — the PHP handler is not unwound; the extension still answers `504` after 60 s. |
 | `maxRequests` | `0` (no limit) | Stop the server after this many requests, see [below](#stopping-after-n-requests). |
-| `reusePort` | `false` | `SO_REUSEPORT` — several processes on one port. |
 | `onError` | `null` | `Closure(Throwable, ServerRequestInterface): ?ResponseInterface`. |
 | `masterPid` | `null` | Stop gracefully once this pid is no longer the parent. `null` — the master that forked this worker (`WorkerContext`, see the [worker master](worker-master.md#self-termination-of-orphaned-workers)), or no check outside one. |
 | `telemetrySocket` | `null` | Unix socket for stats snapshots ([stats](admin-stats.md)); `''` — off. `null` — `SCONCUR_TELEMETRY_SOCKET` from the environment, which the master sets for its workers. |
@@ -352,7 +351,7 @@ Lifecycle lines are written by the PHP side and flushed immediately — one at
 startup, one per shutdown step:
 
 ```
-2026-06-28T12:00:00.000000 sconcur http server listening on 0.0.0.0:8080 pid=12345 version=X.Y.Z maxConcurrency=0 maxRequests=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur http server listening on 0.0.0.0:8080 pid=12345 version=X.Y.Z maxConcurrency=0 maxRequests=0
 2026-06-28T12:00:01.000000 sconcur http server shutdown: stop accepting (reason=signal), draining 2 in-flight
 2026-06-28T12:00:01.050000 sconcur http server shutdown: drained all in-flight
 2026-06-28T12:00:01.060000 sconcur http server shutdown: stopped
@@ -437,11 +436,10 @@ flowchart TB
     Port --> P4
 ```
 
-Pass `reusePort: true` to every process on the shared port (inside the extension
-it sets `SO_REUSEPORT` on the socket before the bind,
-`ext/src/features/httpserver/listen.rs`). Run them as separate processes — a
-supervisor (systemd, supervisord, docker `--scale`), the
-[worker master](worker-master.md), or a plain loop.
+Every server binds its address with `SO_REUSEPORT` (set on the socket before the bind,
+`ext/src/features/httpserver/listen.rs`), so several processes on one port need no
+setting. Run them as separate processes — the [worker master](worker-master.md), a
+supervisor (systemd, supervisord, docker `--scale`), or a plain loop.
 
 ```bash
 # one process per core
@@ -456,8 +454,6 @@ Caveats:
 - Processes are independent: no shared memory, each has its own runtime,
   scheduler and coroutines. Shared state (sessions, cache, counters) goes to
   external storage.
-- Every process must set `reusePort: true` — if one did not and started first, the
-  rest get `EADDRINUSE`.
 - Balancing is by connections, not requests (4-tuple hash), so with keep-alive all
   requests of one connection land in the same process. Few long-lived connections
   distribute unevenly.
@@ -467,32 +463,19 @@ Caveats:
   intercept part of the connections; keep that in mind in a multi-tenant
   environment.
 
-### One socket for the whole pool
+### A second process on the port
 
-Instead of binding an address, a server can accept on a listening socket bound
-elsewhere: `address: 'fd://3'` (or `--address=fd://3`) names its descriptor — the one
-systemd's socket activation hands over, say, or one the application bound with
-`ProcessControl::bind()` before it built its master, which every forked worker then
-holds. Nothing is bound, so `reusePort` has nothing to set and is refused beside it.
-The server takes over a copy of the descriptor, so stopping it closes the copy and
-leaves the socket to whoever else holds it, and a stopping server leaves what is queued
-on the socket to them.
+`SO_REUSEPORT` on every socket has a price: a process started on a port that is
+already taken does not fail with `EADDRINUSE`, it joins, and the kernel spreads the
+connections over both. A server left running from an earlier deploy, or a second
+master (with another `name` or `runtimeDir` — the same one is refused by its lock),
+serves part of the traffic with its own code. Make sure the old one is gone before
+the new one starts, by its pid or by `MasterControl::isRunning()`.
 
-```php
-$descriptor = ProcessControl::bind('0.0.0.0:8080');
-
-// in the role of every worker of the group
-$server = new HttpServer(
-    serverRequestFactory: $factory,
-    responseFactory: $factory,
-    address: 'fd://' . $descriptor,
-);
-```
-
-Several processes accepting on one socket all wake for every connection, and the first
-to run takes what is queued: across 12 workers the busiest served 7–9 times as many
-requests as the idlest. A pool of processes on one port is better served by
-`SO_REUSEPORT`.
+There is no option to bind without it, and no way to hand a server a socket bound
+elsewhere: a pool of processes on one shared socket all wake for every connection,
+and the first to run takes what is queued — across 12 workers the busiest served
+7–9 times as many requests as the idlest.
 
 ### A proxy in front of the pool
 
@@ -518,8 +501,8 @@ connections:
 
 If a proxy goes in front anyway, two conditions. Do not take the default
 round-robin: it hands out blindly and is the worst of the three; take a
-load-aware strategy. And the workers run with `reusePort: false` on separate
-ports, listed in the upstream:
+load-aware strategy. And the workers listen on separate ports, listed in the
+upstream:
 
 ```nginx
 upstream workers {
@@ -595,9 +578,7 @@ accepting and closes its listening socket, so with `SO_REUSEPORT` the kernel sen
 connections to its neighbours. Then:
 
 1. The connections the kernel had already queued on the socket, and the server had not
-   accepted yet, are taken and served rather than reset with the socket. (Not for a
-   socket handed over as `fd://`: whoever else holds it goes on taking from its
-   queue.)
+   accepted yet, are taken and served rather than reset with the socket.
 2. Every response from now on goes out with `Connection: close`, and the connection
    closes after it: the client sends its next request to a neighbour. A request already
    on its way on a keep-alive connection is answered, not dropped.
@@ -663,7 +644,7 @@ connection reads the handler's writes from) and `server_states` (`flowKey →`
 server state, for `StopAccepting`). It is also the accept loop and the
 per-request service over `hyper`, handling the concurrency semaphore, the
 handler timeout, 503/504 and the graceful stop of the connections. `listen.rs` is the
-TCP listener, `SO_REUSEPORT`, a socket handed over as `fd://`, and taking what is
+TCP listener with `SO_REUSEPORT`, and taking what is
 queued on the socket when the server stops.
 
 The listener is a self-pumping stream: an extension-side runtime task publishes every

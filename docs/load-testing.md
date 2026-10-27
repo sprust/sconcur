@@ -54,7 +54,7 @@ starts it through `tests/servers/worker/master.php`). `throughput.sh` and the We
 harness start their pools the same way. Under `PIN_SERVERS=group` the master is put on
 the cores and its forks inherit the mask; under `1` and `physical` each worker pins
 itself to its CPUs as it starts, before its runtime does. `DISTINCT_PORTS=1` gives
-worker `i` the port `PORT+1+i` without `SO_REUSEPORT`; `WORKER_LOGS=1` turns on the
+worker `i` a port of its own, `PORT+1+i`; `WORKER_LOGS=1` turns on the
 group's access file, whose lines carry the worker's slot, and the spread is counted from
 it. Otherwise access lines are off. The worker RSS is summed over the workers found by
 their title, read afresh at every sample, so a worker that was replaced is not lost.

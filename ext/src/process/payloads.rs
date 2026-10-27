@@ -51,28 +51,12 @@ pub struct WatchParams {
     pub signals: Vec<String>,
 }
 
-/// PHP: ProcessCommandEnum::Bind.
-#[derive(Deserialize)]
-pub struct BindParams {
-    #[serde(rename = "ad")]
-    pub address: String,
-    #[serde(rename = "bl", default)]
-    pub backlog: i64,
-}
-
 /// PHP: ProcessCommandEnum::MarkHeartbeat.
 #[derive(Deserialize)]
 pub struct MarkParams {
     /// The mark, by its byte. PHP: HeartbeatMarkEnum; here: heartbeat::Mark.
     #[serde(rename = "mk")]
     pub mark: i64,
-}
-
-/// PHP: ProcessCommandEnum::Close.
-#[derive(Deserialize)]
-pub struct CloseParams {
-    #[serde(rename = "fd")]
-    pub descriptor: i64,
 }
 
 /// PHP: ProcessCommandEnum::Adopted.

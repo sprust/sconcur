@@ -16,12 +16,10 @@ class WsServerReusePortTest extends TestCase
     public function testTwoServersShareOnePortAndBothServe(): void
     {
         $first = TestWsServer::start(
-            options: ['reusePort' => 1],
         );
 
         try {
             $second = TestWsServer::start(
-                options: ['reusePort' => 1],
                 port: $first->port(),
             );
 

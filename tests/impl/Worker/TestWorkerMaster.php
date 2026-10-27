@@ -12,8 +12,8 @@ use SConcur\Tests\Impl\FreePort;
  * JSON config the test writes), supervising the demo HTTP server
  * (tests/servers/http/http-server.php) on a loopback port, so tests drive a real master
  * they fully control (start it, signal it, read its log/state). The master runs with the
- * built extension loaded, and its workers — forks of it — serve with reusePort on (several
- * workers behind one port).
+ * built extension loaded, and its workers — forks of it — share one port, as every server
+ * binds with SO_REUSEPORT.
  */
 class TestWorkerMaster
 {
@@ -96,7 +96,7 @@ class TestWorkerMaster
                 'logDir'       => $runtimeDir,
                 'name'         => $name,
                 // Several workers behind one port: each must enable SO_REUSEPORT.
-                'server'       => ['address' => $address, 'reusePort' => true],
+                'server'       => ['address' => $address],
                 'workerArgs'   => array_values($workerArgs),
                 ...$options,
             ]),
@@ -146,7 +146,7 @@ class TestWorkerMaster
             'workerScript' => self::workerScript(),
             'workerCount'  => 1,
             'runtimeDir'   => sys_get_temp_dir(),
-            'server'       => ['address' => self::HOST . ':0', 'reusePort' => true],
+            'server'       => ['address' => self::HOST . ':0'],
             ...$overrides,
         ];
 

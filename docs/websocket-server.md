@@ -109,7 +109,7 @@ The `WsServer` constructor; the PHP defaults mirror the extension's.
 
 | Parameter | Default | Purpose |
 | --- | --- | --- |
-| `address` | `0.0.0.0:9200` | listener address `host:port`, or `fd://N` — a listening socket bound elsewhere (systemd socket activation, say; `reusePort` must then stay off), see [one socket for the whole pool](http-server.md#one-socket-for-the-whole-pool) |
+| `address` | `0.0.0.0:9200` | listener address `host:port`, bound with `SO_REUSEPORT` — see [scaling across cores](http-server.md#scaling-across-cores-so_reuseport) |
 | `handshakeTimeoutMs` | `10000` | accepted and not applied |
 | `idleTimeoutMs` | `0` (off) | idle timeout between inbound frames — data messages and the client's pongs, so a client that answers the keepalive ping stays connected |
 | `writeTimeoutMs` | `30000` | max time to send one message (and one ping) |
@@ -119,7 +119,6 @@ The `WsServer` constructor; the PHP defaults mirror the extension's.
 | `handlerTimeoutMs` | `0` (no limit) | how long one connection handler may run before it is unwound where it stands — see [coroutine timeout](coroutine-timeout.md) |
 | `maxConnections` | `0` (no limit) | stop the server after N served connections (a leak guard); spread under the master, see [restart policy](worker-master.md#restart-policy-and-maxrequests) |
 | `shutdownTimeoutMs` | `10000` | accepted and not applied: finishing the connections already accepted is bounded by the grace period below, not by a clock of its own |
-| `reusePort` | `false` | `SO_REUSEPORT` — a pool of processes on one port (Linux) |
 | `path` | `/` | the path on which the upgrade is accepted (empty string — any path); another path → `404` |
 | `allowedOrigins` | `[]` | hosts the `Origin` header may name, port included, compared ignoring case; `*` — any (empty — the check is skipped; a request without `Origin` always passes) |
 | `subprotocols` | `[]` | negotiable WebSocket subprotocols; the first one in this list that the client offers wins |
@@ -173,7 +172,7 @@ Lifecycle lines go to `STDOUT`. The WebSocket server writes no access lines:
 `accessLog` of a master group has nothing to direct for it.
 
 ```
-2026-06-28T12:00:00.000000 sconcur ws server listening on 0.0.0.0:9200 pid=12345 version=X.Y.Z maxConcurrency=0 maxConnections=0 reusePort=0
+2026-06-28T12:00:00.000000 sconcur ws server listening on 0.0.0.0:9200 pid=12345 version=X.Y.Z maxConcurrency=0 maxConnections=0
 2026-06-28T12:00:01.000000 sconcur ws server shutdown: stop accepting (reason=signal), draining 2 in-flight
 2026-06-28T12:00:01.050000 sconcur ws server shutdown: drained all in-flight
 2026-06-28T12:00:01.060000 sconcur ws server shutdown: stopped
@@ -187,7 +186,7 @@ A group's role builds the server and serves; the master needs to know nothing ab
 new WorkerGroupConfig(
     name: 'ws',
     role: static function (): void {
-        new WsServer(address: '0.0.0.0:9200', reusePort: true)
+        new WsServer(address: '0.0.0.0:9200')
             ->serve(static function (Connection $connection): void {
                 while (($message = $connection->read()) !== null) {
                     $connection->write($message);
@@ -198,8 +197,8 @@ new WorkerGroupConfig(
 );
 ```
 
-Under a master the server watches it on its own (`WorkerContext`); `reusePort: true` lets
-the workers share the port. The pool reports statistics through the master panel
+Under a master the server watches it on its own (`WorkerContext`), and the workers share
+the port through `SO_REUSEPORT`, which every server sets. The pool reports statistics through the master panel
 (`GET /api/stats`) via the `connections` section, as in the socket server — see
 [worker master](worker-master.md) and [server statistics](admin-stats.md).
 `WsServer::fromArgs($_SERVER['argv'])` builds the same server from `--key=value` flags,
