@@ -19,11 +19,18 @@
  *   workers   how many, their anonymous memory, descriptors and threads, and from /memory
  *             their heap and the tasks of their runtime;
  *   the rest  zombies under the master, the files in the runtime directory, worker exits in
- *             the journal, requests on /work answered and failed, with why.
+ *             the journal, requests on /work answered and failed, with why, and refused.
  *
- * The verdict looks at the reads after WARMUP_SECONDS (60): a master whose descriptors or threads rose (the least value of the second half over the most of the
- * first, since a worker being spawned or reaped moves them for a moment), or whose memory
- * grew by more than a MiB; the same zombie in the last two reads; files piling up in the
+ * A request refused a connection — no worker listens on the port for a moment — is counted
+ * apart from the failed ones and sent again after REFUSED_RETRY_MS: every worker has a
+ * socket of its own, so a pool that is empty between deaths refuses at once, and a client
+ * that retried at once would count thousands of refusals a second. Failed are the requests
+ * a worker took and did not answer, which is what a death costs.
+ *
+ * The verdict looks at the reads after WARMUP_SECONDS (60): a master whose descriptors or
+ * threads rose (the least value of the second half over the most of the first, since a
+ * worker being spawned or reaped moves them for a moment), or whose memory grew by more
+ * than a MiB; the same zombie in the last two reads; files piling up in the
  * runtime directory; the workers' heap or tasks climbing in a scenario where they survive.
  *
  * Scenarios:
@@ -64,6 +71,9 @@ declare(strict_types=1);
  * stderr and heartbeat. Descriptors beyond these are what the verdict watches.
  */
 const PIPES_PER_WORKER = 3;
+
+/** How long a client waits before it sends again a request whose connection was refused. */
+const REFUSED_RETRY_MS = 50;
 
 $root          = dirname(__DIR__, 2);
 $extension     = (string) (getenv('SCONCUR_EXT') ?: $root . '/ext/build/sconcur.so');
@@ -266,7 +276,8 @@ function drive(
     $endsAt       = $startedAt + $seconds;
     $nextSampleAt = $startedAt + $sampleSeconds;
     $nextSignalAt = $startedAt + ($scenario['signal']['everyMs'] ?? 0) / 1000;
-    $counts       = ['answered' => 0, 'failed' => 0, 'faults' => 0, 'signals' => 0];
+    $counts       = ['answered' => 0, 'failed' => 0, 'refused' => 0, 'faults' => 0, 'signals' => 0];
+    $retries      = [];
     $raw          = ['opened' => 0, 'closedByServer' => 0, 'outlived' => 0];
     $servedBy     = [];
     $failedBy     = [];
@@ -282,10 +293,14 @@ function drive(
             $path   = (string) curl_getinfo($handle, CURLINFO_PRIVATE);
             $body   = (string) curl_multi_getcontent($handle);
 
+            $refused = $done['result'] === CURLE_COULDNT_CONNECT;
+
             if ($path === '/work') {
                 $ok = $done['result'] === CURLE_OK && curl_getinfo($handle, CURLINFO_RESPONSE_CODE) === 200;
 
-                if ($ok) {
+                if ($refused) {
+                    ++$counts['refused'];
+                } elseif ($ok) {
                     ++$counts['answered'];
 
                     $servedBy[(int) $body] = true;
@@ -305,13 +320,24 @@ function drive(
             curl_multi_remove_handle($multi, $handle);
             curl_close($handle);
 
-            // A paced request is sent on its own clock, not as the one before it ends.
-            if (!isset($nextPacedAt[$path])) {
+            // A paced request is sent on its own clock, not as the one before it ends; a
+            // refused one after a pause.
+            if ($refused && !isset($nextPacedAt[$path])) {
+                $retries[] = ['at' => microtime(true) + REFUSED_RETRY_MS / 1000, 'path' => $path];
+            } elseif (!isset($nextPacedAt[$path])) {
                 curl_multi_add_handle($multi, requestHandle(port: $port, path: $path, timeoutSeconds: $path === '/work' ? 5 : 30));
             }
         }
 
         $now = microtime(true);
+
+        foreach ($retries as $index => $retry) {
+            if ($now >= $retry['at']) {
+                curl_multi_add_handle($multi, requestHandle(port: $port, path: $retry['path'], timeoutSeconds: $retry['path'] === '/work' ? 5 : 30));
+
+                unset($retries[$index]);
+            }
+        }
 
         foreach ($nextPacedAt as $path => $at) {
             if ($now >= $at) {
@@ -502,7 +528,7 @@ function printSample(string $label, int $elapsed, array $sample): void
     printf(
         "%-22s t=%-5s master %.1f MiB fd %d (%d own) thr %d | %d workers: %.1f MiB, fd %d, thr %d,"
         . " heap %.2f MiB, tasks %d (%d read) | zombies %s | runtime files %d | exits %d | /work %d ok %d failed"
-        . " by %d workers | faults %d signals %d | raw %d opened %d closed by server %d outlived\n",
+        . " %d refused by %d workers | faults %d signals %d | raw %d opened %d closed by server %d outlived\n",
         $label,
         $elapsed . 's',
         $sample['master']['anonKib'] / 1024,
@@ -521,6 +547,7 @@ function printSample(string $label, int $elapsed, array $sample): void
         $sample['exits'],
         $sample['answered'],
         $sample['failed'],
+        $sample['refused'],
         $sample['servedBy'],
         $sample['faults'],
         $sample['signals'],
@@ -617,7 +644,7 @@ function judge(array $samples, int $warmUpSeconds, bool $workersSurvive): string
     }
 
     return sprintf(
-        '%s: %d events after the warm-up (%d exits); %s; worker heap %+.2f MiB, tasks %d -> %d; /work %d ok %d failed%s',
+        '%s: %d events after the warm-up (%d exits); %s; worker heap %+.2f MiB, tasks %d -> %d; /work %d ok %d failed, %d refused%s',
         $suspects === [] ? 'ok' : 'SUSPECT ' . implode('; ', $suspects),
         $events,
         $last['exits'] - $first['exits'],
@@ -627,6 +654,7 @@ function judge(array $samples, int $warmUpSeconds, bool $workersSurvive): string
         $last['tasks'],
         $last['answered'] - $first['answered'],
         $last['failed'] - $first['failed'],
+        $last['refused'] - $first['refused'],
         $failedBy === [] ? '' : ' (' . implode(', ', $failedBy) . ')',
     );
 }

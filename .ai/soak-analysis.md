@@ -67,6 +67,10 @@ repository; their findings are recorded in the release plan.)
   rather than recovering.
 - Count losses per death (failed requests ÷ worker exits) or per event, not in total:
   scenarios differ in how many events they make.
+- Refused connections are counted apart (`refused`) and retried after 50 ms. Every worker
+  has a socket of its own, so a pool empty between deaths refuses at once, and a client
+  retrying at once counted millions of refusals in a minute of `crash-at-start`. Failed
+  are the requests a worker took and did not answer.
 - Compare deaths that differ in one thing. SIGKILL closes everything at once and cost
   0.6 requests a death; `oom`, `fatal` and, before the fix, `exit` in a forked worker
   cost 6.5–7: the worker's runtime goes on accepting while PHP dies from inside. `exit`

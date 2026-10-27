@@ -125,5 +125,15 @@ function lossOf(string $verdict): string
 
     $per = $exits > 0 ? sprintf('%.2f a death', $failed / $exits) : sprintf('%.4f an event', $failed / max(1, $events));
 
-    return sprintf('%s: %d answered, %d failed, %s', str_starts_with($verdict, 'ok') ? 'ok' : 'SUSPECT', $answered, $failed, $per);
+    // Refused connections are counted apart since the soak paces them; older outputs have none.
+    $refused = preg_match('~failed, (\d+) refused~', $verdict, $refusedMatch) === 1 ? (int) $refusedMatch[1] : 0;
+
+    return sprintf(
+        '%s: %d answered, %d failed, %s, %d refused',
+        str_starts_with($verdict, 'ok') ? 'ok' : 'SUSPECT',
+        $answered,
+        $failed,
+        $per,
+        $refused,
+    );
 }
